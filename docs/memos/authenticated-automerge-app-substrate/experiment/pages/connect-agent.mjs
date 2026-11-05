@@ -1,5 +1,6 @@
 import { pagesPublicOrigin } from "./agent-guide.mjs";
 import {
+  checkAccountCommand,
   codexConfig,
   codexHeaderHelper,
   keyFile,
@@ -70,13 +71,14 @@ export function connectAgentResponse(request, env) {
   <section aria-labelledby="setup-key"><h2 id="setup-key"><span>1</span> Create an API key</h2>${keyInstructions}</section>
   <section aria-labelledby="setup-save"><h2 id="setup-save"><span>2</span> Save it privately</h2>
     <p>Kilo and Codex can use the same local key file: <code>${keyFile}</code>. Your agent configures the connection; you enter the key.</p>
+    <p>For multiple accounts, use an account-specific filename such as <code>~/.config/pages/anaconda-api-key-rgbkrk</code>; the path above remains the default. Inspect filenames, not secrets, in <code>~/.config/pages</code>, and ask before reusing or replacing an existing key. Use the chosen path consistently in the save command, Kilo file reference, and Codex helper. Use a separate Codex helper filename per account so existing clients keep their key.</p>
     <details class="setup-details"><summary>Save the key on macOS or Linux</summary>
       <p>Copy this command into your own terminal. It uses Python 3 to ask for the key with input hidden. Paste the raw key when prompted, then press Enter.</p>
       <pre class="setup-value"><code id="save-key-command">${escapeHtml(saveKeyCommand)}</code></pre>
       <button type="button" class="setup-copy" data-copy="save-key-command" data-copy-message="Command copied. Run it in your own terminal, then paste the key at the hidden prompt." hidden>Copy save command</button>
-      <p class="setup-note">This replaces the key in that file and allows only your user to read or write it. If you don't have Python 3, ask your agent to prepare a private local file and enter the key there yourself. The key never goes through this page.</p>
+      <p class="setup-note">This refuses to overwrite an existing file and allows only your user to read or write a new one. Change the path in the command for an account-specific file. If you don't have Python 3, ask your agent to prepare an equivalent private local file without overwriting an existing key and enter the key there yourself. The key never goes through this page.</p>
     </details>
-    <p>Once saved, tell your agent: <q>The key is ready in ${keyFile}. Finish setup and call list_pages to verify it.</q></p>
+    <p>Once saved, tell your agent the chosen filename, not the key: <q>The key is ready. Finish setup, reload MCP or start a new session, then call list_pages to verify it.</q></p>
   </section>
   <section aria-labelledby="setup-client"><h2 id="setup-client"><span>3</span> Connect your client</h2>
     <p>Your agent can apply the matching recipe below after the key is saved. It should preserve your other settings.</p>
@@ -122,7 +124,14 @@ export function connectAgentResponse(request, env) {
     </details>
   </section>
   <section aria-labelledby="setup-try"><h2 id="setup-try"><span>4</span> Check the connection</h2>
-    <p>Ask your agent: <q>List my Pages.</q> A successful response, even an empty list, means you're connected. A config file or a client status label alone doesn't verify access.</p>
+    <p><strong>Reload MCP or start a new session, then call <code>list_pages</code> from that session.</strong> A successful response, even an empty list, means you're connected. A config file or a client status label alone doesn't verify access.</p>
+    <p>Check the returned <code>account</code> before proceeding if it is unexpected. <code>list_pages</code> and authenticated <code>GET /whoami</code> return the same account summary: <code>principal</code>, <code>display_name</code> (which may be null), and <code>email</code> only when the provider supplies a verified email. <code>/whoami</code> also returns credential <code>kind</code> and <code>can_write</code>, not expiry. Write scope does not override Page sharing permissions.</p>
+    <details class="setup-details"><summary>Check an API key's account over HTTP</summary>
+      <p>After confirming the chosen key, run this private-file check with Python 3. Change its path to your account-specific filename. It refuses redirects and prints only the account and credential summary, never the key or response error bodies. This checks HTTP authentication without changing any Pages; it does not replace MCP reload and <code>list_pages</code> verification.</p>
+      <pre class="setup-value"><code id="check-account-command">${escapeHtml(checkAccountCommand(setup.origin))}</code></pre>
+      <button type="button" class="setup-copy" data-copy="check-account-command" data-copy-message="Account check copied. Confirm the key file path before running it in your terminal." hidden>Copy account check</button>
+    </details>
+    <p class="setup-note"><code>quota.count</code> counts active owned Pages, excluding shared Pages; <code>quota.trash_count</code> counts your trashed Pages separately. Counts include pending creations and lifecycle reservations in owned catalog slots. These are account-wide counts, not the number of results shown. A null <code>content_updated_at</code> means no content edit time is recorded, including for new Pages and legacy Pages; don't invent an edit timestamp from other dates.</p>
     <p class="setup-note">If it fails, check that the key is saved, unexpired, and belongs to this deployment's Anaconda environment. Missing access to one Page can also mean it hasn't been shared with that account.</p>
     <p class="setup-note">For CLI setup, tool details, and troubleshooting, read the <a href="/llms.txt">agent guide</a>.</p>
   </section>

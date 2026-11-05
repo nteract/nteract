@@ -273,6 +273,46 @@ test("Home is the Pages library and starts the editor import at boot", async () 
   assert.equal(document.querySelector(".index-nav [aria-current=page]")?.textContent, "Pages");
 });
 
+test("?grid=1 opens the library on the grid; the address drops it and a reload keeps the list", async () => {
+  const listing = {
+    ...catalog,
+    list_pages: {
+      pages: [{ page_id: "1a160b47-6df1-4983-81eb-489ca5a26812", title: "Roadmap" }],
+      next_cursor: null,
+      principal: "one",
+    },
+  };
+  window.localStorage.removeItem("nteract.pages.view");
+  window.localStorage.removeItem("pages.grid");
+  try {
+    history.replaceState(null, "", "/pages?grid=1");
+    await boot(signedIn, listing);
+    await settle();
+    assert.ok(document.querySelector('ul.index-grid[aria-label="Pages"]'), "the grid shows");
+    const toggle = document.querySelector('[role="group"][aria-label="Display"]');
+    assert.equal(
+      toggle.querySelector('[aria-label="Grid view"]').getAttribute("aria-pressed"),
+      "true",
+    );
+    assert.equal(location.pathname + location.search, "/pages", "the library's own address");
+    assert.equal(window.localStorage.getItem("nteract.pages.view"), "grid");
+    // Without the query or the stored flag, the grid and its toggle stay off.
+    await boot(signedIn, listing);
+    await settle();
+    assert.equal(document.querySelector(".index-grid"), null);
+    assert.equal(document.querySelector('[role="group"][aria-label="Display"]'), null);
+    // The stored flag shows the toggle, and the remembered grid.
+    window.localStorage.setItem("pages.grid", "1");
+    await boot(signedIn, listing);
+    await settle();
+    assert.ok(document.querySelector(".index-grid"));
+  } finally {
+    window.localStorage.removeItem("nteract.pages.view");
+    window.localStorage.removeItem("pages.grid");
+    history.replaceState(null, "", "/");
+  }
+});
+
 test("a library choice pushes the address at / and /pages, and Back restores the view", async () => {
   for (const base of ["/", "/pages"]) {
     history.replaceState(null, "", base);

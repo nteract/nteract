@@ -14,16 +14,76 @@
  * `legibleHostRefusal` turns that body into the JSON refusal shape every other
  * Pages error uses, with a stable code and a retry hint. A refused request did
  * no work, so a retry with the same idempotency_key and retry_token is safe.
+ *
+ * Cloudflare reports the same conditions differently: the stub fetch throws.
+ * An overloaded object throws an Error with `overloaded: true`, and a
+ * transient failure (a lost connection, a reset or code update) throws one
+ * with `retryable: true`
+ * (developers.cloudflare.com/durable-objects/best-practices/error-handling/).
+ * `legibleHostError` answers those two with JSON refusals too, so a thrown
+ * overload is `page_busy` rather than the gateway's generic 500. Every other
+ * thrown error is rethrown unchanged.
  */
 
 export const HOST_BUSY_TEXT = "cell request limit reached";
+
+/** What a refusal names, by the namespace the gateway called. */
+const SUBJECTS = Object.freeze({
+  PAGES: "This Page",
+  CATALOGS: "Your account's Catalog",
+  PROJECTS: "This Project",
+});
+const subjectOf = (binding) => SUBJECTS[binding] ?? "This Pages object";
+
+const busyMessage = (subject) =>
+  `${subject} is answering as many requests as it can right now; it did not run this one. Retry after retry_after_ms with the same idempotency_key and retry_token, and back off exponentially if it repeats.`;
+
 export const PAGE_BUSY = Object.freeze({
   code: "page_busy",
   status: 503,
+  // celld's refusal: its in-flight count drops as soon as requests finish.
   retryAfterMs: 1000,
-  message:
-    "This Page is answering as many requests as it can right now; it did not run this one. Retry in a second with the same idempotency_key and retry_token.",
+  message: busyMessage(SUBJECTS.PAGES),
 });
+
+/**
+ * How long an overloaded object asks callers to wait, in whole seconds so
+ * `retry_after_ms` and `Retry-After` agree: 2 to 5 s, at random. Cloudflare
+ * says overloaded calls should not be retried, because a retry adds to the
+ * overload. A caller that does retry waits longer than after celld's refusal,
+ * and the jitter spreads callers that were refused together.
+ */
+export function overloadRetryAfterMs(random = Math.random) {
+  return (2 + Math.min(3, Math.floor(random() * 4))) * 1000;
+}
+
+/** How a request may be repeated after a lost answer, as `withinToolDeadline`
+ * and `safeToRepeat` say it: `true` (a read, or a write whose receipt
+ * replays), `false` (a tokenless write) or `"lease"` (a progress creation).
+ * `undefined` is a request outside the tool API. */
+const transientMessage = (subject, safe) => {
+  const failed = `${subject} failed before it answered, for example while it restarted.`;
+  if (safe === true)
+    return `${failed} It may have started this request: retry it with the same idempotency_key and retry_token, and its receipt replays.`;
+  if (safe === false)
+    return `${failed} This write may have completed. Read back and reconcile before retrying: a write without retry_token is deduplicated only while its receipt is retained.`;
+  if (safe === "lease")
+    return `${failed} The document was not edited. If you have its progress_id and lease_token, retry that session; do not loop creating sessions.`;
+  return `${failed} Retry with the same idempotency_key and retry_token. A write without a retry_token may have completed: read back and reconcile before retrying.`;
+};
+
+/** A transient failure between the gateway and an object. Unlike an
+ * overload, the object may have started the request, so only a retry that
+ * replays its receipt is blind. */
+export const PAGE_TRANSIENT_FAILURE = Object.freeze({
+  code: "page_transient_failure",
+  status: 503,
+  retryAfterMs: 1000,
+  message: transientMessage(SUBJECTS.PAGES),
+});
+
+/** Every code the gateway answers a saturated or failed object with. */
+export const HOST_REFUSAL_CODES = Object.freeze([PAGE_BUSY.code, PAGE_TRANSIENT_FAILURE.code]);
 
 /** Only a short plain-text 503 can be celld's refusal; a JSON body is ours. */
 function mayBeHostRefusal(response) {
@@ -34,17 +94,16 @@ function mayBeHostRefusal(response) {
   return length === null || Number(length) <= 128;
 }
 
-/** The JSON refusal for a Page or Catalog at its request limit. */
-export function pageBusyResponse({ retryAfterMs = PAGE_BUSY.retryAfterMs } = {}) {
+function refusalResponse({ code, status, message, retryable = true }, retryAfterMs) {
   return new Response(
     JSON.stringify({
-      error: PAGE_BUSY.message,
-      code: PAGE_BUSY.code,
-      retryable: true,
+      error: message,
+      code,
+      retryable,
       retry_after_ms: retryAfterMs,
     }),
     {
-      status: PAGE_BUSY.status,
+      status,
       headers: {
         "content-type": "application/json",
         "retry-after": String(Math.max(1, Math.ceil(retryAfterMs / 1000))),
@@ -54,38 +113,127 @@ export function pageBusyResponse({ retryAfterMs = PAGE_BUSY.retryAfterMs } = {})
   );
 }
 
+/** The JSON refusal for a Page, Catalog or Project at its request limit. */
+export function pageBusyResponse({ retryAfterMs = PAGE_BUSY.retryAfterMs, binding } = {}) {
+  return refusalResponse({ ...PAGE_BUSY, message: busyMessage(subjectOf(binding)) }, retryAfterMs);
+}
+
+// The transient refusals this module made, by the binding they name, so the
+// tool API can restate one for the request's repeat safety.
+const transientRefusals = new WeakMap();
+
+/** The JSON refusal for a transient failure between the gateway and an
+ * object. Only a request that is safe to repeat (or one outside the tool
+ * API) is `retryable`. */
+export function pageTransientFailureResponse({
+  retryAfterMs = PAGE_TRANSIENT_FAILURE.retryAfterMs,
+  binding,
+  safe,
+} = {}) {
+  const response = refusalResponse(
+    {
+      ...PAGE_TRANSIENT_FAILURE,
+      message: transientMessage(subjectOf(binding), safe),
+      retryable: safe === undefined || safe === true,
+    },
+    retryAfterMs,
+  );
+  transientRefusals.set(response, binding);
+  return response;
+}
+
+/** `response`, or for a transient or storage refusal, the same refusal
+ * stated for a tool request's repeat safety (`safeToRepeat`): a tokenless
+ * write is told to reconcile and is not retryable. */
+export async function withRepeatSafety(response, safe, signal) {
+  if (transientRefusals.has(response))
+    return pageTransientFailureResponse({ binding: transientRefusals.get(response), safe });
+  if (
+    safe !== false ||
+    response.status !== 503 ||
+    !response.headers.get("content-type")?.toLowerCase().includes("json")
+  )
+    return response;
+  // Only tool-body inspection needs the deadline module and its auth dependencies.
+  const { bufferedResponse } = await import("./tool-deadline.mjs");
+  // Buffer under the tool deadline before cloning: teeing a live body would
+  // leave an unread branch that prevents cancellation of the upstream stream.
+  const buffered = await bufferedResponse(response, signal);
+  let body;
+  try {
+    body = await buffered.clone().json();
+  } catch {
+    return buffered;
+  }
+  if (body?.code !== "record_persistence_unavailable") return buffered;
+  const headers = new Headers(buffered.headers);
+  headers.delete("content-length");
+  return Response.json(
+    {
+      ...body,
+      retryable: false,
+      error:
+        "This Page's storage did not confirm its records. This write may have completed. Read back and reconcile before retrying: a write without retry_token is deduplicated only while its receipt is retained.",
+    },
+    { status: buffered.status, headers },
+  );
+}
+
+/** The refusal for an error a stub fetch threw, or the error rethrown.
+ * `overloaded` wins over `retryable`: an overloaded object did not run the
+ * request, and its refusal asks for a longer, jittered wait
+ * (`overloadRetryAfterMs`). `binding` names the namespace in the message and
+ * the log line; nothing from the error's message is logged. */
+export function legibleHostError(error, binding) {
+  const overloaded = error?.overloaded === true;
+  if (!overloaded && error?.retryable !== true) throw error;
+  console.warn(
+    JSON.stringify({
+      service: "nteract-pages-native",
+      event: overloaded ? "host.overloaded" : "host.transient_failure",
+      ...(typeof binding === "string" && { binding }),
+      timestamp: new Date().toISOString(),
+    }),
+  );
+  return overloaded
+    ? pageBusyResponse({ retryAfterMs: overloadRetryAfterMs(), binding })
+    : pageTransientFailureResponse({ binding });
+}
+
 /**
  * The response as the caller should see it. Anything but celld's refusal is
  * returned untouched, body unread. The refusal body is tiny, so reading it
  * costs nothing; a 503 with another short text body passes through with its
  * bytes intact.
  */
-export async function legibleHostRefusal(response) {
+export async function legibleHostRefusal(response, binding) {
   if (!mayBeHostRefusal(response)) return response;
   const text = await response.text();
   if (text.trim() !== HOST_BUSY_TEXT) return new Response(text, response);
-  return pageBusyResponse();
+  return pageBusyResponse({ binding });
 }
 
 /** Wrap a Durable Object namespace so every stub fetch through it answers
- * celld's refusal legibly. Other methods and properties pass through. */
-export function legibleNamespace(namespace) {
+ * celld's refusal, and Cloudflare's thrown overload and transient errors,
+ * legibly. Other methods and properties pass through. */
+export function legibleNamespace(namespace, binding) {
   if (!namespace || typeof namespace !== "object") return namespace;
   return new Proxy(namespace, {
     get(target, property) {
       const value = Reflect.get(target, property, target);
       if (typeof value !== "function") return value;
       if (property === "getByName" || property === "get")
-        return (...args) => legibleStub(value.apply(target, args));
+        return (...args) => legibleStub(value.apply(target, args), binding);
       return value.bind(target);
     },
   });
 }
 
-function legibleStub(stub) {
+function legibleStub(stub, binding) {
   if (!stub || typeof stub !== "object") return stub;
   const legible = (response) =>
-    mayBeHostRefusal(response) ? legibleHostRefusal(response) : response;
+    mayBeHostRefusal(response) ? legibleHostRefusal(response, binding) : response;
+  const thrown = (error) => legibleHostError(error, binding);
   return new Proxy(stub, {
     get(target, property) {
       const value = Reflect.get(target, property, target);
@@ -94,8 +242,13 @@ function legibleStub(stub) {
       // No extra turn for an answer that isn't the refusal: the caller's
       // deadline and body reader see the response as soon as the stub has it.
       return (...args) => {
-        const result = value.apply(target, args);
-        return typeof result?.then === "function" ? result.then(legible) : legible(result);
+        let result;
+        try {
+          result = value.apply(target, args);
+        } catch (error) {
+          return Promise.resolve().then(() => thrown(error));
+        }
+        return typeof result?.then === "function" ? result.then(legible, thrown) : legible(result);
       };
     },
   });
@@ -111,7 +264,8 @@ export function legibleEnv(env) {
   return new Proxy(env, {
     get(target, property, receiver) {
       if (!LEGIBLE_NAMESPACES.has(property)) return Reflect.get(target, property, receiver);
-      if (!wrapped.has(property)) wrapped.set(property, legibleNamespace(target[property]));
+      if (!wrapped.has(property))
+        wrapped.set(property, legibleNamespace(target[property], property));
       return wrapped.get(property);
     },
   });

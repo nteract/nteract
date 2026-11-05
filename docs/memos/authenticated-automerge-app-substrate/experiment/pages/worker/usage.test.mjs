@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
 import worker from "./index.mjs";
+import { sqliteD1 } from "../test/sqlite-d1.mjs";
 import {
   LABEL_LIMIT,
   USAGE_EVENT,
@@ -70,7 +71,7 @@ test("usage event has a fixed shape and omits secrets and absent fields", () => 
   });
   const text = JSON.stringify(record);
   assert.doesNotMatch(text, /kyle@example\.com|secret/);
-  assert.throws(() => usageEvent({ action: "page.read" }), TypeError);
+  assert.throws(() => usageEvent({ action: "page.unknown" }), TypeError);
   assert.equal(usageEvent({ action: "sync.open", surface: "elsewhere" }).surface, "unknown");
 });
 
@@ -192,6 +193,8 @@ test("MCP clientInfo from initialize is carried onto tool-call usage events", as
   t.mock.method(globalThis, "fetch", auth.fetch);
   const token = auth.apiKey();
   const env = auth.env;
+  env.PAGES_USAGE = sqliteD1(t).open();
+  const holds = [];
   env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN ??= "https://pages.invalid";
   const pageId = "44444444-4444-4444-8444-444444444444";
   env.PAGES = {
@@ -216,6 +219,7 @@ test("MCP clientInfo from initialize is carried onto tool-call usage events", as
         body: JSON.stringify({ jsonrpc: "2.0", id: 1, ...body }),
       }),
       env,
+      { waitUntil: (work) => holds.push(work) },
     );
   const init = await post({
     method: "initialize",
@@ -309,4 +313,42 @@ test("MCP clientInfo from initialize is carried onto tool-call usage events", as
   assert.equal(resourceCall.kind, "resource");
   assert.equal(resourceCall.page_id, pageId);
   assert.equal(tool.kind, "tool");
+  await Promise.all(holds);
+  const stored = env.PAGES_USAGE.rows("SELECT * FROM pages_usage_events");
+  assert.equal(stored.filter((row) => row.action === "tool.call").length, toolCalls().length);
+  assert.ok(stored.every((row) => row.principal === tool.principal));
+  assert.doesNotMatch(JSON.stringify(stored), /Fixture Person|claude-opus|clientInfo/);
+});
+
+test("a gateway response never awaits a hung or failed usage database", async (t) => {
+  const auth = await createAuthFixture();
+  t.mock.method(globalThis, "fetch", auth.fetch);
+  t.mock.method(console, "info", () => {});
+  const token = auth.apiKey();
+  const pageId = "44444444-4444-4444-8444-444444444444";
+  for (const mode of ["hang", "fail"]) {
+    const db = sqliteD1(t).open();
+    db.mode = mode;
+    const holds = [];
+    const env = {
+      ...auth.env,
+      PAGES_USAGE: db,
+      PAGES: { getByName: () => ({ fetch: async () => Response.json({ page_id: pageId }) }) },
+    };
+    const response = await worker.fetch(
+      new Request("https://pages.invalid/api/tools", {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "x-pages-driver": "Kilo" },
+        body: JSON.stringify({ operation: "read_page_presence", arguments: { page_id: pageId } }),
+      }),
+      env,
+      { waitUntil: (work) => holds.push(work) },
+    );
+    assert.equal(response.status, 200);
+    assert.equal(db.calls, 0, "D1 I/O has not started when the response returns");
+    // Recover the fixture before the scheduled work starts, avoiding a real
+    // five-second hold in this integration test; virtual time covers timeout.
+    db.mode = "ok";
+    await Promise.all(holds);
+  }
 });

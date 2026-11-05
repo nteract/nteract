@@ -1,4 +1,5 @@
 import {
+  checkAccountCommand,
   codexConfig,
   codexHeaderHelper,
   keyFile,
@@ -200,12 +201,26 @@ Branch on code, not on the error message:
 - page_recovery_blocked: a pending edit exceeds the Page's history capacity;
   accepted content stays readable. Tell the person.
 - Retryable server waits (503, retryable:true): record_persistence_timeout,
-  comments_migrating and location_migration_required. Retry the same request,
-  including its key and token. location_migration_required also names the
-  reason, page_id and space_id blocking the pass.
-- page_busy (503, retryable:true): the Page is answering as many requests as
-  it can and did not run this one. retry_after_ms and Retry-After say when to
-  retry; send the same request, including its key and token.
+  record_persistence_unavailable, comments_migrating and
+  location_migration_required. Retry the same request, including its key and
+  token. location_migration_required also names the reason, page_id and
+  space_id blocking the pass. record_persistence_unavailable carries
+   retry_after_ms and Retry-After. For a tokenless write it is retryable:false:
+   read back and reconcile before retrying, since the write may have completed.
+- shared_page_unavailable (503, retryable:true): a listing met a shared Page,
+  or its owner's Catalog, that did not answer. Retry the listing after
+  retry_after_ms (also Retry-After), with exponential backoff if it repeats.
+- page_busy (503, retryable:true): the Page, Catalog or Project is answering
+  as many requests as it can and did not run this one. Wait retry_after_ms
+  (also Retry-After), then send the same request, including its key and
+  token. Use exponential backoff if it repeats: an overloaded host asks for 2
+  to 5 s, and retrying sooner adds to the overload.
+- page_transient_failure (503): the Page's, Catalog's or Project's host
+  failed before it answered, for example while it restarted. retryable:true (a
+  read, a progress renewal, or a write with retry_token): wait retry_after_ms,
+  then retry the same request; the receipt replays. retryable:false (a
+  tokenless write): it may have completed; read back and reconcile before
+  retrying. A progress creation follows its lease rules.
 - request_timeout: the host didn't answer in 60 s but keeps the work it
   accepted. retryable:true (a read, a progress renewal, or a write with
   retry_token): retry the same request; the receipt replays. retryable:false (a
@@ -250,7 +265,9 @@ Choose by how the client runs before investigating authentication:
   is not enabled. Ask for client support instead of trying unrelated login flows.
 
 Ask the human for their step early, and prepare non-secret configuration in
-parallel. Only a successful list_pages call proves the connection works.
+parallel. **Reload MCP or start a new session, then call list_pages from that
+session.** Only a successful list_pages call proves the connection works;
+configuration alone is not verification.
 
 ### API-key connection: first ask the human
 
@@ -258,7 +275,13 @@ For clients using the API-key recipes, follow this order:
 
 1. Check whether a key is already explicitly configured for Pages (a supplied
    secret path/header or ANACONDA_API_KEY / ANACONDA_AUTH_API_KEY). Check presence
-   without displaying its value. The recipes below use ${keyFile}.
+   without displaying its value. Inspect filenames, not secrets, in ~/.config/pages.
+   Ask before reusing or replacing an existing key; do not assume it belongs to
+   the intended account. The recipes below retain ${keyFile} as the default.
+   For multiple accounts, choose an account-specific filename such as
+   ~/.config/pages/anaconda-api-key-rgbkrk. Use that path consistently in the
+   save command, Kilo file reference, and Codex helper. Use a separate Codex
+   helper filename per account so existing clients keep their key.
 2. If no key is available, ask the human immediately:
    "Pages needs a separate Anaconda API key. Please open ${origin}/connect,
    create a key, and save it privately using that page's instructions. Tell me
@@ -274,7 +297,8 @@ For clients using the API-key recipes, follow this order:
 3. After the human saves the key, merge the client recipe below into their
    existing configuration. Preserve unrelated settings and existing servers.
    If they supplied another secret path, use that path consistently instead.
-4. Reload the client's MCP connection, then call list_pages. Only a successful
+4. Reload the client's MCP connection or start a new session, then call list_pages
+   from that session. Only a successful
    authenticated tool call proves it works; a saved config is not a connection.
    An empty Pages list is a successful result. Until then report the exact stage:
    prepared and waiting for a key, configured but not verified, or connected.
@@ -289,13 +313,39 @@ scopes and Page sharing permissions. Do not retry in a loop.
 Create the key through /connect, then run this in your own terminal. Python 3
 prompts with input hidden and writes a user-only file. Paste only the raw key,
 not an environment-variable assignment. Nothing is sent to the agent or this page.
-This replaces the key in ${keyFile}; clients using that file will use the new key.
+This refuses to overwrite an existing file. Change the path in the command for
+an account-specific file; ask before reusing or replacing an existing key.
 If Python 3 is unavailable, ask the agent to prepare an equivalent private local
-file and enter the key yourself; no CLI installation is required.
+file without overwriting an existing key and enter the key yourself; no CLI
+installation is required.
 
 \`\`\`sh
 ${saveKeyCommand}
 \`\`\`
+
+### Check the account without exposing the key
+
+After the human confirms the chosen key, GET ${origin}/whoami checks which account
+it authenticates without creating or editing a Page. It requires authentication
+and returns account {principal, display_name, email?} and credential {kind,
+can_write}. display_name may be null; email is included only when the provider
+supplies a verified email. kind is api-key, oidc, or oauth. No credential expiry
+is reported. can_write describes credential scope, not permission to edit every
+Page; sharing permissions still apply. Responses are not cached.
+
+This API-key check reads the private file directly, refuses redirects, and prints
+only account and credential summary fields. Change its path to the confirmed
+account-specific filename. Never print the key or resolved Authorization header.
+Errors do not print response bodies or redirect destinations.
+
+\`\`\`sh
+${checkAccountCommand(origin)}
+\`\`\`
+
+Check the returned account with the human before proceeding if it is unexpected.
+A successful HTTP check is not MCP verification: reload MCP or start a new
+session, then call list_pages from that session. list_pages includes the same
+account object as /whoami, alongside its existing principal and quota fields.
 
 ### Kilo Desktop / CLI (API key, recommended)
 
@@ -439,7 +489,8 @@ the same tokens and refresh concurrently, Pages treats the second use of the
 refresh token as replay and revokes the whole grant. Do not use OAuth for
 several concurrent agents or CLI runs; use an API key there.
 
-OAuth credentials work on /mcp only, not the JSON API, sharing API, or native sync.
+OAuth credentials work on /mcp and authenticated GET /whoami, not the JSON API,
+sharing API, or native sync.
 After authorization, call list_pages from the actual connected chat. A
 configured plugin alone isn't proof.
 
@@ -731,7 +782,10 @@ list_pages accepts optional query (title substring), limit (1-100, default 50) a
 access "owned" or "shared" narrows it to Pages you own or Pages shared with you; shared does
 not combine with in_trash or project_id. sort "activity" (default) lists the most recently edited
 first: each Page's content_updated_at (when its title or content last changed; null when
-unknown), or updated_at for a Page with no recorded edit. With in_trash, "activity" lists the
+unknown), or updated_at for a Page with no recorded edit. A null content_updated_at
+means no content edit time is recorded, including for new Pages and legacy Pages; do not invent an edit
+timestamp from updated_at or created_at. The sorting fallback is not evidence of an edit.
+With in_trash, "activity" lists the
 most recently trashed first, by trashed_at. "created" lists the newest first;
 "title" lists by lowercased title in Unicode code point order: empty titles first, accented
 and non-Latin titles after z.
@@ -739,7 +793,11 @@ Pass next_cursor back as cursor, with the same other arguments, until it is null
 snapshot: concurrent title or sharing changes can move Pages across the cursor, and so can
 content edits under the activity sort. A short or
 empty result does not prove a Page is absent. Its quota object is your own account's Page
-limit: {limit, count, trash_count}, and principal names the account that answered. At the limit, create_page and restore_page return
+limit: {limit, count, trash_count}. quota.count counts active owned Pages, excluding
+shared Pages; quota.trash_count counts your trashed Pages separately. These are
+account-wide counts, not the number of results shown, even with filters or pagination.
+Counts include pending creations and lifecycle reservations in the owned catalog slots.
+principal names the account that answered. At the limit, create_page and restore_page return
 page_quota_exceeded with limit and count; tell the person rather than retrying.
 
 - create_page: title, optional markdown, optional project_id or parent_id, and idempotency_key.

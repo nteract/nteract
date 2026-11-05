@@ -289,6 +289,26 @@ test("a block holding two identical dataframes keeps one line for each", () => {
   );
 });
 
+test("duplicate dataframe lines with different hidden attrs refuse Markdown rewrites", () => {
+  const first = dataframeMarker(),
+    second = dataframeMarker();
+  first.value.attrs.future = "first";
+  second.value.attrs.future = "second";
+  const { doc, id } = mixed([first, second]);
+  assert.throws(
+    () =>
+      edit(doc, [
+        {
+          op: "replace_block_markdown",
+          block_id: id,
+          markdown: projectPage(doc).blocks[0].markdown,
+        },
+      ]),
+    (error) =>
+      error.code === "markdownless_node" && /different hidden attributes/.test(error.message),
+  );
+});
+
 test("replace_block_markdown keeps a dataframe only as its own top-level line, once", () => {
   const { doc, id } = mixed();
   const line = `[Dataframe: Usage by day](${src})`;

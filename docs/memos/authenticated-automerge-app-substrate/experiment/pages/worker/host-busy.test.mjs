@@ -1,15 +1,50 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import {
   HOST_BUSY_TEXT,
+  HOST_REFUSAL_CODES,
   PAGE_BUSY,
+  PAGE_TRANSIENT_FAILURE,
   legibleEnv,
+  legibleHostError,
+  overloadRetryAfterMs,
+  pageTransientFailureResponse,
+  withRepeatSafety,
   legibleHostRefusal,
   legibleNamespace,
 } from "./host-busy.mjs";
 
 const hostRefusal = () =>
   new Response(HOST_BUSY_TEXT, { status: 503, headers: { "content-type": "text/plain" } });
+
+test("low-level persistence imports work with the parent experiment's tsconfig", () => {
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      "--input-type=module",
+      "--eval",
+      `
+        import assert from "node:assert/strict";
+        import { overloadRetryAfterMs } from "./pages/worker/host-busy.mjs";
+        import { encodeRecordBatch, decodeRecordBatch } from "./pages/worker/record-persistence.mjs";
+        assert.equal(overloadRetryAfterMs(() => 0), 2000);
+        const entries = [["record", new Uint8Array([1, 2, 3])]];
+        assert.deepEqual(decodeRecordBatch(encodeRecordBatch(entries)), entries);
+      `,
+    ],
+    {
+      cwd: new URL("../../", import.meta.url),
+      env: { ...process.env, TSX_TSCONFIG_PATH: "tsconfig.test.json" },
+      encoding: "utf8",
+      timeout: 10_000,
+    },
+  );
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+});
 
 test("celld's plain-text refusal becomes a JSON page_busy refusal with Retry-After", async () => {
   const response = await legibleHostRefusal(hostRefusal());
@@ -98,4 +133,286 @@ test("legibleEnv wraps the object namespaces the gateway forwards to and nothing
   assert.equal(legible.DB, env.DB);
   assert.equal(legible.PAGES_EDITOR, "wordgard");
   assert.equal(legibleEnv({}).PAGES, undefined);
+});
+
+/** Cloudflare's infrastructure errors: an Error with flags, thrown by fetch. */
+const cloudflareError = (message, flags) => Object.assign(new Error(message), flags);
+
+test("a thrown overload or transient error answers as a JSON refusal; other errors are unchanged", async (t) => {
+  const logged = [];
+  t.mock.method(console, "warn", (line) => logged.push(JSON.parse(line)));
+  let next;
+  const legible = legibleNamespace(
+    {
+      getByName: () => ({
+        fetch() {
+          const error = next();
+          if (error.sync) throw error;
+          return Promise.reject(error);
+        },
+      }),
+    },
+    "PAGES",
+  );
+  const send = (error) => {
+    next = () => error;
+    return legible.getByName("p").fetch(new Request("https://pages.internal/x"));
+  };
+
+  for (const sync of [false, true]) {
+    const overloaded = cloudflareError("Durable Object is overloaded. Too many requests queued.", {
+      overloaded: true,
+      sync,
+    });
+    const busy = await send(overloaded);
+    assert.equal(busy.status, 503);
+    const body = await busy.json();
+    assert.equal(body.code, PAGE_BUSY.code);
+    assert.equal(body.retryable, true);
+    // An overload asks for a longer, jittered wait, the same in both places.
+    assert.ok([2000, 3000, 4000, 5000].includes(body.retry_after_ms), body.retry_after_ms);
+    assert.equal(busy.headers.get("retry-after"), String(body.retry_after_ms / 1000));
+    assert.match(body.error, /^This Page /);
+    assert.match(body.error, /back off exponentially/);
+
+    const lost = await send(cloudflareError("Network connection lost.", { retryable: true, sync }));
+    assert.equal(lost.status, 503);
+    assert.equal(lost.headers.get("retry-after"), "1");
+    assert.equal(lost.headers.get("content-type"), "application/json");
+    const transient = await lost.json();
+    assert.equal(transient.code, PAGE_TRANSIENT_FAILURE.code);
+    assert.equal(transient.retryable, true);
+    assert.match(transient.error, /read back and reconcile/);
+  }
+
+  // An overload that is also marked retryable did not run: page_busy.
+  const both = await send(cloudflareError("overloaded", { overloaded: true, retryable: true }));
+  assert.equal((await both.json()).code, PAGE_BUSY.code);
+
+  // Anything else reaches the caller as it was thrown, the same object.
+  for (const error of [
+    new Error("example error"),
+    cloudflareError("remote", { remote: true }),
+    cloudflareError("not retryable", { retryable: false, overloaded: false }),
+    Object.assign(new DOMException("aborted", "AbortError"), {}),
+  ]) {
+    await assert.rejects(send(error), (thrown) => thrown === error);
+    await assert.rejects(send(Object.assign(error, { sync: true })), (thrown) => thrown === error);
+  }
+
+  // Each refusal logs one content-free line naming the binding.
+  assert.deepEqual(
+    logged.map(({ event, binding }) => [event, binding]),
+    [
+      ["host.overloaded", "PAGES"],
+      ["host.transient_failure", "PAGES"],
+      ["host.overloaded", "PAGES"],
+      ["host.transient_failure", "PAGES"],
+      ["host.overloaded", "PAGES"],
+    ],
+  );
+  assert.ok(logged.every((line) => !JSON.stringify(line).includes("Network")));
+});
+
+test("legibleHostError is the mapping the stub wrapper uses", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  assert.equal(
+    (await legibleHostError(cloudflareError("x", { overloaded: true })).json()).code,
+    "page_busy",
+  );
+  assert.equal(
+    (await legibleHostError(cloudflareError("x", { retryable: true })).json()).code,
+    "page_transient_failure",
+  );
+  const plain = new Error("plain");
+  assert.throws(
+    () => legibleHostError(plain),
+    (thrown) => thrown === plain,
+  );
+  assert.throws(
+    () => legibleHostError(undefined),
+    (thrown) => thrown === undefined,
+  );
+  assert.deepEqual(HOST_REFUSAL_CODES, ["page_busy", "page_transient_failure"]);
+});
+
+test("legibleEnv maps thrown errors for every namespace it wraps and leaves PAGE_RECORDS raw", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const overloaded = cloudflareError("overloaded", { overloaded: true });
+  const stub = { fetch: async () => Promise.reject(overloaded) };
+  const env = {
+    PAGES: { getByName: () => stub },
+    CATALOGS: { getByName: () => stub },
+    PROJECTS: { getByName: () => stub },
+    PAGE_RECORDS: { getByName: () => stub },
+  };
+  const legible = legibleEnv(env);
+  for (const name of ["PAGES", "CATALOGS", "PROJECTS"]) {
+    const response = await legible[name].getByName("x").fetch(new Request("https://p.internal"));
+    assert.equal((await response.json()).code, "page_busy", name);
+  }
+  await assert.rejects(
+    legible.PAGE_RECORDS.getByName("x").fetch(new Request("https://p.internal")),
+    (thrown) => thrown === overloaded,
+  );
+});
+
+test("an overload's wait is 2 to 5 whole seconds, at random", () => {
+  assert.equal(
+    overloadRetryAfterMs(() => 0),
+    2000,
+  );
+  assert.equal(
+    overloadRetryAfterMs(() => 0.3),
+    3000,
+  );
+  assert.equal(
+    overloadRetryAfterMs(() => 0.6),
+    4000,
+  );
+  assert.equal(
+    overloadRetryAfterMs(() => 0.999999),
+    5000,
+  );
+  assert.equal(
+    overloadRetryAfterMs(() => 1),
+    5000,
+  );
+  for (let n = 0; n < 200; n++) {
+    const ms = overloadRetryAfterMs();
+    assert.ok(ms >= 2000 && ms <= 5000 && ms % 1000 === 0, ms);
+  }
+});
+
+test("refusals name the object the gateway called", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const subjects = {
+    PAGES: /^This Page /,
+    CATALOGS: /^Your account's Catalog /,
+    PROJECTS: /^This Project /,
+    OTHER: /^This Pages object /,
+  };
+  for (const [binding, subject] of Object.entries(subjects)) {
+    const namespace = legibleNamespace(
+      { getByName: () => ({ fetch: async () => next() }) },
+      binding,
+    );
+    let next = () => hostRefusal();
+    const celld = await (
+      await namespace.getByName("x").fetch(new Request("https://p.internal"))
+    ).json();
+    assert.match(celld.error, subject, binding);
+    assert.equal(
+      celld.retry_after_ms,
+      PAGE_BUSY.retryAfterMs,
+      "celld's refusal keeps its 1 s wait",
+    );
+    for (const flags of [{ overloaded: true }, { retryable: true }]) {
+      next = () => Promise.reject(cloudflareError("x", flags));
+      const body = await (
+        await namespace.getByName("x").fetch(new Request("https://p.internal"))
+      ).json();
+      assert.match(body.error, subject, `${binding} ${JSON.stringify(flags)}`);
+    }
+  }
+});
+
+test("a transient refusal restated for a tool request follows its repeat safety", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const transient = pageTransientFailureResponse({ binding: "CATALOGS" });
+  const cases = [
+    [true, true, /receipt replays/],
+    [false, false, /Read back and reconcile/],
+    ["lease", false, /do not loop creating sessions/],
+    [undefined, true, /read back and reconcile before retrying/],
+  ];
+  for (const [safe, retryable, advice] of cases) {
+    const response = await withRepeatSafety(transient, safe);
+    assert.equal(response.status, 503);
+    const body = await response.json();
+    assert.equal(body.code, "page_transient_failure");
+    assert.equal(body.retryable, retryable, String(safe));
+    assert.match(body.error, advice, String(safe));
+    assert.match(body.error, /^Your account's Catalog /);
+    assert.equal(response.headers.get("retry-after"), "1");
+  }
+  // Other refusals keep their payload; successful responses stay unread.
+  const busy = legibleHostError(cloudflareError("x", { overloaded: true }));
+  const expected = await busy.clone().json();
+  const passed = await withRepeatSafety(busy, false, new AbortController().signal);
+  assert.equal(passed.status, busy.status);
+  assert.deepEqual(await passed.json(), expected);
+  const ok = new Response("ok");
+  assert.equal(await withRepeatSafety(ok, false), ok);
+});
+
+test("a Page storage refusal preserves its delay but requires tokenless writes to reconcile", async () => {
+  const body = {
+    error:
+      "Storage did not confirm its records. Retry after retry_after_ms with the same idempotency_key and retry_token.",
+    code: "record_persistence_unavailable",
+    retryable: true,
+    retry_after_ms: 3000,
+  };
+  for (const safe of [false, true, undefined]) {
+    const response = Response.json(body, {
+      status: 503,
+      headers: {
+        "retry-after": "3",
+        "x-custom": "kept",
+        "content-length": String(JSON.stringify(body).length),
+      },
+    });
+    const restated = await withRepeatSafety(response, safe, new AbortController().signal);
+    assert.equal(restated.status, 503);
+    assert.equal(restated.headers.get("retry-after"), "3");
+    assert.equal(restated.headers.get("x-custom"), "kept");
+    const actual = await restated.json();
+    assert.equal(actual.code, body.code);
+    assert.equal(actual.retry_after_ms, 3000);
+    assert.equal(actual.retryable, safe !== false);
+    if (safe === false) {
+      assert.equal(restated.headers.get("content-length"), null);
+      assert.match(actual.error, /Read back and reconcile before retrying/);
+      assert.doesNotMatch(actual.error, /Retry after retry_after_ms/);
+    } else {
+      assert.equal(restated, response);
+      assert.deepEqual(actual, body);
+    }
+  }
+});
+
+test("repeat-safety inspection propagates body read failures", async () => {
+  const failure = new Error("body read failed");
+  const response = new Response(
+    new ReadableStream({
+      start(controller) {
+        controller.error(failure);
+      },
+    }),
+    { status: 503, headers: { "content-type": "application/json" } },
+  );
+  await assert.rejects(
+    withRepeatSafety(response, false, new AbortController().signal),
+    (error) => error === failure,
+  );
+});
+
+test("repeat-safety inspection preserves other JSON, malformed and empty response bodies", async () => {
+  for (const text of [
+    '{ "code": "record_persistence_timeout", "retryable": true }',
+    '{ "code": "page_busy", "retryable": true }',
+    '{"unfinished":',
+    "null",
+    "",
+  ]) {
+    const response = new Response(text || null, {
+      status: 503,
+      headers: { "content-type": "application/json", "retry-after": "2" },
+    });
+    const actual = await withRepeatSafety(response, false, new AbortController().signal);
+    assert.equal(actual.status, 503);
+    assert.equal(actual.headers.get("retry-after"), "2");
+    assert.equal(await actual.text(), text);
+  }
 });

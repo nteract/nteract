@@ -1,8 +1,11 @@
 import { assertStoredSize } from "../model/limits.mjs";
+import { overloadRetryAfterMs } from "./host-busy.mjs";
 import { holdUntilSettled } from "./request-hold.mjs";
 
 // Kept below the deployment's 2 MiB request cap, including binary framing.
 const MAX_BATCH_BYTES = 2_000_000;
+// Reserve one of storage.put's 128 keys for host/seq.
+const MAX_BATCH_RECORDS = 127;
 const MAX_REPLICA_BYTES = 48 * 1024 * 1024;
 const MAX_KEYS = 65_536;
 const encoder = new TextEncoder();
@@ -67,12 +70,13 @@ export function decodeRecordBatch(bytes) {
   return entries;
 }
 
-/** One PageRecords POST is one atomic storage.put of at most 128 keys and
- * MAX_BATCH_BYTES. A group saved through saveMany stays inside one batch when
- * it fits, so its records persist together or not at all. A group that cannot
- * fit is split and logged; lookup readiness then covers an interrupted prefix.
+/** One PageRecords POST is bounded by MAX_BATCH_BYTES and 127 records, leaving
+ * room for host/seq in the atomic storage.put. A group saved through saveMany
+ * stays inside one batch when it fits, so its records persist together or not
+ * at all. A group that cannot fit is split and logged; lookup readiness then
+ * covers an interrupted prefix.
  * `maxKeys` bounds ungrouped batches only. */
-function batches(entries, groupOf = () => undefined, maxKeys = 128) {
+function batches(entries, groupOf = () => undefined, maxKeys = MAX_BATCH_RECORDS) {
   const sized = (entry) => 8 + keyBytes(entry[0]).length + (entry[1]?.byteLength ?? 0);
   const members = new Map();
   for (const entry of entries) {
@@ -90,7 +94,13 @@ function batches(entries, groupOf = () => undefined, maxKeys = 128) {
   };
   const add = (entry) => {
     const bytes = sized(entry);
-    if ((size + bytes > MAX_BATCH_BYTES || batch.length >= maxKeys) && batch.length) close();
+    if (
+      (size + bytes > MAX_BATCH_BYTES ||
+        batch.length >= maxKeys ||
+        batch.length >= MAX_BATCH_RECORDS) &&
+      batch.length
+    )
+      close();
     batch.push(entry);
     size += bytes;
   };
@@ -104,12 +114,15 @@ function batches(entries, groupOf = () => undefined, maxKeys = 128) {
     if (placed.has(group)) continue;
     placed.add(group);
     const bytes = together.reduce((n, item) => n + sized(item), 0);
-    if (together.length > 128 || bytes > MAX_BATCH_BYTES) {
+    if (together.length > MAX_BATCH_RECORDS || bytes > MAX_BATCH_BYTES) {
       logGroupSplit(together.length, bytes);
       together.forEach(add);
       continue;
     }
-    if (batch.length && (size + bytes > MAX_BATCH_BYTES || batch.length + together.length > 128))
+    if (
+      batch.length &&
+      (size + bytes > MAX_BATCH_BYTES || batch.length + together.length > MAX_BATCH_RECORDS)
+    )
       close();
     batch.push(...together);
     size += bytes;
@@ -129,6 +142,24 @@ function logGroupSplit(records, bytes) {
       timestamp: new Date().toISOString(),
     }),
   );
+}
+
+/** A batch's `x-pages-record-seq`: a positive safe integer, or undefined for a
+ * sink that sends none. Within one generation a sink is one build, so either
+ * every batch carries a sequence or none does. */
+function batchSeq(header) {
+  if (header === null) return undefined;
+  if (!/^[1-9][0-9]{0,15}$/.test(header) || !Number.isSafeInteger(Number(header)))
+    throw invalid("Invalid record batch sequence");
+  return Number(header);
+}
+
+/** The last applied sequence, stored as decimal text beside the generation.
+ * An owner from a build without sequences has none: 0. */
+function storedSeq(value) {
+  const seq = Number(value ?? 0);
+  if (!Number.isSafeInteger(seq) || seq < 0) throw Error("Invalid stored record sequence");
+  return seq;
 }
 
 /** A separate object owns record durability. Its output gate never closes the
@@ -158,8 +189,10 @@ export class PageRecords {
       if (url.pathname === "/lease" && request.method === "POST") {
         // A newly restored Page fences any late persistence request from its
         // previous incarnation before taking a snapshot or admitting records.
+        // Its batch sequence starts again with it.
         this.generation = crypto.randomUUID();
-        await this.storage.put({ "host/generation": this.generation });
+        this.seq = 0;
+        await this.storage.put({ "host/generation": this.generation, "host/seq": "0" });
         await this.storage.sync();
         return new Response(this.generation);
       }
@@ -193,11 +226,29 @@ export class PageRecords {
         });
       }
       if (request.method === "POST") {
+        const seq = batchSeq(request.headers.get("x-pages-record-seq"));
+        if (seq !== undefined) {
+          this.seq ??= storedSeq(await this.storage.get("host/seq"));
+          // A batch the sink stopped waiting for, arriving after a newer one.
+          // The sink put its records back in pending, so a newer batch already
+          // wrote each of its keys with a value at least as new. Applying it
+          // now would roll mutable keys (a manifest, a sync state) back.
+          if (seq <= this.seq)
+            return new Response(null, {
+              status: 204,
+              headers: { "x-pages-record-batch": "superseded" },
+            });
+        }
         const entries = decodeRecordBatch(new Uint8Array(await request.arrayBuffer()));
-        if (entries.length > 128 || new Set(entries.map(([key]) => key)).size !== entries.length)
+        // Shipped sequence-less sinks can still send 128 records without metadata.
+        if (
+          entries.length > (seq === undefined ? 128 : MAX_BATCH_RECORDS) ||
+          new Set(entries.map(([key]) => key)).size !== entries.length
+        )
           throw invalid("Invalid record batch keys");
-        // A failed/partial write has no receipt. Retrying the entire immutable
-        // batch is safe; a Page serializes its batches, including deletions.
+        // A failed/partial write has no receipt. The sink resends its records
+        // in a later batch with a higher sequence; a Page serializes its
+        // batches, including deletions.
         const values = Object.fromEntries(
           entries
             .filter(([, value]) => value !== undefined)
@@ -206,7 +257,11 @@ export class PageRecords {
         const removed = entries
           .filter(([, value]) => value === undefined)
           .map(([key]) => `repo/${key}`);
+        // The sequence lands in the same atomic put as the values. A batch
+        // whose deletion then fails is resent whole under a higher sequence.
+        if (seq !== undefined) values["host/seq"] = String(seq);
         if (Object.keys(values).length) await this.storage.put(values);
+        if (seq !== undefined) this.seq = seq;
         if (removed.length) await this.storage.delete(removed);
         await this.storage.sync();
         return new Response(null, { status: 204 });
@@ -230,33 +285,85 @@ export function recordPersistenceTimeout() {
   );
 }
 
+/** PageRecords threw an overload or a transient error: Cloudflare's
+ * `overloaded` or `retryable` flag. The records stay pending, as after a
+ * timeout. Tool retry advice depends on the request's repeat safety. */
+export function recordPersistenceUnavailable(cause) {
+  return Object.assign(
+    Error(
+      "This Page's storage is busy or briefly unavailable and did not confirm its records. Retry after retry_after_ms with the same idempotency_key and retry_token.",
+      { cause },
+    ),
+    {
+      status: 503,
+      code: "record_persistence_unavailable",
+      retryAfterMs: cause.overloaded === true ? overloadRetryAfterMs() : 1000,
+    },
+  );
+}
+
+/**
+ * The Page's client for its PageRecords object.
+ *
+ * `stubs` is a factory that returns a new PageRecords stub, or one stub for a
+ * caller that never needs another. On Cloudflare a stub whose fetch threw can
+ * stay broken: every later call on it fails at once
+ * (developers.cloudflare.com/durable-objects/best-practices/error-handling/).
+ * A sink that kept that stub could never flush again, and its replica would
+ * grow to its cap. So the sink reuses one stub while it answers, which keeps
+ * the stub's in-order delivery for consecutive batches, and drops it after a
+ * fetch throws or misses its deadline. The next request asks the factory for
+ * a fresh one. An HTTP error answer is not a broken stub and keeps it.
+ */
 export class RemoteRecordSink {
-  constructor(stub, { timeoutMs = RECORD_REQUEST_TIMEOUT_MS } = {}) {
-    this.stub = stub;
+  constructor(stubs, { timeoutMs = RECORD_REQUEST_TIMEOUT_MS } = {}) {
+    this.stubs = typeof stubs === "function" ? stubs : () => stubs;
     this.timeoutMs = timeoutMs;
+    this.current = undefined;
+    this.seq = 0;
+  }
+  /** The stub for the next request: the current one, or a fresh one. */
+  stub() {
+    return (this.current ??= this.stubs());
+  }
+  /** Drop `stub` if it is still current, so the next request gets a new one.
+   * A request that started on an older stub never drops a newer one. */
+  discard(stub) {
+    if (this.current === stub) this.current = undefined;
   }
   /** Every PageRecords request settles: an unanswered one rejects after
    * `timeoutMs` and aborts its request, and the caller keeps its pending
-   * records for the next flush. PageRecords skips an aborted request that is
-   * still queued. One already writing finishes; batches are immutable, so it
-   * only rewrites the same record bytes or retains a record a later
-   * compaction removed.
+   * records for the next flush. The abandoned request may still arrive, and
+   * on a fresh stub nothing orders it before the next batch. PageRecords
+   * skips it when it sees the abort; otherwise its sequence fences it
+   * (`commit`): one that lands after a newer batch is dropped, and one that
+   * lands first is overwritten by the newer batch.
    */
   async request(url, init, read) {
     const abort = new AbortController();
+    const stub = this.stub();
     let timer;
     const deadline = new Promise((_, reject) => {
       timer = setTimeout(() => {
+        this.discard(stub);
         reject(recordPersistenceTimeout());
         abort.abort();
       }, this.timeoutMs);
     });
+    const answer = async () => {
+      let response;
+      try {
+        response = await stub.fetch(new Request(url, { ...init, signal: abort.signal }));
+      } catch (error) {
+        this.discard(stub);
+        if (error?.overloaded === true || error?.retryable === true)
+          throw recordPersistenceUnavailable(error);
+        throw error;
+      }
+      return read(response);
+    };
     try {
-      return await Promise.race([
-        (async () =>
-          read(await this.stub.fetch(new Request(url, { ...init, signal: abort.signal }))))(),
-        deadline,
-      ]);
+      return await Promise.race([answer(), deadline]);
     } finally {
       clearTimeout(timer);
     }
@@ -299,8 +406,18 @@ export class RemoteRecordSink {
       after = next;
     } while (after !== undefined);
   }
+  /** Each batch carries a rising `x-pages-record-seq`. The sink sends one
+   * batch at a time and never resends a sequence: after a failure the store
+   * puts the batch's records back in pending, and the next batch carries
+   * them, at least as new, under a higher sequence. PageRecords stores the
+   * sequence with the batch and skips any batch at or below it, so a batch
+   * delivered late can never overwrite a newer one. The sequence is scoped to
+   * the generation: a restarted Page host builds a new sink, takes a new
+   * lease, and starts again at 1, while every batch of the old host fails the
+   * generation check. */
   async commit(entries) {
     const generation = await this.generation();
+    const seq = ++this.seq;
     await this.request(
       "https://records.internal/records",
       {
@@ -309,6 +426,7 @@ export class RemoteRecordSink {
         headers: {
           "content-type": "application/octet-stream",
           "x-pages-record-generation": generation,
+          "x-pages-record-seq": String(seq),
         },
       },
       (response) => {
@@ -323,7 +441,10 @@ export class RemoteRecordSink {
  * local history until /api/saved confirms that second boundary.
  */
 export class BufferedRecordStore {
-  constructor(sink, { onDirty = () => {}, maxBytes = MAX_REPLICA_BYTES, maxBatchKeys = 128 } = {}) {
+  constructor(
+    sink,
+    { onDirty = () => {}, maxBytes = MAX_REPLICA_BYTES, maxBatchKeys = MAX_BATCH_RECORDS } = {},
+  ) {
     this.sink = sink;
     this.onDirty = onDirty;
     this.maxBytes = maxBytes;

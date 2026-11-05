@@ -593,6 +593,239 @@ test("sort by title, and group by Project or date with headings and counts", asy
   await app.unmount();
 });
 
+test("group headings fold their rows, keep their counts, and remember folds per account", async () => {
+  window.localStorage.removeItem("nteract.pages.folds");
+  const calls = [];
+  const pages = [
+    ...CATALOG,
+    { page_id: id(6), title: "Later", project_id: projectId, updated_at: ago(3 * HOUR) },
+  ];
+  // The first page leaves Later for Load more, which joins the folded Launch.
+  const tool = async (name, args) => {
+    calls.push(args);
+    if (args.cursor === "more") return { pages: [pages[5]], next_cursor: null };
+    return { pages: CATALOG, next_cursor: "more" };
+  };
+  const props = libraryProps({
+    tool,
+    principal: "user:alice",
+    projects: PROJECTS,
+    clock: fixedClock(),
+    view: { group: "project" },
+  });
+  const app = await mount(createElement(Library, props));
+  const { host } = app;
+  const toggle = (label) =>
+    [...host.querySelectorAll(".library-group-toggle")].find(
+      (element) => element.querySelector(".library-group-label").textContent === label,
+    );
+  const state = () =>
+    [...host.querySelectorAll(".library-group")].map((section) => {
+      const button = section.querySelector(".library-group-toggle");
+      const list = section.querySelector("ul");
+      assert.equal(button.getAttribute("aria-controls"), list.id, "the button names its list");
+      return [
+        button.querySelector(".library-group-label").textContent,
+        button.querySelector(".library-group-count [aria-hidden=true]").textContent,
+        button.getAttribute("aria-expanded"),
+        list.hidden,
+        list.querySelectorAll("li").length,
+      ];
+    });
+  assert.deepEqual(state(), [
+    ["Launch", "2", "true", false, 2],
+    ["Shared with you", "1", "true", false, 1],
+    ["Your items", "1", "true", false, 1],
+    ["Notes", "1", "true", false, 1],
+  ]);
+  const launch = host.querySelector(".library-group-heading");
+  assert.equal(launch.tagName, "H2");
+  assert.equal(launch.querySelector("a").getAttribute("href"), `/project/${projectId}`);
+  assert.equal(launch.querySelector("a").getAttribute("aria-label"), "Open Project Launch");
+  assert.equal(launch.querySelector("button a"), null, "the Project link sits beside the button");
+  assert.equal(
+    host.querySelector(".library-group").getAttribute("aria-labelledby"),
+    launch.querySelector(".library-group-label").id,
+    "a section is named by its label alone",
+  );
+
+  await click(toggle("Launch"));
+  await click(toggle("Shared with you"));
+  assert.deepEqual(state(), [
+    ["Launch", "2", "false", true, 0],
+    ["Shared with you", "1", "false", true, 0],
+    ["Your items", "1", "true", false, 1],
+    ["Notes", "1", "true", false, 1],
+  ]);
+  assert.deepEqual(JSON.parse(window.localStorage.getItem("nteract.pages.folds")), {
+    v: 1,
+    accounts: [["user:alice", { project: [`project:${projectId}`, "shared"] }]],
+  });
+  assert.equal(calls.length, 2, "folding asks for nothing: StrictMode's two loads");
+
+  // Load more brings a row into the folded Launch: it counts, and stays folded.
+  await click(button(host, "Load more Pages"));
+  await settle();
+  assert.deepEqual(state()[0], ["Launch", "3", "false", true, 0]);
+
+  // Fold all and Unfold all, from the Group menu.
+  await click(menuButton(host, "Group"));
+  const action = (label) =>
+    [...host.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent === label);
+  assert.ok(host.querySelector('[role="menu"] [role="separator"]'));
+  assert.equal(action("Fold all").getAttribute("aria-disabled"), null);
+  await click(action("Fold all"));
+  assert.ok(
+    state().every(([, , expanded, hidden]) => expanded === "false" && hidden),
+    "every group folds",
+  );
+  assert.equal(document.activeElement, menuButton(host, "Group"), "focus returns to the menu");
+  await click(menuButton(host, "Group"));
+  assert.equal(action("Fold all").getAttribute("aria-disabled"), "true");
+  await click(action("Fold all"));
+  assert.ok(
+    state().every(([, , expanded]) => expanded === "false"),
+    "a disabled action is inert",
+  );
+  assert.ok(host.querySelector('[role="menu"]'), "and leaves the menu open");
+  await click(action("Unfold all"));
+  assert.ok(state().every(([, , expanded]) => expanded === "true"));
+  assert.equal(window.localStorage.getItem("nteract.pages.folds"), null, "nothing left to keep");
+
+  // Folds survive a remount, under a renamed Project, but only for alice.
+  await click(toggle("Launch"));
+  await app.unmount();
+  const renamed = [{ project_id: projectId, title: "Launch, renamed" }, PROJECTS[1]];
+  const again = await mount(createElement(Library, { ...props, projects: renamed }));
+  const heading = again.host.querySelector(".library-group-toggle");
+  assert.equal(heading.querySelector(".library-group-label").textContent, "Launch, renamed");
+  assert.equal(heading.getAttribute("aria-expanded"), "false", "a Project folds by its ID");
+  await again.unmount();
+  const bob = await mount(createElement(Library, { ...props, principal: "user:bob" }));
+  assert.equal(
+    bob.host.querySelector(".library-group-toggle").getAttribute("aria-expanded"),
+    "true",
+    "another account keeps its own folds",
+  );
+  // Date groups fold apart from Project groups.
+  await pick(bob.host, "Group", "Date");
+  assert.ok(
+    [...bob.host.querySelectorAll(".library-group-toggle")].every(
+      (element) => element.getAttribute("aria-expanded") === "true",
+    ),
+  );
+  await click(menuButton(bob.host, "Group"));
+  assert.equal(
+    [...bob.host.querySelectorAll('[role="menuitem"]')]
+      .find((item) => item.textContent === "Unfold all")
+      .getAttribute("aria-disabled"),
+    "true",
+    "nothing folded, nothing to unfold",
+  );
+  await key(bob.host.querySelector('[role="menu"]'), { key: "Escape" });
+  await pick(bob.host, "Group", "None");
+  assert.equal(bob.host.querySelector(".library-group-toggle"), null);
+  await click(menuButton(bob.host, "Group"));
+  assert.equal(bob.host.querySelector('[role="menuitem"]'), null, "no folds without groups");
+  await key(bob.host.querySelector('[role="menu"]'), { key: "Escape" });
+  await bob.unmount();
+  window.localStorage.removeItem("nteract.pages.folds");
+});
+
+test("each group heading wears its accent: Projects by ID, fixed groups, and dates by age", async () => {
+  const app = await mount(
+    createElement(
+      Library,
+      libraryProps({
+        tool: catalogTool(),
+        projects: PROJECTS,
+        clock: fixedClock(),
+        view: { group: "project" },
+      }),
+    ),
+  );
+  const accents = () =>
+    [...app.host.querySelectorAll(".library-group-heading")].map((heading) => [
+      heading.querySelector(".library-group-label").textContent,
+      heading.dataset.accent,
+      heading.dataset.recency ?? null,
+    ]);
+  assert.deepEqual(accents(), [
+    ["Launch", "5", null],
+    ["Shared with you", "shared", null],
+    ["Your items", "items", null],
+    ["Notes", "4", null],
+  ]);
+  await pick(app.host, "Group", "Date");
+  assert.deepEqual(accents(), [
+    ["Today", "date", "0"],
+    ["Yesterday", "date", "1"],
+    ["Previous 7 days", "date", "2"],
+    ["September 2026", "date", "4"],
+  ]);
+  await app.unmount();
+});
+
+test("a new view keeps the results in place: no status line above them, and one box for loading and empty", async () => {
+  // Nothing is shared with this account. While `held`, each list_pages waits
+  // for its answer.
+  const own = catalogTool(
+    [],
+    CATALOG.filter((page) => !page.shared),
+  );
+  let held = false;
+  const answers = [];
+  const tool = (name, args) => {
+    if (!held) return own(name, args);
+    const answer = deferred();
+    answers.push(() => own(name, args).then(answer.resolve));
+    return answer.promise;
+  };
+  const release = async () => {
+    for (const answer of answers.splice(0)) await answer();
+    await settle();
+  };
+  const app = await mount(
+    createElement(Library, libraryProps({ tool, projects: PROJECTS, clock: fixedClock() })),
+  );
+  const { host } = app;
+  const body = host.querySelector(".library-body");
+  const progress = host.querySelector(".library-controls .library-progress");
+  assert.ok(body && progress);
+  assert.equal(progress.dataset.active, "false");
+  const controls = host.querySelector(".library-controls");
+  assert.equal(body.previousElementSibling, controls, "the body follows the control row");
+
+  held = true;
+  await click(tab(host, "Shared with you"));
+  assert.equal(host.querySelector(".library-body"), body, "the same body stays");
+  assert.equal(progress.dataset.active, "true", "the bar runs");
+  assert.equal(body.dataset.stale, "true", "the rows it replaces dim");
+  assert.equal(host.querySelector(".index-searching"), null, "no line pushed above the rows");
+  assert.equal(body.querySelector(".sr-only[role=status]").textContent, "Loading…");
+  assert.ok(body.querySelector(".library-results"), "the previous rows still show");
+  assert.equal(body.previousElementSibling, controls);
+
+  await release();
+  assert.equal(progress.dataset.active, "false");
+  assert.equal(body.dataset.stale, "false");
+  assert.equal(body.querySelector(".sr-only[role=status]").textContent, "");
+  const empty = body.querySelector(".library-state.library-empty");
+  assert.equal(empty.textContent, "Nothing is shared with you yet.");
+
+  // Back to All: nothing to dim, so Loading… takes the empty message's box.
+  await click(tab(host, "All"));
+  const state = body.querySelector(".library-state");
+  assert.equal(state.getAttribute("role"), "status");
+  assert.equal(state.textContent, "Loading…");
+  assert.equal(progress.dataset.active, "true");
+  held = false;
+  await release();
+  assert.ok(body.querySelector(".library-results"));
+  assert.equal(body.querySelector(".library-state"), null);
+  await app.unmount();
+});
+
 test("the menus open from the keyboard, move with arrows, and Escape returns focus", async () => {
   const app = await mount(
     createElement(Library, libraryProps({ tool: catalogTool(), clock: fixedClock() })),

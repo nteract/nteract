@@ -8,6 +8,7 @@ import { recordBytes } from "@automerge/automerge-repo/sedimentree";
 import { SubductionBackend } from "@automerge/automerge-repo-subduction";
 import { treeId, closePeers, createPeer, connectPeers } from "../../backend.mjs";
 import { DurableByteStore } from "./storage.mjs";
+import { errorResponse } from "./auth.mjs";
 import { BufferedRecordStore, PageRecords, RemoteRecordSink } from "./record-persistence.mjs";
 import { DocumentAdmission, isHistoryCapacityError } from "./history-admission.mjs";
 import { documentMutation, recoverDocumentMutations } from "./mutations.mjs";
@@ -523,6 +524,49 @@ test(
     }
   },
 );
+
+for (const [flags, label] of [
+  [{ overloaded: true }, "an overload"],
+  [{ retryable: true }, "a transient error"],
+])
+  test(`buffered: ${label} thrown by PageRecords fails the write with a retryable 503, and its retry adds no second edit`, async (t) => {
+    t.mock.method(console, "error", () => {});
+    const base = baseDoc();
+    const cap = bytes(base) + 65536;
+    let handle;
+    let thrown = 0;
+    const peer = host("buffered", cap, undefined, undefined, {
+      async recordFetch(request, send) {
+        if (request.method === "POST" && handle?.doc().api !== undefined && !thrown++)
+          throw Object.assign(Error("Durable Object infrastructure error"), flags);
+        return send(request);
+      },
+    });
+    const peers = [peer];
+    try {
+      handle = await peer.repo.import(A.save(base));
+      await peer.flush();
+      const ctx = context(peer, handle);
+      const error = await documentMutation(ctx).then(
+        () => assert.fail("the write must wait for its records"),
+        (failure) => failure,
+      );
+      assert.equal(error.code, "record_persistence_unavailable");
+      assert.equal(thrown, 1);
+      const response = errorResponse(error, "page");
+      assert.equal(response.status, 503);
+      assert.ok(response.headers.has("retry-after"));
+      const body = await response.json();
+      assert.equal(body.code, "record_persistence_unavailable");
+      assert.equal(body.retryable, true);
+      ctx.apply = () => assert.fail("retry must not reauthor");
+      const receipt = await documentMutation(ctx);
+      assert.ok(A.hasHeads(handle.doc(), receipt.heads));
+      assert.equal(A.getChanges(base, handle.doc()).length, 1, "one semantic edit");
+    } finally {
+      assert.deepEqual(await closePeers(peers, []), []);
+    }
+  });
 
 const equalBytes = (a, b) => a.length === b.length && a.every((value, i) => value === b[i]);
 

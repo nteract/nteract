@@ -114,3 +114,9 @@ export function guardStub(stub, refusal) {
     },
   };
 }
+
+/** A stub factory whose every stub is guarded by `guardStub`. A caller that
+ * replaces a broken stub (RemoteRecordSink) gets the same gate on each one. */
+export function guardStubs(stubs, refusal) {
+  return () => guardStub(stubs(), refusal);
+}

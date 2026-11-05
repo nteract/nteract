@@ -216,6 +216,7 @@ export class PlainSync {
     onCompactionFailed = () => {},
     onActors = () => {},
     onJoined = () => {},
+    onWrite = () => {},
   }) {
     this.storage = storage;
     this.pageFeatures = pageFeatures;
@@ -225,6 +226,7 @@ export class PlainSync {
     this.onRefused = onRefused;
     this.onRounds = onRounds;
     this.onActors = onActors;
+    this.onWrite = onWrite;
     this.blocked = new Set();
     this.recent = new Map();
     const guardComments = commentAdmission({
@@ -506,6 +508,11 @@ export class PlainSync {
 
   #admitted(conn, doc, fresh, claims) {
     if (conn.trusted) return;
+    try {
+      if (fresh.length) this.onWrite(conn, doc);
+    } catch {
+      // Usage reporting must not interrupt attestation or publication.
+    }
     const attested = {};
     for (const bytes of fresh) {
       const { hash, actor } = A.decodeChange(bytes);

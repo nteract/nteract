@@ -36,6 +36,7 @@ import {
   updateSpansConfig,
 } from "../model/marks.mjs";
 import { DATAFRAME_BLOCK, readDataframe } from "../shared/dataset-assets.mjs";
+import { imageAttrs } from "../model/image-attrs.mjs";
 import { TEXT_CONTAINERS, validAlignment, validHeadingLevel } from "../model/node-registry.mjs";
 // The Pages table format stores physical alignment. Wordgard's stock mark
 // uses logical values and does not round-trip a physical `right` clipboard style.
@@ -159,12 +160,32 @@ export const OpaqueBlock = Leaf.Type.define("PagesOpaque", {
 /** Shown above a preserved block until the host's conversion arrives. */
 export const PRESERVED_NOTICE =
   "Saved by an older version of Pages. It becomes editable text once Pages finishes converting it; this happens when the Page syncs.";
+const IMAGE_ATTR = "data-pages-image";
+const IMAGE_METADATA_LIMIT = 16 * 1024;
+function imageMetadata(value) {
+  const attrs = imageAttrs(value);
+  if (!attrs || Object.keys(attrs).length > 64 || Object.keys(attrs).some((k) => k.length > 256))
+    throw Error("Invalid Pages image metadata");
+  const json = JSON.stringify(
+    Object.fromEntries(Object.entries(attrs).sort(([a], [b]) => a.localeCompare(b))),
+  );
+  if (json.length > IMAGE_METADATA_LIMIT) throw Error("Pages image metadata is too large to copy");
+  return json;
+}
+function copyImageMetadata(value) {
+  try {
+    return imageMetadata(value);
+  } catch {
+    // Keep rendering a valid native image, but refuse a lossy Pages paste.
+    return "null";
+  }
+}
 export const PagesImage = Leaf.Type.define("PagesImage", {
   inline: true,
   selectable: true,
   validate(value) {
     if (
-      !value ||
+      !imageAttrs(value) ||
       !safeUrl(value.src) ||
       ["alt", "title"].some((key) => value[key] != null && typeof value[key] !== "string")
     )
@@ -175,9 +196,27 @@ export const PagesImage = Leaf.Type.define("PagesImage", {
       selector: "img[src]",
       readElement(element) {
         const src = element.getAttribute("src");
-        return safeUrl(src)
-          ? { src, alt: element.getAttribute("alt"), title: element.getAttribute("title") }
-          : parse.Reject;
+        if (!safeUrl(src)) return parse.Reject;
+        const metadata = element.getAttribute(IMAGE_ATTR);
+        if (metadata !== null) {
+          try {
+            if (metadata.length > IMAGE_METADATA_LIMIT) return parse.Reject;
+            const attrs = JSON.parse(metadata);
+            imageMetadata(attrs);
+            PagesImage.spec.validate(attrs);
+            // Metadata cannot override the sanitized, visible image identity.
+            if (
+              ["src", "alt", "title"].some(
+                (key) => (attrs[key] ?? null) !== element.getAttribute(key),
+              )
+            )
+              return parse.Reject;
+            return attrs;
+          } catch {
+            return parse.Reject;
+          }
+        }
+        return { src, alt: element.getAttribute("alt"), title: element.getAttribute("title") };
       },
     },
   ],
@@ -188,6 +227,7 @@ export const PagesImage = Leaf.Type.define("PagesImage", {
             src: value.src,
             ...(value.alt != null ? { alt: value.alt } : {}),
             ...(value.title != null ? { title: value.title } : {}),
+            [IMAGE_ATTR]: copyImageMetadata(value),
           })
         : Elt.mk("span", ["Image omitted"]),
   },
@@ -608,7 +648,13 @@ export function decode(spans) {
       if (type === "hard-break") leaf(LineBreak);
       else if (type === "image") {
         if (!safeUrl(attrs.src)) throw Error("Invalid Pages image");
-        leaf(PagesImage.of({ src: attrs.src, alt: attrs.alt ?? null, title: attrs.title ?? null }));
+        if (!imageAttrs(value.attrs)) {
+          lossy = true;
+          unknownInline(value);
+        } else {
+          PagesImage.spec.validate(attrs);
+          leaf(PagesImage.of(attrs));
+        }
       } else unknownInline(value);
       continue;
     }

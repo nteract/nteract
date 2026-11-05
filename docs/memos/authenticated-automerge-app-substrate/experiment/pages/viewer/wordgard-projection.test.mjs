@@ -1,9 +1,39 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Leaf } from "wordgard/doc";
-import { schema, Paragraph, Strong, PagesLink, OpaqueBlock } from "./wordgard-model.mjs";
+import { GardState, GardSelection, Transaction } from "wordgard/state";
+import {
+  schema,
+  Paragraph,
+  Strong,
+  PagesLink,
+  OpaqueBlock,
+  PagesImage,
+} from "./wordgard-model.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
 const doc = (...nodes) => schema.doc([Paragraph.create(nodes)]);
+test("reordered image attrs beside remote text preserve the image and its node selection", () => {
+  for (const opaque of [{}, { future: "opaque", count: 2, enabled: false, empty: null }]) {
+    const attrs = { src: "https://example.com/image.png", alt: "Diagram", title: null, ...opaque };
+    const image = PagesImage.of(attrs);
+    const reordered = PagesImage.of(Object.fromEntries(Object.entries(attrs).reverse()));
+    assert.ok(image.eq(reordered));
+    const before = doc(Leaf.text("Before"), image);
+    const after = doc(Leaf.text("Before"), reordered, Leaf.text("After"));
+    const changes = projectChanges(before, after);
+    const ranges = [];
+    changes.iterChanges((from, to, fromB, toB) => ranges.push([from, to, fromB, toB]));
+    assert.deepEqual(ranges, [[8, 8, 8, 13]], "only adjacent text is inserted");
+    const state = GardState.create({
+      doc: before,
+      selection: GardSelection.node(7, image),
+      config: schema.elements.map((e) => GardState.schemaElement.of(e)),
+    });
+    const updated = state.update({ changes, annotations: [Transaction.remote.of(true)] }).state;
+    assert.ok(updated.selection.eq(state.selection), "remote text keeps the selected image");
+    assert.ok(updated.doc.eq(after));
+  }
+});
 test("mark-only projections preserve text positions without replacement", () => {
   const before = doc(Leaf.text("hello 🌊 world")),
     after = doc(Leaf.text("hello 🌊", [Strong]), Leaf.text(" world"));
@@ -28,4 +58,14 @@ test("opaque source updates project as intact leaf changes", () => {
   const before = schema.doc([OpaqueBlock.of({ source: "old", importId: "", kind: "markdown" })]);
   const after = schema.doc([OpaqueBlock.of({ source: "new", importId: "", kind: "markdown" })]);
   assert.ok(projectChanges(before, after).apply(before).eq(after));
+});
+test("a changed opaque image attr still replaces the image", () => {
+  const attrs = { src: "https://example.com/image.png", alt: "Diagram", future: "before" };
+  const before = doc(PagesImage.of(attrs));
+  const after = doc(PagesImage.of({ ...attrs, future: "after" }));
+  const changes = projectChanges(before, after);
+  const ranges = [];
+  changes.iterChanges((from, to) => ranges.push([from, to]));
+  assert.deepEqual(ranges, [[1, 2]]);
+  assert.ok(changes.apply(before).eq(after));
 });
