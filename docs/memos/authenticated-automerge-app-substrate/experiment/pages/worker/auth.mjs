@@ -395,6 +395,10 @@ export const RETRYABLE_SERVER_CODES = Object.freeze([
   // The owner's Catalog isn't in the current location shape yet
   // (location-shape.mjs); the next write tries the pass again.
   "location_migration_required",
+  // PageRecords threw an overload or a transient error (record-persistence.mjs).
+  "record_persistence_unavailable",
+  // A listing met a shared Page or owner Catalog that did not answer.
+  "shared_page_unavailable",
 ]);
 
 const LOGGED_ERROR_TYPES = [
@@ -477,10 +481,17 @@ export function errorResponse(error, stage = "request") {
   // the error says otherwise (a tokenless write's timeout: reconcile first).
   const coded = status >= 500 && RETRYABLE_SERVER_CODES.includes(error?.code);
   const retryable = coded && error.retryable !== false;
+  // A retryable failure may say how long to wait, in the body and as
+  // Retry-After (whole seconds, never less than the body's wait).
+  const retryAfterMs =
+    retryable && Number.isSafeInteger(error.retryAfterMs) && error.retryAfterMs > 0
+      ? error.retryAfterMs
+      : undefined;
   return Response.json(
     {
       error: status < 500 || coded ? error.message : "Pages request failed",
       ...(coded && { code: error.code, retryable }),
+      ...(retryAfterMs !== undefined && { retry_after_ms: retryAfterMs }),
       ...(CLIENT_ERROR_CODES.includes(error?.code) && { code: error.code }),
       ...(error?.code === "unsupported_markdown" &&
         error.details?.unsupported && {
@@ -539,7 +550,15 @@ export function errorResponse(error, stage = "request") {
         }),
       }),
     },
-    { status, headers: { "cache-control": "no-store" } },
+    {
+      status,
+      headers: {
+        "cache-control": "no-store",
+        ...(retryAfterMs !== undefined && {
+          "retry-after": String(Math.ceil(retryAfterMs / 1000)),
+        }),
+      },
+    },
   );
 }
 

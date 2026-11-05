@@ -112,7 +112,7 @@ import {
 } from "./operation-journal.mjs";
 import { BufferedRecordStore, RemoteRecordSink } from "./record-persistence.mjs";
 import { RecordMaintenance } from "./record-maintenance.mjs";
-import { guardContext, guardStub } from "./storage-guard.mjs";
+import { guardContext, guardStubs } from "./storage-guard.mjs";
 import {
   HOST_SENDER_ID,
   PlainSync,
@@ -325,7 +325,7 @@ import { serialQueue, serialQueueBounds } from "./serial-queue.mjs";
 import { opensIndex } from "./account-index-machine.mjs";
 import { holdUntilSettled } from "./request-hold.mjs";
 import { boundedMap } from "./bounded-map.mjs";
-import { legibleEnv } from "./host-busy.mjs";
+import { legibleEnv, overloadRetryAfterMs, withRepeatSafety } from "./host-busy.mjs";
 import { readTool } from "./tool-reads.mjs";
 import { readChangesTool } from "./tool-changes.mjs";
 import { PageActivity } from "./page-activity.mjs";
@@ -395,6 +395,18 @@ const lifecycleFingerprint = {
   purge_page: "purge_page",
 };
 const noop = async () => {};
+/** A listing that met a shared Page (or its owner's Catalog) that did not
+ * answer. A listing is a read, so it is retryable; an overloaded host asks
+ * for the longer, jittered wait page_busy uses. */
+const sharedPagesUnavailable = ({ overloaded = false } = {}) =>
+  Object.assign(
+    new HttpError(
+      503,
+      "Shared Pages are temporarily unavailable: a shared Page or its owner's Catalog did not answer. Retry the listing after retry_after_ms, backing off exponentially if it repeats.",
+      "shared_page_unavailable",
+    ),
+    { retryAfterMs: overloaded ? overloadRetryAfterMs() : 1000 },
+  );
 /** The error an abandoned object refuses with when its reset gave no reason. */
 const abandonedError = () => Object.assign(Error("Page object was reset"), { status: 503 });
 /** Complete the upgrade and close at once with the refusal's admission code.
@@ -839,19 +851,24 @@ async function invoke(request, env, operation, args = {}, seen) {
       arguments: args,
       ...(await quotaFields(env, identity, operation)),
     };
+    const safe = safeToRepeat(operation, args);
     return withinToolDeadline(
       async (signal) =>
         bufferedResponse(
-          await untilAborted(
-            env.CATALOGS.getByName(identity.principal).fetch(
-              forwarded(request, "/internal/catalog", body),
-              { signal },
+          await withRepeatSafety(
+            await untilAborted(
+              env.CATALOGS.getByName(identity.principal).fetch(
+                forwarded(request, "/internal/catalog", body),
+                { signal },
+              ),
+              signal,
             ),
+            safe,
             signal,
           ),
           signal,
         ),
-      { safe: safeToRepeat(operation, args) },
+      { safe },
     );
   }
   requirePageIdArgument(args.page_id);
@@ -867,13 +884,20 @@ async function invoke(request, env, operation, args = {}, seen) {
   }
   // One deadline covers the Page fetch, its body and read_page's location
   // view, so a timeout never returns an unfiltered body.
+  const safe = safeToRepeat(operation, args);
   return withinToolDeadline(
     async (signal) => {
-      const response = await untilAborted(
-        env.PAGES.getByName(args.page_id).fetch(
-          forwarded(request, "/internal/tool", { operation, arguments: args }),
-          { signal },
+      // Transient and storage failures use this request's repeat safety,
+      // as a timeout does.
+      const response = await withRepeatSafety(
+        await untilAborted(
+          env.PAGES.getByName(args.page_id).fetch(
+            forwarded(request, "/internal/tool", { operation, arguments: args }),
+            { signal },
+          ),
+          signal,
         ),
+        safe,
         signal,
       );
       if (operation !== "read_page" || !response.ok) return bufferedResponse(response, signal);
@@ -881,7 +905,7 @@ async function invoke(request, env, operation, args = {}, seen) {
       await locationView(request, env, body, signal);
       return json(body, response.status);
     },
-    { safe: safeToRepeat(operation, args) },
+    { safe },
   );
 }
 
@@ -2991,6 +3015,8 @@ export class Catalog {
       if ([403, 404].includes(response.status)) return { status: "denied" };
     } catch (error) {
       logFailure(error, "catalog-verify");
+      // Cloudflare throws from the stub fetch of an overloaded object.
+      if (error?.overloaded === true) return { status: "unavailable", overloaded: true };
     }
     return { status: "unavailable" };
   }
@@ -3010,7 +3036,7 @@ export class Catalog {
       return Array.isArray(children) ? children.filter(validPageId) : [];
     } catch (error) {
       logFailure(error, "catalog-location");
-      throw new HttpError(503, "Shared Pages are temporarily unavailable");
+      throw sharedPagesUnavailable({ overloaded: error?.overloaded === true });
     }
   }
 
@@ -3073,8 +3099,7 @@ export class Catalog {
         // Children of a Page shared with this account: the caller must be
         // able to read the parent before learning what sits under it.
         const shared = await this.verifyShared(request, options.parentId);
-        if (shared.status === "unavailable")
-          throw new HttpError(503, "Shared Pages are temporarily unavailable");
+        if (shared.status === "unavailable") throw sharedPagesUnavailable(shared);
         if (shared.status !== "ok" || (shared.page.state && shared.page.state !== "active"))
           throw new HttpError(404, "Parent Page not found", "parent_unavailable");
         // Only a Page's owner places Pages under it, so no child of a shared
@@ -3311,8 +3336,7 @@ export class Catalog {
       if (options.inTrash || options.spaceId) return null;
       if (options.parentId !== undefined && !scope.sharedChildren?.has(row.page_id)) return null;
       const result = await this.verifyShared(request, row.page_id);
-      if (result.status === "unavailable")
-        throw new HttpError(503, "Shared Pages are temporarily unavailable");
+      if (result.status === "unavailable") throw sharedPagesUnavailable(result);
       if (result.status === "denied" || (result.page.state && result.page.state !== "active")) {
         pruned.push({
           page_id: row.page_id,
@@ -3572,6 +3596,19 @@ export class Page {
     if (this.migration?.name === "retired") return (this.migratedError ||= recordStorageMigrated());
     if (this.startup.name !== "abandoned") return undefined;
     return (this.bootError ||= abandonedError());
+  }
+
+  /** A sink for this Page's PageRecords object. PageRecords is this host's
+   * record storage, so the same gate refuses its writes once the object is
+   * abandoned. The sink asks for a new stub after one throws, and the gate
+   * wraps each one. */
+  pageRecordsSink(pageId) {
+    return new RemoteRecordSink(
+      guardStubs(
+        () => this.env.PAGE_RECORDS.getByName(pageId),
+        () => this.storageRefusal(),
+      ),
+    );
   }
 
   /** Throw when this object was abandoned (page-startup's `abandoned`). The
@@ -4364,21 +4401,12 @@ export class Page {
         });
         const recordStore =
           metadata?.recordStorage === "buffered"
-            ? new BufferedRecordStore(
-                new RemoteRecordSink(
-                  // PageRecords is this host's record storage: the same
-                  // gate refuses its writes once the object is abandoned.
-                  guardStub(this.env.PAGE_RECORDS.getByName(metadata.pageId), () =>
-                    this.storageRefusal(),
-                  ),
-                ),
-                {
-                  onDirty: (record) => {
-                    this.recordMaintenance?.recordWrite(record);
-                    this.schedulePersistence();
-                  },
+            ? new BufferedRecordStore(this.pageRecordsSink(metadata.pageId), {
+                onDirty: (record) => {
+                  this.recordMaintenance?.recordWrite(record);
+                  this.schedulePersistence();
                 },
-              )
+              })
             : new DurableByteStore(ctx.storage);
         if (recordStore.ready) await recordStore.ready;
         const actorAuthorship = new ActorAuthorship({
@@ -5397,13 +5425,7 @@ export class Page {
    * Each step is idempotent, so a repeated deletion finishes the job. */
   async purgeMigratedRecords() {
     if (this.metadata.recordStorageMigratedFrom === "buffered" && this.env.PAGE_RECORDS) {
-      const records = new BufferedRecordStore(
-        new RemoteRecordSink(
-          guardStub(this.env.PAGE_RECORDS.getByName(this.metadata.pageId), () =>
-            this.storageRefusal(),
-          ),
-        ),
-      );
+      const records = new BufferedRecordStore(this.pageRecordsSink(this.metadata.pageId));
       await records.ready;
       for (const key of await records.list("")) await records.remove(key);
       await records.flush();
