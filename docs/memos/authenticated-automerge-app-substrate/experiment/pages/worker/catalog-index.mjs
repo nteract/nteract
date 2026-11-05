@@ -187,7 +187,10 @@ const PAGE_MARK = "host/index/page/";
  * (account-index-machine.mjs `indexCooldownMachine`). */
 const UNAVAILABLE_UNTIL = "host/index/unavailable-until";
 const SPACES_DIRTY = "host/index/spaces-dirty";
+/** Per D1 binding: `SCHEMA_READY`, or the attempts running per calling
+ * object (`catalogIndexDatabase`). */
 const schemas = new WeakMap();
+const SCHEMA_READY = Symbol("catalog index schema ready");
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
@@ -282,36 +285,63 @@ export async function migrateSchema(
   return version;
 }
 
-/** One migration attempt per database binding. A caller may time out while it
- * continues, so a slow first access warms the schema for later requests; a
- * stuck attempt expires instead of staying cached.
+/**
+ * The D1 binding, once its catalog index schema is current.
  *
- * `ctx` is the calling object's state, and it is required. The attempt and its
- * expiry timer run in the request that started it, and every caller stops
- * waiting at its own read or write bound. Each caller holds the attempt on its
- * request (request-hold.mjs), so a request that stops waiting cannot strand
- * it as a cached promise that never settles. */
+ * Durable Objects in one isolate share this module, but each runs its I/O in
+ * its own context. A promise one object started may never settle for another:
+ * if the starter resets mid-flight, its D1 call and its expiry timer can be
+ * dropped with it. So objects share only settled readiness. `schemas` holds,
+ * per binding, one of two states:
+ *
+ * - `SCHEMA_READY`: an attempt succeeded. Every later call returns the binding
+ *   without touching D1.
+ * - a `WeakMap` from each calling object's `ctx` to the attempt that object is
+ *   running: no attempt has succeeded yet.
+ *
+ * An object that finds no attempt of its own starts one, under its own expiry
+ * timer (`catalogIndexTimeouts.migration`), even while another object's is
+ * running. Never awaiting another object's attempt keeps every caller's wait on
+ * its own clock. Racing attempts are safe: each migration commits with its
+ * version row in one batch, and the loser rolls back and reads the winner's
+ * version (`migrateSchema`). Concurrent calls from one object share its
+ * attempt. A failed or expired attempt is forgotten, so the next call retries.
+ *
+ * `ctx` is the calling object's state, and it is required. A caller may stop
+ * waiting at its own read or write bound while the attempt continues, so a
+ * slow first access warms the schema for later requests. Each call that starts
+ * or joins an attempt holds it on its request (request-hold.mjs), so a request
+ * that stops waiting can't strand it.
+ */
 export function catalogIndexDatabase(env, ctx) {
   if (!ctx || typeof ctx !== "object")
     throw new TypeError("catalogIndexDatabase needs the calling object's ctx");
   const db = env.DB;
-  let ready = schemas.get(db);
-  if (!ready) {
-    ready = withTimeout(
-      migrateCatalogIndex(db),
-      catalogIndexTimeouts.migration,
-      "Catalog index migration timed out",
-    ).then(
-      () => db,
-      (error) => {
-        schemas.delete(db);
-        throw error;
-      },
-    );
-    schemas.set(db, ready);
+  let attempts = schemas.get(db);
+  if (attempts === SCHEMA_READY) return Promise.resolve(db);
+  if (!attempts) schemas.set(db, (attempts = new WeakMap()));
+  const running = attempts.get(ctx);
+  if (running) {
+    holdUntilSettled(ctx, running);
+    return running;
   }
-  holdUntilSettled(ctx, ready);
-  return ready;
+  const attempt = withTimeout(
+    migrateCatalogIndex(db),
+    catalogIndexTimeouts.migration,
+    "Catalog index migration timed out",
+  ).then(
+    () => {
+      schemas.set(db, SCHEMA_READY);
+      return db;
+    },
+    (error) => {
+      if (attempts.get(ctx) === attempt) attempts.delete(ctx);
+      throw error;
+    },
+  );
+  attempts.set(ctx, attempt);
+  holdUntilSettled(ctx, attempt);
+  return attempt;
 }
 
 /** A fresh token per mark: a reconcile pass clears it only if no newer mark
@@ -1142,6 +1172,33 @@ export function listScope(options) {
 
 export const escapeLike = (value) => value.replace(/[\\%_]/g, "\\$&");
 export const titleMatches = (title, needle) => !needle || searchText(title).includes(needle);
+
+/** The longest `LIKE` or `GLOB` pattern D1 accepts, in UTF-8 bytes
+ * (https://developers.cloudflare.com/d1/platform/limits/). A longer one fails
+ * the query. */
+export const LIKE_PATTERN_MAX_BYTES = 50;
+
+/**
+ * The `LIKE` pattern a search binds: `%…%` around the longest prefix of
+ * `needle` whose escaped form keeps the whole pattern within
+ * `LIKE_PATTERN_MAX_BYTES` of UTF-8. The cut falls between code points, and
+ * each character's escape stays with it, so the pattern never ends in a
+ * dangling `\`. A cut pattern matches a superset of the rows the full needle
+ * matches; `queryCatalogIndex` marks the rest. Every database gets the same
+ * pattern, so a search behaves the same on celld's SQLite as on D1.
+ */
+export function likePattern(needle) {
+  let budget = LIKE_PATTERN_MAX_BYTES - 2;
+  let escaped = "";
+  for (const char of needle) {
+    const piece = escapeLike(char);
+    const bytes = encoder.encode(piece).length;
+    if (bytes > budget) break;
+    budget -= bytes;
+    escaped += piece;
+  }
+  return `%${escaped}%`;
+}
 /** The title key a title-sorted listing orders by: the same lowercased,
  * capped title the index stores as `title_search`. An empty title sorts
  * first; a missing one is stored as "Untitled" and sorts as that word. */
@@ -1272,7 +1329,7 @@ export function listingQuery({
   access = null,
   sort = "activity",
 }) {
-  const pattern = needle ? `%${escapeLike(needle)}%` : null;
+  const pattern = needle ? likePattern(needle) : null;
   if (sort === "trashed") return trashQuery({ principal, inTrash, pattern, after, count });
   const title = sort === "title";
   const accessFilter =
@@ -1349,14 +1406,24 @@ function trashQuery({ principal, inTrash, pattern, after, count }) {
 
 /** Up to `count` candidate rows from D1 after `after`, in the listing's
  * order: newest activity, creation or trash first, or by title key. `access` keeps
- * only owner rows ("owned") or only non-owner rows ("shared"). */
+ * only owner rows ("owned") or only non-owner rows ("shared").
+ *
+ * A search binds a pattern that may hold only a prefix of the needle
+ * (`likePattern`). A row that pattern matched but whose title snapshot lacks
+ * the whole needle comes back with `unmatched: true`, in its place in the
+ * order: it counts toward the caller's scan bound and moves the scan's
+ * position past it, but never lists. Dropping it here instead would return
+ * fewer than `count` rows from a walk with more rows to read, which the scan
+ * takes as the end of the walk. */
 export async function queryCatalogIndex(db, query) {
   const { sql, params } = listingQuery(query);
   const result = await db
     .prepare(sql)
     .bind(...params)
     .all();
+  const needle = query.needle;
   return (result.results ?? []).map((row) => ({
+    ...(needle && !keyText(row.title_search).includes(needle) && { unmatched: true }),
     page_id: row.page_id,
     title: row.title,
     title_search: row.title_search,

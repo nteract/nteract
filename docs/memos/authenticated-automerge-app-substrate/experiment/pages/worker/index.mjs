@@ -3196,6 +3196,10 @@ export class Catalog {
     const pruned = [];
     let stale = false;
     const check = async (row) => {
+      // A D1 row that matched only the cut search pattern (likePattern): it
+      // counts as scanned and moves the position, but its snapshot lacks
+      // the needle, so it lists nothing and asks no Page host.
+      if (row.unmatched) return null;
       // Sources already apply `access`; these guards keep the other kind of
       // row out even if one doesn't, and keep owned-only listings from ever
       // asking a Page host about a shared row.
@@ -3274,8 +3278,10 @@ export class Catalog {
     const limit = options.limit;
     // A bounded scan may stop on rejected candidates and return a cursor
     // over them. That is safe when every candidate is already disclosed to
-    // the caller: its own entries, or Pages it discovered. Candidates from
-    // another account's Catalog are not. An exhaustive scan checks up to
+    // the caller: its own entries, or Pages it discovered. A D1 row a cut
+    // search pattern matched without the whole needle is the caller's own
+    // row too, and the position after it carries only its own snapshot.
+    // Candidates from another account's Catalog are not. An exhaustive scan checks up to
     // sharedChildBounds.scan of them per request, sharedCheckBounds at a time. Within that
     // bound it returns a cursor only when another authorized result follows
     // the page. Past it, the sealed cursor continues from the last child
