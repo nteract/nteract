@@ -5,8 +5,8 @@
 //   export: read the Project on the source and write a bundle.
 //   import: create the Project and its Pages on the target from the bundle.
 //
-// Nothing here runs inside the Worker, and comments, sharing and private image
-// bytes are not copied. Dataframe bytes are, when the credential can use the
+// Nothing here runs inside the Worker; comments and sharing are not copied.
+// Private image and dataframe bytes require a credential that can use the
 // asset routes (an API key; a Pages OAuth token can't). See "Copying a Project
 // to a new target" in DEPLOYMENT.md for usage and credentials.
 import { open, readFile, rename } from "node:fs/promises";
@@ -14,11 +14,13 @@ import { pathToFileURL } from "node:url";
 import { isProjectId } from "../shared/routes.mjs";
 import { exportMarkdown, parseMarkdown, unsupportedMarkdown } from "../model/richtext.mjs";
 import { DATASET_MAX_BYTES } from "../shared/dataset-assets.mjs";
+import { IMAGE_MAX_BYTES, IMAGE_MEDIA_TYPES, imageAssetUrl } from "../shared/image-assets.mjs";
+import { inspectImage } from "../worker/image-assets.mjs";
 
 export const BUNDLE_FORMAT = "nteract-pages-project-bundle";
-/** Version 2 adds dataframes and their asset bytes. Import reads 1 and 2. */
-export const BUNDLE_VERSION = 2;
-const BUNDLE_VERSIONS = new Set([1, 2]);
+/** Version 3 adds typed image inventory and bytes. Persisted v1/v2 still import. */
+export const BUNDLE_VERSION = 3;
+const BUNDLE_VERSIONS = new Set([1, 2, 3]);
 export const STATE_FORMAT = "nteract-pages-project-import-state";
 export const STATE_VERSION = 1;
 export const DRIVER = "Pages project transfer";
@@ -27,7 +29,6 @@ export const EDIT_BATCH = 100;
 const READ_BUDGET = 262144;
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 const PAGE_ID = new RegExp(`^${UUID}$`);
-const ASSET_PATH = new RegExp(`/api/pages/${UUID}/assets/[a-f0-9]{64}`, "g");
 const ASSET_ID = /^[a-f0-9]{64}$/;
 /** A dataframe's read-back line: `[Dataframe: <title>](<src>)` alone on a
  * line. The title is escaped Markdown; the node's own title comes from the
@@ -215,11 +216,33 @@ export function pagesClient({
   }
   /** The bytes at a same-origin asset path. Anything else is refused before
    * the request, so the credential never goes to another origin. */
-  async function download(path) {
+  async function download(path, maxBytes = DATASET_MAX_BYTES) {
     if (typeof path !== "string" || !ASSET_SRC.test(path))
       throw new TransferError(`Not an asset path: ${String(path).slice(0, 200)}`);
     const response = await assetRequest(path, { method: "GET", headers: {} }, `GET ${path}`);
-    return new Uint8Array(await response.arrayBuffer());
+    if (Number(response.headers.get("content-length")) > maxBytes) {
+      await response.body?.cancel();
+      throw new TransferError(`Asset ${path} exceeds the byte limit`);
+    }
+    const reader = response.body?.getReader();
+    if (!reader) throw new TransferError(`Asset ${path} has no bytes`);
+    const chunks = [];
+    let size = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.length;
+        if (size > maxBytes) throw new TransferError(`Asset ${path} exceeds the byte limit`);
+        chunks.push(value);
+      }
+    } catch (error) {
+      if (error instanceof TransferError) throw error;
+      throw new TransferError(`Asset ${path}: incomplete response`, { uncertain: true });
+    } finally {
+      await reader.cancel().catch(() => {});
+    }
+    return new Uint8Array(Buffer.concat(chunks, size));
   }
   /** Store `bytes` on Page `pageId`. The asset routes address content by its
    * SHA-256, so storing the same bytes again is a no-op that returns the same
@@ -231,7 +254,11 @@ export function pagesClient({
       { method: "POST", headers: { "Content-Type": mediaType }, body: bytes },
       `Upload to Page ${pageId}`,
     );
-    return response.json();
+    try {
+      return await response.json();
+    } catch {
+      throw new TransferError(`Upload to Page ${pageId}: unreadable response`, { uncertain: true });
+    }
   }
   // The server limits a Pages OAuth token (pages_…) to /mcp, by path, before
   // any Page lookup (worker/auth.mjs authenticate). Only other credentials,
@@ -444,12 +471,49 @@ export async function readWholePage(client, pageId, options) {
  */
 const PRESERVED_TYPES = new Set(["pages-opaque", "raw"]);
 
+/** Only image nodes count: asset-looking links, code and prose are not assets. */
+export function imageInventory(blocks) {
+  const images = [];
+  for (const markdown of blocks) {
+    parseMarkdown(markdown).descendants((node) => {
+      if (node.type.name !== "image") return;
+      const assetId = ASSET_SRC.exec(node.attrs.src ?? "")?.[1];
+      if (assetId) images.push({ asset_id: assetId, src: node.attrs.src });
+    });
+  }
+  return images;
+}
+
+/** Rewrite image attrs, never matching URL text in a link or code node. */
+export function remapImages(markdown, images, targetId) {
+  if (!images.length) return markdown;
+  const sources = new Map(images.map((image) => [image.src, image.asset_id]));
+  const tree = parseMarkdown(markdown);
+  let changed = false;
+  const map = (node) => {
+    if (node.type.name === "image" && sources.has(node.attrs.src)) {
+      changed = true;
+      return node.type.create(
+        { ...node.attrs, src: imageAssetUrl(targetId, sources.get(node.attrs.src)) },
+        null,
+        node.marks,
+      );
+    }
+    if (node.isLeaf) return node;
+    const children = [];
+    node.forEach((child) => children.push(map(child)));
+    return node.copy(node.content.constructor.fromArray(children));
+  };
+  const mapped = map(tree);
+  return changed ? exportMarkdown(mapped) : markdown;
+}
+
 /** A bundle entry for one source Page. */
 function bundlePage(row, parentSourceId, read, homePageId) {
   const blocks = read.blocks.length ? read.blocks.map((block) => block.markdown) : [""];
   const markdown = blocks.join("\n\n");
   const dataframes = read.dataframes ?? [];
-  const dataframeSources = new Set(dataframes.map((frame) => frame.src));
+  const images = imageInventory(blocks);
   // Dataframe lines the outline didn't list (inside a quote or list): they
   // import as links, and are reported with the dataframes not copied.
   const links = [...markdown.matchAll(DATAFRAME_LINKS)].map((match) => match[1]);
@@ -474,21 +538,25 @@ function bundlePage(row, parentSourceId, read, homePageId) {
     preserved_markdown:
       read.types.some((type) => PRESERVED_TYPES.has(type)) ||
       read.blocks.some((block) => block.kind && block.kind !== "markdown"),
-    private_images: [...new Set(markdown.match(ASSET_PATH) ?? [])].filter(
-      (path) => !dataframeSources.has(path) && !linked.has(path),
-    ),
+    private_images: [...new Set(images.map((image) => image.src))],
+    images,
     ...(dataframes.length && { dataframes }),
     ...(unlisted.length && { unlisted_dataframes: unlisted }),
     comment_threads: read.comment_threads,
   };
 }
 
-/** Each distinct dataframe asset in `pages`, downloaded and checked against
- * its id. A Pages OAuth token can't use the asset routes, so with one
- * `assets` stays empty, a warning says why, and those dataframes stay as
- * links. Any other refusal fails the export. */
+/** Download distinct typed assets, checking content hashes and image containers.
+ * Missing image bytes are fatal; dataframes retain their legacy link fallback. */
 async function exportAssets(client, pages, { log, ...options }) {
   const wanted = new Map();
+  for (const page of pages)
+    for (const image of page.images ?? []) wanted.set(image.asset_id, { ...image, image: true });
+  if (wanted.size && !client.assets)
+    throw new TransferError(
+      "Private images require an API key to read asset bytes; Pages OAuth credentials cannot export them",
+      { code: "assets_unauthorized" },
+    );
   for (const page of pages)
     for (const frame of page.dataframes ?? [])
       if (!wanted.has(frame.asset_id)) wanted.set(frame.asset_id, frame);
@@ -504,27 +572,33 @@ async function exportAssets(client, pages, { log, ...options }) {
   for (const [assetId, frame] of wanted) {
     let bytes;
     try {
-      bytes = await withRetries(() => client.download(frame.src), options);
+      bytes = await withRetries(
+        () => client.download(frame.src, frame.image ? IMAGE_MAX_BYTES : DATASET_MAX_BYTES),
+        options,
+      );
     } catch (error) {
       // The node names an asset its Page no longer stores: nothing to copy,
       // and the dataframe imports as a link, reported with the rest.
-      if (error.status !== 404) throw error;
+      if (error.status !== 404 || frame.image) throw error;
       warnings.push(`${frame.src} is missing on the source; that dataframe imports as a link.`);
       continue;
     }
     total += bytes.length;
     if (total > MAX_BUNDLE_ASSET_BYTES)
       throw new TransferError(
-        `The Project's dataframes are larger than one bundle carries (${MAX_BUNDLE_ASSET_BYTES} bytes)`,
+        `The Project's assets are larger than one bundle carries (${MAX_BUNDLE_ASSET_BYTES} bytes)`,
       );
     if ((await sha256(bytes)) !== assetId)
       throw new TransferError(`The bytes at ${frame.src} don't match asset ${assetId}`);
+    const mediaType = frame.image ? inspectImage(bytes).mime_type : frame.media_type;
     assets[assetId] = {
-      media_type: frame.media_type,
+      media_type: mediaType,
       size: bytes.length,
       data: Buffer.from(bytes).toString("base64"),
     };
-    log(`downloaded dataframe ${frame.title ?? assetId} (${bytes.length} bytes)`);
+    log(
+      `downloaded ${frame.image ? "image" : "dataframe"} ${frame.title ?? assetId} (${bytes.length} bytes)`,
+    );
   }
   return { assets, warnings };
 }
@@ -582,7 +656,7 @@ export function bundleReport(bundle, warnings = []) {
     pages: bundle.pages.length,
     preserved_markdown: bundle.pages.filter((page) => page.preserved_markdown).map(pageRef),
     private_images: bundle.pages
-      .filter((page) => page.private_images.length)
+      .filter((page) => page.private_images?.length && !page.images)
       .map((page) => ({ ...pageRef(page), assets: page.private_images })),
     ...dataframeReport(bundle),
     comment_threads: bundle.pages.reduce((sum, page) => sum + page.comment_threads, 0),
@@ -652,6 +726,18 @@ export function validateBundle(bundle) {
       fail(`${at}.parent_source_id must name an earlier Page (parents come before children)`);
     if (typeof page.title !== "string") fail(`${at}.title must be a string`);
     if (typeof page.markdown !== "string") fail(`${at}.markdown must be a string`);
+    if (bundle.version >= 3 || page.images !== undefined) {
+      if (!Array.isArray(page.images)) fail(`${at}.images must be an array`);
+      const discovered = imageInventory(page.blocks ?? [page.markdown]);
+      if (JSON.stringify(page.images) !== JSON.stringify(discovered))
+        fail(`${at}.images must match the image nodes in its Markdown`);
+      for (const image of page.images) {
+        const asset = bundle.assets?.[image.asset_id];
+        if (!asset) fail(`${at}: missing bytes for image ${image.asset_id}`);
+        if (!IMAGE_MEDIA_TYPES.includes(asset.media_type))
+          fail(`${at}: unsupported image media_type for ${image.asset_id}`);
+      }
+    }
     if (
       page.unlisted_dataframes !== undefined &&
       (!Array.isArray(page.unlisted_dataframes) ||
@@ -1176,22 +1262,36 @@ export async function importBundle(
   const assets = bundle.assets ?? {};
   // Each asset's bytes, checked against its id once, before any write.
   const bytes = new Map();
+  let totalBytes = 0;
   for (const [assetId, asset] of Object.entries(assets)) {
+    if (asset.data.length > Math.ceil(DATASET_MAX_BYTES / 3) * 4)
+      throw new TransferError(`Asset ${assetId} is larger than the asset routes accept`);
     const decoded = new Uint8Array(Buffer.from(asset.data, "base64"));
+    totalBytes += decoded.length;
+    if (totalBytes > MAX_BUNDLE_ASSET_BYTES)
+      throw new TransferError("The bundle exceeds the total asset byte limit");
     if (decoded.length > DATASET_MAX_BYTES)
       throw new TransferError(`Asset ${assetId} is larger than the asset routes accept`);
+    if (
+      IMAGE_MEDIA_TYPES.includes(asset.media_type) &&
+      inspectImage(decoded).mime_type !== asset.media_type
+    )
+      throw new TransferError(`Asset ${assetId} disagrees with its image media_type`);
     if ((await sha256(decoded)) !== assetId)
       throw new TransferError(`Invalid bundle: the data for asset ${assetId} doesn't match its id`);
     bytes.set(assetId, decoded);
   }
   if (bytes.size && !client.assets)
     throw new TransferError(
-      "This bundle carries dataframe bytes, and a Pages OAuth token can't store assets. Import with an Anaconda API key, or delete the bundle's assets to import those dataframes as links.",
+      "This bundle carries asset bytes, and a Pages OAuth token can't store assets. Import with an Anaconda API key.",
       { code: "assets_unauthorized" },
     );
   // An older target has no insert_node (or asset routes): find out before the
   // first write, not after the Project and its Pages exist.
-  if (bytes.size && !(await withRetries(() => client.insertsNodes(), options)))
+  if (
+    bundle.pages.some((page) => page.dataframes?.some((frame) => bytes.has(frame.asset_id))) &&
+    !(await withRetries(() => client.insertsNodes(), options))
+  )
     throw new TransferError(
       `${client.origin} doesn't take dataframes (its edit_page has no insert_node). Import into a current target, or delete the bundle's assets to import those dataframes as links.`,
       { code: "dataframes_unsupported" },
@@ -1352,7 +1452,7 @@ export async function importBundle(
     });
     const args = {
       title: page.title,
-      markdown: pageBlocks(page)[0],
+      markdown: page.images?.length ? "" : pageBlocks(page)[0],
       parent_id: placement.parent_id,
       idempotency_key:
         state.catalog.retry_key_prefix +
@@ -1370,6 +1470,8 @@ export async function importBundle(
   const projects = new Map([[bundle.source.project_id, state.project.project_id]]);
   const unresolved = [];
   for (const page of bundle.pages) {
+    const images = page.images ?? [];
+    const targetId = state.pages[page.source_page_id];
     const blocks = pageBlocks(page);
     const rewrites = blocks.map((markdown) =>
       rewriteLinks(markdown, {
@@ -1384,21 +1486,23 @@ export async function importBundle(
         unresolved.push({ title: page.title, source_page_id: page.source_page_id, url });
     if (state.bodies[page.source_page_id] === "done") continue;
     const units = bodyUnits(
-      rewrites.map((rewrite) => rewrite.markdown),
+      rewrites.map((rewrite) => remapImages(rewrite.markdown, images, targetId)),
       page,
       assets,
     );
     const frames = units.filter((unit) => unit.dataframe);
     const rewritten = rewrites.reduce((sum, rewrite) => sum + rewrite.rewritten, 0);
-    if (!page.home && blocks.length === 1 && rewritten === 0 && !frames.length) {
+    if (!page.home && blocks.length === 1 && rewritten === 0 && !frames.length && !images.length) {
       state.bodies[page.source_page_id] = "done";
       await save();
       continue;
     }
-    const targetId = state.pages[page.source_page_id];
     // Store each dataframe's bytes on the target Page before the body names
     // them. A rerun stores them again, which changes nothing.
-    for (const assetId of new Set(frames.map((unit) => unit.dataframe.asset_id))) {
+    for (const assetId of new Set([
+      ...frames.map((unit) => unit.dataframe.asset_id),
+      ...images.map((image) => image.asset_id),
+    ])) {
       const stored = await withRetries(
         () => client.upload(targetId, bytes.get(assetId), assets[assetId].media_type),
         options,
@@ -1460,7 +1564,7 @@ export async function importBundle(
     unresolved_links: unresolved,
     preserved_markdown: bundle.pages.filter((page) => page.preserved_markdown).map(pageRef),
     private_images: bundle.pages
-      .filter((page) => page.private_images?.length)
+      .filter((page) => page.private_images?.length && !page.images)
       .map((page) => ({ ...pageRef(page), assets: page.private_images })),
     dataframes_not_copied: dataframeReport(bundle).dataframes_not_copied,
     comment_threads_not_migrated: bundle.pages.reduce(

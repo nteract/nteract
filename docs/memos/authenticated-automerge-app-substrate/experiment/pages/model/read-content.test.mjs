@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
-import { projectReadContent } from "./read-content.mjs";
+import { nodeFields, projectReadContent } from "./read-content.mjs";
 import { projectPage } from "./page.mjs";
 import {
   enableRich,
@@ -40,6 +40,31 @@ function read(doc, args) {
 }
 
 const expectedError = (status, code) => (error) => error.status === status && error.code === code;
+
+test("nested images have bounded typed occurrence metadata, not link or code matches", () => {
+  const src = `/api/pages/${crypto.randomUUID()}/assets/${"a".repeat(64)}`;
+  const doc = parseMarkdown(
+    `> ![one](${src} "title")\n>\n> - ![two](${src})\n>\n> [link](${src}) and \`![code](${src})\``,
+  );
+  const fields = nodeFields(doc.firstChild, { maxItems: 1 });
+  assert.equal(fields.summary.images.length, 1);
+  assert.equal(fields.summary.images_truncated, true);
+  assert.deepEqual(fields.summary.images[0], {
+    path: [0, 0],
+    src,
+    alt: "one",
+    title: "title",
+    asset_id: "a".repeat(64),
+  });
+  assert.equal(nodeFields(doc.firstChild).summary.images.length, 2);
+  assert.equal(
+    nodeFields(doc.firstChild, { pageId: "other" }).summary.images[0].asset_id,
+    undefined,
+  );
+  const many = parseMarkdown(Array(201).fill(`![x](${src})`).join(" "));
+  assert.equal(nodeFields(many.firstChild).summary.images.length, 200);
+  assert.equal(nodeFields(many.firstChild).summary.images_truncated, true);
+});
 
 // Markdown carries content, not the Automerge adapter's node provenance flags.
 const contentJSON = (value) =>
