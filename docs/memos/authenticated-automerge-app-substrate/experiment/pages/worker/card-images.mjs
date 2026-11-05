@@ -12,10 +12,11 @@
 //   put is fenced on the etag it read (`onlyIf`), as the card writer's put
 //   is (page-card-writer.mjs), and retried after a refusal.
 //
-// Only the latest hash is kept. An upload for a new hash swaps the pointer,
-// then deletes the images the old pointer named, so a Page holds at most two
-// images plus the pointer. A delete that fails leaves an orphan no route
-// names and the next purge's prefix listing removes.
+// The pointer references at most two images, one per theme. An upload for a
+// new hash swaps the pointer, then attempts to delete the old images. Stale
+// uploads and failed writes or deletes can leave unreferenced bytes. Purge
+// scans at most four prefix-listing pages; it may not collect every orphan.
+// Successful-swap cleanup is not fenced and can still race with key reuse.
 //
 // Who writes. Only the Page owner, checked by the Page host's own policy
 // (`authorizeCardImageUpload`, run inside the Page object), never D1. The
@@ -134,18 +135,19 @@ export function cardImageView(pageId, pointer) {
  * Store one theme's image for `hash` and point `latest` at it. Returns the
  * pointer it wrote. Authorization belongs to the caller.
  *
- * The image lands first, so the pointer never names a missing object. The
- * pointer swap is fenced on the etag it read; a refused put reads again, up
+ * The image lands before the pointer swap, which is fenced on the etag it
+ * read; a refused put reads again, up
  * to POINTER_ATTEMPTS times. Once the swap lands, images the previous
- * pointer named and this one doesn't are deleted.
+ * pointer named and this one doesn't are deleted. That cleanup is not
+ * fenced against a newer upload reusing those keys.
  *
  * The etag orders writes to the bucket, not first screens. `revision` does:
  * the Page host hands out one per admitted upload, in order, from durable
  * storage, and admits only its current `card_hash`, so a later revision is
  * always a later (or the same) first screen. The pointer keeps the highest
  * revision it has seen, and a swap to another hash with a lower revision is
- * refused as stale (409), its image deleted. Uploads of the same hash merge
- * whatever their order.
+ * refused as stale (409), without deleting the shared image key. Uploads of
+ * the same hash merge whatever their order.
  */
 export async function storeCardImage(
   bucket,
@@ -161,9 +163,8 @@ export async function storeCardImage(
     const previous = await readCardImagePointer(bucket, pageId);
     const same = previous?.card_hash === hash;
     if (previous && !same && previous.revision > revision) {
-      // A later first screen's image landed first. This upload was admitted
-      // for an older one; its image is an orphan no pointer names.
-      await bucket.delete(imageKey).catch(() => {});
+      // The hash/theme key is shared: a newer accepted upload may already
+      // reuse it. This stale pointer snapshot cannot authorize its deletion.
       throw new HttpError(409, "This card image is for an older first screen", "card_image_stale");
     }
     const themes = { ...(same ? previous.themes : {}), [theme]: inspected.ext };
@@ -193,9 +194,8 @@ export async function storeCardImage(
   throw new HttpError(503, "Card image storage is busy; try again", "card_image_busy");
 }
 
-/** Delete every card image of `pageId` and its pointer: the images the
- * pointer names, then whatever a prefix listing finds (orphans of a failed
- * delete or a lost race), when the bucket lists. */
+/** Delete the pointer and its referenced images, plus orphans found in at
+ * most four prefix-listing pages when the bucket lists. More may remain. */
 export async function deleteCardImages(bucket, pageId) {
   const keys = new Set([cardImagePointerKey(pageId)]);
   const pointer = await readCardImagePointer(bucket, pageId).catch(() => null);
@@ -204,7 +204,7 @@ export async function deleteCardImages(bucket, pageId) {
       keys.add(cardImageKey(pageId, pointer.card_hash, theme, ext));
   if (typeof bucket.list === "function") {
     let cursor;
-    // A Page holds a handful of objects; a few pages of listing is plenty.
+    // Bound purge work even when uploads have left many unreferenced objects.
     for (let page = 0; page < 4; page++) {
       const listed = await bucket.list({ prefix: cardImagePrefix(pageId), cursor });
       for (const object of listed.objects ?? []) keys.add(object.key);
