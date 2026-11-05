@@ -502,3 +502,136 @@ test("a transient failure is retryable only for a request that is safe to repeat
   const tokened = await call("create_page", { title: "New", ...token });
   assert.equal(tokened.retryable, true);
 });
+
+for (const transport of ["http", "mcp"]) {
+  test(`a Page storage refusal gives ${transport} callers advice matching repeat safety`, async (t) => {
+    const auth = await createAuthFixture();
+    t.mock.method(globalThis, "fetch", auth.fetch);
+    const unavailable = () =>
+      Response.json(
+        {
+          error:
+            "Storage did not confirm its records. Retry after retry_after_ms with the same idempotency_key and retry_token.",
+          code: "record_persistence_unavailable",
+          retryable: true,
+          retry_after_ms: 3000,
+        },
+        { status: 503, headers: { "retry-after": "3" } },
+      );
+    const env = {
+      ...auth.env,
+      NOTEBOOK_CLOUD_PUBLIC_ORIGIN: publicOrigin,
+      PAGES: answer(unavailable),
+      CATALOGS: answer(unavailable),
+    };
+    const comment = { page_id: pageId, action: "add", block_id: "b1", body: "Hi" };
+    const cases = [
+      ["read_page", { page_id: pageId }, true],
+      ["manage_page_comment", { ...comment }, false],
+      ["manage_page_comment", { ...comment, retry_token: "rt" }, true],
+      ["create_page", { title: "New" }, false],
+      ["create_page", { title: "New", retry_token: "rt" }, true],
+    ];
+    for (const [operation, args, retryable] of cases) {
+      args.idempotency_key = args.retry_token
+        ? `v1_${"a".repeat(64)}_storage-test`
+        : "storage-test";
+      const response = await worker.fetch(
+        new Request(`http://127.0.0.1:9477/${transport === "http" ? "api/tools" : "mcp"}`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${auth.apiKey()}`,
+            "Content-Type": "application/json",
+            Accept: "application/json, text/event-stream",
+          },
+          body: JSON.stringify(
+            transport === "http"
+              ? { operation, arguments: args }
+              : {
+                  jsonrpc: "2.0",
+                  id: 1,
+                  method: "tools/call",
+                  params: { name: operation, arguments: args },
+                },
+          ),
+        }),
+        env,
+      );
+      assert.equal(response.status, transport === "http" ? 503 : 200);
+      let body = await response.json();
+      if (transport === "http") {
+        assert.equal(response.headers.get("retry-after"), "3");
+      } else {
+        assert.equal(body.result.isError, true);
+        assert.deepEqual(JSON.parse(body.result.content[0].text), body.result.structuredContent);
+        body = body.result.structuredContent;
+      }
+      assert.equal(body.code, "record_persistence_unavailable");
+      assert.equal(body.retry_after_ms, 3000);
+      assert.equal(body.retryable, retryable, operation);
+      assert.match(
+        body.error,
+        retryable
+          ? /same idempotency_key and retry_token/
+          : /Read back and reconcile before retrying/,
+      );
+    }
+  });
+}
+
+test("repeat-safety inspection cancels a stalled storage refusal body at the tool deadline", async (t) => {
+  const auth = await createAuthFixture();
+  t.mock.method(globalThis, "fetch", auth.fetch);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  for (const operation of ["manage_page_comment", "create_page"]) {
+    const state = {};
+    let reached;
+    const reading = new Promise((resolve) => {
+      reached = resolve;
+    });
+    const unavailable = answer(
+      () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                new TextEncoder().encode('{"code":"record_persistence_unavailable",'),
+              );
+            },
+            pull() {
+              reached();
+            },
+            cancel() {
+              state.cancelled = true;
+            },
+          }),
+          { status: 503, headers: { "content-type": "application/json" } },
+        ),
+    );
+    const pending = worker.fetch(
+      new Request("http://127.0.0.1:9477/api/tools", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${auth.apiKey()}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          operation,
+          arguments: {
+            page_id: pageId,
+            action: "add",
+            body: "Hi",
+            title: "New",
+            idempotency_key: "storage-test",
+          },
+        }),
+      }),
+      { ...auth.env, PAGES: unavailable, CATALOGS: unavailable },
+    );
+    await reading;
+    t.mock.timers.tick(TOOL_REQUEST_TIMEOUT_MS);
+    const response = await pending;
+    assert.equal(response.status, 504);
+    const body = await response.json();
+    assert.equal(body.code, "request_timeout");
+    assert.equal(body.retryable, false);
+    assert.equal(state.cancelled, true, operation);
+  }
+});

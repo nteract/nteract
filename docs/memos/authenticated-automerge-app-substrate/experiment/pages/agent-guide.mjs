@@ -204,7 +204,8 @@ Branch on code, not on the error message:
   location_migration_required. Retry the same request, including its key and
   token. location_migration_required also names the reason, page_id and
   space_id blocking the pass. record_persistence_unavailable carries
-  retry_after_ms and Retry-After.
+   retry_after_ms and Retry-After. For a tokenless write it is retryable:false:
+   read back and reconcile before retrying, since the write may have completed.
 - shared_page_unavailable (503, retryable:true): a listing met a shared Page,
   or its owner's Catalog, that did not answer. Retry the listing after
   retry_after_ms (also Retry-After), with exponential backoff if it repeats.

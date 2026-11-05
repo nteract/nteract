@@ -25,6 +25,8 @@
  * thrown error is rethrown unchanged.
  */
 
+import { bufferedResponse } from "./tool-deadline.mjs";
+
 export const HOST_BUSY_TEXT = "cell request limit reached";
 
 /** What a refusal names, by the namespace the gateway called. */
@@ -142,12 +144,39 @@ export function pageTransientFailureResponse({
   return response;
 }
 
-/** `response`, or for a transient refusal from a stub fetch, the same refusal
+/** `response`, or for a transient or storage refusal, the same refusal
  * stated for a tool request's repeat safety (`safeToRepeat`): a tokenless
  * write is told to reconcile and is not retryable. */
-export function withRepeatSafety(response, safe) {
-  if (!transientRefusals.has(response)) return response;
-  return pageTransientFailureResponse({ binding: transientRefusals.get(response), safe });
+export async function withRepeatSafety(response, safe, signal) {
+  if (transientRefusals.has(response))
+    return pageTransientFailureResponse({ binding: transientRefusals.get(response), safe });
+  if (
+    safe !== false ||
+    response.status !== 503 ||
+    !response.headers.get("content-type")?.toLowerCase().includes("json")
+  )
+    return response;
+  // Buffer under the tool deadline before cloning: teeing a live body would
+  // leave an unread branch that prevents cancellation of the upstream stream.
+  const buffered = await bufferedResponse(response, signal);
+  let body;
+  try {
+    body = await buffered.clone().json();
+  } catch {
+    return buffered;
+  }
+  if (body?.code !== "record_persistence_unavailable") return buffered;
+  const headers = new Headers(buffered.headers);
+  headers.delete("content-length");
+  return Response.json(
+    {
+      ...body,
+      retryable: false,
+      error:
+        "This Page's storage did not confirm its records. This write may have completed. Read back and reconcile before retrying: a write without retry_token is deduplicated only while its receipt is retained.",
+    },
+    { status: buffered.status, headers },
+  );
 }
 
 /** The refusal for an error a stub fetch threw, or the error rethrown.

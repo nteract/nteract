@@ -1652,8 +1652,9 @@ The same flags reach code inside an object. A listing that meets a shared Page
 `503 shared_page_unavailable`, `retryable: true`, `retry_after_ms` and
 `Retry-After`; an overloaded Page asks for the jittered 2 to 5 s. A flagged
 throw from `PageRecords` while a write waits for its records is
-`503 record_persistence_unavailable`, retryable like
-`record_persistence_timeout`, and its records stay pending. MCP passes every
+`503 record_persistence_unavailable`, and its records stay pending. Tool reads
+and tokened writes can retry; tokenless writes receive `retryable: false` and
+must read back and reconcile before retrying. MCP passes every
 one of these codes through, and the viewer treats any `503` as an outage and
 retries with backoff. The
 [Cloudflare portability audit](https://pages.runtimed.run/p/460c48f0-dc4b-4702-af82-59910e6bebd0)

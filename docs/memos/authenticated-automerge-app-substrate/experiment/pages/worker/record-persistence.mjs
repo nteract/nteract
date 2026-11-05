@@ -4,6 +4,8 @@ import { holdUntilSettled } from "./request-hold.mjs";
 
 // Kept below the deployment's 2 MiB request cap, including binary framing.
 const MAX_BATCH_BYTES = 2_000_000;
+// Reserve one of storage.put's 128 keys for host/seq.
+const MAX_BATCH_RECORDS = 127;
 const MAX_REPLICA_BYTES = 48 * 1024 * 1024;
 const MAX_KEYS = 65_536;
 const encoder = new TextEncoder();
@@ -68,12 +70,13 @@ export function decodeRecordBatch(bytes) {
   return entries;
 }
 
-/** One PageRecords POST is one atomic storage.put of at most 128 keys and
- * MAX_BATCH_BYTES. A group saved through saveMany stays inside one batch when
- * it fits, so its records persist together or not at all. A group that cannot
- * fit is split and logged; lookup readiness then covers an interrupted prefix.
+/** One PageRecords POST is bounded by MAX_BATCH_BYTES and 127 records, leaving
+ * room for host/seq in the atomic storage.put. A group saved through saveMany
+ * stays inside one batch when it fits, so its records persist together or not
+ * at all. A group that cannot fit is split and logged; lookup readiness then
+ * covers an interrupted prefix.
  * `maxKeys` bounds ungrouped batches only. */
-function batches(entries, groupOf = () => undefined, maxKeys = 128) {
+function batches(entries, groupOf = () => undefined, maxKeys = MAX_BATCH_RECORDS) {
   const sized = (entry) => 8 + keyBytes(entry[0]).length + (entry[1]?.byteLength ?? 0);
   const members = new Map();
   for (const entry of entries) {
@@ -91,7 +94,13 @@ function batches(entries, groupOf = () => undefined, maxKeys = 128) {
   };
   const add = (entry) => {
     const bytes = sized(entry);
-    if ((size + bytes > MAX_BATCH_BYTES || batch.length >= maxKeys) && batch.length) close();
+    if (
+      (size + bytes > MAX_BATCH_BYTES ||
+        batch.length >= maxKeys ||
+        batch.length >= MAX_BATCH_RECORDS) &&
+      batch.length
+    )
+      close();
     batch.push(entry);
     size += bytes;
   };
@@ -105,12 +114,15 @@ function batches(entries, groupOf = () => undefined, maxKeys = 128) {
     if (placed.has(group)) continue;
     placed.add(group);
     const bytes = together.reduce((n, item) => n + sized(item), 0);
-    if (together.length > 128 || bytes > MAX_BATCH_BYTES) {
+    if (together.length > MAX_BATCH_RECORDS || bytes > MAX_BATCH_BYTES) {
       logGroupSplit(together.length, bytes);
       together.forEach(add);
       continue;
     }
-    if (batch.length && (size + bytes > MAX_BATCH_BYTES || batch.length + together.length > 128))
+    if (
+      batch.length &&
+      (size + bytes > MAX_BATCH_BYTES || batch.length + together.length > MAX_BATCH_RECORDS)
+    )
       close();
     batch.push(...together);
     size += bytes;
@@ -228,7 +240,11 @@ export class PageRecords {
             });
         }
         const entries = decodeRecordBatch(new Uint8Array(await request.arrayBuffer()));
-        if (entries.length > 128 || new Set(entries.map(([key]) => key)).size !== entries.length)
+        // Shipped sequence-less sinks can still send 128 records without metadata.
+        if (
+          entries.length > (seq === undefined ? 128 : MAX_BATCH_RECORDS) ||
+          new Set(entries.map(([key]) => key)).size !== entries.length
+        )
           throw invalid("Invalid record batch keys");
         // A failed/partial write has no receipt. The sink resends its records
         // in a later batch with a higher sequence; a Page serializes its
@@ -271,7 +287,7 @@ export function recordPersistenceTimeout() {
 
 /** PageRecords threw an overload or a transient error: Cloudflare's
  * `overloaded` or `retryable` flag. The records stay pending, as after a
- * timeout, so the same request can be retried. */
+ * timeout. Tool retry advice depends on the request's repeat safety. */
 export function recordPersistenceUnavailable(cause) {
   return Object.assign(
     Error(
@@ -425,7 +441,10 @@ export class RemoteRecordSink {
  * local history until /api/saved confirms that second boundary.
  */
 export class BufferedRecordStore {
-  constructor(sink, { onDirty = () => {}, maxBytes = MAX_REPLICA_BYTES, maxBatchKeys = 128 } = {}) {
+  constructor(
+    sink,
+    { onDirty = () => {}, maxBytes = MAX_REPLICA_BYTES, maxBatchKeys = MAX_BATCH_RECORDS } = {},
+  ) {
     this.sink = sink;
     this.onDirty = onDirty;
     this.maxBytes = maxBytes;

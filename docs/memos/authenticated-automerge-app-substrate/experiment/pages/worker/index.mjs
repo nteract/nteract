@@ -831,7 +831,7 @@ async function invoke(request, env, operation, args = {}, seen) {
     return withinToolDeadline(
       async (signal) =>
         bufferedResponse(
-          withRepeatSafety(
+          await withRepeatSafety(
             await untilAborted(
               env.CATALOGS.getByName(identity.principal).fetch(
                 forwarded(request, "/internal/catalog", body),
@@ -840,6 +840,7 @@ async function invoke(request, env, operation, args = {}, seen) {
               signal,
             ),
             safe,
+            signal,
           ),
           signal,
         ),
@@ -862,9 +863,9 @@ async function invoke(request, env, operation, args = {}, seen) {
   const safe = safeToRepeat(operation, args);
   return withinToolDeadline(
     async (signal) => {
-      // A transient failure is stated for this request's repeat safety, as
-      // a timeout is.
-      const response = withRepeatSafety(
+      // Transient and storage failures use this request's repeat safety,
+      // as a timeout does.
+      const response = await withRepeatSafety(
         await untilAborted(
           env.PAGES.getByName(args.page_id).fetch(
             forwarded(request, "/internal/tool", { operation, arguments: args }),
@@ -873,6 +874,7 @@ async function invoke(request, env, operation, args = {}, seen) {
           signal,
         ),
         safe,
+        signal,
       );
       if (operation !== "read_page" || !response.ok) return bufferedResponse(response, signal);
       const body = await readResponseJson(response, signal);

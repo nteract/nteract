@@ -25,6 +25,7 @@ class Storage {
   barrier;
   puts = 0;
   async put(values) {
+    assert.ok(Object.keys(values).length <= 128, "storage.put accepts at most 128 keys");
     if (Object.keys(values).some((key) => key.startsWith("repo/"))) this.puts++;
     for (const [key, value] of Object.entries(values)) this.values.set(key, value.slice());
   }
@@ -128,6 +129,95 @@ test("large native records stay binary and are split below request limits", asyn
   assert.equal((await reopened.list("")).length, 2);
 });
 
+for (const grouped of [false, true]) {
+  for (const count of [127, 128]) {
+    for (const maxBatchKeys of [undefined, 1, 64, 127, 128, 256]) {
+      test(`record batch boundary: ${count} records, grouped=${grouped}, maxBatchKeys=${maxBatchKeys}`, async (t) => {
+        const warnings = [];
+        t.mock.method(console, "warn", (line) => warnings.push(JSON.parse(line)));
+        const f = fixture({ maxBatchKeys });
+        await f.live.ready;
+        const writes = [];
+        const put = f.storage.put.bind(f.storage);
+        t.mock.method(f.storage, "put", async (values) => {
+          assert.equal(values["host/seq"], String(writes.length + 1));
+          writes.push(Object.keys(values).filter((key) => key.startsWith("repo/")));
+          return put(values);
+        });
+        const entries = Array.from({ length: count }, (_, i) => [`tree/${i}`, bytes(String(i))]);
+        if (grouped) await f.live.saveMany(entries);
+        else for (const [key, value] of entries) await f.live.save(key, value);
+        await f.live.flush();
+        const limit = grouped && count === 127 ? 127 : Math.min(maxBatchKeys ?? 127, 127);
+        assert.deepEqual(
+          writes.map((keys) => keys.length),
+          Array.from({ length: Math.ceil(count / limit) }, (_, i) =>
+            Math.min(limit, count - i * limit),
+          ),
+        );
+        assert.deepEqual(
+          writes.flat(),
+          entries.map(([key]) => `repo/${key}`),
+        );
+        assert.equal(warnings.length, grouped && count === 128 ? 1 : 0);
+        assert.equal(f.live.dirty, false);
+        for (const [key, value] of entries)
+          assert.deepEqual(f.storage.values.get(`repo/${key}`), value);
+      });
+    }
+  }
+}
+
+test("record batch boundary: a full group stays separate from adjacent records", async () => {
+  const f = fixture();
+  await f.live.save("tree/before", bytes("before"));
+  await f.live.saveMany(Array.from({ length: 127 }, (_, i) => [`tree/${i}`, bytes(String(i))]));
+  await f.live.save("tree/after", bytes("after"));
+  await f.live.flush();
+  assert.equal(f.storage.puts, 3);
+  assert.equal(f.storage.values.get("host/seq"), "3");
+  assert.equal(f.storage.values.size, 131);
+});
+
+test("record batch boundary: owner reserves sequence metadata but accepts legacy 128-record batches", async (t) => {
+  for (const seq of [undefined, "1"]) {
+    for (const count of [127, 128, 129]) {
+      for (const value of [bytes("value"), undefined]) {
+        const f = fixture();
+        await f.live.ready;
+        const before = new Map(f.storage.values);
+        const put = t.mock.method(f.storage, "put");
+        const remove = t.mock.method(f.storage, "delete");
+        const response = await f.owner.fetch(
+          new Request("https://records.internal/records", {
+            method: "POST",
+            body: encodeRecordBatch(Array.from({ length: count }, (_, i) => [`tree/${i}`, value])),
+            headers: {
+              "x-pages-record-generation": await f.sink.generation(),
+              ...(seq !== undefined && { "x-pages-record-seq": seq }),
+            },
+          }),
+        );
+        const accepted = count <= (seq === undefined ? 128 : 127);
+        assert.equal(
+          response.status,
+          accepted ? 204 : 400,
+          `seq=${seq}, count=${count}, value=${value}`,
+        );
+        if (!accepted) {
+          assert.equal(put.mock.callCount(), 0);
+          assert.equal(remove.mock.callCount(), 0);
+          assert.deepEqual(f.storage.values, before);
+          assert.equal(f.owner.seq, 0);
+        } else {
+          assert.equal(f.storage.values.get("host/seq"), seq ?? "0");
+          assert.equal(f.storage.values.size, value === undefined ? 2 : count + 2);
+        }
+      }
+    }
+  }
+});
+
 test("records saved together persist in one write or are split with a bounded log", async (t) => {
   const warnings = [];
   t.mock.method(console, "warn", (line) => warnings.push(JSON.parse(line)));
@@ -166,7 +256,7 @@ test("records saved together persist in one write or are split with a bounded lo
   f.storage.barrier = undefined;
   await f.live.flush();
   assert.deepEqual(writes.at(-1), ["repo/tree/d", "repo/tree/e"]);
-  // A group over one request's 128 keys cannot be atomic.
+  // A group over one request's 127 records cannot be atomic.
   writes.length = 0;
   await f.live.saveMany(
     Array.from({ length: 130 }, (_, i) => [`tree/g${String(i).padStart(3, "0")}`, bytes("g")]),
