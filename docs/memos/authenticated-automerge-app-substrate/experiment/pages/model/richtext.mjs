@@ -1889,7 +1889,8 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
     node.forEach((child) => children.push(restore(child, inner)));
     return node.copy(node.content.constructor.from(children));
   };
-  const kept = restore(tree, "");
+  // Without stored dataframes, dataframe-like lines are ordinary links.
+  const kept = existing.length ? restore(tree, "") : tree;
   if (problems.has("moved"))
     refuse(
       "A dataframe's line can't go inside a quote, list or table, into a heading, or out of the quote or list item it's stored in. Keep it where read_page shows it; it may move among its neighbours.",

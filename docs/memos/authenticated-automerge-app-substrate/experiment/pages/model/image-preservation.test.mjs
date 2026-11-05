@@ -18,6 +18,21 @@ const attrs = (doc) =>
     .filter((s) => s.type === "block" && String(s.value.type) === "image")
     .map((s) => s.value.attrs);
 const image = '![Diagram](https://example.com/image.png "Title")';
+test("opaque images do not turn ordinary dataframe-like links into dataframe nodes", () => {
+  const link = `[Dataframe: report](/api/pages/11111111-1111-4111-8111-111111111111/assets/${"a".repeat(64)})`;
+  for (const extra of [{}, { future: "x" }]) {
+    const doc = fixture(`${image}\n\n${link}`, extra);
+    const markdown = `${blockMarkdown(doc.blocks.one)}\n\nAfter`;
+    const changed = A.change(doc, (d) => setRichMarkdownKeepingNodes(d, "one", markdown));
+    assert.equal(blockMarkdown(changed.blocks.one), markdown);
+    assert.deepEqual(attrs(changed), attrs(doc));
+    assert.ok(
+      !A.spans(changed, textPath("one")).some(
+        (s) => s.type === "block" && String(s.value.type) === "dataframe",
+      ),
+    );
+  }
+});
 test("Markdown rewrites preserve opaque image attrs in paragraphs, headings, quotes, lists and tables", () => {
   for (const source of [
     image,
