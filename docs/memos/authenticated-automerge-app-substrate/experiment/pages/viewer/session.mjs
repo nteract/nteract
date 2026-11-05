@@ -2305,8 +2305,10 @@ export class PageSession {
         try {
           result = await this.reconcileExpiredRegistration();
         } catch (renewed) {
-          if (!storageRefused(renewed)) throw renewed;
-          return this.retryAfterStorageRefusal(renewed, storageMoved);
+          if (storageRefused(renewed)) return this.retryAfterStorageRefusal(renewed, storageMoved);
+          if (renewed.status === 409 && renewed.message === "Page was deleted")
+            await this.markDeleted();
+          throw renewed;
         }
       } else if (storageRefused(error)) {
         return this.retryAfterStorageRefusal(error, storageMoved);
@@ -2351,12 +2353,13 @@ export class PageSession {
       connection = await this.requestWithRenewal(connectUrl(this.pageId));
     } catch (error) {
       if (!current()) return;
+      if (error.status === 404 && error.code === "page_deleted") {
+        await this.markDeleted();
+        return;
+      }
       // Missing and unreadable Pages share one response. Registration
       // independently checks ownership and deletion tombstones.
-      const absent =
-        (error.status === 404 && error.message === "Page not found") ||
-        (error.status === 403 && error.code === "page_access_denied");
-      if (!absent) throw error;
+      if (!(error.status === 403 && error.code === "page_access_denied")) throw error;
       const prepared = await this.requestWithRenewal("/api/tools", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
