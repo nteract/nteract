@@ -432,10 +432,22 @@ test("outline entries and changed nodes carry attrs, summary and node_type", asy
       operation: "patch_page",
       arguments: {
         operations: [
-          { op: "set_node", block_id: id, match_text: "Head", heading_level: 2 },
-          { op: "set_node", block_id: id, match_text: "open", checked: true },
-          { op: "set_node", block_id: id, match_text: "plain", occurrence: 1, language: "mermaid" },
-          { op: "set_node", block_id: id, match_text: "3", align: "right" },
+          {
+            op: "set_node",
+            block_id: id,
+            match_text: "Head",
+            type: "heading",
+            attrs: { level: 2 },
+          },
+          { op: "set_node", block_id: id, match_text: "open", attrs: { checked: true } },
+          {
+            op: "set_node",
+            block_id: id,
+            match_text: "plain",
+            occurrence: 1,
+            attrs: { language: "mermaid" },
+          },
+          { op: "set_node", block_id: id, match_text: "3", attrs: { align: "right" } },
         ],
       },
     }),

@@ -9,9 +9,9 @@
 // marker keeps its own.
 //
 // The shape is `{ type?, attrs? }`, with type and attribute names from
-// model/node-registry.mjs: the same names read_page reports. The flat fields
-// checked, language, heading_level and align are aliases accepted for one
-// deploy; nodeChange turns them into the typed shape.
+// model/node-registry.mjs: the same names read_page reports. A top-level
+// checked, language, heading_level or align is refused with the typed field
+// that replaces it.
 import * as A from "@automerge/automerge/slim";
 import { richDoc, textPath } from "./richtext.mjs";
 import { updateSpansConfig } from "./marks.mjs";
@@ -26,8 +26,13 @@ import {
   settableAttr,
 } from "./node-registry.mjs";
 
-/** The flat aliases, accepted for one deploy. */
-export const LEGACY_FIELDS = Object.freeze(["checked", "language", "heading_level", "align"]);
+/** Top-level fields set_node refuses, each with the typed field to use. */
+export const REFUSED_FIELDS = Object.freeze({
+  checked: "attrs.checked",
+  language: "attrs.language",
+  heading_level: 'type "heading" with attrs.level, or type "paragraph"',
+  align: "attrs.align",
+});
 /** Agent names set_node's attrs take, from the registry. */
 export const NODE_ATTRS = Object.freeze(Object.keys(SETTABLE_ATTRS));
 export { ALIGNMENTS };
@@ -65,29 +70,14 @@ function attrValue(name, value) {
   throw Error(`set_node can't set ${name}`);
 }
 
-/** The flat alias in `input` as the typed shape, or null. */
-function legacyChange(input) {
-  const present = LEGACY_FIELDS.filter((field) => input[field] !== undefined);
-  if (!present.length) return null;
-  if (present.length !== 1 || input.type !== undefined || input.attrs !== undefined)
-    throw Error(
-      `set_node takes type and attrs, or exactly one of ${LEGACY_FIELDS.join(", ")}, not both`,
-    );
-  const [field] = present;
-  const value = input[field];
-  if (field !== "heading_level") return { attrs: { [field]: value }, label: field };
-  if (!Number.isSafeInteger(value) || value < 0 || value > 6)
-    throw Error("heading_level takes 1 to 6 for a heading, or 0 for a paragraph");
-  return value
-    ? { type: "heading", attrs: { level: value }, label: field }
-    : { type: "paragraph", attrs: {}, label: field };
-}
-
-/** Validate set_node's change. Returns `{ type?, attrs, label }`, with attr
- * values normalized for storage. `label` names the field a refusal quotes. */
+/** Validate set_node's change. Returns `{ type?, attrs }`, with attr values
+ * normalized for storage. */
 export function nodeChange(input) {
-  const change = legacyChange(input) ?? { type: input.type, attrs: input.attrs ?? {}, label: null };
-  const { type, attrs } = change;
+  for (const [field, use] of Object.entries(REFUSED_FIELDS))
+    if (input[field] !== undefined)
+      throw Error(`set_node takes type and attrs, not a top-level ${field}; use ${use}`);
+  const type = input.type;
+  const attrs = input.attrs ?? {};
   if (type !== undefined && (typeof type !== "string" || !RETYPES.includes(type)))
     throw Error(`set_node's type takes ${RETYPES.join(" or ")}`);
   if (!attrs || typeof attrs !== "object" || Array.isArray(attrs))
@@ -101,7 +91,7 @@ export function nodeChange(input) {
       throw Error(`set_node's attrs take ${NODE_ATTRS.join(", ")}; ${name} isn't one`);
     values[name] = attrValue(name, attrs[name]);
   }
-  return { ...(type !== undefined && { type }), attrs: values, label: change.label };
+  return { ...(type !== undefined && { type }), attrs: values };
 }
 
 /** The spans array index of the block marker governing native offset `at`,
@@ -191,7 +181,7 @@ export function setNode(doc, id, input, trace, { anchor } = {}) {
   };
   const target = change.type ?? current;
   if (target !== current && !retypeTargets(current).includes(target))
-    refuse(change.label ?? "type", retypeTargets(target));
+    refuse("type", retypeTargets(target));
   // A retype drops the attributes the old type registers (a heading's level)
   // and keeps the rest, including any a newer build wrote.
   const attrs = { ...marker.value.attrs };
@@ -206,7 +196,7 @@ export function setNode(doc, id, input, trace, { anchor } = {}) {
       throw Error(
         `type ${target} has no ${name}; ${name} applies to ${pluralLabel(SETTABLE_ATTRS[name].blocks)}`,
       );
-    if (!found) refuse(change.label ?? name, SETTABLE_ATTRS[name].blocks);
+    if (!found) refuse(name, SETTABLE_ATTRS[name].blocks);
     const value = change.attrs[name];
     if (found.spec.scope === "column") {
       column[found.stored] = value;

@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
-import {
-  ADMISSION_CAPABILITY,
-  ADMISSION_OUTCOMES,
-  admissionCloseOutcome,
-} from "../shared/admission.mjs";
+import { ADMISSION_OUTCOMES, admissionCloseOutcome } from "../shared/admission.mjs";
 import {
   ADMISSION_CODES,
   ADMISSION_REASONS,
@@ -161,13 +157,12 @@ async function disclosureFixture(auth, metadata) {
       who === "owner" ? auth.apiKey() : auth.apiKey({ userId: who }),
     ]),
   );
-  const call = async (who, path = "/api/connect", { capable = true } = {}) => {
+  const call = async (who, path = "/api/connect") => {
     const response = await page.run(
       new Request(`https://pages.invalid${path}?page=${pageId}`, {
         method: path === "/api/saved" ? "POST" : "GET",
         headers: {
           authorization: `Bearer ${tokens[who]}`,
-          ...(capable && { [ADMISSION_CAPABILITY.header]: ADMISSION_CAPABILITY.value }),
           ...(path === "/api/sync" && { upgrade: "websocket" }),
         },
         ...(path === "/api/saved" ? { body: JSON.stringify({ heads: ["a".repeat(64)] }) } : {}),
@@ -228,28 +223,15 @@ test("admission routes answer missing, unreadable and hidden-deleted Pages ident
   }
 });
 
-test("a deployed viewer without the capability still renews a never-created draft", async (t) => {
+test("a never-created draft answers its owner with the unified 403", async (t) => {
   const auth = await createAuthFixture();
   t.mock.method(globalThis, "fetch", auth.fetch);
   t.mock.method(console, "warn", () => {});
+  // viewer/session.mjs reconcileExpiredRegistration renews the registration
+  // on page_access_denied; every client gets this answer, header or not.
   const missing = await disclosureFixture(auth, undefined);
-  // d53a6e64b viewer/session.mjs reconcileExpiredRegistration renews only when
-  // /api/connect fails with this exact status and message.
-  const legacyAbsent = ({ status, body }) =>
-    status === 404 && JSON.parse(body).error === "Page not found";
-  const legacy = await missing.call("owner", "/api/connect", { capable: false });
-  assert.equal(legacyAbsent(legacy), true);
-  // An unreadable existing Page still answers 403, so legacy clients never
-  // mistake revocation for absence.
-  const existing = await disclosureFixture(auth, { deleted: false });
-  assert.deepEqual(
-    await existing.call("stranger", "/api/connect", { capable: false }),
-    deniedResponse,
-  );
-  // The current viewer declares the capability and accepts the unified 403.
-  const current = await missing.call("owner", "/api/connect");
-  assert.deepEqual(current, deniedResponse);
-  assert.equal(legacyAbsent(current), false);
+  for (const path of ["/api/connect", "/api/sync", "/api/saved"])
+    assert.deepEqual(await missing.call("owner", path), deniedResponse, path);
 });
 
 test("gateway admission denials carry a client code and log a bounded reason", async (t) => {

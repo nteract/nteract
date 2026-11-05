@@ -75,7 +75,7 @@ async function create(title, markdown) {
 /** A raw native peer on a Page, admitted with `declared` as its build's
  * schema features (none: the baseline, like a build from before the stamp). */
 async function nativePeer(cookie, pageId, declared) {
-  const headers = { cookie, origin, "X-Pages-Admission": "1" };
+  const headers = { cookie, origin };
   const discovery = await fetch(`${origin}/api/connect?page=${pageId}`, {
     headers,
   }).then((response) => response.json());
@@ -136,7 +136,7 @@ async function nativePeer(cookie, pageId, declared) {
 
 /** nativePeer for an `automerge` Page: plain Automerge sync on the socket. */
 async function plainNativePeer(cookie, pageId, declared, discovery) {
-  const headers = { cookie, origin, "X-Pages-Admission": "1" };
+  const headers = { cookie, origin };
   const peer = await plainPeer({
     origin,
     pageId,

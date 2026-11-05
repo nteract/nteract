@@ -73,14 +73,10 @@ test("patch_page advertises set_node, occurrence, all and replacement_markdown",
   assert.deepEqual(replace.required, ["op", "block_id", "match_text"]);
   for (const op of [replace, format, setNode]) assert.ok(op.properties.occurrence);
   assert.deepEqual(format.properties.all, { ...format.properties.all, const: true });
-  assert.deepEqual(Object.keys(setNode.properties).slice(-4), [
-    "checked",
-    "language",
-    "heading_level",
-    "align",
-  ]);
+  for (const field of ["checked", "language", "heading_level", "align"])
+    assert.equal(field in setNode.properties, false, `set_node advertises top-level ${field}`);
   assert.match(patch.description, /set_node/);
-  // Agents learn the {type, attrs} shape; the flat fields are deprecated aliases.
+  // Agents learn the {type, attrs} shape.
   assert.match(patch.description, /type heading, attrs \{level\}/);
   for (const field of ["heading_level", "(checked)", "(language", "(align)"])
     assert.equal(patch.description.includes(field), false, `patch_page teaches ${field}`);

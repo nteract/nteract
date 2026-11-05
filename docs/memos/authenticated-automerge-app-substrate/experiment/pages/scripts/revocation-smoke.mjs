@@ -24,7 +24,7 @@ async function api(page, path, body) {
     async ({ path, body }) => {
       const response = await fetch(path, {
         method: body ? "POST" : "GET",
-        headers: { "Content-Type": "application/json", "X-Pages-Admission": "1" },
+        headers: { "Content-Type": "application/json" },
         ...(body ? { body: JSON.stringify(body) } : {}),
       });
       return { status: response.status, body: await response.json() };

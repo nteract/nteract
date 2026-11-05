@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { maintainBrowserSession } from "./browser-session.mjs";
 import {
-  CONNECT_HEADERS,
   EARLY_CONNECT,
   EARLY_CONNECT_MAX_AGE_MS,
   EARLY_SESSION,
@@ -373,14 +372,12 @@ test("the head script starts a Page's connection discovery on its route only", (
       assert.equal(EARLY_CONNECT in win, false, pathname);
       continue;
     }
-    // The same request openConnection makes: a GET with the admission header.
+    // The same request openConnection makes: a GET with no headers.
     assert.equal(calls.length, 1, pathname);
     const [url, init] = calls[0];
     // Plus the preview the shell shows while the editor loads.
     assert.equal(url, `${connectUrl(pageId)}&preview=1`);
-    assert.deepEqual(Object.keys(init), ["headers", "signal"]);
-    assert.deepEqual(init.headers, CONNECT_HEADERS);
-    assert.deepEqual(CONNECT_HEADERS, { "X-Pages-Admission": "1" });
+    assert.deepEqual(Object.keys(init), ["signal"]);
   }
 });
 
@@ -399,7 +396,7 @@ test("the first discovery for the routed Page adopts the early request; later on
     assert.deepEqual(await requestConnect(PAGE, request, { win }), connection);
     assert.equal(fetched.length, 1);
     assert.equal(fetched[0][0], connectUrl(PAGE));
-    assert.deepEqual(fetched[0][1].headers, CONNECT_HEADERS);
+    assert.deepEqual(Object.keys(fetched[0][1]), ["signal"]);
     assert.deepEqual(seen, ["early", "later"]);
   } finally {
     stop();
@@ -481,7 +478,7 @@ test("an early discovery follows its own age bound and the session slot's visibi
     const fetched = stubFetch(t, () => sessionResponse(connection));
     assert.deepEqual(await requestConnect(PAGE, request, { win }), connection);
     assert.equal(fetched.length, 1);
-    assert.deepEqual(fetched[0][1].headers, CONNECT_HEADERS);
+    assert.deepEqual(Object.keys(fetched[0][1]), ["signal"]);
     t.mock.restoreAll();
   }
   // The fresh answer is the answer, refusal included.

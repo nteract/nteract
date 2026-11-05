@@ -294,7 +294,7 @@ test("the blocking theme asset applies preferences without loading the editor", 
     Object.keys(result.metafile.inputs)
       .map((file) => path.basename(file))
       .sort(),
-    ["admission.mjs", "early-session.mjs", "routes.mjs", "theme-bootstrap.mjs", "theme.mjs"],
+    ["early-session.mjs", "routes.mjs", "theme-bootstrap.mjs", "theme.mjs"],
   );
   const classes = new Set();
   const root = {
@@ -329,7 +329,7 @@ test("the blocking theme asset applies preferences without loading the editor", 
   });
   assert.deepEqual(fetches, [
     ["/api/auth/session", ["signal"]],
-    [`/api/connect?page=${pageId}&sync=automerge&preview=1`, ["headers", "signal"]],
+    [`/api/connect?page=${pageId}&sync=automerge&preview=1`, ["signal"]],
   ]);
   assert.equal(root.dataset.theme, "dark");
   assert.equal(root.dataset.colorTheme, undefined);

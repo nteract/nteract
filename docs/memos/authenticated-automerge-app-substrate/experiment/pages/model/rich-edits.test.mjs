@@ -215,7 +215,7 @@ test("set_node checks a task without moving its marker or text", () => {
   const text = A.getCursor(doc, path, 1);
   const heads = A.getHeads(doc);
   const { after, result } = apply(doc, [
-    { op: "set_node", block_id: id, match_text: "Ship the beta", checked: true },
+    { op: "set_node", block_id: id, match_text: "Ship the beta", attrs: { checked: true } },
   ]);
   assert.equal(md(after, id), projected("- [x] Ship the beta\n- [ ] Write notes"));
   assert.deepEqual(result.edits, [{ op: "set_node", block_id: id, matched: 1 }]);
@@ -232,16 +232,16 @@ test("set_node checks a task without moving its marker or text", () => {
 test("set_node sets a code block's language, including mermaid", () => {
   const { doc, id } = fixture("```\ngraph TD\n  A --> B\n```");
   const { after } = apply(doc, [
-    { op: "set_node", block_id: id, match_text: "graph TD", language: "mermaid" },
+    { op: "set_node", block_id: id, match_text: "graph TD", attrs: { language: "mermaid" } },
   ]);
   assert.equal(md(after, id), "```mermaid\ngraph TD\n  A --> B\n```");
   const plain = apply(after, [
-    { op: "set_node", block_id: id, match_text: "graph TD", language: "" },
+    { op: "set_node", block_id: id, match_text: "graph TD", attrs: { language: "" } },
   ]).after;
   assert.equal(md(plain, id), "```\ngraph TD\n  A --> B\n```");
   refuses(
     doc,
-    [{ op: "set_node", block_id: id, match_text: "graph", language: "a`b" }],
+    [{ op: "set_node", block_id: id, match_text: "graph", attrs: { language: "a`b" } }],
     /without backticks/,
   );
 });
@@ -249,11 +249,17 @@ test("set_node sets a code block's language, including mermaid", () => {
 test("set_node changes heading levels and turns headings into paragraphs", () => {
   const { doc, id } = fixture("Next steps\n\n### Details");
   const heading = apply(doc, [
-    { op: "set_node", block_id: id, match_text: "Next steps", heading_level: 2 },
+    {
+      op: "set_node",
+      block_id: id,
+      match_text: "Next steps",
+      type: "heading",
+      attrs: { level: 2 },
+    },
   ]);
   assert.equal(md(heading.after, id), "## Next steps\n\n### Details");
   const paragraph = apply(heading.after, [
-    { op: "set_node", block_id: id, match_text: "Details", heading_level: 0 },
+    { op: "set_node", block_id: id, match_text: "Details", type: "paragraph" },
   ]).after;
   assert.equal(md(paragraph, id), "## Next steps\n\nDetails");
   assert.deepEqual(markers(paragraph, id), [
@@ -268,7 +274,7 @@ test("set_node gives the implicit first paragraph a marker when it becomes a hea
   doc = A.change(doc, (draft) => A.splice(draft, textPath(id), 0, 0, "Opening words"));
   assert.deepEqual(markers(doc, id), []);
   const { after } = apply(doc, [
-    { op: "set_node", block_id: id, match_text: "Opening", heading_level: 1 },
+    { op: "set_node", block_id: id, match_text: "Opening", type: "heading", attrs: { level: 1 } },
   ]);
   assert.equal(md(after, id), "# Opening words");
 });
@@ -276,7 +282,7 @@ test("set_node gives the implicit first paragraph a marker when it becomes a hea
 test("set_node aligns a whole table column and clears it", () => {
   const { doc, id } = fixture("| Item | Total |\n| --- | --- |\n| Tea | 3 |\n| Cake | 12 |");
   const { after, result } = apply(doc, [
-    { op: "set_node", block_id: id, match_text: "12", align: "right" },
+    { op: "set_node", block_id: id, match_text: "12", attrs: { align: "right" } },
   ]);
   assert.equal(result.edits[0].cells, 3);
   assert.equal(
@@ -290,7 +296,7 @@ test("set_node aligns a whole table column and clears it", () => {
     [null, "right", null, "right", null, "right"],
   );
   const cleared = apply(after, [
-    { op: "set_node", block_id: id, match_text: "Total", align: null },
+    { op: "set_node", block_id: id, match_text: "Total", attrs: { align: null } },
   ]).after;
   assert.equal(md(cleared, id), md(doc, id));
 });
@@ -300,35 +306,42 @@ test("set_node refuses the wrong node and malformed fields", () => {
   const base = { op: "set_node", block_id: id };
   refuses(
     doc,
-    [{ ...base, match_text: "paragraph", checked: true }],
+    [{ ...base, match_text: "paragraph", attrs: { checked: true } }],
     /checked applies to task list items; match_text is in a paragraph/,
   );
   refuses(
     doc,
-    [{ ...base, match_text: "task", heading_level: 2 }],
-    /heading_level applies to paragraphs and headings; match_text is in a task list item/,
+    [{ ...base, match_text: "task", type: "heading", attrs: { level: 2 } }],
+    /type applies to paragraphs and headings; match_text is in a task list item/,
   );
   refuses(
     doc,
-    [{ ...base, match_text: "task", language: "py" }],
+    [{ ...base, match_text: "task", attrs: { language: "py" } }],
     /language applies to code blocks/,
   );
-  refuses(doc, [{ ...base, match_text: "task", align: "left" }], /align applies to table cells/);
+  refuses(
+    doc,
+    [{ ...base, match_text: "task", attrs: { align: "left" } }],
+    /align applies to table cells/,
+  );
   refuses(
     doc,
     [{ ...base, match_text: "task" }],
     /set_node takes type, attrs \(level, language, checked, align\), or both/,
   );
-  refuses(doc, [{ ...base, match_text: "task", checked: true, language: "x" }], /exactly one of/);
-  refuses(doc, [{ ...base, match_text: "task", checked: "yes" }], /checked takes true or false/);
   refuses(
     doc,
-    [{ ...base, match_text: "paragraph", heading_level: 7 }],
-    /heading_level takes 1 to 6/,
+    [{ ...base, match_text: "task", attrs: { checked: "yes" } }],
+    /checked takes true or false/,
   );
   refuses(
     doc,
-    [{ ...base, match_text: "task", align: "justify" }],
+    [{ ...base, match_text: "paragraph", type: "heading", attrs: { level: 7 } }],
+    /level takes an integer from 1 to 6/,
+  );
+  refuses(
+    doc,
+    [{ ...base, match_text: "task", attrs: { align: "justify" } }],
     /align takes left, center, right or null/,
   );
 });
@@ -336,7 +349,12 @@ test("set_node refuses the wrong node and malformed fields", () => {
 test("target scope accepts set_node beside unrelated edits and conflicts on the same node", () => {
   const { doc, id } = fixture("- [ ] Ship the beta\n- [ ] Write notes\n\nOther text.");
   const heads = A.getHeads(doc);
-  const op = { op: "set_node", block_id: id, match_text: "Ship the beta", checked: true };
+  const op = {
+    op: "set_node",
+    block_id: id,
+    match_text: "Ship the beta",
+    attrs: { checked: true },
+  };
   // A peer edits elsewhere: the target is unchanged.
   const elsewhere = apply(doc, [
     { op: "replace_match", block_id: id, match_text: "Other", replacement: "Different" },
@@ -351,7 +369,7 @@ test("target scope accepts set_node beside unrelated edits and conflicts on the 
   // A peer checks the same item first: the node's attributes changed.
   const toggled = apply(doc, [op]).after;
   assert.throws(
-    () => guardPassageEdits(toggled, heads, [{ ...op, checked: false }]),
+    () => guardPassageEdits(toggled, heads, [{ ...op, attrs: { checked: false } }]),
     (error) =>
       error.code === "edit_conflict" &&
       error.details.conflicts[0].reason === "target_structure_changed",
@@ -371,14 +389,14 @@ test("set_node looks past hard breaks to the node that holds the text", () => {
     "- [ ] Ship\\\nby Friday\n\n| a | b |\n| --- | --- |\n| x<br>y | 2 |",
   );
   const { after } = apply(doc, [
-    { op: "set_node", block_id: id, match_text: "by Friday", checked: true },
+    { op: "set_node", block_id: id, match_text: "by Friday", attrs: { checked: true } },
     {
       op: "set_node",
       block_id: id,
       match_text: "y",
       occurrence: 1,
       node_index: 1,
-      align: "center",
+      attrs: { align: "center" },
     },
   ]);
   assert.match(md(after, id), /^- \[x\] Ship/);
@@ -389,12 +407,12 @@ test("set_node names a container's first paragraph instead of a marker type", ()
   const { doc, id } = fixture("> quoted first\n>\n> second");
   refuses(
     doc,
-    [{ op: "set_node", block_id: id, match_text: "quoted", heading_level: 2 }],
+    [{ op: "set_node", block_id: id, match_text: "quoted", type: "heading", attrs: { level: 2 } }],
     /match_text is in a quote's first paragraph/,
   );
   // The quote's later paragraphs have their own markers.
   const { after } = apply(doc, [
-    { op: "set_node", block_id: id, match_text: "second", heading_level: 3 },
+    { op: "set_node", block_id: id, match_text: "second", type: "heading", attrs: { level: 3 } },
   ]);
   assert.match(md(after, id), /> ### second/);
 });
@@ -454,19 +472,19 @@ test("set_node updates markers in place and leaves every text mark alone", () =>
     .map(([at]) => at);
   for (const [op, expected] of [
     [
-      { match_text: "Intro", heading_level: 2 },
+      { match_text: "Intro", type: "heading", attrs: { level: 2 } },
       markerOffsets(marked)
         .filter(([, type]) => type === "paragraph")
         .map(([at]) => at)
         .slice(0, 1),
     ],
     [
-      { match_text: "x = 1", language: "rust" },
+      { match_text: "x = 1", attrs: { language: "rust" } },
       markerOffsets(marked)
         .filter(([, type]) => type === "code-block")
         .map(([at]) => at),
     ],
-    [{ match_text: "2", align: "right" }, cells.filter((_, index) => index % 2 === 1)],
+    [{ match_text: "2", attrs: { align: "right" } }, cells.filter((_, index) => index % 2 === 1)],
   ]) {
     const heads = A.getHeads(marked);
     const before = marks(marked);
@@ -511,7 +529,7 @@ test("target scope keeps unsupported_markdown and lets set_node share a passage"
     (error) => error.code === "unsupported_markdown" && !!error.details?.unsupported,
   );
   const operations = [
-    { op: "set_node", block_id: id, match_text: "Ship the beta", checked: true },
+    { op: "set_node", block_id: id, match_text: "Ship the beta", attrs: { checked: true } },
     { op: "format_match", block_id: id, match_text: "Ship the beta", add: { strike: true } },
   ];
   const plan = guardPassageEdits(doc, heads, operations);
@@ -548,12 +566,12 @@ test("an editor rewrite after an import or a set_node writes nothing", () => {
   assert.deepEqual(rewrite(untouched.doc, untouched.id), []);
   const key = JSON.stringify;
   for (const op of [
-    { match_text: "Intro", heading_level: 3 },
-    { match_text: "task", checked: true },
-    { match_text: "x = 1", language: "rust" },
-    { match_text: "x = 1", language: "" },
-    { match_text: "2", align: "center" },
-    { match_text: "2", align: null },
+    { match_text: "Intro", type: "heading", attrs: { level: 3 } },
+    { match_text: "task", attrs: { checked: true } },
+    { match_text: "x = 1", attrs: { language: "rust" } },
+    { match_text: "x = 1", attrs: { language: "" } },
+    { match_text: "2", attrs: { align: "center" } },
+    { match_text: "2", attrs: { align: null } },
   ]) {
     const { doc, id } = fixture(source);
     const { after } = apply(doc, [{ op: "set_node", block_id: id, ...op }]);
@@ -565,11 +583,11 @@ test("an editor rewrite after an import or a set_node writes nothing", () => {
   const id = orderedBlockIds(doc)[0];
   doc = A.change(doc, (draft) => A.splice(draft, textPath(id), 0, 0, "Opening words"));
   const heading = apply(doc, [
-    { op: "set_node", block_id: id, match_text: "Opening", heading_level: 2 },
+    { op: "set_node", block_id: id, match_text: "Opening", type: "heading", attrs: { level: 2 } },
   ]);
   assert.deepEqual(rewrite(heading.after, id), []);
   const same = apply(doc, [
-    { op: "set_node", block_id: id, match_text: "Opening", heading_level: 0 },
+    { op: "set_node", block_id: id, match_text: "Opening", type: "paragraph" },
   ]);
   assert.deepEqual(A.getHeads(same.after), A.getHeads(doc));
   assert.deepEqual(same.result.edits, [{ op: "set_node", block_id: id, matched: 1 }]);
@@ -675,7 +693,15 @@ test("set_node can't address an image block, which has no visible text", () => {
   const image = orderedBlockIds(after)[1];
   refuses(
     after,
-    [{ op: "set_node", block_id: image, match_text: "Chart", heading_level: 2 }],
+    [
+      {
+        op: "set_node",
+        block_id: image,
+        match_text: "Chart",
+        type: "heading",
+        attrs: { level: 2 },
+      },
+    ],
     /found 0 matches/,
   );
 });
@@ -738,11 +764,6 @@ test("set_node takes {type, attrs} with the names read_page reports", () => {
     [{ op: "set_node", block_id: id, match_text: "Intro", type: "heading", attrs: { level: 7 } }],
     /level takes an integer from 1 to 6/,
   );
-  refuses(
-    doc,
-    [{ op: "set_node", block_id: id, match_text: "task", checked: true, attrs: { checked: true } }],
-    /not both/,
-  );
   // A retype refusal names the type the node would become.
   refuses(
     heading,
@@ -783,32 +804,24 @@ test("a retype drops only the old type's own attrs and keeps a newer build's", (
   assert.deepEqual(markers(back, id), [["paragraph", { anchor: "a1" }]]);
 });
 
-test("the flat set_node fields and {type, attrs} write the same marker", () => {
-  const { doc: plain, id } = fixture(
+test("set_node refuses a top-level field and names the typed field to use", () => {
+  const { doc, id } = fixture(
     "Intro words\n\n- [ ] task\n\n```\ngraph TD\n```\n\n| a | b |\n| --- | --- |\n| 1 | 2 |",
   );
-  // Start from a heading and an aligned column, so heading_level: 0 and
-  // align: null have something to undo.
-  const doc = apply(plain, [
-    { op: "set_node", block_id: id, match_text: "Intro", type: "heading", attrs: { level: 2 } },
-    { op: "set_node", block_id: id, match_text: "2", attrs: { align: "right" } },
-  ]).after;
-  const pairs = [
-    ["Intro", { heading_level: 3 }, { type: "heading", attrs: { level: 3 } }],
-    ["Intro", { heading_level: 0 }, { type: "paragraph" }],
-    ["task", { checked: true }, { attrs: { checked: true } }],
-    ["graph", { language: "mermaid" }, { attrs: { language: "mermaid" } }],
-    ["2", { align: "center" }, { attrs: { align: "center" } }],
-    ["2", { align: null }, { attrs: { align: null } }],
+  const cases = [
+    [
+      "Intro",
+      { heading_level: 2 },
+      /not a top-level heading_level; use type "heading" with attrs\.level, or type "paragraph"/,
+    ],
+    ["Intro", { heading_level: 0 }, /not a top-level heading_level/],
+    ["task", { checked: true }, /not a top-level checked; use attrs\.checked/],
+    ["graph", { language: "mermaid" }, /not a top-level language; use attrs\.language/],
+    ["2", { align: "center" }, /not a top-level align; use attrs\.align/],
+    ["2", { align: null }, /not a top-level align; use attrs\.align/],
+    // Beside the typed shape too: refused, never silently ignored.
+    ["task", { checked: false, attrs: { checked: true } }, /not a top-level checked/],
   ];
-  for (const [target, flat, typed] of pairs) {
-    const a = apply(doc, [{ op: "set_node", block_id: id, match_text: target, ...flat }]).after;
-    const b = apply(doc, [{ op: "set_node", block_id: id, match_text: target, ...typed }]).after;
-    assert.notDeepEqual(
-      markers(a, id),
-      markers(doc, id),
-      `${JSON.stringify(flat)} changed nothing`,
-    );
-    assert.deepEqual(markers(a, id), markers(b, id), JSON.stringify(flat));
-  }
+  for (const [target, fields, message] of cases)
+    refuses(doc, [{ op: "set_node", block_id: id, match_text: target, ...fields }], message);
 });

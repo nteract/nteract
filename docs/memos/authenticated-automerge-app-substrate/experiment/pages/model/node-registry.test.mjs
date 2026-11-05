@@ -200,13 +200,18 @@ test("insertedAssets lists each stored asset a batch names, validated", () => {
 });
 
 test("set_node's attrs are the registry attrs marked settable", async () => {
-  const { NODE_ATTRS, LEGACY_FIELDS } = await import("./set-node.mjs");
+  const { NODE_ATTRS, REFUSED_FIELDS } = await import("./set-node.mjs");
   const settable = new Set();
   for (const type of NODE_TYPES)
     for (const [name, attr] of Object.entries(type.attrs))
       if (attr.set === "set_node") settable.add(attr.agent ?? name);
   assert.deepEqual([...settable].sort(), [...NODE_ATTRS].sort());
-  assert.deepEqual([...LEGACY_FIELDS].sort(), ["align", "checked", "heading_level", "language"]);
+  assert.deepEqual(Object.keys(REFUSED_FIELDS).sort(), [
+    "align",
+    "checked",
+    "heading_level",
+    "language",
+  ]);
 });
 
 test("the editor and registration agree on heading levels", () => {

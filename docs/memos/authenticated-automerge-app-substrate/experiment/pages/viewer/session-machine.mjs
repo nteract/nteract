@@ -54,7 +54,7 @@
  * `grant` same, changed, denied, revoked or deleted; `tab` when another tab
  * already wrote it). `denied` keeps the copy, as for a refusal without a
  * code; `revoked` is the host's `page_access_denied` or a role of none;
- * `deleted` is a 404. `signIn` (an authentication result), `trash` (the host
+ * `deleted` is a 404 carrying `page_deleted`. `signIn` (an authentication result), `trash` (the host
  * answered that the Page is in its owner's Trash), `restore` (the owner
  * restored the previewed Page, so the read-only preview leaves),
  * `reloadAccess` (Reload current Page), `leave` (the host releases the

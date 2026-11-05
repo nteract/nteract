@@ -161,7 +161,6 @@ import {
   transportRefusal,
   withAdmissionReason,
 } from "./admission-reasons.mjs";
-import { ADMISSION_CAPABILITY } from "../shared/admission.mjs";
 import { buildAdvertisement } from "../shared/build-identity.mjs";
 import { RECORD_STORAGE_MODES } from "../shared/record-storage.mjs";
 import { advertiseBuild } from "./build-advertisement.mjs";
@@ -172,8 +171,6 @@ import {
   withinToolDeadline,
 } from "./tool-deadline.mjs";
 
-const unifiedMissing = (request) =>
-  request.headers.get(ADMISSION_CAPABILITY.header) === ADMISSION_CAPABILITY.value;
 import {
   COMMENTS_DOC,
   PAGE_DOC,
@@ -4005,7 +4002,7 @@ export class Page {
         ? null
         : await resolveProjectAccess(this.env, metadata).catch(() => null);
     const effective = { ...metadata, projectAccess };
-    const hidden = this.hiddenRefusal(identity, request, false, metadata);
+    const hidden = this.hiddenRefusal(identity, false, metadata);
     if (hidden) throw hidden;
     const deleted = this.deletedRefusal(identity, false, metadata);
     if (deleted) throw deleted;
@@ -5753,7 +5750,7 @@ export class Page {
         await this.finishCreation(intent);
         return json(await this.createdReply(intent.metadata.createdReceipt, identity), 201);
       }
-      const hidden = this.hiddenRefusal(identity, request, admissionRoute);
+      const hidden = this.hiddenRefusal(identity, admissionRoute);
       if (hidden) throw hidden;
       if (pageState(this.metadata) === "trashed" && !this.handle) {
         await this.loadDocument();
@@ -6227,17 +6224,10 @@ export class Page {
    * there is no record, or it is in Trash and the caller holds no grant.
    * Anyone without a current grant cannot tell a trashed Page from a missing
    * one. Only the owner and current members learn it exists. */
-  hiddenRefusal(identity, request, admissionRoute, metadata = this.metadata) {
+  hiddenRefusal(identity, admissionRoute, metadata = this.metadata) {
     if (metadata && !this.hiddenWhileTrashed(identity, metadata)) return undefined;
-    // Admission routes answer a missing Page exactly as an unreadable one,
-    // for clients that declare it. The deployed viewer renews an expired
-    // draft registration only on this 404, so other clients keep it.
-    // Remove the legacy branch once older viewers must reload before
-    // reconnecting and every supported viewer handles the unified 403.
-    if (admissionRoute && unifiedMissing(request))
-      return withAdmissionReason(new PermissionDenied(), "page_not_found");
-    if (admissionRoute)
-      return withAdmissionReason(new HttpError(404, "Page not found"), "page_not_found_legacy");
+    // Admission routes answer a missing Page exactly as an unreadable one.
+    if (admissionRoute) return withAdmissionReason(new PermissionDenied(), "page_not_found");
     return new HttpError(404, "Page not found", "page_not_found");
   }
 

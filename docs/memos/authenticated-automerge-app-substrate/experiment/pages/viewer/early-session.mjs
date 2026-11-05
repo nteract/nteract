@@ -15,7 +15,6 @@
 // (the trigger browser-session.mjs uses to notice a sign-in in another tab),
 // on a back/forward cache restore, or when it is older than its bound
 // (EARLY_SESSION_MAX_AGE_MS, EARLY_CONNECT_MAX_AGE_MS).
-import { ADMISSION_CAPABILITY } from "../shared/admission.mjs";
 import { readPageRoute } from "../shared/routes.mjs";
 
 export const SESSION_URL = "/api/auth/session";
@@ -44,9 +43,6 @@ const VIEWER_ROUTES = new Set(["home", "page", "project", "projects", "pages"]);
  * `sync=automerge` says this build also speaks plain Automerge sync. */
 export const connectUrl = (pageId) =>
   `/api/connect?page=${encodeURIComponent(pageId)}&sync=automerge`;
-export const CONNECT_HEADERS = Object.freeze({
-  [ADMISSION_CAPABILITY.header]: ADMISSION_CAPABILITY.value,
-});
 
 const monotonic = () => globalThis.performance.now();
 
@@ -124,13 +120,13 @@ export function startEarlyConnect(win, now = monotonic) {
   const route = readPageRoute(win.location.href);
   if (route.kind !== "page") return;
   // Otherwise identical to openConnection's request: a GET with default
-  // credentials, the admission header, and only a signal added.
+  // credentials, no headers, and only a signal added.
   const slot = startEarly(
     win,
     EARLY_CONNECT,
     route.pageId,
     `${connectUrl(route.pageId)}&preview=1`,
-    { headers: CONNECT_HEADERS },
+    {},
     now,
   );
   // Tee the body before the session reads it. This reader is registered
@@ -215,12 +211,15 @@ export function requestSession(request, { win = globalThis, now = monotonic } = 
  * registration lands, which can be after the head script asked. */
 export function requestConnect(pageId, request, { win = globalThis, now = monotonic } = {}) {
   const url = connectUrl(pageId);
-  const options = { headers: CONNECT_HEADERS };
   const early = takeEarly(win, EARLY_CONNECT, pageId, now, EARLY_CONNECT_MAX_AGE_MS);
-  if (!early) return request(url, options);
-  return request(url, options, {
-    fetch: (url, init) => adopt(early, url, init, (status) => status >= 200 && status < 300),
-  });
+  if (!early) return request(url);
+  return request(
+    url,
+    {},
+    {
+      fetch: (url, init) => adopt(early, url, init, (status) => status >= 200 && status < 300),
+    },
+  );
 }
 
 /** The early response when `usable(status)`, else the request it stood in for. */

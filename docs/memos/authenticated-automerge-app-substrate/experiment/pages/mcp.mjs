@@ -3,7 +3,7 @@ import { isTokenedRequest } from "./model/retry-key.mjs";
 import { pagesPublicOrigin } from "./agent-guide.mjs";
 import { PRODUCT_NAME } from "./shared/product.mjs";
 import { HIGHLIGHT_COLORS, MARK_NAMES, formatAddSchema } from "./model/marks.mjs";
-import { ALIGNMENTS, SETTABLE_ATTRS, retypeTargets } from "./model/node-registry.mjs";
+import { SETTABLE_ATTRS, retypeTargets } from "./model/node-registry.mjs";
 import {
   markdownSyntax,
   richContentInstructions,
@@ -296,7 +296,6 @@ const attrSchema = ({ spec }) =>
             enum: [...spec.values, ...(spec.nullable ? [null] : [])],
           }
         : { ...string, maxLength: 64 };
-const deprecated = (text) => `Deprecated alias, accepted for one deploy: ${text}`;
 const setNodeOperation = {
   type: "object",
   description:
@@ -319,23 +318,6 @@ const setNodeOperation = {
       ),
       additionalProperties: false,
       minProperties: 1,
-    },
-    checked: { type: "boolean", description: deprecated("use attrs.checked.") },
-    language: {
-      ...string,
-      maxLength: 64,
-      description: deprecated("use attrs.language."),
-    },
-    heading_level: {
-      type: "integer",
-      minimum: 0,
-      maximum: 6,
-      description: deprecated('use type "heading" with attrs.level, or type "paragraph".'),
-    },
-    align: {
-      type: ["string", "null"],
-      enum: [...ALIGNMENTS, null],
-      description: deprecated("use attrs.align."),
     },
   },
   required: ["op", "block_id", "match_text"],

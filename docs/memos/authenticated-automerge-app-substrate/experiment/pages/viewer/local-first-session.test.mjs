@@ -252,7 +252,10 @@ test("an expired never-registered draft renews only retry authority after an aut
     }
     assert.equal(url, `/api/connect?page=${session.pageId}&sync=automerge`);
     probes++;
-    return Response.json({ error: "Page not found" }, { status: 404 });
+    return Response.json(
+      { error: "Page access denied", code: "page_access_denied" },
+      { status: 403 },
+    );
   });
   await session.registerDraft();
   assert.equal(registrations.length, 2);
@@ -275,6 +278,41 @@ test("an expired never-registered draft renews only retry authority after an aut
   assert.equal(session.localPage.pending, true);
   assert.deepEqual(A.getHeads(session.doc), heads);
   assert.equal(session.doc.title, "Kept offline edits");
+});
+
+test("an expired registration whose Page was deleted marks the draft deleted", async (t) => {
+  const { session } = await expiredRegistrationFixture(t);
+  const requests = [];
+  t.mock.method(globalThis, "fetch", async (url) => {
+    requests.push(url);
+    if (url === "/api/pages/register") return expiredRegistration();
+    return Response.json({ error: "Page was deleted", code: "page_deleted" }, { status: 404 });
+  });
+  await session.registerDraft();
+  assert.deepEqual(requests, [
+    "/api/pages/register",
+    `/api/connect?page=${session.pageId}&sync=automerge`,
+  ]);
+  assert.equal(session.deleted, true);
+});
+
+test("a renewed registration refused as deleted marks the draft deleted", async (t) => {
+  const { session } = await expiredRegistrationFixture(t);
+  let registrations = 0;
+  t.mock.method(globalThis, "fetch", async (url) => {
+    if (url === "/api/pages/register")
+      return ++registrations === 1
+        ? expiredRegistration()
+        : Response.json({ error: "Page was deleted" }, { status: 409 });
+    if (url === "/api/tools") return Response.json({ retry_token: "replacement-token" });
+    return Response.json(
+      { error: "Page access denied", code: "page_access_denied" },
+      { status: 403 },
+    );
+  });
+  await assert.rejects(session.registerDraft(), /Page was deleted/);
+  assert.equal(registrations, 2);
+  assert.equal(session.deleted, true);
 });
 
 /** A draft created where the session endpoint advertised plain storage, or
@@ -801,7 +839,10 @@ test("a storage refusal after an expired registration also moves the draft", asy
   t.mock.method(globalThis, "fetch", async (url, options) => {
     if (url === "/api/tools") return Response.json({ retry_token: `token-${++tokens}` });
     if (url.startsWith("/api/connect"))
-      return Response.json({ error: "Page not found" }, { status: 404 });
+      return Response.json(
+        { error: "Page access denied", code: "page_access_denied" },
+        { status: 403 },
+      );
     const input = JSON.parse(options.body);
     registrations.push(input);
     if (registrations.length === 1) return expiredRegistration();
@@ -908,7 +949,10 @@ test("expiry reconciliation does not resume a closed or signed-out session", asy
             await waiting;
             return Response.json(connectionFor(session, auth));
           }
-          return Response.json({ error: "Page not found" }, { status: 404 });
+          return Response.json(
+            { error: "Page access denied", code: "page_access_denied" },
+            { status: 403 },
+          );
         });
         const registering = session.registerDraft();
         await started;
@@ -943,7 +987,10 @@ test("simultaneous expiry reconciliation adopts one persisted replacement reques
     if (url === "/api/tools")
       return Response.json({ retry_token: `replacement-token-${++preparations}` });
     assert.equal(url, `/api/connect?page=${first.pageId}&sync=automerge`);
-    return Response.json({ error: "Page not found" }, { status: 404 });
+    return Response.json(
+      { error: "Page access denied", code: "page_access_denied" },
+      { status: 403 },
+    );
   });
   await Promise.all([first.registerDraft(), second.registerDraft()]);
   assert.ok(preparations >= 1);
@@ -1377,8 +1424,8 @@ test("a forbidden receipt pauses page access without requesting sign-in or sched
   await session.close();
 });
 
-test("authenticated missing Pages and deleted registrations terminate local editing", async (t) => {
-  for (const failure of ["connect-missing", "registration-deleted", "registration-quota"]) {
+test("authenticated deleted Pages and deleted registrations terminate local editing", async (t) => {
+  for (const failure of ["connect-deleted", "registration-deleted", "registration-quota"]) {
     await t.test(failure, async (t) => {
       browser(t);
       const auth = authentication();
@@ -1403,7 +1450,7 @@ test("authenticated missing Pages and deleted registrations terminate local edit
           return Response.json({ page_id: input.page_id, document_id: input.document_id });
         }
         assert.match(url, /^\/api\/connect/);
-        return Response.json({ error: "Page not found" }, { status: 404 });
+        return Response.json({ error: "Page not found", code: "page_deleted" }, { status: 404 });
       });
       const session = await PageSession.create(
         {},

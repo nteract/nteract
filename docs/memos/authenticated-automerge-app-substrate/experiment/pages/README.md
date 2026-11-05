@@ -466,8 +466,8 @@ an offline cold start of application assets or authentication.
 When the host refuses this account, the browser stops rendering its copy. A
 `page_access_denied` answer (access removed, or a Page missing to this account,
 purged included) or an access fact with a role of none retires the session for
-access; a 404 (`page_deleted`, the legacy missing-Page answer, or the 4404
-admission close) retires it as deleted. Sync stops first, and any comments
+access; `page_deleted` (a 404, or the 4404 admission close) retires it as
+deleted. Sync stops first, and any comments
 document lookup is cancelled. Then one IndexedDB transaction moves the
 checkpoint and the live replica's copy to the recovery archive, with any
 unsent comment or reply drafts from the UI, and leaves a marker in the
@@ -1260,13 +1260,9 @@ epoch, so it clears without counting as a refusal.
 A deleted Page returns `page_deleted` only to its owner and to holders of a
 current viewer/editor grant. Everyone else, including principals with a role
 "none" tombstone, receives the same `403 page_access_denied` body and headers as
-for an unreadable Page. Clients that send `X-Pages-Admission: 1` also get that
-response for a missing Page. Clients without it keep the legacy 404, because
-viewers built before that header renew an expired draft registration only on
-that 404. Those viewers predate the protocol floor and never read it, so it
-stays until the removal policy in [Build updates](#build-updates) is met. Until
-then, a caller that omits the header can still distinguish missing from existing
-Pages, as before. Tool and MCP routes also still distinguish them.
+for an unreadable Page. A missing Page gets that response too, so admission
+routes never tell a missing Page from an existing one. Tool and MCP routes
+still distinguish them.
 
 The browser reconnects with backoff on transient codes, rechecks access through
 `/api/connect` on access and sign-in codes, and stops on `signing_key_rejected`
@@ -2458,8 +2454,8 @@ written. `set_node`'s receipt carries only `matched` and, for `align`,
 as `{ type?, attrs? }` with the names [`model/node-registry.mjs`](model/node-registry.mjs)
 declares and `read_page` reports: `type` (`paragraph` or `heading`, the
 registry's `retype` group) and settable attrs (`level`, `language`, `checked`,
-`align`, the last scoped to the table column). The flat fields `checked`,
-`language`, `heading_level` and `align` are aliases for one deploy. It
+`align`, the last scoped to the table column). A top-level `checked`,
+`language`, `heading_level` or `align` is refused with the field to use. It
 rewrites the governing block marker through `updateSpans`, which updates the
 marker's attributes in place, as the editor does: the marker, its text and
 its comment anchors keep their identity. Marks on text characters are unchanged;
@@ -2584,8 +2580,7 @@ Trashing applies immediately, like an access reduction: member sessions close,
 current viewers and editors get `403 page_trashed` (admission close 4410, retry
 "recheck"), and their catalog references are pruned on their next listing.
 Everyone else, including company viewers and removed members, gets exactly the
-missing-Page response: the legacy `404`, or `403 page_access_denied` for clients
-that send `X-Pages-Admission`. The D1 index retires trashed rows to the owner
+missing-Page response, `403 page_access_denied`. The D1 index retires trashed rows to the owner
 and lists them only with `in_trash`. Index writes are fenced by the Page's
 lifecycle revision, and every lifecycle transition advances the Catalog entry's
 `updated_at`, so delayed retirements, reports and prunes cannot undo a restore. The owner keeps a

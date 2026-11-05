@@ -54,7 +54,6 @@ async function api(page, path, body, headers = {}) {
     { path, body, headers },
   );
 }
-const capable = { "X-Pages-Admission": "1" };
 const tool = (page, operation, args = {}) =>
   api(page, "/api/tools", { operation, arguments: args });
 async function setRole(principal, role) {
@@ -166,7 +165,7 @@ async function nativeConnect(cookie, seed) {
 /** A full native peer with signing key `seed`: syncs the Page document over
  * its own socket, as a tab does. `features` is its build's schema features. */
 async function nativePeer(cookie, seed, features = ["comments-doc"]) {
-  const headers = { cookie, origin, "X-Pages-Admission": "1" };
+  const headers = { cookie, origin };
   const discovery = await fetch(`${origin}/api/connect?page=${pageId}`, {
     headers,
   }).then((response) => response.json());
@@ -249,19 +248,15 @@ try {
   const anonymous = await fetch(`${origin}/api/connect?page=${pageId}`);
   assert.equal(anonymous.status, 401);
   assert.equal((await anonymous.json()).code, "sign_in_required");
-  const unreadable = await api(stranger, `/api/connect?page=${pageId}`, undefined, capable);
+  const unreadable = await api(stranger, `/api/connect?page=${pageId}`);
   const missingId = crypto.randomUUID();
-  const missing = await api(stranger, `/api/connect?page=${missingId}`, undefined, capable);
+  const missing = await api(stranger, `/api/connect?page=${missingId}`);
   assert.deepEqual(unreadable, missing);
   assert.equal(unreadable.status, 403);
   assert.deepEqual(unreadable.body, {
     error: "Document access denied",
     code: "page_access_denied",
   });
-  // Clients without the capability (the deployed viewer) keep the legacy 404
-  // for a missing Page; an unreadable Page is still 403 for them.
-  assert.equal((await api(stranger, `/api/connect?page=${missingId}`)).status, 404);
-  assert.equal((await api(stranger, `/api/connect?page=${pageId}`)).status, 403);
   const crossOrigin = await fetch(`${origin}/api/connect?page=${pageId}`, {
     headers: {
       cookie: await cookieFor(owner),
@@ -271,7 +266,7 @@ try {
   assert.equal(crossOrigin.status, 403);
   assert.equal((await crossOrigin.json()).code, "request_rejected");
   report.completed.push(
-    "HTTP admission: sign_in_required, request_rejected, identical missing/unreadable 403; legacy 404 without capability",
+    "HTTP admission: sign_in_required, request_rejected, identical missing/unreadable 403",
   );
 
   // Native refusals close with an application code after the upgrade.
@@ -541,7 +536,7 @@ try {
   const { heads } = recovered.body;
   await restartCelld();
   report.firstRequests = await owner.evaluate(
-    ({ pageId, heads, capable }) => {
+    ({ pageId, heads }) => {
       const status = (path, init = {}) =>
         fetch(path, { ...init, signal: AbortSignal.timeout(15000) }).then(
           (response) => response.status,
@@ -551,13 +546,13 @@ try {
         status("/api/auth/session"),
         status(`/api/saved?page=${pageId}`, {
           method: "POST",
-          headers: { "Content-Type": "application/json", ...capable },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ heads }),
         }),
-        status(`/api/connect?page=${pageId}`, { headers: capable }),
+        status(`/api/connect?page=${pageId}`),
       ]);
     },
-    { pageId, heads, capable },
+    { pageId, heads },
   );
   assert.deepEqual(report.firstRequests, [200, 200, 200]);
   await expect(saved(owner)).toBeVisible({ timeout: 30000 });

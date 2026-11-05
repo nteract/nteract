@@ -191,9 +191,9 @@ const ANSWERS = [
     outcome: "deleted",
   },
   {
-    name: "purged, the legacy missing-Page answer",
+    name: "a 404 without page_deleted",
     fetch: respond(404, { error: "Page not found" }),
-    outcome: "deleted",
+    outcome: "kept",
   },
   {
     name: "in its owner's Trash",
@@ -226,8 +226,8 @@ const ANSWERS = [
 test("refusalOf names only the refusals that retire the copy", () => {
   assert.equal(refusalOf({ status: 403, code: "page_access_denied" }), "access");
   assert.equal(refusalOf({ status: 404, code: "page_deleted" }), "deleted");
-  assert.equal(refusalOf({ status: 404 }), "deleted");
   for (const kept of [
+    { status: 404 },
     { status: 403, code: "page_trashed" },
     { status: 403, code: "signing_key_rejected" },
     { status: 403 },
@@ -312,20 +312,18 @@ test("a refused receipt retires the open copy", async (t) => {
 
 test("classifyRefusal names each refusal once for every path", () => {
   const cases = [
-    [{ status: 404, code: "page_deleted" }, "deleted", "deleted"],
-    [{ status: 404 }, "deleted", undefined],
-    [{ status: 403, code: "page_access_denied" }, "access", "access"],
-    [{ status: 403, code: "page_trashed" }, "trash", "trash"],
-    [{ status: 403 }, "denied", "denied"],
-    [{ status: 403, code: "signing_key_rejected" }, undefined, undefined],
-    [{ status: 401, code: "sign_in_required" }, undefined, undefined],
-    [{ status: 503, code: "temporarily_unavailable" }, undefined, undefined],
-    [undefined, undefined, undefined],
+    [{ status: 404, code: "page_deleted" }, "deleted"],
+    [{ status: 404 }, undefined],
+    [{ status: 403, code: "page_access_denied" }, "access"],
+    [{ status: 403, code: "page_trashed" }, "trash"],
+    [{ status: 403 }, "denied"],
+    [{ status: 403, code: "signing_key_rejected" }, undefined],
+    [{ status: 401, code: "sign_in_required" }, undefined],
+    [{ status: 503, code: "temporarily_unavailable" }, undefined],
+    [undefined, undefined],
   ];
-  for (const [error, any, strict] of cases) {
-    assert.equal(classifyRefusal(error), any, JSON.stringify(error));
-    assert.equal(classifyRefusal(error, { legacyMissing: false }), strict, JSON.stringify(error));
-  }
+  for (const [error, refusal] of cases)
+    assert.equal(classifyRefusal(error), refusal, JSON.stringify(error));
 });
 
 /** The Trash notice, the copy kept and rendered, read-only. */
