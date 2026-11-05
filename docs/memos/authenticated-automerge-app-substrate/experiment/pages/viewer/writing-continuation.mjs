@@ -1,11 +1,11 @@
 import { applyPageOperation } from "../model/page.mjs";
 import { orderedBlockIds } from "../model/order.mjs";
-import { blockMarkdown, isRich } from "../model/richtext.mjs";
+import { isBlankBlock, isRich } from "../model/richtext-format.mjs";
 
 function emptyTrailingBlock(doc) {
   const id = orderedBlockIds(doc).at(-1),
     block = doc?.blocks?.[id];
-  return block?.kind === "markdown" && isRich(block) && !blockMarkdown(block).trim() ? id : null;
+  return block?.kind === "markdown" && isRich(block) && isBlankBlock(block) ? id : null;
 }
 
 /** Whether a projected Page (projectPage) is still empty: one rich paragraph
