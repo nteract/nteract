@@ -54,7 +54,7 @@ const bytes = (value) => new TextEncoder().encode(value);
 test("live reads and edits proceed while remote persistence is held; flush waits for durability", async () => {
   const f = fixture();
   await f.live.save("tree/first", bytes("one"));
-  assert.deepEqual([...f.storage.values.keys()], ["host/generation"]);
+  assert.deepEqual([...f.storage.values.keys()], ["host/generation", "host/seq"]);
   f.storage.barrier = deferred();
   const saving = f.live.flush();
   let saved = false;
@@ -498,4 +498,158 @@ test("the storage gate wraps every stub the sink's factory makes", async () => {
   refusal = undefined;
   await live.flush();
   assert.equal(live.dirty, false);
+});
+
+const text = (value) => new TextDecoder().decode(value);
+
+/** A stub whose first records POST is held in transit: the request is copied
+ * at once and delivered later by `deliver()`, and the stub never answers it. */
+function transitFactory(owner, { propagatesAbort = false } = {}) {
+  const held = [];
+  let made = 0;
+  const factory = () => {
+    const n = ++made;
+    return {
+      async fetch(request) {
+        const post = request.method === "POST" && new URL(request.url).pathname === "/records";
+        if (n === 1 && post && !held.length) {
+          const body = await request.arrayBuffer();
+          held.push(() =>
+            owner().fetch(
+              new Request(request.url, {
+                method: "POST",
+                body,
+                headers: request.headers,
+                ...(propagatesAbort && { signal: request.signal }),
+              }),
+            ),
+          );
+          return new Promise(() => {});
+        }
+        return owner().fetch(request);
+      },
+    };
+  };
+  return { factory, held, made: () => made };
+}
+
+/** One timed-out batch (manifest -> snapshot 1), then a compaction batch on a
+ * fresh stub (manifest -> snapshot 2, snapshot 1 removed). */
+async function compactAfterTimeout(sink) {
+  const live = new BufferedRecordStore(sink);
+  await live.save("sync/d/m", bytes("manifest -> s/1"));
+  await live.save("sync/d/s/1/0", bytes("snapshot 1"));
+  await assert.rejects(live.flush(), { code: "record_persistence_timeout" });
+  await live.save("sync/d/m", bytes("manifest -> s/2"));
+  await live.save("sync/d/s/2/0", bytes("snapshot 2"));
+  await live.remove("sync/d/s/1/0");
+  await live.flush();
+  return live;
+}
+
+for (const propagatesAbort of [false, true]) {
+  test(`a batch delivered late, after a newer batch on a fresh stub, is skipped (abort reaches PageRecords: ${propagatesAbort})`, async () => {
+    const storage = new Storage();
+    const owner = new PageRecords({ storage });
+    const transit = transitFactory(() => owner, { propagatesAbort });
+    await compactAfterTimeout(
+      new RemoteRecordSink(
+        guardStubs(transit.factory, () => undefined),
+        { timeoutMs: 30 },
+      ),
+    );
+    assert.equal(transit.made(), 2);
+    const late = await transit.held[0]();
+    assert.equal(late.status, propagatesAbort ? 503 : 204);
+    assert.equal(text(storage.values.get("repo/sync/d/m")), "manifest -> s/2");
+    assert.equal(
+      storage.values.has("repo/sync/d/s/1/0"),
+      false,
+      "the compacted snapshot stays gone",
+    );
+    assert.equal(text(storage.values.get("repo/sync/d/s/2/0")), "snapshot 2");
+    assert.equal(storage.values.get("host/seq"), "2", "the newer batch's sequence is stored");
+    if (!propagatesAbort) assert.equal(late.headers.get("x-pages-record-batch"), "superseded");
+  });
+}
+
+test("a late batch arriving before the newer one is overwritten by it", async () => {
+  const storage = new Storage();
+  const owner = new PageRecords({ storage });
+  const transit = transitFactory(() => owner);
+  const live = new BufferedRecordStore(new RemoteRecordSink(transit.factory, { timeoutMs: 30 }));
+  await live.save("sync/d/m", bytes("manifest -> s/1"));
+  await assert.rejects(live.flush(), { code: "record_persistence_timeout" });
+  assert.equal((await transit.held[0]()).status, 204);
+  assert.equal(text(storage.values.get("repo/sync/d/m")), "manifest -> s/1");
+  await live.save("sync/d/m", bytes("manifest -> s/2"));
+  await live.flush();
+  assert.equal(text(storage.values.get("repo/sync/d/m")), "manifest -> s/2");
+});
+
+test("the batch sequence survives a PageRecords restart", async () => {
+  const storage = new Storage();
+  let owner = new PageRecords({ storage });
+  const transit = transitFactory(() => owner);
+  await compactAfterTimeout(new RemoteRecordSink(transit.factory, { timeoutMs: 30 }));
+  // A new PageRecords object over the same storage reads the sequence back.
+  owner = new PageRecords({ storage });
+  assert.equal(owner.seq, undefined);
+  const late = await transit.held[0]();
+  assert.equal(late.status, 204);
+  assert.equal(late.headers.get("x-pages-record-batch"), "superseded");
+  assert.equal(text(storage.values.get("repo/sync/d/m")), "manifest -> s/2");
+  assert.equal(owner.seq, 2);
+});
+
+test("a new lease restarts the sequence and fences every batch of the old generation", async () => {
+  const storage = new Storage();
+  const owner = new PageRecords({ storage });
+  const stub = { fetch: (request) => owner.fetch(request) };
+  const first = new RemoteRecordSink(stub);
+  const before = new BufferedRecordStore(first);
+  for (const n of [1, 2, 3]) {
+    await before.save(`tree/${n}`, bytes(`old ${n}`));
+    await before.flush();
+  }
+  assert.equal(storage.values.get("host/seq"), "3");
+  // The Page host restarts: a new sink takes a new lease and starts at 1.
+  const after = new BufferedRecordStore(new RemoteRecordSink(stub));
+  await after.ready;
+  assert.equal(storage.values.get("host/seq"), "0");
+  await after.save("tree/1", bytes("new 1"));
+  await after.flush();
+  assert.equal(storage.values.get("host/seq"), "1");
+  assert.equal(text(storage.values.get("repo/tree/1")), "new 1");
+  // The old host's next batch has a higher sequence but the old generation.
+  await before.save("tree/1", bytes("old 4"));
+  await assert.rejects(before.flush(), /Could not persist records/);
+  assert.equal(text(storage.values.get("repo/tree/1")), "new 1");
+});
+
+test("PageRecords checks the batch sequence header and accepts a batch without one", async () => {
+  const storage = new Storage();
+  const owner = new PageRecords({ storage });
+  const generation = await (
+    await owner.fetch(new Request("https://records.internal/lease", { method: "POST" }))
+  ).text();
+  const post = (seq, value) =>
+    owner.fetch(
+      new Request("https://records.internal/records", {
+        method: "POST",
+        body: encodeRecordBatch([["tree/a", bytes(value)]]),
+        headers: {
+          "x-pages-record-generation": generation,
+          ...(seq !== undefined && { "x-pages-record-seq": seq }),
+        },
+      }),
+    );
+  for (const bad of ["0", "-1", "1.5", "x", "99999999999999999"])
+    assert.equal((await post(bad, "bad")).status, 400, bad);
+  assert.equal((await post(undefined, "legacy")).status, 204);
+  assert.equal(text(storage.values.get("repo/tree/a")), "legacy");
+  assert.equal((await post("5", "five")).status, 204);
+  assert.equal((await post("5", "again")).headers.get("x-pages-record-batch"), "superseded");
+  assert.equal((await post("4", "four")).headers.get("x-pages-record-batch"), "superseded");
+  assert.equal(text(storage.values.get("repo/tree/a")), "five");
 });

@@ -131,6 +131,24 @@ function logGroupSplit(records, bytes) {
   );
 }
 
+/** A batch's `x-pages-record-seq`: a positive safe integer, or undefined for a
+ * sink that sends none. Within one generation a sink is one build, so either
+ * every batch carries a sequence or none does. */
+function batchSeq(header) {
+  if (header === null) return undefined;
+  if (!/^[1-9][0-9]{0,15}$/.test(header) || !Number.isSafeInteger(Number(header)))
+    throw invalid("Invalid record batch sequence");
+  return Number(header);
+}
+
+/** The last applied sequence, stored as decimal text beside the generation.
+ * An owner from a build without sequences has none: 0. */
+function storedSeq(value) {
+  const seq = Number(value ?? 0);
+  if (!Number.isSafeInteger(seq) || seq < 0) throw Error("Invalid stored record sequence");
+  return seq;
+}
+
 /** A separate object owns record durability. Its output gate never closes the
  * live Page's gate when a background batch is uploaded to object storage.
  * This binding is private to the Worker; the public router never exposes it.
@@ -158,8 +176,10 @@ export class PageRecords {
       if (url.pathname === "/lease" && request.method === "POST") {
         // A newly restored Page fences any late persistence request from its
         // previous incarnation before taking a snapshot or admitting records.
+        // Its batch sequence starts again with it.
         this.generation = crypto.randomUUID();
-        await this.storage.put({ "host/generation": this.generation });
+        this.seq = 0;
+        await this.storage.put({ "host/generation": this.generation, "host/seq": "0" });
         await this.storage.sync();
         return new Response(this.generation);
       }
@@ -193,11 +213,25 @@ export class PageRecords {
         });
       }
       if (request.method === "POST") {
+        const seq = batchSeq(request.headers.get("x-pages-record-seq"));
+        if (seq !== undefined) {
+          this.seq ??= storedSeq(await this.storage.get("host/seq"));
+          // A batch the sink stopped waiting for, arriving after a newer one.
+          // The sink put its records back in pending, so a newer batch already
+          // wrote each of its keys with a value at least as new. Applying it
+          // now would roll mutable keys (a manifest, a sync state) back.
+          if (seq <= this.seq)
+            return new Response(null, {
+              status: 204,
+              headers: { "x-pages-record-batch": "superseded" },
+            });
+        }
         const entries = decodeRecordBatch(new Uint8Array(await request.arrayBuffer()));
         if (entries.length > 128 || new Set(entries.map(([key]) => key)).size !== entries.length)
           throw invalid("Invalid record batch keys");
-        // A failed/partial write has no receipt. Retrying the entire immutable
-        // batch is safe; a Page serializes its batches, including deletions.
+        // A failed/partial write has no receipt. The sink resends its records
+        // in a later batch with a higher sequence; a Page serializes its
+        // batches, including deletions.
         const values = Object.fromEntries(
           entries
             .filter(([, value]) => value !== undefined)
@@ -206,7 +240,11 @@ export class PageRecords {
         const removed = entries
           .filter(([, value]) => value === undefined)
           .map(([key]) => `repo/${key}`);
+        // The sequence lands in the same atomic put as the values. A batch
+        // whose deletion then fails is resent whole under a higher sequence.
+        if (seq !== undefined) values["host/seq"] = String(seq);
         if (Object.keys(values).length) await this.storage.put(values);
+        if (seq !== undefined) this.seq = seq;
         if (removed.length) await this.storage.delete(removed);
         await this.storage.sync();
         return new Response(null, { status: 204 });
@@ -248,6 +286,7 @@ export class RemoteRecordSink {
     this.stubs = typeof stubs === "function" ? stubs : () => stubs;
     this.timeoutMs = timeoutMs;
     this.current = undefined;
+    this.seq = 0;
   }
   /** The stub for the next request: the current one, or a fresh one. */
   stub() {
@@ -260,10 +299,11 @@ export class RemoteRecordSink {
   }
   /** Every PageRecords request settles: an unanswered one rejects after
    * `timeoutMs` and aborts its request, and the caller keeps its pending
-   * records for the next flush. PageRecords skips an aborted request that is
-   * still queued. One already writing finishes; batches are immutable, so it
-   * only rewrites the same record bytes or retains a record a later
-   * compaction removed.
+   * records for the next flush. The abandoned request may still arrive, and
+   * on a fresh stub nothing orders it before the next batch. PageRecords
+   * skips it when it sees the abort; otherwise its sequence fences it
+   * (`commit`): one that lands after a newer batch is dropped, and one that
+   * lands first is overwritten by the newer batch.
    */
   async request(url, init, read) {
     const abort = new AbortController();
@@ -330,8 +370,18 @@ export class RemoteRecordSink {
       after = next;
     } while (after !== undefined);
   }
+  /** Each batch carries a rising `x-pages-record-seq`. The sink sends one
+   * batch at a time and never resends a sequence: after a failure the store
+   * puts the batch's records back in pending, and the next batch carries
+   * them, at least as new, under a higher sequence. PageRecords stores the
+   * sequence with the batch and skips any batch at or below it, so a batch
+   * delivered late can never overwrite a newer one. The sequence is scoped to
+   * the generation: a restarted Page host builds a new sink, takes a new
+   * lease, and starts again at 1, while every batch of the old host fails the
+   * generation check. */
   async commit(entries) {
     const generation = await this.generation();
+    const seq = ++this.seq;
     await this.request(
       "https://records.internal/records",
       {
@@ -340,6 +390,7 @@ export class RemoteRecordSink {
         headers: {
           "content-type": "application/octet-stream",
           "x-pages-record-generation": generation,
+          "x-pages-record-seq": String(seq),
         },
       },
       (response) => {

@@ -1706,7 +1706,23 @@ a sink that kept it would never flush again while its replica grew toward the
 48 MiB cap. An HTTP error answer keeps the stub. The storage gate that refuses
 an abandoned object's writes wraps every stub the factory makes
 (`guardStubs` in [storage-guard.mjs](worker/storage-guard.mjs)). Every other
-Durable Object call in the Worker gets its stub per request. Tool requests to a Catalog or Page answer
+Durable Object call in the Worker gets its stub per request.
+
+A fresh stub gives up the old one's ordering, so a batch the sink stopped
+waiting for can still arrive after the batch that replaced it. Each batch
+carries a rising `x-pages-record-seq`. PageRecords stores the sequence in the
+same atomic put as the batch's values (`host/seq`, beside `host/generation`)
+and answers any batch at or below it with `204` and
+`x-pages-record-batch: superseded`, writing nothing. Skipping is safe: after a
+failed flush the store puts every record of it back in pending, so the batch
+that replaced a late one already wrote its keys with values at least as new.
+Without the fence a late batch could roll a mutable key, such as a document's
+manifest, back to a snapshot that compaction had deleted. The sequence is
+scoped to the lease: a new lease resets it, and a restarted Page host takes a
+new lease, so every batch of the old host fails the generation check. A batch without
+the header, from a build before the fence, is applied as before.
+
+Tool requests to a Catalog or Page answer
 within 60 seconds; a slower one returns `504 request_timeout` while the host
 finishes the work it accepted. For a read, a progress renewal or clear
 (`progress_id` and `lease_token` name the session) or a write that carried a
