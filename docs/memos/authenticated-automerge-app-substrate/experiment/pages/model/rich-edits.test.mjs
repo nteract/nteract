@@ -7,7 +7,7 @@ import { createPageData, initializePage, orderedBlockIds, applyPageOperation } f
 import { blockMarkdown, textPath } from "./richtext.mjs";
 import { guardPassageEdits } from "./passage-edits.mjs";
 import { documentFeatures } from "./schema-features.mjs";
-import { decode, encode } from "../viewer/wordgard-model.mjs";
+import { decode, encode } from "./wordgard-doc.mjs";
 
 function fixture(markdown) {
   let doc = A.from(createPageData({ pageId: "rich_edits", title: "Rich edits" }));

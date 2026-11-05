@@ -10,7 +10,7 @@ import {
   validateRich,
   blockMarkdown,
 } from "./richtext.mjs";
-import { decode, encode, TaskList, TaskChecked } from "../viewer/wordgard-model.mjs";
+import { decode, encode, TaskList, TaskChecked } from "./wordgard-doc.mjs";
 
 const path = textPath("one");
 const fixture = (markdown) =>

@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import { HorizontalRule, Paragraph } from "wordgard/types";
-import { encode, schema } from "../viewer/wordgard-model.mjs";
+import { encode, schema } from "./wordgard-doc.mjs";
 import { applyPageOperation, createPageData, initializePage, orderedBlockIds } from "./page.mjs";
 import { adapterSpans, blockMarkdown, parseMarkdown, richDoc, textPath } from "./richtext.mjs";
 import { updateSpansConfig } from "./marks.mjs";

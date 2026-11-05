@@ -17,7 +17,7 @@ import {
   validHeadingLevel,
 } from "./node-registry.mjs";
 import { adapter, schema } from "./richtext.mjs";
-import { PagesUnknownBlock, PagesUnknownEmbed, decode, encode } from "../viewer/wordgard-model.mjs";
+import { PagesUnknownBlock, PagesUnknownEmbed, decode, encode } from "./wordgard-doc.mjs";
 import { insertedAssets } from "./page.mjs";
 
 test("every adapter block mapping has exactly one registry entry, and back", () => {

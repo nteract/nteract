@@ -11,7 +11,7 @@ import {
 } from "./page.mjs";
 import { schema, textPath, validateRich } from "./richtext.mjs";
 import { documentFeatures } from "./schema-features.mjs";
-import { decode, encode, PagesDataframe } from "../viewer/wordgard-model.mjs";
+import { decode, encode, PagesDataframe } from "./wordgard-doc.mjs";
 import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
 
 const pageId = "33333333-3333-4333-8333-333333333333";

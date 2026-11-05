@@ -35,7 +35,7 @@ import {
   parseAssetPath,
   readDataframe,
 } from "../shared/dataset-assets.mjs";
-import { decode, encode } from "../viewer/wordgard-model.mjs";
+import { decode, encode } from "./wordgard-doc.mjs";
 
 export { safeUrl } from "./marks.mjs";
 
@@ -1740,7 +1740,7 @@ export function setRichMarkdown(doc, id, source, { literal = false } = {}) {
  * writer form, use these directly. */
 export const adapterSpans = (tree) => pmNodeToSpans(adapter, tree);
 /** A Page block's spans for `tree`, written by the editor's own encoder
- * (encode in viewer/wordgard-model.mjs), so the editor's first structural
+ * (encode in model/wordgard-doc.mjs), so the editor's first structural
  * edit (Enter, a cross-block delete, a block paste, a list toggle) in an
  * agent-written block rewrites the same spans. The adapter's form differs:
  * it writes a marker for a top-level first paragraph, leaves out the marker
@@ -1762,7 +1762,7 @@ export function pageSpans(tree) {
 }
 /** Whether `spans` open with a marker the editor wouldn't write: a plain
  * top-level paragraph marker before content, or as the only node (encode's
- * implicitAt in viewer/wordgard-model.mjs). Writers drop it, so the editor's
+ * implicitAt in model/wordgard-doc.mjs). Writers drop it, so the editor's
  * next structural edit has nothing to delete. */
 export function redundantFirstMarker(spans) {
   const [first, next] = spans;
