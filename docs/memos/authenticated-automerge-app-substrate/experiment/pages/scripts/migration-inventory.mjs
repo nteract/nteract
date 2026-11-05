@@ -26,7 +26,8 @@
  * Host record: decoded host/document or explicit null. creation: null or
  * {metadata} from host/creation, including native registration intents. Do NOT
  * export creation bytes, credentials or retry secrets. pending_keys: explicit
- * array of pending Page/comment operation and preserved-conversion keys.
+ * array of pending Page/comment operation keys, including any host-internal
+ * ones an earlier build left.
  * plain: [key, canonicalBase64] pairs for original plain/sync/ byte values,
  * including CBOR manifests/descriptors and object parts (sync/doc-store.mjs).
  * known_heads: {page: [hashes], comments: [hashes]} from separate saved evidence;

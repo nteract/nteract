@@ -1212,8 +1212,8 @@ Project again from a source running the current Pages. A source whose
 `markdown` is the body: the Page's blocks joined by a blank line. `blocks`
 appears only when a Page has more than one block. Each block is written
 separately. A Page10 target refuses math and HTML with `unsupported_markdown`,
-so import writes such a block as the literal text it reads as, the same text
-the target's own conversion of a preserved block produces. If you edit a Page's
+so import writes such a block as the literal text it reads as, as the
+target's literal Markdown import would. If you edit a Page's
 `markdown`, edit `blocks` to match or delete it; import refuses a mismatch.
 
 `dataframes` lists a Page's dataframes from its outline, and `assets` holds each

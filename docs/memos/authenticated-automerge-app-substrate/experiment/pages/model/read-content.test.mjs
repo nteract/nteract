@@ -8,25 +8,22 @@ import { richFromSource } from "./richtext-test-support.mjs";
 import { stampFeatures } from "./schema-features.mjs";
 
 function page(blocks) {
-  return A.change(
-    A.from({ page_id: "read-fixture", title: "A title", blocks: {} }),
-    (doc) => {
-      for (const [
-        index,
-        { id, markdown, rich = true, kind = "markdown", position },
-      ] of blocks.entries()) {
-        doc.blocks[id] = {
-          id,
-          position: new A.RawString(position ?? `a${index}`),
-          kind,
-          markdown,
-          metadata: { retained: id },
-        };
-        if (rich) richFromSource(doc, id);
-      }
-      stampFeatures(doc, ["comments-doc"]);
-    },
-  );
+  return A.change(A.from({ page_id: "read-fixture", title: "A title", blocks: {} }), (doc) => {
+    for (const [
+      index,
+      { id, markdown, rich = true, kind = "markdown", position },
+    ] of blocks.entries()) {
+      doc.blocks[id] = {
+        id,
+        position: new A.RawString(position ?? `a${index}`),
+        kind,
+        markdown,
+        metadata: { retained: id },
+      };
+      if (rich) richFromSource(doc, id);
+    }
+    stampFeatures(doc, ["comments-doc"]);
+  });
 }
 
 function read(doc, args) {
@@ -260,7 +257,10 @@ test("a block without rich text fails closed instead of being read as Markdown",
     { id: "legacy", markdown: "# Legacy", rich: false },
   ]);
   for (const args of [{}, { section: "Legacy" }, { include_content: false }])
-    assert.throws(() => projectReadContent(doc, args), expectedError(409, "stored_form_unsupported"));
+    assert.throws(
+      () => projectReadContent(doc, args),
+      expectedError(409, "stored_form_unsupported"),
+    );
 });
 
 test("instruction-like text and private image references are only data", () => {
@@ -491,6 +491,28 @@ test("outline fields bound per-item values, cover ragged tables and name unknown
   assert.equal(wideTable.summary.align.length, OUTLINE_MAX_ITEMS);
   assert.equal(wideTable.summary.align_truncated, true);
   assert.deepEqual(small.summary, { rows: 2, columns: 3, align: ["left", null, null] });
+});
+
+test("a stored pages-opaque marker an older build wrote reads as an unknown node", async () => {
+  const { createPageData, initializePage, orderedBlockIds } = await import("./page.mjs");
+  const { textPath } = await import("./richtext.mjs");
+  let doc = A.change(A.from(createPageData({ pageId: "opaque", title: "Opaque" })), (draft) =>
+    initializePage(draft, "After"),
+  );
+  const id = orderedBlockIds(doc)[0];
+  doc = A.change(doc, (draft) =>
+    A.splitBlock(draft, textPath(id), 0, {
+      type: new A.ImmutableString("pages-opaque"),
+      parents: [],
+      attrs: { source: new A.ImmutableString("<div>kept</div>") },
+      isEmbed: false,
+    }),
+  );
+  const result = projectReadContent(doc, {});
+  const unknown = result.outline.find((entry) => entry.type === "unknown");
+  assert.equal(unknown?.node_type, "pages-opaque");
+  assert.match(result.blocks[0].markdown, /Unsupported node: pages-opaque/);
+  assert.doesNotMatch(result.blocks[0].markdown, /kept/);
 });
 
 test("a list item that opens with a block other than a paragraph reads back and writes back unchanged", async () => {

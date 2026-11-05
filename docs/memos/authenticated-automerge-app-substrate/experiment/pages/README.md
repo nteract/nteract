@@ -197,7 +197,7 @@ Existing documents, comment anchors and MCP addresses must survive each step.
 Each Pages block has its own continuous editor. Moves update fractional positions without recreating the block or its
 text object, preserving comment and selection anchors. Concurrent positions use
 block IDs as deterministic ties. Cross-Pages-block selections remain unsupported.
-When a block ends in a code block, table, preserved block or an image, ArrowDown
+When a block ends in a code block, table, unknown block or an image, ArrowDown
 on its last line, Mod-Enter, or a click below it adds an empty paragraph and puts
 the caret there. Mod-Enter also leaves a code block anywhere else. The paragraph
 is an ordinary edit, written only when someone asks for it, so opening a Page
@@ -268,9 +268,9 @@ references; it does not publish the Page or change asset access.
   - The scan masks code per table cell, as Markdown-it splits cells first,
     and recognizes a tag of any length, with `>` inside quoted values, in
     linear time.
-  - Nothing writes a preserved block (`raw`, `pages-opaque`). The schema keeps
-    it read-only so older Pages open; the Page host converts each stored one
-    on load (see Preserved blocks below).
+  - Nothing writes a preserved block (`pages-opaque`), and the schema has no
+    node for one. A stored marker an older build wrote reads as an unknown
+    block, as below (see Stored forms).
   - A node this build doesn't know, from a newer build, still opens. Its
     feature stamp makes the Page read-only here and refuses this build's
     writes. The editor draws a notice (`PagesUnknownBlock`,

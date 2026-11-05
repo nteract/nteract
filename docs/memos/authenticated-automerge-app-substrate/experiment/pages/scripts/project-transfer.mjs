@@ -949,7 +949,7 @@ function validateBody(bundle, page, at, fail) {
 
 // A Page10 target refuses Markdown it can't represent (math and HTML) with
 // unsupported_markdown. Such a block is written as the literal text it reads
-// as, which is how the target itself converts a preserved block.
+// as, as the target's literal Markdown import would.
 const importable = (markdown) =>
   unsupportedMarkdown(markdown) ? exportMarkdown(parseMarkdown(markdown)) : markdown;
 const pageBlocks = (page) => (page.blocks ?? [page.markdown]).map(importable);

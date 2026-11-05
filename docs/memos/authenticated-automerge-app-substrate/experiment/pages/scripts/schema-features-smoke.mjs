@@ -11,17 +11,16 @@
 // Then the Markdown cutover: a strikethrough or horizontal rule write stamps
 // its feature, so a baseline build's native edits are refused; agent writes
 // with math get unsupported_markdown; and a draft that holds a preserved block
-// from an older build is converted by the host on registration.
+// from an older build is refused at registration and registers nothing.
 //
 //   PAGES_ORIGIN=http://localhost:9894 node scripts/schema-features-smoke.mjs
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import * as A from "@automerge/automerge";
 import * as N from "@automerge/subduction";
-import { pmNodeToSpans } from "@automerge/prosemirror";
 import { generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
 import { createPageData, initializePage, orderedBlockIds } from "../model/page.mjs";
-import { adapter, schema, textPath } from "../model/richtext.mjs";
+import { textPath } from "../model/richtext.mjs";
 import { retryKey } from "../model/retry-key.mjs";
 import { chromium, expect } from "@playwright/test";
 import { closePeers, createPeer, eventually } from "../../backend.mjs";
@@ -343,29 +342,21 @@ try {
   });
   checkpoint("create_page refuses math with unsupported_markdown, line and column");
 
-  stage = "the host converts a registered draft's preserved block";
+  stage = "registration refuses a draft holding a preserved block";
   const draftId = crypto.randomUUID();
   const draftTitle = "Draft " + Date.now();
   let draft = A.change(A.from(createPageData({ pageId: draftId, title: draftTitle })), (doc) =>
     initializePage(doc, ""),
   );
   const draftBlock = orderedBlockIds(draft)[0];
+  // The `pages-opaque` marker a protocol 1 viewer could write.
   draft = A.change(draft, (doc) =>
-    A.updateSpans(
-      doc,
-      textPath(draftBlock),
-      pmNodeToSpans(
-        adapter,
-        schema.node("doc", null, [
-          schema.node("raw", {
-            source: "Keep `~~x~~` and ~~drop~~.\n\nThe value is $x$.",
-            importId: "",
-            kind: "markdown",
-          }),
-        ]),
-      ),
-      adapter.updateSpansConfig(),
-    ),
+    A.splitBlock(doc, textPath(draftBlock), 0, {
+      type: new A.ImmutableString("pages-opaque"),
+      parents: [],
+      attrs: { source: new A.ImmutableString("Keep ~~drop~~. The value is $x$.") },
+      isEmbed: false,
+    }),
   );
   const prepared = await tool("list_pages", {});
   const session = await page.evaluate(() =>
@@ -391,22 +382,10 @@ try {
       idempotency_key: await retryKey(prepared.body.retry_token),
     },
   );
-  assert.equal(registered.status, 200, JSON.stringify(registered.body));
-  const converted = await tool("read_page", {
-    page_id: draftId,
-    comments: "none",
-  });
-  assert.equal(converted.status, 200, JSON.stringify(converted.body));
-  assert.equal(
-    converted.body.blocks[0].markdown,
-    "Keep `~~x~~` and ~~drop~~.\n\nThe value is \\$x\\$.",
-  );
-  assert.ok(converted.body.schema_features.includes("preserved-markdown-converted"));
-  await page.goto(origin + "/p/" + draftId);
-  await expect(content().first().locator("s")).toHaveText("drop");
-  await expect(page.locator("[data-pages-opaque]")).toHaveCount(0);
-  await expect(content().first()).toHaveAttribute("contenteditable", "true");
-  checkpoint("registration converts a preserved block to native, editable text");
+  assert.equal(registered.status, 400, JSON.stringify(registered.body));
+  const unregistered = await tool("read_page", { page_id: draftId, comments: "none" });
+  assert.notEqual(unregistered.status, 200, JSON.stringify(unregistered.body));
+  checkpoint("registration refuses a preserved block and registers nothing");
 
   stage = "navigating back to the current Page";
   await page.goto(origin + "/p/" + baseline);
