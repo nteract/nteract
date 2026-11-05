@@ -130,7 +130,6 @@ export function Library({
   drafts = [],
   notice = "",
   creating = false,
-  grid = false,
   onNavigate,
   onViewChange,
   onOpen,
@@ -218,7 +217,7 @@ export function Library({
     if (!sameLibraryRequest(next, listing.params()) || view.failed) listing.load(next);
   };
 
-  const [display, setDisplay] = useState(() => (grid ? readDisplayMode(browser()) : "list"));
+  const [display, setDisplay] = useState(() => readDisplayMode(browser()));
   // Card previews for grid mode, one loader per mount. List mode never asks,
   // and neither does a grid that doesn't know its account.
   const cards = useConnected(() => new PageCards({ tool, principal }));
@@ -410,7 +409,7 @@ export function Library({
             onChoose={(next) => choose({ group: next })}
             actions={foldActions}
           />
-          {grid && <DisplayToggle mode={display} onChange={chooseDisplay} />}
+          <DisplayToggle mode={display} onChange={chooseDisplay} />
         </div>
         <span className="library-progress" data-active={pending} aria-hidden="true" />
       </div>
@@ -480,7 +479,7 @@ const EMPTY = Object.freeze([]);
 /** The window whose localStorage holds the display mode, when there is one. */
 const browser = () => (typeof window === "undefined" ? undefined : window);
 
-/** Grid or list. Shown only when grid cards are enabled (feature-flags.mjs). */
+/** Grid or list, remembered for this browser. */
 function DisplayToggle({ mode, onChange }) {
   return (
     <div className="index-display" role="group" aria-label="Display">
