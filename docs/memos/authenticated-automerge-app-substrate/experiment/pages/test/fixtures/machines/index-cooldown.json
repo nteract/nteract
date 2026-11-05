@@ -1,0 +1,151 @@
+{
+  "machine": "index-cooldown",
+  "description": "Whether an account's first pages may try D1 (worker/account-index-machine.mjs indexCooldownMachine). A walk that began on D1 and that D1 couldn't serve restarts; the refusal starts a cooldown so the restart reads the Catalog, and each walk restarts at most once per cooldown.",
+  "states": [
+    "open",
+    "cooling"
+  ],
+  "events": [
+    "refused",
+    "expired"
+  ],
+  "unreachable": [],
+  "cases": {
+    "cooling/refused": [
+      "later",
+      "earlier"
+    ],
+    "cooling/expired": [
+      "passed",
+      "early"
+    ]
+  },
+  "rows": [
+    {
+      "label": "a refusal starts a cooldown",
+      "state": {
+        "name": "open"
+      },
+      "event": {
+        "type": "refused",
+        "now": 1000,
+        "cooldownMs": 60000
+      },
+      "expect": {
+        "state": {
+          "name": "cooling",
+          "until": 61000
+        },
+        "effects": [
+          {
+            "type": "store",
+            "until": 61000
+          }
+        ]
+      }
+    },
+    {
+      "label": "a later refusal extends the cooldown",
+      "case": "later",
+      "state": {
+        "name": "cooling",
+        "until": 61000
+      },
+      "event": {
+        "type": "refused",
+        "now": 30000,
+        "cooldownMs": 60000
+      },
+      "expect": {
+        "state": {
+          "name": "cooling",
+          "until": 90000
+        },
+        "effects": [
+          {
+            "type": "store",
+            "until": 90000
+          }
+        ]
+      }
+    },
+    {
+      "label": "an earlier refusal never shortens it",
+      "case": "earlier",
+      "state": {
+        "name": "cooling",
+        "until": 90000
+      },
+      "event": {
+        "type": "refused",
+        "now": 1000,
+        "cooldownMs": 60000
+      },
+      "expect": {
+        "state": {
+          "name": "cooling",
+          "until": 90000
+        },
+        "effects": [
+          {
+            "type": "store",
+            "until": 90000
+          }
+        ]
+      }
+    },
+    {
+      "label": "nothing to expire",
+      "state": {
+        "name": "open"
+      },
+      "event": {
+        "type": "expired",
+        "now": 5000
+      },
+      "expect": {
+        "state": {
+          "name": "open"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a passed cooldown opens D1 to first pages again",
+      "case": "passed",
+      "state": {
+        "name": "cooling",
+        "until": 61000
+      },
+      "event": {
+        "type": "expired",
+        "now": 61000
+      },
+      "expect": {
+        "state": {
+          "name": "open"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a cooldown still running stays",
+      "case": "early",
+      "state": {
+        "name": "cooling",
+        "until": 61000
+      },
+      "event": {
+        "type": "expired",
+        "now": 60999
+      },
+      "expect": {
+        "state": {
+          "name": "cooling",
+          "until": 61000
+        },
+        "effects": []
+      }
+    }
+  ]
+}

@@ -81,6 +81,46 @@ export function projectGroup(row) {
   return ITEMS_GROUP;
 }
 
+/** How many accents Project groups share: --chart-1 to --chart-6 (style.css). */
+export const PROJECT_ACCENTS = 6;
+
+/** 32-bit FNV-1a over `text`'s UTF-16 code units: small, stable everywhere. */
+function fnv1a(text) {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < text.length; index++) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash;
+}
+
+/** How fresh a date group is, 0 (Today) to 5 (a year, or no date). */
+function recency(key) {
+  const fixed = { today: 0, yesterday: 1, week: 2, month: 3 };
+  if (key in fixed) return fixed[key];
+  return key.startsWith("m:") ? 4 : 5;
+}
+
+/**
+ * The accent a section's heading wears, as `{ accent, recency }` for its
+ * data attributes. A Project hashes its group key (which holds the Project
+ * ID, never the title) to one of PROJECT_ACCENTS, so it keeps its color across
+ * renames, sessions and browsers. Shared with you, On this device and Your
+ * items have fixed accents of their own. Date groups share one neutral accent
+ * that fades with age (`recency`), so color never suggests that two dates are
+ * different kinds of thing. The label always names the group; the accent only
+ * helps the eye find it again.
+ */
+export function groupAccent(section) {
+  const key = section?.key ?? "";
+  if (key === DEVICE_GROUP.key) return { accent: "device", recency: null };
+  if (key === SHARED_GROUP.key) return { accent: "shared", recency: null };
+  if (key === ITEMS_GROUP.key) return { accent: "items", recency: null };
+  if (key.startsWith("project:"))
+    return { accent: String((fnv1a(key) % PROJECT_ACCENTS) + 1), recency: null };
+  return { accent: "date", recency: recency(key) };
+}
+
 /**
  * `rows` in sections for `group` ("project", "date" or null). Each section is
  * `{ key, label, rows }`, plus `projectId` and `href` for a Project. With no

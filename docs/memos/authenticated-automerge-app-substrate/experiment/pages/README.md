@@ -774,9 +774,10 @@ loop each resident socket's request runs while it's open. A window timer is held
 on the request that armed it, so a Page edited once still flushes at the
 window's end; a longer retry backoff isn't held, and waits for the next request.
 
-Cursors are sealed to the listing's location, kind, `access` and sort. A cursor
-issued under one combination never opens under another; the client gets
-`invalid_cursor` and restarts. The scope names each sort by what its position's
+Cursors are sealed to the listing's location, kind, `access` and sort, and to
+the candidate source that issued them (below). A cursor issued under one
+combination never opens under another; the client gets `invalid_cursor` and
+restarts. The scope names each sort by what its position's
 key means: `content_activity` for `activity_at`, `created` for `created_at`,
 `title` for `title_search` and `trashed` for `trash_key`. An activity cursor
 sealed with no scope, or with a scope that names no sort or names `activity`,
@@ -817,7 +818,17 @@ Before an ACL restriction or a deletion
 is durable, the host removes listing rows best-effort; the deleted tombstone is
 written only after the host record is durable. Editing and sync never wait on D1.
 If D1 errors or exceeds its read budget, listing falls back to the Catalog entries
-(at most 500 per prefix) with the same cursor format.
+with the same cursor format. The fallback reads every entry under `page/`,
+`trash/` and `shared/`: rows order by keys the entries store, not by their
+storage keys, so a listing that read only some of them could put a later entry
+before its cursor and end a walk without it. Owned entries are bounded by the
+Page limit; shared entries grow only as Pages are shared with the account and it
+opens them. Each candidate is still checked within the scan's bound. Reading and
+sorting every entry costs O(entries) per listing, so a full walk costs about
+entries² / limit: with the index off and 5,000 shared Pages, a listing of 50
+took 48 ms and a full walk at limit 100 took 3.0 s in a local run. The fallback
+serves only while D1 is unavailable, unsynced or catching up, so most listings
+pay none of this.
 
 Each account reconciles from its Catalog entries: on its first listing under an
 epoch, after a Catalog change that may have missed D1, and at least every six
@@ -832,7 +843,88 @@ call (2.5 s), or plus one check group (3 s) and its commit (1.5 s). Progress is
 saved through the last committed entry, so a pass, which is O(account size) and
 advanced only by listings, resumes exactly and does not hold the Catalog's queue
 beyond that bound. While D1 calls take longer than the budget, the pass waits.
-Until an account's first pass completes, its listings use the Catalog entries.
+
+A listing reads D1 only while the account index is `ready`
+([account-index-machine.mjs](worker/account-index-machine.mjs)) and no Page
+index mark is pending: a pass has completed under this epoch, and the Catalog
+has recorded no write since that D1 may miss. A missing D1 row would hide its
+Page and could end a walk with no cursor; the Catalog entries hold every owned
+Page.
+
+A Catalog write that adds a listable entry for one Page marks that Page
+(`host/index/page/<id>`, `pageIndexMarkMachine`) before it writes the entry: a
+creation, a Project's home Page, a Trash, restore or purge projection, and a new
+entry a Page host projects, including a discovery. A creation, a home Page and a
+lifecycle projection then write the owner's D1 row after the response, started
+in the live request and held with `waitUntil`, and clear the mark once it lands.
+So `create_page`, Project creation, Trash, restore and purge never wait on D1.
+Each listing first settles up to 24 marks from their Pages' current entries: it
+writes an owned entry's row as a pass would, finds a discovered Page's row its
+host already reported, or checks the host within the pass's check budget and
+writes its answer; a refused shared entry is forgotten. A mark clears only if
+it is still the token the writer read, so a newer write's mark survives. While
+a mark is pending, listings read the Catalog entries, so a just-created Page is
+in the very next listing either way: from D1 once its mark settles, or from its
+entry. One write never restarts the account's pass.
+
+With the index off, no listing settles marks, so writes mark the account dirty
+instead. The account is also marked dirty when a listing finds an owner row
+stale. Moves write nothing to D1, since D1 rows carry no location, and mark
+nothing. Creating a Project marks its Space rows dirty
+(`host/index/spaces-dirty`) for the Project listing, not the Page index. A row
+written for an entry that never lands is safe: an owner row needs a live,
+settled entry to list, and a listing that meets one without it prunes it.
+
+A marked account is `behind`, and an account with no completed pass under this
+epoch is `unsynced`; both list from the Catalog entries while the pass advances.
+Once a pass records its epoch, it reads the mark again and clears it only if it
+is still the one the pass started from, so a write that lands mid-pass keeps the
+account behind through the next pass. A call that doesn't finish its pass reads
+the mark again before it reports `ready`, since a write can land while the
+pass waits on D1.
+
+A lifecycle projection can fail after the Page host applied the change. The
+host's report then gives D1's row the new state while the owner's entry keeps
+the old one. The Page's mark settles from that entry, but the lifecycle fence
+keeps D1's newer state. A listing shows an owned D1 row only when the matching
+entry confirms it (`page/` for Home, `trash/` for Trash), so D1 lists the Page
+in neither:
+
+- After a failed restore, D1's row is active and the entry is in Trash. The
+  Catalog lists the Page in Trash.
+- After a failed Trash, D1's row is trashed and the entry is still active. The
+  Catalog lists the Page in Home.
+
+A D1 listing that meets such a row prunes it and marks the account dirty, so
+listings read the Catalog until a pass imports the entry again. Retrying the
+request projects it again and both sources agree.
+
+The two sources order shared rows by different times: D1 holds the Page row's own
+creation and content times, the Catalog this account's discovery time and the
+last projection's. A Page host's content flush moves D1's member rows but not the
+members' Catalog entries. So every Page listing cursor names the source that
+issued it (`index` or `catalog`, sealed into its context beside the scope), and a
+walk continues on that source whatever the account's state is by then. A walk
+that began on a ready D1 can miss only rows written while it ran, as any walk
+can. If D1 can't serve a walk that began there (the database or the pass fails,
+the scan's read fails, or the index is switched off), the next page fails with
+`invalid_cursor` rather than resume D1's order on the Catalog. The client
+restarts from the first page; the viewer's listing machine already restarts on
+`invalid_cursor`. The refusal also stores a cooldown
+(`host/index/unavailable-until`, 60 s, `indexCooldownMachine`). While it lasts,
+no listing opens D1 except a page of a walk that began there, so the restart's
+first page reads the Catalog and its walk stays there, even when D1 serves
+first pages and fails later ones. Each walk restarts at most once per cooldown;
+the pass and the Page marks wait until it ends. A walk that began on the Catalog
+never reads D1. A cursor from an earlier build names no source;
+it opens as before and continues on whichever source the account's state picks.
+
+Title and content updates to an existing entry don't mark the account: a stale
+title or time snapshot misorders a row but doesn't drop it from an unfiltered
+walk. A `query` search is different: D1 matches each principal's title
+snapshot and the fallback matches the entry's title, so a rename that has reached
+one and not yet the other can hide the renamed Page from that source's search
+until its row or entry is rewritten.
 Changing the epoch value forces an immediate pass everywhere; it is not required
 after a rollback, since the periodic pass and each Page host's first report after
 restart repair what an older build missed.
@@ -2501,7 +2593,21 @@ it) or by last activity (Today, Yesterday, Previous 7 days, Previous 30 days,
 each month of the last year, then each year), in the order their first row
 appears. Last activity is `content_updated_at`, else `updated_at`: the key the
 Last activity sort orders by, so date groups follow the rows
-([listing.mjs](viewer/listing.mjs) `activityAt`). The Last activity column
+([listing.mjs](viewer/listing.mjs) `activityAt`). Each group heading is a
+disclosure button that folds its rows and keeps its count; Fold all and
+Unfold all sit in the Group menu. Folds are this browser's, kept per account
+and grouping by group key, so a Project folds by its ID and a rename keeps it
+folded; Load more and rows that join a group later leave it folded
+([library-folds.mjs](viewer/library-folds.mjs), at most 4 accounts and 100
+folds each in `localStorage["nteract.pages.folds"]`). A heading's accent (a
+bar, a faint tint and the label's color) comes from `groupAccent`: a Project
+hashes its ID to one of six, Shared with you and On this device keep their
+own, and date groups share one neutral accent whose bar fades with age. Each
+accent reads at 4.5:1 or more in both themes, and the label still names the
+group. The heading row, tabs and menus never move with the results: loading,
+empty and failed views share one box in a body with a fixed floor, a new
+request runs a bar along the control row and dims the rows it will replace,
+and the page keeps its scrollbar's room. The Last activity column
 shows the same time, and screen readers hear "Last active 2 days ago, …".
 Drafts this browser hasn't synced show first, as "On this device", on All and
 Your items when there is no Project filter. The server can't search them, so a
@@ -2513,7 +2619,10 @@ moment ago may not be in them yet. Load more follows
 `next_cursor`; a cursor that has expired (`invalid_cursor`) starts the listing
 over from its first page. Grid cards are behind the `grid` flag (`?grid=1` or
 `localStorage["pages.grid"] = "1"`); each shows a preview of its Page's first
-content (see [Card previews](#card-previews)).
+content (see [Card previews](#card-previews)). The flag shows the List/Grid
+toggle, and the choice is remembered. `?grid=1` also opens the tab on the
+grid, as a remembered choice; the library then drops the query from its
+address, so after a reload the toggle shows only with the stored flag.
 
 ### Card previews
 
@@ -2565,8 +2674,10 @@ the later put wins: that is the same content built by two builder versions.
 
 Two cases are left open. The order between live hosts comes from their clocks,
 so it holds only within that 5-minute limit: an old host that is still live, on
-a clock fast by less than that, can overwrite a newer card once, and the newer
-host's writes skip until its own content times pass the old one's. And a late
+a clock fast by less than that, can overwrite a newer card once. The newer
+host's writes then skip until its own content times pass the old one's, so the
+stale card can last until the next content change after that, however long
+that takes, not just for the skew window. And a late
 put can land after the next host's first write skipped an unchanged card: it
 holds a card the Page had moments before, until the next change to its first
 screen.
@@ -2605,7 +2716,7 @@ while it runs: with a 150 ms round trip, every card shows within 350 ms of
 coming into view. At most two requests run at once, and a request takes the
 latest cards to come into view first. A card that leaves the viewport, or
 unmounts, before its request goes out stops waiting and goes back to idle, so a
-fling asks only for the cards it stops on. A request with room fills toward 24
+request never carries a card that left view before it went out. A request with room fills toward 24
 with the next cards in the grid's order that haven't asked, so a slow scroll
 down a 100-card grid sends 5 requests, not one per row. Each card follows a small
 machine, `idle → requested → shown | empty | failed`, keyed by Page ID and the

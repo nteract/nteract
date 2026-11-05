@@ -14,6 +14,15 @@
 // In grid mode each card loads its Page's card preview as it scrolls into
 // view (page-cards.mjs); the loader lives as long as this mount.
 //
+// Group headings fold their rows. Which groups are folded is local UI state,
+// kept per account and grouping in this browser (library-folds.mjs), so a
+// fold survives a reload, Load more and rows that join the group later.
+//
+// The heading row, the tabs and the menus never move with the results. The
+// results sit in one body with a fixed floor: loading, empty and failed
+// states share one box there, and a new request shows as a bar along the
+// control row and dimmed rows, never as a line pushed in above them.
+//
 // A first page this tab showed before paints from memory (listing-cache.mjs)
 // while the Listing asks for it again, so a return visit within the cache's
 // age limit never starts blank. What a shown page says besides its rows (the
@@ -21,9 +30,15 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   ArrowDownUp,
+  ArrowUpRight,
   Boxes,
+  CalendarDays,
+  ChevronRight,
+  ChevronsDownUp,
+  ChevronsUpDown,
   Copy,
   FileText,
+  HardDrive,
   Home,
   LayoutGrid,
   List,
@@ -31,6 +46,8 @@ import {
   Rows3,
   Search,
   Trash2,
+  UserRound,
+  Users,
 } from "lucide-react";
 import {
   LIBRARY_SORTS,
@@ -50,7 +67,15 @@ import {
   pagesRequest,
   projectTitles,
 } from "./listing.mjs";
-import { DEVICE_GROUP, groupRows } from "./library-groups.mjs";
+import { DEVICE_GROUP, groupAccent, groupRows } from "./library-groups.mjs";
+import {
+  allFolded,
+  foldAll,
+  readFolds,
+  toggleFold,
+  unfoldAll,
+  writeFolds,
+} from "./library-folds.mjs";
 import { listingCache } from "./listing-cache.mjs";
 import { useStore } from "./store.mjs";
 import { readDisplayMode, writeDisplayMode } from "./display-mode.mjs";
@@ -71,6 +96,9 @@ export const LIBRARY_TABS = Object.freeze([
 /** Why the Project filter is unavailable on the shared tab. */
 export const SHARED_PROJECT_REASON =
   "Projects hold only your own Pages. Switch to All or Your items to filter by Project.";
+/** The Group menu's actions over every shown group. */
+export const FOLD_ALL = "Fold all";
+export const UNFOLD_ALL = "Unfold all";
 /** Why date groups are unavailable under the title sort. */
 export const DATE_GROUP_REASON = "Sort by Last activity to group by date";
 /** The Project menu's label for a `project` the account can't list. */
@@ -227,6 +255,20 @@ export function Library({
   );
   const shownGroup = groupApplies(group, params.sort) ? group : null;
   const sections = useMemo(() => groupRows(rows, shownGroup, { now }), [rows, shownGroup, now]);
+  // Folds for the grouping that shows. The account this library listed for
+  // owns them; one it doesn't know folds for this visit only.
+  const [folds, setFolds] = useState(() => readFolds(browser(), principal));
+  const folded = shownGroup ? (folds[shownGroup] ?? EMPTY) : EMPTY;
+  const shownKeys = useMemo(
+    () => sections.filter((section) => section.label !== null).map((section) => section.key),
+    [sections],
+  );
+  const changeFolds = (next) => {
+    if (!shownGroup) return;
+    const kept = writeFolds(browser(), principal, shownGroup, next);
+    setFolds((current) => ({ ...current, [shownGroup]: kept }));
+  };
+  const toggleGroup = (key) => changeFolds(toggleFold(folded, key));
 
   // The controls show what was chosen, which a slow request hasn't listed yet.
   const chosen = normalizeLibraryView({ ...params, query: text, group });
@@ -260,8 +302,26 @@ export function Library({
       note: groupApplies("date", chosen.sort) ? null : DATE_GROUP_REASON,
     },
   ];
+  const foldActions = shownGroup
+    ? [
+        {
+          label: FOLD_ALL,
+          icon: ChevronsDownUp,
+          disabled: allFolded(folded, shownKeys),
+          onSelect: () => changeFolds(foldAll(folded, shownKeys)),
+        },
+        {
+          label: UNFOLD_ALL,
+          icon: ChevronsUpDown,
+          disabled: folded.length === 0,
+          onSelect: () => changeFolds(unfoldAll()),
+        },
+      ]
+    : EMPTY;
   const Rows = display === "grid" ? PageGrid : PageList;
   const empty = view.empty && rows.length === 0 && !unknownProject;
+  // A request for another view: the bar runs and the rows it replaces dim.
+  const pending = view.loading || view.searching;
   return (
     <main className="page-library index-view library-view">
       <IndexNav current="pages" onNavigate={onNavigate} />
@@ -348,61 +408,69 @@ export function Library({
             choices={groupChoices}
             value={chosen.group}
             onChoose={(next) => choose({ group: next })}
+            actions={foldActions}
           />
           {grid && <DisplayToggle mode={display} onChange={chooseDisplay} />}
         </div>
+        <span className="library-progress" data-active={pending} aria-hidden="true" />
       </div>
       {notice && (
         <p className="muted quota-notice" role="status">
           {notice}
         </p>
       )}
-      {unknownProject && (
-        <p className="library-filter-notice" role="status">
-          <span>{UNKNOWN_PROJECT_MESSAGE}</span>
-          <button
-            type="button"
-            className="subtle-button"
-            onClick={() => choose({ projectId: null })}
-          >
-            Clear Project filter
-          </button>
+      <div className="library-body" data-stale={view.searching}>
+        {/* Announces a request over rows that still show; the bar above is
+            its visible half. */}
+        <p className="sr-only" role="status">
+          {view.searching ? (params.query || text ? "Searching…" : "Loading…") : ""}
         </p>
-      )}
-      {view.searching && (
-        <p role="status" className="muted index-searching">
-          {params.query || text ? "Searching…" : "Loading…"}
-        </p>
-      )}
-      {view.loading && (
-        <p role="status" className="muted index-status">
-          Loading…
-        </p>
-      )}
-      {view.failed && !unknownProject && (
-        <p className="index-status">
-          <button className="subtle-button" onClick={() => onRetry(() => listing.load(params))}>
-            Try again
-          </button>
-        </p>
-      )}
-      {empty && <p className="muted index-status library-empty">{emptyMessage(params)}</p>}
-      {rows.length > 0 && (
-        <Rows
-          sections={sections}
-          grouping={shownGroup}
-          busy={view.searching || view.refreshing}
-          now={now}
-          onOpen={onOpen}
-          onOpenProject={onOpenProject}
-          onCopyLink={onCopyLink}
-          onWarm={onWarm}
-          cards={cards}
-        />
-      )}
-      {!view.failed && (
-        <ListingFooter view={view} listing={listing} label="Pages" onRetry={onRetry} />
-      )}
+        {unknownProject && (
+          <p className="library-filter-notice" role="status">
+            <span>{UNKNOWN_PROJECT_MESSAGE}</span>
+            <button
+              type="button"
+              className="subtle-button"
+              onClick={() => choose({ projectId: null })}
+            >
+              Clear Project filter
+            </button>
+          </p>
+        )}
+        {view.loading && (
+          <p role="status" className="muted index-status library-state">
+            Loading…
+          </p>
+        )}
+        {view.failed && !unknownProject && (
+          <p className="index-status library-state">
+            <button className="subtle-button" onClick={() => onRetry(() => listing.load(params))}>
+              Try again
+            </button>
+          </p>
+        )}
+        {empty && (
+          <p className="muted index-status library-empty library-state">{emptyMessage(params)}</p>
+        )}
+        {rows.length > 0 && (
+          <Rows
+            sections={sections}
+            grouping={shownGroup}
+            folded={folded}
+            onToggle={toggleGroup}
+            busy={view.searching || view.refreshing}
+            now={now}
+            onOpen={onOpen}
+            onOpenProject={onOpenProject}
+            onCopyLink={onCopyLink}
+            onWarm={onWarm}
+            cards={cards}
+          />
+        )}
+        {!view.failed && (
+          <ListingFooter view={view} listing={listing} label="Pages" onRetry={onRetry} />
+        )}
+      </div>
     </main>
   );
 }
@@ -456,48 +524,90 @@ function ActivityTime({ value, now }) {
   );
 }
 
-/** A group's heading: its label (a Project links to the Project) and how
- * many of its rows have loaded. */
-function GroupHeading({ id, section, onOpenProject }) {
+/** The icon beside a group's label, by its accent (groupAccent). */
+const GROUP_ICONS = Object.freeze({
+  shared: Users,
+  device: HardDrive,
+  items: UserRound,
+  date: CalendarDays,
+});
+
+/** A group's heading: a disclosure button that folds the group's rows, with
+ * its label and how many of its rows have loaded, which stay when folded. A
+ * Project group links to its Project beside the button. The accent (a bar,
+ * a tint and the label's color) helps the eye; the label names the group. */
+function GroupHeading({ labelId, listId, section, folded, onToggle, onOpenProject }) {
   const count = section.rows.length;
+  const { accent, recency } = groupAccent(section);
+  const Icon = GROUP_ICONS[accent] ?? Boxes;
   return (
-    <h2 className="library-group-heading" id={id}>
-      {section.href ? (
+    <h2 className="library-group-heading" data-accent={accent} data-recency={recency ?? undefined}>
+      <button
+        type="button"
+        className="library-group-toggle"
+        aria-expanded={!folded}
+        aria-controls={listId}
+        onClick={() => onToggle(section.key)}
+      >
+        <ChevronRight className="library-group-chevron" size={16} aria-hidden="true" />
+        <Icon className="library-group-icon" size={14} aria-hidden="true" />
+        <span className="library-group-label" id={labelId}>
+          {section.label}
+        </span>
+        <span className="library-group-count">
+          <span aria-hidden="true">{count}</span>
+          <span className="sr-only">
+            {count} {count === 1 ? "Page" : "Pages"}
+          </span>
+        </span>
+      </button>
+      {section.href && (
         <a
-          className="library-group-label"
+          className="icon-button library-group-open"
           href={section.href}
+          aria-label={`Open Project ${section.label}`}
+          title="Open Project"
           onClick={follow(() => onOpenProject(section.projectId))}
         >
-          <Boxes size={14} aria-hidden="true" />
-          <span>{section.label}</span>
+          <ArrowUpRight size={16} aria-hidden="true" />
         </a>
-      ) : (
-        <span className="library-group-label">{section.label}</span>
       )}
-      <span className="library-group-count">
-        <span aria-hidden="true">{count}</span>
-        <span className="sr-only">
-          {count} {count === 1 ? "Page" : "Pages"}
-        </span>
-      </span>
     </h2>
   );
 }
 
 /** One section per group, or one unlabeled list. Each list is named for its
- * group, or "Pages". */
-function Sections({ sections, onOpenProject, children }) {
+ * group, or "Pages". `children(section, name, list)` draws a section's list;
+ * `list` holds its `id` and whether it is `folded`, when it draws nothing
+ * but the empty, hidden list its heading controls. */
+function Sections({ sections, folded, onToggle, onOpenProject, children }) {
   const prefix = useId();
-  return sections.map((section, index) =>
-    section.label === null ? (
-      <div key={section.key}>{children(section, "Pages")}</div>
-    ) : (
-      <section key={section.key} className="library-group" aria-labelledby={`${prefix}-${index}`}>
-        <GroupHeading id={`${prefix}-${index}`} section={section} onOpenProject={onOpenProject} />
-        {children(section, section.label)}
+  return sections.map((section, index) => {
+    if (section.label === null)
+      return (
+        <div key={section.key}>{children(section, "Pages", { id: undefined, folded: false })}</div>
+      );
+    const shut = folded.includes(section.key);
+    const list = { id: `${prefix}-list-${index}`, folded: shut };
+    return (
+      <section
+        key={section.key}
+        className="library-group"
+        data-folded={shut}
+        aria-labelledby={`${prefix}-label-${index}`}
+      >
+        <GroupHeading
+          labelId={`${prefix}-label-${index}`}
+          listId={list.id}
+          section={section}
+          folded={shut}
+          onToggle={onToggle}
+          onOpenProject={onOpenProject}
+        />
+        {children(section, section.label, list)}
       </section>
-    ),
-  );
+    );
+  });
 }
 
 /** Where a row comes from, in the Source column. A row only this browser
@@ -535,7 +645,18 @@ function Source({ row, grouping, onOpenProject }) {
  * assistive tech. The Name link covers the row; the Project label and Copy
  * link sit above it as their own targets. Grouped by Project, the group
  * heading names each row's source, so the Source column goes. */
-function PageList({ sections, grouping, busy, now, onOpen, onOpenProject, onCopyLink, onWarm }) {
+function PageList({
+  sections,
+  grouping,
+  folded,
+  onToggle,
+  busy,
+  now,
+  onOpen,
+  onOpenProject,
+  onCopyLink,
+  onWarm,
+}) {
   const source = grouping !== "project";
   return (
     <div
@@ -548,10 +669,20 @@ function PageList({ sections, grouping, busy, now, onOpen, onOpenProject, onCopy
         <span className="index-column-updated">Last activity</span>
         <span />
       </div>
-      <Sections sections={sections} onOpenProject={onOpenProject}>
-        {(section, name) => (
-          <ul className="index-list index-page-list" aria-label={name}>
-            {section.rows.map((row) => (
+      <Sections
+        sections={sections}
+        folded={folded}
+        onToggle={onToggle}
+        onOpenProject={onOpenProject}
+      >
+        {(section, name, list) => (
+          <ul
+            className="index-list index-page-list"
+            aria-label={name}
+            id={list.id}
+            hidden={list.folded}
+          >
+            {(list.folded ? EMPTY : section.rows).map((row) => (
               <li className="index-row index-page-row" key={row.id}>
                 <div className="index-cell-name">
                   <PageIcon home={row.home} className="index-row-icon" size={19} />
@@ -594,15 +725,27 @@ function PageList({ sections, grouping, busy, now, onOpen, onOpenProject, onCopy
 
 /** Grid mode: each card is one link to its Page, so it carries no Project
  * label (a link inside a link). */
-function PageGrid({ sections, busy, onOpen, onOpenProject, onWarm, cards }) {
-  // The order batches top up in (page-cards.mjs): the cards as shown.
-  useEffect(() => cards.arrange(sections.flatMap((section) => section.rows)), [cards, sections]);
+function PageGrid({ sections, folded, onToggle, busy, onOpen, onOpenProject, onWarm, cards }) {
+  // The order batches top up in (page-cards.mjs): the cards as shown, which
+  // leaves out a folded group's.
+  useEffect(
+    () =>
+      cards.arrange(
+        sections.flatMap((section) => (folded.includes(section.key) ? [] : section.rows)),
+      ),
+    [cards, sections, folded],
+  );
   return (
     <div className="library-results" aria-busy={busy}>
-      <Sections sections={sections} onOpenProject={onOpenProject}>
-        {(section, name) => (
-          <ul className="index-grid" aria-label={name}>
-            {section.rows.map((row) => (
+      <Sections
+        sections={sections}
+        folded={folded}
+        onToggle={onToggle}
+        onOpenProject={onOpenProject}
+      >
+        {(section, name, list) => (
+          <ul className="index-grid" aria-label={name} id={list.id} hidden={list.folded}>
+            {(list.folded ? EMPTY : section.rows).map((row) => (
               <GridCard key={row.id} row={row} cards={cards} onOpen={onOpen} onWarm={onWarm} />
             ))}
           </ul>

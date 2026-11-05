@@ -75,16 +75,37 @@ export function readGlideSettings(browser = globalThis) {
 /**
  * Grid cards in the Pages library: `?grid=1` or `localStorage["pages.grid"]`.
  * Off by default; the library shows its list and no List/Grid toggle until
- * cards show previews. With it on, the toggle returns and the choice is
- * remembered (display-mode.mjs).
+ * cards show previews. With it on, the toggle shows and the choice is
+ * remembered (display-mode.mjs). `?grid=1` also asks for the grid itself
+ * (readGridRequest): the tab opens on it, though the library's address then
+ * drops the query, so a reload keeps the grid only with the stored flag.
  */
 export const readGridFlag = (browser = globalThis) => enabled(readFlag("grid", browser));
+
+/** Whether the page's own address asks for grid cards (`?grid=1`). Storage
+ * turns the flag on but asks for nothing: it shows the toggle, and the
+ * remembered choice decides. */
+export function readGridRequest(browser = globalThis) {
+  try {
+    return enabled(new URLSearchParams(browser?.location?.search ?? "").get("grid"));
+  } catch {
+    return false;
+  }
+}
 
 let tabGrid = null;
 /** Whether this tab shows grid cards. Read once, like glideSettings. */
 export function gridEnabled() {
   tabGrid ??= readGridFlag(globalThis);
   return tabGrid;
+}
+
+let tabGridRequest = null;
+/** Whether this tab's first address asked for the grid. Read once, like
+ * gridEnabled. */
+export function gridRequested() {
+  tabGridRequest ??= readGridRequest(globalThis);
+  return tabGridRequest;
 }
 
 let tabGlide = null;

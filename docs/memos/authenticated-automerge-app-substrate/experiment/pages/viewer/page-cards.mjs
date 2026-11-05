@@ -8,9 +8,10 @@
 // so a steady scroll still sends requests while it runs. A request takes the
 // latest cards to come into view first. A card that leaves the viewport, or
 // unmounts, before its request goes out stops waiting and goes back to idle,
-// so a fling asks only for what it stops on. A request then fills toward 24
-// with the next cards in the grid's order that haven't asked yet, so a slow
-// scroll down a phone grid sends one request per 24 cards, not one per row.
+// so a request never carries a card that left view before it went out. A
+// request then fills toward 24 with the next cards in the grid's order that
+// haven't asked yet, so a slow scroll down a phone grid sends one request per
+// 24 cards, not one per row.
 //
 // Each card follows the page-card machine below, keyed by Page ID and the
 // row's `content_updated_at`, so a Page edited since the grid asked shows a

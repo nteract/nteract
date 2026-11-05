@@ -234,8 +234,8 @@ test("move_page reparents a Page with its subtree, reorders siblings, and change
   );
   assert.equal(before.body.location_revision, 4);
   await s.invariants();
-  // The index reconciles from the entries: every move marks it dirty.
-  assert.ok(await storage.get("host/index/dirty"));
+  // D1 rows carry no location: a move leaves the account index ready.
+  assert.equal(await storage.get("host/index/dirty"), undefined);
   // Pages in Your items move among themselves too.
   const loose = await s.page({ title: "Loose" });
   const otherLoose = await s.page({ title: "Other loose" });
@@ -336,7 +336,7 @@ test("move_page moves a subtree across containers: Your items, Project and Proje
 
   await s.invariants();
   for (const id of [loose, child, grandchild]) assert.deepEqual(w.heads(id), heads[id], id);
-  assert.ok(await storage.get("host/index/dirty"));
+  assert.equal(await storage.get("host/index/dirty"), undefined);
   // The trashed sub-page restores into the container its parent now sits in.
   const restored = await w.call("owner", "restore_page", {
     page_id: gone,
@@ -819,7 +819,7 @@ test("300 tied siblings: the repair crosses 128 keys and lands in one transactio
   for (const put of movePuts) assert.ok(Object.keys(put.entries).length <= STORAGE_KEYS_PER_CALL);
   assert.ok(keys.includes(`page/${mover}`));
   assert.ok(keys.includes(LOCATION_REVISION_KEY));
-  assert.ok(keys.includes("host/index/dirty"));
+  assert.ok(!keys.includes("host/index/dirty"), "a move leaves the account index as it was");
   assert.ok(keys.some((key) => key.startsWith("host/operation/v1_")));
   assert.equal(
     keys.filter((key) => key.startsWith("page/")).length,
