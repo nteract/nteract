@@ -233,15 +233,16 @@ references; it does not publish the Page or change asset access.
   - Export writes lists tight with `-` bullets. The native model doesn't
     record blank lines between items, so a list reads back loose only when an
     item holds a second block, which Markdown can't write tight.
-  - Markdown writes store the editor's form ([`pageSpans`](model/richtext.mjs)):
-    an implicit top-level first paragraph and immutable-string attrs. The
+  - Markdown writes store the spans the editor's own encoder writes
+    ([`pageSpans`](model/richtext.mjs) runs Wordgard's `encode`). The
     editor's first structural edit (Enter, a cross-block delete, a block
-    paste, a list toggle) in an agent-written block writes no history; plain
-    typing never rewrites a block.
+    paste, a list toggle) in an agent-written block stores the same spans;
+    plain typing never rewrites a block.
     [`markdown-projection.test.mjs`](model/markdown-projection.test.mjs)
-    checks every corpus case and lists the cases left for a shared encoder:
-    two kinds of disagreement (a quote whose first child isn't a paragraph,
-    and mark runs the editor re-marks) across 11 corpus cases.
+    checks every corpus case. Five cases still write on that edit: Automerge
+    3.5's `updateSpans` unmarks and marks again any mark that covers more
+    than one span, even when the spans are unchanged. Those ops can win over
+    a peer's concurrent change to the same mark; the test pins it.
   - The scan masks code per table cell, as Markdown-it splits cells first,
     and recognizes a tag of any length, with `>` inside quoted values, in
     linear time.

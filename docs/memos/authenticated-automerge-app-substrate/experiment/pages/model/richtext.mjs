@@ -35,6 +35,7 @@ import {
   parseAssetPath,
   readDataframe,
 } from "../shared/dataset-assets.mjs";
+import { decode, encode } from "../viewer/wordgard-model.mjs";
 
 export { safeUrl } from "./marks.mjs";
 
@@ -1674,22 +1675,30 @@ export function setRichMarkdown(doc, id, source, { literal = false } = {}) {
   A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
   stampSpans(doc, spans);
 }
-/** A Page block's spans for `tree`, in the form the editor writes: a
- * top-level first paragraph has no marker when it has content or is the only
- * node (encode's implicitAt in viewer/wordgard-model.mjs). The adapter always
- * writes that marker, so the editor's first structural edit (Enter, a
- * cross-block delete, a block paste, a list toggle) would otherwise delete
- * it and write history. Two disagreements remain for the shared encoder: a
- * quote whose first child isn't a paragraph, and some mark runs
- * (markdown-projection.test.mjs lists them). */
 /** The spans the ProseMirror adapter writes for `tree`, before pageSpans
  * puts them in the editor's form. Fixtures whose history must not move with
- * Pages' writer form use these. */
+ * Pages' writer form use these, as do fixtures for stored content in the
+ * adapter's form. */
 export const adapterSpans = (tree) => pmNodeToSpans(adapter, tree);
+/** A Page block's spans for `tree`, written by the editor's own encoder
+ * (encode in viewer/wordgard-model.mjs), so the editor's first structural
+ * edit (Enter, a cross-block delete, a block paste, a list toggle) in an
+ * agent-written block rewrites the same spans. The adapter's form differs in
+ * two places: it writes a marker for a top-level first paragraph, and leaves
+ * out the marker of a quote whose first child isn't a paragraph.
+ *
+ * A tree the editor model can't hold whole (decode reports `lossy`) falls
+ * back to the adapter's spans, put in the editor's form as far as that
+ * goes. */
 export function pageSpans(tree) {
+  const spans = adapterSpans(tree);
+  const decoded = decode(spans);
+  return decoded.lossy ? adapterPageSpans(spans) : encode(decoded.doc);
+}
+function adapterPageSpans(adapted) {
   // String attrs are immutable strings, as encode writes them; the adapter
   // writes an image's alt and title as text.
-  const spans = pmNodeToSpans(adapter, tree).map((span) =>
+  const spans = adapted.map((span) =>
     span.type === "block"
       ? {
           ...span,
