@@ -3,6 +3,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
+import { HorizontalRule, Paragraph } from "wordgard/types";
+import { encode, schema } from "../viewer/wordgard-model.mjs";
 import { applyPageOperation, createPageData, initializePage, orderedBlockIds } from "./page.mjs";
 import { adapterSpans, blockMarkdown, parseMarkdown, richDoc, textPath } from "./richtext.mjs";
 import { updateSpansConfig } from "./marks.mjs";
@@ -75,6 +77,32 @@ test("the outline gives every top-level node an id but the block's opening parag
     }
     assert.equal(span.type, "block");
     assert.equal(span.value.isEmbed, false);
+  }
+});
+
+test("consecutive rules and an empty paragraph get their own stored marker ids", () => {
+  const { doc: base, id } = fixture("");
+  const doc = A.change(base, (draft) =>
+    A.updateSpans(
+      draft,
+      textPath(id),
+      encode(schema.doc([HorizontalRule, HorizontalRule, Paragraph.create([])])),
+      updateSpansConfig,
+    ),
+  );
+  const expected = [0, 1, 2].map((at) => ({ id: A.getCursor(doc, textPath(id), at), at }));
+  assert.deepEqual(nodeIds(doc, id), expected);
+  assert.deepEqual(
+    outline(doc, id).map((entry) => [entry.type, entry.node_id]),
+    ["horizontal-rule", "horizontal-rule", "paragraph"].map((type, i) => [type, expected[i].id]),
+  );
+  for (const [index, { id: nodeId }] of expected.entries()) {
+    assert.deepEqual(resolveNodeId(doc, id, nodeId), { index, start: index, end: index + 1 });
+    const after = edit(doc, [{ op: "delete_node", block_id: id, node_id: nodeId }]).doc;
+    assert.deepEqual(
+      outline(after, id).map((entry) => entry.node_id),
+      expected.filter((entry) => entry.id !== nodeId).map((entry) => entry.id),
+    );
   }
 });
 
