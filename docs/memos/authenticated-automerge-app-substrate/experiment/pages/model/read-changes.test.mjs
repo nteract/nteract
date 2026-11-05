@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import { projectReadChanges } from "./read-changes.mjs";
+import { projectReadContent } from "./read-content.mjs";
 import { enableRich, setRichMarkdown, textPath } from "./richtext.mjs";
 import { replaceMatch } from "./replace-match.mjs";
 import { applyComment as applyCommentTo } from "./comments.mjs";
@@ -44,6 +45,19 @@ function markerCursor(doc, n) {
   throw Error(`No marker ${n}`);
 }
 const errorCode = (status, code) => (error) => error.status === status && error.code === code;
+
+test("read and change feed agree on bounded nested image occurrences", () => {
+  const before = page("Before");
+  const src = `/api/pages/${crypto.randomUUID()}/assets/${"b".repeat(64)}`;
+  const after = A.change(A.clone(before), (doc) =>
+    setRichMarkdown(doc, "one", `> ![quote](${src})\n>\n> - ![nested](${src})`),
+  );
+  const outline = projectReadContent(after, {}).outline.find((entry) => entry.summary?.images);
+  const delta = read(after, A.getHeads(before));
+  const changed = delta.changes.find((entry) => entry.summary?.images);
+  assert.deepEqual(changed.summary.images, outline.summary.images);
+  assert.equal(changed.summary.images.length, 2);
+});
 /** Changes since a Page revision and a comments revision, each with its own
  * heads, as the Page host reads them. */
 function readBoth(doc, comments, since_heads, since_comment_heads, options = {}) {
