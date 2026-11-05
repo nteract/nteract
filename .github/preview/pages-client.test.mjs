@@ -1,13 +1,42 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {sendPagesDeployment,pagesStepSummary,pagesFailureDiagnostic,PAGES_DEPLOY_TIMEOUT_MS} from './pages-client.mjs';
+import {sendPagesDeployment,pagesStepSummary,pagesJournalSummary,pagesFailureDiagnostic,PAGES_DEPLOY_TIMEOUT_MS} from './pages-client.mjs';
 const sha='a'.repeat(40),id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const env={PAGES_PAGE10_ENABLED:'true',GITHUB_REPOSITORY:'nteract/nteract',GITHUB_EVENT_NAME:'workflow_run',GITHUB_RUN_ID:'10',GITHUB_RUN_ATTEMPT:'1',
   GITHUB_TOKEN:'secret',ACTIONS_ID_TOKEN_REQUEST_URL:'https://actions.githubusercontent.com/token',ACTIONS_ID_TOKEN_REQUEST_TOKEN:'oidc'};
 const event={workflow_run:{event:'push',head_branch:'main',head_sha:sha,id:20,run_attempt:1,status:'completed',conclusion:'success'}};
 const result={operationId:id,requestedSha:sha,sha,target:'page10',status:'succeeded',build:'b'.repeat(12),
   restorePointKey:'standalone/page10-snapshots/2026-11-04-210000-auto/versions.json',counts:{total:0}};
+test('journal summary renders legacy and absent coverage as Unknown, refusing qualified failures',()=>{
+  const unknown={schema:1,coverage:'unknown',completeness:'unknown',total:null,byStatus:{},invalidLines:0,envelopes:741,
+    parseableMessages:14,textMessages:727,requestSamples:0};
+  assert.match(pagesStepSummary({...result,counts:unknown}),/Unknown \(no verified HTTP samples\)/);
+  assert.equal(pagesJournalSummary({total:0}),'Unknown (legacy unverified count: 0)');
+  for(const total of [1,3,-1,0.5,'0',null]) assert.throws(()=>pagesJournalSummary({total}));
+  const observed={...unknown,coverage:'observed',total:0,requestSamples:2};
+  assert.match(pagesJournalSummary(observed),/Unknown coverage \(0 observed 5xx in 2 HTTP-tool samples\)/);
+  for(const counts of [{...unknown,total:0},{...unknown,invalidLines:1},{...unknown,completeness:'complete'},
+    {...unknown,schema:2},{...observed,total:1,byStatus:{503:1}},{...observed,byStatus:{'secret':1}},
+    {...unknown,envelopes:100001},{...unknown,total:null,requestSamples:1},{total:0,coverage:'complete'},
+    {total:0,invalidLines:1}]) assert.throws(()=>pagesJournalSummary(counts));
+});
+test('successful operation accepts unknown coverage but rejects malformed evidence and observed 5xx',async()=>{
+  const unknown={schema:1,coverage:'unknown',completeness:'unknown',total:null,byStatus:{},invalidLines:0,envelopes:1,
+    parseableMessages:0,textMessages:1,requestSamples:0};
+  for(const counts of [unknown,{...unknown,coverage:'observed',total:1,byStatus:{503:1},requestSamples:1,parseableMessages:1},
+    {...unknown,invalidLines:1},{total:1},{total:-1}]) {
+    let posts=0,time=0;
+    const promise=sendPagesDeployment(env,event,{clock:{now:()=>time,sleep:async ms=>time+=ms},fetchImpl:async(url,options)=>{
+      if(String(url).includes('actions.githubusercontent.com')) return Response.json({value:'a.b.c'});
+      if(options.method==='POST') {posts++;return Response.json({operationId:id},{status:202});}
+      return Response.json({...result,counts});
+    }});
+    if(counts===unknown) assert.deepEqual((await promise).counts,unknown);
+    else await assert.rejects(promise,error=>pagesFailureDiagnostic(error).code==='evidence');
+    assert.equal(posts,1);
+  }
+});
 test('client obtains audience-bound OIDC per poll and posts exact source once with release summary',async t=>{
   let time=0;const calls=[],timeouts=[];
   t.mock.method(AbortSignal,'timeout',ms=>{timeouts.push(ms);return new AbortController().signal;});
@@ -21,7 +50,7 @@ test('client obtains audience-bound OIDC per poll and posts exact source once wi
   assert.equal(calls.filter(c=>c.options.method==='POST').length,1);assert.equal(calls.length,4);
   assert.equal(PAGES_DEPLOY_TIMEOUT_MS,420000);
   assert.deepEqual(timeouts,[20000,PAGES_DEPLOY_TIMEOUT_MS,20000,30000]);
-  assert.match(pagesStepSummary(result),/Post-deploy 5xx/);
+  assert.match(pagesStepSummary(result),/Unknown \(legacy unverified count: 0\)/);
 });
 test('diagnostics distinguish bounded request failures and never disclose untrusted values',async t=>{
   const secret='private-token-and-response-content',controllers=[];

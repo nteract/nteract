@@ -4,6 +4,29 @@ export const PAGES_CONTROLLER='https://deploy.runtimed.run';
 // Covers GitHub authorization/settling and the controller's admission subprocess.
 // The paired preview-infra contract test checks this against the server budgets.
 export const PAGES_DEPLOY_TIMEOUT_MS=7*60*1000;
+export function pagesJournalSummary(counts) {
+  const bounded=value=>Number.isSafeInteger(value)&&value>=0&&value<=100000;
+  check(counts&&typeof counts==='object'&&!Array.isArray(counts),'invalid journal evidence');
+  if(counts.schema===undefined) {
+    check(bounded(counts.total)&&counts.coverage===undefined&&counts.completeness===undefined&&
+      (counts.invalidLines===undefined||counts.invalidLines===0),'invalid legacy journal evidence');
+    check(counts.total===0,'legacy journal count may contain HTTP 5xx');
+    return `Unknown (legacy unverified count: ${counts.total})`;
+  }
+  check(counts.schema===1&&counts.completeness==='unknown'&&['unknown','observed'].includes(counts.coverage),'invalid journal coverage');
+  for(const field of ['invalidLines','envelopes','parseableMessages','textMessages','requestSamples']) check(bounded(counts[field]),'invalid journal aggregate');
+  check(counts.invalidLines===0&&counts.requestSamples<=counts.parseableMessages&&counts.textMessages<=counts.envelopes,'invalid journal sample');
+  check(counts.byStatus&&typeof counts.byStatus==='object'&&!Array.isArray(counts.byStatus),'invalid journal statuses');
+  const statuses=Object.entries(counts.byStatus);check(statuses.length<=100&&statuses.every(([status,count])=>/^5\d\d$/.test(status)&&bounded(count)&&count>0),'invalid journal statuses');
+  if(counts.coverage==='unknown') {
+    check(counts.requestSamples===0&&counts.total===null&&statuses.length===0,'invalid unknown journal evidence');
+    return 'Unknown (no verified HTTP samples)';
+  }
+  check(counts.requestSamples>0&&bounded(counts.total)&&counts.total<=counts.requestSamples&&
+    statuses.reduce((sum,[,count])=>sum+count,0)===counts.total,'invalid observed journal evidence');
+  check(counts.total===0,'verified HTTP samples contain 5xx');
+  return `Unknown coverage (0 observed 5xx in ${counts.requestSamples} HTTP-tool samples)`;
+}
 const failures=new WeakMap();
 const operationIdPattern=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 export function pagesFailureDiagnostic(error) {
@@ -70,7 +93,7 @@ export async function sendPagesDeployment(env,event,{fetchImpl,clock,onAccepted=
     if(result.status==='succeeded') {
       stage('status','evidence');
       check(result.sha===sha && /^[a-f0-9]{12}$/.test(result.build) && typeof result.restorePointKey==='string' &&
-        Number.isSafeInteger(result.counts?.total),'Pages result missing verified release evidence');return result;
+        result.counts,'Pages result missing verified release evidence');pagesJournalSummary(result.counts);return result;
     }
   }
   } catch(cause) {
@@ -81,6 +104,7 @@ export async function sendPagesDeployment(env,event,{fetchImpl,clock,onAccepted=
 export function pagesStepSummary(result) {
   sourceSha(result.sha);
   check(/^[a-f0-9]{12}$/.test(result.build) && /^standalone\/page10-snapshots\/[a-z0-9-]+\/versions.json$/.test(result.restorePointKey) &&
-    Number.isSafeInteger(result.counts?.total) && result.counts.total>=0,'invalid Pages summary evidence');
-  return `Page10 deployed at \`${result.sha}\`.\n\n| Build | Restore point | Post-deploy 5xx (lab1, 60s) |\n| --- | --- | --- |\n| ${result.build} | ${result.restorePointKey} | ${result.counts.total} |\n`;
+    result.counts,'invalid Pages summary evidence');
+  const journal=pagesJournalSummary(result.counts);
+  return `Page10 deployed at \`${result.sha}\`.\n\n| Build | Restore point | HTTP error observations (lab1 journal) |\n| --- | --- | --- |\n| ${result.build} | ${result.restorePointKey} | ${journal} |\n`;
 }
