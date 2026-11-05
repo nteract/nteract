@@ -3058,15 +3058,21 @@ once a minute. The host numbers each admitted upload from its durable storage.
 The images live at `pages/<id>/card/<hash>-<theme>.<ext>`. An etag-fenced
 `card/latest` pointer names the current hash and the highest revision it has
 seen. A swap to another hash with a lower revision is refused as stale, so an
-upload for an older first screen that lands late can't replace a newer one. A
-new hash deletes the old images, so a Page keeps at most one image per theme.
+upload for an older first screen that lands late can't replace a newer one.
+The pointer references at most one image per theme, not a bound on stored bytes.
+A stale upload retains its image key because a newer accepted upload may already
+reuse that hash/theme key. Rejected uploads and failed writes or deletes can leave
+orphaned bytes. Successful swaps still attempt to delete old images; that separate,
+unfenced cleanup can race with newer uploads reusing those keys.
 `page_cards` adds `image: { card_hash, light, dark }` only when the pointer's
 hash is the stored JSON card's and both themes exist. The image route decides
 access as `page_cards` does, on every request: the caller's own Catalog entry
 for an owned Page, or its shared entry plus the Page host's record-only check.
 A grid of image cards boots no Page document, and a revoked grant fails on
 the next fetch. Its responses are `private, immutable`
-and carry `nosniff`. Purge and tombstone delete the images with `card.json`.
+and carry `nosniff`. Purge and tombstone delete `card.json`, the image pointer and
+its referenced images, plus orphans found in at most four prefix-listing pages.
+That bounded cleanup may leave orphaned bytes beyond the listing limit.
 The server can't check that the pixels match the content. That is the trust of
 any image the owner inserts into the Page, and only the Page's readers see it.
 

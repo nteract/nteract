@@ -14,6 +14,7 @@ import {
   cardImageKey,
   cardImagePointerKey,
   cardImageView,
+  deleteCardImages,
   inspectCardImage,
   readCardImagePointer,
   storeCardImage,
@@ -248,7 +249,7 @@ test("images are served only to readers, with private immutable caching", async 
   );
 });
 
-test("a new first screen replaces the images; only the latest hash is kept", async (t) => {
+test("sequential first-screen uploads replace the images and remove the old hash", async (t) => {
   const { w, assets, hashOf, create, upload } = await imagesWorld(t);
   const pageId = await create();
   const first = await hashOf(pageId);
@@ -462,13 +463,67 @@ test("a late upload for an older first screen never replaces a newer pointer", a
   assert.equal(pointer.revision, 3);
   assert.ok(assets.objects.has(cardImageKey(pageId, H2, "light", "webp")));
   assert.ok(assets.objects.has(cardImageKey(pageId, H2, "dark", "webp")));
-  assert.equal(assets.objects.has(cardImageKey(pageId, H1, "light", "webp")), false);
+  assert.ok(assets.objects.has(cardImageKey(pageId, H1, "light", "webp")));
   // Same-hash uploads merge in any order and keep the higher revision.
   await store(H2, "light", 2);
   assert.equal((await readCardImagePointer(assets, pageId)).revision, 3);
   // A newer first screen still replaces it.
   await store(H1, "light", 4);
   assert.equal((await readCardImagePointer(assets, pageId)).card_hash, H1);
+});
+
+test("a stale upload keeps a shared image key reused by newer accepted uploads", async () => {
+  const assets = cardBucket();
+  const pageId = "11111111-1111-4111-8111-111111111111";
+  const H1 = "1".repeat(64);
+  const H2 = "2".repeat(64);
+  const store = (hash, theme, revision, image) =>
+    storeCardImage(assets, { pageId, hash, theme, revision, bytes: image });
+  await store(H2, "light", 2, bytes("webp"));
+  await store(H2, "dark", 3, bytes("webp"));
+
+  // Only the old upload's head response waits; later reads see the live pointer.
+  const reached = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  const head = assets.head;
+  assets.head = async (key) => {
+    const snapshot = await head.call(assets, key);
+    if (key === cardImagePointerKey(pageId)) {
+      assets.head = head;
+      reached.resolve(snapshot);
+      await release.promise;
+    }
+    return snapshot;
+  };
+  const older = assert.rejects(store(H1, "light", 1, bytes("png")), {
+    status: 409,
+    code: "card_image_stale",
+  });
+  const light = sizedPng(4, 2);
+  const dark = bytes("webp");
+  const lightKey = cardImageKey(pageId, H1, "light", "png");
+  const darkKey = cardImageKey(pageId, H1, "dark", "webp");
+  try {
+    const snapshot = await reached.promise;
+    assert.equal(snapshot.customMetadata.card_hash, H2);
+    assert.equal(snapshot.customMetadata.revision, "3");
+    assert.equal((await store(H1, "light", 4, light)).revision, 4);
+    assert.equal((await store(H1, "dark", 5, dark)).revision, 5);
+    assert.deepEqual(assets.objects.get(lightKey)?.bytes, light);
+    assert.deepEqual(assets.objects.get(darkKey)?.bytes, dark);
+  } finally {
+    release.resolve();
+  }
+  await older;
+  const pointer = await readCardImagePointer(assets, pageId);
+  assert.equal(pointer.revision, 5);
+  assert.deepEqual(cardImageView(pageId, pointer), {
+    card_hash: H1,
+    light: `/api/pages/${pageId}/card-image/${H1}-light.png`,
+    dark: `/api/pages/${pageId}/card-image/${H1}-dark.webp`,
+  });
+  assert.deepEqual(assets.objects.get(lightKey)?.bytes, light);
+  assert.deepEqual(assets.objects.get(darkKey)?.bytes, dark);
 });
 
 test("two first screens racing to the pointer: the older one loses even if its put is retried", async () => {
@@ -478,13 +533,14 @@ test("two first screens racing to the pointer: the older one loses even if its p
   const H2 = "2".repeat(64);
   // H1 (revision 1) reads the pointer first, then waits while H2 (revision 2)
   // swaps it; H1's fenced put is refused, it reads again and sees H2.
-  let release;
-  const held = new Promise((resolve) => (release = resolve));
+  const reached = Promise.withResolvers();
+  const release = Promise.withResolvers();
   let first = true;
   assets.beforePut = async (key) => {
     if (key === cardImagePointerKey(pageId) && first) {
       first = false;
-      await held;
+      reached.resolve();
+      await release.promise;
     }
   };
   const older = storeCardImage(assets, {
@@ -494,22 +550,30 @@ test("two first screens racing to the pointer: the older one loses even if its p
     bytes: bytes("webp"),
     revision: 1,
   });
-  await new Promise((resolve) => setTimeout(resolve, 5));
-  await storeCardImage(assets, {
-    pageId,
-    hash: H2,
-    theme: "light",
-    bytes: bytes("webp"),
-    revision: 2,
-  });
-  release();
+  await reached.promise;
+  try {
+    await storeCardImage(assets, {
+      pageId,
+      hash: H2,
+      theme: "light",
+      bytes: bytes("webp"),
+      revision: 2,
+    });
+  } finally {
+    release.resolve();
+  }
   await assert.rejects(older, { status: 409, code: "card_image_stale" });
+  assert.equal(assets.refused, 1);
   const pointer = await readCardImagePointer(assets, pageId);
   assert.equal(pointer.card_hash, H2);
   assert.deepEqual([...assets.objects.keys()].filter((key) => key.includes("/card/")).sort(), [
+    cardImageKey(pageId, H1, "dark", "webp"),
     cardImageKey(pageId, H2, "light", "webp"),
     cardImagePointerKey(pageId),
   ]);
+  // H1 is not pointer-referenced; only the prefix listing can find its orphan.
+  await deleteCardImages(assets, pageId);
+  assert.equal(assets.objects.size, 0);
 });
 
 test("each admitted upload gets the host's next revision, kept in its storage", async (t) => {
