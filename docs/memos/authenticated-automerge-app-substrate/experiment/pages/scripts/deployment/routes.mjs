@@ -12,6 +12,8 @@ export const assetPaths =
 // only when a Page shows a Parquet dataframe. A separate group, so Page9's frozen
 // asset route bytes stay exactly as deployed.
 export const siftPaths = "sift-[A-Z2-7]{8}[.]wasm|";
+// Exact identity endpoint; the Worker enforces GET and authentication.
+export const whoamiPaths = "whoami|";
 // Viewer Project links (shared/routes.mjs readPageRoute): /project/<id> and
 // the older /s/<id>, which the viewer rewrites to /project/<id>.
 export const projectPaths =
@@ -49,6 +51,7 @@ export function routesFor(target = "pages-next", legacy = false) {
       sift +
       renderer +
       connect +
+      (profile.whoami === true ? whoamiPaths : "") +
       (authenticatedAssets ? oauthPaths : "") +
       "(automerge|subduction)[.]wasm|health|mcp|llms[.]txt|p/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/?|" +
       projects +

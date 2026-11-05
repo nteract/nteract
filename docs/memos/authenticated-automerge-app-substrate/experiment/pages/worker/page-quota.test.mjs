@@ -466,6 +466,15 @@ test("list_pages reports the caller's own quota", async (t) => {
   await g.create();
   const listed = await g.call("list_pages");
   assert.equal(listed.status, 200);
+  assert.deepEqual(listed.body.account, {
+    principal: listed.body.principal,
+    display_name: "Fixture Person",
+    email: "fixture@example.invalid",
+  });
+  assert.deepEqual(
+    (await g.call("list_pages", { kind: "notebook" })).body.account,
+    listed.body.account,
+  );
   assert.deepEqual(listed.body.quota, { limit: 10, count: 2, trash_count: 0 });
   // A filtered listing reports the same account-wide numbers.
   assert.deepEqual(
