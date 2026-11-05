@@ -186,6 +186,12 @@ const dialogOf = (f) => f.container.querySelector("dialog");
 const rows = (f) =>
   [...f.container.querySelectorAll(".thread-row")].map((row) => row.dataset.threadId);
 
+test("threads before the first heading get no group label; later headings do", async (t) => {
+  const f = await fixture(t);
+  assert.equal(f.container.querySelector(".comments-group"), null);
+  assert.equal(f.container.textContent.includes("Top of page"), false);
+});
+
 test("the list shows compact rows for open threads with filters for mine and resolved", async (t) => {
   const f = await fixture(t, { principal: "me" });
   f.props.threads[1].messages[0].author.principal = "me";
@@ -218,10 +224,8 @@ test("opening a row shows the thread; Back restores the list scroll and focus", 
   const view = f.view();
   assert.equal(f.row("first"), null, "the list is replaced by the thread");
   assert.equal(view.querySelector(".thread-title").textContent, "Full first comment first");
-  assert.match(
-    view.querySelector(".thread-view-meta").textContent,
-    /Open·3 messages·Started by Kyle Kelley/,
-  );
+  assert.equal(view.querySelector(".thread-view-meta"), null, "Resolve says the state");
+  assert.match(view.querySelector(".thread-state-action").textContent, /Resolve/);
   assert.equal(view.querySelector(".thread-passage mark").textContent, "Passage first");
   assert.equal(view.querySelector(".thread-divider").textContent, "2 replies");
   assert.equal(view.querySelectorAll(".thread-replies .message").length, 2);
@@ -373,11 +377,17 @@ test("resolve and reopen send the action and keep focus in the thread", async (t
   assert.ok(f.container.querySelector("dialog").contains(document.activeElement));
 });
 
-test("viewers read threads without Reply or Resolve", async (t) => {
+test("viewers read threads without Reply or Resolve; resolved threads say so", async (t) => {
   const f = await fixture(t, {
     session: { doc: { blocks: { block: {} } }, canComment: false, commentMessage: () => undefined },
   });
+  f.props.target = { id: "done", source: "passage", request: 9 };
+  await f.render();
+  assert.match(f.view().querySelector(".thread-view-meta").textContent, /Resolved/);
+  await f.click(f.container.querySelector(".comments-back"));
+  await f.click(f.container.querySelector(".comments-filter"));
   await f.open("first");
+  assert.equal(f.view().querySelector(".thread-view-meta"), null);
   assert.equal(f.view().querySelector(".thread-state-action"), null);
   assert.equal(f.view().querySelector(".thread-reply-button"), null);
   assert.equal(f.view().querySelector(".thread-composer"), null);

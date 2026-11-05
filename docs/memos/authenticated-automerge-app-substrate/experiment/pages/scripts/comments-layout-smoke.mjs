@@ -18,7 +18,7 @@ const WIDTHS = [2560, 1920, 1536, 1440, 1366, 1280, 1180, 1100, 901, 800];
 // Mirrors style.css: Page box, panel widths, and the 24px viewport margin.
 const PAGE_WIDTH = 1056,
   PAGE_PADDING = 24,
-  PANEL_WIDTH = 312,
+  PANEL_WIDTH = 360,
   PANEL_MARGIN = 24;
 const TOLERANCE = 1;
 await mkdir(output, { recursive: true });

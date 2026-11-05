@@ -644,7 +644,7 @@ details.document-actions > div button {
    so fractional widths such as 900.5px under browser zoom get one layout. */
 @media screen and (width > 900px) {
   .document.with-comments {
-    --comments-width: 312px;
+    --comments-width: 360px;
     --comments-reserve: calc(var(--comments-width) + 24px);
     --document-width: min(1056px, 100% - var(--comments-reserve));
     --document-left: max(
@@ -660,7 +660,7 @@ details.document-actions > div button {
     margin-right: 0;
   }
   .document.with-comments:has(> .comments-expanded) {
-    --comments-width: min(680px, max(312px, 100% - 600px));
+    --comments-width: min(680px, max(360px, 100% - 600px));
   }
   .document.with-comments > .comments {
     left: calc(var(--document-left) + var(--document-width));
@@ -947,7 +947,7 @@ dialog::backdrop {
 .comments {
   position: fixed;
   inset: 80px 24px auto auto;
-  width: 312px;
+  width: 360px;
   max-width: calc(100vw - 2rem);
   max-height: calc(100dvh - 104px);
   margin: 0;
