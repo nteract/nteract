@@ -21,9 +21,9 @@
  *   (model/location.mjs) decides.
  * - writing: the receipt is in storage, its durability not yet confirmed. A
  *   new request put the moved entry, the rekeyed siblings, the location
- *   revision, the completed journal row and the index's dirty mark here in
- *   one transaction; a replay found the row already there. The barrier
- *   decides.
+ *   revision and the completed journal row here in one transaction; a replay
+ *   found the row already there. The barrier decides. A move writes no index
+ *   mark: D1 rows carry no location.
  * - replied: the receipt went back with 200.
  * - refused: the request ended with an error code and status. A refused
  *   request writes nothing, except the `synced` failure, whose put may or

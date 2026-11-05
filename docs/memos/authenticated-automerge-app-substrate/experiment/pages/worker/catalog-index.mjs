@@ -29,6 +29,14 @@
  * `host/index/spaces-*` markers. project-api.mjs maps `space_id` in results.
  */
 import { pageGrant, pageState } from "./access.mjs";
+import {
+  accountIndexMachine,
+  accountIndexState,
+  indexCooldownMachine,
+  indexCooldownState,
+  pageIndexMarkMachine,
+  pageIndexMarkState,
+} from "./account-index-machine.mjs";
 import { HttpError } from "./auth.mjs";
 import { catalogTitle, listAll, trashTime } from "./catalog.mjs";
 import { acceptedTime, validTime } from "./content-activity.mjs";
@@ -172,6 +180,12 @@ export const CATALOG_MIGRATIONS = Object.freeze([
 
 const DIRTY = "host/index/dirty";
 const SYNC = "host/index/sync";
+/** One Page's index mark: `PAGE_MARK + pageId` holds a token
+ * (account-index-machine.mjs `pageIndexMarkMachine`). */
+const PAGE_MARK = "host/index/page/";
+/** When this account's first pages may try D1 again, in ms
+ * (account-index-machine.mjs `indexCooldownMachine`). */
+const UNAVAILABLE_UNTIL = "host/index/unavailable-until";
 const SPACES_DIRTY = "host/index/spaces-dirty";
 const schemas = new WeakMap();
 const encoder = new TextEncoder();
@@ -191,7 +205,10 @@ export const catalogIndexBounds = {
   entriesPerListing: 128,
   verifications: 16,
   concurrency: 4,
-  fallbackScan: 500,
+  /** Page index marks one listing settles; owned marks need one D1 write. */
+  pageMarks: 24,
+  /** How long first pages read the Catalog after D1 failed a D1 walk. */
+  unavailableCooldownMs: 60_000,
   reconcileIntervalMs: 6 * 60 * 60 * 1000,
   cursorMaxAgeMs: 24 * 60 * 60 * 1000,
 };
@@ -301,6 +318,62 @@ export function catalogIndexDatabase(env, ctx) {
  * arrived while the pass was running. */
 export async function markCatalogIndexDirty(storage) {
   await storage.put(DIRTY, crypto.randomUUID());
+}
+
+/**
+ * Mark `pageIds` before a write to their entries, so listings don't read D1
+ * until it holds them. Returns the marks, each `{ key, pageId, token }`, for
+ * `settlePageMark` once the write's own D1 rows land. With the index off, no
+ * listing settles marks, so the account is marked dirty instead, which the
+ * first pass after the index returns clears.
+ */
+export async function markPagesForIndex(env, storage, pageIds) {
+  if (!catalogIndexEpoch(env)) {
+    await markCatalogIndexDirty(storage);
+    return [];
+  }
+  const marks = pageIds.map((pageId) => ({
+    key: `${PAGE_MARK}${pageId}`,
+    pageId,
+    token: crypto.randomUUID(),
+  }));
+  if (marks.length)
+    await storage.put(Object.fromEntries(marks.map((mark) => [mark.key, mark.token])));
+  return marks;
+}
+
+/** Settle the mark `{ key, pageId, token }` a writer read, with `outcome`
+ * (`pageIndexMarkMachine`). Reads the stored token and runs the effects with
+ * no I/O between, so a newer mark survives. */
+export async function settlePageMark(storage, { key, pageId, token }, outcome) {
+  const state = pageIndexMarkState(await storage.get(key));
+  const step = pageIndexMarkMachine.step(state, { type: "checked", token, outcome });
+  for (const effect of step.effects)
+    if (effect.type === "forget_entry") await storage.delete(`shared/${pageId}`);
+    else if (effect.type === "clear") await storage.delete(key);
+}
+
+/** The account's D1 cooldown state at `now` (`indexCooldownMachine`). */
+export async function readIndexCooldown(storage, now = Date.now()) {
+  return indexCooldownState(await storage.get(UNAVAILABLE_UNTIL), now);
+}
+
+/** D1 couldn't serve a walk that began there: start or extend the cooldown,
+ * so the walk's restart and other first pages read the Catalog for a while. */
+export async function coolIndex(storage, now = Date.now()) {
+  const state = await readIndexCooldown(storage, now);
+  const step = indexCooldownMachine.step(state, {
+    type: "refused",
+    now,
+    cooldownMs: catalogIndexBounds.unavailableCooldownMs,
+  });
+  for (const effect of step.effects)
+    if (effect.type === "store") await storage.put(UNAVAILABLE_UNTIL, effect.until);
+}
+
+/** True while any Page index mark is stored. */
+async function pageMarksPending(storage) {
+  return (await storage.list({ prefix: PAGE_MARK, limit: 1 })).size > 0;
 }
 
 /** Lifecycle as the index stores it. Trash keeps a deleted tombstone plus a
@@ -667,6 +740,23 @@ export async function restrictPageIndex(env, ctx, metadata, revision = revisionO
   ]);
 }
 
+/** A deleted Page's tombstone: no title, no access rows, and no later write
+ * changes it. */
+function tombstoneStatements(db, pageId, owner, lifecycle, now = new Date().toISOString()) {
+  return [
+    db
+      .prepare(
+        `INSERT INTO pages_catalog_pages
+          (page_id, owner, title, title_search, state, created_at, updated_at, lifecycle_revision)
+        VALUES (?, ?, '', '', 'deleted', ?, ?, ?)
+        ON CONFLICT (page_id) DO UPDATE SET state = 'deleted', title = '', title_search = '',
+          lifecycle_revision = max(lifecycle_revision, excluded.lifecycle_revision)`,
+      )
+      .bind(pageId, owner, now, now, lifecycle),
+    db.prepare("DELETE FROM pages_catalog_access WHERE page_id = ?").bind(pageId),
+  ];
+}
+
 /** Record a durable trash or deletion. Only call after the host record that
  * says so has crossed its durability barrier: a deleted tombstone is final. */
 export async function retirePageIndex(env, ctx, metadata, now = new Date().toISOString()) {
@@ -675,18 +765,7 @@ export async function retirePageIndex(env, ctx, metadata, now = new Date().toISO
   const db = await catalogIndexDatabase(env, ctx);
   const pageId = metadata.pageId;
   if (state === "deleted") {
-    await db.batch([
-      db
-        .prepare(
-          `INSERT INTO pages_catalog_pages
-            (page_id, owner, title, title_search, state, created_at, updated_at, lifecycle_revision)
-          VALUES (?, ?, '', '', 'deleted', ?, ?, ?)
-          ON CONFLICT (page_id) DO UPDATE SET state = 'deleted', title = '', title_search = '',
-            lifecycle_revision = max(lifecycle_revision, excluded.lifecycle_revision)`,
-        )
-        .bind(pageId, metadata.owner, now, now, lifecycleOf(metadata)),
-      db.prepare("DELETE FROM pages_catalog_access WHERE page_id = ?").bind(pageId),
-    ]);
+    await db.batch(tombstoneStatements(db, pageId, metadata.owner, lifecycleOf(metadata), now));
     return;
   }
   // Fenced by lifecycle revision: a retirement delayed past a restore (or a
@@ -784,17 +863,32 @@ function cursorKey(env) {
 }
 /** `scope` binds a cursor to everything else that shapes its listing: a
  * Space, a parent, kind, access and sort (see `listScope`), or the Space
- * listing itself. Cursors without one keep their original bytes. */
-const cursorContext = ({ principal, needle, inTrash, scope }) =>
-  encoder.encode(
+ * listing itself. Cursors without one keep their original bytes. `source`,
+ * which needs a scope, binds a Page listing's cursor to the candidate source
+ * that issued it (`LIST_SOURCES`); cursors without one keep their bytes too. */
+const cursorContext = ({ principal, needle, inTrash, scope, source }) => {
+  if (source !== undefined && !scope) throw new TypeError("A cursor source needs a scope");
+  return encoder.encode(
     JSON.stringify([
       "pages-list-cursor-v1",
       principal,
       needle ?? "",
       inTrash === true,
       ...(scope ? [scope] : []),
+      ...(source !== undefined ? [source] : []),
     ]),
   );
+};
+
+/**
+ * A Page listing's candidate sources: D1 (`index`) and this account's own
+ * Catalog entries (`catalog`). They order shared rows by different times: D1
+ * holds the Page row's own creation and content times, the Catalog this
+ * account's discovery time and the last projection's. A walk that switched
+ * sources would resume one order from a position in the other and skip or
+ * repeat rows, so every cursor names its source, and a walk continues on it.
+ */
+export const LIST_SOURCES = Object.freeze(["index", "catalog"]);
 
 /** Seal a cursor payload. The payload stays private, the cursor only opens
  * for the same principal, query, in_trash and scope (location, kind, access
@@ -903,6 +997,22 @@ export async function openPosition(env, context, cursor, sort, now = Date.now())
   return title
     ? { title_search: opened.title_search, page_id: opened.page_id }
     : { key: opened.updated_at, page_id: opened.page_id };
+}
+
+/** Open a Page listing cursor: its position, and the source that issued it
+ * (`LIST_SOURCES`), or null for a cursor an earlier build sealed without
+ * one. Each source seals under its own context, so a cursor opens under
+ * exactly one; a cursor from an earlier build opens only without a source.
+ * Anything else fails with `invalid_cursor`. */
+export async function openListingCursor(env, context, cursor, sort, now = Date.now()) {
+  for (const source of [...LIST_SOURCES, undefined]) {
+    try {
+      const position = await openPosition(env, { ...context, source }, cursor, sort, now);
+      return { position, source: source ?? null };
+    } catch (error) {
+      if (error?.code !== "invalid_cursor" || source === undefined) throw error;
+    }
+  }
 }
 
 export const LIST_DEFAULT_LIMIT = 50;
@@ -1263,9 +1373,13 @@ export async function queryCatalogIndex(db, query) {
 /** Candidate source over the Catalog entries: for when the index is off or
  * unavailable, and for listings filtered by location, which only the
  * Catalog's entries record. `owned(entry)` keeps an owned entry; `shared`
- * says whether shared entries are candidates. Owned entries are read whole:
- * the account's Page limit bounds them, and a listing reads them all for
- * location anyway. Shared entries have no limit, so that read is bounded.
+ * says whether shared entries are candidates. Every entry is read: rows
+ * order by keys stored in the entries, not by their storage keys, so a
+ * listing that read only some of them could put a later entry before its
+ * cursor and end a walk without it. Owned entries are bounded by the
+ * account's Page limit; shared entries grow only as Pages are shared with
+ * the account and it opens them. Each row is still checked before it shows,
+ * within the scan's own bound.
  * Rows order as `listingQuery` orders the same `sort`, with each key computed
  * from the entry as the index computes it: the title key from its title, the
  * activity key from its `content_updated_at`, else `updated_at`, the
@@ -1283,12 +1397,7 @@ export async function catalogSource(
   { inTrash, needle, owned = () => true, shared = true, sort = "activity" },
 ) {
   const order = listOrder(sort);
-  const list = async (prefix) => [
-    ...(prefix === "shared/"
-      ? await storage.list({ prefix, limit: catalogIndexBounds.fallbackScan })
-      : await listAll(storage, prefix)
-    ).values(),
-  ];
+  const list = async (prefix) => [...(await listAll(storage, prefix)).values()];
   const entries = inTrash
     ? (await list("trash/")).map((entry) => ({ entry, owned: true }))
     : [
@@ -1411,6 +1520,63 @@ function sharedStatements(db, principal, pageId, page, fallbackAt, createdAt) {
   ];
 }
 
+/** Statements that index one owned Catalog entry (`page/` as "active",
+ * `trash/` as "trashed") exactly as a reconcile pass does. Only listing
+ * times reach D1 (`firstTime`); the fallback reads the same entry with the
+ * same fallbacks (`catalogSource`). An entry with neither time is indexed at
+ * '', which the fallback reads too: every writer writes the same value, so
+ * it never moves the row. */
+function ownedEntryStatements(db, principal, entry, state) {
+  const updatedAt = firstTime(entry.updated_at, entry.created_at) ?? "";
+  return [
+    pageUpsert(db, {
+      page_id: entry.page_id,
+      owner: principal,
+      title: entry.title,
+      state,
+      created_at: firstTime(entry.created_at) ?? updatedAt,
+      updated_at: updatedAt,
+      // A trash key the fallback would read as "" is indexed as null,
+      // which `trash_key` reads as '': both sort it last.
+      trashed_at: state === "trashed" ? firstTime(entry.trashed_at) : null,
+      lifecycle: entry.lifecycle_revision ?? 0,
+      content_updated_at: entry.content_updated_at,
+    }),
+    upsertAccess(
+      db,
+      entry.page_id,
+      [{ principal, role: "owner", source: "owner", domain: null }],
+      0,
+      { title: entry.title, updatedAt, owner: true },
+    ),
+  ];
+}
+
+/**
+ * Index owned Catalog entries a Catalog request wrote, after its response,
+ * so its Page index marks clear without a listing's help. `items` are
+ * `{ entry, state }`: state "active" for a `page/` entry, "trashed" for a
+ * `trash/` entry, or "deleted" for a purged Page, whose row becomes a
+ * tombstone. The rows are what a reconcile pass would write from the same
+ * entries, fenced by lifecycle revision as every index write is.
+ *
+ * Bounded by the read and write timeouts. Returns true when D1 holds the
+ * rows, false when the index is off, and rejects when the write fails. The
+ * caller marked the Pages first (`markPagesForIndex`) and settles the marks
+ * only on true; a mark left behind is settled by the next listing.
+ */
+export async function indexOwnedEntries(env, ctx, principal, items) {
+  if (!catalogIndexEpoch(env) || typeof principal !== "string") return false;
+  const db = await withTimeout(catalogIndexDatabase(env, ctx), catalogIndexTimeouts.read);
+  const statements = items.flatMap(({ entry, state }) =>
+    state === "deleted"
+      ? tombstoneStatements(db, entry.page_id, principal, entry.lifecycle_revision ?? 0)
+      : ownedEntryStatements(db, principal, entry, state),
+  );
+  if (statements.length) await withTimeout(db.batch(statements), catalogIndexTimeouts.write);
+  return true;
+}
+
 /**
  * Read whether this account's rows are usable, and advance its reconcile pass
  * when they need repair. A pass rewrites owner rows from the Catalog's `page/`
@@ -1430,8 +1596,10 @@ function sharedStatements(db, principal, pageId, page, fallbackAt, createdAt) {
  * resumes exactly where it stopped and never holds this Catalog's request
  * queue beyond that bound. While D1 calls exceed the budget, the pass waits.
  *
- * Returns true when the account's rows are complete for this epoch: a pass
- * completed now, or one completed before under the same epoch.
+ * Returns true when the account's rows may choose listing candidates: the
+ * account index is `ready` (account-index-machine.mjs) when this call returns.
+ * A pass still running, or one that started before the Catalog's latest write,
+ * leaves it `unsynced` or `behind`, and the listing reads the Catalog entries.
  */
 export async function reconcileAccountIndex({
   db,
@@ -1451,21 +1619,22 @@ export async function reconcileAccountIndex({
   );
   const current = marker?.epoch === epoch;
   const dirty = await storage.get(DIRTY);
-  let pass = await storage.get(SYNC);
-  if (pass && pass.epoch !== epoch) pass = undefined;
-  const due =
-    !current ||
-    dirty !== undefined ||
-    pass !== undefined ||
-    !(Date.parse(marker.synced_at) > now - catalogIndexBounds.reconcileIntervalMs);
-  if (!due) return true;
-  pass ??= { epoch, phase: "owned", after: null, incomplete: false, dirty: dirty ?? null };
+  const state = accountIndexState({ current, dirty });
   let verifications = 0;
   let entries = 0;
   const write = (statements) =>
     statements.length
       ? withTimeout(db.batch(statements), catalogIndexTimeouts.write)
       : Promise.resolve();
+  verifications += await settlePageMarks({ db, storage, principal, verify, open, write, now });
+  let pass = await storage.get(SYNC);
+  if (pass && pass.epoch !== epoch) pass = undefined;
+  const due =
+    state.name !== "ready" ||
+    pass !== undefined ||
+    !(Date.parse(marker.synced_at) > now - catalogIndexBounds.reconcileIntervalMs);
+  if (!due) return !(await pageMarksPending(storage));
+  pass ??= { epoch, phase: "owned", after: null, incomplete: false, dirty: dirty ?? null };
   /** Commit a unit and the position after it, in that order. */
   const commit = async (statements, position) => {
     await write(statements);
@@ -1531,32 +1700,12 @@ export async function reconcileAccountIndex({
       const statements = [];
       for (const [, entry] of listed) {
         if (entry?.pending || !validPageId(entry?.page_id)) continue;
-        // Only listing times reach D1 (`firstTime`); the fallback reads the
-        // same entry with the same fallbacks (`catalogSource`). An entry with
-        // neither time is indexed at '', which the fallback reads too: every
-        // pass writes the same value, so it never moves the row.
-        const updatedAt = firstTime(entry.updated_at, entry.created_at) ?? "";
-        const state = pass.phase === "owned" ? "active" : "trashed";
         statements.push(
-          pageUpsert(db, {
-            page_id: entry.page_id,
-            owner: principal,
-            title: entry.title,
-            state,
-            created_at: firstTime(entry.created_at) ?? updatedAt,
-            updated_at: updatedAt,
-            // A trash key the fallback would read as "" is indexed as null,
-            // which `trash_key` reads as '': both sort it last.
-            trashed_at: state === "trashed" ? firstTime(entry.trashed_at) : null,
-            lifecycle: entry.lifecycle_revision ?? 0,
-            content_updated_at: entry.content_updated_at,
-          }),
-          upsertAccess(
+          ...ownedEntryStatements(
             db,
-            entry.page_id,
-            [{ principal, role: "owner", source: "owner", domain: null }],
-            0,
-            { title: entry.title, updatedAt, owner: true },
+            principal,
+            entry,
+            pass.phase === "owned" ? "active" : "trashed",
           ),
         );
       }
@@ -1657,21 +1806,128 @@ export async function reconcileAccountIndex({
       );
     } else if (pass.phase === "done") {
       await storage.delete(SYNC);
-      if (pass.incomplete) return current;
-      await read(
-        db
-          .prepare(
-            `INSERT INTO pages_catalog_accounts (principal, epoch, synced_at) VALUES (?, ?, ?)
-            ON CONFLICT (principal) DO UPDATE SET epoch = excluded.epoch, synced_at = excluded.synced_at`,
-          )
-          .bind(principal, epoch, new Date(now).toISOString())
-          .run(),
-      );
-      if ((await storage.get(DIRTY)) === (pass.dirty ?? undefined)) await storage.delete(DIRTY);
-      return true;
+      const verified = !pass.incomplete;
+      if (verified)
+        await read(
+          db
+            .prepare(
+              `INSERT INTO pages_catalog_accounts (principal, epoch, synced_at) VALUES (?, ?, ?)
+              ON CONFLICT (principal) DO UPDATE SET epoch = excluded.epoch, synced_at = excluded.synced_at`,
+            )
+            .bind(principal, epoch, new Date(now).toISOString())
+            .run(),
+        );
+      // Read after the marker lands: a write that arrived while the pass ran,
+      // or during the marker write, leaves the account behind.
+      const unchanged = (await storage.get(DIRTY)) === (pass.dirty ?? undefined);
+      const step = accountIndexMachine.step(state, { type: "completed", verified, unchanged });
+      for (const effect of step.effects) if (effect.type === "clear") await storage.delete(DIRTY);
+      return step.state.name === "ready" && !(await pageMarksPending(storage));
     }
   }
-  return current;
+  // Unfinished. The pass's D1 calls let other requests run, and a write one
+  // of them recorded since entry puts a ready account behind.
+  if (state.name !== "ready") return false;
+  return (await storage.get(DIRTY)) === undefined && !(await pageMarksPending(storage));
+}
+
+/**
+ * Settle up to `pageMarks` Page index marks from their Pages' current
+ * entries (`pageIndexMarkMachine`). An owned entry (`page/` or `trash/`) is
+ * written as a pass writes it, and a purged Page's tombstone likewise. A
+ * shared entry is settled when D1 already holds this account's active row
+ * (its host's report landed); otherwise its host is checked, within the
+ * verification budget, and an answer is written as a pass writes it. A Page
+ * with no entry has nothing to list. Every write lands before a mark clears.
+ * Returns the Page checks it spent.
+ */
+async function settlePageMarks({ db, storage, principal, verify, open, write, now }) {
+  const marks = [
+    ...(await storage.list({ prefix: PAGE_MARK, limit: catalogIndexBounds.pageMarks })).entries(),
+  ].map(([key, token]) => ({ key, pageId: key.slice(PAGE_MARK.length), token }));
+  if (!marks.length) return 0;
+  const live = (entry) =>
+    entry && !entry.pending && !entry.reservation && validPageId(entry.page_id);
+  const statements = [];
+  const indexed = [];
+  const refused = [];
+  const shared = [];
+  for (const mark of marks) {
+    const { pageId } = mark;
+    if (!validPageId(pageId)) {
+      indexed.push(mark);
+      continue;
+    }
+    const active = await storage.get(`page/${pageId}`);
+    const trashed = live(active) ? undefined : await storage.get(`trash/${pageId}`);
+    const entry = live(active) || live(trashed) ? undefined : await storage.get(`shared/${pageId}`);
+    if (live(active)) statements.push(...ownedEntryStatements(db, principal, active, "active"));
+    else if (live(trashed))
+      statements.push(...ownedEntryStatements(db, principal, trashed, "trashed"));
+    else if (entry) {
+      shared.push({ mark, entry });
+      continue;
+    } else if (await storage.get(`host/deleted/${pageId}`))
+      statements.push(...tombstoneStatements(db, pageId, principal, 0));
+    indexed.push(mark);
+  }
+  let checks = 0;
+  if (shared.length && open()) {
+    const rows =
+      (
+        await read(
+          db
+            .prepare(
+              `SELECT a.page_id FROM pages_catalog_access a
+              JOIN pages_catalog_pages p ON p.page_id = a.page_id
+              WHERE a.principal = ? AND p.state = 'active'
+                AND a.page_id IN (SELECT value FROM json_each(?))`,
+            )
+            .bind(principal, JSON.stringify(shared.map(({ mark }) => mark.pageId)))
+            .all(),
+        )
+      ).results ?? [];
+    const found = new Set(rows.map((row) => row.page_id));
+    const unchecked = [];
+    for (const item of shared) (found.has(item.mark.pageId) ? indexed : unchecked).push(item.mark);
+    const entries = new Map(shared.map(({ mark, entry }) => [mark.pageId, entry]));
+    for (
+      let at = 0;
+      at < unchecked.length && open() && checks < catalogIndexBounds.verifications;
+      at += catalogIndexBounds.concurrency
+    ) {
+      const group = unchecked.slice(
+        at,
+        at + Math.min(catalogIndexBounds.concurrency, catalogIndexBounds.verifications - checks),
+      );
+      checks += group.length;
+      const results = await Promise.all(group.map((mark) => verify(mark.pageId)));
+      for (const [index, result] of results.entries()) {
+        const mark = group[index];
+        const entry = entries.get(mark.pageId);
+        if (result.status === "ok" && result.page.state === "active" && result.page.owner) {
+          statements.push(
+            ...sharedStatements(
+              db,
+              principal,
+              mark.pageId,
+              result.page,
+              firstTime(entry.updated_at) ?? new Date(now).toISOString(),
+              firstTime(entry.created_at) ?? undefined,
+            ),
+          );
+          indexed.push(mark);
+        } else if (result.status === "ok" || result.status === "denied") refused.push(mark);
+      }
+    }
+  }
+  if (statements.length) {
+    if (!open()) return checks;
+    await write(statements);
+  }
+  for (const mark of indexed) await settlePageMark(storage, mark, "indexed");
+  for (const mark of refused) await settlePageMark(storage, mark, "refused");
+  return checks;
 }
 
 const SPACES_SYNCED = "host/index/spaces-synced";

@@ -38,11 +38,12 @@
  *   matches belongs to a superseded request, so its result is ignored.
  *   `failed` carries the server's error `code`, or null.
  *
- * A cursor expires (list_pages answers `invalid_cursor` after a day), so a
- * next page that fails that way can never succeed. The listing starts over
- * from the first page instead of stalling; the expired request has settled,
- * so its key names the restart. Other failures stall and retry the same
- * cursor.
+ * list_pages answers `invalid_cursor` when a cursor expired (after a day) or
+ * when the source that issued it can't serve the next page (a walk that
+ * began on D1 while D1 is failing). Either way a next page that fails that
+ * way can't succeed with that cursor. The listing starts over from the first
+ * page instead of stalling; the failed request has settled, so its key names
+ * the restart. Other failures stall and retry the same cursor.
  *
  * Effects: `fetch` requests one page; `paint` puts the remembered rows for
  * `params` on screen; `show` puts the settled request's rows on screen,

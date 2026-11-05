@@ -197,6 +197,7 @@ import {
   lifecycleSlot,
   lifecycleSlotKey,
   observedLifecycleRevision,
+  lifecycleIndexItem,
   projectLifecycle,
   pruneTombstonedTrash,
   refreshCatalogTitle,
@@ -223,20 +224,24 @@ import {
   catalogIndexTimeouts,
   catalogSource,
   childIdSource,
+  indexOwnedEntries,
   indexSource,
   indexedState,
   listScope,
   listingRestricted,
   markCatalogIndexDirty,
+  coolIndex,
+  markPagesForIndex,
   markSpaceIndexDirty,
   openCursor,
-  openPosition,
+  openListingCursor,
   positionOf,
   parseListArguments,
   reconcileSpaceIndex,
   spaceCatalogSource,
   spaceIndexSource,
   pruneIndexRows,
+  readIndexCooldown,
   reconcileAccountIndex,
   reportContentActivity,
   reportPageIndex,
@@ -244,6 +249,7 @@ import {
   retirePageIndex,
   sealCursor,
   sealPosition,
+  settlePageMark,
   titleMatches,
   withTimeout,
 } from "./catalog-index.mjs";
@@ -305,6 +311,7 @@ import { handleImportPageImage } from "./import-image.mjs";
 import { countedStorage } from "./catalog-counts.mjs";
 import { forwardedPageLimit, quotaError, quotaRefusal, resolvePageQuota } from "./page-quota.mjs";
 import { serialQueue, serialQueueBounds } from "./serial-queue.mjs";
+import { opensIndex } from "./account-index-machine.mjs";
 import { holdUntilSettled } from "./request-hold.mjs";
 import { boundedMap } from "./bounded-map.mjs";
 import { legibleEnv } from "./host-busy.mjs";
@@ -1560,8 +1567,9 @@ export class Catalog {
           (value.shared || !(await this.storage.get(`trash/${value.page_id}`))) &&
           (!previous?.updated_at || previous.updated_at <= value.observed_at)
         ) {
-          // A new discovery entry may not have reached D1; reconcile on next listing.
-          if (!previous) await markCatalogIndexDirty(this.storage);
+          // A new entry D1 may not hold, such as a discovery whose host
+          // report hasn't landed: the next listing settles its Page's mark.
+          if (!previous) await markPagesForIndex(this.env, this.storage, [value.page_id]);
           await this.storage.put(key, {
             ...previous,
             page_id: value.page_id,
@@ -1672,6 +1680,7 @@ export class Catalog {
           digest,
           inspected,
           limit,
+          principal: identity.principal,
         });
       let intent = inspected.entry;
       if (intent && !intent.pending) {
@@ -1748,15 +1757,13 @@ export class Catalog {
       };
       intent.pending = false;
       const { pending: _pending, ...created } = pending;
-      await markCatalogIndexDirty(this.storage);
-      await this.storage.put({
-        [key]: intent,
-        [`page/${pageId}`]: {
-          ...created,
-          title: catalogTitle(intent.receipt.title),
-        },
-      });
+      const entry = { ...created, title: catalogTitle(intent.receipt.title) };
+      // The mark lands before the entry, so no listing reads D1 without the
+      // new Page; the owner's row is written after the response.
+      const marks = await markPagesForIndex(this.env, this.storage, [pageId]);
+      await this.storage.put({ [key]: intent, [`page/${pageId}`]: entry });
       await this.storage.sync();
+      this.indexInBackground(identity.principal, [{ entry, state: "active" }], marks);
       return json(intent.receipt);
     } catch (error) {
       return errorResponse(error, "catalog");
@@ -1770,7 +1777,7 @@ export class Catalog {
    * Page in order, and feeds the Page's answers back in until it replies.
    * Requests reach it one at a time through this Catalog's queue.
    */
-  async runLifecycle(request, operation, args, { key, digest, inspected, limit }) {
+  async runLifecycle(request, operation, args, { key, digest, inspected, limit, principal }) {
     const storage = this.storage;
     const pageId = args.page_id;
     const run = {
@@ -1782,6 +1789,7 @@ export class Catalog {
       digest,
       retry: inspected.retry,
       limit,
+      principal,
     };
     run.row = inspected.entry;
     let state = await intentState(storage, key, operation, pageId);
@@ -1914,10 +1922,18 @@ export class Catalog {
       case "sync":
         await storage.sync();
         return;
-      case "project":
+      case "project": {
         // A replayed receipt may be older than the Page's current state.
-        await projectLifecycle(storage, pageId, effect.current);
+        // The mark lands before the projection, so it survives a projection
+        // that fails: the next listing settles the Page from whatever entry
+        // it has. The owner's row is written after the response.
+        const now = new Date().toISOString();
+        const item = await lifecycleIndexItem(storage, pageId, effect.current, now);
+        const marks = item ? await markPagesForIndex(this.env, storage, [pageId]) : [];
+        await projectLifecycle(storage, pageId, effect.current, { marked: true, now });
+        if (item) this.indexInBackground(run.principal, [item], marks);
         return;
+      }
       case "forget_trash":
         await storage.delete(`trash/${pageId}`);
         return;
@@ -2436,7 +2452,8 @@ export class Catalog {
   /**
    * The one put: the moved entry with its new parent and position, the
    * destination siblings the plan rekeyed, the location revision, the
-   * completed journal row with its receipt, and the index's dirty mark.
+   * completed journal row with its receipt. D1 rows carry no location, so
+   * a move writes no index mark.
    * `reserveOperation` checks capacity and writes nothing, so the row goes
    * in with the rest. Storage takes at most STORAGE_KEYS_PER_CALL keys per
    * put, so a large rebalance is several puts inside one transaction; a
@@ -2482,7 +2499,8 @@ export class Catalog {
         [LOCATION_REVISION_KEY]: plan.revision,
         [key]: row,
       });
-      await markCatalogIndexDirty(target);
+      // D1 rows carry no location, so a move leaves the account index as it
+      // was. Location filters read these entries.
       const perPut = STORAGE_KEYS_PER_CALL - 2;
       for (let at = 0; at < puts.length; at += perPut)
         await target.put(Object.fromEntries(puts.slice(at, at + perPut)));
@@ -2559,13 +2577,13 @@ export class Catalog {
         },
       });
     }
-    return this.completeSpaceCreation(request, key, intent);
+    return this.completeSpaceCreation(request, key, intent, identity.principal);
   }
 
   /** Run the creation lifecycle from its persisted state. Each effect is
    * idempotent; its outcome is persisted with the next state before the
    * following effect starts, so a retry resumes where the last one stopped. */
-  async completeSpaceCreation(request, key, intent) {
+  async completeSpaceCreation(request, key, intent, principal) {
     const storage = this.storage;
     intent.phase ??= "reserved";
     for (let effect = spaceCreationEffect(intent.phase); effect; ) {
@@ -2596,6 +2614,15 @@ export class Catalog {
       } else {
         const space = intent.space;
         intent.receipt = { ...space, home_page_title: intent.homeTitle };
+        const home = {
+          page_id: intent.pageId,
+          title: catalogTitle(intent.homeTitle),
+          created_at: intent.createdAt,
+          updated_at: intent.createdAt,
+          ...homeLocation(intent.spaceId),
+        };
+        // Marked before its entry, as a creation is.
+        const marks = await markPagesForIndex(this.env, storage, [intent.pageId]);
         await storage.put({
           [`space/${intent.spaceId}`]: {
             space_id: intent.spaceId,
@@ -2605,15 +2632,9 @@ export class Catalog {
             created_at: space.created_at,
             updated_at: space.updated_at,
           },
-          [`page/${intent.pageId}`]: {
-            page_id: intent.pageId,
-            title: catalogTitle(intent.homeTitle),
-            created_at: intent.createdAt,
-            updated_at: intent.createdAt,
-            ...homeLocation(intent.spaceId),
-          },
+          [`page/${intent.pageId}`]: home,
         });
-        await markCatalogIndexDirty(storage);
+        this.indexInBackground(principal, [{ entry: home, state: "active" }], marks);
         await markSpaceIndexDirty(storage);
         intent.pending = false;
         event = "committed";
@@ -2854,6 +2875,25 @@ export class Catalog {
     });
   }
 
+  /** Write owned entries' D1 rows (catalog-index.mjs `indexOwnedEntries`)
+   * after this request responds, and settle their Pages' `marks` once they
+   * land. Started in the live request and held with waitUntil, so celld
+   * runs its I/O to the end (request-hold.mjs). A failed write leaves the
+   * marks, which the next listing settles. */
+  indexInBackground(principal, items, marks) {
+    if (!marks.length) return;
+    const work = (async () => {
+      try {
+        if (!(await indexOwnedEntries(this.env, this.ctx, principal, items))) return;
+      } catch (error) {
+        logFailure(error, "catalog-index-write");
+        return;
+      }
+      for (const mark of marks) await settlePageMark(this.storage, mark, "indexed");
+    })();
+    holdUntilSettled(this.ctx, work);
+  }
+
   /** The access step of page_cards (page-cards.mjs): which of up to
    * PAGE_CARDS_MAX IDs the caller may read, each checked as list_pages
    * checks its row. Answers IDs only; the gateway reads the objects outside
@@ -3027,16 +3067,20 @@ export class Catalog {
         })),
       });
     // A position in this sort's shape (positionOf); the scan and the next
-    // cursor keep that shape.
-    const after = options.cursor
-      ? await openPosition(this.env, context, options.cursor, options.sort)
-      : null;
+    // cursor keep that shape. `pinned` is the source that issued the cursor,
+    // or null for a first page or a cursor from an earlier build.
+    const { position: after, source: pinned } = options.cursor
+      ? await openListingCursor(this.env, context, options.cursor, options.sort)
+      : { position: null, source: null };
     const epoch = catalogIndexEpoch(this.env);
     let db;
     let source;
+    // While D1 is cooling after failing a D1 walk, only that kind of walk
+    // opens it, so a restart can't pin D1 again (opensIndex).
+    const opens = opensIndex({ pinned, cooldown: await readIndexCooldown(storage) });
     // D1 rows don't carry the location derived from this account's entries,
     // so a listing filtered by Project or parent reads the entries.
-    if (epoch && !filtered) {
+    if (epoch && !filtered && opens) {
       try {
         db = await withTimeout(catalogIndexDatabase(this.env, this.ctx), catalogIndexTimeouts.read);
         const ready = await reconcileAccountIndex({
@@ -3047,9 +3091,14 @@ export class Catalog {
           verify: (pageId) => this.verifyShared(request, pageId),
         });
         const evidence = identity.domainAccess;
-        // Until an account's first reconcile completes, its D1 rows may be
-        // missing; the Catalog entries serve while the pass advances.
-        if (ready)
+        // While D1 may miss a Catalog write, a walk over it would end
+        // early with no cursor; the Catalog entries serve while the pass
+        // and the Page marks settle. A walk continues on the source that
+        // issued its cursor, whatever the account's state now: the two order
+        // shared rows differently (LIST_SOURCES). A walk that began on a
+        // ready D1 misses at most rows written since it began. If D1 can't
+        // serve a walk that began there, it restarts (below).
+        if (pinned === "index" || (pinned === null && ready))
           source = indexSource(db, {
             principal: identity.principal,
             domain: evidence?.expiresAt > Date.now() ? evidence.domain : null,
@@ -3072,6 +3121,21 @@ export class Catalog {
         if (!(error instanceof CatalogIndexUnavailable)) throw error;
         logFailure(error, "catalog-index");
       }
+    }
+    // A walk that began on D1 never continues on the Catalog entries: its
+    // position is in D1's order. When D1 can't serve it (the database, the
+    // pass or the scan failed, or the index is off), the walk restarts from
+    // its first page. The refusal starts a cooldown, during which first
+    // pages read the Catalog, so the restart lands there and stays there
+    // even if D1 serves first pages and fails later ones. A Catalog walk
+    // never needs D1.
+    if (!result && pinned === "index") {
+      await coolIndex(storage);
+      throw new HttpError(
+        400,
+        "This listing's source is unavailable; restart from the first page",
+        "invalid_cursor",
+      );
     }
     result ??= {
       ...(await this.scanCandidates(
@@ -3102,7 +3166,12 @@ export class Catalog {
       pages: result.pages,
       limit: options.limit,
       next_cursor: result.next
-        ? await sealPosition(this.env, context, options.sort, result.next)
+        ? await sealPosition(
+            this.env,
+            { ...context, source: result.source },
+            options.sort,
+            result.next,
+          )
         : null,
       quota,
       principal: identity.principal,

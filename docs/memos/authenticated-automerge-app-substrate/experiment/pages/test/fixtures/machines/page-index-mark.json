@@ -1,0 +1,227 @@
+{
+  "machine": "page-index-mark",
+  "description": "One Page's index mark (worker/account-index-machine.mjs pageIndexMarkMachine). A Catalog write stores a fresh token before it writes the Page's entry; while any mark is pending, listings read the Catalog entries. A writer settles only the token it read, so a newer write's mark survives.",
+  "states": [
+    "settled",
+    "pending"
+  ],
+  "events": [
+    "marked",
+    "checked"
+  ],
+  "unreachable": [],
+  "cases": {
+    "settled/checked": [
+      "indexed",
+      "refused",
+      "unavailable"
+    ],
+    "pending/checked": [
+      "indexed",
+      "indexed-superseded",
+      "refused",
+      "refused-superseded",
+      "unavailable"
+    ]
+  },
+  "rows": [
+    {
+      "label": "a write marks a settled Page",
+      "state": {
+        "name": "settled"
+      },
+      "event": {
+        "type": "marked",
+        "token": "t1"
+      },
+      "expect": {
+        "state": {
+          "name": "pending",
+          "token": "t1"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a newer write replaces the mark's token",
+      "state": {
+        "name": "pending",
+        "token": "t1"
+      },
+      "event": {
+        "type": "marked",
+        "token": "t2"
+      },
+      "expect": {
+        "state": {
+          "name": "pending",
+          "token": "t2"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a check finds nothing to settle (indexed)",
+      "case": "indexed",
+      "state": {
+        "name": "settled"
+      },
+      "event": {
+        "type": "checked",
+        "token": "t1",
+        "outcome": "indexed"
+      },
+      "expect": {
+        "state": {
+          "name": "settled"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a check finds nothing to settle (refused)",
+      "case": "refused",
+      "state": {
+        "name": "settled"
+      },
+      "event": {
+        "type": "checked",
+        "token": "t1",
+        "outcome": "refused"
+      },
+      "expect": {
+        "state": {
+          "name": "settled"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a check finds nothing to settle (unavailable)",
+      "case": "unavailable",
+      "state": {
+        "name": "settled"
+      },
+      "event": {
+        "type": "checked",
+        "token": "t1",
+        "outcome": "unavailable"
+      },
+      "expect": {
+        "state": {
+          "name": "settled"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "D1 holds the Page's current entry: the mark clears",
+      "case": "indexed",
+      "state": {
+        "name": "pending",
+        "token": "t1"
+      },
+      "event": {
+        "type": "checked",
+        "token": "t1",
+        "outcome": "indexed"
+      },
+      "expect": {
+        "state": {
+          "name": "settled"
+        },
+        "effects": [
+          {
+            "type": "clear"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a newer write marked the Page since the check read it: its mark stays",
+      "case": "indexed-superseded",
+      "state": {
+        "name": "pending",
+        "token": "t1"
+      },
+      "event": {
+        "type": "checked",
+        "token": "t0",
+        "outcome": "indexed"
+      },
+      "expect": {
+        "state": {
+          "name": "pending",
+          "token": "t1"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "the host refused the shared Page: forget its entry, then clear",
+      "case": "refused",
+      "state": {
+        "name": "pending",
+        "token": "t1"
+      },
+      "event": {
+        "type": "checked",
+        "token": "t1",
+        "outcome": "refused"
+      },
+      "expect": {
+        "state": {
+          "name": "settled"
+        },
+        "effects": [
+          {
+            "type": "forget_entry"
+          },
+          {
+            "type": "clear"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a refusal for an older mark forgets nothing",
+      "case": "refused-superseded",
+      "state": {
+        "name": "pending",
+        "token": "t1"
+      },
+      "event": {
+        "type": "checked",
+        "token": "t0",
+        "outcome": "refused"
+      },
+      "expect": {
+        "state": {
+          "name": "pending",
+          "token": "t1"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "an unanswered check leaves the mark for the next listing",
+      "case": "unavailable",
+      "state": {
+        "name": "pending",
+        "token": "t1"
+      },
+      "event": {
+        "type": "checked",
+        "token": "t1",
+        "outcome": "unavailable"
+      },
+      "expect": {
+        "state": {
+          "name": "pending",
+          "token": "t1"
+        },
+        "effects": []
+      }
+    }
+  ]
+}
