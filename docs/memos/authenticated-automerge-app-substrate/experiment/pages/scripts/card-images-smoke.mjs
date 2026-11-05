@@ -59,7 +59,7 @@ const fetchImage = (page, url) =>
 async function signIn(email, viewport = { width: 1280, height: 900 }, options = {}) {
   const context = await browser.newContext({ viewport, ...options });
   const page = await context.newPage();
-  page.on("pageerror", (error) => report.errors.push(`${email}: ${error.message}`));
+  page.on("pageerror", (error) => report.errors.push(`${email}: ${error.stack}`));
   const begin = await context.request.get(`${origin}/api/auth/login`, { maxRedirects: 0 });
   assert.equal(begin.status(), 302);
   const authorize = new URL(begin.headers().location);
