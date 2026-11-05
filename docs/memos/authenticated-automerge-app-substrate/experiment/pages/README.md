@@ -1,17 +1,28 @@
 # Pages
 
-Pages is an **actively maintained experiment** in collaborative documents for
-people and agents. People write in a rich editor; agents read and edit Markdown
-through HTTP or MCP. Both work on the same Automerge document, with passage
-comments, presence, private images, and host-enforced sharing.
+Pages is a rich collaborative document product for people and agents. It has
+the exploratory feel of a notebook, with room for prose, images, diagrams,
+editable tables, task lists, interactive dataframes, and conversations anchored
+to the words you're discussing. Use it to think through an idea, tell a story
+with data, or build something together. Exploring and writing should be fun.
 
-The application evaluates experimental Automerge Repo 3 and Subduction as a
-shared document foundation. It has its own document model and deployment; it
-does not migrate or replace nteract notebooks. APIs, editor behavior, and resource
-limits may evolve as the experiment is exercised. Page8 is the current isolated
-QA deployment; Page7 and earlier deployments remain frozen.
+People write in the Wordgard editor; agents read and edit through HTTP or MCP
+using Markdown and structured node operations. Both work on the same native
+Automerge content. Projects organize related Pages; individual Pages have their
+own sharing permissions, presence, and passage comments. Code blocks display
+source, while notebooks provide kernel execution.
 
-- [Architecture and motivation](../../README.md)
+Pages is developed in the nteract monorepo and shares libraries such as Sift
+and UI tokens with notebooks. It owns its editor, document model, host, and
+deployment. The source directory and `@nteract/pages-native-experiment` workspace
+name reflect its origins in the authenticated Automerge infrastructure research.
+Its Repo 3/Subduction foundation still has experimental dependencies and evolving
+contracts; the infrastructure research and deployment qualification remain
+separate from Pages' product identity. See the deployment guide for current
+release targets and frozen historical services.
+
+- [Contributor instructions](AGENTS.md)
+- [Infrastructure research and motivation](../../README.md)
 - [Shared integration workspace](../README.md) and [upstream provenance and patches](../UPSTREAM.md)
 - [Deployment and rollback boundaries](DEPLOYMENT.md)
 
@@ -34,9 +45,9 @@ must finish before `dev`; rebuild after source changes. The dev command serves
 
 Wordgard is the only browser editor, locally and in deployed Pages. The
 `PAGES_EDITOR` comparison flag is no longer used. These flags enable background
-record persistence and lossless record cleanup used by Page8; without them,
-local persistence is synchronous. A Page records its storage mode at creation:
-changing a persistence flag does not migrate existing local documents.
+record persistence and lossless record cleanup used by deployed Pages; without
+them, local persistence is synchronous. A Page records its storage mode at
+creation: changing a persistence flag does not migrate existing local documents.
 
 Local sign-in uses a loopback-only OIDC issuer. State persists under
 `pages/dist/.celld`; local credentials and build output are ignored. The dev

@@ -1,7 +1,8 @@
 # Architecture Decision Register
 
-This directory is the durable architecture register for nteract notebook rooms,
-runtime state, output transport, hosted sharing, and related daemon invariants.
+This directory is the durable architecture register for nteract notebooks,
+Pages, and shared libraries and services. Decisions cover document state,
+execution, output transport, hosted sharing, persistence, and related invariants.
 
 Research and proposals start in `docs/memos/`. Memos should cite supporting
 source code, but they do not establish architectural decisions. Record those

@@ -1,5 +1,18 @@
 # Contributing to nteract
 
+This repository contains nteract notebooks, Pages, and shared runtime and UI
+libraries. Start with the workflow for the project you want to change:
+
+| Project | Start here |
+|---------|------------|
+| Notebooks, daemon, and client libraries | The setup and build commands below |
+| Pages | [Pages guide](docs/memos/authenticated-automerge-app-substrate/experiment/pages/README.md) and [contributor instructions](docs/memos/authenticated-automerge-app-substrate/experiment/pages/AGENTS.md) |
+| Sift | [Standalone development and embedding](packages/sift/README.md) |
+
+Pages has its own npm workspace, browser editor, local server, and test suites.
+The Cargo and pnpm notebook workflows below apply to notebooks and their shared
+libraries. The commit and PR conventions apply across the repository.
+
 ## 1. Computer setup
 
 - **macOS** - see [docs/runbooks/macos-setup.md](docs/runbooks/macos-setup.md)
