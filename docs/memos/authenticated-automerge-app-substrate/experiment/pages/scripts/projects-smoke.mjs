@@ -1588,8 +1588,136 @@ try {
     idempotency_key: moveKey(),
   });
   assert.equal(missing.body.code, "move_destination_required");
-  report.cleaned = true;
   complete("move_page moved the Page between Projects and out to Your items over MCP");
+
+  // A real browser claims an email invitation, then crosses two hard Project
+  // lease deadlines. Capture protocol facts only, never cookies or signer keys.
+  const leaseProject = await ok("owner", "create_project", {
+    title: "Inherited lease fixture",
+    idempotency_key: crypto.randomUUID(),
+  });
+  const leasePage = await ok("owner", "create_page", {
+    title: "Inherited lease Page",
+    markdown: "Shared through the Project only.",
+    project_id: leaseProject.project_id,
+    idempotency_key: crypto.randomUUID(),
+  });
+  const grant = await ok("owner", "get_project_access", { project_id: leaseProject.project_id });
+  await ok("owner", "manage_project_access", {
+    project_id: leaseProject.project_id,
+    action: "invite",
+    email: "alice@localhost",
+    role: "editor",
+    expected_revision: grant.revision,
+    idempotency_key: crypto.randomUUID(),
+  });
+  const leaseContext = await browser.newContext();
+  await leaseContext.addInitScript(() => {
+    window.__leaseEvents = [];
+    window.__leaseHold = null;
+    let sequence = 0;
+    const Base = WebSocket;
+    window.WebSocket = class extends Base {
+      constructor(...args) {
+        super(...args);
+        this.fixtureId = ++sequence;
+        for (const name of ["open", "close"])
+          this.addEventListener(name, (event) => {
+            window.__leaseEvents.push({
+              name,
+              id: this.fixtureId,
+              at: Date.now(),
+              ...(name === "close" && { code: event.code, reason: event.reason }),
+            });
+          });
+      }
+      send(bytes) {
+        // Hold only the admitted connection under test, never a fresh handshake.
+        if (this.fixtureId !== window.__leaseHold) super.send(bytes);
+      }
+    };
+  });
+  const member = await leaseContext.newPage();
+  phones.set("project-member", member);
+  member.on("pageerror", (error) => report.errors.push(error.message));
+  const memberLogin = await leaseContext.request.get(`${origin}/api/auth/login`, {
+    maxRedirects: 0,
+  });
+  const memberAuthorize = new URL(memberLogin.headers().location);
+  memberAuthorize.searchParams.set("login_hint", "alice@localhost");
+  await member.goto(memberAuthorize.href, { waitUntil: "domcontentloaded" });
+  await expect(member.getByRole("button", { name: /, switch page$/ })).toBeVisible();
+  const claimed = await ok("owner", "get_project_access", { project_id: leaseProject.project_id });
+  const memberPrincipal = (await browserApi(member, "/api/auth/session")).body.identity.principal;
+  assert.equal(claimed.members[memberPrincipal]?.role, "editor");
+  assert.equal(claimed.invites.length, 0, "verified login claims the Project email invitation");
+  await member.goto(`${origin}/p/${leasePage.page_id}`);
+  const leaseContent = member.locator(".page-block wg-content").first();
+  await expect(leaseContent).toHaveAttribute("contenteditable", "true");
+  await expect(member.getByRole("status").filter({ hasText: /^Saved$/ })).toBeVisible();
+  const events = () => member.evaluate(() => window.__leaseEvents);
+  for (let cycle = 1; cycle <= 2; cycle++) {
+    await expect
+      .poll(async () => (await events()).filter((event) => event.name === "close").length, {
+        timeout: 17000,
+      })
+      .toBe(cycle);
+    const closed = (await events()).filter((event) => event.name === "close").at(-1);
+    assert.equal(closed.code, 4503);
+    assert.equal(closed.reason, "project_lease_expired");
+    await expect
+      .poll(async () => (await events()).filter((event) => event.name === "open").length)
+      .toBe(cycle + 1);
+    const reopened = (await events()).filter((event) => event.name === "open").at(-1);
+    assert.ok(reopened.at - closed.at < 2000, "scheduled renewal stays near base backoff");
+    await expect(leaseContent).toHaveAttribute("contenteditable", "true");
+    await expect(member.getByRole("status").filter({ hasText: /^Saved$/ })).toBeVisible();
+    await expect(member.getByText(/Server unreachable|Sign in again/)).toHaveCount(0);
+  }
+  report.projectLease = { cycles: await events() };
+  complete(
+    "An accepted Project editor crossed two real 15-second lease closes and reconnected without an outage",
+  );
+  await member.evaluate(() => {
+    window.__leaseHold = window.__leaseEvents.filter((event) => event.name === "open").at(-1).id;
+  });
+  await leaseContent.click();
+  await member.keyboard.press("End");
+  await member.keyboard.insertText(" Unsynced lease recovery.");
+  await expect(leaseContent).toContainText("Unsynced lease recovery.");
+  const latestAccess = await ok("owner", "get_project_access", {
+    project_id: leaseProject.project_id,
+  });
+  const revokedAt = Date.now();
+  await ok("owner", "manage_project_access", {
+    project_id: leaseProject.project_id,
+    action: "set_role",
+    principal: memberPrincipal,
+    role: null,
+    expected_revision: latestAccess.revision,
+    idempotency_key: crypto.randomUUID(),
+  });
+  await expect(member.getByRole("heading", { name: "You no longer have access" })).toBeVisible({
+    timeout: 17000,
+  });
+  report.projectLease.revocation_ms = Date.now() - revokedAt;
+  assert.ok(
+    report.projectLease.revocation_ms <= 15000,
+    "revocation is bounded by the inherited lease",
+  );
+  await expect(leaseContent).toHaveCount(0);
+  const downloaded = member.waitForEvent("download");
+  await member.getByRole("button", { name: /^Download .*local cop/ }).click();
+  const download = await downloaded;
+  assert.match(await readFile(await download.path(), "utf8"), /Unsynced lease recovery/);
+  report.projectLease.finalEvents = await events();
+  await member.screenshot({ path: `${output}/project-lease-revoked.png` });
+  await leaseContext.close();
+  phones.delete("project-member");
+  complete(
+    "Project revocation stopped the live member within the lease bound and preserved the unsynced draft download",
+  );
+  report.cleaned = true;
   assert.deepEqual(report.errors, []);
 } catch (error) {
   report.failure = error.stack || error.message;

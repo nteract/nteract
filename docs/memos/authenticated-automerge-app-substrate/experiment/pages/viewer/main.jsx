@@ -1,5 +1,5 @@
 import "../../../../../../src/styles/notebook-tokens.css";
-import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import {
@@ -179,6 +179,16 @@ const CREATED_FLASH_MS = 1600;
 const host = new SessionHost();
 reloadGate.watch(host);
 const installedSession = (state) => state.current;
+function projectDetailsTransition(state, event) {
+  if (event.type === "reset") return { name: event.value ? "ready" : "idle", value: event.value };
+  if (event.type === "load" && ["idle", "failed"].includes(state.name))
+    return { name: "loading", projectId: event.projectId, value: null };
+  if (state.name === "loading" && event.type === "loaded")
+    return { name: "ready", value: event.value };
+  if (state.name === "loading" && event.type === "failed")
+    return { name: "failed", projectId: state.projectId, value: null, error: event.error };
+  return state;
+}
 const editorFailed = (state) => state.name === "failed";
 // The build banner already asks for a reload when the editor can't load.
 const bannerShows = (error) => error?.code === "EDITOR_UNAVAILABLE";
@@ -211,7 +221,10 @@ function App() {
     [index, setIndex] = useState(null),
     // read_page's location for the open Page, null until it answers.
     [placement, setPlacement] = useState(null),
-    [projectDetails, setProjectDetails] = useState(null),
+    [projectDetails, dispatchProjectDetails] = useReducer(projectDetailsTransition, {
+      name: "idle",
+      value: null,
+    }),
     // The Pages of the open Project home Page's Project: { pageId, pages },
     // or null until list_pages answers.
     [projectPages, setProjectPages] = useState(null),
@@ -385,6 +398,24 @@ function App() {
     host.release({ ...options, onError: showError });
     resetDocumentUI();
   }
+  async function loadProjectDetails(next, projectId) {
+    const current = () =>
+      host.current === next &&
+      !next.authRequired &&
+      next.identity?.principal === authentication.current?.identity?.principal;
+    if (!current()) return;
+    dispatchProjectDetails({ type: "load", projectId });
+    setError("");
+    try {
+      const value = await tool("get_project", { project_id: projectId });
+      if (current()) dispatchProjectDetails({ type: "loaded", value });
+    } catch (error) {
+      if (current()) {
+        dispatchProjectDetails({ type: "failed", error: failureMessage(error) });
+        showError(error);
+      }
+    }
+  }
   async function install(
     next,
     revision,
@@ -397,7 +428,7 @@ function App() {
     bootPreview.dispatch({ type: "installed" });
     setIndex(null);
     setPlacement(null);
-    setProjectDetails(project);
+    dispatchProjectDetails({ type: "reset", value: project });
     setProjectPages(null);
     // Breadcrumbs show only the Project and parents this account can open.
     // A Project's home Page also lists the Project's Pages. A Page created in
@@ -410,17 +441,7 @@ function App() {
       onFound: (value) => {
         setPlacement((shown) => shown ?? value);
         if (value.project_id && project?.project_id !== value.project_id)
-          void tool("get_project", { project_id: value.project_id }).then(
-            (project) => {
-              if (
-                host.current === next &&
-                !next.authRequired &&
-                next.identity?.principal === authentication.current?.identity?.principal
-              )
-                setProjectDetails(project);
-            },
-            () => {},
-          );
+          void loadProjectDetails(next, value.project_id);
         if (value.home && value.project_id)
           void listProjectPages(tool, value.project_id).then(
             (pages) => {
@@ -1363,6 +1384,11 @@ function App() {
           },
         },
         { key: "copy-link", label: "Copy link", icon: Link, run: () => copyLink() },
+        projectDetails.name === "failed" && {
+          key: "retry-project-access",
+          label: "Retry Project access",
+          run: () => loadProjectDetails(session, projectDetails.projectId),
+        },
         localRecoveries.length > 0 && {
           key: "local-draft",
           label: "Download previous local draft",
@@ -1392,8 +1418,12 @@ function App() {
           },
         session.canDelete &&
           !projectOpen &&
-          placement &&
-          !placement.home && {
+          (placement
+            ? !placement.home
+            : session.localPage?.registration &&
+              !session.localPage.registered &&
+              !session.authRequired &&
+              session.identity?.principal === authentication.current?.identity?.principal) && {
             key: "trash",
             label: "Move to Trash",
             icon: Trash2,
@@ -1451,9 +1481,9 @@ function App() {
                   session={session}
                   project={
                     projectOpen || (placement?.home && placement.project_id)
-                      ? (projectDetails ?? {
+                      ? (projectDetails.value ?? {
                           project_id: projectOpen ?? placement.project_id,
-                          role: "unknown",
+                          role: projectDetails.name === "failed" ? "unavailable" : "unknown",
                         })
                       : null
                   }

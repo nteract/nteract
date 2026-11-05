@@ -10,6 +10,7 @@ import {
   ADMISSION_CODES,
   ADMISSION_REASONS,
   admissionCloseCode,
+  admissionCloseReason,
   admissionCode,
   admissionReason,
   logAdmissionDenied,
@@ -17,7 +18,12 @@ import {
 } from "./admission-reasons.mjs";
 import { authenticate } from "./auth.mjs";
 import { default as gateway, Page } from "./index.mjs";
-import { DocumentPolicy, PermissionDenied, admissionCancelled } from "./policy.mjs";
+import {
+  DocumentPolicy,
+  PermissionDenied,
+  admissionCancelled,
+  leaseExpiryError,
+} from "./policy.mjs";
 
 const pageId = "33333333-3333-4333-8333-333333333333";
 
@@ -106,6 +112,33 @@ test("client close interpretation accepts only matching code and reason pairs", 
   assert.equal(admissionCloseOutcome({ code: 4403, reason: "temporarily_unavailable" }), undefined);
   for (const code of [1000, 1001, 1006, 4000, 4999])
     assert.equal(admissionCloseOutcome({ code, reason: "Disconnected" }), undefined);
+});
+
+test("Project lease expiry has one safe wire reason without exposing arbitrary denial details", () => {
+  const error = leaseExpiryError({ expiresAt: 61000 }, 16000);
+  assert.equal(admissionReason(error), "project_lease_expired");
+  assert.equal(admissionCode(error), "temporarily_unavailable");
+  assert.equal(admissionCloseReason(error), "project_lease_expired");
+  assert.equal(
+    admissionCloseReason(
+      Object.assign(Error("policy unavailable"), {
+        status: 503,
+        code: "project_policy_unavailable",
+      }),
+    ),
+    "temporarily_unavailable",
+  );
+  assert.equal(
+    admissionCloseReason(leaseExpiryError({ expiresAt: 16000 }, 16000)),
+    "sign_in_required",
+  );
+  assert.deepEqual(admissionCloseOutcome({ code: 4503, reason: "project_lease_expired" }), {
+    code: "temporarily_unavailable",
+    ...ADMISSION_OUTCOMES.temporarily_unavailable,
+    reason: "project_lease_expired",
+  });
+  assert.equal(admissionCloseOutcome({ code: 4401, reason: "project_lease_expired" }), undefined);
+  assert.equal(admissionCloseOutcome({ code: 4503, reason: "private_policy_details" }), undefined);
 });
 
 async function disclosureFixture(auth, metadata) {

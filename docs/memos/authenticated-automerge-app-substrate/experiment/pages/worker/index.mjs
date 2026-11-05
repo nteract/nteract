@@ -146,13 +146,14 @@ import {
   DocumentPolicy,
   PermissionDenied,
   admissionCancelled,
-  credentialExpired,
+  leaseExpiryError,
   hex,
   logicalId,
 } from "./policy.mjs";
 import {
   ADMISSION_ROUTES,
   admissionCloseCode,
+  admissionCloseReason,
   admissionCode,
   admissionErrorResponse,
   admissionReason,
@@ -298,7 +299,11 @@ import {
   shapeState,
 } from "./location-shape.mjs";
 import { LOCATION_REVISION_KEY, movePage } from "./move-page.mjs";
-import { resolveProjectAccess } from "./project-access.mjs";
+import {
+  PROJECT_ACCESS_EMPTY,
+  projectAccessStep,
+  resolveProjectAccess,
+} from "./project-access.mjs";
 import { invitedProjects } from "./project-invitations.mjs";
 import {
   MAX_DEPTH,
@@ -3885,9 +3890,25 @@ export class Page {
   /** Authenticate a request's caller with its own credentials. */
   async identify(request) {
     const identity = await authenticate(request, this.env);
-    if (identity.principal !== this.metadata?.owner)
-      this.projectAccess = await resolveProjectAccess(this.env, this.metadata).catch(() => null);
+    if (identity.principal !== this.metadata?.owner) {
+      const metadata = this.metadata;
+      const observed = this.projectAccessState ?? PROJECT_ACCESS_EMPTY;
+      const snapshot = await resolveProjectAccess(this.env, metadata).catch(() => null);
+      if (metadata?.owner === this.metadata?.owner && metadata?.pageId === this.metadata?.pageId)
+        this.projectAccessState = projectAccessStep(
+          this.projectAccessState ?? PROJECT_ACCESS_EMPTY,
+          {
+            observed,
+            owner: metadata?.owner,
+            snapshot,
+          },
+        );
+    }
     return identity;
+  }
+
+  get projectAccess() {
+    return this.projectAccessState?.snapshot ?? null;
   }
 
   /** Load the serving document. A trashed record whose document cannot be
@@ -6776,12 +6797,13 @@ export class Page {
     const admission = new AbortController();
     let leaseTimer;
     let expiryTimer;
-    const close = (error) => wire.disconnect(admissionCloseCode(error), admissionCode(error));
-    const armExpiry = (expiresAt) => {
+    const close = (error) =>
+      wire.disconnect(admissionCloseCode(error), admissionCloseReason(error));
+    const armExpiry = (expiresAt, currentIdentity = identity) => {
       clearTimeout(expiryTimer);
       if (this.wires.has(wire))
         expiryTimer = setTimeout(
-          () => void close(credentialExpired()),
+          () => void close(leaseExpiryError(currentIdentity, expiresAt)),
           Math.max(1, expiresAt - Date.now()),
         );
     };
@@ -6836,8 +6858,8 @@ export class Page {
                 logAdmissionDenied(error, { stage: "native", identity });
               return close(error ?? admissionCancelled());
             },
-            onRenewal: (expiresAt) => {
-              if (identity.credentialKind === "api-key") armExpiry(expiresAt);
+            onRenewal: (expiresAt, renewedIdentity) => {
+              if (identity.credentialKind === "api-key") armExpiry(expiresAt, renewedIdentity);
             },
             features,
           });
@@ -6977,8 +6999,8 @@ export class Page {
           left > 2 ** 30
             ? armExpiry()
             : void wire.disconnect(
-                admissionCloseCode(credentialExpired()),
-                admissionCode(credentialExpired()),
+                admissionCloseCode(leaseExpiryError(conn.identity, conn.expiresAt)),
+                admissionCloseReason(leaseExpiryError(conn.identity, conn.expiresAt)),
               ),
         Math.max(1, Math.min(left, 2 ** 30)),
       );

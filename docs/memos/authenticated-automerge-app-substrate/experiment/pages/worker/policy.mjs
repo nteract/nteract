@@ -23,6 +23,19 @@ export class PermissionDenied extends Error {
   }
 }
 
+/** An inherited lease requires a fresh policy resolution, not a new credential. */
+export function leaseExpiryError(identity, deadline) {
+  return deadline < identity.expiresAt && deadline !== identity.domainAccess?.expiresAt
+    ? withAdmissionReason(
+        Object.assign(new Error("Project authority lease expired"), {
+          status: 503,
+          code: "project_policy_unavailable",
+        }),
+        "project_lease_expired",
+      )
+    : credentialExpired();
+}
+
 export function credentialExpired() {
   const error = new PermissionDenied(
     "Document access denied: credential expired",
@@ -608,7 +621,7 @@ export class DocumentPolicy {
           }
           if (previous.credentialKind === "api-key") {
             session.identity = renewed;
-            session.onRenewal(this.leaseExpiresAt(renewed));
+            session.onRenewal(this.leaseExpiresAt(renewed), renewed);
           }
           // OIDC retains the original absolute session deadline.
           session.checkedAt = checkedAt;

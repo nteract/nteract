@@ -2,6 +2,7 @@
  * Capability checks use decide() in authz.mjs. Grant identity (pageGrant) and
  * deletion disclosure (pageRelation) use separate projections of the same
  * relation model. */
+import { projectGrantGeneration } from "../shared/grant-generation.mjs";
 import {
   NO_ACTOR_CHAIN,
   decide,
@@ -61,7 +62,11 @@ export function pageGrant(metadata, principal, now = Date.now()) {
       return {
         role: inherited,
         revision,
-        generation: `project:${container.id}:${memberRow(container.members, principal)?.generation ?? 0}:${member?.generation ?? 0}`,
+        generation: projectGrantGeneration(
+          container.id,
+          memberRow(container.members, principal)?.generation ?? 0,
+          member?.generation ?? 0,
+        ),
       };
   }
   if (!member) return { role: "none", revision, generation: 0 };

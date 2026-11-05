@@ -323,6 +323,9 @@
         "page:in_project#project@project:team",
         "project:team#owner@user:alice",
         "project:team#editor@user:bob",
+        "project:team#commenter@user:dana",
+        "project:team#commenter@group:reviewers#member",
+        "group:reviewers#member@user:erin",
         "project:team#viewer@user:carol"
       ],
       "principals": [
@@ -331,6 +334,18 @@
           "credential": "write",
           "capabilities": ["read", "comment", "edit"],
           "basis": { "relation": "editor", "via": "project" }
+        },
+        {
+          "subject": "user:dana",
+          "credential": "write",
+          "capabilities": ["read", "comment"],
+          "basis": { "relation": "commenter", "via": "project" }
+        },
+        {
+          "subject": "user:erin",
+          "credential": "write",
+          "capabilities": ["read", "comment"],
+          "basis": { "relation": "commenter", "via": "project" }
         },
         {
           "subject": "user:carol",

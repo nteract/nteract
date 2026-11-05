@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import "fake-indexeddb/auto";
 import * as A from "@automerge/automerge";
 import { PageSession, classifyRefusal } from "./session.mjs";
+import { projectGrantGeneration } from "../shared/grant-generation.mjs";
 import { SessionHost } from "./session-host.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import { applyComment } from "../model/comments.mjs";
@@ -13,6 +14,7 @@ import {
   readLocalPage,
   writeLocalPage,
   prepareLocalPageReload,
+  retireLocalPage,
   listLocalRecoveries,
 } from "./local-pages.mjs";
 
@@ -207,6 +209,279 @@ test("an unrelated collaborator's revision does not retire this principal's key"
   assert.equal(session.accessReloadRequired, false);
   assert.equal(session.replicaKey, "1:writer");
   assert.equal(session.canWrite, true);
+});
+
+test("commenter promotion waits for the receipt frontier or preserves recovery until explicit reload", async (t) => {
+  for (const acknowledged of [false, true]) {
+    await t.test(acknowledged ? "applied receipt" : "held receipt", async (t) => {
+      const { session, auth, doc } = fixture();
+      t.after(() => session.close());
+      session.phase$.update(() => ({ name: "open" }));
+      session.access = { ...access("commenter"), canComment: true };
+      session.replicaKey = "1:commenter";
+      session.localPage = {
+        ...session.localPage,
+        access: session.access,
+        replicaKey: session.replicaKey,
+        pending: false,
+      };
+      session.savedHeads = A.getHeads(doc);
+      const genesis = newCommentsDoc();
+      session.savedCommentHeads = A.getHeads(genesis);
+      const comments = A.change(A.clone(genesis), (draft) =>
+        applyComment(
+          draft,
+          { block_id: Object.keys(doc.blocks)[0], body: "Accepted remote reply awaiting receipt" },
+          { principal: "remote-author", displayName: "Remote author" },
+          undefined,
+          { page: doc, role: "owner" },
+        ),
+      );
+      session.commentsHandle = { doc: () => comments, documentId: crypto.randomUUID() };
+      assert.equal(session.localPage.pending, false);
+      assert.equal(session.recoveryPending, true, "remote heads alone can precede their receipt");
+      await writeLocalPage(auth.identity, session.localPage);
+      const receipt = Promise.withResolvers();
+      const requested = Promise.withResolvers();
+      session.connection = {};
+      t.mock.method(session, "requestWithRenewal", async (url, options) => {
+        assert.equal(url, `/api/saved?page=${session.pageId}`);
+        assert.deepEqual(JSON.parse(options.body).comment_heads, A.getHeads(comments));
+        requested.resolve();
+        return receipt.promise;
+      });
+      const saving = session.saveReceipt();
+      await requested.promise;
+      if (acknowledged) {
+        receipt.resolve({ durableHeads: A.getHeads(doc) });
+        await saving;
+        assert.equal(session.localPage.pending, false);
+        assert.deepEqual(session.savedCommentHeads, A.getHeads(comments));
+      }
+      await assert.rejects(session.acceptPageAccess(access("editor", 2, 2)), {
+        code: "PAGE_ACCESS_CHANGED",
+      });
+      await session.cacheTail;
+      assert.equal(session.recoveryPending, !acknowledged);
+      assert.equal(session.accessReloadRequired, true);
+      assert.equal(session.canWrite, false, "the old commenter key never becomes a writer");
+      assert.equal(session.replicaKey, "1:commenter");
+      assert.equal(session.access.role, "editor");
+      assert.equal(session.accessReloadRequired && !session.recoveryPending, acknowledged);
+      assert.equal((await session.listRecoveries()).length, 0, "promotion discards no history");
+      if (!acknowledged) {
+        receipt.resolve({ durableHeads: A.getHeads(doc) });
+        await saving;
+        assert.deepEqual(
+          session.savedCommentHeads,
+          A.getHeads(genesis),
+          "late receipt cannot clear the access pause",
+        );
+        assert.equal(session.recoveryPending, true);
+        assert.match(session.exportRecovery().markdown, /Accepted remote reply awaiting receipt/);
+        const replacement = {};
+        t.mock.method(PageSession, "open", async () => replacement);
+        assert.equal(await session.reloadForAccess(), replacement);
+        const recoveries = await session.listRecoveries();
+        assert.ok(recoveries.length);
+        assert.ok(
+          recoveries.some((entry) =>
+            /Accepted remote reply awaiting receipt/.test(session.exportRecovery(entry).markdown),
+          ),
+        );
+        const local = await readLocalPage(auth.identity, session.pageId);
+        assert.equal(local.replicaKey, "2:writer");
+        assert.equal(local.resetReplica, true);
+        assert.equal(local.snapshot, undefined, "replacement cannot import the retired history");
+      }
+    });
+  }
+});
+
+test("inherited editor, commenter and viewer answers use validated host grant identities", async (t) => {
+  for (const role of ["editor", "commenter", "viewer"]) {
+    const { session } = fixture();
+    t.after(() => session.close());
+    session.handle = null;
+    const token = projectGrantGeneration("prj_00000000-0000-4000-8000-000000000001", 1, 0);
+    session.replicaKey = `${token}:${role === "editor" ? "writer" : role === "commenter" ? "commenter" : "reader"}`;
+    await session.acceptPageAccess({ ...access(role, token, 0), canComment: role !== "viewer" });
+    assert.equal(session.access.generation, token);
+    assert.equal(
+      session.replicaKey,
+      `${token}:${role === "editor" ? "writer" : role === "commenter" ? "commenter" : "reader"}`,
+    );
+    assert.equal(session.canWrite, role === "editor");
+    for (const malformed of ["project:prj_invalid:1:0", token + ":extra", "1"])
+      await assert.rejects(
+        session.acceptPageAccess(access(role, malformed, 0)),
+        /Invalid Page access/,
+      );
+  }
+});
+
+test("Project checkpoint replacement and stale retirement never order unrelated grant sources", async (t) => {
+  const project = "prj_00000000-0000-4000-8000-000000000001";
+  const other = "prj_00000000-0000-4000-8000-000000000002";
+  const token = projectGrantGeneration(project, 2, 1);
+  for (const staleGeneration of [
+    1,
+    projectGrantGeneration(project, 1, 1),
+    projectGrantGeneration(other, 99, 99),
+  ]) {
+    const { session, auth } = fixture();
+    t.after(() => session.close());
+    const stale = {
+      ...session.localPage,
+      access: access("editor", staleGeneration, 0),
+      replicaKey: `${staleGeneration}:writer`,
+    };
+    await writeLocalPage(auth.identity, stale);
+    await prepareLocalPageReload(
+      auth.identity,
+      stale,
+      access("editor", token, 0),
+      `${token}:writer`,
+    );
+    await assert.rejects(
+      prepareLocalPageReload(
+        auth.identity,
+        stale,
+        access("editor", staleGeneration, 0),
+        stale.replicaKey,
+      ),
+      { code: "LOCAL_PAGE_ACCESS_CHANGED" },
+    );
+    await assert.rejects(writeLocalPage(auth.identity, stale), {
+      code: "LOCAL_PAGE_ACCESS_CHANGED",
+    });
+    const retired = await retireLocalPage(auth.identity, session.pageId, {
+      reason: "access",
+      grant: stale.replicaKey,
+      revision: 0,
+      snapshot: stale.snapshot,
+    });
+    assert.equal(retired.superseded, true);
+    const current = await readLocalPage(auth.identity, session.pageId);
+    assert.equal(current.replicaKey, `${token}:writer`);
+    assert.equal(current.snapshot, undefined);
+    assert.ok((await session.listRecoveries()).length);
+    await assert.rejects(
+      prepareLocalPageReload(
+        auth.identity,
+        current,
+        access("editor", projectGrantGeneration(project, 1, 1), 0),
+        `${projectGrantGeneration(project, 1, 1)}:writer`,
+      ),
+      { code: "LOCAL_PAGE_ACCESS_CHANGED" },
+    );
+  }
+});
+
+test("direct to inherited to direct reloads archive each source and isolate late checkpoint writes", async (t) => {
+  const { session, auth, doc } = fixture();
+  t.after(() => session.close());
+  const token = projectGrantGeneration("prj_00000000-0000-4000-8000-000000000001", 2, 1);
+  let current = await writeLocalPage(auth.identity, session.localPage);
+  for (const [generation, title] of [
+    [token, "Inherited server content"],
+    [1, "Direct server content"],
+  ]) {
+    const observed = current;
+    const before = await listLocalRecoveries(auth.identity, session.pageId);
+    const reset = await prepareLocalPageReload(
+      auth.identity,
+      observed,
+      access("editor", generation, 1),
+      `${generation}:writer`,
+    );
+    assert.equal(reset.snapshot, undefined, "reloading never imports the old grant's history");
+    assert.equal(reset.resetReplica, true);
+    const archived = await listLocalRecoveries(auth.identity, session.pageId);
+    assert.equal(archived.length, before.length + 1);
+    assert.equal(archived.at(-1).snapshot, observed.snapshot);
+    const serverDoc = A.change(A.clone(doc), (draft) => {
+      draft.title = title;
+    });
+    current = await writeLocalPage(auth.identity, {
+      ...reset,
+      resetReplica: false,
+      snapshot: encodeSnapshot(A.save(serverDoc)),
+      title,
+    });
+    const delayedDoc = A.change(A.load(decodeSnapshot(observed.snapshot)), (draft) => {
+      draft.title = `Late checkpoint from ${observed.replicaKey}`;
+    });
+    const delayed = {
+      ...observed,
+      snapshot: encodeSnapshot(A.save(delayedDoc)),
+      title: delayedDoc.title,
+      pending: true,
+    };
+    await assert.rejects(writeLocalPage(auth.identity, delayed), {
+      code: "LOCAL_PAGE_ACCESS_CHANGED",
+    });
+    const preserved = await readLocalPage(auth.identity, session.pageId);
+    assert.equal(preserved.replicaKey, `${generation}:writer`);
+    assert.equal(
+      preserved.snapshot,
+      current.snapshot,
+      "the retired source cannot merge into the new checkpoint",
+    );
+    assert.equal(A.load(decodeSnapshot(preserved.snapshot)).title, title);
+    const recoveries = await listLocalRecoveries(auth.identity, session.pageId);
+    assert.equal(recoveries.length, archived.length + 1);
+    assert.equal(recoveries.at(-1).snapshot, delayed.snapshot);
+    assert.equal(recoveries.at(-1).replicaKey, observed.replicaKey);
+    current = preserved;
+  }
+  assert.equal(
+    current.replicaKey,
+    "1:writer",
+    "a legitimate direct fallback keeps its shipped generation",
+  );
+});
+
+test("incomparable Project counters cannot replace or retire the observed checkpoint", async (t) => {
+  const project = "prj_00000000-0000-4000-8000-000000000001";
+  for (const [stored, incoming] of [
+    [2, 1],
+    [1, 2],
+  ]) {
+    const { session, auth } = fixture();
+    t.after(() => session.close());
+    const generation = projectGrantGeneration(project, stored, incoming);
+    const conflicting = projectGrantGeneration(project, incoming, stored);
+    const current = await writeLocalPage(auth.identity, {
+      ...session.localPage,
+      access: access("editor", generation, 1),
+      replicaKey: `${generation}:writer`,
+    });
+    await assert.rejects(
+      prepareLocalPageReload(
+        auth.identity,
+        current,
+        access("editor", conflicting, 1),
+        `${conflicting}:writer`,
+      ),
+      { code: "LOCAL_PAGE_ACCESS_CHANGED" },
+    );
+    assert.deepEqual(await readLocalPage(auth.identity, session.pageId), current);
+    assert.equal((await listLocalRecoveries(auth.identity, session.pageId)).length, 0);
+    const result = await retireLocalPage(auth.identity, session.pageId, {
+      reason: "access",
+      grant: `${conflicting}:writer`,
+      revision: 1,
+      drafts: [{ block_id: "block", body: "Keep the conflicting tab's draft" }],
+    });
+    assert.equal(result.superseded, true);
+    const kept = await readLocalPage(auth.identity, session.pageId);
+    assert.equal(kept.snapshot, current.snapshot);
+    assert.equal(kept.replicaKey, current.replicaKey);
+    assert.equal(kept.revoked, undefined);
+    const recovery = (await listLocalRecoveries(auth.identity, session.pageId)).at(-1);
+    assert.equal(recovery.comment_drafts[0].body, "Keep the conflicting tab's draft");
+  }
 });
 
 test("losing read access throws a refusal classified as access", async (t) => {

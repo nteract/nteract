@@ -527,6 +527,77 @@ test("native completion after socket loss or expired sign-in cannot announce a c
 const hostClose = (socket, code, reason) =>
   socket.dispatchEvent(Object.assign(new Event("close"), { code, reason }));
 
+test("eight admitted Project leases reconnect at base delay despite discovery and handshake offsets", async (t) => {
+  const f = fixture(t, { random: () => 0, date: true });
+  f.hooks.receipt = (request) => Response.json({ durableHeads: request.heads });
+  let identifiedAt;
+  f.hooks.connect = () => {
+    identifiedAt = f.session.now();
+  };
+  f.hooks.setup = () => new Promise((resolve) => setTimeout(resolve, 800));
+  const opening = f.session.openConnection(false);
+  await drain();
+  await f.advance(800);
+  await opening;
+  for (let cycle = 0; cycle < 8; cycle++) {
+    const socket = f.sockets.at(-1);
+    assert.equal(f.session.socketAdmittedAt.get(socket) - identifiedAt, 800);
+    await f.advance(15000 - (f.session.now() - identifiedAt));
+    hostClose(socket, 4503, "project_lease_expired");
+    f.session.socketDisconnected(socket);
+    assert.equal(f.session.retryAttempts, 1, `lease cycle ${cycle + 1}`);
+    assert.notEqual(f.session.connectionProblem, SERVER_UNREACHABLE);
+    const count = f.sockets.length;
+    await f.advance(249);
+    assert.equal(f.sockets.length, count);
+    await f.advance(1);
+    assert.equal(f.sockets.length, count + 1, "equal-jitter base delay stays 250 ms");
+    await f.advance(800);
+  }
+  f.mutate("Keep this local draft after revocation");
+  const draft = A.getHeads(f.session.handle.doc());
+  f.hooks.connect = () =>
+    Response.json({ error: "Document access denied", code: "page_access_denied" }, { status: 403 });
+  const socket = f.sockets.at(-1);
+  hostClose(socket, 4503, "project_lease_expired");
+  f.session.socketDisconnected(socket);
+  await f.advance(250);
+  assert.equal(f.session.accessDenied, true);
+  assert.deepEqual(A.getHeads(f.session.handle.doc()), draft);
+  assert.equal(f.session.retryTimer, undefined);
+});
+
+for (const reason of ["temporarily_unavailable", "project_lease_expired"]) {
+  test(`eight early ${reason} closes before admission still back off and report an outage`, async (t) => {
+    const f = fixture(t, { random: () => 0, date: true });
+    f.hooks.setup = async () => {
+      hostClose(f.sockets.at(-1), 4503, reason);
+      throw Error("Host closed before admission");
+    };
+    await f.session.attemptConnection();
+    for (let attempt = 1; attempt <= 8; attempt++) {
+      assert.equal(f.session.retryAttempts, attempt);
+      if (attempt < 8) await f.advance(backoffStep(attempt - 1) / 2);
+    }
+    assert.equal(f.session.connectionProblem, SERVER_UNREACHABLE);
+  });
+}
+
+test("eight admitted but unstable generic 4503 closes retain exponential backoff", async (t) => {
+  const f = fixture(t, { random: () => 0, date: true });
+  f.hooks.receipt = (request) => Response.json({ durableHeads: request.heads });
+  await f.session.openConnection(false);
+  for (let attempt = 1; attempt <= 8; attempt++) {
+    await f.advance(14200);
+    const socket = f.sockets.at(-1);
+    hostClose(socket, 4503, "temporarily_unavailable");
+    f.session.socketDisconnected(socket);
+    assert.equal(f.session.retryAttempts, attempt);
+    if (attempt < 8) await f.advance(backoffStep(attempt - 1) / 2);
+  }
+  assert.equal(f.session.connectionProblem, SERVER_UNREACHABLE);
+});
+
 test("refused native admission does not reset reconnect backoff", async (t) => {
   const f = fixture(t);
   await f.start();

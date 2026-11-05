@@ -63,6 +63,9 @@ definition project {
 	/** contribute is the proposal's project.contribute: owner + editor. */
 	permission contribute = owner + editor
 
+	/** comment_items grants comments on every item, without editing its content. */
+	permission comment_items = contribute + commenter
+
 	/** read_items is the proposal's project.read_items: contribute + viewer. */
 	permission read_items = contribute + commenter + viewer
 
@@ -139,7 +142,7 @@ definition page {
 	 * comment writes the item's comments document: every editor, and
 	 * commenters. Editing the item itself stays with edit.
 	 */
-	permission comment = edit + commenter + project->commenter
+	permission comment = edit + commenter + project->comment_items
 
 	/** read is the proposal's item.read, with removed subtracted from the direct viewer path. */
 	permission read = comment + (viewer - removed) + project->read_items
