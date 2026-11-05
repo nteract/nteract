@@ -541,15 +541,6 @@ test("membership removal never removes an independent direct content grant", asy
   assert.equal(w.page(project.document_id).projectAccess.revision, 2);
 });
 
-test("an owner Catalog awaiting its home-removal migration answers 503 to the selector", async (t) => {
-  const w = await world(t);
-  const project = await w.createProject();
-  await w.catalogStorage().put("host/home-removal/state", { phase: "applying", next: 0, total: 1 });
-  const result = await w.call("owner", "read_page", { project_id: project.project_id });
-  assert.equal(result.status, 503, JSON.stringify(result.body));
-  assert.equal(result.body.code, "location_migration_required");
-});
-
 test("reply_page_comment takes the content selector too", () => {
   assert.ok(PROJECT_CONTENT_OPERATIONS.has("reply_page_comment"));
 });

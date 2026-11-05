@@ -129,7 +129,6 @@ was a caret race in the smoke; the editor side is
 | `list_pages` reports `content_updated_at` after an MCP edit and after typing in a tab, each well after the Page's creation | `node scripts/local-sharing-e2e.mjs --content-activity` | Starts an isolated fixture |
 | Grid cards show each edited Page's first content in light, dark and phone layouts; a shared card shows for its member and `page_cards` answers null on the call after removal | `node scripts/local-sharing-e2e.mjs --cards` | Starts an isolated fixture |
 | Cold first open of a 300-paragraph Page with images on Fast 3G and 4x CPU, phase by phase (records timings, gates on nothing) | `node scripts/local-sharing-e2e.mjs --cold-open` | Starts an isolated fixture behind a brotli proxy; writes `report.json` |
-| Rollback to a previous build and forward again on one data directory | `node scripts/rollback-qualification.mjs --target <target> --previous <previous pages dir>` | Starts an isolated fixture; build the previous commit first |
 | Rich comment tables and drafts | `PAGES_ORIGIN=http://localhost:9894 node scripts/rich-comments-smoke.mjs` | Uses the running Wordgard fixture |
 | Comments panel placement at 1920/1440/1100/800px | `PAGES_ORIGIN=http://localhost:9894 node scripts/comments-layout-smoke.mjs` | Uses the running Wordgard fixture |
 | Schema-feature gate: a Page stamped with an unknown feature opens read-only and refuses tool writes | `PAGES_ORIGIN=http://localhost:9894 node scripts/schema-features-smoke.mjs` | Uses the running Wordgard fixture |
@@ -2962,9 +2961,8 @@ Project stores the Project's `space_id` with `parent_id: null`; the content
 document's entry stores `project_content` and no location; a sub-page's Project
 is derived by walking parents to its root with
 [model/location.mjs](model/location.mjs). The Catalog stamps its location shape
-version (`LOCATION_SHAPE_VERSION`, now 2); a Catalog holding the earlier shape
-answers `503 location_migration_required` on location reads and writes until
-its owner runs the one-shot migration described in DEPLOYMENT.md. `create_page` writes the location
+version (`LOCATION_SHAPE_VERSION`, now 2); this build reads only that shape.
+`create_page` writes the location
 into the pending Catalog entry in the same put as its journal intent, so a
 retry finds its parent there, and the Page learns only its content. Results
 call `space_id` `project_id`. A parent implies its Project; a different

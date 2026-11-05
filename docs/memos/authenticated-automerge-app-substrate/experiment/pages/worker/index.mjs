@@ -288,8 +288,6 @@ import {
   locationAnswer,
   locationEntries,
   locationScan,
-  migrationRequired,
-  requireCurrentShape,
   parentActive,
   projectOf,
   publicLocation,
@@ -298,20 +296,7 @@ import {
   rekeyedEntries,
   restoreTarget,
 } from "./catalog-location.mjs";
-import {
-  LOCATION_SHAPE_KEY,
-  MIGRATION_REQUIRED,
-  migrateLocationShape,
-  shapeState,
-} from "./location-shape.mjs";
-// ONE-SHOT MIGRATION imports: delete with home-removal-migration.mjs.
-import {
-  HOME_REMOVAL_MODES,
-  HOME_REMOVAL_STATE_KEY,
-  applyHomeRemoval,
-  planHomeRemoval,
-  readHomeRemovalInput,
-} from "./home-removal-migration.mjs";
+import { migrateLocationShape } from "./location-shape.mjs";
 // ONE-SHOT MIGRATION imports: delete with content-migration.mjs.
 import {
   contentMigrationArguments,
@@ -988,7 +973,7 @@ async function invoke(request, env, operation, args = {}, seen) {
       if (projectId && operation !== "read_page") {
         delete body._owner;
         body.project_id = projectId;
-      } else await locationView(request, env, body, signal, identity);
+      } else await locationView(request, env, body, signal);
       return json(body, response.status);
     },
     { safe },
@@ -1051,9 +1036,8 @@ async function pageCards(request, env, identity, args) {
  * reveals its Project. This runs in the stateless gateway: a Page never calls
  * its owner's Catalog.
  */
-async function locationView(request, env, body, signal, identity) {
+async function locationView(request, env, body, signal) {
   const owner = body._owner;
-  let migrationRefused = false;
   delete body._owner;
   body.kind = "page";
   body.breadcrumbs = [];
@@ -1074,10 +1058,7 @@ async function locationView(request, env, body, signal, identity) {
         controller.signal,
       );
       if (!response.ok) {
-        if (response.status === 503 && namespace === env.CATALOGS) {
-          const refusal = await response.json().catch(() => ({}));
-          if (refusal?.code === MIGRATION_REQUIRED) migrationRefused = true;
-        } else await response.body?.cancel().catch(() => {});
+        await response.body?.cancel().catch(() => {});
         return null;
       }
       return await readResponseJson(response, controller.signal);
@@ -1094,10 +1075,6 @@ async function locationView(request, env, body, signal, identity) {
     typeof owner === "string"
       ? await readable(env.CATALOGS, owner, locationRequest({ page_id: body.page_id }))
       : null;
-  // The owner's own unmigrated Catalog can't say whether this is Project
-  // content: refuse rather than call it a plain Page. Anyone else keeps the
-  // private direct-grant view, which never names a Project.
-  if (!location && migrationRefused && identity?.principal === owner) throw migrationRequired();
   if (!location) return;
   // Top-level Pages in Your items.
   if (!location.space_id && !location.parent_id) {
@@ -1439,15 +1416,6 @@ const gateway = {
           recheckUpload: () => authorizeImage(request, env, pageId, false),
         });
       }
-      // ONE-SHOT MIGRATION route (home-removal-migration.mjs; delete with it).
-      if (url.pathname === "/api/admin/home-removal" && request.method === "POST") {
-        const identity = await authenticate(request, env);
-        return await withRefusalCode(
-          await env.CATALOGS.getByName(identity.principal).fetch(
-            forwarded(request, "/internal/home-removal", await readJson(request)),
-          ),
-        );
-      }
       // ONE-SHOT MIGRATION route (content-migration.mjs; delete with it). Lab
       // only: without PAGES_OPERATOR_SECRET, with a wrong secret, or for a
       // request the Cloudflare edge forwarded, it is the unknown path below.
@@ -1706,75 +1674,9 @@ export class Catalog {
    * The Catalog's location shape, brought up to date. Every queued write
    * runs this once its input is sound and before it reserves or writes
    * anything; a `migrated` record costs one read (location-shape.mjs).
-   * Location writes need `migrated`. Reads don't record anything, but a
-   * Catalog still holding the retired shape refuses them too
-   * (catalog-location.mjs `locationScan`).
    */
   async locationShape() {
     return migrateLocationShape(this.storage);
-  }
-  /**
-   * ONE-SHOT MIGRATION (home-removal-migration.mjs; delete with it). The
-   * owner's `dry_run` reports; `apply` rewrites Space records, then this
-   * Catalog's entries with backups, then records the current shape. Runs in
-   * the serial queue, so nothing else writes meanwhile; idempotent.
-   */
-  async homeRemoval(request) {
-    const identity = await authenticate(request, this.env);
-    if (this.ctx.id.name && this.ctx.id.name !== identity.principal)
-      throw new HttpError(403, "Account access denied");
-    const { mode } = (await readJson(request)) ?? {};
-    if (!HOME_REMOVAL_MODES.includes(mode))
-      throw new HttpError(400, 'mode must be "dry_run" or "apply"', "invalid_arguments");
-    if (mode === "apply") requireWrite(identity);
-    const storage = this.storage;
-    if (mode === "dry_run") {
-      const plan = planHomeRemoval(await readHomeRemovalInput(storage, listAll));
-      const progress = (await storage.get(HOME_REMOVAL_STATE_KEY)) ?? { phase: "none" };
-      return json({ mode, ...plan.report, writes: plan.writes.size, progress });
-    }
-    let result;
-    try {
-      result = await applyHomeRemoval(storage, {
-        listAll,
-        perBatch: STORAGE_KEYS_PER_CALL - 1,
-        rewriteSpaces: async (spaceIds) => {
-          for (const spaceId of spaceIds) {
-            const response = await this.env.PROJECTS.getByName(spaceId).fetch(
-              new Request("https://pages.internal/internal/space/remove-home", {
-                method: "POST",
-                body: JSON.stringify({ space_id: spaceId, owner: identity.principal }),
-              }),
-            );
-            // A Project this account no longer owns, or whose object was never
-            // created (a creation still `reserved`), has nothing to rewrite.
-            if (!response.ok && response.status !== 404)
-              throw new HttpError(503, `Project ${spaceId} could not be migrated; retry`);
-          }
-        },
-      });
-    } catch (error) {
-      if (!error.blockers) throw error;
-      throw Object.assign(
-        new HttpError(409, "The migration found entries it can't convert", "home_removal_blocked"),
-        { details: { blockers: error.blockers } },
-      );
-    }
-    await markCatalogIndexDirty(storage);
-    await markSpaceIndexDirty(storage);
-    await storage.sync();
-    if (result.state.phase === "failed")
-      throw Object.assign(
-        new HttpError(409, "The migrated Catalog failed validation", "home_removal_invalid"),
-        { details: { problems: result.state.problems } },
-      );
-    return json({
-      mode,
-      ...result.report,
-      writes: result.writes,
-      shape: shapeState(await storage.get(LOCATION_SHAPE_KEY)).name,
-      progress: result.state,
-    });
   }
   /**
    * ONE-SHOT MIGRATION (content-migration.mjs; delete with it). The owner's
@@ -1890,18 +1792,6 @@ export class Catalog {
     });
   }
 
-  /** Refuse a location write while this Catalog isn't in the current shape.
-   * A blocked pass names the Project and Page in its way, in the message and
-   * as `reason`, `page_id` and `space_id`; the next write tries again. */
-  static requireMigrated(shape) {
-    if (shape.name === "migrated") return;
-    if (shape.name === "blocked") throw migrationRequired();
-    throw new HttpError(
-      503,
-      "This account's Pages are being checked. Retry shortly.",
-      MIGRATION_REQUIRED,
-    );
-  }
   async run(request) {
     try {
       const pathname = new URL(request.url).pathname;
@@ -1944,7 +1834,6 @@ export class Catalog {
         });
         return json({ ok: true });
       }
-      if (pathname === "/internal/home-removal") return await this.homeRemoval(request);
       if (pathname === "/internal/content-migration") return await this.contentMigration(request);
       if (pathname === "/internal/operator-content-migration")
         return await this.operatorContentMigration(request);
@@ -2089,11 +1978,8 @@ export class Catalog {
         if (await this.storage.get(`host/deleted/${args.page_id}`))
           throw new HttpError(409, "Page was deleted");
       }
-      // Input is sound: this write runs the shape pass first. Creating,
-      // trashing and restoring place a Page, so they also wait for the
-      // current shape. Purging removes a Trash entry in either shape.
-      const shape = await this.locationShape();
-      if (body.operation !== "purge_page") Catalog.requireMigrated(shape);
+      // Input is sound: this write runs the shape pass first.
+      await this.locationShape();
       const key = mutationKey(args);
       const digest = await fingerprint(
         lifecycleFingerprint[body.operation] ?? body.operation,
@@ -2721,7 +2607,7 @@ export class Catalog {
   async movePage(identity, args) {
     const { pageId, parentId, spaceId, position } = validateMoveInput(args);
     // Input is sound: the shape pass runs first, as for every queued write.
-    Catalog.requireMigrated(await this.locationShape());
+    await this.locationShape();
     const run = {
       identity,
       pageId,
@@ -2958,9 +2844,8 @@ export class Catalog {
   async createSpace(request, identity, args, limit) {
     const storage = this.storage;
     const { title, description } = validateSpaceInput(args, { creating: true });
-    // A Project write records a content document in this Catalog, which
-    // needs the current shape.
-    Catalog.requireMigrated(await this.locationShape());
+    // Input is sound: the shape pass runs first, as for every queued write.
+    await this.locationShape();
     const key = mutationKey(args);
     const digest = await fingerprint("create_space", args, identity);
     const inspected = await inspectOperation(storage, {
@@ -3210,9 +3095,6 @@ export class Catalog {
    * supplies what is returned. */
   async listSpaces(request, identity, args) {
     const storage = this.storage;
-    // The owner's own Project records must be in the current shape; an
-    // unmigrated account refuses rather than list Projects without content.
-    await requireCurrentShape(storage);
     for (const spaceId of await invitedProjects(this.env, identity)) {
       // An invitation is an untrusted candidate, not an existing membership.
       // Capacity conflicts or unavailable candidate hosts must not prevent

@@ -2493,7 +2493,7 @@ test("the build receipt lists every record storage mode the Worker opens", async
   const { PLAIN_STORAGE_FORMATS } = await import("../shared/record-storage.mjs");
   assert.deepEqual(PLAIN_STORAGE_FORMATS, CURRENT_PLAIN_STORAGE_FORMATS);
   assert.match(source, /plain_storage_formats: \[\.\.\.PLAIN_STORAGE_FORMATS\]/);
-  for (const entry of ["deploy.mjs", "deployment/install.mjs", "rollback-qualification.mjs"])
+  for (const entry of ["deploy.mjs", "deployment/install.mjs"])
     assert.match(
       fs.readFileSync(new URL(entry, import.meta.url), "utf8"),
       /assertReleaseOpensTargetPages\(/,

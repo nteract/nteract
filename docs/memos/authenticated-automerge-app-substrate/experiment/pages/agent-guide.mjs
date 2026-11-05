@@ -233,12 +233,8 @@ Branch on code, not on the error message:
 - page_recovery_blocked: a pending edit exceeds the Page's history capacity;
   accepted content stays readable. Tell the person.
 - Retryable server waits (503, retryable:true): record_persistence_timeout,
-  record_persistence_unavailable, comments_migrating and
-  location_migration_required. Retry the same request, including its key and
-  token. location_migration_required also names the reason, page_id and
-  space_id blocking the pass; when the reason says the owner's Catalog needs a
-  one-time migration, retrying does not help until an operator runs it, so
-  tell the person. record_persistence_unavailable carries
+  record_persistence_unavailable and comments_migrating. Retry the same
+  request, including its key and token. record_persistence_unavailable carries
    retry_after_ms and Retry-After. For a tokenless write it is retryable:false:
    read back and reconcile before retrying, since the write may have completed.
 - shared_page_unavailable (503, retryable:true): a listing met a shared Page,
