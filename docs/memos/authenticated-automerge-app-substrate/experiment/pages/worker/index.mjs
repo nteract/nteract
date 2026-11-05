@@ -85,6 +85,7 @@ import { pagePreview } from "../model/page-preview.mjs";
 import { cardKey, pageCard } from "../model/page-card.mjs";
 import {
   authenticate,
+  accountIdentity,
   agentLabel,
   driverLabel,
   requireSameOrigin,
@@ -1098,6 +1099,21 @@ const gateway = {
       }
       const oauth = await handleOAuth(request, env);
       if (oauth) return oauth;
+      if (url.pathname === "/whoami") {
+        if (request.method !== "GET") {
+          const response = json({ error: "Use GET" }, 405);
+          response.headers.set("allow", "GET");
+          return response;
+        }
+        const identity = await authenticate(request, env);
+        return json({
+          account: accountIdentity(identity),
+          credential: {
+            kind: identity.credentialKind,
+            can_write: identity.canWrite,
+          },
+        });
+      }
       if (url.pathname === "/api/auth/login" && request.method === "GET")
         return beginServerOidcLogin(request, env);
       if (url.pathname === "/oidc")
@@ -3021,6 +3037,7 @@ export class Catalog {
         next_cursor: null,
         quota,
         principal: identity.principal,
+        account: accountIdentity(identity),
         ...(await issueRetryToken(storage, {
           scope: `catalog:${identity.principal}`,
           principal: identity.principal,
@@ -3106,6 +3123,7 @@ export class Catalog {
         : null,
       quota,
       principal: identity.principal,
+      account: accountIdentity(identity),
       ...migration,
       ...(await issueRetryToken(storage, {
         scope: `catalog:${identity.principal}`,

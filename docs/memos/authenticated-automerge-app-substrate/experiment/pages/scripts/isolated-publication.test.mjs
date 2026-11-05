@@ -11,6 +11,7 @@ import {
   indexPaths,
   projectPaths,
   siftPaths,
+  whoamiPaths,
 } from "./deployment/routes.mjs";
 import { isIndexRoute, readPageRoute } from "../shared/routes.mjs";
 import { deploymentProfile } from "./deployment/profiles.mjs";
@@ -355,7 +356,7 @@ function priorConfig(config, target) {
         : target === "page9"
           ? config.replace(indexPaths, "")
           : target === "page10" || target === "pages"
-            ? config.replace(siftPaths, "")
+            ? config.replace(whoamiPaths, "")
             : config.replace("|mermaid[.]js|", "|");
 }
 const configDir = (target) => "/etc/" + deploymentProfile(target).deployment.service;
@@ -677,11 +678,12 @@ test("Page10 serves Page9's route set on its own origin while every older route 
   const current = routesFor("page10");
   const page9 = deploymentProfile("page9").deployment;
   const page10 = deploymentProfile("page10").deployment;
-  // Page10 copies Page9's route flags and adds Sift's WASM. Otherwise only the
+  // Page10 copies Page9's route flags and adds Sift and whoami. Otherwise only the
   // hostname and listener differ.
   assert.equal(current.split(siftPaths).length, 2, "the Sift route appears once");
   assert.equal(
     current
+      .replace(whoamiPaths, "")
       .replace(siftPaths, "")
       .replaceAll(page10.hostname, page9.hostname)
       .replaceAll(page10.listen, page9.listen),
@@ -689,6 +691,62 @@ test("Page10 serves Page9's route set on its own origin while every older route 
   );
   assert.doesNotMatch(current, /page9[.]runtimed[.]run|127[.]0[.]0[.]1:9479/);
 });
+
+const whoamiRejected = ["/whoami/", "/whoami/private", "/whoamiX", "/Whoami", "/api/whoami"];
+test("only explicit live profiles admit exact whoami, never legacy routes", () => {
+  for (const target of [
+    "pages-next",
+    "page3",
+    "page4",
+    "page5",
+    "page6",
+    "page7",
+    "page8",
+    "page9",
+    "page10",
+    "pages",
+  ]) {
+    const enabled = ["page10", "pages"].includes(target);
+    assert.equal(deploymentProfile(target).whoami === true, enabled);
+    for (const legacy of [false, true]) {
+      const route = new RegExp(/^    path: (.+)$/m.exec(routesFor(target, legacy))[1]);
+      assert.equal(route.test("/whoami"), enabled && !legacy, target);
+      assert.equal(
+        route.test(new URL("https://example.com/whoami?probe=1").pathname),
+        enabled && !legacy,
+      );
+      for (const pathname of [...whoamiRejected, "/whoami.json", "/x/whoami", "/%77hoami"])
+        assert.equal(route.test(pathname), false, `${target} ${pathname}`);
+    }
+  }
+});
+
+test("whoami predecessors retain the exact Sift and pre-Sift route bytes", () => {
+  for (const [target, sift, beforeSift] of [
+    [
+      "page10",
+      "6ba30080c9a94d04fe6ba71ec1d123289ab8d885e86aa3279909fd20795f18c8",
+      "a2b973dfa57ee7ea2a2ab8d6f0cfca4b7238e6ef12240dfc0a365e03daba9904",
+    ],
+    [
+      "pages",
+      "f10e88bd040d7c1a691736ee8619d228a439cd816ae508ed25d5e8096ecc69cd",
+      "4aa6f96562532f3c5739fe7ffc44728cd210432abf45a80f74fef383081e6ce5",
+    ],
+  ]) {
+    const prior = routesFor(target).replace(whoamiPaths, "");
+    assert.equal(digest(prior), sift);
+    assert.equal(digest(prior.replace(siftPaths, "")), beforeSift);
+  }
+});
+
+for (const target of ["page7", "page8", "page9", "page10", "pages"])
+  for (const misroutePath of ["/whoami", ...whoamiRejected])
+    test(`${target} refuses misrouted ${misroutePath} before connector activation`, (t) => {
+      const f = fixture(t, { target, misroutePath });
+      assert.throws(f.execute, /route validation failed/);
+      assert.deepEqual(lifecycle(f), []);
+    });
 
 test("Page10 and Pages admit exactly Sift's hashed WASM; Page9 never does", () => {
   const page9 = new RegExp(/^    path: (.+)$/m.exec(routesFor("page9"))[1]);
@@ -1720,6 +1778,133 @@ const installedReceipt = (f) =>
   fs.readFileSync(f.local(configDir(f.target) + "/tunnel-installation.json"), "utf8");
 
 for (const target of ["page10", "pages"]) {
+  for (const phase of ["starting", "stopping", "reverting", "serving"])
+    test(`${target} resumes unchanged-Sift legacy handoff at ${phase}, rolls back and retries`, (t) => {
+      const f = fixture(t, { target, neverReady: true });
+      const plan = isolatedPublicationPlan(inputFor(target));
+      const sift = plan.config.replace(whoamiPaths, "");
+      const hash = digest(sift);
+      // HEAD's predecessor(plan.config, true): routes did not change, units did.
+      const historical = slotReceipt(sift, plan.unitSha256, {
+        previous_config_sha256: hash,
+        previous_unit_sha256: digest(plan.unit),
+      });
+      f.write(plan.configPath, sift);
+      f.write(plan.unitPath, plan.unit);
+      for (const slot of plan.slots) f.write(slot.unitPath, slot.unit);
+      f.write(configDir(target) + "/tunnel-installation.json", historical);
+      const record =
+        phase === "starting"
+          ? { phase, live: "legacy", config: hash, next: "a", nextConfig: hash }
+          : phase === "stopping"
+            ? { phase, live: "a", config: hash, previous: "legacy", previousConfig: hash }
+            : phase === "reverting"
+              ? { phase, live: "legacy", config: hash, next: "a" }
+              : { phase, live: "a", config: hash };
+      f.write(recordPath(target), JSON.stringify({ schema: 1, ...record }));
+      if (phase !== "serving") f.activate(plan.service);
+      if (phase !== "starting") f.activate(plan.slots[0].service);
+      assert.throws(f.execute, /reported fewer than 2 edge connections/);
+      assert.equal(installedReceipt(f), historical);
+      assert.equal(fs.readFileSync(f.local(plan.configPath), "utf8"), sift);
+      f.setNeverReady(false);
+      assert.equal(f.execute().routesUpdated, true);
+      assert.equal(installedReceipt(f), slotReceipt(plan.config, plan.unitSha256));
+      assert.equal(fs.readFileSync(f.local(plan.configPath), "utf8"), plan.config);
+      assert.equal(f.execute().routesUpdated, false);
+      assertNoGap(f);
+    });
+
+  test(`${target} unchanged-Sift pending receipt rejects pre-Sift or edited files`, (t) => {
+    const plan = isolatedPublicationPlan(inputFor(target));
+    const sift = plan.config.replace(whoamiPaths, "");
+    for (const config of [sift.replace(siftPaths, ""), sift + "# foreign\n"]) {
+      const f = fixture(t, { target });
+      f.write(plan.configPath, config);
+      f.write(plan.unitPath, plan.unit);
+      f.write(
+        configDir(target) + "/tunnel-installation.json",
+        slotReceipt(sift, plan.unitSha256, {
+          previous_config_sha256: digest(sift),
+          previous_unit_sha256: digest(plan.unit),
+        }),
+      );
+      assert.throws(f.execute, /migration requires exact previous files/);
+      assert.equal(f.writes.length, 0);
+      assert.deepEqual(lifecycle(f), []);
+    }
+  });
+
+  for (const legacy of [false, true])
+    for (const state of [
+      "sealed",
+      "pending-old",
+      "pending-new",
+      "pending-legacy-old",
+      "pending-legacy-new",
+    ]) {
+      if (!legacy && state.startsWith("pending-legacy")) continue;
+      test(`${target} migrates exact pre-whoami Sift history: ${legacy ? "legacy" : "slots"} ${state}`, (t) => {
+        const f = fixture(t, { target });
+        const plan = isolatedPublicationPlan(inputFor(target));
+        const sift = plan.config.replace(whoamiPaths, "");
+        const beforeSift = sift.replace(siftPaths, "");
+        const config = state.endsWith("new") ? sift : beforeSift;
+        const unit = legacy ? digest(plan.unit) : plan.unitSha256;
+        const receipt =
+          state === "sealed"
+            ? slotReceipt(beforeSift, unit)
+            : slotReceipt(sift, state.startsWith("pending-legacy") ? unit : plan.unitSha256, {
+                previous_config_sha256: digest(beforeSift),
+                ...(state.startsWith("pending-legacy") ? {} : { previous_unit_sha256: unit }),
+              });
+        f.write(plan.configPath, config);
+        f.write(configDir(target) + "/tunnel-installation.json", receipt);
+        if (legacy) f.write(plan.unitPath, plan.unit);
+        else {
+          for (const slot of plan.slots) f.write(slot.unitPath, slot.unit);
+          f.write(
+            recordPath(target),
+            JSON.stringify({ schema: 1, phase: "serving", live: "a", config: digest(beforeSift) }),
+          );
+        }
+        f.activate(legacy ? plan.service : plan.slots[0].service);
+        // A failed new connector preserves an exact historical receipt and
+        // config, which must remain retryable under this release.
+        f.failNextStart();
+        assert.throws(f.execute, /injected connector startup failure/);
+        assert.equal(installedReceipt(f), receipt);
+        assert.equal(fs.readFileSync(f.local(plan.configPath), "utf8"), config);
+        assert.equal(f.execute().routesUpdated, true);
+        assert.equal(installedReceipt(f), slotReceipt(plan.config, plan.unitSha256));
+        assertNoGap(f);
+        assert.equal(f.execute().routesUpdated, false);
+      });
+    }
+
+  test(`${target} refuses arbitrary edits to either whoami predecessor even with matching receipts`, (t) => {
+    const plan = isolatedPublicationPlan(inputFor(target));
+    for (const base of [
+      plan.config.replace(whoamiPaths, ""),
+      plan.config.replace(whoamiPaths, "").replace(siftPaths, ""),
+    ])
+      for (const changed of [
+        base + "# foreign edit\n",
+        base.replace("health|", "health|private|"),
+      ]) {
+        const f = fixture(t, { target });
+        f.write(plan.configPath, changed);
+        f.write(plan.unitPath, plan.unit);
+        f.write(
+          configDir(target) + "/tunnel-installation.json",
+          slotReceipt(changed, digest(plan.unit)),
+        );
+        assert.throws(f.execute, /installation differs/);
+        assert.equal(f.writes.length, 0);
+        assert.deepEqual(lifecycle(f), []);
+      }
+  });
+
   test(`${target} slot units add metrics and a bounded grace period; the legacy unit is unchanged`, () => {
     const plan = isolatedPublicationPlan(inputFor(target));
     const { deployment } = deploymentProfile(target);

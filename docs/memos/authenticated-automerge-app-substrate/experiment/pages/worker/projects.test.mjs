@@ -1846,6 +1846,11 @@ test("a shared parent's hidden children never show through pagination", async (t
     next_cursor: null,
     quota: { limit: 250, count: 0, trash_count: 0 },
     principal: w.member,
+    account: {
+      principal: w.member,
+      display_name: "Fixture Person",
+      email: "fixture@example.invalid",
+    },
   });
   assert.deepEqual(await list(parent), none);
 

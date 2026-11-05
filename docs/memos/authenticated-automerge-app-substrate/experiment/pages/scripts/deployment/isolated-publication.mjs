@@ -12,7 +12,7 @@ import {
   settleConnector,
 } from "./connector-slots.mjs";
 import { deploymentProfile, stageTarget, verifyDeployment } from "./profiles.mjs";
-import { routesFor, imagePaths, indexPaths, siftPaths } from "./routes.mjs";
+import { routesFor, imagePaths, indexPaths, siftPaths, whoamiPaths } from "./routes.mjs";
 
 const accountId = "1cfb529b94b3d6cde3aaf49d1d6ed5e6";
 function publicationPaths(target) {
@@ -247,7 +247,7 @@ export function publishIsolated(
             : target === "page9"
               ? plan.config.replace(indexPaths, "")
               : target === "page10" || target === "pages"
-                ? plan.config.replace(siftPaths, "")
+                ? plan.config.replace(whoamiPaths, "")
                 : null;
   // Each predecessor is an exact (config, units) pair this run may migrate
   // from. A slotted target also migrates from its legacy single unit, with or
@@ -256,7 +256,7 @@ export function publishIsolated(
   const predecessor = (config, legacy) => {
     const unitSha256 = legacy ? hash(plan.unit) : plan.unitSha256;
     if (config === plan.config && unitSha256 === plan.unitSha256) return;
-    predecessors.push({
+    const entry = {
       config,
       legacy,
       sealed: receiptFor(config, unitSha256),
@@ -264,7 +264,9 @@ export function publishIsolated(
         previous_config_sha256: hash(config),
         ...(slotted ? { previous_unit_sha256: unitSha256 } : {}),
       }),
-    });
+    };
+    predecessors.push(entry);
+    return entry;
   };
   if (previousConfig !== null) predecessor(previousConfig, false);
   if (slotted) {
@@ -280,6 +282,37 @@ export function publishIsolated(
       });
     }
     predecessor(plan.config, true);
+  }
+  if (profile.whoami === true) {
+    // The prior release also handed unchanged Sift routes from legacy to slots.
+    // That pending receipt can only accompany the exact Sift config.
+    predecessors.push({
+      ...predecessor(previousConfig, true),
+      sealed: receiptFor(previousConfig, plan.unitSha256, {
+        previous_config_sha256: hash(previousConfig),
+        previous_unit_sha256: hash(plan.unit),
+      }),
+    });
+    const beforeSift = previousConfig.replace(siftPaths, "");
+    for (const legacy of [false, true]) {
+      // An interrupted Sift rollout can leave either exact config on disk.
+      // Recognize only its historical receipt and unit layout, not arbitrary
+      // hashes supplied by the installed receipt.
+      const unit = legacy ? hash(plan.unit) : plan.unitSha256;
+      const historical = [
+        receiptFor(previousConfig, plan.unitSha256, {
+          previous_config_sha256: hash(beforeSift),
+          previous_unit_sha256: unit,
+        }),
+        ...(legacy
+          ? [receiptFor(previousConfig, unit, { previous_config_sha256: hash(beforeSift) })]
+          : []),
+      ];
+      for (const config of [beforeSift, previousConfig]) {
+        const entry = predecessor(config, legacy);
+        for (const sealed of historical) predecessors.push({ ...entry, sealed });
+      }
+    }
   }
   const exactly = (file, contents) => filesystem.existsSync(file) && read(file) === contents;
   const slotUnitsInstalled = () => plan.slots.every((slot) => exactly(slot.unitPath, slot.unit));
@@ -303,12 +336,13 @@ export function publishIsolated(
   if (!fresh) {
     installed = read(installation);
     if (installed !== receipt) {
-      migration =
-        predecessors.find(({ sealed, pending }) => installed === sealed || installed === pending) ??
-        null;
+      const matches = predecessors.filter(
+        ({ sealed, pending }) => installed === sealed || installed === pending,
+      );
+      current = matches.length ? read(configPath) : null;
+      migration = matches.find(({ config }) => config === current) ?? matches[0] ?? null;
       if (!migration)
         throw new Error("Dedicated tunnel installation differs; inspect before retrying");
-      current = read(configPath);
       if (
         !unitsInstalled(migration.legacy) ||
         (current !== migration.config &&
@@ -393,6 +427,13 @@ export function publishIsolated(
     for (const [pathname, expected] of [
       ["/", plan.listen],
       ["/mcp", plan.listen],
+      ["/whoami", profile.whoami === true ? plan.listen : "http_status:404"],
+      ["/whoami?probe=1", profile.whoami === true ? plan.listen : "http_status:404"],
+      ["/whoami/", "http_status:404"],
+      ["/whoami/private", "http_status:404"],
+      ["/whoamiX", "http_status:404"],
+      ["/Whoami", "http_status:404"],
+      ["/api/whoami", "http_status:404"],
       ["/connect", sharing ? plan.listen : "http_status:404"],
       ["/connect.js", sharing ? plan.listen : "http_status:404"],
       ["/connect/private", "http_status:404"],
