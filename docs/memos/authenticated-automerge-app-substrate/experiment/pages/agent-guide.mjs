@@ -695,7 +695,21 @@ this Page's private storage; an asset from another Page must be copied first.
 }
 \`\`\`
 
-The receipt returns result.inserted_images with the actual block_id, asset_id,
+Images have one default/light source and optionally one dark source. Pass
+dark_asset_id to insert_image after uploading both files to this same Page.
+alt and optional title describe the logical image, not each variant. There is
+no third source. The reader's resolved Pages appearance chooses the variant,
+with one fallback to the default source when the dark image fails.
+
+Use edit_page set_image with block_id and image_id from summary.images to
+change asset_id, dark_asset_id, alt or title. dark_asset_id:null removes the
+alternate; omitted fields stay unchanged. image_id is the actual live inline
+marker cursor, not node_id or a child-index path. It survives in-place edits;
+a deleted marker never slides to another image. Exact current base_heads are
+required. Duplicate image targets in a batch are refused. Unknown native attrs
+are preserved. Comments accept baseline images, not theme variants.
+
+The receipt returns result.inserted_images with the actual block_id, image_id, asset_id,
 asset_url, and alt, plus updated heads and the Page url. The MCP structured
 result matches its text receipt. Save the exact edit request and retry it after
 an uncertain result: it returns the original receipt without another block or

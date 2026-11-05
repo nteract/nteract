@@ -612,6 +612,13 @@ export const tools = [
               type: "object",
               properties: {
                 op: { const: "insert_image" },
+                dark_asset_id: {
+                  type: "string",
+                  pattern: "^[a-f0-9]{64}$",
+                  description:
+                    "Optional dark-theme image uploaded to this same Page; asset_id remains the default/light source.",
+                },
+                title: { type: ["string", "null"], maxLength: 2048 },
                 asset_id: {
                   type: "string",
                   pattern: "^[a-f0-9]{64}$",
@@ -630,6 +637,29 @@ export const tools = [
                 },
               },
               required: ["op", "asset_id", "alt"],
+              additionalProperties: false,
+            },
+            {
+              type: "object",
+              properties: {
+                op: { const: "set_image" },
+                block_id: { type: "string" },
+                image_id: {
+                  type: "string",
+                  maxLength: 192,
+                  description:
+                    "Actual live inline image marker cursor from summary.images, not a top-level node_id.",
+                },
+                asset_id: { type: "string", pattern: "^[a-f0-9]{64}$" },
+                dark_asset_id: {
+                  type: ["string", "null"],
+                  pattern: "^[a-f0-9]{64}$",
+                  description: "Page-local dark asset; null removes the alternate.",
+                },
+                alt: { type: "string", maxLength: 2048 },
+                title: { type: ["string", "null"], maxLength: 2048 },
+              },
+              required: ["op", "block_id", "image_id"],
               additionalProperties: false,
             },
             {

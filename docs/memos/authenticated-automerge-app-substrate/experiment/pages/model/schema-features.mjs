@@ -37,6 +37,7 @@ export function featureRegistry(features = featureFile, marks = MARK_REGISTRY) {
     throw Error("features.json needs a features list");
   const ids = new Set(),
     blocks = new Map(),
+    attributes = new Map(),
     markFeatures = new Map();
   for (const feature of features.features) {
     if (!isMap(feature) || typeof feature.id !== "string" || !FEATURE_ID.test(feature.id))
@@ -45,6 +46,19 @@ export function featureRegistry(features = featureFile, marks = MARK_REGISTRY) {
     if (typeof feature.description !== "string" || !feature.description)
       throw Error(`Schema feature ${feature.id} needs a description`);
     ids.add(feature.id);
+    for (const attr of feature.attributes ?? []) {
+      if (
+        !isMap(attr) ||
+        typeof attr.block !== "string" ||
+        !attr.block ||
+        typeof attr.name !== "string" ||
+        !attr.name
+      )
+        throw Error(`Schema feature ${feature.id} lists an invalid attribute`);
+      const key = `${attr.block}:${attr.name}`;
+      if (attributes.has(key)) throw Error(`Attribute ${key} belongs to two schema features`);
+      attributes.set(key, feature.id);
+    }
     for (const block of feature.blocks ?? []) {
       if (typeof block !== "string" || !block)
         throw Error(`Schema feature ${feature.id} lists an invalid block type`);
@@ -62,6 +76,7 @@ export function featureRegistry(features = featureFile, marks = MARK_REGISTRY) {
     ids: Object.freeze([...ids].sort()),
     marks: markFeatures,
     blocks,
+    attributes,
   });
 }
 
@@ -135,13 +150,17 @@ export function parseDeclaredFeatures(value) {
 /** Features that native rich-text spans need: their marks, block types and
  * block parents. */
 export function spanFeatures(spans, registry = active) {
-  if (!registry.marks.size && !registry.blocks.size) return [];
+  if (!registry.marks.size && !registry.blocks.size && !registry.attributes?.size) return [];
   const needed = new Set();
   for (const span of spans) {
     if (span.type === "text") {
       for (const name of Object.keys(span.marks ?? {}))
         if (registry.marks.has(name)) needed.add(registry.marks.get(name));
     } else if (span.type === "block") {
+      for (const name of Object.keys(span.value?.attrs ?? {})) {
+        const feature = registry.attributes?.get(`${String(span.value.type)}:${name}`);
+        if (feature && span.value.attrs[name] != null) needed.add(feature);
+      }
       for (const type of [span.value?.type, ...(span.value?.parents ?? [])]) {
         const feature = registry.blocks.get(String(type));
         if (feature) needed.add(feature);

@@ -1579,6 +1579,24 @@ change. The lifecycle overlay and the credential ceiling stay with nteract:
 
 ## Private images
 
+An image has a default/light `src` and optional `dark_src`, with shared `alt`
+and `title`. The `image-theme-variants` feature is stamped only when a dark
+source is written and never removed. Baseline images remain baseline. Agents
+use `insert_image.dark_asset_id` or `edit_page` `set_image` with the actual live
+inline `image_id` reported in `summary.images`, at exact heads. Both assets are
+preflighted as images belonging to the Page; deleted cursors never slide.
+Comments deliberately accept only baseline images.
+
+The Wordgard widget and boot preview share the resolved Pages appearance store
+and image lifecycle. Each source attempt creates a fresh image element; stale
+events are ignored, and dark-source failure falls back once to a distinct default
+source. Browser lazy loading owns the wait, with no offscreen timeout. Clipboard
+serialization still emits one canonical image with inert preservation metadata.
+Project-transfer bundle v4 carries structured variant occurrences and both asset
+references, deduplicates uploads per destination Page, and applies variants using
+destination live IDs. Truncated occurrence reads fail rather than silently losing
+variants. Versions 1 through 3 remain importable; old importers reject v4.
+
 Browser upload, screenshot paste, and file drop send PNG, JPEG, or static WebP to
 `POST /api/pages/:pageId/assets`. Only a stable Page-scoped reference and alt text
 enter Automerge. Image bytes use the private `PAGES_ASSETS` R2 binding, backed by

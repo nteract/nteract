@@ -144,6 +144,15 @@ function fakePages(
       node_index: 0,
       type: block.type ?? "paragraph",
       ...(block.attrs && { attrs: block.attrs }),
+      ...(imageInventory([block.markdown ?? ""]).length && {
+        summary: {
+          images: imageInventory([block.markdown]).map((image, index) => ({
+            ...image,
+            image_id: `${index}@${block.id}`,
+            ...block.variants?.[index],
+          })),
+        },
+      }),
     }));
   // A block may list its own outline entries, for a dataframe inside it.
   const entriesOf = (page) =>
@@ -316,6 +325,21 @@ function fakePages(
               if (page.blocks[index].type === "dataframe" || page.blocks[index].outline)
                 return fail("markdownless_node");
               page.blocks[index].markdown = op.markdown;
+            } else if (op.op === "set_image") {
+              const block = page.blocks[index];
+              const imageIndex = Number(op.image_id.split("@")[0]);
+              if (
+                op.image_id !== `${imageIndex}@${block.id}` ||
+                !imageInventory([block.markdown])[imageIndex]
+              )
+                return fail("image_not_found");
+              if (!assets.has(`${page.page_id}/${op.dark_asset_id}`))
+                return fail("image_not_found");
+              block.variants ??= {};
+              block.variants[imageIndex] = {
+                dark_src: assetPath(page.page_id, op.dark_asset_id),
+                dark_asset_id: op.dark_asset_id,
+              };
             } else return fail("unsupported_operation");
           }
         }
@@ -374,6 +398,7 @@ function fakePages(
       calls.push({ name: "tools/list", args: {}, ok: true, replayed: false });
       const ops = ["replace_block_markdown", "insert_markdown", "delete_block"];
       if (insertNode) ops.push("insert_node");
+      ops.push("set_image");
       return Response.json({
         jsonrpc: "2.0",
         id: message.id,
@@ -483,6 +508,43 @@ test("nested image inventory excludes links/code and remaps only image attrs", a
   await importBundle(client(target, TARGET), bundle, { store, ...quick });
   assert.equal(target.assetCalls.length, 1, "completed bodies do not upload again");
   assert.equal(remapImages("unchanged", page.images, result.home_page_id), "unchanged");
+});
+
+test("export discovers dark assets from structured occurrences and refuses truncated facts", async () => {
+  const { source, home, id, src, project_id } = await imageBundle();
+  home.blocks[0].outline = [
+    {
+      type: "blockquote",
+      summary: {
+        images: [
+          { image_id: "cursor", path: [0, 0], src, asset_id: id, dark_src: src, dark_asset_id: id },
+          { image_id: "second", path: [1, 0], src, asset_id: id },
+          { image_id: "third", path: [2, 0], src, asset_id: id },
+        ],
+      },
+    },
+  ];
+  const { bundle } = await exportProject(client(source, SOURCE), {
+    projectId: project_id,
+    ...quick,
+  });
+  assert.deepEqual(bundle.pages[0].image_variants, [
+    { ordinal: 0, src, dark_src: src, dark_asset_id: id },
+  ]);
+  assert.equal(Object.keys(bundle.assets).length, 1);
+  const target = fakePages(TARGET),
+    store = memoryStore();
+  const result = await importBundle(client(target, TARGET), bundle, { store, ...quick });
+  const targetImage = target.pages.get(result.home_page_id).blocks[0].variants[0];
+  assert.equal(targetImage.dark_src, assetPath(result.home_page_id, id));
+  assert.equal(target.assetCalls.length, 1, "shared light and dark asset uploads once");
+  await importBundle(client(target, TARGET), bundle, { store, ...quick });
+  assert.equal(target.assetCalls.length, 1);
+  home.blocks[0].outline[0].summary.images_truncated = true;
+  await assert.rejects(
+    exportProject(client(source, SOURCE), { projectId: project_id, ...quick }),
+    /truncated/,
+  );
 });
 
 test("private images require source/target asset credentials and missing bytes fail before writes", async () => {
@@ -676,7 +738,7 @@ test("export lists Pages in tree order: home first, parents before children, sib
   const { bundle, report, home, before, zeta, alpha, two, one, deep, project_id } =
     await exportGuide({ outlinePage: 1 });
   assert.equal(bundle.format, BUNDLE_FORMAT);
-  assert.equal(bundle.version, 3);
+  assert.equal(bundle.version, 4);
   assert.equal(bundle.bundle_id, "3f0d6c2e-1f7b-4b8e-9a51-0c2d5e7f8a90");
   assert.deepEqual(bundle.source, { origin: SOURCE, project_id, home_page_id: home.page_id });
   assert.equal(bundle.exported_at, "2026-11-01T00:00:00.000Z");

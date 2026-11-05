@@ -7,6 +7,7 @@
 // HTML.
 import { isRich, richDoc } from "./richtext.mjs";
 import { orderedBlockIds } from "./order.mjs";
+import { safeUrl } from "./marks.mjs";
 
 /** The most UTF-8 bytes the serialized preview may take. */
 export const PREVIEW_MAX_BYTES = 256 * 1024;
@@ -60,6 +61,19 @@ export function renderNode(node, overrides) {
   };
   const replaced = overrides?.node?.(node, children);
   if (replaced) return replaced;
+  if (node.type.name === "image" && safeUrl(node.attrs.src))
+    return [
+      [
+        "img",
+        {
+          src: node.attrs.src,
+          alt: node.attrs.alt ?? "",
+          ...(node.attrs.title != null && { title: node.attrs.title }),
+          ...(node.attrs.dark_src != null &&
+            safeUrl(node.attrs.dark_src) && { dark_src: node.attrs.dark_src }),
+        },
+      ],
+    ];
   const toDOM = node.type.spec.toDOM;
   // Unknown or unrenderable nodes keep their text.
   return toDOM ? [fill(toDOM(node), children())] : children();

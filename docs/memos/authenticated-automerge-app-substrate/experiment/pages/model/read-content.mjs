@@ -1,6 +1,7 @@
 import { orderedBlockIds } from "./order.mjs";
 import { agentType } from "./node-registry.mjs";
 import { readableNodeIds } from "./node-ids.mjs";
+import { readableImageIds } from "./image-ids.mjs";
 import { DATAFRAME_TITLE_MAX, parseAssetPath, readDataframe } from "../shared/dataset-assets.mjs";
 import {
   exportMarkdown,
@@ -111,10 +112,11 @@ function indexNodes(doc) {
       tree = rich
         ? richDoc(block, doc.page_id)
         : parseMarkdown(block.markdown ?? "", { kind: block.kind ?? "markdown" }),
-      ids = rich ? readableNodeIds(doc, blockId, tree) : [];
+      ids = rich ? readableNodeIds(doc, blockId, tree) : [],
+      imageIds = rich ? readableImageIds(doc, blockId, tree) : new Map();
     trees.set(blockId, tree);
     tree.forEach((node, _offset, nodeIndex) => {
-      const entry = { blockId, nodeIndex, node, nodeId: ids[nodeIndex]?.id ?? null };
+      const entry = { blockId, nodeIndex, node, nodeId: ids[nodeIndex]?.id ?? null, imageIds };
       if (node.type.name === "heading") {
         entry.heading = visibleText(node);
         entry.level = node.attrs.level;
@@ -154,7 +156,7 @@ const bounded = (name, values, max) =>
  *
  * Nested lists read as their own Markdown. `maxItems` bounds per-item
  * arrays. */
-export function nodeFields(node, { pageId, maxItems = Infinity } = {}) {
+export function nodeFields(node, { pageId, maxItems = Infinity, imageIds } = {}) {
   // Child-index paths are relative to this top-level node at the read revision,
   // not stable identities. Image occurrences stay bounded even in change feeds.
   const fields = ownNodeFields(node, { pageId, maxItems });
@@ -165,17 +167,23 @@ export function nodeFields(node, { pageId, maxItems = Infinity } = {}) {
     if (child.type.name === "image") {
       count++;
       if (images.length < limit) {
-        const { src, alt, title } = child.attrs;
+        const { src, dark_src, alt, title } = child.attrs;
         const asset = parseAssetPath(src);
+        const darkAsset = parseAssetPath(dark_src);
         images.push({
           path,
+          image_id: imageIds?.get(child) ?? null,
           src: String(src ?? "").slice(0, 4096),
           alt: String(alt ?? "").slice(0, 2048),
           title: title == null ? null : String(title).slice(0, 2048),
+          ...(dark_src != null && { dark_src: String(dark_src).slice(0, 4096) }),
+          ...(darkAsset &&
+            (!pageId || darkAsset.pageId === pageId) && { dark_asset_id: darkAsset.assetId }),
           ...(asset && (!pageId || asset.pageId === pageId) && { asset_id: asset.assetId }),
           ...(String(src ?? "").length > 4096 ||
           String(alt ?? "").length > 2048 ||
-          String(title ?? "").length > 2048
+          String(title ?? "").length > 2048 ||
+          String(dark_src ?? "").length > 4096
             ? { truncated: true }
             : {}),
         });
@@ -256,7 +264,7 @@ function outlineEntry(entry, pageId) {
     // Bytes of this node's standalone Markdown projection, excluding inter-node separators.
     markdown_bytes: utf8.encode(markdownFor([entry.node])).byteLength,
     ...(entry.heading !== undefined ? { heading: entry.heading, level: entry.level } : {}),
-    ...nodeFields(entry.node, { pageId, maxItems: OUTLINE_MAX_ITEMS }),
+    ...nodeFields(entry.node, { pageId, maxItems: OUTLINE_MAX_ITEMS, imageIds: entry.imageIds }),
   };
 }
 

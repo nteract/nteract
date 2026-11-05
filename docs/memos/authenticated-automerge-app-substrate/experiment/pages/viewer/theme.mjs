@@ -77,3 +77,5 @@ export function createThemeStore(browser) {
     },
   };
 }
+
+export const themeStore = createThemeStore(globalThis.window);

@@ -1,8 +1,6 @@
 import React, { useSyncExternalStore } from "react";
 import { Monitor, Moon, Sun } from "lucide-react";
-import { createThemeStore } from "./theme.mjs";
-
-const themeStore = createThemeStore(globalThis.window);
+import { themeStore } from "./theme.mjs";
 const modes = [
   { value: "system", label: "System", icon: Monitor },
   { value: "light", label: "Light", icon: Sun },
