@@ -774,7 +774,22 @@ bodies aren't touched. Preserved
 blocks, the comments move and the record's `comments_doc` field are the Page
 host's existing on-load work; the migration reports them and refuses a Page
 whose conversion fence is up (`held`). A Page with a live socket is skipped
-(`busy`) and visited again on the next pass. Permanent deletions an earlier
+(`busy`) and visited again on the next pass, unless the run passes
+`include_connected: true` (script flag `--include-connected`).
+
+**Connected peers.** With `include_connected`, the host writes while browsers
+or agents are connected. The change reaches them over sync like any host
+change: the editor re-decodes the block, unchanged text and markers keep their
+identity, so carets and comment anchors stay put. No peer is disconnected and
+no fence goes up: the change adds no schema feature, so a stale tab from an
+earlier build keeps editing (the schema gate refuses a tab only for a feature
+its build lacks, and a stamp repair adds only a feature the content already
+uses), and build freshness is untouched because nothing is deployed. A peer's
+own edit either merges (made before the write and synced after it, or made
+after it) or, if it reaches the host between the plan and the write, fails
+the write's exact-heads check: the Page answers `stale`, nothing is written,
+and the next pass plans again. Default to skipping; use `include_connected`
+for Pages that stay `busy` because a tab is left open. Permanent deletions an earlier
 build left half-finished (a `host/deleted/` tombstone beside a `trash/`
 entry) are reported under `tombstones`, not changed.
 

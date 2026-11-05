@@ -18,6 +18,9 @@ Options:
   --origin URL      Required. The Pages origin.
   --mode MODE       Required: dry_run or apply.
   --limit N         Pages per call, 1–25 (default 10).
+  --include-connected
+                    Apply to Pages with live sockets instead of skipping them
+                    as busy (DEPLOYMENT.md, Content migration).
   --page-id ID      Also visit this Page (repeatable): a Page cell no Catalog
                     key names. Its host checks that you own it.
   --max-calls N     Stop after N calls (default 100).
@@ -34,9 +37,14 @@ export function parseArgs(argv) {
     pageIds: [],
     maxCalls: 100,
     log: undefined,
+    includeConnected: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const [flag, value] = [argv[i], argv[i + 1]];
+    if (flag === "--include-connected") {
+      args.includeConnected = true;
+      continue;
+    }
     if (flag === "--origin") args.origin = value;
     else if (flag === "--mode") args.mode = value;
     else if (flag === "--limit") args.limit = Number(value);
@@ -61,7 +69,15 @@ const add = (into, from) => {
  * answers the parsed JSON response or throws; `onResponse(body)` sees each
  * response first. Returns the aggregate; a failure throws with the aggregate
  * so far as `error.report`. */
-export async function drive({ mode, limit, pageIds = [], maxCalls = 100, call, onResponse }) {
+export async function drive({
+  mode,
+  limit,
+  pageIds = [],
+  maxCalls = 100,
+  includeConnected = false,
+  call,
+  onResponse,
+}) {
   const report = { mode, calls: 0, pages: [], visited: [], totals: {}, progress: null };
   let after = null;
   for (;;) {
@@ -72,6 +88,7 @@ export async function drive({ mode, limit, pageIds = [], maxCalls = 100, call, o
         mode,
         limit,
         ...(pageIds.length && { page_ids: pageIds }),
+        ...(includeConnected && { include_connected: true }),
         ...(after && { after }),
       });
       onResponse?.(body);

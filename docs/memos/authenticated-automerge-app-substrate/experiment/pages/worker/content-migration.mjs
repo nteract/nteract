@@ -67,7 +67,13 @@ const KINDS = [
 export function contentMigrationArguments(body) {
   const invalid = (message) =>
     Object.assign(new Error(message), { status: 400, code: "invalid_arguments" });
-  const { mode, limit = CONTENT_MIGRATION_LIMITS.batch, after = null, page_ids = [] } = body ?? {};
+  const {
+    mode,
+    limit = CONTENT_MIGRATION_LIMITS.batch,
+    after = null,
+    page_ids = [],
+    include_connected = false,
+  } = body ?? {};
   if (!CONTENT_MIGRATION_MODES.includes(mode)) throw invalid('mode must be "dry_run" or "apply"');
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > CONTENT_MIGRATION_LIMITS.maxBatch)
     throw invalid(`limit must be 1–${CONTENT_MIGRATION_LIMITS.maxBatch}`);
@@ -78,7 +84,8 @@ export function contentMigrationArguments(body) {
     page_ids.some((id) => !validPageId(id))
   )
     throw invalid(`page_ids must be up to ${CONTENT_MIGRATION_LIMITS.extraIds} page_ids`);
-  return { mode, limit, after, page_ids: [...new Set(page_ids)] };
+  if (typeof include_connected !== "boolean") throw invalid("include_connected must be a boolean");
+  return { mode, limit, after, page_ids: [...new Set(page_ids)], include_connected };
 }
 
 /**
@@ -224,9 +231,9 @@ const failedVisit = (page_id, error) => ({
   error: String(error?.message ?? error).slice(0, 200),
 });
 
-async function visitSafely(visit, page_id, mode) {
+async function visitSafely(visit, page_id, mode, options) {
   try {
-    const result = await visit(page_id, mode);
+    const result = await visit(page_id, mode, options);
     return { ...result, page_id };
   } catch (error) {
     return failedVisit(page_id, error);
@@ -235,14 +242,16 @@ async function visitSafely(visit, page_id, mode) {
 
 /**
  * Run one call of the migration against Catalog storage. `visit(page_id,
- * mode)` asks the Page host and answers its result; `listAll` reads a prefix;
+ * mode, options)` asks the Page host and answers its result (`options`:
+ * `{ include_connected }`); `listAll` reads a prefix;
  * `clock()` is milliseconds (Date.now). Returns the response body.
  */
 export async function runContentMigration(
   storage,
   { args, listAll, visit, clock = Date.now, budgetMs = CONTENT_MIGRATION_LIMITS.budgetMs },
 ) {
-  const { mode, limit, after, page_ids } = args;
+  const { mode, limit, after, page_ids, include_connected } = args;
+  const options = { include_connected };
   const started = clock();
   const inBudget = (visited) => visited === 0 || clock() - started < budgetMs;
   if (mode === "dry_run") {
@@ -251,7 +260,10 @@ export async function runContentMigration(
     const pages = [];
     for (const target of start < 0 ? [] : targets.slice(start, start + limit)) {
       if (!inBudget(pages.length)) break;
-      pages.push({ ...(await visitSafely(visit, target.page_id, mode)), kind: target.kind });
+      pages.push({
+        ...(await visitSafely(visit, target.page_id, mode, options)),
+        kind: target.kind,
+      });
     }
     const last = pages.at(-1)?.page_id ?? null;
     const kinds = {};
@@ -286,7 +298,7 @@ export async function runContentMigration(
   const pages = [];
   while (state.next < state.ids.length && pages.length < limit && inBudget(pages.length)) {
     const page_id = state.ids[state.next];
-    const result = await visitSafely(visit, page_id, mode);
+    const result = await visitSafely(visit, page_id, mode, options);
     pages.push(result);
     step({ type: "visited", page_id });
     const resultKey = `${CONTENT_MIGRATION_RESULT_PREFIX}${page_id}`;

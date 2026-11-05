@@ -66,6 +66,7 @@ test("arguments are validated", () => {
     limit: 10,
     after: null,
     page_ids: [],
+    include_connected: false,
   });
   for (const body of [
     {},
@@ -482,4 +483,77 @@ test("a revisit keeps the revert records an earlier visit stored", async () => {
   const stored = await storage.get(`${CONTENT_MIGRATION_RESULT_PREFIX}${id(1)}`);
   assert.equal(stored.status, "unchanged");
   assert.deepEqual(stored.revert, [record]);
+});
+
+// Connected peers (`include_connected`).
+
+test("include_connected is a boolean, off by default", () => {
+  assert.equal(args({ mode: "apply" }).include_connected, false);
+  assert.equal(args({ mode: "apply", include_connected: true }).include_connected, true);
+  assert.throws(() => args({ mode: "apply", include_connected: "yes" }), {
+    code: "invalid_arguments",
+  });
+});
+
+test("end to end: include_connected writes with a peer connected, which keeps editing", async (t) => {
+  const { f, block, run } = await adapterFixture(t);
+  const peer = "cd".repeat(32);
+  // A tab on this build, and a stale one from before the dataframe and image
+  // variant features: no stamp the normalization writes fences either.
+  const stale = "ef".repeat(32);
+  await f.bind(peer, f.owner);
+  await f.bind(stale, f.owner, [
+    "comments-doc",
+    "horizontal-rule",
+    "preserved-markdown-converted",
+    "strike",
+  ]);
+  const wire = { disconnect: async () => {} };
+  f.page.wires.add(wire);
+  const skipped = await run({ mode: "apply" });
+  assert.equal(skipped.body.pages[0].status, "busy");
+  const applied = await run({ mode: "apply", include_connected: true });
+  assert.equal(applied.body.pages[0].status, "normalized");
+  assert.equal(applied.body.pages[0].connected, 1);
+  assert.ok(canonical(f.doc(), block));
+  assert.deepEqual(f.disconnected, [], "no peer is disconnected");
+  assert.equal(f.page.conversionFenced(), false);
+  // Both peers' native writes are still admitted.
+  await f.page.policy.put(peer, peer, f.page.metadata.tree);
+  await f.page.policy.put(stale, stale, f.page.metadata.tree);
+});
+
+test("end to end: a peer's edit from before the write merges after it", async (t) => {
+  const { f, block, run } = await adapterFixture(t);
+  f.page.wires.add({ disconnect: async () => {} });
+  // The peer edited its replica at the pre-migration heads and hasn't synced.
+  const peerDoc = A.change(A.clone(f.doc()), (draft) =>
+    A.splice(draft, textPath(block), String(draft.blocks[block].richText).length, 0, "!"),
+  );
+  const peerText = String(peerDoc.blocks[block].richText);
+  const applied = await run({ mode: "apply", include_connected: true });
+  assert.equal(applied.body.pages[0].status, "normalized");
+  await f.page.handle.update((doc) => A.merge(doc, peerDoc));
+  const text = String(f.doc().blocks[block].richText);
+  assert.ok(text.includes("!"), "the peer's character survives");
+  assert.ok(peerText.length > 0);
+  assert.ok(canonical(f.doc(), block), "the merged block is still in the editor's form");
+});
+
+test("end to end: with include_connected, a peer edit inside the window makes the write stale", async (t) => {
+  const { f, block, run } = await adapterFixture(t);
+  f.page.wires.add({ disconnect: async () => {} });
+  const get = f.storage.get.bind(f.storage);
+  let edited = false;
+  f.storage.get = async (key) => {
+    if (!edited && key.startsWith(`${INTERNAL_PREFIX}content_norm_`)) {
+      edited = true;
+      f.edit("Typed by a peer");
+    }
+    return get(key);
+  };
+  const applied = await run({ mode: "apply", include_connected: true });
+  assert.equal(applied.body.pages[0].status, "stale");
+  assert.ok(!canonical(f.doc(), block));
+  assert.equal(f.doc().title, "Typed by a peer");
 });

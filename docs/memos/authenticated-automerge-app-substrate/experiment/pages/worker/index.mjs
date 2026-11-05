@@ -1768,12 +1768,17 @@ export class Catalog {
     const body = await runContentMigration(this.storage, {
       args,
       listAll,
-      visit: async (pageId, mode) => {
+      visit: async (pageId, mode, options) => {
         const response = await withTimeout(
           this.env.PAGES.getByName(pageId).fetch(
             new Request("https://pages.internal/internal/content-migration", {
               method: "POST",
-              body: JSON.stringify({ page_id: pageId, owner: identity.principal, mode }),
+              body: JSON.stringify({
+                page_id: pageId,
+                owner: identity.principal,
+                mode,
+                include_connected: options?.include_connected === true,
+              }),
             }),
           ),
           CONTENT_MIGRATION_PAGE_MS,
@@ -4703,14 +4708,19 @@ export class Page {
    * The host is the document's only writer: the write is one journaled host
    * change keyed by the heads it read, so a restart replays its recorded
    * bytes and a later visit plans nothing. A Page with a live socket is
-   * skipped as `busy`; a fenced or blocked Page as `held`; a Page whose plan
+   * skipped as `busy` unless the run passed `include_connected`; a fenced or blocked Page as `held`; a Page whose plan
    * refuses any block, or whose on-load work is unfinished, as `partial`,
    * with nothing written.
    */
   async contentMigration(request) {
     if (request.headers.has("authorization") || request.headers.has("cookie"))
       throw spaceNotFound();
-    const { page_id: pageId, owner, mode } = (await readJson(request)) ?? {};
+    const {
+      page_id: pageId,
+      owner,
+      mode,
+      include_connected: includeConnected = false,
+    } = (await readJson(request)) ?? {};
     if (!["dry_run", "apply"].includes(mode))
       throw new HttpError(400, 'mode must be "dry_run" or "apply"', "invalid_arguments");
     const metadata = this.metadata;
@@ -4749,7 +4759,11 @@ export class Page {
         problems: normalizationProblems(report),
         ...(revert.length && { revert }),
       });
-    if (this.wires.size) return json({ ...base, status: "busy", heads, report });
+    // A connected peer receives the write over sync like any host change.
+    // Its own edit either merges (made before or after the write) or, landing
+    // between the plan and the write, fails the exact-heads check (`stale`).
+    if (this.wires.size && includeConnected !== true)
+      return json({ ...base, status: "busy", heads, report });
     const digest = hex(
       new Uint8Array(
         await crypto.subtle.digest("SHA-256", new TextEncoder().encode(heads.join(","))),
