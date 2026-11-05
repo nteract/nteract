@@ -1821,7 +1821,10 @@ function App() {
                 target={target}
                 onClose={closeComments}
                 onReveal={revealComment}
-                onSelect={selectComment}
+                onSelect={(id) => {
+                  // Panel selections highlight the passage without drilling in.
+                  setTarget({ id, request: performance.now(), source: "panel" });
+                }}
               />
               <CommentPopover
                 key={`popover-${session.pageId}`}

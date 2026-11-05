@@ -501,3 +501,84 @@ button.anchor-chip:hover {
   overflow-wrap: anywhere;
   user-select: text;
 }
+
+/* Drill-in: the list groups threads by heading; one thread opens full height. */
+.comments-group {
+  margin: 0.9rem 0 0.35rem;
+  padding: 0 0.25rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.comments-body > .comments-group:first-child {
+  margin-top: 0;
+}
+.thread-open {
+  all: unset;
+  cursor: pointer;
+  border-radius: 0.25rem;
+}
+.thread-open:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.thread-open:focus-visible {
+  outline: 2px solid var(--ring, var(--comment-anchor-line));
+  outline-offset: 2px;
+}
+.comments-thread-nav {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.comments-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-right: auto;
+}
+.comments-position {
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  margin-right: 0.25rem;
+}
+.comments-drilled .comments-body > :not(.thread-current, .resolved-threads, [role="alert"]),
+.comments-drilled .resolved-threads > summary,
+.comments-drilled .resolved-threads > .thread:not(.thread-current) {
+  display: none;
+}
+.comments-drilled .resolved-threads {
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+.comments-drilled .resolved-threads:not(:has(.thread-current)) {
+  display: none;
+}
+.comments.comments-drilled .thread.thread-current {
+  border-color: transparent;
+  background: transparent;
+  padding-left: 0;
+  padding-right: 0;
+}
+.comments.comments-drilled .thread.thread-current::before {
+  display: none;
+}
+.comments-drilled .thread-current .thread-title {
+  font-size: 1rem;
+}
+/* Keep the reply composer docked under a long conversation. */
+.comments-drilled .thread-current form {
+  position: sticky;
+  bottom: -1rem;
+  padding-bottom: 1rem;
+  background: var(--surface);
+}

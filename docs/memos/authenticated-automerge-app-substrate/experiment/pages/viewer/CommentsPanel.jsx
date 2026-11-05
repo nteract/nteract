@@ -1,5 +1,15 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import { Check, MessageSquare, RotateCcw, X, Maximize2, Minimize2 } from "lucide-react";
+import { useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
+import {
+  ArrowLeft,
+  Check,
+  ChevronDown,
+  ChevronUp,
+  MessageSquare,
+  RotateCcw,
+  X,
+  Maximize2,
+  Minimize2,
+} from "lucide-react";
 import { resolveCommentDraft } from "./comment-draft.mjs";
 import { reloadGate } from "./build-freshness.mjs";
 import { hasDraftText } from "./comment-composer.mjs";
@@ -8,6 +18,7 @@ import { COMMENTS_SHEET_QUERY } from "./comments-layout.mjs";
 import { CommentRichText } from "./CommentRichText.jsx";
 import { AnchorChip, Message, MessageRuns, useNow } from "./CommentThreadParts.jsx";
 import { threadLocation, threadTitle } from "./comment-thread-display.mjs";
+import { LIST, groupByHeading, navigate, position } from "./comment-nav.mjs";
 import "./comments.css";
 
 const NO_COMPOSER = new Store({ state: { name: "idle" }, composer: null, body: "" });
@@ -23,7 +34,10 @@ export function CommentsPanel({
   onSelect,
 }) {
   const dialog = useRef(null),
+    body = useRef(null),
     resolvedDisclosure = useRef(null);
+  const [nav, dispatch] = useReducer(navigate, LIST);
+  const returnTo = useRef(null);
   // The inline composer (CommentPopover) owns new comments. The panel shows a
   // draft only after the popover closed with text in it.
   const draft = useStore(composer?.store ?? NO_COMPOSER);
@@ -88,6 +102,11 @@ export function CommentsPanel({
     const active = document.activeElement;
     if (dialog.current?.contains(active) || !active || active === document.body) composer?.focus();
   }, [inert, composer]);
+  // A passage clicked in the Page opens its thread. Selections made inside
+  // the panel (focus, click) only highlight the passage.
+  useEffect(() => {
+    if (target?.source === "passage" && target.id) dispatch({ type: "show", id: target.id });
+  }, [target]);
   useEffect(() => {
     if (!open || !target?.id) return;
     const frame = requestAnimationFrame(() => {
@@ -218,17 +237,71 @@ export function CommentsPanel({
           if (target?.id !== thread.id) onSelect?.(thread.id);
         }}
         onChangeThread={() => changeThread(thread)}
+        current={drilled?.id === thread.id}
+        onOpen={() => openThread(thread.id)}
       />
     );
   }
-  const unresolved = threads.filter((thread) => thread.state === "open");
-  const resolved = threads.filter((thread) => thread.state === "resolved");
+  const locate = (thread) => threadLocation(session.doc, thread);
+  const unresolvedGroups = groupByHeading(
+    threads.filter((thread) => thread.state === "open"),
+    locate,
+  );
+  const unresolved = unresolvedGroups.flatMap((group) => group.threads);
+  const resolved = groupByHeading(
+    threads.filter((thread) => thread.state === "resolved"),
+    locate,
+  ).flatMap((group) => group.threads);
+  const ordered = [...unresolved, ...resolved];
+  const orderedIds = ordered.map((thread) => thread.id);
+  const idsKey = orderedIds.join("\n");
+  useEffect(() => dispatch({ type: "sync", ids: idsKey ? idsKey.split("\n") : [] }), [idsKey]);
+  const drilled = nav.name === "thread" ? ordered.find((t) => t.id === nav.id) : null;
+  const where = drilled ? position(nav, orderedIds) : null;
+  useEffect(() => {
+    // A resolved thread lives inside the disclosure; open it to show the thread.
+    if (drilled?.state === "resolved" && resolvedDisclosure.current)
+      resolvedDisclosure.current.open = true;
+  }, [drilled?.id, drilled?.state]);
+  useLayoutEffect(() => {
+    const scroller = body.current;
+    if (!scroller) return;
+    if (nav.name === "thread") {
+      scroller.scrollTop = 0;
+      return;
+    }
+    scroller.scrollTop = nav.scroll;
+    const id = returnTo.current;
+    returnTo.current = null;
+    if (id)
+      dialog.current
+        ?.querySelector(`[data-thread-id="${CSS.escape(id)}"] .thread-open`)
+        ?.focus({ preventScroll: true });
+  }, [nav]);
+  function openThread(id) {
+    dispatch({ type: "open", id, scroll: body.current?.scrollTop ?? 0 });
+  }
+  function back() {
+    returnTo.current = nav.name === "thread" ? nav.id : null;
+    dispatch({ type: "back" });
+  }
+  function groupHeading(group) {
+    return (
+      <p key={`group:${group.key}`} className="comments-group">
+        {group.heading === null ? "Detached" : group.heading || "Top of page"}
+      </p>
+    );
+  }
   return (
     <dialog
       ref={dialog}
       inert={inert}
       id="page-comments"
-      className={"comments" + (mobile ? " comments-sheet" : expanded ? " comments-expanded" : "")}
+      className={
+        "comments" +
+        (mobile ? " comments-sheet" : expanded ? " comments-expanded" : "") +
+        (drilled ? " comments-drilled" : "")
+      }
       aria-labelledby="comments-title"
       onClose={() => {
         if (!dialog.current.open && open) onClose();
@@ -237,6 +310,11 @@ export function CommentsPanel({
         if (modal && event.target === dialog.current) onClose();
       }}
       onKeyDown={(event) => {
+        if (!event.defaultPrevented && drilled && event.key === "Escape") {
+          event.preventDefault();
+          back();
+          return;
+        }
         if (!event.defaultPrevented && !modal && event.key === "Escape") {
           event.preventDefault();
           onClose();
@@ -265,7 +343,37 @@ export function CommentsPanel({
           <X size={19} aria-hidden="true" />
         </button>
       </div>
-      <div className="comments-body">
+      {drilled && (
+        <nav className="comments-thread-nav" aria-label="Thread navigation">
+          <button type="button" className="subtle-button comments-back" onClick={back}>
+            <ArrowLeft size={16} aria-hidden="true" /> All comments
+          </button>
+          {where && (
+            <span className="muted comments-position">
+              {where.index} of {where.total}
+            </span>
+          )}
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="Previous thread"
+            disabled={!where || where.index === 1}
+            onClick={() => dispatch({ type: "step", by: -1, ids: orderedIds })}
+          >
+            <ChevronUp size={17} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="Next thread"
+            disabled={!where || where.index === where.total}
+            onClick={() => dispatch({ type: "step", by: 1, ids: orderedIds })}
+          >
+            <ChevronDown size={17} aria-hidden="true" />
+          </button>
+        </nav>
+      )}
+      <div className="comments-body" ref={body}>
         {problem && (
           <p role="alert" className="error">
             {problem}
@@ -310,7 +418,11 @@ export function CommentsPanel({
                 : "No comments yet."}
           </p>
         )}
-        {(open || visited) && unresolved.map(renderThread)}
+        {(open || visited) &&
+          unresolvedGroups.flatMap((group) => [
+            unresolvedGroups.length > 1 || group.heading ? groupHeading(group) : null,
+            ...group.threads.map(renderThread),
+          ])}
         {resolved.length > 0 && (
           <details className="resolved-threads" ref={resolvedDisclosure}>
             <summary>
@@ -337,8 +449,14 @@ function CommentThread({
   onReveal,
   onSelect,
   onChangeThread,
+  current = false,
+  onOpen,
 }) {
   const [repliesExpanded, setRepliesExpanded] = useState(false);
+  // Drilling into a thread shows the whole conversation.
+  useEffect(() => {
+    if (current) setRepliesExpanded(true);
+  }, [current]);
   const [replying, setReplying] = useState(false);
   const [replyStarted, setReplyStarted] = useState(false);
   const [pending, setPending] = useState(false);
@@ -375,7 +493,8 @@ function CommentThread({
       className={
         "thread" +
         (thread.state === "resolved" ? " resolved" : "") +
-        (selected ? " thread-active" : "")
+        (selected ? " thread-active" : "") +
+        (current ? " thread-current" : "")
       }
       data-thread-id={thread.id}
       aria-label="Comment thread"
@@ -403,7 +522,15 @@ function CommentThread({
     >
       <AnchorChip anchor={location.anchor} onReveal={onReveal} />
       <div className="thread-heading">
-        <h3 className="thread-title">{title || "Comment"}</h3>
+        <h3 className="thread-title">
+          {onOpen && !current ? (
+            <button type="button" className="thread-open" onClick={onOpen}>
+              {title || "Comment"}
+            </button>
+          ) : (
+            title || "Comment"
+          )}
+        </h3>
         {session.canComment && (
           <button
             className="icon-button thread-state-action"
