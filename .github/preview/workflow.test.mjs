@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import {readFileSync} from "node:fs";
+import {chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
+import {spawnSync} from "node:child_process";
 import {test} from "node:test";
 
 const workflow = readFileSync(new URL("../workflows/preview-reusable.yml", import.meta.url), "utf8");
@@ -61,6 +64,45 @@ test("trusted jobs execute only reviewed helper entry points at the published re
     assert.deepEqual([...body.matchAll(/^          ref: (.+)$/gm)].map(match => match[1]), [`${helperSha} # Reviewed preview helpers`]);
     assert.match(body, /^          persist-credentials: false$/m);
     assert.match(body, /^          sparse-checkout: \.github\/preview$/m);
+  }
+});
+
+test("build tools come from merged helper A, independently of authorized application source", () => {
+  const build = jobs.get("build");
+  assert.deepEqual([...build.matchAll(/^          ref: (.+)$/gm)].map(match => match[1]), [
+    "339ec9a383dc6bfad3c791d773d5ce18757b2f1e # Reviewed preview helpers",
+    "${{ needs.authorize.outputs.sha }}",
+  ]);
+  assert.match(build, /ref: 339ec9a383dc6bfad3c791d773d5ce18757b2f1e # Reviewed preview helpers\n          path: helpers\n          persist-credentials: false\n          sparse-checkout: \.github\/preview/);
+  assert.match(build, /path: source\n          lfs: true\n          persist-credentials: false/);
+});
+
+test("WASM extraction requires successful verified helper exit without installer fallback", (t) => {
+  const build = jobs.get("build");
+  const step = /      - name: Install Rust and the WASM builder\n        run: \|\n([\s\S]*?)(?=      - name:)/.exec(build)?.[1];
+  assert.ok(step);
+  assert.match(step, /^          node helpers\/\.github\/preview\/download-wasm-pack\.mjs "\$RUNNER_TEMP\/wasm-pack.tar.gz"$/m);
+  assert.doesNotMatch(step, /curl|wget|cargo install|source\/|\|\||set \+e/);
+  assert.ok(step.indexOf("download-wasm-pack.mjs") < step.indexOf("tar -xzf"));
+  const directory = mkdtempSync(join(tmpdir(), "preview-install-test-"));
+  t.after(() => rmSync(directory, {recursive: true, force: true}));
+  const log = join(directory, "calls");
+  for (const command of ["rustup", "node", "tar", "mkdir"]) {
+    const path = join(directory, command);
+    writeFileSync(path, `#!/bin/bash\nprintf '%s\\n' '${command}' "$@" >> "$CALL_LOG"\n${command === "node" ? 'exit "$DOWNLOAD_EXIT"' : "exit 0"}\n`);
+    chmodSync(path, 0o700);
+  }
+  for (const exit of ["1", "0"]) {
+    writeFileSync(log, "");
+    const result = spawnSync("/bin/bash", ["--noprofile", "--norc", "-eo", "pipefail", "-c", step], {
+      encoding: "utf8",
+      env: {PATH: directory, RUNNER_TEMP: directory, GITHUB_ENV: join(directory, "env"), GITHUB_PATH: join(directory, "path"), CALL_LOG: log, DOWNLOAD_EXIT: exit},
+    });
+    assert.equal(result.status, Number(exit), result.stderr);
+    const calls = readFileSync(log, "utf8");
+    assert.ok(calls.includes(`node\nhelpers/.github/preview/download-wasm-pack.mjs\n${directory}/wasm-pack.tar.gz\n`));
+    assert.equal(calls.includes("tar\n-xzf\n"), exit === "0");
+    assert.equal(calls.includes("mkdir\n"), exit === "0");
   }
 });
 

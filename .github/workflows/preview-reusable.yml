@@ -55,7 +55,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: nteract/nteract
-          ref: 745935af5fdfcf15424c59d52cbccc629a260d50 # Reviewed preview helpers
+          ref: 339ec9a383dc6bfad3c791d773d5ce18757b2f1e # Reviewed preview helpers
           path: helpers
           persist-credentials: false
           sparse-checkout: .github/preview
@@ -95,9 +95,7 @@ jobs:
           rustup toolchain install 1.99.1 --profile minimal --target wasm32-unknown-unknown
           echo "CARGO=$(rustup which --toolchain 1.99.1 cargo)" >> "$GITHUB_ENV"
           echo "RUSTC=$(rustup which --toolchain 1.99.1 rustc)" >> "$GITHUB_ENV"
-          curl --fail --location --show-error --retry 5 --output "$RUNNER_TEMP/wasm-pack.tar.gz" \
-            https://github.com/wasm-bindgen/wasm-pack/releases/download/v0.15.0/wasm-pack-v0.15.0-x86_64-unknown-linux-musl.tar.gz
-          echo "c09f971ecaed9a2efc80fdcea7a00ef6b53c7fadc8c57d1f61b53a6aa66b668a  $RUNNER_TEMP/wasm-pack.tar.gz" | sha256sum --check
+          node helpers/.github/preview/download-wasm-pack.mjs "$RUNNER_TEMP/wasm-pack.tar.gz"
           mkdir "$RUNNER_TEMP/preview-wasm-pack"
           tar -xzf "$RUNNER_TEMP/wasm-pack.tar.gz" -C "$RUNNER_TEMP/preview-wasm-pack" --strip-components=1
           echo "$RUNNER_TEMP/preview-wasm-pack" >> "$GITHUB_PATH"
