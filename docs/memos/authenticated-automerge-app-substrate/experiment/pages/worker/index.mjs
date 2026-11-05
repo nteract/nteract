@@ -1770,7 +1770,19 @@ export class Catalog {
       if (body.operation === "create_page") validateCreateInput(args);
       if (registering) {
         requireRegistrationAccount(args, identity);
-        A.free(readRegistration(args).doc);
+        // A retry of a registration this Catalog already recorded resends the
+        // bytes the browser saved with the draft, which this build may no
+        // longer accept fresh. Its receipt, or for a pending one the Page
+        // host's record, answers it, so only a new request is validated.
+        const recorded = await this.storage.get(mutationKey(args));
+        const digest =
+          recorded &&
+          (await fingerprint(
+            lifecycleFingerprint[body.operation] ?? body.operation,
+            args,
+            identity,
+          ));
+        if (recorded?.fingerprint !== digest || !digest) A.free(readRegistration(args).doc);
         // The browser knows its UUID before the Page host has an intent. A
         // successful deletion must also cancel retries of that local creation.
         if (await this.storage.get(`host/deleted/${args.page_id}`))

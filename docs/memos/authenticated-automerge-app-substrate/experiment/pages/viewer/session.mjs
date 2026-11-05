@@ -133,13 +133,30 @@ export function classifyRefusal(error) {
   if (error.code === "signing_key_rejected") return undefined;
   return "denied";
 }
-// 409s that say only a reload helps: the replica's storage changed under it,
-// a draft's storage move failed, or this build lacks a feature the Page uses.
+// 409s that retrying can't fix: the replica's storage changed under it, a
+// draft's storage move failed, this build lacks a feature the Page uses, or
+// the host can't read a draft an earlier build saved.
 const RELOAD_REQUIRED_CODES = new Set([
   "RECORD_STORAGE_CHANGED",
   "STORAGE_SWITCH_FAILED",
   "unsupported_schema_feature",
+  "stored_form_unsupported",
 ]);
+/** Shown when the host refuses to register a draft an earlier version of
+ * Pages saved in a form this build doesn't read. */
+export const DRAFT_FORM_UNSUPPORTED =
+  "This Page was drafted with an earlier version of Pages and can't be saved to your account. Its local copy stays on this device: copy its content into a new Page, or reload.";
+/** The person-facing stop for a registration the host refused as a stored
+ * form it can't read, or undefined for any other error. Retrying would send
+ * the same saved bytes, so the draft stays local. */
+function draftUnreadable(error) {
+  if (error?.status !== 409 || error.code !== "stored_form_unsupported") return undefined;
+  return Object.assign(Error(DRAFT_FORM_UNSUPPORTED), {
+    status: 409,
+    code: error.code,
+    cause: error,
+  });
+}
 /** Whether a failed connection attempt retries on the reconnect backoff. It
  * runs after attemptConnection has handled classifyRefusal, a 401, and the
  * native admission's own stop, so it decides what remains.
@@ -2260,12 +2277,15 @@ export class PageSession {
           result = await this.reconcileExpiredRegistration();
         } catch (renewed) {
           if (storageRefused(renewed)) return this.retryAfterStorageRefusal(renewed, storageMoved);
+          if (draftUnreadable(renewed)) throw draftUnreadable(renewed);
           if (renewed.status === 409 && renewed.message === "Page was deleted")
             await this.markDeleted();
           throw renewed;
         }
       } else if (storageRefused(error)) {
         return this.retryAfterStorageRefusal(error, storageMoved);
+      } else if (draftUnreadable(error)) {
+        throw draftUnreadable(error);
       } else {
         if (error.status === 409 && error.message === "Page was deleted") await this.markDeleted();
         throw error;

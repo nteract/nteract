@@ -3,11 +3,13 @@ import assert from "node:assert/strict";
 import "fake-indexeddb/auto";
 import * as A from "@automerge/automerge";
 import {
+  DRAFT_FORM_UNSUPPORTED,
   PageSession,
   STORAGE_ADOPTED,
   STORAGE_REFUSED_AGAIN,
   STORAGE_SWITCHING,
   STORAGE_SWITCH_FAILED,
+  connectionFailureRetries,
   listLocalPages,
   retireLocalPage,
 } from "./session.mjs";
@@ -313,6 +315,33 @@ test("a renewed registration refused as deleted marks the draft deleted", async 
   await assert.rejects(session.registerDraft(), /Page was deleted/);
   assert.equal(registrations, 2);
   assert.equal(session.deleted, true);
+});
+
+test("a draft the host can't read stops with a message, keeps its local copy and doesn't retry", async (t) => {
+  const { session } = await expiredRegistrationFixture(t);
+  const before = session.localPage;
+  let registrations = 0;
+  t.mock.method(globalThis, "fetch", async (url) => {
+    assert.equal(url, "/api/pages/register");
+    registrations++;
+    return Response.json(
+      {
+        error:
+          "Pages can't read this draft Page, stored in a form from an earlier version of Pages.",
+        code: "stored_form_unsupported",
+      },
+      { status: 409 },
+    );
+  });
+  const error = await session.registerDraft().catch((error) => error);
+  assert.equal(error.message, DRAFT_FORM_UNSUPPORTED);
+  assert.equal(error.code, "stored_form_unsupported");
+  assert.equal(registrations, 1);
+  // The draft stays on the device, unregistered, for the person to copy out.
+  assert.equal(session.deleted, false);
+  assert.equal(session.localPage.registered, before.registered);
+  assert.deepEqual(session.localPage.registration, before.registration);
+  assert.equal(connectionFailureRetries(error), false);
 });
 
 /** A draft created where the session endpoint advertised plain storage, or

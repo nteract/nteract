@@ -13,6 +13,7 @@ import worker, { Catalog, Page } from "./index.mjs";
 import { readRegistration } from "./registration.mjs";
 import { DEFAULT_PAGE_QUOTA } from "./page-quota.mjs";
 import { REPLAYED_RECEIPT_HEADER } from "./usage.mjs";
+import { fingerprint } from "./mutations.mjs";
 
 class Storage {
   values = new Map();
@@ -711,4 +712,67 @@ test("an unknown http-tools operation is recorded as unknown, never as sent", as
   assert.equal(call.operation, "unknown");
   assert.equal(call.outcome, "http_400");
   assert.doesNotMatch(JSON.stringify(lines), /secret_plans/);
+});
+
+test("a draft from before the comments stamp replays once registered, and is refused fresh", async (t) => {
+  const f = await fixture(t),
+    { args, doc } = registration();
+  // The same draft as a build before the `comments-doc` stamp saved it.
+  const unstamped = A.change(A.clone(doc), (draft) => {
+    draft.schema.features = draft.schema.features.filter((id) => id !== "comments-doc");
+  });
+  const old = {
+    ...args,
+    initial_snapshot_base64: Buffer.from(A.save(unstamped)).toString("base64"),
+  };
+  // A fresh one reserves nothing.
+  const fresh = await f.send(old);
+  assert.equal(fresh.status, 409);
+  assert.equal((await fresh.json()).code, "stored_form_unsupported");
+  assert.equal(f.catalog().storage.values.size, 0);
+  // An earlier build accepted it: register the current draft, then rewrite
+  // the stored request digests as the unstamped draft's.
+  const seen = [];
+  const digest = crypto.subtle.digest.bind(crypto.subtle);
+  t.mock.method(crypto.subtle, "digest", (algorithm, bytes) => {
+    try {
+      const value = JSON.parse(new TextDecoder().decode(bytes));
+      if (value?.operation === "register_page") seen.push(value);
+    } catch {}
+    return digest(algorithm, bytes);
+  });
+  const first = await f.send(args);
+  assert.equal(first.status, 200, await first.clone().text());
+  const receipt = await first.json();
+  t.mock.restoreAll();
+  t.mock.method(globalThis, "fetch", f.auth.fetch);
+  const rewrite = async (value) =>
+    fingerprint(
+      value.operation,
+      { ...value.args, initial_snapshot_base64: old.initial_snapshot_base64 },
+      { principal: value.principal, driver: value.driver },
+    );
+  const [catalogDigest, pageDigest] = await Promise.all(seen.slice(0, 2).map(rewrite));
+  const key = "host/operation/register-fixture";
+  const entry = await f.catalog().storage.get(key);
+  await f.catalog().storage.put(key, { ...entry, fingerprint: catalogDigest });
+  const record = await f.page().storage.get("host/document");
+  const registered = { ...record, registration: pageDigest };
+  await f.page().storage.put("host/document", registered);
+  f.page().page.metadata = registered;
+  // Its response was lost; the browser resends the bytes it saved.
+  const replayed = await f.send(old);
+  assert.equal(replayed.status, 200, await replayed.clone().text());
+  assert.deepEqual(await replayed.json(), receipt);
+  // A reservation still pending (the Page host accepted it, the response
+  // was lost) reaches the Page, which replays from its record.
+  const { receipt: _receipt, ...reserved } = await f.catalog().storage.get(key);
+  await f.catalog().storage.put(key, { ...reserved, pending: true });
+  await f.catalog().storage.put(`page/${pageId}`, {
+    ...(await f.catalog().storage.get(`page/${pageId}`)),
+    pending: true,
+  });
+  const fromPage = await f.send(old);
+  assert.equal(fromPage.status, 200, await fromPage.clone().text());
+  assert.equal((await fromPage.json()).document_id, args.document_id);
 });

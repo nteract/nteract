@@ -1266,6 +1266,7 @@ test("only definitive answers stop automatic reconnects", () => {
     [{ status: 409, code: "RECORD_STORAGE_CHANGED" }, false],
     [{ status: 409, code: "STORAGE_SWITCH_FAILED" }, false],
     [{ status: 409, code: "unsupported_schema_feature" }, false],
+    [{ status: 409, code: "stored_form_unsupported" }, false],
     [{}, true],
     [{ code: "RECORD_STORAGE_CHANGED" }, true],
     [{ status: 500 }, true],
