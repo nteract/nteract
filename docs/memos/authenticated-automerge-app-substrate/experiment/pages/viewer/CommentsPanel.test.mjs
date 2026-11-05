@@ -506,3 +506,38 @@ test("a kept inline-composer draft shows as Unsent comment with Continue and Dis
   await f.click(kept.querySelector("button"));
   assert.deepEqual([reopened, cancelled], [0, 1]);
 });
+
+test("a passage hovered in the Page marks its row", async (t) => {
+  const f = await fixture(t, { hovered: "next" });
+  assert.ok(f.row("next").classList.contains("thread-row-hovered"));
+  assert.equal(f.row("first").classList.contains("thread-row-hovered"), false);
+});
+
+test("the passage card copies the rendered paragraph, formatting and all, read-only", async (t) => {
+  const page = document.body.appendChild(document.createElement("div"));
+  page.className = "document";
+  page.innerHTML = `<section class="page-block" data-block-id="block"><p>Before <strong>bold</strong> <span class="comment-passage" data-comment-thread="first" contenteditable="true">Passage first</span> <mark data-color="yellow">after</mark></p></section>`;
+  t.after(() => page.remove());
+  const f = await fixture(t);
+  await f.open("first");
+  await tick();
+  const snippet = f.view().querySelector(".passage-snippet");
+  assert.equal(snippet.hidden, false);
+  assert.equal(snippet.querySelector("strong").textContent, "bold");
+  assert.equal(snippet.querySelector("mark[data-color='yellow']").textContent, "after");
+  const lit = snippet.querySelector(".copy-passage-active");
+  assert.equal(lit.textContent, "Passage first");
+  assert.equal(lit.hasAttribute("contenteditable"), false);
+  assert.equal(
+    snippet.querySelector("[data-comment-thread], .comment-passage"),
+    null,
+    "copies don't look like Page passages",
+  );
+  assert.equal(f.view().querySelector(".thread-passage-text"), null, "no plain-text fallback");
+  await f.click(f.container.querySelector('[aria-label="Next thread"]'));
+  await tick();
+  assert.ok(
+    f.view().querySelector(".thread-passage-text"),
+    "unrendered passages fall back to text",
+  );
+});

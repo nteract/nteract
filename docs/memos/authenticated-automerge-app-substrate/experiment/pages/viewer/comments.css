@@ -1298,7 +1298,7 @@ button.anchor-chip:hover {
   margin: 0 auto;
 }
 /* Other passages step back so this thread's passage reads. */
-.page-excerpt .comment-passage:not(.comment-passage-active) {
+.page-excerpt .copy-passage:not(.copy-passage-active) {
   background: color-mix(in oklab, var(--comment-anchor) 8%, transparent);
   border-bottom-color: color-mix(in oklab, var(--comment-anchor-line) 40%, transparent);
 }
@@ -1453,4 +1453,48 @@ button.anchor-chip:hover {
 }
 .comment-avatar-mark .agent-mark {
   display: block;
+}
+/* The passage card's paragraph as the Page renders it, clipped. */
+.passage-snippet {
+  max-height: calc(1.6em * 4);
+  overflow: hidden;
+  font-size: 0.8rem;
+  line-height: 1.6;
+  color: var(--muted-foreground);
+  -webkit-mask-image: linear-gradient(to bottom, #000 72%, transparent);
+  mask-image: linear-gradient(to bottom, #000 72%, transparent);
+}
+.passage-snippet .passage-snippet-paragraph {
+  margin: 0;
+  padding: 0;
+  font-size: inherit;
+  line-height: inherit;
+  list-style: none;
+}
+.passage-snippet .copy-passage:not(.copy-passage-active) {
+  background: none;
+  border-bottom-color: transparent;
+}
+.passage-snippet .copy-passage-active {
+  color: var(--foreground);
+}
+/* A passage hovered in the Page marks its row. */
+.thread-row-hovered {
+  background: color-mix(in oklab, var(--foreground) 5%, transparent);
+}
+.thread-row-hovered .thread-row-chip {
+  background: color-mix(in oklab, var(--comment-anchor) 13%, transparent);
+  color: color-mix(in oklab, var(--comment-anchor) 55%, var(--foreground));
+}
+/* Passages in read-only copies look like the Page's. */
+.copy-passage {
+  background: color-mix(in oklab, var(--comment-anchor) var(--comment-anchor-fill), transparent);
+  border-bottom: 2px solid var(--comment-anchor-line);
+}
+.copy-passage-active {
+  background: color-mix(
+    in oklab,
+    var(--comment-anchor) calc(var(--comment-anchor-fill) * 2),
+    transparent
+  );
 }

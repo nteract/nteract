@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /**
  * The block a thread points at, shown as the Page renders it: tables stay
@@ -28,7 +28,7 @@ export function PageExcerpt({ thread }) {
           return;
         }
         target.append(readOnlyCopy(block, thread.id));
-        const lit = target.querySelector(".comment-passage-active");
+        const lit = target.querySelector(".copy-passage-active");
         if (lit) {
           const box = target.getBoundingClientRect();
           const at = lit.getBoundingClientRect();
@@ -72,14 +72,80 @@ export function readOnlyCopy(block, threadId) {
     element.removeAttribute("aria-describedby");
     if (element.matches?.("input, textarea, select, button")) element.setAttribute("disabled", "");
   }
+  // Copies get their own passage classes and attribute, so nothing that
+  // looks for the Page's passages (scrolling, hover, tests) finds a copy.
   for (const passage of copy.querySelectorAll(".comment-passage")) {
-    passage.classList.remove("comment-passage-active", "comment-passage-created");
-    if (passage.dataset.commentThread === threadId) passage.classList.add("comment-passage-active");
+    const id = passage.dataset.commentThread;
+    passage.removeAttribute("data-comment-thread");
+    passage.className = "copy-passage" + (id === threadId ? " copy-passage-active" : "");
   }
+  for (const draft of copy.querySelectorAll(".comment-draft-passage")) draft.className = "";
   // Editing chrome (carets, selection, block handles) isn't part of the Page.
   for (const chrome of copy.querySelectorAll(
     ".peer-caret, .remote-caret, .block-handle, .block-actions, [data-editor-chrome]",
   ))
     chrome.remove();
   return copy;
+}
+
+const PARAGRAPH = "p, li, td, th, h1, h2, h3, h4, h5, h6, blockquote, pre, figcaption";
+
+/**
+ * The paragraph around a thread's passage as the Page renders it, so marks,
+ * links and code keep their formatting. Read-only, clipped to a few lines
+ * around the passage. Falls back to `children` (a plain-text excerpt) when
+ * the passage isn't rendered, such as a block comment or a detached thread.
+ */
+export function PassageSnippet({ thread, children }) {
+  const host = useRef(null);
+  const [rendered, setRendered] = useState(false);
+  useEffect(() => {
+    const target = host.current;
+    if (!target) return;
+    let frame = 0;
+    const find = () =>
+      document.querySelector(`.document [data-comment-thread="${CSS.escape(thread.id)}"]`);
+    const render = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const passage = find();
+        const paragraph = passage?.closest(PARAGRAPH);
+        if (!paragraph || !paragraph.closest(".document")) {
+          target.replaceChildren();
+          setRendered(false);
+          return;
+        }
+        const copy = readOnlyCopy(paragraph, thread.id);
+        copy.classList.add("passage-snippet-paragraph");
+        target.replaceChildren(copy);
+        setRendered(true);
+        // Bring the passage into the clipped window, a line from the top.
+        const lit = target.querySelector(".copy-passage-active");
+        if (lit) {
+          const line = parseFloat(window.getComputedStyle(target).lineHeight) || 20;
+          target.scrollTop = Math.max(0, lit.offsetTop - copy.offsetTop - line);
+        }
+      });
+    };
+    render();
+    const source = find()?.closest(".page-block");
+    const observer = new MutationObserver(render);
+    if (source) observer.observe(source, { subtree: true, childList: true, characterData: true });
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [thread.id]);
+  return (
+    <>
+      <div
+        ref={host}
+        className="passage-snippet document-copy"
+        hidden={!rendered}
+        inert
+        aria-hidden={!rendered || undefined}
+      />
+      {!rendered && children}
+    </>
+  );
 }

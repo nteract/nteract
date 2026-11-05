@@ -238,6 +238,8 @@ function App() {
     [active, setActive] = useState(null),
     [commentsOpen, setCommentsOpen] = useState(false),
     [target, setTarget] = useState(null),
+    // The passage under the pointer, so the comments list can mark its row.
+    [hoveredThread, setHoveredThread] = useState(null),
     [pickerError, setPickerError] = useState(""),
     [creating, setCreating] = useState(false),
     // One creation at a time, and placed creates to replay (page-create-machine.mjs).
@@ -1313,6 +1315,20 @@ function App() {
     if (commentsOpen) closeComments();
     else setCommentsOpen(true);
   }
+  useEffect(() => {
+    const element = article.current;
+    if (!element || !commentsOpen) return;
+    const over = (event) =>
+      setHoveredThread(event.target.closest?.(".comment-passage")?.dataset.commentThread ?? null);
+    const leave = () => setHoveredThread(null);
+    element.addEventListener("pointerover", over);
+    element.addEventListener("pointerleave", leave);
+    return () => {
+      element.removeEventListener("pointerover", over);
+      element.removeEventListener("pointerleave", leave);
+      setHoveredThread(null);
+    };
+  }, [commentsOpen, session?.pageId]);
   function selectComment(id) {
     setTarget({ id, request: performance.now(), source: "passage" });
     setCommentsOpen(true);
@@ -1845,6 +1861,7 @@ function App() {
                 composer={composer}
                 target={target}
                 principal={account?.principal ?? null}
+                hovered={hoveredThread}
                 onClose={closeComments}
                 onReveal={revealComment}
                 onSelect={(id) => {
