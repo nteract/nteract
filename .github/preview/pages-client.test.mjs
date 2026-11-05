@@ -126,6 +126,29 @@ test('CLI prints only accepted identity and safe diagnostics, never cause or res
   const failure=JSON.parse(lines[1]);assert.equal(failure.phase,'status');assert.equal(failure.code,'transport');assert.equal(failure.operationId,id);
   assert.ok(!lines.join('\n').includes(secret));assert.equal(lines.length,3);
 });
+test('CLI summary failure preserves completed deployment and never recommends redispatch',async()=>{
+  const source=await readFile(new URL('./send-pages-deployment.mjs',import.meta.url),'utf8');
+  for(const fault of ['validation','write']) {
+    const secret='private-summary-path-and-error',lines=[];let posts=0,writes=0;
+    const cli=source.replace(/^#![^\n]*\n/,'')
+      .replace("import {readFile,appendFile} from 'node:fs/promises';",'const readFile=async()=>"{}";')
+      .replace("import {setTimeout as sleep} from 'node:timers/promises';",'const sleep=async()=>{};')
+      .replace("'./pages-client.mjs'",JSON.stringify(new URL('./pages-client.mjs',import.meta.url).href))
+      .replace(/^import .*from (.*);$/m,'const {sendPagesDeployment,pagesStepSummary,pagesFailureDiagnostic}=await import($1);');
+    const context={env:{...env,GITHUB_EVENT_NAME:'workflow_dispatch',INPUT_SHA:sha,INPUT_BUILD_RUN_ID:'20',INPUT_BUILD_RUN_ATTEMPT:'1',
+      GITHUB_EVENT_PATH:'synthetic',GITHUB_STEP_SUMMARY:secret},exitCode:0};
+    await new (Object.getPrototypeOf(async function(){}).constructor)('process','fetch','console','appendFile',cli)(context,async(url,options)=>{
+      if(String(url).includes('actions.githubusercontent.com')) return Response.json({value:'a.b.c'});
+      if(options.method==='POST') {posts++;return Response.json({operationId:id},{status:202});}
+      return Response.json({...result,...(fault==='validation'?{restorePointKey:secret}:{})});
+    },{log:value=>lines.push(value),error:value=>lines.push(value)},async()=>{writes++;throw new Error(secret);});
+    assert.equal(context.exitCode,1);assert.equal(posts,1);assert.equal(writes,fault==='write'?1:0);
+    const diagnostic=lines.filter(line=>line.startsWith('{')).map(line=>JSON.parse(line)).at(-1);
+    assert.deepEqual(diagnostic,{event:'pages_deployment_report_failed',status:'succeeded',operationId:id,phase:'summary',code:fault});
+    assert.match(lines.at(-1),/Deployment completed; summary report failed\. Do not redispatch/);
+    assert.ok(!lines.join('\n').includes(secret));assert.ok(!lines.join('\n').includes('deployment did not complete'));
+  }
+});
 test('disabled caller, failed CI and bad status never retry accepted deployment',async()=>{
   for(const change of [{PAGES_PAGE10_ENABLED:'false'},{GITHUB_REPOSITORY:'fork/repo'}])
     await assert.rejects(sendPagesDeployment({...env,...change},event,{fetchImpl:()=>assert.fail(),clock:{now:()=>0}}));
