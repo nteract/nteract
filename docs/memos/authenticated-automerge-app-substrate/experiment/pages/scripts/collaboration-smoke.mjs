@@ -430,7 +430,7 @@ try {
   const resolved = a.locator(".thread-view");
   await expect(resolved).toContainText("Yes, brown.");
   await resolved.getByRole("button", { name: "Reopen" }).click();
-  await expect(b.locator(".thread-view .thread-state-open")).toBeVisible();
+  await expect(b.locator(".thread-view").getByRole("button", { name: "Resolve" })).toBeVisible();
   complete(stage);
 
   stage = "Move to Trash refused by a peer's edit says so in plain words";

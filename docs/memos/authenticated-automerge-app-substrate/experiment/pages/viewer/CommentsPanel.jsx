@@ -6,9 +6,7 @@ import {
   ChevronRight,
   ChevronUp,
   CircleCheck,
-  Heading,
   ListChecks,
-  LocateFixed,
   MessageSquare,
   RotateCcw,
   X,
@@ -568,11 +566,11 @@ export function CommentsPanel({
                 )}
                 {groups.map((group) => (
                   <div className="comments-group-block" key={`group:${group.key}`}>
-                    <p className="comments-group">
-                      <span>
-                        {group.heading === null ? "Detached" : group.heading || "Top of page"}
-                      </span>
-                    </p>
+                    {group.heading !== "" && (
+                      <p className="comments-group">
+                        <span>{group.heading === null ? "Detached" : group.heading}</span>
+                      </p>
+                    )}
                     {group.threads.map((thread) => (
                       <ThreadRow
                         key={thread.id}
@@ -810,11 +808,11 @@ function ReviewWorkspace({
           <div className="comments-body comments-list">
             {groups.map((group) => (
               <div className="comments-group-block" key={`group:${group.key}`}>
-                <p className="comments-group">
-                  <span>
-                    {group.heading === null ? "Detached" : group.heading || "Top of page"}
-                  </span>
-                </p>
+                {group.heading !== "" && (
+                  <p className="comments-group">
+                    <span>{group.heading === null ? "Detached" : group.heading}</span>
+                  </p>
+                )}
                 {group.threads.map(row)}
               </div>
             ))}
@@ -843,7 +841,7 @@ function ReviewWorkspace({
         <section className="review-context" aria-label="Passage in the Page">
           <div className="review-column-head">
             <span className="review-crumbs">
-              {(path.length ? path : ["Top of page"]).map((heading, i) => (
+              {path.map((heading, i) => (
                 <span key={i}>
                   {i > 0 && <ChevronRight size={13} aria-hidden="true" />}
                   <span className={i === path.length - 1 ? "here" : undefined}>{heading}</span>
@@ -851,7 +849,7 @@ function ReviewWorkspace({
               ))}
             </span>
             <button type="button" className="subtle-button review-open-page" onClick={onOpenInPage}>
-              <LocateFixed size={14} aria-hidden="true" /> Open in Page
+              Open in Page
             </button>
           </div>
           <PageExcerpt thread={current} />
@@ -1051,25 +1049,19 @@ function ThreadView({
     );
     return () => cancelAnimationFrame(frame);
   }, [replying, replyRequest]);
-  const started = attribution(first?.author);
-  const heading = location.headings.at(-1);
   return (
     <div className="thread-view" data-thread-id={thread.id} tabIndex={-1}>
       <div className="thread-view-scroll">
         <header className="thread-view-head">
           <div className="thread-view-titles">
             <h3 className="thread-title">{title || "Comment"}</h3>
-            <p className="thread-view-meta">
-              <span className={"thread-state thread-state-" + thread.state}>
-                {thread.state === "open" ? "Open" : "Resolved"}
-              </span>
-              <span aria-hidden="true">·</span>
-              <span>
-                {messages.length} {messages.length === 1 ? "message" : "messages"}
-              </span>
-              <span aria-hidden="true">·</span>
-              <span>Started by {started.name}</span>
-            </p>
+            {/* Resolve / Reopen already says which state it's in; without
+                that button (viewers) a resolved thread still says so. */}
+            {!session.canComment && thread.state === "resolved" && (
+              <p className="thread-view-meta">
+                <span className="thread-state thread-state-resolved">Resolved</span>
+              </p>
+            )}
           </div>
           {session.canComment && (
             <button
@@ -1088,17 +1080,6 @@ function ThreadView({
           )}
         </header>
         <div className={"thread-passage thread-passage-" + location.anchor.kind}>
-          <div className="thread-passage-top">
-            <span className="thread-passage-section">
-              <Heading size={13} aria-hidden="true" />
-              <span>{heading || "Top of page"}</span>
-            </span>
-            {(location.anchor.kind !== "detached" || location.anchor.blockSurvives) && (
-              <button type="button" className="thread-passage-jump quote" onClick={onReveal}>
-                <LocateFixed size={13} aria-hidden="true" /> Jump to passage
-              </button>
-            )}
-          </div>
           {excerpt ? (
             <p className="thread-passage-text">
               {excerpt.before}
@@ -1109,6 +1090,11 @@ function ThreadView({
             <p className="thread-passage-text thread-passage-removed">
               The passage this thread pointed at was removed.
             </p>
+          )}
+          {(location.anchor.kind !== "detached" || location.anchor.blockSurvives) && (
+            <button type="button" className="thread-passage-jump quote" onClick={onReveal}>
+              Jump to passage
+            </button>
           )}
         </div>
         <div className="thread-messages">

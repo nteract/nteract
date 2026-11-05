@@ -3,6 +3,7 @@
 import { useEffect, useId, useState } from "react";
 import { ChevronDown, ChevronUp, ListChecks, Table, Text, Unlink } from "lucide-react";
 import { CommentContent } from "./CommentRichText.jsx";
+import { AgentMark, agentMarkFor, markHasTile } from "./AgentMark.jsx";
 import {
   attribution,
   fullTime,
@@ -23,6 +24,22 @@ export function useNow(intervalMs = 60_000) {
 
 export function Avatar({ author, size = 24 }) {
   const who = attribution(author);
+  const mark = who.agent ? agentMarkFor(author?.driver) : null;
+  if (mark)
+    return (
+      <span
+        className={
+          "comment-avatar comment-avatar-agent comment-avatar-mark" +
+          (markHasTile(mark) ? " comment-avatar-own-tile" : "")
+        }
+        style={{ "--avatar-size": `${size}px` }}
+        title={who.label}
+        aria-hidden="true"
+      >
+        <AgentMark mark={mark} size={Math.round(size * (markHasTile(mark) ? 1 : 0.62))} />
+        <span className="comment-avatar-badge">{who.personInitials.slice(0, 1)}</span>
+      </span>
+    );
   return (
     <span
       className={"comment-avatar" + (who.agent ? " comment-avatar-agent" : "")}
