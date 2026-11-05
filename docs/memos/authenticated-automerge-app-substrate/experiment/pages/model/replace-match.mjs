@@ -1,7 +1,9 @@
 import * as A from "@automerge/automerge/slim";
 import { diffArrays } from "diff";
-import { amSpliceIdxToPmIdx, pmRangeToAmRange } from "@automerge/prosemirror/dist/traversal.js";
-import { adapter, isRich, parseInlineMarkdown, richDoc, textPath } from "./richtext.mjs";
+import { isRich, textPath } from "./richtext-format.mjs";
+import { parseInlineMarkdown } from "./markdown-import.mjs";
+import { adapter, amSpliceIdxToPmIdx, pmRangeToAmRange } from "./pm-adapter.mjs";
+import { richDoc } from "./richtext-spans.mjs";
 import {
   encodeMarkValue,
   isKnownMark,

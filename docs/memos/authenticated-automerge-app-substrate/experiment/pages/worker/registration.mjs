@@ -2,7 +2,8 @@ import * as A from "@automerge/automerge";
 import { documentIdToBinary } from "@automerge/automerge-repo";
 import { generateKeyBetween } from "fractional-indexing";
 import { assertDocumentLimits } from "../model/limits.mjs";
-import { RICH_FORMAT, validateRich } from "../model/richtext.mjs";
+import { RICH_FORMAT } from "../model/richtext-format.mjs";
+import { validateRich } from "../model/richtext-spans.mjs";
 import { requireSupportedSchema } from "../model/schema-features.mjs";
 import { HttpError } from "./auth.mjs";
 

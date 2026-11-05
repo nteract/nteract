@@ -13,7 +13,8 @@
 // checked, language, heading_level and align are aliases accepted for one
 // deploy; nodeChange turns them into the typed shape.
 import * as A from "@automerge/automerge/slim";
-import { richDoc, textPath } from "./richtext.mjs";
+import { textPath } from "./richtext-format.mjs";
+import { richDoc } from "./richtext-spans.mjs";
 import { updateSpansConfig } from "./marks.mjs";
 import { locateRange } from "./replace-match.mjs";
 import {

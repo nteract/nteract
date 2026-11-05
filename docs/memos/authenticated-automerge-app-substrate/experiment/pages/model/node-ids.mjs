@@ -21,9 +21,9 @@
 //
 // An id is meaningful only with its block_id: cursors are per text object.
 import * as A from "@automerge/automerge/slim";
-import { eventsWithIndexChanges, traverseSpans } from "@automerge/prosemirror/dist/traversal.js";
-import { pmDocFromSpans } from "@automerge/prosemirror";
-import { adapter, codeTextUnmarked, richDoc, textPath } from "./richtext.mjs";
+import { codeTextUnmarked, textPath } from "./richtext-format.mjs";
+import { adapter, eventsWithIndexChanges, pmDocFromSpans, traverseSpans } from "./pm-adapter.mjs";
+import { richDoc } from "./richtext-spans.mjs";
 
 // A cursor is `<counter>@<actor hex>`; Pages accepts actors of up to 64 bytes
 // (worker/actor-authorship.mjs), 128 hex characters.
@@ -56,8 +56,7 @@ export function nodeIds(doc, blockId, tree = richDoc(doc.blocks[blockId], doc.pa
     // leaf occupies one position, so its closing tag adds no width.
     if (state.event.type === "closeTag" && adapter.schema.nodes[state.event.tag].isLeaf)
       leafClosures++;
-    while (index < ranges.length && state.after.pmIdx - leafClosures >= ranges[index].end)
-      index++;
+    while (index < ranges.length && state.after.pmIdx - leafClosures >= ranges[index].end) index++;
     const range = ranges[index];
     if (!range || range.at !== null) continue;
     if (state.event.type !== "block" || state.event.block.isEmbed) continue;

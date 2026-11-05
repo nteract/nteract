@@ -30,7 +30,7 @@ import {
   schemaUnsupported,
   unsupportedFeatures,
 } from "../model/schema-features.mjs";
-import { unsupportedMarkdown, unsupportedMarkdownError } from "../model/richtext.mjs";
+import { unsupportedMarkdown, unsupportedMarkdownError } from "../model/markdown-scan.mjs";
 import { convertPreservedBlocks, hasPreservedBlocks } from "../model/raw-migration.mjs";
 import { commentsGenesis } from "../model/comments-doc.mjs";
 import { applyComment, commentsMigrated } from "../model/comments.mjs";

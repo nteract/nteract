@@ -1,5 +1,5 @@
 import * as A from "@automerge/automerge/slim";
-import { isRich } from "./richtext.mjs";
+import { isRich } from "./richtext-format.mjs";
 import { commentBodyProjection, setCommentContent } from "./comment-content.mjs";
 import { COMMENTS_FEATURE, commentThreads } from "./comments-doc.mjs";
 import { commentDecision, requireCommentDecision } from "./comment-rules.mjs";

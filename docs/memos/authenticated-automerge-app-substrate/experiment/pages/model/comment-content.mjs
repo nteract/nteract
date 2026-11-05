@@ -1,17 +1,9 @@
 import * as A from "@automerge/automerge/slim";
-import { pmNodeToSpans, pmDocFromSpans } from "@automerge/prosemirror";
-import {
-  codeTextUnmarked,
-  adapter,
-  RICH_FORMAT,
-  isRich,
-  parseAgentMarkdown,
-  parseMarkdown,
-  exportMarkdown,
-  richDoc,
-  schema,
-  validateRichSpans,
-} from "./richtext.mjs";
+import { codeTextUnmarked, RICH_FORMAT, isRich } from "./richtext-format.mjs";
+import { parseAgentMarkdown, parseMarkdown } from "./markdown-import.mjs";
+import { adapter, pmDocFromSpans, pmNodeToSpans, schema } from "./pm-adapter.mjs";
+import { exportMarkdown } from "./pm-markdown-serializer.mjs";
+import { richDoc, validateRichSpans } from "./richtext-spans.mjs";
 import { stampSpans } from "./schema-features.mjs";
 import { DATAFRAME_BLOCK } from "../shared/dataset-assets.mjs";
 

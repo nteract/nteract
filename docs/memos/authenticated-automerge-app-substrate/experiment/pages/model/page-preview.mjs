@@ -5,7 +5,8 @@
 // [tag, attributes, ...children] and each text run is a string. The viewer
 // (viewer/PagePreview.jsx) builds elements from an allowlist; nothing here is
 // HTML.
-import { isRich, richDoc } from "./richtext.mjs";
+import { isRich } from "./richtext-format.mjs";
+import { richDoc } from "./richtext-spans.mjs";
 import { orderedBlockIds } from "./order.mjs";
 import { safeUrl } from "./marks.mjs";
 

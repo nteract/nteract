@@ -2,7 +2,7 @@
 // wrote each message, when, and where the thread points in the Page. Nothing
 // here writes to a document; stored Markdown stays exactly as written.
 import * as A from "@automerge/automerge/slim";
-import { isRich } from "../model/richtext.mjs";
+import { isRich } from "../model/richtext-format.mjs";
 import { orderedBlockIds } from "../model/order.mjs";
 import { presenceColor } from "./presence-color.mjs";
 

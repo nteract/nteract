@@ -155,10 +155,15 @@ share one span encoder, Wordgard's `encode` (`model/wordgard-doc.mjs`):
 
 - Browser edits encode the editor's document.
 - Page-body Markdown writes parse with the ProseMirror codec, and `pageSpans`
-  (`model/richtext.mjs`) re-encodes the adapter's spans with `encode`.
+  (`model/richtext-spans.mjs`) re-encodes the adapter's spans with `encode`.
 
 Comments and preserved-content migration still write the ProseMirror adapter's
 spans directly.
+
+The codec is split by job; `model/richtext.mjs` lists the modules and
+re-exports their public names. Only `model/pm-*.mjs` import ProseMirror
+packages, and `model/pm-boundary.test.mjs` fails when another production
+module does.
 
 Block types are declared once in `model/node-registry.mjs`: stored names,
 ProseMirror names, agent-facing names, settable attrs and insert operations.
@@ -236,7 +241,7 @@ references; it does not publish the Page or change asset access.
     record blank lines between items, so a list reads back loose only when an
     item holds a second block, which Markdown can't write tight.
   - Markdown writes store the spans the editor's own encoder writes
-    ([`pageSpans`](model/richtext.mjs) runs Wordgard's `encode`). The
+    ([`pageSpans`](model/richtext-spans.mjs) runs Wordgard's `encode`). The
     editor's first structural edit (Enter, a cross-block delete, a block
     paste, a list toggle) in an agent-written block stores the same spans;
     plain typing never rewrites a block.
@@ -2419,7 +2424,7 @@ whose words changed still covers them and is not reported. The agent caret
 covers the changed words.
 
 `replace_match` can take `replacement_markdown` instead of `replacement`: one
-line of inline Markdown ([`parseInlineMarkdown`](model/richtext.mjs)). The
+line of inline Markdown ([`parseInlineMarkdown`](model/markdown-import.mjs)). The
 plain text goes through the same word diff, then the replaced range gets
 exactly the written marks plus marks that covered the whole match; other
 known marks are cleared from it and unknown ones kept. Written formatting is

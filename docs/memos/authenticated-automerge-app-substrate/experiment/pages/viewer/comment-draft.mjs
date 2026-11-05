@@ -1,6 +1,6 @@
 import * as A from "@automerge/automerge/slim";
 import { selectionContext } from "../model/comments.mjs";
-import { isRich } from "../model/richtext.mjs";
+import { isRich } from "../model/richtext-format.mjs";
 
 const textField = (block) => (isRich(block) ? "richText" : "markdown");
 const changedPassage = () => Error("Selected passage was removed or replaced; select it again");

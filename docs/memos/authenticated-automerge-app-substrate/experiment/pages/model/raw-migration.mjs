@@ -24,9 +24,10 @@
 // Idempotent: a converted text holds no preserved marker, so running again
 // finds nothing and changes nothing.
 import * as A from "@automerge/automerge/slim";
-import { pmNodeToSpans } from "@automerge/prosemirror";
 import { updateSpansConfig } from "./marks.mjs";
-import { adapter, isRich, parseMarkdown } from "./richtext.mjs";
+import { isRich } from "./richtext-format.mjs";
+import { parseMarkdown } from "./markdown-import.mjs";
+import { adapter, pmNodeToSpans } from "./pm-adapter.mjs";
 import { documentFeatures, stampFeatures, stampSpans } from "./schema-features.mjs";
 
 export const PRESERVED_BLOCK = "pages-opaque";

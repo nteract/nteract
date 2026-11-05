@@ -61,7 +61,7 @@ import {
   COMMENT_MAX_LENGTH,
   COMMENT_MAX_BYTES,
 } from "../model/comment-content.mjs";
-import { isRich } from "../model/richtext.mjs";
+import { isRich } from "../model/richtext-format.mjs";
 import "./wordgard.css";
 
 const permissions = (editable) => [

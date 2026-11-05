@@ -5,7 +5,7 @@
 // marker type and what every layer needs to know about it:
 //
 // - `block`: the Automerge block marker type, as stored.
-// - `pm`: the ProseMirror node in model/richtext.mjs. `wrapper` names the list
+// - `pm`: the ProseMirror node in model/pm-adapter.mjs. `wrapper` names the list
 //   node a list item sits in; the wrapper has no marker of its own.
 // - `kind`:
 //     text            holds inline content (paragraph, heading)
