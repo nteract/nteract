@@ -847,8 +847,8 @@ loopback firewall resets connections from any other uid.
   isolates can disagree until then. Poll `list_pages` for `quota.limit` rather
   than expecting it at once.
 
-Never run `celld d1 execute` by hand against `pages-next-auth`. It also holds
-the auth and OIDC tables, and celld reports some errors misleadingly.
+For anything other than quota rules, use `scripts/d1.mjs` ([Querying
+D1](#querying-d1)).
 
 #### After a failed write
 
@@ -885,6 +885,38 @@ one line without the account:
 
 Expect it after a rollback build has written Catalog entries. Without a rollback,
 it points at a write path that skips the counts.
+
+## Querying D1
+
+The lab targets are test deployments for the team, so operators can read and
+write their D1 database by hand. `scripts/d1.mjs` sends SQL to the same fixed
+remote command `quota-rules.mjs` uses: it checks the celld version, refuses to
+run unless the database's cell already exists (celld creates an empty database
+for an id it hasn't seen), and runs `celld d1 execute` as the service user,
+through the database's live owner, in one transaction.
+
+```bash
+node scripts/d1.mjs --target pages "SELECT name FROM sqlite_master WHERE type = 'table'"
+node scripts/d1.mjs --target pages "SELECT owner, state, COUNT(*) AS n FROM pages_catalog_pages GROUP BY owner, state"
+node scripts/d1.mjs --target page10 --file query.sql
+echo "SELECT 1" | node scripts/d1.mjs --target pages -
+```
+
+`--target` is required, as for quota rules. Rows print one JSON object per line
+on stdout; the database, target and storage prefix print on stderr.
+
+- **The catalog tables are projections.** Each account's Catalog cell is
+  authoritative; the Worker writes the `pages_catalog_*` rows from it, so an
+  edit to a row can be overwritten. Change Pages through the Worker.
+- **Auth lives here too.** `pages-next-auth` holds the OIDC sessions and OAuth
+  grants, codes and tokens beside the catalog, quota and invitation tables.
+  Deleting rows there signs people out or revokes agents.
+- **A failed write may have committed.** celld can report an error for a write
+  that landed, as in [After a failed write](#after-a-failed-write). Read the
+  row back before running it again.
+
+The production Cloudflare deployment will not allow this; these steps are for
+the celld lab targets.
 
 ## Tunnel and DNS provisioning
 
