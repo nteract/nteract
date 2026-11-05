@@ -36,6 +36,19 @@ helper pins unchanged. Then review and authorize that workflow revision B in
 the controller before changing the PR caller pin. Neither the global installer
 nor any live deployment is changed by this helper.
 
+## Pages Status Polling
+
+After admission, `pages-client.mjs` polls `/pages-deployments/<id>` every five
+seconds with a fresh OIDC token. A poll whose OIDC or status request hits a
+network error, timeout, 408, 429 or 5xx is transient: the client logs
+`pages_deployment_status_retry` and waits 5, 10, 20, then 40 seconds (at most 60),
+or longer when `Retry-After` is canonical delta-seconds up to 3600. A running
+response resets the count. The fifth consecutive transient poll fails with the
+last failure's diagnostic, as does any wait that would cross the 48-minute
+deadline. Other 4xx responses, malformed bodies, identity or evidence mismatches
+and `failed` operations stay terminal on the first poll. Admission is a single
+POST and is never retried by the client.
+
 ## Pages Journal Coverage
 
 Pages deployment counts schema 1 distinguishes no verified HTTP samples
