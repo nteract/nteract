@@ -5,6 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
+import { Leaf } from "wordgard/doc";
 import markdownCorpus from "./markdown-corpus.json" with { type: "json" };
 import { createPageData, initializePage, orderedBlockIds } from "./page.mjs";
 import {
@@ -15,11 +16,26 @@ import {
   parseMarkdown,
   schema,
   setRichMarkdown,
+  setRichMarkdownKeepingNodes,
   textPath,
   unsupportedMarkdown,
 } from "./richtext.mjs";
-import { decode, encode } from "../viewer/wordgard-model.mjs";
+import {
+  Blockquote,
+  BulletList,
+  Heading,
+  ListItem,
+  OrderedList,
+  PagesDataframe,
+  Paragraph,
+  TaskChecked,
+  TaskList,
+  decode,
+  encode,
+  schema as wordgardSchema,
+} from "../viewer/wordgard-model.mjs";
 import { updateSpansConfig } from "./marks.mjs";
+import { stampSpans } from "./schema-features.mjs";
 import { richDoc } from "./richtext.mjs";
 
 test("lists read back tight with - bullets, loose only when an item holds several blocks", () => {
@@ -271,6 +287,58 @@ const storedRead = (spans) => {
   doc = A.change(doc, (draft) => A.updateSpans(draft, textPath(id), spans, updateSpansConfig));
   return exportMarkdown(richDoc(doc.blocks[id]));
 };
+
+test("block-first tasks keep quote delimiters on their blank lines", () => {
+  for (const checked of [false, true]) {
+    for (const depth of [1, 2]) {
+      let quote = Blockquote.create([
+        TaskList.create([
+          ListItem.withMarks([TaskChecked.of(checked)]).create([
+            Heading.of(1).create([Leaf.text("a")]),
+          ]),
+        ]),
+        Paragraph.create([Leaf.text("a")]),
+      ]);
+      for (let level = 1; level < depth; level++) quote = Blockquote.create([quote]);
+      const tree = wordgardSchema.doc([quote]);
+      const markdown = storedRead(encode(tree));
+      assert.deepEqual(
+        decode(pageSpans(parseAgentMarkdown(markdown))).doc.toJSON(),
+        tree.toJSON(),
+        markdown,
+      );
+      assert.equal(storedRead(pageSpans(parseAgentMarkdown(markdown))), markdown);
+    }
+  }
+});
+
+test("a dataframe stays a standalone link before a nested block-first list", () => {
+  const pageId = "55555555-5555-4555-8555-555555555555";
+  const src = `/api/pages/${pageId}/assets/${"b".repeat(64)}`;
+  for (const list of [BulletList, OrderedList.of(1)]) {
+    const tree = wordgardSchema.doc([
+      TaskList.create([
+        ListItem.withMarks([TaskChecked.of(false)]).create([
+          PagesDataframe.of({ src, media_type: "application/vnd.apache.parquet" }),
+          list.create([ListItem.create([Heading.of(1).create([Leaf.text("a")])])]),
+        ]),
+      ]),
+    ]);
+    let doc = A.from(createPageData({ pageId, title: "Projection" }));
+    const id = orderedBlockIds(doc)[0];
+    const spans = encode(tree);
+    doc = A.change(doc, (draft) => {
+      A.updateSpans(draft, textPath(id), spans, updateSpansConfig);
+      stampSpans(draft, spans);
+    });
+    const markdown = exportMarkdown(richDoc(doc.blocks[id]));
+    const after = A.change(A.clone(doc), (draft) =>
+      setRichMarkdownKeepingNodes(draft, id, markdown),
+    );
+    assert.deepEqual(decode(A.spans(after, textPath(id))).doc.toJSON(), tree.toJSON(), markdown);
+    assert.deepEqual(A.getHeads(after), A.getHeads(doc), markdown);
+  }
+});
 
 test("the editor's encoder stores the same content as the adapter for every corpus case", () => {
   for (const { id: caseId, markdown } of markdownCorpus.cases)

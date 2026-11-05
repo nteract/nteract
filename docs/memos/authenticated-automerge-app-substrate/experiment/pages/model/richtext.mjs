@@ -730,7 +730,12 @@ const cannotInterrupt = (list) => {
   return !text;
 };
 function renderList(state, node, delim, firstDelim) {
-  if (state.inTightList && state.closed?.type.name === "paragraph" && cannotInterrupt(node))
+  // A dataframe's read-back link is also a Markdown paragraph.
+  if (
+    state.inTightList &&
+    ["paragraph", "dataframe"].includes(state.closed?.type.name) &&
+    cannotInterrupt(node)
+  )
     state.flushClose(2);
   const tight = state.options.tightLists;
   let loose = false;
@@ -785,8 +790,11 @@ const serializer = new MarkdownSerializer(
     // a blank line follows it; otherwise a line that can't interrupt a
     // paragraph, such as a dataframe's, would join the box's text.
     list_item(state, node, parent, index) {
-      if (node.firstChild && node.firstChild.type !== schema.nodes.paragraph)
-        state.write(parent.type === schema.nodes.task_list ? "\n\n" : "\n");
+      if (node.firstChild && node.firstChild.type !== schema.nodes.paragraph) {
+        // flushClose keeps quote delimiters on blank lines without trailing spaces.
+        state.closeBlock(node);
+        state.flushClose(parent.type === schema.nodes.task_list ? 2 : 1);
+      }
       defaultMarkdownSerializer.nodes.list_item(state, node, parent, index);
     },
     bullet_list(state, node) {

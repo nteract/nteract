@@ -50,8 +50,14 @@ export function nodeIds(doc, blockId, tree = richDoc(doc.blocks[blockId], doc.pa
   // One pass over the binding's indexed traversal. A node's opening marker is
   // the first non-embed block marker inside its ProseMirror range.
   let index = 0;
+  let leafClosures = 0;
   for (const state of eventsWithIndexChanges(traverseSpans(adapter, spans))) {
-    while (index < ranges.length && state.after.pmIdx >= ranges[index].end) index++;
+    // The binding can emit open/close tags for leaves such as rules. A PM
+    // leaf occupies one position, so its closing tag adds no width.
+    if (state.event.type === "closeTag" && adapter.schema.nodes[state.event.tag].isLeaf)
+      leafClosures++;
+    while (index < ranges.length && state.after.pmIdx - leafClosures >= ranges[index].end)
+      index++;
     const range = ranges[index];
     if (!range || range.at !== null) continue;
     if (state.event.type !== "block" || state.event.block.isEmbed) continue;
