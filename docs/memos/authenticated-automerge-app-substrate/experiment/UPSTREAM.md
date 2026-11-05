@@ -1,6 +1,6 @@
 # Upstream integration lane
 
-The maintained [integration fixture](README.md) and [Pages experiment](pages/README.md)
+The maintained [integration fixture](README.md) and [Pages application](pages/README.md)
 build the two packages at Repo revision
 `afec0444191a5a662e065f24193bef58ab07122a`, with Automerge `3.5.0` and
 Subduction `0.26.0`. It requires Node >=22.13, Git, and npm.

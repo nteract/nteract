@@ -20,17 +20,33 @@ task needs. Preserve required fields in structured outputs and record templates.
 - Discover files from the checkout. Keep paths in this guide only when they are
   canonical entry points; do not maintain subsystem file inventories here.
 
-## What nteract is
+## Products and shared projects
 
-nteract is a local-first notebook application. Notebook content is stored in
-Automerge documents. The runtimed daemon owns kernels, execution, outputs, and
-save/recovery behavior. Desktop, cloud, and programmatic clients use the same
-notebook and runtime protocols.
+This monorepo contains nteract notebooks, Pages, and reusable libraries and
+runtime services. People and AI agents work on the same live Automerge content
+in both products. Name the product and its state owner when describing a change.
 
-Use the project names when they matter: `NotebookDoc` for notebook content,
-`RuntimeStateDoc` for kernel and execution state, `CommsDoc` for widget state,
-and `CommentsDoc` for comments. Describe concrete mechanisms rather than
-inventing product labels.
+- **nteract notebooks** are for code execution, data exploration, and rich
+  outputs, with desktop and hosted browser apps. The `runtimed` daemon owns
+  kernels, execution, outputs, and save/recovery behavior. Desktop, cloud, and
+  programmatic clients use the same notebook and runtime protocols.
+- **Pages** is a product for rich collaborative documents: prose, images,
+  diagrams, tables, task lists, interactive dataframes, and passage comments.
+  It is notebook-like, with its own editor, document model, host, HTTP API, and
+  MCP server. Pages currently displays code; notebooks execute it. Projects
+  organize Pages. Its source remains under the original infrastructure
+  experiment directory; start with the [Pages guide](docs/memos/authenticated-automerge-app-substrate/experiment/pages/README.md)
+  and [scoped instructions](docs/memos/authenticated-automerge-app-substrate/experiment/pages/AGENTS.md).
+- **Sift** is the data explorer and table UI used by notebooks and Pages, also
+  available as a standalone library. Start with [its guide](packages/sift/README.md).
+- **Runtime and client libraries** support notebook execution and programmatic
+  access. **Elements** provides shared UI fixtures and design references.
+
+For notebooks, use `NotebookDoc` for content, `RuntimeStateDoc` for kernel and
+execution state, `CommsDoc` for widgets, and `CommentsDoc` for comments. Pages
+has its own content and comments documents; notebook schema, wire protocol,
+and daemon rules do not automatically apply to them. Describe the implemented
+boundary before proposing shared infrastructure.
 
 ## Working in the repository
 
@@ -39,9 +55,9 @@ inventing product labels.
 - For frontend or product-surface work, use the `frontend-dev` skill and follow
   the nearest subsystem guide. Shared notebook UI should behave the same in
   desktop and cloud unless the host difference is intentional.
-- Automerge documents and daemon-owned runtime documents hold shared notebook
-  state. React state is for local UI state, not a second copy of notebook or
-  runtime state.
+- Automerge documents hold shared content; runtime and host services own their
+  respective execution, authorization, and catalog state. React state is for
+  local UI state, not a second copy of shared document or runtime state.
 - Use `docs/README.md` to find maintained design and operations documents.
   Keep temporary investigation notes in `.context/`. Do not add a permanent
   document for notes that belong only to the current patch or PR.
@@ -58,10 +74,14 @@ global toolchain defaults alone. See `CONTRIBUTING.md` for platform prerequisite
 Only report validation blocked after attempting recovery, with the failing
 command, error, and checks left unverified.
 
-Use `nteract-dev` for development against this worktree. The `nteract` and
-`nteract-nightly` servers are for inspecting installed builds, not source
-changes. If `nteract-dev` is unavailable, use `cargo xtask`; do not substitute
-an installed notebook server. Full server details are in the scoped MCP rules.
+For notebook and runtime work, use `nteract-dev` against this worktree. The
+`nteract` and `nteract-nightly` servers are for inspecting installed builds, not
+source changes. If `nteract-dev` is unavailable, use `cargo xtask`; do not
+substitute an installed notebook server. Full server details are in the scoped
+MCP rules.
+
+Pages uses its own npm workspace and local celld server. Follow its scoped
+guide for setup and validation; `cargo xtask dev` starts the notebook app.
 
 For desktop source work, use `cargo xtask dev` for the worktree-local daemon
 and hot-reload app. It stops the daemon it started when the app exits. Use

@@ -1,7 +1,12 @@
 # celld as a Hosted Room Substrate
 
-**Status:** Proposal. Deployment status as of 2026-10-29. Not an accepted
-deployment decision. celld hosts managed
+**Status:** Proposal. The evidence below records deployments as of 2026-10-29.
+For current Pages targets, see the [Pages deployment guide](authenticated-automerge-app-substrate/experiment/pages/DEPLOYMENT.md).
+Pages is now a product in its own right. The historical Page8 checks below
+remain evidence for that release; the infrastructure promotion gates still
+need qualification.
+
+At the time of this evaluation, celld hosted managed
 notebook-cloud previews and the Pages experiment's Page8 QA service. Neither
 is an accepted production substrate; the promotion gates below are unmet.
 
@@ -21,17 +26,17 @@ Related:
   lists where each hosted deployment runs today.
 - [Authenticated Automerge application infrastructure](authenticated-automerge-app-substrate/README.md)
   explores reusable synchronization and account authorization independently
-  of the host runtime choice. Its [Pages experiment](authenticated-automerge-app-substrate/experiment/pages/DEPLOYMENT.md)
-  runs on celld as an isolated QA service. That deployment does not change
+  of the host runtime choice. The [Pages product](authenticated-automerge-app-substrate/experiment/pages/DEPLOYMENT.md)
+  uses that infrastructure and runs on celld. Its deployment does not change
   the promotion gates below.
 - [AWS Rust Room Host](aws-rust-room-host.md) — a from-scratch Rust
   reimplementation of the room host on Postgres/S3.
 - `~/projects/sandbox/celld-lab/{README.md,NOTES-celld.md}` — the proof's
   terraform, deploy scripts, and verified field notes (not in this repo).
 
-## celld deployments today
+## celld deployments at the evaluation date
 
-celld hosts notebook-cloud previews and the Page8 QA service.
+At that date, celld hosted notebook-cloud previews and the Page8 QA service.
 
 | Deployment | What runs | Runtime and storage | Source |
 |------------|-----------|---------------------|--------|

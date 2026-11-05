@@ -1,10 +1,76 @@
 # nteract
 
-nteract is a local-first notebook environment where humans, kernels, and AI agents can work with the same live document. It ships as a native desktop app with realtime sync across windows and programmatic clients, and managed local environments.
+nteract builds tools for thinking with code, data, and documents. This monorepo
+is home to **nteract notebooks**, **Pages**, and the libraries and runtime that
+support them. People and AI agents collaborate on live Automerge documents in
+both products.
 
-Built on [jupyter-zmq-client](https://crates.io/crates/jupyter-zmq-client) and [jupyter-protocol](https://crates.io/crates/jupyter-protocol).
+## Products
+
+### nteract notebooks
+
+A local-first notebook environment for writing and running code, exploring data,
+and working with rich outputs. The native desktop app and hosted browser app
+share notebook UI and document protocols. The `runtimed` daemon manages kernels,
+environments, execution, and outputs; desktop, CLI, MCP, and programmatic clients
+work with the same live notebook.
+
+[![A nteract notebook with an outline of headings and output previews beside Markdown prose and Python code](https://img.runt.run/2026/06/2.6-outline-v3.png)](https://nteract.io/changelog/2.6)
+
+*Navigate a computational story through its headings and outputs. Screenshot
+from the [nteract 2.6 release notes](https://nteract.io/changelog/2.6), which also
+include video demos.*
+
+Start with the [desktop installation](#install), [development guide](#development),
+or [hosted notebook guide](apps/notebook-cloud/README.md).
+
+### Pages
+
+Pages is a notebook-like space for writing, thinking, and exploring together.
+Mix rich text, images, diagrams, editable tables, task lists, and interactive
+dataframes in one document. Sketch an idea, explore a dataset, leave a comment
+on a passage, and invite an agent to help develop it. Organize related Pages
+into Projects and share individual Pages with collaborators. It should be as
+fun to explore an idea as it is to write it down.
+
+Pages has its own browser editor, document model, HTTP API, and MCP server.
+People edit rich content directly; agents use Markdown and structured operations
+on that same content. Pages displays code and diagrams; kernel execution lives
+in notebooks.
+
+Start with the [Pages guide](docs/memos/authenticated-automerge-app-substrate/experiment/pages/README.md)
+for features, local development, and tests, or the
+[deployment guide](docs/memos/authenticated-automerge-app-substrate/experiment/pages/DEPLOYMENT.md)
+for release targets. Its source still lives under the original infrastructure
+experiment directory; Pages is a product in its own right.
+
+## What's in here
+
+| Project | Purpose |
+|---------|---------|
+| nteract notebooks | Desktop and hosted notebooks for code execution and data exploration |
+| [Pages](docs/memos/authenticated-automerge-app-substrate/experiment/pages/README.md) | Rich collaborative documents for people and agents |
+| [Sift](packages/sift/README.md) | Interactive data exploration and table rendering, used in notebooks and Pages and available as a standalone library |
+| `runtimed` | Notebook runtime daemon for environment pools, sync, kernel execution, and outputs |
+| `nteract` command | CLI for notebooks, workstations, runtime operations, and supervised notebook MCP |
+| Client libraries | TypeScript, Node, and Python access to notebook documents and the daemon |
+| Elements | Shared UI catalog and interaction fixtures |
+
+<details>
+<summary>See Sift's interactive data exploration</summary>
+
+![Sift filtering a Spotify tracks dataset with histograms and category summaries above the table](https://img.runt.run/sift/crossfilter-demo.gif)
+
+*Brush a column's distribution to filter the table and update the other
+summaries. Sift powers dataframe exploration in notebooks and Pages; see the
+[Sift guide](packages/sift/README.md) for standalone use and embedding.*
+
+</details>
 
 ## Install
+
+These instructions install nteract Desktop and its notebook tools. Pages has a
+separate [local setup](docs/memos/authenticated-automerge-app-substrate/experiment/pages/README.md#run-locally).
 
 Download the latest release from [GitHub Releases](https://github.com/nteract/nteract/releases).
 
@@ -30,31 +96,25 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash -s -- --cli
 
 Use `nteract` for notebook, workstation, and MCP operations. CLI-only installation does not configure or start a local daemon service. The desktop app bundles the same CLI. Existing `runt`, `runt-nightly`, and `nteract-mcp` commands remain compatible. See the [CLI guide](docs/runbooks/cli.md) for runtime startup, channel selection, and scripting behavior.
 
-## What's in here
-
-| Component | Description |
-|-----------|-------------|
-| nteract Desktop | Notebook editor (Tauri + React) |
-| `runtimed` | Background daemon for environment pools, notebook sync, and kernel execution |
-| `nteract` command | CLI for notebooks, workstations, runtime operations, and supervised MCP |
-| `runtimed` (Python) | Python bindings for the daemon (ships with the app) |
-
-## Experiments
-
-[Pages](docs/memos/authenticated-automerge-app-substrate/experiment/pages/README.md)
-is an actively maintained experiment in collaborative documents for people and
-agents. Its browser editor, HTTP API, and MCP tools work on the same Automerge
-document. It runs separately from the notebook app; its APIs and storage contracts
-are still evolving. The experiment README covers local setup, tests, and the
-current limitations.
-
 ## Runtime model
 
-nteract stores notebook content in an Automerge-backed document and keeps live kernel state in an explicit runtime state document. The daemon owns kernel processes, execution queues, output capture, and the write path for execution results.
+nteract notebooks store content in `NotebookDoc` and live kernel and execution
+state in `RuntimeStateDoc`. `CommsDoc` holds widget state and `CommentsDoc` holds
+notebook comments. The daemon owns kernel processes, execution queues, output
+capture, and the write path for execution results.
 
 Execution requests name a synced `cell_id`; the daemon reads the cell source from the shared document, records queue and status changes in runtime state, and writes outputs through the same model. The desktop app, CLI, MCP server, and agent clients use that path, so programmatic control observes the same notebook state a human is editing.
 
+Pages stores native rich text in its own Automerge document, with a separate
+comments document. Its host owns authorization and durable receipts. It has its
+own sync and persistence stack, described in the
+[Pages guide](docs/memos/authenticated-automerge-app-substrate/experiment/pages/README.md#document-and-editor).
+
 ## MCP Server
+
+Both products expose MCP tools. Pages serves its own
+[HTTP MCP endpoint](docs/memos/authenticated-automerge-app-substrate/experiment/pages/README.md#http-and-mcp-tools)
+for document, Project, and comment operations. The setup below is for notebooks.
 
 Run `nteract mcp` to connect AI assistants to notebooks. Local notebooks use the runtime daemon; direct hosted connections use WebSockets without a local daemon. Agents can run code, read and write cells, manage dependencies, and collaborate with humans on the same live notebook.
 
@@ -207,11 +267,11 @@ nteract/nteract
 │   ├── elements/          # Elements design system catalog
 │   ├── mcp-app/           # MCP widget dev app
 │   └── renderer-test/     # Isolated renderer test harness
-├── packages/               # Shared npm packages
+├── packages/               # Client and UI libraries
 │   ├── notebook-host/     # Notebook host shell
-│   ├── runtimed/          # Node/NAPI daemon client
+│   ├── runtimed/          # TypeScript notebook client and state stores
 │   ├── runtimed-node/     # Node bindings for daemon
-│   ├── sift/              # Sift visualization renderer
+│   ├── sift/              # Standalone data explorer and embeddable table UI
 │   └── odometer/          # Odometer component
 ├── crates/                 # Rust code
 │   ├── runt/              # Shared CLI; nteract-cli and legacy runt entrypoints
@@ -241,9 +301,18 @@ nteract/nteract
 │   └── safari-timeline/   # Safari timeline parser
 ├── plugins/                # Agent plugin distribution
 │   └── nteract/           # Codex plugin package
+└── docs/                   # Design, decisions, and operations
+    └── memos/authenticated-automerge-app-substrate/experiment/
+        └── pages/          # Pages application (historical source location)
 ```
 
 ## Development
+
+Choose the workflow for the project you're changing:
+
+- **Notebooks and runtime:** use the prerequisites and `cargo xtask` commands below.
+- **Pages:** use its [npm workspace setup and tests](docs/memos/authenticated-automerge-app-substrate/experiment/pages/README.md#run-locally).
+- **Sift:** use its [standalone development guide](packages/sift/README.md#quick-start).
 
 ### Prerequisites
 
@@ -345,8 +414,11 @@ The underlying Rust libraries are published to crates.io:
 
 ## Contributing
 
-See `AGENTS.md` for the subsystem map and development guidance. Key entry points:
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contributor workflows,
+[AGENTS.md](AGENTS.md) for agent guidance, and [docs/README.md](docs/README.md)
+for the documentation map. Key entry points:
 
+- [Pages contributor guidance](docs/memos/authenticated-automerge-app-substrate/experiment/pages/AGENTS.md): document model, editor, host, and tests
 - `crates/runtimed/AGENTS.md`: architecture, daemon, state ownership
 - `apps/notebook/src/AGENTS.md`: frontend architecture
 - `crates/notebook-wire/AGENTS.md`: wire protocol

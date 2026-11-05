@@ -1,18 +1,19 @@
 # Authenticated Automerge infrastructure for applications
 
-**Status:** Research with an actively maintained application experiment.
-[Pages](experiment/pages/README.md) exercises the editor and authenticated backend
-in a separately deployable celld service. Its README describes current behavior,
-development, testing, and deployment. The Page8 QA service runs on celld 0.6.3
-on a lab host; that is an experiment deployment, not an accepted production
-substrate. The [celld memo](../celld-hosted-room-substrate.md) tracks its unmet
-promotion gates. Production notebook adoption remains undecided.
+**Status:** Infrastructure research, used by the Pages product.
+[Pages](experiment/pages/README.md) grew from this work into a rich collaborative
+document application with its own editor, model, agent tools, and deployment.
+Its source remains nested here; start with its README for product behavior,
+development, and testing, and its [deployment guide](experiment/pages/DEPLOYMENT.md)
+for current celld targets. The [celld memo](../celld-hosted-room-substrate.md)
+tracks unmet infrastructure promotion gates. Production notebook adoption
+remains undecided.
 
 We want another application to reuse document loading, synchronization,
 persistence, presence, and authenticated attribution without rebuilding our
 notebook room host. The initial integration fixture connected upstream Automerge
-infrastructure to our OIDC and API-key authority. Pages extends that work into an
-application where we can test which existing mechanisms it can replace.
+infrastructure to our OIDC and API-key authority. Pages extends that work into a
+product that also exercises the shared infrastructure and informs that research.
 
 This memo preserves the original source evaluation and notebook-adoption
 questions. The [maintained integration fixture](experiment/README.md) and
