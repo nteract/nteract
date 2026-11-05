@@ -31,7 +31,7 @@ export class PlainHostStorage {
   async sync() {}
 }
 
-/** Test/benchmark host. PlainSync itself owns the Repo/backend/trusted framePipe wiring. */
+/** Test/benchmark host using the production PlainSync adapter. */
 export async function plainHostFixture({
   documentId,
   bytes,

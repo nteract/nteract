@@ -4,6 +4,7 @@ import * as A from "@automerge/automerge";
 import { changesContent } from "../worker/content-activity.mjs";
 import { concat, DocStore, MemoryByteStore } from "./doc-store.mjs";
 import { browser, host, newId, raw, until, urlOf } from "./test-helpers.mjs";
+import { Refusal } from "./host.mjs";
 
 const actor = "ab".repeat(8) + "cd".repeat(8);
 const tick = () => new Promise((resolve) => setImmediate(resolve));
@@ -325,6 +326,39 @@ test("ambiguous append reload repairs durable without rewriting recorded bytes o
   assert.deepEqual(headEvents[0], { id, heads: events[0].heads });
   assert.ok(changesContent(events[0].patches));
 });
+
+for (const recovery of ["mutate", "applyChanges", "durable"])
+  test(`ambiguous append retains the committed root until ${recovery} reloads and publishes once`, async (t) => {
+    const { h, bytes, id } = await fixture(t);
+    const before = await h.document(id);
+    const events = [];
+    h.on("heads-changed", (event) => events.push(event));
+    const changes = recorded(before, (d) => {
+      d.title = "Committed after all";
+    });
+    const save = bytes.saveMany.bind(bytes);
+    bytes.saveMany = async (entries) => {
+      await save(entries);
+      throw Error("lost response");
+    };
+    await assert.rejects(h.applyChanges(id, changes), /lost response/);
+    assert.equal(h.doc(id), before);
+    assert.equal(h.doc(id).title, "Before");
+    assert.equal(events.length, 0);
+    const seq = h.store.manifest(id).seq;
+    bytes.saveMany = save;
+    if (recovery === "mutate")
+      await h.mutate(id, (d) => {
+        assert.equal(d.title, "Committed after all");
+      });
+    else if (recovery === "applyChanges") await h.applyChanges(id, changes);
+    else await h.durable(id);
+    assert.equal(h.doc(id).title, "Committed after all");
+    assert.equal(events.length, 1);
+    await h.durable(id);
+    assert.equal(events.length, 1);
+    assert.equal(h.store.manifest(id).seq, seq);
+  });
 
 test("host mutation fans out to connected browsers", async (t) => {
   const { h, id } = await fixture(t);
@@ -811,7 +845,99 @@ for (const api of ["mutate", "applyChanges"])
     A.free(saved);
   });
 
-test("string storage rejection is wrapped, invalidates live state, and retains replayable bytes", async (t) => {
+test("pending bytes already admitted are not re-gated when policy changes", async (t) => {
+  const { h, bytes, id } = await fixture(t);
+  let fenced = false;
+  const contexts = [];
+  h.policy.admitTrusted = (_doc, _live, _fresh, preview, context) => {
+    contexts.push(context.fenceExempt === true);
+    if (fenced && !context.fenceExempt) throw Error("fenced");
+    return preview;
+  };
+  const before = await h.document(id);
+  const ordinary = recorded(before, (d) => {
+    d.title = "Ordinary";
+  });
+  bytes.failNext();
+  await assert.rejects(h.applyChanges(id, ordinary), { queued: true });
+  fenced = true;
+  const internalBase = A.clone(before, { actor: "ef".repeat(16) });
+  const internalDoc = A.change(internalBase, (d) => {
+    d.future.push("migration");
+  });
+  const internal = A.getChanges(before, internalDoc);
+  A.free(internalDoc);
+  await h.durable(id);
+  assert.deepEqual(contexts, [false]);
+  assert.equal(h.doc(id).title, "Ordinary");
+  bytes.failNext();
+  await assert.rejects(h.applyChanges(id, internal, { fenceExempt: true }), { queued: true });
+  await h.durable(id);
+  assert.deepEqual(contexts, [false, true]);
+  assert.deepEqual(h.doc(id).future, ["migration"]);
+});
+
+test("a refusal only during retry retires pending bytes and durable recovers", async (t) => {
+  const { h, bytes, id } = await fixture(t);
+  const heads = A.getHeads(await h.document(id));
+  bytes.failNext();
+  await assert.rejects(
+    h.mutate(id, (d) => {
+      d.title = "Never committed";
+    }),
+    { queued: true },
+  );
+  const append = h.store.append.bind(h.store);
+  h.store.append = async () => {
+    throw new Refusal("history_capacity", "Retry refused");
+  };
+  await assert.rejects(h.durable(id), { code: "pending_retry_refused", queued: false });
+  h.store.append = append;
+  await h.durable(id);
+  assert.deepEqual(A.getHeads(h.doc(id)), heads);
+  await h.mutate(id, (d) => {
+    d.future.push("usable");
+  });
+  assert.equal(h.doc(id).title, "Before");
+  assert.deepEqual(h.doc(id).future, ["usable"]);
+});
+
+test("trusted admission receives conn and origin, and known relays bypass fences", async (t) => {
+  const { h, id } = await fixture(t);
+  const seen = [];
+  let fenced = false;
+  h.policy.admitTrusted = (_doc, _live, _fresh, preview, _context, conn, origin) => {
+    assert.equal(conn.trusted, true);
+    seen.push(origin);
+    if (fenced) throw new Refusal("fenced", "No new writes");
+    return preview;
+  };
+  await h.mutate(id, (d) => {
+    d.title = "Host";
+  });
+  const changes = recorded(h.doc(id), (d) => {
+    d.future.push("recorded");
+  });
+  await h.applyChanges(id, changes);
+  const bridge = raw(h, { trusted: true });
+  t.after(() => bridge.link.client.close());
+  const relay = A.change(A.clone(h.doc(id), { actor: "ed".repeat(16) }), (d) => {
+    d.future.push("bridge");
+  });
+  const fresh = A.getChanges(h.doc(id), relay);
+  A.free(relay);
+  bridge.link.client.send({ t: "sync", doc: id, m: syncMessage(fresh), r: 1 });
+  await until(() => bridge.frames.some((frame) => frame.r === 1));
+  assert.deepEqual(seen, ["mutate", "replay", "bridge"]);
+  fenced = true;
+  bridge.link.client.send({ t: "sync", doc: id, m: syncMessage(fresh), r: 2 });
+  await until(() => bridge.frames.some((frame) => frame.r === 2));
+  assert.equal(bridge.frames.find((frame) => frame.r === 2).t, "sync");
+  await h.applyChanges(id, changes);
+  assert.deepEqual(seen, ["mutate", "replay", "bridge"]);
+});
+
+test("string storage rejection is wrapped, retains the committed root and replayable bytes", async (t) => {
   const { h, bytes, id } = await fixture(t);
   const save = bytes.saveMany.bind(bytes);
   bytes.saveMany = async () => {
@@ -834,7 +960,7 @@ test("string storage rejection is wrapped, invalidates live state, and retains r
       return true;
     },
   );
-  assert.equal(h.doc(id), null, "failed append invalidates cached live history");
+  assert.equal(h.doc(id).title, "Before", "failed append preserves committed reads");
   bytes.saveMany = save;
   await h.durable(id);
   assert.equal(h.doc(id).title, "Recovered");
