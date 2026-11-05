@@ -346,7 +346,9 @@ Shape 1, which builds before #4853 wrote, kept the content as a Page: a root
 entry flagged `home: true` whose children were the Project's top level, and
 `space/<id>.home_page_id` naming it. Nothing in this build reads or checks for
 that shape. An owner-run one-shot migration converted production's only account
-with Projects on 2026-11-05; no other production account held a Project. The
+with Projects on 2026-11-05; no other production account held a Project. On
+page10, which deploys main automatically, the same migration had already run:
+every Project there carries `document_id`. The
 one other trace is D1 migration 4's historical `CREATE TABLE`, which migration 8
 rebuilds without the column.
 
@@ -631,12 +633,20 @@ There is no repair tool. To repair a Page:
 
 ### Stored forms this build refuses
 
-Every production Page was rewritten to the current stored forms on 2026-11-05:
-rich-text blocks, comments in their own document, `comments_doc` in every host
-record. This build doesn't read the earlier forms. A Page that still holds one
-answers `409 stored_form_unsupported` on the read or write that meets it, and
-a host record without `comments_doc` fails at boot. Don't restore a backup
-taken before that date onto a target running this build.
+Every Page on pages and page10 was rewritten to the current stored forms on
+2026-11-05: rich-text blocks, comments in their own document, `comments_doc`
+in every live or trashed host record. On pages, the verifying dry run at 19:27
+UTC reported 137 Pages unchanged, 1 deleted, 0 writes pending and 0 problems,
+with `comments_doc` on every host record. On page10, the run from 22:24 to
+22:27 UTC reported 86 unchanged, 19 deleted (their tombstones finished), 0
+problems, no preserved blocks and no pending comments move.
+
+This build doesn't read the earlier forms. A Page that still holds one answers
+`409 stored_form_unsupported` on the read or write that meets it, and a live or
+trashed Page's host record without `comments_doc` fails at boot. A deleted
+Page's record needs none: it names no comments document and answers as deleted.
+page10 holds one such record (59361b99-fc53-40ec-a733-a74a4db24630). Don't
+restore a backup taken before 2026-11-05 onto a target running this build.
 
 ### Plain sync on pages.runtimed.run
 

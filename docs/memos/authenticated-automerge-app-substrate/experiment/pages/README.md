@@ -1312,7 +1312,8 @@ checked against the signer (see [Comments document](#comments-document)).
 A Page's comments live in their own Automerge document, owned by the same Page
 Durable Object. The Page record names it by a deployment-relative id,
 `comments_doc: "<uuid>"`, derived from the Page ID when the Page is created.
-Every record carries it; a record without it fails closed at boot. There is no hostname and no
+A live or trashed Page's record without it fails closed at boot; a deleted
+Page's record may lack it and serves no comments. There is no hostname and no
 origin: comments are platform data, not part of the Page. The browser syncs it
 on the same socket as the Page; `/api/connect` returns `commentsDocumentId`.
 Trash, restore, permanent deletion and the purge preview cover both documents.

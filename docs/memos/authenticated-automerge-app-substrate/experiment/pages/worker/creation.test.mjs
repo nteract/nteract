@@ -107,7 +107,9 @@ for (const fault of ["metadata", "flush", "final-sync"]) {
 
 test("restart does not replay an old creation over a persisted deletion", async (t) => {
   const storage = new Storage();
-  const metadata = { pageId, documentId: "unused", comments_doc: crypto.randomUUID(), deleted: true };
+  // A deleted Page's record from an earlier build has no comments_doc; it
+  // still boots and answers as deleted.
+  const metadata = { pageId, documentId: "unused", deleted: true };
   await storage.put("host/document", metadata);
   await storage.put("host/creation", {
     metadata: { ...metadata, deleted: false },

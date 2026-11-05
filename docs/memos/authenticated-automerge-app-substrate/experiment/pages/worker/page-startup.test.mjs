@@ -88,3 +88,17 @@ test("a host record names its comments document; one without the name fails clos
   for (const record of [{ pageId: "p" }, { pageId: "p", comments_doc: 3 }])
     assert.throws(() => recordCommentsUuid(record), { code: "stored_form_unsupported" });
 });
+
+test("a deleted Page's record without comments_doc names none, and answers from the record", () => {
+  const tombstone = { pageId: "p", documentId: "d", deleted: true };
+  const purged = { ...tombstone, purged: { purged_at: "2026-11-05T00:00:00.000Z" } };
+  for (const record of [tombstone, purged]) {
+    assert.equal(recordCommentsUuid(record), undefined);
+    assert.equal(recordAnswerable(record), true);
+    assert.equal(startupOf(record, undefined), "lazy");
+  }
+  // A trashed Page still needs its comments document.
+  const trashed = { pageId: "p", documentId: "d", deleted: true, trash: {} };
+  assert.throws(() => recordCommentsUuid(trashed), { code: "stored_form_unsupported" });
+  assert.equal(recordAnswerable(trashed), false);
+});
