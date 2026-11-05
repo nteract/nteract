@@ -2575,3 +2575,55 @@ test("a timeout does not name a rollback to a release without the plain format c
   assert.doesNotMatch(message, /Roll back with/);
   assert.match(message, /plain_storage_formats/);
 });
+
+// ONE-SHOT MIGRATION: delete with worker/content-migration.mjs.
+test("lab installs carry a root-only operator secret for the content migration", (t) => {
+  for (const target of ["pages", "page10"]) {
+    const f = installFixture(t, { target });
+    f.execute();
+    const secret = f.read(f.configDir + "/operator-secret").trim();
+    assert.match(secret, /^[A-Za-z0-9_-]{64}$/);
+    const config = JSON.parse(f.read(f.release + "/wrangler.json"));
+    assert.equal(config.vars.PAGES_OPERATOR_SECRET, secret);
+    assert.equal(fs.statSync(f.local(f.configDir + "/operator-secret")).mode & 0o777, 0o600);
+    // A later install keeps the same secret.
+    const again = installFixture(t, { target });
+    again.write(again.configDir + "/operator-secret", "kept-operator-secret-" + "k".repeat(43));
+    again.execute();
+    assert.equal(
+      JSON.parse(again.read(again.release + "/wrangler.json")).vars.PAGES_OPERATOR_SECRET,
+      "kept-operator-secret-" + "k".repeat(43),
+    );
+  }
+  // A profile without the flag gets no secret.
+  const other = installFixture(t, {
+    target: "page10",
+    profile: { ...profiles.deploymentProfile("page10"), operatorMigration: undefined },
+  });
+  other.execute();
+  const config = JSON.parse(other.read(other.release + "/wrangler.json"));
+  assert.equal(config.vars.PAGES_OPERATOR_SECRET, undefined);
+  assert.equal(fs.existsSync(other.local(other.configDir + "/operator-secret")), false);
+});
+
+test("serving targets shed above 2.5 GB and older targets keep their shipped limits", () => {
+  for (const target of ["page10", "pages"])
+    assert.deepEqual(profiles.unitMemory(profiles.deploymentProfile(target)), {
+      maxRssMb: 2560,
+      memoryMax: "4G",
+    });
+  assert.deepEqual(
+    profiles.unitMemory(profiles.deploymentProfile("page9")),
+    profiles.DEFAULT_MEMORY,
+  );
+  assert.deepEqual(profiles.DEFAULT_MEMORY, { maxRssMb: 768, memoryMax: "1G" });
+  for (const memory of [
+    { maxRssMb: 100, memoryMax: "4G" },
+    { maxRssMb: 2560.5, memoryMax: "4G" },
+    { maxRssMb: 2560, memoryMax: "4096M" },
+    { maxRssMb: 2560, memoryMax: "3G" },
+    { maxRssMb: 2560, memoryMax: "0G" },
+    { maxRssMb: 2560 },
+  ])
+    assert.throws(() => profiles.unitMemory({ memory }), /memory\./);
+});

@@ -31,7 +31,12 @@ The `pages` profile owns `pages.runtimed.run`:
 It carries every Page10 flag, the Page quota default and D1 binding, and the
 same celld 0.6.3 runtime and OIDC client. Like Page10, it creates new Pages
 with plain Automerge sync; see [Moving pages off
-Subduction](#moving-pages-off-subduction) for the Pages created before that. The service and prefix end in `-live`
+Subduction](#moving-pages-off-subduction) for the Pages created before that.
+Both serving targets set `memory` in their profile:
+celld sheds cells above `CELLD_MAX_RSS_MB=2560`, and systemd caps the unit at
+`MemoryMax=4G`. At the earlier 768 MB threshold production shed its D1 cell
+repeatedly, and signed-in requests failed with 503 while it restored. Changing
+either value changes the unit, so the next install restarts the service. The service and prefix end in `-live`
 because lab1 still holds a disabled `nteract-pages.service` and
 `/etc/nteract-pages` from an earlier prototype. The installer refuses any path,
 user or prefix it does not own, so the target must not share those names.
@@ -862,9 +867,11 @@ One owner-run pass puts every Page document in the forms this build writes,
 so the readers of older forms can be deleted. The code lives in
 `model/content-normalization.mjs` (what changes in a document) and
 `worker/content-migration.mjs` (the run), both marked for deletion after
-production has migrated, with `scripts/content-migration.mjs`, the
-`/api/admin/content-migration`, Catalog and Page routes, and the content
-listener's `contentMigrating` flag in `worker/index.mjs`.
+production has migrated, with `scripts/content-migration.mjs`,
+`scripts/content-migration-operator.mjs`, the `/api/admin/content-migration`
+and `/api/operator/content-migration` routes and their Catalog and Page
+routes, the content listener's `contentMigrating` flag in `worker/index.mjs`,
+and the installer's `operatorMigration` secret (`scripts/deployment/`).
 
 Per Page, in one journaled host change (`host/operation/internal:content_norm_<digest of
 heads>`):
@@ -896,15 +903,102 @@ bodies aren't touched. Preserved
 blocks, the comments move and the record's `comments_doc` field are the Page
 host's existing on-load work; the migration reports them and refuses a Page
 whose conversion fence is up (`held`). A Page with a live socket is skipped
-(`busy`) and visited again on the next pass. Permanent deletions an earlier
-build left half-finished (a `host/deleted/` tombstone beside a `trash/`
-entry) are reported under `tombstones`, not changed.
+(`busy`) and visited again on the next pass, unless the run passes
+`include_connected: true` (script flag `--include-connected`).
 
-The owner runs it, once per account, with an API key that has write access.
-It reaches only that account's Pages: every `page/` (Project content
-included), `trash/` and `host/deleted/` key in the owner's Catalog, plus any
-`page_ids` in the body, which the Page host checks against its record's
-owner. Every account with Pages needs its own run.
+**Connected peers.** With `include_connected`, the host writes while browsers
+or agents are connected. The change reaches them over sync like any host
+change: the editor re-decodes the block, unchanged text and markers keep their
+identity, so carets and comment anchors stay put. No peer is disconnected and
+no fence goes up: the change adds no schema feature, so a stale tab from an
+earlier build keeps editing (the schema gate refuses a tab only for a feature
+its build lacks, and a stamp repair adds only a feature the content already
+uses), and build freshness is untouched because nothing is deployed. A peer's
+own edit either merges (made before the write and synced after it, or made
+after it) or, if it reaches the host between the plan and the write, fails
+the write's exact-heads check: the Page answers `stale`, nothing is written,
+and the next pass plans again. Default to skipping; use `include_connected`
+for Pages that stay `busy` because a tab is left open.
+
+**Half-finished permanent deletions.** A build without Trash could delete a
+trashed Page for good and leave its `trash/` entry beside the Catalog's
+`host/deleted/<id>` tombstone, with the Page record still trashed. `dry_run`
+lists each under `tombstones` (`{page_id, trash_entry, finalize}`) and on the
+Page's row (`tombstone`). `apply` finishes it the way the current build does
+when it meets such a tombstone: the operation-intent machine's `tombstone`
+effects, `forget_trash` (drop the `trash/` entry) and `notify_tombstone`
+(the Page host records the deletion as `deleted_by_earlier_build`, drops its
+document, withdraws access and retires its index row). A tombstone whose
+`trash/` entry a Trash listing already pruned is finished too when the Page
+still reports itself trashed. Before the first change, the Catalog saves the
+`trash/` entry and `host/count/trash` under `host/content-migration/before/`
+(`{content_migration_absent: true}` for a key that didn't exist), once. Until
+the Page reports `deleted`, the visit stays `tombstone_pending`. To undo the
+Catalog side, put each before-image back through the Catalog's counted storage;
+the Page side can't be undone: the earlier build already deleted the document.
+
+**Operator run (lab targets: every account).** On the celld lab targets
+(`pages`, `page10`; profiles with `operatorMigration`), an operator runs it for
+every account from an operator machine over SSH:
+
+```sh
+cd docs/memos/authenticated-automerge-app-substrate/experiment/pages
+node scripts/content-migration-operator.mjs --target pages --mode dry_run > dry-run.json
+node scripts/content-migration-operator.mjs --target pages --mode apply \
+  --include-connected > apply.json
+```
+
+Each call is one SSH command to lab1. It reads the root-only
+`/etc/<service>/operator-secret` with `sudo -n` and posts, as the service user,
+to `http://<listen>/api/operator/content-migration` on loopback. The secret
+reaches curl in its config on stdin, never on a command line. The script lists
+the accounts, drives each account's Catalog until it covered every Page (the
+same `dry_run`/`apply` responses as the owner run below), then lists the Page
+cells with `celld cell list Page` (read-only), and probes every cell no run
+reached for its `page_id`, `owner` and `state`. The report holds per-account
+totals and progress, `reached`, `page_cells` and `unreached`. Each response,
+refusals included, is appended to a JSON-lines log as it arrives
+(`--log`, default `content-migration-operator-<target>-<mode>-<time>.jsonl`). A
+leftover with an owner can be passed to that owner's run (`--principal <owner>`
+here runs one account; `page_ids` in the route body adds Pages). Options:
+`--principal` (repeatable), `--include-connected`, `--limit`, `--no-cells`,
+`--ssh-host`.
+
+How the route is gated:
+
+- celld's internal listener (`internalListen`, 19481 for `pages`) answers its
+  own operator routes and never forwards to the Worker (on lab1, `GET /health`
+  and any other path there return celld's `{"error":"not_found"}`), so the
+  Worker can't gate on how a request arrives. It gates on a secret instead.
+- The installer creates `/etc/<service>/operator-secret` (48 random bytes,
+  root-only, kept across installs) on profiles with `operatorMigration` and
+  passes it to the Worker as `PAGES_OPERATOR_SECRET`. The route exists only
+  when that variable holds at least 32 characters: a Cloudflare deployment, or
+  any profile without the flag, answers the gateway's plain
+  `404 {"error":"Not found"}`.
+- The request must carry the secret in `x-pages-operator-secret`, compared in
+  constant time, and must carry none of `cf-ray`, `cf-connecting-ip`,
+  `cf-visitor`, `cdn-loop`. The Cloudflare edge adds those to everything it
+  forwards through the tunnel, and a client can't remove them, so even a leaked
+  secret doesn't open the route from the public hostname. Every refusal is the
+  same 404 as an unknown path.
+- The listeners' firewall admits only root and the service user, which is why
+  the script runs curl as the service user.
+
+The operator selects a Catalog; it doesn't bypass Page authority. The route
+forwards to that account's Catalog on a host-only path, and the run acts for
+the Catalog's own account: each Page host still answers `not_owner` unless its
+record names that account. Accounts come from the D1 catalog projection
+(`pages_catalog_pages` and `pages_catalog_spaces` owners, and
+`pages_catalog_accounts`), because the Worker can't list Catalog cells; the
+cell diff above is the cross-check. The secret needs an install of a build
+with this route; the route is deleted with the migration.
+
+**Owner run (alternative, any deployment).** The owner runs it for their own
+account with an API key that has write access. It reaches only that account's
+Pages: every `page/` (Project content included), `trash/` and `host/deleted/`
+key in the owner's Catalog, plus any `page_ids` in the body, which the Page host
+checks against its record's owner.
 
 ```sh
 cd docs/memos/authenticated-automerge-app-substrate/experiment/pages
@@ -939,10 +1033,10 @@ reason. Before `apply`, read the report: `partial` Pages won't be written, and
 `markdown_block` conversions detach the selection comments their `anchors`
 count.
 
-Page cells no Catalog key names don't appear. List the target's `Page` cells
-read-only with `celld cell list Page --bucket s3://<bucket>/<prefix> --region
-us-east-1 --all --json` and diff the ids against the union of every account's
-`visited`. Pass a leftover as `--page-id` in its owner's run.
+Page cells no Catalog key names don't appear in an owner run. `celld cell list
+Page` lists cells by Durable Object id, not page id; each visited page reports
+its `cell_id` when the runtime exposes `idFromName`, and the operator script
+diffs and probes the rest. Pass a leftover as `--page-id` in its owner's run.
 
 Then `apply`, after Kyle approves the dry-run reports:
 

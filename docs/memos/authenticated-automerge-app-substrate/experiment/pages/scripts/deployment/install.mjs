@@ -32,6 +32,7 @@ import {
   verifyDeployment,
   verifyRuntime,
   parseRuntimeVersion,
+  unitMemory,
 } from "./profiles.mjs";
 import {
   awaitServing,
@@ -366,8 +367,20 @@ const configPath = release + "/wrangler.json",
   config = JSON.parse(readFileSync(stage + "/release/wrangler.json"));
 if (config.main !== "index.js" || config.no_bundle !== true || config.build || config.containers)
   throw new Error("Unexpected build configuration");
+// ONE-SHOT MIGRATION: the content migration's operator secret
+// (worker/content-migration.mjs), created once on this host and kept
+// root-only like the session secret. Delete with that module.
+const operatorSecretPath = configDir + "/operator-secret";
+if (profile.operatorMigration && !existsSync(operatorSecretPath))
+  writeFileSync(operatorSecretPath, randomBytes(48).toString("base64url"), {
+    mode: 0o600,
+    flag: "wx",
+  });
 config.vars = {
   ...migration,
+  ...(profile.operatorMigration
+    ? { PAGES_OPERATOR_SECRET: readFileSync(operatorSecretPath, "utf8").trim() }
+    : {}),
   ...(profile.asyncPersistence ? { PAGES_ASYNC_PERSISTENCE: "true" } : {}),
   ...(profile.compactRecords ? { PAGES_COMPACT_RECORDS: "true" } : {}),
   ...(profile.editor ? { PAGES_EDITOR: profile.editor } : {}),
@@ -497,7 +510,8 @@ for (const helper of helpers) {
   cpSync(stage + "/" + helper, base + "/" + helper);
   chmodSync(base + "/" + helper, 0o644);
 }
-const unitText = `[Unit]\nDescription=Isolated native Pages experiment on celld\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser=${expected.service}\nGroup=${expected.service}\nWorkingDirectory=${state}\nEnvironment=AWS_REGION=us-east-1\nEnvironment=CELLD_DURABILITY=bucket\nEnvironment=CELLD_OTEL=1\nEnvironment=CELLD_OTEL_RETENTION=30d\n${profile.otelTracesSampler ? `Environment=OTEL_TRACES_SAMPLER=${profile.otelTracesSampler}\n` : ""}Environment=CELLD_TOKIO_THREADS=2\nEnvironment=CELLD_V8_HEAP_LIMIT_MB=256\nEnvironment=CELLD_MAX_REQUEST_BODY_BYTES=6291456\nEnvironment=CELLD_MAX_RSS_MB=768\nEnvironment=CELLD_LOCAL_CACHE_MAX_BYTES=536870912\nEnvironment=CELLD_TEST_DATA_DIR=${state}/cache\nExecStartPre=+/usr/bin/node ${base}/firewall.mjs --target ${target}\nExecStart=${base}/celld --bucket s3://${expected.bucket}/${expected.prefix} --region ${expected.region} --listen ${expected.listen} --internal-listen ${expected.internalListen}\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec=60\nLimitNOFILE=65536\nMemoryMax=1G\nCPUQuota=100%\nTasksMax=256\nNoNewPrivileges=true\nPrivateTmp=true\nProtectHome=true\nProtectSystem=strict\nReadWritePaths=${state}\nUMask=0077\n\n[Install]\nWantedBy=multi-user.target\n`;
+const memory = unitMemory(profile);
+const unitText = `[Unit]\nDescription=Isolated native Pages experiment on celld\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser=${expected.service}\nGroup=${expected.service}\nWorkingDirectory=${state}\nEnvironment=AWS_REGION=us-east-1\nEnvironment=CELLD_DURABILITY=bucket\nEnvironment=CELLD_OTEL=1\nEnvironment=CELLD_OTEL_RETENTION=30d\n${profile.otelTracesSampler ? `Environment=OTEL_TRACES_SAMPLER=${profile.otelTracesSampler}\n` : ""}Environment=CELLD_TOKIO_THREADS=2\nEnvironment=CELLD_V8_HEAP_LIMIT_MB=256\nEnvironment=CELLD_MAX_REQUEST_BODY_BYTES=6291456\nEnvironment=CELLD_MAX_RSS_MB=${memory.maxRssMb}\nEnvironment=CELLD_LOCAL_CACHE_MAX_BYTES=536870912\nEnvironment=CELLD_TEST_DATA_DIR=${state}/cache\nExecStartPre=+/usr/bin/node ${base}/firewall.mjs --target ${target}\nExecStart=${base}/celld --bucket s3://${expected.bucket}/${expected.prefix} --region ${expected.region} --listen ${expected.listen} --internal-listen ${expected.internalListen}\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec=60\nLimitNOFILE=65536\nMemoryMax=${memory.memoryMax}\nCPUQuota=100%\nTasksMax=256\nNoNewPrivileges=true\nPrivateTmp=true\nProtectHome=true\nProtectSystem=strict\nReadWritePaths=${state}\nUMask=0077\n\n[Install]\nWantedBy=multi-user.target\n`;
 // Stage and verify the unit under its own basename, then rename it into place,
 // so a failed verify leaves the loaded definition and the file in agreement.
 // /etc/systemd is the same filesystem as /etc/systemd/system.

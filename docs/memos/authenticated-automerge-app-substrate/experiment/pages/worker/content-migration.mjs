@@ -18,6 +18,13 @@
  * `host/deleted/` tombstone, and any `page_ids` from the body. `shared/`
  * entries belong to other owners' runs.
  *
+ * Half-finished permanent deletions (inventory #22): a build without Trash
+ * could delete a trashed Page for good, writing the tombstone but leaving the
+ * `trash/` entry and the Page record trashed. `dry_run` lists each with what
+ * finalizing runs; `apply` runs the current build's own tombstone effects
+ * (TOMBSTONE_EFFECTS, through the Catalog's operation-intent effect runner)
+ * after saving before-images under `host/content-migration/before/`.
+ *
  * - `dry_run` writes nothing of its own. It visits up to `limit` targets
  *   after `after` and answers their reports, the next cursor, and the Catalog
  *   summary (targets by kind, tombstones). Booting a Page runs its existing
@@ -39,6 +46,17 @@ import { validPageId } from "./registration.mjs";
 export const CONTENT_MIGRATION_MODES = Object.freeze(["dry_run", "apply"]);
 export const CONTENT_MIGRATION_STATE_KEY = "host/content-migration/state";
 export const CONTENT_MIGRATION_RESULT_PREFIX = "host/content-migration/result/";
+/** Before-images of the Catalog keys the tombstone step rewrites or deletes:
+ * `<prefix><key>` holds the prior value, saved once and never overwritten;
+ * CONTENT_MIGRATION_ABSENT records a key that didn't exist. */
+export const CONTENT_MIGRATION_BEFORE_PREFIX = "host/content-migration/before/";
+export const CONTENT_MIGRATION_ABSENT = Object.freeze({ content_migration_absent: true });
+/** What finishing an earlier build's permanent deletion runs: the effects the
+ * current build's operation-intent machine gives a `tombstone` event
+ * (worker/operation-intent.mjs): drop the `trash/` entry, then tell the Page,
+ * whose host records the deletion (`acceptTombstone`). */
+export const TOMBSTONE_EFFECTS = Object.freeze(["forget_trash", "notify_tombstone"]);
+const TRASH_COUNT_KEY = "host/count/trash";
 /** `budgetMs`: a call starts no visit after this long, so with each visit's
  * own deadline it ends inside the Catalog queue's 120 s bound. */
 export const CONTENT_MIGRATION_LIMITS = Object.freeze({
@@ -48,7 +66,8 @@ export const CONTENT_MIGRATION_LIMITS = Object.freeze({
   budgetMs: 60_000,
 });
 /** Page outcomes that need no further visit. Every other status (busy,
- * stale, held, partial, unavailable, record_pending, error) stays pending. */
+ * stale, held, partial, unavailable, record_pending, tombstone_pending,
+ * error) stays pending. */
 export const SETTLED_STATUSES = new Set([
   "normalized",
   "unchanged",
@@ -57,17 +76,25 @@ export const SETTLED_STATUSES = new Set([
   "not_owner",
 ]);
 
+// A Page named twice keeps the first kind: a tombstone beside a `trash/`
+// entry is a deletion to finish, not a Page in Trash.
 const KINDS = [
   ["page/", "page"],
-  ["trash/", "trash"],
   ["host/deleted/", "deleted"],
+  ["trash/", "trash"],
 ];
 
 /** The run's arguments, validated. Throws `{ status: 400, code }`. */
 export function contentMigrationArguments(body) {
   const invalid = (message) =>
     Object.assign(new Error(message), { status: 400, code: "invalid_arguments" });
-  const { mode, limit = CONTENT_MIGRATION_LIMITS.batch, after = null, page_ids = [] } = body ?? {};
+  const {
+    mode,
+    limit = CONTENT_MIGRATION_LIMITS.batch,
+    after = null,
+    page_ids = [],
+    include_connected = false,
+  } = body ?? {};
   if (!CONTENT_MIGRATION_MODES.includes(mode)) throw invalid('mode must be "dry_run" or "apply"');
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > CONTENT_MIGRATION_LIMITS.maxBatch)
     throw invalid(`limit must be 1–${CONTENT_MIGRATION_LIMITS.maxBatch}`);
@@ -78,16 +105,17 @@ export function contentMigrationArguments(body) {
     page_ids.some((id) => !validPageId(id))
   )
     throw invalid(`page_ids must be up to ${CONTENT_MIGRATION_LIMITS.extraIds} page_ids`);
-  return { mode, limit, after, page_ids: [...new Set(page_ids)] };
+  if (typeof include_connected !== "boolean") throw invalid("include_connected must be a boolean");
+  return { mode, limit, after, page_ids: [...new Set(page_ids)], include_connected };
 }
 
 /**
  * Every Page this Catalog can name, sorted by page_id: `[{ page_id, kind }]`,
  * where kind is `page`, `trash`, `deleted` or `extra` (named only by the
  * request). A Page named twice keeps the first kind in that order. Also
- * returns the tombstones: `[{ page_id, trash_entry }]`, where `trash_entry`
- * says a `trash/` entry remains beside the tombstone (inventory #22, which
- * this migration reports and doesn't finish).
+ * returns the tombstones: `[{ page_id, trash_entry, finalize? }]`, where
+ * `trash_entry` says a `trash/` entry remains beside the tombstone and
+ * `finalize` lists what apply runs for it (TOMBSTONE_EFFECTS).
  */
 export async function contentMigrationTargets(storage, listAll, extra = []) {
   const kinds = new Map();
@@ -106,7 +134,11 @@ export async function contentMigrationTargets(storage, listAll, extra = []) {
     .filter((key) => key.startsWith("host/deleted/"))
     .map((key) => key.slice("host/deleted/".length))
     .sort()
-    .map((page_id) => ({ page_id, trash_entry: keys.has(`trash/${page_id}`) }));
+    .map((page_id) =>
+      keys.has(`trash/${page_id}`)
+        ? { page_id, trash_entry: true, finalize: [...TOMBSTONE_EFFECTS] }
+        : { page_id, trash_entry: false },
+    );
   return { targets, tombstones };
 }
 
@@ -224,34 +256,85 @@ const failedVisit = (page_id, error) => ({
   error: String(error?.message ?? error).slice(0, 200),
 });
 
-async function visitSafely(visit, page_id, mode) {
+async function visitSafely(visit, page_id, mode, options) {
   try {
-    const result = await visit(page_id, mode);
+    const result = await visit(page_id, mode, options);
     return { ...result, page_id };
   } catch (error) {
     return failedVisit(page_id, error);
   }
 }
 
+/** Save `key`'s current value as its before-image, once. */
+async function saveBefore(storage, key) {
+  const backup = `${CONTENT_MIGRATION_BEFORE_PREFIX}${key}`;
+  if ((await storage.get(backup)) !== undefined) return;
+  const value = await storage.get(key);
+  await storage.put(backup, value === undefined ? CONTENT_MIGRATION_ABSENT : value);
+}
+
+/**
+ * Finish an earlier build's permanent deletion of `page_id`, if one is
+ * half-finished: the tombstone is there and so is the `trash/` entry, or the
+ * Page last reported its record as trashed. Saves the before-images of the
+ * `trash/` entry and the Trash count, then runs `finalize(page_id)`, the
+ * current build's tombstone effects. Returns `{ finalized }`, or null when
+ * nothing was half-finished.
+ */
+async function finishDeletion(storage, page_id, finalize, { pageTrashed = false } = {}) {
+  if (!(await storage.get(`host/deleted/${page_id}`))) return null;
+  const trashKey = `trash/${page_id}`;
+  if ((await storage.get(trashKey)) === undefined && !pageTrashed) return null;
+  await saveBefore(storage, trashKey);
+  await saveBefore(storage, TRASH_COUNT_KEY);
+  await finalize(page_id);
+  return { finalized: [...TOMBSTONE_EFFECTS] };
+}
+
 /**
  * Run one call of the migration against Catalog storage. `visit(page_id,
- * mode)` asks the Page host and answers its result; `listAll` reads a prefix;
- * `clock()` is milliseconds (Date.now). Returns the response body.
+ * mode, options)` asks the Page host and answers its result (`options`:
+ * `{ include_connected }`); `listAll` reads a prefix;
+ * `clock()` is milliseconds (Date.now); `finalize(page_id)` runs
+ * TOMBSTONE_EFFECTS in the Catalog. Returns the response body.
  */
 export async function runContentMigration(
   storage,
-  { args, listAll, visit, clock = Date.now, budgetMs = CONTENT_MIGRATION_LIMITS.budgetMs },
+  {
+    args,
+    listAll,
+    visit,
+    finalize,
+    clock = Date.now,
+    budgetMs = CONTENT_MIGRATION_LIMITS.budgetMs,
+  },
 ) {
-  const { mode, limit, after, page_ids } = args;
+  const { mode, limit, after, page_ids, include_connected } = args;
+  const options = { include_connected };
   const started = clock();
   const inBudget = (visited) => visited === 0 || clock() - started < budgetMs;
   if (mode === "dry_run") {
     const { targets, tombstones } = await contentMigrationTargets(storage, listAll, page_ids);
     const start = after === null ? 0 : targets.findIndex((target) => target.page_id > after);
     const pages = [];
+    const pendingDeletion = new Map(
+      tombstones.filter((tombstone) => tombstone.finalize).map((t) => [t.page_id, t]),
+    );
     for (const target of start < 0 ? [] : targets.slice(start, start + limit)) {
       if (!inBudget(pages.length)) break;
-      pages.push({ ...(await visitSafely(visit, target.page_id, mode)), kind: target.kind });
+      const result = await visitSafely(visit, target.page_id, mode, options);
+      const tombstone =
+        pendingDeletion.get(target.page_id) ??
+        (target.kind === "deleted" && result.state === "trashed"
+          ? { trash_entry: false, finalize: [...TOMBSTONE_EFFECTS] }
+          : null);
+      pages.push({
+        ...result,
+        kind: target.kind,
+        ...(tombstone && {
+          tombstone: { trash_entry: tombstone.trash_entry, finalize: tombstone.finalize },
+        }),
+      });
     }
     const last = pages.at(-1)?.page_id ?? null;
     const kinds = {};
@@ -286,7 +369,19 @@ export async function runContentMigration(
   const pages = [];
   while (state.next < state.ids.length && pages.length < limit && inBudget(pages.length)) {
     const page_id = state.ids[state.next];
-    const result = await visitSafely(visit, page_id, mode);
+    // A half-finished deletion is finished before its Page is visited, so the
+    // visit reports the Page as the current build leaves it.
+    let tombstone = finalize ? await finishDeletion(storage, page_id, finalize) : null;
+    let result = await visitSafely(visit, page_id, mode, options);
+    if (!tombstone && finalize && result.state === "trashed") {
+      tombstone = await finishDeletion(storage, page_id, finalize, { pageTrashed: true });
+      if (tombstone) result = await visitSafely(visit, page_id, mode, options);
+    }
+    if (tombstone) {
+      result = { ...result, tombstone };
+      // The Page must have recorded the deletion; until it has, it stays pending.
+      if (result.state === "trashed") result.status = "tombstone_pending";
+    }
     pages.push(result);
     step({ type: "visited", page_id });
     const resultKey = `${CONTENT_MIGRATION_RESULT_PREFIX}${page_id}`;
@@ -316,4 +411,123 @@ export async function runContentMigration(
     totals: summarize(pages),
     progress: progressOf(state),
   };
+}
+
+// --- The operator path (lab only) --------------------------------------------
+//
+// `POST /api/operator/content-migration` runs this migration for every
+// account on a celld lab deployment. celld's internal listener answers its
+// own operator routes and never forwards to the Worker, so the Worker can't
+// tell a request by how it arrived. The gate is a secret instead:
+//
+// - PAGES_OPERATOR_SECRET is set only by the lab installer
+//   (scripts/deployment/install.mjs, `operatorMigration` profiles), from
+//   `/etc/<service>/operator-secret` (root-only). A Cloudflare deployment has
+//   none, so the route is the unknown path there.
+// - The request carries it in OPERATOR_SECRET_HEADER, compared in constant
+//   time.
+// - A request the Cloudflare edge forwarded is refused even with the secret:
+//   the edge adds `cf-ray`, `cf-connecting-ip`, `cf-visitor` and `cdn-loop`,
+//   and a client can't strip them. The operator calls the public listener on
+//   loopback from lab1 (scripts/content-migration-operator.mjs), whose
+//   firewall admits only root and the service user.
+//
+// Every refusal is the gateway's plain 404 for an unknown path.
+
+export const OPERATOR_SECRET_HEADER = "x-pages-operator-secret";
+const EDGE_HEADERS = ["cf-ray", "cf-connecting-ip", "cf-visitor", "cdn-loop"];
+const MIN_SECRET_LENGTH = 32;
+
+async function digest(value) {
+  return new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)));
+}
+
+/** Whether `request` may use the operator route under `env`. */
+export async function operatorAuthorized(request, env) {
+  const secret = env?.PAGES_OPERATOR_SECRET;
+  if (typeof secret !== "string" || secret.length < MIN_SECRET_LENGTH) return false;
+  if (EDGE_HEADERS.some((header) => request.headers.has(header))) return false;
+  const offered = request.headers.get(OPERATOR_SECRET_HEADER) ?? "";
+  // Compare digests, so neither the length nor the first differing byte of
+  // the secret shows in the timing.
+  const [a, b] = await Promise.all([digest(offered), digest(secret)]);
+  let difference = 0;
+  for (let index = 0; index < a.length; index++) difference |= a[index] ^ b[index];
+  return difference === 0;
+}
+
+/**
+ * Every account principal the D1 catalog projection knows: Page and Project
+ * owners and indexed accounts. The Catalog cells are authoritative, but the
+ * Worker can't list Durable Objects, so this projection is the only list it
+ * has; `celld cell list Catalog` and `Page` stay the cross-check, and a
+ * Page cell no run reaches shows up in the operator script's `unreached`.
+ */
+export async function operatorAccounts(db) {
+  const { results } = await db
+    .prepare(
+      `SELECT owner AS principal FROM pages_catalog_pages
+       UNION SELECT owner FROM pages_catalog_spaces
+       UNION SELECT principal FROM pages_catalog_accounts
+       ORDER BY principal`,
+    )
+    .all();
+  return results.map((row) => row.principal).filter((value) => typeof value === "string");
+}
+
+const json = (body, status = 200) => Response.json(body, { status });
+const CELL_ID = /^[0-9a-f]{64}$/;
+
+/**
+ * The operator route, behind `operatorAuthorized`. Body `action`:
+ * - `accounts`: `{ principals, source }` from operatorAccounts.
+ * - `run`: one call of the run over `principal`'s Catalog, with the owner-run
+ *   arguments (`mode`, `limit`, `after`, `page_ids`, `include_connected`).
+ * - `probe`: for each of `cell_ids` (from `celld cell list Page`), what its
+ *   Page host records: `{ cell_id, page_id, owner, state }`, so a cell no run
+ *   reached can be passed to its owner's run as `page_ids`.
+ */
+export async function operatorContentMigration(request, env) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: "Body must be JSON", code: "invalid_arguments" }, 400);
+  }
+  const { action, ...rest } = body ?? {};
+  if (action === "accounts") {
+    if (!env.DB?.prepare) return json({ error: "No catalog database" }, 503);
+    return json({ principals: await operatorAccounts(env.DB), source: "d1_projection" });
+  }
+  if (action === "run") {
+    if (typeof rest.principal !== "string" || !rest.principal)
+      return json({ error: "principal is required", code: "invalid_arguments" }, 400);
+    return env.CATALOGS.getByName(rest.principal).fetch(
+      new Request("https://pages.internal/internal/operator-content-migration", {
+        method: "POST",
+        body: JSON.stringify(rest),
+      }),
+    );
+  }
+  if (action === "probe") {
+    const ids = rest.cell_ids;
+    if (
+      !Array.isArray(ids) ||
+      ids.length > CONTENT_MIGRATION_LIMITS.extraIds ||
+      ids.some((id) => !CELL_ID.test(String(id)))
+    )
+      return json({ error: "cell_ids must be up to 100 cell ids", code: "invalid_arguments" }, 400);
+    const cells = [];
+    for (const cell_id of ids) {
+      const response = await env.PAGES.get(env.PAGES.idFromString(cell_id)).fetch(
+        new Request("https://pages.internal/internal/content-migration", {
+          method: "POST",
+          body: JSON.stringify({ mode: "probe" }),
+        }),
+      );
+      cells.push({ cell_id, ...(await response.json().catch(() => ({ status: "error" }))) });
+    }
+    return json({ cells });
+  }
+  return json({ error: "action must be accounts, run or probe", code: "invalid_arguments" }, 400);
 }
