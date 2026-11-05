@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import {spawnSync} from "node:child_process";
-import {mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync} from "node:fs";
+import {mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {test} from "node:test";
 import {fileURLToPath} from "node:url";
+import {runInNewContext} from "node:vm";
 
 function workflow(name) {
   return readFileSync(new URL(`../../.github/workflows/${name}.yml`, import.meta.url), "utf8");
@@ -30,6 +31,259 @@ const release = workflow("release-common");
 const jobs = workflowJobs(release);
 const validation = workflow("release-validation");
 const validationJobs = workflowJobs(validation);
+
+const ATTRIBUTION_FILES = ["LICENSE.nteract", "THIRD_PARTY_NOTICES.txt", "sbom.cdx.json"];
+const DAEMON_PLATFORMS = ["linux-x64", "linux-arm64", "darwin-arm64", "darwin-x64", "windows-x64.exe", "windows-arm64.exe"];
+
+function workflowStep(body, name) {
+  const start = body.indexOf(`      - name: ${name}\n`);
+  assert.ok(start >= 0, `missing step ${name}`);
+  return body.slice(start).split(/\n      - /)[0];
+}
+
+test("native attribution preflights run for collector, dependency, and packaging changes", () => {
+  const paths = validation.split("\n  workflow_dispatch:")[0];
+  assert.match(paths, /\n  pull_request:\n    paths:/);
+  for (const path of [
+    "packages/runtimed-node/scripts/**", ".github/actions/install-cargo-about/**",
+    "Cargo.lock", "rust-toolchain.toml", "scripts/licenses/**",
+    "scripts/release-attribution.mjs", "scripts/release-about.toml",
+    "scripts/tests/release-workflow.test.mjs",
+  ]) assert.ok(paths.includes(`      - ${path}\n`), `missing attribution trigger: ${path}`);
+});
+
+test("license exception review dates warn after the UTC review day without failing CI", () => {
+  const body = validationJobs.get("release-tag");
+  const step = workflowStep(body, "Warn about overdue license exception reviews");
+  assert.ok(body.indexOf("uses: actions/setup-node@v6") < body.indexOf(step));
+  assert.ok(body.indexOf(step) < body.indexOf("pnpm install"));
+  const program = step.match(/          node --input-type=module <<'JS'\n([\s\S]*?)          JS(?:\n|$)/)?.[1];
+  assert.ok(program, "execute the actual workflow warning program");
+  const records = JSON.parse(readFileSync(new URL("../licenses/plotly-exceptions.json", import.meta.url), "utf8"));
+  assert.equal(records.exceptions.length, 4);
+  for (const today of ["2026-12-04", "2026-12-05", "2026-12-06"]) {
+    const warnings = [];
+    assert.doesNotThrow(() => runInNewContext(program.replace(/^\s*import .+;\n/m, ""), {
+      readFileSync(path, encoding) {
+        assert.equal(path, "scripts/licenses/plotly-exceptions.json");
+        assert.equal(encoding, "utf8");
+        return JSON.stringify(records);
+      },
+      Date: class { toISOString() { return `${today}T23:59:59.999Z`; } },
+      console: {log: message => warnings.push(message)},
+    }));
+    const overdue = records.exceptions.filter(record => today > record.reviewDate);
+    assert.equal(warnings.length, overdue.length);
+    for (const [index, record] of overdue.entries()) {
+      assert.ok(warnings[index].startsWith("::warning::"));
+      for (const value of [`${record.name}@${record.version}`, record.reviewDate, record.owner, record.trackingUrl]) {
+        assert.ok(warnings[index].includes(value));
+      }
+    }
+  }
+  assert.doesNotMatch(step, /::error::|process\.exit|exitCode|throw|continue-on-error:/);
+});
+
+test("Linux attribution preflight collects native daemon and Node metadata across release OS targets without building", () => {
+  const body = validationJobs.get("native-rust-attribution");
+  assert.ok(body, "missing native-rust-attribution job");
+  assert.match(body, /runs-on: ubuntu-24\.04/);
+  const collect = workflowStep(body, "Validate native Cargo attribution without building artifacts");
+  for (const prerequisite of [
+    "uses: actions/checkout@v6", "uses: dsherret/rust-toolchain-file@v1",
+    "uses: actions/setup-node@v6", "uses: pnpm/action-setup@v4",
+    "pnpm install --frozen-lockfile --ignore-scripts", "uses: ./.github/actions/install-cargo-about",
+  ]) assert.ok(body.indexOf(prerequisite) >= 0 && body.indexOf(prerequisite) < body.indexOf(collect), prerequisite);
+  assert.match(collect, /import \{ collectRust \} from '\.\/scripts\/release-attribution\.mjs'/);
+  assert.match(collect, /for \(const kind of \['runtimed', 'runtimed-node'\]\)/);
+  assert.match(collect, /collectRust\(process\.cwd\(\), \{ kind, target \}\)/);
+  const program = collect.match(/          node --input-type=module <<'JS'\n([\s\S]*?)          JS\n/)?.[1];
+  assert.ok(program);
+  const calls = [];
+  runInNewContext(program.replace(/^\s*import .+;\n/m, ""), {
+    process: {cwd: () => "/checkout"}, console: {log() {}},
+    collectRust(root, {kind, target}) {
+      assert.equal(root, "/checkout");
+      calls.push(`${kind}:${target}`);
+      return {components: [], materials: []};
+    },
+  });
+  assert.deepEqual(calls, ["runtimed", "runtimed-node"].flatMap(kind =>
+    ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin", "x86_64-pc-windows-msvc"].map(target => `${kind}:${target}`)));
+  assert.match(collect, /node --input-type=module/);
+  assert.doesNotMatch(body, /continue-on-error:|\|\| true|collectBundledNpm|--binary|cargo build|pnpm build|build-runtime-artifacts|npm publish|upload-artifact|: write|\n    (?:needs|if):/);
+});
+
+test("Windows CRT preflight validates all actual release runner environments without compiling", () => {
+  const body = validationJobs.get("windows-crt-attribution");
+  assert.ok(body, "missing windows-crt-attribution job");
+  assert.match(body, /runs-on: \$\{\{ matrix\.runner \}\}/);
+  assert.match(body, /fail-fast: false/);
+  assert.match(body, /runner: windows-2025\n\s+arch: x64\n\s+target: x86_64-pc-windows-msvc/);
+  assert.match(body, /runner: windows-latest\n\s+arch: x64\n\s+target: x86_64-pc-windows-msvc/);
+  assert.doesNotMatch(body, /windows-2022/);
+  assert.equal(body.match(/- runner:/g)?.length, 3);
+  assert.match(body, /runner: windows-11-vs2026-arm\n\s+arch: arm64\n\s+target: aarch64-pc-windows-msvc/);
+  const activate = workflowStep(body, "Activate producer MSVC environment");
+  const verify = workflowStep(body, "Verify producer MSVC environment");
+  const collect = workflowStep(body, "Validate installed producer CRT attribution without compiling");
+  const producer = workflowJobs(workflow("publish-npm")).get("pack-native");
+  assert.equal(activate.match(/uses: (.+)/)[1], workflowStep(producer, "Activate producer MSVC environment").match(/uses: (.+)/)[1]);
+  assert.match(activate, /arch: \$\{\{ matrix\.arch \}\}/);
+  assert.match(verify, /EXPECTED_MSVC_ARCH: \$\{\{ matrix\.arch \}\}/);
+  assert.equal(verify.split("        run: |\n")[1].trim(), workflowStep(producer, "Verify producer MSVC environment").split("        run: |\n")[1].trim());
+  assert.ok(body.indexOf("uses: actions/checkout@v6") < body.indexOf(activate));
+  assert.ok(body.indexOf(activate) < body.indexOf(verify));
+  assert.ok(body.indexOf(verify) < body.indexOf(collect));
+  assert.ok(body.indexOf("uses: actions/setup-node@v6") < body.indexOf(collect));
+  assert.match(body, /node-version: "24"\n\s+architecture: \$\{\{ matrix\.arch \}\}/);
+  assert.equal(body.match(/uses: ilammy\/msvc-dev-cmd@/g)?.length, 1);
+  assert.match(collect, /TARGET: \$\{\{ matrix\.target \}\}/);
+  assert.match(collect, /import \{ collectMsvcRuntime \} from '\.\/scripts\/release-attribution\.mjs'/);
+  assert.match(collect, /collectMsvcRuntime\(\{ kind: 'runtimed-node', target: process\.env\.TARGET \}, process\.env\)/);
+  assert.match(collect, /node --input-type=module/);
+  assert.doesNotMatch(body, /continue-on-error:|\|\| true|collectRust|collectBundledNpm|cargo |rust-toolchain|pnpm |--binary|build-runtime-artifacts|npm publish|upload-artifact|: write|NTERACT_(?:MSVC|WINDOWS_SDK)_LICENSE_FILE|\n    (?:needs|if):|\n\s+(?:sdk|toolset|vsversion):/);
+});
+
+test("Windows release producers activate a pinned native MSVC environment before every build", () => {
+  const npm = workflowJobs(workflow("publish-npm")).get("pack-native");
+  const producers = [
+    [jobs.get("build-notebook-windows-x64"), "x64", "Generate standalone runtimed attribution"],
+    [jobs.get("build-notebook-windows-arm64"), "arm64", "Generate standalone runtimed attribution"],
+    [npm, "${{ matrix.target == 'win32-arm64-msvc' && 'arm64' || 'x64' }}", "Generate native binding attribution"],
+  ];
+  const verificationPrograms = [];
+  for (const [body, arch, attributionName] of producers) {
+    const activate = workflowStep(body, "Activate producer MSVC environment");
+    const verify = workflowStep(body, "Verify producer MSVC environment");
+    assert.match(activate, /uses: ilammy\/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1\.13\.0/);
+    assert.ok(activate.split("\n").includes(`          arch: ${arch}`));
+    assert.ok(verify.includes(`          EXPECTED_MSVC_ARCH: ${arch}\n`));
+    assert.doesNotMatch(activate, /\n\s+(?:sdk|toolset|vsversion):/, "keep the installed producer defaults, not a different SDK");
+    assert.doesNotMatch(activate + verify, /continue-on-error:/);
+    for (const variable of ["VCToolsInstallDir", "VCToolsVersion", "VSINSTALLDIR", "WindowsSdkDir", "UCRTVersion", "LIB"]) {
+      assert.ok(verify.includes(`'${variable}'`), `must require producer ${variable}`);
+    }
+    assert.match(verify, /\$env:VSCMD_ARG_TGT_ARCH -ne \$env:EXPECTED_MSVC_ARCH/);
+    assert.match(verify, /Get-Command cl\.exe -ErrorAction Stop/);
+    assert.match(verify, /\$compiler\.StartsWith\(\$tools, \[StringComparison\]::OrdinalIgnoreCase\)/);
+    assert.ok(body.indexOf(activate) < body.indexOf(verify));
+    for (const build of ["uses: dsherret/rust-toolchain-file@", "uses: ./.github/actions/build-runtime-artifacts", "run: pnpm --dir packages/runtimed-node build", "cargo build --release"]) {
+      const index = body.indexOf(build);
+      if (index >= 0) assert.ok(body.indexOf(verify) < index, `${build} must share the activated producer environment`);
+    }
+    assert.ok(body.indexOf(verify) < body.indexOf(workflowStep(body, attributionName)));
+    assert.equal(body.match(/uses: ilammy\/msvc-dev-cmd@/g)?.length, 1, "do not reactivate a different toolset after compilation");
+    verificationPrograms.push(verify.split("        run: |\n")[1].trim());
+  }
+  assert.deepEqual(verificationPrograms, Array(3).fill(verificationPrograms[0]), "all producers enforce the same compiler/environment checks");
+  for (const name of ["Activate producer MSVC environment", "Verify producer MSVC environment"]) {
+    assert.match(workflowStep(npm, name), /if: startsWith\(matrix\.target, 'win32-'\)/);
+  }
+});
+
+test("UI attribution follows production build and gates the single archive publisher", () => {
+  const body = jobs.get("build-notebook-linux");
+  const attribution = workflowStep(body, "Generate notebook UI attribution");
+  assert.match(attribution, /if: matrix\.platform\.package_notebook_ui/);
+  assert.match(attribution, /--kind notebook-ui --target wasm32-unknown-unknown/);
+  assert.match(attribution, /--output notebook-ui-attribution --version "\$VERSION" --commit "\$NTERACT_BUILD_GIT_HASH"/);
+  assert.match(attribution, /VERSION: \$\{\{ needs\.compute-version\.outputs\.version \}\}/);
+  assert.ok(body.indexOf("run: pnpm build") < body.indexOf(attribution));
+  assert.ok(body.indexOf("uses: ./.github/actions/install-cargo-about") < body.indexOf(attribution));
+  const pack = workflowStep(body, "Package notebook UI for embedders");
+  assert.ok(body.indexOf(attribution) < body.indexOf(pack));
+  assert.match(pack, /--attribution notebook-ui-attribution/);
+  assert.doesNotMatch(pack, /--license/);
+  assert.doesNotMatch(attribution, /continue-on-error/);
+  assert.match(workflowStep(body, "Upload notebook UI release bundle"), /path: notebook-ui-assets\//);
+  assert.match(jobs.get("prerelease"), /\.\/release-assets\/nteract-\$\{\{ inputs\.version_suffix \}\}-notebook-ui\.tar\.gz\n/);
+});
+
+test("all six standalone daemon targets generate and upload attribution after building", () => {
+  const runtimeSetup = readFileSync(new URL("../../.github/actions/build-runtime-artifacts/action.yml", import.meta.url), "utf8");
+  assert.match(runtimeSetup, /uses: actions\/setup-node@/);
+  assert.match(runtimeSetup, /pnpm install --frozen-lockfile/);
+  const installer = readFileSync(new URL("../../.github/actions/install-cargo-about/action.yml", import.meta.url), "utf8");
+  assert.match(installer, /default: "0\.9\.2"/);
+  for (const id of ["build-linux", "build-macos", "build-notebook-windows-x64", "build-notebook-windows-arm64"]) {
+    const body = jobs.get(id);
+    const attribution = workflowStep(body, "Generate standalone runtimed attribution");
+    const index = body.indexOf(attribution);
+    for (const prerequisite of ["uses: ./.github/actions/build-runtime-artifacts", "uses: ./.github/actions/install-cargo-about", "cargo build --release"]) {
+      assert.ok(body.indexOf(prerequisite) >= 0 && body.indexOf(prerequisite) < index, `${id}: ${prerequisite}`);
+    }
+    assert.match(attribution, /--kind runtimed --target /);
+    assert.match(attribution, /--version "\$VERSION" --commit "\$NTERACT_BUILD_GIT_HASH" --binary "\$ASSET"/);
+    assert.match(attribution, /VERSION: \$\{\{ needs\.compute-version\.outputs\.version \}\}/);
+    assert.match(attribution, /for name in LICENSE\.nteract THIRD_PARTY_NOTICES\.txt sbom\.cdx\.json; do/);
+    assert.match(attribution, /cp "daemon-attribution\/.*\$name" "\$ASSET\.\$name"/);
+    assert.doesNotMatch(attribution, /continue-on-error|\|\| true/);
+  }
+  const linux = jobs.get("build-linux");
+  const linuxAttribution = workflowStep(linux, "Generate standalone runtimed attribution");
+  assert.match(linuxAttribution, /TARGET: \$\{\{ matrix\.platform\.target \}\}/);
+  assert.match(linuxAttribution, /ASSET="runtimed-linux-\$ARCH"/);
+  assert.match(linux, /runtimed-linux-\$\{\{ matrix\.platform\.arch \}\}\.\*/);
+  const mac = jobs.get("build-macos");
+  assert.match(mac, /for pair in aarch64-apple-darwin:arm64 x86_64-apple-darwin:x64; do/);
+  assert.match(mac, /ASSET="runtimed-darwin-\$ARCH"/);
+  for (const arch of ["arm64", "x64"]) {
+    assert.ok(mac.includes(`            runtimed-darwin-${arch}.*\n`));
+    const windows = jobs.get(`build-notebook-windows-${arch}`);
+    const attribution = workflowStep(windows, "Generate standalone runtimed attribution");
+    const target = arch === "arm64" ? "aarch64" : "x86_64";
+    assert.ok(attribution.includes(`--target ${target}-pc-windows-msvc`));
+    assert.ok(attribution.includes(`ASSET="daemon/runtimed-windows-${arch}.exe"`));
+    assert.ok(windows.indexOf(attribution) > windows.indexOf("uses: tauri-apps/tauri-action@v0"), "hash the post-signing binary");
+    assert.ok(windows.indexOf(attribution) > windows.indexOf("- name: Stage standalone runtimed binary"));
+    assert.ok(windows.indexOf(attribution) < windows.indexOf("- name: Upload standalone runtimed binary"));
+    assert.ok(windows.includes(`path: daemon/runtimed-windows-${arch}.exe*\n`));
+  }
+});
+
+for (const channel of ["stable", "nightly"]) {
+  for (const missing of [null, "sbom.cdx.json"]) {
+    test(`${channel} release staging ${missing ? "rejects a missing sidecar" : "retains all target sidecars and publication globs"}`, (t) => {
+      const fixture = mkdtempSync(join(tmpdir(), "release-attribution-"));
+      t.after(() => rmSync(fixture, {recursive: true, force: true}));
+      mkdirSync(join(fixture, "executables"));
+      mkdirSync(join(fixture, "release-assets"));
+      for (const platform of DAEMON_PLATFORMS) {
+        for (const name of ATTRIBUTION_FILES) {
+          if (missing === name && platform === "windows-arm64.exe") continue;
+          writeFileSync(join(fixture, "executables", `runtimed-${platform}.${name}`), `${platform}:${name}`);
+        }
+      }
+      const prepare = workflowStep(jobs.get("prerelease"), "Prepare release assets");
+      const rename = prepare.match(/          DAEMON_NAME="runtimed"[\s\S]*?          fi\n/)?.[0];
+      const copy = prepare.match(/^          for platform in linux-x64 [\s\S]*?^          done\n/m)?.[0];
+      assert.ok(rename && copy, "exercise actual channel selection and attribution staging loop");
+      const result = spawnSync("bash", ["-euo", "pipefail", "-c", rename + copy], {
+        cwd: fixture, encoding: "utf8", env: {...process.env, CHANNEL: channel},
+      });
+      if (missing) {
+        assert.notEqual(result.status, 0, "missing attribution must stop release staging");
+        return;
+      }
+      assert.equal(result.status, 0, result.stderr);
+      const basename = channel === "nightly" ? "runtimed-nightly" : "runtimed";
+      const expected = DAEMON_PLATFORMS.flatMap(platform => ATTRIBUTION_FILES.map(name => `${basename}-${platform}.${name}`)).sort();
+      assert.deepEqual(readdirSync(join(fixture, "release-assets")).sort(), expected);
+      for (const platform of DAEMON_PLATFORMS) {
+        for (const name of ATTRIBUTION_FILES) {
+          assert.equal(readFileSync(join(fixture, "release-assets", `${basename}-${platform}.${name}`), "utf8"), `${platform}:${name}`);
+        }
+      }
+      const publish = workflowStep(jobs.get("prerelease"), "Create GitHub Release");
+      const patterns = ATTRIBUTION_FILES.map(name => `./release-assets/runtimed*.${name}`);
+      for (const pattern of patterns) assert.ok(publish.includes(`            ${pattern}\n`));
+      const expansion = spawnSync("bash", ["-c", `printf '%s\\n' ${patterns.join(" ")}`], {cwd: fixture, encoding: "utf8"});
+      assert.equal(expansion.status, 0, expansion.stderr);
+      assert.deepEqual(expansion.stdout.trim().split("\n").map(path => path.replace("./release-assets/", "")).sort(), expected);
+    });
+  }
+}
 
 test("macOS runner migration preserves ARM64 hosts and explicit release architectures", () => {
   const build = workflow("build");

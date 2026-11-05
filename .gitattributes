@@ -3,6 +3,9 @@ packages/runtimed/src/protocol-contract.ts text eol=lf
 packages/runtimed/src/wire-constants.ts text eol=lf
 packages/runtimed/src/scope-capabilities.ts text eol=lf
 
+# Attribution supplements verify exact upstream bytes, including line endings.
+scripts/licenses/** -text -whitespace
+
 # Stable third-party renderer-plugin bundles are LFS-tracked for direct consumers.
 # The dev artifact workflow checks them once per checkout to record current-input
 # receipts; later builds reuse those receipts and preserve byte-identical files.

@@ -52,6 +52,22 @@ through the same local daemon used by nteract desktop.
 
 ## Embedding a notebook frontend
 
+### Native binding attribution
+
+Native platform packages (`@runtimed/node-<platform>`) include `LICENSE.nteract`,
+`THIRD_PARTY_NOTICES.txt`, and `sbom.cdx.json` beside the `.node` binary. Keep these
+files when copying the binding into an Electron application or another host.
+The wrapper installs the matching platform package as an optional dependency;
+its README points to those target-specific materials rather than substituting
+daemon notices for the binding's independent Rust dependency graph.
+
+The SBOM records the npm release version, source commit, Rust target, and binary
+SHA-256. It is a conservative dependency inventory, not a replacement for license
+texts or copyright notices. Preserve accessible notices and make corresponding
+MPL-covered source, including covered-file changes, available to recipients.
+Downloaded kernels/tools, the daemon, notebook UI, and host additions have separate
+attribution obligations. These files do not establish complete product compliance.
+
 ### Host telemetry permission
 
 Host-attributed telemetry is staged behind the daemon's default-off
@@ -69,7 +85,7 @@ notebook activity.
 ```js
 const runtime = require("@runtimed/node");
 
-// Older package versions and older daemons remain usable without attribution.
+// Older packages and daemons remain usable without host-attributed telemetry.
 const telemetry = await runtime.openTelemetryRegistration?.({
   socketPath: selectedDaemonSocket,
   hostId: "example-desktop", // Product slug, never a machine or account identity.

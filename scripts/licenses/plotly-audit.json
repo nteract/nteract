@@ -1,0 +1,129 @@
+{
+  "schemaVersion": 1,
+  "status": "reviewed-with-exceptions",
+  "scope": "Conservative upstream source inventory; not exact bundle linkage, completeness, or legal approval",
+  "bundleSha256": "28498fa2ea4ba45c8633218088eb223436ca0ca02fc57027fd6fa841ad1901f9",
+  "selectedPackages": 278,
+  "verifiedPackagesWithFullMaterials": 274,
+  "exceptions": [
+    {
+      "name": "array-normalize",
+      "version": "1.1.4",
+      "license": "MIT",
+      "tarballSha256": "e11abdabce87fb80301de2383796b56ead33a6173d32b91ab3027ce3882dcaa8",
+      "registryGitHead": "10c4d70820e264a4c315a085172ce2a85fa6b181",
+      "gitHead": "10c4d70820e264a4c315a085172ce2a85fa6b181",
+      "bundleSha256": "28498fa2ea4ba45c8633218088eb223436ca0ca02fc57027fd6fa841ad1901f9",
+      "missingMaterial": "Full MIT permission/disclaimer text and an authoritative copyright notice for this released source.",
+      "reason": "Exact published source declares MIT in package.json but supplies no copyright notice. Later upstream license addition follows functional range/NaN changes and is not verified to cover this version. Author metadata is preserved as metadata, not inferred as a copyright holder.",
+      "evidence": [
+        {
+          "path": "package/package.json",
+          "sha256": "91f8c61fa81250de61cb38ea0520d8e5b813cd3df24172e612b8a3f7145d81a5",
+          "declaration": "\"license\": \"MIT\""
+        },
+        {
+          "path": "package/readme.md",
+          "sha256": "cb155a3a4859faefcf99f23367b650d800c71f8af9f2c12b791ab5ae4944d803"
+        }
+      ],
+      "owner": "nteract maintainers",
+      "reviewDate": "2026-12-05",
+      "trackingUrl": "https://github.com/nteract/nteract/issues/4858"
+    },
+    {
+      "name": "color-alpha",
+      "version": "1.0.4",
+      "license": "MIT",
+      "tarballSha256": "9173bae32403e6b9dda3beea02ff752c397259494de2964203c1c6001c6155fd",
+      "registryGitHead": "9d0b7b2091ef0d6341171c5a8e667b372749135f",
+      "gitHead": "9d0b7b2091ef0d6341171c5a8e667b372749135f",
+      "bundleSha256": "28498fa2ea4ba45c8633218088eb223436ca0ca02fc57027fd6fa841ad1901f9",
+      "missingMaterial": "Full MIT permission/disclaimer text and an authoritative copyright notice for this released source.",
+      "reason": "Exact published source declares MIT in package.json but supplies no copyright notice. Later upstream license addition follows functional CJS-to-ESM/default-alpha changes and is not verified to cover this version. Author metadata is not a copyright notice.",
+      "evidence": [
+        {
+          "path": "package/package.json",
+          "sha256": "eb374d9bae922819f0be7c00896f1d1f2c407bd7cd4ac974d6bc68a1511ad24d",
+          "declaration": "\"license\": \"MIT\""
+        },
+        {
+          "path": "package/readme.md",
+          "sha256": "b6afdc5931e29ddb3b4b375c01e72a7f975089cbd9189aaad50419ed1521e768"
+        }
+      ],
+      "owner": "nteract maintainers",
+      "reviewDate": "2026-12-05",
+      "trackingUrl": "https://github.com/nteract/nteract/issues/4858"
+    },
+    {
+      "name": "draw-svg-path",
+      "version": "1.0.0",
+      "license": "MIT",
+      "tarballSha256": "ea308040951545a16c99d540f7958fa66517ecdb454f77e012d86bdb0c2d4374",
+      "registryGitHead": null,
+      "gitHead": null,
+      "bundleSha256": "28498fa2ea4ba45c8633218088eb223436ca0ca02fc57027fd6fa841ad1901f9",
+      "missingMaterial": "Full MIT permission/disclaimer text and an accepted upstream copyright notice.",
+      "reason": "Published package.json and README explicitly declare MIT. Accepted upstream history contains no copyright notice. The third-party proposal at https://github.com/michaelrhodes/draw-svg-path/pull/2 was not merged or approved and is not used as evidence of a grant.",
+      "evidence": [
+        {
+          "path": "package/package.json",
+          "sha256": "3568856a087a501f5b38360dfc347231dc375af0d8dc0b1748cd7e762a1c8a65",
+          "declaration": "\"license\": \"MIT\""
+        },
+        {
+          "path": "package/readme.md",
+          "sha256": "fa4e6ce3d6a95dc4d42f8cafe8464d6779b13c5b6546ed8136323d53693407e5",
+          "declaration": "[MIT](http://opensource.org/licenses/MIT)"
+        }
+      ],
+      "owner": "nteract maintainers",
+      "reviewDate": "2026-12-05",
+      "trackingUrl": "https://github.com/nteract/nteract/issues/4858"
+    },
+    {
+      "name": "jison-lex",
+      "version": "0.3.4",
+      "license": "MIT",
+      "tarballSha256": "871a664d52eb7407a542e3eb45a2a19f1fd0049d5640ee228dcea01b1ad784be",
+      "registryGitHead": null,
+      "gitHead": "28aa5ac329310ac74eff0d4259fcf594429134f7",
+      "bundleSha256": "28498fa2ea4ba45c8633218088eb223436ca0ca02fc57027fd6fa841ad1901f9",
+      "missingMaterial": "Full notice covering the current lexer source and substantive changes after extraction from Jison; the inherited historical notice alone does not resolve this gap.",
+      "reason": "Published README and runtime header explicitly declare MIT. Runtime matches upstream commit 28aa5ac329310ac74eff0d4259fcf594429134f7, although npm metadata has no gitHead. Jison extraction fd891080f7975c7e29bf9d33d2b198700d4752e6 establishes an inherited 2012 Zachary Carter notice. That original notice is preserved as historical material, not claimed to cover later substantive modifications. A parent dependency does not supply a blanket current-source notice.",
+      "evidence": [
+        {
+          "path": "package/package.json",
+          "sha256": "4043796d5432f8c381dc0d8d088af205ff51f59b9a66b76f575cee37da3c43d4"
+        },
+        {
+          "path": "package/README.md",
+          "sha256": "3826df7925c1fb652ac7394b924d13dd199e527f457fdea251f0d227819eb8b8",
+          "declaration": "## license\nMIT"
+        },
+        {
+          "path": "package/regexp-lexer.js",
+          "sha256": "c1755996e566dfd20a4c4767b115227f3848ba5e0c59ffc1ffc87a5640102ab1",
+          "declaration": "// MIT Licensed"
+        },
+        {
+          "path": "source/regexp-lexer.js",
+          "url": "https://raw.githubusercontent.com/zaach/jison-lex/28aa5ac329310ac74eff0d4259fcf594429134f7/regexp-lexer.js",
+          "sha256": "c1755996e566dfd20a4c4767b115227f3848ba5e0c59ffc1ffc87a5640102ab1",
+          "reason": "Exact released runtime matches this source commit; MIT declaration only, no complete copyright notice."
+        },
+        {
+          "path": "historical/README.md",
+          "url": "https://raw.githubusercontent.com/zaach/jison/d071b1a04958f65883f3dc5ceb5b8eab484aa37f/README.md",
+          "sha256": "052927779124d0fb5b88fa29e9494eb6decd1f9b8b213e7aa27edc6c57ff845f",
+          "reason": "Original Jison full MIT notice before lexer extraction; historical inherited material, not a complete current-source notice."
+        }
+      ],
+      "owner": "nteract maintainers",
+      "reviewDate": "2026-12-05",
+      "trackingUrl": "https://github.com/nteract/nteract/issues/4858"
+    }
+  ],
+  "failures": []
+}
