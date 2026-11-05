@@ -1,0 +1,87 @@
+name: Pages property search
+
+# A deep, fresh-seed run of the Pages property suites. Pull requests run the
+# same properties with the default seed and 50 runs (Pages experiment
+# workflow). A failure here prints the seed; replay it locally with the
+# PAGES_FUZZ_* values from the step summary and the fast-check path in the log.
+on:
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Runs per property (PAGES_FUZZ_RUNS)
+        default: "2000"
+      depth:
+        description: Nesting depth (PAGES_FUZZ_DEPTH)
+        default: "3"
+      seed:
+        description: Seed to replay (PAGES_FUZZ_SEED); empty picks a fresh one
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-property-search-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  search:
+    name: Pages structural and concurrent properties
+    runs-on: ubuntu-24.04
+    # Locally, 2000 runs at depth 3 take about 31 minutes; the slowest property,
+    # the read-back replacement, about 16.
+    timeout-minutes: 150
+    defaults:
+      run:
+        working-directory: docs/memos/authenticated-automerge-app-substrate/experiment
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            docs/memos/authenticated-automerge-app-substrate/experiment
+            apps/notebook-cloud/src
+            packages/runtimed/src
+            packages/local-oidc/src
+            src/components/markdown
+            src/components/sharing
+            src/styles
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Prepare pinned upstream packages and locked fixture dependencies
+        run: npm run setup
+      - name: Choose the search parameters
+        env:
+          RUNS: ${{ inputs.runs || '2000' }}
+          DEPTH: ${{ inputs.depth || '3' }}
+          SEED: ${{ inputs.seed }}
+        run: |
+          case "$RUNS:$DEPTH:$SEED" in
+            *[!0-9:]*) echo "::error::runs, depth and seed must be integers"; exit 1 ;;
+          esac
+          if [ -z "$SEED" ]; then
+            SEED=$(node -p 'require("node:crypto").randomInt(2 ** 31)')
+          fi
+          {
+            echo "PAGES_FUZZ_RUNS=$RUNS"
+            echo "PAGES_FUZZ_DEPTH=$DEPTH"
+            echo "PAGES_FUZZ_SEED=$SEED"
+            echo "PAGES_FUZZ_TIME_LIMIT_MS=3600000"
+          } >> "$GITHUB_ENV"
+          echo "Seed $SEED, $RUNS runs per property, depth $DEPTH"
+          {
+            echo "### Pages property search"
+            echo
+            echo "Replay a failure from \`docs/memos/authenticated-automerge-app-substrate/experiment/pages\`:"
+            echo
+            echo '```sh'
+            echo "PAGES_FUZZ_SEED=$SEED PAGES_FUZZ_DEPTH=$DEPTH PAGES_FUZZ_PATH='<path from the log>' \\"
+            echo "  npm exec -- tsx --tsconfig tsconfig.json --test --test-name-pattern '<property>' <file>"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Search the Pages properties
+        run: npm run test:properties --workspace @nteract/pages-native-experiment
