@@ -98,8 +98,13 @@ nodes.task_list = {
   toDOM: () => ["ul", { "data-task-list": "true" }, 0],
   parseDOM: [{ tag: 'ul[data-task-list="true"]', priority: 60 }],
 };
+// A list item can open with any block, as Wordgard's ListItem can. The
+// adapter's `paragraph block*` can't read an item stored as a list-item
+// marker followed by another block's marker, which both writers produce for
+// an item that opens with a code block, heading, quote, rule or dataframe.
 nodes.list_item = {
   ...nodes.list_item,
+  content: "block+",
   attrs: { ...nodes.list_item.attrs, checked: { default: null } },
   toDOM: (node) =>
     typeof node.attrs.checked === "boolean"
@@ -1513,10 +1518,24 @@ function parseTokens(tokens) {
   const own = parser.tokenizer;
   parser.tokenizer = { parse: () => tokens };
   try {
-    return parser.parse("");
+    return paragraphFirstItems(parser.parse(""));
   } finally {
     parser.tokenizer = own;
   }
+}
+
+/** `tree` with an empty paragraph opening every list item that opens with
+ * another block. The adapter writes an item's marker for its first
+ * paragraph, so without one an item that opens with a list has no marker and
+ * joins the item before it. Reads accept either form (`list_item` is
+ * `block+`). */
+function paragraphFirstItems(node) {
+  if (node.isTextblock || node.isLeaf) return node;
+  const children = [];
+  node.forEach((child) => children.push(paragraphFirstItems(child)));
+  if (node.type === schema.nodes.list_item && children[0]?.type !== schema.nodes.paragraph)
+    children.unshift(schema.nodes.paragraph.create());
+  return node.copy(node.content.constructor.from(children));
 }
 
 // Export escapes literal text that would otherwise read back as math or HTML:

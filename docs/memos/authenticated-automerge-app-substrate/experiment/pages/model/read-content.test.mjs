@@ -503,3 +503,59 @@ test("outline fields bound per-item values, cover ragged tables and name unknown
   assert.equal(wideTable.summary.align_truncated, true);
   assert.deepEqual(small.summary, { rows: 2, columns: 3, align: ["left", null, null] });
 });
+
+test("a list item that opens with a block other than a paragraph reads back", async () => {
+  const { createPageData, initializePage, orderedBlockIds } = await import("./page.mjs");
+  const { textPath } = await import("./richtext.mjs");
+  const { updateSpansConfig } = await import("./marks.mjs");
+  const pageId = "44444444-4444-4444-8444-444444444444";
+  const written = (markdown) => {
+    let doc = A.from(createPageData({ pageId, title: "Items" }));
+    doc = A.change(doc, (draft) => initializePage(draft, markdown));
+    return doc;
+  };
+  // Agent writes: each item's opening block reads back as written.
+  for (const markdown of [
+    "- ```\n  x\n  ```",
+    "- a\n- ```\n  x\n  ```",
+    "- # Heading",
+    "1. > quoted",
+  ]) {
+    const read = projectReadContent(written(markdown), {});
+    assert.equal(read.blocks[0].markdown, markdown, markdown);
+    assert.equal(read.outline.length, 1, markdown);
+  }
+  // The editor stores an item that opens with a dataframe as the item's
+  // marker, then the dataframe's.
+  const S = (value) => new A.ImmutableString(value);
+  const marker = (type, parents = [], attrs = {}) => ({
+    type: "block",
+    value: { type: S(type), parents: parents.map(S), attrs, isEmbed: false },
+  });
+  let doc = written("Intro");
+  const id = orderedBlockIds(doc)[0];
+  doc = A.change(doc, (draft) =>
+    A.updateSpans(
+      draft,
+      textPath(id),
+      [
+        marker("unordered-list-item"),
+        { type: "text", value: "a" },
+        marker("unordered-list-item"),
+        marker("dataframe", ["unordered-list-item"], {
+          src: S(`/api/pages/${pageId}/assets/${"e".repeat(64)}`),
+          media_type: S("application/vnd.apache.parquet"),
+          title: S("Usage"),
+        }),
+      ],
+      updateSpansConfig,
+    ),
+  );
+  const read = projectReadContent(doc, {});
+  assert.equal(
+    read.blocks[0].markdown,
+    `- a\n- [Dataframe: Usage](/api/pages/${pageId}/assets/${"e".repeat(64)})`,
+  );
+  assert.equal(read.outline[0].type, "bullet-list");
+  assert.ok(read.outline[0].node_id);
+});
