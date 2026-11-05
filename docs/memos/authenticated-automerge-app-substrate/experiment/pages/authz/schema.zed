@@ -55,6 +55,7 @@ definition project {
 
 	/** editor contributes to every item in the project. */
 	relation editor: user | group#member | organization#member
+	relation commenter: user | group#member
 
 	/** viewer reads every item in the project. organization#member is company view. */
 	relation viewer: user | group#member | organization#member
@@ -63,7 +64,7 @@ definition project {
 	permission contribute = owner + editor
 
 	/** read_items is the proposal's project.read_items: contribute + viewer. */
-	permission read_items = contribute + viewer
+	permission read_items = contribute + commenter + viewer
 
 	/** administer is ownership of the project itself. */
 	permission administer = owner
@@ -79,17 +80,17 @@ definition project {
 	permission manage_members = administer
 
 	/** create_items adds items to the project. */
-	permission create_items = contribute
+	permission create_items = administer
 
 	/** trash and restore move the project's items to and from Trash. */
-	permission trash = contribute
-	permission restore = contribute
+	permission trash = administer
+	permission restore = administer
 
 	/** purge permanently deletes an item from Trash. */
 	permission purge = administer
 
 	/** move_within reorders or reparents items inside the project. */
-	permission move_within = contribute
+	permission move_within = administer
 
 	/** move_out takes an item out of the project. */
 	permission move_out = administer
@@ -138,7 +139,7 @@ definition page {
 	 * comment writes the item's comments document: every editor, and
 	 * commenters. Editing the item itself stays with edit.
 	 */
-	permission comment = edit + commenter
+	permission comment = edit + commenter + project->commenter
 
 	/** read is the proposal's item.read, with removed subtracted from the direct viewer path. */
 	permission read = comment + (viewer - removed) + project->read_items

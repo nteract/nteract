@@ -45,12 +45,25 @@ export function validateAccessPrincipal(principal) {
  * or retire signing keys, so only the lifecycle overlay in decide() withholds
  * access while trashed.
  */
-export function pageGrant(metadata, principal) {
+export function pageGrant(metadata, principal, now = Date.now()) {
   const revision = revisionOf(metadata);
   if (!metadata || pageState(metadata) === "deleted" || typeof principal !== "string")
     return { role: "none", revision, generation: 0 };
   if (principal === metadata.owner) return { role: "owner", revision, generation: 0 };
   const member = memberRow(metadata.acl?.members, principal);
+  const container = metadata.projectAccess;
+  if (container?.valid_until > now) {
+    const inherited = ["editor", "commenter", "viewer"].find((role) =>
+      container.relations?.[role]?.some((subject) => subject.id === principal),
+    );
+    const rank = { none: 0, viewer: 1, commenter: 2, editor: 3 };
+    if (inherited && rank[inherited] > (rank[member?.role] ?? 0))
+      return {
+        role: inherited,
+        revision,
+        generation: `project:${container.id}:${memberRow(container.members, principal)?.generation ?? 0}:${member?.generation ?? 0}`,
+      };
+  }
   if (!member) return { role: "none", revision, generation: 0 };
   return { role: member.role, revision, generation: member.generation };
 }
@@ -72,7 +85,7 @@ export function pageRelation(metadata, principal) {
  * role it holds. Grant revision and generation come from pageGrant.
  */
 export function pageAccess(metadata, identity, options) {
-  const grant = pageGrant(metadata, identity?.principal);
+  const grant = pageGrant(metadata, identity?.principal, options?.now);
   const decision = pageDecision(metadata, identity, options);
   const can = (capability) => decision.capabilities.includes(capability);
   const role = decision.basis.relation ?? "none";
@@ -97,6 +110,7 @@ export function pageAccess(metadata, identity, options) {
     role,
     // Company viewing never creates a durable principal membership.
     ...(decision.basis.via === "organization" && { source: "domain" }),
+    ...(decision.basis.via === "project" && { source: "project" }),
     canRead: can("read"),
     canWrite: can("edit"),
     canComment: can("comment"),

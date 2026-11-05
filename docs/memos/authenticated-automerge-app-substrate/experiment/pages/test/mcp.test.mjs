@@ -103,7 +103,11 @@ test("MCP gives every refusal a stable code in text and structured content", asy
   assert.deepEqual(
     await call("read_page", async () =>
       Response.json(
-        { error: "Request timed out", code: "request_timeout", retryable: true },
+        {
+          error: "Request timed out",
+          code: "request_timeout",
+          retryable: true,
+        },
         { status: 504 },
       ),
     ),
@@ -173,6 +177,10 @@ test("MCP tools declare every annotation hint, and each tool's hints are intende
   const destructive = { ...write, destructiveHint: true };
   // A new tool fails here until its hints are chosen.
   const intended = {
+    get_page_access: read,
+    get_project_access: read,
+    manage_page_access: destructive,
+    manage_project_access: destructive,
     list_pages: read,
     read_page: read,
     read_page_changes: read,
@@ -197,6 +205,113 @@ test("MCP tools declare every annotation hint, and each tool's hints are intende
   const listed = (await response.json()).result.tools;
   assert.deepEqual(listed.map((tool) => tool.name).sort(), Object.keys(intended).sort());
   for (const tool of listed) assert.deepEqual(tool.annotations, intended[tool.name], tool.name);
+});
+
+test("Project tools expose the backing content ID without a separate home concept", () => {
+  const descriptor = (name) => tools.find((tool) => tool.name === name);
+  assert.match(
+    descriptor("create_project").description,
+    /own editable content and a hierarchy of Pages/,
+  );
+  assert.match(descriptor("get_project").description, /home_page_id[\s\S]*edit_page or patch_page/);
+  assert.match(descriptor("update_project").description, /does not change its content/);
+  for (const name of ["create_project", "get_project", "update_project"])
+    assert.doesNotMatch(JSON.stringify(descriptor(name)), /home Page/);
+});
+
+test("sharing tools preserve access guards and require separate OAuth consent", async () => {
+  for (const target of ["page", "project"]) {
+    const name = `manage_${target}_access`;
+    const descriptor = tools.find((tool) => tool.name === name);
+    assert.deepEqual(descriptor.securitySchemes[0].scopes, [
+      "pages:read",
+      "pages:write",
+      "pages:share",
+    ]);
+    assert.equal(descriptor.inputSchema.properties.retry_token, undefined);
+    assert.ok(descriptor.inputSchema.required.includes("expected_revision"));
+    const args = {
+      [`${target}_id`]: target === "page" ? pageId : "prj_fixture",
+      action: "set_role",
+      principal: "anaconda:recipient",
+      role: "commenter",
+      expected_revision: 3,
+      idempotency_key: "share-test-0001",
+    };
+    const req = request("tools/call", { name, arguments: args });
+    req.headers.set("authorization", "Bearer pages_at_fixture");
+    const response = await handleMcp(req, async (operation, received) => {
+      assert.equal(operation, name);
+      assert.deepEqual(received, args);
+      return Response.json(
+        { code: "oauth_insufficient_scope", error: "Sharing consent required" },
+        { status: 403 },
+      );
+    });
+    const result = (await response.json()).result;
+    assert.equal(result.isError, true);
+    assert.match(
+      result._meta["mcp/www_authenticate"][0],
+      /scope="pages:read pages:write pages:share"/,
+    );
+  }
+  assert.deepEqual(
+    tools.find((tool) => tool.name === "manage_project_access").inputSchema.properties.action,
+    { enum: ["invite", "set_role", "revoke_invite"] },
+  );
+});
+
+test("Project discovery descriptions distinguish claim reads from Page listings", () => {
+  const descriptor = (name) => tools.find((tool) => tool.name === name);
+  for (const name of ["get_project", "list_projects"])
+    assert.match(descriptor(name).description, /authenticated read can claim/);
+  assert.match(descriptor("get_project").description, /not its backing \/p\/\.\.\. link/);
+  assert.match(
+    descriptor("list_pages").description,
+    /does not enumerate all inherited Project Pages/,
+  );
+  assert.match(
+    descriptor("list_pages").inputSchema.properties.project_id.description,
+    /owner or a Project member/,
+  );
+  assert.match(
+    descriptor("get_project_access").description,
+    /removed members and internal signing generations are omitted/,
+  );
+  assert.match(descriptor("get_project_access").description, /expiresAt \(epoch milliseconds\)/);
+});
+
+test("Project email invitations forward exact email without requiring principal lookup", async () => {
+  const descriptor = tools.find((tool) => tool.name === "manage_project_access");
+  assert.ok(!descriptor.inputSchema.required.includes("principal"));
+  assert.ok(!descriptor.inputSchema.required.includes("role"));
+  assert.match(descriptor.description, /exact known email/);
+  assert.match(descriptor.description, /no email is sent/);
+  for (const fields of [
+    { action: "invite", email: "known.person@example.com", role: "commenter" },
+    { action: "revoke_invite", invite_id: "invite-fixture" },
+  ]) {
+    const args = {
+      project_id: "prj_fixture",
+      expected_revision: 7,
+      idempotency_key: `project-${fields.action}-fixture`,
+      ...fields,
+    };
+    const receipt = { project_id: args.project_id, revision: 8, members: {}, invites: [] };
+    const response = await handleMcp(
+      request("tools/call", { name: "manage_project_access", arguments: args }),
+      async (operation, received) => {
+        assert.equal(operation, "manage_project_access");
+        assert.deepEqual(received, args);
+        assert.equal(received.principal, undefined);
+        return Response.json(receipt);
+      },
+    );
+    const result = (await response.json()).result;
+    assert.equal(result.isError, undefined);
+    assert.deepEqual(result.structuredContent.invites, []);
+    assert.deepEqual(JSON.parse(result.content[0].text), result.structuredContent);
+  }
 });
 
 test("MCP advertises typed image insertion and echoes its exact receipt as structured content", async () => {
@@ -225,7 +340,10 @@ test("MCP advertises typed image insertion and echoes its exact receipt as struc
   const response = await handleMcp(
     request("tools/call", {
       name: "edit_page",
-      arguments: { page_id: pageId, operations: [{ op: "insert_image", asset_id, alt: "A cat" }] },
+      arguments: {
+        page_id: pageId,
+        operations: [{ op: "insert_image", asset_id, alt: "A cat" }],
+      },
     }),
     async () => Response.json(receipt),
   );
@@ -239,7 +357,9 @@ test("MCP advertises typed image insertion and echoes its exact receipt as struc
 test("MCP refuses resource URLs outside this service before invoking tools", async () => {
   let invoked = false;
   const response = await handleMcp(
-    request("resources/read", { uri: "https://elsewhere.example/?page=page_" + "a".repeat(32) }),
+    request("resources/read", {
+      uri: "https://elsewhere.example/?page=page_" + "a".repeat(32),
+    }),
     async () => {
       invoked = true;
       return Response.json({});
@@ -265,7 +385,11 @@ test("MCP change budgets count both representations, escaping and the JSON-RPC I
     const response = await handleMcp(
       request("tools/call", {
         name: "read_page_changes",
-        arguments: { page_id: pageId, since_heads: ["b".repeat(64)], max_bytes: maxBytes },
+        arguments: {
+          page_id: pageId,
+          since_heads: ["b".repeat(64)],
+          max_bytes: maxBytes,
+        },
       }),
       async () => Response.json(body),
     );
@@ -303,7 +427,11 @@ test("MCP exposes net changes and node-scoped target edits without changing exac
     (op) => op.properties.op.const === "replace_match",
   );
   assert.equal(match.properties.node_index.minimum, 0);
-  const args = { page_id: pageId, since_heads: ["b".repeat(64)], comments: "none" };
+  const args = {
+    page_id: pageId,
+    since_heads: ["b".repeat(64)],
+    comments: "none",
+  };
   const body = {
     page_id: pageId,
     heads: ["c".repeat(64)],
@@ -321,7 +449,10 @@ test("MCP exposes net changes and node-scoped target edits without changing exac
     },
   );
   const result = (await response.json()).result;
-  assert.deepEqual(result.structuredContent, { ...body, url: `https://pages.example/p/${pageId}` });
+  assert.deepEqual(result.structuredContent, {
+    ...body,
+    url: `https://pages.example/p/${pageId}`,
+  });
   assert.equal(result.isError, undefined);
   const conflict = {
     code: "edit_conflict",
@@ -355,7 +486,10 @@ test("MCP initialization guides title authoring and successful receipts preserve
   assert.equal(initialized.serverInfo.name, "Pages");
   const [orientation, ...rest] = initialized.instructions.split("\n");
   assert.match(orientation, /^Start with list_pages/);
-  assert.match(rest.join("\n"), /home Page[\s\S]*url field[\s\S]*opening_heading_repeats_title/);
+  assert.match(
+    rest.join("\n"),
+    /Projects have editable content[\s\S]*url field[\s\S]*opening_heading_repeats_title/,
+  );
   const receipt = {
     page_id: pageId,
     heads: ["b".repeat(64)],
@@ -393,7 +527,12 @@ test("MCP advertises and forwards selective reads and read-only compact comments
     ],
     [
       "list_page_comments",
-      { page_id: pageId, state: "open", thread_ids: ["thread-id"], include_messages: false },
+      {
+        page_id: pageId,
+        state: "open",
+        thread_ids: ["thread-id"],
+        include_messages: false,
+      },
     ],
   ]) {
     const descriptor = tools.find((tool) => tool.name === name);
@@ -428,14 +567,20 @@ test("MCP preserves actionable read-budget errors and does not suggest mutation 
     outline: { entries: [], total: 0, offset: 0, next_offset: null },
   };
   const result = await handleMcp(
-    request("tools/call", { name: "read_page", arguments: { page_id: pageId } }),
+    request("tools/call", {
+      name: "read_page",
+      arguments: { page_id: pageId },
+    }),
     async () => Response.json(budget, { status: 413 }),
   );
   const body = (await result.json()).result;
   assert.equal(body.isError, true);
   assert.deepEqual(JSON.parse(body.content[0].text), budget);
   const failed = await handleMcp(
-    request("tools/call", { name: "list_page_comments", arguments: { page_id: pageId } }),
+    request("tools/call", {
+      name: "list_page_comments",
+      arguments: { page_id: pageId },
+    }),
     async () => {
       throw Error("Private internals");
     },
@@ -458,7 +603,11 @@ test("MCP advertises ephemeral progress with write scope and reads presence with
     [
       "report_page_progress",
       { page_id: pageId, message: "Checking the summary" },
-      { page_id: pageId, progress_id: "activity-1", lease_token: "private-capability" },
+      {
+        page_id: pageId,
+        progress_id: "activity-1",
+        lease_token: "private-capability",
+      },
     ],
     [
       "read_page_presence",
@@ -588,7 +737,9 @@ test("MCP advertises visible-text replacement separately from Markdown replaceme
       assert.deepEqual(received, args);
       return Response.json({
         page_id: pageId,
-        result: { edits: [{ op: "replace_match", block_id: "block-a", matched: 1 }] },
+        result: {
+          edits: [{ op: "replace_match", block_id: "block-a", matched: 1 }],
+        },
       });
     },
   );
@@ -604,7 +755,10 @@ test("MCP list and read tool links use the public origin regardless of proxy hea
     ["read_page", { page_id: pageId, title: "Test", blocks: [] }],
   ]) {
     const response = await handleMcp(
-      request("tools/call", { name, arguments: name === "read_page" ? { page_id: pageId } : {} }),
+      request("tools/call", {
+        name,
+        arguments: name === "read_page" ? { page_id: pageId } : {},
+      }),
       async () => Response.json(body),
     );
     const result = JSON.parse((await response.json()).result.content[0].text);
@@ -631,16 +785,28 @@ test("MCP tool metadata declares the OAuth scopes needed by each operation", asy
         {
           type: "oauth2",
           scopes: [
-            "list_pages",
-            "read_page",
-            "read_page_changes",
-            "list_page_comments",
-            "read_page_presence",
-            "list_projects",
-            "get_project",
-          ].includes(tool.name)
-            ? ["pages:read"]
-            : ["pages:read", "pages:write"],
+            ...([
+              "get_page_access",
+              "get_project_access",
+              "list_pages",
+              "read_page",
+              "read_page_changes",
+              "list_page_comments",
+              "read_page_presence",
+              "list_projects",
+              "get_project",
+            ].includes(tool.name)
+              ? ["pages:read"]
+              : ["pages:read", "pages:write"]),
+            ...([
+              "get_page_access",
+              "get_project_access",
+              "manage_page_access",
+              "manage_project_access",
+            ].includes(tool.name)
+              ? ["pages:share"]
+              : []),
+          ],
         },
       ],
       tool.name,
@@ -674,11 +840,18 @@ test("MCP image import advertises ChatGPT's complete file descriptor and keeps t
   };
   const assetUrl = `/api/pages/${pageId}/assets/${"a".repeat(64)}`;
   const response = await handleMcp(
-    request("tools/call", { name: "import_page_image", arguments: { page_id: pageId, file } }),
+    request("tools/call", {
+      name: "import_page_image",
+      arguments: { page_id: pageId, file },
+    }),
     async (operation, args) => {
       assert.equal(operation, "import_page_image");
       assert.deepEqual(args, { page_id: pageId, file });
-      return Response.json({ page_id: pageId, asset_url: assetUrl, mime_type: "image/png" });
+      return Response.json({
+        page_id: pageId,
+        asset_url: assetUrl,
+        mime_type: "image/png",
+      });
     },
   );
   const result = (await response.json()).result;
@@ -691,7 +864,10 @@ test("MCP image import advertises ChatGPT's complete file descriptor and keeps t
 
 test("image import failures distinguish storage retries from document edits without leaking file URLs", async () => {
   const response = await handleMcp(
-    request("tools/call", { name: "import_page_image", arguments: { page_id: pageId } }),
+    request("tools/call", {
+      name: "import_page_image",
+      arguments: { page_id: pageId },
+    }),
     async () => {
       throw new Error("private download URL with credentials");
     },
@@ -711,7 +887,10 @@ test("only verified OAuth credential failures produce tool reauthorization chall
     ["anaconda-fixture-key", 403, "oauth_insufficient_scope", undefined],
     ["anaconda-fixture-key", 401, undefined, undefined],
   ]) {
-    const req = request("tools/call", { name: "read_page", arguments: { page_id: pageId } });
+    const req = request("tools/call", {
+      name: "read_page",
+      arguments: { page_id: pageId },
+    });
     req.headers.set("authorization", `Bearer ${token}`);
     const response = await handleMcp(req, async () =>
       Response.json({ error: "Denied", ...(code && { code }) }, { status }),
@@ -796,7 +975,11 @@ test("MCP resources reach invoke() as kind resource; tool calls carry no kind", 
     return Response.json(
       operation === "list_pages"
         ? { pages: [] }
-        : { page_id: "44444444-4444-4444-8444-444444444444", title: "T", blocks: [] },
+        : {
+            page_id: "44444444-4444-4444-8444-444444444444",
+            title: "T",
+            blocks: [],
+          },
     );
   };
   assert.equal((await handleMcp(request("resources/list"), invoke)).status, 200);
@@ -850,7 +1033,10 @@ test("MCP list_pages advertises access and sort and forwards them unchanged", as
   );
   assert.equal(response.status, 200);
   assert.deepEqual(calls, [
-    { operation: "list_pages", args: { access: "shared", sort: "created", limit: 5 } },
+    {
+      operation: "list_pages",
+      args: { access: "shared", sort: "created", limit: 5 },
+    },
   ]);
 });
 

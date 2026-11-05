@@ -170,10 +170,19 @@ export class DocumentPolicy {
     return binding.generation ?? (binding.principal === this.metadata()?.owner ? 0 : -1);
   }
 
+  inheritedAuthorityUnknown(binding) {
+    const generation = this.bindingGeneration(binding);
+    return (
+      typeof generation === "string" &&
+      generation.startsWith("project:") &&
+      !(this.metadata()?.projectAccess?.valid_until > this.now())
+    );
+  }
+
   /** Whether `binding` may author records in `scope` now. */
   authorAllowed(binding, scope = PAGE_SCOPE) {
     if (!binding || binding.pending || binding.revoked || binding.retired) return false;
-    const grant = pageGrant(this.metadata(), binding.principal);
+    const grant = pageGrant(this.metadata(), binding.principal, this.now());
     if (this.bindingGeneration(binding) !== grant.generation) return false;
     if (scope === COMMENTS_SCOPE)
       return (
@@ -200,11 +209,16 @@ export class DocumentPolicy {
     const writes = [];
     const disconnects = [];
     for (const [key, binding] of this.bindings) {
-      const grant = pageGrant(this.metadata(), binding.principal);
+      const grant = pageGrant(this.metadata(), binding.principal, this.now());
+      // A Project lease expiring (or failing to refresh) is unknown authority,
+      // not proof of revocation. Live access still fails closed below, but
+      // permanently retire inherited author keys only against a fresh ACL.
+      const inheritedUnknown = this.inheritedAuthorityUnknown(binding);
       const retire =
-        this.bindingGeneration(binding) !== grant.generation ||
-        (binding.writer && !EDITING_ROLES.includes(grant.role)) ||
-        (binding.commenter && !COMMENTING_ROLES.includes(grant.role));
+        !inheritedUnknown &&
+        (this.bindingGeneration(binding) !== grant.generation ||
+          (binding.writer && !EDITING_ROLES.includes(grant.role)) ||
+          (binding.commenter && !COMMENTING_ROLES.includes(grant.role)));
       if (retire && !binding.retired) {
         const retired = { ...binding, writer: false, retired: true };
         this.bindings.set(key, retired);
@@ -394,6 +408,14 @@ export class DocumentPolicy {
         previous.driver !== identity.driver)
     )
       throw new PermissionDenied("Signing key has another binding", "native_binding_mismatch");
+    // A direct reader grant may admit this account during a Project outage,
+    // but it is not evidence that this key lost its inherited author grant.
+    // Defer before constructing/persisting any downgraded binding.
+    if (previous && this.inheritedAuthorityUnknown(previous))
+      throw Object.assign(new Error("Project access is temporarily unavailable; reconnect"), {
+        status: 503,
+        code: "project_policy_unavailable",
+      });
     // A connection still holding this key doesn't block admission: the same
     // tab is reconnecting, and admission replaces it (native-session-machine).
     let admission = this.admissions.get(key);
@@ -674,7 +696,7 @@ export class DocumentPolicy {
     if (!binding) return undefined;
     return {
       principal: binding.principal,
-      role: pageGrant(this.metadata(), binding.principal).role,
+      role: pageGrant(this.metadata(), binding.principal, this.now()).role,
     };
   }
 

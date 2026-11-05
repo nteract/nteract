@@ -19,6 +19,7 @@ const CHATGPT_REDIRECT = "https://chatgpt.com/connector_platform_oauth_redirect"
 const KILO_REDIRECT = "http://127.0.0.1:19876/mcp/oauth/callback";
 const READ = "pages:read";
 const WRITE = "pages:write";
+const SHARE = "pages:share";
 const OFFLINE = "offline_access";
 const MAX_INPUT_BYTES = 16_384;
 // This single fixed, public metadata document is shared by all requests in an
@@ -102,7 +103,7 @@ export function oauthProtectedResourceMetadata(env) {
   return {
     resource: origin + "/mcp",
     authorization_servers: [origin],
-    scopes_supported: [READ, WRITE],
+    scopes_supported: [READ, WRITE, SHARE],
     bearer_methods_supported: ["header"],
     resource_name: "Pages",
     resource_documentation: origin + "/connect",
@@ -121,7 +122,7 @@ export function oauthAuthorizationServerMetadata(env) {
     token_endpoint_auth_methods_supported: ["none"],
     revocation_endpoint_auth_methods_supported: ["none"],
     code_challenge_methods_supported: ["S256"],
-    scopes_supported: [READ, WRITE, OFFLINE],
+    scopes_supported: [READ, WRITE, SHARE, OFFLINE],
     authorization_response_iss_parameter_supported: true,
     client_id_metadata_document_supported: true,
     service_documentation: origin + "/connect",
@@ -156,12 +157,7 @@ function knownClient(clientId, env) {
       redirectUri: CHATGPT_REDIRECT,
     };
   if (clientId === "pages-kilo")
-    return {
-      id: clientId,
-      name: "Kilo",
-      site: "https://kilo.ai/",
-      redirectUri: KILO_REDIRECT,
-    };
+    return { id: clientId, name: "Kilo", site: "https://kilo.ai/", redirectUri: KILO_REDIRECT };
   const origin = pagesPublicOrigin(env);
   if (
     clientId === "pages-local-e2e" &&
@@ -296,15 +292,15 @@ function single(params, name, { required = true, max = 2048 } = {}) {
 function scopeFor(value) {
   const requested = new Set(value === undefined ? [READ] : value.split(" "));
   if (
-    [...requested].some((scope) => ![READ, WRITE, OFFLINE].includes(scope)) ||
+    [...requested].some((scope) => ![READ, WRITE, SHARE, OFFLINE].includes(scope)) ||
     (!requested.has(READ) && !requested.has(WRITE))
   )
     throw new OAuthError(
       "invalid_scope",
-      "Request pages:read, optionally pages:write and offline_access.",
+      "Request pages:read, optionally pages:write, pages:share and offline_access.",
     );
   if (requested.has(WRITE)) requested.add(READ);
-  return [READ, WRITE, OFFLINE].filter((scope) => requested.has(scope)).join(" ");
+  return [READ, WRITE, SHARE, OFFLINE].filter((scope) => requested.has(scope)).join(" ");
 }
 async function authorizationRequest(params, env, context) {
   for (const key of params.keys()) single(params, key, { required: false, max: MAX_INPUT_BYTES });
@@ -437,6 +433,10 @@ async function authorize(request, env, context) {
     });
     const scopes = new Set(auth.request.scope.split(" "));
     const permissions = ["Read the Pages your account can access."];
+    if (scopes.has(SHARE))
+      permissions.push(
+        "View and manage sharing for Pages and Projects you own. Project members can access every Page in the Project.",
+      );
     if (scopes.has(WRITE))
       permissions.push(
         "Create Pages, edit and comment, and delete Pages you own. Each Page's sharing permissions still apply.",

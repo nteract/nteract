@@ -32,6 +32,7 @@ import {
   libraryBase,
   libraryPath,
   pagePath,
+  projectPath,
   readPageRoute,
   writePageRoute,
   writeRoute,
@@ -57,13 +58,7 @@ import { ProjectCreator } from "./ProjectCreator.jsx";
 import { MoveDialog } from "./MoveDialog.jsx";
 import { moveOrigin } from "./container-dialog-machine.mjs";
 import { TrashView } from "./TrashView.jsx";
-import {
-  Breadcrumbs,
-  ProjectChip,
-  ProjectPages,
-  ProjectView,
-  projectPageCount,
-} from "./ProjectView.jsx";
+import { Breadcrumbs, ProjectChip, ProjectPages, projectPageCount } from "./ProjectView.jsx";
 import { pageCreations } from "./page-create-machine.mjs";
 import { ProjectsIndex } from "./IndexViews.jsx";
 import { Library } from "./Library.jsx";
@@ -216,6 +211,7 @@ function App() {
     [index, setIndex] = useState(null),
     // read_page's location for the open Page, null until it answers.
     [placement, setPlacement] = useState(null),
+    [projectDetails, setProjectDetails] = useState(null),
     // The Pages of the open Project home Page's Project: { pageId, pages },
     // or null until list_pages answers.
     [projectPages, setProjectPages] = useState(null),
@@ -389,15 +385,19 @@ function App() {
     host.release({ ...options, onError: showError });
     resetDocumentUI();
   }
-  async function install(next, revision, { focus = false, focusEmpty = true } = {}) {
+  async function install(
+    next,
+    revision,
+    { focus = false, focusEmpty = true, project = null } = {},
+  ) {
     if (!host.install(next, revision, authentication.current?.identity?.principal)) {
       await next.close();
       return false;
     }
     bootPreview.dispatch({ type: "installed" });
-    setProjectOpen(null);
     setIndex(null);
     setPlacement(null);
+    setProjectDetails(project);
     setProjectPages(null);
     // Breadcrumbs show only the Project and parents this account can open.
     // A Project's home Page also lists the Project's Pages. A Page created in
@@ -409,6 +409,18 @@ function App() {
       current: () => host.current === next,
       onFound: (value) => {
         setPlacement((shown) => shown ?? value);
+        if (value.project_id && project?.project_id !== value.project_id)
+          void tool("get_project", { project_id: value.project_id }).then(
+            (project) => {
+              if (
+                host.current === next &&
+                !next.authRequired &&
+                next.identity?.principal === authentication.current?.identity?.principal
+              )
+                setProjectDetails(project);
+            },
+            () => {},
+          );
         if (value.home && value.project_id)
           void listProjectPages(tool, value.project_id).then(
             (pages) => {
@@ -500,13 +512,19 @@ function App() {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
   /** Open a Page. `nameIt` is for a Page just created: focus its title
-   * rather than its empty body. */
-  async function open(id, { focus = false, historyMode = "push", nameIt = false } = {}) {
-    if (historyMode !== "none") writePageRoute(id, { replace: historyMode === "replace" });
+   * rather than its empty body. Project routes resolve their existing backing
+   * Page inside the same fenced navigation, without rewriting the address. */
+  async function open(
+    id,
+    { focus = false, historyMode = "push", nameIt = false, projectId = null } = {},
+  ) {
+    if (historyMode !== "none")
+      writePageRoute(projectId ?? id, { replace: historyMode === "replace" });
     bootPreview.dispatch({ type: "navigated", pageId: id });
     picker.close();
     setNotice("");
-    if (host.current?.pageId === id) return;
+    setProjectOpen(projectId);
+    if (id && host.current?.pageId === id) return;
     const controller = new AbortController();
     const revision = host.navigate(controller);
     setError("");
@@ -516,6 +534,13 @@ function App() {
       // A quick Back may revisit a replica whose final local checkpoint is
       // still flushing. Wait only for that same Page, never an unrelated one.
       const principal = authentication.current?.identity?.principal;
+      let project = null;
+      if (projectId) {
+        project = await tool("get_project", { project_id: projectId });
+        if (!navigationCurrent(revision, principal)) return;
+        id = project.home_page_id;
+        if (!id) throw new Error("This Project has no document to open.");
+      }
       await host.closingFor(principal, id);
       if (!host.isCurrent(revision)) return;
       const loaded = await editor.readyWhile(() => navigationCurrent(revision, principal));
@@ -531,7 +556,7 @@ function App() {
       );
       if (nameIt) {
         if (await install(next, revision, { focusEmpty: false })) setTitleFocusRequest(next);
-      } else await install(next, revision, { focus });
+      } else await install(next, revision, { focus, project });
     } catch (error) {
       if (host.isCurrent(revision)) bootPreview.dispatch({ type: "refused" });
       if (host.isCurrent(revision) && !bannerShows(error)) showError(error);
@@ -577,9 +602,12 @@ function App() {
     };
   }
   function openProject(projectId, { historyMode = "push" } = {}) {
-    home(null, { historyMode: "none", refreshCatalog: false });
-    if (historyMode !== "none") writePageRoute(projectId, { replace: historyMode === "replace" });
-    setProjectOpen(projectId);
+    if (host.current && placement?.home && placement.project_id === projectId) {
+      if (historyMode !== "none") writePageRoute(projectId, { replace: historyMode === "replace" });
+      setProjectOpen(projectId);
+      return;
+    }
+    return open(null, { projectId, historyMode });
   }
   /** Show an index route (readPageRoute's `projects` or `pages`). */
   function openIndex(route, { historyMode = "push" } = {}) {
@@ -1037,10 +1065,16 @@ function App() {
       setCreating(false);
     }
   }
-  async function copyLink(pageId = host.current?.pageId) {
+  async function copyLink(pageId = host.current?.pageId, path = null) {
     if (!pageId) return;
     try {
-      await navigator.clipboard.writeText(new URL(pagePath(pageId), location.origin).href);
+      const projectId =
+        pageId === host.current?.pageId &&
+        (projectOpen || (placement?.home && placement.project_id));
+      await navigator.clipboard.writeText(
+        new URL(path ?? (projectId ? projectPath(projectId) : pagePath(pageId)), location.origin)
+          .href,
+      );
       setNotice("Link copied");
       if (documentDisclosure.current) documentDisclosure.current.open = false;
     } catch {
@@ -1094,7 +1128,7 @@ function App() {
       setPlacement(where);
     }
     if (where.home) {
-      setError("A Project's home Page stays with its Project.");
+      setError("A Project cannot be moved into another Project.");
       return;
     }
     const projectCrumb = where.breadcrumbs.find((crumb) => crumb.kind === "project");
@@ -1291,11 +1325,8 @@ function App() {
   const listedPages = mergePageListings(pickerFailed ? null : pickerSnapshot.items, localPages).map(
     ownTitle,
   );
-  // The open Page's Project, when read_page shows one: Projects are
-  // owner-only in this build, so a visible project_id means this account owns
-  // it. Shared viewers see none and get no create affordances. The owner
-  // role on the Page (`canDelete`) is the second check: a Page sits in its
-  // owner's Catalog, so only its owner can add Pages beside or under it.
+  // Structure remains owner-only; Project members can read the tree without
+  // gaining create/move affordances from their content-editing role.
   const ownsProject =
     !!placement?.project_id &&
     !!session?.canDelete &&
@@ -1309,9 +1340,7 @@ function App() {
   const projectPagesShown =
     !!placement?.project_id && !!page && projectPages?.pageId === page.page_id;
   const projectPagesList = projectPagesShown
-    ? projectPages.pages
-        .filter((item) => item.project_id === placement.project_id && !item.shared)
-        .map(ownTitle)
+    ? projectPages.pages.filter((item) => item.project_id === placement.project_id).map(ownTitle)
     : [];
   const usage = quotaNotice(quota);
   const openComments = threads.filter((thread) => thread.state === "open").length;
@@ -1361,13 +1390,16 @@ function App() {
             icon: FilePlus,
             run: () => createIn({ parent_id: session.pageId }),
           },
-        session.canDelete && {
-          key: "trash",
-          label: "Move to Trash",
-          icon: Trash2,
-          danger: true,
-          run: remove,
-        },
+        session.canDelete &&
+          !projectOpen &&
+          placement &&
+          !placement.home && {
+            key: "trash",
+            label: "Move to Trash",
+            icon: Trash2,
+            danger: true,
+            run: remove,
+          },
       ].filter(Boolean)
     : [];
   return (
@@ -1417,6 +1449,18 @@ function App() {
                 <PageControls
                   phone={phoneHeader}
                   session={session}
+                  project={
+                    projectOpen || (placement?.home && placement.project_id)
+                      ? (projectDetails ?? {
+                          project_id: projectOpen ?? placement.project_id,
+                          role: "unknown",
+                        })
+                      : null
+                  }
+                  tool={tool}
+                  inheritedProject={
+                    placement?.project_id ? placementProject?.title || "Project" : null
+                  }
                   actions={pageActions}
                   onReveal={revealProgress}
                   activityDisclosure={activityDisclosure}
@@ -1500,8 +1544,8 @@ function App() {
       ) : !account ? (
         <main className="welcome">
           <h1>
-            {readPageRoute(location.href).kind === "page"
-              ? "Sign in to open this Page."
+            {["page", "project"].includes(readPageRoute(location.href).kind)
+              ? `Sign in to open this ${readPageRoute(location.href).kind === "project" ? "Project" : "Page"}.`
               : "A place to write together."}
           </h1>
           <p>Shared documents that people and agents edit together. Agents connect over MCP.</p>
@@ -1726,12 +1770,14 @@ function App() {
                     <span className="writing-continuation-label">Continue writing</span>
                   </button>
                 )}
-                {ownsProject && placement.home && (
+                {placement?.project_id && placement.home && (
                   <ProjectPages
                     title={placementProject?.title}
                     pages={projectPagesList}
                     onOpen={open}
-                    onCreate={() => createIn({ project_id: placement.project_id })}
+                    onCreate={
+                      ownsProject ? () => createIn({ project_id: placement.project_id }) : null
+                    }
                     creating={creating}
                   />
                 )}
@@ -1771,15 +1817,25 @@ function App() {
               </main>
             )
           ) : projectOpen ? (
-            <ProjectView
-              key={projectOpen}
-              tool={tool}
-              projectId={projectOpen}
-              onOpen={(id) => open(id)}
-              onBack={() => navigateIndex("projects")}
-              onCreate={() => createIn({ project_id: projectOpen })}
-              creating={creating}
-            />
+            <main className="welcome">
+              <button
+                type="button"
+                className="subtle-button"
+                onClick={() => openProject(projectOpen, { historyMode: "none" })}
+              >
+                Retry opening Project
+              </button>
+              <a
+                href={PROJECTS_PATH}
+                onClick={(event) => {
+                  if (!isPlainNavigation(event)) return;
+                  event.preventDefault();
+                  navigateIndex("projects");
+                }}
+              >
+                Back to Projects
+              </a>
+            </main>
           ) : index?.kind === "projects" ? (
             <ProjectsIndex
               key={index.visit}

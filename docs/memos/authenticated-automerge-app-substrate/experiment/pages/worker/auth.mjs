@@ -155,6 +155,8 @@ export async function authenticate(request, env) {
           "/internal/space/create",
           "/internal/space/read",
           "/internal/space/update",
+          "/internal/space/access",
+          "/internal/access",
         ].includes(new URL(request.url).pathname)
       )
         throw withAdmissionReason(
@@ -166,6 +168,15 @@ export async function authenticate(request, env) {
       });
       if (!grant) throw new HttpError(401, "Reconnect your Pages client", "oauth_invalid_token");
       const scopes = new Set(grant.scope.split(" "));
+      if (
+        ["/internal/space/access", "/internal/access"].includes(new URL(request.url).pathname) &&
+        !scopes.has("pages:share")
+      )
+        throw new HttpError(
+          403,
+          "Pages sharing permission is required",
+          "oauth_insufficient_scope",
+        );
       if (!scopes.has("pages:read"))
         throw new HttpError(403, "Pages read permission is required", "oauth_insufficient_scope");
       return withDomainAccess(
@@ -188,6 +199,7 @@ export async function authenticate(request, env) {
           ...(agent && { agent }),
           ...(await mcpSession(request, grant.identity.principal)),
           canWrite: scopes.has("pages:write"),
+          canShare: scopes.has("pages:share"),
           credentialKind: "oauth",
           namespace: grant.identity.namespace,
           emailProof: grant.identity.emailProof,
@@ -298,9 +310,7 @@ export function accountIdentity(identity) {
     principal: identity.principal,
     display_name: identity.accountDisplayName ?? null,
     ...(identity.credentialKind === "api-key" &&
-      identity.verifiedEmail && {
-        email: identity.verifiedEmail,
-      }),
+      identity.verifiedEmail && { email: identity.verifiedEmail }),
   };
 }
 
@@ -438,9 +448,7 @@ function failureShape(error) {
     origin: failureOrigin(error),
     ...(error?.name === "BackendError" &&
       /^[a-z-]{1,32}$/.test(error.operation) &&
-      /^[a-z-]{1,32}$/.test(error.code) && {
-        backend: `${error.operation}/${error.code}`,
-      }),
+      /^[a-z-]{1,32}$/.test(error.code) && { backend: `${error.operation}/${error.code}` }),
   };
 }
 
@@ -536,9 +544,7 @@ export function errorResponse(error, stage = "request") {
         ...(Array.isArray(error.details?.conflicts) && {
           conflicts: error.details.conflicts.slice(0, 10).map((conflict) => ({
             block_id: String(conflict.block_id ?? "").slice(0, 128),
-            ...(Number.isSafeInteger(conflict.node_index) && {
-              node_index: conflict.node_index,
-            }),
+            ...(Number.isSafeInteger(conflict.node_index) && { node_index: conflict.node_index }),
             reason: String(conflict.reason ?? "Target changed").slice(0, 240),
           })),
         }),
@@ -563,10 +569,7 @@ export function errorResponse(error, stage = "request") {
 }
 
 export function json(value, status = 200) {
-  return Response.json(value, {
-    status,
-    headers: { "cache-control": "no-store" },
-  });
+  return Response.json(value, { status, headers: { "cache-control": "no-store" } });
 }
 
 export async function readJson(request) {

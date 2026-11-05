@@ -39,7 +39,6 @@ import {
   Copy,
   FileText,
   HardDrive,
-  Home,
   LayoutGrid,
   List,
   Plus,
@@ -505,7 +504,7 @@ const DISPLAY_CHOICES = Object.freeze([
 
 const PageIcon = ({ home, className, size }) =>
   home ? (
-    <Home className={className} size={size} aria-hidden="true" />
+    <Boxes className={className} size={size} aria-hidden="true" />
   ) : (
     <FileText className={className} size={size} aria-hidden="true" />
   );
@@ -689,7 +688,9 @@ function PageList({
                     className="index-row-link"
                     href={row.href}
                     onPointerDown={onWarm}
-                    onClick={follow(() => onOpen(row.id))}
+                    onClick={follow(() =>
+                      row.home && row.project ? onOpenProject(row.project.id) : onOpen(row.id),
+                    )}
                   >
                     {row.title}
                   </a>
@@ -708,7 +709,7 @@ function PageList({
                     className="icon-button index-row-action"
                     aria-label={`Copy link to ${row.title}`}
                     title="Copy link"
-                    onClick={() => onCopyLink(row.id)}
+                    onClick={() => onCopyLink(row.id, row.href)}
                   >
                     <Copy size={16} aria-hidden="true" />
                   </button>
@@ -745,7 +746,14 @@ function PageGrid({ sections, folded, onToggle, busy, onOpen, onOpenProject, onW
         {(section, name, list) => (
           <ul className="index-grid" aria-label={name} id={list.id} hidden={list.folded}>
             {(list.folded ? EMPTY : section.rows).map((row) => (
-              <GridCard key={row.id} row={row} cards={cards} onOpen={onOpen} onWarm={onWarm} />
+              <GridCard
+                key={row.id}
+                row={row}
+                cards={cards}
+                onOpen={onOpen}
+                onOpenProject={onOpenProject}
+                onWarm={onWarm}
+              />
             ))}
           </ul>
         )}
@@ -756,7 +764,7 @@ function PageGrid({ sections, folded, onToggle, busy, onOpen, onOpenProject, onW
 
 /** One grid card. A row the server listed asks for its card once it nears
  * the viewport; a row only this browser holds has none to ask for. */
-function GridCard({ row, cards, onOpen, onWarm }) {
+function GridCard({ row, cards, onOpen, onOpenProject, onWarm }) {
   const element = useRef(null);
   const key = cardKeyOf(row);
   const listed = !row.local;
@@ -772,7 +780,9 @@ function GridCard({ row, cards, onOpen, onWarm }) {
         className="index-card-link"
         href={row.href}
         onPointerDown={onWarm}
-        onClick={follow(() => onOpen(row.id))}
+        onClick={follow(() =>
+          row.home && row.project ? onOpenProject(row.project.id) : onOpen(row.id),
+        )}
       >
         <span className="index-card-header">
           <PageIcon home={row.home} className="index-card-icon" size={16} />

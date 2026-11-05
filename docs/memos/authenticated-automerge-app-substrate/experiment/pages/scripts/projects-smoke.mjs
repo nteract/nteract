@@ -3,7 +3,7 @@
 // breadcrumbs, browse /pages as a list and a grid at desktop width, browse
 // /pages and /projects on a phone-sized screen, filter, sort and group the
 // Pages library as an account with its own and shared Pages, add Pages
-// from a Project's home Page at the 640px breakpoint and from the picker,
+// from a Project at the 640px breakpoint and from the picker,
 // check a shared editor gets no create affordances, and trash
 // and restore Pages one at a time.
 import assert from "node:assert/strict";
@@ -70,7 +70,9 @@ async function oneLineButton(tab, name, label) {
   await expect(button).toBeVisible();
   const { lines, height } = await button.evaluate((element) => {
     const range = document.createRange();
-    const text = [...element.childNodes].find((node) => node.nodeType === Node.TEXT_NODE);
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    let text;
+    while ((text = walker.nextNode()) && !text.textContent.trim()) {}
     range.selectNodeContents(text);
     const tops = [...range.getClientRects()].map((rect) => Math.round(rect.top));
     return { lines: new Set(tops).size, height: element.getBoundingClientRect().height };
@@ -170,8 +172,12 @@ try {
   });
   assert.equal(plan.project_id, project.project_id);
   assert.equal(plan.parent_id, roadmap.page_id);
-  assert.equal(roadmap.parent_id, project.home_page_id, "a Project's top level is under its home");
-  complete("MCP created a Project with its home Page and a nested Page");
+  assert.equal(
+    roadmap.parent_id,
+    project.home_page_id,
+    "a Project's top level is under its backing document",
+  );
+  complete("MCP created a Project with content and a nested Page");
 
   const projects = await ok("owner", "list_projects");
   assert.ok(projects.projects.some((entry) => entry.project_id === project.project_id));
@@ -185,7 +191,7 @@ try {
     children.pages.map((page) => page.page_id),
     [plan.page_id],
   );
-  // The chain runs through the home Page, flagged so viewers fold it into the
+  // The chain runs through the backing document, flagged so viewers fold it into the
   // Project crumb; both carry the Project's title.
   const read = await ok("owner", "read_page", { page_id: plan.page_id, include_content: false });
   assert.deepEqual(
@@ -203,7 +209,7 @@ try {
   assert.deepEqual(
     topLevel.pages.map((page) => page.page_id).sort(),
     [project.home_page_id, roadmap.page_id].sort(),
-    "the Project's top level is its home Page and the home Page's children",
+    "the Project's top level contains its backing document and immediate children",
   );
   const home = await ok("owner", "get_project", { project_id: project.project_id });
   assert.equal(home.home_page_id, project.home_page_id);
@@ -230,19 +236,45 @@ try {
   });
   // A link from before the Project name opens the Project at its own path.
   await owner.goto(`${origin}/s/${project.project_id}`);
-  await expect(owner.getByRole("heading", { name: title })).toBeVisible({ timeout: 60000 });
+  await expect(owner.getByLabel("Page title")).toHaveValue(title, { timeout: 60000 });
+  await expect(owner.locator("wg-content").first()).toContainText("Where the launch lives.");
+  await expect(owner.locator("wg-content").first()).toHaveAttribute("contenteditable", "true");
   await expect(owner).toHaveURL(`${origin}/project/${project.project_id}`);
-  const list = owner.getByRole("list", { name: `Pages in ${title}` });
-  // The home Page isn't a row: the heading opens it.
+  const list = owner.getByRole("region", { name: `Pages in ${title}` }).getByRole("list");
+  // Project content and its tree share one editor; there is no separate backing-document row.
   await expect(list.locator(".project-home")).toHaveCount(0);
-  await expect(owner.getByRole("heading", { name: title }).getByRole("link")).toHaveAttribute(
-    "href",
-    `/p/${project.home_page_id}`,
-  );
+  await expect(
+    owner.getByRole("navigation", { name: "Project", exact: true }).getByRole("link"),
+  ).toHaveAttribute("href", `/project/${project.project_id}`);
   await expect(list.getByRole("link", { name: "Roadmap" })).toBeVisible();
   await expect(list.getByRole("link", { name: "Q4 plan" })).toBeVisible();
   await owner.screenshot({ path: `${output}/projects-view.png` });
-  complete("The browser opened the Project from an /s/ link with its home Page and Page tree");
+  await owner.getByRole("button", { name: "Share", exact: true }).click();
+  const sharing = owner.getByRole("dialog", { name: "Share Project", exact: true });
+  await expect(sharing.getByLabel("Email", { exact: true })).toBeVisible();
+  await expect(sharing.getByRole("button", { name: "Add access", exact: true })).toBeDisabled();
+  await sharing.getByLabel("Email", { exact: true }).fill("pending-project@localhost");
+  await sharing.getByRole("combobox", { name: /^Project role/ }).selectOption("editor");
+  await sharing.getByRole("button", { name: "Add access", exact: true }).click();
+  await expect(sharing.getByRole("region", { name: "Pending access" })).toContainText(
+    "pending-project@localhost: Can edit",
+  );
+  await owner.screenshot({ path: `${output}/project-sharing-desktop.png` });
+  await sharing.getByRole("button", { name: "Close", exact: true }).click();
+  await owner.setViewportSize({ width: 390, height: 844 });
+  await owner.getByRole("button", { name: "Share", exact: true }).click();
+  await expect(sharing).toBeVisible();
+  await owner.screenshot({ path: `${output}/project-sharing-mobile.png` });
+  const sharingBounds = await sharing.boundingBox();
+  assert.ok(
+    sharingBounds.x >= 0 && sharingBounds.x + sharingBounds.width <= 390,
+    `Project sharing panel outside mobile viewport: ${JSON.stringify(sharingBounds)}`,
+  );
+  await sharing.getByRole("button", { name: "Revoke pending access", exact: true }).click();
+  await expect(sharing.getByRole("region", { name: "Pending access" })).toHaveCount(0);
+  await sharing.getByRole("button", { name: "Close", exact: true }).click();
+  await owner.setViewportSize({ width: 1280, height: 900 });
+  complete("The browser opened the unified Project editor and Page tree from an /s/ link");
 
   await list.getByRole("link", { name: "Q4 plan" }).click();
   await expect(owner.locator("wg-content").first()).toContainText("The fourth quarter.", {
@@ -253,7 +285,8 @@ try {
   await expect(crumbs).toContainText("Roadmap");
   await owner.screenshot({ path: `${output}/projects-breadcrumbs.png` });
   await crumbs.getByRole("link", { name: title }).click();
-  await expect(owner.getByRole("heading", { name: title })).toBeVisible();
+  await expect(owner.getByLabel("Page title")).toHaveValue(title);
+  await expect(owner.locator("wg-content").first()).toContainText("Where the launch lives.");
   await owner.getByRole("button", { name: /, switch page$/ }).click();
   const switcher = owner.getByRole("dialog", { name: "Pages" });
   await expect(switcher.getByRole("navigation", { name: "Projects" })).toContainText(title);
@@ -274,8 +307,8 @@ try {
   assert.equal(after.pages.length, 4);
   complete("New Page in a Project created a Page at the Project's top level");
 
-  // The home Page shares the Project's title, so the viewer shows one crumb
-  // for both. The API keeps the home crumb, marked home:true.
+  // The backing document shares the Project's title, so the viewer shows one crumb
+  // for both. The API retains its internal home:true marker.
   const underHome = await ok("owner", "create_page", {
     title: "Architecture",
     markdown: "How the pieces fit.",
@@ -303,7 +336,7 @@ try {
     "href",
     `/project/${project.project_id}`,
   );
-  complete("A Page under the home Page shows the Project crumb once");
+  complete("A top-level Page shows the Project crumb once");
 
   // From a Page in the Project, the picker's New Page offers the Project and
   // Your items. "In <Project>" lands at the Project's top level and opens it.
@@ -395,7 +428,7 @@ try {
     .getByRole("link", { name: `Project ${title}` })
     .click();
   await expect(owner).toHaveURL(`${origin}/project/${project.project_id}`);
-  await expect(owner.getByRole("heading", { name: title })).toBeVisible();
+  await expect(owner.getByLabel("Page title")).toHaveValue(title);
   await owner.goBack();
   await expect(owner).toHaveURL(`${origin}/pages`);
   await expect(desktopRow("Q4 plan")).toBeVisible();
@@ -599,7 +632,8 @@ try {
   await phone.screenshot({ path: `${output}/projects-mobile.png` });
   await projectRow.getByRole("link", { name: title, exact: true }).tap();
   await expect(phone).toHaveURL(`${origin}/project/${project.project_id}`);
-  await expect(phone.getByRole("list", { name: `Pages in ${title}` })).toBeVisible();
+  await expect(phone.getByRole("region", { name: `Pages in ${title}` })).toBeVisible();
+  await expect(phone.locator("wg-content").first()).toContainText("Where the launch lives.");
   await fitsScreen("the Project");
   await oneLineButton(phone, "New Page", "the Project");
   await phone.screenshot({ path: `${output}/project-mobile.png` });
@@ -610,7 +644,7 @@ try {
     "/projects lists the Project with its description, opens it with New Page on one line, and Back returns",
   );
 
-  // The home Page at the 640px breakpoint: a Project chip instead of a crumb
+  // The Project at the 640px breakpoint: a Project chip instead of a crumb
   // repeating the title, the Project's Pages under the body, and an inline
   // New Page row that adds one at the top level and opens it.
   await phone.setViewportSize({ width: 640, height: 900 });
@@ -621,11 +655,11 @@ try {
   await expect(phone.getByRole("navigation", { name: "Breadcrumbs" })).toHaveCount(0);
   const homePages = phone.getByRole("region", { name: `Pages in ${title}` });
   await expect(homePages.getByRole("link", { name: "Roadmap" })).toBeVisible();
-  await fitsScreen("the home Page at 640px");
+  await fitsScreen("the Project at 640px");
   await minimumRowHeight(homePages.getByRole("list"));
   const chipHeight = (await chip.boundingBox()).height;
   assert.ok(chipHeight >= 44, `the Project chip is ${chipHeight}px tall at 640px`);
-  await phone.screenshot({ path: `${output}/project-home-640.png` });
+  await phone.screenshot({ path: `${output}/project-editor-640.png` });
   const beforeHomeCreate = await ok("owner", "list_pages", { project_id: project.project_id });
   // A double tap: both clicks land before React disables the row. The
   // one-at-a-time guard drops the second; the unit tests pin the guard
@@ -670,11 +704,11 @@ try {
   await expect(phone.getByLabel("Page title")).toBeVisible({ timeout: 30000 });
   await fitsScreen("a new sub-page at 640px");
   complete(
-    "At 640px the home Page shows a Project chip, its Pages and New Page; Document actions adds a sub-page",
+    "At 640px the Project shows its chip, Pages and New Page; Document actions adds a sub-page",
   );
 
-  // On a phone the same entry is in the ⋯ menu, on Pages but not on the home
-  // Page, which has its New Page row instead.
+  // On a phone the same entry is in the ⋯ menu, on Pages but not on the
+  // Project, which has its New Page row instead.
   await phone.setViewportSize({ width: 390, height: 844 });
   const phoneMenu = phone.getByRole("button", { name: "More page actions" });
   await phoneMenu.tap();
@@ -683,14 +717,14 @@ try {
   await phone.keyboard.press("Escape");
   await phone.goto(`${origin}/p/${project.home_page_id}`);
   await expect(chip).toBeVisible({ timeout: 60000 });
-  await fitsScreen("the home Page on a phone");
+  await fitsScreen("the Project on a phone");
   await phoneMenu.tap();
   await expect(phone.getByRole("menuitem", { name: "Copy link" })).toBeVisible();
   await expect(phone.getByRole("menuitem", { name: "New sub-page" })).toHaveCount(0);
   await phone.keyboard.press("Escape");
-  complete("On a phone ⋯ offers New sub-page on a Project's Page, not on its home Page");
+  complete("On a phone ⋯ offers New sub-page on a Project's Page, not on the Project itself");
 
-  // Owner-only: alice can edit the home Page and Roadmap but doesn't own the
+  // Owner-only: alice can edit the backing document and Roadmap but doesn't own the
   // Project. She sees no chip, no Project Pages, no New sub-page and a plain
   // New Page, and the API refuses her creates in the Project.
   for (const pageId of [project.home_page_id, roadmap.page_id]) {
@@ -1222,7 +1256,8 @@ try {
   // From that fresh /projects load, into the Project and one of its Pages: the
   // editor loads on demand there, and an agent's caret shows.
   await fresh.getByRole("link", { name: title, exact: true }).tap();
-  const inProject = fresh.getByRole("list", { name: `Pages in ${title}` });
+  const inProject = fresh.getByRole("region", { name: `Pages in ${title}` }).getByRole("list");
+  await expect(fresh.locator("wg-content").first()).toContainText("Where the launch lives.");
   await inProject.getByRole("link", { name: "Roadmap" }).tap();
   await expect(fresh).toHaveURL(`${origin}/p/${roadmap.page_id}`);
   await expect(fresh.locator("wg-content").first()).toContainText("What ships when.", {
@@ -1251,12 +1286,12 @@ try {
     "href",
     "/projects",
   );
-  await oneLineButton(fresh, "New Page", "Home");
-  await oneLineButton(fresh, "Trash", "Home");
-  await fresh.screenshot({ path: `${output}/home-mobile.png` });
+  await oneLineButton(fresh, "New Page", "Pages library");
+  await oneLineButton(fresh, "Trash", "Pages library");
+  await fresh.screenshot({ path: `${output}/pages-library-mobile.png` });
   await phoneContext.close();
   complete(
-    "A fresh /projects load lists without the editor, a Page in its Project shows an agent's caret, and Home is the Pages library",
+    "A fresh /projects load lists without the editor, a Page in its Project shows an agent's caret, and / opens the Pages library",
   );
 
   // Agent caret glide (viewer/caret-glide.mjs), an experiment behind ?glide=1.
@@ -1374,7 +1409,7 @@ try {
   assert.equal(
     planBack.parent_id,
     project.home_page_id,
-    "its parent is in Trash, so it returns to the Project's top level, under the home Page",
+    "its parent is in Trash, so it returns to the Project's top level, under the backing document",
   );
   const roadmapBack = await ok("owner", "restore_page", {
     page_id: roadmap.page_id,
@@ -1386,7 +1421,7 @@ try {
   for (const pageId of [roadmap.page_id, plan.page_id])
     assert.ok(top.pages.some((page) => page.page_id === pageId));
   complete(
-    "Trash refused a parent with sub-pages, kept the home Page, and restore re-homed a child",
+    "Trash refused a parent with sub-pages, preserved Project content, and restore relocated a child",
   );
 
   // move_page nests the restored Page under its old parent again, in one
@@ -1453,26 +1488,26 @@ try {
   await creator.getByLabel(/Description/).fill("Talks and hallway notes.");
   await owner.screenshot({ path: `${output}/new-project-dialog.png` });
   await creator.getByRole("button", { name: "Create Project" }).click();
-  await expect(owner.getByRole("heading", { name: notesTitle })).toBeVisible({ timeout: 30000 });
+  await expect(owner.getByLabel("Page title")).toHaveValue(notesTitle, { timeout: 30000 });
   await expect(owner).toHaveURL(new RegExp(`/project/prj_`));
   const notesProject = (await ok("owner", "list_projects")).projects.find(
     (entry) => entry.title === notesTitle,
   );
   assert.ok(notesProject, "the dialog created the Project through create_project");
   assert.equal(notesProject.description, "Talks and hallway notes.");
-  // A new Project has only its home Page: the heading opens it, and the empty
-  // state carries the one New Page button.
-  await expect(owner.getByText("No Pages yet", { exact: true })).toBeVisible();
+  // A new Project opens its editable content and a tree with only New Page.
+  await expect(owner.locator("wg-content").first()).toContainText("Talks and hallway notes.");
+  await expect(owner.locator("wg-content").first()).toHaveAttribute("contenteditable", "true");
+  const emptyTree = owner.getByRole("region", { name: `Pages in ${notesTitle}` });
+  await expect(emptyTree.getByRole("link")).toHaveCount(0);
+  await expect(emptyTree.getByRole("listitem")).toHaveCount(1);
   await expect(owner.getByRole("button", { name: "New Page", exact: true })).toHaveCount(1);
+  await expect(emptyTree.getByRole("button", { name: "New Page" })).toBeVisible();
   await expect(
-    owner.locator(".project-empty").getByRole("button", { name: "New Page" }),
-  ).toBeVisible();
-  await expect(owner.getByRole("heading", { name: notesTitle }).getByRole("link")).toHaveAttribute(
-    "href",
-    `/p/${notesProject.home_page_id}`,
-  );
+    owner.getByRole("navigation", { name: "Project", exact: true }).getByRole("link"),
+  ).toHaveAttribute("href", `/project/${notesProject.project_id}`);
   await owner.screenshot({ path: `${output}/project-empty.png` });
-  complete("New Project in the browser created a Project and opened it to No Pages yet");
+  complete("New Project opened editable content and an empty tree with one New Page action");
 
   const loose = await ok("owner", "create_page", {
     title: "Keynote",

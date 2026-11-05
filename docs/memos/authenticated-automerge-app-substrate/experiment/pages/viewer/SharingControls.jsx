@@ -6,11 +6,8 @@ import {
 } from "../../../../../../src/components/sharing/SharingPanel.tsx";
 
 /** Grantable Page roles and their labels, weakest first. */
-export const ROLE_LABELS = Object.freeze({
-  viewer: "Can view",
-  commenter: "Can comment",
-  editor: "Can edit",
-});
+import { ROLE_LABELS } from "./sharing-roles.mjs";
+export { ROLE_LABELS } from "./sharing-roles.mjs";
 const roleLabel = (role) => ROLE_LABELS[role] ?? ROLE_LABELS.viewer;
 // Pages adds Can comment to the shared panel's invite roles.
 const primitives = {
@@ -104,6 +101,7 @@ export function SharingControls({ session, ...options }) {
 }
 function PageSharing({
   session,
+  inheritedProject,
   trigger = true,
   open: requested,
   onOpenChange,
@@ -292,7 +290,11 @@ function PageSharing({
               runtimeAccess: false,
             }}
             emptyAccessMessage={
-              manage ? "Only you have access." : "Access is managed by the Page owner."
+              inheritedProject
+                ? "No direct collaborators are listed."
+                : manage
+                  ? "Only you have access."
+                  : "Access is managed by the Page owner."
             }
             accessProjection={projection(value, manage)}
             busyAction={busy}
@@ -326,6 +328,12 @@ function PageSharing({
             showInitialAccessLoading={loading}
             primitives={primitives}
           />
+          {inheritedProject && (
+            <p className="muted">
+              If {inheritedProject} has members, they also have access through the Project. These
+              settings manage this Page's direct grants only.
+            </p>
+          )}
           {state.error && available && (
             <button
               className="subtle-button"

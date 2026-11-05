@@ -342,9 +342,7 @@ test("OAuth whoami is a narrow read-only exception with no private proof or expi
     verifiedEmailBinding: "private-proof",
     verifiedEmailDomainBinding: "private-domain-proof",
   };
-  const f = await fixture(t, "pages:read", {
-    identity: { ...person, emailProof },
-  });
+  const f = await fixture(t, "pages:read", { identity: { ...person, emailProof } });
   assert.deepEqual(
     (await readAccessToken(f.env, f.tokens.access_token, { resource })).identity.emailProof,
     emailProof,
@@ -442,6 +440,21 @@ test("MCP grants cannot call direct APIs or reach internal routes through the ga
   }
 });
 
+test("sharing is a separately consented OAuth scope, never implied by write", async (t) => {
+  const old = await fixture(t);
+  for (const path of ["/internal/access", "/internal/space/access"])
+    await assert.rejects(authenticate(request(path, old.tokens.access_token), old.env), {
+      status: 403,
+      code: "oauth_insufficient_scope",
+    });
+  const scoped = await fixture(t, "pages:read pages:write pages:share");
+  for (const path of ["/internal/access", "/internal/space/access"]) {
+    const identity = await authenticate(request(path, scoped.tokens.access_token), scoped.env);
+    assert.equal(identity.canShare, true);
+    assert.equal(identity.canWrite, true);
+  }
+});
+
 test("refresh and revocation apply immediately, and unknown Pages tokens never reach Anaconda", async (t) => {
   const f = await fixture(t);
   const refreshed = await rotateRefreshToken(f.env, {
@@ -499,11 +512,7 @@ function readPageFixture(t, f, role) {
       operation: "edit_page",
       arguments: {
         operations: [
-          {
-            op: "insert_markdown",
-            after_block_id: blockId,
-            markdown: "Unselected body sentinel.",
-          },
+          { op: "insert_markdown", after_block_id: blockId, markdown: "Unselected body sentinel." },
         ],
       },
     });

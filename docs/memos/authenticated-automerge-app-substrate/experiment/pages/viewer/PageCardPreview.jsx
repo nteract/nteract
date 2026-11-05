@@ -13,7 +13,7 @@
 // A card whose Page has images for the same `card_hash` draws them over the
 // JSON (PageCardImage.jsx).
 import { Fragment } from "react";
-import { FileText, Home } from "lucide-react";
+import { FileText, Boxes } from "lucide-react";
 import { previewNodes } from "./PagePreview.jsx";
 import { PageCardImage, cardImageOf } from "./PageCardImage.jsx";
 
@@ -23,7 +23,7 @@ import { PageCardImage, cardImageOf } from "./PageCardImage.jsx";
  */
 export function PageCardPreview({ card = null, home = false }) {
   if (!card?.blocks?.length) {
-    const Icon = home ? Home : FileText;
+    const Icon = home ? Boxes : FileText;
     return (
       <div className="index-card-preview" aria-hidden="true">
         <Icon className="index-card-placeholder" size={36} strokeWidth={1.5} />

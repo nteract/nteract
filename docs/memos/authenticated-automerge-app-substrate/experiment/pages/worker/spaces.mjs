@@ -3,10 +3,9 @@
  *
  * A Space has its own prefixed ID (`sp_<uuid>`), title, description, owner,
  * a members ACL with a revision, and a home Page created with it. The Space
- * Durable Object is the authority for that record. Membership is owner-only
- * in this build: `members` stays empty, nothing inherits access from a Space,
- * and a Space's Pages are readable by its owner plus anyone holding a direct
- * grant on a Page.
+ * Durable Object is the authority for that record. Members inherit content
+ * access to every Page; only the owner manages sharing and structure. Direct
+ * Page grants remain independent and never propagate to descendants.
  *
  * The owner's Catalog records where each Page is (catalog-location.mjs), with
  * the nesting limit from model/location.mjs. Page records carry no location.
@@ -22,6 +21,8 @@ import { fingerprint, mutationKey } from "./mutations.mjs";
 import { validPageId } from "./registration.mjs";
 import { NO_ACTOR_CHAIN, decide, heldRelation, principalOf, projectObject } from "./authz.mjs";
 import { serialQueue } from "./serial-queue.mjs";
+import { claimInvitation, proposeSharingMutation } from "./sharing.mjs";
+import { indexProjectInvitations } from "./project-invitations.mjs";
 
 export const SPACE_LIMIT = 50;
 export const SPACE_TITLE_LIMIT = 200;
@@ -95,24 +96,52 @@ export function validateSpaceInput(args, { creating }) {
  * and agents, never authority to widen a task. */
 export function homePageMarkdown(description) {
   const lead = description?.trim() ? description.trim() : "Describe what this Project is for.";
-  return `${lead}\n\n## Guidance\n\nThis is the Project's home Page. Keep current priorities and notes for people and agents working in this Project here.`;
+  return `${lead}\n\n## Guidance\n\nKeep current priorities and notes for people and agents working in this Project here.`;
 }
 
-export function publicSpace(record) {
+/** Public sharing roster, never durable signing identities or ACL bookkeeping.
+ * Accept receipts too so older stored replies cannot expose removed members. */
+export function publicProjectAccess(value) {
+  const acl = value.acl ?? value;
+  return {
+    space_id: value.space_id,
+    revision: acl.revision ?? 0,
+    members: Object.fromEntries(
+      Object.entries(acl.members ?? {})
+        .filter(([, member]) => ["viewer", "commenter", "editor"].includes(member.role))
+        .map(([principal, member]) => [
+          principal,
+          {
+            role: member.role,
+            ...(typeof member.displayName === "string" && { displayName: member.displayName }),
+            ...(typeof member.email === "string" && { email: member.email }),
+          },
+        ]),
+    ),
+    invites: Object.values(acl.invites ?? {}).map(({ id, email, role, expiresAt }) => ({
+      id,
+      email,
+      role,
+      expiresAt,
+    })),
+  };
+}
+
+export function publicSpace(record, identity) {
   return {
     space_id: record.space_id,
     title: record.title,
     description: record.description ?? "",
     home_page_id: record.home_page_id,
-    role: "owner",
+    role: identity ? heldRelation(projectObject(record), identity.principal) : "owner",
     revision: record.revision ?? 0,
+    owner: record.owner,
     created_at: record.created_at,
     updated_at: record.updated_at,
   };
 }
 
-/** Owner-only in this build: projectObject lists the owner as the only
- * relation. The next slice adds members and their roles. */
+/** Capability checks include current Project members. */
 function can(capability, record, identity) {
   return decide(
     principalOf(identity),
@@ -125,7 +154,7 @@ function can(capability, record, identity) {
 /** Authority for one Project's record and ACL. Only the host reaches these
  * routes: the gateway forwards Project operations through the caller's
  * Catalog, which calls this object with the caller's own credentials. It never
- * calls a Catalog or a Page.
+ * publishes candidate discovery hints to Catalogs; it never calls a Page.
  *
  * The class name is the storage identity for Projects: celld keys Durable
  * Object storage by class name and refuses `renamed_classes` migrations, so
@@ -137,23 +166,152 @@ export class Space {
     this.queue = serialQueue(ctx, "space-queue");
   }
   fetch(request) {
+    // Read-only host snapshots cannot wait behind a membership operation
+    // repairing a recipient's discovery hints (which may check this Project).
+    if (new URL(request.url).pathname === "/internal/space/policy") return this.run(request);
     return this.queue(() => this.run(request));
   }
   async run(request) {
     try {
       const path = new URL(request.url).pathname;
+      if (path === "/internal/space/policy") {
+        if (request.headers.has("authorization") || request.headers.has("cookie"))
+          throw spaceNotFound();
+        const args = await readJson(request);
+        const record = await this.ctx.storage.get(RECORD);
+        if (!record || record.space_id !== args.space_id || record.owner !== args.owner)
+          throw spaceNotFound();
+        await this.ctx.storage.sync();
+        return json({ space_id: record.space_id, owner: record.owner, acl: record.acl });
+      }
       const identity = await authenticate(request, this.env);
       const args = await readJson(request);
       requireSpaceIdArgument(args?.space_id);
       if (this.ctx.id?.name && this.ctx.id.name !== args.space_id) throw spaceNotFound();
-      const record = await this.ctx.storage.get(RECORD);
+      let record = await this.ctx.storage.get(RECORD);
+      // Reads and exact retries confirm the previous output barrier too. A
+      // failed ACL write cannot expose or acknowledge an unconfirmed record.
+      await this.ctx.storage.sync();
       if (path === "/internal/space/create") return await this.create(identity, args, record);
+      if (path === "/internal/space/read" && record) {
+        const claimed = await claimInvitation(
+          { ...record, pageId: record.space_id },
+          identity,
+          this.env,
+        );
+        if (claimed) {
+          const discovered = await this.env.CATALOGS.getByName(identity.principal).fetch(
+            new Request("https://pages.internal/internal/project-discovery", {
+              method: "POST",
+              body: JSON.stringify({ space_id: record.space_id, owner: record.owner }),
+            }),
+          );
+          if (!discovered.ok) throw new HttpError(503, "Project discovery unavailable; retry");
+          record = { ...record, acl: claimed.acl };
+          await this.ctx.storage.put(RECORD, record);
+          await this.ctx.storage.sync();
+        }
+      }
       // A Space the caller cannot read looks exactly like a missing one.
       if (!record || !can("read", record, identity)) throw spaceNotFound();
-      if (path === "/internal/space/read") return json(publicSpace(record));
+      if (path === "/internal/space/read") return json(publicSpace(record, identity));
+      if (path === "/internal/space/access") {
+        if (identity.principal !== record.owner)
+          throw new HttpError(403, "Only the Project owner can manage access");
+        if (identity.credentialKind === "oauth" && !identity.canShare)
+          throw new HttpError(
+            403,
+            "Pages sharing permission is required",
+            "oauth_insufficient_scope",
+          );
+        if (!args.read) {
+          requireWrite(identity);
+          if (!["set_role", "invite", "revoke_invite"].includes(args.action))
+            throw new HttpError(400, "Choose invite, set_role or revoke_invite");
+          if (
+            Object.keys(args).some(
+              (key) =>
+                ![
+                  "space_id",
+                  "read",
+                  "action",
+                  "principal",
+                  "email",
+                  "invite_id",
+                  "role",
+                  "expected_revision",
+                  "idempotency_key",
+                ].includes(key),
+            )
+          )
+            throw new HttpError(400, "Unsupported Project sharing argument");
+          const key = mutationKey(args);
+          const digest = await fingerprint(
+            "project_access",
+            {
+              space_id: args.space_id,
+              action: args.action,
+              principal: args.principal,
+              email: args.email,
+              invite_id: args.invite_id,
+              role: args.role,
+              expected_revision: args.expected_revision,
+            },
+            identity,
+          );
+          const previous = await this.ctx.storage.get(receiptKey(key));
+          if (previous) {
+            if (previous.fingerprint !== digest)
+              throw new HttpError(
+                409,
+                "idempotency_key was used for a different request",
+                "idempotency_conflict",
+              );
+            await this.ctx.storage.sync();
+            return json(publicProjectAccess(previous.receipt));
+          }
+          const proposed = await proposeSharingMutation(
+            { ...record, pageId: record.space_id },
+            identity,
+            args,
+          );
+          const next = { ...record, acl: proposed.metadata.acl };
+          const receipt = publicProjectAccess(next);
+          // Discovery is only a candidate hint. Publish before the atomic ACL
+          // and receipt; a failed grant may leave a hint but never access.
+          if (args.action === "invite") await indexProjectInvitations(this.env, next);
+          if (args.action === "set_role" && args.role !== null) {
+            const discovered = await this.env.CATALOGS.getByName(args.principal).fetch(
+              new Request("https://pages.internal/internal/project-discovery", {
+                method: "POST",
+                body: JSON.stringify({ space_id: record.space_id, owner: record.owner }),
+              }),
+            );
+            if (!discovered.ok) throw new HttpError(503, "Project discovery unavailable; retry");
+          }
+          await this.ctx.storage.put({
+            [RECORD]: next,
+            [receiptKey(key)]: { fingerprint: digest, receipt, at: Date.now() },
+          });
+          await this.ctx.storage.sync();
+          if (args.action === "set_role" && args.role === null)
+            await this.env.CATALOGS.getByName(args.principal).fetch(
+              new Request("https://pages.internal/internal/project-discovery", {
+                method: "POST",
+                body: JSON.stringify({ space_id: record.space_id, remove: true }),
+              }),
+            );
+          return json(receipt);
+        }
+        return json(publicProjectAccess(record));
+      }
       if (path === "/internal/space/update") return await this.update(identity, args, record);
       throw new HttpError(404, "Not found");
     } catch (error) {
+      // Shared invitation validation uses Page wording internally. Keep this
+      // Project endpoint's actionable errors in its own product vocabulary.
+      if (error instanceof Error && error.status >= 400 && error.status < 500)
+        error.message = error.message.replace(/\bPage\b/g, "Project");
       return errorResponse(error, "space");
     }
   }
@@ -178,7 +336,7 @@ export class Space {
       description: description ?? "",
       owner: identity.principal,
       owner_name: identity.displayName,
-      // Owner-only membership. Members gain roles and generations later.
+      // Membership starts restricted to the owner.
       acl: { revision: 0, members: {} },
       home_page_id: args.home_page_id,
       revision: 0,
@@ -192,6 +350,8 @@ export class Space {
 
   async update(identity, args, record) {
     requireWrite(identity);
+    if (identity.principal !== record.owner)
+      throw new HttpError(403, "Only the Project owner can update it");
     const { title, description } = validateSpaceInput(args, { creating: false });
     const key = mutationKey(args);
     const digest = await fingerprint(

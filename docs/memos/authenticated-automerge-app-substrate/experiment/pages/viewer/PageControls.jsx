@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { MoreHorizontal, Share2, UsersRound } from "lucide-react";
 import { SharingControls } from "./SharingControls.jsx";
+import { ProjectSharing } from "./ProjectSharing.jsx";
 import { ActivityList, PageActivity, activitySessions, usePageActivity } from "./PageActivity.jsx";
 import { initialPageMenu, pageMenuEffects, transition } from "./page-menu-machine.mjs";
 
@@ -30,6 +31,9 @@ export function PageControls(props) {
 function Controls({
   phone,
   session,
+  project,
+  tool,
+  inheritedProject,
   actions,
   onReveal,
   activityDisclosure,
@@ -81,9 +85,17 @@ function Controls({
     if (next !== previous) setState(next);
     run(pageMenuEffects(previous, next, event), domEvent);
   };
+  const Sharing = project ? ProjectSharing : SharingControls;
   const sharing = (
-    <SharingControls
-      key="sharing"
+    <Sharing
+      key={
+        project
+          ? `project:${project.project_id}:${session.identity?.principal}:${!!session.authRequired}`
+          : "sharing"
+      }
+      project={project}
+      tool={tool}
+      inheritedProject={inheritedProject}
       session={session}
       trigger={!shown.phone}
       open={shown.view === "share"}
