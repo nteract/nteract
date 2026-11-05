@@ -18,7 +18,7 @@ import {
   validateControllerCompatibility,
 } from "./controller-deploy.mjs";
 import { sourceFingerprint } from "./source-fingerprint.mjs";
-import { releaseArtifacts } from "./stage-artifacts.mjs";
+import { releaseArtifacts, releaseFilesOf } from "./stage-artifacts.mjs";
 import { deploymentProfile } from "./deployment/profiles.mjs";
 import { VIEWER_ASSETS, hashedAssetPath } from "./viewer-chunks.mjs";
 
@@ -152,6 +152,12 @@ function createFixture(t) {
     plain_storage_formats: ["doc-store-v2-host-actor-prefix"],
     viewer_chunks: viewerChunks,
     viewer_assets: viewerAssets,
+    files: Object.fromEntries(
+      releaseFilesOf([chunk], Object.keys(assets)).map((file) => [
+        file,
+        sha256(fs.readFileSync(path.join(dist, file))),
+      ]),
+    ),
     fingerprint,
   };
   write(path.join(dist, "build-receipt.json"), JSON.stringify(receipt, null, 2) + "\n");

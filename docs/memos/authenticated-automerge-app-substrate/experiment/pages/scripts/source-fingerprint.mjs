@@ -119,10 +119,13 @@ export function sourceFingerprint(app, { root = repository(app) } = {}) {
 /** `viewerChunks` lists the viewer's hashed chunk files and `viewerAssets` its
  * hashed shell assets (paths in dist). The receipt maps each to the sha256 of
  * its bytes as built; staging copies exactly these files and only when their
- * bytes still match. */
+ * bytes still match. `releaseFiles` lists every file the release carries
+ * except build-receipt.json (see stage-artifacts.mjs `releaseFilesOf`); the
+ * receipt's `files` maps each to its sha256, so a staged bundle can be
+ * checked file by file without the source tree. */
 export function writeBuildReceipt(
   app,
-  { expectedFingerprint, viewerChunks = [], viewerAssets = [] } = {},
+  { expectedFingerprint, viewerChunks = [], viewerAssets = [], releaseFiles = [] } = {},
 ) {
   const root = repository(app);
   const fingerprint = sourceFingerprint(app, { root });
@@ -147,6 +150,7 @@ export function writeBuildReceipt(
     plain_storage_formats: [...PLAIN_STORAGE_FORMATS],
     viewer_chunks: certify(viewerChunks),
     viewer_assets: certify(viewerAssets),
+    files: certify(releaseFiles),
     fingerprint,
   };
   writeFileSync(path.join(app, "dist/build-receipt.json"), JSON.stringify(receipt, null, 2) + "\n");

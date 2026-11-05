@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, rmSync, readFileSyn
 import os from "node:os";
 import path from "node:path";
 import { stageCloudflareFiles, cloudflareConfig } from "./cloudflare-stage.mjs";
-import { releaseArtifacts } from "./stage-artifacts.mjs";
+import { releaseArtifacts, releaseFilesOf } from "./stage-artifacts.mjs";
 import { VIEWER_ASSETS, hashedAssetPath } from "./viewer-chunks.mjs";
 
 test("Cloudflare staging separates native modules from browser assets and excludes local secrets/state", (t) => {
@@ -19,6 +19,7 @@ test("Cloudflare staging separates native modules from browser assets and exclud
     VIEWER_ASSETS.map((name) => [hashedAssetPath(name, name), name]),
   );
   mkdirSync(path.join(dist, "public/chunks"));
+  const contents = (file) => assets[file] ?? file;
   for (const file of [...releaseArtifacts, chunk, ...Object.keys(assets)])
     writeFileSync(
       path.join(dist, file),
@@ -28,8 +29,14 @@ test("Cloudflare staging separates native modules from browser assets and exclud
             viewer_assets: Object.fromEntries(
               Object.entries(assets).map(([path, bytes]) => [path, sha256(bytes)]),
             ),
+            files: Object.fromEntries(
+              releaseFilesOf([chunk], Object.keys(assets)).map((file) => [
+                file,
+                sha256(contents(file)),
+              ]),
+            ),
           })
-        : (assets[file] ?? file),
+        : contents(file),
     );
   writeFileSync(path.join(dist, ".dev.vars"), "secret-that-must-stay-local");
   mkdirSync(path.join(dist, ".celld"));

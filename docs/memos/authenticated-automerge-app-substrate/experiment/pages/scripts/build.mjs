@@ -3,6 +3,7 @@ import { AUTH_D1, USAGE_CRON, USAGE_D1 } from "./deployment/profiles.mjs";
 import { mermaidSource } from "./browser-mermaid.mjs";
 import { siftWasmPath } from "./browser-sift.mjs";
 import { sourceFingerprint, writeBuildReceipt } from "./source-fingerprint.mjs";
+import { releaseFilesOf } from "./stage-artifacts.mjs";
 import {
   VIEWER_ASSETS,
   hashedAssetPath,
@@ -220,5 +221,6 @@ writeBuildReceipt(app, {
   expectedFingerprint,
   viewerChunks,
   viewerAssets: Object.values(assets),
+  releaseFiles: releaseFilesOf(viewerChunks, Object.values(assets)),
 });
 console.log("Built native Pages Worker, WASM and viewer into pages/dist.");

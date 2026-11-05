@@ -1134,6 +1134,15 @@ receipt maps each to its sha256, and the name's hash must be the first 40 bits
 of that digest. `prepare` stages exactly those seven files, checks their bytes
 first, and refuses any other file of that shape in `public`.
 
+The receipt's `files` maps every file the release carries, except
+`build-receipt.json` itself, to its sha256: `index.js`, both WASM modules,
+`wrangler.json`, `public/index.html`, `public/connect.js`, `public/_headers`,
+and the hashed chunks and shell assets above. Staging refuses a receipt whose
+`files` lists anything else or leaves one out, and a file whose bytes changed
+since the build. The gate workflow's `release` job builds from a clean
+checkout, stages the bundle this way, and uploads it as the `pages-release`
+artifact.
+
 Page10 and Pages admit `sift-<hash>.wasm` through their own route group, which
 Page9 never had. Each publisher migrates only from its config without that
 group, so the first release with Sift tables hands off that target's connector
