@@ -20,6 +20,8 @@ import path from "node:path";
 import {
   deploymentProfile,
   migrationVars,
+  migrationPolicyPath,
+  MAX_MIGRATION_POLICY_BYTES,
   assertQualifiedDeploymentTarget,
   assertReleaseOpensTargetPages,
   stageTarget,
@@ -47,7 +49,24 @@ const requested = flags.length === 1 && flags[0] === "--restart";
 if (process.getuid() !== 0 || apply !== "--apply" || (flags.length && !requested))
   throw new Error("Explicit root installation with a prepared stage is required");
 const profile = deploymentProfile(target);
-const migration = migrationVars(profile);
+// The operator's canary list, if any, from a root-only file in the service's
+// own config directory. It must be a plain file nobody else can write; a
+// symlink or a group- or world-writable file is refused rather than skipped.
+const operatorPolicyPath = migrationPolicyPath(profile);
+let operatorPolicy;
+if (existsSync(operatorPolicyPath)) {
+  const stat = lstatSync(operatorPolicyPath);
+  if (!stat.isFile() || stat.mode & 0o022 || stat.size > MAX_MIGRATION_POLICY_BYTES)
+    throw new Error(
+      "Invalid record storage migration canary file: " +
+        operatorPolicyPath +
+        " must be a regular file, not group- or world-writable, at most " +
+        MAX_MIGRATION_POLICY_BYTES +
+        " bytes",
+    );
+  operatorPolicy = readFileSync(operatorPolicyPath, "utf8");
+}
+const migration = migrationVars(profile, operatorPolicy);
 const run = (command, args) => {
   try {
     return execFileSync(command, args, {
@@ -340,11 +359,27 @@ if (existsSync(release) && !lstatSync(release).isDirectory())
 mkdirSync(release, { recursive: true, mode: 0o750 });
 // Retry only the same verified bytes. A partial copy may have missing files,
 // but never replace an unexpected file or a modified existing artifact.
+// The installer writes the configured wrangler.json's vars itself, so an
+// earlier install of this release with other vars (a changed migration
+// canary) is accepted when everything but `vars` matches this configuration.
+const sameButVars = (bytes) => {
+  try {
+    const existing = JSON.parse(bytes);
+    return (
+      Object.hasOwn(existing, "vars") &&
+      JSON.stringify({ ...existing, vars: null }) === JSON.stringify({ ...config, vars: null })
+    );
+  } catch {
+    return false;
+  }
+};
 for (const file of stagedFiles(release)) {
-  const digest = hash(readFileSync(path.join(release, file)));
+  const bytes = readFileSync(path.join(release, file));
+  const digest = hash(bytes);
   if (
     !Object.hasOwn(releaseFiles, file) ||
-    (digest !== releaseFiles[file] && !(file === "wrangler.json" && digest === hash(configured)))
+    (digest !== releaseFiles[file] &&
+      !(file === "wrangler.json" && (digest === hash(configured) || sameButVars(bytes))))
   )
     throw new Error("Existing release differs from prepared artifacts: " + file);
 }
