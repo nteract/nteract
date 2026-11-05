@@ -87,7 +87,8 @@ installs Playwright's Chromium with system dependencies, runs `npm run e2e` with
 one retry and a flaky budget of one, and always uploads `test-results/`. It
 runs twice: once with the default Subduction storage and once, as "Pages browser
 E2E (local celld, plain sync)", with `PAGES_RECORD_STORAGE=automerge`.
-Production promotion needs both workflows green for the exact source SHA. On a
+Production promotion is a manual operator step; the operator confirms both
+workflows are green for the exact source SHA before promoting it. On a
 fresh Linux runner, install browser system dependencies with
 `npx playwright install --with-deps chromium`.
 
