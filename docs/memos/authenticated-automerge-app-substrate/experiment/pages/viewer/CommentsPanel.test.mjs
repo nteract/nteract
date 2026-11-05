@@ -166,6 +166,9 @@ test("threads start with full first messages, collapsed replies, and no exposed 
   const f = await fixture(t);
   const first = f.element("first");
   assert.match(first.querySelector(".message").textContent, /Full first comment first/);
+  assert.equal(first.querySelector(".thread-title").textContent, "Full first comment first");
+  assert.equal(first.querySelector(".quote").textContent, "Passage first");
+  assert.match(first.querySelector(".message-author").textContent, /^Kyle Kelley/);
   const toggle = first.querySelector(".thread-replies-toggle");
   assert.equal(toggle.getAttribute("aria-expanded"), "false");
   assert.equal(toggle.textContent.trim(), "2 replies");
@@ -174,9 +177,12 @@ test("threads start with full first messages, collapsed replies, and no exposed 
     assert.ok(textarea.closest("[hidden]"));
   await f.click(toggle);
   assert.equal(toggle.getAttribute("aria-expanded"), "true");
-  assert.match(
-    first.querySelector(".thread-replies").textContent,
-    /ChatGPTon behalf of Kyle Kelley/,
+  const replyAuthor = first.querySelector(".thread-replies .message-author");
+  assert.match(replyAuthor.textContent, /^ChatGPTfor Kyle/);
+  assert.equal(replyAuthor.title, "ChatGPT on behalf of Kyle Kelley");
+  assert.equal(
+    replyAuthor.querySelector(".comment-delegate").getAttribute("aria-label"),
+    "on behalf of Kyle Kelley",
   );
   await f.click(toggle);
   assert.ok(first.querySelector(".thread-replies").hidden);
