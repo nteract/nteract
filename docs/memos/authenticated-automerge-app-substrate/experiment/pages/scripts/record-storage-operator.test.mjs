@@ -186,9 +186,9 @@ test("convert --all converts each convertible Page once, paced, and reports what
   assert.deepEqual(
     calls.filter((call) => call.action === "convert"),
     [
-      { action: "convert", page_id: id(1), owner: "a" },
-      { action: "convert", page_id: id(2), owner: "a" },
-      { action: "convert", page_id: id(4), owner: "b" },
+      { action: "convert", cell_id: cell(1), owner: "a" },
+      { action: "convert", cell_id: cell(2), owner: "a" },
+      { action: "convert", cell_id: cell(4), owner: "b" },
     ],
   );
   assert.deepEqual(sleeps, [7, 7]);
@@ -281,4 +281,23 @@ test("an unreadable status is never done: it is listed, and the run doesn't succ
   });
   assert.equal(clean.done, true);
   assert.equal(exitCode(clean), 0);
+});
+
+test("under --all a cell its Page id doesn't name converts by cell id", async () => {
+  const cells = {
+    [cell(1)]: { page_id: id(1), owner: "a", state: "active", storage: "buffered", unnamed: true },
+  };
+  const { transport, calls } = fakeTarget(cells);
+  const report = await operatorRun({
+    mode: "convert",
+    all: true,
+    transport,
+    sleep: async () => {},
+  });
+  assert.deepEqual(report.converted, [id(1)]);
+  assert.deepEqual(report.failed, []);
+  assert.deepEqual(
+    calls.filter((call) => call.action === "convert"),
+    [{ action: "convert", cell_id: cell(1), owner: "a" }],
+  );
 });

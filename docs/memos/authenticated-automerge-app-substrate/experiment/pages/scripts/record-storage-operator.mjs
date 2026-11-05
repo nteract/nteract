@@ -221,7 +221,9 @@ export async function operatorRun({
       done++;
       const result = await post({
         action: "convert",
-        page_id: status.page_id,
+        // Under --all the target is the cell itself: a cell its Page id
+        // doesn't name would otherwise send the conversion elsewhere.
+        ...(all && status.cell_id ? { cell_id: status.cell_id } : { page_id: status.page_id }),
         ...(status.owner && { owner: status.owner }),
       });
       if (result.status?.record_storage === "automerge") report.converted.push(status.page_id);

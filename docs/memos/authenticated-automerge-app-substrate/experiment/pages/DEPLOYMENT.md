@@ -1025,7 +1025,9 @@ node scripts/record-storage-operator.mjs --target pages --mode convert --all
 ```
 
 `--principal P` (repeatable) limits a run to one account's Catalog. `--max N`
-stops after N conversions; `--pause-ms` paces them (default 500). Each
+stops after N conversions; `--pause-ms` paces them (default 500). Under
+`--all` each conversion addresses its cell id, which the route resolves to
+the Page its record names; the other scopes address the Page id. Each
 `convert` call answers `{cell_id, page_id, outcome, status}`. A converted
 object resets under its own request, so `outcome` may be an error; `status`
 is read from the next object and is what counts. The script converts every
