@@ -75,8 +75,12 @@ test("a search pattern fits 50 bytes, cut between code points and never inside a
     assert.ok(bytes(pattern) <= 50, pattern);
     assert.ok(needle.startsWith(prefix), pattern);
     assert.ok(!/[\uD800-\uDBFF]$/.test(prefix), pattern);
-    const next = needle.slice(prefix.length)[0];
-    if (next) assert.ok(bytes(`%${escapeLike(prefix + next)}%`) > 50, pattern);
+    // The next whole code point, an emoji's two UTF-16 units together.
+    const point = needle.codePointAt(prefix.length);
+    if (point !== undefined) {
+      const next = String.fromCodePoint(point);
+      assert.ok(bytes(`%${escapeLike(prefix + next)}%`) > 50, pattern);
+    }
   }
 });
 
