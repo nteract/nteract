@@ -492,6 +492,97 @@ for (const gate of ["fence", "capacity", "schema"])
     assert.equal(page.handle.doc().refused, undefined);
   });
 
+test("plain capacity refusal on restart preserves committed reads and the pending ordinary journal", async (t) => {
+  const f = await fixture(t);
+  f.env.CATALOGS = { getByName: () => ({ fetch: async () => Response.json({ ok: true }) }) };
+  const host = f.page();
+  assert.ok((await f.register(host)).ok);
+  await host.flush();
+  const tree = treeHex(f.args.document_id);
+  const key = "host/operation/capacity-recovery";
+  const args = {
+    base_heads: A.getHeads(host.handle.doc()),
+    idempotency_key: "capacity-recovery",
+    operations: [{ op: "set_title", title: "Pending title " + "long ".repeat(100) }],
+  };
+  const browser = rawSocket(
+    host,
+    {
+      principal: f.args.expected_principal,
+      driver: "Browser",
+      canWrite: true,
+      expiresAt: Date.now() + 3_600_000,
+    },
+    { senderId: "b-capacity" },
+  );
+  t.after(() => browser.client.close());
+  const candidate = A.change(A.clone(host.handle.doc()), (d) => {
+    d.browser = true;
+  });
+  const changes = A.getChanges(host.handle.doc(), candidate);
+  A.free(candidate);
+  // Scale byte accounting near the limit without allocating 16 MiB of history.
+  // The real browser append consumes the space the journaled edit needed.
+  let offset = 0;
+  const manifest = DocStore.prototype.manifest;
+  t.mock.method(DocStore.prototype, "manifest", function (id) {
+    const value = manifest.call(this, id);
+    return id === tree && value && offset
+      ? { ...value, snapshot: { ...value.snapshot, bytes: (value.snapshot?.bytes ?? 0) + offset } }
+      : value;
+  });
+  const put = f.storage.put.bind(f.storage);
+  t.mock.method(f.storage, "put", async (name, value) => {
+    await put(name, value);
+    if (name !== key || !value.pending || offset) return;
+    const stored = manifest.call(host.plain.host.store, tree);
+    const pendingBytes = value.changes.reduce((n, bytes) => n + bytes.byteLength, 0);
+    assert.ok(changes.reduce((n, bytes) => n + bytes.byteLength, 0) < pendingBytes);
+    offset =
+      16 * 1024 * 1024 -
+      pendingBytes -
+      (stored.snapshot?.bytes ?? 0) -
+      stored.chunks.reduce((n, chunk) => n + chunk.bytes, 0);
+    browser.client.send({ t: "sync", doc: tree, m: helloWith(changes), r: 1 });
+    await until(() => host.handle.doc().browser === true);
+  });
+  const refusals = [];
+  const admit = host.plain.host.policy.admitTrusted;
+  t.mock.method(host.plain.host.policy, "admitTrusted", (...args) => {
+    try {
+      return admit(...args);
+    } catch (error) {
+      refusals.push(error.code);
+      throw error;
+    }
+  });
+  const refused = await tool(f, host, "edit_page", args);
+  assert.equal(refused.status, 500);
+  assert.deepEqual(refusals, ["history_capacity"]);
+  const pending = await f.storage.get(key);
+  assert.equal(pending.pending, true);
+  assert.ok(pending.changes.length);
+  const committed = A.getHeads(host.handle.doc());
+  assert.equal(host.handle.doc().title, "Plain Page");
+  browser.client.close();
+  await host.plain.close();
+
+  const restarted = f.page();
+  const read = await tool(f, restarted, "read_page", { comments: "none" });
+  assert.equal(read.status, 200, await read.clone().text());
+  const content = await read.json();
+  assert.equal(content.title, "Plain Page");
+  assert.deepEqual(content.heads, committed);
+  assert.equal(content.recovery.code, "page_recovery_blocked");
+  assert.equal(content.recovery.pending, true);
+  assert.equal(restarted.handle.doc().browser, true);
+  assert.deepEqual(await f.storage.get(key), pending);
+  const edit = await tool(f, restarted, "edit_page", { ...args, base_heads: committed });
+  assert.equal(edit.status, 409);
+  assert.equal((await edit.json()).code, "page_recovery_blocked");
+  assert.deepEqual(await f.storage.get(key), pending);
+});
+
 test("an abandoned pending intent does not block another principal and replays on restart", async (t) => {
   const f = await fixture(t);
   f.env.CATALOGS = { getByName: () => ({ fetch: async () => Response.json({ ok: true }) }) };

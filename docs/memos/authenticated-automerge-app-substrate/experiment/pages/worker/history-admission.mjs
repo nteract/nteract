@@ -5,6 +5,7 @@ import {
   recordMetadataKey,
 } from "@automerge/automerge-repo/sedimentree/automerge";
 import { HistoryCapacityError } from "@automerge/automerge-repo-subduction";
+import { Refusal } from "../sync/host.mjs";
 import { recordIdentity, reservationMachine } from "./reservation-machine.mjs";
 
 /** The records `candidate` adds to the serving document `base`, selected the
@@ -23,7 +24,11 @@ export function addedRecords(candidate, base) {
 export function isHistoryCapacityError(error) {
   const seen = new Set();
   while (error && !seen.has(error)) {
-    if (error instanceof HistoryCapacityError) return true;
+    if (
+      error instanceof HistoryCapacityError ||
+      (error instanceof Refusal && error.code === "history_capacity")
+    )
+      return true;
     seen.add(error);
     error = error.cause;
   }
