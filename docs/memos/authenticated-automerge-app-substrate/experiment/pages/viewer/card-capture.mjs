@@ -2,12 +2,13 @@
 //
 // When the `card_hash` of the local document (model/page-card.mjs, the same
 // code the Page host runs) differs from the stored image's, and the tab is
-// visible and has been quiet for CARD_CAPTURE_IDLE_MS, the tab renders the
+// visible and has had no edit or input for CARD_CAPTURE_IDLE_MS, the tab renders the
 // card shell offscreen (card-shell.mjs, loaded on first use with its
 // rasterizer) in light and dark and uploads both. A capture that starts
 // begins a CARD_CAPTURE_REST_MS rest, so a Page captures at most once per
 // rest however much it changes. Only one capture runs at a time; a change to
-// the first screen, a hidden tab or leaving the Page cancels it.
+// the first screen, a hidden tab or leaving the Page cancels it, and so does
+// input, which also gives back the rest.
 //
 // The stored image's hash comes from one `GET /api/pages/:id/card-image`
 // when the Page opens, then from each upload's answer: no request per edit.
@@ -15,7 +16,17 @@
 // A tab never captures on Save-Data, on a device reporting under 2 GB of
 // memory, or for anyone but the Page's owner with write access. Every timer
 // runs through an RxJS scheduler, so tests drive it on virtual time.
-import { Subject, Subscription, debounceTime, fromEvent, switchMap, timer, EMPTY } from "rxjs";
+import {
+  EMPTY,
+  Subject,
+  Subscription,
+  debounceTime,
+  fromEvent,
+  merge,
+  switchMap,
+  throttleTime,
+  timer,
+} from "rxjs";
 import { defineMachine, reject } from "../shared/machine.mjs";
 
 /** Quiet time after the last change before a capture starts. */
@@ -78,13 +89,14 @@ function settle(state, effects, { rearm = false } = {}) {
  * (the Page closed; terminal).
  *
  * Events: `changed` (the local hash was rebuilt after a change, `hash`),
- * `stored` (the stored hash, `hash`), `visible`, `hidden`, `elapsed` (the
+ * `stored` (the stored hash, `hash`), `visible`, `hidden`, `input` (the
+ * person pointed, typed, wheeled or scrolled), `elapsed` (the
  * quiet timer fired), `captured` (`target` uploaded; `stored` is the
  * server's answer), `failed` (`target` didn't upload), `rested` (the rest
  * ended), `stop`.
  *
  * Effects: `arm` and `disarm` the quiet timer, `capture` (`hash`), `cancel`
- * the running capture, `rest` (start the rest timer).
+ * the running capture, `rest` (start the rest timer), `unrest` (drop it).
  */
 export const cardCaptureMachine = defineMachine({
   name: "card-capture",
@@ -94,6 +106,7 @@ export const cardCaptureMachine = defineMachine({
     "stored",
     "visible",
     "hidden",
+    "input",
     "elapsed",
     "captured",
     "failed",
@@ -148,6 +161,7 @@ export const cardCaptureMachine = defineMachine({
       capture: (effect) => hashOrNull(effect.hash, "hash"),
       cancel: () => {},
       rest: () => {},
+      unrest: () => {},
     },
   },
   transition(state, event) {
@@ -179,6 +193,21 @@ export const cardCaptureMachine = defineMachine({
         }
         return { state: settle({ ...state, visible: false }, effects), effects };
       }
+      case "input":
+        // Quiet means no input either: a pointer, key, wheel or scroll
+        // restarts the wait, and stops a capture before its rasterizing
+        // lands in the middle of the interaction. The cancelled capture
+        // doesn't count against the rest.
+        if (state.name === "waiting") {
+          effects.push({ type: "arm" });
+          return { state, effects };
+        }
+        if (state.name === "capturing") {
+          effects.push({ type: "cancel" }, { type: "unrest" });
+          const next = { ...state, name: "idle", resting: false };
+          return { state: settle(next, effects, { rearm: true }), effects };
+        }
+        return reject(state, "nothing waits for quiet");
       case "elapsed":
         // A timer that fired as the state moved on.
         if (state.name !== "waiting") return reject(state, "no quiet timer is running");
@@ -233,6 +262,7 @@ export function captureAllowed(browser = globalThis.navigator) {
  *
  * - `hashes$`: an Observable of the local card hash (null while empty).
  * - `visible$`: an Observable of whether the tab may capture now.
+ * - `input$`: an Observable that emits on the person's input.
  * - `readStored()`: resolves with the stored image's hash, or null.
  * - `capture(hash, signal)`: draws and uploads both themes; resolves with
  *   the server's stored hash. It must stop when `signal` aborts.
@@ -249,6 +279,7 @@ export class CardCapture {
   constructor({
     hashes$,
     visible$,
+    input$ = EMPTY,
     readStored,
     capture,
     scheduler,
@@ -265,13 +296,14 @@ export class CardCapture {
     );
     this.#subscription.add(
       this.#rest
-        .pipe(switchMap(() => timer(restMs, scheduler)))
+        .pipe(switchMap((resting) => (resting ? timer(restMs, scheduler) : EMPTY)))
         .subscribe(() => this.dispatch({ type: "rested" })),
     );
     this.#subscription.add(hashes$.subscribe((hash) => this.dispatch({ type: "changed", hash })));
     this.#subscription.add(
       visible$.subscribe((visible) => this.dispatch({ type: visible ? "visible" : "hidden" })),
     );
+    this.#subscription.add(input$.subscribe(() => this.dispatch({ type: "input" })));
     Promise.resolve()
       .then(readStored)
       .then(
@@ -302,6 +334,8 @@ export class CardCapture {
         return this.#idle.next(false);
       case "rest":
         return this.#rest.next(true);
+      case "unrest":
+        return this.#rest.next(false);
       case "cancel":
         this.#abort?.abort();
         this.#abort = null;
@@ -333,10 +367,19 @@ export class CardCapture {
   }
 }
 
+/** Input that means someone is using the tab. Pointer moves don't count. */
+const INPUT_EVENTS = ["pointerdown", "keydown", "wheel", "touchstart", "scroll"];
+/** At most one `input` event per this many ms reaches the machine. */
+const INPUT_THROTTLE_MS = 250;
+
 /**
  * Capture `session`'s card images while this tab shows the Page to its
  * owner. Returns the stop function. `session` is a PageSession: its `doc`,
  * `pageId`, `access`, `canWrite`, `hidden` and `subscribe`.
+ *
+ * Until the session first shows the owner's write access, this only watches
+ * for it: a reader's or editor's tab never hashes, reads the stored image's
+ * hash or loads the shell.
  */
 export function captureCards(
   session,
@@ -355,9 +398,77 @@ export function captureCards(
     session.access?.role === "owner" && session.canWrite !== false && !session.hidden;
   const docs = new Subject();
   const visible = new Subject();
+  const subscription = new Subscription();
+  let capture = null;
   let lastDoc = null;
   let lastVisible = null;
+  let model;
+  const hashOf = async (doc) => {
+    model ??= await loadModel();
+    const card = await model.pageCard(doc);
+    return card.blocks.length ? card.card_hash : null;
+  };
+  const start = () => {
+    const hashes = new Subject();
+    subscription.add(
+      docs
+        .pipe(
+          debounceTime(CARD_HASH_DEBOUNCE_MS, scheduler),
+          switchMap((doc) => hashOf(doc).catch(() => null)),
+        )
+        .subscribe((hash) => hashes.next(hash)),
+    );
+    const input$ = merge(
+      ...INPUT_EVENTS.map((type) => fromEvent(document, type, { capture: true, passive: true })),
+    ).pipe(throttleTime(INPUT_THROTTLE_MS, scheduler));
+    return new CardCapture({
+      hashes$: hashes,
+      visible$: visible,
+      input$,
+      scheduler,
+      readStored: async () => {
+        const response = await fetch(`/api/pages/${pageId}/card-image`, {
+          headers: { "X-Pages-Admission": "1" },
+        });
+        if (!response.ok) throw Error(`card image state answered ${response.status}`);
+        return (await response.json()).card_hash ?? null;
+      },
+      capture: async (hash, signal) => {
+        const shell = await loadShell();
+        const doc = session.doc;
+        if (!doc || signal.aborted) throw Error("The Page closed");
+        // The document may have moved on since the hash was built; draw only
+        // the first screen that hash names.
+        if ((await hashOf(doc)) !== hash) throw Error("The first screen changed");
+        const images = await shell.renderCardImages({ doc, pageId, signal });
+        let stored = null;
+        for (const image of images) {
+          signal.throwIfAborted();
+          const response = await fetch(
+            `/api/pages/${pageId}/card-image?hash=${hash}&theme=${image.theme}`,
+            {
+              method: "PUT",
+              headers: { "Content-Type": image.blob.type, "X-Pages-Admission": "1" },
+              body: image.blob,
+              signal,
+            },
+          );
+          if (!response.ok) throw Error(`card image upload answered ${response.status}`);
+          stored = (await response.json()).card_hash ?? null;
+        }
+        return stored;
+      },
+      onError: (error) => {
+        if (globalThis.process?.env?.NODE_TEST_CONTEXT) return;
+        console.info(`Pages card image: ${error?.message ?? error}`);
+      },
+    });
+  };
   const report = () => {
+    if (!capture) {
+      if (!eligible()) return;
+      capture = start();
+    }
     const doc = session.doc;
     if (doc && doc !== lastDoc) {
       lastDoc = doc;
@@ -369,72 +480,19 @@ export function captureCards(
       visible.next(now);
     }
   };
-  let model;
-  const hashOf = async (doc) => {
-    model ??= await loadModel();
-    const card = await model.pageCard(doc);
-    return card.blocks.length ? card.card_hash : null;
-  };
-  const hashes = new Subject();
-  const subscription = new Subscription();
-  subscription.add(
-    docs
-      .pipe(
-        debounceTime(CARD_HASH_DEBOUNCE_MS, scheduler),
-        switchMap((doc) => hashOf(doc).catch(() => null)),
-      )
-      .subscribe((hash) => hashes.next(hash)),
-  );
-  const capture = new CardCapture({
-    hashes$: hashes,
-    visible$: visible,
-    scheduler,
-    readStored: async () => {
-      const response = await fetch(`/api/pages/${pageId}/card-image`, {
-        headers: { "X-Pages-Admission": "1" },
-      });
-      if (!response.ok) throw Error(`card image state answered ${response.status}`);
-      return (await response.json()).card_hash ?? null;
-    },
-    capture: async (hash, signal) => {
-      const shell = await loadShell();
-      const doc = session.doc;
-      if (!doc || signal.aborted) throw Error("The Page closed");
-      // The document may have moved on since the hash was built; draw only
-      // the first screen that hash names.
-      if ((await hashOf(doc)) !== hash) throw Error("The first screen changed");
-      const images = await shell.renderCardImages({ doc, pageId, signal });
-      let stored = null;
-      for (const image of images) {
-        signal.throwIfAborted();
-        const response = await fetch(
-          `/api/pages/${pageId}/card-image?hash=${hash}&theme=${image.theme}`,
-          {
-            method: "PUT",
-            headers: { "Content-Type": image.blob.type, "X-Pages-Admission": "1" },
-            body: image.blob,
-            signal,
-          },
-        );
-        if (!response.ok) throw Error(`card image upload answered ${response.status}`);
-        stored = (await response.json()).card_hash ?? null;
-      }
-      return stored;
-    },
-    onError: (error) => {
-      if (globalThis.process?.env?.NODE_TEST_CONTEXT) return;
-      console.info(`Pages card image: ${error?.message ?? error}`);
-    },
-  });
   const unsubscribe = session.subscribe(report);
   subscription.add(fromEvent(document, "visibilitychange").subscribe(report));
-  const leave = () => capture.stop();
+  // A Page kept in the back/forward cache comes back with its capture: its
+  // tab is hidden meanwhile, which already holds or cancels the capture.
+  const leave = (event) => {
+    if (!event?.persisted) capture?.stop();
+  };
   browser.addEventListener?.("pagehide", leave);
   report();
   return () => {
     browser.removeEventListener?.("pagehide", leave);
     unsubscribe();
     subscription.unsubscribe();
-    capture.stop();
+    capture?.stop();
   };
 }

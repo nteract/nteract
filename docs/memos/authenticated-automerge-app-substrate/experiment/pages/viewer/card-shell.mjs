@@ -109,6 +109,8 @@ export function shellBlocks(doc) {
  * stylesheets and the card's own. */
 async function createFrame(document, signal) {
   const frame = document.createElement("iframe");
+  // Out of focus, find-in-page and the accessibility tree, whatever loads in it.
+  frame.inert = true;
   frame.setAttribute("aria-hidden", "true");
   frame.setAttribute("tabindex", "-1");
   frame.setAttribute("title", "");

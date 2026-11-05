@@ -109,6 +109,11 @@ const rows = [
     expect: no(idle(), "not resting"),
   },
   { state: idle(), event: { type: "stop" }, expect: ok(stopped()) },
+  {
+    state: idle({ resting: true }),
+    event: { type: "input" },
+    expect: no(idle({ resting: true }), "nothing waits for quiet"),
+  },
   // waiting
   {
     case: "rearm",
@@ -161,6 +166,12 @@ const rows = [
   },
   { state: waiting(), event: { type: "rested" }, expect: no(waiting(), "not resting") },
   { state: waiting(), event: { type: "stop" }, expect: ok(stopped(), [disarm]) },
+  {
+    label: "input restarts the quiet time",
+    state: waiting(),
+    event: { type: "input" },
+    expect: ok(waiting(), [arm]),
+  },
   // capturing
   {
     case: "same",
@@ -224,12 +235,19 @@ const rows = [
     expect: ok(capturing({ resting: false })),
   },
   { state: capturing(), event: { type: "stop" }, expect: ok(stopped({ resting: true }), [cancel]) },
+  {
+    label: "input stops the capture and gives back the rest: it tries again after quiet",
+    state: capturing(),
+    event: { type: "input" },
+    expect: ok(waiting(), [cancel, { type: "unrest" }, arm]),
+  },
   // stopped
   ...[
     { type: "changed", hash: B },
     { type: "stored", hash: B },
     { type: "visible" },
     { type: "hidden" },
+    { type: "input" },
     { type: "elapsed" },
     { type: "captured", target: A, stored: A },
     { type: "failed", target: A },
@@ -240,8 +258,8 @@ const rows = [
 
 test("the card-capture machine covers every state and event", async () => {
   assert.deepEqual(await runTable(cardCaptureMachine, rows), {
-    rows: 46,
-    pairs: 36,
+    rows: 50,
+    pairs: 40,
     unreachable: 0,
     cases: 19,
   });
@@ -252,10 +270,12 @@ function harness({ stored = null } = {}) {
   const scheduler = new VirtualTimeScheduler();
   const hashes = new Subject();
   const visible = new BehaviorSubject(true);
+  const input = new Subject();
   const captures = [];
   const capture = new CardCapture({
     hashes$: hashes,
     visible$: visible,
+    input$: input,
     scheduler,
     readStored: async () => stored,
     capture: (hash, signal) =>
@@ -275,7 +295,7 @@ function harness({ stored = null } = {}) {
     scheduler.flush();
     await tick();
   };
-  return { scheduler, hashes, visible, captures, capture, advance, tick };
+  return { scheduler, hashes, visible, input, captures, capture, advance, tick };
 }
 
 test("a new first screen captures once after quiet time, then rests", async () => {
@@ -342,6 +362,33 @@ test("a hidden tab or a changed first screen cancels; captures never overlap", a
   assert.equal(h.captures.length, 2, "nothing runs after stop");
 });
 
+test("input holds a capture back, and stops one that started without spending the rest", async () => {
+  const h = harness();
+  await h.tick();
+  h.hashes.next(A);
+  await h.advance(CARD_CAPTURE_IDLE_MS - 1);
+  h.input.next();
+  await h.advance(CARD_CAPTURE_IDLE_MS - 1);
+  assert.equal(h.captures.length, 0, "a click restarted the quiet time");
+  await h.advance(1);
+  assert.equal(h.captures.length, 1);
+  h.input.next();
+  assert.equal(h.captures[0].signal.aborted, true);
+  assert.equal(h.capture.state.name, "waiting");
+  assert.equal(h.capture.state.resting, false);
+  // The next try waits for quiet only, not the two-minute rest.
+  await h.advance(CARD_CAPTURE_IDLE_MS);
+  assert.equal(h.captures.length, 2);
+  // The rest timer from the stopped capture never fires into the new one.
+  h.captures[1].resolve(A);
+  await h.tick();
+  await h.tick();
+  assert.equal(h.capture.state.stored, A);
+  assert.equal(h.capture.state.resting, true);
+  await h.advance(CARD_CAPTURE_REST_MS - 1);
+  assert.equal(h.capture.state.resting, true, "the rest started with the second capture");
+});
+
 test("a failed capture rests, then tries again", async () => {
   const h = harness();
   await h.tick();
@@ -373,12 +420,13 @@ test("Save-Data and low-memory devices never capture", () => {
   assert.equal(subscribed, false);
 });
 
-test("captureCards: only the owner's visible tab captures, from the debounced hash", async () => {
+/** captureCards over a fake session and document on virtual time. */
+function tab({ role = "owner" } = {}) {
   const scheduler = new VirtualTimeScheduler();
   const listeners = new Set();
   const session = {
     pageId: "11111111-1111-4111-8111-111111111111",
-    access: { role: "editor" },
+    access: { role },
     canWrite: true,
     hidden: false,
     doc: { version: 1 },
@@ -387,21 +435,25 @@ test("captureCards: only the owner's visible tab captures, from the debounced ha
       return () => listeners.delete(fn);
     },
   };
-  const emit = () => listeners.forEach((fn) => fn());
   const document = new EventTarget();
   document.visibilityState = "visible";
+  const browser = new EventTarget();
+  Object.assign(browser, { document, navigator: {} });
   const requests = [];
-  const fetch = async (url, init = {}) => {
-    requests.push([init.method ?? "GET", url]);
-    return Response.json({ card_hash: init.method === "PUT" ? A : null });
-  };
   const drawn = [];
+  const hashed = [];
   const stop = captureCards(session, {
-    browser: { document, navigator: {}, addEventListener() {}, removeEventListener() {} },
-    fetch,
+    browser,
+    fetch: async (url, init = {}) => {
+      requests.push([init.method ?? "GET", url]);
+      return Response.json({ card_hash: init.method === "PUT" ? A : null });
+    },
     scheduler,
     loadModel: async () => ({
-      pageCard: async (doc) => ({ card_hash: A, blocks: doc.version ? [{}] : [] }),
+      pageCard: async (doc) => {
+        hashed.push(doc);
+        return { card_hash: A, blocks: doc.version ? [{}] : [] };
+      },
     }),
     loadShell: async () => ({
       renderCardImages: async ({ signal }) => {
@@ -413,30 +465,85 @@ test("captureCards: only the owner's visible tab captures, from the debounced ha
       },
     }),
   });
-  const advance = (ms) => {
-    scheduler.schedule(() => {}, ms);
-    scheduler.maxFrames = scheduler.frame + ms;
-    scheduler.flush();
-  };
   const settle = async () => {
     for (let i = 0; i < 10; i++) await new Promise((resolve) => setTimeout(resolve, 0));
   };
-  await settle();
-  advance(CARD_HASH_DEBOUNCE_MS);
-  await settle();
-  advance(CARD_CAPTURE_IDLE_MS * 2);
-  await settle();
-  assert.equal(drawn.length, 0, "an editor's tab never captures");
-  session.access = { role: "owner" };
-  emit();
-  advance(CARD_CAPTURE_IDLE_MS);
-  await settle();
-  assert.equal(drawn.length, 1);
-  assert.deepEqual(requests, [
-    ["GET", `/api/pages/${session.pageId}/card-image`],
-    ["PUT", `/api/pages/${session.pageId}/card-image?hash=${A}&theme=light`],
-    ["PUT", `/api/pages/${session.pageId}/card-image?hash=${A}&theme=dark`],
+  const advance = async (ms) => {
+    scheduler.schedule(() => {}, ms);
+    scheduler.maxFrames = scheduler.frame + ms;
+    scheduler.flush();
+    await settle();
+  };
+  const emit = () => listeners.forEach((fn) => fn());
+  return {
+    session,
+    document,
+    browser,
+    requests,
+    drawn,
+    hashed,
+    stop,
+    settle,
+    advance,
+    emit,
+    listeners,
+  };
+}
+
+test("captureCards: editors' and viewers' tabs never hash, read the stored hash or draw", async () => {
+  for (const role of ["editor", "viewer", "commenter"]) {
+    const t = tab({ role });
+    await t.settle();
+    for (let version = 2; version < 5; version++) {
+      t.session.doc = { version };
+      t.emit();
+      await t.advance(CARD_HASH_DEBOUNCE_MS + CARD_CAPTURE_IDLE_MS);
+    }
+    assert.deepEqual(t.requests, [], `${role}: no request`);
+    assert.deepEqual(t.hashed, [], `${role}: no hashing`);
+    assert.equal(t.drawn.length, 0);
+    t.stop();
+    assert.equal(t.listeners.size, 0);
+  }
+});
+
+test("captureCards: the owner's tab starts once its access shows, then captures after quiet", async () => {
+  const t = tab({ role: "editor" });
+  await t.settle();
+  await t.advance(CARD_CAPTURE_IDLE_MS * 2);
+  assert.deepEqual(t.requests, []);
+  // Access arrives later, as a PageSession's does.
+  t.session.access = { role: "owner" };
+  t.emit();
+  await t.advance(CARD_HASH_DEBOUNCE_MS);
+  // A click during the quiet time restarts it.
+  t.document.dispatchEvent(new Event("pointerdown"));
+  await t.advance(CARD_CAPTURE_IDLE_MS - 1);
+  assert.equal(t.drawn.length, 0);
+  await t.advance(1);
+  assert.equal(t.drawn.length, 1);
+  assert.deepEqual(t.requests, [
+    ["GET", `/api/pages/${t.session.pageId}/card-image`],
+    ["PUT", `/api/pages/${t.session.pageId}/card-image?hash=${A}&theme=light`],
+    ["PUT", `/api/pages/${t.session.pageId}/card-image?hash=${A}&theme=dark`],
   ]);
-  stop();
-  assert.equal(listeners.size, 0);
+  t.stop();
+  assert.equal(t.listeners.size, 0);
+});
+
+test("captureCards: pagehide into the back/forward cache keeps the capture; a real unload stops it", async () => {
+  const t = tab();
+  await t.settle();
+  await t.advance(CARD_HASH_DEBOUNCE_MS);
+  t.browser.dispatchEvent(Object.assign(new Event("pagehide"), { persisted: true }));
+  await t.advance(CARD_CAPTURE_IDLE_MS);
+  assert.equal(t.drawn.length, 1, "a cached page keeps its schedule");
+  const u = tab();
+  await u.settle();
+  await u.advance(CARD_HASH_DEBOUNCE_MS);
+  u.browser.dispatchEvent(Object.assign(new Event("pagehide"), { persisted: false }));
+  await u.advance(CARD_CAPTURE_IDLE_MS * 3);
+  assert.equal(u.drawn.length, 0, "an unloading page stops");
+  t.stop();
+  u.stop();
 });
