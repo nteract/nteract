@@ -38,7 +38,7 @@ import {
   position,
   reviewKey,
 } from "./comment-nav.mjs";
-import { PageExcerpt } from "./PageExcerpt.jsx";
+import { PageExcerpt, PassageSnippet } from "./PageExcerpt.jsx";
 import "./comments.css";
 
 const NO_COMPOSER = new Store({ state: { name: "idle" }, composer: null, body: "" });
@@ -58,6 +58,7 @@ export function CommentsPanel({
   composer,
   target,
   principal = null,
+  hovered = null,
   onClose,
   onReveal,
   onSelect,
@@ -578,6 +579,7 @@ export function CommentsPanel({
                         now={now}
                         location={locate(thread)}
                         active={(current?.id ?? target?.id) === thread.id}
+                        hovered={hovered === thread.id}
                         draft={hasDraft(drafts[thread.id])}
                         onOpen={() => openThread(thread.id)}
                         onHover={() => {
@@ -940,7 +942,7 @@ function ReviewWorkspace({
 }
 
 /** One compact row in the thread list. Clicking opens the thread. */
-function ThreadRow({ thread, now, location, active, draft, onOpen, onHover }) {
+function ThreadRow({ thread, now, location, active, hovered = false, draft, onOpen, onHover }) {
   const messages = thread.messages.filter((message) => !message.deletedAt);
   const [first] = messages;
   const last = messages.at(-1);
@@ -957,6 +959,7 @@ function ThreadRow({ thread, now, location, active, draft, onOpen, onHover }) {
       className={
         "thread-row" +
         (active ? " thread-row-active" : "") +
+        (hovered ? " thread-row-hovered" : "") +
         (thread.state === "resolved" ? " resolved" : "") +
         (title.length > 42 ? " thread-row-two" : "")
       }
@@ -1081,11 +1084,13 @@ function ThreadView({
         </header>
         <div className={"thread-passage thread-passage-" + location.anchor.kind}>
           {excerpt ? (
-            <p className="thread-passage-text">
-              {excerpt.before}
-              <mark>{excerpt.passage}</mark>
-              {excerpt.after}
-            </p>
+            <PassageSnippet thread={thread}>
+              <p className="thread-passage-text">
+                {excerpt.before}
+                <mark>{excerpt.passage}</mark>
+                {excerpt.after}
+              </p>
+            </PassageSnippet>
           ) : (
             <p className="thread-passage-text thread-passage-removed">
               The passage this thread pointed at was removed.
