@@ -1,0 +1,52 @@
+name: Deploy page10 after Pages CI
+
+on:
+  workflow_run:
+    workflows: [Pages experiment]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Full main SHA of a successful Pages experiment push
+        required: true
+        type: string
+      build_run_id:
+        description: Successful Pages experiment push run ID
+        required: true
+        type: string
+      build_run_attempt:
+        description: Exact successful attempt
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  automatic:
+    if: >-
+      vars.PAGES_PAGE10_AUTODEPLOY == 'true' &&
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.conclusion == 'success'
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    # Bootstrap pin: repin to merged main reusable before enabling either variable.
+    uses: nteract/nteract/.github/workflows/pages-page10-reusable.yml@2cb95d1a29be7566f3fb1c7712ac58cf837acdfa
+    with:
+      enabled: true
+  manual:
+    if: vars.PAGES_PAGE10_MANUAL == 'true' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    uses: nteract/nteract/.github/workflows/pages-page10-reusable.yml@2cb95d1a29be7566f3fb1c7712ac58cf837acdfa
+    with:
+      enabled: true
+      sha: ${{ inputs.sha }}
+      build_run_id: ${{ inputs.build_run_id }}
+      build_run_attempt: ${{ inputs.build_run_attempt }}
