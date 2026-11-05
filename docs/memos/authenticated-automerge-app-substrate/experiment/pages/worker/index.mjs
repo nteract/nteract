@@ -347,6 +347,7 @@ import {
   summarizeReceipt,
 } from "./page-lifecycle.mjs";
 import { pageStartup, recordFallback, startupOf, storedTitleProjection } from "./page-startup.mjs";
+import { titleProjection } from "./title-projection.mjs";
 
 const operations = new Set([
   "list_pages",
@@ -546,7 +547,7 @@ const locationRequest = (query) =>
 const INDEX_REPORT_PENDING = "host/index/report-pending";
 /** `{ title, observed_at, keep }`: the title this Page host last projected to
  * the Catalogs and the index, when it first observed it, and whether writers
- * holding that title keep their own time (`titleObservation`). */
+ * holding that title keep their own time (`title-projection.mjs`). */
 const TITLE_PROJECTION_KEY = "host/title-projection";
 /** `true` while a projection of the title to the owner's and members'
  * Catalogs hasn't been seen to land everywhere. Written before the title it
@@ -554,9 +555,6 @@ const TITLE_PROJECTION_KEY = "host/title-projection";
  * record boots while it is set, so the loaded host's first check sends the
  * title again (`cacheTitle`). */
 const PROJECTION_PENDING = "host/title-projection/pending";
-/** The least time between two stores of the same title projection after a
- * failed one (retryTitleStore). */
-const TITLE_STORE_RETRY_MS = 30_000;
 /** Lifecycle receipts kept per Page for retries; older ones are pruned. */
 const LIFECYCLE_RECEIPT_LIMIT = 256;
 const lifecycleReceiptKey = (operationKey) =>
@@ -3424,7 +3422,7 @@ export class Catalog {
  * one answered by the loaded host both build it here. Fields after title let
  * the caller's Catalog index this grant; the listing returns only page_id,
  * title and content_updated_at from it. `observed` is the title's observation
- * (`{ at, keep }`, titleObservation). */
+ * (`{ at, keep }`). */
 function catalogAnswer(metadata, identity, { title, observed, contentUpdatedAt }) {
   const access = pageAccess(metadata, identity);
   const domain = access.source === "domain";
@@ -3441,7 +3439,7 @@ function catalogAnswer(metadata, identity, { title, observed, contentUpdatedAt }
     state: indexedState(metadata),
     title_observed_at: observed?.at,
     // A member's reconcile pass keeps its row's time for this title when the
-    // observation lets writers keep theirs (titleObservation).
+    // observation lets writers keep theirs.
     ...(observed?.keep && { title_keep_time: true }),
     // When this host last accepted a content change, or null.
     content_updated_at: contentUpdatedAt ?? null,
@@ -4767,105 +4765,40 @@ export class Page {
    * once the serving document is loaded, before the first projection. */
   async restoreTitleProjection() {
     const stored = storedTitleProjection(await this.ctx.storage.get(TITLE_PROJECTION_KEY));
-    if (stored) this.titleProjection ??= stored;
+    this.advanceTitleProjection({ type: "restore", record: stored });
   }
 
-  /** When `title` was observed, for a projection or report about to send it,
-   * and whether writers may keep their own time.
-   *
-   * A title this host already projected keeps the time it was first observed
-   * (`TITLE_PROJECTION_KEY`), so a restart, a retried projection or a repeated
-   * report carries the same time, and so does `title_observed_at` on this
-   * host's checks. Any other title, and every `observe` (an ACL commit or a
-   * restore), is observed now and stored.
-   *
-   * `keepTime` lets a writer whose stored title already equals this one keep
-   * its own `updated_at`. A title observation sets it: that covers a host with
-   * no record, such as one from a build without it, and a writer that never
-   * got an earlier projection. An `observe` clears it, because an ACL commit
-   * and a restore move every writer's time. The record stores it as `keep`,
-   * so a retry or repair of an `observe` still moves the writers it missed; a
-   * resent stored time changes nothing for writers that already took it,
-   * since each takes the later time. A stored record without `keep` keeps:
-   * the build that wrote it stored no flag. */
-  titleObservation(title, { observe = false } = {}) {
-    const known = this.titleProjection;
-    if (!observe && known?.title === title) {
-      const observation = {
-        observedAt: known.observed_at,
-        keepTime: known.keep !== false,
+  /** Advance before effects. Local writes run in order, including clears:
+   * a delete already awaiting storage cannot overtake a newer mark. Queued
+   * obsolete effects are skipped; completions are fenced again by the machine.
+   * Catalog delivery is started by cacheTitle and never waits on this queue. */
+  advanceTitleProjection(event) {
+    const { state, effects } = titleProjection(this.titleProjection, event);
+    this.titleProjection = state;
+    for (const effect of effects) {
+      if (effect.type === "deliver") continue;
+      const run = async () => {
+        const current = this.titleProjection;
+        if ((effect.type === "clear" ? current.token : current.storage?.token) !== effect.token)
+          return;
+        let ok = true;
+        try {
+          if (effect.type === "clear") await this.ctx.storage.delete(PROJECTION_PENDING);
+          else if (effect.type === "mark") await this.ctx.storage.put(PROJECTION_PENDING, true);
+          else await this.ctx.storage.put(TITLE_PROJECTION_KEY, effect.record);
+        } catch (error) {
+          ok = false;
+          logFailure(
+            error,
+            effect.type === "store" ? "title-projection" : "title-projection-pending",
+          );
+        }
+        this.advanceTitleProjection({ ...effect, type: `${effect.type}Finished`, ok });
       };
-      // A record whose store failed is stored again, with the same time, at
-      // most once per retry interval (retryTitleStore).
-      return this.titleUnstored === known
-        ? {
-            ...observation,
-            stored: this.retryTitleStore() ?? Promise.resolve({ ok: false }),
-          }
-        : observation;
+      this.titleStorageTail = (this.titleStorageTail ?? Promise.resolve()).then(run);
+      this.ctx.waitUntil(this.titleStorageTail);
     }
-    const record = {
-      title,
-      observed_at: new Date().toISOString(),
-      keep: !observe,
-    };
-    this.titleProjection = record;
-    return {
-      observedAt: record.observed_at,
-      keepTime: record.keep,
-      stored: this.storeTitleProjection(record),
-    };
-  }
-
-  /** Store `record` as the title projection, after its mark: a stored title
-   * the Catalogs may lack always has the mark. Without the mark the title
-   * stays unstored, a check from the record answers the last stored title,
-   * and `titleUnstored` holds `record` until a later store lands
-   * (retryTitleStore).
-   * Resolves `{ ok }`. */
-  storeTitleProjection(record) {
-    this.titleStoreAttemptAt = Date.now();
-    const failed = () => {
-      this.titleUnstored = record;
-      return { ok: false };
-    };
-    return this.markProjection().then((marked) =>
-      marked
-        ? this.ctx.storage.put(TITLE_PROJECTION_KEY, record).then(
-            () => {
-              if (this.titleUnstored === record) this.titleUnstored = undefined;
-              return { ok: true };
-            },
-            (error) => {
-              logFailure(error, "title-projection");
-              return failed();
-            },
-          )
-        : failed(),
-    );
-  }
-
-  /** Store the current title projection again, alone, if its last store
-   * failed and the last attempt is at least TITLE_STORE_RETRY_MS old.
-   * Returns the store's `{ ok }` promise, or undefined when there is nothing
-   * to retry yet. While storage keeps failing, this bounds the retries; a
-   * failed store never resends the title to the Catalogs (cacheTitle).
-   *
-   * When the Catalogs already got this title (`titleDelivered`), a store
-   * that lands clears the pending mark it wrote, unless a newer mark or
-   * projection started since (settleProjection). */
-  retryTitleStore() {
-    const record = this.titleUnstored;
-    if (!record || record !== this.titleProjection) return undefined;
-    if (Date.now() - (this.titleStoreAttemptAt ?? -Infinity) < TITLE_STORE_RETRY_MS)
-      return undefined;
-    const stored = this.storeTitleProjection(record);
-    // storeTitleProjection's mark moved the sequence on, synchronously.
-    const marked = this.projectionSeq;
-    return stored.then(async (result) => {
-      if (result.ok && this.titleDelivered === record) await this.settleProjection(marked, true);
-      return result;
-    });
+    return effects;
   }
 
   /** Project this Page's title to the Catalogs that list it, and report its
@@ -4879,14 +4812,15 @@ export class Page {
       identity && pageAccess(this.metadata, identity).source === "domain"
         ? identity.principal
         : null;
-    if (this.cachedTitle === title) {
-      // The Catalogs have this title; only its store may be left to retry.
-      const retry = this.retryTitleStore();
-      if (retry) this.ctx.waitUntil(retry);
-      if (!observedReader) return;
-    }
-    const titleChanged = this.cachedTitle !== title;
-    const recipients = !titleChanged
+    const effects = this.advanceTitleProjection({
+      type: "project",
+      title,
+      observe,
+      now: Date.now(),
+    });
+    const fanout = effects.find((effect) => effect.type === "deliver");
+    if (!fanout && !observedReader) return;
+    const recipients = !fanout
       ? [observedReader]
       : [
           this.metadata.owner,
@@ -4895,24 +4829,11 @@ export class Page {
             .map(([principal]) => principal),
           ...(observedReader ? [observedReader] : []),
         ];
-    this.cachedTitle = title;
     // A domain reader's open alone is that reader's discovery, observed now.
-    const observation = titleChanged
-      ? this.titleObservation(title, { observe })
-      : { observedAt: new Date().toISOString(), keepTime: false };
-    // A projection to the owner and members clears the pending mark once it
-    // lands everywhere (settleProjection). A domain reader's own projection
-    // doesn't: a loaded host's check sends readers nothing.
-    const fanout = titleChanged ? (this.projectionSeq = (this.projectionSeq ?? 0) + 1) : undefined;
-    const { observedAt, keepTime } = observation;
-    // `{ at, keep }`: the title's observation, as the host's check reports it.
-    if (titleChanged) this.titleObserved = { at: observedAt, keep: keepTime };
+    const record = this.titleProjection.record;
+    const observedAt = fanout ? record.observed_at : new Date().toISOString();
+    const keepTime = fanout ? record.keep !== false : false;
     const contentUpdatedAt = this.contentActivity?.value ?? null;
-    // A projection that times out clears the cached title below, so the next
-    // request to this Page sends it again, with the same observation time.
-    // A failed title store doesn't: the request path retries the store alone
-    // (retryTitleStore).
-    const record = this.titleProjection;
     const projections = recipients.map((principal) =>
       withTimeout(
         this.env.CATALOGS.getByName(principal).fetch(
@@ -4932,25 +4853,26 @@ export class Page {
         "Catalog projection timed out",
       ),
     );
-    const tasks = [...projections];
-    if (fanout)
-      this.ctx.waitUntil(
-        Promise.all([Promise.all(projections), observation.stored ?? { ok: true }]).then(
-          ([results, stored]) => {
-            const delivered = results.every((result) => result.ok);
-            // A later store of this record can clear the mark (retryTitleStore).
-            if (delivered && !stored.ok) this.titleDelivered = record;
-            return this.settleProjection(fanout, delivered && stored.ok);
-          },
-          () => this.settleProjection(fanout, false),
-        ),
-      );
+    this.ctx.waitUntil(
+      Promise.allSettled(projections).then((results) => {
+        if (fanout)
+          this.advanceTitleProjection({
+            ...fanout,
+            type: "deliverFinished",
+            ok: results.every(
+              (result, index) =>
+                recipients[index] === observedReader ||
+                (result.status === "fulfilled" && result.value.ok),
+            ),
+          });
+      }),
+    );
     if (catalogIndexEpoch(this.env)) {
       // A domain reader's row is rewritten when the reader opens the Page for
       // the first time in this host's life, after a title change, and after
       // the content time moved past the one its last report carried. A flush
       // never rewrites these rows (reportContentActivity).
-      if (titleChanged) this.indexedReaders = new Map();
+      if (fanout) this.indexedReaders = new Map();
       this.indexedReaders ??= new Map();
       const reported = this.indexedReaders.get(observedReader);
       const reader =
@@ -4959,65 +4881,24 @@ export class Page {
         (reported === undefined || (contentUpdatedAt !== null && contentUpdatedAt !== reported))
           ? { principal: observedReader, domain: identity.domainAccess.domain }
           : undefined;
-      if (titleChanged || reader) {
+      if (fanout || reader) {
         if (reader) this.indexedReaders.set(reader.principal, contentUpdatedAt);
-        tasks.push(
+        const readers = this.indexedReaders;
+        this.ctx.waitUntil(
           this.reportIndex({
             title,
             observedAt,
             reader,
-            readerOnly: !titleChanged,
+            readerOnly: !fanout,
             contentUpdatedAt,
             keepTime,
-          }).then(
-            () => ({ ok: true }),
-            (error) => {
-              logFailure(error, "catalog-index-report");
-              if (reader) this.indexedReaders?.delete(reader.principal);
-              return { ok: false };
-            },
-          ),
+          }).catch((error) => {
+            logFailure(error, "catalog-index-report");
+            if (reader && readers.get(reader.principal) === contentUpdatedAt)
+              readers.delete(reader.principal);
+          }),
         );
       }
-    }
-    this.ctx.waitUntil(
-      Promise.all(tasks)
-        .then((results) => {
-          if (results.some((response) => !response.ok) && this.cachedTitle === title)
-            this.cachedTitle = undefined;
-        })
-        .catch(() => {
-          if (this.cachedTitle === title) this.cachedTitle = undefined;
-        }),
-    );
-  }
-
-  /** Mark the stored title as not yet projected everywhere. Resolves true
-   * once the mark is written, false if the write failed; the title it marks
-   * is written only after true (titleObservation). It moves the sequence on,
-   * so a projection already running can't clear it. */
-  markProjection() {
-    this.projectionSeq = (this.projectionSeq ?? 0) + 1;
-    return Promise.resolve()
-      .then(() => this.ctx.storage.put(PROJECTION_PENDING, true))
-      .then(
-        () => true,
-        (error) => {
-          logFailure(error, "title-projection-pending");
-          return false;
-        },
-      );
-  }
-
-  /** Clear the mark once the latest projection reached every Catalog and the
-   * title it sent is stored. An earlier projection finishing late clears
-   * nothing, and a failure leaves the mark for the next boot's first check. */
-  async settleProjection(fanout, delivered) {
-    if (!delivered || fanout !== this.projectionSeq) return;
-    try {
-      await this.ctx.storage.delete(PROJECTION_PENDING);
-    } catch (error) {
-      logFailure(error, "title-projection-pending");
     }
   }
 
@@ -5061,17 +4942,15 @@ export class Page {
     this.indexRepairing = true;
     const title = catalogTitle(this.handle.doc().title);
     // A repeat observes nothing new: the title keeps its observation time.
-    const { observedAt, keepTime, stored } = this.titleObservation(title);
+    this.advanceTitleProjection({ type: "observe", title, now: Date.now() });
+    const record = this.titleProjection.record;
     this.ctx.waitUntil(
-      Promise.all([
-        stored,
-        this.reportIndex({
-          title,
-          observedAt,
-          keepTime,
-          contentUpdatedAt: this.contentActivity?.value ?? null,
-        }),
-      ])
+      this.reportIndex({
+        title,
+        observedAt: record.observed_at,
+        keepTime: record.keep !== false,
+        contentUpdatedAt: this.contentActivity?.value ?? null,
+      })
         .catch((error) => logFailure(error, "catalog-index-repair"))
         .finally(() => {
           this.indexRepairing = false;
@@ -5130,7 +5009,6 @@ export class Page {
     this.plain?.refresh();
     this.activity?.prune();
     this.pendingAccess = undefined;
-    this.cachedTitle = undefined;
     this.cacheTitle(undefined, { observe: true });
   }
 
@@ -5664,7 +5542,10 @@ export class Page {
         return json(
           catalogAnswer(this.metadata, identity, {
             title: this.handle.doc().title,
-            observed: this.titleObserved,
+            observed: {
+              at: this.titleProjection?.record?.observed_at,
+              keep: this.titleProjection?.record?.keep !== false,
+            },
             contentUpdatedAt: this.contentActivity?.value ?? null,
           }),
         );
@@ -6367,7 +6248,6 @@ export class Page {
         return;
       case "projectTitle":
         // A restore is a lifecycle observation: listings move it now.
-        this.cachedTitle = undefined;
         this.cacheTitle(undefined, { observe: true });
         return;
       case "retireIndex":

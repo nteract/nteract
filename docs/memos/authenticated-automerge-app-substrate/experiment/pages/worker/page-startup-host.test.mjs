@@ -426,11 +426,76 @@ test("a projection that finishes after a newer title was stored leaves the mark"
   // A projection of the stored title is running when an ACL commit stores a
   // new observation of it (marked); the older projection lands after.
   page.cacheTitle();
-  page.titleObservation("Launch plan", { observe: true });
+  page.advanceTitleProjection({
+    type: "observe",
+    title: "Launch plan",
+    observe: true,
+    now: Date.now(),
+  });
   release();
   await settle();
   assert.equal(await h.f.storage.get("host/title-projection/pending"), true);
 });
+
+test("an in-flight pending delete finishes before a newer observation's mark", async (t) => {
+  const h = await hosts(t);
+  const page = h.cold();
+  await page.ready;
+  await page.documentReady();
+  const remove = h.f.storage.delete;
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  let deleting = false;
+  h.f.storage.delete = async function (key) {
+    if (key === "host/title-projection/pending") {
+      deleting = true;
+      await held;
+    }
+    return remove.call(this, key);
+  };
+  page.cacheTitle();
+  await until(() => deleting, "the old clear entered storage");
+  page.advanceTitleProjection({ type: "observe", title: "New title", now: Date.now() });
+  const newest = page.titleProjection.record;
+  release();
+  await drain(h);
+  assert.deepEqual(await h.f.storage.get("host/title-projection"), newest);
+  assert.equal(await h.f.storage.get("host/title-projection/pending"), true);
+  assert.equal(page.titleProjection.delivery.name, "needed");
+});
+
+for (const fails of [false, true]) {
+  test(`an old A store ${fails ? "failure" : "success"} cannot overwrite a newer A after B`, async (t) => {
+    const h = await hosts(t);
+    const page = h.cold();
+    await page.ready;
+    await page.documentReady();
+    const put = h.f.storage.put;
+    let release;
+    const held = new Promise((resolve) => (release = resolve));
+    let storing = false;
+    h.f.storage.put = async function (key, value) {
+      if (key === "host/title-projection" && !storing) {
+        storing = true;
+        await held;
+        if (fails) throw Error("old store failed");
+      }
+      return put.call(this, key, value);
+    };
+    const observe = (title, now) => page.advanceTitleProjection({ type: "observe", title, now });
+    observe("A", 1000);
+    await until(() => storing, "the first A store entered storage");
+    observe("B", 2000);
+    observe("A", 3000);
+    const newest = page.titleProjection.record;
+    release();
+    await drain(h);
+    assert.deepEqual(await h.f.storage.get("host/title-projection"), newest);
+    assert.equal(newest.observed_at, new Date(3000).toISOString());
+    assert.equal(page.titleProjection.storage.name, "stored");
+    assert.equal(await h.f.storage.get("host/title-projection/pending"), true);
+  });
+}
 
 test("a creation intent or a legacy record boots in the constructor, as every host did", async (t) => {
   const h = await hosts(t);
@@ -978,7 +1043,7 @@ test("a title whose mark write failed is stored alone, with the same time, once 
   await page.documentReady();
   assert.equal((await h.check(page, "member")).status, 200);
   await drain(h);
-  const first = page.titleProjection;
+  const first = page.titleProjection.record;
   assert.equal(first.title, "Launch plan");
   assert.equal((await h.f.storage.get("host/title-projection")).title, "Old plan", "unstored");
   const projected = sent.projections;
@@ -1042,7 +1107,11 @@ test("while the title store keeps failing, requests resend nothing and the store
   for (let i = 0; i < 5; i++) await request();
   assert.equal(stores, 2, "one retry once the interval passed");
   assert.equal(sent.projections, projected);
-  assert.equal(page.cachedTitle, "Launch plan", "the failed store left the Catalogs' title cached");
+  assert.equal(
+    page.titleProjection.delivery.name,
+    "delivered",
+    "Catalog delivery survives store failure",
+  );
   // The pending mark stays: the next object's first check sends the title.
   assert.equal(await h.f.storage.get("host/title-projection/pending"), true);
 });

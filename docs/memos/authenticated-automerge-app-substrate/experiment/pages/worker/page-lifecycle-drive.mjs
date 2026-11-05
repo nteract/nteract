@@ -294,8 +294,8 @@ function watchHost(page, h) {
     trace.record({ type: "retireIndex" });
   };
   const cacheTitle = Page.prototype.cacheTitle;
-  page.cacheTitle = function (identity) {
-    cacheTitle.call(this, identity);
+  page.cacheTitle = function (...args) {
+    cacheTitle.call(this, ...args);
     trace.record({ type: "projectTitle" });
   };
   const convert = page.convertPreservedMarkdown.bind(page);
