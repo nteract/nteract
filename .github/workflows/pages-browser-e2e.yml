@@ -32,9 +32,11 @@ on:
 permissions:
   contents: read
 
+# Pull requests cancel superseded runs. Every main push runs to completion on
+# its own SHA, so each candidate for production promotion gets an E2E result.
 concurrency:
-  group: pages-browser-e2e-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: pages-browser-e2e-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # One leg per record storage a new Page can get. The default leg (Subduction)

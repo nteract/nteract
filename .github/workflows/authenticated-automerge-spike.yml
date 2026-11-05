@@ -30,9 +30,12 @@ on:
 permissions:
   contents: read
 
+# Pull requests cancel superseded runs. Every main push runs to completion on
+# its own SHA, so a burst of merges cannot cancel each candidate in turn and
+# leave page10 with no green commit to deploy.
 concurrency:
-  group: authenticated-automerge-spike-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: authenticated-automerge-spike-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
