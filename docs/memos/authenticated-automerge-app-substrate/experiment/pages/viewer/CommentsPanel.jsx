@@ -4,6 +4,7 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  ListChecks,
   MessageSquare,
   RotateCcw,
   X,
@@ -18,7 +19,14 @@ import { COMMENTS_SHEET_QUERY } from "./comments-layout.mjs";
 import { CommentRichText } from "./CommentRichText.jsx";
 import { AnchorChip, Message, MessageRuns, useNow } from "./CommentThreadParts.jsx";
 import { threadLocation, threadTitle } from "./comment-thread-display.mjs";
-import { LIST, groupByHeading, navigate, position } from "./comment-nav.mjs";
+import {
+  LIST,
+  afterResolve,
+  groupByHeading,
+  navigate,
+  position,
+  reviewKey,
+} from "./comment-nav.mjs";
 import "./comments.css";
 
 const NO_COMPOSER = new Store({ state: { name: "idle" }, composer: null, body: "" });
@@ -189,11 +197,26 @@ export function CommentsPanel({
       thread.state === "resolved"
         ? thread.id
         : (openThreads[index + 1] ?? openThreads[index - 1])?.id;
+    const reviewing = nav.name === "review";
+    const advanceTo =
+      reviewing && thread.state === "open"
+        ? afterResolve(
+            thread.id,
+            unresolved.map((item) => item.id),
+          )
+        : null;
     try {
       await session.comment({
         action: thread.state === "open" ? "resolve" : "reopen",
         thread_id: thread.id,
       });
+      if (reviewing) {
+        // Resolve-and-next: review moves on; the resolved thread stays in
+        // the navigator to reopen.
+        if (advanceTo) dispatch({ type: "go", id: advanceTo });
+        requestAnimationFrame(() => body.current?.focus({ preventScroll: true }));
+        return;
+      }
       requestAnimationFrame(() => {
         if (!dialog.current?.open) return;
         if (![focused, document.body, dialog.current].includes(document.activeElement)) return;
@@ -256,7 +279,36 @@ export function CommentsPanel({
   const orderedIds = ordered.map((thread) => thread.id);
   const idsKey = orderedIds.join("\n");
   useEffect(() => dispatch({ type: "sync", ids: idsKey ? idsKey.split("\n") : [] }), [idsKey]);
-  const drilled = nav.name === "thread" ? ordered.find((t) => t.id === nav.id) : null;
+  const drilled = nav.name !== "list" ? ordered.find((t) => t.id === nav.id) : null;
+  const reviewing = Boolean(drilled) && nav.name === "review";
+  const resolvedCount = resolved.length;
+  function startReview() {
+    const id = drilled?.id ?? unresolved[0]?.id ?? ordered[0]?.id;
+    if (!id) return;
+    dispatch({ type: "review", id, scroll: body.current?.scrollTop ?? 0 });
+    requestAnimationFrame(() => body.current?.focus({ preventScroll: true }));
+  }
+  function reviewCommand(command) {
+    switch (command) {
+      case "next":
+        return dispatch({ type: "step", by: 1, ids: orderedIds });
+      case "previous":
+        return dispatch({ type: "step", by: -1, ids: orderedIds });
+      case "resolve":
+        if (drilled?.state === "open" && session.canComment && changing !== drilled.id)
+          changeThread(drilled);
+        return;
+      case "reply":
+        dialog.current
+          ?.querySelector(".thread-current .thread-reply-button:not([hidden])")
+          ?.click();
+        return;
+      case "exit":
+        dispatch({ type: "exit" });
+        requestAnimationFrame(() => body.current?.focus({ preventScroll: true }));
+        return;
+    }
+  }
   const where = drilled ? position(nav, orderedIds) : null;
   useEffect(() => {
     // A resolved thread lives inside the disclosure; open it to show the thread.
@@ -266,7 +318,7 @@ export function CommentsPanel({
   useLayoutEffect(() => {
     const scroller = body.current;
     if (!scroller) return;
-    if (nav.name === "thread") {
+    if (nav.name !== "list") {
       scroller.scrollTop = 0;
       return;
     }
@@ -300,7 +352,8 @@ export function CommentsPanel({
       className={
         "comments" +
         (mobile ? " comments-sheet" : expanded ? " comments-expanded" : "") +
-        (drilled ? " comments-drilled" : "")
+        (drilled ? " comments-drilled" : "") +
+        (reviewing ? " comments-review" : "")
       }
       aria-labelledby="comments-title"
       onClose={() => {
@@ -310,6 +363,15 @@ export function CommentsPanel({
         if (modal && event.target === dialog.current) onClose();
       }}
       onKeyDown={(event) => {
+        if (reviewing) {
+          const command = reviewKey(event);
+          if (command) {
+            event.preventDefault();
+            reviewCommand(command);
+            return;
+          }
+          if (event.key === "Escape") return;
+        }
         if (!event.defaultPrevented && drilled && event.key === "Escape") {
           event.preventDefault();
           back();
@@ -325,7 +387,17 @@ export function CommentsPanel({
         <h2 id="comments-title">
           <MessageSquare size={18} aria-hidden="true" /> Comments
         </h2>
-        {!mobile && (
+        {!reviewing && unresolved.length > 0 && (
+          <button
+            type="button"
+            className="subtle-button comments-review-start"
+            title="Review open threads one at a time (J/K to move, R to resolve, E to reply)"
+            onClick={startReview}
+          >
+            <ListChecks size={16} aria-hidden="true" /> Review
+          </button>
+        )}
+        {!mobile && !reviewing && (
           <button
             className="icon-button comments-expand"
             aria-label={expanded ? "Narrow comments" : "Expand comments"}
@@ -345,9 +417,19 @@ export function CommentsPanel({
       </div>
       {drilled && (
         <nav className="comments-thread-nav" aria-label="Thread navigation">
-          <button type="button" className="subtle-button comments-back" onClick={back}>
-            <ArrowLeft size={16} aria-hidden="true" /> All comments
-          </button>
+          {reviewing ? (
+            <button
+              type="button"
+              className="subtle-button comments-back"
+              onClick={() => reviewCommand("exit")}
+            >
+              <ArrowLeft size={16} aria-hidden="true" /> Exit review
+            </button>
+          ) : (
+            <button type="button" className="subtle-button comments-back" onClick={back}>
+              <ArrowLeft size={16} aria-hidden="true" /> All comments
+            </button>
+          )}
           {where && (
             <span className="muted comments-position">
               {where.index} of {where.total}
@@ -373,7 +455,36 @@ export function CommentsPanel({
           </button>
         </nav>
       )}
-      <div className="comments-body" ref={body}>
+      {reviewing && (
+        <nav className="review-navigator" aria-label="Threads to review">
+          <p className="review-progress">
+            <span>
+              {resolvedCount} of {ordered.length} resolved
+            </span>
+            <progress max={ordered.length || 1} value={resolvedCount} />
+          </p>
+          <ol>
+            {ordered.map((thread) => (
+              <li key={thread.id}>
+                <button
+                  type="button"
+                  className={"review-item" + (thread.state === "resolved" ? " resolved" : "")}
+                  aria-current={thread.id === drilled.id ? "true" : undefined}
+                  onClick={() => dispatch({ type: "go", id: thread.id })}
+                >
+                  {thread.state === "resolved" && <Check size={13} aria-label="Resolved" />}
+                  {threadTitle(thread.messages.find((m) => !m.deletedAt)?.body).title || "Comment"}
+                </button>
+              </li>
+            ))}
+          </ol>
+          <p className="muted review-keys">
+            <kbd>J</kbd>/<kbd>K</kbd> move · <kbd>R</kbd> resolve · <kbd>E</kbd> reply ·{" "}
+            <kbd>Esc</kbd> exit
+          </p>
+        </nav>
+      )}
+      <div className="comments-body" ref={body} tabIndex={-1}>
         {problem && (
           <p role="alert" className="error">
             {problem}

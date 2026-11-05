@@ -582,3 +582,153 @@ button.anchor-chip:hover {
   padding-bottom: 1rem;
   background: var(--surface);
 }
+
+/* Review: a full-width workspace with a navigator beside one thread. */
+.comments-review-start {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-left: auto;
+}
+.comments.comments-review[open],
+.document.with-comments > .comments.comments-review[open] {
+  inset: 72px 24px 24px 24px;
+  left: 24px;
+  right: 24px;
+  width: auto;
+  height: calc(100dvh - 96px);
+  max-width: none;
+  max-height: none;
+  display: grid;
+  grid-template-columns: minmax(200px, 280px) minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-areas:
+    "heading heading"
+    "navigator bar"
+    "navigator body";
+  box-shadow: 0 12px 40px #00000033;
+  z-index: 20;
+}
+.comments-review .comments-heading {
+  grid-area: heading;
+}
+.comments-review .comments-thread-nav {
+  grid-area: bar;
+}
+.comments-review .comments-body {
+  grid-area: body;
+  padding: 1.5rem clamp(1rem, 6vw, 4rem);
+}
+.comments-review .comments-body:focus {
+  outline: none;
+}
+.comments-review .thread-current {
+  max-width: 44rem;
+}
+/* The passage reads in full, as a read-only excerpt. */
+.comments-review .thread-current .anchor-chip {
+  font-size: 0.95rem;
+  padding: 0.6rem 0.8rem;
+  margin-bottom: 0.9rem;
+}
+.comments-review .thread-current .anchor-chip-text {
+  display: block;
+  white-space: normal;
+  -webkit-line-clamp: unset;
+  overflow: visible;
+}
+.comments-review .thread-current .thread-title {
+  font-size: 1.15rem;
+}
+.review-navigator {
+  grid-area: navigator;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--line);
+}
+.review-progress {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0.75rem 0.9rem;
+  font-size: 0.78rem;
+  color: var(--muted-foreground);
+}
+.review-progress progress {
+  width: 100%;
+  height: 4px;
+  appearance: none;
+  border: 0;
+  border-radius: 2px;
+  background: var(--muted);
+  accent-color: var(--comment-anchor-line);
+}
+.review-progress progress::-webkit-progress-bar {
+  background: var(--muted);
+  border-radius: 2px;
+}
+.review-progress progress::-webkit-progress-value {
+  background: var(--comment-anchor-line);
+  border-radius: 2px;
+}
+.review-navigator ol {
+  list-style: none;
+  margin: 0;
+  padding: 0 0.4rem;
+  overflow-y: auto;
+  flex: 1;
+}
+.review-item {
+  all: unset;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: 100%;
+  padding: 0.45rem 0.6rem;
+  border-radius: 0.4rem;
+  cursor: pointer;
+  font-size: 0.82rem;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.review-item:hover {
+  background: color-mix(in oklab, var(--muted) 60%, transparent);
+}
+.review-item[aria-current="true"] {
+  background: color-mix(in oklab, var(--comment-anchor) 16%, transparent);
+  box-shadow: inset 2px 0 0 var(--comment-anchor-line);
+  font-weight: 600;
+}
+.review-item.resolved {
+  color: var(--muted-foreground);
+}
+.review-item:focus-visible {
+  outline: 2px solid var(--ring, var(--comment-anchor-line));
+  outline-offset: -2px;
+}
+.review-keys {
+  margin: 0;
+  padding: 0.6rem 0.9rem;
+  border-top: 1px solid var(--line);
+  font-size: 0.72rem;
+}
+.review-keys kbd {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.7rem;
+  padding: 0 0.25rem;
+  border: 1px solid var(--border);
+  border-radius: 0.2rem;
+}
+@media (max-width: 900px) {
+  .comments.comments-review[open] {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "heading" "bar" "body";
+  }
+  .comments-review .review-navigator {
+    display: none;
+  }
+}

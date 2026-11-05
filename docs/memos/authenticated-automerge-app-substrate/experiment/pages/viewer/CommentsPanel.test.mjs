@@ -558,3 +558,63 @@ test("Escape inside a thread returns to the list before closing the panel", asyn
   await escape();
   assert.equal(closed, 1);
 });
+
+test("review mode walks threads with J/K, resolves and advances with R, and keeps keys out of the editor", async (t) => {
+  const f = await fixture(t);
+  f.props.session.comment = async (action) => {
+    f.calls.push(action);
+    f.props.threads = f.props.threads.map((thread) =>
+      thread.id === action.thread_id
+        ? { ...thread, state: action.action === "resolve" ? "resolved" : "open" }
+        : thread,
+    );
+    f.renderSync();
+  };
+  const dialog = f.container.querySelector("dialog");
+  const press = async (key, target = dialog.querySelector(".comments-body")) => {
+    const event = new dom.window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+    await act(async () => {
+      target.dispatchEvent(event);
+      await Promise.resolve();
+    });
+    await tick();
+    return event;
+  };
+  await f.click(dialog.querySelector(".comments-review-start"));
+  assert.ok(dialog.classList.contains("comments-review"));
+  assert.ok(f.element("first").classList.contains("thread-current"));
+  assert.match(dialog.querySelector(".review-progress").textContent, /1 of 3 resolved/);
+  await press("j");
+  assert.ok(f.element("next").classList.contains("thread-current"));
+  await press("k");
+  assert.ok(f.element("first").classList.contains("thread-current"));
+  await press("r");
+  assert.deepEqual(f.calls, [{ action: "resolve", thread_id: "first" }]);
+  assert.ok(f.element("next").classList.contains("thread-current"), "resolve-and-next");
+  assert.match(dialog.querySelector(".review-progress").textContent, /2 of 3 resolved/);
+  await press("e");
+  const textarea = f.element("next").querySelector("textarea");
+  assert.ok(textarea, "E opens the reply composer");
+  const typed = await press("j", textarea);
+  assert.equal(typed.defaultPrevented, false, "J while typing belongs to the editor");
+  assert.ok(f.element("next").classList.contains("thread-current"));
+  await press("Escape", textarea);
+  assert.ok(dialog.classList.contains("comments-review"), "Escape while typing stays in review");
+  await press("Escape");
+  assert.equal(dialog.classList.contains("comments-review"), false);
+  assert.ok(f.element("next").classList.contains("thread-current"), "exit lands on the thread");
+});
+
+test("viewers can review but R does nothing without comment access", async (t) => {
+  const f = await fixture(t, {
+    session: { doc: { blocks: { block: {} } }, canComment: false, commentMessage: () => undefined },
+  });
+  const dialog = f.container.querySelector("dialog");
+  await f.click(dialog.querySelector(".comments-review-start"));
+  await act(() =>
+    dialog
+      .querySelector(".comments-body")
+      .dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "r", bubbles: true })),
+  );
+  assert.deepEqual(f.calls, []);
+});

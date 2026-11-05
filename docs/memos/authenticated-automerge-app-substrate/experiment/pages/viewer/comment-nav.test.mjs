@@ -68,3 +68,42 @@ test("groupByHeading orders by document and groups consecutive headings", () => 
     ],
   );
 });
+
+test("review enters from any state, keeps its mode while moving, and exits to the thread", () => {
+  const review = navigate({ name: "list", scroll: 40 }, { type: "review", id: "a" });
+  assert.deepEqual(review, { name: "review", id: "a", listScroll: 40 });
+  assert.equal(navigate(review, { type: "step", by: 1, ids }).name, "review");
+  assert.deepEqual(navigate(review, { type: "go", id: "c" }), { ...review, id: "c" });
+  assert.deepEqual(navigate(review, { type: "show", id: "b" }), { ...review, id: "b" });
+  assert.deepEqual(navigate(review, { type: "exit" }), { name: "thread", id: "a", listScroll: 40 });
+  assert.deepEqual(navigate(review, { type: "back" }), { name: "list", scroll: 40 });
+  assert.deepEqual(navigate(review, { type: "sync", ids: [] }), { name: "list", scroll: 40 });
+  assert.equal(navigate(LIST, { type: "go", id: "a" }), LIST);
+  assert.equal(navigate(LIST, { type: "exit" }), LIST);
+  const thread = { name: "thread", id: "b", listScroll: 7 };
+  assert.deepEqual(navigate(thread, { type: "review", id: "b" }), { ...thread, name: "review" });
+});
+
+test("afterResolve prefers the next open thread, then the previous", async () => {
+  const { afterResolve } = await import("./comment-nav.mjs");
+  assert.equal(afterResolve("a", ids), "b");
+  assert.equal(afterResolve("c", ids), "b");
+  assert.equal(afterResolve("a", ["a"]), null);
+  assert.equal(afterResolve("z", ids), "a");
+});
+
+test("reviewKey maps J/K/R/E/Escape and ignores keys while typing", async () => {
+  const { reviewKey } = await import("./comment-nav.mjs");
+  const key = (key, extra = {}) => ({ key, target: { closest: () => null }, ...extra });
+  assert.equal(reviewKey(key("j")), "next");
+  assert.equal(reviewKey(key("K")), "previous");
+  assert.equal(reviewKey(key("r")), "resolve");
+  assert.equal(reviewKey(key("e")), "reply");
+  assert.equal(reviewKey(key("Escape")), "exit");
+  assert.equal(reviewKey(key("x")), null);
+  assert.equal(reviewKey(key("j", { metaKey: true })), null);
+  assert.equal(reviewKey(key("j", { defaultPrevented: true })), null);
+  const typing = { closest: () => ({}) };
+  assert.equal(reviewKey(key("r", { target: typing })), null);
+  assert.equal(reviewKey(key("Escape", { target: typing })), null, "Escape belongs to the editor");
+});
