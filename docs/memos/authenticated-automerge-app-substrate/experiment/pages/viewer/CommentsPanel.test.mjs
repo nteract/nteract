@@ -513,6 +513,21 @@ test("a passage hovered in the Page marks its row", async (t) => {
   assert.equal(f.row("first").classList.contains("thread-row-hovered"), false);
 });
 
+test("the passage card shows the copy from the first paint, without a text fallback", async (t) => {
+  const page = document.body.appendChild(document.createElement("div"));
+  page.className = "document";
+  page.innerHTML = `<section class="page-block" data-block-id="block"><table><tbody><tr><td><strong><span class="comment-passage" data-comment-thread="first">Passage first</span></strong></td></tr></tbody></table></section>`;
+  t.after(() => page.remove());
+  const f = await fixture(t);
+  // A synchronous act runs the commit and its effects but no task or frame:
+  // what the browser paints first.
+  act(() => f.row("first").click());
+  const card = f.view().querySelector(".thread-passage");
+  assert.equal(card.querySelector(".passage-snippet").hidden, false);
+  assert.equal(card.querySelector("strong .copy-passage-active").textContent, "Passage first");
+  assert.equal(card.querySelector(".thread-passage-text"), null, "no fallback flash");
+});
+
 test("the passage card copies the rendered paragraph, formatting and all, read-only", async (t) => {
   const page = document.body.appendChild(document.createElement("div"));
   page.className = "document";

@@ -2030,10 +2030,15 @@ object's records.
 A tab that held the Page on its native replica, offline say, finds plain
 storage at its next discovery. The storage switch
 ([viewer/storage-switch-machine.mjs](viewer/storage-switch-machine.mjs)) pauses
-edits, records its checkpoint under plain storage and asks for a reload; the
-reloaded tab opens a plain replica from that checkpoint and sends the host the
-changes it lacks. Edits in a browser that never reconnects stay in that
-browser. `node scripts/e2e.mjs migration` covers both tabs.
+edits and records its checkpoint, final, under plain storage. The tab then
+reopens the Page in place ([viewer/storage-reopen-machine.mjs](viewer/storage-reopen-machine.mjs),
+`SessionHost.reopenStorage`): it closes the native session, opens a plain
+replica of the Page and its comments from that checkpoint, installs it, and
+sends the host the changes it lacks. There is no reload and no banner. A tab
+asks for a reload only when the close or the open fails, or when the same Page
+adopts other storage again in that tab, so a host whose answer keeps changing
+can't loop it. Edits in a browser that never reconnects stay in that browser.
+`node scripts/e2e.mjs migration` covers both tabs.
 
 ### Page quotas
 

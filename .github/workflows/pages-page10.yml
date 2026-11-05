@@ -35,7 +35,7 @@ jobs:
       actions: read
       id-token: write
     # Reviewed main reusable; deployment still requires explicit enablement.
-    uses: nteract/nteract/.github/workflows/pages-page10-reusable.yml@9eb266bc28f1b01971eb9f94123174845fd3faa7
+    uses: nteract/nteract/.github/workflows/pages-page10-reusable.yml@86dcd9624e313806c99923dd3e00c141a00dbd9b
     with:
       enabled: true
   manual:
@@ -44,7 +44,7 @@ jobs:
       contents: read
       actions: read
       id-token: write
-    uses: nteract/nteract/.github/workflows/pages-page10-reusable.yml@9eb266bc28f1b01971eb9f94123174845fd3faa7
+    uses: nteract/nteract/.github/workflows/pages-page10-reusable.yml@86dcd9624e313806c99923dd3e00c141a00dbd9b
     with:
       enabled: true
       sha: ${{ inputs.sha }}

@@ -187,14 +187,20 @@ export const STORAGE_SWITCH_FAILED =
   "This draft couldn't move to new storage. Reload to keep editing; it's saved on this device.";
 export const STORAGE_ADOPTED =
   "This Page's storage changed. Reload to keep editing; your edits are saved on this device.";
+/** The edit pause while a tab that reopens in place (`reopenInPlace`) closes
+ * the adopted replica and opens the host's storage. */
+export const STORAGE_REOPENING = "This Page is reopening on new storage. Try again in a moment.";
 export const STORAGE_REFUSED_AGAIN =
   "The server refused this draft's storage again. Try again to register it.";
-/** Why a storage switch in `state` holds edits. */
-const storageSwitchNotice = (state) =>
+/** Why a storage switch in `state` holds edits. `reopening` says the tab
+ * reopens the Page in place once the host's storage is adopted. */
+const storageSwitchNotice = (state, reopening = false) =>
   state.name === "failed"
     ? STORAGE_SWITCH_FAILED
     : state.name === "adopting" || state.name === "adopted"
-      ? STORAGE_ADOPTED
+      ? reopening
+        ? STORAGE_REOPENING
+        : STORAGE_ADOPTED
       : STORAGE_SWITCHING;
 /** A checkpoint write's answer that the local copy is no longer this tab's
  * (local-pages.mjs). */
@@ -508,9 +514,14 @@ export class PageSession {
       random = Math.random,
       now = monotonicNow,
       buildFeatures = BUILD_FEATURES,
+      reopenInPlace = false,
     } = {},
   ) {
     this.pageId = pageId;
+    // Once this replica adopts the host's storage, the tab's SessionHost
+    // reopens the Page from the recorded checkpoint (storage-reopen-machine.mjs)
+    // instead of asking the person to reload.
+    this.reopenInPlace = reopenInPlace;
     // The schema features this viewer can edit. Tests inject their own.
     this.buildFeatures = buildFeatures;
     this.refreshSession = refreshSession;
@@ -690,18 +701,7 @@ export class PageSession {
         // It waits for the release step, assigned once per session, not the
         // whole close: leaving during an access reload makes the close wait
         // for this open. A failed release doesn't block the open or its retry.
-        return Promise.allSettled([this.#released]).then(() =>
-          PageSession.open(this.pageId, {
-            authentication: {
-              identity: this.identity,
-              canWrite: this.credentialCanWrite,
-            },
-            refreshSession: this.refreshSession,
-            scheduler: this.scheduler,
-            random: this.random,
-            now: this.now,
-          }),
-        );
+        return Promise.allSettled([this.#released]).then(() => this.#openReplacement());
       case "retire": {
         const retiring = this.#retire();
         // The close covers the archive from the start, so a leave or a reload
@@ -713,6 +713,31 @@ export class PageSession {
         return this.#rekey(context);
     }
     throw new Error(`unknown effect ${effect.type}`);
+  }
+  /** A new session for this Page and account, with this one's options. It
+   * opens from the stored checkpoint. */
+  #openReplacement() {
+    return PageSession.open(this.pageId, {
+      authentication: {
+        identity: this.identity,
+        canWrite: this.credentialCanWrite,
+      },
+      refreshSession: this.refreshSession,
+      scheduler: this.scheduler,
+      random: this.random,
+      now: this.now,
+      buildFeatures: this.buildFeatures,
+      reopenInPlace: this.reopenInPlace,
+    });
+  }
+  /** Open this Page again after this session adopted the host's storage and
+   * closed (SessionHost.reopenStorage). The replacement restores the recorded
+   * checkpoint into a replica of the host's storage. Resolves with it. */
+  async openAfterStorageChange() {
+    if (this.alive) throw Error("The adopted session is still open");
+    if (this.hidden) throw Error("This Page's local copy was retired");
+    await Promise.allSettled([this.#released]);
+    return this.#openReplacement();
   }
   #saved() {
     if (this.hidden) return true;
@@ -2134,7 +2159,8 @@ export class PageSession {
    * its checkpoint is plain Automerge. The storage switch pauses edits, then
    * records that checkpoint, final, under the host's storage
    * (storage-switch-machine.mjs). The next open restores it into a replica of
-   * that storage, so a reload recovers instead of failing the same way. */
+   * that storage: SessionHost.reopenStorage in this tab when `reopenInPlace`
+   * is set, otherwise a reload. */
   async adoptHostStorage(storage) {
     const { state, error } = await this.#switchStorage({ type: "mismatched", storage });
     await this.#retireAfterStorageSwitch(error);
@@ -2146,6 +2172,18 @@ export class PageSession {
     if (error) throw error;
     if (!this.alive || state.name === "closed") throw Error("Page closed");
     throw Error("This Page's storage is still changing. Trying again.");
+  }
+  /** This session recorded the host's storage and edits stay held: the tab
+   * reopens the Page from that checkpoint (`reopenInPlace`), or a reload
+   * does. */
+  get storageAdopted() {
+    return this.alive && this.storageSwitch$.snapshot().name === "adopted";
+  }
+  /** Reopening in place can't continue: ask the person to reload, as a tab
+   * without `reopenInPlace` does. */
+  showStorageReloadRequired() {
+    this.reopenInPlace = false;
+    this.showConnectionProblem(STORAGE_ADOPTED);
   }
   /** A storage switch step found the local copy deleted, revoked or replaced
    * by another grant: retire this tab the way a checkpoint write does. */
@@ -2729,6 +2767,12 @@ export class PageSession {
         this.refuseNative(error.admission);
         return;
       }
+      // The host's storage is recorded and the tab reopens the Page in place:
+      // no banner and no reconnect. Listeners hear `storageAdopted`.
+      if (error.code === "RECORD_STORAGE_CHANGED" && this.reopenInPlace && this.storageAdopted) {
+        this.emit();
+        return;
+      }
       // Discovery classified its own answer. Only page_deleted marks a
       // deletion, so a 404 from another request (registration, tools) doesn't.
       const refusal = classifyRefusal(error);
@@ -2807,7 +2851,7 @@ export class PageSession {
   change(fn) {
     if (!this.alive) throw Error("Page closed");
     if (this.editPauses.has(STORAGE_SWITCH))
-      throw Error(storageSwitchNotice(this.storageSwitch$.snapshot()));
+      throw Error(storageSwitchNotice(this.storageSwitch$.snapshot(), this.reopenInPlace));
     if (!this.canWrite) throw Error("This Page is read only");
     return this.#write(this.handle, fn);
   }

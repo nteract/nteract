@@ -2,7 +2,8 @@
 // `node scripts/local-sharing-e2e.mjs --migration`. The harness starts celld
 // with new Pages on Subduction; on request it restarts celld with plain
 // Automerge sync and PAGES_MIGRATE_RECORD_STORAGE on. A Page converts once
-// its last tab leaves (record-storage-migration.mjs).
+// its last tab leaves (record-storage-migration.mjs). Each open tab reopens
+// its Page in place on plain sync, without a reload.
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
@@ -64,6 +65,38 @@ async function hostText() {
   const read = await tool("read_page", { page_id: pageId });
   assert.equal(read.status, 200, JSON.stringify(read.body));
   return read.body.blocks.map((block) => block.markdown).join("\n");
+}
+const STORAGE_BANNER = "This Page's storage changed";
+/** Mark the tab so a reload shows (the mark goes), and record whether the
+ * storage reload banner ever renders. */
+async function watchTab(page) {
+  await page.evaluate((banner) => {
+    window.__pagesSameTab = true;
+    window.__pagesSawStorageBanner = false;
+    new MutationObserver(() => {
+      if (document.body.textContent.includes(banner)) window.__pagesSawStorageBanner = true;
+    }).observe(document.body, { subtree: true, childList: true, characterData: true });
+  }, STORAGE_BANNER);
+}
+/** The tab reopened the Page in place on a plain replica: no reload, no
+ * banner. */
+async function reopenedInPlace(page) {
+  await expect
+    .poll(
+      () =>
+        page.evaluate(async () =>
+          (await indexedDB.databases()).some((d) => d.name.startsWith("pages-plain-")),
+        ),
+      { timeout: 60000, intervals: [500] },
+    )
+    .toBe(true);
+  await expect(saved(page)).toBeVisible({ timeout: 60000 });
+  const tab = await page.evaluate(() => ({
+    same: window.__pagesSameTab === true,
+    banner: window.__pagesSawStorageBanner,
+  }));
+  assert.deepEqual(tab, { same: true, banner: false }, "reopened without a reload or banner");
+  await expect(page.getByText(STORAGE_BANNER)).toHaveCount(0);
 }
 async function typeAtEnd(page, text) {
   await content(page).click();
@@ -157,20 +190,25 @@ try {
   await c.context.close();
 
   // Tab B comes back online. Discovery names plain storage, so its native
-  // replica checkpoints its edit under plain storage and asks for a reload.
+  // replica checkpoints its edit under plain storage and the tab reopens the
+  // Page in place on a plain replica, without a reload.
+  await watchTab(b.page);
   await b.context.setOffline(false);
-  await expect(b.page.getByText("This Page's storage changed")).toBeVisible({
-    timeout: 60000,
-  });
-  await b.page.screenshot({ path: `${output}/storage-changed.png` });
-  await b.page.reload({ waitUntil: "domcontentloaded" });
+  await reopenedInPlace(b.page);
   await expect(content(b.page)).toContainText("Typed offline.", {
     timeout: 60000,
   });
-  await expect(saved(b.page)).toBeVisible({ timeout: 60000 });
+  await b.page.screenshot({ path: `${output}/storage-reopened.png` });
   await expect.poll(hostText, { timeout: 30000 }).toContain("Typed offline.");
   assert.match(await hostText(), /From tab A\./);
-  report.completed.push("Tab B reconnected, reloaded on plain sync, and its offline edit arrived");
+  await expect(content(b.page)).toContainText("From tab A.", { timeout: 30000 });
+  await typeAtEnd(b.page, " After the reopen.");
+  await expect(saved(b.page)).toBeVisible({ timeout: 60000 });
+  await expect.poll(hostText, { timeout: 30000 }).toContain("After the reopen.");
+  report.completed.push(
+    "Tab B reconnected, reopened in place on plain sync without a reload, and its offline edit arrived",
+  );
+
   assert.deepEqual(report.errors, []);
 } catch (error) {
   report.failure = error.message;
