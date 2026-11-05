@@ -266,7 +266,7 @@ try {
 
   // The owner sees it live in the thread list.
   await owner.getByRole("button", { name: /^Comments/ }).click();
-  await expect(owner.locator(".thread", { hasText: "Alice was here" })).toBeVisible();
+  await expect(owner.locator(".thread-row", { hasText: "Alice was here" })).toBeVisible();
   checkpoint("the owner sees the commenter's thread live");
 
   // Typing in the Page reaches nothing.
@@ -379,7 +379,8 @@ try {
   );
 
   // Her thread list offers the comment controls a commenter holds.
-  const ownThread = commenter.locator(`[data-thread-id="${aliceThread.id}"]`);
+  await commenter.locator(`.thread-row[data-thread-id="${aliceThread.id}"]`).click();
+  const ownThread = commenter.locator(`.thread-view[data-thread-id="${aliceThread.id}"]`);
   await expect(ownThread).toBeVisible();
   await expect(ownThread.getByRole("button", { name: "Resolve", exact: true })).toBeEnabled();
   await expect(ownThread.getByRole("button", { name: "Reply", exact: true })).toBeEnabled();

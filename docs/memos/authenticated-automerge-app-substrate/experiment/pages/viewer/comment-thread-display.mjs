@@ -262,3 +262,81 @@ export function threadLocation(doc, thread) {
 
 /** Compare two locations in document order. */
 export const byDocumentOrder = (a, b) => a.order[0] - b.order[0] || a.order[1] - b.order[1];
+
+/** The text after a thread's title, for a one-line preview under it. */
+export function threadPreview(markdown) {
+  const source = String(markdown ?? "").trimStart();
+  const lead = /^(\*\*|__)(?!\s)([^\n]+?)(?<!\s)\1[\s:.,;—–-]*/.exec(source);
+  if (lead) return plainText(source.slice(lead[0].length));
+  const text = plainText(source);
+  const sentence = /^(.+?[.!?])(?=\s|$)/u.exec(text)?.[1];
+  return sentence ? text.slice(sentence.length).trim() : "";
+}
+
+const BOUNDARY = /[\ufffc\n]/;
+
+/**
+ * The passage a thread points at with a little of its paragraph on either
+ * side: `{ before, passage, after }`. Context stops at paragraph boundaries
+ * and is cut at word breaks with an ellipsis. Block comments read the start
+ * of the block as `passage`. Null when there's nothing to show.
+ */
+export function passageExcerpt(doc, thread, { before = 60, after = 110 } = {}) {
+  const context = thread?.selectionContext;
+  const target = thread?.target ?? {};
+  if (context?.status === "attached" && !context.start)
+    return { before: "", passage: context.text ?? "", after: "" };
+  if (context?.status === "attached") {
+    const block = doc?.blocks?.[context.start.blockId];
+    const source = String((isRich(block) ? block.richText : block?.markdown) ?? "");
+    const from = context.start.offsetUtf16,
+      to = context.end.offsetUtf16;
+    if (!source || to > source.length) return { before: "", passage: context.text, after: "" };
+    let head = source.slice(0, from);
+    head = head.slice(Math.max(...[...head].map((c, i) => (BOUNDARY.test(c) ? i + 1 : 0)), 0));
+    let tail = source.slice(to);
+    const stop = tail.search(BOUNDARY);
+    if (stop >= 0) tail = tail.slice(0, stop);
+    const clipStart = (text) => {
+      if (text.length <= before) return text;
+      const cut = text.slice(-before);
+      const space = cut.indexOf(" ");
+      return "…" + (space >= 0 ? cut.slice(space + 1) : cut);
+    };
+    const clipEnd = (text) => {
+      if (text.length <= after) return text;
+      const cut = text.slice(0, after);
+      const space = cut.lastIndexOf(" ");
+      return (space > 0 ? cut.slice(0, space) : cut) + "…";
+    };
+    return {
+      before: plainInline(clipStart(head)),
+      passage: context.text.replaceAll("\ufffc", " "),
+      after: plainInline(clipEnd(tail)),
+    };
+  }
+  if (target.kind === "block") {
+    const block = doc?.blocks?.[target.blockId];
+    if (!block) return null;
+    const source = isRich(block) ? String(block.richText ?? "") : plainText(block.markdown);
+    const text = source.replace(/[\ufffc\n]+/g, " ").trim();
+    if (!text) return null;
+    return { before: "", passage: ellipsis(text, before + after), after: "" };
+  }
+  return null;
+}
+
+// Context around a passage is raw block text; keep it readable without
+// collapsing the spacing at the passage edges.
+const plainInline = (text) => text.replace(/[\ufffc\n]+/g, " ");
+
+/** Distinct authors after the first message, most recent first. */
+export function replyAuthors(messages, limit = 3) {
+  const seen = new Map();
+  for (const message of messages.slice(1).reverse()) {
+    const who = attribution(message.author);
+    if (!seen.has(who.key)) seen.set(who.key, message.author);
+    if (seen.size === limit) break;
+  }
+  return [...seen.values()];
+}

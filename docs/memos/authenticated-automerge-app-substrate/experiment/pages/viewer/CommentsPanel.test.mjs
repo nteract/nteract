@@ -142,6 +142,25 @@ async function fixture(t, options = {}) {
       await act(render);
       await tick();
     },
+    row: (id) => container.querySelector(`.thread-row[data-thread-id="${id}"]`),
+    view: () => container.querySelector(".thread-view"),
+    async open(id) {
+      await this.click(this.row(id));
+    },
+    async key(key, target = container.querySelector("dialog"), extra = {}) {
+      const event = new dom.window.KeyboardEvent("keydown", {
+        key,
+        bubbles: true,
+        cancelable: true,
+        ...extra,
+      });
+      await act(async () => {
+        target.dispatchEvent(event);
+        await Promise.resolve();
+      });
+      await tick();
+      return event;
+    },
     async click(button) {
       await act(async () => {
         button.focus();
@@ -162,317 +181,161 @@ async function fixture(t, options = {}) {
   };
 }
 
-test("threads start with full first messages, collapsed replies, and no exposed empty editors", async (t) => {
-  const f = await fixture(t);
-  const first = f.element("first");
-  assert.match(first.querySelector(".message").textContent, /Full first comment first/);
-  assert.equal(first.querySelector(".thread-title").textContent, "Full first comment first");
-  assert.equal(first.querySelector(".quote").textContent, "Passage first");
-  assert.match(first.querySelector(".message-author").textContent, /^Kyle Kelley/);
-  const toggle = first.querySelector(".thread-replies-toggle");
-  assert.equal(toggle.getAttribute("aria-expanded"), "false");
-  assert.equal(toggle.textContent.trim(), "2 replies");
-  assert.ok(first.querySelector(".thread-replies").hidden);
-  for (const textarea of f.container.querySelectorAll("textarea"))
-    assert.ok(textarea.closest("[hidden]"));
-  await f.click(toggle);
-  assert.equal(toggle.getAttribute("aria-expanded"), "true");
-  const replyAuthor = first.querySelector(".thread-replies .message-author");
-  assert.match(replyAuthor.textContent, /^ChatGPTfor Kyle/);
-  assert.equal(replyAuthor.title, "ChatGPT on behalf of Kyle Kelley");
-  assert.equal(
-    replyAuthor.querySelector(".comment-delegate").getAttribute("aria-label"),
-    "on behalf of Kyle Kelley",
+const dialogOf = (f) => f.container.querySelector("dialog");
+const rows = (f) =>
+  [...f.container.querySelectorAll(".thread-row")].map((row) => row.dataset.threadId);
+
+test("the list shows compact rows for open threads with filters for mine and resolved", async (t) => {
+  const f = await fixture(t, { principal: "me" });
+  f.props.threads[1].messages[0].author.principal = "me";
+  await f.render();
+  assert.deepEqual(rows(f), ["first", "next"]);
+  const first = f.row("first");
+  assert.equal(first.querySelector(".thread-row-title").textContent, "Full first comment first");
+  assert.equal(first.querySelector(".thread-row-chip").textContent, "Passage first");
+  assert.equal(first.querySelector(".thread-row-count").textContent, "2 replies");
+  assert.equal(f.container.querySelector("textarea"), null, "no editor until a thread is open");
+  const tabs = [...f.container.querySelectorAll(".comments-filter")];
+  assert.deepEqual(
+    tabs.map((tab) => tab.textContent),
+    ["Open2", "Mine", "Resolved1"],
   );
-  await f.click(toggle);
-  assert.ok(first.querySelector(".thread-replies").hidden);
-  await f.click(first.querySelector(".quote"));
-  assert.deepEqual(f.revealed, ["first"]);
-  assert.deepEqual(f.calls, []);
+  await f.click(tabs[1]);
+  assert.deepEqual(rows(f), ["next"]);
+  await f.click(tabs[2]);
+  assert.deepEqual(rows(f), ["done"]);
+  await f.click(tabs[0]);
+  await f.click(f.container.querySelector(".comments-list-end"));
+  assert.deepEqual(rows(f), ["done"], "the resolved footer switches the filter");
 });
 
-test("hiding replies and switching threads preserve reply drafts, errors and pending submissions", async (t) => {
+test("opening a row shows the thread; Back restores the list scroll and focus", async (t) => {
   const f = await fixture(t);
-  const first = f.element("first"),
-    reply = first.querySelector(".thread-reply-button");
-  await f.click(reply);
-  const textarea = first.querySelector("textarea"),
-    form = first.querySelector("form");
-  assert.equal(document.activeElement, textarea);
-  await f.type(textarea, "Keep this draft");
-  const hide = form.querySelector('button[type="button"]');
-  await f.click(hide);
-  assert.equal(document.activeElement, reply);
-  assert.equal(reply.textContent, "Continue reply");
-  await f.click(reply);
-  assert.equal(first.querySelector("textarea"), textarea);
-  assert.equal(textarea.value, "Keep this draft");
-  let reject;
-  f.props.session.comment = () =>
-    new Promise((_, failure) => {
-      reject = failure;
-    });
-  await act(() =>
-    form.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true })),
+  const list = f.container.querySelector(".comments-list");
+  list.scrollTop = 140;
+  await f.open("first");
+  const view = f.view();
+  assert.equal(f.row("first"), null, "the list is replaced by the thread");
+  assert.equal(view.querySelector(".thread-title").textContent, "Full first comment first");
+  assert.match(
+    view.querySelector(".thread-view-meta").textContent,
+    /Open·3 messages·Started by Kyle Kelley/,
   );
-  assert.ok(textarea.disabled);
-  assert.ok(first.querySelector('[aria-label="Resolve"]').disabled);
-  assert.ok(hide.disabled);
-  await f.click(f.element("next").querySelector(".quote"));
-  await act(async () => {
-    reject(Error("Try again later"));
-    await Promise.resolve();
-  });
-  assert.equal(textarea.value, "Keep this draft");
-  assert.match(form.querySelector('[role="alert"]').textContent, /Try again later/);
-  await f.click(hide);
-  await f.click(reply);
-  assert.equal(textarea.value, "Keep this draft");
-  assert.match(form.querySelector('[role="alert"]').textContent, /Try again later/);
-  await f.click(f.element("next").querySelector(".quote"));
+  assert.equal(view.querySelector(".thread-passage mark").textContent, "Passage first");
+  assert.equal(view.querySelector(".thread-divider").textContent, "2 replies");
+  assert.equal(view.querySelectorAll(".thread-replies .message").length, 2);
+  assert.match(f.container.querySelector(".comments-position").textContent, /1 of 2/);
+  assert.deepEqual(f.props.target, { id: "first" }, "opening lights the passage");
+  await f.click(f.container.querySelector('[aria-label="Next thread"]'));
+  assert.equal(f.view().dataset.threadId, "next");
+  await f.click(f.container.querySelector(".comments-back"));
+  assert.equal(f.view(), null);
+  assert.equal(f.container.querySelector(".comments-list").scrollTop, 140);
+  assert.equal(document.activeElement, f.row("next"));
+});
+
+test("Jump to passage reveals the passage; a detached thread says so", async (t) => {
+  const f = await fixture(t);
+  f.props.threads[1] = {
+    ...f.props.threads[1],
+    target: { kind: "selection" },
+    selectionContext: { status: "detached" },
+  };
+  await f.render();
+  await f.open("first");
+  await f.click(f.view().querySelector(".thread-passage-jump"));
+  assert.deepEqual(f.revealed, ["first"]);
+  await f.click(f.container.querySelector('[aria-label="Next thread"]'));
+  assert.match(f.view().querySelector(".thread-passage-removed").textContent, /removed/);
+  assert.equal(f.view().querySelector(".thread-passage-jump"), null);
+});
+
+test("a passage clicked in the Page opens its thread, switching to Resolved when needed", async (t) => {
+  const f = await fixture(t);
+  await act(() => f.row("next").focus());
+  assert.equal(f.view(), null, "focus in the list only lights the passage");
+  f.props.target = { id: "done", source: "passage", request: 1 };
+  await f.render();
+  assert.equal(f.view().dataset.threadId, "done");
+  assert.ok(f.view().querySelector(".thread-state-action").textContent.includes("Reopen"));
+  await f.click(f.container.querySelector(".comments-back"));
+  assert.deepEqual(rows(f), ["done"]);
+  f.props.target = { id: "next", source: "passage", request: 2 };
+  await f.render();
+  f.props.threads = f.props.threads.filter((thread) => thread.id !== "next");
+  await f.render();
+  assert.equal(f.view(), null, "a deleted thread falls back to the list");
+});
+
+test("reply drafts survive leaving a thread, send with Mod+Enter, and finish after leaving", async (t) => {
   let finish;
-  f.props.session.comment = () =>
-    new Promise((resolve) => {
+  const f = await fixture(t);
+  f.props.session.comment = (action) => {
+    f.calls.push(action);
+    return new Promise((resolve) => {
       finish = resolve;
     });
-  await act(() =>
-    form.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true })),
-  );
-  const otherFocus = document.activeElement;
-  await act(async () => {
-    finish();
-    await Promise.resolve();
+  };
+  await f.open("next");
+  await f.click(f.view().querySelector(".thread-reply-button"));
+  await f.type(f.view().querySelector("textarea"), "Draft for next");
+  await f.click(f.container.querySelector('[aria-label="Previous thread"]'));
+  assert.equal(f.view().dataset.threadId, "first");
+  await f.click(f.container.querySelector(".comments-back"));
+  assert.ok(f.row("next").querySelector(".thread-row-draft"), "the row marks the draft");
+  await f.open("next");
+  const textarea = f.view().querySelector("textarea");
+  assert.equal(textarea.value, "Draft for next", "the composer reopens with the draft");
+  const sent = await f.key("Enter", textarea, { metaKey: true });
+  assert.ok(sent.defaultPrevented);
+  assert.deepEqual(f.calls.at(-1), {
+    action: "reply",
+    thread_id: "next",
+    body: "Draft for next",
+    body_format: "markdown",
   });
+  assert.ok(f.view().querySelector(".thread-state-action").disabled, "no resolve while sending");
+  await f.click(f.container.querySelector(".comments-back"));
+  await act(async () => finish());
   await tick();
-  assert.equal(
-    document.activeElement,
-    otherFocus,
-    "completing a reply must not steal another thread's focus",
-  );
-  assert.equal(textarea.value, "");
+  assert.equal(f.row("next").querySelector(".thread-row-draft"), null, "the draft cleared");
 });
 
-test("pointer focus keeps thread controls still until their click, while keyboard focus selects", async (t) => {
+test("R in a thread or on a focused row starts a reply", async (t) => {
   const f = await fixture(t);
-  const first = f.element("first"),
-    reply = first.querySelector(".thread-reply-button");
-  await act(() => {
-    reply.dispatchEvent(new dom.window.Event("pointerdown", { bubbles: true }));
-    reply.focus();
-  });
-  assert.equal(f.props.target, null, "pointer focus must not expand the quote before pointerup");
-  assert.ok(first.querySelector(".thread-replies").hidden);
-  await act(() => {
-    reply.dispatchEvent(new dom.window.Event("pointerup", { bubbles: true }));
-    reply.click();
-  });
+  await act(() => f.row("first").focus());
+  await f.key("ArrowDown", f.row("first"));
+  assert.equal(document.activeElement, f.row("next"));
+  await f.key("r", f.row("next"));
+  assert.equal(f.view().dataset.threadId, "next");
   await tick();
-  assert.equal(f.props.target.id, "first");
-  assert.equal(document.activeElement, first.querySelector("textarea"));
-  assert.equal(first.querySelector("textarea").closest("[hidden]"), null);
-
-  const next = f.element("next").querySelector(".thread-reply-button");
-  await act(() => next.focus());
-  assert.equal(f.props.target.id, "next", "keyboard focus still selects its passage");
+  assert.ok(f.view().querySelector("textarea"));
+  await f.click(f.container.querySelector('[aria-label="Previous thread"]'));
+  assert.equal(f.view().querySelector("textarea"), null);
+  await f.key("r", f.view());
+  assert.ok(f.view().querySelector("textarea"));
 });
 
-test("selecting a thread never competes with its explicit replies disclosure", async (t) => {
-  const f = await fixture(t);
-  const first = f.element("first"),
-    toggle = first.querySelector(".thread-replies-toggle");
-  await act(() => first.querySelector(".quote").focus());
-  assert.equal(f.props.target.id, "first");
-  assert.equal(toggle.getAttribute("aria-expanded"), "false");
-  await f.click(toggle);
-  assert.equal(toggle.getAttribute("aria-expanded"), "true");
-  await f.click(toggle);
-  assert.equal(toggle.getAttribute("aria-expanded"), "false");
-  await f.click(f.element("next").querySelector(".quote"));
-  await act(() => {
-    toggle.dispatchEvent(new dom.window.Event("pointerdown", { bubbles: true }));
-    toggle.focus();
-  });
-  await act(() => {
-    toggle.dispatchEvent(new dom.window.Event("pointerup", { bubbles: true }));
-    toggle.click();
-  });
-  assert.equal(f.props.target.id, "first");
-  assert.equal(toggle.getAttribute("aria-expanded"), "true");
-});
-
-test("switching dialog modality preserves the active reply and its caret", async (t) => {
-  const previousMatchMedia = globalThis.matchMedia;
-  const listeners = new Set();
-  const media = {
-    matches: false,
-    addEventListener: (_, listener) => listeners.add(listener),
-    removeEventListener: (_, listener) => listeners.delete(listener),
-  };
-  globalThis.matchMedia = () => media;
-  const prototype = dom.window.HTMLDialogElement.prototype;
-  const previousShow = prototype.show,
-    previousModal = prototype.showModal;
-  // Opening a native dialog can focus its first control. The resize must restore
-  // the reply that was focused before close/reopen rather than keeping that focus.
-  prototype.show = prototype.showModal = function () {
-    this.open = true;
-    this.querySelector("button")?.focus();
-  };
-  t.after(() => {
-    globalThis.matchMedia = previousMatchMedia;
-    prototype.show = previousShow;
-    prototype.showModal = previousModal;
-  });
-  const f = await fixture(t);
-  const first = f.element("first");
-  await f.click(first.querySelector(".thread-reply-button"));
-  const textarea = first.querySelector("textarea");
-  await f.type(textarea, "A reply in progress");
-  textarea.setSelectionRange(2, 7, "backward");
-  for (const mobile of [true, false]) {
-    await act(() => {
-      media.matches = mobile;
-      for (const listener of listeners) listener();
-    });
-    assert.equal(document.activeElement, textarea);
-    assert.equal(textarea.value, "A reply in progress");
-    assert.deepEqual(
-      [textarea.selectionStart, textarea.selectionEnd, textarea.selectionDirection],
-      [2, 7, "backward"],
-    );
-    assert.equal(f.container.querySelector("dialog").classList.contains("comments-sheet"), mobile);
-  }
-});
-
-test("resolve/reopen restore focus and selected resolved threads remain discoverable", async (t) => {
-  const f = await fixture(t);
-  f.props.session.comment = async (action) => {
-    f.calls.push(action);
-    f.props.threads = f.props.threads.map((thread) =>
-      thread.id === action.thread_id
-        ? { ...thread, state: action.action === "resolve" ? "resolved" : "open" }
-        : thread,
-    );
-    f.renderSync();
-  };
-  await f.click(f.element("first").querySelector('[aria-label="Resolve"]'));
-  assert.equal(document.activeElement, f.element("next").querySelector(".quote"));
-  f.props.target = { id: "first" };
-  await f.render();
-  assert.ok(f.container.querySelector(".resolved-threads").open);
-  await f.click(f.element("first").querySelector('[aria-label="Reopen"]'));
-  assert.equal(document.activeElement, f.element("first").querySelector(".quote"));
-  assert.deepEqual(
-    f.calls.map(({ action }) => action),
-    ["resolve", "reopen"],
-  );
-});
-
-test("viewers retain discussion and passage access without reply or state-changing controls", async (t) => {
-  const f = await fixture(t, {
-    session: { doc: { blocks: { block: {} } }, canComment: false, commentMessage: () => undefined },
-  });
-  assert.equal(f.container.querySelectorAll("textarea").length, 0);
-  assert.equal(
-    f.container.querySelectorAll(".thread-state-action, .thread-reply-button").length,
-    0,
-  );
-  await f.click(f.element("first").querySelector(".thread-replies-toggle"));
-  assert.equal(f.element("first").querySelector(".thread-replies").hidden, false);
-  await f.click(f.element("first").querySelector(".quote"));
-  assert.deepEqual(f.revealed, ["first"]);
-});
-
-for (const modifier of ["metaKey", "ctrlKey"])
-  test(`Mod+Enter (${modifier}) sends a reply; plain Enter stays with the editor`, async (t) => {
-    const f = await fixture(t);
-    await f.click(f.element("next").querySelector(".thread-reply-button"));
-    const textarea = f.element("next").querySelector("textarea");
-    const editorKeys = [];
-    textarea.addEventListener("keydown", (event) => editorKeys.push(event));
-    const press = async (init) => {
-      const event = new dom.window.KeyboardEvent("keydown", {
-        bubbles: true,
-        cancelable: true,
-        ...init,
-      });
-      await act(async () => {
-        textarea.dispatchEvent(event);
-        await Promise.resolve();
-      });
-      await tick();
-      return event;
-    };
-    await press({ key: "Enter", [modifier]: true });
-    assert.deepEqual(f.calls, [], "an empty reply sends nothing");
-    await f.type(textarea, "Ship it");
-    const plain = await press({ key: "Enter" });
-    assert.equal(plain.defaultPrevented, false, "plain Enter is the editor's newline");
-    assert.deepEqual(f.calls, []);
-    const send = await press({ key: "Enter", [modifier]: true });
-    assert.equal(send.defaultPrevented, true);
-    assert.deepEqual(editorKeys, [plain], "the editor never sees Mod+Enter");
-    assert.deepEqual(f.calls, [
-      { action: "reply", thread_id: "next", body: "Ship it", body_format: "markdown" },
-    ]);
-    assert.equal(textarea.value, "");
-  });
-
-test("a reply draft on a resolved thread blocks Reload and stays reachable to copy or discard", async (t) => {
-  const copied = [];
-  Object.defineProperty(navigator, "clipboard", {
-    configurable: true,
-    value: { writeText: async (text) => void copied.push(text) },
-  });
-  t.after(() => delete navigator.clipboard);
+test("a reply draft blocks Reload until it's sent or discarded, even on a resolved thread", async (t) => {
   const f = await fixture(t);
   assert.equal(reloadGate.hasDrafts(), false);
-  await f.click(f.element("first").querySelector(".thread-reply-button"));
-  await f.type(f.element("first").querySelector("textarea"), "Reply typed before resolve");
+  await f.open("next");
+  await f.click(f.view().querySelector(".thread-reply-button"));
+  await f.type(f.view().querySelector("textarea"), "Unsent");
   assert.equal(reloadGate.hasDrafts(), true);
-  // Another collaborator resolves the thread while the reply is unsent.
   f.props.threads = f.props.threads.map((thread) =>
-    thread.id === "first" ? { ...thread, state: "resolved" } : thread,
+    thread.id === "next" ? { ...thread, state: "resolved" } : thread,
   );
   await f.render();
   assert.equal(reloadGate.hasDrafts(), true, "resolved threads still count");
-  const disclosure = f.container.querySelector(".resolved-threads");
-  assert.ok(disclosure.open, "the disclosure opens to show the draft");
-  assert.match(disclosure.querySelector("summary").textContent, /unsent reply/);
-  const first = f.element("first");
-  assert.equal(first.querySelector("textarea").closest("[hidden]"), null);
-  assert.match(first.textContent, /Unsent reply/);
-  const textarea = first.querySelector("textarea");
-  assert.equal(textarea.value, "Reply typed before resolve");
-  assert.equal(textarea.disabled, true);
-  const button = (name) =>
-    [...first.querySelectorAll("button")].find((b) => b.textContent.trim() === name);
-  assert.equal(button("Send").disabled, true);
-  assert.equal(button("Hide reply"), undefined);
-  await f.click(button("Copy"));
-  assert.deepEqual(copied, ["Reply typed before resolve"]);
-  assert.ok(button("Copied"));
-  await f.click(button("Discard"));
-  assert.equal(reloadGate.hasDrafts(), false);
-  assert.equal(f.element("first").querySelector("textarea"), null);
-  assert.deepEqual(f.calls, []);
-});
-
-test("a reply draft kept after write access ends can still be copied or discarded", async (t) => {
-  const f = await fixture(t);
-  await f.click(f.element("next").querySelector(".thread-reply-button"));
-  await f.type(f.element("next").querySelector("textarea"), "Draft before downgrade");
-  f.props.session = { ...f.props.session, canComment: false };
-  await f.render();
-  const next = f.element("next");
-  assert.equal(next.querySelector(".thread-reply-button"), null);
-  assert.equal(next.querySelector("textarea").disabled, true);
-  assert.equal(next.querySelector("textarea").closest("[hidden]"), null);
-  assert.equal(reloadGate.hasDrafts(), true);
-  const discard = [...next.querySelectorAll("button")].find((b) => b.textContent === "Discard");
+  assert.match(f.view().querySelector(".thread-kept-draft").textContent, /Unsent reply/);
+  assert.ok(f.view().querySelector("textarea").disabled);
+  await f.click(f.container.querySelector(".comments-back"));
+  assert.match(f.container.querySelector(".comments-filter-draft").title, /Unsent reply/);
+  await f.open("next");
+  const discard = [...f.view().querySelectorAll("button")].find((b) => b.textContent === "Discard");
   await f.click(discard);
   assert.equal(reloadGate.hasDrafts(), false);
-  assert.equal(f.element("next").querySelector("textarea"), null);
 });
 
 test("reply drafts are readable by the session, so a retirement can archive them", async (t) => {
@@ -486,11 +349,11 @@ test("reply drafts are readable by the session, so a retirement can archive them
     },
   };
   await f.render();
-  assert.equal(readers.size, 1);
   const [read] = readers;
   assert.deepEqual(read(), []);
-  await f.click(f.element("next").querySelector(".thread-reply-button"));
-  await f.type(f.element("next").querySelector("textarea"), "Reply typed before the refusal");
+  await f.open("next");
+  await f.click(f.view().querySelector(".thread-reply-button"));
+  await f.type(f.view().querySelector("textarea"), "Reply typed before the refusal");
   assert.deepEqual(read(), [
     {
       kind: "reply",
@@ -501,65 +364,54 @@ test("reply drafts are readable by the session, so a retirement can archive them
   ]);
 });
 
-test("drilling into a thread shows its conversation, steps between threads, and Back restores the list", async (t) => {
+test("resolve and reopen send the action and keep focus in the thread", async (t) => {
   const f = await fixture(t);
-  const dialog = f.container.querySelector("dialog");
-  const body = dialog.querySelector(".comments-body");
-  body.scrollTop = 120;
-  await f.click(f.element("first").querySelector(".thread-open"));
-  assert.ok(dialog.classList.contains("comments-drilled"));
-  assert.ok(f.element("first").classList.contains("thread-current"));
+  await f.open("next");
+  await f.click(f.view().querySelector(".thread-state-action"));
+  assert.deepEqual(f.calls, [{ action: "resolve", thread_id: "next" }]);
+  assert.ok(f.container.querySelector("dialog").contains(document.activeElement));
+});
+
+test("viewers read threads without Reply or Resolve", async (t) => {
+  const f = await fixture(t, {
+    session: { doc: { blocks: { block: {} } }, canComment: false, commentMessage: () => undefined },
+  });
+  await f.open("first");
+  assert.equal(f.view().querySelector(".thread-state-action"), null);
+  assert.equal(f.view().querySelector(".thread-reply-button"), null);
+  assert.equal(f.view().querySelector(".thread-composer"), null);
+  await f.key("r", f.view());
+  assert.equal(f.view().querySelector("textarea"), null);
   assert.equal(
-    f.element("first").querySelector(".thread-open"),
-    null,
-    "the title is no longer a link",
+    f.container.querySelector(".comments-keys")?.textContent.includes("Reply"),
+    undefined,
   );
-  assert.equal(f.element("first").querySelector(".thread-replies").hidden, false);
-  assert.match(dialog.querySelector(".comments-position").textContent, /1 of 3/);
-  await f.click(dialog.querySelector('[aria-label="Next thread"]'));
-  assert.ok(f.element("next").classList.contains("thread-current"));
-  await f.click(dialog.querySelector('[aria-label="Next thread"]'));
-  assert.ok(f.element("done").classList.contains("thread-current"));
-  assert.ok(f.container.querySelector(".resolved-threads").open, "resolved threads open to show");
-  assert.ok(dialog.querySelector('[aria-label="Next thread"]').disabled);
-  await f.click(dialog.querySelector(".comments-back"));
-  assert.equal(dialog.classList.contains("comments-drilled"), false);
-  assert.equal(body.scrollTop, 120);
-  assert.equal(document.activeElement, f.element("done").querySelector(".thread-open"));
 });
 
-test("a passage clicked in the Page opens its thread; panel selections and deletions don't strand it", async (t) => {
-  const f = await fixture(t);
-  const dialog = f.container.querySelector("dialog");
-  await act(() => f.element("next").querySelector(".quote").focus());
-  assert.equal(dialog.classList.contains("comments-drilled"), false, "panel focus only highlights");
-  f.props.target = { id: "next", source: "passage", request: 1 };
-  await f.render();
-  assert.ok(f.element("next").classList.contains("thread-current"));
-  f.props.threads = f.props.threads.filter((thread) => thread.id !== "next");
-  await f.render();
-  assert.equal(dialog.classList.contains("comments-drilled"), false);
-});
-
-test("Escape inside a thread returns to the list before closing the panel", async (t) => {
+test("Escape in a thread returns to the list, then closes the panel", async (t) => {
   let closed = 0;
   const f = await fixture(t, { onClose: () => closed++ });
-  const dialog = f.container.querySelector("dialog");
-  await f.click(f.element("next").querySelector(".thread-open"));
-  const escape = () =>
-    act(() =>
-      dialog.dispatchEvent(
-        new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
-      ),
-    );
-  await escape();
-  assert.equal(dialog.classList.contains("comments-drilled"), false);
+  await f.open("next");
+  await f.key("Escape");
+  assert.equal(f.view(), null);
   assert.equal(closed, 0);
-  await escape();
+  await f.key("Escape");
   assert.equal(closed, 1);
 });
 
-test("review mode walks threads with J/K, resolves and advances with R, and keeps keys out of the editor", async (t) => {
+test("expanded shows the list and the open thread side by side", async (t) => {
+  const f = await fixture(t);
+  await f.click(f.container.querySelector(".comments-expand"));
+  assert.match(f.container.querySelector(".comments-thread-empty").textContent, /Choose a thread/);
+  await f.open("first");
+  assert.ok(f.row("first"), "the list stays");
+  assert.equal(f.view().dataset.threadId, "first");
+  assert.equal(f.row("first").getAttribute("aria-current"), "true");
+  await f.key("Escape");
+  assert.ok(f.view(), "Escape closes the panel instead of leaving the thread");
+});
+
+test("review walks threads with J/K, resolves and advances with R, and leaves typing alone", async (t) => {
   const f = await fixture(t);
   f.props.session.comment = async (action) => {
     f.calls.push(action);
@@ -570,51 +422,51 @@ test("review mode walks threads with J/K, resolves and advances with R, and keep
     );
     f.renderSync();
   };
-  const dialog = f.container.querySelector("dialog");
-  const press = async (key, target = dialog.querySelector(".comments-body")) => {
-    const event = new dom.window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
-    await act(async () => {
-      target.dispatchEvent(event);
-      await Promise.resolve();
-    });
-    await tick();
-    return event;
-  };
-  await f.click(dialog.querySelector(".comments-review-start"));
-  assert.ok(dialog.classList.contains("comments-review"));
-  assert.ok(f.element("first").classList.contains("thread-current"));
-  assert.match(dialog.querySelector(".review-progress").textContent, /1 of 3 resolved/);
-  await press("j");
-  assert.ok(f.element("next").classList.contains("thread-current"));
-  await press("k");
-  assert.ok(f.element("first").classList.contains("thread-current"));
-  await press("r");
+  await f.click(f.container.querySelector(".comments-review-start"));
+  assert.ok(dialogOf(f).classList.contains("comments-review"));
+  assert.equal(f.view().dataset.threadId, "first");
+  await f.key("j", f.view());
+  assert.equal(f.view().dataset.threadId, "next");
+  await f.key("k", f.view());
+  await f.key("r", f.view());
   assert.deepEqual(f.calls, [{ action: "resolve", thread_id: "first" }]);
-  assert.ok(f.element("next").classList.contains("thread-current"), "resolve-and-next");
-  assert.match(dialog.querySelector(".review-progress").textContent, /2 of 3 resolved/);
-  await press("e");
-  const textarea = f.element("next").querySelector("textarea");
-  assert.ok(textarea, "E opens the reply composer");
-  const typed = await press("j", textarea);
-  assert.equal(typed.defaultPrevented, false, "J while typing belongs to the editor");
-  assert.ok(f.element("next").classList.contains("thread-current"));
-  await press("Escape", textarea);
-  assert.ok(dialog.classList.contains("comments-review"), "Escape while typing stays in review");
-  await press("Escape");
-  assert.equal(dialog.classList.contains("comments-review"), false);
-  assert.ok(f.element("next").classList.contains("thread-current"), "exit lands on the thread");
+  assert.equal(f.view().dataset.threadId, "next", "resolve-and-next");
+  await f.key("e", f.view());
+  await tick();
+  const textarea = f.view().querySelector("textarea");
+  assert.ok(textarea, "E opens the reply");
+  assert.equal((await f.key("j", textarea)).defaultPrevented, false);
+  await f.key("Escape", textarea);
+  assert.ok(dialogOf(f).classList.contains("comments-review"), "Escape while typing stays");
+  await f.key("Escape", f.view());
+  assert.equal(dialogOf(f).classList.contains("comments-review"), false);
+  assert.equal(f.view().dataset.threadId, "next");
 });
 
-test("viewers can review but R does nothing without comment access", async (t) => {
-  const f = await fixture(t, {
-    session: { doc: { blocks: { block: {} } }, canComment: false, commentMessage: () => undefined },
+test("a kept inline-composer draft shows as Unsent comment with Continue and Discard", async (t) => {
+  const { Store } = await import("./store.mjs");
+  let reopened = 0,
+    cancelled = 0;
+  const store = new Store({
+    state: { name: "dismissed" },
+    composer: { quote: "Picked words", draft: {} },
+    body: "Half a thought",
   });
-  const dialog = f.container.querySelector("dialog");
-  await f.click(dialog.querySelector(".comments-review-start"));
-  await act(() =>
-    dialog
-      .querySelector(".comments-body")
-      .dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "r", bubbles: true })),
-  );
-  assert.deepEqual(f.calls, []);
+  const f = await fixture(t, {
+    composer: { store, reopen: () => reopened++, cancel: () => cancelled++, focus() {} },
+    session: {
+      doc: { blocks: { block: {} } },
+      canComment: true,
+      commentMessage: () => undefined,
+    },
+  });
+  const kept = f.container.querySelector(".comment-kept-draft");
+  assert.match(kept.textContent, /Unsent comment/);
+  assert.match(kept.textContent, /Half a thought/);
+  // This draft no longer resolves against the Page, so it can only be discarded.
+  assert.match(kept.querySelector('[role="alert"]').textContent, /Copy the text/);
+  const buttons = [...kept.querySelectorAll("button")].map((b) => b.textContent);
+  assert.deepEqual(buttons, ["Discard"]);
+  await f.click(kept.querySelector("button"));
+  assert.deepEqual([reopened, cancelled], [0, 1]);
 });

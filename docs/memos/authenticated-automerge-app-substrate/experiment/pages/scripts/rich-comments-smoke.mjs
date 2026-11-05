@@ -271,21 +271,24 @@ try {
     )
     .toBe(true);
   await page.getByRole("button", { name: /^Comments/ }).click();
-  const inlineThread = page.locator(".thread", { hasText: "Inline note here" });
-  await expect(inlineThread.locator(".quote")).toHaveText("discussion");
+  const inlineThread = page.locator(".thread-row", { hasText: "Inline note here" });
+  await expect(inlineThread.locator(".thread-row-chip")).toHaveText("discussion");
   await page.getByRole("button", { name: "Close comments", exact: true }).click();
   await expect(panel).toBeHidden();
   // The new passage's emphasis fades on its own.
   await expect(page.locator(".comment-passage-created")).toHaveCount(0);
   checkpoint("the shortcut reopens the kept draft; Mod+Enter adds the thread without the panel");
   await page.getByRole("button", { name: /^Comments/ }).click();
-  const thread = page.locator(`[data-thread-id="${added.thread_id}"]`);
+  await page.locator(`.thread-row[data-thread-id="${legacy.thread_id}"]`).click();
+  await expect(page.locator(".thread-view .message-body").first()).toHaveText(
+    "**Legacy literal** | value |",
+  );
+  await page.getByRole("button", { name: "All comments" }).click();
+  await page.locator(`.thread-row[data-thread-id="${added.thread_id}"]`).click();
+  const thread = page.locator(`.thread-view[data-thread-id="${added.thread_id}"]`);
   await expect(thread.locator(".comment-rich-content table")).toBeVisible();
   await expect(thread.locator(".comment-rich-content strong").first()).toHaveText(
     "Native discussion",
-  );
-  await expect(page.locator(`[data-thread-id="${legacy.thread_id}"] .message-body`)).toHaveText(
-    "**Legacy literal** | value |",
   );
   assert.equal(
     await page.locator(".comment-rich-editor wg-content").count(),
@@ -408,7 +411,8 @@ try {
   assert.match(reply.body, /Kept/);
   await page.reload();
   await page.getByRole("button", { name: /^Comments/ }).click();
-  await thread.getByRole("button", { name: "1 reply", exact: true }).click();
+  // After a reload the panel opens on its list; open the thread again.
+  await page.locator(".thread-row", { hasText: "Native discussion" }).click();
   await expect(thread.locator(".thread-replies .comment-rich-content img")).toBeVisible();
   assert.equal(await thread.locator('.comment-rich-content [contenteditable="true"]').count(), 0);
   checkpoint(
