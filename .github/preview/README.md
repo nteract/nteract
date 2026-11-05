@@ -1,5 +1,41 @@
 # PR preview workflow helpers
 
+## Verified WASM builder download
+
+`download-wasm-pack.mjs OUTPUT` downloads the pinned Linux x86_64 wasm-pack
+0.15.0 archive. It accepts no version, URL, checksum, or credential inputs.
+The first retryable transport failure switches from the official release URL
+to the same release's pinned GitHub asset API. A release-route 404 can use that
+fallback; an API 404 or other non-retryable response fails closed. Only the
+pinned API endpoint's 403 is retryable when `x-ratelimit-remaining` is exactly
+`0` or `Retry-After` is a canonical integer from 0 through 3600 seconds.
+Other forms, including HTTP dates, are not used as rate-limit evidence.
+These headers classify the response only; they never extend the fixed backoff.
+A long rate-limit reset can still exhaust the budget. Release and redirected
+asset 403s remain terminal regardless of those headers. There are
+at most six download attempts, each bounded to 60 seconds and three redirects,
+with 1/2/4/8/16-second backoff. Redirects must use credential-free HTTPS on
+`release-assets.githubusercontent.com`. No response bodies or signed URLs are logged.
+
+Both sources must produce exactly 2,881,231 bytes with SHA-256
+`c09f971ecaed9a2efc80fdcea7a00ef6b53c7fadc8c57d1f61b53a6aa66b668a`.
+Size or checksum mismatches are terminal, not fallback triggers. Only verified
+bytes are published, exclusively, through a private temporary file in the
+destination filesystem. Existing files and symlinks are never overwritten.
+The helper does not extract or execute the archive.
+
+This helper is inactive until the publication sequence below is completed.
+The current PR caller pins reusable workflow
+`fcdfb358876ec0a690c865dce49ef4adc7efeb33`; its build job checks out helper
+revision `745935af5fdfcf15424c59d52cbccc629a260d50`. After this helper lands as
+revision A, a separate workflow change must pin the build job's helper checkout
+to A and replace its inline download with
+`node helpers/.github/preview/download-wasm-pack.mjs "$RUNNER_TEMP/wasm-pack.tar.gz"`.
+Extraction follows only a successful helper exit. Keep the other trusted-job
+helper pins unchanged. Then review and authorize that workflow revision B in
+the controller before changing the PR caller pin. Neither the global installer
+nor any live deployment is changed by this helper.
+
 ## Pages Journal Coverage
 
 Pages deployment counts schema 1 distinguishes no verified HTTP samples
