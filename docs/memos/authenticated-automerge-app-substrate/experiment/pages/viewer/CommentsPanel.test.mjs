@@ -500,3 +500,61 @@ test("reply drafts are readable by the session, so a retirement can archive them
     },
   ]);
 });
+
+test("drilling into a thread shows its conversation, steps between threads, and Back restores the list", async (t) => {
+  const f = await fixture(t);
+  const dialog = f.container.querySelector("dialog");
+  const body = dialog.querySelector(".comments-body");
+  body.scrollTop = 120;
+  await f.click(f.element("first").querySelector(".thread-open"));
+  assert.ok(dialog.classList.contains("comments-drilled"));
+  assert.ok(f.element("first").classList.contains("thread-current"));
+  assert.equal(
+    f.element("first").querySelector(".thread-open"),
+    null,
+    "the title is no longer a link",
+  );
+  assert.equal(f.element("first").querySelector(".thread-replies").hidden, false);
+  assert.match(dialog.querySelector(".comments-position").textContent, /1 of 3/);
+  await f.click(dialog.querySelector('[aria-label="Next thread"]'));
+  assert.ok(f.element("next").classList.contains("thread-current"));
+  await f.click(dialog.querySelector('[aria-label="Next thread"]'));
+  assert.ok(f.element("done").classList.contains("thread-current"));
+  assert.ok(f.container.querySelector(".resolved-threads").open, "resolved threads open to show");
+  assert.ok(dialog.querySelector('[aria-label="Next thread"]').disabled);
+  await f.click(dialog.querySelector(".comments-back"));
+  assert.equal(dialog.classList.contains("comments-drilled"), false);
+  assert.equal(body.scrollTop, 120);
+  assert.equal(document.activeElement, f.element("done").querySelector(".thread-open"));
+});
+
+test("a passage clicked in the Page opens its thread; panel selections and deletions don't strand it", async (t) => {
+  const f = await fixture(t);
+  const dialog = f.container.querySelector("dialog");
+  await act(() => f.element("next").querySelector(".quote").focus());
+  assert.equal(dialog.classList.contains("comments-drilled"), false, "panel focus only highlights");
+  f.props.target = { id: "next", source: "passage", request: 1 };
+  await f.render();
+  assert.ok(f.element("next").classList.contains("thread-current"));
+  f.props.threads = f.props.threads.filter((thread) => thread.id !== "next");
+  await f.render();
+  assert.equal(dialog.classList.contains("comments-drilled"), false);
+});
+
+test("Escape inside a thread returns to the list before closing the panel", async (t) => {
+  let closed = 0;
+  const f = await fixture(t, { onClose: () => closed++ });
+  const dialog = f.container.querySelector("dialog");
+  await f.click(f.element("next").querySelector(".thread-open"));
+  const escape = () =>
+    act(() =>
+      dialog.dispatchEvent(
+        new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+      ),
+    );
+  await escape();
+  assert.equal(dialog.classList.contains("comments-drilled"), false);
+  assert.equal(closed, 0);
+  await escape();
+  assert.equal(closed, 1);
+});
