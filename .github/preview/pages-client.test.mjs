@@ -12,7 +12,8 @@ test('journal summary renders legacy and absent coverage as Unknown, refusing qu
   const unknown={schema:1,coverage:'unknown',completeness:'unknown',total:null,byStatus:{},invalidLines:0,envelopes:741,
     parseableMessages:14,textMessages:727,requestSamples:0};
   assert.match(pagesStepSummary({...result,counts:unknown}),/Unknown \(no verified HTTP samples\)/);
-  for(const total of [0,3]) assert.equal(pagesJournalSummary({total}),`Unknown (legacy unverified count: ${total})`);
+  assert.equal(pagesJournalSummary({total:0}),'Unknown (legacy unverified count: 0)');
+  for(const total of [1,3,-1,0.5,'0',null]) assert.throws(()=>pagesJournalSummary({total}));
   const observed={...unknown,coverage:'observed',total:0,requestSamples:2};
   assert.match(pagesJournalSummary(observed),/Unknown coverage \(0 observed 5xx in 2 HTTP-tool samples\)/);
   for(const counts of [{...unknown,total:0},{...unknown,invalidLines:1},{...unknown,completeness:'complete'},
@@ -24,7 +25,7 @@ test('successful operation accepts unknown coverage but rejects malformed eviden
   const unknown={schema:1,coverage:'unknown',completeness:'unknown',total:null,byStatus:{},invalidLines:0,envelopes:1,
     parseableMessages:0,textMessages:1,requestSamples:0};
   for(const counts of [unknown,{...unknown,coverage:'observed',total:1,byStatus:{503:1},requestSamples:1,parseableMessages:1},
-    {...unknown,invalidLines:1}]) {
+    {...unknown,invalidLines:1},{total:1},{total:-1}]) {
     let posts=0,time=0;
     const promise=sendPagesDeployment(env,event,{clock:{now:()=>time,sleep:async ms=>time+=ms},fetchImpl:async(url,options)=>{
       if(String(url).includes('actions.githubusercontent.com')) return Response.json({value:'a.b.c'});

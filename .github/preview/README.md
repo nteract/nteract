@@ -7,8 +7,9 @@ Pages deployment counts schema 1 distinguishes no verified HTTP samples
 numeric total). Both require `completeness: unknown`; neither proves a complete
 HTTP window. The client renders Unknown, accepts otherwise verified releases with
 unknown coverage, and refuses malformed aggregates or known observed 5xx. Historical
-numeric-only counts remain readable but are labeled unverified, not retroactively
-treated as complete. Stored receipts are never rewritten.
+numeric-only zero remains readable but is labeled unverified, not retroactively
+treated as complete. Positive legacy counts fail closed as possible HTTP errors.
+Stored receipts are never rewritten.
 
 Activate these helpers first through reviewed main helper/reusable pins, BOTH
 page10 callers, and the exact controller reusable allowlist. Only then install

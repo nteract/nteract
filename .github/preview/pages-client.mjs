@@ -10,6 +10,7 @@ export function pagesJournalSummary(counts) {
   if(counts.schema===undefined) {
     check(bounded(counts.total)&&counts.coverage===undefined&&counts.completeness===undefined&&
       (counts.invalidLines===undefined||counts.invalidLines===0),'invalid legacy journal evidence');
+    check(counts.total===0,'legacy journal count may contain HTTP 5xx');
     return `Unknown (legacy unverified count: ${counts.total})`;
   }
   check(counts.schema===1&&counts.completeness==='unknown'&&['unknown','observed'].includes(counts.coverage),'invalid journal coverage');
