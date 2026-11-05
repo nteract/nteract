@@ -12,17 +12,12 @@ import {
   pageLocationMachine,
   pageLocationSpec,
   listProjectPages,
+  pageLocation,
   projectTree,
   watchPageLocation,
 } from "./projects.mjs";
 import { runPageCreation } from "./page-create-machine.mjs";
-import {
-  Breadcrumbs,
-  ProjectChip,
-  ProjectPages,
-  projectPageCount,
-  projectPageRows,
-} from "./ProjectView.jsx";
+import { Breadcrumbs, ProjectChip, ProjectPages } from "./ProjectView.jsx";
 import { PagePicker } from "./PagePicker.jsx";
 
 const projectId = "prj_1a160b47-6df1-4983-81eb-489ca5a26812";
@@ -61,21 +56,21 @@ test("Project IDs from before the rename and /s/ links still open the Project", 
   assert.deepEqual(calls, [`/project/${legacyId}`]);
 });
 
-test("a Project tree puts the home Page first with its descendants, then nests by position", () => {
+test("a Project tree nests Pages by position, with missing parents at the top level", () => {
   const rows = projectTree([
     { page_id: page(5), title: "Orphan", parent_id: page(9), position: "a0" },
     { page_id: page(3), title: "Child", parent_id: page(2), position: "a0" },
     { page_id: page(2), title: "Second", parent_id: null, position: "a2" },
-    { page_id: page(1), title: "Home", parent_id: null, position: "a0", home: true },
+    { page_id: page(1), title: "Guide", parent_id: null, position: "a0" },
     { page_id: page(4), title: "First", parent_id: null, position: "a1" },
-    { page_id: page(6), title: "Under home", parent_id: page(1), position: "a0" },
+    { page_id: page(6), title: "Under guide", parent_id: page(1), position: "a0" },
     { page_id: page(7), title: "Grandchild", parent_id: page(6), position: "a0" },
   ]);
   assert.deepEqual(
     rows.map(({ page, depth }) => [page.title, depth]),
     [
-      ["Home", 0],
-      ["Under home", 1],
+      ["Guide", 0],
+      ["Under guide", 1],
       ["Grandchild", 2],
       ["Orphan", 0],
       ["First", 0],
@@ -125,45 +120,75 @@ const crumbTitles = (crumbs) =>
     ).matchAll(/<a [^>]*>([^<]*)<\/a>/g),
   ].map((match) => match[1]);
 
-test("a Project's home Page folds into the Project crumb; other parents stay", () => {
+test("breadcrumbs show the Project followed by every disclosed ancestor Page", () => {
   const projectCrumb = { kind: "project", project_id: projectId, title: "Guide" };
-  const homeCrumb = { kind: "page", page_id: page(1), title: "Guide", home: true };
+  const guideCrumb = { kind: "page", page_id: page(1), title: "Guide" };
   const parentCrumb = { kind: "page", page_id: page(2), title: "Architecture" };
-  assert.deepEqual(crumbTitles([projectCrumb, homeCrumb]), ["Guide"]);
-  assert.deepEqual(crumbTitles([projectCrumb, homeCrumb, parentCrumb]), ["Guide", "Architecture"]);
+  assert.deepEqual(crumbTitles([projectCrumb]), ["Guide"]);
+  assert.deepEqual(crumbTitles([projectCrumb, guideCrumb, parentCrumb]), [
+    "Guide",
+    "Guide",
+    "Architecture",
+  ]);
   assert.deepEqual(crumbTitles([projectCrumb, parentCrumb]), ["Guide", "Architecture"]);
-  // Without its Project crumb, the home crumb is the only way back up.
-  assert.deepEqual(crumbTitles([homeCrumb, parentCrumb]), ["Guide", "Architecture"]);
+  assert.deepEqual(crumbTitles([parentCrumb]), ["Architecture"]);
 });
 
-test("a home Page lists its Project's Pages without the home row, then a New Page row", () => {
+test("Project content lists its Pages from top-level roots, then a New Page row", () => {
   const pages = [
-    { page_id: page(1), title: "Launch", parent_id: null, position: "a0", home: true },
-    { page_id: page(2), title: "Plan", parent_id: page(1), position: "a0" },
+    { page_id: page(2), title: "Plan", parent_id: null, position: "a0" },
     { page_id: page(3), title: "Detail", parent_id: page(2), position: "a0" },
-    { page_id: page(4), title: "Budget", parent_id: page(1), position: "a1" },
+    { page_id: page(4), title: "Budget", parent_id: null, position: "a1" },
   ];
   assert.deepEqual(
-    projectPageRows(pages).map(({ page, depth }) => [page.title, depth]),
+    projectTree(pages).map(({ page, depth }) => [page.title, depth]),
     [
       ["Plan", 0],
       ["Detail", 1],
       ["Budget", 0],
     ],
   );
-  assert.equal(projectPageCount(pages), 3);
   const html = renderToStaticMarkup(
     createElement(ProjectPages, { title: "Launch", pages, onOpen() {}, onCreate() {} }),
   );
   assert.match(html, /aria-label="Pages in Launch"/);
-  assert.doesNotMatch(html, />Launch</, "the home Page isn't a row");
+  assert.doesNotMatch(html, />Launch</, "Project content isn't a row");
   assert.match(html, /Plan.*Detail.*Budget.*New Page/s);
   assert.equal(
     renderToStaticMarkup(
-      createElement(ProjectPages, { pages: pages.slice(0, 1), onOpen() {}, onCreate() {} }),
+      createElement(ProjectPages, { pages: [], onOpen() {}, onCreate() {} }),
     ).match(/<li/g).length,
     1,
     "an empty Project shows only the New Page row",
+  );
+});
+
+test("document placement uses host-disclosed kind and leaves direct-only access private", async () => {
+  const calls = [];
+  const locate = (result) =>
+    pageLocation(async (operation, args) => {
+      calls.push([operation, args]);
+      return result;
+    }, page(1));
+  const breadcrumbs = [{ kind: "project", project_id: projectId, title: "Launch" }];
+  assert.deepEqual(await locate({ kind: "project", project_id: projectId, breadcrumbs }), {
+    kind: "project",
+    project_id: projectId,
+    parent_id: null,
+    breadcrumbs,
+  });
+  assert.deepEqual(await locate({ kind: "page", page_id: page(1) }), {
+    kind: "page",
+    project_id: null,
+    parent_id: null,
+    breadcrumbs: [],
+  });
+  assert.deepEqual(
+    await locate({ kind: "page", project_id: projectId, parent_id: null, breadcrumbs }),
+    { kind: "page", project_id: projectId, parent_id: null, breadcrumbs },
+  );
+  assert.ok(
+    calls.every(([operation, args]) => operation === "read_page" && args.page_id === page(1)),
   );
 });
 
@@ -229,9 +254,9 @@ test("a Page's location is asked for again as its session registers and connects
   asks[1].reject(Object.assign(Error("Page not found"), { status: 404 }));
   await settle();
   assert.equal(asks.length, 3, "the connection changed while it was asking");
-  asks[2].resolve({ project_id: null, home: false, breadcrumbs: [] });
+  asks[2].resolve({ project_id: null, kind: "page", breadcrumbs: [] });
   await settle();
-  assert.deepEqual(found, [{ project_id: null, home: false, breadcrumbs: [] }]);
+  assert.deepEqual(found, [{ project_id: null, kind: "page", breadcrumbs: [] }]);
   session.connection = null;
   location.changed();
   assert.equal(asks.length, 3, "found is final");
@@ -240,7 +265,7 @@ test("a Page's location is asked for again as its session registers and connects
   const left = watchPageLocation(
     { connection: {} },
     {
-      locate: async () => ({ home: true }),
+      locate: async () => ({ kind: "project" }),
       onFound: (value) => found.push(value),
       current: () => current,
     },
@@ -309,9 +334,9 @@ test("a reconnect asks for a Page's location again, and a transient failure retr
   assert.equal(asks.length, 6);
   await advance(60_000);
   assert.equal(asks.length, 6, "the cancelled retry never fires");
-  asks[5].resolve({ home: false });
+  asks[5].resolve({ kind: "page" });
   await settle();
-  assert.deepEqual(found, [{ home: false }]);
+  assert.deepEqual(found, [{ kind: "page" }]);
 });
 
 test("the page-location table runs through the pure machine", async () => {

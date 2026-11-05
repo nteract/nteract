@@ -445,10 +445,12 @@ test("creating a Page or a Project marks the Page, answers, then writes the owne
   assert.equal(ownerRow(w, created[0]), undefined);
   release();
   const project = await w.createProject("Launch");
-  created.push(project.home_page_id);
   assert.equal(await w.catalogStorage().get(DIRTY), undefined, "no write put the account behind");
   await w.settle();
-  for (const pageId of created) assert.equal(ownerRow(w, pageId), "active");
+  // The Project's content document has its owner row too, but it isn't a
+  // Page in the tree, so no listing shows it.
+  for (const pageId of [...created, project.document_id])
+    assert.equal(ownerRow(w, pageId), "active");
   assert.deepEqual(await pageMarks(w), [], "each written row cleared its mark");
   const listed = await list(w, { limit: 100 });
   assert.equal(listed.source, "index");

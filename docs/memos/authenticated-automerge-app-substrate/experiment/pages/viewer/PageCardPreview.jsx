@@ -1,5 +1,5 @@
 // The body of a library grid card: a scaled, read-only rendering of the
-// Page's card (model/page-card.mjs), or a muted Page (or home) icon while
+// Page's card (model/page-card.mjs), or a muted Page icon while
 // there is none to show. The body is decoration: the card's link text is
 // the Page title, so the body is aria-hidden and takes no pointer events.
 //
@@ -13,20 +13,18 @@
 // A card whose Page has images for the same `card_hash` draws them over the
 // JSON (PageCardImage.jsx).
 import { Fragment } from "react";
-import { FileText, Boxes } from "lucide-react";
+import { FileText } from "lucide-react";
 import { previewNodes } from "./PagePreview.jsx";
 import { PageCardImage, cardImageOf } from "./PageCardImage.jsx";
 
 /**
- * @param {{ card?: { blocks: Array<{ id: string, content: unknown[] }> } | null,
- *           home?: boolean }} props
+ * @param {{ card?: { blocks: Array<{ id: string, content: unknown[] }> } | null }} props
  */
-export function PageCardPreview({ card = null, home = false }) {
+export function PageCardPreview({ card = null }) {
   if (!card?.blocks?.length) {
-    const Icon = home ? Boxes : FileText;
     return (
       <div className="index-card-preview" aria-hidden="true">
-        <Icon className="index-card-placeholder" size={36} strokeWidth={1.5} />
+        <FileText className="index-card-placeholder" size={36} strokeWidth={1.5} />
       </div>
     );
   }

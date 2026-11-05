@@ -294,13 +294,13 @@ test("missing provenance, forged coverage, known heads, and empty subsets never 
     });
 });
 
-test("all observed accounts, home, nested, trash and host-only Pages are retained", async () => {
+test("all observed accounts, Project content, nested, trash and host-only Pages are retained", async () => {
   const first = await fixture(1);
   const second = await fixture(2);
   second.hosts[0].record.owner = "other-owner";
   second.hosts[0].record.deleted = true;
   second.hosts[0].record.trash = { trashed_at: "2026-01-01T00:00:00.000Z" };
-  first.catalogs[0].entries.push(["space/synthetic-project", { home_page_id: id(1) }]);
+  first.catalogs[0].entries.push(["space/synthetic-project", { document_id: id(1) }]);
   first.catalogs.push({
     account: "other-owner",
     entries: [[`trash/${id(2)}`, { page_id: id(2), parent_id: id(3) }]],
@@ -309,9 +309,31 @@ test("all observed accounts, home, nested, trash and host-only Pages are retaine
   const result = await audit(first);
   assert.equal(result.accounts_observed, 2);
   assert.equal(result.pages.length, 3);
+  assert.ok(result.pages.find((p) => p.page_id === id(1)).catalog.includes("content"));
   assert.equal(result.pages.find((p) => p.page_id === id(2)).classification, "plain_verified");
   assert.equal(result.pages.find((p) => p.page_id === id(3)).classification, "unknown");
   assert.equal(result.state, "incomplete");
+  assert.ok(!result.issues.includes("project_content_unmigrated"));
+});
+
+test("a space record from before the content migration is retained and reported, never guessed", async () => {
+  // Pre-migration evidence names the content document with the retired field.
+  const legacy = await fixture(1);
+  legacy.catalogs[0].entries.push(["space/old-project", { home_page_id: id(1) }]);
+  const result = await audit(legacy);
+  assert.equal(result.pages.length, 1);
+  assert.deepEqual(result.pages[0].catalog.sort(), ["active", "legacy_content"]);
+  assert.ok(result.issues.includes("project_content_unmigrated"));
+  assert.equal(result.state, "incomplete");
+  assert.equal(result.removal_ready, false);
+  // A record naming both fields, or neither, is not a Project record.
+  for (const value of [{ document_id: id(1), home_page_id: id(1) }, {}, { title: "x" }]) {
+    const broken = await fixture(1);
+    broken.catalogs[0].entries.push(["space/broken", value]);
+    const refused = await audit(broken);
+    assert.equal(refused.state, "blocked", JSON.stringify(value));
+    assert.ok(refused.issues.includes("invalid_project"), JSON.stringify(value));
+  }
 });
 
 test("native selectors, pending creation/registration/journals and deletion fail closed", async (t) => {

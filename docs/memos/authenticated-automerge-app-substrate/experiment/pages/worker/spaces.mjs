@@ -2,7 +2,8 @@
  * Spaces: containers for Pages.
  *
  * A Space has its own prefixed ID (`sp_<uuid>`), title, description, owner,
- * a members ACL with a revision, and a home Page created with it. The Space
+ * a members ACL with a revision, and one content document created with it
+ * (`document_id`, an ordinary Page document outside the Page tree). The Space
  * Durable Object is the authority for that record. Members inherit content
  * access to every Page; only the owner manages sharing and structure. Direct
  * Page grants remain independent and never propagate to descendants.
@@ -23,6 +24,8 @@ import { NO_ACTOR_CHAIN, decide, heldRelation, principalOf, projectObject } from
 import { serialQueue } from "./serial-queue.mjs";
 import { claimInvitation, proposeSharingMutation } from "./sharing.mjs";
 import { indexProjectInvitations } from "./project-invitations.mjs";
+// ONE-SHOT MIGRATION import: delete with home-removal-migration.mjs.
+import { HOME_REMOVAL_BACKUP_PREFIX, planSpaceHomeRemoval } from "./home-removal-migration.mjs";
 
 export const SPACE_LIMIT = 50;
 export const SPACE_TITLE_LIMIT = 200;
@@ -50,7 +53,7 @@ export function requirePageIdArgument(value, argument = "page_id") {
       400,
       argument === "parent_id"
         ? "parent_id expects a Page ID, but this is a Project ID. Pass it as project_id to create or list Pages at the Project's top level."
-        : `${argument} expects a Page ID, but this is a Project ID. Use get_project with project_id to read a Project; its home_page_id is a Page ID for read_page.`,
+        : `${argument} expects a Page ID, but this is a Project ID. Pass it as project_id to read_page and the other Page tools to address the Project's content.`,
       "project_id_as_page_id",
     );
   throw new HttpError(400, `Invalid ${argument}`, "invalid_page_id");
@@ -92,9 +95,9 @@ export function validateSpaceInput(args, { creating }) {
   return { title: title?.trim(), description };
 }
 
-/** Body of a new home Page. It is ordinary Page content: guidance for people
- * and agents, never authority to widen a task. */
-export function homePageMarkdown(description) {
+/** Body of a new Project's content document. It is ordinary Page content:
+ * guidance for people and agents, never authority to widen a task. */
+export function projectContentMarkdown(description) {
   const lead = description?.trim() ? description.trim() : "Describe what this Project is for.";
   return `${lead}\n\n## Guidance\n\nKeep current priorities and notes for people and agents working in this Project here.`;
 }
@@ -132,7 +135,7 @@ export function publicSpace(record, identity) {
     space_id: record.space_id,
     title: record.title,
     description: record.description ?? "",
-    home_page_id: record.home_page_id,
+    document_id: record.document_id,
     role: identity ? heldRelation(projectObject(record), identity.principal) : "owner",
     revision: record.revision ?? 0,
     owner: record.owner,
@@ -185,11 +188,11 @@ export class Space {
           record.pending ||
           record.space_id !== args.space_id ||
           (this.ctx.id?.name && this.ctx.id.name !== args.space_id) ||
-          !validPageId(record.home_page_id)
+          !validPageId(record.document_id)
         )
           throw spaceNotFound();
         await this.ctx.storage.sync();
-        return json({ page_id: record.home_page_id, owner: record.owner });
+        return json({ page_id: record.document_id, owner: record.owner });
       }
       if (path === "/internal/space/policy") {
         if (request.headers.has("authorization") || request.headers.has("cookie"))
@@ -201,16 +204,30 @@ export class Space {
         await this.ctx.storage.sync();
         return json({ space_id: record.space_id, owner: record.owner, acl: record.acl });
       }
+      if (path === "/internal/space/remove-home") return await this.removeHome(request);
       const identity = await authenticate(request, this.env);
       const args = await readJson(request);
       requireSpaceIdArgument(args?.space_id);
       if (this.ctx.id?.name && this.ctx.id.name !== args.space_id) throw spaceNotFound();
       let record = await this.ctx.storage.get(RECORD);
+      // A record from before the content document was named `document_id`
+      // can't be read by this build; its owner's migration rewrites it. Only
+      // a caller who could read it learns that: anyone else gets not-found.
+      if (record && !record.document_id) {
+        if (!can("read", record, identity)) throw spaceNotFound();
+        throw new HttpError(
+          503,
+          "This Project needs a one-time migration; its owner runs it",
+          "location_migration_required",
+        );
+      }
       // Reads and exact retries confirm the previous output barrier too. A
       // failed ACL write cannot expose or acknowledge an unconfirmed record.
       await this.ctx.storage.sync();
       if (path === "/internal/space/create") return await this.create(identity, args, record);
-      if (path === "/internal/space/read" && record) {
+      // A content-selector check (`claim: false`) only asks whether the
+      // caller already reads the Project; it never claims an invitation.
+      if (path === "/internal/space/read" && record && args.claim !== false) {
         const claimed = await claimInvitation(
           { ...record, pageId: record.space_id },
           identity,
@@ -333,16 +350,48 @@ export class Space {
     }
   }
 
+  /** ONE-SHOT MIGRATION route (home-removal-migration.mjs; delete with it).
+   * Host-only, like the policy route: the owner's Catalog calls it with no
+   * credentials while applying its migration. Rewrites the record and stored
+   * receipts to the current names; idempotent. */
+  async removeHome(request) {
+    if (request.headers.has("authorization") || request.headers.has("cookie"))
+      throw spaceNotFound();
+    const args = await readJson(request);
+    const record = await this.ctx.storage.get(RECORD);
+    if (!record || record.space_id !== args?.space_id || record.owner !== args?.owner)
+      throw spaceNotFound();
+    const receipts = await this.ctx.storage.list({ prefix: "host/receipt/" });
+    const { writes } = planSpaceHomeRemoval(record, receipts);
+    // Each replaced value's before-image lands in the same call as its
+    // replacement, and is never overwritten by a rerun.
+    const entries = [...writes];
+    for (let at = 0; at < entries.length; at += 60) {
+      const puts = {};
+      for (const [key, value] of entries.slice(at, at + 60)) {
+        const backup = `${HOME_REMOVAL_BACKUP_PREFIX}${key}`;
+        if ((await this.ctx.storage.get(backup)) === undefined)
+          puts[backup] = key === RECORD ? record : receipts.get(key);
+        puts[key] = value;
+      }
+      await this.ctx.storage.put(puts);
+    }
+    // Always confirm the barrier: a retry after a failed sync plans nothing
+    // and must not acknowledge writes that never became durable.
+    await this.ctx.storage.sync();
+    return json({ space_id: record.space_id, changed: writes.size });
+  }
+
   /** Idempotent: the owner's Catalog repeats this after a lost response or a
-   * crash, with the same Space ID and home Page ID. */
+   * crash, with the same Space ID and content document ID. */
   async create(identity, args, record) {
     requireWrite(identity);
     const { title, description } = validateSpaceInput(args, { creating: true });
-    if (!validPageId(args.home_page_id)) throw new HttpError(400, "Invalid home_page_id");
+    if (!validPageId(args.document_id)) throw new HttpError(400, "Invalid document_id");
     if (record) {
       if (heldRelation(projectObject(record), identity.principal) !== "owner")
         throw spaceNotFound();
-      if (record.home_page_id !== args.home_page_id)
+      if (record.document_id !== args.document_id)
         throw new HttpError(409, "Project already exists");
       return json(publicSpace(record));
     }
@@ -355,7 +404,7 @@ export class Space {
       owner_name: identity.displayName,
       // Membership starts restricted to the owner.
       acl: { revision: 0, members: {} },
-      home_page_id: args.home_page_id,
+      document_id: args.document_id,
       revision: 0,
       created_at: now,
       updated_at: now,

@@ -157,7 +157,9 @@ try {
   });
   assert.match(project.project_id, /^prj_/);
   assert.equal(project.url, `${origin}/project/${project.project_id}`);
-  assert.equal(project.home_page_url, `${origin}/p/${project.home_page_id}`);
+  assert.match(project.document_id, /^[0-9a-f-]{36}$/, "the content document's ID");
+  assert.equal(project.role, "owner");
+  assert.doesNotMatch(JSON.stringify(project), /home/i, "no retired field on a Project");
   const roadmap = await ok("owner", "create_page", {
     title: "Roadmap",
     markdown: "What ships when.",
@@ -172,18 +174,27 @@ try {
   });
   assert.equal(plan.project_id, project.project_id);
   assert.equal(plan.parent_id, roadmap.page_id);
-  assert.equal(
-    roadmap.parent_id,
-    project.home_page_id,
-    "a Project's top level is under its backing document",
-  );
+  assert.equal(roadmap.project_id, project.project_id);
+  assert.equal(roadmap.parent_id, null, "a Project's top level has parent_id null");
   complete("MCP created a Project with content and a nested Page");
 
+  // The Project's content is its own document, addressed by project_id. It
+  // reads as kind "project" with a Project breadcrumb, edits through the same
+  // selector, and shares its history with the document_id the catalog names.
   const content = await ok("owner", "read_page", { project_id: project.project_id });
-  assert.equal(content.page_id, project.home_page_id);
+  assert.equal(content.kind, "project");
   assert.equal(content.project_id, project.project_id);
-  assert.equal(content._owner, undefined);
-  assert.equal(content.breadcrumbs, undefined);
+  assert.equal(content.page_id, project.document_id);
+  assert.equal(content.title, title);
+  assert.equal(content.url, project.url, "content links to its Project");
+  assert.deepEqual(
+    content.breadcrumbs.map((crumb) => [crumb.kind, crumb.project_id, crumb.title]),
+    [["project", project.project_id, title]],
+  );
+  assert.ok(
+    content.blocks.some((block) => block.markdown.includes("Where the launch lives.")),
+    "create_project's description opens the content",
+  );
   const contentEdit = {
     project_id: project.project_id,
     base_heads: content.heads,
@@ -192,14 +203,15 @@ try {
     operations: [{ op: "insert_markdown", markdown: "Content selector sentinel." }],
   };
   const contentReceipt = await ok("owner", "edit_page", contentEdit);
-  const legacyEdit = Object.fromEntries(
+  assert.equal(contentReceipt.project_id, project.project_id);
+  // An exact retry through the document_id alias replays the same receipt.
+  const aliasEdit = Object.fromEntries(
     Object.entries(contentEdit).map(([key, value]) =>
-      key === "project_id" ? ["page_id", project.home_page_id] : [key, value],
+      key === "project_id" ? ["page_id", project.document_id] : [key, value],
     ),
   );
-  const legacyReceipt = await ok("owner", "edit_page", legacyEdit);
-  const { project_id: _projectId, ...physicalReceipt } = contentReceipt;
-  assert.deepEqual(legacyReceipt, physicalReceipt);
+  const aliasReceipt = await ok("owner", "edit_page", aliasEdit);
+  assert.deepEqual(aliasReceipt.heads, contentReceipt.heads);
   const contentReadback = await ok("owner", "read_page", { project_id: project.project_id });
   assert.deepEqual(contentReadback.heads, contentReceipt.heads);
   assert.equal(
@@ -207,31 +219,41 @@ try {
       .length,
     1,
   );
+  const bothSelectors = await mcp("owner", "read_page", {
+    page_id: project.document_id,
+    project_id: project.project_id,
+  });
+  assert.equal(bothSelectors.isError, true);
+  assert.equal(bothSelectors.body.code, "invalid_arguments");
   complete(
-    "Project content selector reads and writes the same history, with an exact legacy-alias retry",
+    "Project content reads and writes through project_id, with one history behind document_id",
   );
 
   const projects = await ok("owner", "list_projects");
-  assert.ok(projects.projects.some((entry) => entry.project_id === project.project_id));
+  const listedProject = projects.projects.find((entry) => entry.project_id === project.project_id);
+  assert.equal(listedProject.document_id, project.document_id);
+  assert.equal(listedProject.role, "owner");
+  assert.equal(listedProject.url, project.url);
+  assert.doesNotMatch(JSON.stringify(projects), /home/i);
   const listed = await ok("owner", "list_pages", { project_id: project.project_id });
   assert.deepEqual(
     listed.pages.map((page) => page.page_id).sort(),
-    [project.home_page_id, roadmap.page_id, plan.page_id].sort(),
+    [roadmap.page_id, plan.page_id].sort(),
+    "the content document is never listed as a Page",
   );
   const children = await ok("owner", "list_pages", { parent_id: roadmap.page_id });
   assert.deepEqual(
     children.pages.map((page) => page.page_id),
     [plan.page_id],
   );
-  // The chain runs through the backing document, flagged so viewers fold it into the
-  // Project crumb; both carry the Project's title.
+  // The chain is the Project, then the parent Pages; nothing stands between.
   const read = await ok("owner", "read_page", { page_id: plan.page_id, include_content: false });
+  assert.equal(read.kind, "page");
   assert.deepEqual(
-    read.breadcrumbs.map((crumb) => [crumb.title, crumb.home === true]),
+    read.breadcrumbs.map((crumb) => [crumb.kind, crumb.title]),
     [
-      [title, false],
-      [title, true],
-      ["Roadmap", false],
+      ["project", title],
+      ["page", "Roadmap"],
     ],
   );
   const topLevel = await ok("owner", "list_pages", {
@@ -239,12 +261,30 @@ try {
     parent_id: null,
   });
   assert.deepEqual(
-    topLevel.pages.map((page) => page.page_id).sort(),
-    [project.home_page_id, roadmap.page_id].sort(),
-    "the Project's top level contains its backing document and immediate children",
+    topLevel.pages.map((page) => [page.page_id, page.parent_id]),
+    [[roadmap.page_id, null]],
+    "the Project's top level holds its immediate Pages, parent_id null",
   );
-  const home = await ok("owner", "get_project", { project_id: project.project_id });
-  assert.equal(home.home_page_id, project.home_page_id);
+  const fetched = await ok("owner", "get_project", { project_id: project.project_id });
+  assert.equal(fetched.document_id, project.document_id);
+  assert.equal(fetched.revision, 0);
+  // The content document is not in the tree: it can't move or go to Trash.
+  for (const [operation, args] of [
+    ["delete_page", { page_id: project.document_id, idempotency_key: crypto.randomUUID() }],
+    [
+      "move_page",
+      {
+        page_id: project.document_id,
+        parent_id: roadmap.page_id,
+        retry_token: listed.retry_token,
+        idempotency_key: listed.retry_key_prefix + crypto.randomUUID(),
+      },
+    ],
+  ]) {
+    const refused = await mcp("owner", operation, args);
+    assert.equal(refused.isError, true, operation);
+    assert.equal(refused.body.code, "project_content_protected", operation);
+  }
   complete("list_projects, list_pages by Project and parent, get_project and breadcrumbs agree");
 
   const mixup = await mcp("owner", "read_page", { page_id: project.project_id });
@@ -253,6 +293,13 @@ try {
   const other = await mcp("editor", "get_project", { project_id: project.project_id });
   assert.equal(other.isError, true);
   assert.equal(other.body.code, "project_not_found");
+  const otherContent = await mcp("editor", "read_page", { project_id: project.project_id });
+  assert.equal(otherContent.isError, true);
+  assert.equal(
+    otherContent.body.code,
+    "project_not_found",
+    "content answers with the Project's refusal",
+  );
   complete("A Project ID passed as page_id names get_project; another account sees no Project");
 
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
@@ -273,8 +320,8 @@ try {
   await expect(owner.locator("wg-content").first()).toHaveAttribute("contenteditable", "true");
   await expect(owner).toHaveURL(`${origin}/project/${project.project_id}`);
   const list = owner.getByRole("region", { name: `Pages in ${title}` }).getByRole("list");
-  // Project content and its tree share one editor; there is no separate backing-document row.
-  await expect(list.locator(".project-home")).toHaveCount(0);
+  // Project content and its tree share one editor; the content document is not a row.
+  await expect(list.getByRole("link", { name: title })).toHaveCount(0);
   await expect(
     owner.getByRole("navigation", { name: "Project", exact: true }).getByRole("link"),
   ).toHaveAttribute("href", `/project/${project.project_id}`);
@@ -336,39 +383,48 @@ try {
   await expect(owner.getByLabel("Page title")).toBeVisible({ timeout: 30000 });
   await expect(owner.getByRole("navigation", { name: "Breadcrumbs" })).toContainText(title);
   const after = await ok("owner", "list_pages", { project_id: project.project_id });
-  assert.equal(after.pages.length, 4);
+  assert.equal(after.pages.length, 3);
+  const newPage = after.pages.find(
+    (entry) => ![roadmap.page_id, plan.page_id].includes(entry.page_id),
+  );
+  assert.equal(newPage.parent_id, null, "New Page lands at the Project's top level");
   complete("New Page in a Project created a Page at the Project's top level");
 
-  // The backing document shares the Project's title, so the viewer shows one crumb
-  // for both. The API retains its internal home:true marker.
-  const underHome = await ok("owner", "create_page", {
+  // The content document is not a parent: a Page can't be created under it.
+  const underContent = await mcp("owner", "create_page", {
     title: "Architecture",
     markdown: "How the pieces fit.",
-    parent_id: project.home_page_id,
+    parent_id: project.document_id,
     idempotency_key: crypto.randomUUID(),
   });
-  const underHomeRead = await ok("owner", "read_page", {
-    page_id: underHome.page_id,
+  assert.equal(underContent.isError, true);
+  assert.equal(underContent.body.code, "parent_unavailable");
+  const topPage = await ok("owner", "create_page", {
+    title: "Architecture",
+    markdown: "How the pieces fit.",
+    project_id: project.project_id,
+    idempotency_key: crypto.randomUUID(),
+  });
+  assert.equal(topPage.parent_id, null);
+  const topPageRead = await ok("owner", "read_page", {
+    page_id: topPage.page_id,
     include_content: false,
   });
   assert.deepEqual(
-    underHomeRead.breadcrumbs.map((crumb) => [crumb.kind, crumb.home === true]),
-    [
-      ["project", false],
-      ["page", true],
-    ],
+    topPageRead.breadcrumbs.map((crumb) => [crumb.kind, crumb.title]),
+    [["project", title]],
   );
-  await owner.goto(`${origin}/p/${underHome.page_id}`);
+  await owner.goto(`${origin}/p/${topPage.page_id}`);
   await expect(owner.locator("wg-content").first()).toContainText("How the pieces fit.", {
     timeout: 30000,
   });
-  const underHomeCrumbs = owner.getByRole("navigation", { name: "Breadcrumbs" });
-  await expect(underHomeCrumbs.getByRole("link")).toHaveCount(1);
-  await expect(underHomeCrumbs.getByRole("link", { name: title })).toHaveAttribute(
+  const topPageCrumbs = owner.getByRole("navigation", { name: "Breadcrumbs" });
+  await expect(topPageCrumbs.getByRole("link")).toHaveCount(1);
+  await expect(topPageCrumbs.getByRole("link", { name: title })).toHaveAttribute(
     "href",
     `/project/${project.project_id}`,
   );
-  complete("A top-level Page shows the Project crumb once");
+  complete("A top-level Page shows the Project crumb once; the content document is no parent");
 
   // From a Page in the Project, the picker's New Page offers the Project and
   // Your items. "In <Project>" lands at the Project's top level and opens it.
@@ -390,14 +446,15 @@ try {
   const beforePicker = await ok("owner", "list_pages", { project_id: project.project_id });
   await pickerCreate.getByRole("button", { name: `New Page In ${title}` }).click();
   await expect(picker).toBeHidden({ timeout: 30000 });
-  await expect(owner).not.toHaveURL(`${origin}/p/${underHome.page_id}`, { timeout: 30000 });
+  await expect(owner).not.toHaveURL(`${origin}/p/${topPage.page_id}`, { timeout: 30000 });
   await expect(owner.getByLabel("Page title")).toBeVisible({ timeout: 30000 });
   const afterPicker = await ok("owner", "list_pages", { project_id: project.project_id });
   assert.equal(afterPicker.pages.length, beforePicker.pages.length + 1);
   const pickerCreated = afterPicker.pages.find(
     (entry) => !beforePicker.pages.some((known) => known.page_id === entry.page_id),
   );
-  assert.equal(pickerCreated.parent_id, project.home_page_id, "In <Project> is its top level");
+  assert.equal(pickerCreated.parent_id, null, "In <Project> is its top level");
+  assert.equal(pickerCreated.project_id, project.project_id);
   await expect(owner).toHaveURL(`${origin}/p/${pickerCreated.page_id}`);
   complete(
     "The picker's New Page offers the Project and Your items; In <Project> lands at its top level",
@@ -680,45 +737,48 @@ try {
   // repeating the title, the Project's Pages under the body, and an inline
   // New Page row that adds one at the top level and opens it.
   await phone.setViewportSize({ width: 640, height: 900 });
-  await phone.goto(`${origin}/p/${project.home_page_id}`);
+  await phone.goto(`${origin}/project/${project.project_id}`);
   const chip = phone.getByRole("navigation", { name: "Project" }).getByRole("link");
   await expect(chip).toHaveText(/^Project · \d+ Pages?$/, { timeout: 60000 });
   await expect(chip).toHaveAttribute("href", `/project/${project.project_id}`);
   await expect(phone.getByRole("navigation", { name: "Breadcrumbs" })).toHaveCount(0);
-  const homePages = phone.getByRole("region", { name: `Pages in ${title}` });
-  await expect(homePages.getByRole("link", { name: "Roadmap" })).toBeVisible();
+  const projectPages = phone.getByRole("region", { name: `Pages in ${title}` });
+  await expect(projectPages.getByRole("link", { name: "Roadmap" })).toBeVisible();
   await fitsScreen("the Project at 640px");
-  await minimumRowHeight(homePages.getByRole("list"));
+  await minimumRowHeight(projectPages.getByRole("list"));
   const chipHeight = (await chip.boundingBox()).height;
   assert.ok(chipHeight >= 44, `the Project chip is ${chipHeight}px tall at 640px`);
   await phone.screenshot({ path: `${output}/project-editor-640.png` });
-  const beforeHomeCreate = await ok("owner", "list_pages", { project_id: project.project_id });
+  const beforeRowCreate = await ok("owner", "list_pages", { project_id: project.project_id });
   // A double tap: both clicks land before React disables the row. The
   // one-at-a-time guard drops the second; the unit tests pin the guard
   // itself (page-create-machine.test.mjs).
-  await homePages.getByRole("button", { name: "New Page" }).evaluate((button) => {
+  await projectPages.getByRole("button", { name: "New Page" }).evaluate((button) => {
     button.click();
     button.click();
   });
-  await expect(phone).not.toHaveURL(`${origin}/p/${project.home_page_id}`, { timeout: 30000 });
+  await expect(phone).not.toHaveURL(`${origin}/project/${project.project_id}`, {
+    timeout: 30000,
+  });
   await expect(phone.getByLabel("Page title")).toBeVisible({ timeout: 30000 });
   // A new Page names itself first: the title has focus, not the body.
   await expect(phone.getByLabel("Page title")).toBeFocused();
   const projectPageCount = async () =>
     (await ok("owner", "list_pages", { project_id: project.project_id })).pages.length;
-  await expect.poll(projectPageCount, { timeout: 30000 }).toBe(beforeHomeCreate.pages.length + 1);
+  await expect.poll(projectPageCount, { timeout: 30000 }).toBe(beforeRowCreate.pages.length + 1);
   await phone.waitForTimeout(1000);
   assert.equal(
     await projectPageCount(),
-    beforeHomeCreate.pages.length + 1,
+    beforeRowCreate.pages.length + 1,
     "a double tap made one Page",
   );
-  const afterHomeCreate = await ok("owner", "list_pages", { project_id: project.project_id });
-  const homeCreated = afterHomeCreate.pages.find(
-    (entry) => !beforeHomeCreate.pages.some((known) => known.page_id === entry.page_id),
+  const afterRowCreate = await ok("owner", "list_pages", { project_id: project.project_id });
+  const rowCreated = afterRowCreate.pages.find(
+    (entry) => !beforeRowCreate.pages.some((known) => known.page_id === entry.page_id),
   );
-  assert.equal(homeCreated.parent_id, project.home_page_id, "New Page lands at the top level");
-  await expect(phone).toHaveURL(`${origin}/p/${homeCreated.page_id}`);
+  assert.equal(rowCreated.parent_id, null, "New Page lands at the top level");
+  assert.equal(rowCreated.project_id, project.project_id);
+  await expect(phone).toHaveURL(`${origin}/p/${rowCreated.page_id}`);
   // The phone header (⋯) starts below 601px, so at 640px the page menu is
   // Document actions. New sub-page there creates under the open Page.
   await phone.locator('summary[aria-label="Document actions"]').tap();
@@ -727,11 +787,11 @@ try {
     .getByRole("button", { name: "New sub-page" })
     .tap();
   await expect
-    .poll(async () => (await ok("owner", "list_pages", { parent_id: homeCreated.page_id })).pages, {
+    .poll(async () => (await ok("owner", "list_pages", { parent_id: rowCreated.page_id })).pages, {
       timeout: 30000,
     })
     .toHaveLength(1);
-  const [sub] = (await ok("owner", "list_pages", { parent_id: homeCreated.page_id })).pages;
+  const [sub] = (await ok("owner", "list_pages", { parent_id: rowCreated.page_id })).pages;
   await expect(phone).toHaveURL(`${origin}/p/${sub.page_id}`, { timeout: 30000 });
   await expect(phone.getByLabel("Page title")).toBeVisible({ timeout: 30000 });
   await fitsScreen("a new sub-page at 640px");
@@ -747,7 +807,7 @@ try {
   await expect(phone.getByRole("menuitem", { name: "New sub-page" })).toBeVisible();
   await phone.screenshot({ path: `${output}/new-sub-page-menu-phone.png` });
   await phone.keyboard.press("Escape");
-  await phone.goto(`${origin}/p/${project.home_page_id}`);
+  await phone.goto(`${origin}/project/${project.project_id}`);
   await expect(chip).toBeVisible({ timeout: 60000 });
   await fitsScreen("the Project on a phone");
   await phoneMenu.tap();
@@ -756,10 +816,12 @@ try {
   await phone.keyboard.press("Escape");
   complete("On a phone ⋯ offers New sub-page on a Project's Page, not on the Project itself");
 
-  // Owner-only: alice can edit the backing document and Roadmap but doesn't own the
-  // Project. She sees no chip, no Project Pages, no New sub-page and a plain
-  // New Page, and the API refuses her creates in the Project.
-  for (const pageId of [project.home_page_id, roadmap.page_id]) {
+  // Owner-only: alice holds direct grants on the content document (by its
+  // document_id, as grants on existing content documents do) and on Roadmap,
+  // but doesn't own the Project. She sees no chip, no Project Pages, no New
+  // sub-page and a plain New Page, and the API refuses her creates in the
+  // Project. Direct access never reveals the Project.
+  for (const pageId of [project.document_id, roadmap.page_id]) {
     const current = await browserApi(owner, `/api/access?page=${pageId}`);
     assert.equal(current.status, 200);
     const invited = await browserApi(owner, `/api/access?page=${pageId}`, {
@@ -786,13 +848,26 @@ try {
   });
   const documentActions = (tab) =>
     tab.locator(".document-actions .menu-popover").getByRole("button");
-  await alice.goto(`${origin}/p/${project.home_page_id}`);
+  await alice.goto(`${origin}/p/${project.document_id}`);
   await expect(alice.locator("wg-content").first()).toContainText("Where the launch lives.", {
     timeout: 30000,
   });
   await expect(alice.locator("wg-content").first()).toHaveAttribute("contenteditable", "true");
+  await expect(alice).toHaveURL(`${origin}/p/${project.document_id}`, {
+    timeout: 30000,
+  });
   await expect(alice.getByRole("navigation", { name: "Project", exact: true })).toHaveCount(0);
   await expect(alice.getByRole("region", { name: `Pages in ${title}` })).toHaveCount(0);
+  // "editor" is alice's fixture API key.
+  const aliceContent = await ok("editor", "read_page", {
+    page_id: project.document_id,
+    include_content: false,
+  });
+  assert.equal(aliceContent.kind, "page", "a direct grantee sees a Page, not the Project");
+  assert.equal(aliceContent.project_id, undefined);
+  const aliceByProject = await mcp("editor", "read_page", { project_id: project.project_id });
+  assert.equal(aliceByProject.isError, true);
+  assert.equal(aliceByProject.body.code, "project_not_found");
   await alice.goto(`${origin}/p/${roadmap.page_id}`);
   await expect(alice.locator("wg-content").first()).toContainText("What ships when", {
     timeout: 30000,
@@ -1305,16 +1380,16 @@ try {
   await fresh.goBack();
   await expect(fresh).toHaveURL(`${origin}/projects`);
   await fresh.goto(`${origin}/`);
-  const homeNav = fresh.getByRole("navigation", { name: "Browse" });
-  await expect(homeNav.getByRole("link", { name: "Pages", exact: true })).toHaveAttribute(
+  const browseNav = fresh.getByRole("navigation", { name: "Browse" });
+  await expect(browseNav.getByRole("link", { name: "Pages", exact: true })).toHaveAttribute(
     "href",
     "/",
   );
-  await expect(homeNav.getByRole("link", { name: "Pages", exact: true })).toHaveAttribute(
+  await expect(browseNav.getByRole("link", { name: "Pages", exact: true })).toHaveAttribute(
     "aria-current",
     "page",
   );
-  await expect(homeNav.getByRole("link", { name: "Projects" })).toHaveAttribute(
+  await expect(browseNav.getByRole("link", { name: "Projects" })).toHaveAttribute(
     "href",
     "/projects",
   );
@@ -1430,8 +1505,9 @@ try {
     assert.equal(trashed.isError, false, JSON.stringify(trashed.body));
     assert.equal(trashed.body.state, "trashed");
   }
-  const protectedHome = await trashPage(project.home_page_id);
-  assert.equal(protectedHome.body.code, "home_page_protected");
+  const protectedContent = await trashPage(project.document_id);
+  assert.equal(protectedContent.isError, true);
+  assert.equal(protectedContent.body.code, "project_content_protected");
   const restoreKey = () => authority.retry_key_prefix + crypto.randomUUID();
   const planBack = await ok("owner", "restore_page", {
     page_id: plan.page_id,
@@ -1440,9 +1516,10 @@ try {
   });
   assert.equal(
     planBack.parent_id,
-    project.home_page_id,
-    "its parent is in Trash, so it returns to the Project's top level, under the backing document",
+    null,
+    "its parent is in Trash, so it returns to the Project's top level",
   );
+  assert.equal(planBack.project_id, project.project_id);
   const roadmapBack = await ok("owner", "restore_page", {
     page_id: roadmap.page_id,
     retry_token: authority.retry_token,
@@ -1485,21 +1562,20 @@ try {
   });
   assert.deepEqual(movedRead.heads, planHeads, "a move changes no Page heads");
   assert.deepEqual(
-    movedRead.breadcrumbs.map((crumb) => [crumb.title, crumb.home === true]),
+    movedRead.breadcrumbs.map((crumb) => [crumb.kind, crumb.title]),
     [
-      [title, false],
-      [title, true],
-      ["Roadmap", false],
+      ["project", title],
+      ["page", "Roadmap"],
     ],
   );
-  const homeMove = await mcp("owner", "move_page", {
-    page_id: project.home_page_id,
+  const contentMove = await mcp("owner", "move_page", {
+    page_id: project.document_id,
     parent_id: roadmap.page_id,
     retry_token: authority.retry_token,
     idempotency_key: moveKey(),
   });
-  assert.equal(homeMove.isError, true);
-  assert.equal(homeMove.body.code, "home_page_protected");
+  assert.equal(contentMove.isError, true);
+  assert.equal(contentMove.body.code, "project_content_protected");
   const cycle = await mcp("owner", "move_page", {
     page_id: roadmap.page_id,
     parent_id: plan.page_id,

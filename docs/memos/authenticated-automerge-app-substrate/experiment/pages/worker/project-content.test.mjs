@@ -11,7 +11,7 @@ import { tools } from "../mcp.mjs";
 // The Projects fixture stubs native transport. Supply mutable document handles
 // for journal tests; record-admission behavior has its own integration suite.
 function writableContent(w, project) {
-  const page = w.page(project.home_page_id);
+  const page = w.page(project.document_id);
   let doc = A.change(page.handle.doc(), (draft) => stampFeatures(draft, ["comments-doc"]));
   let comments = newCommentsDoc();
   page.handle = {
@@ -41,7 +41,7 @@ const alias = (args, projectId) =>
   );
 const grant = (w, project, role, direct = false, expected_revision = 0) =>
   w.call("owner", direct ? "manage_page_access" : "manage_project_access", {
-    ...(direct ? { page_id: project.home_page_id } : { project_id: project.project_id }),
+    ...(direct ? { page_id: project.document_id } : { project_id: project.project_id }),
     action: "set_role",
     principal: w.member,
     role,
@@ -103,25 +103,28 @@ test("authentication and write scopes precede Project lookup", async (t) => {
     assert.equal((await w.call("reader", operation, args)).status, 403, operation);
 });
 
-test("Project content reads preserve old fields and omit Project metadata", async (t) => {
+test("Project content reads as the Project for a reader, by project_id or document_id", async (t) => {
   const w = await world(t);
   const project = await w.createProject("Catalog title", "Private description");
-  const result = await w.call("owner", "read_page", { project_id: project.project_id });
-  assert.equal(result.status, 200, JSON.stringify(result.body));
-  assert.equal(result.body.page_id, project.home_page_id);
-  assert.equal(result.body.project_id, project.project_id);
-  for (const key of ["_owner", "breadcrumbs", "parent_id", "home", "description", "members", "org"])
-    assert.equal(Object.hasOwn(result.body, key), false, key);
-  const legacy = await w.call("owner", "read_page", { page_id: project.home_page_id });
-  assert.equal(legacy.body.home, true);
-  assert.equal(legacy.body.project_id, project.project_id);
+  for (const address of [{ project_id: project.project_id }, { page_id: project.document_id }]) {
+    const result = await w.call("owner", "read_page", address);
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.equal(result.body.kind, "project");
+    assert.equal(result.body.page_id, project.document_id);
+    assert.equal(result.body.project_id, project.project_id);
+    assert.deepEqual(result.body.breadcrumbs, [
+      { kind: "project", project_id: project.project_id, title: "Catalog title" },
+    ]);
+    for (const key of ["_owner", "home", "description", "members", "org"])
+      assert.equal(Object.hasOwn(result.body, key), false, key);
+  }
   assert.equal(
-    (await w.call("owner", "get_project", { project_id: project.project_id })).body.home_page_id,
-    project.home_page_id,
+    (await w.call("owner", "get_project", { project_id: project.project_id })).body.document_id,
+    project.document_id,
   );
   const mcp = await w.mcp("owner", "read_page", { project_id: project.project_id });
   assert.equal(mcp.isError, false, JSON.stringify(mcp.body));
-  assert.equal(mcp.body.url, `https://pages.invalid/p/${project.home_page_id}`);
+  assert.equal(mcp.body.url, `https://pages.invalid/project/${project.project_id}`);
   assert.equal(mcp.body.project_id, project.project_id);
 });
 
@@ -132,19 +135,31 @@ for (const direct of [false, true])
       const project = await w.createProject();
       writableContent(w, project);
       assert.equal((await grant(w, project, role, direct)).status, 200);
-      const read = await w.call("member", "read_page", { project_id: project.project_id });
+      // A direct grant reads by document ID only, as a plain Page; the
+      // project_id selector never widens it to the Project.
+      if (direct) {
+        const selected = await w.call("member", "read_page", { project_id: project.project_id });
+        assert.equal(selected.status, 404, JSON.stringify(selected.body));
+        assert.equal(selected.body.code, "project_not_found");
+      }
+      const address = direct
+        ? { page_id: project.document_id }
+        : { project_id: project.project_id };
+      const read = await w.call("member", "read_page", address);
       assert.equal(read.status, 200, JSON.stringify(read.body));
+      assert.equal(read.body.kind, direct ? "page" : "project");
+      assert.equal(read.body.project_id, direct ? undefined : project.project_id);
       const edited = await w.call("member", "edit_page", {
-        project_id: project.project_id,
+        ...address,
         base_heads: read.body.heads,
         idempotency_key: w.key(),
         operations: [{ op: "set_title", title: "Edited" }],
       });
       assert.equal(edited.status, role === "editor" ? 200 : 403, JSON.stringify(edited.body));
       const comment = await w.call("member", "manage_page_comment", {
-        project_id: project.project_id,
+        ...address,
         action: "add",
-        block_id: Object.keys(w.page(project.home_page_id).handle.doc().blocks)[0],
+        block_id: Object.keys(w.page(project.document_id).handle.doc().blocks)[0],
         body: "Content comment",
         idempotency_key: w.key(),
       });
@@ -162,10 +177,11 @@ for (const direct of [false, true])
       assert.equal((await grant(w, project, null, direct, 1)).status, 200);
       assert.equal(
         (await w.call("member", "read_page", { project_id: project.project_id })).status,
-        403,
+        404,
+        "no longer a Project reader",
       );
       assert.equal(
-        (await w.call("member", "read_page", { page_id: project.home_page_id })).status,
+        (await w.call("member", "read_page", { page_id: project.document_id })).status,
         403,
       );
     });
@@ -190,10 +206,10 @@ test("Project lookup neither claims invitations nor creates discovery hints", as
   const storage = w.projects.get(project.project_id).ctx.storage;
   const before = await storage.get("space/record");
   const discovery = await w.catalogStorage(w.member).list({ prefix: "project-discovery/" });
-  assert.equal(
-    (await w.call("member", "read_page", { project_id: project.project_id })).status,
-    200,
-  );
+  // A direct grant plus an unclaimed invitation is not Project read access,
+  // and the selector check never claims the invitation.
+  const selected = await w.call("member", "read_page", { project_id: project.project_id });
+  assert.equal(selected.status, 404, JSON.stringify(selected.body));
   assert.deepEqual(await storage.get("space/record"), before);
   assert.deepEqual(
     await w.catalogStorage(w.member).list({ prefix: "project-discovery/" }),
@@ -203,7 +219,7 @@ test("Project lookup neither claims invitations nor creates discovery hints", as
   assert.equal((await grant(w, project, null, true, 1)).status, 200);
   assert.equal(
     (await w.call("member", "read_page", { project_id: project.project_id })).status,
-    403,
+    404,
   );
   assert.deepEqual(await storage.get("space/record"), before);
 });
@@ -214,7 +230,7 @@ test("alias edits replay the physical journal and retain stale-head and token fe
   writableContent(w, project);
   const read = (await w.call("owner", "read_page", { project_id: project.project_id })).body;
   const args = {
-    page_id: project.home_page_id,
+    page_id: project.document_id,
     base_heads: read.heads,
     retry_token: read.retry_token,
     idempotency_key: read.retry_key_prefix + crypto.randomUUID(),
@@ -225,7 +241,7 @@ test("alias edits replay the physical journal and retain stale-head and token fe
   const second = await w.call("owner", "edit_page", args);
   const { project_id: _id, ...receipt } = first.body;
   assert.deepEqual(second.body, receipt);
-  assert.deepEqual(w.heads(project.home_page_id), first.body.heads);
+  assert.deepEqual(w.heads(project.document_id), first.body.heads);
   const stale = await w.call("owner", "edit_page", {
     ...alias(args, project.project_id),
     idempotency_key: read.retry_key_prefix + crypto.randomUUID(),
@@ -246,7 +262,7 @@ for (const damage of [
   "missing-catalog",
   "pending-project",
   "pending-page",
-  "wrong-home",
+  "wrong-document",
   "wrong-owner",
 ])
   test(`incomplete mapping fails closed: ${damage}`, async (t) => {
@@ -261,14 +277,14 @@ for (const damage of [
       await catalog.put(key, { ...(await catalog.get(key)), pending: true });
     }
     if (damage === "pending-page") {
-      const key = `page/${project.home_page_id}`;
+      const key = `page/${project.document_id}`;
       await catalog.put(key, { ...(await catalog.get(key)), pending: true });
     }
-    if (damage === "wrong-home") {
+    if (damage === "wrong-document") {
       const key = `space/${project.project_id}`;
-      await catalog.put(key, { ...(await catalog.get(key)), home_page_id: crypto.randomUUID() });
+      await catalog.put(key, { ...(await catalog.get(key)), document_id: crypto.randomUUID() });
     }
-    if (damage === "wrong-owner") w.page(project.home_page_id).metadata.owner = w.member;
+    if (damage === "wrong-owner") w.page(project.document_id).metadata.owner = w.member;
     const result = await w.call("owner", "read_page", { project_id: project.project_id });
     assert.equal(result.status, 404, JSON.stringify(result.body));
     assert.equal(result.body.code, "project_not_found");
@@ -298,8 +314,8 @@ test("patch, comment and presence tools resolve the same content and receipt sco
   const w = await world(t);
   const project = await w.createProject();
   writableContent(w, project);
-  const before = (await w.call("owner", "read_page", { page_id: project.home_page_id })).body;
-  const doc = w.page(project.home_page_id).handle.doc();
+  const before = (await w.call("owner", "read_page", { page_id: project.document_id })).body;
+  const doc = w.page(project.document_id).handle.doc();
   const blockId = Object.keys(doc.blocks)[0];
   const insert = await w.call("owner", "edit_page", {
     project_id: project.project_id,
@@ -311,7 +327,7 @@ test("patch, comment and presence tools resolve the same content and receipt sco
   const after = (await w.call("owner", "read_page", { project_id: project.project_id })).body;
   const inserted = after.blocks.find((block) => block.markdown.includes("Original passage."));
   const patch = {
-    page_id: project.home_page_id,
+    page_id: project.document_id,
     base_heads: after.heads,
     idempotency_key: w.key(),
     operations: [
@@ -334,7 +350,7 @@ test("patch, comment and presence tools resolve the same content and receipt sco
   assert.equal(changes.status, 200, JSON.stringify(changes.body));
   assert.equal(changes.body.project_id, project.project_id);
   const comment = {
-    page_id: project.home_page_id,
+    page_id: project.document_id,
     action: "add",
     block_id: blockId,
     body: "One comment",
@@ -384,12 +400,12 @@ test("content mapping endpoints reject caller credentials and public HTTP routes
     [
       w.catalog(),
       "/internal/location",
-      { project_content: project.project_id, page_id: project.home_page_id },
+      { project_content: project.project_id, page_id: project.document_id },
     ],
     [
-      w.page(project.home_page_id),
+      w.page(project.document_id),
       "/internal/content-target",
-      { page_id: project.home_page_id, owner: w.owner },
+      { page_id: project.document_id, owner: w.owner },
     ],
   ];
   for (const [host, path, body] of paths) {
@@ -418,12 +434,12 @@ test("revocation during alias resolution is enforced by final Page admission", a
   });
   const result = await w.call("member", "edit_page", {
     project_id: project.project_id,
-    base_heads: w.heads(project.home_page_id),
+    base_heads: w.heads(project.document_id),
     idempotency_key: w.key(),
     operations: [{ op: "set_title", title: "Denied" }],
   });
   assert.equal(result.status, 403, JSON.stringify(result.body));
-  assert.equal(w.page(project.home_page_id).handle.doc().title, "Launch");
+  assert.equal(w.page(project.document_id).handle.doc().title, "Launch");
 });
 
 test("Project image imports preserve Page asset identity and recheck edit access", async (t) => {
@@ -453,7 +469,7 @@ test("Project image imports preserve Page asset identity and recheck edit access
     if (String(url).startsWith("https://files.oaiusercontent.com/")) {
       downloads++;
       assert.equal(options.headers.authorization, undefined);
-      if (revokeOnDownload) assert.equal((await grant(w, project, null, true, 2)).status, 200);
+      if (revokeOnDownload) assert.equal((await grant(w, project, null, false, 2)).status, 200);
       return new Response(png, { headers: { "content-type": "image/png" } });
     }
     return w.auth.fetch(url, options);
@@ -464,25 +480,25 @@ test("Project image imports preserve Page asset identity and recheck edit access
     file,
   });
   assert.equal(first.status, 201, JSON.stringify(first.body));
-  assert.equal(first.body.page_id, project.home_page_id);
+  assert.equal(first.body.page_id, project.document_id);
   assert.equal(
     first.body.asset_url,
-    `/api/pages/${project.home_page_id}/assets/${first.body.asset_id}`,
+    `/api/pages/${project.document_id}/assets/${first.body.asset_id}`,
   );
   const replay = await w.call("owner", "import_page_image", {
-    page_id: project.home_page_id,
+    page_id: project.document_id,
     file,
   });
   assert.equal(replay.status, 200);
   assert.deepEqual(replay.body, first.body);
   assert.equal(objects.size, 1);
-  assert.equal((await grant(w, project, "commenter", true)).status, 200);
+  assert.equal((await grant(w, project, "commenter")).status, 200);
   assert.equal(
     (await w.call("member", "import_page_image", { project_id: project.project_id, file })).status,
     403,
   );
   assert.equal(downloads, 2, "commenter cannot start a download");
-  assert.equal((await grant(w, project, "editor", true, 1)).status, 200);
+  assert.equal((await grant(w, project, "editor", false, 1)).status, 200);
   revokeOnDownload = true;
   assert.equal(
     (await w.call("member", "import_page_image", { project_id: project.project_id, file })).status,
@@ -503,12 +519,18 @@ test("membership removal never removes an independent direct content grant", asy
     200,
   );
   assert.equal((await grant(w, project, null, false, 1)).status, 200);
-  const result = await w.call("member", "read_page", { project_id: project.project_id });
+  // No longer a Project reader: the selector is closed, the direct grant isn't.
+  assert.equal(
+    (await w.call("member", "read_page", { project_id: project.project_id })).status,
+    404,
+  );
+  const result = await w.call("member", "read_page", { page_id: project.document_id });
   assert.equal(result.status, 200);
+  assert.equal(result.body.kind, "page");
   assert.equal(
     (
       await w.call("member", "edit_page", {
-        project_id: project.project_id,
+        page_id: project.document_id,
         base_heads: result.body.heads,
         idempotency_key: w.key(),
         operations: [{ op: "set_title", title: "Denied" }],
@@ -516,5 +538,41 @@ test("membership removal never removes an independent direct content grant", asy
     ).status,
     403,
   );
-  assert.equal(w.page(project.home_page_id).projectAccess.revision, 2);
+  assert.equal(w.page(project.document_id).projectAccess.revision, 2);
+});
+
+test("an owner Catalog awaiting its home-removal migration answers 503 to the selector", async (t) => {
+  const w = await world(t);
+  const project = await w.createProject();
+  await w.catalogStorage().put("host/home-removal/state", { phase: "applying", next: 0, total: 1 });
+  const result = await w.call("owner", "read_page", { project_id: project.project_id });
+  assert.equal(result.status, 503, JSON.stringify(result.body));
+  assert.equal(result.body.code, "location_migration_required");
+});
+
+test("reply_page_comment takes the content selector too", () => {
+  assert.ok(PROJECT_CONTENT_OPERATIONS.has("reply_page_comment"));
+});
+
+test("reading content by project_id never claims a member's pending invitation", async (t) => {
+  const w = await world(t);
+  const project = await w.createProject();
+  assert.equal((await grant(w, project, "viewer")).status, 200);
+  const invited = await w.call("owner", "manage_project_access", {
+    project_id: project.project_id,
+    action: "invite",
+    email: "fixture@example.invalid",
+    role: "editor",
+    expected_revision: 1,
+    idempotency_key: w.key(),
+  });
+  assert.equal(invited.status, 200, JSON.stringify(invited.body));
+  const storage = w.projects.get(project.project_id).ctx.storage;
+  const before = await storage.get("space/record");
+  for (const address of [{ project_id: project.project_id }, { page_id: project.document_id }]) {
+    const read = await w.call("member", "read_page", address);
+    assert.equal(read.status, 200, JSON.stringify(read.body));
+    assert.equal(read.body.kind, "project");
+  }
+  assert.deepEqual(await storage.get("space/record"), before, "no claim, no ACL change");
 });

@@ -20,7 +20,7 @@ import { pageState } from "./access.mjs";
  *
  * `intent` marks a creation intent left beside an installed record. Page
  * records hold no location: the owner's Catalog records it and guards the
- * home Page.
+ * Project content document.
  *
  * Events are requests (trash, restore, purgePreview, purgeConfirm), the
  * owner Catalog's tombstone, and `boot` (a cold start over durable storage).

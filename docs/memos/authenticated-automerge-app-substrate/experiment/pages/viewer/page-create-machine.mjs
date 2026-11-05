@@ -1,6 +1,6 @@
-// Creating a Page in a Project from where you are: the home Page's "+ New
-// Page" row, "New sub-page" in the page menu, the picker's "In <Project>" and
-// the Project view's New Page. Each is one create_page with a placement, then
+// Creating a Page in a Project from where you are: the Project's "New Page"
+// row, "New sub-page" in the page menu, or the picker's "In <Project>".
+// Each is one create_page with a placement, then
 // opening the new Page.
 //
 //   preparing ──prepared──▶ writing ──written──▶ opening ──opened──▶ done

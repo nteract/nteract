@@ -147,7 +147,7 @@ test("a marked pre-intent size rejection frees the catalog reservation and retry
   assert.deepEqual(Object.fromEntries(f.storage.values), {
     "host/count/active": 0,
     "host/count/trash": 0,
-    "host/location/shape": { version: 1, state: "migrated" },
+    "host/location/shape": { version: 2, state: "migrated" },
   });
   f.recover();
   assert.equal((await f.create({ ...args, title: "Smaller" })).status, 200);

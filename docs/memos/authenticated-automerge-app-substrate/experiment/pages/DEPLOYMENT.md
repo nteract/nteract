@@ -314,45 +314,134 @@ columns on `pages_catalog_pages`, which nothing writes or reads now, and a
 new fields, keys and tables: the owner lists and opens every Page in a Project
 as an ordinary Page, collaborators keep their direct grants, and Project
 records wait for a roll forward. Such a build does not refuse to trash a Page
-with sub-pages and does not protect home Pages. After rolling forward, a Page
-whose parent is in Trash shows at the top level of the Project view, a resumed
-creation under such a parent answers `parent_unavailable`, and a trashed home
-Page can be restored normally. At
-startup a build without the `Space` class logs `celld runtime start failed for
+with sub-pages and does not protect a Project's content document. After rolling
+forward, a Page whose parent is in Trash shows at the top level of the Project
+view and a resumed creation under such a parent answers `parent_unavailable`.
+Rolling back that far is only possible before the content migration below has
+run. At startup a build without the `Space` class logs `celld runtime start failed for
 Space:<id>: no Worker exports Durable Object class Space` once per Project cell
 celld resumes, then serves normally. On Cloudflare, removing a Durable Object
 class takes a `deleted_classes` migration that erases its storage, so a
 Cloudflare rollback must keep exporting `Space` and its binding instead.
 
-A Project's home Page is its only root: `create_page {project_id}` makes a
-child of the home Page, and `list_pages {project_id, parent_id: null}` lists
-the home Page and its children. Builds before this one made every Project
-top-level Page a root with `space_id`. Each Catalog migrates itself lazily
-(`worker/location-shape.mjs`): the first queued write after deploy moves every
-such root under its Project's home Page, in batches of 128 keys, and records
-`host/location/shape` as `migrated`. Reads work in both shapes, because a
-Page's Project is derived from its root either way, and `list_pages
-{project_id, parent_id: null}` lists a Project's top level in either shape or a
-mix of the two. A chain that was nine deep under a Project root sits ten deep
-under the home Page; the model holds that depth (`MAX_TREE_DEPTH`) and refuses
-to nest below it or move it anywhere it still exceeds nine. A root whose Project
-record and home Page are both gone becomes a Your items root. Only two things
-block a pass, both defensive: a home Page still pending (the older shape never
-placed a Page in a pending Project) and a chain already past the depth the
-model holds (corrupt data). A blocked Catalog logs
-`catalog.location_migration_blocked`, records `blocked` with `reason`, `page_id`
-and `space_id`, answers `503 location_migration_required` with those three
-fields to create, trash and restore, and reports them as `location_migration`
-on every `list_pages` until a later write clears it. Listings and reads keep
-working.
+A Project's content is its own document, not a Page in the tree. `get_project`
+names it as `document_id`; the Page tools address it by `project_id` in place of
+`page_id`; `list_pages` never lists it; `move_page`, `delete_page` and
+`purge_page` refuse it with `project_content_protected`. `create_page
+{project_id}` makes a top-level Page with `parent_id: null`, and `list_pages
+{project_id, parent_id: null}` lists those. In the owner's Catalog the content
+document keeps its `page/<document_id>` entry (so its title, quota slot, D1 owner
+row and any direct grants stay where they were) marked `project_content:
+<project_id>` with no location fields; `space/<id>` records name it as
+`document_id`. This is location shape 2 (`LOCATION_SHAPE_VERSION` in
+`worker/location-shape.mjs`, stamped in `host/location/shape`).
 
-Rollback. A build before this one reads the migrated shape (it derives the
-Project from the root), but its `list_pages {project_id, parent_id: null}`
-lists only the home Page, because it takes "top level" to mean roots; the
-Pages themselves show in the full Project listing and under `parent_id:
-<home_page_id>`, and its viewer's Project view nests them from the full listing.
-It also writes the older shape for new Pages; a roll forward after such writes
-must bump `LOCATION_SHAPE_VERSION` so every Catalog runs the pass again.
+Shape 1, which every build before this one wrote, kept the content as a Page: a
+root entry flagged `home: true` whose children were the Project's top level, and
+`space/<id>.home_page_id` naming it. Nothing in this build reads that shape.
+Every reader of the retired fields lives in one module,
+`worker/home-removal-migration.mjs`, marked for deletion once production has
+migrated, together with the imports that call it from `location-shape`,
+`catalog-location`, `spaces` and `index`. The one other trace is D1 migration 4's
+historical `CREATE TABLE`, which migration 8 rebuilds without the column.
+
+**Fail closed.** A Catalog that still holds `home: true` entries or a
+`space/<id>.home_page_id`, and a Space record without `document_id`, answer `503
+location_migration_required` with `details.reason: "home_removal_required"` on
+every location read and write: `list_projects`, `get_project`, `list_pages` and
+`read_page` by `project_id`, `create_page` into the Project, moves, Trash and
+restore. Loose Pages and reads by `page_id` keep working. Nothing is converted on
+its own. A Catalog with no Project (every account without one) stamps shape 2 on
+its next queued write. Code that meets the old shape anywhere else refuses the
+request rather than guessing where a Page belongs.
+
+**The migration.** The owner runs it, once per account, as a signed-in session or
+with an API key (Pages OAuth tokens are not allowlisted):
+
+```sh
+curl -sS https://pages.runtimed.run/api/admin/home-removal \
+  -H "Authorization: Bearer $ANACONDA_API_KEY" -H "Content-Type: application/json" \
+  -d '{"mode":"dry_run"}'
+```
+
+`dry_run` writes nothing and answers `200 {mode, projects: [{project_id,
+document_id, content_found, reparented, reparented_trashed}], entries_changed,
+intents_changed, blockers: [{code, page_id, project_id}], writes}`. `apply` with
+the same body answers `409 home_removal_blocked` with `details.blockers` when any
+blocker exists (`content_trashed`: the content document is in Trash;
+`content_not_root`: it sits under another Page) and otherwise rewrites, in the
+owner Catalog's serial queue:
+
+1. each live Space record and its stored receipts (`home_page_id` →
+   `document_id`, `home_page_title` dropped);
+2. the Catalog, in transactional batches: the content entry loses `home`,
+   `space_id`, `parent_id` and `position` and gains `project_content`; its
+   children, active and trashed, become roots with `parent_id: null` and
+   `space_id`, re-keyed where positions tie; pending `create_project` intents and
+   receipts take the new field names (`home_created` → `content_created`,
+   `homeTitle` → `contentTitle`), so a create retried with the same key and
+   payload finishes without the old fields;
+3. the D1 Space rows are marked dirty and `host/location/shape` is stamped
+   version 2, `migrated`.
+
+Before each batch, the prior value of every key it changes is saved once and
+never overwritten; the value `{"home_removal_absent": true}` records a key that
+did not exist. In the Catalog: `host/home-removal/before/<key>` for every
+rewritten `page/`, `trash/`, `space/` and `host/operation/` key, plus
+`host/home-removal/before/host/location/shape`. In each Space object:
+`host/home-removal/before/space/record` and
+`host/home-removal/before/host/receipt/<id>`. Progress is kept in
+`host/home-removal/state` (`{phase: planning | applying | done | failed, next,
+total, problems}`) with the saved plan under `host/home-removal/plan/<8-digit
+index>`, so an interrupted `apply` resumes the same plan in the same order rather
+than replanning over half-converted siblings. Both responses carry `progress`;
+`apply` answers `409 home_removal_invalid` with `details.problems` when the saved
+plan no longer matches what is stored. The response otherwise carries the
+`dry_run` fields plus `shape: "migrated"`. The operation is idempotent and
+resumable: a rerun plans only what is left, and a second `apply` reports
+`writes: 0`. There are no pending create intents or receipts to carry across
+this deployment by hand: the migration finalizes or renames them, including a
+Project whose create was still pending, and a Catalog that is refused `503` has
+not accepted new ones. Run `dry_run` first and have Kyle approve its report
+before `apply` on production; the production inventory (10 Projects, one content
+document each, direct editor grants on nine of them, and since 2026-11-05 one
+editor member on all ten) is the expected shape of that report, and
+`content_found: true` on every row is the gate. Project ACLs are not touched by
+the migration; verify after `apply` that the member still sees all ten through
+`list_projects`, reads each content through `project_id`, and lists each tree.
+
+To restore by hand: copy each before-image back over its key (delete the keys
+whose image is the absent value), in the Catalog and in every Space object, then
+delete `host/home-removal/state` and `host/home-removal/plan/*`.
+
+Direct grants survive by construction: the content entry and the Page record it
+points at don't move, and the migration makes no call to any Page, so a
+collaborator with a grant on the content document (by its `document_id`) opens
+it after `apply` exactly as before, as `kind: "page"`, without learning of the
+Project; a `project_id` read by that collaborator stays `project_not_found`. The integration test turns a live
+account back into shape 1 and checks the 503, a dry run that writes nothing,
+`apply`, a no-op second `apply`, the backups, the surviving direct grant, reads
+through `project_id` and `document_id`, and a pending create receipt replayed
+without the old fields.
+
+**Rollback rule.** Rolling back to a build before this one is safe only while no
+Catalog has had `apply` run: those builds read and write shape 1, and this build
+goes on refusing that shape until the owner migrates, so nothing written in
+between is misread. After `apply`, never roll back past this build. The older
+build's location pass takes shape 2 for shape 1 and would move the now-root Pages
+back under the content document; its D1 Space upserts also fail against schema
+8. If a rollback is unavoidable, restore each key from
+`host/home-removal/before/` first. And any future rewrite of location entries
+must bump `LOCATION_SHAPE_VERSION` (to 3) so every Catalog is checked again: a
+roll-forward after a rollback that wrote shape 1 is exactly that case. The
+older lazy pass (shape 1's own, which nested roots under the content document)
+is gone with it; a Catalog from before that pass is shape 1 too and is migrated
+by the same operation.
+
+`scripts/migration-inventory.mjs` audits offline Catalog evidence from either
+side of the migration: a `space/` record with `document_id` is counted as
+`content`, one with the retired field as `legacy_content` with the issue
+`project_content_unmigrated`, and one with both or neither is invalid.
 
 Rollback past #4712. Builds before #4712 can't replay a `move_page` receipt
 for a request with `parent_id: null`. The move already landed, so after such a
@@ -446,10 +535,11 @@ and a Durable Object that stores one value showed:
 New Projects get `prj_` IDs; `sp_` IDs stay valid. IDs aren't key names, so a
 `prj_` Project is stored under `space/prj_<uuid>` like any other.
 
-Because stored intents are unchanged, work 3548b9750 left pending resumes here.
-A `create_space` interrupted before its home Page finishes when retried as
-`create_project` with the same key and payload: the fingerprint still uses the
-stored operation name. A `create_page` interrupted before its Page finishes
+Because stored intents are unchanged, work 3548b9750 left pending resumes here
+once the account's Catalog has run the content migration above, which renames
+the intent's phases and receipts. A `create_space` interrupted before its content
+document finishes when retried as `create_project` with the same key and
+payload: the fingerprint still uses the stored operation name. A `create_page` interrupted before its Page finishes
 when retried with `project_id`, the same key and the arguments in the same
 order: its pending Catalog entry holds the location. Fingerprints have always covered argument order.
 Both cases are tested by writing the intent through the Catalog exactly as the
@@ -462,13 +552,15 @@ no idempotency key is consumed. The old tool names answer
 same for the other three). A `space_id` argument answers
 `` `space_id` is now `project_id` `` (`argument_renamed`).
 
-Rolling back to 3548b9750 serves every Space and every Page, including updates
-this build made. That build can't address `prj_` IDs: `get_space` on one answers
+Rolling back to 3548b9750 is subject to the rollback rule above: possible only
+before `apply` has run on the account. Until then that build serves every Space
+and every Page it wrote. It can't address `prj_` IDs: `get_space` on one answers
 `Invalid space_id`, and its `list_spaces` skips them. It refuses a child under a
 Page in a `prj_` Project rather than file it elsewhere. Its
 restore-to-top-level path rejects a `prj_` placement, because its
 `validatePlacement` accepts only `sp_` IDs, so a Page never drops out of its
-Project. Rolling forward serves everything again.
+Project. Rolling forward refuses its shape-1 writes until the owner migrates,
+then serves everything again.
 
 ### Rollback qualification for Projects
 
@@ -487,11 +579,46 @@ CELLD_BIN=<celld 0.6.3> node scripts/rollback-qualification.mjs --target <target
 `--target` names the deployment the rollback is for. The script refuses a
 previous build that can't open every record storage the target may hold (see
 Rollback and Page record storage) before it starts celld, and the fixture
-creates Pages with the target's `recordStorage`. The recorded run below
-created only native Pages. 3548b9750 can still be qualified for `pages`; for
-`page10` it is refused.
+creates Pages with the target's `recordStorage`. 3548b9750 can still be
+qualified for `pages`; for `page10` it is refused.
 
-Against 3548b9750 (build `9ae4ed83e44e`), with the catalog index on:
+The phases qualify the one rollback that is supported, before `apply`, and the
+migration itself:
+
+1. The previous build creates a Space with a Page and lists both, so D1 holds
+   Space rows and the Catalog shape 1.
+2. This build fails closed: `list_projects`, `get_project`, `list_pages` and
+   `read_page` by `project_id` and `create_page` into the Space all answer
+   `location_migration_required`, reason `home_removal_required`,
+   `retryable: true`. A `dry_run` reports the Space with its `document_id`,
+   `content_found: true`, no blockers and a positive `writes`; the refusals hold
+   after it. A loose Page is created normally.
+3. The previous build serves its Space untouched at revision 0, updates it,
+   lists the loose Page, creates a second Space with a nested Page and trashes
+   the child.
+4. This build still fails closed over everything the previous build wrote, then
+   `apply` reports both Spaces converted (`reparented: 1` for the second: its
+   top-level Page became a root; the trashed child stayed under it) and
+   `shape: "migrated"`; a second `apply` reports `writes: 0`. `list_projects`
+   names both with `document_id` and `role: "owner"`; the first shows the
+   previous build's title at revision 1 and takes another update. Each Project
+   lists only its Pages, at the top level with `parent_id: null`, never the
+   content document; the trashed child is still in Trash. The content reads by
+   `project_id` as `kind: "project"` with one Project breadcrumb, an edit by
+   `project_id` is read back by `document_id` with the same heads, and giving
+   both selectors is `invalid_arguments`. `delete_page` and `move_page` on the
+   content document answer `project_content_protected`. A new Project carries
+   `document_id` and no retired field, its Pages land with `parent_id: null`
+   and Project › parent breadcrumbs, the trashed child restores under its
+   parent, and trashing either parent is refused with `page_has_children`.
+
+Not run, by design: the previous build over a migrated directory. The report
+records `rollback_after_apply: "unsupported"`. This revision of the script has
+not yet been run against a built previous commit; the recorded run below is from
+the Space-to-Project build and predates the content migration.
+
+Against 3548b9750 (build `9ae4ed83e44e`), with the catalog index on, before the
+content migration existed:
 
 1. The previous build created a Space with a Page and listed both, so D1 held
    Space rows.
@@ -1026,9 +1153,9 @@ Page10 release.
 Deployment never copies data. When a new target needs a Project from an older
 one, [project-transfer.mjs](scripts/project-transfer.mjs) copies it through the
 public `/mcp` endpoint and asset routes of each target, from outside the
-Worker. It copies each Page's title and Markdown body, its dataframes with their
-bytes, the Page tree and sibling order. It does not copy comments, sharing,
-Trash, history or private image bytes.
+Worker. It copies the Project's content, each Page's title and Markdown body,
+their images and dataframes with their bytes, the Page tree and sibling order.
+It does not copy comments, sharing, Trash or history.
 
 ### Credentials
 
@@ -1070,22 +1197,34 @@ The bundle is JSON for review before import:
 ```json
 {
   "format": "nteract-pages-project-bundle",
-  "version": 2,
+  "version": 5,
   "bundle_id": "<uuid>",
-  "source": { "origin": "https://page9.runtimed.run", "project_id": "prj_…", "home_page_id": "…" },
+  "source": { "origin": "https://page9.runtimed.run", "project_id": "prj_…", "document_id": "…" },
   "exported_at": "2026-11-01T00:00:00.000Z",
-  "project": { "title": "…", "description": "…" },
+  "project": {
+    "title": "…",
+    "description": "…",
+    "content": {
+      "source_document_id": "…",
+      "title": "…",
+      "markdown": "…",
+      "preserved_markdown": false,
+      "private_images": [],
+      "images": [],
+      "comment_threads": 0
+    }
+  },
   "pages": [
     {
       "source_page_id": "…",
       "parent_source_id": null,
       "position": "a0",
-      "home": true,
       "title": "…",
       "markdown": "…",
       "blocks": ["…", "…"],
       "preserved_markdown": false,
       "private_images": [],
+      "images": [],
       "dataframes": [{ "asset_id": "<sha256>", "src": "/api/pages/…/assets/<sha256>", "media_type": "application/vnd.apache.parquet", "title": "…" }],
       "comment_threads": 0
     }
@@ -1094,8 +1233,18 @@ The bundle is JSON for review before import:
 }
 ```
 
-`pages` is in tree order: the home Page first, then each subtree depth first,
-siblings by source position, so parents always come before children.
+`project.content` is the Project's content document, read on the source with
+`read_page {project_id}` and named by `source.document_id` (the two must agree).
+It has the same body fields as a Page entry and no placement. `pages` holds the
+Page tree only, in tree order: each top-level Page (`parent_source_id: null`)
+with its subtree depth first, siblings by source position, so parents always
+come before children. Version 5 is the only version this tool reads. Bundles
+from before it described the content as a Page flagged at the root; import
+refuses them (`bundle_version_unsupported`) without reading them. Export the
+Project again from a source running the current Pages. A source whose
+`get_project` returns no `document_id` is refused the same way
+(`source_unsupported`), as is a target whose `create_project` returns none
+(`target_unsupported`).
 `markdown` is the body: the Page's blocks joined by a blank line. `blocks`
 appears only when a Page has more than one block. Each block is written
 separately. A Page10 target refuses math and HTML with `unsupported_markdown`,
@@ -1116,7 +1265,7 @@ only to `/api/pages/<id>/assets/<sha256>` paths on the target's own origin; a
 dataframe whose `src` isn't one is skipped. A dataframe whose asset is missing on
 the source, or one inside a quote or list, imports as a link and is reported in
 `dataframes_not_copied`. A bundle carries at most 256 MiB of asset bytes; export
-stops with a message past that. Import reads version 1 bundles, which have no dataframes.
+stops with a message past that.
 
 The report lists Pages with `preserved_markdown` (the source stored preserved
 blocks or non-Markdown blocks; check that they read as intended),
@@ -1145,17 +1294,19 @@ network call. Import compares normalized origins and refuses the bundle's own
 source, however it is spelled (case, trailing slash, explicit default port). It
 runs in this order:
 
-1. `create_project` with the bundle's title and description. Its home Page is
-   the source home Page's counterpart: import fills it in and never creates a
-   sibling for it.
-2. `create_page` for every other Page in bundle order, by `parent_id`. A Page at
-   the source Project's top level goes under the target home Page, because a
-   Project is its home Page on Page10 and later. `targetPlacement` is the only
-   function that decides this. New Pages append after their siblings, so bundle
-   order is sibling order.
-3. After every Page exists, one guarded `edit_page` per Page that needs it: the
-   home Page's title and body, the remaining blocks of a multi-block Page, and
-   internal links. Source links `/p/<id>`, `/?page=<id>`, `/project/<id>` and
+1. `create_project` with the bundle's title and description. Its content
+   document (`document_id` in the result) is the source content's counterpart:
+   import fills it in through `project_id` and never creates a Page for it.
+2. `create_page` for every Page in bundle order: a top-level Page with
+   `project_id` alone, so it lands with `parent_id: null`; any other by
+   `parent_id`. `targetPlacement` is the only function that decides this. New
+   Pages append after their siblings, so bundle order is sibling order.
+3. After every Page exists, one guarded `edit_page` per document that needs it:
+   the content's title and body, addressed by `project_id` (its assets upload to
+   `/api/pages/<document_id>/assets`, which the content's asset URLs name), the
+   remaining blocks of a multi-block Page, images, dataframes and internal
+   links. A source link to the content document's own `/p/<document_id>` URL
+   rewrites to the target's. Source links `/p/<id>`, `/?page=<id>`, `/project/<id>` and
    `/s/<id>`, and root-relative `](/p/<id>` destinations, point at the new IDs.
    Links are read as whole tokens: a Markdown link destination `](...)`, read
    as CommonMark does (balanced parentheses, backslash escapes, or `<...>`), an
@@ -1166,7 +1317,9 @@ runs in this order:
    A root-relative `/p/<id>` counts only as a link destination. Links to Pages
    outside the bundle stay as they are and are reported.
 4. A listing of the target Project checks that every Page is under its expected
-   parent, in source order. Import exits 1 if not.
+   parent (`null` for the top level), in source order, that the content
+   document is not listed as a Page, and that `get_project` still names the
+   `document_id` the content was written to. Import exits 1 if not.
 
 Every write uses the repository's retry contract. Creates use the catalog
 `retry_token` from `list_pages` with a key of its `retry_key_prefix` plus a
@@ -1188,12 +1341,14 @@ sent) and refuses every further write until it is resolved. A same-title Page
 may be unrelated, so nothing is adopted automatically:
 
 - `--reconcile` writes nothing. It lists candidates: unmapped Pages with the
-  create's title under its parent, or Projects with its title, each with its
-  ID, `created_at` and URL, oldest first. Open them before choosing.
+  create's title under its parent (or at the recorded Project's top level),
+  or Projects with its title, each with its ID, `created_at` and URL, oldest
+  first. Open them before choosing. The content document is never a candidate.
 - `--adopt ID` records one candidate and continues. It refuses an ID that is
-  not under the recorded parent, has another title, already maps to a bundle
-  Page, or was created before `requested_at`, allowing two minutes of clock
-  skew (`ADOPT_CLOCK_SKEW_MS`).
+  not under the recorded parent or at the recorded top level, has another
+  title, already maps to a bundle document, or was created before
+  `requested_at`, allowing two minutes of clock skew (`ADOPT_CLOCK_SKEW_MS`).
+  An adopted Project must return a `document_id`.
 - `--accept-missing` sends the create again with a new key. Use it when the
   target has no such Page.
 

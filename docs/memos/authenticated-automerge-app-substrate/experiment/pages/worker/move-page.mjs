@@ -44,7 +44,7 @@ import { defineMachine, reject } from "../shared/machine.mjs";
 export const MOVE_STATUS = Object.freeze({
   page_not_found: 404,
   not_page_owner: 403,
-  home_page_protected: 409,
+  project_content_protected: 409,
   page_trashed: 409,
   parent_unavailable: 409,
   placement_cycle: 409,

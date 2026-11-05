@@ -16,7 +16,7 @@ import { defineMachine } from "../shared/machine.mjs";
  *
  * A listing also needs no Page index mark pending (`pageIndexMarkMachine`
  * below). A Catalog write that adds a listable entry for one Page marks
- * that Page, not the account: a creation, a Project's home Page, a
+ * that Page, not the account: a creation, a Project's content document, a
  * Trash, restore or purge projection, and a new entry a Page host projects,
  * including a discovery. The next listing settles each mark from the Page's
  * current entries, so one write never restarts a pass. The account is marked

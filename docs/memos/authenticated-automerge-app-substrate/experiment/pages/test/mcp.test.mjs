@@ -207,16 +207,104 @@ test("MCP tools declare every annotation hint, and each tool's hints are intende
   for (const tool of listed) assert.deepEqual(tool.annotations, intended[tool.name], tool.name);
 });
 
-test("Project tools expose the backing content ID without a separate home concept", () => {
+test("Project tools describe document_id and project_id content addressing, never a home", () => {
   const descriptor = (name) => tools.find((tool) => tool.name === name);
   assert.match(
     descriptor("create_project").description,
     /own editable content and a hierarchy of Pages/,
   );
-  assert.match(descriptor("get_project").description, /home_page_id[\s\S]*edit_page or patch_page/);
+  assert.match(descriptor("create_project").description, /project_id, document_id .* and url/);
+  assert.match(
+    descriptor("get_project").description,
+    /revision, role, owner, url and document_id[\s\S]*passing project_id instead of page_id/,
+  );
+  assert.match(descriptor("get_project").description, /content document is not one of them/);
+  assert.match(descriptor("list_projects").description, /role, owner, url and document_id/);
   assert.match(descriptor("update_project").description, /does not change its content/);
-  for (const name of ["create_project", "get_project", "update_project"])
-    assert.doesNotMatch(JSON.stringify(descriptor(name)), /home Page/);
+  assert.match(descriptor("move_page").description, /project_content_protected/);
+  assert.match(descriptor("delete_page").description, /project_content_protected/);
+  assert.doesNotMatch(JSON.stringify(tools), /home/i);
+});
+
+test("every Page tool takes project_id in place of page_id for Project content", async () => {
+  const addressed = [
+    "read_page",
+    "read_page_changes",
+    "list_page_comments",
+    "read_page_presence",
+    "report_page_progress",
+    "import_page_image",
+    "edit_page",
+    "patch_page",
+    "manage_page_comment",
+  ];
+  for (const name of addressed) {
+    const { inputSchema } = tools.find((tool) => tool.name === name);
+    const { page_id, project_id } = inputSchema.properties;
+    assert.equal(page_id.type, "string", name);
+    assert.match(page_id.description, /pass project_id instead/, name);
+    assert.equal(project_id.pattern, "^(prj|sp)_", name);
+    assert.match(project_id.description, /never both \(invalid_arguments\)/, name);
+    assert.match(project_id.description, /kind "project"/, name);
+    // Exactly one of the two: neither is in required; oneOf says which.
+    assert.ok(!inputSchema.required.includes("page_id"), name);
+    assert.ok(!inputSchema.required.includes("project_id"), name);
+    assert.deepEqual(inputSchema.oneOf, [{ required: ["page_id"] }, { required: ["project_id"] }]);
+    assert.match(
+      tools.find((tool) => tool.name === name).description,
+      /Supply exactly one of page_id or project_id/,
+      name,
+    );
+  }
+  // Catalog operations keep page_id required: the content document is not in the tree.
+  for (const name of ["delete_page", "restore_page", "move_page", "purge_page"]) {
+    const { inputSchema } = tools.find((tool) => tool.name === name);
+    assert.ok(inputSchema.required.includes("page_id"), name);
+    // move_page's project_id is a destination, never content addressing.
+    if (name !== "move_page") assert.equal(inputSchema.properties.project_id, undefined, name);
+  }
+  // A content read forwards project_id unchanged, keeps the content's own
+  // page_id, kind and project_id, and links to the Project rather than /p/.
+  const projectId = "prj_55555555-5555-4555-8555-555555555555";
+  const args = { project_id: projectId, comments: "none" };
+  const body = {
+    kind: "project",
+    project_id: projectId,
+    page_id: pageId,
+    title: "Project content",
+    blocks: [],
+    heads: ["c".repeat(64)],
+    retry_token: "token",
+  };
+  const response = await handleMcp(
+    request("tools/call", { name: "read_page", arguments: args }),
+    async (operation, received) => {
+      assert.equal(operation, "read_page");
+      assert.deepEqual(received, args);
+      return Response.json(body);
+    },
+  );
+  const result = (await response.json()).result;
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(result.structuredContent, {
+    ...body,
+    url: `https://pages.example/project/${projectId}`,
+  });
+  assert.deepEqual(JSON.parse(result.content[0].text), result.structuredContent);
+  const both = await handleMcp(
+    request("tools/call", {
+      name: "edit_page",
+      arguments: { page_id: pageId, project_id: projectId, operations: [] },
+    }),
+    async () =>
+      Response.json(
+        { error: "Give page_id or project_id, not both", code: "invalid_arguments" },
+        { status: 400 },
+      ),
+  );
+  const refused = (await both.json()).result;
+  assert.equal(refused.isError, true);
+  assert.equal(refused.structuredContent.code, "invalid_arguments");
 });
 
 test("sharing tools preserve access guards and require separate OAuth consent", async () => {
@@ -265,7 +353,10 @@ test("Project discovery descriptions distinguish claim reads from Page listings"
   const descriptor = (name) => tools.find((tool) => tool.name === name);
   for (const name of ["get_project", "list_projects"])
     assert.match(descriptor(name).description, /authenticated read can claim/);
-  assert.match(descriptor("get_project").description, /not its backing \/p\/\.\.\. link/);
+  assert.match(
+    descriptor("get_project").description,
+    /a \/p\/\.\.\. link to the content document does not claim one/,
+  );
   assert.match(
     descriptor("list_pages").description,
     /does not enumerate all inherited Project Pages/,

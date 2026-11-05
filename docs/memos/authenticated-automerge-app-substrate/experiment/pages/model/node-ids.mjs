@@ -56,8 +56,7 @@ export function nodeIds(doc, blockId, tree = richDoc(doc.blocks[blockId], doc.pa
     // leaf occupies one position, so its closing tag adds no width.
     if (state.event.type === "closeTag" && adapter.schema.nodes[state.event.tag].isLeaf)
       leafClosures++;
-    while (index < ranges.length && state.after.pmIdx - leafClosures >= ranges[index].end)
-      index++;
+    while (index < ranges.length && state.after.pmIdx - leafClosures >= ranges[index].end) index++;
     const range = ranges[index];
     if (!range || range.at !== null) continue;
     if (state.event.type !== "block" || state.event.block.isEmbed) continue;

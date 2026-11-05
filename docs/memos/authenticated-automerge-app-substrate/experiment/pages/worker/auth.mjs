@@ -377,7 +377,7 @@ export const CLIENT_ERROR_CODES = Object.freeze([
   "placement_mismatch",
   "parent_unavailable",
   "nesting_depth_exceeded",
-  "home_page_protected",
+  "project_content_protected",
   "page_has_children",
   "not_page_owner",
   "placement_cycle",

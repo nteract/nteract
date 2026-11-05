@@ -65,12 +65,11 @@ export function moveDestinations(projects, current = null) {
 }
 
 /**
- * Pages a moved Page could go under at a destination: owned, not a Project's
- * home Page (the top level stands for it), and not the moved Page or one of
+ * Pages a moved Page could go under at a destination: owned, not the moved Page or one of
  * its sub-pages. Rows are `{ page_id, title, depth }` in tree order.
  */
 export function parentChoices(pages, movingId) {
-  const owned = pages.filter((page) => !page.shared && !page.home);
+  const owned = pages.filter((page) => !page.shared);
   const ids = new Set(owned.map((page) => page.page_id));
   const children = new Map();
   for (const page of owned) {

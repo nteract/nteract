@@ -58,7 +58,7 @@ import { ProjectCreator } from "./ProjectCreator.jsx";
 import { MoveDialog } from "./MoveDialog.jsx";
 import { moveOrigin } from "./container-dialog-machine.mjs";
 import { TrashView } from "./TrashView.jsx";
-import { Breadcrumbs, ProjectChip, ProjectPages, projectPageCount } from "./ProjectView.jsx";
+import { Breadcrumbs, ProjectChip, ProjectPages } from "./ProjectView.jsx";
 import { pageCreations } from "./page-create-machine.mjs";
 import { ProjectsIndex } from "./IndexViews.jsx";
 import { Library } from "./Library.jsx";
@@ -227,7 +227,7 @@ function App() {
       name: "idle",
       value: null,
     }),
-    // The Pages of the open Project home Page's Project: { pageId, pages },
+    // The open Project's Pages: { pageId, pages },
     // or null until list_pages answers.
     [projectPages, setProjectPages] = useState(null),
     // The New Project or Move to… dialog: null, { kind: "create" } or
@@ -283,7 +283,7 @@ function App() {
     titleCompositionRef = useRef(null),
     activeBlock = useRef(null),
     commentsButton = useRef(null);
-  screen.current = { index, projectOpen, trashOpen, opening };
+  screen.current = { index, projectOpen, trashOpen, opening, placement };
   // The inline comment composer. It outlives Pages; resetDocumentUI resets it,
   // and a send that settles after the reset is ignored by its key.
   const [composer] = useState(
@@ -433,24 +433,32 @@ function App() {
     dispatchProjectDetails({ type: "reset", value: project });
     setProjectPages(null);
     // Breadcrumbs show only the Project and parents this account can open.
-    // A Project's home Page also lists the Project's Pages. A Page created in
+    // A Project's content document also lists its Pages. A Page created in
     // this tab isn't on the server until it registers, so the location is
     // asked for again as the session registers and connects.
     placementWatch.current?.stop();
+    const current = () =>
+      host.current === next &&
+      !next.authRequired &&
+      next.identity?.principal === authentication.current?.identity?.principal;
     const watch = watchPageLocation(next, {
       locate: () => pageLocation(tool, next.pageId),
-      current: () => host.current === next,
+      current,
       onFound: (value) => {
         setPlacement((shown) => shown ?? value);
         if (value.project_id && project?.project_id !== value.project_id)
           void loadProjectDetails(next, value.project_id);
-        if (value.home && value.project_id)
+        if (value.kind === "project" && value.project_id) {
+          // Only disclosed Project metadata may canonicalize a legacy document link.
+          setProjectOpen(value.project_id);
+          writePageRoute(value.project_id, { replace: true });
           void listProjectPages(tool, value.project_id).then(
             (pages) => {
-              if (host.current === next) setProjectPages({ pageId: next.pageId, pages });
+              if (current()) setProjectPages({ pageId: next.pageId, pages });
             },
             () => {},
           );
+        }
       },
     });
     placementWatch.current = watch;
@@ -535,8 +543,8 @@ function App() {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
   /** Open a Page. `nameIt` is for a Page just created: focus its title
-   * rather than its empty body. Project routes resolve their existing backing
-   * Page inside the same fenced navigation, without rewriting the address. */
+   * rather than its empty body. Project routes resolve their content document
+   * inside the same fenced navigation, without rewriting the address. */
   async function open(
     id,
     { focus = false, historyMode = "push", nameIt = false, projectId = null } = {},
@@ -547,7 +555,14 @@ function App() {
     picker.close();
     setNotice("");
     setProjectOpen(projectId);
-    if (id && host.current?.pageId === id) return;
+    if (id && host.current?.pageId === id) {
+      const placed = screen.current.placement;
+      if (placed?.kind === "project" && placed.project_id) {
+        setProjectOpen(placed.project_id);
+        writePageRoute(placed.project_id, { replace: true });
+      }
+      return;
+    }
     const controller = new AbortController();
     const revision = host.navigate(controller);
     setError("");
@@ -561,7 +576,7 @@ function App() {
       if (projectId) {
         project = await tool("get_project", { project_id: projectId });
         if (!navigationCurrent(revision, principal)) return;
-        id = project.home_page_id;
+        id = project.document_id;
         if (!id) throw new Error("This Project has no document to open.");
       }
       await host.closingFor(principal, id);
@@ -625,7 +640,7 @@ function App() {
     };
   }
   function openProject(projectId, { historyMode = "push" } = {}) {
-    if (host.current && placement?.home && placement.project_id === projectId) {
+    if (host.current && placement?.kind === "project" && placement.project_id === projectId) {
       if (historyMode !== "none") writePageRoute(projectId, { replace: historyMode === "replace" });
       setProjectOpen(projectId);
       return;
@@ -1093,7 +1108,7 @@ function App() {
     try {
       const projectId =
         pageId === host.current?.pageId &&
-        (projectOpen || (placement?.home && placement.project_id));
+        (projectOpen || (placement?.kind === "project" && placement.project_id));
       await navigator.clipboard.writeText(
         new URL(path ?? (projectId ? projectPath(projectId) : pagePath(pageId)), location.origin)
           .href,
@@ -1117,7 +1132,7 @@ function App() {
   }
   /** Move to…: only the Page's owner, signed in as that account, moves it.
    * The dialog starts where read_page says the Page is, asked here when the
-   * shell doesn't know yet. A Project's home Page stays with its Project. */
+   * shell doesn't know yet. Project content cannot be moved as a Page. */
   async function startMove() {
     const moving = host.current;
     if (!moving) return;
@@ -1150,7 +1165,7 @@ function App() {
       }
       setPlacement(where);
     }
-    if (where.home) {
+    if (where.kind === "project") {
       setError("A Project cannot be moved into another Project.");
       return;
     }
@@ -1188,8 +1203,6 @@ function App() {
   /** A Project was created: list it and open it. */
   function projectCreated(projectId) {
     setContainerDialog(null);
-    // Its home Page joins the account's own views.
-    listingCache.forgetOwnedViews();
     void refresh({ fresh: true }).catch(() => {});
     openProject(projectId);
   }
@@ -1402,17 +1415,18 @@ function App() {
           icon: RotateCcw,
           run: restoreCurrent,
         },
-        // A Project's home Page stays with its Project. Until read_page says
+        // Project content cannot be moved as a Page. Until read_page says
         // where the Page is, Move to… asks when chosen (startMove).
         session.canDelete &&
-          !placement?.home && {
+          !projectOpen &&
+          placement?.kind !== "project" && {
             key: "move",
             label: "Move to…",
             icon: FolderInput,
             run: startMove,
           },
         ownsProject &&
-          !placement.home && {
+          placement.kind !== "project" && {
             key: "new-sub-page",
             label: "New sub-page",
             icon: FilePlus,
@@ -1421,7 +1435,7 @@ function App() {
         session.canDelete &&
           !projectOpen &&
           (placement
-            ? !placement.home
+            ? placement.kind !== "project"
             : session.localPage?.registration &&
               !session.localPage.registered &&
               !session.authRequired &&
@@ -1482,7 +1496,7 @@ function App() {
                   phone={phoneHeader}
                   session={session}
                   project={
-                    projectOpen || (placement?.home && placement.project_id)
+                    projectOpen || (placement?.kind === "project" && placement.project_id)
                       ? (projectDetails.value ?? {
                           project_id: projectOpen ?? placement.project_id,
                           role: projectDetails.name === "failed" ? "unavailable" : "unknown",
@@ -1643,10 +1657,10 @@ function App() {
             >
               <article ref={article}>
                 <h1 className="document-print-title sr-only">{page.title || "Untitled"}</h1>
-                {placement?.home && placement.project_id ? (
+                {placement?.kind === "project" && placement.project_id ? (
                   <ProjectChip
                     projectId={placement.project_id}
-                    count={projectPagesShown ? projectPageCount(projectPagesList) : null}
+                    count={projectPagesShown ? projectPagesList.length : null}
                     onOpenProject={(id) => openProject(id)}
                   />
                 ) : (
@@ -1802,7 +1816,7 @@ function App() {
                     <span className="writing-continuation-label">Continue writing</span>
                   </button>
                 )}
-                {placement?.project_id && placement.home && (
+                {placement?.project_id && placement.kind === "project" && (
                   <ProjectPages
                     title={placementProject?.title}
                     pages={projectPagesList}

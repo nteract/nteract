@@ -1,14 +1,6 @@
 import { Boxes, FileText, Plus } from "lucide-react";
 import { pagePath, projectPath, isPlainNavigation } from "../shared/routes.mjs";
-import { projectTree, visibleCrumbs } from "./projects.mjs";
-
-/** Rows under a Project's home Page: the Project's Pages without the home
- * row, one level shallower since the home Page stands for the Project. */
-export function projectPageRows(pages) {
-  // Without the home row its children have no listed parent, so the tree
-  // puts them at the top level.
-  return projectTree(pages.filter((page) => !page.home));
-}
+import { projectTree } from "./projects.mjs";
 
 function PageRows({ rows, onOpen }) {
   return rows.map(({ page, depth }) => (
@@ -33,11 +25,11 @@ function PageRows({ rows, onOpen }) {
   ));
 }
 
-/** On a Project's home Page, under the body: the Project's Pages and an
+/** Under a Project's content: its Pages and an
  * inline "+ New Page" row that adds one at the top level. Owner only; the
  * caller decides. `pages` are the Project's listed Pages. */
 export function ProjectPages({ title, pages, onOpen, onCreate, creating = false }) {
-  const rows = projectPageRows(pages);
+  const rows = projectTree(pages);
   return (
     <section className="project-pages" aria-label={`Pages in ${title || "Project"}`}>
       <h2 className="project-pages-heading">Pages</h2>
@@ -61,10 +53,7 @@ export function ProjectPages({ title, pages, onOpen, onCreate, creating = false 
   );
 }
 
-/** Pages in a Project, counted for its chip: the home Page isn't one. */
-export const projectPageCount = (pages) => pages.filter((page) => !page.home).length;
-
-/** On a Project's home Page, in place of the breadcrumb that repeats the
+/** Above a Project's content, in place of the breadcrumb that repeats the
  * title: "Project · N Pages", opening the Project view. A null `count`
  * (still loading) shows "Project". */
 export function ProjectChip({ projectId, count, onOpenProject }) {
@@ -88,14 +77,13 @@ export function ProjectChip({ projectId, count, onOpenProject }) {
   );
 }
 
-/** Project › parent Pages above an open Page's title. The Project crumb also
- * stands for its home Page. */
+/** Project › parent Pages above an open Page's title. */
 export function Breadcrumbs({ crumbs, onOpenProject, onOpenPage }) {
   if (!crumbs?.length) return null;
   return (
     <nav className="breadcrumbs" aria-label="Breadcrumbs">
       <ol>
-        {visibleCrumbs(crumbs).map((crumb) => (
+        {crumbs.map((crumb) => (
           <li key={crumb.project_id ?? crumb.page_id}>
             <a
               href={

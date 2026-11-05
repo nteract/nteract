@@ -20,8 +20,7 @@ export async function listProjectPages(call, projectId, { maxRequests = 10 } = {
   return [...pages.values()];
 }
 
-/** Rows for a Project view: the home Page first with the Pages nested under
- * it, then the other top-level Pages, each followed by its descendants in
+/** Rows for a Project view: top-level Pages, each followed by its descendants in
  * position order. A Page whose parent is missing (in Trash, or not listed)
  * shows at the top level. */
 export function projectTree(pages) {
@@ -33,12 +32,11 @@ export function projectTree(pages) {
     children.get(parent).push(page);
   }
   const order = (a, b) =>
-    Number(!!b.home) - Number(!!a.home) ||
-    ((a.position ?? "") === (b.position ?? "")
+    (a.position ?? "") === (b.position ?? "")
       ? a.page_id.localeCompare(b.page_id)
       : (a.position ?? "") < (b.position ?? "")
         ? -1
-        : 1);
+        : 1;
   const rows = [];
   const seen = new Set();
   const visit = (parent, depth) => {
@@ -53,17 +51,9 @@ export function projectTree(pages) {
   return rows;
 }
 
-/** Crumbs to show: a Project's home Page stands for its Project, so a home
- * crumb right after its Project crumb is dropped. A home crumb with no Project
- * crumb before it stays, so the chain still leads somewhere. */
-export function visibleCrumbs(crumbs) {
-  return crumbs.filter((crumb, index) => !(crumb.home && crumbs[index - 1]?.kind === "project"));
-}
-
-/** Where an open Page is, from read_page: `{ project_id, parent_id, home,
- * breadcrumbs }`, limited to what this account can open. project_id and
- * parent_id are null when absent; a Project's top-level Page has its home
- * Page as parent_id. */
+/** An open document's kind and placement from read_page, limited to what this
+ * account can open. Project content is not a Page in the tree; top-level
+ * Pages have parent_id null. */
 export async function pageLocation(call, pageId) {
   const result = await call("read_page", {
     page_id: pageId,
@@ -72,9 +62,9 @@ export async function pageLocation(call, pageId) {
     outline_limit: 1,
   });
   return {
+    kind: result.kind ?? "page",
     project_id: result.project_id ?? null,
     parent_id: result.parent_id ?? null,
-    home: result.home === true,
     breadcrumbs: Array.isArray(result.breadcrumbs) ? result.breadcrumbs : [],
   };
 }
