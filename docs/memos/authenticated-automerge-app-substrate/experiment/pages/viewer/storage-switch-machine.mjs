@@ -14,7 +14,8 @@
  * - Adopting the host's storage for any Page, registered or not, in either
  *   direction. Discovery names plain or native storage, and the open replica
  *   is in the other one. Its history can't switch live, so its checkpoint is
- *   recorded under the host's storage and the reload restores it there.
+ *   recorded under the host's storage. The tab then reopens the Page from it
+ *   in that storage (storage-reopen-machine.mjs), or a reload does.
  *
  * States:
  * - idle: no switch is running. Edits follow the session's other pauses.
@@ -35,8 +36,8 @@
  *   paused and the live checkpoint is being recorded under the host's
  *   storage.
  * - adopted: that checkpoint is recorded and final. Edits stay paused: the
- *   reload restores the checkpoint into a replica of the host's storage, and
- *   an edit after it would reach only this replica.
+ *   in-place reopen or a reload restores the checkpoint into a replica of the
+ *   host's storage, and an edit after it would reach only this replica.
  * - closed: the session closed, or its local copy retired (deleted,
  *   revoked, or replaced by another grant) during a step. Late completions
  *   are ignored.

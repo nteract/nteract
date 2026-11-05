@@ -4,6 +4,7 @@
 // Automerge sync and PAGES_MIGRATE_RECORD_STORAGE on. A Page converts once
 // its last tab leaves (record-storage-migration.mjs). A second Page converts
 // on the operator's request with a tab open (record-storage-operator.mjs).
+// Each open tab reopens its Page in place on plain sync, without a reload.
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
@@ -67,6 +68,38 @@ async function hostText() {
   const read = await tool("read_page", { page_id: pageId });
   assert.equal(read.status, 200, JSON.stringify(read.body));
   return read.body.blocks.map((block) => block.markdown).join("\n");
+}
+const STORAGE_BANNER = "This Page's storage changed";
+/** Mark the tab so a reload shows (the mark goes), and record whether the
+ * storage reload banner ever renders. */
+async function watchTab(page) {
+  await page.evaluate((banner) => {
+    window.__pagesSameTab = true;
+    window.__pagesSawStorageBanner = false;
+    new MutationObserver(() => {
+      if (document.body.textContent.includes(banner)) window.__pagesSawStorageBanner = true;
+    }).observe(document.body, { subtree: true, childList: true, characterData: true });
+  }, STORAGE_BANNER);
+}
+/** The tab reopened the Page in place on a plain replica: no reload, no
+ * banner. */
+async function reopenedInPlace(page) {
+  await expect
+    .poll(
+      () =>
+        page.evaluate(async () =>
+          (await indexedDB.databases()).some((d) => d.name.startsWith("pages-plain-")),
+        ),
+      { timeout: 60000, intervals: [500] },
+    )
+    .toBe(true);
+  await expect(saved(page)).toBeVisible({ timeout: 60000 });
+  const tab = await page.evaluate(() => ({
+    same: window.__pagesSameTab === true,
+    banner: window.__pagesSawStorageBanner,
+  }));
+  assert.deepEqual(tab, { same: true, banner: false }, "reopened without a reload or banner");
+  await expect(page.getByText(STORAGE_BANNER)).toHaveCount(0);
 }
 async function typeAtEnd(page, text) {
   await content(page).click();
@@ -168,28 +201,34 @@ try {
   await c.context.close();
 
   // Tab B comes back online. Discovery names plain storage, so its native
-  // replica checkpoints its edit under plain storage and asks for a reload.
+  // replica checkpoints its edit under plain storage and the tab reopens the
+  // Page in place on a plain replica, without a reload.
+  await watchTab(b.page);
   await b.context.setOffline(false);
-  await expect(b.page.getByText("This Page's storage changed")).toBeVisible({
-    timeout: 60000,
-  });
-  await b.page.screenshot({ path: `${output}/storage-changed.png` });
-  await b.page.reload({ waitUntil: "domcontentloaded" });
+  await reopenedInPlace(b.page);
   await expect(content(b.page)).toContainText("Typed offline.", {
     timeout: 60000,
   });
-  await expect(saved(b.page)).toBeVisible({ timeout: 60000 });
+  await b.page.screenshot({ path: `${output}/storage-reopened.png` });
   await expect.poll(hostText, { timeout: 30000 }).toContain("Typed offline.");
   assert.match(await hostText(), /From tab A\./);
-  report.completed.push("Tab B reconnected, reloaded on plain sync, and its offline edit arrived");
+  await expect(content(b.page)).toContainText("From tab A.", { timeout: 30000 });
+  await typeAtEnd(b.page, " After the reopen.");
+  await expect(saved(b.page)).toBeVisible({ timeout: 60000 });
+  await expect.poll(hostText, { timeout: 30000 }).toContain("After the reopen.");
+  report.completed.push(
+    "Tab B reconnected, reopened in place on plain sync without a reload, and its offline edit arrived",
+  );
 
   // The operator converts the second Page while tab D has it open. Its
-  // socket closes, its next discovery names plain storage, and it reloads.
+  // socket closes, its next discovery names plain storage, and it reopens
+  // the Page in place.
   const d = await signIn();
   await d.page.goto(`${origin}/p/${operatorPageId}`);
   await expect(content(d.page)).toContainText("Operator garden.", { timeout: 60000 });
   await typeAtEnd(d.page, " Before the operator.");
   await expect(saved(d.page)).toBeVisible({ timeout: 30000 });
+  await watchTab(d.page);
   const operate = async (body) => {
     const response = await fetch(`${origin}/api/operator/record-storage`, {
       method: "POST",
@@ -203,9 +242,8 @@ try {
   report.operator = converted.body;
   assert.equal(converted.body.status.record_storage, "automerge", JSON.stringify(converted.body));
   assert.equal(converted.body.status.migrated_from, "buffered");
-  await expect(d.page.getByText("This Page's storage changed")).toBeVisible({ timeout: 60000 });
-  await d.page.screenshot({ path: `${output}/operator-storage-changed.png` });
-  await d.page.reload({ waitUntil: "domcontentloaded" });
+  await reopenedInPlace(d.page);
+  await d.page.screenshot({ path: `${output}/operator-storage-reopened.png` });
   await expect(content(d.page)).toContainText("Before the operator.", { timeout: 60000 });
   await typeAtEnd(d.page, " After the operator.");
   await expect(saved(d.page)).toBeVisible({ timeout: 60000 });
@@ -220,10 +258,10 @@ try {
   );
   assert.ok(
     plainDbs.some((name) => name.startsWith("pages-plain-")),
-    "a plain replica after reload",
+    "a plain replica after the reopen",
   );
   report.completed.push(
-    "The operator converted a Page with a tab open; the tab reloaded plain and kept editing",
+    "The operator converted a Page with a tab open; the tab reopened plain in place and kept editing",
   );
   await d.context.close();
   assert.deepEqual(report.errors, []);

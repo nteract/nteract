@@ -122,7 +122,8 @@ const SUITES = Object.freeze([
   },
   // A Subduction Page converts to plain sync once its last tab leaves, with
   // PAGES_MIGRATE_RECORD_STORAGE on; a tab that was offline with an edit
-  // reconnects through the storage switch and its edit arrives.
+  // reconnects through the storage switch, reopens the Page in place without
+  // a reload, and its edit arrives.
   { name: "migration", harness: sharing("--migration"), timeout: 4 * minute },
   { name: "trash", harness: sharing("--trash"), timeout: 4 * minute },
   { name: "revocation", harness: sharing("--revocation"), timeout: 4 * minute },
