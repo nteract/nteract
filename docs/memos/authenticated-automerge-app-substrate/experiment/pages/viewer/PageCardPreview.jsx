@@ -9,9 +9,13 @@
 // The content lays out at a reading width and is scaled down with
 // `transform: scale()` (style.css, .page-card-scale), so every card shows
 // the same small type whatever its width.
+//
+// A card whose Page has images for the same `card_hash` draws them over the
+// JSON (PageCardImage.jsx).
 import { Fragment } from "react";
 import { FileText, Home } from "lucide-react";
 import { previewNodes } from "./PagePreview.jsx";
+import { PageCardImage, cardImageOf } from "./PageCardImage.jsx";
 
 /**
  * @param {{ card?: { blocks: Array<{ id: string, content: unknown[] }> } | null,
@@ -26,6 +30,7 @@ export function PageCardPreview({ card = null, home = false }) {
       </div>
     );
   }
+  const image = cardImageOf(card);
   return (
     <div className="index-card-preview page-card-preview" aria-hidden="true">
       <div className="page-card-scale">
@@ -37,6 +42,7 @@ export function PageCardPreview({ card = null, home = false }) {
           ))}
         </div>
       </div>
+      {image && <PageCardImage image={image} />}
     </div>
   );
 }

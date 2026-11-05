@@ -41,20 +41,7 @@ import { HighlightMenu } from "./HighlightMenu.jsx";
 import { monotonicNow } from "./monotonic.mjs";
 import { selectionHighlight, toggleHighlight } from "./highlight.mjs";
 import { PROSE_ENTRY_ATTRIBUTES } from "./prose-entry.mjs";
-import {
-  blockDoc,
-  paragraph,
-  heading,
-  lineBreak,
-  strong,
-  emphasis,
-  code,
-  codeBlock,
-  codeBlockLanguage,
-  bulletList,
-  orderedList,
-  blockquote,
-} from "wordgard/schema";
+import { codeBlockLanguage } from "wordgard/schema";
 import {
   Paragraph,
   Heading,
@@ -97,7 +84,6 @@ import {
   filterPastedDataframes,
 } from "./wordgard-model.mjs";
 import { DATASET_ACCEPT } from "../shared/dataset-assets.mjs";
-import { taskLists } from "./wordgard-task-lists.mjs";
 import { markdownShortcuts } from "./wordgard-shortcuts.mjs";
 import { displaySymbols } from "./wordgard-symbols.mjs";
 import { clickBelowFinalBlock, exitBlock, leaveFinalBlock } from "./wordgard-leave-block.mjs";
@@ -109,6 +95,7 @@ import {
 } from "./wordgard-collaboration.mjs";
 import { wordgardWidgets, wordgardCodeLanguages } from "./wordgard-widgets.mjs";
 import { wordgardDataframes } from "./wordgard-dataframes.mjs";
+import { pageNodes } from "./wordgard-page-config.mjs";
 import { selectionToolbarPosition } from "./selection-toolbar.mjs";
 import { linkDestination, openInNewTab, wantsNewTab } from "./link-destination.mjs";
 import { LinkPopover } from "./LinkPopover.jsx";
@@ -369,18 +356,7 @@ export function WordgardEditor(props) {
       parent: mount.current,
       doc: bound.current.doc,
       config: [
-        blockDoc(),
-        paragraph(),
-        heading(),
-        lineBreak(),
-        strong(),
-        emphasis(),
-        code(),
-        bulletList(),
-        orderedList(),
-        taskLists(),
-        blockquote(),
-        codeBlock(),
+        ...pageNodes(),
         markdownShortcuts(),
         tables({ cellContent: "inline", cellSpanning: false }),
         tablePresentation,

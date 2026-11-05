@@ -5,7 +5,9 @@ import path from "node:path";
 import { test } from "node:test";
 import { generateKeyBetween } from "fractional-indexing";
 import { retryKeyPrefix } from "../model/retry-key.mjs";
-import { inspectParquet } from "../worker/image-assets.mjs";
+import { inspectAsset } from "../worker/image-assets.mjs";
+import { createHash } from "node:crypto";
+import { imageAssetUrl as assetPath } from "../shared/image-assets.mjs";
 import {
   BUNDLE_FORMAT,
   EDIT_BATCH,
@@ -15,6 +17,8 @@ import {
   exportProject,
   fileStore,
   importBundle,
+  imageInventory,
+  remapImages,
   memoryStore,
   pagesClient,
   planImport,
@@ -29,6 +33,10 @@ const KEY = "pages-test-key-0123456789";
 const quick = { sleep: async () => {}, now: () => Date.parse("2026-11-01T00:00:00Z") };
 const MUTATIONS = new Set(["create_project", "create_page", "edit_page"]);
 const PARQUET = "application/vnd.apache.parquet";
+const PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAIAAAASFvFNAAAAFElEQVR4nGP07NrPAAZMEIqBgQEAHAoBlkMvCokAAAAASUVORK5CYII=",
+  "base64",
+);
 
 /**
  * An in-memory Pages target behind a fetch function that speaks the same
@@ -335,7 +343,7 @@ function fakePages(
       if (!pages.has(write[1])) return Response.json({ error: "not found" }, { status: 404 });
       const bytes = new Uint8Array(init.body);
       try {
-        inspectParquet(bytes);
+        inspectAsset(bytes);
       } catch (error) {
         return Response.json({ error: error.message }, { status: error.status ?? 415 });
       }
@@ -439,6 +447,185 @@ function fakePages(
 
 const client = (fake, origin, token = KEY) => pagesClient({ origin, token, fetch: fake.fetch });
 
+async function imageBundle() {
+  const source = fakePages(SOURCE);
+  const { project_id, home } = source.seedProject({ title: "Images" });
+  const id = createHash("sha256").update(PNG).digest("hex");
+  const src = assetPath(home.page_id, id);
+  const markdown = `> ![quote](${src} "Caption")\n\n- ![list](${src})\n\n| image |\n| --- |\n| ![table](${src}) |\n\n[link](${src})\n\n\`![code](${src})\`\n\n\`\`\`md\n![fenced](${src})\n\`\`\``;
+  home.blocks = [{ id: crypto.randomUUID(), kind: "markdown", markdown }];
+  source.assets.set(`${home.page_id}/${id}`, PNG);
+  const result = await exportProject(client(source, SOURCE), { projectId: project_id, ...quick });
+  return { ...result, source, home, id, src, project_id };
+}
+
+test("nested image inventory excludes links/code and remaps only image attrs", async () => {
+  const { bundle, source, id, src } = await imageBundle();
+  const page = bundle.pages[0];
+  assert.equal(page.images.length, 3);
+  assert.equal(Object.keys(bundle.assets).length, 1);
+  assert.equal(source.assetCalls.length, 1);
+  const target = fakePages(TARGET);
+  const store = memoryStore();
+  const result = await importBundle(client(target, TARGET), bundle, { store, ...quick });
+  const body = target.pages
+    .get(result.home_page_id)
+    .blocks.map((block) => block.markdown)
+    .join("\n\n");
+  assert.deepEqual(
+    imageInventory([body]).map((image) => image.src),
+    Array(3).fill(assetPath(result.home_page_id, id)),
+  );
+  assert.ok(body.includes(`[link](${src})`));
+  assert.ok(body.includes(`![code](${src})`));
+  assert.ok(body.includes(`![fenced](${src})`));
+  assert.equal(target.assetCalls.length, 1);
+  await importBundle(client(target, TARGET), bundle, { store, ...quick });
+  assert.equal(target.assetCalls.length, 1, "completed bodies do not upload again");
+  assert.equal(remapImages("unchanged", page.images, result.home_page_id), "unchanged");
+});
+
+test("private images require source/target asset credentials and missing bytes fail before writes", async () => {
+  const { bundle, source, project_id } = await imageBundle();
+  await assert.rejects(
+    exportProject(
+      { ...client(source, SOURCE), assets: false },
+      { projectId: project_id, ...quick },
+    ),
+    { code: "assets_unauthorized" },
+  );
+  const target = fakePages(TARGET);
+  await assert.rejects(
+    importBundle({ ...client(target, TARGET), assets: false }, bundle, {
+      store: memoryStore(),
+      ...quick,
+    }),
+    { code: "assets_unauthorized" },
+  );
+  const missing = structuredClone(bundle);
+  missing.assets = {};
+  await assert.rejects(
+    importBundle(client(target, TARGET), missing, { store: memoryStore(), ...quick }),
+    /missing bytes/,
+  );
+  assert.equal(target.calls.length, 0);
+  source.assets.clear();
+  await assert.rejects(exportProject(client(source, SOURCE), { projectId: project_id, ...quick }), {
+    status: 404,
+  });
+});
+
+test("image upload uncertainty resumes before remapping without duplicate stored assets", async () => {
+  const { bundle } = await imageBundle();
+  const target = fakePages(TARGET);
+  const normal = client(target, TARGET);
+  let lose = true;
+  const flaky = {
+    ...normal,
+    upload: async (...args) => {
+      const result = await normal.upload(...args);
+      if (lose) {
+        lose = false;
+        throw new TransferError("lost upload response", { uncertain: true });
+      }
+      return result;
+    },
+  };
+  const store = memoryStore();
+  await assert.rejects(
+    importBundle(flaky, bundle, { store, attempts: 1, ...quick }),
+    /lost upload/,
+  );
+  assert.equal(target.assets.size, 1);
+  const result = await importBundle(flaky, bundle, { store, ...quick });
+  assert.equal(target.assets.size, 1);
+  assert.equal(result.verification.ok, true);
+});
+
+test("asset download enforces declared and streamed byte limits and never redirects", async () => {
+  const path = assetPath(crypto.randomUUID(), "a".repeat(64));
+  for (const headers of [{ "content-length": "10" }, {}]) {
+    const c = pagesClient({
+      origin: SOURCE,
+      token: KEY,
+      fetch: async (_url, init) => {
+        assert.equal(init.redirect, "error");
+        return new Response(new Uint8Array(10), { headers });
+      },
+    });
+    await assert.rejects(c.download(path, 5), /byte limit/);
+  }
+});
+
+test("duplicate images upload once per destination Page and keep titles", async () => {
+  const { bundle, id } = await imageBundle();
+  const child = structuredClone(bundle.pages[0]);
+  child.source_page_id = crypto.randomUUID();
+  child.home = false;
+  child.title = "Child";
+  bundle.pages.push(child);
+  const target = fakePages(TARGET);
+  const report = await importBundle(client(target, TARGET), bundle, {
+    store: memoryStore(),
+    ...quick,
+  });
+  assert.equal(report.verification.ok, true);
+  assert.equal(target.assets.size, 2);
+  assert.equal(target.assetCalls.length, 2);
+  for (const page of target.pages.values()) {
+    const markdown = page.blocks.map((block) => block.markdown).join("\n\n");
+    assert.ok(markdown.includes('"Caption"'));
+    assert.deepEqual(
+      imageInventory([markdown]).map((image) => image.src),
+      Array(3).fill(assetPath(page.page_id, id)),
+    );
+  }
+  const creation = target.calls.find((call) => call.name === "create_page");
+  assert.equal(creation.args.markdown, "", "never install source image references before upload");
+});
+
+test("image bundle validation rejects invalid inventory, media and corrupt containers before writes", async () => {
+  const { bundle, id } = await imageBundle();
+  const target = fakePages(TARGET);
+  for (const mutate of [
+    (value) => {
+      value.pages[0].images.pop();
+    },
+    (value) => {
+      value.assets[id].media_type = PARQUET;
+    },
+    (value) => {
+      value.assets[id].data = Buffer.from("invalid PNG").toString("base64");
+    },
+  ]) {
+    const broken = structuredClone(bundle);
+    mutate(broken);
+    await assert.rejects(
+      importBundle(client(target, TARGET), broken, { store: memoryStore(), ...quick }),
+    );
+  }
+  assert.equal(target.calls.length, 0);
+  for (const version of [1, 2]) {
+    const legacy = structuredClone(bundle);
+    legacy.version = version;
+    delete legacy.pages[0].images;
+    delete legacy.assets;
+    validateBundle(legacy);
+  }
+});
+
+test("an unreadable upload receipt is retryable, without exposing credentials", async () => {
+  const c = pagesClient({
+    origin: SOURCE,
+    token: KEY,
+    fetch: async () => new Response("not JSON"),
+  });
+  await assert.rejects(
+    c.upload(crypto.randomUUID(), PNG, "image/png"),
+    (error) => error.uncertain && !error.message.includes(KEY),
+  );
+});
+
 /** A page9-shaped source: top-level Pages are the home Page's siblings. */
 function guideSource({ preservedType = "pages-opaque", ...options } = {}) {
   const source = fakePages(SOURCE, { placement: "page9", ...options });
@@ -456,7 +643,7 @@ function guideSource({ preservedType = "pages-opaque", ...options } = {}) {
   const one = at(
     "Alpha one",
     [
-      "![diagram](/api/pages/" +
+      "[diagram](/api/pages/" +
         "1".repeat(8) +
         "-1111-4111-8111-" +
         "1".repeat(12) +
@@ -489,7 +676,7 @@ test("export lists Pages in tree order: home first, parents before children, sib
   const { bundle, report, home, before, zeta, alpha, two, one, deep, project_id } =
     await exportGuide({ outlinePage: 1 });
   assert.equal(bundle.format, BUNDLE_FORMAT);
-  assert.equal(bundle.version, 2);
+  assert.equal(bundle.version, 3);
   assert.equal(bundle.bundle_id, "3f0d6c2e-1f7b-4b8e-9a51-0c2d5e7f8a90");
   assert.deepEqual(bundle.source, { origin: SOURCE, project_id, home_page_id: home.page_id });
   assert.equal(bundle.exported_at, "2026-11-01T00:00:00.000Z");
@@ -523,7 +710,7 @@ test("export lists Pages in tree order: home first, parents before children, sib
   // The preserved node is on the second outline page; only paging finds it.
   assert.equal(alphaEntry.preserved_markdown, true);
   assert.equal(bundle.pages[1].blocks, undefined, "a single block needs no blocks array");
-  assert.equal(bundle.pages[3].private_images.length, 1);
+  assert.equal(bundle.pages[3].private_images.length, 0);
   assert.equal(bundle.pages[3].comment_threads, 2);
   assert.deepEqual(
     report.preserved_markdown.map((page) => page.title),
@@ -531,7 +718,7 @@ test("export lists Pages in tree order: home first, parents before children, sib
   );
   assert.deepEqual(
     report.private_images.map((page) => page.title),
-    ["Alpha one"],
+    [],
   );
   assert.equal(report.comment_threads, 2);
 });
@@ -620,7 +807,7 @@ test("import fills the home Page, nests the top level under it and keeps sibling
   );
   assert.deepEqual(
     report.private_images.map((page) => page.title),
-    ["Alpha one"],
+    [],
   );
   assert.equal(report.url, `${TARGET}/project/${project.project_id}`);
 });

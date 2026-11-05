@@ -45,6 +45,9 @@ const checkbox = Widget.define({
     const input = label.appendChild(document.createElement("input"));
     input.type = "checkbox";
     input.checked = value.checked;
+    // The property doesn't serialize; the attribute draws the same box in a
+    // copy of this DOM (the card shell's rasterizer clones it).
+    input.toggleAttribute("checked", value.checked);
     input.disabled = value.readOnly;
     input.setAttribute("aria-label", "Task complete");
     input.addEventListener("change", () => {
