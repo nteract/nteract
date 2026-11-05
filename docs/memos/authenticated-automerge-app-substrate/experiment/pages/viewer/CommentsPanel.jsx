@@ -554,28 +554,40 @@ function CommentForm({
       mounted.current = false;
     };
   }, []);
+  async function send() {
+    if (busy || uploading || disabled || draftError || !body.trim()) return;
+    setBusy(true);
+    onBusyChange?.(true);
+    setError("");
+    try {
+      await submit(body, value.spans);
+      if (!mounted.current) return;
+      onChange("");
+      onSuccess?.();
+    } catch (error) {
+      if (mounted.current) setError(error.message);
+    } finally {
+      if (mounted.current) {
+        setBusy(false);
+        onBusyChange?.(false);
+      }
+    }
+  }
   return (
     <form
       className={compact ? "comment-reply-form" : undefined}
-      onSubmit={async (event) => {
+      onKeyDownCapture={(event) => {
+        // Mod+Enter sends, as in the inline composer (CommentPopover). The
+        // rich editor isn't a form control, so no key submits this form on
+        // its own; capture keeps the editor from taking the key first.
+        if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey) || event.altKey) return;
         event.preventDefault();
-        if (busy || uploading || disabled || draftError || !body.trim()) return;
-        setBusy(true);
-        onBusyChange?.(true);
-        setError("");
-        try {
-          await submit(body, value.spans);
-          if (!mounted.current) return;
-          onChange("");
-          onSuccess?.();
-        } catch (error) {
-          if (mounted.current) setError(error.message);
-        } finally {
-          if (mounted.current) {
-            setBusy(false);
-            onBusyChange?.(false);
-          }
-        }
+        event.stopPropagation();
+        send();
+      }}
+      onSubmit={(event) => {
+        event.preventDefault();
+        send();
       }}
     >
       <div>

@@ -377,6 +377,41 @@ test("viewers retain discussion and passage access without reply or state-changi
   assert.deepEqual(f.revealed, ["first"]);
 });
 
+for (const modifier of ["metaKey", "ctrlKey"])
+  test(`Mod+Enter (${modifier}) sends a reply; plain Enter stays with the editor`, async (t) => {
+    const f = await fixture(t);
+    await f.click(f.element("next").querySelector(".thread-reply-button"));
+    const textarea = f.element("next").querySelector("textarea");
+    const editorKeys = [];
+    textarea.addEventListener("keydown", (event) => editorKeys.push(event));
+    const press = async (init) => {
+      const event = new dom.window.KeyboardEvent("keydown", {
+        bubbles: true,
+        cancelable: true,
+        ...init,
+      });
+      await act(async () => {
+        textarea.dispatchEvent(event);
+        await Promise.resolve();
+      });
+      await tick();
+      return event;
+    };
+    await press({ key: "Enter", [modifier]: true });
+    assert.deepEqual(f.calls, [], "an empty reply sends nothing");
+    await f.type(textarea, "Ship it");
+    const plain = await press({ key: "Enter" });
+    assert.equal(plain.defaultPrevented, false, "plain Enter is the editor's newline");
+    assert.deepEqual(f.calls, []);
+    const send = await press({ key: "Enter", [modifier]: true });
+    assert.equal(send.defaultPrevented, true);
+    assert.deepEqual(editorKeys, [plain], "the editor never sees Mod+Enter");
+    assert.deepEqual(f.calls, [
+      { action: "reply", thread_id: "next", body: "Ship it", body_format: "markdown" },
+    ]);
+    assert.equal(textarea.value, "");
+  });
+
 test("a reply draft on a resolved thread blocks Reload and stays reachable to copy or discard", async (t) => {
   const copied = [];
   Object.defineProperty(navigator, "clipboard", {
