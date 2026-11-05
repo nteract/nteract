@@ -150,13 +150,12 @@ Wordgard is the sole editor and applies native text splices, marks, and
 structural spans. The shared Markdown codec still uses ProseMirror schema and
 traversal libraries for import/export, validation, outlines and `node_index`,
 change reads, and passage-address mapping. It does not own an editor or mediate
-Wordgard keystrokes. Two encoders write spans:
+Wordgard keystrokes. One encoder writes spans, Wordgard's `encode`
+(`viewer/wordgard-model.mjs`):
 
-- Browser edits use Wordgard's `encode` (`viewer/wordgard-model.mjs`).
-- Markdown writes use the ProseMirror adapter, then `pageSpans`
-  (`model/richtext.mjs`), which adjusts its output to the editor's form.
-  [`markdown-projection.test.mjs`](model/markdown-projection.test.mjs) lists
-  where the two still differ.
+- Browser edits encode the editor's document.
+- Markdown writes parse with the ProseMirror codec, and `pageSpans`
+  (`model/richtext.mjs`) re-encodes the adapter's spans with `encode`.
 
 Block types are declared once in `model/node-registry.mjs`: stored names,
 ProseMirror names, agent-facing names, settable attrs and insert operations.

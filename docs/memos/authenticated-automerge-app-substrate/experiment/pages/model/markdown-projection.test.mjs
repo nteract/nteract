@@ -8,8 +8,12 @@ import * as A from "@automerge/automerge";
 import markdownCorpus from "./markdown-corpus.json" with { type: "json" };
 import { createPageData, initializePage, orderedBlockIds } from "./page.mjs";
 import {
+  adapterSpans,
   exportMarkdown,
+  pageSpans,
+  parseAgentMarkdown,
   parseMarkdown,
+  schema,
   setRichMarkdown,
   textPath,
   unsupportedMarkdown,
@@ -195,21 +199,51 @@ test("an editor rewrite of any block Pages wrote from Markdown writes nothing", 
     Object.keys(KNOWN_DISAGREEMENTS).filter((caseId) => !seen.has(caseId)),
     [],
   );
-  // Pages' writer stores exactly the spans the editor's encoder writes.
-  for (const { id: caseId, markdown } of markdownCorpus.cases) {
-    if (unsupportedMarkdown(markdown)) continue;
-    let doc = A.from(createPageData({ pageId: "projection", title: "Projection" }));
-    const id = orderedBlockIds(doc)[0];
-    try {
-      doc = A.change(doc, (draft) => setRichMarkdown(draft, id, markdown));
-    } catch {
-      continue;
-    }
-    const stored = A.spans(doc, textPath(id));
-    assert.deepEqual(plainSpans(encode(decode(stored).doc)), plainSpans(stored), caseId);
-  }
   // create_page goes through the same writer.
   let doc = A.from(createPageData({ pageId: "projection", title: "Projection" }));
   doc = A.change(doc, (draft) => initializePage(draft, "Intro\n\n- a\n- b"));
   assert.deepEqual(editorRewrite(doc, orderedBlockIds(doc)[0]), []);
+});
+
+// A block's content as an agent reads it, from its stored spans.
+const storedRead = (spans) => {
+  let doc = A.from(createPageData({ pageId: "projection", title: "Projection" }));
+  const id = orderedBlockIds(doc)[0];
+  doc = A.change(doc, (draft) => A.updateSpans(draft, textPath(id), spans, updateSpansConfig));
+  return exportMarkdown(richDoc(doc.blocks[id]));
+};
+
+test("the editor's encoder stores the same content as the adapter for every corpus case", () => {
+  for (const { id: caseId, markdown } of markdownCorpus.cases)
+    for (const literal of unsupportedMarkdown(markdown) ? [true] : [false, true]) {
+      let tree;
+      try {
+        tree = literal ? parseMarkdown(markdown) : parseAgentMarkdown(markdown);
+      } catch {
+        continue;
+      }
+      const spans = pageSpans(tree);
+      assert.equal(storedRead(spans), storedRead(adapterSpans(tree)), caseId);
+      // Encoding the stored spans again writes them unchanged.
+      assert.deepEqual(plainSpans(encode(decode(spans).doc)), plainSpans(spans), caseId);
+    }
+});
+
+test("a newline in a paragraph is stored as the hard break the editor writes", () => {
+  const spans = pageSpans(parseAgentMarkdown("a&#10;b"));
+  assert.deepEqual(
+    plainSpans(spans).map((span) => (span.type === "text" ? span.value : span.value.type)),
+    ["a", "hard-break", "b"],
+  );
+  // It reads back as a hard break, so a read written back keeps it.
+  assert.equal(storedRead(spans), "a\\\nb");
+});
+
+test("a tree the editor can't hold whole is refused, not stored", () => {
+  const tree = schema.node("doc", null, [
+    schema.node("paragraph", null, [
+      schema.node("image", { src: "/a.png", alt: { nested: true }, title: null }),
+    ]),
+  ]);
+  assert.throws(() => pageSpans(tree), { code: "markdownless_node" });
 });

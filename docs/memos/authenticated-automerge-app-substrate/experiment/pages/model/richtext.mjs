@@ -1675,46 +1675,31 @@ export function setRichMarkdown(doc, id, source, { literal = false } = {}) {
   A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
   stampSpans(doc, spans);
 }
-/** The spans the ProseMirror adapter writes for `tree`, before pageSpans
- * puts them in the editor's form. Fixtures whose history must not move with
- * Pages' writer form use these, as do fixtures for stored content in the
- * adapter's form. */
+/** The spans the ProseMirror adapter writes for `tree`. pageSpans re-encodes
+ * them with the editor's encoder. Fixtures for stored content in the
+ * adapter's form, and fixtures whose history must not move with Pages'
+ * writer form, use these directly. */
 export const adapterSpans = (tree) => pmNodeToSpans(adapter, tree);
 /** A Page block's spans for `tree`, written by the editor's own encoder
  * (encode in viewer/wordgard-model.mjs), so the editor's first structural
  * edit (Enter, a cross-block delete, a block paste, a list toggle) in an
- * agent-written block rewrites the same spans. The adapter's form differs in
- * two places: it writes a marker for a top-level first paragraph, and leaves
- * out the marker of a quote whose first child isn't a paragraph.
+ * agent-written block rewrites the same spans. The adapter's form differs:
+ * it writes a marker for a top-level first paragraph, leaves out the marker
+ * of a quote whose first child isn't a paragraph, and keeps a newline in a
+ * paragraph as text where the editor writes a hard break.
  *
- * A tree the editor model can't hold whole (decode reports `lossy`) falls
- * back to the adapter's spans, put in the editor's form as far as that
- * goes. */
+ * A tree the editor model can't hold whole (decode reports `lossy`) is
+ * refused: the editor would show that block read-only. */
 export function pageSpans(tree) {
-  const spans = adapterSpans(tree);
-  const decoded = decode(spans);
-  return decoded.lossy ? adapterPageSpans(spans) : encode(decoded.doc);
-}
-function adapterPageSpans(adapted) {
-  // String attrs are immutable strings, as encode writes them; the adapter
-  // writes an image's alt and title as text.
-  const spans = adapted.map((span) =>
-    span.type === "block"
-      ? {
-          ...span,
-          value: {
-            ...span.value,
-            attrs: Object.fromEntries(
-              Object.entries(span.value.attrs ?? {}).map(([key, value]) => [
-                key,
-                typeof value === "string" ? new A.ImmutableString(value) : value,
-              ]),
-            ),
-          },
-        }
-      : span,
-  );
-  return redundantFirstMarker(spans) ? spans.slice(1) : spans;
+  const decoded = decode(adapterSpans(tree));
+  if (decoded.lossy)
+    throw Object.assign(
+      Error(
+        "This content has a node the Pages editor can't hold, so it can't be written. Leave that node out, or use targeted edits.",
+      ),
+      { code: "markdownless_node" },
+    );
+  return encode(decoded.doc);
 }
 /** Whether `spans` open with a marker the editor wouldn't write: a plain
  * top-level paragraph marker before content, or as the only node (encode's
