@@ -23,6 +23,21 @@ export const BUNDLE_VERSION = 4;
 const BUNDLE_VERSIONS = new Set([1, 2, 3, 4]);
 export const STATE_FORMAT = "nteract-pages-project-import-state";
 export const STATE_VERSION = 1;
+// Persisted theme-body lifecycle. A receipt advances exactly one saved batch;
+// neither restart nor retry may reconstruct an installed body or its image IDs.
+export function themeBodyTransition(state, event) {
+  if (event.type === "plan" && !state)
+    return { phase: "installing", operations: event.operations, next: 0, heads: event.heads };
+  if (event.type === "discover" && state?.phase === "installed")
+    return { phase: "variants", operations: event.operations, next: 0, heads: state.heads };
+  if (event.type === "receipt" && ["installing", "variants"].includes(state?.phase)) {
+    const next = Math.min(state.next + EDIT_BATCH, state.operations.length);
+    if (next === state.operations.length)
+      return { phase: state.phase === "installing" ? "installed" : "done", heads: event.heads };
+    return { ...state, next, heads: event.heads };
+  }
+  throw new TransferError("Invalid persisted theme-body transition");
+}
 export const DRIVER = "Pages project transfer";
 /** edit_page accepts at most this many operations per request. */
 export const EDIT_BATCH = 100;
@@ -1439,6 +1454,13 @@ export async function importBundle(
       counts.edits++;
       for (const warning of result.warnings ?? [])
         warnings.push(`${step.slice(5)}: ${warning.code ?? "warning"}`);
+    } else if (step.startsWith("themed:")) {
+      const id = step.slice(7);
+      state.bodies[id] = themeBodyTransition(state.bodies[id], {
+        type: "receipt",
+        heads: result.heads,
+      });
+      counts.edits++;
     }
   };
 
@@ -1567,7 +1589,11 @@ export async function importBundle(
     for (const { unresolved: urls } of rewrites)
       for (const url of urls)
         unresolved.push({ title: page.title, source_page_id: page.source_page_id, url });
-    if (state.bodies[page.source_page_id] === "done") continue;
+    if (
+      state.bodies[page.source_page_id] === "done" ||
+      state.bodies[page.source_page_id]?.phase === "done"
+    )
+      continue;
     const units = bodyUnits(
       rewrites.map((rewrite) => remapImages(rewrite.markdown, images, targetId)),
       page,
@@ -1601,44 +1627,9 @@ export async function importBundle(
       if (stored.asset_id !== assetId)
         throw new TransferError(`The target stored asset ${assetId} as ${stored.asset_id}`);
     }
-    await writeBody(page, targetId, units);
     if (page.image_variants?.length) {
-      // Match the complete target's structural occurrence order only after its
-      // body is written. Cursor IDs are destination-local, never copied.
-      for (let offset = 0; offset < page.image_variants.length; offset += EDIT_BATCH) {
-        const target = await readWholePage(client, targetId, options);
-        const operations = page.image_variants.slice(offset, offset + EDIT_BATCH).map((variant) => {
-          const image = target.image_occurrences[variant.ordinal];
-          const assetId = ASSET_SRC.exec(variant.src)?.[1];
-          const expected = assetId ? imageAssetUrl(targetId, assetId) : variant.src;
-          if (!image?.image_id || image.src !== expected)
-            throw new TransferError(
-              "Target image occurrence changed; refusing to apply an alternate to another image",
-            );
-          return {
-            op: "set_image",
-            block_id: image.block_id,
-            image_id: image.image_id,
-            dark_asset_id: variant.dark_asset_id,
-          };
-        });
-        const step = `body:${page.source_page_id}`;
-        await send(
-          step,
-          "edit_page",
-          {
-            page_id: targetId,
-            base_heads: target.heads,
-            retry_token: target.retry_token,
-            idempotency_key:
-              target.retry_key_prefix +
-              (await nonce(bundle.bundle_id, "variants", page.source_page_id, String(offset))),
-            operations,
-          },
-          commitFor(step),
-        );
-      }
-    }
+      await writeThemeBody(page, targetId, units);
+    } else await writeBody(page, targetId, units);
     counts.dataframes += frames.length;
     counts.links_rewritten += rewritten;
     state.bodies[page.source_page_id] = "done";
@@ -1653,6 +1644,70 @@ export async function importBundle(
     } catch (error) {
       if (error.code !== "read_budget_exceeded") throw error;
       return call({ page_id: pageId });
+    }
+  }
+
+  async function writeThemeBody(page, pageId, units) {
+    const id = page.source_page_id;
+    const step = `themed:${id}`;
+    const fencedRead = async (whole = false) => {
+      const read = whole ? await readWholePage(client, pageId, options) : await readForEdit(pageId);
+      if (
+        JSON.stringify([...read.heads].sort()) !==
+        JSON.stringify([...state.bodies[id].heads].sort())
+      )
+        throw new TransferError(
+          "Target changed during theme image import; refusing to rebase image identities",
+          { code: "transfer_revision_changed" },
+        );
+      return read;
+    };
+    if (!state.bodies[id]) {
+      const read = await readForEdit(pageId);
+      const operations = [
+        ...(page.home && read.title !== page.title ? [{ op: "set_title", title: page.title }] : []),
+        ...bodyOperations(read.blocks ?? [], units),
+      ];
+      state.bodies[id] = themeBodyTransition(null, { type: "plan", operations, heads: read.heads });
+      await save();
+    }
+    while (state.bodies[id].phase !== "done") {
+      const progress = state.bodies[id];
+      if (progress.phase === "installed") {
+        // Only the body receipt's exact revision can define destination IDs.
+        const target = await fencedRead(true);
+        const operations = page.image_variants.map((variant) => {
+          const image = target.image_occurrences[variant.ordinal];
+          const assetId = ASSET_SRC.exec(variant.src)?.[1];
+          const expected = assetId ? imageAssetUrl(pageId, assetId) : variant.src;
+          if (!image?.image_id || image.src !== expected)
+            throw new TransferError("Target image occurrence does not match the installed body");
+          return {
+            op: "set_image",
+            block_id: image.block_id,
+            image_id: image.image_id,
+            dark_asset_id: variant.dark_asset_id,
+          };
+        });
+        state.bodies[id] = themeBodyTransition(progress, { type: "discover", operations });
+        await save();
+        continue;
+      }
+      const read = await fencedRead();
+      await send(
+        step,
+        "edit_page",
+        {
+          page_id: pageId,
+          base_heads: progress.heads,
+          retry_token: read.retry_token,
+          idempotency_key:
+            read.retry_key_prefix +
+            (await nonce(bundle.bundle_id, progress.phase, id, String(progress.next))),
+          operations: progress.operations.slice(progress.next, progress.next + EDIT_BATCH),
+        },
+        commitFor(step),
+      );
     }
   }
 

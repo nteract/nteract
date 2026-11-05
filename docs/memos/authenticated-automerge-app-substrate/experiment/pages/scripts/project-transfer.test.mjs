@@ -24,6 +24,7 @@ import {
   planImport,
   rewriteLinks,
   targetPlacement,
+  themeBodyTransition,
   validateBundle,
 } from "./project-transfer.mjs";
 
@@ -32,6 +33,25 @@ const TARGET = "https://target.example";
 const KEY = "pages-test-key-0123456789";
 const quick = { sleep: async () => {}, now: () => Date.parse("2026-11-01T00:00:00Z") };
 const MUTATIONS = new Set(["create_project", "create_page", "edit_page"]);
+test("theme body lifecycle transition table persists batch progress and rejects invalid events", () => {
+  const operations = Array(EDIT_BATCH + 1).fill({ op: "set_image" });
+  const installing = themeBodyTransition(null, { type: "plan", operations, heads: ["a"] });
+  const partial = themeBodyTransition(installing, { type: "receipt", heads: ["b"] });
+  assert.equal(partial.next, EDIT_BATCH);
+  const installed = themeBodyTransition(partial, { type: "receipt", heads: ["c"] });
+  const variants = themeBodyTransition(installed, { type: "discover", operations });
+  const remaining = themeBodyTransition(variants, { type: "receipt", heads: ["d"] });
+  const done = themeBodyTransition(remaining, { type: "receipt", heads: ["e"] });
+  assert.deepEqual(done, { phase: "done", heads: ["e"] });
+  for (const state of [null, installing, installed, variants, done])
+    for (const type of ["plan", "discover", "receipt", "unknown"]) {
+      const allowed =
+        (type === "plan" && state === null) ||
+        (type === "discover" && state === installed) ||
+        (type === "receipt" && [installing, variants].includes(state));
+      if (!allowed) assert.throws(() => themeBodyTransition(state, { type }), /Invalid persisted/);
+    }
+});
 const PARQUET = "application/vnd.apache.parquet";
 const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAIAAAASFvFNAAAAFElEQVR4nGP07NrPAAZMEIqBgQEAHAoBlkMvCokAAAAASUVORK5CYII=",
@@ -603,6 +623,90 @@ test("image upload uncertainty resumes before remapping without duplicate stored
   assert.equal(target.assets.size, 1);
   assert.equal(result.verification.ok, true);
 });
+
+test("interrupted duplicate-image variant import replays without rewriting its installed body", async () => {
+  const { bundle, id, src } = await imageBundle();
+  bundle.pages[0].markdown = `![same](${src}) ![same](${src})`;
+  bundle.pages[0].images = imageInventory([bundle.pages[0].markdown]);
+  bundle.pages[0].image_variants = [{ ordinal: 0, src, dark_src: src, dark_asset_id: id }];
+  const target = fakePages(TARGET),
+    normal = client(target, TARGET),
+    store = memoryStore();
+  let lose = true,
+    installed = false;
+  const flaky = {
+    ...normal,
+    call: async (name, args) => {
+      if (
+        installed &&
+        name === "edit_page" &&
+        args.operations.some((op) => op.op === "replace_block_markdown")
+      )
+        assert.fail("rewrote installed duplicate images with hidden attrs");
+      const result = await normal.call(name, args);
+      if (name === "edit_page" && args.operations.some((op) => op.op === "set_image")) {
+        installed = true;
+        if (lose) {
+          lose = false;
+          throw new TransferError("lost variant response", { uncertain: true });
+        }
+      }
+      return result;
+    },
+  };
+  await assert.rejects(
+    importBundle(flaky, bundle, { store, ...quick, attempts: 1 }),
+    /lost variant/,
+  );
+  const result = await importBundle(flaky, bundle, { store, ...quick });
+  assert.equal(result.verification.ok, true);
+  assert.equal(target.pages.get(result.home_page_id).blocks[0].variants[0].dark_asset_id, id);
+});
+
+for (const stage of ["discovery", "between batches"])
+  test(`same-src peer insertion ${stage} fails instead of rebasing variant ordinals`, async () => {
+    const { bundle, id, src } = await imageBundle();
+    const count = stage === "discovery" ? 2 : 101;
+    const markdown = Array(count).fill(`![same](${src})`).join(" ");
+    bundle.pages[0].markdown = markdown;
+    bundle.pages[0].images = imageInventory([markdown]);
+    bundle.pages[0].image_variants = Array.from({ length: count }, (_, ordinal) => ({
+      ordinal,
+      src,
+      dark_src: src,
+      dark_asset_id: id,
+    }));
+    const target = fakePages(TARGET),
+      normal = client(target, TARGET),
+      store = memoryStore();
+    let changed = false,
+      variantWrites = 0;
+    const peer = {
+      ...normal,
+      call: async (name, args) => {
+        const result = await normal.call(name, args);
+        if (name === "edit_page") {
+          const variants = args.operations.some((op) => op.op === "set_image");
+          if (variants) variantWrites++;
+          if (!changed && (stage === "discovery" ? !variants : variants)) {
+            changed = true;
+            const page = target.pages.get(args.page_id);
+            page.blocks[0].markdown =
+              `![same](${assetPath(args.page_id, id)}) ` + page.blocks[0].markdown;
+            page.revision++;
+          }
+        }
+        return result;
+      },
+    };
+    await assert.rejects(importBundle(peer, bundle, { store, ...quick }), {
+      code: "transfer_revision_changed",
+    });
+    assert.equal(variantWrites, stage === "discovery" ? 0 : 1);
+    await assert.rejects(importBundle(normal, bundle, { store, ...quick }), {
+      code: "transfer_revision_changed",
+    });
+  });
 
 test("asset download enforces declared and streamed byte limits and never redirects", async () => {
   const path = assetPath(crypto.randomUUID(), "a".repeat(64));
