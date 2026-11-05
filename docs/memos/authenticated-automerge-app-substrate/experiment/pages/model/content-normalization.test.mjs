@@ -198,6 +198,24 @@ test("a second run writes nothing", () => {
   assert.deepEqual(A.getHeads(replayed), A.getHeads(after));
 });
 
+// Automerge resolves a mark across adjacent runs as one mark, while the spans
+// list it per run, so updateSpans with unchanged spans removes and re-adds it:
+// new heads, same spans. That rewrite isn't a change of form.
+test("a rewrite that leaves the spans unchanged isn't planned", () => {
+  for (const markdown of [
+    "**bold [linked](https://example.org) bold**",
+    "*a* plain *b*\n\n~~struck [link](https://example.org/x)~~",
+  ]) {
+    const { doc, id } = adapterPage(markdown);
+    const after = normalize(doc, planPageNormalization(doc).writes);
+    const again = planPageNormalization(after);
+    assert.deepEqual(again.writes, [], markdown);
+    assert.deepEqual(again.report.blocks, [], markdown);
+    assert.deepEqual(normalizationProblems(again.report), [], markdown);
+    assert.deepEqual(plain(A.spans(after, textPath(id))), canonical(after, id), markdown);
+  }
+});
+
 test("a Page already in the editor's form plans nothing", () => {
   const doc = A.change(A.from(createPageData({ pageId: PAGE_ID })), (draft) =>
     initializePage(draft, "# Title\n\nBody with **bold**\n\n> quoted\n\n- [x] task"),

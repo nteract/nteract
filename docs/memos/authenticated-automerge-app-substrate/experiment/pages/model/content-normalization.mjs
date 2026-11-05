@@ -161,6 +161,22 @@ function anchorsDetached(threads, before, after, blockId) {
 }
 
 const heads = (doc) => A.getHeads(doc).sort().join(",");
+/** Stored spans compared by value: types, parents, attrs, text and marks.
+ * Key order differs between reads, so object keys are sorted. */
+const sameSpans = (a, b) => {
+  const json = (spans) =>
+    JSON.stringify(spans, (_key, value) => {
+      if (A.isImmutableString(value)) return String(value);
+      if (value && typeof value === "object" && !Array.isArray(value))
+        return Object.fromEntries(
+          Object.keys(value)
+            .sort()
+            .map((key) => [key, value[key]]),
+        );
+      return value;
+    });
+  return json(a) === json(b);
+};
 
 /**
  * Plan and measure the normalization of Page document `doc`. Pure; `doc` is
@@ -261,7 +277,12 @@ export function planPageNormalization(doc, { commentsDoc } = {}) {
       const rewritten = A.change(A.clone(work), (draft) => {
         A.updateSpans(draft, path, target, updateSpansConfig);
       });
-      if (heads(rewritten) === heads(work)) {
+      // Automerge can rewrite a mark that spans adjacent runs even when the
+      // spans don't change: new heads, same content. That isn't a write.
+      if (
+        heads(rewritten) === heads(work) ||
+        sameSpans(A.spans(rewritten, path), A.spans(work, path))
+      ) {
         A.free(rewritten);
         continue;
       }

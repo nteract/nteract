@@ -18,6 +18,7 @@ test("arguments need an origin and a mode", () => {
     limit: 10,
     pageIds: ["p"],
     maxCalls: 100,
+    includeConnected: false,
   });
   assert.ok(log.endsWith(".jsonl"));
   assert.throws(() => parseArgs(["--mode", "apply"]));
@@ -99,4 +100,21 @@ test("the log path is a flag, with a default per mode", () => {
     parseArgs(["--origin", "https://x", "--mode", "dry_run", "--log", "out.jsonl"]).log,
     "out.jsonl",
   );
+});
+
+test("--include-connected reaches every apply call", async () => {
+  const parsed = parseArgs(["--origin", "https://x", "--mode", "apply", "--include-connected"]);
+  assert.equal(parsed.includeConnected, true);
+  assert.equal(parseArgs(["--origin", "https://x", "--mode", "apply"]).includeConnected, false);
+  const bodies = [];
+  await drive({
+    mode: "apply",
+    limit: 1,
+    includeConnected: true,
+    call: async (body) => {
+      bodies.push(body);
+      return { pages: [], visited: [], totals: {}, progress: { phase: "done" } };
+    },
+  });
+  assert.equal(bodies[0].include_connected, true);
 });
