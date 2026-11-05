@@ -172,12 +172,18 @@ jobs:
           if (-not $compiler.StartsWith($tools, [StringComparison]::OrdinalIgnoreCase)) { throw 'cl.exe is outside the selected producer toolset' }
           Write-Host "Producer compiler: $compiler"
           Write-Host "Producer SDK: $env:WindowsSdkDir $env:UCRTVersion"
+      - name: Report installed SDK servicing products
+        shell: pwsh
+        run: |
+          Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue |
+            Where-Object { $_.DisplayName -like 'Windows Software Development Kit*' } |
+            Select-Object DisplayName,DisplayVersion | Format-Table -AutoSize
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
           architecture: ${{ matrix.arch }}
       # Missing producer terms must fail here, before a publishing workflow.
-      # VS2026 has no reviewed fallback; installed terms must match that producer.
+      # Installed or pinned terms must match the identified producer.
       - name: Validate installed producer CRT attribution without compiling
         shell: bash
         env:

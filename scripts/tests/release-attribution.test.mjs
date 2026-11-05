@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { collectMsvcRuntime, collectRustReport, mergeComponents, nativeMaterial, parseArgs, pinnedMsvcMaterial, renderRelease } from "../release-attribution.mjs";
 
@@ -230,7 +230,7 @@ test("MSVC records exact proprietary CRT/SDK producer inputs and license evidenc
   assert.ok(fallback.materials.some((m) => m.text.includes("WIN10SDK.RTM.AUG_2018_en-US")));
   assert.ok(fallback.materials.some((m) => m.text.includes("Microsoft.Windows.SDK.CPP.x64")));
   assert.ok(fallback.materials.some((m) => m.text.includes("Original source SHA-256:")));
-  const futureSdk = (command) => command === "powershell.exe" ? JSON.stringify([{ DisplayName: "Windows Software Development Kit", DisplayVersion: "10.1.26100.9999" }]) : run(command);
+  const futureSdk = (command) => command === "powershell.exe" ? JSON.stringify([{ DisplayName: "Windows Software Development Kit", DisplayVersion: "10.1.28000.1" }]) : run(command);
   assert.throws(() => collectMsvcRuntime(options, env, futureSdk), /cannot locate Windows SDK/);
   const futureVs = (command) => command === "where.exe" ? compiler : JSON.stringify([{ installationPath: env.VSINSTALLDIR, installationVersion: "18.0.10000.1", productId: "Microsoft.VisualStudio.Product.Enterprise" }]);
   assert.throws(() => collectMsvcRuntime(options, env, futureVs), /cannot locate Visual Studio 2026/);
@@ -238,10 +238,99 @@ test("MSVC records exact proprietary CRT/SDK producer inputs and license evidenc
 
 test("pinned official Microsoft terms require reviewed content hashes", (t) => {
   assert.match(pinnedMsvcMaterial("vs2022").text, /DISTRIBUTABLE CODE/);
+  assert.match(pinnedMsvcMaterial("vs2026").text, /EULAID: VS2026_EntPro_ENU\.1033/);
   assert.match(pinnedMsvcMaterial("sdk").text, /Distributable Code/);
   const directory = mkdtempSync(join(tmpdir(), "msvc-pin-test-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   writeFileSync(join(directory, "msvc-provenance.json"), readFileSync(new URL("../licenses/msvc-provenance.json", import.meta.url)));
   writeFileSync(join(directory, "msvc-sdk.txt"), "modified Microsoft license");
   assert.throws(() => pinnedMsvcMaterial("sdk", directory), /digest mismatch/);
+});
+
+test("VS2026 runners use their own full terms and SDK family updates with exact evidence", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "release-vs2026-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  // Versions from PR4860 preflight logs; servicing from their versioned runner
+  // image documentation, not inferred from the SDK's unserviced library path.
+  for (const arch of ["x64", "arm64"]) {
+    const studio = join(root, arch, "VS");
+    const sdk = join(root, arch, "Windows Kits/10");
+    const tools = join(studio, "VC/Tools/MSVC/14.51.36231");
+    const compiler = join(tools, `bin/Host${arch}/${arch}/cl.exe`);
+    const vcLib = join(tools, "lib", arch);
+    const ucrtLib = join(sdk, "Lib/10.0.26100.0/ucrt", arch);
+    const licenseDir = join(studio, "Licenses/1033");
+    for (const path of [dirname(compiler), vcLib, ucrtLib, licenseDir]) mkdirSync(path, { recursive: true });
+    writeFileSync(compiler, "fixture compiler bytes");
+    for (const file of [join(vcLib, "libcmt.lib"), join(vcLib, "libvcruntime.lib"), join(ucrtLib, "libucrt.lib")]) writeFileSync(file, "fixture runtime bytes");
+    // Deliberately includes every old terms keyword: a REDIST list must still
+    // never satisfy the full-license check, even when passed as an override.
+    const redist = join(licenseDir, "Redist.txt");
+    writeFileSync(redist, "Fixture Microsoft Visual Studio Enterprise 2026 license Distributable Code list");
+    writeFileSync(join(licenseDir, "ThirdPartyNotices.txt"), Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from("Fixture supplemental third-party notice", "utf16le")]));
+    const env = { VSINSTALLDIR: studio, VCToolsInstallDir: tools, VCToolsVersion: "14.51.36231", WindowsSdkDir: sdk, UCRTVersion: "10.0.26100.0", VSCMD_ARG_TGT_ARCH: arch, LIB: `${vcLib};${ucrtLib}` };
+    const options = { target: `${arch === "x64" ? "x86_64" : "aarch64"}-pc-windows-msvc` };
+    const installation = { installationPath: studio, installationVersion: "18.11.3", productId: "Microsoft.VisualStudio.Product.Enterprise", isPrerelease: false };
+    const product = { DisplayName: "Windows Software Development Kit - Windows 10.0.26100.9457", DisplayVersion: "10.1.26100.9457" };
+    const run = (command) => command === "where.exe" ? compiler : JSON.stringify(command === "powershell.exe" ? [product] : [installation]);
+    for (const edition of ["Enterprise", "Professional"]) {
+      installation.productId = `Microsoft.VisualStudio.Product.${edition}`;
+      const result = collectMsvcRuntime(options, env, run);
+      assert.equal(result.components.length, 2);
+      assert.ok(result.materials.some((m) => m.text.includes("EULAID: VS2026_EntPro_ENU.1033")));
+      assert.ok(!result.materials.some((m) => m.text.includes("VS_EntPro_2022_ENU.1033")));
+      assert.equal(result.materials.filter((m) => m.title.startsWith("Installed supplemental evidence")).length, 2);
+      assert.ok(result.materials.some((m) => m.text === "Fixture supplemental third-party notice"));
+      assert.ok(result.components[1].properties.some((p) => p.name === "nteract:windows-sdk-products" && p.value.includes("10.1.26100.9457")));
+      for (const component of result.components) {
+        const inputs = JSON.parse(component.properties.find((p) => p.name === "nteract:runtime-inputs").value);
+        assert.ok(inputs.every((input) => input.sha256 === createHash("sha256").update("fixture runtime bytes").digest("hex")));
+      }
+    }
+    product.DisplayVersion = "10.1.26100.9999";
+    product.DisplayName = "Windows Software Development Kit - Windows 10.0.26100.9999";
+    installation.installationVersion = "18.12.12345.1";
+    assert.equal(collectMsvcRuntime(options, env, run).components.length, 2);
+    for (const invalid of [
+      { DisplayVersion: "10.1.28000.1" },
+      { DisplayVersion: "11.1.26100.9457" },
+      { DisplayVersion: "10.1.26100.9457-preview" },
+      { DisplayName: "Windows Software Development Kit Preview" },
+      { DisplayName: "Windows Software Development Kit - Windows 10.0.28000.1" },
+      { DisplayName: "Windows Software Development Kit - Windows 10.0.26100.7705" },
+    ]) {
+      const invalidRun = (command) => command === "powershell.exe" ? JSON.stringify([{ ...product, ...invalid }]) : run(command);
+      assert.throws(() => collectMsvcRuntime(options, env, invalidRun), /cannot locate Windows SDK/);
+    }
+    installation.isPrerelease = true;
+    assert.throws(() => collectMsvcRuntime(options, env, run), /preview Visual Studio/);
+    installation.isPrerelease = false;
+    installation.installationVersion = "19.0.12345.1";
+    assert.throws(() => collectMsvcRuntime(options, env, run), /unrecognized Visual Studio/);
+    installation.installationVersion = "18.11.3";
+    for (const edition of ["Community", "BuildTools"]) {
+      installation.productId = `Microsoft.VisualStudio.Product.${edition}`;
+      assert.throws(() => collectMsvcRuntime(options, env, run), /cannot locate Visual Studio/);
+    }
+    installation.productId = "Microsoft.VisualStudio.Product.Enterprise";
+    for (const mismatchedToolset of ["14.44.35207", "14.99.12345"]) {
+      const otherTools = join(studio, "VC/Tools/MSVC", mismatchedToolset);
+      const otherCompiler = join(otherTools, "bin/cl.exe");
+      mkdirSync(dirname(otherCompiler), { recursive: true });
+      writeFileSync(otherCompiler, "fixture compiler bytes");
+      const otherRun = (command) => command === "where.exe" ? otherCompiler : run(command);
+      assert.throws(() => collectMsvcRuntime(options, { ...env, VCToolsInstallDir: otherTools, VCToolsVersion: mismatchedToolset }, otherRun), /cannot locate Visual Studio/);
+    }
+    assert.throws(() => collectMsvcRuntime(options, { ...env, UCRTVersion: "10.0.28000.0" }, run), /cannot locate Windows SDK/);
+    assert.throws(() => collectMsvcRuntime(options, { ...env, NTERACT_MSVC_LICENSE_FILE: redist }, run), /cannot locate Visual Studio/);
+    const override = join(root, "override.txt");
+    writeFileSync(override, pinnedMsvcMaterial("vs2022").text);
+    assert.throws(() => collectMsvcRuntime(options, { ...env, NTERACT_MSVC_LICENSE_FILE: override }, run), /cannot locate Visual Studio/);
+    for (const text of ["{\\rtf1 Microsoft Visual Studio Enterprise 2026 license Distributable Code}", "<html>Microsoft Visual Studio Enterprise 2026 license Distributable Code</html>"]) {
+      writeFileSync(override, text);
+      assert.throws(() => collectMsvcRuntime(options, { ...env, NTERACT_MSVC_LICENSE_FILE: override }, run), /convert structured/);
+    }
+    writeFileSync(override, pinnedMsvcMaterial("vs2026").text);
+    assert.ok(collectMsvcRuntime(options, { ...env, NTERACT_MSVC_LICENSE_FILE: override }, run).components[0].properties.some((p) => p.name === "nteract:producer-license-path" && p.value === override));
+  }
 });

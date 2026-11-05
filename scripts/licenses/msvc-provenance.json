@@ -5,15 +5,23 @@
     "url": "https://visualstudio.microsoft.com/wp-content/uploads/2021/11/Visual-Studio-2022-Enterprise-Professional-License-EN.docx",
     "sourceSha256": "9c0cd52b20db9d081854c75bd1b50c75514b8f8cb09c8cad15e89d90b97b5bf3",
     "textSha256": "a91d6e094ba3758d7ea13019d4fd782f7a340019f75f7eb9e46ef4d5c643d120",
-    "extraction": "macOS textutil -convert txt -format docx -stdin -stdout; all text, Word-generated numbering omitted; complete original document retained separately"
+    "extraction": "macOS textutil -convert txt -format docx -stdin -stdout; form-feed page breaks normalized to newlines; all text, Word-generated numbering omitted; complete original document retained separately"
+  },
+  "vs2026": {
+    "file": "msvc-vs2026.txt",
+    "sourceFile": "msvc-vs2026.docx",
+    "url": "https://visualstudio.microsoft.com/wp-content/uploads/2025/10/Visual_Studio_2026-License-Enterprise_Professional_ENU.docx",
+    "sourceSha256": "dd2ab92a7c2bb90dd509e16572707a34b13bc0bc09b9199d115f25594ac39053",
+    "textSha256": "ce43834b79ae7ca95b8f9d60e1f612422657e7ef20ce042f14d018d53af5cf26",
+    "extraction": "macOS textutil -convert txt -format docx -stdin -stdout; form-feed page breaks normalized to newlines; all text, Word-generated numbering omitted; complete original document retained separately"
   },
   "sdk": {
     "file": "msvc-sdk.txt",
     "sourceFile": "msvc-sdk.rtf",
     "url": "https://download.microsoft.com/download/0/F/F/0FF2B061-47DD-4F55-89B6-FD1D8C44F14D/sdk_license.rtf",
     "sourceSha256": "dd07eb178e00c6bba4148457fc00ff77cd4887eb521d504186fe59c9ec8bbe62",
-    "textSha256": "b51ec2350d938f5b6c8d6207ee5a3e10effbf8a134e432aa393577d41d3dae06",
-    "extraction": "macOS textutil -convert txt -format rtf -stdin -stdout; all text, Word-generated numbering omitted; complete original document retained separately"
+    "textSha256": "358f1d9b3aea46260bcc8e0c538800a3f6e7aeeff6289ff2b1c054d054e5d2d3",
+    "extraction": "macOS textutil -convert txt -format rtf -stdin -stdout; form-feed page breaks normalized to newlines; all text, Word-generated numbering omitted; complete original document retained separately"
   },
   "sdk-package": {
     "file": "msvc-sdk-package.txt",

@@ -135,6 +135,10 @@ test("Windows CRT preflight validates all actual release runner environments wit
   assert.ok(body.indexOf("uses: actions/checkout@v6") < body.indexOf(activate));
   assert.ok(body.indexOf(activate) < body.indexOf(verify));
   assert.ok(body.indexOf(verify) < body.indexOf(collect));
+  const servicing = workflowStep(body, "Report installed SDK servicing products");
+  assert.match(servicing, /Get-ItemProperty/);
+  assert.match(servicing, /Select-Object DisplayName,DisplayVersion/);
+  assert.ok(body.indexOf(servicing) < body.indexOf(collect));
   assert.ok(body.indexOf("uses: actions/setup-node@v6") < body.indexOf(collect));
   assert.match(body, /node-version: "24"\n\s+architecture: \$\{\{ matrix\.arch \}\}/);
   assert.equal(body.match(/uses: ilammy\/msvc-dev-cmd@/g)?.length, 1);

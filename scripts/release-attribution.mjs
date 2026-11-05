@@ -18,6 +18,7 @@ const NODE_SCOPE = "Conservative native runtimed-node Cargo dependency inventory
 export async function prepareMsvcMaterials() {
   const sources = [
     ["vs2022", "https://visualstudio.microsoft.com/wp-content/uploads/2021/11/Visual-Studio-2022-Enterprise-Professional-License-EN.docx", "docx"],
+    ["vs2026", "https://visualstudio.microsoft.com/wp-content/uploads/2025/10/Visual_Studio_2026-License-Enterprise_Professional_ENU.docx", "docx"],
     ["sdk", "https://download.microsoft.com/download/0/F/F/0FF2B061-47DD-4F55-89B6-FD1D8C44F14D/sdk_license.rtf", "rtf"],
     ["sdk-package", "https://api.nuget.org/v3-flatcontainer/microsoft.windows.sdk.cpp/10.0.26100.7705/microsoft.windows.sdk.cpp.nuspec", null],
     ["sdk-package-x64", "https://api.nuget.org/v3-flatcontainer/microsoft.windows.sdk.cpp.x64/10.0.26100.7705/microsoft.windows.sdk.cpp.x64.nuspec", null],
@@ -28,12 +29,12 @@ export async function prepareMsvcMaterials() {
     const response = await fetch(url);
     if (!response.ok) throw new Error(`Cannot fetch ${url}: ${response.status}`);
     const bytes = Buffer.from(await response.arrayBuffer());
-    const text = format ? execFileSync("textutil", ["-convert", "txt", "-format", format, "-stdin", "-stdout"], { input: bytes }) : bytes;
+    const text = format ? Buffer.from(execFileSync("textutil", ["-convert", "txt", "-format", format, "-stdin", "-stdout"], { input: bytes, encoding: "utf8" }).replace(/\f/g, "\n")) : bytes;
     const file = `msvc-${id}.txt`;
     writeFileSync(join(repoRoot, "scripts/licenses", file), text);
     const sourceFile = format ? `msvc-${id}.${format}` : file;
     if (format) writeFileSync(join(repoRoot, "scripts/licenses", sourceFile), bytes);
-    manifest[id] = { file, sourceFile, url, sourceSha256: sha256(bytes), textSha256: sha256(text), extraction: format ? `macOS textutil -convert txt -format ${format} -stdin -stdout; all text, Word-generated numbering omitted; complete original document retained separately` : "Original UTF-8 metadata, unmodified" };
+    manifest[id] = { file, sourceFile, url, sourceSha256: sha256(bytes), textSha256: sha256(text), extraction: format ? `macOS textutil -convert txt -format ${format} -stdin -stdout; form-feed page breaks normalized to newlines; all text, Word-generated numbering omitted; complete original document retained separately` : "Original UTF-8 metadata, unmodified" };
   }
   writeFileSync(join(repoRoot, "scripts/licenses/msvc-provenance.json"), `${JSON.stringify(manifest, null, 2)}\n`);
 }
@@ -41,7 +42,8 @@ export async function prepareMsvcMaterials() {
 export function pinnedMsvcMaterial(id, directory = join(repoRoot, "scripts/licenses")) {
   const pins = {
     vs2022: "a91d6e094ba3758d7ea13019d4fd782f7a340019f75f7eb9e46ef4d5c643d120",
-    sdk: "b51ec2350d938f5b6c8d6207ee5a3e10effbf8a134e432aa393577d41d3dae06",
+    vs2026: "ce43834b79ae7ca95b8f9d60e1f612422657e7ef20ce042f14d018d53af5cf26",
+    sdk: "358f1d9b3aea46260bcc8e0c538800a3f6e7aeeff6289ff2b1c054d054e5d2d3",
     "sdk-package": "7b2f153f9f995726172e30bbc0d77ac6b73443b66a95ac04f8ef2ebcb3b66c4a",
     "sdk-package-x64": "340621de62d163b9dd76611ba816ee0b95a3462c89b3140bd2137ca5c9b3dee3",
     "sdk-package-arm64": "13e6e7575569646f5c0fbe678f9f962e4a0398f4314081bd9129938614d813a0",
@@ -52,7 +54,7 @@ export function pinnedMsvcMaterial(id, directory = join(repoRoot, "scripts/licen
   const path = join(directory, entry.file);
   const bytes = readFileSync(path);
   if (sha256(bytes) !== pins[id]) throw new Error(`Microsoft terms asset digest mismatch: ${path}`);
-  const originalPins = { vs2022: "9c0cd52b20db9d081854c75bd1b50c75514b8f8cb09c8cad15e89d90b97b5bf3", sdk: "dd07eb178e00c6bba4148457fc00ff77cd4887eb521d504186fe59c9ec8bbe62" };
+  const originalPins = { vs2022: "9c0cd52b20db9d081854c75bd1b50c75514b8f8cb09c8cad15e89d90b97b5bf3", vs2026: "dd2ab92a7c2bb90dd509e16572707a34b13bc0bc09b9199d115f25594ac39053", sdk: "dd07eb178e00c6bba4148457fc00ff77cd4887eb521d504186fe59c9ec8bbe62" };
   if (!/^msvc-[a-z0-9-]+\.(txt|rtf|docx)$/.test(entry.sourceFile ?? "") || entry.sourceSha256 !== (originalPins[id] ?? pins[id]) || sha256(readFileSync(join(directory, entry.sourceFile))) !== entry.sourceSha256) throw new Error(`Microsoft original source digest mismatch: ${id}`);
   return { path, digest: pins[id], text: bytes.toString("utf8"), provenance: `Official source: ${entry.url}\nOriginal source SHA-256: ${entry.sourceSha256}\nPreserved text SHA-256: ${pins[id]}\nExtraction: ${entry.extraction}` };
 }
@@ -270,8 +272,11 @@ export function collectMsvcRuntime({ target }, env = process.env, run = execFile
   const year = installation.installationVersion.startsWith("17.") ? "2022" : "2026";
   const paths = env.LIB.split(";").filter(Boolean).map((path) => resolve(path));
   const materials = [];
+  const supplemental = (path) => /^(?:redist|thirdpartynotices)\.txt$/i.test(basename(path));
   function terms(label, override, candidates, expectedProduct, fallback) {
     for (const path of override ? [override] : candidates) {
+      // REDIST lists and third-party notices supplement, but never replace, a grant.
+      if (supplemental(path)) continue;
       if (!existsSync(path)) continue;
       const bytes = readFileSync(path);
        const text = bytes.subarray(0, 2).equals(Buffer.from([0xff, 0xfe])) ? bytes.subarray(2).toString("utf16le") : bytes.toString("utf8");
@@ -296,25 +301,43 @@ export function collectMsvcRuntime({ target }, env = process.env, run = execFile
    const vsLicenseFiles = existsSync(vsLicenseDir) ? filesUnder(vsLicenseDir).filter((file) => /\.txt$/i.test(file)) : [];
   const edition = installation.productId.split(".").at(-1);
   const vsProduct = new RegExp(`Visual Studio[^]*?(?:${edition === "BuildTools" ? "Enterprise|Professional|Community" : edition})[^]*?${year}`, "i");
-  const vsFallback = year === "2022" && ["Enterprise", "Professional"].includes(edition) && /^17\.14\./.test(installation.installationVersion) && /^14\.44\./.test(version) ? "vs2022" : undefined;
+  // Reviewed toolset families, not runner patch releases. The 2026 terms
+  // explicitly cover revisions/updates unless different terms accompany them.
+  let vsFallback;
+  if (["Enterprise", "Professional"].includes(edition)) {
+    if (year === "2022" && /^17\.14\./.test(installation.installationVersion) && /^14\.44\./.test(version)) vsFallback = "vs2022";
+    if (year === "2026" && /^18\.\d+\.\d+(?:\.\d+)?$/.test(installation.installationVersion) && /^14\.51\./.test(version)) vsFallback = "vs2026";
+  }
    const vsTerms = terms(`Visual Studio ${year} ${installation.productId}`, env.NTERACT_MSVC_LICENSE_FILE, [join(studio, "License.txt"), join(studio, "Common7/IDE/License.txt"), ...vsLicenseFiles], vsProduct, vsFallback);
   let sdkFallback;
-  if (!env.NTERACT_WINDOWS_SDK_LICENSE_FILE && sdkVersion === "10.0.26100.0" && ["x64", "arm64"].includes(arch)) {
-    // The library directory omits servicing revisions. Match the installed SDK
-    // product as well, rather than extending a 26100 grant to future servicing.
+  let sdkProducts = [];
+  if (sdkVersion === "10.0.26100.0" && ["x64", "arm64"].includes(arch)) {
+    // The library directory omits servicing revisions. The SDK terms cover
+    // updates unless separately licensed; preserve exact products as evidence,
+    // without treating an arbitrary monthly servicing revision as a new grant.
     const script = "$ErrorActionPreference='Stop'; @(Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like 'Windows Software Development Kit*' } | Select-Object DisplayName,DisplayVersion) | ConvertTo-Json -Compress";
     let products;
     try { products = JSON.parse(run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8" })); }
-    catch (error) { if (!sdkLicenseFiles.length) fail(`cannot verify SDK servicing product for pinned terms: ${error.message}`); }
-    if ([products].flat().some((product) => product?.DisplayVersion === "10.1.26100.7705" && /^Windows Software Development Kit/.test(product.DisplayName))) {
+    catch (error) { if (!env.NTERACT_WINDOWS_SDK_LICENSE_FILE && !sdkLicenseFiles.some((path) => !supplemental(path))) fail(`cannot verify SDK servicing product for pinned terms: ${error.message}`); }
+    sdkProducts = [products].flat().filter((product) => {
+      const servicing = product?.DisplayVersion?.match(/^10\.1\.26100\.(\d+)$/)?.[1];
+      return servicing && ["Windows Software Development Kit", `Windows Software Development Kit - Windows 10.0.26100.${servicing}`].includes(product.DisplayName);
+    }).map(({ DisplayName, DisplayVersion }) => ({ DisplayName, DisplayVersion })).sort((a, b) => compare(a.DisplayVersion, b.DisplayVersion) || compare(a.DisplayName, b.DisplayName));
+    if (sdkProducts.length && !env.NTERACT_WINDOWS_SDK_LICENSE_FILE) {
       sdkFallback = "sdk";
       const evidence = pinnedMsvcMaterial("sdk-package");
-      materials.push({ title: "Windows SDK 10.0.26100.7705 license applicability evidence", text: `${evidence.provenance}\n\n${evidence.text}\nThe exact Microsoft SDK package declares https://aka.ms/WinSDKLicenseURL, resolved during preparation to the preserved sdk_license.rtf source. Installed product 10.1.26100.7705 uses the 10.0.26100.0 library directory. This fallback applies only to that installed servicing product, not future SDK versions.` });
+      materials.push({ title: "Windows SDK 26100 product-family license applicability evidence", text: `${evidence.provenance}\n\n${evidence.text}\nThe preserved Microsoft 10.0.26100.7705 SDK package declares https://aka.ms/WinSDKLicenseURL, resolved during preparation to the preserved sdk_license.rtf source. Its terms explicitly cover updates unless other terms accompany them. Reviewed applicability: SDK 26100 family, installed product 10.1.26100.*, library directory 10.0.26100.0, x64/arm64. Other SDK families and previews require review. Installed terms take precedence; maintainers must review any separately supplied or changed terms. This is product-family license evidence, not a claim that the preserved NuGet package produced these libraries.\nDetected installed products:\n${JSON.stringify(sdkProducts, null, 2)}` });
       const architecture = pinnedMsvcMaterial(`sdk-package-${arch}`);
       materials.push({ title: `Windows SDK ${arch} runtime package license applicability`, text: `${architecture.provenance}\n\n${architecture.text}` });
     }
   }
   const sdkTerms = terms(`Windows SDK ${sdkVersion}`, env.NTERACT_WINDOWS_SDK_LICENSE_FILE, sdkLicenseFiles, /Windows[^]*?(?:Development Kit|SDK)/i, sdkFallback);
+  for (const path of [...vsLicenseFiles, ...sdkLicenseFiles].filter(supplemental)) {
+    const bytes = readFileSync(path);
+    const text = bytes.subarray(0, 2).equals(Buffer.from([0xff, 0xfe])) ? bytes.subarray(2).toString("utf16le") : bytes.toString("utf8");
+    if (!text.trim() || text.includes("\0")) fail(`invalid supplemental notice ${path}`);
+    materials.push({ title: `Installed supplemental evidence (${path}; SHA-256 ${sha256(bytes)}; not a standalone license grant)`, text });
+  }
   const guidance = "https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files";
   const vsRedist = `https://learn.microsoft.com/en-us/visualstudio/releases/${year}/redistribution`;
   const sdkRedist = "https://learn.microsoft.com/en-us/legal/windows-sdk/redist";
@@ -330,6 +353,7 @@ export function collectMsvcRuntime({ target }, env = process.env, run = execFile
     materials.push({ title: `${name} ${release}`, text: `Proprietary Microsoft runtime statically linked by the release's +crt-static configuration; not covered by nteract's BSD license.\nProducer: ${installation.productId} ${installation.installationVersion}\nSource toolchain: ${source}\nRuntime input inventory (not an exact linker member map):\n${inventory.map((item) => `${item.path}\nSHA-256: ${item.sha256}`).join("\n")}\n\nRedistribution is subject to the producer's Microsoft license terms and applicable REDIST lists. No independent license grant or legal approval is supplied by these notices. Preserving these documents does not itself satisfy all distribution requirements, including applicable downstream protective terms. The SDK REDIST list permits listed static .lib inputs only as linked program output, subject to its terms. Debug CRTs are not redistributable. Security fixes for statically linked runtime code require rebuilding and redistributing the application.\nGuidance: ${guidance}\nApplicable REDIST list: ${redist}\nCRT library descriptions: https://learn.microsoft.com/en-us/cpp/c-runtime-library/crt-library-features\nVisual Studio licensing directory: https://visualstudio.microsoft.com/license-terms/` });
     return { type: "library", name, version: release, purl, "bom-ref": purl, licenses: [{ license: { name: "Microsoft proprietary software license terms (producer edition; see notices)", url: "https://visualstudio.microsoft.com/license-terms/" } }], externalReferences: [{ type: "documentation", url: guidance }, { type: "license", url: redist }], properties: [property("target", target), property("linkage", "static"), property("source-toolchain-path", source), property("visual-studio-product", installation.productId), property("visual-studio-version", installation.installationVersion), property("compiler-path", compiler), property("compiler-sha256", compilerHash), property("runtime-inputs", JSON.stringify(inventory)), property("producer-license-path", license.path), property("producer-license-sha256", license.digest)] };
   });
+  if (sdkProducts.length) components[1].properties.push(property("windows-sdk-products", JSON.stringify(sdkProducts)));
   return { components, materials };
 }
 

@@ -129,10 +129,32 @@ Windows MSVC builds statically link Microsoft runtime code. Build and attributio
 must use the same activated Visual Studio developer environment. Attribution
 records the producer edition, toolset, SDK, compiler, and static-library hashes.
 It also preserves the producer's Visual Studio and Windows SDK redistribution
-terms. Checked-in official terms cover the reviewed Visual Studio 2022
-Enterprise/Professional 17.14 / MSVC 14.44 and Windows SDK 10.1.26100.7705
-producer combination. Other toolsets require a new review or matching installed
-terms. If automatic discovery cannot locate those terms, set
+terms, plus installed `Redist.txt` and `ThirdPartyNotices.txt` as supplemental
+evidence, never as substitutes for the full grant. Checked-in official terms
+cover Visual Studio 2022 Enterprise/Professional 17.14 / MSVC 14.44 and
+Visual Studio 2026 Enterprise/Professional 18.x / MSVC 14.51. The
+[published VS2026 terms](https://visualstudio.microsoft.com/license-terms/vs2026-ga-pro-enterprise/)
+explicitly cover updates and revisions unless different terms apply. The original
+DOCX and complete extracted text are retained with SHA-256 provenance under
+`scripts/licenses/msvc*`. Preview installations and other toolset families require
+review; an edition name alone does not prove a valid full-use license.
+
+The SDK fallback covers the reviewed 26100 product family: installed product
+`10.1.26100.*`, library directory `10.0.26100.0`, and x64/arm64 static UCRT.
+The preserved Microsoft SDK package metadata links to the retained SDK terms,
+which expressly cover updates unless other terms accompany them. The package
+metadata establishes license applicability, not the origin of the installed
+library bytes. Exact detected servicing versions and static-library hashes remain
+in the evidence; a monthly servicing change alone does not require a new grant.
+The failing CI image manifests report SDK `10.1.26100.9457`:
+[Windows x64 image](https://github.com/actions/runner-images/blob/win25-vs2026/20261030.294/images/windows/Windows2025-VS2026-Readme.md)
+and [Windows ARM64 image](https://github.com/actions/runner-images/blob/win11-vs2026-arm64/20261101.203/images/windows/Windows11-VS2026-Arm64-Readme.md).
+These are runner documentation, not registry observations from the failed jobs.
+
+Installed terms take precedence. Maintainers must review changed or separately
+supplied terms, including the current published VS2026 terms, before release.
+Other SDK families require review or matching installed terms.
+If automatic discovery cannot locate those terms, set
 `NTERACT_MSVC_LICENSE_FILE` and `NTERACT_WINDOWS_SDK_LICENSE_FILE` to the correct
 plain-text terms files. Missing evidence stops Windows attribution. The
 Microsoft runtime is not BSD-licensed; preserving these documents does not replace

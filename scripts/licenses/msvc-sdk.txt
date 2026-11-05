@@ -22,7 +22,8 @@ Creating and configuring build systems internal to your organization to support 
 Enabling a service for third parties to design, develop and test programs or services that run on a Microsoft operating system. 
 Included Microsoft Programs. The software contains other Microsoft programs. The license terms with those programs apply to your use of them.
 Third Party Notices.  The software may include third party code that Microsoft, not the third party, licenses to you under this agreement. Notices, if any, for the third party code are included for your information only.  Notices, if any, for this third party code are included with the software and may be located at http://aka.ms/thirdpartynotices.
-
+
+
 
 ADDITIONAL LICENSING REQUIREMENTS AND/OR USE RIGHTS.
 Distributable Code. The software contains code that you are permitted to distribute in programs you develop if you comply with the terms below.
