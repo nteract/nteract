@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { callScript, operatorConfig } from "./operator-ssh.mjs";
-import { ROUTE, operatorRun, parseArgs } from "./record-storage-operator.mjs";
+import { ROUTE, exitCode, operatorRun, parseArgs } from "./record-storage-operator.mjs";
 
 const id = (n) =>
   `${String(n).repeat(8)}-${String(n).repeat(4)}-4${String(n).repeat(3)}-8${String(n).repeat(3)}-${String(n).repeat(12)}`;
@@ -39,11 +39,14 @@ test("the remote call goes to the record-storage operator route", () => {
 });
 
 /** A target of Page cells. Each is `{ page_id, owner, state, storage,
- * refusal?, fails? }`; converting flips storage unless `fails`. */
+ * fails?, unreadable?, unnamed? }`; converting flips storage unless `fails`.
+ * An `unreadable` cell's status is an error; an `unnamed` cell isn't the one
+ * its Page id names, so only its cell id reaches it. */
 function fakeTarget(cells, { catalogs = {}, switchOff = false } = {}) {
   const calls = [];
   const statusOf = (key) => {
     const page = cells[key];
+    if (page?.unreadable) return { cell_id: key, error: "Durable Object storage timed out" };
     if (!page)
       return {
         cell_id: key,
@@ -69,7 +72,8 @@ function fakeTarget(cells, { catalogs = {}, switchOff = false } = {}) {
             : null,
     };
   };
-  const byPage = (pageId) => Object.keys(cells).find((key) => cells[key].page_id === pageId);
+  const byPage = (pageId) =>
+    Object.keys(cells).find((key) => cells[key].page_id === pageId && !cells[key].unnamed);
   return {
     calls,
     transport: {
@@ -95,9 +99,9 @@ function fakeTarget(cells, { catalogs = {}, switchOff = false } = {}) {
               ],
             });
           case "convert": {
-            const key = byPage(body.page_id);
+            const key = body.cell_id ?? byPage(body.page_id) ?? `x${body.page_id}`;
             const page = cells[key];
-            if (page.fails)
+            if (!page || page.fails)
               return ok({
                 cell_id: key,
                 page_id: body.page_id,
@@ -230,4 +234,51 @@ test("convert stops before writing when the target lacks the plain switch", asyn
     return true;
   });
   assert.ok(!calls.some((call) => call.action === "convert"));
+});
+
+test("an unreadable status is never done: it is listed, and the run doesn't succeed", async () => {
+  const cells = {
+    [cell(1)]: { page_id: id(1), owner: "a", state: "active", storage: "buffered" },
+    [cell(2)]: {
+      page_id: id(2),
+      owner: "a",
+      state: "active",
+      storage: "buffered",
+      unreadable: true,
+    },
+  };
+  const status = await operatorRun({
+    mode: "status",
+    all: true,
+    transport: fakeTarget(cells).transport,
+  });
+  assert.deepEqual(
+    status.unreadable.map((page) => page.cell_id),
+    [cell(2)],
+  );
+  assert.equal(status.done, false);
+  const converted = await operatorRun({
+    mode: "convert",
+    all: true,
+    transport: fakeTarget(cells).transport,
+    sleep: async () => {},
+  });
+  assert.deepEqual(converted.converted, [id(1)]);
+  assert.deepEqual(converted.remaining, []);
+  assert.deepEqual(
+    converted.unreadable.map((page) => page.cell_id),
+    [cell(2)],
+  );
+  assert.equal(converted.done, false);
+  assert.equal(exitCode(converted), 2);
+  // Once every status reads and nothing remains, the run is done.
+  delete cells[cell(2)].unreadable;
+  cells[cell(2)].storage = "automerge";
+  const clean = await operatorRun({
+    mode: "status",
+    all: true,
+    transport: fakeTarget(cells).transport,
+  });
+  assert.equal(clean.done, true);
+  assert.equal(exitCode(clean), 0);
 });

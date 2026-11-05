@@ -86,6 +86,8 @@ export function parseArgs(argv) {
 /** Whether a status says the host would convert now. */
 const convertible = (status) =>
   validPageId(status?.page_id) && status.refusal === null && !status.error;
+/** Whether a status couldn't be read: the Page may still be on Subduction. */
+const unreadable = (status) => !!status?.error;
 /** Whether a status leaves the Page on Subduction for good. */
 const remains = (status) =>
   !status?.error &&
@@ -138,6 +140,15 @@ export async function operatorRun({
     not_converted: [],
     after: null,
     remaining: null,
+    unreadable: null,
+    done: false,
+  };
+  /** The verdict over the last statuses read: nothing left on Subduction and
+   * nothing unreadable. */
+  const settle = (statuses) => {
+    report.remaining = statuses.filter(remains).map(brief);
+    report.unreadable = statuses.filter(unreadable).map(brief);
+    report.done = !report.remaining.length && !report.unreadable.length;
   };
   const post = async (body) => {
     const { status, text } = await transport.call(body);
@@ -188,7 +199,7 @@ export async function operatorRun({
       report.catalog_only = [...listed].filter((id) => !named.has(id)).sort();
     }
     if (mode === "status") {
-      report.remaining = before.filter(remains).map(brief);
+      settle(before);
       return report;
     }
     if (before.some((status) => status.refusal === "switch_off"))
@@ -223,12 +234,16 @@ export async function operatorRun({
     }
     const after = await statuses(scope);
     report.after = summarize(after);
-    report.remaining = after.filter(remains).map(brief);
+    settle(after);
     return report;
   } catch (error) {
     throw Object.assign(error, { report });
   }
 }
+
+/** The script's exit code for a finished report: 0 only when it's done
+ * and no conversion failed. */
+export const exitCode = (report) => (report.done && !report.failed.length ? 0 : 2);
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
@@ -239,7 +254,7 @@ async function main() {
   try {
     const report = await operatorRun({ ...args, transport: sshTransport(config, ROUTE), log });
     process.stdout.write(`${JSON.stringify({ target: config.target, ...report }, null, 2)}\n`);
-    if (report.failed.length) process.exitCode = 2;
+    process.exitCode = exitCode(report);
   } catch (error) {
     if (error.report)
       process.stdout.write(

@@ -1030,8 +1030,11 @@ stops after N conversions; `--pause-ms` paces them (default 500). Each
 object resets under its own request, so `outcome` may be an error; `status`
 is read from the next object and is what counts. The script converts every
 target its host calls convertible, reads them all again, and prints
-`converted`, `failed`, `not_converted` and `remaining`. It exits 2 when any
-conversion failed; run it again to retry those. Every request and response is
+`converted`, `failed`, `not_converted`, `remaining`, `unreadable` (statuses
+that came back as errors: those Pages may still be on Subduction) and `done`.
+`done` is true only when `remaining` and `unreadable` are both empty. Either
+mode exits 0 only when `done` and no conversion failed, otherwise 2; run it
+again to retry. Every request and response is
 in the JSON-lines log (`--log`, default
 `record-storage-operator-<target>-<mode>-<time>.jsonl`).
 
@@ -1042,8 +1045,9 @@ node scripts/record-storage-operator.mjs --target pages --mode status --all > af
 ssh lab1 'sudo -n journalctl -u nteract-pages-live --since -1h | grep -c "\"trigger\":\"operator\""'
 ```
 
-`after.json` must have an empty `remaining`; only `deleted` and `missing`
-cells may still name Subduction storage. Locally,
+`after.json` must say `"done": true` (empty `remaining` and `unreadable`), and
+the script must exit 0; only `deleted` and `missing` cells may still name
+Subduction storage. Locally,
 `node scripts/e2e.mjs migration` runs both paths against celld and Chromium:
 a tab on a passively converted Page, and a tab open on a Page the operator
 converts, which reloads plain and keeps editing.
