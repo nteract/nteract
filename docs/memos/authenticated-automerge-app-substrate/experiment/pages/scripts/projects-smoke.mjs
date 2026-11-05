@@ -339,9 +339,7 @@ try {
   );
 
   // /pages at 1280px: Name, Source and Last activity columns, and a grid of cards
-  // that this browser remembers. Grid cards are behind a flag until they
-  // show previews (viewer/feature-flags.mjs).
-  await owner.evaluate(() => localStorage.setItem("pages.grid", "1"));
+  // that this browser remembers, with no query or stored flag.
   await owner.goto(`${origin}/pages`);
   await expect(owner.getByRole("heading", { name: "Pages", exact: true })).toBeVisible({
     timeout: 60000,
@@ -368,6 +366,11 @@ try {
   await expect(owner).toHaveURL(`${origin}/pages`);
   await owner.screenshot({ path: `${output}/pages-list-desktop.png` });
   const display = owner.getByRole("group", { name: "Display" });
+  await expect(display.getByRole("button", { name: "Grid view" })).toBeVisible();
+  await expect(display.getByRole("button", { name: "List view" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
   await display.getByRole("button", { name: "Grid view" }).click();
   await expect(display.getByRole("button", { name: "Grid view" })).toHaveAttribute(
     "aria-pressed",
@@ -396,7 +399,6 @@ try {
   await owner.goBack();
   await expect(owner).toHaveURL(`${origin}/pages`);
   await expect(desktopRow("Q4 plan")).toBeVisible();
-  await owner.evaluate(() => localStorage.removeItem("pages.grid"));
   complete(
     "/pages at 1280px shows Source and Last activity columns, a remembered grid of card links, and Project labels that open their Project",
   );
@@ -1083,8 +1085,7 @@ try {
   await expect(heading("Shared with you")).toBeVisible();
   await alice.screenshot({ path: `${shots}/library-desktop-dark.png` });
   await alice.emulateMedia({ colorScheme: "light" });
-  // ?grid=1 opens on the grid, with no stored flag and nothing clicked, and
-  // the library's address drops it.
+  // The shortcut opens on the grid, and the library's address drops it.
   await alice.goto(`${origin}/?group=project&grid=1`);
   const aliceDisplay = alice.getByRole("group", { name: "Display" });
   await expect(aliceDisplay.getByRole("button", { name: "Grid view" })).toHaveAttribute(
@@ -1102,9 +1103,12 @@ try {
   await aliceDisplay.getByRole("button", { name: "List view" }).click();
   await expect(alice.locator(".index-grid")).toHaveCount(0);
   complete("?grid=1 opens the library on the grid");
-  await alice.evaluate(() => localStorage.setItem("pages.grid", "1"));
   await alice.reload();
   await expect(heading("Shared with you")).toBeVisible({ timeout: 60000 });
+  await expect(aliceDisplay.getByRole("button", { name: "List view" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
   await alice
     .getByRole("group", { name: "Display" })
     .getByRole("button", { name: "Grid view" })
@@ -1116,12 +1120,19 @@ try {
     }),
   ).toBeVisible();
   await alice.screenshot({ path: `${shots}/library-desktop-grid.png` });
+  await alice.reload();
+  await expect(aliceDisplay.getByRole("button", { name: "Grid view" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+    { timeout: 60000 },
+  );
   await alice
     .getByRole("group", { name: "Display" })
     .getByRole("button", { name: "List view" })
     .click();
-  await alice.evaluate(() => localStorage.removeItem("pages.grid"));
-  complete("Date groups, a Page opened from them and Back, dark theme, and the flagged grid");
+  complete(
+    "Date groups, a Page opened from them and Back, dark theme, and remembered display modes",
+  );
 
   const alicePhone = await browser.newContext({
     viewport: { width: 390, height: 844 },
@@ -1150,6 +1161,8 @@ try {
     narrow.getByRole("group", { name: "Show" }).getByRole("button", { name: "All", exact: true }),
     narrow.getByRole("button", { name: /^Sort: / }),
     narrow.getByRole("button", { name: "New Page", exact: true }),
+    narrow.getByRole("button", { name: "Grid view", exact: true }),
+    narrow.getByRole("button", { name: "List view", exact: true }),
   ]) {
     const box = await control.boundingBox();
     assert.ok(box.height >= 44, `a phone control is ${box.height}px tall`);

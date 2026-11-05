@@ -520,7 +520,12 @@ test("opening a domain Page remembers only that reader's discovery entry, never 
   const page = Object.assign(Object.create(Page.prototype), {
     metadata: { ...doc, pageId: "test-page" },
     handle: { doc: () => ({ title: "Shared by domain" }) },
-    cachedTitle: "Shared by domain",
+    titleProjection: {
+      name: "settled",
+      record: { title: "Shared by domain" },
+      storage: { name: "stored" },
+      delivery: { name: "delivered" },
+    },
     ctx: { waitUntil: (promise) => pending.push(promise) },
     env: {
       CATALOGS: {
@@ -555,7 +560,12 @@ test("a domain reader's row is reported again when the Page's content moved sinc
   const page = Object.assign(Object.create(Page.prototype), {
     metadata: { ...doc, pageId: "test-page" },
     handle: { doc: () => ({ title: "Shared by domain" }) },
-    cachedTitle: "Shared by domain",
+    titleProjection: {
+      name: "settled",
+      record: { title: "Shared by domain" },
+      storage: { name: "stored" },
+      delivery: { name: "delivered" },
+    },
     contentActivity: { value: null },
     ctx: { waitUntil: (promise) => pending.push(promise) },
     env: {
@@ -596,4 +606,135 @@ test("a domain reader's row is reported again when the Page's content moved sinc
   // A reader's open is its discovery: its projection carries no keep_time.
   assert.equal(projections.length, 4);
   for (const { body } of projections) assert.equal(body.keep_time, undefined);
+});
+
+for (const failing of ["catalog", "d1"]) {
+  test(`a domain-only ${failing} failure retries discovery without invalidating owner delivery`, async () => {
+    const pending = [],
+      sent = [],
+      reports = [];
+    let fail = true;
+    const state = {
+      name: "settled",
+      record: { title: "Shared by domain", observed_at: "2026-11-05T00:00:00Z", keep: true },
+      storage: { name: "stored" },
+      delivery: { name: "delivered" },
+    };
+    const page = Object.assign(Object.create(Page.prototype), {
+      metadata: { ...metadata(), pageId: "test-page" },
+      handle: { doc: () => ({ title: "Shared by domain" }) },
+      titleProjection: state,
+      ctx: { waitUntil: (job) => pending.push(job) },
+      env: {
+        PAGES_CATALOG_INDEX: "1",
+        DB: { prepare() {}, batch() {} },
+        CATALOGS: {
+          getByName: (principal) => ({
+            fetch: async () => {
+              sent.push(principal);
+              return new Response(null, { status: fail && failing === "catalog" ? 503 : 200 });
+            },
+          }),
+        },
+      },
+      reportIndex: async (details) => {
+        reports.push(details);
+        if (fail && failing === "d1") throw Error("reader report unavailable");
+      },
+    });
+    const open = async () => {
+      page.cacheTitle({
+        ...employee,
+        expiresAt: Date.now() + 60_000,
+        domainAccess: { ...lease, expiresAt: Date.now() + 60_000 },
+      });
+      while (pending.length) await Promise.all(pending.splice(0));
+    };
+    await open();
+    assert.equal(page.titleProjection, state);
+    fail = false;
+    await open();
+    page.cacheTitle();
+    while (pending.length) await Promise.all(pending.splice(0));
+    assert.deepEqual(sent, [employee.principal, employee.principal]);
+    assert.equal(reports.length, failing === "d1" ? 2 : 1);
+    assert.ok(reports.every((report) => report.readerOnly));
+    assert.equal(page.titleProjection, state);
+  });
+}
+
+test("a domain discovery cannot clear an owner projection still pending", async () => {
+  const jobs = [];
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  const values = new Map();
+  const doc = metadata();
+  const page = Object.assign(Object.create(Page.prototype), {
+    metadata: { ...doc, pageId: "test-page" },
+    handle: { doc: () => ({ title: "Shared by domain" }) },
+    ctx: {
+      waitUntil: (job) => jobs.push(job),
+      storage: {
+        put: async (key, value) => values.set(key, value),
+        delete: async (key) => values.delete(key),
+      },
+    },
+    env: {
+      CATALOGS: {
+        getByName: (principal) => ({
+          fetch: () => (principal === doc.owner ? held : Promise.resolve(new Response(null))),
+        }),
+      },
+    },
+  });
+  page.cacheTitle();
+  const ownerWork = jobs.splice(0);
+  page.cacheTitle({
+    ...employee,
+    expiresAt: Date.now() + 60_000,
+    domainAccess: { ...lease, expiresAt: Date.now() + 60_000 },
+  });
+  while (jobs.length) await Promise.all(jobs.splice(0));
+  assert.equal(values.get("host/title-projection/pending"), true);
+  assert.equal(page.titleProjection.delivery.name, "sending");
+  release(new Response(null));
+  await Promise.all(ownerWork);
+  while (jobs.length) await Promise.all(jobs.splice(0));
+  assert.equal(values.get("host/title-projection/pending"), undefined);
+});
+
+test("a domain reader's failure during initial fanout does not invalidate owner delivery", async () => {
+  const jobs = [],
+    sent = [];
+  const doc = metadata();
+  const page = Object.assign(Object.create(Page.prototype), {
+    metadata: { ...doc, pageId: "test-page" },
+    handle: { doc: () => ({ title: "Shared by domain" }) },
+    ctx: {
+      waitUntil: (job) => jobs.push(job),
+      storage: { put: async () => {}, delete: async () => {} },
+    },
+    env: {
+      CATALOGS: {
+        getByName: (principal) => ({
+          fetch: async () => {
+            sent.push(principal);
+            return new Response(null, { status: principal === doc.owner ? 200 : 503 });
+          },
+        }),
+      },
+    },
+  });
+  const open = async () => {
+    page.cacheTitle({
+      ...employee,
+      expiresAt: Date.now() + 60_000,
+      domainAccess: { ...lease, expiresAt: Date.now() + 60_000 },
+    });
+    while (jobs.length) await Promise.all(jobs.splice(0));
+  };
+  await open();
+  assert.equal(page.titleProjection.name, "settled");
+  await open();
+  assert.deepEqual(sent, [doc.owner, employee.principal, employee.principal]);
 });

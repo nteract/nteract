@@ -265,7 +265,7 @@ test("the library lists every Page with Project labels, opens rows and Projects 
     "the nav marks where you are",
   );
   assert.deepEqual(calls[0], ["list_pages", { limit: 50 }]);
-  assert.equal(host.querySelector('[role="group"][aria-label="Display"]'), null, "no grid toggle");
+  assert.ok(host.querySelector('[role="group"][aria-label="Display"]'), "the display toggle shows");
 
   const row = host.querySelector(".index-row-link");
   act(() => row.dispatchEvent(new window.Event("pointerdown", { bubbles: true })));
@@ -940,7 +940,7 @@ test("drafts on this device lead All and Your items, and the offline fallback li
   await offline.unmount();
 });
 
-test("the grid shows only when enabled, switches with the list, and never nests links", async () => {
+test("the grid needs no flag, remembers either display mode, and never nests links", async () => {
   const events = [];
   const props = libraryProps({
     tool: async () => ({
@@ -954,7 +954,6 @@ test("the grid shows only when enabled, switches with the list, and never nests 
     projects: [{ project_id: projectId, title: "Launch" }],
     onOpen: (pageId) => events.push(["open", pageId]),
     onWarm: () => events.push(["warm"]),
-    grid: true,
   });
   window.localStorage.clear();
   const mounted = [];
@@ -962,6 +961,7 @@ test("the grid shows only when enabled, switches with the list, and never nests 
     const app = await mount(createElement(Library, props));
     mounted.push(app);
     const group = app.host.querySelector('[role=group][aria-label="Display"]');
+    assert.ok(group, "the toggle shows without a flag");
     const toggle = (name) => group.querySelector(`button[aria-label="${name}"]`);
     assert.deepEqual(
       [...group.querySelectorAll("button")].map((b) => [
@@ -1014,11 +1014,13 @@ test("the grid shows only when enabled, switches with the list, and never nests 
     assert.equal(window.localStorage.getItem("nteract.pages.view"), "list");
     await mounted.pop().unmount();
 
-    window.localStorage.setItem("nteract.pages.view", "grid");
-    const off = await mount(createElement(Library, { ...props, grid: false }));
-    mounted.push(off);
-    assert.ok(off.host.querySelector(".index-page-list"), "without the flag, always the list");
-    assert.equal(off.host.querySelector('[role=group][aria-label="Display"]'), null);
+    const list = await mount(createElement(Library, props));
+    mounted.push(list);
+    assert.ok(list.host.querySelector(".index-page-list"), "a remount remembers the list too");
+    assert.equal(
+      list.host.querySelector('button[aria-label="List view"]').getAttribute("aria-pressed"),
+      "true",
+    );
     await mounted.pop().unmount();
   } finally {
     // A failed assertion must not leave a grid mounted.
@@ -1082,9 +1084,7 @@ test("grid cards show each Page's card preview, inert, and keep the icon without
     act(() => new Promise((resolve) => setTimeout(resolve, PAGE_CARDS_GATHER_MS + 100)));
   const mounted = [];
   try {
-    const app = await mount(
-      createElement(Library, libraryProps({ tool, principal: "user:me", grid: true })),
-    );
+    const app = await mount(createElement(Library, libraryProps({ tool, principal: "user:me" })));
     mounted.push(app);
     await gathered();
     const cardCalls = calls.filter(([name]) => name === "page_cards");
@@ -1107,9 +1107,7 @@ test("grid cards show each Page's card preview, inert, and keep the icon without
     // List mode never asks for cards.
     window.localStorage.setItem("nteract.pages.view", "list");
     calls.length = 0;
-    mounted.push(
-      await mount(createElement(Library, libraryProps({ tool, principal: "user:me", grid: true }))),
-    );
+    mounted.push(await mount(createElement(Library, libraryProps({ tool, principal: "user:me" }))));
     await gathered();
     assert.deepEqual(
       calls.filter(([name]) => name === "page_cards"),
@@ -1120,9 +1118,7 @@ test("grid cards show each Page's card preview, inert, and keep the icon without
     // Neither does a grid that doesn't know its account.
     window.localStorage.setItem("nteract.pages.view", "grid");
     calls.length = 0;
-    mounted.push(
-      await mount(createElement(Library, libraryProps({ tool, principal: null, grid: true }))),
-    );
+    mounted.push(await mount(createElement(Library, libraryProps({ tool, principal: null }))));
     await gathered();
     assert.deepEqual(
       calls.filter(([name]) => name === "page_cards"),

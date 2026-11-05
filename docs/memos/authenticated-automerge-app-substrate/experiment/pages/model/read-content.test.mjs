@@ -50,6 +50,7 @@ test("nested images have bounded typed occurrence metadata, not link or code mat
   assert.equal(fields.summary.images.length, 1);
   assert.equal(fields.summary.images_truncated, true);
   assert.deepEqual(fields.summary.images[0], {
+    image_id: null,
     path: [0, 0],
     src,
     alt: "one",

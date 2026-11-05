@@ -142,15 +142,13 @@ async function cardsFor(page, ids, timeout = 30_000) {
   }
 }
 
-/** Open the library as a grid. `?grid=1` turns the flag on for the tab that
- * loads it, but the library drops the query from its address, so a reload
- * reads the flag from localStorage instead. */
+/** Open the library as a grid and check that a reload remembers the shortcut. */
 async function openGrid(page) {
   await page.goto(`${origin}/?grid=1`);
-  await page.evaluate(() => {
-    localStorage.setItem("pages.grid", "1");
-    localStorage.setItem("nteract.pages.view", "grid");
-  });
+  await expect(page.getByRole("button", { name: "Grid view" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
   await page.reload();
   await expect(page.locator("ul.index-grid").first()).toBeVisible({ timeout: 30000 });
 }

@@ -10,6 +10,8 @@ import {
 } from "./page.mjs";
 import { richDoc, parseMarkdown } from "./richtext.mjs";
 import { assertDocumentLimits } from "./limits.mjs";
+import { imageIds } from "./image-ids.mjs";
+import { documentFeatures } from "./schema-features.mjs";
 
 const asset_id = "a".repeat(64);
 const pageId = "33333333-3333-4333-8333-333333333333";
@@ -87,4 +89,40 @@ test("malformed or unplaceable images reject the entire structural batch", () =>
     assert.equal(before.title, "Untitled");
     assert.equal(orderedBlockIds(before).length, 1);
   }
+});
+
+test("two sources share metadata, preserve marker identity and stamp monotonically", () => {
+  const { after, result } = apply(fixture(), [
+    { op: "insert_image", asset_id, dark_asset_id: "b".repeat(64), alt: "", title: "Chart" },
+  ]);
+  const { block_id, image_id } = result.inserted_images[0];
+  assert.equal(imageIds(after, block_id)[0].image_id, image_id);
+  assert.ok(documentFeatures(after).includes("image-theme-variants"));
+  assert.equal(
+    richDoc(after.blocks[block_id]).firstChild.firstChild.attrs.dark_src,
+    `/api/pages/${pageId}/assets/${"b".repeat(64)}`,
+  );
+  const changed = apply(after, [
+    { op: "set_image", block_id, image_id, dark_asset_id: null, alt: "Updated" },
+  ]).after;
+  assert.equal(imageIds(changed, block_id)[0].image_id, image_id);
+  assert.ok(documentFeatures(changed).includes("image-theme-variants"));
+  const image = richDoc(changed.blocks[block_id]).firstChild.firstChild;
+  assert.equal(image.attrs.dark_src, null);
+  assert.equal(image.attrs.alt, "Updated");
+  assert.equal(image.attrs.title, "Chart");
+  assert.throws(
+    () =>
+      apply(changed, [
+        { op: "set_image", block_id, image_id, alt: "one" },
+        { op: "set_image", block_id, image_id, alt: "two" },
+      ]),
+    /same image twice/,
+  );
+  const deleted = A.change(A.clone(changed), (doc) =>
+    A.splice(doc, ["blocks", block_id, "richText"], 0, 1),
+  );
+  assert.throws(() => apply(deleted, [{ op: "set_image", block_id, image_id, alt: "Gone" }]), {
+    code: "image_not_found",
+  });
 });

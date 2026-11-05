@@ -187,6 +187,7 @@ export const PagesImage = Leaf.Type.define("PagesImage", {
     if (
       !imageAttrs(value) ||
       !safeUrl(value.src) ||
+      (value.dark_src != null && !safeUrl(value.dark_src)) ||
       ["alt", "title"].some((key) => value[key] != null && typeof value[key] !== "string")
     )
       throw Error("Invalid Pages image");

@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import ts from "typescript";
+import { createRequire } from "node:module";
 import { RECORD_STORAGE_MODES, PLAIN_STORAGE_FORMATS } from "../shared/record-storage.mjs";
 
 const excluded = new Set([
@@ -19,6 +19,9 @@ const repository = (app) =>
 
 /** Hash only the prototype, pinned experiment setup, and imported local source. */
 export function sourceFingerprint(app, { root = repository(app) } = {}) {
+  // Install/publish can import the adapter without build dependencies. Only
+  // preparation needs TypeScript, resolved from this trusted checkout.
+  const ts = createRequire(import.meta.url)("typescript");
   app = path.resolve(app);
   root = path.resolve(root);
   const inputs = new Set();

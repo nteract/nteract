@@ -74,7 +74,6 @@ async function signIn(email, viewport = { width: 1280, height: 900 }, options = 
 async function openGrid(page) {
   await page.goto(`${origin}/?grid=1`);
   await page.evaluate(() => {
-    localStorage.setItem("pages.grid", "1");
     localStorage.setItem("nteract.pages.view", "grid");
   });
   await page.reload();

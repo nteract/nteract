@@ -266,9 +266,17 @@ try {
   const figuresId = await create(a, "Image lines", `Intro\n\n${figures}`);
   const figuresBefore = await read(a, figuresId);
   await openPage(a, figuresId, "Intro");
-  const firstFigure = content(a).first().locator("img").first();
+  // These deliberately unavailable URLs render a fallback inside the stable
+  // logical image widget. Navigation must still use the native image node.
+  const figuresWidgets = content(a).first().locator(".pages-image");
+  await expect(figuresWidgets).toHaveCount(3);
+  for (const widget of await figuresWidgets.all())
+    await expect(widget).toHaveAttribute("data-image-state", "failed");
+  const firstFigure = figuresWidgets.first();
   await firstFigure.click();
-  await expect(firstFigure).toHaveClass(/wg-selected-node/);
+  await expect(
+    firstFigure.locator("xpath=ancestor::*[contains(@class, 'wg-selected-node')]"),
+  ).toHaveCount(1);
   await a.keyboard.press("ArrowDown");
   await a.keyboard.press("ArrowDown");
   assert.deepEqual(await blockTypes(a), ["Paragraph", "Paragraph"]);

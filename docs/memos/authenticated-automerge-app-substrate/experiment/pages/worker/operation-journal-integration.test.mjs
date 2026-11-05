@@ -1036,6 +1036,78 @@ test("Page image insertion validates storage once and journals actual block iden
   );
 });
 
+test("Page theme image set preflights both sources and keeps exact heads", async (t) => {
+  const f = await pageFixture(t);
+  const assetId = "a".repeat(64),
+    dark = "b".repeat(64);
+  let invalid = null;
+  const checked = [];
+  f.page.env = {
+    ...f.page.env,
+    PAGES_ASSETS: {
+      async head(key) {
+        const id = key.includes(dark) ? dark : assetId;
+        checked.push(id);
+        return {
+          size: 74,
+          httpMetadata: {
+            contentType:
+              invalid === "type" && id === dark ? "application/vnd.apache.parquet" : "image/png",
+          },
+          customMetadata: {
+            page_id: invalid === "page" && id === dark ? crypto.randomUUID() : pageId,
+            hash: id,
+            width: "3",
+            height: "2",
+          },
+        };
+      },
+    },
+  };
+  const before = await (await f.request("read_page")).json();
+  const inserted = await (
+    await f.request("edit_page", {
+      page_id: pageId,
+      base_heads: before.heads,
+      retry_token: before.retry_token,
+      idempotency_key: await retryKey(before.retry_token, "theme-insert"),
+      operations: [{ op: "insert_image", asset_id: assetId, alt: "Chart" }],
+    })
+  ).json();
+  const image = inserted.result.inserted_images[0];
+  for (const reason of ["type", "page", null]) {
+    invalid = reason;
+    const read = await (await f.request("read_page")).json();
+    const response = await f.request("edit_page", {
+      page_id: pageId,
+      base_heads: read.heads,
+      retry_token: read.retry_token,
+      idempotency_key: await retryKey(read.retry_token, `theme-set-${reason}`),
+      operations: [
+        {
+          op: "set_image",
+          block_id: image.block_id,
+          image_id: image.image_id,
+          asset_id: assetId,
+          dark_asset_id: dark,
+        },
+      ],
+    });
+    assert.equal(response.status === 200, reason === null);
+  }
+  assert.ok(checked.includes(dark));
+  const stale = await f.request("edit_page", {
+    page_id: pageId,
+    base_heads: before.heads,
+    retry_token: before.retry_token,
+    idempotency_key: await retryKey(before.retry_token, "theme-stale"),
+    operations: [
+      { op: "set_image", block_id: image.block_id, image_id: image.image_id, alt: "No" },
+    ],
+  });
+  assert.equal(stale.status, 409);
+});
+
 test("Page image preflight rejects missing assets and lost write access before editing", async (t) => {
   for (const denied of ["missing", "permission"]) {
     const f = await pageFixture(t);

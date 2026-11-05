@@ -7,7 +7,8 @@
 // the editor's prose styles apply and the swap to the live editor doesn't move
 // the text. It never renders wg-content, so nothing that finds the editor by
 // that element finds the preview.
-import React, { createElement } from "react";
+import React, { createElement, useEffect, useRef } from "react";
+import { imageLifecycle } from "./image-lifecycle.mjs";
 
 const TAGS = new Set([
   "p",
@@ -82,9 +83,9 @@ function props(tag, attrs, key) {
       const href = previewHref(value);
       if (href) out.href = href;
     } else if (tag === "a" && name === "title") out.title = value;
-    else if (tag === "img" && name === "src") {
+    else if (tag === "img" && (name === "src" || name === "dark_src")) {
       const src = previewSrc(value);
-      if (src) out.src = src;
+      if (src) out[name] = src;
     } else if (tag === "img" && (name === "alt" || name === "title")) out[name] = value;
     else if (tag === "input" && name === "checked") out.defaultChecked = true;
   }
@@ -123,10 +124,21 @@ export function previewNodes(content, prefix = "n", { inert = false } = {}) {
       });
     const elementProps = props(tag, attrs, key);
     if (!elementProps) return null;
+    if (tag === "img" && elementProps.dark_src) return createElement(PreviewImage, elementProps);
     return VOID.has(tag)
       ? createElement(tag, elementProps)
       : createElement(tag, elementProps, ...inner);
   });
+}
+
+function PreviewImage({ src, dark_src, alt, title }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const lifecycle = imageLifecycle(ref.current, { src, dark_src, alt, title });
+    lifecycle.connect();
+    return () => lifecycle.disconnect();
+  }, [src, dark_src, alt, title]);
+  return <span className="pages-image" ref={ref} />;
 }
 
 /** The preview of one Page, laid out like the open Page. */

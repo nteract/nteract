@@ -58,15 +58,7 @@ test("glide knobs read from the URL or localStorage and fall back when invalid",
   );
 });
 
-test("grid cards are off unless this browser opts in", async () => {
-  const { readGridFlag } = await import("./feature-flags.mjs");
-  assert.equal(readGridFlag(browser()), false);
-  assert.equal(readGridFlag(browser("?grid=1")), true);
-  assert.equal(readGridFlag(browser("", { "pages.grid": "on" })), true);
-  assert.equal(readGridFlag(browser("?grid=0", { "pages.grid": "1" })), false);
-});
-
-test("only the address asks for the grid itself; storage just turns the flag on", async () => {
+test("only the address shortcut requests grid; the old stored flag does not", async () => {
   const { readGridRequest } = await import("./feature-flags.mjs");
   assert.equal(readGridRequest(browser("?grid=1")), true);
   assert.equal(readGridRequest(browser("?show=shared&grid=on")), true);

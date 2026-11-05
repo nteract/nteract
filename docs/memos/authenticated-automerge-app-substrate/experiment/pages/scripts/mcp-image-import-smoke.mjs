@@ -307,6 +307,7 @@ try {
   assert.equal(inserted.result.inserted_images.length, 1);
   const insertedImage = inserted.result.inserted_images[0];
   assert.deepEqual(insertedImage, {
+    image_id: insertedImage.image_id,
     block_id: insertedImage.block_id,
     asset_id: asset.asset_id,
     asset_url: asset.asset_url,

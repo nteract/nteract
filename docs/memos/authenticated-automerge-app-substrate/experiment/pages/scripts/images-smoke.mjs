@@ -294,12 +294,16 @@ try {
   for (const page of [owner, editor, viewer]) await expectImages(page, 1);
   const leading = images(owner).first();
   await leading.click();
-  await expect(leading).toHaveClass(/wg-selected-node/);
+  await expect(
+    leading.locator("xpath=ancestor::*[contains(@class, 'wg-selected-node')]"),
+  ).toHaveCount(1);
   await owner.keyboard.press("ArrowRight");
   await owner.keyboard.press("Enter");
   await expect(firstBlock.locator("p")).toHaveCount(3);
   await leading.click();
-  await expect(leading).toHaveClass(/wg-selected-node/);
+  await expect(
+    leading.locator("xpath=ancestor::*[contains(@class, 'wg-selected-node')]"),
+  ).toHaveCount(1);
   await owner.keyboard.press("Backspace");
   for (const page of [owner, editor, viewer]) await expectImages(page, 0);
   const projectionError = /did not reproduce|is behind its Pages document/;
@@ -389,7 +393,9 @@ try {
   complete("File picker upload tolerates concurrent editing; image undo/redo reaches both peers");
 
   await images(owner).first().click();
-  await expect(images(owner).first()).toHaveClass(/wg-selected-node/);
+  await expect(
+    images(owner).first().locator("xpath=ancestor::*[contains(@class, 'wg-selected-node')]"),
+  ).toHaveCount(1);
   await expect(owner.getByRole("toolbar", { name: "Image actions" })).toBeVisible();
   await expect(owner.getByRole("button", { name: "Bold", exact: true })).toHaveCount(0);
   await expect(owner.getByRole("combobox", { name: "Text style" })).toHaveCount(0);
@@ -404,12 +410,16 @@ try {
       await owner.keyboard.press(key);
     await owner.waitForTimeout(1500);
     assert.equal(await markdown(), before, "a mark or heading key changed a selected image");
-    await expect(images(owner).first()).toHaveClass(/wg-selected-node/);
+    await expect(
+      images(owner).first().locator("xpath=ancestor::*[contains(@class, 'wg-selected-node')]"),
+    ).toHaveCount(1);
   }
   await atEnd(editor);
   await editor.keyboard.insertText(" A peer keeps writing while the image is selected.");
   await expect(content(owner)).toContainText("peer keeps writing while the image is selected");
-  await expect(images(owner).first()).toHaveClass(/wg-selected-node/);
+  await expect(
+    images(owner).first().locator("xpath=ancestor::*[contains(@class, 'wg-selected-node')]"),
+  ).toHaveCount(1);
   await expect(owner.getByRole("toolbar", { name: "Image actions" })).toBeVisible();
   await content(owner)
     .locator("p")
@@ -548,6 +558,44 @@ try {
   complete(
     "Markdown contains references only; viewer reload and phone-width layout render private images",
   );
+  const variantRead = (await tool(owner, "read_page", { page_id: pageId, comments: "none" })).body;
+  const occurrenceEntry = variantRead.outline.entries.find(
+    (entry) => entry.summary?.images?.length,
+  );
+  const occurrence = occurrenceEntry.summary.images[0];
+  const darkUpload = await fetch(origin + uploadPath, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${keys.editor}`, "Content-Type": "image/png" },
+    body: Buffer.from(fixtures[2], "base64"),
+  });
+  const darkAsset = await darkUpload.json();
+  const variantEdit = await tool(owner, "edit_page", {
+    page_id: pageId,
+    base_heads: variantRead.heads,
+    ...retry(variantRead),
+    operations: [
+      {
+        op: "set_image",
+        block_id: occurrenceEntry.block_id,
+        image_id: occurrence.image_id,
+        dark_asset_id: darkAsset.asset_id,
+      },
+    ],
+  });
+  assert.equal(variantEdit.status, 200, JSON.stringify(variantEdit.body));
+  await owner.emulateMedia({ colorScheme: "light" });
+  await owner.evaluate(() => {
+    localStorage.setItem("nteract.pages.theme", "dark");
+    window.dispatchEvent(new StorageEvent("storage", { key: "nteract.pages.theme" }));
+  });
+  await expect(images(owner).first()).toHaveAttribute("src", darkAsset.url);
+  await owner.evaluate(() => {
+    localStorage.setItem("nteract.pages.theme", "light");
+    window.dispatchEvent(new StorageEvent("storage", { key: "nteract.pages.theme" }));
+  });
+  await owner.emulateMedia({ colorScheme: "dark" });
+  await expect(images(owner).first()).toHaveAttribute("src", occurrence.src);
+  complete("Theme variants follow explicit Pages appearance opposite the OS at phone width");
 
   // Type, paste a screenshot, keep typing: the text after the paste follows
   // the image. Then the same with an upload slow enough to type through.

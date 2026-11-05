@@ -4,6 +4,7 @@ import { projectReadComments } from "./read-comments.mjs";
 import { nodeFields } from "./read-content.mjs";
 import { agentType } from "./node-registry.mjs";
 import { nodeIds } from "./node-ids.mjs";
+import { readableImageIds } from "./image-ids.mjs";
 import { commentMessageState, commentThreadState } from "./comment-content.mjs";
 import { blockMarkdown, exportMarkdown, isRich, richDoc, schema } from "./richtext.mjs";
 
@@ -77,6 +78,7 @@ function nativeNodes(doc, blockId, headings) {
   } catch {
     return null;
   }
+  const imageIds = readableImageIds(doc, blockId, tree);
   tree.forEach((node, _offset, nodeIndex) => {
     if (node.type.name === "heading") {
       while (headings.length && headings.at(-1).level >= node.attrs.level) headings.pop();
@@ -99,7 +101,7 @@ function nativeNodes(doc, blockId, headings) {
       type: agentType(node.type.name),
       heading_path: headings.map((heading) => heading.text),
       markdown: exportMarkdown(schema.node("doc", null, [node])),
-      fields: nodeFields(node, { pageId: doc.page_id }),
+      fields: nodeFields(node, { pageId: doc.page_id, imageIds }),
       fingerprint: canonical(node.toJSON()),
     });
   });

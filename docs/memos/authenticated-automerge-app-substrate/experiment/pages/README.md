@@ -150,13 +150,15 @@ Wordgard is the sole editor and applies native text splices, marks, and
 structural spans. The shared Markdown codec still uses ProseMirror schema and
 traversal libraries for import/export, validation, outlines and `node_index`,
 change reads, and passage-address mapping. It does not own an editor or mediate
-Wordgard keystrokes. Two encoders write spans:
+Wordgard keystrokes. Page-body Markdown writes and browser structural edits
+share one span encoder, Wordgard's `encode` (`viewer/wordgard-model.mjs`):
 
-- Browser edits use Wordgard's `encode` (`viewer/wordgard-model.mjs`).
-- Markdown writes use the ProseMirror adapter, then `pageSpans`
-  (`model/richtext.mjs`), which adjusts its output to the editor's form.
-  [`markdown-projection.test.mjs`](model/markdown-projection.test.mjs) lists
-  where the two still differ.
+- Browser edits encode the editor's document.
+- Page-body Markdown writes parse with the ProseMirror codec, and `pageSpans`
+  (`model/richtext.mjs`) re-encodes the adapter's spans with `encode`.
+
+Comments and preserved-content migration still write the ProseMirror adapter's
+spans directly.
 
 Block types are declared once in `model/node-registry.mjs`: stored names,
 ProseMirror names, agent-facing names, settable attrs and insert operations.
@@ -233,15 +235,16 @@ references; it does not publish the Page or change asset access.
   - Export writes lists tight with `-` bullets. The native model doesn't
     record blank lines between items, so a list reads back loose only when an
     item holds a second block, which Markdown can't write tight.
-  - Markdown writes store the editor's form ([`pageSpans`](model/richtext.mjs)):
-    an implicit top-level first paragraph and immutable-string attrs. The
+  - Markdown writes store the spans the editor's own encoder writes
+    ([`pageSpans`](model/richtext.mjs) runs Wordgard's `encode`). The
     editor's first structural edit (Enter, a cross-block delete, a block
-    paste, a list toggle) in an agent-written block writes no history; plain
-    typing never rewrites a block.
+    paste, a list toggle) in an agent-written block stores the same spans;
+    plain typing never rewrites a block.
     [`markdown-projection.test.mjs`](model/markdown-projection.test.mjs)
-    checks every corpus case and lists the cases left for a shared encoder:
-    two kinds of disagreement (a quote whose first child isn't a paragraph,
-    and mark runs the editor re-marks) across 11 corpus cases.
+    checks every corpus case. Five cases still write on that edit: Automerge
+    3.5's `updateSpans` unmarks and marks again any mark that covers more
+    than one span, even when the spans are unchanged. Those ops can win over
+    a peer's concurrent change to the same mark; the test pins it.
   - The scan masks code per table cell, as Markdown-it splits cells first,
     and recognizes a tag of any length, with `>` inside quoted values, in
     linear time.
@@ -1101,7 +1104,17 @@ projection or report. Two marks make a check boot until that repair has run:
   retries the store alone, at most once every 30 s, with the title's first
   observation time, and clears the mark when it lands if the Catalogs already
   had that title.
-- The index report mark is written after a report fails, and synced.
+- The index report mark is written after a report fails, and synced. Index
+  repair is independent: a failed D1 report does not resend a title that the
+  Catalogs already received. Domain-reader discovery likewise cannot invalidate
+  delivery to the owner and explicit members.
+
+`worker/title-projection.mjs` owns the title observation's storage and delivery
+states. Either can finish first; both must succeed before clearing the pending
+mark. Attempt tokens reject late outcomes, including an A-to-B-to-A rename.
+The host serializes local mark, title-store and clear effects, so a delayed
+clear cannot erase a newer mark. Catalog delivery does not wait on that queue.
+The stored record and pending-key formats are unchanged.
 
 Each reader's reconcile pass also rewrites its own access row from the
 check's answer. Repeating a title projection is harmless since `keep_time`,
@@ -1579,6 +1592,24 @@ change. The lifecycle overlay and the credential ceiling stay with nteract:
 
 ## Private images
 
+An image has a default/light `src` and optional `dark_src`, with shared `alt`
+and `title`. The `image-theme-variants` feature is stamped only when a dark
+source is written and never removed. Baseline images remain baseline. Agents
+use `insert_image.dark_asset_id` or `edit_page` `set_image` with the actual live
+inline `image_id` reported in `summary.images`, at exact heads. Both assets are
+preflighted as images belonging to the Page; deleted cursors never slide.
+Comments deliberately accept only baseline images.
+
+The Wordgard widget and boot preview share the resolved Pages appearance store
+and image lifecycle. Each source attempt creates a fresh image element; stale
+events are ignored, and dark-source failure falls back once to a distinct default
+source. Browser lazy loading owns the wait, with no offscreen timeout. Clipboard
+serialization still emits one canonical image with inert preservation metadata.
+Project-transfer bundle v4 carries structured variant occurrences and both asset
+references, deduplicates uploads per destination Page, and applies variants using
+destination live IDs. Truncated occurrence reads fail rather than silently losing
+variants. Versions 1 through 3 remain importable; old importers reject v4.
+
 Browser upload, screenshot paste, and file drop send PNG, JPEG, or static WebP to
 `POST /api/pages/:pageId/assets`. Only a stable Page-scoped reference and alt text
 enter Automerge. Image bytes use the private `PAGES_ASSETS` R2 binding, backed by
@@ -1869,7 +1900,7 @@ names the native one, so a close or crash midway reopens the plain draft and
 repeats the move. Existing Pages keep the mode they were created with, and a
 Page never changes mode.
 
-Both sides keep Repo 3 and run `AutomergeSyncBackend`
+Browsers keep Repo 3 and run `AutomergeSyncBackend`
 ([sync/backend.mjs](sync/backend.mjs)), a `SedimentreeBackend` that keeps a
 mirror Automerge document per tree and speaks CBOR frames
 ([sync/wire.mjs](sync/wire.mjs)) over the authenticated WebSocket. Repo
@@ -1897,9 +1928,12 @@ failure in a row doubles the writes that skip compaction, up to 256
 
 On the host, [worker/plain-sync.mjs](worker/plain-sync.mjs) runs a `SyncHost`
 ([sync/host.mjs](sync/host.mjs)). Browsers connect to it directly; the host's
-own Repo, which tools, comments and lifecycle code use through its handles,
-reaches it through an in-process trusted connection, so the host's edits take
-the same per-document queue and `flush()` waits for a completed sync round. A
+`HostRepo` facade ([sync/host-handle.mjs](sync/host-handle.mjs)) gives tools,
+comments and lifecycle code stable handles over SyncHost's single live document.
+Trusted host edits apply exact recorded changes through the same per-document
+queue; `flush()` waits for `durable()` and the worker's storage barrier. No host
+Repo, backend mirror or trusted transport is needed. Borrowed snapshots remain
+readable across commits and rely on Automerge's GC finalizer for reclamation. A
 sync message carrying changes is checked in that queue before anything is
 stored:
 
@@ -2687,12 +2721,12 @@ copies show there too. A `project` that `list_pages` refuses with
 filter; the account's Projects alone can't say so, since a Project created a
 moment ago may not be in them yet. Load more follows
 `next_cursor`; a cursor that has expired (`invalid_cursor`) starts the listing
-over from its first page. Grid cards are behind the `grid` flag (`?grid=1` or
-`localStorage["pages.grid"] = "1"`); each shows a preview of its Page's first
-content (see [Card previews](#card-previews)). The flag shows the List/Grid
-toggle, and the choice is remembered. `?grid=1` also opens the tab on the
-grid, as a remembered choice; the library then drops the query from its
-address, so after a reload the toggle shows only with the stored flag.
+over from its first page. The List/Grid toggle is always available. List is
+the default, and this browser remembers the choice in `nteract.pages.view`.
+Each grid card shows a preview of its Page's first content (see
+[Card previews](#card-previews)). The `?grid=1` shortcut opens the tab on the
+grid and remembers that choice; the library drops the query from its address,
+and a reload keeps the chosen view. No `pages.grid` flag is needed.
 
 ### Card previews
 
@@ -3037,15 +3071,21 @@ once a minute. The host numbers each admitted upload from its durable storage.
 The images live at `pages/<id>/card/<hash>-<theme>.<ext>`. An etag-fenced
 `card/latest` pointer names the current hash and the highest revision it has
 seen. A swap to another hash with a lower revision is refused as stale, so an
-upload for an older first screen that lands late can't replace a newer one. A
-new hash deletes the old images, so a Page keeps at most one image per theme.
+upload for an older first screen that lands late can't replace a newer one.
+The pointer references at most one image per theme, not a bound on stored bytes.
+A stale upload retains its image key because a newer accepted upload may already
+reuse that hash/theme key. Rejected uploads and failed writes or deletes can leave
+orphaned bytes. Successful swaps still attempt to delete old images; that separate,
+unfenced cleanup can race with newer uploads reusing those keys.
 `page_cards` adds `image: { card_hash, light, dark }` only when the pointer's
 hash is the stored JSON card's and both themes exist. The image route decides
 access as `page_cards` does, on every request: the caller's own Catalog entry
 for an owned Page, or its shared entry plus the Page host's record-only check.
 A grid of image cards boots no Page document, and a revoked grant fails on
 the next fetch. Its responses are `private, immutable`
-and carry `nosniff`. Purge and tombstone delete the images with `card.json`.
+and carry `nosniff`. Purge and tombstone delete `card.json`, the image pointer and
+its referenced images, plus orphans found in at most four prefix-listing pages.
+That bounded cleanup may leave orphaned bytes beyond the listing limit.
 The server can't check that the pixels match the content. That is the trust of
 any image the owner inserts into the Page, and only the Page's readers see it.
 
