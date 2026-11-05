@@ -7,6 +7,7 @@
     "dev": "node scripts/dev.mjs",
     "e2e": "node scripts/e2e.mjs",
     "test": "tsx --tsconfig tsconfig.json --test worker/*.test.mjs model/*.test.mjs viewer/*.test.mjs sync/*.test.mjs test/*.test.mjs scripts/*.test.mjs",
+    "test:properties": "tsx --tsconfig tsconfig.json --test model/structural-roundtrip.test.mjs",
     "smoke": "node scripts/smoke.mjs",
     "smoke:editor": "node scripts/wordgard-smoke.mjs",
     "smoke:tables": "node scripts/editable-table-smoke.mjs",
@@ -38,6 +39,7 @@
     "@playwright/test": "1.59.1",
     "esbuild": "0.28.0",
     "fake-indexeddb": "6.2.5",
+    "fast-check": "4.10.2",
     "jsdom": "26.1.0",
     "wrangler": "4.151.1"
   }
