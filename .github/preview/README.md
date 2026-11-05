@@ -1,5 +1,20 @@
 # PR preview workflow helpers
 
+## Pages Journal Coverage
+
+Pages deployment counts schema 1 distinguishes no verified HTTP samples
+(`coverage: unknown`, `total: null`) from a partial observation (`coverage: observed`,
+numeric total). Both require `completeness: unknown`; neither proves a complete
+HTTP window. The client renders Unknown, accepts otherwise verified releases with
+unknown coverage, and refuses malformed aggregates or known observed 5xx. Historical
+numeric-only counts remain readable but are labeled unverified, not retroactively
+treated as complete. Stored receipts are never rewritten.
+
+Activate these helpers first through reviewed main helper/reusable pins, BOTH
+page10 callers, and the exact controller reusable allowlist. Only then install
+the paired controller counts-schema change: older pinned clients cannot accept
+nullable totals. This source change does not edit pins, policy, logging, or hosts.
+
 These dependency-free Node.js helpers support automatic previews on an existing
 celld deployment on EC2. They do not activate any GitHub event workflow by
 themselves. The private `nteract/preview-infra` controller owns deployment policy,
