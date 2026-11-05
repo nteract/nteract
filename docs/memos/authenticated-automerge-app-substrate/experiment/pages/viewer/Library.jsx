@@ -240,9 +240,13 @@ export function Library({
   const params = view.params;
   const titles = useMemo(() => projectTitles(projects), [projects]);
   const items = view.failed ? EMPTY : snapshot.items;
+  const contents = useMemo(
+    () => new Set((projects ?? []).map((project) => project.document_id).filter(Boolean)),
+    [projects],
+  );
   const local = useMemo(
-    () => deviceRows(drafts, items, params, { failed: view.failed }),
-    [drafts, items, params, view.failed],
+    () => deviceRows(drafts, items, params, { failed: view.failed, contents }),
+    [drafts, items, params, view.failed, contents],
   );
   const rows = useMemo(
     () => [
