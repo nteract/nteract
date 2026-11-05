@@ -40,6 +40,7 @@ import {
   position,
   reviewKey,
 } from "./comment-nav.mjs";
+import { PageExcerpt } from "./PageExcerpt.jsx";
 import "./comments.css";
 
 const NO_COMPOSER = new Store({ state: { name: "idle" }, composer: null, body: "" });
@@ -410,7 +411,7 @@ export function CommentsPanel({
         if (
           current &&
           !event.defaultPrevented &&
-          reviewKey(event) === "resolve" &&
+          reviewKey(event) === "reply" &&
           current.state === "open" &&
           session.canComment
         ) {
@@ -429,242 +430,275 @@ export function CommentsPanel({
         }
       }}
     >
-      {showList && (
-        <section className="comments-list-pane" aria-label="Comment threads">
-          <div className="comments-heading">
-            <h2 id="comments-title">
-              <MessageSquare size={17} aria-hidden="true" /> Comments
-            </h2>
-            {!mobile && (
-              <button
-                type="button"
-                className="icon-button comments-expand"
-                aria-label={expanded ? "Narrow comments" : "Expand comments"}
-                title={expanded ? "Narrow comments" : "Expand comments"}
-                onClick={() => setExpanded(!expanded)}
-              >
-                {expanded ? (
-                  <Minimize2 size={16} aria-hidden="true" />
-                ) : (
-                  <Maximize2 size={16} aria-hidden="true" />
+      {reviewing ? (
+        <ReviewWorkspace
+          current={current}
+          threads={threads}
+          order={allInOrder()}
+          locate={locate}
+          now={now}
+          drafts={drafts}
+          problem={problem}
+          canComment={session.canComment}
+          changing={changing === current.id || Boolean(sending[current.id])}
+          onGo={(id) => dispatch({ type: "go", id })}
+          onStep={(by) => reviewCommand(by > 0 ? "next" : "previous")}
+          onResolveNext={() => reviewCommand("resolve")}
+          onExit={() => reviewCommand("exit")}
+          onOpenInPage={() => {
+            onClose();
+            requestAnimationFrame(() => onReveal(current));
+          }}
+          onClose={onClose}
+          threadView={threadView(current)}
+        />
+      ) : (
+        <>
+          {showList && (
+            <section className="comments-list-pane" aria-label="Comment threads">
+              <div className="comments-heading">
+                <h2 id="comments-title">
+                  <MessageSquare size={17} aria-hidden="true" /> Comments
+                </h2>
+                {!mobile && (
+                  <button
+                    type="button"
+                    className="icon-button comments-expand"
+                    aria-label={expanded ? "Narrow comments" : "Expand comments"}
+                    title={expanded ? "Narrow comments" : "Expand comments"}
+                    onClick={() => setExpanded(!expanded)}
+                  >
+                    {expanded ? (
+                      <Minimize2 size={16} aria-hidden="true" />
+                    ) : (
+                      <Maximize2 size={16} aria-hidden="true" />
+                    )}
+                  </button>
                 )}
-              </button>
-            )}
-            <button className="icon-button" aria-label="Close comments" onClick={onClose}>
-              <X size={18} aria-hidden="true" />
-            </button>
-          </div>
-          <div className="comments-filters">
-            <div className="comments-segmented" role="tablist" aria-label="Show threads">
-              {FILTERS.map((name) => (
-                <button
-                  key={name}
-                  type="button"
-                  role="tab"
-                  aria-selected={filter === name}
-                  className="comments-filter"
-                  onClick={() => setFilter(name)}
-                >
-                  {name === "open" ? "Open" : name === "mine" ? "Mine" : "Resolved"}
-                  {name !== "mine" && <span className="comments-filter-count">{counts[name]}</span>}
-                  {name === "resolved" && resolvedDraft && (
-                    <span className="comments-filter-draft" title="Unsent reply">
-                      ·
-                    </span>
-                  )}
+                <button className="icon-button" aria-label="Close comments" onClick={onClose}>
+                  <X size={18} aria-hidden="true" />
                 </button>
-              ))}
-            </div>
-            {openThreads.length > 0 && (
-              <button
-                type="button"
-                className="icon-button comments-review-start"
-                aria-label="Review open threads"
-                title="Review open threads one at a time"
-                onClick={startReview}
-              >
-                <ListChecks size={16} aria-hidden="true" />
-              </button>
-            )}
-          </div>
-          <div className="comments-body comments-list" ref={list} onKeyDown={rowKeys}>
-            {problem && !current && (
-              <p role="alert" className="error">
-                {problem}
-              </p>
-            )}
-            {session.commentsUnavailable && (
-              <p role="alert" className="error comments-unavailable">
-                Comments couldn't load. You can still read the Page.{" "}
-                <button
-                  type="button"
-                  className="subtle-button"
-                  onClick={() => session.retryComments()}
-                >
-                  Try again
-                </button>
-              </p>
-            )}
-            {keptDraft && (
-              <section className="comment-kept-draft" aria-label="Unsent comment">
-                <p className="muted comment-kept-draft-label">Unsent comment</p>
-                {quote && <blockquote className="composer-context">{quote}</blockquote>}
-                {draftProblem && (
-                  <p className="error" role="alert">
-                    {draftProblem}. Copy the text, then select a passage and choose Comment again.
+              </div>
+              <div className="comments-filters">
+                <div className="comments-segmented" role="tablist" aria-label="Show threads">
+                  {FILTERS.map((name) => (
+                    <button
+                      key={name}
+                      type="button"
+                      role="tab"
+                      aria-selected={filter === name}
+                      className="comments-filter"
+                      onClick={() => setFilter(name)}
+                    >
+                      {name === "open" ? "Open" : name === "mine" ? "Mine" : "Resolved"}
+                      {name !== "mine" && (
+                        <span className="comments-filter-count">{counts[name]}</span>
+                      )}
+                      {name === "resolved" && resolvedDraft && (
+                        <span className="comments-filter-draft" title="Unsent reply">
+                          ·
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+                {openThreads.length > 0 && (
+                  <button
+                    type="button"
+                    className="icon-button comments-review-start"
+                    aria-label="Review open threads"
+                    title="Review open threads one at a time"
+                    onClick={startReview}
+                  >
+                    <ListChecks size={16} aria-hidden="true" />
+                  </button>
+                )}
+              </div>
+              <div className="comments-body comments-list" ref={list} onKeyDown={rowKeys}>
+                {problem && !current && (
+                  <p role="alert" className="error">
+                    {problem}
                   </p>
                 )}
-                <p className="comment-kept-draft-text">
-                  {keptDraft.body?.markdown ?? keptDraft.body}
-                </p>
-                <div className="comment-form-actions">
-                  {session.canComment && !draftProblem && (
-                    <button type="button" className="primary" onClick={continueDraft}>
-                      Continue
+                {session.commentsUnavailable && (
+                  <p role="alert" className="error comments-unavailable">
+                    Comments couldn't load. You can still read the Page.{" "}
+                    <button
+                      type="button"
+                      className="subtle-button"
+                      onClick={() => session.retryComments()}
+                    >
+                      Try again
                     </button>
-                  )}
-                  <button type="button" className="subtle-button" onClick={() => composer.cancel()}>
-                    Discard
+                  </p>
+                )}
+                {keptDraft && (
+                  <section className="comment-kept-draft" aria-label="Unsent comment">
+                    <p className="muted comment-kept-draft-label">Unsent comment</p>
+                    {quote && <blockquote className="composer-context">{quote}</blockquote>}
+                    {draftProblem && (
+                      <p className="error" role="alert">
+                        {draftProblem}. Copy the text, then select a passage and choose Comment
+                        again.
+                      </p>
+                    )}
+                    <p className="comment-kept-draft-text">
+                      {keptDraft.body?.markdown ?? keptDraft.body}
+                    </p>
+                    <div className="comment-form-actions">
+                      {session.canComment && !draftProblem && (
+                        <button type="button" className="primary" onClick={continueDraft}>
+                          Continue
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="subtle-button"
+                        onClick={() => composer.cancel()}
+                      >
+                        Discard
+                      </button>
+                    </div>
+                  </section>
+                )}
+                {!visible.length && (
+                  <p className="muted comments-empty">
+                    {emptyText(filter, threads.length, session.canComment)}
+                  </p>
+                )}
+                {groups.map((group) => (
+                  <div className="comments-group-block" key={`group:${group.key}`}>
+                    <p className="comments-group">
+                      <span>
+                        {group.heading === null ? "Detached" : group.heading || "Top of page"}
+                      </span>
+                    </p>
+                    {group.threads.map((thread) => (
+                      <ThreadRow
+                        key={thread.id}
+                        thread={thread}
+                        now={now}
+                        location={locate(thread)}
+                        active={(current?.id ?? target?.id) === thread.id}
+                        draft={hasDraft(drafts[thread.id])}
+                        onOpen={() => openThread(thread.id)}
+                        onHover={() => {
+                          if (target?.id !== thread.id) onSelect?.(thread.id);
+                        }}
+                      />
+                    ))}
+                  </div>
+                ))}
+                {filter === "open" && resolvedThreads.length > 0 && (
+                  <button
+                    type="button"
+                    className="comments-list-end"
+                    onClick={() => setFilter("resolved")}
+                  >
+                    <CircleCheck size={14} aria-hidden="true" />
+                    <span>
+                      {resolvedThreads.length} resolved{" "}
+                      {resolvedThreads.length === 1 ? "thread" : "threads"}
+                      {resolvedDraft ? " · unsent reply" : ""}
+                    </span>
+                    <span className="comments-list-end-action">Show</span>
                   </button>
-                </div>
-              </section>
-            )}
-            {!visible.length && (
-              <p className="muted comments-empty">
-                {emptyText(filter, threads.length, session.canComment)}
-              </p>
-            )}
-            {groups.map((group) => (
-              <div className="comments-group-block" key={`group:${group.key}`}>
-                <p className="comments-group">
+                )}
+              </div>
+              {!mobile && (
+                <p className="comments-keys" aria-hidden="true">
                   <span>
-                    {group.heading === null ? "Detached" : group.heading || "Top of page"}
+                    <kbd>↑</kbd>
+                    <kbd>↓</kbd> Move
+                  </span>
+                  <span>
+                    <kbd>↵</kbd> Open
+                  </span>
+                  {session.canComment && (
+                    <span>
+                      <kbd>R</kbd> Reply
+                    </span>
+                  )}
+                  <span className="comments-keys-end">
+                    <kbd>esc</kbd> Close
                   </span>
                 </p>
-                {group.threads.map((thread) => (
-                  <ThreadRow
-                    key={thread.id}
-                    thread={thread}
-                    now={now}
-                    location={locate(thread)}
-                    active={(current?.id ?? target?.id) === thread.id}
-                    draft={hasDraft(drafts[thread.id])}
-                    onOpen={() => openThread(thread.id)}
-                    onHover={() => {
-                      if (target?.id !== thread.id) onSelect?.(thread.id);
-                    }}
-                  />
-                ))}
-              </div>
-            ))}
-            {filter === "open" && resolvedThreads.length > 0 && (
-              <button
-                type="button"
-                className="comments-list-end"
-                onClick={() => setFilter("resolved")}
-              >
-                <CircleCheck size={14} aria-hidden="true" />
-                <span>
-                  {resolvedThreads.length} resolved{" "}
-                  {resolvedThreads.length === 1 ? "thread" : "threads"}
-                  {resolvedDraft ? " · unsent reply" : ""}
-                </span>
-                <span className="comments-list-end-action">Show</span>
-              </button>
-            )}
-          </div>
-          {!mobile && (
-            <p className="comments-keys" aria-hidden="true">
-              <span>
-                <kbd>↑</kbd>
-                <kbd>↓</kbd> Move
-              </span>
-              <span>
-                <kbd>↵</kbd> Open
-              </span>
-              {session.canComment && (
-                <span>
-                  <kbd>R</kbd> Reply
-                </span>
               )}
-              <span className="comments-keys-end">
-                <kbd>esc</kbd> Close
-              </span>
-            </p>
+            </section>
           )}
-        </section>
-      )}
-      {current ? (
-        <section className="comments-thread-pane" aria-label="Thread">
-          <div className="comments-heading comments-thread-nav">
-            {reviewing ? (
-              <button
-                type="button"
-                className="subtle-button comments-back"
-                onClick={() => reviewCommand("exit")}
-              >
-                <ChevronLeft size={17} aria-hidden="true" /> Exit review
-              </button>
-            ) : split ? (
-              <span className="comments-split-title">Thread</span>
-            ) : (
-              <button type="button" className="subtle-button comments-back" onClick={back}>
-                <ChevronLeft size={17} aria-hidden="true" /> All comments
-              </button>
-            )}
-            {where && (
-              <span className="comments-position">
-                <b>{where.index}</b> of {where.total}
-              </span>
-            )}
-            <button
-              type="button"
-              className="icon-button"
-              aria-label="Previous thread"
-              disabled={!where || where.index === 1}
-              onClick={() => step(-1)}
-            >
-              <ChevronUp size={16} aria-hidden="true" />
-            </button>
-            <button
-              type="button"
-              className="icon-button"
-              aria-label="Next thread"
-              disabled={!where || where.index === where.total}
-              onClick={() => step(1)}
-            >
-              <ChevronDown size={16} aria-hidden="true" />
-            </button>
-            {!split && !mobile && !reviewing && (
-              <button
-                type="button"
-                className="icon-button comments-expand"
-                aria-label="Expand comments"
-                title="Expand comments"
-                onClick={() => setExpanded(true)}
-              >
-                <Maximize2 size={16} aria-hidden="true" />
-              </button>
-            )}
-            {!split && (
-              <button className="icon-button" aria-label="Close comments" onClick={onClose}>
-                <X size={18} aria-hidden="true" />
-              </button>
-            )}
-          </div>
-          {problem && (
-            <p role="alert" className="error comments-thread-problem">
-              {problem}
-            </p>
+          {current && !reviewing ? (
+            <section className="comments-thread-pane" aria-label="Thread">
+              <div className="comments-heading comments-thread-nav">
+                {reviewing ? (
+                  <button
+                    type="button"
+                    className="subtle-button comments-back"
+                    onClick={() => reviewCommand("exit")}
+                  >
+                    <ChevronLeft size={17} aria-hidden="true" /> Exit review
+                  </button>
+                ) : split ? (
+                  <span className="comments-split-title">Thread</span>
+                ) : (
+                  <button type="button" className="subtle-button comments-back" onClick={back}>
+                    <ChevronLeft size={17} aria-hidden="true" /> All comments
+                  </button>
+                )}
+                {where && (
+                  <span className="comments-position">
+                    <b>{where.index}</b> of {where.total}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="Previous thread"
+                  disabled={!where || where.index === 1}
+                  onClick={() => step(-1)}
+                >
+                  <ChevronUp size={16} aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="Next thread"
+                  disabled={!where || where.index === where.total}
+                  onClick={() => step(1)}
+                >
+                  <ChevronDown size={16} aria-hidden="true" />
+                </button>
+                {!split && !mobile && !reviewing && (
+                  <button
+                    type="button"
+                    className="icon-button comments-expand"
+                    aria-label="Expand comments"
+                    title="Expand comments"
+                    onClick={() => setExpanded(true)}
+                  >
+                    <Maximize2 size={16} aria-hidden="true" />
+                  </button>
+                )}
+                {!split && (
+                  <button className="icon-button" aria-label="Close comments" onClick={onClose}>
+                    <X size={18} aria-hidden="true" />
+                  </button>
+                )}
+              </div>
+              {problem && (
+                <p role="alert" className="error comments-thread-problem">
+                  {problem}
+                </p>
+              )}
+              {threadView(current)}
+            </section>
+          ) : (
+            split && (
+              <section className="comments-thread-pane comments-thread-empty" aria-label="Thread">
+                <p className="muted">Choose a thread to read it here.</p>
+              </section>
+            )
           )}
-          {threadView(current)}
-        </section>
-      ) : (
-        split && (
-          <section className="comments-thread-pane comments-thread-empty" aria-label="Thread">
-            <p className="muted">Choose a thread to read it here.</p>
-          </section>
-        )
+        </>
       )}
     </dialog>
   );
@@ -693,6 +727,218 @@ function emptyText(filter, total, canComment) {
   if (filter === "mine") return "No threads you've started or replied to.";
   if (total) return "All caught up.";
   return canComment ? "No comments yet. Select text to add one." : "No comments yet.";
+}
+
+/**
+ * Review (concept C): a full-width workspace. Threads to review on the left,
+ * the passage live in its Page in the middle, and the conversation with
+ * Resolve and next on the right. Keys: J/K move, R reply, E resolve and
+ * next, Esc back to the panel.
+ */
+function ReviewWorkspace({
+  current,
+  threads,
+  order,
+  locate,
+  now,
+  drafts,
+  problem,
+  canComment,
+  changing,
+  onGo,
+  onStep,
+  onResolveNext,
+  onExit,
+  onOpenInPage,
+  onClose,
+  threadView,
+}) {
+  const byId = new Map(threads.map((thread) => [thread.id, thread]));
+  const ordered = order.map((id) => byId.get(id)).filter(Boolean);
+  const open = ordered.filter((thread) => thread.state === "open");
+  const resolved = ordered.filter((thread) => thread.state === "resolved");
+  const done = resolved.length;
+  const index = ordered.findIndex((thread) => thread.id === current.id);
+  const next =
+    current.state === "open"
+      ? afterResolve(
+          current.id,
+          open.map((t) => t.id),
+        )
+      : null;
+  const upNext = next ? byId.get(next) : null;
+  const location = locate(current);
+  const path = location.headings;
+  const groups = groupByHeading(open, locate);
+  const [showResolved, setShowResolved] = useState(current.state === "resolved");
+  useEffect(() => {
+    if (current.state === "resolved") setShowResolved(true);
+  }, [current.id, current.state]);
+  const row = (thread) => (
+    <ThreadRow
+      key={thread.id}
+      thread={thread}
+      now={now}
+      location={locate(thread)}
+      active={thread.id === current.id}
+      draft={hasDraft(drafts[thread.id])}
+      onOpen={() => onGo(thread.id)}
+      onHover={() => {}}
+    />
+  );
+  return (
+    <>
+      <div className="comments-heading review-heading">
+        <h2 id="comments-title">
+          <ListChecks size={17} aria-hidden="true" /> Review comments
+        </h2>
+        <span className="review-progress-label">
+          <b>{done}</b> of {ordered.length} resolved
+        </span>
+        <span className="review-progress-bar" aria-hidden="true">
+          <span style={{ width: `${ordered.length ? (done / ordered.length) * 100 : 0}%` }} />
+        </span>
+        <button type="button" className="subtle-button comments-back" onClick={onExit}>
+          Exit review
+        </button>
+        <button className="icon-button" aria-label="Close comments" onClick={onClose}>
+          <X size={18} aria-hidden="true" />
+        </button>
+      </div>
+      <div className="review-grid">
+        <nav className="review-navigator" aria-label="Threads to review">
+          <div className="comments-body comments-list">
+            {groups.map((group) => (
+              <div className="comments-group-block" key={`group:${group.key}`}>
+                <p className="comments-group">
+                  <span>
+                    {group.heading === null ? "Detached" : group.heading || "Top of page"}
+                  </span>
+                </p>
+                {group.threads.map(row)}
+              </div>
+            ))}
+            {!open.length && <p className="muted comments-empty">All caught up.</p>}
+            {resolved.length > 0 && (
+              <>
+                <button
+                  type="button"
+                  className="comments-list-end"
+                  aria-expanded={showResolved}
+                  onClick={() => setShowResolved((value) => !value)}
+                >
+                  {showResolved ? (
+                    <ChevronDown size={14} aria-hidden="true" />
+                  ) : (
+                    <ChevronRight size={14} aria-hidden="true" />
+                  )}
+                  <span>Resolved</span>
+                  <span className="comments-filter-count">{resolved.length}</span>
+                </button>
+                {showResolved && resolved.map(row)}
+              </>
+            )}
+          </div>
+        </nav>
+        <section className="review-context" aria-label="Passage in the Page">
+          <div className="review-column-head">
+            <span className="review-crumbs">
+              {(path.length ? path : ["Top of page"]).map((heading, i) => (
+                <span key={i}>
+                  {i > 0 && <ChevronRight size={13} aria-hidden="true" />}
+                  <span className={i === path.length - 1 ? "here" : undefined}>{heading}</span>
+                </span>
+              ))}
+            </span>
+            <button type="button" className="subtle-button review-open-page" onClick={onOpenInPage}>
+              <LocateFixed size={14} aria-hidden="true" /> Open in Page
+            </button>
+          </div>
+          <PageExcerpt thread={current} />
+        </section>
+        <section className="review-conversation" aria-label="Conversation">
+          <div className="review-column-head">
+            <span className="comments-position">
+              <b>{index + 1}</b> of {ordered.length}
+            </span>
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="Previous thread"
+              title="Previous thread (K)"
+              disabled={index <= 0}
+              onClick={() => onStep(-1)}
+            >
+              <ChevronUp size={16} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="Next thread"
+              title="Next thread (J)"
+              disabled={index === ordered.length - 1}
+              onClick={() => onStep(1)}
+            >
+              <ChevronDown size={16} aria-hidden="true" />
+            </button>
+          </div>
+          {problem && (
+            <p role="alert" className="error comments-thread-problem">
+              {problem}
+            </p>
+          )}
+          {threadView}
+          {canComment && current.state === "open" && (
+            <div className="review-dock">
+              <button
+                type="button"
+                className="review-resolve-next"
+                disabled={changing}
+                onClick={onResolveNext}
+              >
+                <Check size={15} aria-hidden="true" /> Resolve and next <kbd>E</kbd>
+              </button>
+              {upNext ? (
+                <span className="review-up-next">
+                  <span className="review-up-next-label">Up next</span>
+                  <Avatar author={upNext.messages[0]?.author} size={16} />
+                  <span className="review-up-next-title">
+                    {threadTitle(upNext.messages.find((m) => !m.deletedAt)?.body).title ||
+                      "Comment"}
+                  </span>
+                </span>
+              ) : (
+                <span className="review-up-next review-up-next-label">Last open thread</span>
+              )}
+            </div>
+          )}
+        </section>
+      </div>
+      <footer className="review-keys" aria-hidden="true">
+        <span>
+          <kbd>J</kbd>
+          <kbd>K</kbd> Next / previous thread
+        </span>
+        {canComment && (
+          <>
+            <span>
+              <kbd>R</kbd> Reply
+            </span>
+            <span>
+              <kbd>E</kbd> Resolve and next
+            </span>
+            <span>
+              <kbd>⌘</kbd>
+              <kbd>↵</kbd> Send
+            </span>
+          </>
+        )}
+        <span>
+          <kbd>Esc</kbd> Back
+        </span>
+      </footer>
+    </>
+  );
 }
 
 /** One compact row in the thread list. Clicking opens the thread. */
@@ -928,6 +1174,7 @@ function ThreadView({
               ref={replyButton}
               type="button"
               className="thread-reply-button"
+              aria-label={hasDraft(value) ? "Continue reply" : "Reply"}
               onClick={() => {
                 setReplying(true);
                 requestAnimationFrame(() =>
@@ -935,7 +1182,11 @@ function ThreadView({
                 );
               }}
             >
-              <span>{hasDraft(value) ? "Continue reply" : "Reply"}</span>
+              <span>
+                {hasDraft(value)
+                  ? "Continue reply"
+                  : `Reply to ${attribution(messages.at(-1)?.author).name}…`}
+              </span>
               <kbd aria-hidden="true">R</kbd>
             </button>
           )}
