@@ -5,20 +5,10 @@ import { reloadGate } from "./build-freshness.mjs";
 import { hasDraftText } from "./comment-composer.mjs";
 import { Store, useStore } from "./store.mjs";
 import { COMMENTS_SHEET_QUERY } from "./comments-layout.mjs";
-import { CommentRichText, CommentContent } from "./CommentRichText.jsx";
+import { CommentRichText } from "./CommentRichText.jsx";
+import { AnchorChip, Message, MessageRuns, useNow } from "./CommentThreadParts.jsx";
+import { threadLocation, threadTitle } from "./comment-thread-display.mjs";
 import "./comments.css";
-
-function CommentAuthor({ author }) {
-  const name = author?.displayName?.trim() || "Collaborator";
-  const driver = author?.driver?.trim();
-  const delegated = driver && driver.toLowerCase() !== "browser";
-  return (
-    <div className="message-author">
-      <strong>{delegated ? driver : name}</strong>
-      {delegated && <span className="muted">on behalf of {name}</span>}
-    </div>
-  );
-}
 
 const NO_COMPOSER = new Store({ state: { name: "idle" }, composer: null, body: "" });
 
@@ -40,6 +30,7 @@ export function CommentsPanel({
   const keptDraft = draft.state.name === "dismissed" ? draft : null;
   const [mobile, setMobile] = useState(() => matchMedia(COMMENTS_SHEET_QUERY).matches);
   const [drafts, setDrafts] = useState({});
+  const now = useNow();
   const [expanded, setExpanded] = useState(false);
   const [visited, setVisited] = useState(open);
   // A modal sheet makes everything outside it inert, the inline composer
@@ -217,6 +208,7 @@ export function CommentsPanel({
         key={thread.id}
         thread={thread}
         session={session}
+        now={now}
         selected={target?.id === thread.id}
         changing={changing === thread.id}
         value={drafts[thread.id] || ""}
@@ -337,6 +329,7 @@ const hasDraft = (value) => Boolean((value?.markdown ?? value)?.trim());
 function CommentThread({
   thread,
   session,
+  now,
   selected,
   changing,
   value,
@@ -355,9 +348,8 @@ function CommentThread({
   const repliesId = useId();
   const messages = thread.messages.filter((message) => !message.deletedAt);
   const [first, ...replies] = messages;
-  const blockId =
-    thread.target.kind === "selection" ? thread.target.anchor.blockId : thread.target.blockId;
-  const blockSurvives = Object.hasOwn(session.doc.blocks, blockId);
+  const location = threadLocation(session.doc, thread);
+  const { title } = threadTitle(first?.body);
   const canReply = session.canComment && thread.state === "open";
   // A typed reply that can't be sent (edits paused, access lost, or the
   // thread resolved) stays visible, read-only, so it can be copied or
@@ -409,21 +401,9 @@ function CommentThread({
         onSelect();
       }}
     >
-      {thread.selectionContext?.text ? (
-        <button className="quote" onClick={onReveal} title="Show passage">
-          {thread.selectionContext.text}
-        </button>
-      ) : blockSurvives &&
-        (thread.target.kind === "block" || thread.selectionContext?.status === "detached") ? (
-        <button className="quote" onClick={onReveal}>
-          Show block
-        </button>
-      ) : null}
-      {thread.selectionContext?.status === "detached" && (
-        <p className="muted thread-detached">Passage removed</p>
-      )}
+      <AnchorChip anchor={location.anchor} onReveal={onReveal} />
       <div className="thread-heading">
-        {first && <CommentAuthor author={first.author} />}
+        <h3 className="thread-title">{title || "Comment"}</h3>
         {session.canComment && (
           <button
             className="icon-button thread-state-action"
@@ -441,9 +421,7 @@ function CommentThread({
         )}
       </div>
       {first && (
-        <div className="message">
-          <CommentContent message={first} source={session.commentMessage(thread.id, first.id)} />
-        </div>
+        <Message message={first} source={session.commentMessage(thread.id, first.id)} now={now} />
       )}
       <div className="thread-conversation-actions">
         {replies.length > 0 && (
@@ -474,17 +452,13 @@ function CommentThread({
         )}
       </div>
       <div id={repliesId} className="thread-replies" hidden={!repliesExpanded}>
-        {replies.map((message) => (
-          <div className="message" key={message.id}>
-            <CommentAuthor author={message.author} />
-            {repliesExpanded && (
-              <CommentContent
-                message={message}
-                source={session.commentMessage(thread.id, message.id)}
-              />
-            )}
-          </div>
-        ))}
+        {repliesExpanded && (
+          <MessageRuns
+            messages={replies}
+            sourceOf={(message) => session.commentMessage(thread.id, message.id)}
+            now={now}
+          />
+        )}
       </div>
       {((canReply && replyStarted) || keptDraft) && (
         <div ref={form} hidden={!replying && !keptDraft}>

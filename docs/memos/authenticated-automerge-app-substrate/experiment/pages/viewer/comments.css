@@ -1,80 +1,287 @@
-/* Discussion stays readable; empty reply editors do not occupy every thread. */
+/* Each thread is a card: where it points, a title, who wrote it and when,
+   then the conversation. The active thread carries the comment-anchor color
+   that lights its passage in the Page. */
 .comments .comments-body {
-  padding: 0 1rem 0.75rem;
+  padding: 0.5rem 0.75rem 0.75rem;
 }
 .comments .thread {
-  border: 0;
-  border-bottom: 1px solid var(--line);
-  border-radius: 0;
+  position: relative;
+  border: 1px solid transparent;
+  border-radius: 0.7rem;
   box-shadow: none;
-  margin: 0;
-  padding: 0.9rem 0;
+  margin: 0 0 0.35rem;
+  padding: 0.75rem 0.8rem 0.6rem;
   background: transparent;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease;
+}
+.comments .thread:hover {
+  background: color-mix(in oklab, var(--muted) 45%, transparent);
 }
 .comments .thread.thread-active {
   border-color: var(--line);
+  background: var(--card);
   box-shadow: none;
 }
-.comments .thread .quote {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  margin: 0 0 0.5rem;
-  padding: 0 0 0 0.5rem;
+.comments .thread.thread-active::before {
+  content: "";
+  position: absolute;
+  inset: 0.7rem auto 0.7rem -1px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--comment-anchor-line);
+}
+.comments .thread.resolved {
   background: transparent;
+  opacity: 0.85;
+}
+
+/* Anchor chips: a quoted passage with an orange tick, a named block, or a
+   passage that's gone. */
+.anchor-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: 100%;
+  min-height: 0;
+  margin: 0 0 0.45rem;
+  padding: 0.15rem 0.5rem 0.15rem 0.45rem;
+  border: 0;
+  border-left: 2px solid var(--comment-anchor-line);
+  border-radius: 0 0.35rem 0.35rem 0;
+  background: color-mix(in oklab, var(--comment-anchor) 9%, transparent);
   color: var(--muted-foreground);
   font-size: 0.75rem;
   line-height: 1.45;
-  max-height: none;
+  text-align: left;
 }
-.comments .thread-active .quote {
-  display: block;
-  max-height: 100px;
-  overflow: auto;
+.comments .thread .quote.anchor-chip {
+  display: inline-flex;
+  width: auto;
+  max-height: none;
+  overflow: hidden;
+}
+button.anchor-chip:hover {
+  color: var(--foreground);
+  background: color-mix(in oklab, var(--comment-anchor) 16%, transparent);
+}
+.anchor-chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.comments .thread-active .anchor-selection .anchor-chip-text {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
   color: var(--foreground);
 }
+.anchor-block {
+  border-left-color: var(--comment-anchor-line);
+}
+.anchor-detached {
+  border-left-color: var(--border);
+  background: color-mix(in oklab, var(--muted) 60%, transparent);
+}
+.anchor-chip-action {
+  margin-left: 0.2rem;
+  padding: 0;
+  min-height: 0;
+  border: 0;
+  background: none;
+  color: var(--foreground);
+  font-size: 0.75rem;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .comments .thread-heading {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 0.4rem;
-  min-height: 28px;
+  min-height: 24px;
+  margin-bottom: 0.35rem;
+}
+.thread-title {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 650;
+  line-height: 1.4;
+  letter-spacing: -0.005em;
+  overflow-wrap: anywhere;
+}
+.comments .thread-state-action {
+  width: 28px;
+  height: 28px;
+  margin-top: -3px;
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+}
+
+/* Messages: avatar column, then the author line and body. */
+.comments .message {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  column-gap: 0.55rem;
+}
+.message-gutter {
+  position: relative;
+  display: flex;
+  justify-content: center;
+}
+.message-gutter-time {
+  padding-top: 0.2rem;
+  font-size: 0.65rem;
+  color: var(--muted-foreground);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.message:hover .message-gutter-time {
+  opacity: 1;
+}
+.comments .message-author {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.1rem 0.4rem;
+  min-height: 24px;
+  overflow-wrap: anywhere;
 }
 .comments .message-author strong {
   font-size: 0.8rem;
   font-weight: 650;
 }
-.comments .thread-state-action {
-  width: 28px;
-  height: 28px;
-  margin-top: -4px;
-  flex-shrink: 0;
+.comment-delegate {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  background: var(--muted);
   color: var(--muted-foreground);
-}
-.comments .message p {
-  margin: 0.15rem 0 0.5rem;
+  font-size: 0.7rem;
   line-height: 1.5;
 }
-.comments .thread-conversation-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.3rem;
+.comment-time {
+  font-size: 0.72rem;
 }
-.comments .thread-conversation-actions button {
-  min-height: 28px;
-  padding: 0.2rem 0.4rem;
-  margin-left: -0.4rem;
+.comment-avatar {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: var(--avatar-size, 24px);
+  height: var(--avatar-size, 24px);
+  border-radius: 50%;
+  background: var(--avatar-color, var(--muted));
+  color: var(--avatar-foreground, var(--foreground));
+  font-size: calc(var(--avatar-size, 24px) * 0.4);
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  user-select: none;
+}
+.comment-avatar-agent {
+  border-radius: 30%;
+}
+.comment-avatar-badge {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1.5px solid var(--surface);
+  background: var(--foreground);
+  color: var(--background);
+  font-size: 7px;
+  font-weight: 700;
+}
+.message-body {
+  position: relative;
+}
+.message-body-clamped {
+  max-height: calc(1.5em * 4 + 0.65rem);
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 60%, transparent);
+  mask-image: linear-gradient(to bottom, #000 60%, transparent);
+}
+.comments .message p {
+  margin: 0.1rem 0 0.4rem;
+  line-height: 1.5;
+}
+.comments .message-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  min-height: 24px;
+  padding: 0.1rem 0.3rem;
+  margin: 0 0 0.25rem -0.3rem;
   font-size: 0.75rem;
   color: var(--muted-foreground);
 }
-.comments .thread-replies {
-  padding-left: 0.65rem;
-  margin-top: 0.5rem;
-  border-left: 1px solid var(--line);
+
+.comments .thread-conversation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  padding-left: calc(24px + 0.55rem);
 }
-.comments .thread-replies .message + .message {
-  margin-top: 0.65rem;
+.comments .thread-conversation-actions button {
+  min-height: 28px;
+  padding: 0.2rem 0.45rem;
+  margin-left: -0.45rem;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+/* The resting reply is a quiet one-line field until it's used. */
+.comments .thread-conversation-actions .thread-reply-button {
+  flex: 1 1 140px;
+  margin-left: 0;
+  justify-content: flex-start;
+  padding: 0.25rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  text-align: left;
+}
+.comments .thread-conversation-actions .thread-reply-button::after {
+  content: "…";
+}
+.comments .thread-reply-button:hover {
+  color: var(--foreground);
+  border-color: var(--border);
+}
+.comments .thread-replies {
+  margin-top: 0.4rem;
+}
+/* Runs of one author's messages, joined by a thin line in that author's
+   color from the avatar down to the next author. */
+.message-run {
+  position: relative;
+}
+.message-run + .message-run {
+  margin-top: 0.55rem;
+}
+.message-run:not([data-last])::before {
+  content: "";
+  position: absolute;
+  top: 28px;
+  bottom: -0.45rem;
+  left: 11px;
+  width: 2px;
+  border-radius: 2px;
+  background: color-mix(in oklab, var(--author-color) 55%, transparent);
+}
+.message-continued {
+  margin-top: 0.15rem;
 }
 .comments [hidden] {
   display: none;
@@ -83,9 +290,15 @@
   min-height: 64px;
   margin: 0.5rem 0;
 }
-.comments .thread-detached {
-  margin: 0 0 0.4rem;
-  font-size: 0.75rem;
+.comments .comment-reply-form {
+  margin-left: calc(24px + 0.55rem);
+}
+/* Reply formatting appears while the reply is in use. */
+.comment-reply-form .comment-rich-editor:not(:focus-within) .comment-formatting {
+  display: none;
+}
+.comment-reply-form .comment-rich-editor:focus-within {
+  border-color: var(--ring);
 }
 .comments .comment-composer {
   padding-top: 1rem;
@@ -187,6 +400,13 @@
     width: 40px;
     height: 40px;
     margin-top: -8px;
+  }
+  .comments .message-more,
+  .anchor-chip {
+    min-height: 32px;
+  }
+  .message-gutter-time {
+    opacity: 1;
   }
   .comments .thread-conversation-actions button {
     min-height: 40px;
