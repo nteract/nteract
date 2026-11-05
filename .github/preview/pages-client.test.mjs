@@ -1,7 +1,8 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {sendPagesDeployment,pagesStepSummary,pagesJournalSummary,pagesFailureDiagnostic,PAGES_DEPLOY_TIMEOUT_MS} from './pages-client.mjs';
+import {sendPagesDeployment,pagesStepSummary,pagesJournalSummary,pagesFailureDiagnostic,pagesPollTransition,PAGES_DEPLOY_TIMEOUT_MS,
+  PAGES_POLL_INTERVAL_MS,PAGES_POLL_MAX_FAILURES,PAGES_POLL_MAX_BACKOFF_MS} from './pages-client.mjs';
 const sha='a'.repeat(40),id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const env={PAGES_PAGE10_ENABLED:'true',GITHUB_REPOSITORY:'nteract/nteract',GITHUB_EVENT_NAME:'workflow_run',GITHUB_RUN_ID:'10',GITHUB_RUN_ATTEMPT:'1',
   GITHUB_TOKEN:'secret',ACTIONS_ID_TOKEN_REQUEST_URL:'https://actions.githubusercontent.com/token',ACTIONS_ID_TOKEN_REQUEST_TOKEN:'oidc'};
@@ -60,7 +61,7 @@ test('diagnostics distinguish bounded request failures and never disclose untrus
     ['oidc-transport','oidc','transport'],['oidc-timeout','oidc','timeout'],
     ['admission-http','admission','http',503],['admission-parse','admission','parse'],['admission-schema','admission','schema'],
     ['admission-transport','admission','transport'],['admission-timeout','admission','timeout'],
-    ['status-http','status','http',503],['status-parse','status','parse'],['status-identity','status','identity'],
+    ['status-http','status','http',404],['status-retried-http','status','http',503],['status-parse','status','parse'],['status-identity','status','identity'],
     ['status-schema','status','schema'],['status-failed','status','operation_failed'],['status-evidence','status','evidence'],
     ['status-transport','status','transport'],['status-timeout','status','timeout'],['status-body-timeout','status','timeout'],
   ];
@@ -71,7 +72,7 @@ test('diagnostics distinguish bounded request failures and never disclose untrus
       if(current==='admission') posts++;
       if(fault===`${current}-transport`) throw new Error(secret);
       if(fault===`${current}-timeout`) {controllers.at(-1).abort(new DOMException(secret,'TimeoutError'));throw new Error(secret);}
-      if(fault===`${current}-http`) return new Response(secret,{status:httpStatus});
+      if(fault===`${current}-http`||(fault==='status-retried-http'&&current==='status')) return new Response(secret,{status:httpStatus});
       if(fault===`${current}-parse`) return new Response(secret,{status:current==='admission'?202:200});
       if(fault===`${current}-schema`) return Response.json(current==='admission'?{operationId:'-'.repeat(36)}:current==='status'?{...result,status:secret}:{value:secret},
         {status:current==='admission'?202:200});
@@ -89,7 +90,9 @@ test('diagnostics distinguish bounded request failures and never disclose untrus
     await assert.rejects(sendPagesDeployment({...env,GITHUB_TOKEN:secret},event,{fetchImpl,
       clock:{now:()=>time,sleep:async ms=>time+=ms},onAccepted:value=>accepted.push(value)}),error=>{caught=error;return true;});
     const diagnostic=pagesFailureDiagnostic(caught),afterAdmission=phase==='status';
-    assert.deepEqual(diagnostic,{phase,code,elapsedMs:afterAdmission?5000:0,pollCount:afterAdmission?1:0,
+    // Transient status failures retry to the cap: sleeps of 5+5+10+20+40 seconds.
+    const retried=['status-retried-http','status-transport','status-timeout','status-body-timeout'].includes(fault);
+    assert.deepEqual(diagnostic,{phase,code,elapsedMs:retried?80000:afterAdmission?5000:0,pollCount:retried?5:afterAdmission?1:0,
       ...(afterAdmission?{operationId:id}:{}),...(httpStatus?{httpStatus}:{})},fault);
     assert.equal(posts,phase==='oidc'?0:1,fault);
     assert.deepEqual(accepted,afterAdmission?[{operationId:id}]:[],fault);
@@ -152,8 +155,10 @@ test('CLI prints only accepted identity and safe diagnostics, never cause or res
     {log:value=>lines.push(value),error:value=>lines.push(value)});
   assert.equal(context.exitCode,1);assert.equal(posts,1);
   assert.deepEqual(JSON.parse(lines[0]),{event:'pages_deployment_accepted',operationId:id});
-  const failure=JSON.parse(lines[1]);assert.equal(failure.phase,'status');assert.equal(failure.code,'transport');assert.equal(failure.operationId,id);
-  assert.ok(!lines.join('\n').includes(secret));assert.equal(lines.length,3);
+  const failure=JSON.parse(lines[5]);assert.equal(failure.phase,'status');assert.equal(failure.code,'transport');assert.equal(failure.operationId,id);
+  assert.ok(!lines.join('\n').includes(secret));assert.equal(lines.length,7);
+  assert.deepEqual(lines.slice(1,5).map(line=>JSON.parse(line)),[1,2,3,4].map(attempt=>({event:'pages_deployment_status_retry',
+    operationId:id,attempt,phase:'status',code:'transport',delayMs:5000*2**(attempt-1),pollCount:attempt})));
 });
 test('CLI summary failure preserves completed deployment and never recommends redispatch',async()=>{
   const source=await readFile(new URL('./send-pages-deployment.mjs',import.meta.url),'utf8');
@@ -190,4 +195,115 @@ test('disabled caller, failed CI and bad status never retry accepted deployment'
       if(status==='network') throw new Error('private');return Response.json({...result,status});
     }}));assert.equal(posts,1,status);
   }
+});
+
+// Status-poll retry harness: `statuses` scripts each status poll as a Response,
+// an Error to throw, or the string 'oidc-503' for a transient OIDC failure.
+const pollHarness=(statuses,{sleep}={})=>{
+  let time=0,posts=0,polls=0,oidcPolls=0;const sleeps=[],retries=[],queue=[...statuses];let pending;
+  const run=sendPagesDeployment(env,event,{onStatusRetry:value=>retries.push(value),
+    clock:{now:()=>time,sleep:async ms=>{sleeps.push(ms);time+=sleep?.(ms)??ms;}},fetchImpl:async(url,options)=>{
+      if(String(url).includes('actions.githubusercontent.com')) {
+        if(posts===0) return Response.json({value:'a.b.c'});
+        oidcPolls++;pending=queue.shift()??Response.json(result);
+        if(pending==='oidc-503') return new Response(null,{status:503});
+        return Response.json({value:'a.b.c'});
+      }
+      if(options.method==='POST') {posts++;return Response.json({operationId:id},{status:202});}
+      polls++;if(pending instanceof Error) throw pending;return typeof pending==='function'?pending():pending;
+    }});
+  return {run,stats:()=>({posts,polls,oidcPolls,sleeps,retries,time})};
+};
+const running=()=>Response.json({...result,status:'running'});
+test('poll transition backs off, resets on running, honors Retry-After, caps failures and respects the deadline',()=>{
+  let state={failures:0};const delays=[];
+  for(let i=1;i<PAGES_POLL_MAX_FAILURES;i++) {
+    const step=pagesPollTransition(state,{type:'transient',remainingMs:Infinity});state=step.state;
+    assert.equal(step.effect.type,'sleep');assert.equal(step.effect.attempt,i);delays.push(step.effect.delayMs);
+  }
+  assert.deepEqual(delays,[5000,10000,20000,40000]);
+  assert.deepEqual(pagesPollTransition(state,{type:'transient',remainingMs:Infinity}),{state:{failures:5},effect:{type:'fail',reason:'failure_cap'}});
+  assert.deepEqual(pagesPollTransition(state,{type:'running'}),{state:{failures:0},effect:{type:'sleep',delayMs:PAGES_POLL_INTERVAL_MS}});
+  assert.equal(pagesPollTransition({failures:9},{type:'running'}).state.failures,0);
+  assert.equal(pagesPollTransition({failures:20},{type:'running'}).effect.delayMs,PAGES_POLL_INTERVAL_MS);
+  assert.ok(Math.max(...delays)<=PAGES_POLL_MAX_BACKOFF_MS);
+  assert.equal(pagesPollTransition({failures:0},{type:'transient',retryAfterMs:30000,remainingMs:Infinity}).effect.delayMs,30000);
+  assert.equal(pagesPollTransition({failures:2},{type:'transient',retryAfterMs:1000,remainingMs:Infinity}).effect.delayMs,20000);
+  assert.deepEqual(pagesPollTransition({failures:0},{type:'transient',remainingMs:5000}).effect,{type:'fail',reason:'deadline'});
+  assert.deepEqual(pagesPollTransition({failures:0},{type:'transient',retryAfterMs:3600000,remainingMs:600000}).effect,{type:'fail',reason:'deadline'});
+  assert.throws(()=>pagesPollTransition({failures:0},{type:'other'}));
+});
+test('one transport error on a status poll retries, logs the retry, and succeeds without reposting',async()=>{
+  const {run,stats}=pollHarness([new Error('socket hang up'),running(),result].map(v=>v===result?Response.json(result):v));
+  assert.deepEqual(await run,result);
+  const {posts,polls,sleeps,retries}=stats();
+  assert.equal(posts,1);assert.equal(polls,3);assert.deepEqual(sleeps,[5000,5000,5000]);
+  assert.deepEqual(retries,[{operationId:id,attempt:1,phase:'status',code:'transport',delayMs:5000,pollCount:1}]);
+});
+test('failures reset after a running poll, so only consecutive errors count toward the cap',async()=>{
+  const net=()=>new Error('reset');
+  const {run,stats}=pollHarness([net(),net(),net(),net(),running(),net(),net(),net(),net(),Response.json(result)]);
+  assert.deepEqual(await run,result);
+  const {posts,retries}=stats();assert.equal(posts,1);assert.deepEqual(retries.map(r=>r.attempt),[1,2,3,4,1,2,3,4]);
+});
+test('consecutive status transport errors fail with code transport at the cap',async()=>{
+  const {run,stats}=pollHarness(Array.from({length:10},()=>new Error('private')));
+  await assert.rejects(run,error=>{
+    assert.deepEqual(pagesFailureDiagnostic(error),{phase:'status',code:'transport',elapsedMs:80000,pollCount:PAGES_POLL_MAX_FAILURES,operationId:id});return true;
+  });
+  const {posts,polls,retries}=stats();assert.equal(posts,1);assert.equal(polls,PAGES_POLL_MAX_FAILURES);assert.equal(retries.length,PAGES_POLL_MAX_FAILURES-1);
+});
+test('503, 502, 408 and 429 status responses retry; 429 Retry-After lengthens the wait',async()=>{
+  for(const status of [503,502,408,429]) {
+    const headers=status===429?{'retry-after':'30'}:{};
+    const {run,stats}=pollHarness([new Response('busy',{status,headers}),Response.json(result)]);
+    assert.deepEqual(await run,result,String(status));
+    const {posts,sleeps,retries}=stats();assert.equal(posts,1);
+    assert.deepEqual(retries,[{operationId:id,attempt:1,phase:'status',code:'http',httpStatus:status,delayMs:status===429?30000:5000,pollCount:1}]);
+    assert.deepEqual(sleeps,[5000,status===429?30000:5000]);
+  }
+  for(const value of ['Wed, 21 Oct 2026 07:28:00 GMT','-1','3601','01','1.5']) {
+    const {run,stats}=pollHarness([new Response(null,{status:429,headers:{'retry-after':value}}),Response.json(result)]);
+    await run;assert.equal(stats().retries[0].delayMs,5000,value);
+  }
+});
+test('transient OIDC failure during polling retries without reposting',async()=>{
+  const {run,stats}=pollHarness(['oidc-503',Response.json(result)]);
+  assert.deepEqual(await run,result);
+  const {posts,polls,retries}=stats();assert.equal(posts,1);assert.equal(polls,1);
+  assert.deepEqual(retries,[{operationId:id,attempt:1,phase:'oidc',code:'http',httpStatus:503,delayMs:5000,pollCount:1}]);
+});
+test('401, 403, 404 and operation_failed stay terminal on the first poll',async()=>{
+  for(const status of [401,403,404]) {
+    const {run,stats}=pollHarness([new Response(null,{status}),Response.json(result)]);
+    await assert.rejects(run,error=>{
+      assert.deepEqual(pagesFailureDiagnostic(error),{phase:'status',code:'http',httpStatus:status,elapsedMs:5000,pollCount:1,operationId:id});return true;
+    });
+    assert.equal(stats().retries.length,0);assert.equal(stats().polls,1);
+  }
+  const {run,stats}=pollHarness([Response.json({...result,status:'failed'})]);
+  await assert.rejects(run,error=>pagesFailureDiagnostic(error).code==='operation_failed');
+  assert.equal(stats().retries.length,0);assert.equal(stats().posts,1);
+  // Admission-time OIDC and admission failures keep their single-attempt behavior.
+  let posts=0;
+  await assert.rejects(sendPagesDeployment(env,event,{clock:{now:()=>0,sleep:async()=>{}},fetchImpl:async(url,options)=>{
+    if(String(url).includes('actions.githubusercontent.com')) return Response.json({value:'a.b.c'});
+    posts++;return new Response(null,{status:503});
+  }}),error=>{assert.deepEqual(pagesFailureDiagnostic(error),{phase:'admission',code:'http',httpStatus:503,elapsedMs:0,pollCount:0});return true;});
+  assert.equal(posts,1);
+});
+test('retries stop at the overall deadline instead of waiting past it',async()=>{
+  // Three running polls consume 45 minutes; the next 429 asks for an hour.
+  let n=0;
+  const {run,stats}=pollHarness([running(),running(),running(),new Response(null,{status:429,headers:{'retry-after':'3600'}})],
+    {sleep:ms=>++n<=3?15*60*1000:ms});
+  await assert.rejects(run,error=>{
+    const d=pagesFailureDiagnostic(error);assert.equal(d.phase,'status');assert.equal(d.code,'http');assert.equal(d.httpStatus,429);return true;
+  });
+  assert.equal(stats().retries.length,0);assert.equal(stats().posts,1);
+  // Persistent errors near the deadline end on the deadline guard, never a repost.
+  let m=0;
+  const late=pollHarness(Array.from({length:10},()=>new Error('x')),{sleep:ms=>++m===1?47*60*1000+50000:ms});
+  await assert.rejects(late.run,error=>{assert.equal(pagesFailureDiagnostic(error).phase,'status');return true;});
+  assert.ok(late.stats().time<48*60*1000);assert.equal(late.stats().posts,1);
 });
