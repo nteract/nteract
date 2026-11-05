@@ -262,7 +262,7 @@ test("rich edits go through the host: set_node, all and replacement_markdown, wi
   const edit = (key, operations, heads = f.heads()) =>
     f.tool("owner", "patch_page", { base_heads: heads, idempotency_key: key, operations });
   const wrongNode = await edit("rich-wrong-node", [
-    { op: "set_node", block_id: f.blockId, match_text: "Friday", checked: true },
+    { op: "set_node", block_id: f.blockId, match_text: "Friday", attrs: { checked: true } },
   ]);
   assert.equal(wrongNode.status, 400);
   assert.equal(wrongNode.body.code, "invalid_edit_selector");
@@ -276,7 +276,13 @@ test("rich edits go through the host: set_node, all and replacement_markdown, wi
   assert.equal(math.status, 400);
   assert.equal(math.body.code, "unsupported_markdown");
   const applied = await edit("rich-applied", [
-    { op: "set_node", block_id: f.blockId, match_text: "We ship", heading_level: 2 },
+    {
+      op: "set_node",
+      block_id: f.blockId,
+      match_text: "We ship",
+      type: "heading",
+      attrs: { level: 2 },
+    },
     {
       op: "replace_match",
       block_id: f.blockId,
@@ -323,7 +329,15 @@ test("target-scope set_node goes through the host from older heads", async (t) =
     base_heads: base,
     conflict_scope: "target",
     idempotency_key: "target-set-node",
-    operations: [{ op: "set_node", block_id: f.blockId, match_text: "We ship", heading_level: 2 }],
+    operations: [
+      {
+        op: "set_node",
+        block_id: f.blockId,
+        match_text: "We ship",
+        type: "heading",
+        attrs: { level: 2 },
+      },
+    ],
   });
   assert.equal(heading.status, 200, JSON.stringify(heading.body));
   assert.deepEqual(heading.body.result.edits, [
@@ -336,7 +350,15 @@ test("target-scope set_node goes through the host from older heads", async (t) =
     base_heads: base,
     conflict_scope: "target",
     idempotency_key: "target-set-node-stale",
-    operations: [{ op: "set_node", block_id: f.blockId, match_text: "We ship", heading_level: 3 }],
+    operations: [
+      {
+        op: "set_node",
+        block_id: f.blockId,
+        match_text: "We ship",
+        type: "heading",
+        attrs: { level: 3 },
+      },
+    ],
   });
   assert.equal(stale.status, 409, JSON.stringify(stale.body));
   assert.equal(stale.body.code, "edit_conflict");
@@ -396,6 +418,23 @@ test("set_node {type, attrs} goes through the host, and read_page reports the sa
   assert.equal(wrong.status, 400);
   assert.equal(wrong.body.code, "invalid_edit_selector");
   assert.match(wrong.body.error, /checked applies to task list items; match_text is in a heading/);
+  // A top-level field is refused with the typed field to use, in both scopes.
+  for (const conflict_scope of ["page", "target"]) {
+    const flat = await f.tool("owner", "patch_page", {
+      base_heads: f.heads(),
+      conflict_scope,
+      idempotency_key: `flat-set-node-${conflict_scope}`,
+      operations: [
+        { op: "set_node", block_id: f.blockId, match_text: "We ship", heading_level: 2 },
+      ],
+    });
+    assert.equal(flat.status, 400, conflict_scope);
+    assert.equal(flat.body.code, "invalid_edit_selector", conflict_scope);
+    assert.match(
+      flat.body.error,
+      /not a top-level heading_level; use type "heading" with attrs\.level/,
+    );
+  }
 });
 
 test("delete_node goes through the host by the outline's node_id, and a gone id is node_not_found", async (t) => {

@@ -1328,8 +1328,8 @@ whole column, header included, and null clears it. A quote's or list item's firs
 paragraph belongs to the quote or item, so a type change there is refused. Any
 other node is refused with invalid_edit_selector naming the node the text is in.
 Receipts include matched: 1 and, for align, cells. type paragraph on a paragraph
-changes nothing. The flat fields checked, language, heading_level and align are
-accepted as aliases for one deploy; use type and attrs.
+changes nothing. A top-level checked, language, heading_level or align is
+refused with invalid_edit_selector naming the type or attrs field to use.
 
 Markdown is a projection of the rich text, not its storage. Highlights read as
 <mark data-color="green">text</mark>; insert_markdown, replace_block_markdown and

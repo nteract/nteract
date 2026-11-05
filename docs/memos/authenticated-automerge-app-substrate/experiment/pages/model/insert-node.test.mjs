@@ -373,7 +373,7 @@ test("replace_match and set_node beside a dataframe leave it unchanged", () => {
   const before = dataframes(doc, id);
   const { doc: after } = edit(doc, [
     { op: "replace_match", block_id: id, match_text: "hello", replacement: "hi" },
-    { op: "set_node", block_id: id, match_text: "world", heading_level: 2 },
+    { op: "set_node", block_id: id, match_text: "world", type: "heading", attrs: { level: 2 } },
   ]);
   assert.deepEqual(dataframes(after, id), before);
   assert.equal(

@@ -2453,8 +2453,8 @@ written. `set_node`'s receipt carries only `matched` and, for `align`,
 as `{ type?, attrs? }` with the names [`model/node-registry.mjs`](model/node-registry.mjs)
 declares and `read_page` reports: `type` (`paragraph` or `heading`, the
 registry's `retype` group) and settable attrs (`level`, `language`, `checked`,
-`align`, the last scoped to the table column). The flat fields `checked`,
-`language`, `heading_level` and `align` are aliases for one deploy. It
+`align`, the last scoped to the table column). A top-level `checked`,
+`language`, `heading_level` or `align` is refused with the field to use. It
 rewrites the governing block marker through `updateSpans`, which updates the
 marker's attributes in place, as the editor does: the marker, its text and
 its comment anchors keep their identity. Marks on text characters are unchanged;
