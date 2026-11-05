@@ -168,7 +168,11 @@ try {
   await expect(b.locator(".thread-row-chip")).toHaveText("Pages A");
   await b.locator(".thread-row").first().click();
   await expect(b.locator(".thread-view .message")).toContainText("Discuss this cell together.");
-  await expect(b.locator(".thread-passage mark")).toHaveText("Pages A");
+  // The card copies the rendered cell, bold and all, with this passage lit.
+  await expect(
+    b.locator(".thread-passage .passage-snippet strong .copy-passage-active"),
+  ).toHaveText("Pages A");
+  await expect(b.locator(".thread-passage-text")).toHaveCount(0);
   await b.locator(".thread-passage-jump").click();
   await expect(b.locator(".comment-passage-active")).toHaveText("Pages A");
   await b.getByRole("button", { name: "Close comments", exact: true }).click();
