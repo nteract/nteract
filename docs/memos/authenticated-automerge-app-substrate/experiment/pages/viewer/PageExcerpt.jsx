@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 /**
  * The block a thread points at, shown as the Page renders it: tables stay
@@ -99,35 +99,39 @@ const PARAGRAPH = "p, li, td, th, h1, h2, h3, h4, h5, h6, blockquote, pre, figca
 export function PassageSnippet({ thread, children }) {
   const host = useRef(null);
   const [rendered, setRendered] = useState(false);
-  useEffect(() => {
+  // A layout effect, so a rendered passage shows as the copy from the first
+  // paint; the plain-text fallback never flashes in front of it.
+  useLayoutEffect(() => {
     const target = host.current;
     if (!target) return;
     let frame = 0;
     const find = () =>
       document.querySelector(`.document [data-comment-thread="${CSS.escape(thread.id)}"]`);
+    const paint = () => {
+      const passage = find();
+      const paragraph = passage?.closest(PARAGRAPH);
+      if (!paragraph || !paragraph.closest(".document")) {
+        target.replaceChildren();
+        setRendered(false);
+        return;
+      }
+      const copy = readOnlyCopy(paragraph, thread.id);
+      copy.classList.add("passage-snippet-paragraph");
+      target.replaceChildren(copy);
+      setRendered(true);
+      // Bring the passage into the clipped window, a line from the top.
+      const lit = target.querySelector(".copy-passage-active");
+      if (lit) {
+        const line = parseFloat(window.getComputedStyle(target).lineHeight) || 20;
+        target.scrollTop = Math.max(0, lit.offsetTop - copy.offsetTop - line);
+      }
+    };
+    // Edits to the Page repaint once per frame.
     const render = () => {
       cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
-        const passage = find();
-        const paragraph = passage?.closest(PARAGRAPH);
-        if (!paragraph || !paragraph.closest(".document")) {
-          target.replaceChildren();
-          setRendered(false);
-          return;
-        }
-        const copy = readOnlyCopy(paragraph, thread.id);
-        copy.classList.add("passage-snippet-paragraph");
-        target.replaceChildren(copy);
-        setRendered(true);
-        // Bring the passage into the clipped window, a line from the top.
-        const lit = target.querySelector(".copy-passage-active");
-        if (lit) {
-          const line = parseFloat(window.getComputedStyle(target).lineHeight) || 20;
-          target.scrollTop = Math.max(0, lit.offsetTop - copy.offsetTop - line);
-        }
-      });
+      frame = requestAnimationFrame(paint);
     };
-    render();
+    paint();
     const source = find()?.closest(".page-block");
     const observer = new MutationObserver(render);
     if (source) observer.observe(source, { subtree: true, childList: true, characterData: true });
