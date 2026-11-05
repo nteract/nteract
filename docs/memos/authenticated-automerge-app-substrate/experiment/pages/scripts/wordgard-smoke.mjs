@@ -717,13 +717,14 @@ try {
   await expect(b.locator(".comment-passage")).toHaveText("fox");
   await b.getByRole("button", { name: "Comments", exact: true }).click();
   await expect(b.locator(".comment-composer")).toHaveCount(0);
-  await expect(b.locator(".thread .message")).toContainText("Discuss this shared passage.");
-  await b.locator(".thread .quote").click();
+  await b.locator(".thread-row").first().click();
+  await expect(b.locator(".thread-view .message")).toContainText("Discuss this shared passage.");
+  await b.locator(".thread-passage-jump").click();
   await expect(b.locator(".comment-passage-active")).toHaveText("fox");
-  await expect(b.locator(".thread-active")).toBeVisible();
+  await expect(b.locator(".thread-view")).toBeVisible();
   await b.screenshot({ path: output + "/comment-desktop.png", fullPage: true });
   await b.setViewportSize({ width: 390, height: 844 });
-  await b.locator(".thread .quote").click();
+  await b.locator(".thread-passage-jump").click();
   await expect(b.locator("#page-comments")).not.toBeVisible();
   await expect(b.locator(".comment-passage-active")).toHaveText("fox");
   await b.screenshot({ path: output + "/comment-mobile.png", fullPage: true });

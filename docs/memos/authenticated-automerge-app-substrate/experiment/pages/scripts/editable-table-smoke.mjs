@@ -165,9 +165,11 @@ try {
   await expect(popover).toHaveCount(0);
   await expect(b.locator(".comment-passage")).toHaveText("Pages A");
   await b.getByRole("button", { name: "Comments", exact: true }).click();
-  await expect(b.locator(".thread .message")).toContainText("Discuss this cell together.");
-  await expect(b.locator(".thread .quote")).toHaveText("Pages A");
-  await b.locator(".thread .quote").click();
+  await expect(b.locator(".thread-row-chip")).toHaveText("Pages A");
+  await b.locator(".thread-row").first().click();
+  await expect(b.locator(".thread-view .message")).toContainText("Discuss this cell together.");
+  await expect(b.locator(".thread-passage mark")).toHaveText("Pages A");
+  await b.locator(".thread-passage-jump").click();
   await expect(b.locator(".comment-passage-active")).toHaveText("Pages A");
   await b.getByRole("button", { name: "Close comments", exact: true }).click();
   checkpoint();

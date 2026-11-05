@@ -1844,6 +1844,7 @@ function App() {
                 threads={threads}
                 composer={composer}
                 target={target}
+                principal={account?.principal ?? null}
                 onClose={closeComments}
                 onReveal={revealComment}
                 onSelect={(id) => {
