@@ -326,6 +326,11 @@ import {
 export { Space } from "./spaces.mjs";
 import { spaceCreationEffect, spaceCreationTransition } from "./space-lifecycle.mjs";
 import { handleImportPageImage } from "./import-image.mjs";
+import {
+  PROJECT_CONTENT_OPERATIONS,
+  contentSelector,
+  resolveProjectContent,
+} from "./project-content.mjs";
 import { countedStorage } from "./catalog-counts.mjs";
 import { forwardedPageLimit, quotaError, quotaRefusal, resolvePageQuota } from "./page-quota.mjs";
 import { serialQueue, serialQueueBounds } from "./serial-queue.mjs";
@@ -890,22 +895,29 @@ async function invoke(request, env, operation, args = {}, seen) {
       { safe },
     );
   }
-  requirePageIdArgument(args.page_id);
-  if (operation === "import_page_image") {
-    if (Object.keys(args).some((key) => !["page_id", "file"].includes(key)))
-      throw new HttpError(400, "Invalid image import arguments");
-    // Transfer bytes at the Worker edge; only short access checks enter the DO.
-    return handleImportPageImage(request, env, {
-      pageId: args.page_id,
-      file: args.file,
-      authorize: (write) => authorizeImage(request, env, args.page_id, write),
-    });
-  }
-  // One deadline covers the Page fetch, its body and read_page's location
-  // view, so a timeout never returns an unfiltered body.
+  const projectId = PROJECT_CONTENT_OPERATIONS.has(operation) ? contentSelector(args) : null;
+  if (!projectId) requirePageIdArgument(args.page_id);
+  // Mapping, Page admission and response projection share one deadline.
   const safe = safeToRepeat(operation, args);
   return withinToolDeadline(
     async (signal) => {
+      if (projectId) args = await resolveProjectContent(env, args, signal);
+      if (operation === "import_page_image") {
+        if (Object.keys(args).some((key) => !["page_id", "file"].includes(key)))
+          throw new HttpError(400, "Invalid image import arguments");
+        // Transfer bytes at the Worker edge; access stays with the Page host.
+        return bufferedResponse(
+          await untilAborted(
+            handleImportPageImage(request, env, {
+              pageId: args.page_id,
+              file: args.file,
+              authorize: (write) => authorizeImage(request, env, args.page_id, write),
+            }),
+            signal,
+          ),
+          signal,
+        );
+      }
       // Transient and storage failures use this request's repeat safety,
       // as a timeout does.
       const response = await withRepeatSafety(
@@ -919,9 +931,15 @@ async function invoke(request, env, operation, args = {}, seen) {
         safe,
         signal,
       );
-      if (operation !== "read_page" || !response.ok) return bufferedResponse(response, signal);
+      if (!response.ok || (operation !== "read_page" && !projectId))
+        return bufferedResponse(response, signal);
       const body = await readResponseJson(response, signal);
-      await locationView(request, env, body, signal);
+      // locationView can claim Project invitations. A content address never
+      // grants Project metadata or membership, even after a direct Page grant.
+      if (projectId) {
+        delete body._owner;
+        body.project_id = projectId;
+      } else await locationView(request, env, body, signal);
       return json(body, response.status);
     },
     { safe },
@@ -1431,6 +1449,27 @@ export class Catalog {
       }
       const query = await readJson(request);
       const entries = await locationEntries(this.storage);
+      if (query?.project_content !== undefined) {
+        if (request.headers.has("authorization") || request.headers.has("cookie"))
+          throw spaceNotFound();
+        requireSpaceIdArgument(query.project_content);
+        const record = await this.storage.get(`space/${query.project_content}`);
+        const location = locationAnswer(entries, query.page_id);
+        if (
+          !record ||
+          record.pending ||
+          record.space_id !== query.project_content ||
+          record.home_page_id !== query.page_id ||
+          location?.state !== "active" ||
+          !location.complete ||
+          !location.home ||
+          location.parent_id !== null ||
+          location.space_id !== query.project_content
+        )
+          throw spaceNotFound();
+        await this.storage.sync();
+        return json({ page_id: query.page_id });
+      }
       if (query?.project_pages !== undefined) {
         requireSpaceIdArgument(query.project_pages);
         return json({
@@ -5518,6 +5557,21 @@ export class Page {
         // the tombstone when it settles.
         if (this.pendingLifecycle) await this.settleLifecycle();
         return await this.acceptTombstone();
+      }
+      if (url.pathname === "/internal/content-target") {
+        if (request.headers.has("authorization") || request.headers.has("cookie"))
+          throw spaceNotFound();
+        const args = await readJson(request);
+        if (
+          !this.metadata ||
+          this.metadata.pageId !== args.page_id ||
+          this.metadata.owner !== args.owner ||
+          pageState(this.metadata) !== "active" ||
+          this.pendingLifecycle
+        )
+          throw spaceNotFound();
+        await this.ctx.storage.sync();
+        return json({ page_id: this.metadata.pageId });
       }
       identity = await this.identify(request);
       // An ambiguous storage failure retains the exact proposed ACL/receipt.

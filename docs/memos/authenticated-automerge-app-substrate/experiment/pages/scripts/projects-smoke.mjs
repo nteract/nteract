@@ -179,6 +179,38 @@ try {
   );
   complete("MCP created a Project with content and a nested Page");
 
+  const content = await ok("owner", "read_page", { project_id: project.project_id });
+  assert.equal(content.page_id, project.home_page_id);
+  assert.equal(content.project_id, project.project_id);
+  assert.equal(content._owner, undefined);
+  assert.equal(content.breadcrumbs, undefined);
+  const contentEdit = {
+    project_id: project.project_id,
+    base_heads: content.heads,
+    retry_token: content.retry_token,
+    idempotency_key: content.retry_key_prefix + crypto.randomUUID(),
+    operations: [{ op: "insert_markdown", markdown: "Content selector sentinel." }],
+  };
+  const contentReceipt = await ok("owner", "edit_page", contentEdit);
+  const legacyEdit = Object.fromEntries(
+    Object.entries(contentEdit).map(([key, value]) =>
+      key === "project_id" ? ["page_id", project.home_page_id] : [key, value],
+    ),
+  );
+  const legacyReceipt = await ok("owner", "edit_page", legacyEdit);
+  const { project_id: _projectId, ...physicalReceipt } = contentReceipt;
+  assert.deepEqual(legacyReceipt, physicalReceipt);
+  const contentReadback = await ok("owner", "read_page", { project_id: project.project_id });
+  assert.deepEqual(contentReadback.heads, contentReceipt.heads);
+  assert.equal(
+    contentReadback.blocks.filter((block) => block.markdown.includes("Content selector sentinel."))
+      .length,
+    1,
+  );
+  complete(
+    "Project content selector reads and writes the same history, with an exact legacy-alias retry",
+  );
+
   const projects = await ok("owner", "list_projects");
   assert.ok(projects.projects.some((entry) => entry.project_id === project.project_id));
   const listed = await ok("owner", "list_pages", { project_id: project.project_id });

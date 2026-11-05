@@ -16,6 +16,7 @@ import {
   withBrowserLinks,
 } from "./worker/project-api.mjs";
 import { mcpSessionId, usageDropped } from "./worker/usage.mjs";
+import { PROJECT_CONTENT_OPERATIONS } from "./worker/project-content.mjs";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import {
@@ -367,13 +368,17 @@ const accessKey = {
 const tool = (name, description, properties, required, annotations, share = false) => {
   if (!annotations || HINTS.some((hint) => typeof annotations[hint] !== "boolean"))
     throw Error(`${name} must declare ${HINTS.join(", ")}`);
+  const content = PROJECT_CONTENT_OPERATIONS.has(name);
   return {
     name,
-    description,
+    description: content
+      ? `${description} Supply exactly one of page_id or project_id. project_id addresses the Project's existing content with the same Page permissions; it does not grant Project membership or metadata access.`
+      : description,
     inputSchema: {
       type: "object",
-      properties,
-      required,
+      properties: content ? { ...properties, project_id: project } : properties,
+      required: content ? required.filter((field) => field !== "page_id") : required,
+      ...(content && { oneOf: [{ required: ["page_id"] }, { required: ["project_id"] }] }),
       additionalProperties: false,
     },
     annotations,

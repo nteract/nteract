@@ -14,6 +14,7 @@
 import { pagesPublicOrigin } from "../agent-guide.mjs";
 import { pagePath, projectPath } from "../shared/routes.mjs";
 import { HttpError } from "./auth.mjs";
+import { PROJECT_CONTENT_OPERATIONS } from "./project-content.mjs";
 
 /** Old tool name → the tool that replaced it. */
 export const RENAMED_TOOLS = Object.freeze({
@@ -66,7 +67,8 @@ export function toInternalCall(operation, args) {
   if (args && typeof args === "object" && !Array.isArray(args)) {
     if (Object.hasOwn(args, "space_id"))
       throw new HttpError(400, "`space_id` is now `project_id`", "argument_renamed");
-    if (Object.hasOwn(args, "project_id")) internalArgs = renameKey(args, "project_id", "space_id");
+    if (Object.hasOwn(args, "project_id") && !PROJECT_CONTENT_OPERATIONS.has(operation))
+      internalArgs = renameKey(args, "project_id", "space_id");
   }
   return { operation: INTERNAL_OPERATION[operation] ?? operation, args: internalArgs };
 }

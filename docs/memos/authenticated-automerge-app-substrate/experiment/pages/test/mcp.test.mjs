@@ -829,7 +829,11 @@ test("MCP image import advertises ChatGPT's complete file descriptor and keeps t
   ]);
   assert.deepEqual(fileSchema.required, ["download_url", "file_id"]);
   assert.equal(fileSchema.additionalProperties, false);
-  assert.deepEqual(descriptor.inputSchema.required, ["page_id", "file"]);
+  assert.deepEqual(descriptor.inputSchema.required, ["file"]);
+  assert.deepEqual(descriptor.inputSchema.oneOf, [
+    { required: ["page_id"] },
+    { required: ["project_id"] },
+  ]);
   assert.deepEqual(descriptor.securitySchemes[0].scopes, ["pages:read", "pages:write"]);
   assert.equal(descriptor.annotations.destructiveHint, false);
   assert.equal(descriptor.annotations.openWorldHint, true);
@@ -1060,7 +1064,7 @@ test("MCP advertises thread_ids for batch resolve and keeps the refusal's named 
       items: { type: "string", minLength: 1, maxLength: 256 },
     },
   );
-  assert.deepEqual(descriptor.inputSchema.required, ["page_id", "idempotency_key", "action"]);
+  assert.deepEqual(descriptor.inputSchema.required, ["idempotency_key", "action"]);
   assert.match(descriptor.description, /thread_ids/);
   assert.match(descriptor.description, /not_found_thread_ids/);
   // Resolving keeps every message; a status change is not destructive.
