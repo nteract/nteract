@@ -311,7 +311,8 @@ export function pageRow(page, projectTitles = new Map(), { local = false } = {})
  * the same as owned ones locally, so the offline fallback shows on All only.
  * A Project's content document (`contents`, its document IDs) is never a
  * Page: the server never lists it, so its local copy would otherwise look
- * like a draft forever.
+ * like a draft forever. `contents` comes from list_projects, so a copy can
+ * still show until that answers, if it fails, or past its first 100 Projects.
  */
 export function deviceRows(local, items, view, { failed = false, contents = new Set() } = {}) {
   if (view.projectId || view.access === "shared") return [];
