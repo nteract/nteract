@@ -15,7 +15,7 @@ import { isProjectId } from "../shared/routes.mjs";
 import { exportMarkdown, parseMarkdown, unsupportedMarkdown } from "../model/richtext.mjs";
 import { DATASET_MAX_BYTES } from "../shared/dataset-assets.mjs";
 import { IMAGE_MAX_BYTES, IMAGE_MEDIA_TYPES, imageAssetUrl } from "../shared/image-assets.mjs";
-import { inspectImage } from "../worker/image-assets.mjs";
+import { inspectImage } from "../shared/inspect-image.mjs";
 
 export const BUNDLE_FORMAT = "nteract-pages-project-bundle";
 /** Version 3 adds typed image inventory and bytes. Persisted v1/v2 still import. */
