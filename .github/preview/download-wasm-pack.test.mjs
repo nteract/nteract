@@ -72,6 +72,53 @@ test("an API 404 is terminal rather than a release discovery request", async () 
   assert.equal(f.calls.length, 2);
 });
 
+test("explicit API rate limits retry without changing the fixed backoff", async () => {
+  for (const headers of [{"x-ratelimit-remaining": "0"}, {"retry-after": "0"}, {"retry-after": "60"}, {"retry-after": "3600"}]) {
+    const f = fixture([new Response(null, {status: 504}), new Response(null, {status: 403, headers}), new Response(bytes)]);
+    assert.deepEqual(await downloadWasmPack(f.options), bytes);
+    assert.deepEqual(f.calls.map((call) => call.url), [WASM_PACK.release, WASM_PACK.api, WASM_PACK.api]);
+    assert.deepEqual(f.delays, [1000, 2000]);
+  }
+});
+
+test("arbitrary or malformed API 403 headers remain terminal", async () => {
+  for (const headers of [{}, {"x-ratelimit-remaining": "1"}, {"x-ratelimit-remaining": "00"}, {"x-ratelimit-remaining": "0, 1"}, ...["-1", "1.5", "00", "3601", "9999999999999999999", "1e2", "soon", "Wed, 01 Jan 2030 00:00:00 GMT"].map(value => ({"retry-after": value}))]) {
+    const f = fixture([new Response(null, {status: 504}), new Response("private forbidden reason", {status: 403, headers})]);
+    await assert.rejects(downloadWasmPack(f.options), /^Error: wasm-pack download refused$/);
+    assert.equal(f.calls.length, 2);
+  }
+});
+
+test("release and asset redirect 403 never gain API rate-limit semantics", async () => {
+  const headers = {"x-ratelimit-remaining": "0", "retry-after": "60"};
+  const release = fixture([new Response(null, {status: 403, headers})]);
+  await assert.rejects(downloadWasmPack(release.options), /download refused/);
+  assert.equal(release.calls.length, 1);
+  const redirected = fixture([new Response(null, {status: 504}), new Response(null, {
+    status: 302, headers: {location: "https://release-assets.githubusercontent.com/archive"},
+  }), new Response(null, {status: 403, headers})]);
+  await assert.rejects(downloadWasmPack(redirected.options), /download refused/);
+  assert.equal(redirected.calls.length, 3);
+  assert.deepEqual(redirected.delays, [1000]);
+});
+
+test("persistent API rate limits still exhaust exactly six attempts", async () => {
+  const f = fixture([new Response(null, {status: 504}), ...Array.from({length: 5}, () => new Response(null, {
+    status: 403, headers: {"x-ratelimit-remaining": "0", "retry-after": "3600"},
+  }))]);
+  await assert.rejects(downloadWasmPack(f.options), /download attempts exhausted/);
+  assert.equal(f.calls.length, 6);
+  assert.deepEqual(f.delays, [1000, 2000, 4000, 8000, 16000]);
+});
+
+test("a successful corrupt response after rate limiting is still terminal", async () => {
+  const f = fixture([new Response(null, {status: 504}), new Response(null, {
+    status: 403, headers: {"x-ratelimit-remaining": "0"},
+  }), new Response(Buffer.alloc(bytes.length))]);
+  await assert.rejects(downloadWasmPack(f.options), /archive verification failed/);
+  assert.equal(f.calls.length, 3);
+});
+
 for (const prefix of [[], [new Response(null, {status: 504})]])
   test(`corrupt successful ${prefix.length ? "API" : "release"} bytes never fall back or publish`, async () => {
     const f = fixture([...prefix, new Response(Buffer.alloc(bytes.length))]);

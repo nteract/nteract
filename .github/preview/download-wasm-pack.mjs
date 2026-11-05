@@ -59,7 +59,14 @@ export async function downloadWasmPack({fetch = globalThis.fetch, sleep: wait = 
           continue;
         }
         if (response.status !== 200) {
-          event = [429, 500, 502, 503, 504].includes(response.status) || (response.status === 404 && state.source === "release") ? "retry" : "refused";
+          // Rate-limit evidence belongs to the API endpoint, never its asset
+          // redirects. Retry-After classifies only; it cannot extend backoff.
+          const retryAfter = response.headers.get("retry-after") ?? "";
+          const apiRateLimit = response.status === 403 && url === WASM_PACK.api && (
+            response.headers.get("x-ratelimit-remaining") === "0" ||
+            (/^(0|[1-9]\d{0,3})$/.test(retryAfter) && Number(retryAfter) <= 3600)
+          );
+          event = apiRateLimit || [429, 500, 502, 503, 504].includes(response.status) || (response.status === 404 && state.source === "release") ? "retry" : "refused";
           await response.body?.cancel();
           break;
         }

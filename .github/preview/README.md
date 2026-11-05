@@ -6,7 +6,13 @@
 0.15.0 archive. It accepts no version, URL, checksum, or credential inputs.
 The first retryable transport failure switches from the official release URL
 to the same release's pinned GitHub asset API. A release-route 404 can use that
-fallback; an API 404 or other non-retryable response fails closed. There are
+fallback; an API 404 or other non-retryable response fails closed. Only the
+pinned API endpoint's 403 is retryable when `x-ratelimit-remaining` is exactly
+`0` or `Retry-After` is a canonical integer from 0 through 3600 seconds.
+Other forms, including HTTP dates, are not used as rate-limit evidence.
+These headers classify the response only; they never extend the fixed backoff.
+A long rate-limit reset can still exhaust the budget. Release and redirected
+asset 403s remain terminal regardless of those headers. There are
 at most six download attempts, each bounded to 60 seconds and three redirects,
 with 1/2/4/8/16-second backoff. Redirects must use credential-free HTTPS on
 `release-assets.githubusercontent.com`. No response bodies or signed URLs are logged.
