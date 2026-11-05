@@ -1124,9 +1124,9 @@ Each attempt logs one `record_storage.migration` line with its `page_id` and
 `"trigger":"operator"`.
 
 What people see: a tab on a converted Page reconnects, its discovery names
-plain storage, and it shows "This Page's storage changed" with a reload. The
-reload opens a plain replica from the tab's checkpoint and sends the host any
-edit it lacks. Tabs on other Pages are untouched. MCP and HTTP tool calls that
+plain storage, and it reopens the Page in place on a plain replica from the
+tab's checkpoint, then sends the host any edit it lacks. It shows "This Page's
+storage changed" with a reload only if that reopen fails. Tabs on other Pages are untouched. MCP and HTTP tool calls that
 land during a conversion get a 503 and retry; agent harnesses need a restart
 only if one parks on that 503.
 
