@@ -79,12 +79,16 @@ a fresh fixture and reports a pass on retry as flaky; more flaky suites than
 appended to `results.jsonl` and `summary.json` as it finishes.
 
 The Pages experiment workflow runs setup, both unit-test suites, and the Pages
-build in one job. A second job downloads the official celld 0.6.3 Linux x86_64
+build in one job. A green push run of that workflow is the page10 deployment
+gate. The separate Pages browser E2E workflow runs on the same changes without
+holding that gate. It downloads the official celld 0.6.3 Linux x86_64
 release, checks the archive hash and the executable hash in `CELLD_RELEASE`,
 installs Playwright's Chromium with system dependencies, runs `npm run e2e` with
 one retry and a flaky budget of one, and always uploads `test-results/`. It
 runs twice: once with the default Subduction storage and once, as "Pages browser
-E2E (local celld, plain sync)", with `PAGES_RECORD_STORAGE=automerge`. On a
+E2E (local celld, plain sync)", with `PAGES_RECORD_STORAGE=automerge`.
+Production promotion is a manual operator step; the operator confirms both
+workflows are green for the exact source SHA before promoting it. On a
 fresh Linux runner, install browser system dependencies with
 `npx playwright install --with-deps chromium`.
 
