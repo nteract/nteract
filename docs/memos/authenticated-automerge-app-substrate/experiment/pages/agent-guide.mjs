@@ -60,6 +60,20 @@ A successful result for a Page carries url, the browser link: create_page,
 read_page, edit_page, move_page and the rest, except a confirmed purge. A Project
 result carries url for the Project and home_page_url for its backing document;
 use url when linking the Project. List results carry url on each entry.
+
+Content tools accept exactly one of page_id or project_id: read_page,
+read_page_changes, edit_page, patch_page, list_page_comments, manage_page_comment,
+read_page_presence, report_page_progress, and import_page_image. A project_id
+addresses the Project's existing backing document with the same Page permissions.
+It does not join the Project, claim a Project invitation, or reveal its metadata
+or other Pages. Project-addressed reads return content without Project breadcrumbs.
+Existing page_id calls, home_page_id fields and browser links remain supported.
+For retries, replace only the selector in the same payload position; keep all
+other arguments, retry_token and idempotency_key unchanged. Use retry authority
+from a content read, not the catalog token from get_project or list_projects.
+On create_page, list_pages and move_page, project_id still means placement or
+filtering, not the content selector. Sharing and lifecycle tools still use their
+existing IDs and permissions.
 MCP tools take the same names and arguments.
 
 For shared Projects, also call list_projects, then list_pages with project_id.

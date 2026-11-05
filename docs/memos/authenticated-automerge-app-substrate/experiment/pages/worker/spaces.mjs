@@ -174,6 +174,23 @@ export class Space {
   async run(request) {
     try {
       const path = new URL(request.url).pathname;
+      if (path === "/internal/space/content") {
+        if (request.headers.has("authorization") || request.headers.has("cookie"))
+          throw spaceNotFound();
+        const args = await readJson(request);
+        requireSpaceIdArgument(args?.space_id);
+        const record = await this.ctx.storage.get(RECORD);
+        if (
+          !record ||
+          record.pending ||
+          record.space_id !== args.space_id ||
+          (this.ctx.id?.name && this.ctx.id.name !== args.space_id) ||
+          !validPageId(record.home_page_id)
+        )
+          throw spaceNotFound();
+        await this.ctx.storage.sync();
+        return json({ page_id: record.home_page_id, owner: record.owner });
+      }
       if (path === "/internal/space/policy") {
         if (request.headers.has("authorization") || request.headers.has("cookie"))
           throw spaceNotFound();
