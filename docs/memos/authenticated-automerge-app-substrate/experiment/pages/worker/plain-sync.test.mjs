@@ -12,11 +12,6 @@ import { Page, recordStorageFor, registeredRecordStorage } from "./index.mjs";
 import { HOST_SENDER_ID, PlainByteStore } from "./plain-sync.mjs";
 import { documentMutation } from "./mutations.mjs";
 import { applyComment } from "../model/comments.mjs";
-import { pmNodeToSpans } from "@automerge/prosemirror";
-import { adapter, schema, textPath } from "../model/richtext.mjs";
-import { hasPreservedBlocks } from "../model/raw-migration.mjs";
-import { legacyComment } from "../model/comments-test-support.mjs";
-import { INTERNAL_PREFIX } from "./operation-journal.mjs";
 
 class Storage {
   values = new Map();
@@ -327,122 +322,7 @@ for (const ambiguous of [false, true])
     assert.equal(host.plain.host.connections().length, 0);
   });
 
-for (const failures of [0, 1, 2])
-  test(`real plain Page migrates preserved Markdown and legacy comments under its fence (${failures} append failures)`, async (t) => {
-    const f = await fixture(t);
-    f.env.CATALOGS = { getByName: () => ({ fetch: async () => Response.json({ ok: true }) }) };
-    const first = f.page();
-    assert.ok((await f.register(first)).ok);
-    await first.flush();
-    await first.plain.close();
-    let legacy = A.clone(f.doc);
-    const block = Object.keys(legacy.blocks)[0];
-    ({ page: legacy } = legacyComment(
-      legacy,
-      { block_id: block, body: "Legacy comment" },
-      {
-        principal: "user:anaconda-fixture:fixture-user",
-        displayName: "Owner",
-        driver: "Browser",
-      },
-    ));
-    legacy = A.change(legacy, (d) => {
-      delete d.schema;
-      A.updateSpans(
-        d,
-        textPath(block),
-        pmNodeToSpans(
-          adapter,
-          schema.node("doc", null, [
-            schema.node("raw", { source: "Preserved **once**.", importId: "", kind: "markdown" }),
-          ]),
-        ),
-        adapter.updateSpansConfig(),
-      );
-    });
-    await new DocStore(new PlainByteStore(f.storage)).compact(
-      treeHex(f.args.document_id),
-      A.save(legacy),
-      A.getHeads(legacy),
-    );
-    A.free(legacy);
-    let remaining = failures;
-    const put = f.storage.put.bind(f.storage);
-    const intents = new Map();
-    t.mock.method(f.storage, "put", async (key, value) => {
-      if (typeof key === "string" && key.startsWith(INTERNAL_PREFIX))
-        intents.set(key, structuredClone(value));
-      if (
-        remaining &&
-        typeof key === "object" &&
-        Object.keys(key).some((k) => k.startsWith("plain/sync/") && k.includes("/c/"))
-      ) {
-        remaining--;
-        throw Error("interrupted migration append");
-      }
-      return put(key, value);
-    });
-    let page = f.page();
-    await page.ready;
-    await page.documentReady();
-    if (failures === 2) {
-      assert.ok(page.conversionWriteFence());
-      clearTimeout(page.conversionRetry);
-      const api = await tool(f, page, "edit_page", {
-        base_heads: A.getHeads(page.handle.doc()),
-        idempotency_key: "competing-edit",
-        operations: [{ op: "set_title", title: "Refused" }],
-        internal: true,
-      });
-      assert.equal(api.status, 503);
-      const peer = rawSocket(
-        page,
-        {
-          principal: "user:anaconda-fixture:fixture-user",
-          driver: "Browser",
-          canWrite: true,
-          expiresAt: Date.now() + 60_000,
-        },
-        { senderId: "b-migration" },
-      );
-      const candidate = A.change(A.clone(page.handle.doc()), (d) => {
-        d.title = "Browser refused";
-      });
-      peer.client.send({
-        t: "sync",
-        doc: treeHex(f.args.document_id),
-        m: helloWith([A.getLastLocalChange(candidate)]),
-        r: 1,
-        context: { fenceExempt: true },
-      });
-      A.free(candidate);
-      await until(() => peer.frames.some((frame) => frame.t === "refused"));
-      assert.equal(
-        peer.frames.find((frame) => frame.t === "refused").code,
-        "temporarily_unavailable",
-      );
-      peer.client.close();
-      // Rebuild from the journal, not the pending in-memory admission context.
-      await page.plain.close();
-      page = f.page();
-      await page.ready;
-      await page.documentReady();
-      await page.convertPreservedMarkdown();
-    }
-    assert.equal(remaining, 0);
-    assert.equal(hasPreservedBlocks(page.handle.doc()), false);
-    assert.equal(page.handle.doc().comments, undefined);
-    assert.equal(Object.keys(page.commentsHandle.doc().threads).length, 1);
-    assert.equal(page.conversionWriteFence(), undefined);
-    assert.equal(intents.size, 3);
-    assert.ok([...intents.values()].every((entry) => entry.pending === false));
-    const heads = A.getHeads(page.handle.doc());
-    await page.convertPreservedMarkdown();
-    assert.deepEqual(A.getHeads(page.handle.doc()), heads);
-    assert.equal(intents.size, 3);
-  });
-
-for (const gate of ["fence", "capacity", "schema"])
+for (const gate of ["capacity", "schema"])
   test(`trusted host admission refuses ${gate} before storing history`, async (t) => {
     const f = await fixture(t);
     const page = f.page();
@@ -450,9 +330,6 @@ for (const gate of ["fence", "capacity", "schema"])
     await page.flush();
     const before = structuredClone(f.storage.values);
     const heads = A.getHeads(page.handle.doc());
-    if (gate === "fence")
-      page.plain.writeFence = () =>
-        Object.assign(Error("Converting"), { code: "preserved_markdown_converting" });
     if (gate === "schema") page.plain.pageFeatures = () => ["future-schema"];
     const manifest = page.plain.host.store.manifest(treeHex(f.args.document_id));
     const original = structuredClone(manifest);
@@ -462,30 +339,23 @@ for (const gate of ["fence", "capacity", "schema"])
         doc.refused = true;
       }),
       {
-        code:
-          gate === "capacity"
-            ? "history_capacity"
-            : gate === "schema"
-              ? "schema_unsupported"
-              : "temporarily_unavailable",
+        code: gate === "capacity" ? "history_capacity" : "schema_unsupported",
       },
     );
     assert.deepEqual(f.storage.values, before);
     assert.deepEqual(A.getHeads(page.handle.doc()), heads);
-    if (gate !== "fence")
-      await assert.rejects(
-        page.handle.update(
-          (doc) =>
-            A.change(doc, (d) => {
-              d.refused = true;
-            }),
-          { internal: true },
-        ),
-        {
-          code: gate === "capacity" ? "history_capacity" : "schema_unsupported",
-        },
-      );
-    page.plain.writeFence = () => undefined;
+    await assert.rejects(
+      page.handle.update(
+        (doc) =>
+          A.change(doc, (d) => {
+            d.refused = true;
+          }),
+        { internal: true },
+      ),
+      {
+        code: gate === "capacity" ? "history_capacity" : "schema_unsupported",
+      },
+    );
     page.plain.pageFeatures = () => [];
     Object.assign(manifest, original);
     await page.flush();
@@ -1473,23 +1343,21 @@ test("every plain refusal logs page.sync_refused once, and its repeats once at c
     },
   ]);
 
-  // The conversion fence refuses each write, non-fatally: one line now, the
+  // A full history refuses each write, non-fatally: one line now, the
   // repeats when the socket closes.
-  t.mock.method(host, "conversionWriteFence", () =>
-    Object.assign(new Error("Converting"), { reason: "preserved_markdown_converting" }),
-  );
+  host.plain.host.store.manifest(doc).snapshot = { bytes: 16 * 1024 * 1024 };
   const fenced = rawSocket(host, identity, { senderId: "b-fenced" });
   for (let r = 1; r <= 3; r++) fenced.client.send({ t: "sync", doc, m: helloWith([edit(r)]), r });
   await until(() => fenced.frames.filter((frame) => frame.t === "refused").length === 3);
   assert.equal(refusedLines().length, 2);
   assert.deepEqual(
     (({ reason, fatal, repeats }) => ({ reason, fatal, repeats }))(refusedLines()[1]),
-    { reason: "temporarily_unavailable", fatal: false, repeats: undefined },
+    { reason: "history_capacity", fatal: false, repeats: undefined },
   );
   fenced.client.close();
   await until(() => refusedLines().length === 3);
   assert.deepEqual((({ reason, repeats }) => ({ reason, repeats }))(refusedLines()[2]), {
-    reason: "temporarily_unavailable",
+    reason: "history_capacity",
     repeats: 2,
   });
   for (const line of refusedLines()) assert.ok(!JSON.stringify(line).includes(identity.principal));

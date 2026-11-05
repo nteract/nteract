@@ -422,7 +422,7 @@ async function catalogFixture(t, { index = "1" } = {}) {
     acl = { revision: 0, members: {} },
     { storage = new Storage() } = {},
   ) => {
-    const doc = A.from({ page_id: pageId, title });
+    const doc = A.from({ page_id: pageId, title, schema: { features: ["comments-doc"] } });
     const page = Object.assign(Object.create(Page.prototype), {
       env,
       ready: Promise.resolve(),

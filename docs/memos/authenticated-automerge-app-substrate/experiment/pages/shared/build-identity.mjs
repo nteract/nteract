@@ -12,9 +12,9 @@
 // in the same change, or the new viewer would refuse itself. Integers only;
 // never lower either value.
 //
-// Protocol 2: Markdown import writes no preserved blocks, strikethrough and
-// horizontal rules are native, and the Page host converts stored preserved
-// blocks. A protocol 1 viewer can still write a preserved block.
+// Protocol 2: Markdown import writes no preserved blocks, and strikethrough
+// and horizontal rules are native. A protocol 1 viewer can still write a
+// preserved block.
 export const VIEWER_PROTOCOL = 2;
 export const MIN_VIEWER_PROTOCOL = 2;
 

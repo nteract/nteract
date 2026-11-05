@@ -3,9 +3,8 @@ import { agentType } from "./node-registry.mjs";
 import { readableNodeIds } from "./node-ids.mjs";
 import { readableImageIds } from "./image-ids.mjs";
 import { DATAFRAME_TITLE_MAX, parseAssetPath, readDataframe } from "../shared/dataset-assets.mjs";
-import { isRich } from "./richtext-format.mjs";
+import { requireRich } from "./richtext-format.mjs";
 import { quotableNodeType } from "./richtext-notices.mjs";
-import { parseMarkdown } from "./markdown-import.mjs";
 import { schema } from "./pm-adapter.mjs";
 import { exportMarkdown } from "./pm-markdown-serializer.mjs";
 import { richDoc } from "./richtext-spans.mjs";
@@ -85,8 +84,6 @@ function validateSelectors(doc, args) {
 }
 
 function visibleText(node) {
-  // A preserved block the Page host has not converted yet reads as its source.
-  if (node.type.name === "raw") return node.attrs.source;
   if (node.type.name === "image") return node.attrs.alt ?? "";
   if (node.type.name === "hard_break") return "\n";
   if (node.isText) return node.text;
@@ -105,13 +102,10 @@ function indexNodes(doc) {
     trees = new Map(),
     headings = [];
   for (const blockId of orderedBlockIds(doc)) {
-    const block = doc.blocks[blockId],
-      rich = isRich(block),
-      tree = rich
-        ? richDoc(block, doc.page_id)
-        : parseMarkdown(block.markdown ?? "", { kind: block.kind ?? "markdown" }),
-      ids = rich ? readableNodeIds(doc, blockId, tree) : [],
-      imageIds = rich ? readableImageIds(doc, blockId, tree) : new Map();
+    const block = requireRich(doc.blocks[blockId]),
+      tree = richDoc(block, doc.page_id),
+      ids = readableNodeIds(doc, blockId, tree),
+      imageIds = readableImageIds(doc, blockId, tree);
     trees.set(blockId, tree);
     tree.forEach((node, _offset, nodeIndex) => {
       const entry = { blockId, nodeIndex, node, nodeId: ids[nodeIndex]?.id ?? null, imageIds };

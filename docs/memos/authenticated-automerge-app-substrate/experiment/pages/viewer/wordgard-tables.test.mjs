@@ -4,15 +4,8 @@ import * as A from "@automerge/automerge";
 import { Leaf } from "wordgard/doc";
 import { GardState, GardSelection } from "wordgard/state";
 import { addColumn, addRow, deleteColumn, deleteRow, tables } from "wordgard/table";
-import {
-  enableRich,
-  textPath,
-  validateRich,
-  blockMarkdown,
-  parseMarkdown,
-  exportMarkdown,
-  adapter,
-} from "../model/richtext.mjs";
+import { textPath, validateRich, blockMarkdown, parseMarkdown, exportMarkdown, adapter } from "../model/richtext.mjs";
+import { richFromSource } from "../model/richtext-test-support.mjs";
 import { pmNodeToSpans } from "@automerge/prosemirror";
 import {
   decode,
@@ -33,7 +26,7 @@ function fixture(source, initialDoc) {
   let doc =
     initialDoc ??
     A.change(A.from({ blocks: { one: { id: "one", kind: "markdown", markdown: source } } }), (d) =>
-      enableRich(d, "one"),
+      richFromSource(d, "one"),
     );
   const observers = new Set();
   return {
@@ -85,7 +78,11 @@ test("Markdown tables project into native cells with alignment, marks and empty 
     assert.ok(decode(encode(tree)).doc.eq(tree));
     const rewritten = A.change(replica.doc, (d) => A.updateSpans(d, path, encode(tree)));
     validateRich(rewritten.blocks.one);
-    assert.equal(blockMarkdown(rewritten.blocks.one), markdown);
+    assert.deepEqual(
+      parseMarkdown(blockMarkdown(rewritten.blocks.one)).toJSON(),
+      parseMarkdown(markdown).toJSON(),
+      markdown,
+    );
   }
   const table = decode(A.spans(fixture(source).doc, path)).doc.content[0];
   assert.equal(table.type, Table.type);

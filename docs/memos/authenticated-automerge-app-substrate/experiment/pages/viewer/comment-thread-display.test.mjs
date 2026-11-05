@@ -177,18 +177,6 @@ test("a block comment names the block; a removed block reads as detached", () =>
   assert.deepEqual(detached.anchor, { kind: "detached", blockSurvives: true });
 });
 
-test("Markdown-format blocks locate headings line by line", () => {
-  const doc = {
-    blocks: {
-      a: { markdown: "## One\ntext", position: "a" },
-      b: { markdown: "- [ ] task", position: "b" },
-    },
-  };
-  const location = threadLocation(doc, { target: { kind: "block", blockId: "b" } });
-  assert.deepEqual(location.headings, ["One"]);
-  assert.equal(location.anchor.label, "Checklist · One");
-});
-
 test("threadPreview continues after a lead-in or first sentence", async () => {
   const { threadPreview } = await import("./comment-thread-display.mjs");
   assert.equal(threadPreview("**CI handoff:** #4821 is pushed."), "#4821 is pushed.");
@@ -204,7 +192,8 @@ test("passageExcerpt keeps the paragraph around a passage and clips at words", a
   const text = "Heading\ufffcThe plan moves the launch to March and keeps the beta open.\ufffcNext";
   const from = text.indexOf("launch"),
     to = from + "launch to March".length;
-  const doc = { blocks: { b: { markdown: text } } };
+  const rich = { format: "automerge-rich-text-v1" };
+  const doc = { blocks: { b: { ...rich, richText: text } } };
   const thread = {
     target: { kind: "selection" },
     selectionContext: {
@@ -231,10 +220,18 @@ test("passageExcerpt keeps the paragraph around a passage and clips at words", a
   );
   assert.deepEqual(
     passageExcerpt(
-      { blocks: { t: { markdown: "| a | b |" } } },
+      { blocks: { t: { ...rich, richText: "a\ufffcb" } } },
       { target: { kind: "block", blockId: "t" } },
     ).passage,
-    "| a | b |",
+    "a b",
+  );
+  // A block without rich text is in a form this build doesn't read.
+  assert.equal(
+    passageExcerpt(
+      { blocks: { t: { markdown: "| a | b |" } } },
+      { target: { kind: "block", blockId: "t" } },
+    ),
+    null,
   );
 });
 

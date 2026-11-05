@@ -3,6 +3,7 @@ import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { applyComment as applyCommentTo } from "./comments.mjs";
 import { projectReadComments as projectReadCommentsOf } from "./read-comments.mjs";
+import { currentForm } from "./richtext-test-support.mjs";
 
 // One document plays both roles here: it holds the blocks anchors resolve
 // against and the comments document's `threads`.
@@ -13,15 +14,18 @@ const projectReadComments = (doc, options) =>
 
 const author = { principal: "account:one", displayName: "Human 🌊", driver: "Agent" };
 function fixture() {
-  let doc = A.from({
-    page_id: "page",
-    title: "Comments",
-    blocks: {
-      first: { markdown: "Before 🌊 passage after" },
-      second: { markdown: "另一段文字。" },
-    },
-    threads: {},
-  });
+  let doc = A.change(
+    A.from({
+      page_id: "page",
+      title: "Comments",
+      blocks: {
+        first: { markdown: "Before 🌊 passage after" },
+        second: { markdown: "另一段文字。" },
+      },
+      threads: {},
+    }),
+    currentForm,
+  );
   const ids = {};
   doc = A.change(doc, (draft) => {
     ids.first = applyComment(
@@ -112,6 +116,7 @@ test("summary reads count messages without reading their bodies", () => {
     "🌊 passage",
   );
   const only = {
+    schema: { features: ["comments-doc"] },
     blocks: { block: {} },
     threads: {
       comment: {
@@ -159,7 +164,7 @@ test("deleted blocks remain addressable and removed selections report detached",
   let { doc, ids } = fixture();
   doc = A.change(doc, (draft) => {
     delete draft.blocks.second;
-    A.splice(draft, ["blocks", "first", "markdown"], 7, 10, "");
+    A.splice(draft, ["blocks", "first", "richText"], 7, 10, "");
   });
   const [detachedBlock] = projectReadComments(doc, { block_id: "second" });
   assert.equal(detachedBlock.id, ids.second.thread_id);
@@ -247,7 +252,7 @@ test("filters run before expensive anchor and message projection on many unrelat
     target: { kind: "block", blockId: "wanted" },
     messages: {},
   };
-  const doc = { blocks: { wanted: {} }, threads: comments };
+  const doc = { schema: { features: ["comments-doc"] }, blocks: { wanted: {} }, threads: comments };
   for (const options of [{ state: "open" }, { block_id: "wanted" }, { thread_ids: ["selected"] }])
     assert.deepEqual(
       projectReadComments(doc, options).map((value) => value.id),
@@ -258,8 +263,8 @@ test("filters run before expensive anchor and message projection on many unrelat
 
 test("message order is chronological and full quotes/bodies are never silently shortened", () => {
   const body = "完整🌊".repeat(1500),
-    quote = "long 🌈 passage ".repeat(500);
-  let doc = A.from({ blocks: { block: { markdown: quote } }, threads: {} });
+    quote = "long 🌈 passage ".repeat(500).trimEnd();
+  let doc = A.change(A.from({ blocks: { block: { markdown: quote } }, threads: {} }), currentForm);
   let id;
   doc = A.change(doc, (draft) => {
     const result = applyComment(draft, { block_id: "block", selected_text: quote, body }, author);

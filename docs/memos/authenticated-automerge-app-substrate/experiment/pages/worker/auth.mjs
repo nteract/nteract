@@ -391,7 +391,7 @@ export const CLIENT_ERROR_CODES = Object.freeze([
   "markdownless_node",
   "node_not_found",
   "nodes_would_join",
-  "preserved_markdown_converting",
+  "stored_form_unsupported",
   "comment_not_author",
   "comment_access_denied",
   "operation_pending",
@@ -400,8 +400,6 @@ export const CLIENT_ERROR_CODES = Object.freeze([
 export const RETRYABLE_SERVER_CODES = Object.freeze([
   "record_persistence_timeout",
   "request_timeout",
-  // The host is moving a Page's comments to their own document.
-  "comments_migrating",
   // PageRecords threw an overload or a transient error (record-persistence.mjs).
   "record_persistence_unavailable",
   // A listing met a shared Page or owner Catalog that did not answer.

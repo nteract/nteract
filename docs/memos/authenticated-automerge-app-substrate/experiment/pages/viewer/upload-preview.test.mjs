@@ -6,7 +6,8 @@ import { Leaf } from "wordgard/doc";
 import { createWordgardBinding } from "./wordgard-binding.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
 import { schema } from "./wordgard-model.mjs";
-import { enableRich, textPath } from "../model/richtext.mjs";
+import { textPath } from "../model/richtext.mjs";
+import { richFromSource } from "../model/richtext-test-support.mjs";
 import { captureImageInsertion, resolveImageInsertion } from "./image-upload.mjs";
 import {
   resolveUploadPreview,
@@ -24,7 +25,7 @@ const text = (value) => [Leaf.text(value)];
 function fixture(markdown) {
   let doc = A.change(
     A.from({ page_id: pageId, blocks: { one: { id: "one", kind: "markdown", markdown } } }),
-    (d) => enableRich(d, "one"),
+    (d) => richFromSource(d, "one"),
   );
   const observers = new Set();
   const replica = {

@@ -7,6 +7,7 @@ import {
   recordFallback,
   startupOf,
   storedTitleProjection,
+  recordCommentsUuid,
 } from "./page-startup.mjs";
 
 const TABLE = new URL("../test/fixtures/machines/page-startup.json", import.meta.url);
@@ -78,4 +79,12 @@ test("a stored projection stands in for the title only with its observation time
   assert.equal(storedTitleProjection({ ...projection, title: 7 }), null);
   assert.equal(storedTitleProjection({ title: "Launch plan" }), null);
   assert.equal(storedTitleProjection(undefined), null);
+});
+
+test("a host record names its comments document; one without the name fails closed", () => {
+  assert.equal(recordCommentsUuid(undefined), undefined);
+  assert.equal(recordCommentsUuid({}), undefined);
+  assert.equal(recordCommentsUuid({ pageId: "p", comments_doc: "uuid" }), "uuid");
+  for (const record of [{ pageId: "p" }, { pageId: "p", comments_doc: 3 }])
+    assert.throws(() => recordCommentsUuid(record), { code: "stored_form_unsupported" });
 });

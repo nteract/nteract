@@ -6,7 +6,6 @@
 //
 // markdown-it tokens to a ProseMirror tree: the token table for the Pages
 // schema, the parser over already-read tokens, and literal-text documents.
-import MarkdownIt from "markdown-it";
 import { MarkdownParser, defaultMarkdownParser } from "prosemirror-markdown";
 import { schema } from "./pm-adapter.mjs";
 import { imageAlt, tokenizer } from "./markdown-tokenizer.mjs";
@@ -48,11 +47,6 @@ const parser = new MarkdownParser(schema, tokenizer, {
   // An explicit block: the span adapter emits no marker for a leaf it infers.
   hr: { node: "horizontal_rule", attrs: { isAmgBlock: true } },
 });
-export const plainImportParser = new MarkdownParser(
-  schema,
-  new MarkdownIt("commonmark", { html: false, linkify: false }),
-  { ...defaultMarkdownParser.tokens, image: imageToken },
-);
 
 // Non-Markdown content is text: one paragraph per run of lines, each line
 // break a hard break.

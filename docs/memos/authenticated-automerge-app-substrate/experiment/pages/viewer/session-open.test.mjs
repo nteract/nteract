@@ -342,37 +342,3 @@ test("a signing key refused during the handshake reports the diagnosis without r
   await error.cleanupPromise;
 });
 
-// A Page whose preserved-block conversion keeps failing stays fenced. The
-// host still admits the native connection (it refuses every put instead), so
-// an uncached viewer syncs the Page down and shows it read-only, keeping its
-// editor grant and writer key for when the conversion finishes.
-test("an uncached viewer opens a converting Page read-only, keeping its grant", async (t) => {
-  const message =
-    "Pages is converting Markdown saved by an older version. This Page is read-only until that finishes.";
-  const f = coldOpenFixture(t, {
-    discovery: {
-      access: {
-        role: "editor",
-        generation: 0,
-        revision: 0,
-        canRead: true,
-        canWrite: true,
-        canComment: true,
-      },
-      converting: { code: "preserved_markdown_converting", message },
-    },
-  });
-  const opening = f.open();
-  void opening.catch(() => {});
-  // Discovery passed and the socket opened: the document is syncing down.
-  await f.lookup;
-  const session = f.session;
-  assert.equal(session.converting, true);
-  assert.equal(session.problem, message);
-  assert.equal(session.access.canWrite, true, "the grant is unchanged");
-  assert.equal(session.canWrite, false, "read-only while converting");
-  assert.equal(session.canComment, false);
-  assert.ok(f.sockets.length >= 1, "the native connection was admitted");
-  f.disconnect();
-  await opening.catch((error) => error.cleanupPromise);
-});

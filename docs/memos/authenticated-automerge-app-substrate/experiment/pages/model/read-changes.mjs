@@ -6,7 +6,7 @@ import { agentType } from "./node-registry.mjs";
 import { nodeIds } from "./node-ids.mjs";
 import { readableImageIds } from "./image-ids.mjs";
 import { commentMessageState, commentThreadState } from "./comment-content.mjs";
-import { isRich } from "./richtext-format.mjs";
+import { requireRich } from "./richtext-format.mjs";
 import { schema } from "./pm-adapter.mjs";
 import { exportMarkdown } from "./pm-markdown-serializer.mjs";
 import { richDoc } from "./richtext-spans.mjs";
@@ -69,7 +69,7 @@ function options(args) {
 // changes and earlier insertions. Destroying a marker can produce
 // delete+insert; this is a net projection, not an edit audit. A block whose
 // nodes have no ids (a marker the binding can't place) returns null and is
-// reported as a whole block, like a legacy one: matching its nodes by index
+// reported as a whole block: matching its nodes by index
 // could report the wrong one.
 function nativeNodes(doc, blockId, headings) {
   const block = doc.blocks[blockId],
@@ -120,11 +120,11 @@ function index(doc) {
     blocks = new Map();
   for (const id of orderedBlockIds(doc)) {
     const block = doc.blocks[id];
-    const nodes = isRich(block) ? nativeNodes(doc, id, headings) : null;
+    requireRich(block);
+    const nodes = nativeNodes(doc, id, headings);
     blocks.set(id, { block, pageId: doc.page_id, nodes });
-    // A preserved/legacy block, or one without node ids, can contain headings,
-    // but has no native identity. Do not invent a heading path across that
-    // boundary.
+    // A block without node ids can contain headings, but has no native
+    // identity. Do not invent a heading path across that boundary.
     if (!nodes) headings.length = 0;
   }
   return blocks;
@@ -382,31 +382,11 @@ export function projectReadChanges(doc, args, commentsDoc) {
           "Content changes cannot be projected from this baseline. Read the current Page or outline to establish a new baseline. No partial delta was returned.",
         );
       }
-      // A Page that hasn't migrated still holds its threads; diff them here.
-      let comments = payload.comments;
-      if (!commentsDoc) {
-        try {
-          comments = commentChanges(
-            before.view.comments ?? {},
-            doc.comments ?? {},
-            settings.comments,
-            (id, messages) =>
-              projectReadComments(doc, { thread_ids: [id], include_messages: messages })[0],
-          );
-        } catch {
-          fail(
-            409,
-            "resync_required",
-            'Comment changes cannot be projected from this baseline. Retry the same since_heads with comments: "none" for content-only changes, then read current comments; or read the current Page to establish a new baseline. No partial delta was returned.',
-          );
-        }
-      }
       payload = {
         ...payload,
         title_changed: before.view.title !== doc.title,
         ...(before.view.title !== doc.title ? { title: doc.title } : {}),
         changes,
-        comments,
       };
     } finally {
       A.free(before.owned);

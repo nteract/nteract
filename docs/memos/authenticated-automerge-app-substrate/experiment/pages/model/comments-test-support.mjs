@@ -28,21 +28,3 @@ export function comment(
   });
   return { comments: next, result };
 }
-
-/** Tests only. A comment written the way builds before the comments document
- * wrote it: into the Page document's own `comments` map. Returns `{ page,
- * result }`. */
-export function legacyComment(page, input, identity = {}) {
-  let result;
-  const next = A.change(page, (draft) => {
-    if (!draft.comments) draft.comments = {};
-    result = applyComment(
-      draft,
-      input,
-      { principal: "user:test", displayName: "Test", driver: "Test", ...identity },
-      undefined,
-      { page: draft, role: "editor", threadsKey: "comments" },
-    );
-  });
-  return { page: next, result };
-}

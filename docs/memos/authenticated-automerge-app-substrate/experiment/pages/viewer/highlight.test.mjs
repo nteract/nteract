@@ -4,7 +4,8 @@ import * as A from "@automerge/automerge";
 import { GardState, GardSelection } from "wordgard/state";
 import { history, undo } from "wordgard/history";
 import { Command, insertLineBreak, insertText, toggleMark } from "wordgard/command";
-import { enableRich, textPath, blockMarkdown } from "../model/richtext.mjs";
+import { textPath, blockMarkdown } from "../model/richtext.mjs";
+import { richFromSource } from "../model/richtext-test-support.mjs";
 import { createPageData, initializePage, orderedBlockIds } from "../model/page.mjs";
 import { projectComments } from "../model/comments.mjs";
 import { comment, newCommentsDoc } from "../model/comments-test-support.mjs";
@@ -18,7 +19,7 @@ import { clearHighlight, selectionHighlight, setHighlight, toggleHighlight } fro
 
 function setup(markdown) {
   let doc = A.change(A.from({ blocks: { one: { id: "one", kind: "markdown", markdown } } }), (d) =>
-    enableRich(d, "one"),
+    richFromSource(d, "one"),
   );
   const observers = new Set();
   const replica = {
@@ -127,7 +128,7 @@ test("a collapsed selection sets the highlight for the next typed text", () => {
 function native(spans) {
   let doc = A.change(
     A.from({ blocks: { one: { id: "one", kind: "markdown", markdown: "" } } }),
-    (d) => enableRich(d, "one"),
+    (d) => richFromSource(d, "one"),
   );
   return A.change(doc, (d) => A.updateSpans(d, textPath("one"), spans));
 }

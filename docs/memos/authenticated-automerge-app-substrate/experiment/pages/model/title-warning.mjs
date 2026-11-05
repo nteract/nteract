@@ -1,6 +1,5 @@
 import { orderedBlockIds } from "./order.mjs";
 import { isRich } from "./richtext-format.mjs";
-import { parseMarkdown } from "./markdown-import.mjs";
 import { richDoc } from "./richtext-spans.mjs";
 
 const MAX_HEADING = 1024;
@@ -77,14 +76,8 @@ export function openingTitleWarning(doc) {
     for (const blockId of orderedBlockIds(doc)) {
       if (blockId.length > 128) return null;
       const block = doc.blocks[blockId];
-      if (!block || (block.kind !== undefined && block.kind !== "markdown")) return null;
-      if (block.format !== undefined && !isRich(block)) return null;
-      const tree = isRich(block)
-        ? richDoc(block)
-        : typeof block.markdown === "string"
-          ? parseMarkdown(block.markdown)
-          : null;
-      if (!tree) return null;
+      if (!block || !isRich(block)) return null;
+      const tree = richDoc(block);
       for (let index = 0; index < tree.childCount; index++) {
         const node = tree.child(index);
         if (!["paragraph", "heading"].includes(node.type.name)) return null;

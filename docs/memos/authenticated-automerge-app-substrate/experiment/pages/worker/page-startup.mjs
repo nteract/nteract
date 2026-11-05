@@ -2,6 +2,7 @@ import { defineMachine, reject } from "../shared/machine.mjs";
 import { pageState } from "./access.mjs";
 import { validTime } from "./content-activity.mjs";
 import { RECORD_STORAGE_MODES } from "../shared/record-storage.mjs";
+import { storedFormUnsupported } from "../model/stored-form.mjs";
 
 /**
  * How a Page host starts: from its stored record to a loaded document.
@@ -156,9 +157,8 @@ export const pageStartup = defineMachine({
 });
 
 /** Whether the host record is one this build answers checks from without
- * booting. Records an earlier build wrote without a comments document name
- * (the boot writes it) or with a storage mode the boot refuses boot at once,
- * as every host did before. */
+ * booting. A record without a comments document name, or with a storage mode
+ * the boot refuses, boots at once, and the boot refuses it. */
 export function recordAnswerable(record) {
   return (
     !!record &&
@@ -168,6 +168,15 @@ export function recordAnswerable(record) {
     typeof record.comments_doc === "string" &&
     (record.recordStorage === undefined || RECORD_STORAGE_MODES.includes(record.recordStorage))
   );
+}
+
+/** The comments document a host record names, or undefined without a Page.
+ * Every record carries `comments_doc`; one without it fails closed. */
+export function recordCommentsUuid(record) {
+  if (!record?.pageId) return undefined;
+  if (typeof record.comments_doc !== "string")
+    throw storedFormUnsupported("this Page's host record");
+  return record.comments_doc;
 }
 
 /** How the constructor starts the host from what it read. A creation intent

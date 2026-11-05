@@ -2,7 +2,6 @@ import { Plot } from "wordgard/doc";
 import { GardSelection } from "wordgard/state";
 import {
   CodeBlock,
-  OpaqueBlock,
   PagesDataframe,
   PagesImage,
   Paragraph,
@@ -11,14 +10,14 @@ import {
 } from "./wordgard-model.mjs";
 
 // A caret can't type its way out of some final nodes: Enter adds a line in a
-// code block, moves between table cells, and a preserved block, a dataframe
+// code block, moves between table cells, and a dataframe, an unknown block
 // or an image is selected whole. When one of these ends a Page block, ArrowDown on its
 // last line, Mod-Enter, or a click below it adds a real empty paragraph after
 // it and puts the caret there. That's an ordinary edit, so it merges like any
 // Enter, and opening a Page still writes nothing.
 
 /** The final top-level node when the caret can't leave it by typing: a code
- * block, table, preserved, dataframe or unknown block, or a paragraph that
+ * block, table, dataframe or unknown block, or a paragraph that
  * ends in an image. */
 export function finalBlock(doc) {
   const node = doc.content.at(-1);
@@ -26,7 +25,6 @@ export function finalBlock(doc) {
   const blocked =
     node.type === CodeBlock.type ||
     node.type === Table.type ||
-    node.type === OpaqueBlock ||
     node.type === PagesUnknownBlock ||
     node.type === PagesDataframe ||
     (node.type === Paragraph.type && node.content.at(-1)?.type === PagesImage);
@@ -46,7 +44,7 @@ function inFinal(state, final) {
 
 /** ArrowDown. Only when vertical motion has nowhere left to go in the final
  * node: the last line of a code block or of a paragraph holding images, the
- * last table row, or a selected preserved block. Otherwise ArrowDown moves as
+ * last table row, or a selected unknown block. Otherwise ArrowDown moves as
  * usual. A selected image moves down from its own end, like Wordgard's
  * moveByLine, so an image on an earlier line reaches the lines below it. */
 export function leaveFinalBlock(target) {
@@ -75,7 +73,7 @@ function belowInside(target, start, final) {
 
 /** Mod-Enter. In any code block, put the caret on the line after it: the next
  * paragraph when it's empty, otherwise a new empty paragraph. In a final table,
- * image paragraph or preserved block, add a paragraph after it. */
+ * image paragraph or unknown block, add a paragraph after it. */
 export function exitBlock(target) {
   const { state } = target;
   if (state.readOnly) return false;

@@ -92,14 +92,8 @@ export function shellBlocks(doc) {
   for (const { id } of cardContent(doc).blocks) {
     if (budget.nodes <= 0 || budget.text <= 0) break;
     const block = doc.blocks?.[id];
-    if (!block) continue;
-    if (!isRich(block)) {
-      const text = String(block.markdown ?? "").slice(0, MAX_TEXT);
-      budget.text -= text.length;
-      budget.nodes--;
-      blocks.push({ id, text });
-      continue;
-    }
+    // A block without rich text is in a form this build doesn't read.
+    if (!isRich(block)) continue;
     blocks.push({ id, spans: firstScreenSpans(A.spans(doc, textPath(id)), budget) });
   }
   return blocks;
@@ -167,10 +161,6 @@ function mountShell(frame, { blocks, pageId, theme }) {
   for (const block of blocks) {
     const section = article.appendChild(inner.createElement("section"));
     section.className = "page-block";
-    if (block.text !== undefined) {
-      section.appendChild(inner.createElement("pre")).textContent = block.text;
-      continue;
-    }
     const wrap = section.appendChild(inner.createElement("div"));
     wrap.className = "rich-editor wordgard-editor";
     const editor = Wordgard.create({

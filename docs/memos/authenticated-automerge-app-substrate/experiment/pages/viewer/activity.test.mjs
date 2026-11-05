@@ -9,7 +9,8 @@ import {
   pageActivity,
 } from "./activity.mjs";
 import { createProgressTargets } from "../model/presence.mjs";
-import { enableRich, textPath } from "../model/richtext.mjs";
+import { textPath } from "../model/richtext.mjs";
+import { richFromSource } from "../model/richtext-test-support.mjs";
 
 const message = () => ({
   kind: "page-activity",
@@ -101,7 +102,7 @@ test("a closed activity count does not read or project the document", () => {
 
 test("progress ranges follow edits, detach on deletion, and never mutate the document", () => {
   let doc = A.from({ blocks: { first: { kind: "markdown", markdown: "Hello **world**." } } });
-  doc = A.change(doc, (d) => enableRich(d, "first"));
+  doc = A.change(doc, (d) => richFromSource(d, "first"));
   const targets = createProgressTargets(
     doc,
     [{ block_id: "first", match_text: "world" }],

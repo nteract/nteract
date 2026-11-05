@@ -101,7 +101,7 @@ export function MobileBar({
     return () => document.removeEventListener("focusin", away, true);
   }, [barRef, editorDom, onFocusChange]);
   const keep = (event) => event.preventDefault();
-  // With a node selected (an image, a dataframe, a rule, a preserved block),
+  // With a node selected (an image, a dataframe, a rule, an unknown block),
   // the text style, marks, lists and every More entry but undo and redo are
   // off: Insert table and Link would replace the node, the lists would wrap
   // it, and the marks don't apply to it. That includes an image inside a

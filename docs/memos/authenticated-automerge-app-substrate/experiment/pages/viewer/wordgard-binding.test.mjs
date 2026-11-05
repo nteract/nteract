@@ -9,7 +9,8 @@ import { createPeer, connectPeers, closePeers, eventually } from "../../backend.
 import { applyPageOperation, createPageData, initializePage, projectPage } from "../model/page.mjs";
 import { orderedBlockIds } from "../model/order.mjs";
 import { Leaf, Slice } from "wordgard/doc";
-import { enableRich, textPath, blockMarkdown } from "../model/richtext.mjs";
+import { textPath, blockMarkdown } from "../model/richtext.mjs";
+import { richFromSource } from "../model/richtext-test-support.mjs";
 import {
   schema,
   Paragraph,
@@ -45,7 +46,7 @@ import { projectChanges } from "./wordgard-projection.mjs";
 import { encode as previousEncode } from "../test/wordgard-encode-d53a6e64b.mjs";
 function fixture(markdown = "hello 🌊 world") {
   let doc = A.change(A.from({ blocks: { one: { id: "one", kind: "markdown", markdown } } }), (d) =>
-    enableRich(d, "one"),
+    richFromSource(d, "one"),
   );
   const observers = new Set();
   const publish = (before, after, remote) => {

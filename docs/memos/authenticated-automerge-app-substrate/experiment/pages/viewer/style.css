@@ -819,15 +819,6 @@ details.document-actions > div button {
 .toolbar-select:hover {
   background: var(--accent);
 }
-/* A preserved Markdown block waiting for the host's conversion. */
-.opaque pre {
-  background: var(--muted);
-  border: 1px solid var(--border);
-  border-radius: 0.45rem;
-  padding: 0.85rem 1rem;
-  overflow: auto;
-  white-space: pre-wrap;
-}
 .page-block {
   position: relative;
 }

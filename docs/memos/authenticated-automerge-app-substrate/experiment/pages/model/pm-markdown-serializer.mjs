@@ -10,7 +10,6 @@ import { MARK_REGISTRY } from "./marks.mjs";
 import { readDataframe } from "../shared/dataset-assets.mjs";
 import { schema } from "./pm-adapter.mjs";
 import { escapeLiteralSyntax } from "./markdown-scan.mjs";
-import { parseMarkdown } from "./markdown-import.mjs";
 import { dataframeLabel, unknownNodeNotice } from "./richtext-notices.mjs";
 
 // Marks with "markdown": "html" in the registry project as their one fixed tag.
@@ -202,11 +201,6 @@ const serializer = new MarkdownSerializer(
       if (!readDataframe(node.attrs)) state.write(state.esc(unknownNodeNotice("dataframe")));
       else state.write(`[${state.esc(dataframeLabel(node.attrs.title))}](${node.attrs.src})`);
       state.closeBlock(node);
-    },
-    // A preserved block the host has not converted yet projects as the
-    // content it converts to, so a read never offers source a write refuses.
-    raw(state, node) {
-      state.renderContent(parseMarkdown(node.attrs.source, { kind: node.attrs.kind }));
     },
     // A node this build doesn't know, written by a newer build. It reads as a
     // notice naming its type, followed by any text it holds, so a read never

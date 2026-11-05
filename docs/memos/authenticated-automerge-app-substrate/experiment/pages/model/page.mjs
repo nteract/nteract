@@ -1,5 +1,11 @@
 import * as A from "@automerge/automerge/slim";
-import { RICH_FORMAT, isRich, redundantFirstMarker, textPath } from "./richtext-format.mjs";
+import {
+  RICH_FORMAT,
+  isRich,
+  redundantFirstMarker,
+  requireRich,
+  textPath,
+} from "./richtext-format.mjs";
 import { quotableNodeType } from "./richtext-notices.mjs";
 import { markdownlessNode, richDoc } from "./richtext-spans.mjs";
 import {
@@ -271,18 +277,14 @@ function applyEdit(doc, op, trace, context) {
 /** Delete the top-level node `op.node_id` names: its marker through the next
  * node's marker, so its text, marks and children go with it and its
  * neighbours keep their identity. Refused when the block ends up with fewer
- * than one node less: a list, or a quote stored without its own marker, has
- * none to keep it apart, so two alike on either side of the deleted node
- * would join into one. (Deleting a
+ * than one node less: a list has no marker of its own to keep it apart, so
+ * two alike on either side of the deleted node would join into one. (Deleting a
  * block's only node leaves the one empty paragraph a block always has.)
  * A delete of the node that opens the block is recorded in `opened`; the
  * batch drops the next node's plain paragraph marker once it's done
  * (dropOpeningMarkers), so later deletes in the batch still find their ids. */
 function deleteNode(doc, id, op, trace, opened) {
-  if (!isRich(doc.blocks[id]))
-    throw Object.assign(Error("delete_node needs a rich-text block; this block is Markdown"), {
-      code: "node_not_found",
-    });
+  requireRich(doc.blocks[id]);
   const tree = richDoc(doc.blocks[id], doc.page_id);
   const { index, start, end } = resolveNodeId(doc, id, op.node_id, tree);
   const type = agentType(tree.child(index).type.name);

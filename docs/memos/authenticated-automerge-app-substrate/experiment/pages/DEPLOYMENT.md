@@ -629,57 +629,14 @@ There is no repair tool. To repair a Page:
    the receipts. Restore it from a backup, or ask the owner to grant access
    again.
 
-### Preserved Markdown conversion
+### Stored forms this build refuses
 
-Older builds stored Markdown they couldn't import as one read-only preserved
-block. The Page host converts each one when it loads, creates, registers or
-restores a Page (README, "Preserved blocks"). While it converts, the Page is
-read-only: viewers connect and sync it down, discovery reports `converting`
-and the viewer shows a read-only notice, native puts are refused, and HTTP
-edits get `503 preserved_markdown_converting`. A restart while records still
-can't be stored doesn't stop the Page from starting; it stays readable and
-keeps retrying.
-
-The conversion journals in its own key space (`host/operation/internal:`),
-outside the client receipt budgets, so a full legacy receipt store can't
-block it. A run that fails for a reason that passes (storage, a pending edit)
-retries with backoff, 5 seconds doubling to 5 minutes. Connections and edits
-don't start retries early.
-
-Once a run's journal entry is reserved, the host retries that exact intent,
-indefinitely, whatever the failure, and the Page stays fenced and read-only.
-It never reauthors or abandons the run, because its change may already be in
-the serving document. A restart replays the same journal entry. Every five
-failures it logs `page.preserved_markdown_stuck` (below). Such a Page usually
-can't store records at all, for example a `413` on record capacity, so it
-couldn't take writes anyway. An operator frees storage or record capacity
-(see Page quotas); the host's next retry then finishes the same intent on its
-own, and the fence clears.
-
-A run that fails before anything is reserved, for a reason that won't pass
-(the change is too large, the conversion throws, or a request-shaped
-refusal), retries once converting each source as plain text. If that fails
-too, the host logs one line:
-
-```json
-{"service":"nteract-pages-native","event":"page.preserved_markdown_stuck","page_id":"…","reason":"history_capacity","timestamp":"…"}
-```
-
-`reason` is a bounded code (`history_capacity`, `conversion_error`, an error
-code, or `status_<n>`); the line carries no content. After a deploy, search the
-target's logs for `page.preserved_markdown_stuck`. If the Page is still
-fenced (reads work, edits get `preserved_markdown_converting`), it is retrying
-a reserved run: free storage or capacity as above. Otherwise the Page is stuck
-and not fenced: it edits normally, and its preserved blocks stay read-only with a notice. The next
-load tries again. To recover a Page now, as its owner or with an agent:
-
-1. `read_page` the Page. A preserved block reads as the Markdown it would
-   convert to.
-2. `edit_page` with `replace_block_markdown` on that block, passing the
-   Markdown from step 1. If it's refused with `unsupported_markdown` or for
-   size, simplify or split the Markdown and retry.
-
-The replacement removes the preserved block, so nothing is left to convert.
+Every production Page was rewritten to the current stored forms on 2026-11-05:
+rich-text blocks, comments in their own document, `comments_doc` in every host
+record. This build doesn't read the earlier forms. A Page that still holds one
+answers `409 stored_form_unsupported` on the read or write that meets it, and
+a host record without `comments_doc` fails at boot. Don't restore a backup
+taken before that date onto a target running this build.
 
 ### Operator conversion to plain sync
 

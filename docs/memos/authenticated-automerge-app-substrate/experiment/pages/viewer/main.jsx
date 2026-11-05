@@ -1817,7 +1817,10 @@ function App() {
                         />
                       </BlockBoundary>
                     ) : (
-                      <pre>{block.markdown ?? "Unsupported block"}</pre>
+                      <section className="opaque" role="note" data-block-error="true">
+                        This block is stored in a form from an earlier version of Pages that
+                        this build doesn&apos;t read.
+                      </section>
                     )}
                   </section>
                 ))}

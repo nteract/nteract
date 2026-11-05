@@ -28,28 +28,14 @@ import {
   parseDeclaredFeatures,
   requireSupportedSchema,
   schemaUnsupported,
-  unsupportedFeatures,
 } from "../model/schema-features.mjs";
 import { unsupportedMarkdown, unsupportedMarkdownError } from "../model/markdown-scan.mjs";
-import { convertPreservedBlocks, hasPreservedBlocks } from "../model/raw-migration.mjs";
 import { commentsGenesis } from "../model/comments-doc.mjs";
 import { applyComment, commentsMigrated } from "../model/comments.mjs";
 import { guardCommentIntent } from "../model/comment-guard.mjs";
-import {
-  copyLegacyThreads,
-  detachLegacyComments,
-  needsCommentsMigration,
-} from "../model/comments-migration.mjs";
 import { CommentAdmission, recordFrame } from "./comment-admission.mjs";
 import { commentsDocUuid, commentsDocumentId, commentsTreeOf } from "./comments-store.mjs";
-import {
-  conversionFenceError,
-  conversionFenced,
-  conversionNotice,
-  conversionRetryDelay,
-  permanentFailure,
-  preservedConversionMachine,
-} from "./preserved-conversion.mjs";
+import { storedFormUnsupported } from "../model/stored-form.mjs";
 import { readTargets, writeTargets } from "../model/agent-presence.mjs";
 import { BACKEND_LIMITS, assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
 import { handleMcp } from "../mcp.mjs";
@@ -104,7 +90,6 @@ import {
   logIncompleteHistory,
 } from "./history-admission.mjs";
 import {
-  INTERNAL_PREFIX,
   listOperationEntries,
   issueRetryToken,
   inspectOperation,
@@ -184,7 +169,6 @@ import {
   PAGE_DOC,
   documentMutation,
   recoverDocumentMutations,
-  replayRecordedMutation,
   mutationKey,
   fingerprint,
   requireHeads,
@@ -357,7 +341,13 @@ import {
   recordOf,
   summarizeReceipt,
 } from "./page-lifecycle.mjs";
-import { pageStartup, recordFallback, startupOf, storedTitleProjection } from "./page-startup.mjs";
+import {
+  pageStartup,
+  recordCommentsUuid,
+  recordFallback,
+  startupOf,
+  storedTitleProjection,
+} from "./page-startup.mjs";
 import { titleProjection } from "./title-projection.mjs";
 
 const operations = new Set([
@@ -446,28 +436,6 @@ const abandonedError = () => Object.assign(Error("Page object was reset"), { sta
 /** Complete the upgrade and close at once with the refusal's admission code.
  * A browser reads a refused HTTP upgrade only as close 1006, which its
  * reconnect treats as transient; the close code lets it count the refusal. */
-/** A bounded, content-free reason for a failed conversion run. */
-function failureReason(error) {
-  if (isHistoryCapacityError(error)) return "history_capacity";
-  if (error?.conversion) return "conversion_error";
-  if (typeof error?.code === "string") return error.code.slice(0, 64);
-  if (Number.isInteger(error?.status)) return `status_${error.status}`;
-  return "storage_or_runtime";
-}
-/** One structured line when a Page's preserved blocks can't be converted:
- * its Page ID, like `page.creation_intent_conflict`, and a bounded reason,
- * never content. DEPLOYMENT.md describes the recovery. */
-function logPreservedStuck(pageId, reason) {
-  console.error(
-    JSON.stringify({
-      service: "nteract-pages-native",
-      event: "page.preserved_markdown_stuck",
-      page_id: pageId,
-      reason,
-      timestamp: new Date().toISOString(),
-    }),
-  );
-}
 /** The record storage a new Page gets. `PAGES_RECORD_STORAGE=automerge` selects
  * plain Automerge sync (worker/plain-sync.mjs); existing Pages keep the mode
  * they were created with. */
@@ -3772,8 +3740,6 @@ export class Page {
    * at its end. The storage guard already refuses their writes. */
   retireAbandoned() {
     const stop = () => {
-      clearTimeout(this.conversionRetry);
-      this.conversionRetry = undefined;
       this.recordMaintenance?.stop();
       this.actorPersistence?.stop?.();
       this.contentActivity?.stop();
@@ -4005,33 +3971,19 @@ export class Page {
           message:
             "A pending edit exceeds this Page's history capacity. Accepted content is available read-only.",
         };
-      } else {
-        // A pending host migration whose records still can't be stored (a
-        // 413 on record capacity, say) mustn't stop the Page from starting:
-        // it stays readable, fenced, and the conversion machine retries the
-        // same journal entries with backoff. A pending client edit still
-        // rejects startup, as before.
-        const pending = await pendingEntryKeys(this.ctx.storage, PAGE_DOC);
-        if (!pending.length || !pending.every((key) => key.startsWith(INTERNAL_PREFIX)))
-          throw error;
-        logFailure(error, "preserved-markdown-recovery");
-        this.conversionIntent = { replayKeys: pending.map((key) => ({ key, doc: PAGE_DOC })) };
-      }
+      } else throw error;
     }
     await this.loadComments();
     await this.restoreTitleProjection();
     // After recovery: a replayed journal entry was accepted before the
     // restart, not now.
     await this.watchContent();
-    // Before native connections open, so peers sync the converted content.
-    await this.convertPreservedMarkdown();
   }
 
   /** Record content changes on the serving document (content-activity.mjs).
    * The stored time is restored first, so this host's next report carries
-   * it. A change counts when its patches touch the title or blocks and the
-   * conversion machine isn't `converting`; the comments document isn't
-   * observed.
+   * it. A change counts when its patches touch the title or blocks; the
+   * comments document isn't observed.
    *
    * The listener runs on the repository's scheduler loop, in a request that
    * may have responded long ago, so it only records: requests pump the
@@ -4070,10 +4022,7 @@ export class Page {
     this.unwatchContent();
     this.contentHandle = this.handle;
     this.contentListener ??= ({ patches }) => {
-      // While `converting`, the fence holds every other writer, so each Page
-      // change is the host's own migration.
-      if (this.conversion.name === "converting" || !changesContent(patches)) return;
-      this.contentActivity.changed();
+      if (changesContent(patches)) this.contentActivity.changed();
     };
     this.handle.on("change", this.contentListener);
   }
@@ -4224,7 +4173,7 @@ export class Page {
   /** Open the Page's comments document (model/comments-doc.mjs) and finish
    * any journaled write to it. Importing its deterministic genesis is a
    * no-op once it exists, so this also creates it the first time. */
-  async loadComments(metadata = this.metadata) {
+  async loadComments() {
     if (this.commentsHandle || !this.commentsUuid) return;
     const documentId = commentsDocumentId(this.commentsUuid);
     if (this.plain) {
@@ -4235,320 +4184,13 @@ export class Page {
     });
     this.commentAdmission?.reset();
     this.assertNotAbandoned();
-    try {
-      await recoverDocumentMutations(
-        this.ctx.storage,
-        this.commentsHandle,
-        () => this.flush(),
-        this.commentsAdmission,
-        COMMENTS_DOC,
-      );
-    } catch (error) {
-      // As for the Page document: a pending host migration retries under the
-      // conversion machine; a pending client comment stops startup.
-      const pending = await pendingEntryKeys(this.ctx.storage, COMMENTS_DOC);
-      if (!pending.length || !pending.every((key) => key.startsWith(INTERNAL_PREFIX))) throw error;
-      logFailure(error, "comments-migration-recovery");
-      this.conversionIntent = {
-        replayKeys: [
-          ...(this.conversionIntent?.replayKeys ?? []),
-          ...pending.map((key) => ({ key, doc: COMMENTS_DOC })),
-        ],
-      };
-    }
-    // The Page record names its comments document. Derivation gives the same
-    // ID, so a record written without it loses nothing.
-    if (
-      metadata &&
-      metadata === this.metadata &&
-      !metadata.comments_doc &&
-      !this.pendingAccess &&
-      !this.pendingLifecycle
-    ) {
-      this.metadata = { ...metadata, comments_doc: this.commentsUuid };
-      await this.ctx.storage.put("host/document", this.metadata);
-    }
-  }
-
-  /** Replace the Page's preserved Markdown blocks with native rich text, and
-   * hold the write fence until that's done (worker/preserved-conversion.mjs).
-   * The host is the only writer of this conversion (model/raw-migration.mjs).
-   * Resolves when no run is in flight. A failed run leaves the Page fenced,
-   * read-only, with a scheduled retry. */
-  async convertPreservedMarkdown() {
-    this.assertNotAbandoned();
-    this.observeConversion({ due: true });
-    while (this.conversionRun) await this.conversionRun;
-  }
-
-  /** The conversion machine's state; fenced until the first observation. */
-  get conversion() {
-    return this.conversionState ?? preservedConversionMachine.initial;
-  }
-
-  /** Whether peer writes are refused now. */
-  conversionFenced() {
-    return conversionFenced(this.conversion);
-  }
-
-  /** The refusal for a native put or connection while the fence is up on an
-   * active Page, or undefined. A trashed Page keeps its own rules. */
-  conversionWriteFence() {
-    return this.conversionFenced() && pageState(this.metadata) === "active"
-      ? withAdmissionReason(conversionFenceError(), "preserved_markdown_converting")
-      : undefined;
-  }
-
-  /** Feed what the host sees now into the conversion machine. Without a
-   * document there is nothing to observe, and the state stays as it is. */
-  observeConversion({ due = false } = {}) {
-    // An abandoned object starts no run; its retry timer is cleared.
-    if (this.startup.name === "abandoned") return;
-    const doc = typeof this.handle?.doc === "function" ? this.handle.doc() : undefined;
-    if (!doc) return;
-    // The host's migrations share one fence: preserved blocks to rich text,
-    // then legacy comments into the comments document.
-    const preserved =
-      hasPreservedBlocks(doc) || (!!this.commentsHandle && needsCommentsMigration(doc));
-    const unfinished = !!this.conversionIntent;
-    this.conversionEvent({
-      type: "observe",
-      due,
-      preserved,
-      unfinished,
-      eligible:
-        (preserved || unfinished) &&
-        !this.recoveryBlocked &&
-        pageState(this.metadata) === "active" &&
-        !unsupportedFeatures(doc).length,
-    });
-  }
-
-  conversionEvent(event) {
-    const wasFenced = this.conversionFenced();
-    const result = preservedConversionMachine.step(this.conversion, event);
-    this.conversionState = result.state;
-    // Peers connected read-only while fenced. Once the fence drops, close
-    // their sockets with a transient code: they reconnect, discovery no
-    // longer reports `converting`, and editing resumes.
-    if (wasFenced && !this.conversionFenced() && this.wires?.size) {
-      const done = withAdmissionReason(
-        Object.assign(Error("Preserved Markdown converted"), { status: 503 }),
-        "preserved_markdown_converting",
-      );
-      for (const wire of this.wires)
-        void wire.disconnect(admissionCloseCode(done), admissionCode(done));
-    }
-    for (const effect of result.effects) {
-      if (effect.type === "observe") this.observeConversion({ due: true });
-      else if (effect.type === "scheduleRetry") {
-        clearTimeout(this.conversionRetry);
-        // A run that failed because its object was abandoned retries nowhere.
-        if (this.startup.name === "abandoned") continue;
-        this.conversionRetry = setTimeout(
-          () => this.observeConversion({ due: true }),
-          conversionRetryDelay(effect.attempt),
-        );
-        // Node keeps no process alive for it; a Durable Object stays resident.
-        this.conversionRetry?.unref?.();
-      } else if (effect.type === "logStuck")
-        logPreservedStuck(this.metadata?.pageId ?? this.handle.doc().page_id, effect.reason);
-      else if (effect.type === "convert") {
-        // `converting` until this run's outcome steps the machine: the content
-        // listener ignores every Page change in between (watchContent).
-        const run = this.convertPreservedOnce(effect.mode).then(
-          () => ({ type: "succeeded" }),
-          (error) => {
-            logFailure(error, "preserved-markdown");
-            return {
-              type: "failed",
-              permanent: permanentFailure(error, { isHistoryCapacityError }),
-              // Whether the run's journal entry is still reserved.
-              unfinished: !!this.conversionIntent,
-              reason: failureReason(error),
-            };
-          },
-        );
-        this.conversionRun = run.then((outcome) => {
-          this.conversionRun = undefined;
-          this.conversionEvent(outcome);
-        });
-      }
-    }
-  }
-
-  /** Before an HTTP edit: while fenced, try the conversion once more, then
-   * refuse with `preserved_markdown_converting` if the fence stays. */
-  async requireConverted() {
-    if (this.conversion.name === "unchecked") await this.convertPreservedMarkdown();
-    else if (this.conversionFenced()) {
-      // A nudge: it may clear the fence, but a retry waits for its backoff.
-      this.observeConversion();
-      while (this.conversionRun) await this.conversionRun;
-    }
-    if (this.conversionFenced()) throw conversionFenceError();
-  }
-
-  /** One journaled conversion run. A run is a host intent in the journal's
-   * internal key space, keyed by the heads it converted, so a restart replays
-   * the recorded change instead of converting again. The intent is kept
-   * until its journal entry is terminal: a run that applied but failed to
-   * finish replays under the same key, so its reservation completes. Throws
-   * on failure; an error from the conversion itself carries `conversion`. */
-  async convertPreservedOnce(mode) {
-    if (this.conversionIntent?.replayKeys) {
-      // Entries startup recovery couldn't finish: replay them as recorded.
-      for (const { key, doc } of this.conversionIntent.replayKeys) {
-        const comments = doc === COMMENTS_DOC;
-        await replayRecordedMutation({
-          storage: this.ctx.storage,
-          handle: comments ? this.commentsHandle : this.handle,
-          key,
-          flush: () => this.flush(),
-          admission: comments ? this.commentsAdmission : this.admission,
-        });
-      }
-      this.conversionIntent = undefined;
-      return;
-    }
-    // Preserved blocks convert first; legacy comments move once they're done.
-    // A conversion run past its first step finishes before comments move.
-    const converting = !!this.conversionIntent && !this.conversionIntent.comments;
-    if (this.conversionIntent?.comments || (!converting && !hasPreservedBlocks(this.handle.doc())))
-      return this.migrateCommentsOnce(mode === "literal" ? "drop" : "copy");
-    if (!this.conversionIntent) {
-      const heads = A.getHeads(this.handle.doc()).sort();
-      const digest = hex(
-        new Uint8Array(
-          await crypto.subtle.digest("SHA-256", new TextEncoder().encode(heads.join(","))),
-        ),
-      );
-      const literal = mode === "literal";
-      this.conversionIntent = {
-        operation: literal ? "convert_preserved_markdown_literal" : "convert_preserved_markdown",
-        literal,
-        args: {
-          idempotency_key: `preserved_${literal ? "literal" : "markdown"}_${digest.slice(0, 32)}`,
-          base_heads: heads,
-        },
-      };
-    }
-    const intent = this.conversionIntent;
-    try {
-      await documentMutation({
-        storage: this.ctx.storage,
-        hostActorPrefix: this.plain?.hostActorPrefix,
-        admission: this.admission,
-        handle: this.handle,
-        operation: intent.operation,
-        args: intent.args,
-        identity: { principal: "service:pages", driver: "API" },
-        internal: true,
-        apply: (draft) => {
-          try {
-            return { converted: convertPreservedBlocks(draft, { literal: intent.literal }) };
-          } catch (error) {
-            throw Object.assign(error, { conversion: true });
-          }
-        },
-        flush: () => this.flush(),
-      });
-      this.conversionIntent = undefined;
-    } catch (error) {
-      // Keep the intent while its journal entry is pending: the next run
-      // replays it. Without one, the next run starts over from current heads.
-      const key = `${INTERNAL_PREFIX}${intent.args.idempotency_key}`;
-      const entry = await this.ctx.storage.get(key).catch(() => ({ pending: true }));
-      if (!entry?.pending && !this.admission?.pending(key)) this.conversionIntent = undefined;
-      throw error;
-    }
-  }
-
-  /**
-   * Move legacy comments out of the Page document (model/comments-migration.mjs),
-   * as two journaled host intents under the conversion fence:
-   *
-   * 1. copy: every legacy thread into the comments document, keyed by the
-   *    Page heads it read. Threads already there are skipped.
-   * 2. detach: drop the Page's legacy map and stamp `comments-doc`, at
-   *    exactly those heads.
-   *
-   * The fence holds peer writes, so the heads can't move between the steps.
-   * If they do anyway, detach fails with stale heads and the next run copies
-   * again from the new heads. A run that fails after reserving its entry
-   * replays that entry. `mode` is `copy`, or `drop` after a copy keeps
-   * failing for good: then no thread moves and the Page still detaches.
-   */
-  async migrateCommentsOnce(mode) {
-    if (!this.conversionIntent?.comments) {
-      const heads = A.getHeads(this.handle.doc()).sort();
-      const digest = hex(
-        new Uint8Array(
-          await crypto.subtle.digest("SHA-256", new TextEncoder().encode(heads.join(","))),
-        ),
-      ).slice(0, 32);
-      this.conversionIntent = { comments: { mode, heads, digest, step: "copy" } };
-    }
-    const intent = this.conversionIntent.comments;
-    const identity = { principal: "service:pages", driver: "API" };
-    try {
-      if (intent.step === "copy") {
-        const page = this.handle.doc();
-        await documentMutation({
-          storage: this.ctx.storage,
-          hostActorPrefix: this.plain?.hostActorPrefix,
-          admission: this.commentsAdmission,
-          handle: this.commentsHandle,
-          doc: COMMENTS_DOC,
-          pageId: this.metadata.pageId,
-          operation: "migrate_comments_copy",
-          args: {
-            idempotency_key: `comments_copy_${intent.mode}_${intent.digest}`,
-            base_heads: intent.heads,
-          },
-          identity,
-          internal: true,
-          // The copy reads the Page at the heads it names, never later.
-          guard: (args) => {
-            requireHeads(this.handle.doc(), intent.heads);
-            return args;
-          },
-          apply: (draft) => {
-            try {
-              return copyLegacyThreads(draft, page, { mode: intent.mode });
-            } catch (error) {
-              throw Object.assign(error, { conversion: true });
-            }
-          },
-          flush: () => this.flush(),
-        });
-        intent.step = "detach";
-      }
-      await documentMutation({
-        storage: this.ctx.storage,
-        hostActorPrefix: this.plain?.hostActorPrefix,
-        admission: this.admission,
-        handle: this.handle,
-        operation: "migrate_comments_detach",
-        args: {
-          idempotency_key: `comments_detach_${intent.mode}_${intent.digest}`,
-          base_heads: intent.heads,
-        },
-        identity,
-        internal: true,
-        apply: (draft) => detachLegacyComments(draft),
-        flush: () => this.flush(),
-      });
-      this.conversionIntent = undefined;
-    } catch (error) {
-      // Keep the intent while its journal entry is pending: the next run
-      // replays it. Without one, the next run starts over from current heads.
-      const key = `${INTERNAL_PREFIX}comments_${intent.step}_${intent.mode}_${intent.digest}`;
-      const admission = intent.step === "copy" ? this.commentsAdmission : this.admission;
-      const entry = await this.ctx.storage.get(key).catch(() => ({ pending: true }));
-      if (!entry?.pending && !admission?.pending(key)) this.conversionIntent = undefined;
-      throw error;
-    }
+    await recoverDocumentMutations(
+      this.ctx.storage,
+      this.commentsHandle,
+      () => this.flush(),
+      this.commentsAdmission,
+      COMMENTS_DOC,
+    );
   }
 
   initializeRepo(metadata = this.metadata) {
@@ -4569,9 +4211,7 @@ export class Page {
         const serverKey = hex(signer.verifyingKey());
         // The comments document is named before any peer can connect, so the
         // policy serves its tree from the first frame.
-        const commentsUuid = metadata?.pageId
-          ? (metadata.comments_doc ?? (await commentsDocUuid(metadata.pageId)))
-          : undefined;
+        const commentsUuid = recordCommentsUuid(metadata);
         const commentsTree = commentsUuid && commentsTreeOf(commentsUuid);
         const peer = signer.peerId();
         let serverSenderId;
@@ -4595,8 +4235,6 @@ export class Page {
             const handle = scope === COMMENTS_SCOPE ? this.commentsHandle : this.handle;
             return handle ? documentFeatures(handle.doc()) : [];
           },
-          // Peer puts wait for the host's own migrations.
-          writeFence: () => this.conversionWriteFence(),
           commentsTree: () => commentsTree,
         });
         await policy.load();
@@ -4732,9 +4370,7 @@ export class Page {
    * store, native admission or actor replay: claims are made at admission. */
   async initializePlain(metadata) {
     const ctx = this.ctx;
-    const commentsUuid = metadata?.pageId
-      ? (metadata.comments_doc ?? (await commentsDocUuid(metadata.pageId)))
-      : undefined;
+    const commentsUuid = recordCommentsUuid(metadata);
     const policy = new DocumentPolicy({
       storage: ctx.storage,
       metadata: () =>
@@ -4750,7 +4386,6 @@ export class Page {
         const handle = scope === COMMENTS_SCOPE ? this.commentsHandle : this.handle;
         return handle ? documentFeatures(handle.doc()) : [];
       },
-      writeFence: () => this.conversionWriteFence(),
       commentsTree: () => undefined,
     });
     await policy.load();
@@ -4758,7 +4393,6 @@ export class Page {
       storage: ctx.storage,
       policy,
       pageFeatures: () => (this.handle ? documentFeatures(this.handle.doc()) : []),
-      writeFence: () => this.conversionWriteFence(),
       onRefused: (conn, refusal, { doc, repeats }) => {
         if (conn.trusted) return logFailure(refusal, "plain-host-write");
         logSyncRefused({
@@ -4809,8 +4443,6 @@ export class Page {
    * a replay never undoes a later Trash, restore or ACL change. */
   async finishCreation(intent) {
     await this.applyLifecycle(this.metadata ? CREATION_REPLAY : CREATION_COMMIT, { intent });
-    // A registered draft from an older build can hold preserved blocks.
-    await this.convertPreservedMarkdown();
   }
 
   profiles() {
@@ -5241,13 +4873,12 @@ export class Page {
     );
   }
 
-  /** The comments document readers use: the Page's once its comments have
-   * moved there. Before that, readers fall back to the Page's legacy map
-   * (model/comments.mjs threadsOf) and comment writes wait. */
+  /** The Page's comments document. The Page's `comments-doc` stamp says its
+   * comments live there; a Page without the stamp fails closed. */
   commentsView() {
-    return this.commentsHandle && this.handle && commentsMigrated(this.handle.doc())
-      ? this.commentsHandle.doc()
-      : undefined;
+    if (this.handle && !commentsMigrated(this.handle.doc()))
+      throw storedFormUnsupported("this Page's comments");
+    return this.commentsHandle?.doc();
   }
 
   /** The repo document IDs this Page host holds: the Page and, once open,
@@ -5457,7 +5088,6 @@ export class Page {
     // Nothing writes the record meanwhile: this runs in blockConcurrencyWhile.
     const stored = await storage.get("host/document");
     if (JSON.stringify(stored) !== JSON.stringify(this.metadata)) return skip("record_pending");
-    if (this.conversionIntent) return skip("conversion_pending");
     if (
       (await pendingEntryKeys(storage, PAGE_DOC)).length ||
       (await pendingEntryKeys(storage, COMMENTS_DOC)).length
@@ -5612,8 +5242,6 @@ export class Page {
     if (this.migrationRetiring) return;
     this.migrationRetiring = true;
     this.disarmMigration();
-    clearTimeout(this.conversionRetry);
-    this.conversionRetry = undefined;
     this.recordMaintenance?.stop();
     this.actorPersistence?.stop?.();
     this.contentActivity?.stop();
@@ -5895,15 +5523,12 @@ export class Page {
           ...(this.plain ? { recordStorage: "automerge" } : { serverPeerId: this.serverKey }),
           serverSenderId: this.serverSenderId,
           identity: publicIdentity(identity),
-          // Access is the grant; `converting` is a temporary hold the viewer
-          // shows as read-only without retiring its writer key.
           canWrite: !this.recoveryBlocked && this.policy.account(identity).canWrite,
           access: {
             ...this.policy.account(identity),
             ...(this.recoveryBlocked && { canWrite: false, canComment: false }),
           },
           ...(this.recoveryBlocked && { recovery: this.recoveryBlocked }),
-          ...(this.conversionWriteFence() && { converting: conversionNotice() }),
           ...(incompleteHistory(this.handle.doc()) && {
             historyIncomplete: incompleteHistory(this.handle.doc()),
           }),
@@ -6008,7 +5633,6 @@ export class Page {
         // Where this batch landed, captured inside the change so the cursors
         // name the characters it wrote. A replayed receipt has no caret.
         let caret = null;
-        await this.requireConverted();
         const receipt = await documentMutation({
           storage: this.ctx.storage,
           hostActorPrefix: this.plain?.hostActorPrefix,
@@ -6138,13 +5762,7 @@ export class Page {
    */
   async writeComment(request, identity, body) {
     this.policy.account(identity, "comment");
-    await this.requireConverted();
-    if (!this.commentsView())
-      throw new HttpError(
-        503,
-        "This Page's comments are moving to their own document; try again shortly",
-        "comments_migrating",
-      );
+    this.commentsView();
     const role = this.policy.account(identity).role;
     const operation = body.operation;
     const args = body.arguments ?? {};
@@ -6523,10 +6141,6 @@ export class Page {
             );
         } else this.metadata = pending.metadata;
         return;
-      case "convertPreserved":
-        // Journaled and idempotent, so a repeated commit sequence is safe.
-        await this.convertPreservedMarkdown();
-        return;
       case "refreshAccess":
         await this.policy.refreshAccess();
         this.plain?.refresh();
@@ -6601,11 +6215,8 @@ export class Page {
         this.handle = await this.repo.import(context.intent.bytes, {
           docId: context.intent.metadata.documentId,
         });
-        await this.loadComments(context.intent.metadata);
+        await this.loadComments();
         await this.watchContent();
-        // Not active yet: preserved blocks are held, fenced, until
-        // finishCreation observes again after the record is installed.
-        this.observeConversion();
         // Before its record is installed, `install` starts presence instead.
         if (this.metadata) this.observeActivity();
         return;
@@ -6882,30 +6493,11 @@ export class Page {
     const declared = new URL(request.url).searchParams.getAll("schema_features");
     const features = declared.length > 1 ? null : parseDeclaredFeatures(declared[0]);
     if (!features) throw new HttpError(400, "Invalid schema_features");
-    // While the preserved-block conversion holds the fence, peers still
-    // connect and sync down, read-only: the policy refuses every put, relayed
-    // or self-authored, so no competing conversion lands. Discovery tells the
-    // viewer it's converting. Each connection retries a failed conversion.
     // A plain socket from a tab that already holds one replaces it, so the
     // stale socket's slot is free for this one.
     const sender = this.plain?.sender(identity, new URL(request.url).searchParams.get("sender"));
     const capacity = this.connectionCapacity(identity, sender?.replaces?.wire);
     if (capacity) return refuseSocket(capacity, identity);
-    // A first observation is due; afterwards a connection only nudges, which
-    // never starts a retry before its backoff.
-    this.observeConversion({ due: this.conversion.name === "unchecked" });
-    // The viewer discovered `converting` but the fence dropped before this
-    // upgrade, so it would miss the completion close: send it back to
-    // discovery. Synchronous with the wire's registration below, so the
-    // fence can't drop between this check and the socket joining `wires`.
-    if (new URL(request.url).searchParams.get("converting") === "1" && !this.conversionWriteFence())
-      return refuseSocket(
-        withAdmissionReason(
-          Object.assign(Error("Preserved Markdown converted"), { status: 503 }),
-          "preserved_markdown_converting",
-        ),
-        identity,
-      );
     if (this.plain) {
       try {
         requirePlainSyncClient(request);

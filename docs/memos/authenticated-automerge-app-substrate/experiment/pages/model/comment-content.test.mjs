@@ -7,6 +7,7 @@ import {
 } from "./comments.mjs";
 import { projectReadComments as projectReadCommentsOf } from "./read-comments.mjs";
 import { projectReadChanges as projectReadChangesOf } from "./read-changes.mjs";
+import { currentForm } from "./richtext-test-support.mjs";
 
 // Comment content, isolated from document separation: one document plays
 // both roles, holding the blocks anchors resolve against and the threads.
@@ -24,12 +25,15 @@ import {
 
 const identity = { principal: "fixture", displayName: "Writer", driver: "Test" };
 const fixture = () =>
-  A.from({
-    page_id: "comments",
-    title: "Test",
-    blocks: { one: { markdown: "A passage", position: "a0" } },
-    threads: {},
-  });
+  A.change(
+    A.from({
+      page_id: "comments",
+      title: "Test",
+      blocks: { one: { markdown: "A passage", position: "a0" } },
+      threads: {},
+    }),
+    currentForm,
+  );
 const table =
   "**Decision**\n\n| Option | Result |\n| --- | --- |\n| Native | **Editable** |\n| Markdown | `Portable` |";
 function add(doc, body = table, extra = {}) {

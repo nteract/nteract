@@ -503,7 +503,7 @@ class Storage {
 }
 
 function readPageFixture(t, f, role) {
-  const initial = A.from(createPageData({ pageId, title: "Private read fixture" }));
+  const initial = A.change(A.from(createPageData({ pageId, title: "Private read fixture" })), (draft) => initializePage(draft));
   const blockId = Object.keys(initial.blocks)[0];
   let threadId;
   const doc = A.change(initial, (draft) => {
@@ -656,7 +656,8 @@ for (const scope of ["pages:read pages:write offline_access", "pages:read offlin
 
 test("a live Page ACL downgrade and revocation override an existing OAuth write grant", async (t) => {
   const f = await fixture(t);
-  const doc = A.from(createPageData({ pageId, title: "ACL fixture" }));
+  const doc = A.change(A.from(createPageData({ pageId, title: "ACL fixture" })), (draft) => initializePage(draft));
+  const comments = newCommentsDoc();
   t.after(() => A.free(doc));
   const storage = new Storage();
   const page = Object.assign(Object.create(Page.prototype), {
@@ -675,7 +676,7 @@ test("a live Page ACL downgrade and revocation override an existing OAuth write 
       },
     },
     handle: { doc: () => doc },
-    commentsHandle: { doc: () => commented.comments },
+    commentsHandle: { doc: () => comments },
     cacheTitle() {},
   });
   page.policy = new DocumentPolicy({ storage, metadata: () => page.metadata });
@@ -746,7 +747,7 @@ test("OAuth domain viewing rechecks company policy, explicit denial, and proof e
     env: companyEnv,
     identity: { ...person, emailProof: { ...session, provider: "app-session" } },
   });
-  const document = A.from(createPageData({ pageId, title: "Company-only Page" }));
+  const document = A.change(A.from(createPageData({ pageId, title: "Company-only Page" })), (draft) => initializePage(draft));
   t.after(() => A.free(document));
   const jobs = [],
     catalogues = new Map(),

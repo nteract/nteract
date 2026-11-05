@@ -155,16 +155,16 @@ Branch on code, not on the error message:
     format_match or set_node, or remove it with delete_node.
 - node_not_found: delete_node's node_id doesn't name a node in that block. The
   node was deleted, or the id came from another block: read the outline again.
-  It's also returned for a Markdown block, and for a block holding a node this
-  version can't place; neither has node ids, so use delete_block or
-  replace_block_markdown there. Repeating the request unchanged fails again.
+  It's also returned for a block holding a node this version can't place,
+  which has no node ids, so use delete_block or replace_block_markdown there.
+  Repeating the request unchanged fails again.
 - nodes_would_join: delete_node would leave two lists or quotes of the same
   kind side by side, and they'd merge into one. Each delete is checked as it
   applies, so put a delete_node for one of them before this one in the batch,
   or rewrite the block with replace_block_markdown.
-- preserved_markdown_converting (503): Pages is converting Markdown an older
-  version saved on this Page. read_page still works. Wait, read_page again,
-  retry; if it persists, the Page needs an operator.
+- stored_form_unsupported (409): part of this Page is stored in a form from an
+  earlier version of Pages that this build doesn't read. Retrying doesn't
+  help; tell the person, since the Page needs an operator.
 - idempotency_conflict: the key was used for a different request. Use a new key.
 - operation_pending (409): an earlier request with this key is still being
   applied. Retry the same request shortly.
@@ -232,9 +232,9 @@ Branch on code, not on the error message:
   verified email at that domain. Sign in again with it.
 - page_recovery_blocked: a pending edit exceeds the Page's history capacity;
   accepted content stays readable. Tell the person.
-- Retryable server waits (503, retryable:true): record_persistence_timeout,
-  record_persistence_unavailable and comments_migrating. Retry the same
-  request, including its key and token. record_persistence_unavailable carries
+- Retryable server waits (503, retryable:true): record_persistence_timeout
+  and record_persistence_unavailable. Retry the same request, including its
+  key and token. record_persistence_unavailable carries
    retry_after_ms and Retry-After. For a tokenless write it is retryable:false:
    read back and reconcile before retrying, since the write may have completed.
 - shared_page_unavailable (503, retryable:true): a listing met a shared Page,

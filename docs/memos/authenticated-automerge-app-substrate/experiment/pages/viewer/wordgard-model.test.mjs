@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import { Leaf, parse } from "wordgard/doc";
 import { JSDOM } from "jsdom";
-import { enableRich, textPath, validateRich, blockMarkdown } from "../model/richtext.mjs";
+import { textPath, validateRich, blockMarkdown } from "../model/richtext.mjs";
+import { richFromSource } from "../model/richtext-test-support.mjs";
 import {
   decode,
   encode,
@@ -11,7 +12,6 @@ import {
   Paragraph,
   CodeBlock,
   PagesLink,
-  OpaqueBlock,
   PagesImage,
   PagesHighlight,
   PagesForeignMarks,
@@ -24,7 +24,7 @@ import {
 } from "./wordgard-model.mjs";
 function fixture(markdown) {
   return A.change(A.from({ blocks: { one: { id: "one", kind: "markdown", markdown } } }), (d) =>
-    enableRich(d, "one"),
+    richFromSource(d, "one"),
   );
 }
 test("Wordgard reads actual Pages spans with implicit paragraphs and UTF-16 positions", () => {
@@ -58,32 +58,31 @@ test("Pages headings, nested lists, quotes, hard breaks, code params and links r
     assert.equal(blockMarkdown(rewritten.blocks.one), blockMarkdown(native.blocks.one), source);
   }
 });
-// Older builds stored preserved blocks; this build only reads them.
-const preserved = (source) =>
-  A.change(A.from({ blocks: { one: { id: "one", kind: "markdown", markdown: source } } }), (d) => {
-    enableRich(d, "one");
-    A.updateSpans(
-      d,
-      textPath("one"),
-      encode(schema.doc([OpaqueBlock.of({ source, importId: "", kind: "markdown" })])),
-    );
-  });
-test("stored preserved Markdown and instruction nodes retain exact source and kind", () => {
+// Older builds stored preserved Markdown as a `pages-opaque` marker. This
+// build doesn't know that node: it reads as an unknown block, kept as stored.
+const preservedSpans = (source) => [
+  {
+    type: "block",
+    value: {
+      type: new A.ImmutableString("pages-opaque"),
+      parents: [],
+      attrs: { source: new A.ImmutableString(source) },
+      isEmbed: false,
+    },
+  },
+];
+test("a stored preserved Markdown marker reads as an unknown block and keeps its marker", () => {
   const source = "<div>preserved unsupported markup</div>";
   // Import never writes one: this HTML is literal text in a paragraph.
   assert.equal(
     decode(A.spans(fixture(source), textPath("one"))).doc.content[0].type,
     Paragraph.type,
   );
-  const doc = preserved(source),
-    tree = decode(A.spans(doc, textPath("one"))).doc;
-  assert.equal(tree.content[0].type, OpaqueBlock);
-  assert.equal(tree.content[0].param.source, source);
-  assert.ok(decode(encode(tree)).doc.eq(tree));
-  const instruction = schema.doc([
-    OpaqueBlock.of({ source: "secret <script>", importId: "i", kind: "instruction" }),
-  ]);
-  assert.ok(decode(encode(instruction)).doc.eq(instruction));
+  const tree = decode(preservedSpans(source)).doc;
+  assert.equal(tree.content[0].type, PagesUnknownBlock);
+  const [marker] = encode(tree);
+  assert.equal(String(marker.value.type), "pages-opaque");
+  assert.equal(String(marker.value.attrs.source), source);
 });
 test("native positions preserve paragraph ends and opaque leaf endpoints", () => {
   const native = fixture("## 🌊 Heading\n\nNext  \nline"),
@@ -94,7 +93,7 @@ test("native positions preserve paragraph ends and opaque leaf endpoints", () =>
     assert.equal(map.amToWg[map.wgToAm[end]], end);
     pos += block.length;
   }
-  const table = decode(A.spans(preserved("<div>preserved markup</div>"), textPath("one")));
+  const table = decode(preservedSpans("<div>preserved markup</div>"));
   assert.deepEqual(table.map.wgToAm, [0, 1]);
   assert.deepEqual(table.map.amToWg, [0, 1]);
 });

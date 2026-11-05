@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
-import { pmNodeToSpans } from "@automerge/prosemirror";
-import { createPageData, initializePage, orderedBlockIds } from "../model/page.mjs";
-import { hasPreservedBlocks } from "../model/raw-migration.mjs";
-import { adapter, schema, textPath } from "../model/richtext.mjs";
 import { sqliteD1 } from "../test/sqlite-d1.mjs";
 import { reportContentActivity, reportPageIndex } from "./catalog-index.mjs";
 import { CONTENT_ACTIVITY_KEY, CONTENT_ACTIVITY_MAX_SKEW_MS } from "./content-activity.mjs";
@@ -100,40 +96,6 @@ test("content changes record a time; comments, presence and sharing don't", asyn
   const check = await f.pageCall("member", "/internal/catalog", {});
   assert.equal(check.status, 200);
   assert.equal(check.body.content_updated_at, value);
-});
-
-test("the host's own migrations rewrite blocks without recording content activity", async (t) => {
-  let doc = A.change(A.from(createPageData({ pageId, title: "Launch plan" })), (draft) =>
-    initializePage(draft, "We ship on Friday."),
-  );
-  const block = orderedBlockIds(doc)[0];
-  const tree = schema.node("doc", null, [
-    schema.node("paragraph", null, [schema.text("We ship on Friday.")]),
-    schema.node("raw", { source: "Old ~~text~~.", importId: "", kind: "markdown" }),
-  ]);
-  doc = A.change(doc, (draft) =>
-    A.updateSpans(
-      draft,
-      textPath(block),
-      pmNodeToSpans(adapter, tree),
-      adapter.updateSpansConfig(),
-    ),
-  );
-  const plain = await fixture(t);
-  const f = await fixture(t, { auth: plain.auth, docBytes: A.save(doc) });
-  A.free(doc);
-  await emitting(f.page).watchContent();
-  const heads = f.heads();
-  await f.page.convertPreservedMarkdown();
-  await settle(f);
-  assert.equal(hasPreservedBlocks(f.doc()), false);
-  assert.notDeepEqual(f.heads(), heads, "the migration changed the document");
-  assert.equal(f.page.contentActivity.value, null);
-  assert.equal(await f.storage.get(CONTENT_ACTIVITY_KEY), undefined);
-  // Observation resumes once it's done.
-  await peerEdit(f.page, "Launch plan, revised");
-  await settle(f);
-  assert.ok(f.page.contentActivity.value);
 });
 
 test("a recorded time is stored once per window, reported to D1, and survives a restart", async (t) => {

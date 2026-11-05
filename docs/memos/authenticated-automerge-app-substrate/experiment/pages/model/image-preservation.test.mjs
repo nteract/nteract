@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
-import { enableRich, textPath, blockMarkdown, setRichMarkdownKeepingNodes } from "./richtext.mjs";
+import { textPath, blockMarkdown, setRichMarkdownKeepingNodes } from "./richtext.mjs";
+import { richFromSource } from "./richtext-test-support.mjs";
 
 function fixture(markdown, extra = { future: "opaque", enabled: false, count: 2, empty: null }) {
   return A.change(A.from({ blocks: { one: { id: "one", kind: "markdown", markdown } } }), (d) => {
-    enableRich(d, "one");
+    richFromSource(d, "one");
     const spans = A.spans(d, textPath("one"));
     for (const span of spans)
       if (span.type === "block" && String(span.value.type) === "image")

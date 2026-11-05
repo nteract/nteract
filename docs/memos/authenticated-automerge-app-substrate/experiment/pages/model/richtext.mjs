@@ -34,7 +34,6 @@ export {
 } from "./richtext-spans.mjs";
 export {
   blockMarkdown,
-  enableRich,
   setRichMarkdown,
   setRichImage,
   setRichNode,

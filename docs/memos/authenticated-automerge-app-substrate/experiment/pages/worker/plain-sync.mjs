@@ -195,9 +195,9 @@ function refusalFrom(error, code = admissionCode(error)) {
 
 export class PlainSync {
   /**
-   * `policy` is the Page's DocumentPolicy. `features(doc)` is that document's
-   * schema stamp; `writeFence()` returns the refusal while the host holds peer
-   * writes. `onActors(delta)` publishes actor profiles and attested changes.
+   * `policy` is the Page's DocumentPolicy. `pageFeatures()` is the Page's
+   * schema stamp. `onActors(delta)` publishes actor profiles and attested
+   * changes.
    *
    * Reporting: `onRefused(conn, refusal, { doc, repeats })` for a refused
    * frame; a browser connection reports each reason once at once, and its
@@ -212,7 +212,6 @@ export class PlainSync {
     policy,
     now = Date.now,
     pageFeatures = () => [],
-    writeFence = () => undefined,
     onRefused = () => {},
     onRounds = () => {},
     onCompactionFailed = () => {},
@@ -224,7 +223,6 @@ export class PlainSync {
     this.pageFeatures = pageFeatures;
     this.policy = policy;
     this.now = now;
-    this.writeFence = writeFence;
     this.onRefused = onRefused;
     this.onRounds = onRounds;
     this.onActors = onActors;
@@ -250,11 +248,11 @@ export class PlainSync {
           if (!conn.trusted || !["mutate", "replay", "retry", "bridge"].includes(origin))
             throw new Refusal("request_rejected", "Invalid trusted admission context");
           // Host writers support BUILD_FEATURES, not a browser's advertised set.
-          // Keep the fence and history cap, and refuse unknown stored schema
-          // features so an older host cannot edit a newer document blindly.
+          // Keep the history cap, and refuse unknown stored schema features so
+          // an older host cannot edit a newer document blindly.
           // Already-admitted relays have no fresh bytes and never reach this
-          // gate. An origin alone does not exempt new history from the fence.
-          this.#gate({ features: BUILD_FEATURES }, doc, live, fresh, context);
+          // gate.
+          this.#gate({ features: BUILD_FEATURES }, doc, live, fresh);
           return preview;
         },
         admitted: (conn, doc, fresh, claims) => this.#admitted(conn, doc, fresh, claims),
@@ -460,12 +458,8 @@ export class PlainSync {
     }
   }
 
-  /** Conversion fence, schema gate and history capacity, before comment rules. */
-  #gate(conn, doc, live, fresh, { fenceExempt = false } = {}) {
-    // Only host journal migrations receive this capability; browser admission
-    // never forwards frame data here. Schema and capacity checks still apply.
-    const fence = !fenceExempt && this.writeFence();
-    if (fence) throw new Refusal(admissionCode(fence), fence.message);
+  /** Schema gate and history capacity, before comment rules. */
+  #gate(conn, doc, live, fresh) {
     const stamps = [this.pageFeatures()];
     if (doc.kind === "comments") stamps.push(documentFeatures(live));
     for (const stamp of stamps) {

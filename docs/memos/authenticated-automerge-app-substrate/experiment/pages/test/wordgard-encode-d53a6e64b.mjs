@@ -20,7 +20,6 @@ import {
 import {
   Alignment,
   Aside,
-  OpaqueBlock,
   PagesImage,
   TaskChecked,
   TaskList,
@@ -56,10 +55,6 @@ export function encode(doc) {
     } else throw Error(`Unsupported Wordgard inline node: ${node.name}`);
   };
   const block = (node, parents, implicit = false, listType = null) => {
-    if (node.type === OpaqueBlock) {
-      marker("pages-opaque", parents, node.param);
-      return;
-    }
     if (!node.isPlot) throw Error(`Unsupported Wordgard block: ${node.name}`);
     if (node.type === BulletList.type || node.type === OrderedList || node.type === TaskList.type) {
       if (node.type === OrderedList && node.tag.param !== 1)

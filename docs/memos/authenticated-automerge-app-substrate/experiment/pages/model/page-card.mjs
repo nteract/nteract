@@ -152,8 +152,6 @@ const CARD_OVERRIDES = Object.freeze({
             ["div", {}, ...children()],
           ],
         ];
-      case "raw":
-        return [["pre", {}, String(node.attrs.source ?? "")]];
       default:
         return undefined;
     }
@@ -165,7 +163,7 @@ const CARD_OVERRIDES = Object.freeze({
 
 /** One block's top-level card nodes, lazily, or null when it can't render. */
 function blockNodes(block) {
-  if (!isRich(block)) return [["pre", {}, String(block.markdown ?? "")]];
+  if (!isRich(block)) return null;
   let doc;
   try {
     doc = richDoc(block);
