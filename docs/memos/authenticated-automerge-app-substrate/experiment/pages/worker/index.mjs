@@ -305,7 +305,12 @@ import {
   readHomeRemovalInput,
 } from "./home-removal-migration.mjs";
 // ONE-SHOT MIGRATION imports: delete with content-migration.mjs.
-import { contentMigrationArguments, runContentMigration } from "./content-migration.mjs";
+import {
+  contentMigrationArguments,
+  operatorAuthorized,
+  operatorContentMigration,
+  runContentMigration,
+} from "./content-migration.mjs";
 import {
   applyPageNormalization,
   normalizationBlocked,
@@ -1435,6 +1440,15 @@ const gateway = {
           ),
         );
       }
+      // ONE-SHOT MIGRATION route (content-migration.mjs; delete with it). Lab
+      // only: without PAGES_OPERATOR_SECRET, with a wrong secret, or for a
+      // request the Cloudflare edge forwarded, it is the unknown path below.
+      if (
+        url.pathname === "/api/operator/content-migration" &&
+        request.method === "POST" &&
+        (await operatorAuthorized(request, env))
+      )
+        return await operatorContentMigration(request, env);
       // ONE-SHOT MIGRATION route (content-migration.mjs; delete with it).
       if (url.pathname === "/api/admin/content-migration" && request.method === "POST") {
         const identity = await authenticate(request, env);
@@ -1758,13 +1772,43 @@ export class Catalog {
     const identity = await authenticate(request, this.env);
     if (this.ctx.id.name && this.ctx.id.name !== identity.principal)
       throw new HttpError(403, "Account access denied");
-    let args;
+    const args = Catalog.contentMigrationArgs(await readJson(request));
+    if (args.mode === "apply") requireWrite(identity);
+    return json(await this.runOwnersContentMigration(identity.principal, args));
+  }
+
+  /**
+   * ONE-SHOT MIGRATION (content-migration.mjs; delete with it). The operator's
+   * run over this Catalog, from the lab-only `/api/operator/content-migration`
+   * route. Host only: a request that carries a credential is refused, so only
+   * the gateway's operator route (or another host object) reaches it. The run
+   * acts for this Catalog's own account; each Page host still checks that its
+   * record names that account as owner.
+   */
+  async operatorContentMigration(request) {
+    if (request.headers.has("authorization") || request.headers.has("cookie"))
+      return json({ error: "Not found" }, 404);
+    const body = (await readJson(request)) ?? {};
+    const principal = this.ctx.id.name;
+    if (!principal || body.principal !== principal)
+      throw new HttpError(400, "principal must name this Catalog's account", "invalid_arguments");
+    const { principal: _principal, ...rest } = body;
+    return json(
+      await this.runOwnersContentMigration(principal, Catalog.contentMigrationArgs(rest)),
+    );
+  }
+
+  static contentMigrationArgs(body) {
     try {
-      args = contentMigrationArguments(await readJson(request));
+      return contentMigrationArguments(body);
     } catch (error) {
       throw new HttpError(400, error.message, "invalid_arguments");
     }
-    if (args.mode === "apply") requireWrite(identity);
+  }
+
+  /** One call of the content migration over this Catalog, acting for
+   * `owner`, the account the Page hosts check their records against. */
+  async runOwnersContentMigration(owner, args) {
     const body = await runContentMigration(this.storage, {
       args,
       listAll,
@@ -1775,13 +1819,16 @@ export class Catalog {
         for (const effect of result.effects) await this.runIntentEffect({ pageId }, effect);
       },
       visit: async (pageId, mode, options) => {
+        // The cell's id, so an operator can diff the run against
+        // `celld cell list Page`.
+        const cell = this.env.PAGES.idFromName ? String(this.env.PAGES.idFromName(pageId)) : null;
         const response = await withTimeout(
           this.env.PAGES.getByName(pageId).fetch(
             new Request("https://pages.internal/internal/content-migration", {
               method: "POST",
               body: JSON.stringify({
                 page_id: pageId,
-                owner: identity.principal,
+                owner,
                 mode,
                 include_connected: options?.include_connected === true,
               }),
@@ -1791,13 +1838,14 @@ export class Catalog {
           "Page content migration timed out",
         );
         const value = await response.json().catch(() => ({}));
-        if (!response.ok)
-          return { status: "error", error: String(value.error ?? response.status).slice(0, 200) };
-        return value;
+        const result = response.ok
+          ? value
+          : { status: "error", error: String(value.error ?? response.status).slice(0, 200) };
+        return cell ? { ...result, cell_id: cell } : result;
       },
     });
     await this.storage.sync();
-    return json(body);
+    return body;
   }
   /** Refuse a location write while this Catalog isn't in the current shape.
    * A blocked pass names the Project and Page in its way, in the message and
@@ -1855,6 +1903,8 @@ export class Catalog {
       }
       if (pathname === "/internal/home-removal") return await this.homeRemoval(request);
       if (pathname === "/internal/content-migration") return await this.contentMigration(request);
+      if (pathname === "/internal/operator-content-migration")
+        return await this.operatorContentMigration(request);
       if (pathname === "/internal/projection" || pathname === "/internal/content-activity") {
         // Reachable only through the host's CATALOGS namespace, never the gateway.
         const value = await readJson(request);
@@ -4727,9 +4777,16 @@ export class Page {
       mode,
       include_connected: includeConnected = false,
     } = (await readJson(request)) ?? {};
+    const metadata = this.metadata;
+    // The operator's probe of a cell no run reached: who it belongs to.
+    if (mode === "probe")
+      return json({
+        page_id: metadata?.pageId ?? null,
+        owner: metadata?.owner ?? null,
+        state: metadata ? pageState(metadata) : "missing",
+      });
     if (!["dry_run", "apply"].includes(mode))
       throw new HttpError(400, 'mode must be "dry_run" or "apply"', "invalid_arguments");
-    const metadata = this.metadata;
     if (!metadata || metadata.pageId !== pageId)
       return json({ status: "missing", state: "missing" });
     const state = pageState(metadata);

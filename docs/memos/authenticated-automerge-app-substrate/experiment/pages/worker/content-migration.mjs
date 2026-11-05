@@ -412,3 +412,122 @@ export async function runContentMigration(
     progress: progressOf(state),
   };
 }
+
+// --- The operator path (lab only) --------------------------------------------
+//
+// `POST /api/operator/content-migration` runs this migration for every
+// account on a celld lab deployment. celld's internal listener answers its
+// own operator routes and never forwards to the Worker, so the Worker can't
+// tell a request by how it arrived. The gate is a secret instead:
+//
+// - PAGES_OPERATOR_SECRET is set only by the lab installer
+//   (scripts/deployment/install.mjs, `operatorMigration` profiles), from
+//   `/etc/<service>/operator-secret` (root-only). A Cloudflare deployment has
+//   none, so the route is the unknown path there.
+// - The request carries it in OPERATOR_SECRET_HEADER, compared in constant
+//   time.
+// - A request the Cloudflare edge forwarded is refused even with the secret:
+//   the edge adds `cf-ray`, `cf-connecting-ip`, `cf-visitor` and `cdn-loop`,
+//   and a client can't strip them. The operator calls the public listener on
+//   loopback from lab1 (scripts/content-migration-operator.mjs), whose
+//   firewall admits only root and the service user.
+//
+// Every refusal is the gateway's plain 404 for an unknown path.
+
+export const OPERATOR_SECRET_HEADER = "x-pages-operator-secret";
+const EDGE_HEADERS = ["cf-ray", "cf-connecting-ip", "cf-visitor", "cdn-loop"];
+const MIN_SECRET_LENGTH = 32;
+
+async function digest(value) {
+  return new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)));
+}
+
+/** Whether `request` may use the operator route under `env`. */
+export async function operatorAuthorized(request, env) {
+  const secret = env?.PAGES_OPERATOR_SECRET;
+  if (typeof secret !== "string" || secret.length < MIN_SECRET_LENGTH) return false;
+  if (EDGE_HEADERS.some((header) => request.headers.has(header))) return false;
+  const offered = request.headers.get(OPERATOR_SECRET_HEADER) ?? "";
+  // Compare digests, so neither the length nor the first differing byte of
+  // the secret shows in the timing.
+  const [a, b] = await Promise.all([digest(offered), digest(secret)]);
+  let difference = 0;
+  for (let index = 0; index < a.length; index++) difference |= a[index] ^ b[index];
+  return difference === 0;
+}
+
+/**
+ * Every account principal the D1 catalog projection knows: Page and Project
+ * owners and indexed accounts. The Catalog cells are authoritative, but the
+ * Worker can't list Durable Objects, so this projection is the only list it
+ * has; `celld cell list Catalog` and `Page` stay the cross-check, and a
+ * Page cell no run reaches shows up in the operator script's `unreached`.
+ */
+export async function operatorAccounts(db) {
+  const { results } = await db
+    .prepare(
+      `SELECT owner AS principal FROM pages_catalog_pages
+       UNION SELECT owner FROM pages_catalog_spaces
+       UNION SELECT principal FROM pages_catalog_accounts
+       ORDER BY principal`,
+    )
+    .all();
+  return results.map((row) => row.principal).filter((value) => typeof value === "string");
+}
+
+const json = (body, status = 200) => Response.json(body, { status });
+const CELL_ID = /^[0-9a-f]{64}$/;
+
+/**
+ * The operator route, behind `operatorAuthorized`. Body `action`:
+ * - `accounts`: `{ principals, source }` from operatorAccounts.
+ * - `run`: one call of the run over `principal`'s Catalog, with the owner-run
+ *   arguments (`mode`, `limit`, `after`, `page_ids`, `include_connected`).
+ * - `probe`: for each of `cell_ids` (from `celld cell list Page`), what its
+ *   Page host records: `{ cell_id, page_id, owner, state }`, so a cell no run
+ *   reached can be passed to its owner's run as `page_ids`.
+ */
+export async function operatorContentMigration(request, env) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: "Body must be JSON", code: "invalid_arguments" }, 400);
+  }
+  const { action, ...rest } = body ?? {};
+  if (action === "accounts") {
+    if (!env.DB?.prepare) return json({ error: "No catalog database" }, 503);
+    return json({ principals: await operatorAccounts(env.DB), source: "d1_projection" });
+  }
+  if (action === "run") {
+    if (typeof rest.principal !== "string" || !rest.principal)
+      return json({ error: "principal is required", code: "invalid_arguments" }, 400);
+    return env.CATALOGS.getByName(rest.principal).fetch(
+      new Request("https://pages.internal/internal/operator-content-migration", {
+        method: "POST",
+        body: JSON.stringify(rest),
+      }),
+    );
+  }
+  if (action === "probe") {
+    const ids = rest.cell_ids;
+    if (
+      !Array.isArray(ids) ||
+      ids.length > CONTENT_MIGRATION_LIMITS.extraIds ||
+      ids.some((id) => !CELL_ID.test(String(id)))
+    )
+      return json({ error: "cell_ids must be up to 100 cell ids", code: "invalid_arguments" }, 400);
+    const cells = [];
+    for (const cell_id of ids) {
+      const response = await env.PAGES.get(env.PAGES.idFromString(cell_id)).fetch(
+        new Request("https://pages.internal/internal/content-migration", {
+          method: "POST",
+          body: JSON.stringify({ mode: "probe" }),
+        }),
+      );
+      cells.push({ cell_id, ...(await response.json().catch(() => ({ status: "error" }))) });
+    }
+    return json({ cells });
+  }
+  return json({ error: "action must be accounts, run or probe", code: "invalid_arguments" }, 400);
+}
