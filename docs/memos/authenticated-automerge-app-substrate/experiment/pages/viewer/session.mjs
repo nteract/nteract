@@ -133,6 +133,29 @@ export function classifyRefusal(error) {
   if (error.code === "signing_key_rejected") return undefined;
   return "denied";
 }
+// 409s that say only a reload helps: the replica's storage changed under it,
+// a draft's storage move failed, or this build lacks a feature the Page uses.
+const RELOAD_REQUIRED_CODES = new Set([
+  "RECORD_STORAGE_CHANGED",
+  "STORAGE_SWITCH_FAILED",
+  "unsupported_schema_feature",
+]);
+/** Whether a failed connection attempt retries on the reconnect backoff. It
+ * runs after attemptConnection has handled classifyRefusal, a 401, and the
+ * native admission's own stop, so it decides what remains.
+ * Stops, until Retry, an `online` event, sign-in or a reload:
+ * - a 401 or 403 (sign-in, or a refused signing key over HTTP),
+ * - a refused signing key from the native handshake,
+ * - a 409 in RELOAD_REQUIRED_CODES.
+ * Everything else retries: no status, a 5xx, and any other 4xx. A 404
+ * without page_deleted, 408, 409, 425 or 429 is a host that may answer
+ * differently in a moment, a deploy cutover included. */
+export function connectionFailureRetries(error) {
+  if (error?.status === 401 || error?.status === 403) return false;
+  if (error?.code === "SIGNING_KEY_REFUSED") return false;
+  if (error?.status === 409 && RELOAD_REQUIRED_CODES.has(error.code)) return false;
+  return true;
+}
 export const ACCESS_REVOKED = "You no longer have access to this Page.";
 export const TRASHED_COPY =
   "This Page is in its owner's Trash. Your local copy is kept on this device.";
@@ -165,10 +188,13 @@ const LOCAL_COPY_RETIRED = Object.freeze([
 ]);
 const storageRefused = (error) =>
   error?.status === 409 && error.code === "record_storage_unsupported";
-/** A failed move's error. Its 409 stops automatic reconnects: only a reload
- * moves the draft again. */
+/** A failed move's error. It stops automatic reconnects (connectionFailureRetries):
+ * only a reload moves the draft again. */
 const storageSwitchFailed = (cause) =>
-  Object.assign(Error(STORAGE_SWITCH_FAILED, { cause }), { status: 409 });
+  Object.assign(Error(STORAGE_SWITCH_FAILED, { cause }), {
+    code: "STORAGE_SWITCH_FAILED",
+    status: 409,
+  });
 /** Stands in for the Markdown of a copy that couldn't be projected. */
 export const MARKDOWN_UNAVAILABLE =
   "This copy couldn't be shown as Markdown. Its Automerge snapshots are in this download.";
@@ -1241,7 +1267,7 @@ export class PageSession {
               this.retryTimer = undefined;
               if (!this.reconnect({ type: "timer" }).rejected) void this.attemptConnection();
             },
-            reconnectDelay(effect.step, this.random()),
+            Math.max(reconnectDelay(effect.step, this.random()), effect.minMs ?? 0),
           );
           break;
         case "cancel":
@@ -2734,10 +2760,15 @@ export class PageSession {
   }
   /** Retry after a failed attempt or socket, unless the phase stops sync.
    * `refused` says the host's admission closed a socket that never proved
-   * stable. Returns the reconnect state's name. */
-  scheduleReconnect({ refused = false } = {}) {
+   * stable; `retryAfterMs` is the wait the host's answer asked for. Returns
+   * the reconnect state's name. */
+  scheduleReconnect({ refused = false, retryAfterMs } = {}) {
     if (this.alive && !this.authRequired && !this.accessDenied && !this.accessReloadRequired)
-      this.reconnect({ type: "failed", refused });
+      this.reconnect({
+        type: "failed",
+        refused,
+        ...(Number.isSafeInteger(retryAfterMs) && retryAfterMs > 0 && { retryAfterMs }),
+      });
     return this.reconnect$.snapshot().name;
   }
   /** An explicit Retry, an online event, a re-authentication or a first
@@ -2778,13 +2809,19 @@ export class PageSession {
         // The host may be restarting or briefly busy. Retry quietly; the
         // reconnect machine reports an outage if this lasts.
         this.showUnreachable();
-        this.scheduleReconnect({ refused: countsAsRefusal(error.admission) });
+        this.scheduleReconnect({
+          refused: countsAsRefusal(error.admission),
+          retryAfterMs: error.retryAfterMs,
+        });
       } else {
         this.showConnectionProblem(error.message);
         // An admission close during the handshake is a refusal; the next
-        // attempt's discovery still stops on 401, 403 or 404.
-        if (!error.status || error.status >= 500)
-          this.scheduleReconnect({ refused: countsAsRefusal(error.admission) });
+        // attempt's discovery still stops on a definitive answer.
+        if (connectionFailureRetries(error))
+          this.scheduleReconnect({
+            refused: countsAsRefusal(error.admission),
+            retryAfterMs: error.retryAfterMs,
+          });
       }
     } finally {
       // HTTP receipts can recover even if native sync still cannot reconnect.

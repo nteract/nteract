@@ -33,13 +33,34 @@ export function isTransientFailure(error) {
   return error instanceof TypeError && FETCH_FAILURE.test(error.message);
 }
 
+/**
+ * How long a failed response asks the caller to wait, in ms, or undefined:
+ * the body's `retry_after_ms` when it is a positive integer, else the
+ * Retry-After header as whole seconds or an HTTP date still in the future.
+ * `now` is the wall clock in ms, for an HTTP date.
+ */
+export function retryAfterOf(headers, body, now = Date.now()) {
+  const fromBody = body && typeof body === "object" ? body.retry_after_ms : undefined;
+  if (Number.isSafeInteger(fromBody) && fromBody > 0) return fromBody;
+  const header = headers?.get?.("retry-after")?.trim();
+  if (!header) return undefined;
+  if (/^\d+$/.test(header)) {
+    const ms = Number(header) * 1000;
+    return Number.isSafeInteger(ms) && ms > 0 ? ms : undefined;
+  }
+  const at = Date.parse(header);
+  return Number.isFinite(at) && at > now ? Math.ceil(at - now) : undefined;
+}
+
 function invalidResponse(response) {
+  const retryAfterMs = retryAfterOf(response.headers);
   return Object.assign(Error(`The server returned an unexpected response (${response.status})`), {
     code: "INVALID_RESPONSE",
     httpStatus: response.status,
     // A proxy's HTML 404 is not evidence that a Page was deleted. Only the
     // application's structured JSON errors can change authentication/access.
     ...(response.status >= 500 ? { status: response.status } : {}),
+    ...(retryAfterMs !== undefined && { retryAfterMs }),
   });
 }
 
@@ -121,10 +142,12 @@ export async function request(
               : body.error?.message
             : undefined;
         if (typeof message !== "string") throw invalidResponse(response);
+        const retryAfterMs = retryAfterOf(response.headers, body);
         throw Object.assign(Error(message), {
           status: response.status,
           code: body.code,
           ...(body.retryable === true && { retryable: true }),
+          ...(retryAfterMs !== undefined && { retryAfterMs }),
         });
       }
       return body;

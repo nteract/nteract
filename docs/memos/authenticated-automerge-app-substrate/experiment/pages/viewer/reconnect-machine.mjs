@@ -29,7 +29,8 @@
  * classifies the failure, so this only clears the deadline),
  * `handshakeTimeout` (the handshake timer fired), `failed` (an attempt or
  * socket ended and the phase still allows sync; `refused` when an admission
- * close code ended a socket that never proved stable), `keyRefused` (an
+ * close code ended a socket that never proved stable; `retryAfterMs` when the
+ * host's answer said how long to wait), `keyRefused` (an
  * admission close with `retry: "stop"`), `stable` (a socket stayed admitted
  * for STABLE_CONNECTION_MS), `timer` (the backoff timer fired), `resume` (an
  * explicit Retry, an `online` event, a re-authentication or a first open),
@@ -47,7 +48,8 @@
  * attempt always settles, so a stalled setup can't hold the session's one
  * in-flight connect past the state that abandoned it,
  * `schedule` starts the backoff timer for `step` ms (the interpreter applies
- * reconnectDelay's jitter), `cancel` clears it, `pauseSync` tells the person
+ * reconnectDelay's jitter, and waits at least `minMs` when present: a
+ * Retry-After the host sent, capped at MAX_STEP_MS), `cancel` clears it, `pauseSync` tells the person
  * sync stopped and Retry resumes it, and `reportOutage` tells the person the
  * host has been unreachable for a while. Retries continue after
  * `reportOutage`; it repeats on each later transient failure, so the
@@ -56,9 +58,10 @@
  * A handshake timeout is a transient failure: it schedules the same backoff
  * as a closed socket and counts toward an outage, never toward refusals.
  *
- * Transient failures (no status, 5xx, a socket close without an admission
- * code or with `temporarily_unavailable`) never count as refusals and never
- * clear them: a flaky host between
+ * Transient failures (no status, 5xx, a 4xx the session doesn't treat as
+ * definitive, a socket close without an admission code or with
+ * `temporarily_unavailable`) never count as refusals and never clear them:
+ * a flaky host between
  * refusals has not shown the refusal went away. From the OUTAGE_ATTEMPTS-th
  * failure in a row, a transient failure also reports an outage. A refusal
  * never does: the host answered.
@@ -126,8 +129,8 @@ export const viewerReconnectSpec = Object.freeze({
     "halt",
   ],
   cases: {
-    "ready/failed": ["transient", "outage", "refusal", "last-refusal"],
-    "handshaking/failed": ["transient", "outage", "refusal", "last-refusal"],
+    "ready/failed": ["transient", "outage", "refusal", "last-refusal", "retry-after"],
+    "handshaking/failed": ["transient", "outage", "refusal", "last-refusal", "retry-after"],
     "handshaking/handshakeTimeout": ["transient", "outage"],
   },
   validate: {
@@ -157,8 +160,13 @@ export const viewerReconnectSpec = Object.freeze({
       handshakeEnded: typed([]),
       handshakeTimeout: typed([]),
       failed(event) {
-        only(event, ["type", "refused"]);
+        only(event, ["type", "refused", "retryAfterMs"]);
         check(typeof event.refused === "boolean", "refused must be a boolean");
+        if ("retryAfterMs" in event)
+          check(
+            Number.isSafeInteger(event.retryAfterMs) && event.retryAfterMs > 0,
+            "retryAfterMs must be a positive integer",
+          );
       },
       keyRefused: typed([]),
       stable: typed([]),
@@ -178,11 +186,16 @@ export const viewerReconnectSpec = Object.freeze({
         check(ABANDON_REASONS.includes(effect.reason), "reason names what ended the handshake");
       },
       schedule(effect) {
-        only(effect, ["type", "step"]);
+        only(effect, ["type", "step", "minMs"]);
         check(
           Number.isSafeInteger(effect.step) && effect.step > 0 && effect.step <= MAX_STEP_MS,
           "step must be a positive integer no greater than the cap",
         );
+        if ("minMs" in effect)
+          check(
+            Number.isSafeInteger(effect.minMs) && effect.minMs > 0 && effect.minMs <= MAX_STEP_MS,
+            "minMs must be a positive integer no greater than the cap",
+          );
       },
       cancel: typed([]),
       pauseSync: typed([]),
@@ -206,15 +219,20 @@ const fresh = () => ({ name: "ready", attempts: 0, refusals: 0 });
 const keep = (name, { attempts, refusals }) => ({ name, attempts, refusals });
 
 /** A failed attempt from `state`: back off, or pause at the refusal limit.
- * `before` runs ahead of the backoff effects. */
-function fail(state, refused, before = []) {
+ * `retryAfterMs` is the host's requested wait; the retry waits at least that,
+ * up to the backoff cap. `before` runs ahead of the backoff effects. */
+function fail(state, refused, before = [], retryAfterMs) {
   const refusals = state.refusals + (refused ? 1 : 0);
   if (refusals >= REFUSAL_LIMIT)
     return ok(keep("paused", { attempts: state.attempts, refusals }), ...before, {
       type: "pauseSync",
     });
   const attempts = state.attempts + 1;
-  const schedule = { type: "schedule", step: backoffStep(state.attempts) };
+  const schedule = {
+    type: "schedule",
+    step: backoffStep(state.attempts),
+    ...(retryAfterMs !== undefined && { minMs: Math.min(retryAfterMs, MAX_STEP_MS) }),
+  };
   if (!refused && attempts >= OUTAGE_ATTEMPTS)
     return ok(keep("waiting", { attempts, refusals }), ...before, schedule, {
       type: "reportOutage",
@@ -246,7 +264,7 @@ function transition(state, event) {
             ms: HANDSHAKE_TIMEOUT_MS,
           });
         case "failed":
-          return fail(state, event.refused);
+          return fail(state, event.refused, [], event.retryAfterMs);
         case "keyRefused":
           return ok(keep("refused", state));
         case "stable":
@@ -272,10 +290,12 @@ function transition(state, event) {
         case "failed":
           // The socket closed under a pending setup (its disconnect callback,
           // not a rejection). Settle the attempt too, or it holds connect().
-          return fail(state, event.refused, [
-            { type: "disarmHandshake" },
-            { type: "abandonHandshake", reason: "failed" },
-          ]);
+          return fail(
+            state,
+            event.refused,
+            [{ type: "disarmHandshake" }, { type: "abandonHandshake", reason: "failed" }],
+            event.retryAfterMs,
+          );
         case "keyRefused":
           return ok(
             keep("refused", state),
