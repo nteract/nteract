@@ -95,6 +95,7 @@ import {
 } from "./wordgard-collaboration.mjs";
 import { wordgardWidgets, wordgardCodeLanguages } from "./wordgard-widgets.mjs";
 import { wordgardDataframes } from "./wordgard-dataframes.mjs";
+import { wordgardImages } from "./wordgard-images.mjs";
 import { pageNodes } from "./wordgard-page-config.mjs";
 import { selectionToolbarPosition } from "./selection-toolbar.mjs";
 import { linkDestination, openInNewTab, wantsNewTab } from "./link-destination.mjs";
@@ -378,6 +379,7 @@ export function WordgardEditor(props) {
         }),
         wordgardWidgets(),
         wordgardDataframes({ pageId: replica.doc.page_id }),
+        wordgardImages(),
         wordgardCodeNewlines,
         wordgardListStarts,
         codeHighlighting,

@@ -293,6 +293,26 @@ const linkDOM = marks.link.toDOM;
 marks.link.toDOM = (mark, inline) =>
   safeUrl(mark.attrs.href) ? linkDOM(mark, inline) : ["span", 0];
 const imageDOM = nodes.image.toDOM;
+const baseImageParsers = nodes.image.automerge.attrParsers;
+nodes.image = {
+  ...nodes.image,
+  attrs: { ...nodes.image.attrs, dark_src: { default: null } },
+  automerge: {
+    ...nodes.image.automerge,
+    attrParsers: {
+      fromAutomerge: (block) => ({
+        ...baseImageParsers.fromAutomerge(block),
+        dark_src: block.attrs.dark_src == null ? null : String(block.attrs.dark_src),
+      }),
+      fromProsemirror: (node) => ({
+        ...baseImageParsers.fromProsemirror(node),
+        ...(node.attrs.dark_src != null && {
+          dark_src: new A.ImmutableString(node.attrs.dark_src),
+        }),
+      }),
+    },
+  },
+};
 nodes.image.toDOM = (node) =>
   safeUrl(node.attrs.src) ? imageDOM(node) : ["span", {}, "Image omitted"];
 export const adapter = new SchemaAdapter({ nodes, marks });
@@ -1722,10 +1742,10 @@ export function redundantFirstMarker(spans) {
   const content = !next || next.type === "text" || next.value?.isEmbed;
   return plainParagraph && content;
 }
-export function setRichImage(doc, id, { src, alt }) {
+export function setRichImage(doc, id, { src, dark_src = null, alt, title = null }) {
   // Construct the embed directly: alt text is content, never Markdown syntax.
   const tree = schema.node("doc", null, [
-    schema.node("paragraph", null, [schema.node("image", { src, alt, title: null })]),
+    schema.node("paragraph", null, [schema.node("image", { src, dark_src, alt, title })]),
   ]);
   const spans = pageSpans(tree);
   A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
@@ -1976,7 +1996,10 @@ export function validateRichSpans(spans, maxBytes = 262144) {
       throw Error("Invalid table alignment");
     if (node.type.name === "heading" && !validHeadingLevel(node.attrs.level))
       throw Error("Invalid heading level");
-    if (node.type.name === "image" && !safeUrl(node.attrs.src))
+    if (
+      node.type.name === "image" &&
+      (!safeUrl(node.attrs.src) || (node.attrs.dark_src != null && !safeUrl(node.attrs.dark_src)))
+    )
       throw Error("Invalid rich image URL");
     // Lenient: a later build may add media types or attrs under the same
     // feature. Writers check strictly (dataframeAttrs) before writing.

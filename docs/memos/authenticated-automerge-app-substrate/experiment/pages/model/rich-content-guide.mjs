@@ -94,7 +94,13 @@ Code block languages in the editor's menu: ${CODE_LANGUAGES.join(", ")}. Other
 languages are stored as written. A known language gets syntax highlighting.
 Mermaid diagrams render from the code block's source when people view the
 Page; the rendered SVG is never stored. Upload images to the Page and place
-them with insert_image (see Images below).
+them with insert_image (see Images below). Its optional dark_asset_id names
+a second image uploaded to the same Page. summary.images includes bounded
+src, dark_src, asset_id, dark_asset_id, alt, title and live image_id facts;
+images_truncated or truncated explicitly signals omitted data. image_id names
+the inline marker in its block, not the top-level node_id. Use edit_page
+set_image at exact current heads to change a source or shared metadata;
+dark_asset_id:null removes the alternate. Child-index paths remain revision-local.
 
 Pages stores native nodes, not Markdown. Each paragraph, heading, list item,
 code block, table cell, image and dataframe is a node with typed attributes,

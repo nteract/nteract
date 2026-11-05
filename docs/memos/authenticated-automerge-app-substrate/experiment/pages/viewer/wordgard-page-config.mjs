@@ -25,6 +25,7 @@ import { displaySymbols } from "./wordgard-symbols.mjs";
 import { wordgardCodeNewlines, wordgardListStarts } from "./wordgard-binding.mjs";
 import { wordgardWidgets } from "./wordgard-widgets.mjs";
 import { wordgardDataframes } from "./wordgard-dataframes.mjs";
+import { wordgardImages } from "./wordgard-images.mjs";
 import { codeHighlighting } from "./code-highlight.mjs";
 
 /** The block and mark node types every Page editor holds. */
@@ -59,6 +60,7 @@ export function readOnlyPageConfig({ pageId, eagerDataframes = false }) {
     Decoration.Mark.shape(PagesLink, { element: "a", attributes: () => ({}) }),
     wordgardWidgets(),
     wordgardDataframes({ pageId, eager: eagerDataframes }),
+    wordgardImages(),
     wordgardCodeNewlines,
     wordgardListStarts,
     codeHighlighting,

@@ -77,6 +77,8 @@ export function validateCommentSpans(spans) {
     } else if (span?.type === "block") {
       if (String(span.value?.type) === DATAFRAME_BLOCK)
         throw Error("Comments can't hold a dataframe");
+      if (String(span.value?.type) === "image" && span.value?.attrs?.dark_src != null)
+        throw Error("Comments can't hold theme image variants; use a Page image instead");
       length += 1;
       if (span.value?.isEmbed === true) content = true;
     }

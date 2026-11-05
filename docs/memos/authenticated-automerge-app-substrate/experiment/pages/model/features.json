@@ -3,6 +3,11 @@
   "version": 1,
   "features": [
     {
+      "id": "image-theme-variants",
+      "description": "Images with an optional dark_src alternate source and shared alternative text and title.",
+      "attributes": [{ "block": "image", "name": "dark_src" }]
+    },
+    {
       "id": "strike",
       "description": "Strikethrough text: the strike mark, written ~~text~~ in Markdown."
     },

@@ -44,6 +44,29 @@ const { wordgardDataframes, dataframeEventReachesEditor, enterDataframeGrid, GRI
 const { collapseAtomOnLeave } = await import("./image-selection.mjs");
 const { PARQUET_MEDIA_TYPE } = await import("../shared/dataset-assets.mjs");
 
+test("image widget selects its native image", async () => {
+  const { PagesImage } = await import("./wordgard-model.mjs");
+  const { wordgardImages } = await import("./wordgard-images.mjs");
+  const state = GardState.create({
+    doc: schema.doc([
+      Paragraph.create([PagesImage.of({ src: "https://example.com/image.png", alt: "x" })]),
+    ]),
+    config: [schema.elements.map((e) => GardState.schemaElement.of(e)), wordgardImages()],
+  });
+  const editor = new Wordgard({ state, parent: document.body });
+  try {
+    editor.flush();
+    const frame = editor.dom.querySelector(".pages-image");
+    assert.equal(editor.nodeFromDOM(frame)?.node.type, PagesImage);
+    frame.click();
+    editor.flush();
+    assert.ok(editor.state.selection instanceof GardSelection.Node);
+    assert.ok(frame.closest(".wg-selected-node"));
+  } finally {
+    editor.dom.remove();
+  }
+});
+
 for (const direction of ["insert", "delete"])
   for (const count of [1, 2])
     test(`remote ${direction} before ${count} changed Mermaid shapes updates the view`, async () => {

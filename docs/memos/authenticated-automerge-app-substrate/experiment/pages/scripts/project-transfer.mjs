@@ -19,10 +19,25 @@ import { inspectImage } from "../shared/inspect-image.mjs";
 
 export const BUNDLE_FORMAT = "nteract-pages-project-bundle";
 /** Version 3 adds typed image inventory and bytes. Persisted v1/v2 still import. */
-export const BUNDLE_VERSION = 3;
-const BUNDLE_VERSIONS = new Set([1, 2, 3]);
+export const BUNDLE_VERSION = 4;
+const BUNDLE_VERSIONS = new Set([1, 2, 3, 4]);
 export const STATE_FORMAT = "nteract-pages-project-import-state";
 export const STATE_VERSION = 1;
+// Persisted theme-body lifecycle. A receipt advances exactly one saved batch;
+// neither restart nor retry may reconstruct an installed body or its image IDs.
+export function themeBodyTransition(state, event) {
+  if (event.type === "plan" && !state)
+    return { phase: "installing", operations: event.operations, next: 0, heads: event.heads };
+  if (event.type === "discover" && state?.phase === "installed")
+    return { phase: "variants", operations: event.operations, next: 0, heads: state.heads };
+  if (event.type === "receipt" && ["installing", "variants"].includes(state?.phase)) {
+    const next = Math.min(state.next + EDIT_BATCH, state.operations.length);
+    if (next === state.operations.length)
+      return { phase: state.phase === "installing" ? "installed" : "done", heads: event.heads };
+    return { ...state, next, heads: event.heads };
+  }
+  throw new TransferError("Invalid persisted theme-body transition");
+}
 export const DRIVER = "Pages project transfer";
 /** edit_page accepts at most this many operations per request. */
 export const EDIT_BATCH = 100;
@@ -267,7 +282,7 @@ export function pagesClient({
   /** Whether this target's edit_page takes insert_node, from its tool list.
    * The asset routes shipped with it, so a target without it can't hold a
    * dataframe. */
-  async function insertsNodes() {
+  async function insertsNodes(operation = "insert_node") {
     let response;
     try {
       response = await fetchImpl(`${base}/mcp`, {
@@ -295,9 +310,17 @@ export function pagesClient({
       throw new TransferError(`tools/list on ${base}: unreadable response`);
     const editPage = tools.find((tool) => tool?.name === "edit_page");
     const variants = editPage?.inputSchema?.properties?.operations?.items?.oneOf ?? [];
-    return variants.some((variant) => variant?.properties?.op?.const === "insert_node");
+    return variants.some((variant) => variant?.properties?.op?.const === operation);
   }
-  return { origin: base, assets, call, download, upload, insertsNodes };
+  return {
+    origin: base,
+    assets,
+    call,
+    download,
+    upload,
+    insertsNodes,
+    setsImages: () => insertsNodes("set_image"),
+  };
 }
 
 /** The lowercase hex SHA-256 of `bytes`: an asset's id. */
@@ -435,14 +458,29 @@ export async function readWholePage(client, pageId, options) {
       if (error.code === "read_revision_changed") continue;
       throw error;
     }
+    if (
+      entries.some(
+        (entry) =>
+          entry.summary?.images_truncated ||
+          entry.summary?.images?.some((image) => image.truncated),
+      )
+    )
+      throw new TransferError(
+        `read_page on ${pageId}: image occurrences are truncated; refusing a lossy transfer`,
+      );
     return {
       title: read.title,
       heads: read.heads,
+      retry_token: read.retry_token,
+      retry_key_prefix: read.retry_key_prefix,
       blocks: (blocks ?? []).map((block) => ({
         markdown: block.markdown ?? "",
         kind: block.kind,
       })),
       types: entries.map((entry) => entry.type),
+      image_occurrences: entries.flatMap((entry) =>
+        (entry.summary?.images ?? []).map((image) => ({ ...image, block_id: entry.block_id })),
+      ),
       // Dataframes on this Page, from the outline's typed fields. One naming
       // another Page's asset reads as readable:false, with no attrs.
       dataframes: entries
@@ -514,6 +552,27 @@ function bundlePage(row, parentSourceId, read, homePageId) {
   const markdown = blocks.join("\n\n");
   const dataframes = read.dataframes ?? [];
   const images = imageInventory(blocks);
+  const markdownImages = [];
+  for (const text of blocks)
+    parseMarkdown(text).descendants((node) => {
+      if (node.type.name === "image") markdownImages.push(node.attrs.src);
+    });
+  if (
+    read.image_occurrences?.some((image) => image.dark_src != null) &&
+    (read.image_occurrences.length !== markdownImages.length ||
+      read.image_occurrences.some((image, index) => image.src !== markdownImages[index]))
+  )
+    throw new TransferError(
+      "Structured image occurrences disagree with Markdown; refusing a lossy transfer",
+    );
+  const image_variants = (read.image_occurrences ?? []).flatMap((image, ordinal) => {
+    if (image.dark_src == null) return [];
+    if (!ASSET_ID.test(image.dark_asset_id ?? "") || !assetSrc(image.dark_src, image.dark_asset_id))
+      throw new TransferError("Theme image alternate must be a readable Page-local image asset");
+    return [
+      { ordinal, src: image.src, dark_src: image.dark_src, dark_asset_id: image.dark_asset_id },
+    ];
+  });
   // Dataframe lines the outline didn't list (inside a quote or list): they
   // import as links, and are reported with the dataframes not copied.
   const links = [...markdown.matchAll(DATAFRAME_LINKS)].map((match) => match[1]);
@@ -540,6 +599,7 @@ function bundlePage(row, parentSourceId, read, homePageId) {
       read.blocks.some((block) => block.kind && block.kind !== "markdown"),
     private_images: [...new Set(images.map((image) => image.src))],
     images,
+    ...(image_variants.length && { image_variants }),
     ...(dataframes.length && { dataframes }),
     ...(unlisted.length && { unlisted_dataframes: unlisted }),
     comment_threads: read.comment_threads,
@@ -551,7 +611,14 @@ function bundlePage(row, parentSourceId, read, homePageId) {
 async function exportAssets(client, pages, { log, ...options }) {
   const wanted = new Map();
   for (const page of pages)
-    for (const image of page.images ?? []) wanted.set(image.asset_id, { ...image, image: true });
+    for (const image of [
+      ...(page.images ?? []),
+      ...(page.image_variants ?? []).map((variant) => ({
+        asset_id: variant.dark_asset_id,
+        src: variant.dark_src,
+      })),
+    ])
+      wanted.set(image.asset_id, { ...image, image: true });
   if (wanted.size && !client.assets)
     throw new TransferError(
       "Private images require an API key to read asset bytes; Pages OAuth credentials cannot export them",
@@ -736,6 +803,28 @@ export function validateBundle(bundle) {
         if (!asset) fail(`${at}: missing bytes for image ${image.asset_id}`);
         if (!IMAGE_MEDIA_TYPES.includes(asset.media_type))
           fail(`${at}: unsupported image media_type for ${image.asset_id}`);
+      }
+      if (page.image_variants !== undefined) {
+        if (!Array.isArray(page.image_variants)) fail(`${at}.image_variants must be an array`);
+        const occurrences = [];
+        for (const markdown of page.blocks ?? [page.markdown])
+          parseMarkdown(markdown).descendants((node) => {
+            if (node.type.name === "image") occurrences.push(node.attrs.src);
+          });
+        const ordinals = new Set();
+        for (const variant of page.image_variants) {
+          if (
+            !Number.isSafeInteger(variant.ordinal) ||
+            variant.ordinal < 0 ||
+            ordinals.has(variant.ordinal) ||
+            occurrences[variant.ordinal] !== variant.src ||
+            !ASSET_ID.test(variant.dark_asset_id ?? "") ||
+            !assetSrc(variant.dark_src, variant.dark_asset_id) ||
+            !IMAGE_MEDIA_TYPES.includes(bundle.assets?.[variant.dark_asset_id]?.media_type)
+          )
+            fail(`${at}: invalid image variant occurrence or missing image bytes`);
+          ordinals.add(variant.ordinal);
+        }
       }
     }
     if (
@@ -1298,6 +1387,15 @@ export async function importBundle(
     );
   const warnings = [];
 
+  if (
+    bundle.pages.some((page) => page.image_variants?.length) &&
+    !(await withRetries(() => client.setsImages(), options))
+  )
+    throw new TransferError(
+      "Target edit_page has no set_image; theme images require a current target",
+      { code: "image_variants_unsupported" },
+    );
+
   // One request at a time. Its exact arguments are saved before sending, so a
   // rerun after an uncertain failure replays the same token, key and payload.
   // requested_at is when the request was first sent; a replay keeps it.
@@ -1356,6 +1454,13 @@ export async function importBundle(
       counts.edits++;
       for (const warning of result.warnings ?? [])
         warnings.push(`${step.slice(5)}: ${warning.code ?? "warning"}`);
+    } else if (step.startsWith("themed:")) {
+      const id = step.slice(7);
+      state.bodies[id] = themeBodyTransition(state.bodies[id], {
+        type: "receipt",
+        heads: result.heads,
+      });
+      counts.edits++;
     }
   };
 
@@ -1452,7 +1557,7 @@ export async function importBundle(
     });
     const args = {
       title: page.title,
-      markdown: page.images?.length ? "" : pageBlocks(page)[0],
+      markdown: page.images?.length || page.image_variants?.length ? "" : pageBlocks(page)[0],
       parent_id: placement.parent_id,
       idempotency_key:
         state.catalog.retry_key_prefix +
@@ -1484,7 +1589,11 @@ export async function importBundle(
     for (const { unresolved: urls } of rewrites)
       for (const url of urls)
         unresolved.push({ title: page.title, source_page_id: page.source_page_id, url });
-    if (state.bodies[page.source_page_id] === "done") continue;
+    if (
+      state.bodies[page.source_page_id] === "done" ||
+      state.bodies[page.source_page_id]?.phase === "done"
+    )
+      continue;
     const units = bodyUnits(
       rewrites.map((rewrite) => remapImages(rewrite.markdown, images, targetId)),
       page,
@@ -1492,7 +1601,14 @@ export async function importBundle(
     );
     const frames = units.filter((unit) => unit.dataframe);
     const rewritten = rewrites.reduce((sum, rewrite) => sum + rewrite.rewritten, 0);
-    if (!page.home && blocks.length === 1 && rewritten === 0 && !frames.length && !images.length) {
+    if (
+      !page.home &&
+      blocks.length === 1 &&
+      rewritten === 0 &&
+      !frames.length &&
+      !images.length &&
+      !page.image_variants?.length
+    ) {
       state.bodies[page.source_page_id] = "done";
       await save();
       continue;
@@ -1502,6 +1618,7 @@ export async function importBundle(
     for (const assetId of new Set([
       ...frames.map((unit) => unit.dataframe.asset_id),
       ...images.map((image) => image.asset_id),
+      ...(page.image_variants ?? []).map((image) => image.dark_asset_id),
     ])) {
       const stored = await withRetries(
         () => client.upload(targetId, bytes.get(assetId), assets[assetId].media_type),
@@ -1510,7 +1627,9 @@ export async function importBundle(
       if (stored.asset_id !== assetId)
         throw new TransferError(`The target stored asset ${assetId} as ${stored.asset_id}`);
     }
-    await writeBody(page, targetId, units);
+    if (page.image_variants?.length) {
+      await writeThemeBody(page, targetId, units);
+    } else await writeBody(page, targetId, units);
     counts.dataframes += frames.length;
     counts.links_rewritten += rewritten;
     state.bodies[page.source_page_id] = "done";
@@ -1525,6 +1644,70 @@ export async function importBundle(
     } catch (error) {
       if (error.code !== "read_budget_exceeded") throw error;
       return call({ page_id: pageId });
+    }
+  }
+
+  async function writeThemeBody(page, pageId, units) {
+    const id = page.source_page_id;
+    const step = `themed:${id}`;
+    const fencedRead = async (whole = false) => {
+      const read = whole ? await readWholePage(client, pageId, options) : await readForEdit(pageId);
+      if (
+        JSON.stringify([...read.heads].sort()) !==
+        JSON.stringify([...state.bodies[id].heads].sort())
+      )
+        throw new TransferError(
+          "Target changed during theme image import; refusing to rebase image identities",
+          { code: "transfer_revision_changed" },
+        );
+      return read;
+    };
+    if (!state.bodies[id]) {
+      const read = await readForEdit(pageId);
+      const operations = [
+        ...(page.home && read.title !== page.title ? [{ op: "set_title", title: page.title }] : []),
+        ...bodyOperations(read.blocks ?? [], units),
+      ];
+      state.bodies[id] = themeBodyTransition(null, { type: "plan", operations, heads: read.heads });
+      await save();
+    }
+    while (state.bodies[id].phase !== "done") {
+      const progress = state.bodies[id];
+      if (progress.phase === "installed") {
+        // Only the body receipt's exact revision can define destination IDs.
+        const target = await fencedRead(true);
+        const operations = page.image_variants.map((variant) => {
+          const image = target.image_occurrences[variant.ordinal];
+          const assetId = ASSET_SRC.exec(variant.src)?.[1];
+          const expected = assetId ? imageAssetUrl(pageId, assetId) : variant.src;
+          if (!image?.image_id || image.src !== expected)
+            throw new TransferError("Target image occurrence does not match the installed body");
+          return {
+            op: "set_image",
+            block_id: image.block_id,
+            image_id: image.image_id,
+            dark_asset_id: variant.dark_asset_id,
+          };
+        });
+        state.bodies[id] = themeBodyTransition(progress, { type: "discover", operations });
+        await save();
+        continue;
+      }
+      const read = await fencedRead();
+      await send(
+        step,
+        "edit_page",
+        {
+          page_id: pageId,
+          base_heads: progress.heads,
+          retry_token: read.retry_token,
+          idempotency_key:
+            read.retry_key_prefix +
+            (await nonce(bundle.bundle_id, progress.phase, id, String(progress.next))),
+          operations: progress.operations.slice(progress.next, progress.next + EDIT_BATCH),
+        },
+        commitFor(step),
+      );
     }
   }
 

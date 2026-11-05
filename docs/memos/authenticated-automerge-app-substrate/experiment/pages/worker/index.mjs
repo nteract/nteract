@@ -5817,7 +5817,9 @@ export class Page {
           throw new HttpError(400, "Unknown document operation");
         const ops = Array.isArray(body.arguments?.operations) ? body.arguments.operations : [];
         // Ops that create a node naming a stored asset (model/node-registry.mjs).
-        const inserts = ops.filter((op) => insertOperation(op?.op ?? op?.type));
+        const inserts = ops.filter(
+          (op) => insertOperation(op?.op ?? op?.type) || op?.op === "set_image",
+        );
         // Where this batch landed, captured inside the change so the cursors
         // name the characters it wrote. A replayed receipt has no caret.
         let caret = null;

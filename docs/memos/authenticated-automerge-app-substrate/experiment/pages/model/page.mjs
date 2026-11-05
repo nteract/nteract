@@ -14,6 +14,9 @@ import {
   textPath,
 } from "./richtext.mjs";
 import { resolveNodeId } from "./node-ids.mjs";
+import { imageIds, resolveImageId } from "./image-ids.mjs";
+import { updateSpansConfig } from "./marks.mjs";
+import { stampSpans } from "./schema-features.mjs";
 import { imageAssetUrl, validAssetId } from "../shared/image-assets.mjs";
 import { DATAFRAME_BLOCK, dataframeFor } from "../shared/dataset-assets.mjs";
 import { projectComments } from "./comments.mjs";
@@ -59,17 +62,50 @@ export function projectPage(doc, commentsDoc) {
 export function validateImageInsertion(op) {
   if (
     !validAssetId(op.asset_id) ||
+    (op.dark_asset_id !== undefined && !validAssetId(op.dark_asset_id)) ||
+    (op.title !== undefined &&
+      op.title !== null &&
+      (typeof op.title !== "string" || op.title.length > 2048)) ||
     typeof op.alt !== "string" ||
     op.alt.length > 2048 ||
     (op.after_block_id !== undefined &&
       op.after_block_id !== null &&
       (typeof op.after_block_id !== "string" || !op.after_block_id)) ||
     Object.keys(op).some(
-      (key) => !["op", "type", "asset_id", "alt", "after_block_id"].includes(key),
+      (key) =>
+        !["op", "type", "asset_id", "dark_asset_id", "alt", "title", "after_block_id"].includes(
+          key,
+        ),
     )
   )
     throw Error(
       "insert_image requires an uploaded asset_id, alt text (up to 2048 characters), and optional after_block_id",
+    );
+}
+export function validateImageChange(op) {
+  if (
+    !op ||
+    Object.keys(op).some(
+      (key) =>
+        !["op", "block_id", "image_id", "asset_id", "dark_asset_id", "alt", "title"].includes(key),
+    ) ||
+    typeof op.block_id !== "string" ||
+    !op.block_id ||
+    typeof op.image_id !== "string" ||
+    !op.image_id ||
+    op.image_id.length > 192 ||
+    !["asset_id", "dark_asset_id", "alt", "title"].some((key) => Object.hasOwn(op, key)) ||
+    (op.asset_id !== undefined && !validAssetId(op.asset_id)) ||
+    (op.dark_asset_id !== undefined &&
+      op.dark_asset_id !== null &&
+      !validAssetId(op.dark_asset_id)) ||
+    (op.alt !== undefined && (typeof op.alt !== "string" || op.alt.length > 2048)) ||
+    (op.title !== undefined &&
+      op.title !== null &&
+      (typeof op.title !== "string" || op.title.length > 2048))
+  )
+    throw Error(
+      "set_image requires block_id, live image_id and asset_id, dark_asset_id (null removes), alt or title",
     );
 }
 const NODE_INSERTION_USAGE =
@@ -109,13 +145,24 @@ export function insertedAssets(operations, pageId) {
   const seen = new Set();
   for (const op of operations) {
     const name = op?.op ?? op?.type;
+    if (name === "set_image") {
+      validateImageChange(op);
+      for (const assetId of [op.asset_id, op.dark_asset_id].filter(Boolean)) {
+        if (seen.has(assetId)) continue;
+        seen.add(assetId);
+        assets.push({ asset: "image", assetId });
+      }
+      continue;
+    }
     const insert = insertOperation(name);
     if (!insert) continue;
     if (insert.asset === "image") {
       validateImageInsertion(op);
-      if (seen.has(op.asset_id)) continue;
-      seen.add(op.asset_id);
-      assets.push({ asset: "image", assetId: op.asset_id });
+      for (const assetId of [op.asset_id, op.dark_asset_id].filter(Boolean)) {
+        if (seen.has(assetId)) continue;
+        seen.add(assetId);
+        assets.push({ asset: "image", assetId });
+      }
     } else if (insert.asset === "dataset") {
       const attrs = dataframeFor(pageId, validateNodeInsertion(op));
       assets.push({
@@ -148,13 +195,17 @@ function applyEdit(doc, op, trace, context) {
     const value = block(crypto.randomUUID(), positionForInsertion(doc, op.after_block_id));
     const asset_url = imageAssetUrl(doc.page_id, op.asset_id);
     doc.blocks[value.id] = value;
-    setRichImage(doc, value.id, { src: asset_url, alt: op.alt });
+    const dark_src = op.dark_asset_id ? imageAssetUrl(doc.page_id, op.dark_asset_id) : null;
+    setRichImage(doc, value.id, { src: asset_url, dark_src, alt: op.alt, title: op.title });
     trace?.push({ type: "block", block_id: value.id });
     return {
       op: "insert_image",
       block_id: value.id,
       asset_id: op.asset_id,
       asset_url,
+      image_id: imageIds(doc, value.id)[0].image_id,
+      ...(dark_src && { dark_asset_id: op.dark_asset_id, dark_src }),
+      ...(op.title !== undefined && { title: op.title }),
       alt: op.alt,
     };
   }
@@ -173,6 +224,25 @@ function applyEdit(doc, op, trace, context) {
     };
   }
   if (!Object.hasOwn(doc.blocks, id)) throw Error("Block not found");
+  if (op.op === "set_image") {
+    validateImageChange(op);
+    const { index } = resolveImageId(doc, id, op.image_id);
+    const spans = A.spans(doc, textPath(id));
+    const attrs = { ...spans[index].value.attrs };
+    if (op.asset_id !== undefined)
+      attrs.src = new A.ImmutableString(imageAssetUrl(doc.page_id, op.asset_id));
+    if (op.dark_asset_id === null) delete attrs.dark_src;
+    else if (op.dark_asset_id !== undefined)
+      attrs.dark_src = new A.ImmutableString(imageAssetUrl(doc.page_id, op.dark_asset_id));
+    for (const key of ["alt", "title"])
+      if (op[key] !== undefined)
+        attrs[key] = op[key] === null ? null : new A.ImmutableString(op[key]);
+    spans[index] = { ...spans[index], value: { ...spans[index].value, attrs } };
+    A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
+    stampSpans(doc, spans);
+    trace?.push({ type: "block", block_id: id });
+    return { op: "set_image", block_id: id, image_id: op.image_id };
+  }
   if (op.op === "move_block") {
     if (op.after_block_id !== id)
       doc.blocks[id].position = positionForInsertion(doc, op.after_block_id, id);
@@ -260,6 +330,16 @@ function applyOperation(doc, { operation, arguments: args = {}, trace }) {
   if (!Array.isArray(args.operations) || args.operations.length > 100)
     throw Error("Provide up to 100 operations");
   const operations = args.operations.map((op) => ({ ...op, op: op.op ?? op.type }));
+  const imageTargets = new Set();
+  for (const op of operations) {
+    if (op.op !== "set_image") continue;
+    validateImageChange(op);
+    const target = JSON.stringify([op.block_id, op.image_id]);
+    if (imageTargets.has(target)) throw Error("A batch cannot set the same image twice");
+    imageTargets.add(target);
+    if (!Object.hasOwn(doc.blocks, op.block_id)) throw Error("Block not found");
+    resolveImageId(doc, op.block_id, op.image_id);
+  }
   // Every occurrence names a match in the batch's starting snapshot, the one
   // the caller read. Resolve them all before any operation runs.
   const anchors = operations.map((op) => {
