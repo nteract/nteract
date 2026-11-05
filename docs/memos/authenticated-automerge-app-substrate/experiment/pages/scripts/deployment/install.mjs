@@ -4,11 +4,15 @@ import { createHash, randomBytes } from "node:crypto";
 import {
   chmodSync,
   chownSync,
+  closeSync,
+  constants as fsConstants,
   cpSync,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   readdirSync,
   renameSync,
@@ -50,22 +54,58 @@ if (process.getuid() !== 0 || apply !== "--apply" || (flags.length && !requested
   throw new Error("Explicit root installation with a prepared stage is required");
 const profile = deploymentProfile(target);
 // The operator's canary list, if any, from a root-only file in the service's
-// own config directory. It must be a plain file nobody else can write; a
-// symlink or a group- or world-writable file is refused rather than skipped.
+// own config directory. Only a missing file is absent. A symlink (dangling or
+// not), a file owned by anyone but the installing user (root, checked above),
+// or a group- or world-writable one is refused.
+// The checks run on the opened descriptor, so the bytes read are the bytes checked.
 const operatorPolicyPath = migrationPolicyPath(profile);
-let operatorPolicy;
-if (existsSync(operatorPolicyPath)) {
-  const stat = lstatSync(operatorPolicyPath);
-  if (!stat.isFile() || stat.mode & 0o022 || stat.size > MAX_MIGRATION_POLICY_BYTES)
+const readOperatorPolicy = (file) => {
+  const configDirStat = (() => {
+    try {
+      return lstatSync(path.dirname(file));
+    } catch (error) {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    }
+  })();
+  if (!configDirStat) return undefined;
+  if (
+    !configDirStat.isDirectory() ||
+    configDirStat.uid !== process.getuid() ||
+    configDirStat.mode & 0o077
+  )
     throw new Error(
-      "Invalid record storage migration canary file: " +
-        operatorPolicyPath +
-        " must be a regular file, not group- or world-writable, at most " +
-        MAX_MIGRATION_POLICY_BYTES +
-        " bytes",
+      "Refusing canary file: " + path.dirname(file) + " must be a root-owned 0700 directory",
     );
-  operatorPolicy = readFileSync(operatorPolicyPath, "utf8");
-}
+  let fd;
+  try {
+    fd = openSync(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+  } catch (error) {
+    if (error.code === "ENOENT") return undefined;
+    if (error.code === "ELOOP") throw new Error("Refusing canary file: " + file + " is a symlink");
+    throw error;
+  }
+  try {
+    const stat = fstatSync(fd);
+    if (
+      !stat.isFile() ||
+      stat.uid !== process.getuid() ||
+      stat.mode & 0o022 ||
+      stat.size > MAX_MIGRATION_POLICY_BYTES
+    )
+      throw new Error(
+        "Invalid record storage migration canary file: " +
+          file +
+          " must be a regular root-owned file, not group- or world-writable, at most " +
+          MAX_MIGRATION_POLICY_BYTES +
+          " bytes",
+      );
+    return readFileSync(fd, "utf8");
+  } finally {
+    closeSync(fd);
+  }
+};
+const operatorPolicy = readOperatorPolicy(operatorPolicyPath);
 const migration = migrationVars(profile, operatorPolicy);
 const run = (command, args) => {
   try {
@@ -400,6 +440,17 @@ if (existsSync(audit + "/manifest.json")) {
     JSON.stringify(JSON.parse(readFileSync(audit + "/manifest.json"))) !== JSON.stringify(manifest)
   )
     throw new Error("Existing rollout manifest differs from prepared deployment");
+  // A reinstall of the same stage (a canary change) keeps the first snapshot
+  // as previous-deployment.json; the deployment it replaces is kept by version.
+  if (existsSync(configDir + "/deployment.json")) {
+    const current = readFileSync(configDir + "/deployment.json");
+    const version = JSON.parse(current)?.version;
+    if (
+      /^[a-f0-9]{16}$/.test(version ?? "") &&
+      !existsSync(audit + "/deployment-" + version + ".json")
+    )
+      writeFileSync(audit + "/deployment-" + version + ".json", current, { mode: 0o600 });
+  }
 } else {
   // Record absence too, so a retry after deploy cannot mistake its own receipt
   // for the previous deployment. Keep this first snapshot across all retries.

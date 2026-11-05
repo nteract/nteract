@@ -21,7 +21,8 @@
 //   --canary FILE    A migration canary that was installed on the target
 //                    (`{enabled, pageIds}`). Repeatable. A listed Page without
 //                    direct evidence may have converted, so it is `unknown`.
-//   --only MODE      Keep only Pages whose storage is native, automerge or unknown.
+//   --only MODES     Keep only Pages whose storage is one of native, automerge
+//                    or unknown (comma-separated).
 //   --format F       json (default): the report. ids: Page IDs, one per line.
 //
 // A Page's storage, strongest evidence first:
@@ -52,7 +53,7 @@ export class InventoryError extends Error {}
 export const USAGE = `Usage:
   node scripts/record-storage-inventory.mjs --d1 pages.jsonl [--plain-since ISO]
     [--connect connect.jsonl] [--records records.jsonl] [--page-ids ids.txt]
-    [--canary installed.json ...] [--only native|automerge|unknown] [--format json|ids]
+    [--canary installed.json ...] [--only native,automerge,unknown] [--format json|ids]
 
 Collect the D1 rows with:
   node scripts/d1.mjs --target pages \\
@@ -88,8 +89,15 @@ const pageId = (value, where) => {
 };
 const time = (value, where) => {
   if (value === undefined || value === null || value === "") return null;
-  if (typeof value !== "string" || Number.isNaN(Date.parse(value)))
-    throw new InventoryError(`${where}: expected an ISO 8601 time, got ${JSON.stringify(value)}`);
+  // A zone is required: a bare local time would shift the cutoff by the host's offset.
+  if (
+    typeof value !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(value) ||
+    Number.isNaN(Date.parse(value))
+  )
+    throw new InventoryError(
+      `${where}: expected an ISO 8601 time with Z or an offset, got ${JSON.stringify(value)}`,
+    );
   return value;
 };
 
@@ -186,7 +194,7 @@ export function inventory({
     const where = `--canary ${index + 1}`;
     if (!policy || !Array.isArray(policy.pageIds))
       throw new InventoryError(`${where}: expected {enabled, pageIds}`);
-    if (policy.enabled !== true) return;
+    // A paused canary may already have converted its Pages, so it counts too.
     for (const id of policy.pageIds) page(pageId(id, where)).in_canary = true;
   });
 
@@ -203,6 +211,9 @@ export function inventory({
       storage = "automerge";
       basis = plain[0].source;
       if (native.length) notes.push("older native evidence; conversion is one-way");
+    } else if (native.length && entry.in_canary) {
+      // Native evidence can predate the conversion a canary ran.
+      notes.push("native evidence, but listed in a canary; it may have converted since");
     } else if (native.length) {
       storage = "native";
       basis = native[0].source;
@@ -295,8 +306,11 @@ export function parseArgs(argv) {
     } else throw new InventoryError(`Unknown argument ${arg}`);
   }
   if (!args.d1) throw new InventoryError("--d1 is required");
-  if (args.only !== undefined && !MODES.includes(args.only))
-    throw new InventoryError("--only takes native, automerge or unknown");
+  if (args.only !== undefined) {
+    args.only = args.only.split(",");
+    if (!args.only.length || args.only.some((mode) => !MODES.includes(mode)))
+      throw new InventoryError("--only takes native, automerge or unknown, comma-separated");
+  }
   if (!["json", "ids"].includes(args.format))
     throw new InventoryError("--format takes json or ids");
   return args;
@@ -351,7 +365,9 @@ export function main(argv, { read = defaultRead, out = console.log, err = consol
     err(`\n${USAGE}`);
     return 2;
   }
-  const pages = args.only ? report.pages.filter((row) => row.storage === args.only) : report.pages;
+  const pages = args.only
+    ? report.pages.filter((row) => args.only.includes(row.storage))
+    : report.pages;
   if (args.format === "ids") for (const row of pages) out(row.page_id);
   else out(JSON.stringify({ ...report, pages }, null, 2));
   const { storage } = report.counts;

@@ -373,6 +373,8 @@ function installFixture(
   const local = (file) => path.join(root, file);
   const write = (file, value) => {
     mkdirSync(path.dirname(local(file)), { recursive: true });
+    // The installer creates the service's config directory 0700; seeded ones match.
+    if (file.startsWith(configDir + "/")) fs.chmodSync(local(configDir), 0o700);
     writeFileSync(local(file), value);
   };
   const digest = (value) => createHash("sha256").update(value).digest("hex");
@@ -443,8 +445,19 @@ function installFixture(
     "statSync",
     "writeFileSync",
   ])
-    filesystem[name] = (file, ...args) => fs[name](local(file), ...args);
+    // A number is a descriptor from openSync, already inside the fixture root.
+    filesystem[name] = (file, ...args) =>
+      fs[name](typeof file === "number" ? file : local(file), ...args);
   filesystem.chmodSync = filesystem.chownSync = () => {};
+  // The fixture runs unprivileged while the installer sees uid 0, so files
+  // under the fixture root present as root-owned, as on the host.
+  const asRoot = (stat) =>
+    Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { uid: 0, gid: 0 });
+  filesystem.lstatSync = (file, ...args) => asRoot(fs.lstatSync(local(file), ...args));
+  filesystem.openSync = (file, ...args) => fs.openSync(local(file), ...args);
+  filesystem.fstatSync = (fd, ...args) => asRoot(fs.fstatSync(fd, ...args));
+  filesystem.closeSync = (fd) => fs.closeSync(fd);
+  filesystem.constants = fs.constants;
   filesystem.mkdtempSync = (prefix) => fs.mkdtempSync(local(prefix)).slice(root.length);
   filesystem.rmSync = (file, ...args) => fs.rmSync(local(file), ...args);
   filesystem.renameSync = (from, to) => fs.renameSync(local(from), local(to));
@@ -1652,14 +1665,14 @@ test("installer refuses a writable or linked operator file", (t) => {
   for (const mode of [0o620, 0o602, 0o666]) {
     const f = installFixture(t, { target: "pages" });
     operatorFile(f, text, mode);
-    assert.throws(f.execute, /must be a regular file, not group- or world-writable/);
+    assert.throws(f.execute, /must be a regular root-owned file, not group- or world-writable/);
     assert.deepEqual(f.calls, []);
   }
   const f = installFixture(t, { target: "pages" });
   const elsewhere = operatorFile(f, text).replace(".json", ".real.json");
   fs.renameSync(f.local(f.configDir + "/record-storage-migration.json"), f.local(elsewhere));
   fs.symlinkSync(f.local(elsewhere), f.local(f.configDir + "/record-storage-migration.json"));
-  assert.throws(f.execute, /must be a regular file/);
+  assert.throws(f.execute, /is a symlink/);
   assert.deepEqual(f.calls, []);
 });
 
@@ -1691,9 +1704,27 @@ test("widening the operator canary reinstalls the same release and restarts", (t
   assert.deepEqual(f.outputs.at(-1).restart_reasons, ["config"]);
   const first = JSON.parse(f.read(f.release + "/wrangler.json"));
   assert.deepEqual(JSON.parse(first.vars.PAGES_MIGRATE_PAGE_IDS), CANARY.slice(0, 1));
+  const firstDeployment = f.read(f.configDir + "/deployment.json");
+  const firstVersion = JSON.parse(firstDeployment).version;
   f.calls.length = 0;
   operatorFile(f, JSON.stringify({ enabled: true, pageIds: CANARY }));
   f.execute();
+  // The deployment the reinstall replaced stays on record by version.
+  const audit =
+    f.configDir +
+    "/rollout-" +
+    JSON.parse(
+      f.read(
+        f.configDir +
+          "/rollout-" +
+          fs
+            .readdirSync(f.local(f.configDir))
+            .find((n) => n.startsWith("rollout-"))
+            .slice(8) +
+          "/manifest.json",
+      ),
+    ).source_sha;
+  assert.equal(f.read(audit + "/deployment-" + firstVersion + ".json"), firstDeployment);
   assert.equal(
     f.calls.filter(({ command, args }) => command === "systemctl" && args[0] === "restart").length,
     1,

@@ -109,13 +109,13 @@ test("without a plain-since time or direct evidence a Page is unknown", () => {
   assert.equal(report.plain_since, null);
 });
 
-test("a disabled canary does not mark its Pages", () => {
+test("a paused canary still marks its Pages: they may have converted while it ran", () => {
   const report = inventory({
     plainSince: PLAIN_SINCE,
     d1Rows: D1,
     canaries: [{ enabled: false, pageIds: [ID.canaried] }],
   });
-  assert.equal(byId(report)[ID.canaried].storage, "native");
+  assert.equal(byId(report)[ID.canaried].storage, "unknown");
 });
 
 test("malformed evidence is refused, not guessed at", () => {
@@ -207,4 +207,25 @@ test("the CLI reads only the files it is given and prints the report", () => {
     assert.ok(err.length > 0);
   }
   assert.equal(parseArgs(["--help"]).help, true);
+});
+
+test("review fixes: zoned times only, paused canaries count, canary outranks native evidence, --only lists", async () => {
+  const inv = await import("./record-storage-inventory.mjs");
+  const id = "11111111-1111-4111-8111-111111111111";
+  const rows = [{ page_id: id, owner: "o", state: "active", created_at: "2026-11-05T10:00:00Z" }];
+  for (const bad of ["2026-11-05 18:52:02.1 +0000", "2026-11-05T18:52:02", "yesterday"])
+    assert.throws(
+      () => inv.inventory({ target: "pages", plainSince: bad, d1Rows: rows }),
+      /Z or an offset/,
+    );
+  const paused = inv.inventory({
+    target: "pages",
+    plainSince: "2026-11-05T18:52:02Z",
+    d1Rows: rows,
+    canaries: [{ enabled: false, pageIds: [id] }],
+    connect: [{ page_id: id, serverPeerId: "peer" }],
+  });
+  const row = paused.pages.find((p) => p.page_id === id);
+  assert.equal(row.storage, "unknown");
+  assert.ok(row.notes.some((n) => /may have converted/.test(n)));
 });

@@ -513,14 +513,17 @@ steps from `pages`.
    `prepare`, `upload` and `install --apply` as in [Pages release](#pages-release).
    The configured `wrangler.json` changes, so install restarts with
    `restart_reasons: ["config"]`. On a one-node fleet that is a short outage
-   (the drain, up to 40 s, then boot). Note when the plain release took over;
-   the rollout's `deployment.json` is written just before the restart:
+   (the drain, up to 40 s, then boot). Note when the plain release took over.
+   `running.json` is written once the restarted process serves; the old process
+   kept creating native Pages until then, so use this time, not the rollout's
+   `deployment.json`, which is written before the restart:
 
    ```sh
-   ssh lab1 sudo stat -c %y /etc/nteract-pages-live/rollout-<sha>/deployment.json
+   ssh lab1 sudo date -u -r /etc/nteract-pages-live/running.json +%FT%TZ
    ```
 
-   Pages created before that time are native. Check one new Page and one old
+   `--plain-since` takes only ISO 8601 with `Z` or an offset. Pages created
+   before that time are native. Check one new Page and one old
    one: `GET /api/connect?page=<id>` answers `recordStorage: "automerge"` for a
    plain Page and a `serverPeerId` for a Subduction Page.
 
@@ -542,7 +545,7 @@ steps from `pages`.
 
    ```sh
    for id in $(node scripts/record-storage-inventory.mjs --d1 pages.jsonl \
-       --plain-since <time> --only native --format ids); do
+       --plain-since <time> --only native,unknown --format ids); do
      curl -sS -H "Authorization: Bearer $PAGES_API_KEY" \
        "https://pages.runtimed.run/api/connect?page=$id"; echo
    done > connect.jsonl
@@ -551,6 +554,14 @@ steps from `pages`.
    The D1 rows are a projection: an account whose index hasn't reconciled has
    no rows. List Page cells with `celld cell list Page ... --all --json` and
    pass IDs the rows lack as `--page-ids`.
+
+   A Page created within a minute after `--plain-since` is worth probing too:
+   the cutoff is the first served request on the new process, and clocks on the
+   host and in D1 differ slightly.
+
+   Installing a stage built before this profile change turns
+   `PAGES_RECORD_STORAGE` off again, so new Pages go back to Subduction until the
+   next plain install. Existing plain Pages keep opening.
 
 3. **Canary 3 to 5 Pages.** Pick active native Pages you can open in a
    browser: one with comments, one large buffered Page, one shared Page.
