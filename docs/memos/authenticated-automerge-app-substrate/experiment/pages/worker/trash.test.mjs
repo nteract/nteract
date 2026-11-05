@@ -252,26 +252,10 @@ test("members and strangers lose access and listings while trashed", async (t) =
   assert.equal(memberConnect.body.code, "page_trashed");
   // Without a current grant, a trashed Page is indistinguishable from a
   // missing one.
-  // Admission answers it exactly like a missing Page: the legacy 404, or the
-  // unified 403 for clients that send X-Pages-Admission.
+  // Admission answers it exactly like a missing Page.
   const stranger = await f.pageCall("stranger", "/api/connect?page=" + pageId);
-  assert.equal(stranger.status, 404);
-  assert.deepEqual(stranger.body, { error: "Page not found", code: "page_deleted" });
-  const unified = await f.pageCall("stranger", "/api/connect?page=" + pageId, undefined, "GET", {
-    "x-pages-admission": "1",
-  });
-  assert.equal(unified.status, 403);
-  assert.equal(unified.body.code, "page_access_denied");
-  const memberUnified = await f.pageCall(
-    "member",
-    "/api/connect?page=" + pageId,
-    undefined,
-    "GET",
-    {
-      "x-pages-admission": "1",
-    },
-  );
-  assert.equal(memberUnified.body.code, "page_trashed");
+  assert.equal(stranger.status, 403);
+  assert.equal(stranger.body.code, "page_access_denied");
   assert.deepEqual((await f.tool("stranger", "read_page")).body, {
     error: "Page not found",
     code: "page_not_found",

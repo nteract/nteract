@@ -44,7 +44,7 @@ import { CATCH_UP_LIMIT_MS } from "./catch-up-machine.mjs";
 import { BACKEND_LIMITS } from "../model/limits.mjs";
 import { retryKey } from "../model/retry-key.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
-import { ADMISSION_CAPABILITY, admissionCloseOutcome } from "../shared/admission.mjs";
+import { admissionCloseOutcome } from "../shared/admission.mjs";
 import { isTransientFailure, request } from "./request.mjs";
 import { connectUrl, requestConnect } from "./early-session.mjs";
 import { SERVER_UNREACHABLE } from "./alerts.mjs";
@@ -110,26 +110,23 @@ const accessFailure = () =>
 const bytes = (value) => Uint8Array.from(value.match(/../g), (v) => parseInt(v, 16));
 /** Which host refusal retires this account's local copy: `access` for
  * `page_access_denied` (access removed, or a Page missing to this account,
- * purged included), `deleted` for a 404 (`page_deleted`, or the legacy
- * missing-Page answer). Anything else, a transient failure included, leaves
- * the copy where it is. */
+ * purged included), `deleted` for `page_deleted`. Anything else, a transient
+ * failure included, leaves the copy where it is. */
 export function refusalOf(error) {
   const refusal = classifyRefusal(error);
   return refusal === "deleted" || refusal === "access" ? refusal : undefined;
 }
 /** One host refusal, classified once for every path that can see it:
  * discovery, reconnect, open and receipts.
- * - `deleted`: the Page is gone (404). markDeleted retires the copy.
+ * - `deleted`: page_deleted, a 404. markDeleted retires the copy.
  * - `access`: page_access_denied (access removed, or a Page missing to this
  *   account, purged included). revoke retires and hides the copy.
  * - `trash`: page_trashed. The Trash notice; the copy stays for restore.
  * - `denied`: any other 403. Paused; the copy stays, since the host didn't
  *   say why. A refused signing key is a native refusal, handled apart.
- * Anything else is not a refusal. `legacyMissing: false` reads only
- * `page_deleted` as a deletion, for routes where a bare 404 isn't one. */
-export function classifyRefusal(error, { legacyMissing = true } = {}) {
-  if (error?.status === 404)
-    return legacyMissing || error.code === "page_deleted" ? "deleted" : undefined;
+ * Anything else, a 404 without page_deleted included, is not a refusal. */
+export function classifyRefusal(error) {
+  if (error?.status === 404) return error.code === "page_deleted" ? "deleted" : undefined;
   if (error?.status !== 403) return undefined;
   if (error.code === "page_access_denied") return "access";
   if (error.code === "page_trashed") return "trash";
@@ -222,9 +219,6 @@ const SIGNING_KEY_REFUSED =
   "This Page refused this tab's signing key. Your edits stay on this device. Retry, or open the Page in a new tab.";
 const SYNC_PAUSED =
   "Sync paused: the host kept refusing this connection. Your edits stay on this device. Retry to reconnect.";
-const admissionHeaders = {
-  [ADMISSION_CAPABILITY.header]: ADMISSION_CAPABILITY.value,
-};
 /** Whether a native admission close counts toward pausing sync. A
  * `temporarily_unavailable` close says the host is briefly busy (a handshake
  * deadline, a full socket quota, a storage stall), so it takes the backoff
@@ -2354,9 +2348,7 @@ export class PageSession {
     try {
       // A lost registration response can outlive its retry receipt. Reconcile
       // the exact Page/document identity before considering another request.
-      connection = await this.requestWithRenewal(connectUrl(this.pageId), {
-        headers: admissionHeaders,
-      });
+      connection = await this.requestWithRenewal(connectUrl(this.pageId));
     } catch (error) {
       if (!current()) return;
       // Missing and unreadable Pages share one response. Registration
@@ -2771,9 +2763,9 @@ export class PageSession {
         this.refuseNative(error.admission);
         return;
       }
-      // Discovery classified its own answer; a bare 404 from another request
-      // here (registration, tools) isn't a deletion.
-      const refusal = classifyRefusal(error, { legacyMissing: false });
+      // Discovery classified its own answer. Only page_deleted marks a
+      // deletion, so a 404 from another request (registration, tools) doesn't.
+      const refusal = classifyRefusal(error);
       if (refusal) await this.applyRefusal(refusal);
       else if (error.status === 401) this.requireSignIn(this.authProblem || undefined);
       else if (
@@ -3374,7 +3366,7 @@ export class PageSession {
     void request(`/api/saved?page=${encodeURIComponent(this.pageId)}&probe=frontier`, {
       signal: AbortSignal.timeout(CATCH_UP_LIMIT_MS),
       method: "POST",
-      headers: { "Content-Type": "application/json", ...admissionHeaders },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ heads, schema_features: this.buildFeatures }),
     })
       .then((result) => {
@@ -3641,7 +3633,7 @@ export class PageSession {
           // retains ownership of any persistence already in progress.
           signal: AbortSignal.timeout(30_000),
           method: "POST",
-          headers: { "Content-Type": "application/json", ...admissionHeaders },
+          headers: { "Content-Type": "application/json" },
           // The host refuses a receipt for edits it won't accept because this
           // build lacks a feature the Page is stamped with.
           body: JSON.stringify({
@@ -3695,7 +3687,7 @@ export class PageSession {
         }
         // The receipt route answers a missing Page as page_access_denied;
         // page_deleted reaches only the owner and current members.
-        const refusal = classifyRefusal(error, { legacyMissing: false });
+        const refusal = classifyRefusal(error);
         if (refusal === "access" || refusal === "deleted") {
           await this.applyRefusal(refusal);
           return;

@@ -230,7 +230,7 @@ test("a TimeoutError outside the cold lookup's own deadline is not normalized fo
 // document lookup. Only network, socket and storage boundaries are replaced.
 function coldOpenFixture(t, { refuseDuringHandshake = false, discovery = {} } = {}) {
   const authentication = { identity: { principal: crypto.randomUUID() }, canWrite: true };
-  const state = { attempts: 0, sockets: [], backoff: [], capability: [] };
+  const state = { attempts: 0, sockets: [], backoff: [] };
   let lookupStarted;
   state.lookup = new Promise((resolve) => (lookupStarted = resolve));
   const locationBefore = Object.getOwnPropertyDescriptor(globalThis, "location");
@@ -263,9 +263,8 @@ function coldOpenFixture(t, { refuseDuringHandshake = false, discovery = {} } = 
       async shutdown() {},
     };
   });
-  t.mock.method(globalThis, "fetch", async (url, options) => {
+  t.mock.method(globalThis, "fetch", async (url) => {
     assert.ok(url.startsWith("/api/connect?"), url);
-    state.capability.push(new Headers(options?.headers).get("x-pages-admission"));
     return Response.json({
       identity: authentication.identity,
       documentId: "remote-document",
@@ -327,7 +326,6 @@ test("a signing key refused after the handshake ends the cold lookup without ret
   assert.equal(error.admission.code, "signing_key_rejected");
   assert.equal(f.attempts, 1, "a permanent refusal is not reopened");
   assert.deepEqual(f.backoff, []);
-  assert.deepEqual(f.capability, ["1"], "discovery declares the admission capability");
   await error.cleanupPromise;
 });
 

@@ -75,7 +75,7 @@ async function nativeCommentsPeer(page) {
   const cookie = (await page.context().cookies(origin))
     .map((c) => `${c.name}=${c.value}`)
     .join("; ");
-  const headers = { cookie, origin, "X-Pages-Admission": "1" };
+  const headers = { cookie, origin };
   const discovery = await fetch(`${origin}/api/connect?page=${pageId}`, {
     headers,
   }).then((r) => r.json());

@@ -1377,8 +1377,8 @@ test("a forbidden receipt pauses page access without requesting sign-in or sched
   await session.close();
 });
 
-test("authenticated missing Pages and deleted registrations terminate local editing", async (t) => {
-  for (const failure of ["connect-missing", "registration-deleted", "registration-quota"]) {
+test("authenticated deleted Pages and deleted registrations terminate local editing", async (t) => {
+  for (const failure of ["connect-deleted", "registration-deleted", "registration-quota"]) {
     await t.test(failure, async (t) => {
       browser(t);
       const auth = authentication();
@@ -1403,7 +1403,7 @@ test("authenticated missing Pages and deleted registrations terminate local edit
           return Response.json({ page_id: input.page_id, document_id: input.document_id });
         }
         assert.match(url, /^\/api\/connect/);
-        return Response.json({ error: "Page not found" }, { status: 404 });
+        return Response.json({ error: "Page not found", code: "page_deleted" }, { status: 404 });
       });
       const session = await PageSession.create(
         {},

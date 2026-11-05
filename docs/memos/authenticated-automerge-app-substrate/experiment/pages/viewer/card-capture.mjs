@@ -427,9 +427,7 @@ export function captureCards(
       input$,
       scheduler,
       readStored: async () => {
-        const response = await fetch(`/api/pages/${pageId}/card-image`, {
-          headers: { "X-Pages-Admission": "1" },
-        });
+        const response = await fetch(`/api/pages/${pageId}/card-image`);
         if (!response.ok) throw Error(`card image state answered ${response.status}`);
         return (await response.json()).card_hash ?? null;
       },
@@ -448,7 +446,7 @@ export function captureCards(
             `/api/pages/${pageId}/card-image?hash=${hash}&theme=${image.theme}`,
             {
               method: "PUT",
-              headers: { "Content-Type": image.blob.type, "X-Pages-Admission": "1" },
+              headers: { "Content-Type": image.blob.type },
               body: image.blob,
               signal,
             },

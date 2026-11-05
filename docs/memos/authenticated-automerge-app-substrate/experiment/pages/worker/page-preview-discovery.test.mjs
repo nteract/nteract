@@ -2,9 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fixture, pageId, trashArgs } from "./trash-fixture.mjs";
 
-const admission = { "x-pages-admission": "1" };
 const discover = (f, who, query = "&preview=1") =>
-  f.pageCall(who, `/api/connect?page=${pageId}${query}`, undefined, "GET", admission);
+  f.pageCall(who, `/api/connect?page=${pageId}${query}`);
 const expected = (f) => ({
   title: "Launch plan",
   blocks: [{ id: f.blockId, content: [["p", {}, "We ship on Friday."]] }],

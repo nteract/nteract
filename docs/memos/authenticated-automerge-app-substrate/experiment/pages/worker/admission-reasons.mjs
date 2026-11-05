@@ -16,8 +16,6 @@ export const ADMISSION_REASONS = Object.freeze({
   credential_expired: "sign_in_required",
   credential_unverified: "temporarily_unavailable",
   page_not_found: "page_access_denied",
-  // A client without ADMISSION_CAPABILITY keeps the legacy 404 for a missing Page.
-  page_not_found_legacy: "page_deleted",
   page_deleted: "page_deleted",
   page_trashed: "page_trashed",
   page_no_grant: "page_access_denied",
