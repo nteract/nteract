@@ -2,11 +2,11 @@
 
 Maintained integration tests and adapter patches for adding nteract account
 authorization to upstream Repo 3/Subduction. The nested
-[Pages experiment](pages/README.md) is actively maintained and exercises the same
-pinned backend in a separately deployable celld service. Start there for the
-application, editor, MCP tools, and deployment workflow. The root fixture tests
-the shared integration boundary; production notebook dependencies and document
-formats remain unchanged.
+[Pages product](pages/README.md) uses the same pinned backend in a separately
+deployable celld service. Its location here reflects where it began. Start there
+for the application, editor, MCP tools, and deployment workflow. The root
+fixture tests the shared integration boundary; production notebook dependencies
+and document formats remain unchanged.
 
 The [infrastructure memo](../README.md)
 and [document-contract memo](../../extensible-automerge-document-contracts.md)

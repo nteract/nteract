@@ -169,7 +169,7 @@ const CATALOG = [
   { page_id: id(1), title: "Roadmap", project_id: projectId, updated_at: ago(HOUR) },
   { page_id: id(2), title: "Their plan", shared: true, updated_at: ago(26 * HOUR) },
   { page_id: id(3), title: "Loose notes", updated_at: ago(3 * 24 * HOUR) },
-  { page_id: id(4), title: "Launch", project_id: projectId, home: true, updated_at: ago(2 * HOUR) },
+  { page_id: id(4), title: "Launch", project_id: projectId, updated_at: ago(2 * HOUR) },
   {
     page_id: id(5),
     title: "Archive",
@@ -946,7 +946,7 @@ test("the grid needs no flag, remembers either display mode, and never nests lin
     tool: async () => ({
       pages: [
         { page_id: id(1), title: "Roadmap", project_id: projectId, updated_at: twoDaysAgo },
-        { page_id: id(2), title: "Launch", project_id: projectId, home: true },
+        { page_id: id(2), title: "Launch", project_id: projectId },
         { page_id: id(3), title: "Loose notes" },
       ],
       next_cursor: null,
@@ -994,7 +994,7 @@ test("the grid needs no flag, remembers either display mode, and never nests lin
       cards.map((card) => [card.textContent, card.getAttribute("href")]),
       [
         ["Roadmap", `/p/${id(1)}`],
-        ["Launch", `/project/${projectId}`],
+        ["Launch", `/p/${id(2)}`],
         ["Loose notes", `/p/${id(3)}`],
       ],
     );
@@ -1006,7 +1006,7 @@ test("the grid needs no flag, remembers either display mode, and never nests lin
     await click(cards[1], { metaKey: true });
     assert.deepEqual(events, [["warm"], ["open", id(1)]]);
     await click(cards[1]);
-    assert.deepEqual(events.at(-1), ["project", projectId]);
+    assert.deepEqual(events.at(-1), ["open", id(2)]);
     await pick(app.host, "Group", "Project");
     assert.ok(app.host.querySelector('ul.index-grid[aria-label="Launch"]'), "grouped grid");
     await mounted.pop().unmount();
@@ -1016,7 +1016,7 @@ test("the grid needs no flag, remembers either display mode, and never nests lin
     assert.ok(again.host.querySelector(".index-grid"), "a remount reads the stored mode");
     await click(again.host.querySelector('button[aria-label="List view"]'));
     await click(again.host.querySelector('button[aria-label="Copy link to Launch"]'));
-    assert.deepEqual(events.at(-1), ["copy", id(2), `/project/${projectId}`]);
+    assert.deepEqual(events.at(-1), ["copy", id(2), `/p/${id(2)}`]);
     assert.equal(window.localStorage.getItem("nteract.pages.view"), "list");
     await mounted.pop().unmount();
 

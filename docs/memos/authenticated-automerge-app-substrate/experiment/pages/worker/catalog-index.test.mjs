@@ -2579,7 +2579,7 @@ function v6Restore(db, pageId, at) {
 
 test("the trash listing migrates a fresh database and one at version 6, and builds without it keep working", async (t) => {
   const latest = CATALOG_MIGRATIONS.at(-1).version;
-  assert.equal(latest, 7);
+  assert.ok(latest >= 7);
   const fresh = sqliteD1(t).open();
   assert.equal(await migrateCatalogIndex(fresh), latest);
   assert.ok(columnsOf(fresh, "pages_catalog_pages").includes("trash_key"));
@@ -3502,4 +3502,42 @@ test("listings past rejected candidates show every visible Page once, in order, 
               }
     });
   }
+});
+
+test("schema v8 drops the Project root-Page column from a fresh database and from one at version 7", async (t) => {
+  assert.equal(CATALOG_MIGRATIONS.at(-1).version, 8);
+  const fresh = sqliteD1(t).open();
+  assert.equal(await migrateCatalogIndex(fresh), 8);
+  const spaceColumns = (db) => columnsOf(db, "pages_catalog_spaces").sort();
+  const expected = ["created_at", "owner", "space_id", "title", "title_search", "updated_at"];
+  assert.deepEqual(spaceColumns(fresh), expected);
+  assert.ok(indexesOf(fresh).includes("pages_catalog_spaces_listing"));
+
+  // Rows a build at version 7 wrote keep everything but the dropped column.
+  const upgraded = sqliteD1(t).open();
+  assert.equal(await migrateCatalogIndex(upgraded, CATALOG_MIGRATIONS.slice(0, 7)), 7);
+  upgraded.sqlite
+    .prepare(
+      `INSERT INTO pages_catalog_spaces
+        (space_id, owner, title, title_search, home_page_id, created_at, updated_at)
+      VALUES ('prj_a', 'owner', 'Launch', 'launch', 'doc', 't0', 't1')`,
+    )
+    .run();
+  assert.equal(await migrateCatalogIndex(upgraded), 8);
+  assert.deepEqual(spaceColumns(upgraded), expected);
+  assert.deepEqual(
+    upgraded.rows("SELECT * FROM pages_catalog_spaces").map((row) => ({ ...row })),
+    [
+      {
+        space_id: "prj_a",
+        owner: "owner",
+        title: "Launch",
+        title_search: "launch",
+        created_at: "t0",
+        updated_at: "t1",
+      },
+    ],
+  );
+  assert.ok(indexesOf(upgraded).includes("pages_catalog_spaces_listing"));
+  assert.equal(await migrateCatalogIndex(upgraded), 8, "applied once");
 });

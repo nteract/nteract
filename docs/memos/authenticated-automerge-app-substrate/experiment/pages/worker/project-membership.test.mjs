@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { world } from "./projects-fixture.mjs";
 import { invitedProjects } from "./project-invitations.mjs";
-import { publicProjectAccess, homePageMarkdown } from "./spaces.mjs";
+import { publicProjectAccess, projectContentMarkdown } from "./spaces.mjs";
 
 for (const cleared of [false, true]) {
   test(`an older Project resolution cannot undo a real owner revocation${cleared ? " after access clears" : ""}`, async (t) => {
@@ -434,5 +434,5 @@ test("Project sharing output hides tombstones and internal ACL fields including 
   });
   assert.deepEqual(projected.members, {});
   assert.deepEqual(Object.keys(projected.invites[0]).sort(), ["email", "expiresAt", "id", "role"]);
-  assert.doesNotMatch(homePageMarkdown(), /home Page/);
+  assert.doesNotMatch(projectContentMarkdown(), /home Page/);
 });

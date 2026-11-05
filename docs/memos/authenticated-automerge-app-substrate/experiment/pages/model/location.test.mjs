@@ -33,16 +33,22 @@ const entry = (page_id, parent_id = null, extra = {}) => ({
 const stateOf = (...list) => ({
   revision: 7,
   entries: new Map(list.map((item) => [item.page_id, item])),
+  projects: [PRJ, OTHER],
+  contents: new Map([
+    ["launch", PRJ],
+    ["archive", OTHER],
+  ]),
 });
 
 /**
- * Two Projects and Your items:
- *   launch (home of prj_launch)
+ * Two Projects and Your items. `launch` and `archive` are the Projects'
+ * content documents: in `contents`, never in the tree.
+ *   prj_launch
  *     plan
  *       risks
  *       budget (pending)
  *     notes
- *   archive (home of prj_archive)
+ *   prj_archive
  *     old
  *   loose
  *   drafts
@@ -51,13 +57,11 @@ const stateOf = (...list) => ({
  */
 function world() {
   return stateOf(
-    entry("launch", null, { space_id: PRJ, position: "a0" }),
-    entry("plan", "launch", { position: "a0" }),
+    entry("plan", null, { space_id: PRJ, position: "a0" }),
     entry("risks", "plan", { position: "a0" }),
     entry("budget", "plan", { position: "a1", state: "pending" }),
-    entry("notes", "launch", { position: "a1" }),
-    entry("archive", null, { space_id: OTHER, position: "a1" }),
-    entry("old", "archive"),
+    entry("notes", null, { space_id: PRJ, position: "a1" }),
+    entry("old", null, { space_id: OTHER }),
     entry("loose", null, { position: "a2" }),
     entry("drafts", null, { position: "a3" }),
     entry("idea", "drafts"),
@@ -69,7 +73,8 @@ function world() {
   );
 }
 
-const ordered = (state, parentId) => siblingsOf(state.entries, parentId).map((e) => e.page_id);
+const ordered = (state, parentId, spaceId = null) =>
+  siblingsOf(state.entries, parentId, undefined, spaceId).map((e) => e.page_id);
 
 test("MAX_DEPTH is 9 until the design's question 2 picks it", () => {
   assert.equal(MAX_DEPTH, 9);
@@ -151,18 +156,19 @@ test("deriveLocation walks to the root and reports its Project", () => {
   const { entries } = world();
   assert.deepEqual(deriveLocation(entries, "risks"), {
     ok: true,
-    root: "launch",
+    root: "plan",
     space_id: PRJ,
-    depth: 3,
-    ancestors: ["plan", "launch"],
+    depth: 2,
+    ancestors: ["plan"],
   });
-  assert.deepEqual(deriveLocation(entries, "launch"), {
+  assert.deepEqual(deriveLocation(entries, "plan"), {
     ok: true,
-    root: "launch",
+    root: "plan",
     space_id: PRJ,
     depth: 1,
     ancestors: [],
   });
+  assert.equal(deriveLocation(entries, "launch").problem, "missing_page", "content isn't a Page");
   assert.equal(deriveLocation(entries, "idea").space_id, null, "Your items");
   // Plain objects work too.
   assert.equal(deriveLocation(Object.fromEntries(entries), "old").space_id, OTHER);
@@ -199,8 +205,8 @@ test("depth: the model holds one level past MAX_DEPTH; a move can't produce it",
   const fits = deriveLocation(chain(MAX_DEPTH).entries, `d${MAX_DEPTH}`);
   assert.equal(fits.ok, true);
   assert.equal(fits.depth, MAX_DEPTH);
-  // A Project chain of MAX_DEPTH from before the home Page was its root sits
-  // at MAX_TREE_DEPTH once it is under the home Page. It reads and holds.
+  // A chain stored one level deeper by the retired shape (until its Catalog
+  // is migrated) reads and holds.
   const held = deriveLocation(chain(MAX_TREE_DEPTH).entries, `d${MAX_TREE_DEPTH}`);
   assert.equal(held.ok, true);
   assert.equal(held.depth, MAX_TREE_DEPTH);
@@ -224,12 +230,10 @@ test("depth: the model holds one level past MAX_DEPTH; a move can't produce it",
 
 test("subtreeOf and subtreeSpaceIds list a Page's descendants top-down", () => {
   const { entries } = world();
-  assert.deepEqual(subtreeOf(entries, "launch"), [
-    { page_id: "launch", depth: 0 },
-    { page_id: "plan", depth: 1 },
-    { page_id: "notes", depth: 1 },
-    { page_id: "risks", depth: 2 },
-    { page_id: "budget", depth: 2 },
+  assert.deepEqual(subtreeOf(entries, "plan"), [
+    { page_id: "plan", depth: 0 },
+    { page_id: "risks", depth: 1 },
+    { page_id: "budget", depth: 1 },
   ]);
   assert.deepEqual(subtreeOf(entries, "nope"), []);
   assert.deepEqual(subtreeSpaceIds(entries, "plan"), [
@@ -244,32 +248,40 @@ test("subtreeOf and subtreeSpaceIds list a Page's descendants top-down", () => {
   assert.deepEqual(subtreeSpaceIds(entries, "nope"), []);
 });
 
-test("roots: home Pages are each alone, Your items roots are siblings", () => {
+test("roots: each Project's roots and Your items roots are separate sibling sets", () => {
   const s = world();
-  // launch and archive are home Pages (roots with space_id); loose and
+  // plan and notes are prj_launch's roots, old is prj_archive's; loose and
   // drafts are the Your items roots. gone is in Trash.
   assert.deepEqual(ordered(s, null), ["loose", "drafts"]);
-  assert.deepEqual(ordered(s, "launch"), ["plan", "notes"], "a Project's top level");
-  // A move to Your items places among Your items roots only, so a home's
-  // key never constrains it.
+  assert.deepEqual(ordered(s, null, PRJ), ["plan", "notes"], "a Project's top level");
+  assert.deepEqual(ordered(s, null, OTHER), ["old"]);
+  // A move to Your items places among Your items roots only, so a Project
+  // root's key never constrains it.
   const toRoot = planMove(s, "plan", { project_id: null }, "first");
   assert.equal(toRoot.ok, true, JSON.stringify(toRoot));
   assert.ok(toRoot.moved.position < "a2", "before loose");
   const after = applyWrite(s, toRoot);
   assert.deepEqual(ordered(after, null), ["plan", "loose", "drafts"]);
+  assert.equal("space_id" in after.entries.get("plan"), false, "leaving a Project drops space_id");
   assert.deepEqual(checkInvariants(after), []);
-  // A move to a Project's top level lands under its home Page.
+  // A move to a Project's top level makes a root carrying its space_id.
   const toProject = planMove(s, "loose", { project_id: OTHER });
-  assert.equal(toProject.moved.parent_id, "archive");
-  assert.deepEqual(ordered(applyWrite(s, toProject), "archive"), ["old", "loose"]);
+  assert.equal(toProject.moved.parent_id, null);
+  assert.equal(toProject.entries.loose.space_id, OTHER);
+  assert.deepEqual(ordered(applyWrite(s, toProject), null, OTHER), ["old", "loose"]);
+  // Nesting under a Page drops space_id: only roots carry it.
+  const nested = planMove(s, "notes", { parent_id: "plan" });
+  assert.equal("space_id" in nested.entries.notes, false);
+  assert.equal(deriveLocation(applyWrite(s, nested).entries, "notes").space_id, PRJ);
 });
 
 test("every refusal code has a case, and refusals carry a message", () => {
   const s = world();
   const cases = [
     ["page_not_found", "nope", { project_id: null }],
-    ["home_page_protected", "launch", { project_id: OTHER }],
-    ["home_page_protected", "archive", { parent_id: "plan" }],
+    ["project_content_protected", "launch", { project_id: OTHER }],
+    ["project_content_protected", "archive", { parent_id: "plan" }],
+    ["parent_unavailable", "loose", { parent_id: "launch" }],
     ["placement_cycle", "plan", { parent_id: "plan" }],
     ["placement_cycle", "plan", { parent_id: "risks" }],
     ["placement_mismatch", "loose", { project_id: OTHER, parent_id: "plan" }],
@@ -297,8 +309,8 @@ test("every refusal code has a case, and refusals carry a message", () => {
     assert.equal(typeof result.message, "string");
     seen.add(code);
   }
-  // A pending Project (its home is still being created) can't take Pages.
-  const pendingProject = stateOf(entry("h", null, { space_id: PRJ, state: "pending" }), entry("p"));
+  // A Project that isn't live (still being created) can't take Pages.
+  const pendingProject = { ...stateOf(entry("p")), projects: [] };
   assert.equal(planMove(pendingProject, "p", { project_id: PRJ }).code, "project_not_found");
   // nesting_depth_exceeded has its own boundary test.
   seen.add("nesting_depth_exceeded");
@@ -314,16 +326,16 @@ test("malformed arguments are programming errors, not refusals", () => {
 });
 
 test("depth at the boundary: a subtree fits only where its deepest Page stays within MAX_DEPTH", () => {
-  // chain c1..c7 under the home Page h (h is depth 1, c7 depth 8).
-  const list = [entry("h", null, { space_id: PRJ })];
-  for (let i = 1; i <= MAX_DEPTH - 2; i++) list.push(entry(`c${i}`, i === 1 ? "h" : `c${i - 1}`));
+  // chain c1..c8 from a Project root (c1 is depth 1, c8 depth 8).
+  const list = [entry("c1", null, { space_id: PRJ })];
+  for (let i = 2; i <= MAX_DEPTH - 1; i++) list.push(entry(`c${i}`, `c${i - 1}`));
   // m has one child, so it adds two levels.
   list.push(entry("m"), entry("m1", "m"));
   const s = stateOf(...list);
-  const last = `c${MAX_DEPTH - 2}`;
+  const last = `c${MAX_DEPTH - 1}`;
   const tooDeep = planMove(s, "m", { parent_id: last });
   assert.equal(tooDeep.code, "nesting_depth_exceeded");
-  const fits = planMove(s, "m", { parent_id: `c${MAX_DEPTH - 3}` });
+  const fits = planMove(s, "m", { parent_id: `c${MAX_DEPTH - 2}` });
   assert.equal(fits.ok, true, JSON.stringify(fits));
   const after = applyWrite(s, fits);
   assert.equal(deriveLocation(after.entries, "m1").depth, MAX_DEPTH);
@@ -372,10 +384,11 @@ test("a move is one write: the moved entry and the revision, never its descendan
   assert.equal(result.ok, true);
   assert.equal(result.revision, 8);
   assert.deepEqual(Object.keys(result.entries), ["plan"]);
-  assert.equal(result.entries.plan.parent_id, "archive");
+  assert.equal(result.entries.plan.parent_id, null);
+  assert.equal(result.entries.plan.space_id, OTHER);
   assert.deepEqual(result.moved, {
     page_id: "plan",
-    parent_id: "archive",
+    parent_id: null,
     space_id: OTHER,
     position: result.entries.plan.position,
     descendants: 2,
@@ -386,7 +399,7 @@ test("a move is one write: the moved entry and the revision, never its descendan
     { page_id: "budget", space_id: OTHER },
   ]);
   // The input state is untouched.
-  assert.equal(s.entries.get("plan").parent_id, "launch");
+  assert.equal(s.entries.get("plan").space_id, PRJ);
   assert.equal(s.revision, 7);
 });
 
@@ -400,7 +413,7 @@ test("a subtree move across Projects changes every descendant's derived space_id
     { page_id: "risks", space_id: OTHER },
     { page_id: "budget", space_id: OTHER },
   ]);
-  assert.deepEqual(deriveLocation(after.entries, "risks").ancestors, ["plan", "old", "archive"]);
+  assert.deepEqual(deriveLocation(after.entries, "risks").ancestors, ["plan", "old"]);
   // Out to Your items and back into a Project.
   const out = applyWrite(after, planMove(after, "plan", { project_id: null }));
   assert.equal(deriveLocation(out.entries, "budget").space_id, null);
@@ -408,7 +421,8 @@ test("a subtree move across Projects changes every descendant's derived space_id
   assert.equal(out.revision, 9);
   const back = applyWrite(out, planMove(out, "plan", { project_id: PRJ }));
   assert.equal(deriveLocation(back.entries, "risks").space_id, PRJ);
-  assert.equal(back.entries.get("plan").parent_id, "launch");
+  assert.equal(back.entries.get("plan").parent_id, null);
+  assert.equal(back.entries.get("plan").space_id, PRJ);
   for (const state of [after, out, back]) assert.deepEqual(checkInvariants(state), []);
 });
 
@@ -628,11 +642,12 @@ test("checkInvariants finds each kind of violation", () => {
   assert.deepEqual(
     codes(
       stateOf(
-        entry("h1", null, { space_id: PRJ }),
-        entry("h2", null, { space_id: PRJ, position: "a1" }),
+        entry("r1", null, { space_id: PRJ }),
+        entry("r2", null, { space_id: PRJ, position: "a0" }),
       ),
     ),
-    ["duplicate_home"],
+    ["duplicate_position"],
+    "a Project's roots are siblings",
   );
   assert.deepEqual(
     checkInvariants(
@@ -649,7 +664,7 @@ test("checkInvariants finds each kind of violation", () => {
       ),
     ),
     [],
-    "home Pages are each alone: their keys never tie with each other or Your items",
+    "roots of different containers never tie",
   );
   assert.deepEqual(
     checkInvariants(
@@ -673,18 +688,11 @@ test("checkInvariants finds each kind of violation", () => {
       ),
     ),
     [],
-    "a trashed home doesn't count",
+    "a trashed root doesn't tie",
   );
-  const projects = { [PRJ]: "launch", [OTHER]: "archive" };
-  assert.deepEqual(codes(world(), { projects }), []);
-  assert.deepEqual(codes(world(), { projects: { [PRJ]: "launch" } }), ["project_home_mismatch"]);
-  assert.deepEqual(codes(world(), { projects: { ...projects, [PRJ]: "plan" } }), [
-    "project_home_mismatch",
-  ]);
-  assert.deepEqual(
-    codes(world(), { projects: new Map([...Object.entries(projects), ["prj_x", "x"]]) }),
-    ["project_home_mismatch"],
-  );
+  assert.deepEqual(codes(world(), { projects: [PRJ, OTHER] }), []);
+  assert.deepEqual(codes(world(), { projects: new Set([PRJ]) }), ["unknown_project"]);
+  assert.deepEqual(codes(world(), { projects: new Map([[PRJ, {}]]) }), ["unknown_project"]);
 });
 
 /** Small deterministic PRNG so a failing seed replays. */
@@ -711,6 +719,7 @@ function randomCatalog(next, size) {
     entries.set(id, entry(id, null, { space_id: `prj_${i}`, position: `a${i}` }));
     depth.set(id, 1);
   }
+  const live = Array.from({ length: projects }, (_, i) => `prj_${i}`);
   for (let i = 0; i < size; i++) {
     const id = `p${i}`;
     const parents = [...entries.values()].filter(
@@ -729,7 +738,7 @@ function randomCatalog(next, size) {
     );
     depth.set(id, parent ? depth.get(parent) + 1 : 1);
   }
-  return { revision: 0, entries };
+  return { revision: 0, entries, projects: live };
 }
 
 test("property: random moves on random trees keep every invariant", () => {
@@ -751,8 +760,8 @@ test("property: random moves on random trees keep every invariant", () => {
     // Every parent a move has landed in (null for roots). Each must keep
     // distinct keys from then on, whatever later moves do.
     const destinations = new Set();
-    const distinct = (current, parentId) => {
-      const keys = siblingsOf(current.entries, parentId).map((e) => e.position);
+    const distinct = (current, [parentId, spaceId]) => {
+      const keys = siblingsOf(current.entries, parentId, undefined, spaceId).map((e) => e.position);
       return new Set(keys).size === keys.length;
     };
     const ids = [...state.entries.keys()];
@@ -792,9 +801,13 @@ test("property: random moves on random trees keep every invariant", () => {
       assert.equal(state.revision, before.revision + 1, where);
       assert.deepEqual(structural(state), [], where);
       assert.ok(duplicates(state) <= duplicates(before), `${where}: no new ties`);
-      destinations.add(result.moved.parent_id);
-      for (const parentId of destinations)
-        assert.ok(distinct(state, parentId), `${where}: ties left under ${parentId}`);
+      const container = [
+        result.moved.parent_id,
+        result.moved.parent_id ? null : result.moved.space_id,
+      ];
+      destinations.add(JSON.stringify(container));
+      for (const key of destinations)
+        assert.ok(distinct(state, JSON.parse(key)), `${where}: ties left under ${key}`);
       // Only the moved Page changes its parent; descendants keep theirs.
       for (const [id, previous] of before.entries) {
         const now = state.entries.get(id);
@@ -815,7 +828,7 @@ test("property: random moves on random trees keep every invariant", () => {
       for (const { page_id, space_id } of result.projection)
         assert.equal(deriveLocation(state.entries, page_id).space_id, space_id, where);
       // Siblings at the destination have strictly increasing keys around it.
-      const order = ordered(state, result.moved.parent_id);
+      const order = ordered(state, ...container);
       const at = order.indexOf(pageId);
       const key = (i) => state.entries.get(order[i])?.position;
       if (at > 0) assert.ok(key(at - 1) < key(at), `${where}: left key`);

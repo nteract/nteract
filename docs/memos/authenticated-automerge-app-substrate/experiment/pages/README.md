@@ -1,17 +1,28 @@
 # Pages
 
-Pages is an **actively maintained experiment** in collaborative documents for
-people and agents. People write in a rich editor; agents read and edit Markdown
-through HTTP or MCP. Both work on the same Automerge document, with passage
-comments, presence, private images, and host-enforced sharing.
+Pages is a rich collaborative document product for people and agents. It has
+the exploratory feel of a notebook, with room for prose, images, diagrams,
+editable tables, task lists, interactive dataframes, and conversations anchored
+to the words you're discussing. Use it to think through an idea, tell a story
+with data, or build something together. Exploring and writing should be fun.
 
-The application evaluates experimental Automerge Repo 3 and Subduction as a
-shared document foundation. It has its own document model and deployment; it
-does not migrate or replace nteract notebooks. APIs, editor behavior, and resource
-limits may evolve as the experiment is exercised. Page8 is the current isolated
-QA deployment; Page7 and earlier deployments remain frozen.
+People write in the Wordgard editor; agents read and edit through HTTP or MCP
+using Markdown and structured node operations. Both work on the same native
+Automerge content. Projects organize related Pages; individual Pages have their
+own sharing permissions, presence, and passage comments. Code blocks display
+source, while notebooks provide kernel execution.
 
-- [Architecture and motivation](../../README.md)
+Pages is developed in the nteract monorepo and shares libraries such as Sift
+and UI tokens with notebooks. It owns its editor, document model, host, and
+deployment. The source directory and `@nteract/pages-native-experiment` workspace
+name reflect its origins in the authenticated Automerge infrastructure research.
+Its Repo 3/Subduction foundation still has experimental dependencies and evolving
+contracts; the infrastructure research and deployment qualification remain
+separate from Pages' product identity. See the deployment guide for current
+release targets and frozen historical services.
+
+- [Contributor instructions](AGENTS.md)
+- [Infrastructure research and motivation](../../README.md)
 - [Shared integration workspace](../README.md) and [upstream provenance and patches](../UPSTREAM.md)
 - [Deployment and rollback boundaries](DEPLOYMENT.md)
 
@@ -34,9 +45,9 @@ must finish before `dev`; rebuild after source changes. The dev command serves
 
 Wordgard is the only browser editor, locally and in deployed Pages. The
 `PAGES_EDITOR` comparison flag is no longer used. These flags enable background
-record persistence and lossless record cleanup used by Page8; without them,
-local persistence is synchronous. A Page records its storage mode at creation:
-changing a persistence flag does not migrate existing local documents.
+record persistence and lossless record cleanup used by deployed Pages; without
+them, local persistence is synchronous. A Page records its storage mode at
+creation: changing a persistence flag does not migrate existing local documents.
 
 Local sign-in uses a loopback-only OIDC issuer. State persists under
 `pages/dist/.celld`; local credentials and build output are ignored. The dev
@@ -877,8 +888,9 @@ Page.
 
 A Catalog write that adds a listable entry for one Page marks that Page
 (`host/index/page/<id>`, `pageIndexMarkMachine`) before it writes the entry: a
-creation, a Project's home Page, a Trash, restore or purge projection, and a new
-entry a Page host projects, including a discovery. A creation, a home Page and a
+creation, a Project's content document, a Trash, restore or purge projection,
+and a new entry a Page host projects, including a discovery. A creation, a
+content document and a
 lifecycle projection then write the owner's D1 row after the response, started
 in the live request and held with `waitUntil`, and clear the mark once it lands.
 So `create_page`, Project creation, Trash, restore and purge never wait on D1.
@@ -911,13 +923,13 @@ A lifecycle projection can fail after the Page host applied the change. The
 host's report then gives D1's row the new state while the owner's entry keeps
 the old one. The Page's mark settles from that entry, but the lifecycle fence
 keeps D1's newer state. A listing shows an owned D1 row only when the matching
-entry confirms it (`page/` for Home, `trash/` for Trash), so D1 lists the Page
+entry confirms it (`page/` for active, `trash/` for Trash), so D1 lists the Page
 in neither:
 
 - After a failed restore, D1's row is active and the entry is in Trash. The
   Catalog lists the Page in Trash.
 - After a failed Trash, D1's row is trashed and the entry is still active. The
-  Catalog lists the Page in Home.
+  Catalog lists the Page as active.
 
 A D1 listing that meets such a row prunes it and marks the account dirty, so
 listings read the Catalog until a pass imports the entry again. Retrying the
@@ -2668,9 +2680,9 @@ This implementation trashes and restores individual Pages.
 
 ### Projects
 
-A Project is a container for Pages: its own ID (`prj_<uuid>`), title, description,
-owner, a members ACL with a revision, and a home Page created with it. Results
-carry `org`, always `null` until a host supplies tenancy. The name matches the
+A Project has its own ID (`prj_<uuid>`), title, description, owner, a members
+ACL with a revision, a content document created with it (`document_id`) and a
+tree of Pages. Results carry `org`, always `null` until a host supplies tenancy. The name matches the
 organization → project hierarchy hosting platforms use for access, so a Project
 can map one-to-one onto a host's project. Its Durable Object
 ([spaces.mjs](worker/spaces.mjs)) is the authority for that record.
@@ -2893,40 +2905,48 @@ closes it or the person reopens it. Neither walks again, so a 401 can't start
 another walk. A walk answered for another account, or whose pages name
 different accounts, rechecks the session; when that recovery ends with the
 same account, the picker says to reopen it and try again.
-A Project's home Page lists its Project with `project_id`. An open Page
+A Project's content, read with `project_id`, lists its Project. An open Page
 asks `read_page` where it is until it is found: it asks again each time a Page
 created in this tab registers or the session reconnects, and a transient
-failure also retries after 2, 4 and 8 seconds. Once found, it stops asking. Move to… hides only on a Project's home Page, asks
-when chosen otherwise, and on a draft that hasn't registered says to wait for
-it to sync.
+failure also retries after 2, 4 and 8 seconds. Once found, it stops asking.
+Move to… hides on a Project's content, asks when chosen otherwise, and on a
+draft that hasn't registered says to wait for it to sync.
 
 | Tool | Arguments | Result |
 | --- | --- | --- |
-| `create_project` | `title`, `description?`, `idempotency_key`, `retry_token?` | `project_id`, `home_page_id`, `revision` |
-| `list_projects` | `cursor?`, `limit?` | owned Projects, `next_cursor`, `retry_token` |
-| `get_project` | `project_id` | title, description, revision, `home_page_id` |
+| `create_project` | `title`, `description?`, `idempotency_key`, `retry_token?` | `project_id`, `title`, `description`, `revision`, `role`, `owner`, `url`, `document_id` |
+| `list_projects` | `cursor?`, `limit?` | Projects with the same fields as `get_project`, `next_cursor`, `retry_token` |
+| `get_project` | `project_id` | `project_id`, `title`, `description`, `revision`, `role`, `owner`, `url`, `document_id` |
 | `update_project` | `project_id`, `title?`, `description?`, `expected_revision`, `idempotency_key` | the updated Project, or `superseded` |
-| `create_page` | adds `project_id?`, `parent_id?` | adds `project_id`, `parent_id` |
-| `list_pages` | adds `project_id?`, `parent_id?` (`null` = top level), `kind?` | owned rows add `project_id`, `parent_id`, `position`, `home` |
-| `read_page` | unchanged | adds `kind`, `project_id`, `parent_id`, `home`, `breadcrumbs` |
+| `create_page` | adds `project_id?`, `parent_id?` | adds `project_id`, `parent_id` (`null` at the top level) |
+| `list_pages` | adds `project_id?`, `parent_id?` (`null` = top level), `kind?` | owned rows add `project_id`, `parent_id`, `position`; never the content document |
+| `read_page` and every other tool taking `page_id` | `project_id` in place of `page_id` addresses the Project's content (exactly one; both is `invalid_arguments`) | adds `kind` (`page` or `project`), `project_id`, `parent_id`, `breadcrumbs`; content reads carry its `page_id` (= `document_id`) |
 | `move_page` | `page_id`, `parent_id`, `position?`, `idempotency_key`, `retry_token` | `page_id`, `project_id`, `parent_id`, `position`, `location_revision`, `descendants`, `trashed_descendants` |
 
 Every Project and item operation goes through the caller's own Catalog, which
 calls the Project and Pages with the caller's credentials. A Project never calls a
-Catalog or a Page. `create_project` reserves a journal intent with the Project ID and
-home Page ID first, then creates the Project record and the home Page; both steps
-are idempotent, so retrying the same key and payload after a crash or lost
-response finishes the same Project. Until then `get_project` answers `project_pending`
-and `list_projects` omits it. The home Page holds orientation and guidance for
-people and agents. It is ordinary, untrusted Page content and cannot move to
-Trash on its own (`home_page_protected`).
+Catalog or a Page. `create_project` reserves a journal intent with the Project ID
+and content document ID first, then creates the Project record and the content
+document; both steps are idempotent, so retrying the same key and payload after
+a crash or lost response finishes the same Project. Until then `get_project`
+answers `project_pending` and `list_projects` omits it. The content holds
+orientation and guidance for people and agents. It is ordinary, untrusted
+document content, edited with the Page tools by `project_id`; it is not a Page in
+the tree, so `move_page`, `delete_page` and `purge_page` refuse it
+(`project_content_protected`), and `list_pages` never lists it. A direct grant on
+the content document (by its `document_id`) opens it as a plain Page, `kind:
+"page"`, without revealing the Project.
 
 The owner's Catalog is the only record of where a Page is
 ([catalog-location.mjs](worker/catalog-location.mjs)); Page records carry no
 location. Each owned entry stores `parent_id` and `position`. A root in a
-Project stores the Project's `space_id`, and the home Page adds `home`; a
-sub-page's Project is derived by walking parents to its root with
-[model/location.mjs](model/location.mjs). `create_page` writes the location
+Project stores the Project's `space_id` with `parent_id: null`; the content
+document's entry stores `project_content` and no location; a sub-page's Project
+is derived by walking parents to its root with
+[model/location.mjs](model/location.mjs). The Catalog stamps its location shape
+version (`LOCATION_SHAPE_VERSION`, now 2); a Catalog holding the earlier shape
+answers `503 location_migration_required` on location reads and writes until
+its owner runs the one-shot migration described in DEPLOYMENT.md. `create_page` writes the location
 into the pending Catalog entry in the same put as its journal intent, so a
 retry finds its parent there, and the Page learns only its content. Results
 call `space_id` `project_id`. A parent implies its Project; a different
@@ -2964,7 +2984,7 @@ replays a completed receipt, settles the Page's and the parent's Trash or
 restore reservations within the lifecycle budget (`lifecycle_unsettled` when
 out of it), runs the shape pass like every queued write, then `planMove`
 ([model/location.mjs](model/location.mjs)). A destination is a
-`parent_id`, a `project_id` (the Project's top level, under its home Page), or
+`parent_id`, a `project_id` (the Project's top level, `parent_id: null`), or
 `project_id: null` (a root in Your items), and a Page moves within its
 container or across them: Your items into a Project, a Project out to Your
 items, or one Project to another. Only a request naming no destination answers

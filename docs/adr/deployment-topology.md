@@ -154,7 +154,7 @@ this draft ADR.
 |------------|-----|-----------|----------|--------|
 | `preview.runt.run` | `apps/notebook-cloud` | Cloudflare Workers, Durable Objects, D1, R2 | Anaconda stage OIDC | `apps/notebook-cloud/wrangler.toml`, `apps/notebook-cloud/DEPLOY.md` |
 | `main.runtimed.run` and `<id>.runtimed.run` PR previews | `apps/notebook-cloud` | celld on EC2, run by the private `nteract/preview-infra` controller | Controller-owned | `.github/preview/README.md`, `celld-local.mjs export` in `.github/workflows/build.yml` and `preview-reusable.yml` |
-| `pages.runtimed.run` and `page10.runtimed.run` | Pages experiment | celld 0.6.3 on the `lab1` host, `CELLD_DURABILITY=bucket`, S3 fleet bucket, Cloudflare Tunnel ingress | Anaconda production OIDC | `../memos/authenticated-automerge-app-substrate/experiment/pages/DEPLOYMENT.md`, `scripts/deployment/profiles.mjs` and `install.mjs` |
+| `pages.runtimed.run` and `page10.runtimed.run` | Pages | celld 0.6.3 on the `lab1` host, `CELLD_DURABILITY=bucket`, S3 fleet bucket, Cloudflare Tunnel ingress | Anaconda production OIDC | `../memos/authenticated-automerge-app-substrate/experiment/pages/DEPLOYMENT.md`, `scripts/deployment/profiles.mjs` and `install.mjs` |
 
 Pages is a separate application, not a notebook room host. `pages.runtimed.run`
 and Page10 are isolated targets on separate services and prefixes; Page9 and

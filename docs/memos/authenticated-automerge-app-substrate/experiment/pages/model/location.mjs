@@ -2,10 +2,11 @@
  * Where a Page lives, as pure functions over one owner's Catalog entries.
  *
  * The owner's Catalog is the only record of location. Every owned Page has one
- * entry, and location is its `parent_id`. A Project is a root Page with a
- * Project record attached: its entry carries `space_id`, and the Project's
- * Pages are that home Page's descendants. Nothing else stores a Project; it
- * is derived by walking parents to the root.
+ * entry, and location is its `parent_id`. A Project's top-level Pages are
+ * roots whose entry carries the Project's `space_id`; its other Pages are
+ * their descendants. A Page's Project is derived by walking parents to the
+ * root. A Project's content document is not a Page in this tree: the Catalog
+ * keeps it out of the entries handed to this module.
  *
  * State: `{ revision, entries }`. `revision` is the Catalog's location
  * revision; every location write bumps it, and the D1 projection uses it as a
@@ -19,30 +20,31 @@
  *   entry it is a restore hint, not tree membership: the Page has left the
  *   active tree, and the parent it names may be active, trashed, or gone.
  * - `position`: a fractional key among its siblings. Roots without
- *   `space_id` are siblings in Your items; a root with `space_id` is alone.
- * - `space_id`: only on a root that is a Project's home Page.
+ *   `space_id` are siblings in Your items; roots with the same `space_id`
+ *   are the siblings at that Project's top level.
+ * - `space_id`: only on a root: the Project whose top level holds it. On a
+ *   trashed root it is the restore hint for that Project.
  * - `restore_parent_id`, `restore_space_id`: only on a trashed entry. Where a
  *   restore returns it: under that parent while it is active, otherwise at
  *   that Project's top level, otherwise in Your items. Both are history from
  *   when the Page was trashed, not live pointers: the parent may since have
  *   been purged or moved, and the Project deleted. A restore must check each
- *   against the current tree (an active parent within MAX_DEPTH, a live home
- *   Page) before using it, and fall through to the next when it fails.
+ *   against the current tree (an active parent within MAX_DEPTH, a live
+ *   Project) before using it, and fall through to the next when it fails.
  *
  * The Catalog adapter maps these onto its `page/` and `trash/` keys. This
  * module never reads storage, clocks or randomness.
  */
 import { BASE_62_DIGITS, generateKeyBetween, generateNKeysBetween } from "fractional-indexing";
 
-/** Deepest nesting a create or move may produce; a root is at depth 1, so a
- * Project's top-level Pages are at depth 2. The design's open question 2
- * picks the final value; 9 keeps eight levels below a Project's home Page. */
+/** Deepest nesting a create or move may produce; a root (a Project's
+ * top-level Page, or a Your items root) is at depth 1. */
 export const MAX_DEPTH = 9;
-/** Deepest chain the model holds. Before the home Page was a Project's only
- * root, a Project's chain started at depth 1 and could reach MAX_DEPTH; under
- * the home Page the same chain sits one level lower. Such a chain is read and
- * kept whole; it can't grow (MAX_DEPTH bounds new placements), and a move can
- * only take it somewhere it fits. */
+/** Deepest chain the model holds. Catalogs written by the location-shape v1
+ * build placed a Project's Pages one level below a separate root entry, so
+ * until a Catalog's v2 pass runs a stored chain can be one deeper than
+ * MAX_DEPTH. Such a chain is read and kept whole; it can't grow (MAX_DEPTH
+ * bounds new placements). */
 export const MAX_TREE_DEPTH = MAX_DEPTH + 1;
 
 export const ENTRY_STATES = Object.freeze(["active", "pending", "trashed"]);
@@ -50,7 +52,7 @@ export const ENTRY_STATES = Object.freeze(["active", "pending", "trashed"]);
 /** Codes a move can be refused with. The API maps each to its HTTP status. */
 export const MOVE_REFUSALS = Object.freeze([
   "page_not_found",
-  "home_page_protected",
+  "project_content_protected",
   "placement_cycle",
   "placement_mismatch",
   "page_trashed",
@@ -214,27 +216,18 @@ export function subtreeSpaceIds(entries, pageId) {
 }
 
 /** Siblings under `parentId` in order, without trashed entries and without
- * `excludeId`. `parentId` null means the roots of Your items: a root with
- * `space_id` is a Project's home Page, alone at the top of its Project, so it
- * is nobody's sibling. */
-export function siblingsOf(entries, parentId, excludeId) {
+ * `excludeId`. `parentId` null means roots: those of Project `spaceId`, or
+ * of Your items when `spaceId` is null. */
+export function siblingsOf(entries, parentId, excludeId, spaceId = null) {
   return [...asMap(entries).values()]
     .filter(
       (entry) =>
         entry.parent_id === parentId &&
         entry.state !== "trashed" &&
         entry.page_id !== excludeId &&
-        (parentId !== null || !("space_id" in entry)),
+        (parentId !== null || (entry.space_id ?? null) === spaceId),
     )
     .sort(siblingOrder);
-}
-
-/** The home Page entry of a Project, or undefined. Trashed homes don't
- * count; a pending home means the Project is still being created. */
-export function homeOf(entries, spaceId) {
-  for (const entry of asMap(entries).values())
-    if (entry.space_id === spaceId && entry.state !== "trashed") return entry;
-  return undefined;
 }
 
 /** Whether `position` has a valid shape: "first", "last", {before: id} or
@@ -324,12 +317,16 @@ const refuse = (code, message) => ({ ok: false, code, message });
  *
  * `destination` is `{ project_id?, parent_id? }`:
  * - `project_id: null` with no parent: a root in Your items.
- * - `project_id: "prj_…"` with no parent: the Project's top level, which is
- *   under its home Page.
+ * - `project_id: "prj_…"` with no parent: the Project's top level, a root
+ *   carrying its `space_id`.
  * - `parent_id`: under that Page. A `project_id` given alongside must match
  *   the parent's Project (null for Your items).
  *
  * `position` is "first", "last" (default), {before: id} or {after: id}.
+ *
+ * `state.projects` lists the live Project IDs (a Set, array or Map keys);
+ * `state.contents` maps each Project content document ID to its Project.
+ * Content documents aren't in `entries`; moving one is refused.
  *
  * Returns a refusal `{ ok: false, code, message }` with a code from
  * MOVE_REFUSALS, or `{ ok: true, revision, entries, moved, projection }`:
@@ -353,15 +350,19 @@ export function planMove(state, pageId, destination = {}, position = "last") {
   if (parentArgument !== undefined && parentArgument !== null && !isId(parentArgument))
     throw new TypeError("parent_id must be a page ID, null or omitted");
 
+  const contents = asMap(state?.contents);
+  const projects = new Set(
+    state?.projects instanceof Map ? state.projects.keys() : (state?.projects ?? []),
+  );
+  if (contents.has(pageId))
+    return refuse(
+      "project_content_protected",
+      "This is a Project's content. It belongs to its Project and can't be moved",
+    );
   const entry = map.get(pageId);
   if (!entry) return refuse("page_not_found", "Page not found");
   if (entry.state === "trashed")
     return refuse("page_trashed", "Restore this Page from Trash before moving it");
-  if ("space_id" in entry)
-    return refuse(
-      "home_page_protected",
-      "Project content stays at its Project root; it can't be moved independently",
-    );
   if (projectId === undefined && !parentArgument)
     return refuse(
       "move_destination_required",
@@ -376,12 +377,14 @@ export function planMove(state, pageId, destination = {}, position = "last") {
     return refuse("invalid_position", "position names the Page being moved");
 
   let parentId = null;
-  if (typeof projectId === "string") {
-    const home = homeOf(map, projectId);
-    if (!home || home.state !== "active") return refuse("project_not_found", "Project not found");
-    parentId = home.page_id;
-  }
+  if (typeof projectId === "string" && !projects.has(projectId))
+    return refuse("project_not_found", "Project not found");
   if (parentArgument) {
+    if (contents.has(parentArgument))
+      return refuse(
+        "parent_unavailable",
+        "A Project's content can't hold Pages; use project_id for its top level",
+      );
     const parent = map.get(parentArgument);
     if (!parent || parent.state !== "active")
       return refuse("parent_unavailable", "The parent Page is missing, pending or in Trash");
@@ -400,7 +403,7 @@ export function planMove(state, pageId, destination = {}, position = "last") {
   if (parentId !== null && subtree.some((member) => member.page_id === parentId))
     return refuse("placement_cycle", "A Page can't move under itself or one of its sub-pages");
   let rootDepth = 1;
-  let spaceId = null;
+  let spaceId = parentId === null && typeof projectId === "string" ? projectId : null;
   if (parentId !== null) {
     const parentLocation = deriveLocation(map, parentId);
     if (!parentLocation.ok)
@@ -415,7 +418,7 @@ export function planMove(state, pageId, destination = {}, position = "last") {
       `Pages nest at most ${MAX_DEPTH} levels deep, and this move would nest a sub-page deeper`,
     );
 
-  const placed = positionAmong(siblingsOf(map, parentId, pageId), position);
+  const placed = positionAmong(siblingsOf(map, parentId, pageId, spaceId), position);
   if (!placed.ok)
     return refuse(
       placed.code,
@@ -424,7 +427,17 @@ export function planMove(state, pageId, destination = {}, position = "last") {
         : "Invalid position",
     );
 
-  const entries = { [pageId]: { ...entry, parent_id: parentId, position: placed.position } };
+  // Only a root carries space_id: a Project top-level Page gains it, any
+  // other placement drops it.
+  const { space_id: _space, ...rest } = entry;
+  const entries = {
+    [pageId]: {
+      ...rest,
+      parent_id: parentId,
+      position: placed.position,
+      ...(parentId === null && spaceId && { space_id: spaceId }),
+    },
+  };
   // Rekeyed siblings (tie repair or a rebalance) change only their position.
   // Their parent and Project stay the same, so they add no D1 space_id rows:
   // `projection` covers the moved subtree alone.
@@ -450,7 +463,7 @@ export function planMove(state, pageId, destination = {}, position = "last") {
 export function applyWrite(state, write) {
   const entries = new Map(asMap(state.entries));
   for (const [id, entry] of Object.entries(write.entries)) entries.set(id, entry);
-  return { revision: write.revision, entries };
+  return { ...state, revision: write.revision, entries };
 }
 
 /**
@@ -464,13 +477,9 @@ export function applyWrite(state, write) {
  *   (`nesting_depth_exceeded`);
  * - siblings that aren't in Trash have distinct position keys
  *   (`duplicate_position`, reported for each sibling after the first). Roots
- *   with `space_id` are each alone, so only Your items roots are compared;
- * - at most one live home Page per Project (`duplicate_home`), and a home Page
- *   stays a root, which entryProblems checks.
- *
- * `projects`, when given, maps each of the Catalog's Project IDs to its
- * record's `home_page_id`. Each must match exactly one live home entry, and
- * no home entry may name an unknown Project (`project_home_mismatch`).
+ *   are compared within their container: one Project, or Your items;
+ * - when `projects` (live Project IDs) is given, every active or pending root
+ *   with `space_id` names one of them (`unknown_project`).
  */
 export function checkInvariants(state, { projects } = {}) {
   const map = asMap(state?.entries);
@@ -497,25 +506,22 @@ export function checkInvariants(state, { projects } = {}) {
 
   const keysByParent = new Map();
   for (const entry of [...map.values()].sort(siblingOrder)) {
-    if (entry.state === "trashed" || (entry.parent_id === null && "space_id" in entry)) continue;
-    const keys = keysByParent.get(entry.parent_id) ?? new Set();
-    keysByParent.set(entry.parent_id, keys);
+    if (entry.state === "trashed") continue;
+    const container =
+      entry.parent_id === null ? `root:${entry.space_id ?? ""}` : `page:${entry.parent_id}`;
+    const keys = keysByParent.get(container) ?? new Set();
+    keysByParent.set(container, keys);
     if (keys.has(entry.position)) add("duplicate_position", entry.page_id, entry.position);
     else keys.add(entry.position);
   }
 
-  const homes = new Map();
-  for (const entry of map.values()) {
-    if (!("space_id" in entry) || entry.state === "trashed") continue;
-    if (homes.has(entry.space_id)) add("duplicate_home", entry.page_id, entry.space_id);
-    else homes.set(entry.space_id, entry.page_id);
-  }
   if (projects) {
-    const known = projects instanceof Map ? projects : new Map(Object.entries(projects));
-    for (const [spaceId, homePageId] of known)
-      if (homes.get(spaceId) !== homePageId) add("project_home_mismatch", homePageId, spaceId);
-    for (const [spaceId, homePageId] of homes)
-      if (!known.has(spaceId)) add("project_home_mismatch", homePageId, spaceId);
+    const known = new Set(
+      projects instanceof Map ? projects.keys() : Array.isArray(projects) ? projects : projects,
+    );
+    for (const entry of map.values())
+      if (entry.state !== "trashed" && entry.space_id && !known.has(entry.space_id))
+        add("unknown_project", entry.page_id, entry.space_id);
   }
   return violations;
 }

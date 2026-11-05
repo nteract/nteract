@@ -252,9 +252,6 @@ button.anchor-chip:hover {
   border-radius: 999px;
   text-align: left;
 }
-.comments .thread-conversation-actions .thread-reply-button::after {
-  content: "…";
-}
 .comments .thread-reply-button:hover {
   color: var(--foreground);
   border-color: var(--border);
@@ -293,8 +290,10 @@ button.anchor-chip:hover {
 .comments .comment-reply-form {
   margin-left: calc(24px + 0.55rem);
 }
-/* Reply formatting appears while the reply is in use. */
-.comment-reply-form .comment-rich-editor:not(:focus-within) .comment-formatting {
+/* Reply formatting appears while the reply is in use. The whole form (and
+   pointer hover) counts as use, so pressing Send or Hide reply doesn't
+   collapse the toolbar and move the button out from under the click. */
+.comment-reply-form:not(:focus-within, :hover) .comment-formatting {
   display: none;
 }
 .comment-reply-form .comment-rich-editor:focus-within {

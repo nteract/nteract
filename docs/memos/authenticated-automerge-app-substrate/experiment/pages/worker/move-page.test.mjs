@@ -17,7 +17,7 @@ import { projectLifecycle } from "./catalog.mjs";
 import { STORAGE_KEYS_PER_CALL } from "./actor-authorship.mjs";
 import { LOCATION_REVISION_KEY, MOVE_STATUS, movePage, movePageSpec } from "./move-page.mjs";
 import { CrashStorage } from "./operation-intent-fixture.mjs";
-import { Storage, ids, shapeOf, unmigrate, world } from "./projects-fixture.mjs";
+import { Storage, ids, world } from "./projects-fixture.mjs";
 import { tools } from "../mcp.mjs";
 import { runPageCreation } from "../viewer/page-create-machine.mjs";
 
@@ -54,7 +54,7 @@ test("the move_page tool declares its keys, positions and refusals", () => {
     openWorldHint: false,
   });
   for (const word of [
-    "home_page_protected",
+    "project_content_protected",
     "page_trashed",
     "parent_unavailable",
     "placement_cycle",
@@ -100,7 +100,11 @@ class VolatileStorage extends Storage {
   }
 }
 
-/** A Project with a home Page and the authority to move its Pages. */
+/** Stands for a Project's top level in `move` and `top`: a move there names
+ * the Project, since its top level has no Page. */
+const TOP = "<top>";
+
+/** A Project and the authority to move its Pages. */
 async function stage(w, title = "Moves") {
   const project = await w.createProject(title);
   const page = async (args) => {
@@ -111,7 +115,7 @@ async function stage(w, title = "Moves") {
   const authority = (await w.call("owner", "list_pages")).body;
   const moveArgs = (pageId, parentId, position, extra = {}) => ({
     page_id: pageId,
-    parent_id: parentId,
+    ...(parentId === TOP ? { project_id: project.project_id } : { parent_id: parentId }),
     ...(position !== undefined && { position }),
     retry_token: authority.retry_token,
     idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
@@ -120,6 +124,9 @@ async function stage(w, title = "Moves") {
   const move = (pageId, parentId, position, extra) =>
     w.call("owner", "move_page", moveArgs(pageId, parentId, position, extra));
   const entries = () => locationEntries(w.catalogStorage());
+  // The Project's top level, in sibling order.
+  const top = (list) =>
+    siblingsOf(list, null, undefined, project.project_id).map((entry) => entry.page_id);
   const invariants = async () =>
     assert.deepEqual(checkInvariants({ revision: 0, entries: await entries() }), []);
   const trash = async (pageId) => {
@@ -133,7 +140,8 @@ async function stage(w, title = "Moves") {
   };
   return {
     project,
-    home: project.home_page_id,
+    content: project.document_id,
+    top,
     page,
     authority,
     moveArgs,
@@ -200,38 +208,29 @@ test("move_page reparents a Page with its subtree, reorders siblings, and change
   const read = await w.call("owner", "read_page", { page_id: d, include_content: false });
   assert.deepEqual(
     read.body.breadcrumbs.map((crumb) => crumb.page_id ?? crumb.project_id),
-    [s.project.project_id, s.home, b, a, c],
+    [s.project.project_id, b, a, c],
   );
 
-  // Back to the top level by naming the home Page, first among its siblings.
-  const top = await s.move(a, s.home, "first");
+  // Back to the top level by naming the Project, first among its siblings.
+  const top = await s.move(a, TOP, "first");
   assert.equal(top.status, 200, JSON.stringify(top.body));
-  assert.equal(top.body.parent_id, s.home);
+  assert.equal(top.body.parent_id, null);
   assert.equal(top.body.location_revision, 2);
   entries = await s.entries();
-  assert.deepEqual(
-    siblingsOf(entries, s.home).map((entry) => entry.page_id),
-    [a, b],
-  );
+  assert.deepEqual(s.top(entries), [a, b]);
   const topLevel = await w.call("owner", "list_pages", {
     project_id: s.project.project_id,
     parent_id: null,
   });
-  assert.deepEqual(ids(topLevel), [s.home, a, b].sort());
+  assert.deepEqual(ids(topLevel), [a, b].sort(), "the content document isn't listed");
 
   // Reorder: after B, then before B.
-  const after = await s.move(a, s.home, { after: b });
+  const after = await s.move(a, TOP, { after: b });
   assert.equal(after.status, 200, JSON.stringify(after.body));
-  assert.deepEqual(
-    siblingsOf(await s.entries(), s.home).map((entry) => entry.page_id),
-    [b, a],
-  );
-  const before = await s.move(a, s.home, { before: b });
+  assert.deepEqual(s.top(await s.entries()), [b, a]);
+  const before = await s.move(a, TOP, { before: b });
   assert.equal(before.status, 200);
-  assert.deepEqual(
-    siblingsOf(await s.entries(), s.home).map((entry) => entry.page_id),
-    [a, b],
-  );
+  assert.deepEqual(s.top(await s.entries()), [a, b]);
   assert.equal(before.body.location_revision, 4);
   await s.invariants();
   // D1 rows carry no location: a move leaves the account index ready.
@@ -279,7 +278,7 @@ test("move_page moves a subtree across containers: Your items, Project and Proje
   assert.deepEqual(into.body, {
     page_id: loose,
     project_id: s.project.project_id,
-    parent_id: s.home,
+    parent_id: null,
     position: into.body.position,
     location_revision: 1,
     descendants: 2,
@@ -305,7 +304,7 @@ test("move_page moves a subtree across containers: Your items, Project and Proje
   });
   assert.deepEqual(
     read.body.breadcrumbs.map((crumb) => crumb.page_id ?? crumb.project_id),
-    [second.project_id, second.home_page_id, target, loose, child],
+    [second.project_id, target, loose, child],
   );
 
   // Project → Your items, as a root.
@@ -366,11 +365,12 @@ test("a placed New Page lands at the Project's top level or under its parent, on
       refresh: async () => {},
       current: () => true,
     });
-  // New Page in the Project view, the home Page row and "In <Project>".
+  // New Page in the Project view and "In <Project>".
   const top = (await create({ project_id: project.project_id })).receipt;
   assert.equal(top.project_id, project.project_id);
   let entries = await locationEntries(w.catalogStorage());
-  assert.equal(entries.get(top.page_id).parent_id, project.home_page_id);
+  assert.equal(entries.get(top.page_id).parent_id, null);
+  assert.equal(entries.get(top.page_id).space_id, project.project_id);
   assert.equal(deriveLocation(entries, top.page_id).space_id, project.project_id);
   const listed = await w.call("owner", "list_pages", { project_id: project.project_id });
   assert.ok(ids(listed).includes(top.page_id));
@@ -396,15 +396,19 @@ test("a cross-container move keeps the depth limit and the location revision fen
   for (let depth = 2; depth <= MAX_DEPTH; depth++)
     deepest = await s.page({ title: `Depth ${depth}`, parent_id: deepest });
   const revision = await w.catalogStorage().get(LOCATION_REVISION_KEY);
-  // A Project's top level is depth 2, one below its home Page: too deep.
-  const refused = await w.call("owner", "move_page", {
+  // A Project's top level is depth 1 too: the chain still fits there. Under
+  // a Page in that Project it would be too deep.
+  const anchor = await s.page({ title: "Anchor", project_id: other.project_id });
+  const refused = await s.move(root, anchor);
+  assert.equal(refused.status, 400);
+  assert.equal(refused.body.code, "nesting_depth_exceeded");
+  assert.equal(await w.catalogStorage().get(LOCATION_REVISION_KEY), revision, "no revision spent");
+  const fits = await w.call("owner", "move_page", {
     ...s.moveArgs(root, undefined),
     parent_id: undefined,
     project_id: other.project_id,
   });
-  assert.equal(refused.status, 400);
-  assert.equal(refused.body.code, "nesting_depth_exceeded");
-  assert.equal(await w.catalogStorage().get(LOCATION_REVISION_KEY), revision, "no revision spent");
+  assert.equal(fits.status, 200, JSON.stringify(fits.body));
 
   // A barrier failure on the cross-container write: the retry re-plans from
   // what is stored and the revision advances exactly once.
@@ -458,7 +462,7 @@ test("move_page over JSON returns the receipt with its URL from the configured o
   assert.equal(unlinked.status, 200, JSON.stringify(unlinked.body));
   assert.equal(unlinked.body.url, undefined, "no configured origin, no link");
   w.env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN = "https://pages.invalid";
-  const moved = await s.move(a, s.home, "first");
+  const moved = await s.move(a, TOP, "first");
   assert.equal(moved.status, 200, JSON.stringify(moved.body));
   assert.equal(moved.body.page_id, a);
   assert.equal(moved.body.url, `https://pages.invalid/p/${a}`);
@@ -494,8 +498,9 @@ test("each refusal carries its code and status, over HTTP and as MCP structured 
   });
   const shallow = await s.page({ title: "Shallow", project_id: s.project.project_id });
   let deepest = c;
-  for (let depth = 5; depth <= MAX_DEPTH; depth++)
+  for (let depth = 4; depth <= MAX_DEPTH; depth++)
     deepest = await s.page({ title: `Depth ${depth}`, parent_id: deepest });
+  const otherTop = await s.page({ title: "Other top", project_id: other.project_id });
   const before = await s.entries();
   const revision = await w.catalogStorage().get(LOCATION_REVISION_KEY);
 
@@ -503,19 +508,20 @@ test("each refusal carries its code and status, over HTTP and as MCP structured 
     ["page_not_found", 404, s.moveArgs(crypto.randomUUID(), a)],
     ["page_trashed", 409, s.moveArgs(trashed, a)],
     ["not_page_owner", 403, s.moveArgs(sharedId, a)],
-    ["home_page_protected", 409, s.moveArgs(s.home, a)],
+    ["project_content_protected", 409, s.moveArgs(s.content, a)],
+    ["parent_unavailable", 409, s.moveArgs(loose, s.content)],
     ["parent_unavailable", 409, s.moveArgs(loose, crypto.randomUUID())],
     ["parent_unavailable", 409, s.moveArgs(a, trashed)],
     ["placement_cycle", 409, s.moveArgs(a, c)],
     ["placement_cycle", 409, s.moveArgs(a, a)],
-    // A, at depth 2, holds a chain down to MAX_DEPTH; one level lower is too
+    // A, at depth 1, holds a chain down to MAX_DEPTH; one level lower is too
     // deep for its deepest sub-page.
     ["nesting_depth_exceeded", 400, s.moveArgs(a, shallow)],
     // Only a request that names no destination at all lacks one.
-    ["move_destination_required", 400, { ...s.moveArgs(a, s.home), parent_id: undefined }],
-    ["move_destination_required", 400, { ...s.moveArgs(a, s.home), parent_id: null }],
-    ["placement_mismatch", 400, { ...s.moveArgs(a, s.home), project_id: other.project_id }],
-    ["placement_mismatch", 400, { ...s.moveArgs(a, other.home_page_id), project_id: null }],
+    ["move_destination_required", 400, s.moveArgs(a, undefined)],
+    ["move_destination_required", 400, s.moveArgs(a, null)],
+    ["placement_mismatch", 400, { ...s.moveArgs(c, b), project_id: other.project_id }],
+    ["placement_mismatch", 400, { ...s.moveArgs(a, otherTop), project_id: null }],
     [
       "project_not_found",
       404,
@@ -526,22 +532,22 @@ test("each refusal carries its code and status, over HTTP and as MCP structured 
       },
     ],
     [
-      "home_page_protected",
+      "project_content_protected",
       409,
       {
-        ...s.moveArgs(s.home, undefined),
+        ...s.moveArgs(s.content, undefined),
         parent_id: undefined,
         project_id: null,
       },
     ],
-    ["home_page_protected", 409, s.moveArgs(other.home_page_id, s.home)],
+    ["project_content_protected", 409, s.moveArgs(other.document_id, TOP)],
     ["project_id_as_page_id", 400, s.moveArgs(a, s.project.project_id)],
-    ["invalid_position", 400, s.moveArgs(a, s.home, "middle")],
-    ["invalid_position", 400, s.moveArgs(a, s.home, { before: a, after: a })],
-    ["invalid_position", 400, s.moveArgs(a, s.home, { before: a })],
-    ["position_sibling_unknown", 400, s.moveArgs(a, s.home, { after: c })],
-    ["position_sibling_unknown", 400, s.moveArgs(a, s.home, { before: trashed })],
-    ["invalid_retry_token", 400, { ...s.moveArgs(a, s.home), retry_token: undefined }],
+    ["invalid_position", 400, s.moveArgs(a, TOP, "middle")],
+    ["invalid_position", 400, s.moveArgs(a, TOP, { before: a, after: a })],
+    ["invalid_position", 400, s.moveArgs(a, TOP, { before: a })],
+    ["position_sibling_unknown", 400, s.moveArgs(a, TOP, { after: c })],
+    ["position_sibling_unknown", 400, s.moveArgs(a, TOP, { before: trashed })],
+    ["invalid_retry_token", 400, { ...s.moveArgs(a, TOP), retry_token: undefined }],
   ];
   for (const [code, status, args] of cases) {
     const label = `${code}: ${JSON.stringify(args)}`;
@@ -563,9 +569,9 @@ test("each refusal carries its code and status, over HTTP and as MCP structured 
   await s.invariants();
   // Input refusals consume no key: the same key then moves.
   const key = s.authority.retry_key_prefix + crypto.randomUUID();
-  const refused = await s.move(a, s.home, "middle", { idempotency_key: key });
+  const refused = await s.move(a, TOP, "middle", { idempotency_key: key });
   assert.equal(refused.body.code, "invalid_position");
-  const applied = await s.move(a, s.home, "first", { idempotency_key: key });
+  const applied = await s.move(a, TOP, "first", { idempotency_key: key });
   assert.equal(applied.status, 200, JSON.stringify(applied.body));
   // A plan refusal consumes none either.
   const cycleKey = s.authority.retry_key_prefix + crypto.randomUUID();
@@ -573,7 +579,7 @@ test("each refusal carries its code and status, over HTTP and as MCP structured 
     (await s.move(a, c, undefined, { idempotency_key: cycleKey })).body.code,
     "placement_cycle",
   );
-  assert.equal((await s.move(b, s.home, "last", { idempotency_key: cycleKey })).status, 200);
+  assert.equal((await s.move(b, TOP, "last", { idempotency_key: cycleKey })).status, 200);
 });
 
 test("a retry replays the receipt; a key reused for another move is a conflict", async (t) => {
@@ -586,7 +592,7 @@ test("a retry replays the receipt; a key reused for another move is a conflict",
   const first = await w.call("owner", "move_page", args);
   assert.equal(first.status, 200, JSON.stringify(first.body));
   // Something else moves meanwhile; the replay still answers the first move.
-  assert.equal((await s.move(b, s.home, "first")).status, 200);
+  assert.equal((await s.move(b, TOP, "first")).status, 200);
   const replay = await w.call("owner", "move_page", args);
   assert.equal(replay.status, 200);
   assert.deepEqual(replay.body, first.body);
@@ -600,7 +606,7 @@ test("a retry replays the receipt; a key reused for another move is a conflict",
   assert.equal(tokenless.body.code, "invalid_retry_token");
   // The fingerprint covers the caller's driver label, as every write's does:
   // the MCP client's own key replays over MCP.
-  const viaMcp = s.moveArgs(b, s.home, "last");
+  const viaMcp = s.moveArgs(b, TOP, "last");
   const mcpFirst = await w.mcp("owner", "move_page", viaMcp);
   assert.equal(mcpFirst.isError, false, JSON.stringify(mcpFirst.body));
   const mcpReplay = await w.mcp("owner", "move_page", viaMcp);
@@ -623,7 +629,7 @@ test("a failed barrier is 503; the retry plans again over what is stored and rep
   const b = await s.page({ title: "B", project_id: s.project.project_id });
   const c = await s.page({ title: "C", project_id: s.project.project_id });
   const storage = storages.get(w.owner);
-  const args = s.moveArgs(a, s.home, { after: c });
+  const args = s.moveArgs(a, TOP, { after: c });
   // The barrier after the move's put fails, and the put is lost with it.
   storage.failNext = (key) => key === LOCATION_REVISION_KEY;
   const failed = await w.call("owner", "move_page", args);
@@ -633,20 +639,14 @@ test("a failed barrier is 503; the retry plans again over what is stored and rep
   assert.deepEqual(traces.at(-1), ["settle", "plan", "write", "sync"]);
   assert.equal(await storage.get(LOCATION_REVISION_KEY), undefined, "nothing durable");
   assert.equal(await storage.get(`host/operation/${args.idempotency_key}`), undefined);
-  assert.deepEqual(
-    siblingsOf(await s.entries(), s.home).map((entry) => entry.page_id),
-    [a, b, c],
-  );
+  assert.deepEqual(s.top(await s.entries()), [a, b, c]);
   // B moves first, so the retry plans against a different sibling set.
-  assert.equal((await s.move(b, s.home, "first")).status, 200);
+  assert.equal((await s.move(b, TOP, "first")).status, 200);
   const retried = await w.call("owner", "move_page", args);
   assert.equal(retried.status, 200, JSON.stringify(retried.body));
   assert.deepEqual(traces.at(-1), ["settle", "plan", "write", "sync"], "re-planned, not replayed");
   const entries = await s.entries();
-  assert.deepEqual(
-    siblingsOf(entries, s.home).map((entry) => entry.page_id),
-    [b, c, a],
-  );
+  assert.deepEqual(s.top(entries), [b, c, a]);
   assert.equal(retried.body.position, entries.get(a).position, "the position it landed on");
   assert.equal(retried.body.location_revision, 2);
   assert.equal(await storage.get(LOCATION_REVISION_KEY), 2);
@@ -658,7 +658,7 @@ test("a failed barrier is 503; the retry plans again over what is stored and rep
 
   // A barrier that fails after a durable put: the retry replays the stored
   // receipt once the barrier holds.
-  const again = s.moveArgs(c, s.home, "first");
+  const again = s.moveArgs(c, TOP, "first");
   const sync = storage.sync.bind(storage);
   let fail = true;
   storage.sync = async () => {
@@ -676,10 +676,7 @@ test("a failed barrier is 503; the retry plans again over what is stored and rep
   assert.equal(confirmed.status, 200);
   assert.deepEqual(traces.at(-1), ["sync"]);
   assert.equal(confirmed.body.location_revision, 3);
-  assert.deepEqual(
-    siblingsOf(await s.entries(), s.home).map((entry) => entry.page_id),
-    [c, b, a],
-  );
+  assert.deepEqual(s.top(await s.entries()), [c, b, a]);
 });
 
 /** Make the next lifecycle request to a Page fail before it arrives, or
@@ -710,7 +707,7 @@ test("a parent leaving for Trash is unavailable, and a Page's own reservation se
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
   assert.equal(refused.body.code, "parent_unavailable");
   assert.deepEqual(traces.at(-1), ["settle", "plan"]);
-  assert.equal((await s.entries()).get(child).parent_id, s.home);
+  assert.equal((await s.entries()).get(child).parent_id, null);
   // The Page can't answer: the settle is out of budget and refuses as retryable.
   interrupt(w, parent, "before");
   const unsettled = await s.move(child, parent);
@@ -899,37 +896,30 @@ test("projectLifecycle after a move keeps the new parent: Trash and restore retu
   const dBack = await w.call("owner", "restore_page", { page_id: d, idempotency_key: w.key() });
   assert.equal(dBack.status, 200, JSON.stringify(dBack.body));
   assert.equal(dBack.body.parent_id, c);
-  assert.equal(deriveLocation(await s.entries(), d).ancestors.at(-1), s.home);
+  assert.equal(deriveLocation(await s.entries(), d).ancestors.at(-1), a);
   await s.invariants();
 });
 
-test("a Catalog in the older shape migrates on its first move_page, then moves", async (t) => {
+test("the content document is not in the tree: it can't move, hold Pages or be listed", async (t) => {
   const w = await world(t);
-  const s = await stage(w, "Legacy");
+  const s = await stage(w, "Content");
   const a = await s.page({ title: "A", project_id: s.project.project_id });
-  const b = await s.page({ title: "B", project_id: s.project.project_id });
-  const c = await s.page({ title: "C", parent_id: b });
-  const storage = w.catalogStorage();
-  await unmigrate(storage);
-  assert.deepEqual(await shapeOf(storage), { name: "unmigrated" });
-  assert.equal((await storage.get(`page/${a}`)).parent_id, null, "a root with space_id");
-  const moved = await s.move(c, a, "first");
-  assert.equal(moved.status, 200, JSON.stringify(moved.body));
-  assert.deepEqual(await shapeOf(storage), { name: "migrated" });
   const entries = await s.entries();
-  assert.equal(entries.get(a).parent_id, s.home, "the pass ran first");
-  assert.equal(entries.get(a).space_id, undefined);
-  assert.equal(entries.get(c).parent_id, a);
-  assert.equal(moved.body.project_id, s.project.project_id);
-  assert.equal(moved.body.location_revision, 1);
-  await s.invariants();
-  // Moving to the top level names the home Page, in the migrated shape.
-  const top = await s.move(c, s.home, "last");
-  assert.equal(top.status, 200);
-  assert.deepEqual(
-    siblingsOf(await s.entries(), s.home).map((entry) => entry.page_id),
-    [a, b, c],
-  );
+  assert.equal(entries.has(s.content), false);
+  assert.equal(entries.get(a).parent_id, null);
+  assert.equal(entries.get(a).space_id, s.project.project_id);
+  for (const args of [s.moveArgs(s.content, a), s.moveArgs(s.content, TOP)]) {
+    const refused = await w.call("owner", "move_page", args);
+    assert.equal(refused.status, 409, JSON.stringify(refused.body));
+    assert.equal(refused.body.code, "project_content_protected");
+  }
+  const under = await s.move(a, s.content);
+  assert.equal(under.body.code, "parent_unavailable");
+  const created = await w.createPage({ title: "Child", parent_id: s.content });
+  assert.equal(created.body.code, "parent_unavailable");
+  const listed = await w.call("owner", "list_pages", {});
+  assert.ok(!ids(listed).includes(s.content));
+  assert.deepEqual(s.top(await s.entries()), [a]);
 });
 
 /** A small deterministic generator, so a failing run can be replayed. */
@@ -959,13 +949,13 @@ test("property: checkInvariants holds after every move in a random run, and refu
   const trashed = await s.page({ title: "Trashed", parent_id: pick(pages) });
   await s.trash(trashed);
   const loose = [await s.page({ title: "Loose A" }), await s.page({ title: "Loose B" })];
-  const everything = [...pages, ...loose, s.home];
+  const everything = [...pages, ...loose, TOP, s.content];
   const storage = w.catalogStorage();
   let revision = 0;
   let applied = 0;
   const refusals = new Set();
   for (let step = 0; step < 60; step++) {
-    const pageId = pick(everything);
+    const pageId = pick(everything.filter((id) => id !== TOP));
     const parentId = pick(everything);
     const roll = next();
     const position =
@@ -980,7 +970,7 @@ test("property: checkInvariants holds after every move in a random run, and refu
     const result = await s.move(pageId, parentId, position);
     const entries = await s.entries();
     assert.deepEqual(
-      checkInvariants({ revision: 0, entries }, { projects: { [s.project.project_id]: s.home } }),
+      checkInvariants({ revision: 0, entries }, { projects: [s.project.project_id] }),
       [],
       `step ${step}: ${JSON.stringify(result.body)}`,
     );
@@ -988,7 +978,7 @@ test("property: checkInvariants holds after every move in a random run, and refu
       applied++;
       revision++;
       assert.equal(result.body.location_revision, revision);
-      assert.equal(entries.get(pageId).parent_id, parentId);
+      assert.equal(entries.get(pageId).parent_id, parentId === TOP ? null : parentId);
       assert.equal(entries.get(pageId).position, result.body.position);
       assert.equal(deriveLocation(entries, pageId).space_id, result.body.project_id);
       // Only the moved entry and rekeyed destination siblings changed, and
@@ -997,7 +987,11 @@ test("property: checkInvariants holds after every move in a random run, and refu
         if (id === pageId) continue;
         const was = before.get(id);
         if (entry.position !== was.position)
-          assert.equal(entry.parent_id, parentId, `${id} rekeyed outside the destination`);
+          assert.equal(
+            entry.parent_id,
+            parentId === TOP ? null : parentId,
+            `${id} rekeyed outside the destination`,
+          );
         assert.equal(entry.parent_id, was.parent_id, `${id} changed parent`);
         assert.equal(entry.state, was.state);
       }
@@ -1010,7 +1004,9 @@ test("property: checkInvariants holds after every move in a random run, and refu
     assert.equal((await storage.get(LOCATION_REVISION_KEY)) ?? 0, revision);
   }
   assert.ok(applied >= 10, `${applied} moves applied`);
-  assert.ok(refusals.has("placement_cycle") || refusals.has("home_page_protected"), [...refusals]);
+  assert.ok(refusals.has("placement_cycle") || refusals.has("project_content_protected"), [
+    ...refusals,
+  ]);
   // The trashed Page stays trashed, and its restore hint followed its parent.
   assert.equal((await s.entries()).get(trashed).state, "trashed");
   const restored = await w.call("owner", "restore_page", {
@@ -1059,7 +1055,7 @@ for (const destination of ["another Project", "Your items"])
     });
     assert.equal(restored.status, 200, JSON.stringify(restored.body));
     assert.equal(restored.body.project_id ?? null, to?.project_id ?? null);
-    assert.equal(restored.body.parent_id ?? null, to?.home_page_id ?? null);
+    assert.equal(restored.body.parent_id ?? null, null);
     await s.invariants();
   });
 

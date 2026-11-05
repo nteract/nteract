@@ -233,19 +233,41 @@ test("guide documents account-safe onboarding and truthful listing metadata", ()
     assert.ok(prose.includes(fact), fact);
 });
 
-test("guide treats Project content as one surface while retaining backing API fields", () => {
-  const prose = agentGuide(env).replace(/\s+/g, " ");
+test("guide teaches project_id content addressing and document_id with no home concept", () => {
+  const guide = agentGuide(env);
+  const prose = guide.replace(/\s+/g, " ");
   assert.match(prose, /A Project has editable content and a hierarchy of Pages/);
   assert.match(
     prose,
-    /home_page_id, the backing Page ID accepted by read_page, edit_page and patch_page/,
+    /call read_page with project_id instead of page_id, and edit it with edit_page or patch_page the same way/,
+  );
+  assert.match(prose, /page_id is the content document's ID \(document_id on get_project\)/);
+  assert.match(
+    prose,
+    /Returns project_id, title, description, revision, role \(owner, editor, commenter or viewer\), owner, url and document_id/,
+  );
+  assert.match(prose, /takes project_id in its place to address a Project's content/);
+  assert.match(prose, /give one, never both \(invalid_arguments\)/);
+  assert.match(prose, /kind "project", project_id and the content's page_id/);
+  assert.match(prose, /it has project_id and parent_id null/);
+  assert.match(prose, /content document is not a Page and is never listed/);
+  assert.match(prose, /direct access never reveals the Project/);
+  assert.match(
+    prose,
+    /update_project changes catalog metadata, not the content document's title or body/,
   );
   assert.match(
     prose,
-    /update_project changes catalog metadata, not the backing document's title or body/,
+    /move_page, delete_page and purge_page refuse it with project_content_protected/,
   );
   assert.match(prose, /A direct Page grant applies only to that Page, never its descendants/);
-  assert.doesNotMatch(prose, /home Page|Project is a container/);
+  // The quick start shows the project_id form of read_page as valid JSON.
+  assert.ok(guide.includes('{"operation":"read_page","arguments":{"project_id":"<project_id'));
+  // No home field, flag, URL, code or wording survives; only the user's home
+  // directory in client setup snippets.
+  const unrelated = /XDG_CONFIG_HOME|CODEX_HOME|Path\.home\(\)/g;
+  assert.doesNotMatch(guide.replace(unrelated, ""), /home/i);
+  assert.doesNotMatch(prose, /backing|Project is a container/);
 });
 
 test("guide distinguishes whole Project sharing from direct Page grants and editing consent", () => {
@@ -263,7 +285,10 @@ test("guide distinguishes whole Project sharing from direct Page grants and edit
   assert.match(prose, /claim requires the recipient's verified email/);
   assert.match(prose, /Claim occurs on an authenticated get_project or list_projects call/);
   assert.match(prose, /not asynchronously on sign-in/);
-  assert.match(prose, /backing Page's \/p\/\.\.\. link does not claim a Project invitation/);
+  assert.match(
+    prose,
+    /A \/p\/\.\.\. link to the content document does not claim a Project invitation/,
+  );
   assert.match(
     prose,
     /Without project_id, list_pages is not a complete inventory of inherited access/,

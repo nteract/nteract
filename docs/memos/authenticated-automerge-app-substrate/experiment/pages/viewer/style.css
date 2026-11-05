@@ -1890,7 +1890,7 @@ details.account-actions > div a:hover {
   max-height: 24dvh;
   border-top: 1px solid var(--border);
 }
-/* A Project's home Page: its Pages under the body, and the chip that stands
+/* A Project's content: its Pages under the body, and the chip that stands
    in for the breadcrumb repeating the title. */
 .project-pages {
   margin-top: 2.5rem;
