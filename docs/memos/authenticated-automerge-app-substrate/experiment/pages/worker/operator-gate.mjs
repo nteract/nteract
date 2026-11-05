@@ -1,7 +1,7 @@
 /**
- * The lab-only operator gate, shared by every operator route
- * (worker/content-migration.mjs, worker/record-storage-operator.mjs).
- * ONE-SHOT MIGRATION: delete with the last of those routes, with the
+ * The lab-only operator gate for the operator route
+ * (worker/record-storage-operator.mjs).
+ * ONE-SHOT MIGRATION: delete with that route, with the
  * installer's `operatorMigration` secret (scripts/deployment/install.mjs).
  *
  * celld's internal listener answers its own operator routes and never

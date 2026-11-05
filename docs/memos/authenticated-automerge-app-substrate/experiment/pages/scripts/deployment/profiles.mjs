@@ -345,8 +345,8 @@ const targets = Object.freeze({
     // (worker/page-quota.mjs). It also bounds that account's Trash.
     pageQuota: "250",
     // ONE-SHOT MIGRATION: the installer gives this lab target an operator
-    // secret for the content migration's all-account route
-    // (worker/content-migration.mjs). Delete with that module.
+    // secret for the operator gate (worker/operator-gate.mjs). Delete with
+    // worker/record-storage-operator.mjs.
     operatorMigration: true,
     // The D1 database holding pages_quota_rules, for scripts/quota-rules.mjs.
     d1: AUTH_D1,
@@ -419,8 +419,8 @@ const targets = Object.freeze({
     // (worker/page-quota.mjs). It also bounds that account's Trash.
     pageQuota: "250",
     // ONE-SHOT MIGRATION: the installer gives this lab target an operator
-    // secret for the content migration's all-account route
-    // (worker/content-migration.mjs). Delete with that module.
+    // secret for the operator gate (worker/operator-gate.mjs). Delete with
+    // worker/record-storage-operator.mjs.
     operatorMigration: true,
     // The D1 database holding pages_quota_rules, for scripts/quota-rules.mjs.
     d1: AUTH_D1,

@@ -297,19 +297,6 @@ import {
   restoreTarget,
 } from "./catalog-location.mjs";
 import { migrateLocationShape } from "./location-shape.mjs";
-// ONE-SHOT MIGRATION imports: delete with content-migration.mjs.
-import {
-  contentMigrationArguments,
-  operatorAuthorized,
-  operatorContentMigration,
-  runContentMigration,
-} from "./content-migration.mjs";
-import {
-  applyPageNormalization,
-  normalizationBlocked,
-  normalizationProblems,
-  planPageNormalization,
-} from "../model/content-normalization.mjs";
 import { LOCATION_REVISION_KEY, movePage } from "./move-page.mjs";
 import {
   PROJECT_ACCESS_EMPTY,
@@ -555,11 +542,6 @@ export const sharedCheckBounds = { concurrency: 16 };
 const PAGE_CARD_STORE_TIMEOUT_MS = 10_000;
 /** How long a deletion waits on the card object's delete. */
 const PAGE_CARD_DELETE_TIMEOUT_MS = 2_000;
-/** ONE-SHOT MIGRATION: how long the Catalog waits for one Page's content
- * migration call. A call stops starting visits after its batch budget
- * (content-migration.mjs), so the last visit still ends inside the serial
- * queue's 120 s bound. */
-const CONTENT_MIGRATION_PAGE_MS = 20_000;
 /** Budgets for reading Page lifecycles while the Catalog queue waits. */
 export const lifecycleBounds = { readMs: 2000, passMs: 5000, concurrency: 4 };
 const lifecycleUnsettled = () =>
@@ -1416,29 +1398,11 @@ const gateway = {
           recheckUpload: () => authorizeImage(request, env, pageId, false),
         });
       }
-      // ONE-SHOT MIGRATION route (content-migration.mjs; delete with it). Lab
-      // only: without PAGES_OPERATOR_SECRET, with a wrong secret, or for a
-      // request the Cloudflare edge forwarded, it is the unknown path below.
-      if (
-        url.pathname === "/api/operator/content-migration" &&
-        request.method === "POST" &&
-        (await operatorAuthorized(request, env))
-      )
-        return await operatorContentMigration(request, env);
       // ONE-SHOT MIGRATION route (record-storage-operator.mjs; delete with
       // it). Lab only, behind the same gate: otherwise the unknown path.
       if (url.pathname === RECORD_STORAGE_OPERATOR_PATH && request.method === "POST") {
         const response = await operatorRecordStorage(request, env);
         if (response) return response;
-      }
-      // ONE-SHOT MIGRATION route (content-migration.mjs; delete with it).
-      if (url.pathname === "/api/admin/content-migration" && request.method === "POST") {
-        const identity = await authenticate(request, env);
-        return await withRefusalCode(
-          await env.CATALOGS.getByName(identity.principal).fetch(
-            forwarded(request, "/internal/content-migration", await readJson(request)),
-          ),
-        );
       }
       if (url.pathname === "/api/access") {
         await authenticate(request, env);
@@ -1679,95 +1643,10 @@ export class Catalog {
     return migrateLocationShape(this.storage);
   }
   /**
-   * ONE-SHOT MIGRATION (content-migration.mjs; delete with it). The owner's
-   * content migration over this Catalog's Pages: `dry_run` reports a batch,
-   * `apply` advances the stored run by a batch. Runs in the serial queue; each
-   * Page call has its own deadline so a batch stays inside the queue's bound.
-   */
-  async contentMigration(request) {
-    const identity = await authenticate(request, this.env);
-    if (this.ctx.id.name && this.ctx.id.name !== identity.principal)
-      throw new HttpError(403, "Account access denied");
-    const args = Catalog.contentMigrationArgs(await readJson(request));
-    if (args.mode === "apply") requireWrite(identity);
-    return json(await this.runOwnersContentMigration(identity.principal, args));
-  }
-
-  /**
-   * ONE-SHOT MIGRATION (content-migration.mjs; delete with it). The operator's
-   * run over this Catalog, from the lab-only `/api/operator/content-migration`
-   * route. Host only: a request that carries a credential is refused, so only
-   * the gateway's operator route (or another host object) reaches it. The run
-   * acts for this Catalog's own account; each Page host still checks that its
-   * record names that account as owner.
-   */
-  async operatorContentMigration(request) {
-    if (request.headers.has("authorization") || request.headers.has("cookie"))
-      return json({ error: "Not found" }, 404);
-    const body = (await readJson(request)) ?? {};
-    const principal = this.ctx.id.name;
-    if (!principal || body.principal !== principal)
-      throw new HttpError(400, "principal must name this Catalog's account", "invalid_arguments");
-    const { principal: _principal, ...rest } = body;
-    return json(
-      await this.runOwnersContentMigration(principal, Catalog.contentMigrationArgs(rest)),
-    );
-  }
-
-  static contentMigrationArgs(body) {
-    try {
-      return contentMigrationArguments(body);
-    } catch (error) {
-      throw new HttpError(400, error.message, "invalid_arguments");
-    }
-  }
-
-  /** One call of the content migration over this Catalog, acting for
-   * `owner`, the account the Page hosts check their records against. */
-  async runOwnersContentMigration(owner, args) {
-    const body = await runContentMigration(this.storage, {
-      args,
-      listAll,
-      // The current build's tombstone path: the effects operation-intent
-      // gives a `tombstone` event, run by the same effect runner.
-      finalize: async (pageId) => {
-        const result = operationIntent.step({ name: "absent" }, { type: "tombstone" });
-        for (const effect of result.effects) await this.runIntentEffect({ pageId }, effect);
-      },
-      visit: async (pageId, mode, options) => {
-        // The cell's id, so an operator can diff the run against
-        // `celld cell list Page`.
-        const cell = this.env.PAGES.idFromName ? String(this.env.PAGES.idFromName(pageId)) : null;
-        const response = await withTimeout(
-          this.env.PAGES.getByName(pageId).fetch(
-            new Request("https://pages.internal/internal/content-migration", {
-              method: "POST",
-              body: JSON.stringify({
-                page_id: pageId,
-                owner,
-                mode,
-                include_connected: options?.include_connected === true,
-              }),
-            }),
-          ),
-          CONTENT_MIGRATION_PAGE_MS,
-          "Page content migration timed out",
-        );
-        const value = await response.json().catch(() => ({}));
-        const result = response.ok
-          ? value
-          : { status: "error", error: String(value.error ?? response.status).slice(0, 200) };
-        return cell ? { ...result, cell_id: cell } : result;
-      },
-    });
-    await this.storage.sync();
-    return body;
-  }
-  /**
    * ONE-SHOT MIGRATION (record-storage-operator.mjs; delete with it). The
    * Page ids this Catalog names for the operator's record-storage
    * conversion: every `page/` entry (Project content included) and every
-   * `trash/` entry. Host only, like operatorContentMigration.
+   * `trash/` entry. Host only: a request that carries a credential is refused.
    */
   async operatorRecordStorageTargets(request) {
     if (request.headers.has("authorization") || request.headers.has("cookie"))
@@ -1834,9 +1713,6 @@ export class Catalog {
         });
         return json({ ok: true });
       }
-      if (pathname === "/internal/content-migration") return await this.contentMigration(request);
-      if (pathname === "/internal/operator-content-migration")
-        return await this.operatorContentMigration(request);
       // ONE-SHOT MIGRATION route (record-storage-operator.mjs; delete with it).
       if (pathname === RECORD_STORAGE_TARGETS_ROUTE)
         return await this.operatorRecordStorageTargets(request);
@@ -4196,14 +4072,7 @@ export class Page {
     this.contentListener ??= ({ patches }) => {
       // While `converting`, the fence holds every other writer, so each Page
       // change is the host's own migration.
-      // ONE-SHOT MIGRATION: the content normalization isn't an edit either
-      // (contentMigration; delete the flag with it).
-      if (
-        this.conversion.name === "converting" ||
-        this.contentMigrating ||
-        !changesContent(patches)
-      )
-        return;
+      if (this.conversion.name === "converting" || !changesContent(patches)) return;
       this.contentActivity.changed();
     };
     this.handle.on("change", this.contentListener);
@@ -4680,169 +4549,6 @@ export class Page {
       if (!entry?.pending && !admission?.pending(key)) this.conversionIntent = undefined;
       throw error;
     }
-  }
-
-  /**
-   * ONE-SHOT MIGRATION (model/content-normalization.mjs and
-   * worker/content-migration.mjs; delete with them). The owner's Catalog asks
-   * this host to report (`dry_run`) or normalize (`apply`) its content. Host
-   * only: a request that carries a credential is refused, and the named owner
-   * must be the record's.
-   *
-   * The host is the document's only writer: the write is one journaled host
-   * change keyed by the heads it read, so a restart replays its recorded
-   * bytes and a later visit plans nothing. A Page with a live socket is
-   * skipped as `busy` unless the run passed `include_connected`; a fenced or blocked Page as `held`; a Page whose plan
-   * refuses any block, or whose on-load work is unfinished, as `partial`,
-   * with nothing written.
-   */
-  async contentMigration(request) {
-    if (request.headers.has("authorization") || request.headers.has("cookie"))
-      throw spaceNotFound();
-    const {
-      page_id: pageId,
-      owner,
-      mode,
-      include_connected: includeConnected = false,
-    } = (await readJson(request)) ?? {};
-    const metadata = this.metadata;
-    // The operator's probe of a cell no run reached: who it belongs to.
-    if (mode === "probe")
-      return json({
-        page_id: metadata?.pageId ?? null,
-        owner: metadata?.owner ?? null,
-        state: metadata ? pageState(metadata) : "missing",
-      });
-    if (!["dry_run", "apply"].includes(mode))
-      throw new HttpError(400, 'mode must be "dry_run" or "apply"', "invalid_arguments");
-    if (!metadata || metadata.pageId !== pageId)
-      return json({ status: "missing", state: "missing" });
-    const state = pageState(metadata);
-    if (metadata.owner !== owner) return json({ status: "not_owner", state });
-    const base = {
-      state,
-      record_comments_doc: typeof metadata.comments_doc === "string",
-      conversion: this.conversion.name,
-      connected: this.wires.size,
-    };
-    if (state === "deleted") return json({ ...base, status: "deleted" });
-    if (this.pendingAccess || this.pendingLifecycle)
-      return json({ ...base, status: "record_pending" });
-    if (!this.handle) return json({ ...base, status: "unavailable" });
-    if (this.recoveryBlocked || this.conversionFenced()) return json({ ...base, status: "held" });
-    // Before the plan: nothing awaits between reading the heads and the
-    // journaled write but the write's own checks.
-    const revert = await this.contentRevertRecords();
-    const doc = this.handle.doc();
-    const heads = A.getHeads(doc).sort();
-    const { report, writes } = planPageNormalization(doc, {
-      commentsDoc: this.commentsHandle?.doc(),
-    });
-    // The gate holds here, against the Page as it is now: a blocked plan
-    // writes nothing, whatever its dry run said.
-    const blocked = normalizationBlocked(report);
-    if (mode === "dry_run" || !writes.length || blocked)
-      return json({
-        ...base,
-        status: blocked ? "partial" : writes.length ? "would_normalize" : "unchanged",
-        heads,
-        report,
-        problems: normalizationProblems(report),
-        ...(revert.length && { revert }),
-      });
-    // A connected peer receives the write over sync like any host change.
-    // Its own edit either merges (made before or after the write) or, landing
-    // between the plan and the write, fails the exact-heads check (`stale`).
-    if (this.wires.size && includeConnected !== true)
-      return json({ ...base, status: "busy", heads, report });
-    const digest = hex(
-      new Uint8Array(
-        await crypto.subtle.digest("SHA-256", new TextEncoder().encode(heads.join(","))),
-      ),
-    ).slice(0, 32);
-    let receipt;
-    this.contentMigrating = true;
-    try {
-      receipt = await documentMutation({
-        storage: this.ctx.storage,
-        hostActorPrefix: this.plain?.hostActorPrefix,
-        admission: this.admission,
-        handle: this.handle,
-        operation: "normalize_content",
-        args: { idempotency_key: `content_norm_${digest}`, base_heads: heads },
-        identity: { principal: "service:pages", driver: "API" },
-        internal: true,
-        apply: (draft) => ({
-          writes: applyPageNormalization(draft, writes),
-          before_heads: heads,
-          blocks: report.blocks.map(({ block_id, action, forms, reason }) => ({
-            block_id,
-            action,
-            ...(forms && { forms }),
-            ...(reason && { reason }),
-          })),
-        }),
-        flush: () => this.flush(),
-      });
-    } catch (error) {
-      // A native edit landed after the plan: nothing was written, and the
-      // next pass plans again from the new heads.
-      if (error?.code === "stale_heads")
-        return json({ ...base, status: "stale", heads, ...(revert.length && { revert }) });
-      throw error;
-    } finally {
-      this.contentMigrating = false;
-    }
-    const recorded = await this.contentRevertRecords();
-    const problems = normalizationProblems(
-      planPageNormalization(this.handle.doc(), { commentsDoc: this.commentsHandle?.doc() }).report,
-    );
-    return json({
-      ...base,
-      status: problems.length ? "partial" : "normalized",
-      before_heads: heads,
-      after_heads: receipt.heads,
-      report,
-      problems,
-      revert: recorded,
-    });
-  }
-
-  /**
-   * ONE-SHOT MIGRATION (delete with contentMigration). This Page's content
-   * migration writes, `[{ key, before_heads, after_heads, blocks }]`, kept in
-   * `host/content-migration/revert`: the revert reference. Each comes from a
-   * finished `content_norm_` journal receipt, copied here before it can be
-   * dropped. The journal drops finished internal receipts only when another
-   * internal intent reserves, and the next such reservation on a migrated
-   * Page is this route's own, which copies first. A write a crash cut short
-   * finishes in journal recovery at boot and is copied on the next visit.
-   */
-  async contentRevertRecords() {
-    const key = "host/content-migration/revert";
-    const records = (await this.ctx.storage.get(key)) ?? [];
-    const known = new Set(records.map((record) => record.key));
-    let added = false;
-    for (const [name, entry] of await this.ctx.storage.list({
-      prefix: `${INTERNAL_PREFIX}content_norm_`,
-    })) {
-      if (known.has(name) || entry?.pending !== false || !entry.receipt?.result) continue;
-      const { result, heads } = entry.receipt;
-      records.push({
-        key: name,
-        before_heads: result.before_heads,
-        after_heads: heads,
-        blocks: (result.blocks ?? [])
-          .filter((block) => block.action !== "refused")
-          .map(({ block_id, action }) => ({ block_id, action })),
-      });
-      added = true;
-    }
-    if (added) {
-      await this.ctx.storage.put(key, records);
-      await this.ctx.storage.sync();
-    }
-    return records;
   }
 
   initializeRepo(metadata = this.metadata) {
@@ -5972,9 +5678,6 @@ export class Page {
         if (this.pendingLifecycle) await this.settleLifecycle();
         return await this.acceptTombstone();
       }
-      // ONE-SHOT MIGRATION route (content-migration.mjs; delete with it).
-      if (url.pathname === "/internal/content-migration")
-        return await this.contentMigration(request);
       if (url.pathname === "/internal/content-target") {
         if (request.headers.has("authorization") || request.headers.has("cookie"))
           throw spaceNotFound();

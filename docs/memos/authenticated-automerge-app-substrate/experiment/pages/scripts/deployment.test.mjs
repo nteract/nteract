@@ -2584,8 +2584,8 @@ test("a timeout does not name a rollback to a release without the plain format c
   assert.match(message, /plain_storage_formats/);
 });
 
-// ONE-SHOT MIGRATION: delete with worker/content-migration.mjs.
-test("lab installs carry a root-only operator secret for the content migration", (t) => {
+// ONE-SHOT MIGRATION: delete with worker/record-storage-operator.mjs.
+test("lab installs carry a root-only operator secret for the operator route", (t) => {
   for (const target of ["pages", "page10"]) {
     const f = installFixture(t, { target });
     f.execute();

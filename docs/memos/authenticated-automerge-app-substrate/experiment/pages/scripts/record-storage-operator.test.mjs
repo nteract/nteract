@@ -34,8 +34,6 @@ test("the remote call goes to the record-storage operator route", () => {
     callScript(operatorConfig("pages"), ROUTE),
     /127\.0\.0\.1:9481\/api\/operator\/record-storage"/,
   );
-  // The content migration's default is unchanged.
-  assert.match(callScript(operatorConfig("pages")), /\/api\/operator\/content-migration"/);
 });
 
 /** A target of Page cells. Each is `{ page_id, owner, state, storage,

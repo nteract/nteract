@@ -1,5 +1,5 @@
-// ONE-SHOT MIGRATION client transport: delete with the last operator script
-// (scripts/content-migration-operator.mjs, scripts/record-storage-operator.mjs).
+// ONE-SHOT MIGRATION client transport: delete with the operator script
+// (scripts/record-storage-operator.mjs).
 //
 // One SSH command per operator call to the target host. It reads the
 // root-only operator secret the installer wrote and posts to the Worker's
@@ -41,7 +41,7 @@ export const shellQuote = (value) => `'${value.replaceAll("'", `'\\''`)}'`;
  * on stdin, the response body then its HTTP status on the last line. The
  * secret travels to curl in its config on stdin, never on a command line.
  */
-export function callScript(config, route = "/api/operator/content-migration") {
+export function callScript(config, route) {
   const url = `http://${config.listen}${route}`;
   return [
     "set -euo pipefail",
