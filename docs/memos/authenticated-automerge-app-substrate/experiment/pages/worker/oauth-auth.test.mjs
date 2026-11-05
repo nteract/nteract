@@ -13,6 +13,7 @@ import { retryKey } from "../model/retry-key.mjs";
 import {
   exchangeAuthorizationCode,
   issueAuthorizationCode,
+  readAccessToken,
   revokeOAuthToken,
   rotateRefreshToken,
 } from "./oauth-store.mjs";
@@ -331,6 +332,80 @@ test("read-only OAuth scope rejects every mutating MCP tool before forwarding", 
       ],
     });
   }
+});
+
+test("OAuth whoami is a narrow read-only exception with no private proof or expiry", async (t) => {
+  const emailProof = {
+    provider: "app-session",
+    principalNamespace: person.namespace,
+    identityVerifiedAt: Math.floor(Date.now() / 1000),
+    verifiedEmailBinding: "private-proof",
+    verifiedEmailDomainBinding: "private-domain-proof",
+  };
+  const f = await fixture(t, "pages:read", {
+    identity: { ...person, emailProof },
+  });
+  assert.deepEqual(
+    (await readAccessToken(f.env, f.tokens.access_token, { resource })).identity.emailProof,
+    emailProof,
+  );
+  const response = await worker.fetch(request("/whoami", f.tokens.access_token, {}, "GET"), f.env);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.deepEqual(await response.json(), {
+    account: { principal: person.principal, display_name: person.displayName },
+    credential: { kind: "oauth", can_write: false },
+  });
+  assert.equal((await worker.fetch(request("/whoami", f.tokens.access_token), f.env)).status, 405);
+  assert.equal(
+    (await worker.fetch(request("/whoami", "pages_invalid", {}, "GET"), f.env)).status,
+    401,
+  );
+  await revokeOAuthToken(f.env, { token: f.tokens.access_token, clientId });
+  assert.equal(
+    (await worker.fetch(request("/whoami", f.tokens.access_token, {}, "GET"), f.env)).status,
+    401,
+  );
+});
+
+test("OAuth whoami keeps absent and legacy fallback names nullable", async (t) => {
+  for (const displayName of [undefined, person.principal]) {
+    const f = await fixture(t, "pages:read", { identity: { ...person, displayName } });
+    const response = await worker.fetch(
+      request("/whoami", f.tokens.access_token, {}, "GET"),
+      f.env,
+    );
+    assert.deepEqual((await response.json()).account, {
+      principal: person.principal,
+      display_name: null,
+    });
+  }
+});
+
+test("OAuth whoami retains resource, scope and expiry validation", async (t) => {
+  const f = await fixture(t);
+  const whoami = () => request("/whoami", f.tokens.access_token, {}, "GET");
+  const response = await worker.fetch(whoami(), f.env);
+  assert.deepEqual((await response.json()).credential, { kind: "oauth", can_write: true });
+  assert.equal(
+    (
+      await worker.fetch(whoami(), {
+        ...f.env,
+        NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://other.example",
+      })
+    ).status,
+    401,
+  );
+  const now = Date.now();
+  const clock = t.mock.method(Date, "now", () => now + 24 * 60 * 60 * 1000);
+  assert.equal((await worker.fetch(whoami(), f.env)).status, 401);
+  clock.mock.restore();
+  const noRead = await fixture(t, "pages:write");
+  assert.equal(
+    (await worker.fetch(request("/whoami", noRead.tokens.access_token, {}, "GET"), noRead.env))
+      .status,
+    403,
+  );
 });
 
 test("MCP grants cannot call direct APIs or reach internal routes through the gateway", async (t) => {

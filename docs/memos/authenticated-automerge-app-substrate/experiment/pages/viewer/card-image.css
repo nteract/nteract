@@ -1,0 +1,15 @@
+/* A grid card's image (PageCardImage.jsx) covers the JSON card beneath it,
+   top aligned, and only the current theme's image shows. */
+.page-card-image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top center;
+  background: var(--card);
+}
+:root.dark .page-card-image[data-theme="light"],
+:root:not(.dark) .page-card-image[data-theme="dark"] {
+  display: none;
+}

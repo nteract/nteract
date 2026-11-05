@@ -222,12 +222,20 @@ export function dataframeLifecycle({
 
 const mounted = new WeakMap();
 
+/** A watcher that reports every table near the viewport at once, for a
+ * shell no one scrolls (card-shell.mjs). */
+const alwaysNear = (_element, onChange) => {
+  onChange(true);
+  return () => {};
+};
+
 const dataframeTable = Widget.define({
   eq: (a, b) =>
     a.src === b.src &&
     a.media_type === b.media_type &&
     a.title === b.title &&
-    a.pageId === b.pageId,
+    a.pageId === b.pageId &&
+    a.eager === b.eager,
   render(attrs, editor) {
     const frame = dataframeFrame(attrs);
     leaveGridOnEscape(editor, frame.dom);
@@ -239,6 +247,7 @@ const dataframeTable = Widget.define({
         ...frame,
         attrs: { src: attrs.src, pageId: attrs.pageId },
         onUnavailable: reportRendererUnavailable,
+        ...(attrs.eager && { observe: alwaysNear }),
       }),
     );
     return frame.dom;
@@ -258,8 +267,9 @@ const dataframeTable = Widget.define({
  * a point decoration. Wordgard 0.6.2 throws "Moving past end of document"
  * when a shaped point decoration first appears at an insertion boundary at
  * the end of a document, which is where a dropped dataset usually lands.
+ * `eager` loads each table at once rather than near the viewport.
  */
-export function wordgardDataframes({ pageId } = {}) {
+export function wordgardDataframes({ pageId, eager = false } = {}) {
   if (typeof pageId !== "string" || !pageId)
     throw Error("wordgardDataframes needs the Page id it shows");
   return [
@@ -267,7 +277,7 @@ export function wordgardDataframes({ pageId } = {}) {
       PagesDataframe,
       (tag) => {
         const { src, media_type, title } = readDataframe(tag.param);
-        return dataframeTable.of({ src, media_type, title, pageId });
+        return dataframeTable.of({ src, media_type, title, pageId, eager });
       },
       { atom: true },
     ),

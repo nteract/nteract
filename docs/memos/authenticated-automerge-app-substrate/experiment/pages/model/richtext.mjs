@@ -22,6 +22,7 @@ import {
   validateMarkValue,
 } from "./marks.mjs";
 import { FEATURE_REGISTRY, stampSpans } from "./schema-features.mjs";
+import { imageAttrs } from "./image-attrs.mjs";
 import {
   TEXT_CONTAINERS,
   isKnownBlock,
@@ -1783,6 +1784,42 @@ export const dataframeLabel = (title) => {
  */
 export function setRichMarkdownKeepingNodes(doc, id, source) {
   const block = doc.blocks[id];
+  const images = isRich(block)
+    ? A.spans(block, ["richText"]).filter(
+        (s) => s.type === "block" && String(s.value.type) === "image",
+      )
+    : [];
+  const refuseImage = () => {
+    throw Object.assign(
+      Error(
+        "This block holds image attributes Markdown cannot reproduce. Keep each image unchanged in an unambiguous container, or use targeted edits instead.",
+      ),
+      { code: "markdownless_node" },
+    );
+  };
+  if (images.some((s) => !imageAttrs(s.value.attrs))) refuseImage();
+  const opaqueImages = images.filter((s) =>
+    Object.keys(s.value.attrs).some((k) => !["src", "alt", "title"].includes(k)),
+  );
+  const keepImages = (spans) => {
+    const key = (s) =>
+      JSON.stringify([
+        s.value.parents.map(String),
+        ...["src", "alt", "title"].map((k) => String(s.value.attrs[k] ?? "")),
+      ]);
+    for (const original of opaqueImages) {
+      const identity = key(original);
+      const candidates = spans.filter(
+        (s) => s.type === "block" && String(s.value.type) === "image" && key(s) === identity,
+      );
+      // Even identical duplicates have no stable correspondence in Markdown.
+      // Do not guess which hidden attrs belong to which occurrence.
+      if (images.filter((s) => key(s) === identity).length !== 1 || candidates.length !== 1)
+        refuseImage();
+      candidates[0].value.attrs = original.value.attrs;
+    }
+    return spans;
+  };
   // Each dataframe with its container path: the node types from the block's
   // root down to it, "" at the top level.
   const existing = [];
@@ -1797,7 +1834,7 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
   // Every dataframe counts, readable or not: one whose attrs this build can't
   // read never matches a line, so the rewrite is refused rather than dropping
   // it.
-  if (!existing.length) return setRichMarkdown(doc, id, source);
+  if (!existing.length && !opaqueImages.length) return setRichMarkdown(doc, id, source);
   const tree = parseAgentMarkdown(source);
   const unmatched = [...existing];
   const refuse = (message) => {
@@ -1822,6 +1859,11 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
   const restore = (node, path) => {
     const line = node.isTextblock ? lineLink(node) : null;
     if (line) {
+      const matches = existing.filter((entry) => entry.path === path && sameNode(entry.node, line));
+      if (matches.some((entry) => !entry.node.eq(matches[0].node)))
+        refuse(
+          "Duplicate dataframe lines carry different hidden attributes. Use targeted edits instead of guessing their correspondence.",
+        );
       // Only a paragraph can stand where a dataframe was: a heading, code
       // block or table cell can't hold one.
       const index =
@@ -1847,7 +1889,8 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
     node.forEach((child) => children.push(restore(child, inner)));
     return node.copy(node.content.constructor.from(children));
   };
-  const kept = restore(tree, "");
+  // Without stored dataframes, dataframe-like lines are ordinary links.
+  const kept = existing.length ? restore(tree, "") : tree;
   if (problems.has("moved"))
     refuse(
       "A dataframe's line can't go inside a quote, list or table, into a heading, or out of the quote or list item it's stored in. Keep it where read_page shows it; it may move among its neighbours.",
@@ -1877,7 +1920,7 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
     refuse(
       "This line reads as a dataframe this block doesn't hold. Markdown can't create or move a dataframe; use insert_node with its asset_id.",
     );
-  const spans = pageSpans(kept);
+  const spans = keepImages(pageSpans(kept));
   A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
   stampSpans(doc, spans);
 }

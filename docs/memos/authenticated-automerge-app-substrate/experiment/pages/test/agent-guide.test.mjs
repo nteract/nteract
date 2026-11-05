@@ -11,6 +11,7 @@ import { READ_ERROR_CODES } from "../worker/tool-reads.mjs";
 import { CHANGE_ERROR_CODES } from "../worker/tool-changes.mjs";
 import { PRODUCT_NAME } from "../shared/product.mjs";
 import {
+  checkAccountCommand,
   codexConfig,
   kiloApiKeyConfig,
   kiloConfig,
@@ -196,6 +197,38 @@ test("guide URLs use deployment configuration instead of request headers or cred
     origin,
   ])
     assert.equal(guide.includes(value), false, value);
+});
+
+test("guide documents account-safe onboarding and truthful listing metadata", () => {
+  const prose = agentGuide(env).replace(/\s+/g, " ");
+  for (const fact of [
+    "Inspect filenames, not secrets, in ~/.config/pages",
+    "Ask before reusing or replacing an existing key",
+    "~/.config/pages/anaconda-api-key as the default",
+    "~/.config/pages/anaconda-api-key-rgbkrk",
+    "save command, Kilo file reference, and Codex helper",
+    "separate Codex helper filename per account",
+    "This refuses to overwrite an existing file",
+    "Reload MCP or start a new session, then call list_pages from that session",
+    "configuration alone is not verification",
+    "quota.count counts active owned Pages, excluding shared Pages",
+    "quota.trash_count counts your trashed Pages separately",
+    "account-wide counts, not the number of results shown",
+    "A null content_updated_at means no content edit time is recorded, including for new Pages and legacy Pages",
+    "do not invent an edit timestamp from updated_at or created_at",
+    "User Resources is an Anaconda account scope",
+  ])
+    assert.ok(prose.includes(fact), fact);
+  assert.ok(agentGuide(env).includes(checkAccountCommand(origin)));
+  for (const fact of [
+    "GET " + origin + "/whoami",
+    "email is included only when the provider supplies a verified email",
+    "No credential expiry is reported",
+    "A successful HTTP check is not MCP verification",
+    "list_pages includes the same account object as /whoami",
+    "Counts include pending creations and lifecycle reservations in the owned catalog slots",
+  ])
+    assert.ok(prose.includes(fact), fact);
 });
 
 test("HEAD returns guide headers without a body; unsupported methods cannot mutate anything", async () => {

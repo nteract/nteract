@@ -627,6 +627,19 @@ entries into D1 tables (`pages_catalog_pages`, `pages_catalog_access`) so
 shared Page. Migrations are versioned in
 [catalog-index.mjs](worker/catalog-index.mjs) and applied lazily on first use.
 
+Durable Objects in one isolate share module state but not I/O contexts. If the
+object that started a migration resets mid-flight, its D1 call and its expiry
+timer can be dropped, and a promise shared with other objects would never
+settle. So objects share only settled readiness: once any attempt succeeds,
+later callers use the binding without a D1 call. An object that finds no
+attempt of its own starts one under its own 120 s expiry, even while another
+object's runs, and never awaits another object's. Racing attempts are safe:
+each migration commits with its version row in one batch, and the loser rolls
+back and reads the winner's version. A failed or expired attempt is forgotten,
+and the next call retries. The
+[Cloudflare portability audit](https://pages.runtimed.run/p/460c48f0-dc4b-4702-af82-59910e6bebd0)
+(§7) covers why celld's single context hid this.
+
 D1 picks candidates; it never grants access. Every non-owner row returned by a
 listing is verified by its Page host with the caller's credentials, and owner rows
 must match the account's own Catalog entry. Each access row keeps its own title
@@ -925,6 +938,27 @@ walk. A `query` search is different: D1 matches each principal's title
 snapshot and the fallback matches the entry's title, so a rename that has reached
 one and not yet the other can hide the renamed Page from that source's search
 until its row or entry is rewritten.
+
+D1 refuses a `LIKE` pattern over 50 bytes
+([D1 limits](https://developers.cloudflare.com/d1/platform/limits/)), and
+`query` allows 200 characters. So a search binds `%…%` around the longest
+prefix of the lowercased query whose escaped form keeps the pattern within 50
+UTF-8 bytes (`likePattern`). The cut falls between code points, and `\`, `%`
+and `_` keep their escapes. A row the cut pattern matched whose title snapshot
+lacks the whole query comes back marked `unmatched`, in its place in the order.
+It counts toward the scan's `2 × limit + 16` bound and moves the scan's
+position, but never lists and never asks a Page host. So a long query whose
+prefix many titles share can return a short or empty page with a cursor, as
+stale rows can; the walk still reaches every match. Dropping those rows in the
+query instead would return a short batch, which the scan reads as the end of
+the walk. Every database binds the same pattern, so celld's SQLite, which has
+no such limit, searches the same way, and the test D1 (`test/sqlite-d1.mjs`)
+refuses longer patterns as D1 does. Without the cut, any query over about 48
+bytes failed on D1. Its first page then fell back to the Catalog and pinned
+the walk there, so the walk never restarted and no cooldown started, but every
+long search paid the fallback's full read. See the
+[Cloudflare portability audit](https://pages.runtimed.run/p/460c48f0-dc4b-4702-af82-59910e6bebd0)
+(§4).
 Changing the epoch value forces an immediate pass everywhere; it is not required
 after a rollback, since the periodic pass and each Page host's first report after
 restart repair what an older build missed.
@@ -2885,12 +2919,13 @@ when it queues it, through [request-hold.mjs](worker/request-hold.mjs). A
 Page's `/api/saved` and `/api/sync` skip its queue but are held the same way: a
 save waits for heads and drains the record store's serialized flush, and a
 sync's resident socket already holds its own request. A Catalog also holds the
-lifecycle reads that later requests reuse. The catalog index migration is
-shared by every object in an isolate, and its callers stop waiting after 1.5
+lifecycle reads that later requests reuse. A catalog index migration attempt
+belongs to the object that started it, and its callers stop waiting after 1.5
 or 2.5 s, so `catalogIndexDatabase(env, ctx)` requires the caller's `ctx` and
-holds the migration on it; no Catalog or Page call site can skip the hold. The
+holds the attempt on it; no Catalog or Page call site can skip the hold. The
 work runs to completion after its caller leaves, and its response is
-discarded.
+discarded. Objects share only a settled result (see
+[Catalog index](#catalog-index)).
 
 A continuation inside a Durable Object runs under the request that started the
 code awaiting, not the one that settled the promise, and celld 0.6.3 drops the
@@ -2908,6 +2943,48 @@ journal intent before the Project sees the request, and every attempt carries it
 so a retry can never apply once the Project has moved past that revision, even
 after the Project evicted the key's receipt (it keeps the latest 64). Such a retry
 returns `superseded: true, applied: false` with the current Project.
+
+### Card images
+
+The JSON card can't draw a diagram, a table's rows or highlighted code. The
+Page owner's own browser can, so it draws them. Other tabs do nothing:
+[card-capture.mjs](viewer/card-capture.mjs) starts only once the session
+shows the owner's write access. While the owner's tab is visible, it rebuilds
+the card's `card_hash` from its local document with the host's code. When
+that hash differs from the stored image's, it waits for 3 s with no edit or
+input (pointer, key, wheel or scroll), then renders the card's blocks
+read-only. The renderer
+([card-shell.mjs](viewer/card-shell.mjs)) uses the editor's own widgets in a
+hidden same-origin iframe, light and dark. It rasterizes them with
+`modern-screenshot`, a lazy chunk loaded on the first capture, at
+640×480 CSS px and 2x. It uploads WebP, or PNG where the browser has no WebP
+encoder (Safari). A capture starts at most once every two minutes, never on
+Save-Data or under 2 GB of device memory, and never runs beside another one. A
+changed first screen, a hidden tab or leaving the Page cancels it. Input
+cancels it too, and the cancelled capture doesn't count against the
+two-minute rest. The tab
+learns the stored hash from one `GET /api/pages/:id/card-image` when the Page
+opens, then from each upload's answer.
+
+`PUT /api/pages/:id/card-image?hash=&theme=` admits only the Page owner, by the
+Page host's own policy ([card-images.mjs](worker/card-images.mjs)). The bytes
+must be a static WebP, PNG or JPEG of at most 300 KB, never SVG. `hash` must be
+the `card_hash` of the host's loaded document, and each theme uploads at most
+once a minute. The host numbers each admitted upload from its durable storage.
+The images live at `pages/<id>/card/<hash>-<theme>.<ext>`. An etag-fenced
+`card/latest` pointer names the current hash and the highest revision it has
+seen. A swap to another hash with a lower revision is refused as stale, so an
+upload for an older first screen that lands late can't replace a newer one. A
+new hash deletes the old images, so a Page keeps at most one image per theme.
+`page_cards` adds `image: { card_hash, light, dark }` only when the pointer's
+hash is the stored JSON card's and both themes exist. The image route decides
+access as `page_cards` does, on every request: the caller's own Catalog entry
+for an owned Page, or its shared entry plus the Page host's record-only check.
+A grid of image cards boots no Page document, and a revoked grant fails on
+the next fetch. Its responses are `private, immutable`
+and carry `nosniff`. Purge and tombstone delete the images with `card.json`.
+The server can't check that the pixels match the content. That is the trust of
+any image the owner inserts into the Page, and only the Page's readers see it.
 
 ### Retry contract
 

@@ -13,6 +13,87 @@ import {
 import worker from "./index.mjs";
 import { recordPersistenceTimeout } from "./record-persistence.mjs";
 
+test("whoami returns only verified self-account data and credential capability", async (t) => {
+  const fixture = await createAuthFixture();
+  t.mock.method(globalThis, "fetch", fixture.fetch);
+  for (const canWrite of [true, false]) {
+    const token = fixture.apiKey({ scopes: [canWrite ? "cloud:write" : "cloud:read"] });
+    const response = await worker.fetch(
+      new Request("https://pages.invalid/whoami?email=forged", {
+        headers: {
+          authorization: `Bearer ${token}`,
+          "x-principal": "forged",
+          "x-pages-verified-email": "forged@example.invalid",
+          "x-notebook-cloud-display-name": "Forged Name",
+          "x-scope": "editor",
+        },
+      }),
+      fixture.env,
+    );
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.deepEqual(await response.json(), {
+      account: {
+        principal: `user:anaconda-fixture:${fixture.subject}`,
+        display_name: "Fixture Person",
+        email: "fixture@example.invalid",
+      },
+      credential: { kind: "api-key", can_write: canWrite },
+    });
+  }
+});
+
+test("whoami leaves absent profile fields unknown", async (t) => {
+  const fixture = await createAuthFixture();
+  t.mock.method(globalThis, "fetch", async (...args) => {
+    const body = await (await fixture.fetch(...args)).json();
+    delete body.passport.profile;
+    return Response.json(body);
+  });
+  const response = await worker.fetch(
+    new Request("https://pages.invalid/whoami", {
+      headers: { authorization: `Bearer ${fixture.apiKey()}` },
+    }),
+    fixture.env,
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).account, {
+    principal: `user:anaconda-fixture:${fixture.subject}`,
+    display_name: null,
+  });
+});
+
+test("whoami rejects missing or invalid credentials, preserves outages and rejects other methods", async (t) => {
+  const fixture = await createAuthFixture();
+  t.mock.method(globalThis, "fetch", fixture.fetch);
+  t.mock.method(console, "error", () => {});
+  for (const [token, status] of [
+    [undefined, 401],
+    [fixture.apiKey({ status: 401 }), 401],
+    [fixture.apiKey({ status: 503 }), 503],
+    [fixture.apiKey({ status: 429 }), 503],
+  ]) {
+    const response = await worker.fetch(
+      new Request("https://pages.invalid/whoami", {
+        headers: token ? { authorization: `Bearer ${token}` } : {},
+      }),
+      fixture.env,
+    );
+    assert.equal(response.status, status);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.equal(Object.hasOwn(await response.json(), "account"), false);
+  }
+  for (const method of ["POST", "PUT", "DELETE", "HEAD", "OPTIONS"]) {
+    const response = await worker.fetch(
+      new Request("https://pages.invalid/whoami", { method }),
+      fixture.env,
+    );
+    assert.equal(response.status, 405, method);
+    assert.equal(response.headers.get("allow"), "GET");
+    assert.equal(response.headers.get("cache-control"), "no-store");
+  }
+});
+
 test("authenticated sessions advertise Wordgard regardless of legacy editor configuration", async (t) => {
   const fixture = await createAuthFixture();
   t.mock.method(globalThis, "fetch", fixture.fetch);

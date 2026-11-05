@@ -4,6 +4,7 @@ import { JSDOM } from "jsdom";
 import worker from "../worker/index.mjs";
 import { agentConnectionSetup } from "../connect-agent.mjs";
 import {
+  checkAccountCommand,
   codexConfig,
   kiloApiKeyConfig,
   kiloConfig,
@@ -69,7 +70,7 @@ test("setup is public, uses configured destinations, and never reflects credenti
     "https://anaconda.com/app/profile/api-keys",
   );
   assert.equal(dom.querySelectorAll("input, textarea, form").length, 0);
-  assert.equal(dom.querySelectorAll("[data-copy][hidden]").length, 11);
+  assert.equal(dom.querySelectorAll("[data-copy][hidden]").length, 12);
   assert.equal(dom.getElementById("oauth-endpoint").textContent, origin + "/mcp");
   assert.equal(dom.getElementById("kilo-config").textContent, kiloConfig(origin));
   assert.equal(dom.getElementById("kilo-api-key-config").textContent, kiloApiKeyConfig(origin));
@@ -117,6 +118,52 @@ test("setup supports HEAD and refuses mutation methods", async () => {
   const post = await worker.fetch(new Request(origin + "/connect", { method: "POST" }), env);
   assert.equal(post.status, 405);
   assert.equal(post.headers.get("allow"), "GET, HEAD");
+});
+
+test("setup exposes account-safe saving and reload-before-verification outside collapsed recipes", async () => {
+  const response = await worker.fetch(new Request(origin + "/connect"), env);
+  const dom = new JSDOM(await response.text()).window.document;
+  const save = dom.querySelector('section[aria-labelledby="setup-save"]');
+  for (const fact of [
+    "~/.config/pages/anaconda-api-key-rgbkrk",
+    "Inspect filenames, not secrets",
+    "ask before reusing or replacing an existing key",
+    "separate Codex helper filename per account",
+    "refuses to overwrite an existing file",
+  ])
+    assert.ok(save.textContent.includes(fact), fact);
+  const check = dom.querySelector('section[aria-labelledby="setup-try"]');
+  assert.equal(check.closest("details"), null);
+  assert.equal(
+    check.querySelector("strong").textContent,
+    "Reload MCP or start a new session, then call list_pages from that session.",
+  );
+  for (const fact of [
+    "A config file or a client status label alone doesn't verify access",
+    "quota.count counts active owned Pages, excluding shared Pages",
+    "quota.trash_count counts your trashed Pages separately",
+    "no content edit time is recorded, including for new Pages and legacy Pages",
+    "don't invent an edit timestamp",
+  ])
+    assert.ok(check.textContent.includes(fact), fact);
+  assert.ok(
+    dom.body.textContent.includes("Anaconda User Resources permissions, not just Pages access"),
+  );
+  assert.equal(
+    dom.getElementById("check-account-command").textContent,
+    checkAccountCommand(origin),
+  );
+  const copyCheck = dom.querySelector('[data-copy="check-account-command"]');
+  assert.equal(copyCheck.textContent, "Copy account check");
+  assert.equal(dom.getElementById(copyCheck.dataset.copy).textContent, checkAccountCommand(origin));
+  for (const fact of [
+    "GET /whoami",
+    "email only when the provider supplies a verified email",
+    "not expiry",
+    "does not replace MCP reload and list_pages verification",
+    "pending creations and lifecycle reservations in owned catalog slots",
+  ])
+    assert.ok(check.textContent.includes(fact), fact);
 });
 
 test("staging or unknown identity providers cannot direct people to create a production key", async () => {

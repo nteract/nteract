@@ -155,6 +155,45 @@ const bounded = (name, values, max) =>
  * Nested lists read as their own Markdown. `maxItems` bounds per-item
  * arrays. */
 export function nodeFields(node, { pageId, maxItems = Infinity } = {}) {
+  // Child-index paths are relative to this top-level node at the read revision,
+  // not stable identities. Image occurrences stay bounded even in change feeds.
+  const fields = ownNodeFields(node, { pageId, maxItems });
+  const images = [];
+  let count = 0;
+  const limit = Math.min(maxItems, OUTLINE_MAX_ITEMS);
+  const visit = (child, path) => {
+    if (child.type.name === "image") {
+      count++;
+      if (images.length < limit) {
+        const { src, alt, title } = child.attrs;
+        const asset = parseAssetPath(src);
+        images.push({
+          path,
+          src: String(src ?? "").slice(0, 4096),
+          alt: String(alt ?? "").slice(0, 2048),
+          title: title == null ? null : String(title).slice(0, 2048),
+          ...(asset && (!pageId || asset.pageId === pageId) && { asset_id: asset.assetId }),
+          ...(String(src ?? "").length > 4096 ||
+          String(alt ?? "").length > 2048 ||
+          String(title ?? "").length > 2048
+            ? { truncated: true }
+            : {}),
+        });
+      }
+    }
+    child.forEach((nested, _offset, index) => visit(nested, [...path, index]));
+  };
+  visit(node, []);
+  if (count)
+    fields.summary = {
+      ...fields.summary,
+      images,
+      ...(count > images.length && { images_truncated: true }),
+    };
+  return fields;
+}
+
+function ownNodeFields(node, { pageId, maxItems }) {
   switch (node.type.name) {
     case "heading":
       return { attrs: { level: node.attrs.level } };
