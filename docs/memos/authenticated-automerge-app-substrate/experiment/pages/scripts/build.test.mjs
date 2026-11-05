@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 import { build } from "esbuild";
 import { celldCborPlugin } from "./celld-cbor.mjs";
+import { releaseFilesOf } from "./stage-artifacts.mjs";
 import { USAGE_CRON, USAGE_D1 } from "./deployment/profiles.mjs";
 import { browserMermaidPlugin, mermaidSource } from "./browser-mermaid.mjs";
 import {
@@ -133,6 +134,7 @@ for (const fails of [true, false])
           "browser-wasm.mjs",
           "browser-sift.mjs",
           "viewer-chunks.mjs",
+          "stage-artifacts.mjs",
           "deployment/profiles.mjs",
         ])
           write(`scripts/${name}`, readFileSync(new URL(`./${name}`, import.meta.url), "utf8"));
@@ -143,7 +145,7 @@ for (const fails of [true, false])
           );
         write(
           "scripts/source-fingerprint.mjs",
-          `export const sourceFingerprint = () => ({sha256:'source-B'}); export const writeBuildReceipt = () => {${fails ? "throw new Error('failed build must not certify outputs');" : ""}};`,
+          `import {writeFileSync} from 'node:fs'; export const sourceFingerprint = () => ({sha256:'source-B'}); export const writeBuildReceipt = (app, options) => {${fails ? "throw new Error('failed build must not certify outputs');" : "writeFileSync(app + '/dist/receipt-options.json', JSON.stringify(options));"}};`,
         );
         write(
           "node_modules/esbuild/package.json",
@@ -217,6 +219,21 @@ for (const fails of [true, false])
           );
           assert.deepEqual(config.triggers, { crons: [USAGE_CRON] });
           assert.equal(USAGE_CRON, "5 0 * * *");
+          // The receipt certifies every staged file but itself: the allowlist
+          // plus the viewer's hashed files. The stubbed bundler skips the
+          // Worker's WASM copy; every public file must exist.
+          const options = JSON.parse(
+            readFileSync(path.join(fixture, "dist/receipt-options.json"), "utf8"),
+          );
+          assert.deepEqual(
+            options.releaseFiles,
+            releaseFilesOf(options.viewerChunks, options.viewerAssets),
+          );
+          assert.ok(options.releaseFiles.includes("index.js"));
+          assert.ok(options.releaseFiles.includes("public/chunks/ABCDEFGH.js"));
+          assert.ok(!options.releaseFiles.includes("build-receipt.json"));
+          for (const file of options.releaseFiles.filter((name) => name.startsWith("public/")))
+            assert.ok(existsSync(path.join(fixture, "dist", file)), file);
           return;
         }
         assert.ok(failure);

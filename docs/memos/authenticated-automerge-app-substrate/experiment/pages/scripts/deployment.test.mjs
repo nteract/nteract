@@ -176,7 +176,8 @@ test("DNS transport errors do not echo credentials", async () => {
 });
 
 test("release staging copies only built artifacts, never development credentials/state", async () => {
-  const { stageArtifacts, releaseArtifacts } = await import("./stage-artifacts.mjs");
+  const { stageArtifacts, releaseArtifacts, releaseFilesOf } =
+    await import("./stage-artifacts.mjs");
   const { readFileSync, readdirSync, symlinkSync } = await import("node:fs");
   const root = mkdtempSync(path.join(tmpdir(), "pages-artifacts-"));
   const dist = path.join(root, "dist"),
@@ -206,9 +207,16 @@ test("release staging copies only built artifacts, never development credentials
   const certifiedAssets = Object.fromEntries(
     Object.entries(assetBytes).map(([file, bytes]) => [file, sha256(bytes)]),
   );
-  const receipt = JSON.stringify({ viewer_chunks: certified, viewer_assets: certifiedAssets });
   const contents = (artifact) =>
     artifact === "build-receipt.json" ? receipt : (assetBytes[artifact] ?? "artifact:" + artifact);
+  const releaseFiles = Object.fromEntries(
+    releaseFilesOf(chunks, assets).map((file) => [file, sha256(contents(file))]),
+  );
+  const receipt = JSON.stringify({
+    viewer_chunks: certified,
+    viewer_assets: certifiedAssets,
+    files: releaseFiles,
+  });
   const hashed = [...chunks, ...assets];
   const theme = assets.find((file) => file.startsWith("public/theme-"));
   try {

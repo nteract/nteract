@@ -72,6 +72,83 @@ jobs:
       - name: Build native Pages Worker and browser
         run: npm run build --workspace @nteract/pages-native-experiment
 
+  # Builds the release bundle from a tree no test has run in, so the receipt
+  # can say source_dirty false. stageArtifacts checks every file against the
+  # receipt before it writes the bundle outside the checkout. A deploy of
+  # this artifact must still require the whole run to be green.
+  release:
+    name: Pages release bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: docs/memos/authenticated-automerge-app-substrate/experiment
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            docs/memos/authenticated-automerge-app-substrate/experiment
+            apps/notebook-cloud/src
+            packages/runtimed/src
+            packages/local-oidc/src
+            src/components/markdown
+            src/components/sharing
+            src/styles
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Prepare pinned upstream packages and locked fixture dependencies
+        run: npm run setup
+      - name: Build native Pages Worker and browser
+        run: npm run build --workspace @nteract/pages-native-experiment
+      - name: Stage and verify the release bundle
+        working-directory: docs/memos/authenticated-automerge-app-substrate/experiment/pages
+        env:
+          RELEASE_DIR: ${{ runner.temp }}/pages-release
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          node --input-type=module <<'EOF'
+          import { appendFileSync, readFileSync } from "node:fs";
+          import path from "node:path";
+          import { stageArtifacts } from "./scripts/stage-artifacts.mjs";
+
+          const { RELEASE_DIR, SOURCE_SHA, GITHUB_STEP_SUMMARY } = process.env;
+          stageArtifacts("dist", RELEASE_DIR);
+          const receipt = JSON.parse(
+            readFileSync(path.join(RELEASE_DIR, "build-receipt.json"), "utf8"),
+          );
+          if (receipt.source_sha !== SOURCE_SHA)
+            throw new Error(`Receipt source_sha ${receipt.source_sha} is not ${SOURCE_SHA}`);
+          if (receipt.source_dirty !== false)
+            throw new Error("Receipt says the build tree was dirty");
+          console.log(`build_id=${receipt.build_id}`);
+          console.log(`source_sha=${receipt.source_sha}`);
+          console.log(`files=${Object.keys(receipt.files).length}`);
+          appendFileSync(
+            GITHUB_STEP_SUMMARY,
+            [
+              "### Pages release bundle",
+              "",
+              `- build_id: \`${receipt.build_id}\``,
+              `- source_sha: \`${receipt.source_sha}\``,
+              `- files: ${Object.keys(receipt.files).length} certified, plus build-receipt.json`,
+              "",
+            ].join("\n"),
+          );
+          EOF
+      - name: Upload the release bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pages-release
+          path: ${{ runner.temp }}/pages-release
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: ${{ github.event_name == 'pull_request' && 3 || 30 }}
+
   # The native suite is most of the gate's wall time, so it runs as parallel
   # shards of the same file list. Node sorts the test files and gives file k to
   # shard (k mod total) + 1, so the legs are disjoint and together run every

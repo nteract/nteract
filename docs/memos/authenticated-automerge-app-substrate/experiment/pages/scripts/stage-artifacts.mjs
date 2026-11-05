@@ -87,6 +87,38 @@ export function viewerAssetsFor(dist) {
   return assets;
 }
 
+/** Every file a release carries except build-receipt.json: the allowlisted
+ * artifacts plus the viewer's hashed chunks and shell assets (dist paths). The
+ * receipt's `files` certifies exactly this set. */
+export function releaseFilesOf(viewerChunks, viewerAssets) {
+  return [
+    ...releaseArtifacts.filter((file) => file !== "build-receipt.json"),
+    ...viewerChunks,
+    ...viewerAssets,
+  ].sort();
+}
+
+/** Every file this build's receipt certifies: dist path → sha256 of its bytes
+ * at build time. The set must be exactly releaseFilesOf the receipt's viewer
+ * chunks and assets, and a viewer file's digest must agree with its viewer
+ * entry, so the receipt can't certify a file the release doesn't carry or
+ * leave one it does carry unchecked. */
+export function releaseFilesFor(
+  dist,
+  chunks = viewerChunksFor(dist),
+  assets = viewerAssetsFor(dist),
+) {
+  const files = receiptOf(dist).files;
+  const expected = releaseFilesOf(Object.keys(chunks), Object.keys(assets));
+  if (!certifiedMap(files, () => true))
+    throw new Error("The build receipt must list the release files with their sha256");
+  if (!sameFiles(expected, files))
+    throw new Error("The build receipt's files differ from the release allowlist");
+  for (const [file, digest] of Object.entries({ ...chunks, ...assets }))
+    if (files[file] !== digest) throw new Error("The build receipt lists two digests for " + file);
+  return files;
+}
+
 export function stageArtifacts(dist, destination) {
   if (existsSync(destination)) throw new Error("Release destination must be new");
   if (!lstatSync(dist).isDirectory() || !lstatSync(path.join(dist, "public")).isDirectory())
@@ -95,24 +127,21 @@ export function stageArtifacts(dist, destination) {
   for (const file of releaseArtifacts)
     if (!lstatSync(path.join(dist, file)).isFile())
       throw new Error("Artifact must be a regular file: " + file);
-  // Read each hashed file once, check those bytes against the receipt, and
-  // stage the same bytes, so a file changed after the build is refused, not
-  // shipped.
-  const certified = (files, kind) =>
-    Object.entries(files).map(([file, digest]) => {
-      if (!lstatSync(path.join(dist, file)).isFile())
-        throw new Error("Artifact must be a regular file: " + file);
-      const bytes = readFileSync(path.join(dist, file));
-      if (sha256(bytes) !== digest)
-        throw new Error(`Viewer ${kind} changed since the build: ${file}`);
-      return [file, bytes];
-    });
-  const hashed = [
-    ...certified(viewerChunksFor(dist), "chunk"),
-    ...certified(viewerAssetsFor(dist), "asset"),
-  ];
+  const chunks = viewerChunksFor(dist);
+  const assets = viewerAssetsFor(dist);
+  const files = releaseFilesFor(dist, chunks, assets);
+  // Read each file once, check those bytes against the receipt, and stage the
+  // same bytes, so a file changed after the build is refused, not shipped.
+  const kind = (file) =>
+    file in chunks ? "Viewer chunk" : file in assets ? "Viewer asset" : "Release file";
+  const staged = Object.entries(files).map(([file, digest]) => {
+    if (!lstatSync(path.join(dist, file)).isFile())
+      throw new Error("Artifact must be a regular file: " + file);
+    const bytes = readFileSync(path.join(dist, file));
+    if (sha256(bytes) !== digest) throw new Error(`${kind(file)} changed since the build: ${file}`);
+    return [file, bytes];
+  });
   mkdirSync(path.join(destination, "public/chunks"), { recursive: true });
-  for (const file of releaseArtifacts)
-    copyFileSync(path.join(dist, file), path.join(destination, file));
-  for (const [file, bytes] of hashed) writeFileSync(path.join(destination, file), bytes);
+  copyFileSync(path.join(dist, "build-receipt.json"), path.join(destination, "build-receipt.json"));
+  for (const [file, bytes] of staged) writeFileSync(path.join(destination, file), bytes);
 }
