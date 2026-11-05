@@ -77,6 +77,24 @@ const shared = {
   runtime: CELLD_RELEASE.path,
   requiredVersion: CELLD_RELEASE.version,
 };
+// Unit limits for targets without a memory field, matching what they shipped with.
+export const DEFAULT_MEMORY = Object.freeze({ maxRssMb: 768, memoryMax: "1G" });
+const SERVING_MEMORY = Object.freeze({ maxRssMb: 2560, memoryMax: "4G" });
+/**
+ * The celld shedding threshold and systemd ceiling for a profile's unit.
+ * MemoryMax must leave headroom above the shedding threshold, or systemd kills
+ * celld before it sheds.
+ */
+export function unitMemory(profile) {
+  const { maxRssMb, memoryMax } = profile.memory ?? DEFAULT_MEMORY;
+  if (!Number.isSafeInteger(maxRssMb) || maxRssMb < 256 || maxRssMb > 16384)
+    throw new Error("memory.maxRssMb must be an integer from 256 to 16384");
+  const match = /^([1-9][0-9]?)G$/.exec(memoryMax ?? "");
+  if (!match) throw new Error("memory.memoryMax must be whole gigabytes, such as 4G");
+  if (Number(match[1]) * 1024 < maxRssMb * 1.25)
+    throw new Error("memory.memoryMax must be at least 25% above memory.maxRssMb");
+  return { maxRssMb, memoryMax };
+}
 const DISABLED_MIGRATION = Object.freeze({ enabled: false, pageIds: Object.freeze([]) });
 const targets = Object.freeze({
   "pages-next": Object.freeze({
@@ -336,6 +354,10 @@ const targets = Object.freeze({
     // default parent-based sampler then drops every request-scoped log line.
     otelTracesSampler: "always_on",
     editor: "wordgard",
+    // celld sheds cells above CELLD_MAX_RSS_MB. At 768 MB production shed its
+    // D1 cell repeatedly and signed-in requests failed while it restored.
+    // lab1 has 31 GB; MemoryMax stays above the shedding threshold.
+    memory: SERVING_MEMORY,
     // tunnelService is the single connector unit earlier releases installed.
     // Publication hands the tunnel to these two slots and alternates between
     // them, so a route change never stops the last connector
@@ -401,6 +423,8 @@ const targets = Object.freeze({
     // default parent-based sampler then drops every request-scoped log line.
     otelTracesSampler: "always_on",
     editor: "wordgard",
+    // Same limits as Page10; see its memory comment.
+    memory: SERVING_MEMORY,
     // The single connector unit earlier releases installed, then the two
     // slots publication alternates between (see Page10).
     tunnelService: "cloudflared-pages-live.service",
