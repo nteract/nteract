@@ -416,6 +416,20 @@ test("an expired cursor restarts with the same params", async () => {
   assert.equal(requests[2].cursor, null);
 });
 
+test("a Project's content document never shows as a local Page", () => {
+  // The server never lists content, so its local copy stays pending.
+  const local = [
+    { page_id: "content", title: "Project", pending: true },
+    { page_id: "draft", title: "Draft", pending: true },
+  ];
+  const all = { query: "", access: null, projectId: null };
+  const ids = (rows) => rows.map((page) => page.page_id);
+  const contents = new Set(["content"]);
+  assert.deepEqual(ids(deviceRows(local, [], all, { contents })), ["draft"]);
+  assert.deepEqual(ids(deviceRows(local, [], all, { failed: true, contents })), ["draft"]);
+  assert.deepEqual(ids(deviceRows(local, [], all)), ["content", "draft"]);
+});
+
 test("drafts on this device show on All and Your items until the server lists them", () => {
   const local = [
     { page_id: "draft", title: "Draft", pending: true },
