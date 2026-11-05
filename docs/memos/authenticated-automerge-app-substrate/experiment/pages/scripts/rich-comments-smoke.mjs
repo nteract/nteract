@@ -284,7 +284,7 @@ try {
   await expect(thread.locator(".comment-rich-content strong").first()).toHaveText(
     "Native discussion",
   );
-  await expect(page.locator(`[data-thread-id="${legacy.thread_id}"] .message`)).toHaveText(
+  await expect(page.locator(`[data-thread-id="${legacy.thread_id}"] .message-body`)).toHaveText(
     "**Legacy literal** | value |",
   );
   assert.equal(

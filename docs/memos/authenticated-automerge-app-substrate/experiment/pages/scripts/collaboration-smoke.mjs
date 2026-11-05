@@ -426,7 +426,9 @@ try {
   const resolved = a.locator("details.resolved-threads");
   if (!(await resolved.evaluate((element) => element.open)))
     await resolved.locator("summary").click();
-  await resolved.locator(".thread").getByRole("button", { name: "1 reply" }).click();
+  // Replies may already be showing (sending a reply expands them).
+  const repliesToggle = resolved.locator(".thread .thread-replies-toggle");
+  if ((await repliesToggle.getAttribute("aria-expanded")) !== "true") await repliesToggle.click();
   await expect(resolved.locator(".thread")).toContainText("Yes, brown.");
   await resolved.locator(".thread").getByRole("button", { name: "Reopen" }).click();
   await expect(b.locator(".thread:not(.resolved)")).toHaveCount(1);
