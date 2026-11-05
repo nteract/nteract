@@ -69,7 +69,45 @@ jobs:
         run: npm run setup
       - name: Test provider fixtures and real Repo/Subduction integration
         run: npm test
-      - name: Test native Pages model, policy, and MCP
-        run: npm test --workspace @nteract/pages-native-experiment
       - name: Build native Pages Worker and browser
         run: npm run build --workspace @nteract/pages-native-experiment
+
+  # The native suite is most of the gate's wall time, so it runs as parallel
+  # shards of the same file list. Node sorts the test files and gives file k to
+  # shard (k mod total) + 1, so the legs are disjoint and together run every
+  # file. The total is the matrix length: list each shard number once, 1..N.
+  # --test-shard goes through NODE_OPTIONS because Node only reads it before
+  # the file list, and the package script ends with the file globs.
+  native:
+    name: Native Pages model, policy, and MCP (shard ${{ matrix.shard }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    defaults:
+      run:
+        working-directory: docs/memos/authenticated-automerge-app-substrate/experiment
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            docs/memos/authenticated-automerge-app-substrate/experiment
+            apps/notebook-cloud/src
+            packages/runtimed/src
+            packages/local-oidc/src
+            src/components/markdown
+            src/components/sharing
+            src/styles
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Prepare pinned upstream packages and locked fixture dependencies
+        run: npm run setup
+      - name: Test native Pages model, policy, and MCP
+        env:
+          NODE_OPTIONS: --test-shard=${{ matrix.shard }}/${{ strategy.job-total }}
+        run: npm test --workspace @nteract/pages-native-experiment
