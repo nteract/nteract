@@ -1,5 +1,5 @@
 import * as A from "@automerge/automerge/slim";
-import { textPath } from "./richtext.mjs";
+import { textPath } from "./richtext-format.mjs";
 
 // Enumerate actual live embed characters. Resolving a deleted cursor by position
 // alone is unsafe: Automerge deliberately slides it to a surviving neighbour.

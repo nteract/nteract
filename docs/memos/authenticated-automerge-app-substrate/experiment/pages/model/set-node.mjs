@@ -13,7 +13,8 @@
 // checked, language, heading_level or align is refused with the typed field
 // that replaces it.
 import * as A from "@automerge/automerge/slim";
-import { richDoc, textPath } from "./richtext.mjs";
+import { textPath } from "./richtext-format.mjs";
+import { richDoc } from "./richtext-spans.mjs";
 import { updateSpansConfig } from "./marks.mjs";
 import { locateRange } from "./replace-match.mjs";
 import {

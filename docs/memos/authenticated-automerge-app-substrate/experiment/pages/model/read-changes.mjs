@@ -6,7 +6,11 @@ import { agentType } from "./node-registry.mjs";
 import { nodeIds } from "./node-ids.mjs";
 import { readableImageIds } from "./image-ids.mjs";
 import { commentMessageState, commentThreadState } from "./comment-content.mjs";
-import { blockMarkdown, exportMarkdown, isRich, richDoc, schema } from "./richtext.mjs";
+import { isRich } from "./richtext-format.mjs";
+import { schema } from "./pm-adapter.mjs";
+import { exportMarkdown } from "./pm-markdown-serializer.mjs";
+import { richDoc } from "./richtext-spans.mjs";
+import { blockMarkdown } from "./richtext-page.mjs";
 
 export const CHANGE_READ_DEFAULT_BYTES = 128 * 1024;
 const encoder = new TextEncoder();

@@ -33,7 +33,7 @@ import {
   decode,
   encode,
   schema as wordgardSchema,
-} from "../viewer/wordgard-model.mjs";
+} from "./wordgard-doc.mjs";
 import { updateSpansConfig } from "./marks.mjs";
 import { stampSpans } from "./schema-features.mjs";
 import { richDoc } from "./richtext.mjs";

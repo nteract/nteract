@@ -9,7 +9,7 @@ import {
   validateRich,
   blockMarkdown,
 } from "./richtext.mjs";
-import { decode, encode } from "../viewer/wordgard-model.mjs";
+import { decode, encode } from "./wordgard-doc.mjs";
 
 test("tables nested in quotes and lists retain every row inside their container", () => {
   for (const source of [

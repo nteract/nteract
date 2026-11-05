@@ -1,4 +1,4 @@
-import { safeUrl } from "../model/richtext.mjs";
+import { safeUrl } from "../model/richtext-format.mjs";
 
 // Opening is stricter than markup parsing: resolve relative links first and
 // never let a generic document writer navigate to an executable scheme.

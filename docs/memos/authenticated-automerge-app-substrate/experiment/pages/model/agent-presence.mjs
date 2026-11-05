@@ -2,7 +2,7 @@
 // from tool calls the host already authorized, held in memory, and broadcast as
 // part of page-activity. It is never stored in the document or a receipt.
 import * as A from "@automerge/automerge/slim";
-import { isRich, textPath } from "./richtext.mjs";
+import { isRich, textPath } from "./richtext-format.mjs";
 import { textSegments, visibleNodeRange } from "./replace-match.mjs";
 
 export const AGENT_PRESENCE = Object.freeze({

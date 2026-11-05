@@ -19,7 +19,7 @@ import * as A from "@automerge/automerge/slim";
 import { Wordgard } from "wordgard/editor";
 import { filter, firstValueFrom, interval, race, take, timer } from "rxjs";
 import { cardContent } from "../model/page-card.mjs";
-import { isRich, textPath } from "../model/richtext.mjs";
+import { isRich, textPath } from "../model/richtext-format.mjs";
 import { decode } from "./wordgard-model.mjs";
 import { readOnlyPageConfig } from "./wordgard-page-config.mjs";
 import { CARD_IMAGE_MAX_BYTES } from "../shared/card-images.mjs";

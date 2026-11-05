@@ -22,7 +22,8 @@
 //
 // `rich` says the first screen holds Mermaid, a dataframe or an image, which
 // the JSON card can only stand in for. Nothing reads it yet.
-import { isRich, richDoc } from "./richtext.mjs";
+import { isRich } from "./richtext-format.mjs";
+import { richDoc } from "./richtext-spans.mjs";
 import { orderedBlockIds } from "./order.mjs";
 import { renderNode } from "./page-preview.mjs";
 

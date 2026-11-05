@@ -1,4 +1,4 @@
-// Draws each dataframe node (wordgard-model.mjs PagesDataframe) by its media
+// Draws each dataframe node (model/wordgard-doc.mjs PagesDataframe) by its media
 // type. The node is an atomic leaf with no text, so the table is its whole
 // shape; selecting the node and pressing Backspace removes it.
 //

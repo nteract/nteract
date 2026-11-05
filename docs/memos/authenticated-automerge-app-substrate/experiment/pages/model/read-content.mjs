@@ -3,15 +3,13 @@ import { agentType } from "./node-registry.mjs";
 import { readableNodeIds } from "./node-ids.mjs";
 import { readableImageIds } from "./image-ids.mjs";
 import { DATAFRAME_TITLE_MAX, parseAssetPath, readDataframe } from "../shared/dataset-assets.mjs";
-import {
-  exportMarkdown,
-  isRich,
-  parseMarkdown,
-  projectedBlock,
-  quotableNodeType,
-  richDoc,
-  schema,
-} from "./richtext.mjs";
+import { isRich } from "./richtext-format.mjs";
+import { quotableNodeType } from "./richtext-notices.mjs";
+import { parseMarkdown } from "./markdown-import.mjs";
+import { schema } from "./pm-adapter.mjs";
+import { exportMarkdown } from "./pm-markdown-serializer.mjs";
+import { richDoc } from "./richtext-spans.mjs";
+import { projectedBlock } from "./richtext-page.mjs";
 
 const utf8 = new TextEncoder();
 const fail = (status, code, message, details) => {

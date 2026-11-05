@@ -5,8 +5,12 @@
 // holding its source. This build imports every construct natively or as
 // literal text, so each stored block re-parses its source in place: the block
 // marker is replaced by the spans `parseMarkdown` produces, nested under the
-// marker's own parents. Text around the marker keeps its characters, so
-// comment anchors and concurrent edits nearby survive.
+// marker's own parents. Block bodies get the editor's form (`pageSpans`, as
+// Page-body writes use). Legacy comment messages keep the ProseMirror
+// adapter's form, the form comment writes use: the comment length limit
+// counts block markers, and the editor form can hold one more. Text around
+// the marker keeps its characters, so comment anchors and concurrent edits
+// nearby survive.
 //
 // One writer: the Page host. Two peers that each replaced the same marker
 // would each insert a copy, and Automerge keeps both insertions. The host is
@@ -24,9 +28,11 @@
 // Idempotent: a converted text holds no preserved marker, so running again
 // finds nothing and changes nothing.
 import * as A from "@automerge/automerge/slim";
-import { pmNodeToSpans } from "@automerge/prosemirror";
 import { updateSpansConfig } from "./marks.mjs";
-import { adapter, isRich, parseMarkdown } from "./richtext.mjs";
+import { isRich } from "./richtext-format.mjs";
+import { pageSpans } from "./richtext-spans.mjs";
+import { parseMarkdown } from "./markdown-import.mjs";
+import { adapter, pmNodeToSpans } from "./pm-adapter.mjs";
 import { documentFeatures, stampFeatures, stampSpans } from "./schema-features.mjs";
 
 export const PRESERVED_BLOCK = "pages-opaque";
@@ -68,16 +74,15 @@ const plain = (value) => (A.isImmutableString(value) ? String(value) : value);
 
 /** The native spans that replace one preserved marker. Its source parses as
  * Markdown (math and HTML stay literal text), or as plain text when its kind
- * is not Markdown, and every block lands under the marker's parents. */
-export function convertedSpans(marker, { literal = false } = {}) {
+ * is not Markdown, and every block lands under the marker's parents. `form`
+ * is "editor" (pageSpans) or "adapter" (the ProseMirror adapter's spans). */
+export function convertedSpans(marker, { literal = false, form = "editor" } = {}) {
   const attrs = marker.value.attrs ?? {};
   const parents = (marker.value.parents ?? []).map(plain);
-  const spans = pmNodeToSpans(
-    adapter,
-    parseMarkdown(String(plain(attrs.source) ?? ""), {
-      kind: literal ? "text" : String(plain(attrs.kind) ?? "markdown"),
-    }),
-  );
+  const tree = parseMarkdown(String(plain(attrs.source) ?? ""), {
+    kind: literal ? "text" : String(plain(attrs.kind) ?? "markdown"),
+  });
+  const spans = form === "adapter" ? pmNodeToSpans(adapter, tree) : pageSpans(tree);
   // The marker was a block boundary. An implicit first paragraph needs its
   // own marker here, or its text would join the block before it.
   if (spans[0]?.type !== "block" || spans[0].value.isEmbed)
@@ -194,10 +199,11 @@ export function preservedBlockEdits(doc, since = []) {
 export function convertPreservedBlocks(doc, { literal = false } = {}) {
   let converted = 0;
   for (const path of preservedTextPaths(doc)) {
+    const form = path[0] === "comments" ? "adapter" : "editor";
     const spans = spansAt(doc, path).flatMap((span) => {
       if (!isPreserved(span)) return [span];
       converted++;
-      return convertedSpans(span, { literal });
+      return convertedSpans(span, { literal, form });
     });
     A.updateSpans(doc, path, spans, updateSpansConfig);
     stampSpans(doc, spans);

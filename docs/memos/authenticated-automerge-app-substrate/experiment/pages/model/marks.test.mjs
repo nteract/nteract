@@ -25,7 +25,7 @@ import {
   unsupportedMarkdown,
   validateRich,
 } from "./richtext.mjs";
-import { expand } from "../viewer/wordgard-model.mjs";
+import { expand } from "./wordgard-doc.mjs";
 
 function fixture(markdown) {
   let doc = A.from(createPageData({ pageId: "page_fixture", title: "Marks" }));

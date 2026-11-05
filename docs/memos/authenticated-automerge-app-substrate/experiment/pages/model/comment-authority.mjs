@@ -1,5 +1,5 @@
 import * as A from "@automerge/automerge/slim";
-import { RICH_FORMAT } from "./richtext.mjs";
+import { RICH_FORMAT } from "./richtext-format.mjs";
 import { validateCommentBody, validateCommentSpans } from "./comment-content.mjs";
 import {
   MESSAGE_EDITABLE,

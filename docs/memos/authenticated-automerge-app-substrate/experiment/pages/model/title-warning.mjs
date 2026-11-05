@@ -1,5 +1,7 @@
 import { orderedBlockIds } from "./order.mjs";
-import { isRich, parseMarkdown, richDoc } from "./richtext.mjs";
+import { isRich } from "./richtext-format.mjs";
+import { parseMarkdown } from "./markdown-import.mjs";
+import { richDoc } from "./richtext-spans.mjs";
 
 const MAX_HEADING = 1024;
 const MAX_COMPARE = 8192;

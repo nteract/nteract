@@ -1,18 +1,14 @@
 import * as A from "@automerge/automerge/slim";
+import { RICH_FORMAT, isRich, redundantFirstMarker, textPath } from "./richtext-format.mjs";
+import { quotableNodeType } from "./richtext-notices.mjs";
+import { markdownlessNode, richDoc } from "./richtext-spans.mjs";
 import {
-  RICH_FORMAT,
-  isRich,
-  markdownlessNode,
-  quotableNodeType,
-  redundantFirstMarker,
-  richDoc,
   setRichMarkdown,
   setRichMarkdownKeepingNodes,
   setRichImage,
   setRichNode,
   projectedBlock,
-  textPath,
-} from "./richtext.mjs";
+} from "./richtext-page.mjs";
 import { resolveNodeId } from "./node-ids.mjs";
 import { imageIds, resolveImageId } from "./image-ids.mjs";
 import { updateSpansConfig } from "./marks.mjs";

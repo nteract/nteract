@@ -1,5 +1,6 @@
 import * as A from "@automerge/automerge/slim";
-import { RICH_FORMAT, adapter, isRich } from "./richtext.mjs";
+import { RICH_FORMAT, isRich } from "./richtext-format.mjs";
+import { adapter } from "./pm-adapter.mjs";
 import { COMMENTS_FEATURE } from "./comments-doc.mjs";
 import { commentsMigrated } from "./comments.mjs";
 import { stampFeatures, stampSpans } from "./schema-features.mjs";

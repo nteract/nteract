@@ -166,14 +166,22 @@ structural spans. The shared Markdown codec still uses ProseMirror schema and
 traversal libraries for import/export, validation, outlines and `node_index`,
 change reads, and passage-address mapping. It does not own an editor or mediate
 Wordgard keystrokes. Page-body Markdown writes and browser structural edits
-share one span encoder, Wordgard's `encode` (`viewer/wordgard-model.mjs`):
+share one span encoder, Wordgard's `encode` (`model/wordgard-doc.mjs`):
 
 - Browser edits encode the editor's document.
 - Page-body Markdown writes parse with the ProseMirror codec, and `pageSpans`
-  (`model/richtext.mjs`) re-encodes the adapter's spans with `encode`.
+  (`model/richtext-spans.mjs`) re-encodes the adapter's spans with `encode`.
+- Preserved-block conversion (`model/raw-migration.mjs`) writes `pageSpans`
+  output under the block's parents.
 
-Comments and preserved-content migration still write the ProseMirror adapter's
-spans directly.
+Agent-written comments still store the ProseMirror adapter's spans: moving
+them to `pageSpans` shifts the comment length rule, which counts block
+markers, so it waits for a decision on that rule.
+
+The codec is split by job; `model/richtext.mjs` lists the modules and
+re-exports their public names. Only `model/pm-*.mjs` import ProseMirror
+packages, and `model/pm-boundary.test.mjs` fails when another production
+module does.
 
 Block types are declared once in `model/node-registry.mjs`: stored names,
 ProseMirror names, agent-facing names, settable attrs and insert operations.
@@ -251,7 +259,7 @@ references; it does not publish the Page or change asset access.
     record blank lines between items, so a list reads back loose only when an
     item holds a second block, which Markdown can't write tight.
   - Markdown writes store the spans the editor's own encoder writes
-    ([`pageSpans`](model/richtext.mjs) runs Wordgard's `encode`). The
+    ([`pageSpans`](model/richtext-spans.mjs) runs Wordgard's `encode`). The
     editor's first structural edit (Enter, a cross-block delete, a block
     paste, a list toggle) in an agent-written block stores the same spans;
     plain typing never rewrites a block.
@@ -269,7 +277,7 @@ references; it does not publish the Page or change asset access.
   - A node this build doesn't know, from a newer build, still opens. Its
     feature stamp makes the Page read-only here and refuses this build's
     writes. The editor draws a notice (`PagesUnknownBlock`,
-    `PagesUnknownEmbed` in `viewer/wordgard-model.mjs`) whose value is the
+    `PagesUnknownEmbed` in `model/wordgard-doc.mjs`) whose value is the
     stored marker (type, attrs, parents, isEmbed), so encode writes it back
     exactly. Where `decode` can't draw a node as stored (a block inside a
     table cell or code block, a container that owns text, a parent type it
@@ -2431,7 +2439,7 @@ whose words changed still covers them and is not reported. The agent caret
 covers the changed words.
 
 `replace_match` can take `replacement_markdown` instead of `replacement`: one
-line of inline Markdown ([`parseInlineMarkdown`](model/richtext.mjs)). The
+line of inline Markdown ([`parseInlineMarkdown`](model/markdown-import.mjs)). The
 plain text goes through the same word diff, then the replaced range gets
 exactly the written marks plus marks that covered the whole match; other
 known marks are cleared from it and unknown ones kept. Written formatting is

@@ -1,0 +1,252 @@
+// Page block writers and readers: a block's Markdown projection, and the
+// writes that replace a block's rich text from Markdown, an image or a node.
+import * as A from "@automerge/automerge/slim";
+import { updateSpansConfig } from "./marks.mjs";
+import { stampSpans } from "./schema-features.mjs";
+import { imageAttrs } from "./image-attrs.mjs";
+import {
+  DATAFRAME_BLOCK,
+  dataframeAttrs,
+  parseAssetPath,
+  readDataframe,
+} from "../shared/dataset-assets.mjs";
+import { adapter, pmDocFromSpans, pmNodeToSpans, schema } from "./pm-adapter.mjs";
+import { paragraphFirstItems, plainImportParser } from "./pm-markdown-parser.mjs";
+import { exportMarkdown } from "./pm-markdown-serializer.mjs";
+import { unsupportedMarkdown } from "./markdown-scan.mjs";
+import { parseAgentMarkdown, parseMarkdown } from "./markdown-import.mjs";
+import { RICH_FORMAT, isRich, textPath } from "./richtext-format.mjs";
+import { pageSpans, richDoc } from "./richtext-spans.mjs";
+import { dataframeLabel, unknownNodeNotice } from "./richtext-notices.mjs";
+
+/** `pageId` is the Page holding the block; a dataframe naming another
+ * Page's asset then reads as an unknown-node notice. */
+export function blockMarkdown(block, pageId) {
+  if (!isRich(block)) return block.markdown;
+  const current = exportMarkdown(richDoc(block, pageId));
+  // Source that holds math or HTML is provenance only: its current projection
+  // is the escaped literal text an agent can write back.
+  if (unsupportedMarkdown(block.markdown)) return current;
+  const baseline = exportMarkdown(
+    pmDocFromSpans(adapter, pmNodeToSpans(adapter, parseMarkdown(block.markdown))),
+  );
+  if (current === baseline) return block.markdown;
+  // Before native tables, pipe syntax without outer pipes was imported as
+  // prose. Retain its original source while that native content is unchanged;
+  // merely reading it must not flatten the original table into one line.
+  if (
+    block.markdown.includes("|") &&
+    current ===
+      exportMarkdown(
+        pmDocFromSpans(adapter, pmNodeToSpans(adapter, plainImportParser.parse(block.markdown))),
+      )
+  )
+    return block.markdown;
+  return current;
+}
+
+// markdown remains immutable import provenance once a block is rich. Snapshots
+// and semantic tool edits use the rich field, never this old source string.
+export function enableRich(doc, id) {
+  const block = doc.blocks[id];
+  if (isRich(block)) return;
+  if (block.kind !== "markdown") throw Error("Only prose blocks support rich editing");
+  block.format = RICH_FORMAT;
+  block.richText = "";
+  setRichMarkdown(doc, id, block.markdown, { literal: true });
+}
+// Rich writers stamp the schema features their spans need in the same change.
+// Agent-written Markdown refuses math and HTML (`parseAgentMarkdown`); pass
+// `literal: true` for stored source, which keeps them as text instead.
+export function setRichMarkdown(doc, id, source, { literal = false } = {}) {
+  const tree = literal ? parseMarkdown(source) : parseAgentMarkdown(source);
+  const spans = pageSpans(tree);
+  A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
+  stampSpans(doc, spans);
+}
+export function setRichImage(doc, id, { src, dark_src = null, alt, title = null }) {
+  // Construct the embed directly: alt text is content, never Markdown syntax.
+  const tree = schema.node("doc", null, [
+    schema.node("paragraph", null, [schema.node("image", { src, dark_src, alt, title })]),
+  ]);
+  const spans = pageSpans(tree);
+  A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
+  stampSpans(doc, spans);
+}
+/** Write one node with no Markdown form as a block's whole content. */
+export function setRichNode(doc, id, { type, attrs }) {
+  if (type !== DATAFRAME_BLOCK) throw Error(`Unsupported node type: ${type}`);
+  // isAmgBlock marks an explicit block marker; without it the adapter writes
+  // no span for a node with no text.
+  const node = schema.node("dataframe", { ...dataframeAttrs(attrs), isAmgBlock: true });
+  const tree = schema.node("doc", null, [node]);
+  const spans = pageSpans(tree);
+  A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
+  stampSpans(doc, spans);
+}
+
+/**
+ * Rewrite a block from agent Markdown, keeping its dataframes. Applies only
+ * when the block holds one; otherwise this is a plain Markdown rewrite, and a
+ * dataframe-like line stays a link.
+ *
+ * Each dataframe must appear in `source` as its read-back line, unchanged, in
+ * the same place in the block's structure: at the top level, or inside the
+ * same kind of quote or list item it's stored in. That line becomes the
+ * original node again, unknown attrs included. Lines may move among their
+ * siblings. Throws `markdownless_node`, rather than dropping or inventing a
+ * node, when a line:
+ *
+ * - moves into or out of a quote, list or table, or sits in a heading;
+ * - is missing or edited;
+ * - outnumbers the block's dataframes with that line;
+ * - reads like a dataframe the block doesn't hold.
+ */
+export function setRichMarkdownKeepingNodes(doc, id, source) {
+  const block = doc.blocks[id];
+  const images = isRich(block)
+    ? A.spans(block, ["richText"]).filter(
+        (s) => s.type === "block" && String(s.value.type) === "image",
+      )
+    : [];
+  const refuseImage = () => {
+    throw Object.assign(
+      Error(
+        "This block holds image attributes Markdown cannot reproduce. Keep each image unchanged in an unambiguous container, or use targeted edits instead.",
+      ),
+      { code: "markdownless_node" },
+    );
+  };
+  if (images.some((s) => !imageAttrs(s.value.attrs))) refuseImage();
+  const opaqueImages = images.filter((s) =>
+    Object.keys(s.value.attrs).some((k) => !["src", "alt", "title"].includes(k)),
+  );
+  const keepImages = (spans) => {
+    const key = (s) =>
+      JSON.stringify([
+        s.value.parents.map(String),
+        ...["src", "alt", "title"].map((k) => String(s.value.attrs[k] ?? "")),
+      ]);
+    for (const original of opaqueImages) {
+      const identity = key(original);
+      const candidates = spans.filter(
+        (s) => s.type === "block" && String(s.value.type) === "image" && key(s) === identity,
+      );
+      // Even identical duplicates have no stable correspondence in Markdown.
+      // Do not guess which hidden attrs belong to which occurrence.
+      if (images.filter((s) => key(s) === identity).length !== 1 || candidates.length !== 1)
+        refuseImage();
+      candidates[0].value.attrs = original.value.attrs;
+    }
+    return spans;
+  };
+  // Each dataframe with its container path: the node types from the block's
+  // root down to it, "" at the top level.
+  const existing = [];
+  if (isRich(block))
+    (function collect(node, path) {
+      node.forEach((child) => {
+        if (child.type.name === "dataframe") existing.push({ node: child, path });
+        else if (!child.isTextblock && !child.isLeaf)
+          collect(child, path ? `${path}/${child.type.name}` : child.type.name);
+      });
+    })(richDoc(block), "");
+  // Every dataframe counts, readable or not: one whose attrs this build can't
+  // read never matches a line, so the rewrite is refused rather than dropping
+  // it.
+  if (!existing.length && !opaqueImages.length) return setRichMarkdown(doc, id, source);
+  const tree = parseAgentMarkdown(source);
+  const unmatched = [...existing];
+  const refuse = (message) => {
+    throw Object.assign(Error(message), { code: "markdownless_node" });
+  };
+  // Look-alike lines the walk found; the most specific one is reported.
+  const problems = new Set();
+  // The link a textblock holds when its whole text is one link: the shape of
+  // a dataframe's read-back line. Table cells hold their text directly.
+  const lineLink = (node) => {
+    const only = node.isTextblock && node.childCount === 1 ? node.firstChild : null;
+    const link = only?.isText ? only.marks.find((mark) => mark.type.name === "link") : null;
+    return link ? { href: link.attrs.href, text: only.text } : null;
+  };
+  const sameNode = (candidate, line) =>
+    candidate.attrs.src === line.href && dataframeLabel(candidate.attrs.title) === line.text;
+  // A line that reads as a dataframe's read-back line: a "Dataframe" label
+  // linking a Page asset. Kept as a plain link it would read exactly like the
+  // node, so it's refused unless it brings a node back.
+  const looksLikeNode = (line) =>
+    /^Dataframe(: .*)?$/.test(line.text) && parseAssetPath(line.href) !== null;
+  const restore = (node, path) => {
+    const line = node.isTextblock ? lineLink(node) : null;
+    if (line) {
+      const matches = existing.filter((entry) => entry.path === path && sameNode(entry.node, line));
+      if (matches.some((entry) => !entry.node.eq(matches[0].node)))
+        refuse(
+          "Duplicate dataframe lines carry different hidden attributes. Use targeted edits instead of guessing their correspondence.",
+        );
+      // Only a paragraph can stand where a dataframe was: a heading, code
+      // block or table cell can't hold one.
+      const index =
+        node.type.name === "paragraph"
+          ? unmatched.findIndex((entry) => entry.path === path && sameNode(entry.node, line))
+          : -1;
+      if (index !== -1) {
+        const [original] = unmatched.splice(index, 1);
+        // The original attrs, unknown ones included (the adapter's
+        // unknownAttrs); pageSpans stores every string attr immutable.
+        return schema.node("dataframe", { ...original.node.attrs, isAmgBlock: true });
+      }
+      const same = existing.filter((entry) => sameNode(entry.node, line));
+      if (same.some((entry) => entry.path === path && node.type.name === "paragraph"))
+        problems.add("duplicate");
+      else if (same.length) problems.add("moved");
+      else if (looksLikeNode(line)) problems.add("foreign");
+      return node;
+    }
+    if (node.isLeaf || node.isTextblock) return node;
+    const children = [];
+    const inner = node === tree ? "" : path ? `${path}/${node.type.name}` : node.type.name;
+    node.forEach((child) => children.push(restore(child, inner)));
+    return node.copy(node.content.constructor.from(children));
+  };
+  // Without stored dataframes, dataframe-like lines are ordinary links.
+  // A dataframe restored as an item's first child needs the item's empty
+  // first paragraph back, or the adapter writes no marker for the item.
+  const kept = existing.length ? paragraphFirstItems(restore(tree, "")) : tree;
+  if (problems.has("moved"))
+    refuse(
+      "A dataframe's line can't go inside a quote, list or table, into a heading, or out of the quote or list item it's stored in. Keep it where read_page shows it; it may move among its neighbours.",
+    );
+  if (unmatched.length) {
+    const line = (node) =>
+      readDataframe(node.attrs)
+        ? `[${dataframeLabel(node.attrs.title)}](${node.attrs.src})`
+        : unknownNodeNotice("dataframe");
+    const lines = [...new Set(unmatched.map((entry) => line(entry.node)))];
+    const counted = lines.map((text) => {
+      const total = existing.filter((entry) => line(entry.node) === text).length;
+      return total > 1 ? `${text} (the block holds ${total}; keep one line for each)` : text;
+    });
+    throw Object.assign(
+      Error(
+        `This block holds ${unmatched.length === 1 ? "a dataframe" : `${unmatched.length} dataframes`} with no line in your Markdown. A dataframe has no Markdown form; keep its line unchanged to keep it: ${counted.join(", ")}. To remove one, use edit_page delete_node with its node_id from read_page's outline.`,
+      ),
+      { code: "markdownless_node" },
+    );
+  }
+  if (problems.has("duplicate"))
+    refuse(
+      "A dataframe's line appears more times than the block has dataframes with that line. Each dataframe keeps exactly one line; to copy one, use insert_node with its asset_id.",
+    );
+  if (problems.has("foreign"))
+    refuse(
+      "This line reads as a dataframe this block doesn't hold. Markdown can't create or move a dataframe; use insert_node with its asset_id.",
+    );
+  const spans = keepImages(pageSpans(kept));
+  A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
+  stampSpans(doc, spans);
+}
+export function projectedBlock(block, pageId) {
+  const { richText: _rich, ...result } = block;
+  return { ...result, markdown: blockMarkdown(block, pageId) };
+}

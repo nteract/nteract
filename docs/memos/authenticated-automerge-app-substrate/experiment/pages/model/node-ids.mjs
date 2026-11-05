@@ -21,9 +21,9 @@
 //
 // An id is meaningful only with its block_id: cursors are per text object.
 import * as A from "@automerge/automerge/slim";
-import { eventsWithIndexChanges, traverseSpans } from "@automerge/prosemirror/dist/traversal.js";
-import { pmDocFromSpans } from "@automerge/prosemirror";
-import { adapter, codeTextUnmarked, richDoc, textPath } from "./richtext.mjs";
+import { codeTextUnmarked, textPath } from "./richtext-format.mjs";
+import { adapter, eventsWithIndexChanges, pmDocFromSpans, traverseSpans } from "./pm-adapter.mjs";
+import { richDoc } from "./richtext-spans.mjs";
 
 // A cursor is `<counter>@<actor hex>`; Pages accepts actors of up to 64 bytes
 // (worker/actor-authorship.mjs), 128 hex characters.

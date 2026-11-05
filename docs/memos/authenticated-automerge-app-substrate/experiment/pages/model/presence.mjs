@@ -1,7 +1,7 @@
 import * as A from "@automerge/automerge/slim";
 import { selectionContext } from "./comments.mjs";
 import { findUniqueVisibleRange } from "./replace-match.mjs";
-import { isRich } from "./richtext.mjs";
+import { isRich } from "./richtext-format.mjs";
 
 const plain = (value) => value && typeof value === "object" && !Array.isArray(value);
 const bounded = (value, max) =>
