@@ -150,13 +150,15 @@ Wordgard is the sole editor and applies native text splices, marks, and
 structural spans. The shared Markdown codec still uses ProseMirror schema and
 traversal libraries for import/export, validation, outlines and `node_index`,
 change reads, and passage-address mapping. It does not own an editor or mediate
-Wordgard keystrokes. Two encoders write spans:
+Wordgard keystrokes. Page-body Markdown writes and browser structural edits
+share one span encoder, Wordgard's `encode` (`viewer/wordgard-model.mjs`):
 
-- Browser edits use Wordgard's `encode` (`viewer/wordgard-model.mjs`).
-- Markdown writes use the ProseMirror adapter, then `pageSpans`
-  (`model/richtext.mjs`), which adjusts its output to the editor's form.
-  [`markdown-projection.test.mjs`](model/markdown-projection.test.mjs) lists
-  where the two still differ.
+- Browser edits encode the editor's document.
+- Page-body Markdown writes parse with the ProseMirror codec, and `pageSpans`
+  (`model/richtext.mjs`) re-encodes the adapter's spans with `encode`.
+
+Comments and preserved-content migration still write the ProseMirror adapter's
+spans directly.
 
 Block types are declared once in `model/node-registry.mjs`: stored names,
 ProseMirror names, agent-facing names, settable attrs and insert operations.
@@ -233,15 +235,16 @@ references; it does not publish the Page or change asset access.
   - Export writes lists tight with `-` bullets. The native model doesn't
     record blank lines between items, so a list reads back loose only when an
     item holds a second block, which Markdown can't write tight.
-  - Markdown writes store the editor's form ([`pageSpans`](model/richtext.mjs)):
-    an implicit top-level first paragraph and immutable-string attrs. The
+  - Markdown writes store the spans the editor's own encoder writes
+    ([`pageSpans`](model/richtext.mjs) runs Wordgard's `encode`). The
     editor's first structural edit (Enter, a cross-block delete, a block
-    paste, a list toggle) in an agent-written block writes no history; plain
-    typing never rewrites a block.
+    paste, a list toggle) in an agent-written block stores the same spans;
+    plain typing never rewrites a block.
     [`markdown-projection.test.mjs`](model/markdown-projection.test.mjs)
-    checks every corpus case and lists the cases left for a shared encoder:
-    two kinds of disagreement (a quote whose first child isn't a paragraph,
-    and mark runs the editor re-marks) across 11 corpus cases.
+    checks every corpus case. Five cases still write on that edit: Automerge
+    3.5's `updateSpans` unmarks and marks again any mark that covers more
+    than one span, even when the spans are unchanged. Those ops can win over
+    a peer's concurrent change to the same mark; the test pins it.
   - The scan masks code per table cell, as Markdown-it splits cells first,
     and recognizes a tag of any length, with `>` inside quoted values, in
     linear time.

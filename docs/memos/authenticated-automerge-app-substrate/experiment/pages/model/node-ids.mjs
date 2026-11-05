@@ -8,9 +8,11 @@
 // offset. It stops resolving once the marker is deleted, which is when the
 // node is gone (or retyped by a writer that replaces markers).
 //
-// A container (a list or quote) has no marker of its own: its id is the
-// marker of its first item or child, and changes when that one is deleted or
-// moved. A Markdown rewrite diffs the block and can replace markers, so it
+// A list has no marker of its own: its id is the marker of its first item,
+// and changes when that item is deleted or moved. Pages and the editor write
+// a quote's own marker, but content in the ProseMirror adapter's form can
+// lack it when the quote's first child isn't a paragraph; that quote's id is
+// its first child's, the same way. A Markdown rewrite diffs the block and can replace markers, so it
 // can mint new ids.
 //
 // The block's implicit first paragraph has no marker, so it has no id

@@ -4,7 +4,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import { applyPageOperation, createPageData, initializePage, orderedBlockIds } from "./page.mjs";
-import { blockMarkdown, richDoc, textPath } from "./richtext.mjs";
+import { adapterSpans, blockMarkdown, parseMarkdown, richDoc, textPath } from "./richtext.mjs";
+import { updateSpansConfig } from "./marks.mjs";
 import { projectReadContent } from "./read-content.mjs";
 import { projectReadChanges } from "./read-changes.mjs";
 import { MAX_NODE_ID, nodeIds, nodeRange, resolveNodeId } from "./node-ids.mjs";
@@ -448,20 +449,44 @@ test("delete_node refuses to join the lists on either side into one", () => {
         error.message,
       ),
   );
-  // A quote whose first child is a list opens under its own marker; deleting
-  // the rule would reopen the quote above. Refused too.
-  const quoted = fixture("Intro\n\n> a\n\n---\n\n> - x");
+  // Stored content can lack the marker of a quote whose first child is a
+  // list (the ProseMirror adapter's form): the list item names the quote only
+  // as a parent, so deleting the rule would reopen the quote above. Refused.
+  const legacy = fixture("Intro");
+  legacy.doc = A.change(legacy.doc, (draft) =>
+    A.updateSpans(
+      draft,
+      textPath(legacy.id),
+      adapterSpans(parseMarkdown("Intro\n\n> a\n\n---\n\n> - x")).slice(1),
+      updateSpansConfig,
+    ),
+  );
   refuses(
-    quoted.doc,
+    legacy.doc,
     [
       {
         op: "delete_node",
-        block_id: quoted.id,
-        node_id: idOf(quoted.doc, quoted.id, "horizontal-rule"),
+        block_id: legacy.id,
+        node_id: idOf(legacy.doc, legacy.id, "horizontal-rule"),
       },
     ],
     /would join the blockquote before this node and the blockquote after it into one/,
   );
+  // Pages writes that quote's own marker, as the editor does, so the same
+  // delete leaves two quotes.
+  const quoted = fixture("Intro\n\n> a\n\n---\n\n> - x");
+  const apart = edit(quoted.doc, [
+    {
+      op: "delete_node",
+      block_id: quoted.id,
+      node_id: idOf(quoted.doc, quoted.id, "horizontal-rule"),
+    },
+  ]).doc;
+  assert.deepEqual(
+    outline(apart, quoted.id).map((entry) => entry.type),
+    ["paragraph", "blockquote", "blockquote"],
+  );
+  assert.equal(blockMarkdown(apart.blocks[quoted.id]), "Intro\n\n> a\n\n> - x");
   // Different kinds of list stay separate, so that delete goes through.
   const mixed = fixture("Intro\n\n- a\n\n---\n\n1. b");
   const after = edit(mixed.doc, [

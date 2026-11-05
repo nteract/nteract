@@ -8,8 +8,12 @@ import * as A from "@automerge/automerge";
 import markdownCorpus from "./markdown-corpus.json" with { type: "json" };
 import { createPageData, initializePage, orderedBlockIds } from "./page.mjs";
 import {
+  adapterSpans,
   exportMarkdown,
+  pageSpans,
+  parseAgentMarkdown,
   parseMarkdown,
+  schema,
   setRichMarkdown,
   textPath,
   unsupportedMarkdown,
@@ -75,30 +79,86 @@ const rewritten = (doc, id) => {
     A.updateSpans(draft, path, encode(decode(A.spans(draft, path)).doc), updateSpansConfig),
   );
 };
+// Spans as plain values, for comparing writers. Adjacent text with the same
+// marks is one run, as A.spans reads it back.
+const plainSpans = (spans) =>
+  spans.reduce((out, span) => {
+    const last = out.at(-1);
+    if (
+      span.type === "text" &&
+      last?.type === "text" &&
+      JSON.stringify(last.marks) === JSON.stringify({ ...span.marks })
+    )
+      last.value += span.value;
+    else out.push(plainSpan(span));
+    return out;
+  }, []);
+const plainSpan = (span) =>
+  span.type === "text"
+    ? { type: "text", value: span.value, marks: { ...span.marks } }
+    : {
+        type: "block",
+        value: {
+          type: String(span.value.type),
+          parents: span.value.parents.map(String),
+          attrs: Object.fromEntries(
+            Object.entries(span.value.attrs ?? {}).map(([key, value]) => [
+              key,
+              value instanceof A.ImmutableString ? String(value) : value,
+            ]),
+          ),
+          isEmbed: !!span.value.isEmbed,
+        },
+      };
 const editorRewrite = (doc, id) => {
   const after = rewritten(doc, id);
   return A.diff(after, A.getHeads(doc), A.getHeads(after));
 };
 
-// Writer disagreements the shared encoder will remove, by corpus id. Each is
-// invisible: the rewrite stores the same content in the editor's form.
-// - quote-first-child: a quote whose first child isn't a paragraph. The
-//   editor writes an explicit blockquote marker; the importer leaves it to the
-//   children's parents.
-// - mark-runs: the editor re-marks some runs (nested or crossing marks, link
-//   titles) with the same values.
+// Cases where a rewrite with identical spans still writes, by corpus id. Pages'
+// writers and the editor store the same spans; Automerge 3.5's updateSpans
+// compares each span's marks with the document's merged mark runs, so a mark
+// covering more than one span never matches and is unmarked and marked again
+// with the same value ("mark-runs"). The rewrite is invisible, but those ops
+// can win over a peer's concurrent change to the same mark
+// (`a rewrite with unchanged spans ...` below).
 const KNOWN_DISAGREEMENTS = Object.freeze({
-  "quoted-nested-only-bullets": "quote-first-child",
-  "quoted-nested-only-ordered": "quote-first-child",
-  "table-in-quote": "quote-first-child",
-  "sibling-tables-in-quote": "quote-first-child",
-  "native-rule-variants": "quote-first-child",
-  "highlight-heading-quote": "quote-first-child",
   "mark-boundaries": "mark-runs",
   "link-title": "mark-runs",
   "highlight-code-link": "mark-runs",
   "highlight-across-strong": "mark-runs",
   "native-strikethrough-nested": "mark-runs",
+});
+
+// Pins Automerge's mark-runs behaviour. When this fails, Automerge compares
+// merged runs: empty KNOWN_DISAGREEMENTS and delete this test.
+test("a rewrite with unchanged spans re-marks a multi-span mark over a peer's concurrent unmark", () => {
+  const path = ["t"];
+  let base = A.from({ t: "" });
+  base = A.change(base, (draft) =>
+    A.updateSpans(
+      draft,
+      path,
+      [
+        { type: "text", value: "ab", marks: { strong: true } },
+        { type: "text", value: "cd", marks: { strong: true, em: true } },
+      ],
+      updateSpansConfig,
+    ),
+  );
+  const peer = A.change(A.clone(base, { actor: "bb" }), (draft) =>
+    A.unmark(draft, path, { start: 0, end: 2, expand: "both" }, "strong"),
+  );
+  const rewrite = A.change(A.clone(base, { actor: "aa" }), (draft) =>
+    A.updateSpans(draft, path, A.spans(draft, path), updateSpansConfig),
+  );
+  assert.notDeepEqual(A.getHeads(rewrite), A.getHeads(base));
+  const merged = A.merge(A.clone(rewrite), peer);
+  assert.deepEqual(A.spans(merged, path)[0], {
+    type: "text",
+    value: "ab",
+    marks: { strong: true },
+  });
 });
 
 test("an editor rewrite of any block Pages wrote from Markdown writes nothing", () => {
@@ -143,4 +203,47 @@ test("an editor rewrite of any block Pages wrote from Markdown writes nothing", 
   let doc = A.from(createPageData({ pageId: "projection", title: "Projection" }));
   doc = A.change(doc, (draft) => initializePage(draft, "Intro\n\n- a\n- b"));
   assert.deepEqual(editorRewrite(doc, orderedBlockIds(doc)[0]), []);
+});
+
+// A block's content as an agent reads it, from its stored spans.
+const storedRead = (spans) => {
+  let doc = A.from(createPageData({ pageId: "projection", title: "Projection" }));
+  const id = orderedBlockIds(doc)[0];
+  doc = A.change(doc, (draft) => A.updateSpans(draft, textPath(id), spans, updateSpansConfig));
+  return exportMarkdown(richDoc(doc.blocks[id]));
+};
+
+test("the editor's encoder stores the same content as the adapter for every corpus case", () => {
+  for (const { id: caseId, markdown } of markdownCorpus.cases)
+    for (const literal of unsupportedMarkdown(markdown) ? [true] : [false, true]) {
+      let tree;
+      try {
+        tree = literal ? parseMarkdown(markdown) : parseAgentMarkdown(markdown);
+      } catch {
+        continue;
+      }
+      const spans = pageSpans(tree);
+      assert.equal(storedRead(spans), storedRead(adapterSpans(tree)), caseId);
+      // Encoding the stored spans again writes them unchanged.
+      assert.deepEqual(plainSpans(encode(decode(spans).doc)), plainSpans(spans), caseId);
+    }
+});
+
+test("a newline in a paragraph is stored as the hard break the editor writes", () => {
+  const spans = pageSpans(parseAgentMarkdown("a&#10;b"));
+  assert.deepEqual(
+    plainSpans(spans).map((span) => (span.type === "text" ? span.value : span.value.type)),
+    ["a", "hard-break", "b"],
+  );
+  // It reads back as a hard break, so a read written back keeps it.
+  assert.equal(storedRead(spans), "a\\\nb");
+});
+
+test("a tree the editor can't hold whole is refused, not stored", () => {
+  const tree = schema.node("doc", null, [
+    schema.node("paragraph", null, [
+      schema.node("image", { src: "/a.png", alt: { nested: true }, title: null }),
+    ]),
+  ]);
+  assert.throws(() => pageSpans(tree), { code: "markdownless_node" });
 });

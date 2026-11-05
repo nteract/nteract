@@ -453,6 +453,24 @@ test("a link whose only content is a line break is unrepresentable", () => {
     assert.equal(unsupportedMarkdown(native) ?? nativeImportLoss(native), null, native);
 });
 
+test("entity-only linked newlines are refused for agents and preserved literally on import", () => {
+  for (const entity of ["&#10;", "&#xA;", "&NewLine;", "&#10;&#10;"]) {
+    for (const prefix of ["", "[ok](https://example.org) "]) {
+      const source = `${prefix}[${entity}](https://example.org)`;
+      assert.throws(() => parseAgentMarkdown(source), { code: "unsupported_markdown" }, source);
+      assert.deepEqual(nativeImportLoss(source), { kind: "link", value: "https://example.org" });
+      const native = A.change(
+        A.from({ blocks: { one: { id: "one", kind: "markdown", markdown: source } } }),
+        (doc) => enableRich(doc, "one"),
+      );
+      assert.equal(richDoc(native.blocks.one).textContent, source);
+    }
+    const source = `[a${entity}b](https://example.org)`;
+    assert.equal(nativeImportLoss(source), null, source);
+    assert.doesNotThrow(() => parseAgentMarkdown(source), source);
+  }
+});
+
 // Never silent loss: every corpus source, and each one wrapped in a link, a
 // table cell, bold and a highlight, imports with every link destination, image
 // and visible character natively, or as the whole source in literal text. An

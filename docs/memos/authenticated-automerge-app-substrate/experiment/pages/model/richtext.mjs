@@ -35,6 +35,7 @@ import {
   parseAssetPath,
   readDataframe,
 } from "../shared/dataset-assets.mjs";
+import { decode, encode } from "../viewer/wordgard-model.mjs";
 
 export { safeUrl } from "./marks.mjs";
 
@@ -1439,7 +1440,8 @@ export function lostContent(tokens, doc) {
       if (token.type === "inline") walk(token.children ?? []);
       else if (["text", "code_inline", "fence", "code_block"].includes(token.type)) {
         carried.text.push(token.content);
-        if (open && token.content) open.text = true;
+        // Entity newlines become unmarked Wordgard LineBreak leaves.
+        if (open && /[^\n]/.test(token.content)) open.text = true;
       } else if (token.type === "link_open") {
         open = { href: token.attrGet("href"), text: false };
         carried.links.add(open.href);
@@ -1694,38 +1696,31 @@ export function setRichMarkdown(doc, id, source, { literal = false } = {}) {
   A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
   stampSpans(doc, spans);
 }
-/** A Page block's spans for `tree`, in the form the editor writes: a
- * top-level first paragraph has no marker when it has content or is the only
- * node (encode's implicitAt in viewer/wordgard-model.mjs). The adapter always
- * writes that marker, so the editor's first structural edit (Enter, a
- * cross-block delete, a block paste, a list toggle) would otherwise delete
- * it and write history. Two disagreements remain for the shared encoder: a
- * quote whose first child isn't a paragraph, and some mark runs
- * (markdown-projection.test.mjs lists them). */
-/** The spans the ProseMirror adapter writes for `tree`, before pageSpans
- * puts them in the editor's form. Fixtures whose history must not move with
- * Pages' writer form use these. */
+/** The spans the ProseMirror adapter writes for `tree`. pageSpans re-encodes
+ * them with the editor's encoder. Fixtures for stored content in the
+ * adapter's form, and fixtures whose history must not move with Pages'
+ * writer form, use these directly. */
 export const adapterSpans = (tree) => pmNodeToSpans(adapter, tree);
+/** A Page block's spans for `tree`, written by the editor's own encoder
+ * (encode in viewer/wordgard-model.mjs), so the editor's first structural
+ * edit (Enter, a cross-block delete, a block paste, a list toggle) in an
+ * agent-written block rewrites the same spans. The adapter's form differs:
+ * it writes a marker for a top-level first paragraph, leaves out the marker
+ * of a quote whose first child isn't a paragraph, and keeps a newline in a
+ * paragraph as text where the editor writes a hard break.
+ *
+ * A tree the editor model can't hold whole (decode reports `lossy`) is
+ * refused: the editor would show that block read-only. */
 export function pageSpans(tree) {
-  // String attrs are immutable strings, as encode writes them; the adapter
-  // writes an image's alt and title as text.
-  const spans = pmNodeToSpans(adapter, tree).map((span) =>
-    span.type === "block"
-      ? {
-          ...span,
-          value: {
-            ...span.value,
-            attrs: Object.fromEntries(
-              Object.entries(span.value.attrs ?? {}).map(([key, value]) => [
-                key,
-                typeof value === "string" ? new A.ImmutableString(value) : value,
-              ]),
-            ),
-          },
-        }
-      : span,
-  );
-  return redundantFirstMarker(spans) ? spans.slice(1) : spans;
+  const decoded = decode(adapterSpans(tree));
+  if (decoded.lossy)
+    throw Object.assign(
+      Error(
+        "This content has a node the Pages editor can't hold, so it can't be written. Leave that node out, or use targeted edits.",
+      ),
+      { code: "markdownless_node" },
+    );
+  return encode(decoded.doc);
 }
 /** Whether `spans` open with a marker the editor wouldn't write: a plain
  * top-level paragraph marker before content, or as the only node (encode's

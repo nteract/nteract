@@ -275,8 +275,9 @@ function applyEdit(doc, op, trace, context) {
 /** Delete the top-level node `op.node_id` names: its marker through the next
  * node's marker, so its text, marks and children go with it and its
  * neighbours keep their identity. Refused when the block ends up with fewer
- * than one node less: a list or quote has no marker of its own, so two alike
- * on either side of the deleted node would join into one. (Deleting a
+ * than one node less: a list, or a quote stored without its own marker, has
+ * none to keep it apart, so two alike on either side of the deleted node
+ * would join into one. (Deleting a
  * block's only node leaves the one empty paragraph a block always has.)
  * A delete of the node that opens the block is recorded in `opened`; the
  * batch drops the next node's plain paragraph marker once it's done
