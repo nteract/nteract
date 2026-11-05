@@ -1,9 +1,10 @@
 import { ADMISSION_OUTCOMES } from "../shared/admission.mjs";
 
-/** Every admission denial maps to one internal reason (logs only) and one
+/** Every admission denial maps to one internal reason and one
  * client-safe code from ADMISSION_OUTCOMES. Reasons are a closed set: values
  * outside this table are never logged or returned. A reason names the boundary
- * that refused the request, not the cause of a storage delay.
+ * that refused the request, not the cause of a storage delay. Only the scheduled
+ * Project lease boundary is also a client-safe WebSocket close reason.
  */
 export const ADMISSION_REASONS = Object.freeze({
   // HTTP gateway and Page host checks on /api/connect, /api/sync and /api/saved.
@@ -22,6 +23,7 @@ export const ADMISSION_REASONS = Object.freeze({
   page_no_grant: "page_access_denied",
   page_access_removed: "page_access_denied",
   activity_epoch_changed: "temporarily_unavailable",
+  project_lease_expired: "temporarily_unavailable",
   connection_capacity: "temporarily_unavailable",
   receipt_heads_missing: "temporarily_unavailable",
   // A receipt for edits the native gate refused: the tab's declared build
@@ -122,6 +124,14 @@ export function admissionCode(error) {
 
 export function admissionCloseCode(error) {
   return ADMISSION_CODES[admissionCode(error)].close;
+}
+
+/** Only a scheduled lease boundary is public; all other reasons stay internal. */
+export function admissionCloseReason(error) {
+  return admissionReason(error) === "project_lease_expired" &&
+    admissionCode(error) === "temporarily_unavailable"
+    ? "project_lease_expired"
+    : admissionCode(error);
 }
 
 /** One structured, non-sensitive line per denial. celld exports console lines

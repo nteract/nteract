@@ -350,6 +350,19 @@ try {
   for (const page of [owner, commenter])
     await expect(aliceCard(page)).toContainText("1 reply", { timeout: 10000 });
   // Only the forging key was blocked: alice herself still comments.
+  const receipts = [];
+  const observeReceipt = (response) => {
+    const url = new URL(response.url());
+    if (
+      url.pathname === "/api/saved" &&
+      url.searchParams.get("page") === pageId &&
+      !url.searchParams.has("probe") &&
+      response.request().method() === "POST" &&
+      response.status() === 200
+    )
+      receipts.push(response);
+  };
+  commenter.on("response", observeReceipt);
   const aliceReply = await tool(commenter, "manage_page_comment", {
     page_id: pageId,
     action: "reply",
@@ -398,7 +411,34 @@ try {
     checkpoint("MCP: alice's key comments but can't edit");
   }
 
-  // Promote to editor: the open tab becomes editable without a reload.
+  // Clean promotion requires the latest remote reply's receipt to be applied
+  // in Alice's tab, not merely accepted by the agent or visible to the owner.
+  const frontier = (await tool(owner, "read_page", { page_id: pageId })).body;
+  await expect(
+    commenter.getByText(keys ? "3 replies" : "2 replies", { exact: true }),
+  ).toBeVisible();
+  const sameHeads = (a, b) =>
+    Array.isArray(a) &&
+    Array.isArray(b) &&
+    a.length === b.length &&
+    a.every((head) => b.includes(head));
+  const matchingReceipt = () =>
+    receipts.find((response) => {
+      const request = response.request().postDataJSON();
+      return (
+        sameHeads(request.heads, frontier.heads) &&
+        sameHeads(request.comment_heads, frontier.comment_heads)
+      );
+    });
+  await expect.poll(() => !!matchingReceipt()).toBe(true);
+  assert.equal(await matchingReceipt().finished(), null);
+  // The reply render queued Syncing before this response. Saved proves the
+  // client applied its acknowledgement, rather than an in-flight HTTP answer.
+  await expect(commenter.getByRole("status").filter({ hasText: /^Saved$/ })).toBeVisible();
+  commenter.off("response", observeReceipt);
+  checkpoint("Alice applied a receipt for the latest Page and comment frontiers");
+
+  // The clean tab reconnects on the new grant without login or manual reload.
   const current = await api(owner, `/api/access?page=${pageId}`);
   const alice = (await api(commenter, "/api/auth/session")).body.identity.principal;
   const promoted = await api(owner, `/api/access?page=${pageId}`, {

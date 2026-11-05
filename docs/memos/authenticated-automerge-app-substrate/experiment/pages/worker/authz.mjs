@@ -7,8 +7,8 @@
  * decide() is pure and synchronous. It reads only the relation snapshot the
  * item host already holds: the item's own ACL, a copy of its project's ACL,
  * and the item's lifecycle. Policy hooks call it per frame, so it never
- * awaits, fetches or reads a clock. In this build the project copy is
- * synthesized from the Page owner and carries no lease.
+ * awaits, fetches or reads a clock. The host resolves the Project copy from
+ * authoritative Catalog placement and bounds it with a transient lease.
  *
  * Three steps, in this order:
  *
@@ -90,18 +90,15 @@ const GRANTS = {
     commenter: ["read", "comment"],
     viewer: ["read"],
   },
-  project: {
-    owner: PROJECT_CAPABILITIES,
-    editor: ["read", "trash", "restore", "create_items", "move_within"],
-    viewer: ["read"],
-  },
+  project: { owner: PROJECT_CAPABILITIES, editor: ["read"], commenter: ["read"], viewer: ["read"] },
 };
 
 /** What a project relation grants on an item the project holds: the
  * `project->` arrows in schema.zed's page definition. */
 const INHERITED = {
   owner: PAGE_CAPABILITIES,
-  editor: ["read", "comment", "edit", "trash", "restore", "create_items", "move_within"],
+  editor: ["read", "comment", "edit"],
+  commenter: ["read", "comment"],
   viewer: ["read"],
 };
 
@@ -161,7 +158,7 @@ function relationPaths(principal, object, now) {
     for (const path of found) paths.push({ relation, grants, ...path });
   };
   if (object.type === "project") {
-    for (const relation of ["owner", "editor", "viewer"])
+    for (const relation of ["owner", "editor", "commenter", "viewer"])
       add(relation, GRANTS.project[relation], reach(principal, relations[relation], now));
     return paths;
   }
@@ -179,7 +176,7 @@ function relationPaths(principal, object, now) {
   const container = placed ? containerFor(object, now) : null;
   if (container) {
     const until = container.valid_until ?? Infinity;
-    for (const relation of ["owner", "editor", "viewer"])
+    for (const relation of ["owner", "editor", "commenter", "viewer"])
       for (const path of reach(principal, container.relations?.[relation], now))
         paths.push({
           relation,
@@ -258,13 +255,7 @@ export function decide(principal, actorChain, object, now) {
       break;
     }
   }
-  return {
-    capabilities,
-    valid_until: validUntil,
-    revision,
-    authority_token: null,
-    basis,
-  };
+  return { capabilities, valid_until: validUntil, revision, authority_token: null, basis };
 }
 
 /**
@@ -341,10 +332,9 @@ const companyOrganization = (namespace, domain) =>
  * grants and tombstones the ACL has collected. A viewer, commenter or editor
  * row grants.
  * Any other row (a removal tombstone or an unreadable row) becomes `removed`,
- * which blocks company view. A Page record holds no location, so it never has
- * the `project` relation: Projects are owner-only in this build and grant a
- * Page's owner nothing the `owner` relation doesn't. A Project relation, when
- * Projects grant access, comes from the owner's Catalog location.
+ * which blocks company view, not Project membership. The optional transient
+ * projectAccess comes only from the owner's Catalog placement. The immutable
+ * Page owner retains direct authority even when the Project lease expires.
  */
 export function pageObject(metadata, principal) {
   const lifecycle = pageState(metadata);
@@ -363,32 +353,42 @@ export function pageObject(metadata, principal) {
   const domainView = metadata?.acl?.domainView;
   const company = domainView && companyOrganization(domainView.namespace, domainView.domain);
   if (company) viewer.push({ type: "organization", id: company });
+  const container = principal === metadata?.owner ? null : metadata?.projectAccess;
   return {
     type: "page",
     id: metadata?.pageId ?? null,
     revision: metadata?.acl?.revision ?? 0,
     lifecycle,
     relations: {
-      owner: [user(metadata?.owner)],
-      project: [],
+      owner: container ? [] : [user(metadata?.owner)],
+      project: container ? [{ type: "project", id: container.id }] : [],
       editor,
       commenter,
       viewer,
       removed,
     },
-    container: null,
+    container: container ?? null,
   };
 }
 
-/** decide()'s object for a Space record. Owner-only in this build: the
- * record's member list stays empty and grants nothing. */
+/** decide()'s object for the authoritative Project record. */
 export function projectObject(record) {
+  const relations = {
+    owner: record ? [user(record.owner)] : [],
+    editor: [],
+    commenter: [],
+    viewer: [],
+  };
+  for (const principal of Object.keys(record?.acl?.members ?? {})) {
+    const row = memberRow(record.acl.members, principal);
+    if (row && relations[row.role]) relations[row.role].push(user(principal));
+  }
   return {
     type: "project",
     id: record?.space_id ?? null,
     revision: record?.acl?.revision ?? 0,
     lifecycle: record ? "active" : "missing",
-    relations: { owner: record ? [user(record.owner)] : [], editor: [], viewer: [] },
+    relations,
     container: null,
   };
 }

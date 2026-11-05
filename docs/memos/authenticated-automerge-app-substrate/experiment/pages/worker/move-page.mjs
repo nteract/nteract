@@ -50,6 +50,8 @@ export const MOVE_STATUS = Object.freeze({
   placement_cycle: 409,
   placement_mismatch: 400,
   project_not_found: 404,
+  project_policy_unavailable: 503,
+  shared_project_move_unsupported: 409,
   nesting_depth_exceeded: 400,
   move_destination_required: 400,
   invalid_position: 400,
@@ -169,12 +171,7 @@ export const movePageSpec = Object.freeze({
         check(typeof event.ok === "boolean", "ok says whether the barrier held");
       },
     },
-    effects: {
-      settle: noFields,
-      plan: noFields,
-      write: noFields,
-      sync: noFields,
-    },
+    effects: { settle: noFields, plan: noFields, write: noFields, sync: noFields },
   },
 });
 

@@ -358,7 +358,10 @@ export function planMove(state, pageId, destination = {}, position = "last") {
   if (entry.state === "trashed")
     return refuse("page_trashed", "Restore this Page from Trash before moving it");
   if ("space_id" in entry)
-    return refuse("home_page_protected", "A Project's home Page stays a root; it can't be moved");
+    return refuse(
+      "home_page_protected",
+      "Project content stays at its Project root; it can't be moved independently",
+    );
   if (projectId === undefined && !parentArgument)
     return refuse(
       "move_destination_required",

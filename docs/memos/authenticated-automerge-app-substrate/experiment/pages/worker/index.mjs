@@ -146,13 +146,14 @@ import {
   DocumentPolicy,
   PermissionDenied,
   admissionCancelled,
-  credentialExpired,
+  leaseExpiryError,
   hex,
   logicalId,
 } from "./policy.mjs";
 import {
   ADMISSION_ROUTES,
   admissionCloseCode,
+  admissionCloseReason,
   admissionCode,
   admissionErrorResponse,
   admissionReason,
@@ -299,6 +300,12 @@ import {
 } from "./location-shape.mjs";
 import { LOCATION_REVISION_KEY, movePage } from "./move-page.mjs";
 import {
+  PROJECT_ACCESS_EMPTY,
+  projectAccessStep,
+  resolveProjectAccess,
+} from "./project-access.mjs";
+import { invitedProjects } from "./project-invitations.mjs";
+import {
   MAX_DEPTH,
   deriveLocation,
   planMove,
@@ -372,6 +379,10 @@ const operations = new Set([
   "list_spaces",
   "get_space",
   "update_space",
+  "get_project_access",
+  "manage_project_access",
+  "get_page_access",
+  "manage_page_access",
 ]);
 /** Project operations under their stored Space names. Each goes through the
  * caller's own Catalog, which calls the Project with the caller's credentials.
@@ -590,11 +601,7 @@ function logCountRepair(counts) {
   );
 }
 /** Journal operation names for the Catalog's lifecycle routes. */
-const LIFECYCLE_OPERATIONS = {
-  trash: "trash_page",
-  restore: "restore_page",
-  purge: "purge_page",
-};
+const LIFECYCLE_OPERATIONS = { trash: "trash_page", restore: "restore_page", purge: "purge_page" };
 /** A request's base_heads as requireHeads judges them, or `absent` when the
  * request omitted them. The lifecycle machine decides what absence means. */
 function headsCheck(doc, heads) {
@@ -610,11 +617,7 @@ function headsCheck(doc, heads) {
 }
 const sameHeads = (left, right) =>
   left.length === right.length && [...left].sort().join() === [...right].sort().join();
-const publicIdentity = ({ principal, displayName, driver }) => ({
-  principal,
-  displayName,
-  driver,
-});
+const publicIdentity = ({ principal, displayName, driver }) => ({ principal, displayName, driver });
 /** Lifecycle arguments as the caller sent them. The Catalog alone sets the
  * compare-and-set controls it forwards to a Page. */
 const callerLifecycleArguments = ({
@@ -704,11 +707,7 @@ function forwarded(request, path, body) {
   const agent = agentLabel(request);
   if (agent) headers.set("x-pages-agent", agent);
   headers.set("content-type", "application/json");
-  return new Request(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-  });
+  return new Request(url, { method: "POST", headers, body: JSON.stringify(body) });
 }
 
 const ANONYMOUS_MCP_METHODS = new Set(["tools/list", "ping"]);
@@ -763,10 +762,7 @@ function concatBytes(chunks, size) {
 }
 
 function authorizeImage(request, env, pageId, write) {
-  const internal = forwarded(request, "/internal/assets/authorize", {
-    page_id: pageId,
-    write,
-  });
+  const internal = forwarded(request, "/internal/assets/authorize", { page_id: pageId, write });
   // Only the host creates this request. Reauthenticate on every call so a grant
   // or Page permission revoked during a transfer cannot authorize its result.
   if (!internal.headers.has("origin"))
@@ -805,6 +801,8 @@ async function quotaFields(env, identity, operation) {
 }
 
 const READ_OPERATIONS = [
+  "get_project_access",
+  "get_page_access",
   "list_pages",
   "page_cards",
   "read_page",
@@ -832,6 +830,29 @@ async function invoke(request, env, operation, args = {}, seen) {
   if (!args || typeof args !== "object" || Array.isArray(args)) throw invalidArguments();
   const identity = await authenticate(request, env);
   if (seen) seen.identity = identity;
+  if (
+    [
+      "get_project_access",
+      "manage_project_access",
+      "get_page_access",
+      "manage_page_access",
+    ].includes(operation)
+  ) {
+    if (identity.credentialKind === "oauth" && !identity.canShare)
+      throw new HttpError(403, "Pages sharing permission is required", "oauth_insufficient_scope");
+    const read = operation.startsWith("get_");
+    if (!read) requireWrite(identity);
+    if (operation.endsWith("project_access")) {
+      requireSpaceIdArgument(args.space_id);
+      return env.CATALOGS.getByName(identity.principal).fetch(
+        forwarded(request, "/internal/catalog", { operation, arguments: { ...args, read } }),
+      );
+    }
+    requirePageIdArgument(args.page_id);
+    return env.PAGES.getByName(args.page_id).fetch(
+      forwarded(request, "/internal/access", { ...args, read }),
+    );
+  }
   if (!READ_OPERATIONS.includes(operation)) requireWrite(identity);
   if (["get_space", "update_space"].includes(operation)) requireSpaceIdArgument(args.space_id);
   if (operation === "page_cards") return await pageCards(request, env, identity, args);
@@ -1018,11 +1039,7 @@ async function locationView(request, env, body, signal) {
   const chain = [];
   for (const [index, parent] of parents.entries()) {
     if (!parent || (parent.state && parent.state !== "active")) break;
-    chain.unshift({
-      kind: "page",
-      page_id: ancestors[index],
-      title: catalogTitle(parent.title),
-    });
+    chain.unshift({ kind: "page", page_id: ancestors[index], title: catalogTitle(parent.title) });
   }
   const reachedRoot = location.complete && chain.length === location.ancestors.length;
   if (location.parent_id && chain.at(-1)?.page_id === location.parent_id)
@@ -1031,9 +1048,7 @@ async function locationView(request, env, body, signal) {
     ? await readable(
         env.PROJECTS,
         location.space_id,
-        forwarded(request, "/internal/space/read", {
-          space_id: location.space_id,
-        }),
+        forwarded(request, "/internal/space/read", { space_id: location.space_id }),
       )
     : null;
   if (space) {
@@ -1041,12 +1056,7 @@ async function locationView(request, env, body, signal) {
     if (!location.parent_id) body.parent_id = null;
     if (location.home) body.home = true;
     // The whole chain is visible to whoever can read the Project in this build.
-    if (reachedRoot)
-      chain.unshift({
-        kind: "space",
-        space_id: space.space_id,
-        title: space.title,
-      });
+    if (reachedRoot) chain.unshift({ kind: "space", space_id: space.space_id, title: space.title });
     // The home Page stands for its Project; viewers may fold its crumb into
     // the Project's.
     for (const crumb of chain)
@@ -1086,14 +1096,7 @@ function toolUsage(request, surface, operation, args, kind = "tool", env) {
           outcome: response.ok ? "ok" : `http_${response.status}`,
           latencyMs: Date.now() - started,
         };
-        logUsage(
-          {
-            action: "tool.call",
-            ...common,
-            bytes: length || undefined,
-          },
-          env,
-        );
+        logUsage({ action: "tool.call", ...common, bytes: length || undefined }, env);
         if (name === "create_page" && response.ok && !replayed) {
           const body = await response.clone().json();
           logUsage(
@@ -1140,19 +1143,13 @@ const gateway = {
         env.NOTEBOOK_CLOUD_LOCAL_OIDC === "true" &&
         ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)
       ) {
-        const local = await handleLocalOidcRequest(request, env, {
-          store: localOidcStore(env.DB),
-        });
+        const local = await handleLocalOidcRequest(request, env, { store: localOidcStore(env.DB) });
         if (local) return local;
       }
       if (url.pathname === "/connect") return connectAgentResponse(request, env);
       if (url.pathname === "/llms.txt") return agentGuideResponse(request, env);
       if (url.pathname === "/health")
-        return json({
-          ok: true,
-          prototype: "pages-celld-native",
-          ...buildAdvertisement(),
-        });
+        return json({ ok: true, prototype: "pages-celld-native", ...buildAdvertisement() });
       try {
         await sessionStoreReady(request, env);
       } catch (error) {
@@ -1171,10 +1168,7 @@ const gateway = {
         const identity = await authenticate(request, env);
         return json({
           account: accountIdentity(identity),
-          credential: {
-            kind: identity.credentialKind,
-            can_write: identity.canWrite,
-          },
+          credential: { kind: identity.credentialKind, can_write: identity.canWrite },
         });
       }
       if (url.pathname === "/api/auth/login" && request.method === "GET")
@@ -1203,9 +1197,7 @@ const gateway = {
                 identity: publicIdentity(identity),
                 editor: "wordgard",
                 // The storage a Page created in this browser should use.
-                ...(recordStorageFor(env) === "automerge" && {
-                  recordStorage: "automerge",
-                }),
+                ...(recordStorageFor(env) === "automerge" && { recordStorage: "automerge" }),
                 canWrite: identity.canWrite,
                 expiresAt: identity.expiresAt,
               }
@@ -1412,9 +1404,7 @@ export class Catalog {
   }
   /** Storage that keeps the `page/` and `trash/` key counts (catalog.mjs). */
   get storage() {
-    return (this.counted ??= countedStorage(this.ctx.storage, {
-      ctx: this.ctx,
-    }));
+    return (this.counted ??= countedStorage(this.ctx.storage, { ctx: this.ctx }));
   }
   fetch(request) {
     // Location reads write nothing, so they never wait behind the queue. A
@@ -1422,6 +1412,7 @@ export class Catalog {
     // its own queue; two Catalogs doing that to each other must not wait on
     // each other.
     if (new URL(request.url).pathname === "/internal/location") return this.location(request);
+    if (new URL(request.url).pathname === "/internal/project-discovery") return this.run(request);
     return this.queue(() => this.run(request));
   }
   /**
@@ -1440,6 +1431,18 @@ export class Catalog {
       }
       const query = await readJson(request);
       const entries = await locationEntries(this.storage);
+      if (query?.project_pages !== undefined) {
+        requireSpaceIdArgument(query.project_pages);
+        return json({
+          pages: [...entries.values()]
+            .filter(
+              (entry) =>
+                entry.state === "active" &&
+                projectOf(entries, entry.page_id) === query.project_pages,
+            )
+            .map((entry) => ({ ...entry, space_id: query.project_pages })),
+        });
+      }
       if (query?.children_of !== undefined) {
         if (!validPageId(query.children_of)) throw new HttpError(400, "Invalid children_of");
         return json({ children: childrenOf(entries, query.children_of) });
@@ -1453,9 +1456,7 @@ export class Catalog {
     }
   }
   async countEntries(prefix) {
-    return countCapacity(this.storage, prefix, {
-      current: (pageId) => this.pageLifecycle(pageId),
-    });
+    return countCapacity(this.storage, prefix, { current: (pageId) => this.pageLifecycle(pageId) });
   }
   /** Room for one more entry under `prefix` within `limit`: `{ room, count }`.
    * `slotKey` names the caller's own reservation slot, which is counted (and
@@ -1557,9 +1558,7 @@ export class Catalog {
   async notifyTombstone(pageId) {
     try {
       await this.env.PAGES.getByName(pageId).fetch(
-        new Request("https://pages.internal/internal/tombstone", {
-          method: "POST",
-        }),
+        new Request("https://pages.internal/internal/tombstone", { method: "POST" }),
       );
     } catch (error) {
       logFailure(error, "catalog-tombstone");
@@ -1584,7 +1583,7 @@ export class Catalog {
       shape.name === "blocked"
         ? shape.reason === "home_pending"
           ? ` Project ${shape.space_id} is still being created; retry create_project with its original idempotency_key, then retry this. Page ${shape.page_id} waits on it.`
-          : ` Page ${shape.page_id} in Project ${shape.space_id} nests too deep to sit under the Project's home Page; trash and purge its deepest sub-page, then retry.`
+          : ` Page ${shape.page_id} in Project ${shape.space_id} exceeds the Project nesting limit; trash and purge its deepest sub-page, then retry.`
         : " Retry shortly.";
     throw Object.assign(
       new HttpError(
@@ -1593,17 +1592,52 @@ export class Catalog {
         MIGRATION_REQUIRED,
       ),
       shape.name === "blocked" && {
-        details: {
-          reason: shape.reason,
-          page_id: shape.page_id,
-          space_id: shape.space_id,
-        },
+        details: { reason: shape.reason, page_id: shape.page_id, space_id: shape.space_id },
       },
     );
   }
   async run(request) {
     try {
       const pathname = new URL(request.url).pathname;
+      if (pathname === "/internal/project-discovery") {
+        if (request.headers.has("authorization") || request.headers.has("cookie"))
+          throw new HttpError(403, "Host only");
+        const value = await readJson(request);
+        requireSpaceIdArgument(value.space_id);
+        if (value.remove === true) {
+          await this.storage.delete(`project-discovery/${value.space_id}`);
+          return json({ ok: true });
+        }
+        const known = await this.storage.get(`project-discovery/${value.space_id}`);
+        if (
+          !known &&
+          (await this.storage.list({ prefix: "project-discovery/", limit: 500 })).size >= 500
+        ) {
+          for (const [key, hint] of await this.storage.list({ prefix: "project-discovery/" })) {
+            const response = await this.env.PROJECTS.getByName(hint.space_id).fetch(
+              new Request("https://pages.internal/internal/space/policy", {
+                method: "POST",
+                body: JSON.stringify({ space_id: hint.space_id, owner: hint.owner }),
+              }),
+            );
+            if (
+              response.status === 404 ||
+              (response.ok &&
+                !["viewer", "commenter", "editor"].includes(
+                  (await response.json()).acl?.members?.[this.ctx.id.name]?.role,
+                ))
+            )
+              await this.storage.delete(key);
+          }
+          if ((await this.storage.list({ prefix: "project-discovery/", limit: 500 })).size >= 500)
+            throw new HttpError(409, "This account already has 500 shared Projects");
+        }
+        await this.storage.put(`project-discovery/${value.space_id}`, {
+          space_id: value.space_id,
+          owner: value.owner,
+        });
+        return json({ ok: true });
+      }
       if (pathname === "/internal/projection" || pathname === "/internal/content-activity") {
         // Reachable only through the host's CATALOGS namespace, never the gateway.
         const value = await readJson(request);
@@ -1632,10 +1666,7 @@ export class Catalog {
         else if (contentOnly) {
           // A content-only report updates an entry that's already listed.
           if (previous && !previous.pending && contentMoved)
-            await this.storage.put(key, {
-              ...previous,
-              content_updated_at: content,
-            });
+            await this.storage.put(key, { ...previous, content_updated_at: content });
         } else if (
           value.keep_time === true &&
           previous &&
@@ -1645,10 +1676,7 @@ export class Catalog {
           // The host repeats an observation of the title this entry holds
           // (a restart, a retry): `updated_at` keeps its time.
           if (contentMoved)
-            await this.storage.put(key, {
-              ...previous,
-              content_updated_at: content,
-            });
+            await this.storage.put(key, { ...previous, content_updated_at: content });
         } else if (
           !previous?.pending &&
           !(await this.storage.get(`host/deleted/${value.page_id}`)) &&
@@ -1670,10 +1698,7 @@ export class Catalog {
           });
         } else if (previous && !previous.pending && contentMoved)
           // An older title observation still carries a newer content time.
-          await this.storage.put(key, {
-            ...previous,
-            content_updated_at: content,
-          });
+          await this.storage.put(key, { ...previous, content_updated_at: content });
         return json({ ok: true });
       }
       const identity = await authenticate(request, this.env);
@@ -1700,6 +1725,12 @@ export class Catalog {
       if (body.operation === "page_cards") return await this.pageCards(request, identity, args);
       if (body.operation === "list_spaces") return await this.listSpaces(request, identity, args);
       if (body.operation === "get_space") return await this.getSpace(request, args);
+      if (["get_project_access", "manage_project_access"].includes(body.operation)) {
+        requireSpaceIdArgument(args.space_id);
+        return this.env.PROJECTS.getByName(args.space_id).fetch(
+          forwarded(request, "/internal/space/access", args),
+        );
+      }
       requireWrite(identity);
       if (body.operation === "create_space")
         return await this.createSpace(request, identity, args, limit);
@@ -2090,10 +2121,7 @@ export class Catalog {
         ? projectOf(await locationEntries(this.storage), location.parent_id)
         : (location.space_id ?? null);
       if (spaceId || location.parent_id)
-        Object.assign(receipt, {
-          space_id: spaceId,
-          parent_id: location.parent_id,
-        });
+        Object.assign(receipt, { space_id: spaceId, parent_id: location.parent_id });
     }
     const known = await knownRevision(this.storage, pageId);
     return {
@@ -2136,19 +2164,13 @@ export class Catalog {
     const storage = this.storage;
     const { operation, pageId, key } = run;
     const entry = state.slot === "live" ? await storage.get(slotPrefix[operation] + pageId) : null;
-    const event = {
-      type: "request",
-      expired: entry ? !(entry.expires_at > Date.now()) : false,
-    };
+    const event = { type: "request", expired: entry ? !(entry.expires_at > Date.now()) : false };
     if (holdsSlot(state, event.expired)) return { event, state };
     const slotKey = lifecycleSlotKey(operation, pageId);
     run.capacity = await this.destinationCapacity(run, slotKey);
     event.capacity = run.capacity.room;
     // Counting may have removed this intent's own expired slot.
-    state = {
-      ...state,
-      slot: (await intentState(storage, key, operation, pageId)).slot,
-    };
+    state = { ...state, slot: (await intentState(storage, key, operation, pageId)).slot };
     // A trash that lost its slot never applied (an applied one leaves a real
     // Trash entry), so it runs the leaf guard again before it may apply: a
     // child can have arrived since.
@@ -2282,7 +2304,7 @@ export class Catalog {
     if (entry.home)
       throw new HttpError(
         409,
-        "A Project's home Page stays with its Project; it can't move to Trash on its own",
+        "Project content cannot move to Trash independently of its Project",
         "home_page_protected",
       );
     const unsettled = [];
@@ -2477,12 +2499,7 @@ export class Catalog {
   async planMoveEvent(run) {
     const storage = this.storage;
     const { pageId, parentId, spaceId, position } = run;
-    const refuse = (code, message) => ({
-      type: "planned",
-      ok: false,
-      code,
-      message,
-    });
+    const refuse = (code, message) => ({ type: "planned", ok: false, code, message });
     const { entries } = await locationScan(storage);
     const entry = entries.get(pageId);
     if (!entry) {
@@ -2496,13 +2513,9 @@ export class Catalog {
     if (entry.state === "pending") return refuse("page_not_found", "Page not found");
     if (parentId && !(await parentActive(storage, parentId)))
       return refuse("parent_unavailable", "The parent Page is missing, pending or in Trash");
-    // Access guard for cross-container moves. Where a Page sits decides
-    // nothing about who can open it today: Projects are owner-only, and this
-    // Catalog holds only its owner's Pages and Projects, so a destination
-    // found here is one the caller owns, and the Page's sharing travels with
-    // it unchanged. If Project membership ever grants access, a move into,
-    // out of or between Projects changes who can open the Page and its
-    // sub-pages, and this guard has to re-check that access before planning.
+    // Placement supplies inherited access. Keep direct grants unchanged, but
+    // refuse cross-boundary moves after membership or invitation history;
+    // within-Project moves preserve the audience and remain available.
     const destinationSpace =
       typeof spaceId === "string"
         ? spaceId
@@ -2512,6 +2525,28 @@ export class Catalog {
     if (typeof destinationSpace === "string") {
       const record = await storage.get(`space/${destinationSpace}`);
       if (!record || record.pending) return refuse("project_not_found", "Project not found");
+    }
+    const sourceSpace = projectOf(entries, pageId);
+    if (sourceSpace !== destinationSpace) {
+      for (const id of [sourceSpace, destinationSpace].filter(Boolean)) {
+        const response = await this.env.PROJECTS.getByName(id).fetch(
+          new Request("https://pages.internal/internal/space/policy", {
+            method: "POST",
+            body: JSON.stringify({ space_id: id, owner: this.ctx.id.name }),
+          }),
+        );
+        if (!response.ok)
+          return refuse("project_policy_unavailable", "Project access cannot be verified");
+        const policy = await response.json();
+        if (
+          Object.keys(policy.acl?.members ?? {}).length ||
+          Object.keys(policy.acl?.invites ?? {}).length
+        )
+          return refuse(
+            "shared_project_move_unsupported",
+            "Moving across a shared Project boundary is not available; move within the Project instead",
+          );
+      }
     }
     const destination = {
       ...(spaceId !== undefined && { project_id: spaceId }),
@@ -2617,10 +2652,7 @@ export class Catalog {
       return json(intent.receipt);
     }
     if (!intent) {
-      const spaces = await storage.list({
-        prefix: "space/",
-        limit: SPACE_LIMIT + 1,
-      });
+      const spaces = await storage.list({ prefix: "space/", limit: SPACE_LIMIT + 1 });
       if (spaces.size >= SPACE_LIMIT)
         throw new HttpError(
           409,
@@ -2776,9 +2808,7 @@ export class Catalog {
         idempotency_key: args.idempotency_key,
         expected_revision: intent.expectedRevision,
         ...(args.title !== undefined && { title: args.title }),
-        ...(args.description !== undefined && {
-          description: args.description,
-        }),
+        ...(args.description !== undefined && { description: args.description }),
       }),
     );
     if (response.status >= 400 && response.status < 500) {
@@ -2788,16 +2818,10 @@ export class Catalog {
       // now; the outcome is the Space as it is.
       if (inspected.entry && failure.code === "project_revision_conflict") {
         const current = await this.env.PROJECTS.getByName(intent.spaceId).fetch(
-          forwarded(request, "/internal/space/read", {
-            space_id: intent.spaceId,
-          }),
+          forwarded(request, "/internal/space/read", { space_id: intent.spaceId }),
         );
         if (!current.ok) return current;
-        intent.receipt = {
-          superseded: true,
-          applied: false,
-          space: await current.json(),
-        };
+        intent.receipt = { superseded: true, applied: false, space: await current.json() };
         intent.pending = false;
         await storage.put(key, intent);
         await storage.sync();
@@ -2862,6 +2886,82 @@ export class Catalog {
    * supplies what is returned. */
   async listSpaces(request, identity, args) {
     const storage = this.storage;
+    for (const spaceId of await invitedProjects(this.env, identity)) {
+      // An invitation is an untrusted candidate, not an existing membership.
+      // Capacity conflicts or unavailable candidate hosts must not prevent
+      // this account from listing unrelated Projects. The next listing retries.
+      try {
+        const response = await this.env.PROJECTS.getByName(spaceId).fetch(
+          forwarded(request, "/internal/space/read", { space_id: spaceId }),
+        );
+        await response.body?.cancel();
+      } catch {
+        // Nothing from a failed candidate, including its title, is disclosed.
+      }
+    }
+    const discovered = await storage.list({ prefix: "project-discovery/" });
+    if (discovered.size) {
+      const candidates = [
+        ...(await storage.list({ prefix: "space/" })).values(),
+        ...discovered.values(),
+      ];
+      const spaces = [];
+      for (const candidate of candidates) {
+        if (candidate.pending) continue;
+        const response = await this.env.PROJECTS.getByName(candidate.space_id).fetch(
+          forwarded(request, "/internal/space/read", { space_id: candidate.space_id }),
+        );
+        if (response.ok) spaces.push(await response.json());
+        else if (![403, 404, 409].includes(response.status))
+          throw new HttpError(503, "Project access is temporarily unavailable");
+      }
+      const limit = args.limit ?? 50;
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
+        throw new HttpError(
+          400,
+          "limit must be an integer from 1 to 100",
+          "invalid_list_arguments",
+        );
+      const context = {
+        principal: identity.principal,
+        needle: null,
+        inTrash: false,
+        scope: "spaces",
+      };
+      const after = args.cursor
+        ? await openCursor(this.env, context, args.cursor, undefined, {
+            maxLength: SHORT_CURSOR_MAX_LENGTH,
+          })
+        : null;
+      const sorted = [...new Map(spaces.map((space) => [space.space_id, space])).values()]
+        .sort(
+          (a, b) =>
+            b.updated_at.localeCompare(a.updated_at) || b.space_id.localeCompare(a.space_id),
+        )
+        .filter(
+          (space) =>
+            !after ||
+            space.updated_at < after.updated_at ||
+            (space.updated_at === after.updated_at && space.space_id < after.page_id),
+        );
+      const last = sorted[limit - 1];
+      return json({
+        spaces: sorted.slice(0, limit),
+        limit,
+        next_cursor:
+          sorted.length > limit
+            ? await sealCursor(this.env, context, {
+                updated_at: last.updated_at,
+                page_id: last.space_id,
+              })
+            : null,
+        principal: identity.principal,
+        ...(await issueRetryToken(storage, {
+          scope: `catalog:${identity.principal}`,
+          principal: identity.principal,
+        })),
+      });
+    }
     if (!args || typeof args !== "object" || Array.isArray(args))
       throw new HttpError(400, "Invalid list arguments", "invalid_list_arguments");
     let limit = 50;
@@ -2897,12 +2997,7 @@ export class Catalog {
           catalogIndexDatabase(this.env, this.ctx),
           catalogIndexTimeouts.read,
         );
-        await reconcileSpaceIndex({
-          db,
-          storage,
-          principal: identity.principal,
-          epoch,
-        });
+        await reconcileSpaceIndex({ db, storage, principal: identity.principal, epoch });
         source = spaceIndexSource(db, { principal: identity.principal });
       } catch (error) {
         logFailure(error, "catalog-index");
@@ -2923,6 +3018,8 @@ export class Catalog {
             row,
             space: {
               space_id: entry.space_id,
+              role: "owner",
+              owner: identity.principal,
               title: entry.title,
               description: entry.description ?? "",
               home_page_id: entry.home_page_id,
@@ -3059,7 +3156,8 @@ export class Catalog {
       // Only the owner can see a Space in this build, and the owner's own
       // entry records it. A Space the caller can't see looks missing.
       const space = await storage.get(`space/${options.spaceId}`);
-      if (!space || space.pending) throw spaceNotFound();
+      if (!space) return this.listSharedProjectPages(request, identity, options);
+      if (space.pending) throw spaceNotFound();
     }
     // This account's entries record where each owned Page is, and its
     // Project is derived from them. A listing builds the map once. The same
@@ -3067,11 +3165,7 @@ export class Catalog {
     // wrote keys without them leaves them wrong until this repairs them.
     const { entries: locations, counts } = await locationScan(storage);
     if (await storage.verifyCounts(counts)) logCountRepair(counts);
-    const quota = {
-      limit,
-      count: counts["page/"],
-      trash_count: counts["trash/"],
-    };
+    const quota = { limit, count: counts["page/"], trash_count: counts["trash/"] };
     // A listing is a read and runs in either shape. A blocked pass shows
     // here, so a caller refused `location_migration_required` can see what
     // stands in the way without another write.
@@ -3282,6 +3376,70 @@ export class Catalog {
    * `positionOf(options.sort, row)`: the refetch after a rejected candidate
    * and the next cursor resume from the order's key, never a row's own
    * `updated_at`. */
+  async listSharedProjectPages(request, identity, options) {
+    const response = await this.env.PROJECTS.getByName(options.spaceId).fetch(
+      forwarded(request, "/internal/space/read", { space_id: options.spaceId }),
+    );
+    if (!response.ok) throw spaceNotFound();
+    const project = await response.json();
+    const locations = await this.env.CATALOGS.getByName(project.owner).fetch(
+      locationRequest({ project_pages: options.spaceId }),
+    );
+    if (!locations.ok) throw new HttpError(503, "Project Pages are temporarily unavailable");
+    const entries = (await locations.json()).pages;
+    if (options.parentId && !entries.some((entry) => entry.page_id === options.parentId))
+      throw new HttpError(400, "parent_id is not in that Project", "placement_mismatch");
+    const ids = entries.filter(
+      (entry) =>
+        options.parentId === undefined ||
+        (options.parentId === null
+          ? entry.parent_id === null || entry.parent_id === project.home_page_id
+          : entry.parent_id === options.parentId),
+    );
+    const context = {
+      principal: identity.principal,
+      needle: options.needle,
+      inTrash: options.inTrash,
+      scope: listScope(options),
+    };
+    const { position: after } = options.cursor
+      ? await openListingCursor(this.env, context, options.cursor, options.sort)
+      : { position: null };
+    const result = await this.scanCandidates(
+      request,
+      identity,
+      childIdSource(
+        options.inTrash || options.access === "owned" ? [] : ids.map((entry) => entry.page_id),
+        options.sort,
+      ),
+      { ...options, spaceId: null },
+      {
+        locations: new Map(),
+        located: () => false,
+        sharedChildren: new Set(ids.map((entry) => entry.page_id)),
+        exhaustive: true,
+      },
+      after,
+      null,
+    );
+    return json({
+      pages: result.pages.map((page) => ({
+        ...page,
+        space_id: options.spaceId,
+        parent_id: entries.find((entry) => entry.page_id === page.page_id)?.parent_id,
+      })),
+      limit: options.limit,
+      next_cursor: result.next
+        ? await sealPosition(this.env, { ...context, source: "catalog" }, options.sort, result.next)
+        : null,
+      principal: identity.principal,
+      ...(await issueRetryToken(this.storage, {
+        scope: `catalog:${identity.principal}`,
+        principal: identity.principal,
+      })),
+    });
+  }
+
   async scanCandidates(request, identity, source, options, scope, after, db) {
     const storage = this.storage;
     const resumeAt = (row) => positionOf(options.sort, row);
@@ -3411,10 +3569,7 @@ export class Catalog {
       };
     // Only a scan stopped by its bound, not by the end of the candidates,
     // continues from the last scanned row.
-    return {
-      pages: verified.map(({ page }) => page),
-      next: exhausted ? null : position,
-    };
+    return { pages: verified.map(({ page }) => page), next: exhausted ? null : position };
   }
 }
 
@@ -3706,26 +3861,25 @@ export class Page {
         storage.get(PROJECTION_PENDING),
       ]);
     if (
-      recordFallback({
-        record: metadata,
-        creation,
-        projection,
-        reportPending,
-        projectionPending,
-      })
+      recordFallback({ record: metadata, creation, projection, reportPending, projectionPending })
     )
       return null;
     const identity = await this.identify(request);
+    const projectAccess =
+      identity.principal === metadata?.owner
+        ? null
+        : await resolveProjectAccess(this.env, metadata).catch(() => null);
+    const effective = { ...metadata, projectAccess };
     const hidden = this.hiddenRefusal(identity, request, false, metadata);
     if (hidden) throw hidden;
     const deleted = this.deletedRefusal(identity, false, metadata);
     if (deleted) throw deleted;
     if (pageState(metadata) === "trashed") return null;
     if (await claimInvitation(metadata, identity, this.env)) return null;
-    new DocumentPolicy({ storage, metadata: () => metadata }).account(identity);
+    new DocumentPolicy({ storage, metadata: () => effective }).account(identity);
     const stored = storedTitleProjection(projection);
     return json(
-      catalogAnswer(metadata, identity, {
+      catalogAnswer(effective, identity, {
         title: stored.title,
         observed: { at: stored.observed_at, keep: stored.keep !== false },
         contentUpdatedAt: acceptedTime(activity?.content_updated_at),
@@ -3734,8 +3888,27 @@ export class Page {
   }
 
   /** Authenticate a request's caller with its own credentials. */
-  identify(request) {
-    return authenticate(request, this.env);
+  async identify(request) {
+    const identity = await authenticate(request, this.env);
+    if (identity.principal !== this.metadata?.owner) {
+      const metadata = this.metadata;
+      const observed = this.projectAccessState ?? PROJECT_ACCESS_EMPTY;
+      const snapshot = await resolveProjectAccess(this.env, metadata).catch(() => null);
+      if (metadata?.owner === this.metadata?.owner && metadata?.pageId === this.metadata?.pageId)
+        this.projectAccessState = projectAccessStep(
+          this.projectAccessState ?? PROJECT_ACCESS_EMPTY,
+          {
+            observed,
+            owner: metadata?.owner,
+            snapshot,
+          },
+        );
+    }
+    return identity;
+  }
+
+  get projectAccess() {
+    return this.projectAccessState?.snapshot ?? null;
   }
 
   /** Load the serving document. A trashed record whose document cannot be
@@ -3782,9 +3955,7 @@ export class Page {
         if (!pending.length || !pending.every((key) => key.startsWith(INTERNAL_PREFIX)))
           throw error;
         logFailure(error, "preserved-markdown-recovery");
-        this.conversionIntent = {
-          replayKeys: pending.map((key) => ({ key, doc: PAGE_DOC })),
-        };
+        this.conversionIntent = { replayKeys: pending.map((key) => ({ key, doc: PAGE_DOC })) };
       }
     }
     await this.loadComments();
@@ -3971,10 +4142,7 @@ export class Page {
           this.env.CATALOGS.getByName(this.metadata.owner).fetch(
             new Request("https://pages.internal/internal/content-activity", {
               method: "POST",
-              body: JSON.stringify({
-                page_id: pageId,
-                content_updated_at: value,
-              }),
+              body: JSON.stringify({ page_id: pageId, content_updated_at: value }),
             }),
           ),
           serialQueueBounds.projectionMs,
@@ -3986,10 +4154,7 @@ export class Page {
     if (catalogIndexEpoch(this.env))
       tasks.push(
         withTimeout(
-          reportContentActivity(this.env, this.ctx, {
-            pageId,
-            contentUpdatedAt: value,
-          }),
+          reportContentActivity(this.env, this.ctx, { pageId, contentUpdatedAt: value }),
           catalogIndexTimeouts.write,
         ),
       );
@@ -4221,11 +4386,7 @@ export class Page {
         internal: true,
         apply: (draft) => {
           try {
-            return {
-              converted: convertPreservedBlocks(draft, {
-                literal: intent.literal,
-              }),
-            };
+            return { converted: convertPreservedBlocks(draft, { literal: intent.literal }) };
           } catch (error) {
             throw Object.assign(error, { conversion: true });
           }
@@ -4266,9 +4427,7 @@ export class Page {
           await crypto.subtle.digest("SHA-256", new TextEncoder().encode(heads.join(","))),
         ),
       ).slice(0, 32);
-      this.conversionIntent = {
-        comments: { mode, heads, digest, step: "copy" },
-      };
+      this.conversionIntent = { comments: { mode, heads, digest, step: "copy" } };
     }
     const intent = this.conversionIntent.comments;
     const identity = { principal: "service:pages", driver: "API" };
@@ -4367,9 +4526,10 @@ export class Page {
             this.recoveryBlocked
               ? {
                   ...(this.policyMetadata ?? this.metadata),
+                  projectAccess: this.projectAccess,
                   recoveryBlocked: true,
                 }
-              : (this.policyMetadata ?? this.metadata),
+              : { ...(this.policyMetadata ?? this.metadata), projectAccess: this.projectAccess },
           serverKey,
           schemaFeatures: (scope) => {
             const handle = scope === COMMENTS_SCOPE ? this.commentsHandle : this.handle;
@@ -4519,8 +4679,12 @@ export class Page {
       storage: ctx.storage,
       metadata: () =>
         this.recoveryBlocked
-          ? { ...(this.policyMetadata ?? this.metadata), recoveryBlocked: true }
-          : (this.policyMetadata ?? this.metadata),
+          ? {
+              ...(this.policyMetadata ?? this.metadata),
+              projectAccess: this.projectAccess,
+              recoveryBlocked: true,
+            }
+          : { ...(this.policyMetadata ?? this.metadata), projectAccess: this.projectAccess },
       serverKey: undefined,
       schemaFeatures: (scope) => {
         const handle = scope === COMMENTS_SCOPE ? this.commentsHandle : this.handle;
@@ -4592,11 +4756,7 @@ export class Page {
   profiles() {
     return {
       ...(this.plain ? this.plain.profiles() : this.policy.profiles()),
-      [this.serverSenderId]: {
-        principal: "service:pages",
-        displayName: "Pages",
-        driver: "API",
-      },
+      [this.serverSenderId]: { principal: "service:pages", displayName: "Pages", driver: "API" },
     };
   }
 
@@ -4646,10 +4806,7 @@ export class Page {
   broadcastProfiles() {
     if (!this.handle) return;
     try {
-      this.handle.broadcast({
-        kind: "identity-profiles",
-        peerProfiles: this.profiles(),
-      });
+      this.handle.broadcast({ kind: "identity-profiles", peerProfiles: this.profiles() });
     } catch (error) {
       // Cleanup must still release socket capacity if the document is closing.
       logFailure(error, "presence-profiles");
@@ -4700,10 +4857,7 @@ export class Page {
    * retraction drops that actor's pending hashes, so no hash outlives its
    * actor's retraction. Pending hashes keep the newest MAX_ATTESTED_CHANGES. */
   queueActorDelta(actorProfiles, attestedChanges) {
-    const pending = (this.actorDelta ??= {
-      actorProfiles: {},
-      attestedChanges: {},
-    });
+    const pending = (this.actorDelta ??= { actorProfiles: {}, attestedChanges: {} });
     for (const [actor, profile] of Object.entries(actorProfiles)) {
       pending.actorProfiles[actor] = profile;
       if (profile === null)
@@ -4751,11 +4905,7 @@ export class Page {
     if (!this.handle || !(this.actorAuthorship || this.plain)) return;
     this.flushActorDelta();
     try {
-      this.handle.broadcast({
-        kind: "actor-profiles",
-        ...this.actorSnapshot(),
-        snapshot: true,
-      });
+      this.handle.broadcast({ kind: "actor-profiles", ...this.actorSnapshot(), snapshot: true });
     } catch (error) {
       logFailure(error, "actor-profiles");
     }
@@ -4910,10 +5060,7 @@ export class Page {
     const run = async () => {
       try {
         await withTimeout(
-          reportPageIndex(this.env, this.ctx, {
-            metadata: this.metadata,
-            ...details,
-          }),
+          reportPageIndex(this.env, this.ctx, { metadata: this.metadata, ...details }),
           catalogIndexTimeouts.write,
         );
       } catch (error) {
@@ -5213,14 +5360,7 @@ export class Page {
     const storage = this.ctx.storage;
     const from = this.metadata?.recordStorage ?? "local";
     const log = (outcome, fields = {}) =>
-      console.log(
-        JSON.stringify({
-          event: "record_storage.migration",
-          outcome,
-          from,
-          ...fields,
-        }),
-      );
+      console.log(JSON.stringify({ event: "record_storage.migration", outcome, from, ...fields }));
     const skip = (reason, retryMs) => {
       log("skipped", { reason });
       return { type: "skipped", reason, ...(retryMs && { retryMs }) };
@@ -5367,9 +5507,7 @@ export class Page {
             await this.settleLifecycle();
           } catch (error) {
             logFailure(error, "lifecycle-state");
-            const failed = pageLifecycle.step(this.lifecycleState(), {
-              type: "commitFailed",
-            });
+            const failed = pageLifecycle.step(this.lifecycleState(), { type: "commitFailed" });
             return this.lifecycleReply(failed.response);
           }
         }
@@ -5540,7 +5678,7 @@ export class Page {
         // fixes the time its title was observed.
         this.cacheTitle();
         return json(
-          catalogAnswer(this.metadata, identity, {
+          catalogAnswer({ ...this.metadata, projectAccess: this.projectAccess }, identity, {
             title: this.handle.doc().title,
             observed: {
               at: this.titleProjection?.record?.observed_at,
@@ -5552,6 +5690,8 @@ export class Page {
       }
       if (url.pathname === "/internal/access") {
         const args = await readJson(request);
+        if (identity.principal !== this.metadata.owner && identity.credentialKind === "oauth")
+          throw new HttpError(403, "Only the Page owner can manage sharing");
         if (args.read) return json(await sharingProjection(this.metadata, identity, this.env));
         if (state === "trashed")
           throw new HttpError(409, "Restore this Page before changing access", "page_trashed");
@@ -5577,23 +5717,19 @@ export class Page {
           page_id: this.metadata.pageId,
           documentId: this.metadata.documentId,
           // The comments document syncs on the same socket.
-          ...(this.commentsHandle && {
-            commentsDocumentId: commentsDocumentId(this.commentsUuid),
-          }),
+          ...(this.commentsHandle && { commentsDocumentId: commentsDocumentId(this.commentsUuid) }),
           ...(this.plain ? { recordStorage: "automerge" } : { serverPeerId: this.serverKey }),
           serverSenderId: this.serverSenderId,
           identity: publicIdentity(identity),
           // Access is the grant; `converting` is a temporary hold the viewer
           // shows as read-only without retiring its writer key.
-          canWrite: !this.recoveryBlocked && pageAccess(this.metadata, identity).canWrite,
+          canWrite: !this.recoveryBlocked && this.policy.account(identity).canWrite,
           access: {
-            ...pageAccess(this.metadata, identity),
+            ...this.policy.account(identity),
             ...(this.recoveryBlocked && { canWrite: false, canComment: false }),
           },
           ...(this.recoveryBlocked && { recovery: this.recoveryBlocked }),
-          ...(this.conversionWriteFence() && {
-            converting: conversionNotice(),
-          }),
+          ...(this.conversionWriteFence() && { converting: conversionNotice() }),
           ...(incompleteHistory(this.handle.doc()) && {
             historyIncomplete: incompleteHistory(this.handle.doc()),
           }),
@@ -5607,9 +5743,7 @@ export class Page {
           // a Page in Trash gets none, so its notice isn't hidden.
           ...(url.searchParams.get("preview") === "1" &&
             state !== "trashed" &&
-            pageAccess(this.metadata, identity).canRead && {
-              preview: pagePreview(this.handle.doc()),
-            }),
+            this.policy.account(identity).canRead && { preview: pagePreview(this.handle.doc()) }),
         });
       }
       if (url.pathname === "/api/sync" && request.method === "GET")
@@ -5625,10 +5759,7 @@ export class Page {
         const durableCommentHeads = this.commentsHandle && A.getHeads(this.commentsHandle.doc());
         await this.flush();
         this.cacheTitle();
-        return json({
-          durableHeads,
-          ...(durableCommentHeads && { durableCommentHeads }),
-        });
+        return json({ durableHeads, ...(durableCommentHeads && { durableCommentHeads }) });
       }
       if (url.pathname === "/internal/tool") {
         const body = await readJson(request);
@@ -5840,7 +5971,7 @@ export class Page {
         "This Page's comments are moving to their own document; try again shortly",
         "comments_migrating",
       );
-    const role = pageAccess(this.metadata, identity).role;
+    const role = this.policy.account(identity).role;
     const operation = body.operation;
     const args = body.arguments ?? {};
     // The Page snapshot a new comment anchors in. The guard captures it and
@@ -6114,19 +6245,10 @@ export class Page {
         ...metadata,
         deleted: true,
         lifecycleRevision: revision + 1,
-        trash: trashRecord({
-          pageId,
-          principal: identity.principal,
-          now,
-          receipt,
-        }),
+        trash: trashRecord({ pageId, principal: identity.principal, now, receipt }),
         // Builds that predate Trash read only `deletion`: their delete retry
         // conflicts, and a fresh key completes an ordinary permanent deletion.
-        deletion: {
-          key,
-          fingerprint: digest,
-          receipt: { page_id: pageId, deleted: true },
-        },
+        deletion: { key, fingerprint: digest, receipt: { page_id: pageId, deleted: true } },
       };
       context.next = next;
       context.pending = {
@@ -6176,10 +6298,7 @@ export class Page {
       context.next = {
         ...metadata,
         lifecycleRevision: revision + 1,
-        purged: {
-          purged_at: new Date().toISOString(),
-          purged_by: identity.principal,
-        },
+        purged: { purged_at: new Date().toISOString(), purged_by: identity.principal },
         deletion: { key, fingerprint: digest, receipt },
       };
       context.pending = {
@@ -6338,9 +6457,7 @@ export class Page {
    * failure leaves the phase for the next request.
    */
   async settleLifecycle() {
-    const { effects } = pageLifecycle.step(this.lifecycleState(), {
-      type: "commitOk",
-    });
+    const { effects } = pageLifecycle.step(this.lifecycleState(), { type: "commitOk" });
     await this.applyLifecycle(effects);
   }
 
@@ -6397,31 +6514,20 @@ export class Page {
    * like a missing one instead of retrying an absent document.
    */
   async acceptTombstone() {
-    const result = pageLifecycle.step(this.lifecycleState(), {
-      type: "tombstone",
-    });
+    const result = pageLifecycle.step(this.lifecycleState(), { type: "tombstone" });
     const context = {};
     if (result.effects.length)
       context.next = {
         ...this.metadata,
         lifecycleRevision: (this.metadata.lifecycleRevision ?? 0) + 1,
-        purged: {
-          purged_at: new Date().toISOString(),
-          reason: "deleted_by_earlier_build",
-        },
+        purged: { purged_at: new Date().toISOString(), reason: "deleted_by_earlier_build" },
       };
     await this.applyLifecycle(result.effects, context);
     return this.lifecycleReply(result.response);
   }
 
   lifecycleRecord(operation, digest, receipt, revision = this.metadata.lifecycleRevision ?? 0) {
-    return {
-      operation,
-      fingerprint: digest,
-      revision,
-      receipt,
-      at: Date.now(),
-    };
+    return { operation, fingerprint: digest, revision, receipt, at: Date.now() };
   }
 
   /** Persist a lifecycle receipt, optionally with the new record, in one
@@ -6678,11 +6784,7 @@ export class Page {
       usageSession.event("close");
       if (syncAdmittedAt !== undefined)
         logUsage(
-          {
-            action: "sync.close",
-            ...syncUsage,
-            latencyMs: Date.now() - syncAdmittedAt,
-          },
+          { action: "sync.close", ...syncUsage, latencyMs: Date.now() - syncAdmittedAt },
           this.env,
         );
     });
@@ -6695,12 +6797,13 @@ export class Page {
     const admission = new AbortController();
     let leaseTimer;
     let expiryTimer;
-    const close = (error) => wire.disconnect(admissionCloseCode(error), admissionCode(error));
-    const armExpiry = (expiresAt) => {
+    const close = (error) =>
+      wire.disconnect(admissionCloseCode(error), admissionCloseReason(error));
+    const armExpiry = (expiresAt, currentIdentity = identity) => {
       clearTimeout(expiryTimer);
       if (this.wires.has(wire))
         expiryTimer = setTimeout(
-          () => void close(credentialExpired()),
+          () => void close(leaseExpiryError(currentIdentity, expiresAt)),
           Math.max(1, expiresAt - Date.now()),
         );
     };
@@ -6729,9 +6832,7 @@ export class Page {
           throw admission.signal.aborted
             ? admission.signal.reason
             : withAdmissionReason(
-                Object.assign(new Error("Native handshake failed", { cause }), {
-                  status: 400,
-                }),
+                Object.assign(new Error("Native handshake failed", { cause }), { status: 400 }),
                 "native_handshake_failed",
               );
         }
@@ -6749,7 +6850,7 @@ export class Page {
           release = await this.policy.bind(key, senderId, identity, {
             signal: admission.signal,
             waitUntil: (promise) => this.ctx.waitUntil(promise),
-            reauthenticate: () => authenticate(request, this.env),
+            reauthenticate: () => this.identify(request),
             disconnect: (error) => {
               // A replaced connection ends without a failure, so nothing
               // else logs it; log it here so replacements show in the host log.
@@ -6757,8 +6858,8 @@ export class Page {
                 logAdmissionDenied(error, { stage: "native", identity });
               return close(error ?? admissionCancelled());
             },
-            onRenewal: (expiresAt) => {
-              if (identity.credentialKind === "api-key") armExpiry(expiresAt);
+            onRenewal: (expiresAt, renewedIdentity) => {
+              if (identity.credentialKind === "api-key") armExpiry(expiresAt, renewedIdentity);
             },
             features,
           });
@@ -6781,9 +6882,7 @@ export class Page {
             await this.backend.addConnection(transport);
           } catch (cause) {
             throw withAdmissionReason(
-              Object.assign(new Error("Native connection failed", { cause }), {
-                status: 503,
-              }),
+              Object.assign(new Error("Native connection failed", { cause }), { status: 503 }),
               "native_connection_failed",
             );
           }
@@ -6853,10 +6952,7 @@ export class Page {
     try {
       // The tab's presence id (plainSender): it keys presence labels, and the
       // host stamps every relay with it.
-      conn = this.plain.accept(socket, identity, {
-        features,
-        senderId: sender.senderId,
-      });
+      conn = this.plain.accept(socket, identity, { features, senderId: sender.senderId });
     } catch (error) {
       logAdmissionDenied(error, { stage: "native", identity });
       logUsage(
@@ -6903,8 +6999,8 @@ export class Page {
           left > 2 ** 30
             ? armExpiry()
             : void wire.disconnect(
-                admissionCloseCode(credentialExpired()),
-                admissionCode(credentialExpired()),
+                admissionCloseCode(leaseExpiryError(conn.identity, conn.expiresAt)),
+                admissionCloseReason(leaseExpiryError(conn.identity, conn.expiresAt)),
               ),
         Math.max(1, Math.min(left, 2 ** 30)),
       );
@@ -6936,14 +7032,7 @@ export class Page {
       this.wirePrincipals.delete(wire);
       this.activity?.prune();
       this.broadcastProfiles();
-      logUsage(
-        {
-          action: "sync.close",
-          ...syncUsage,
-          latencyMs: Date.now() - started,
-        },
-        this.env,
-      );
+      logUsage({ action: "sync.close", ...syncUsage, latencyMs: Date.now() - started }, this.env);
     });
     logUsage(
       {

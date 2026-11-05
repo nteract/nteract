@@ -137,7 +137,10 @@ export async function world(t, { index = "1", storage: newStorage = () => new St
     });
     page.policy = new DocumentPolicy({
       storage,
-      metadata: () => page.policyMetadata ?? page.metadata,
+      metadata: () => ({
+        ...(page.policyMetadata ?? page.metadata),
+        projectAccess: page.projectAccess,
+      }),
       serverKey: "f".repeat(64),
     });
     pages.set(id, page);

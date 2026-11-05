@@ -1,4 +1,5 @@
 import * as A from "@automerge/automerge";
+import { parseGrantGeneration } from "../shared/grant-generation.mjs";
 import * as N from "@automerge/subduction";
 import {
   asapScheduler,
@@ -1204,6 +1205,13 @@ export class PageSession {
     if (stable) this.reconnect({ type: "stable" });
     if (!this.alive || this.authRequired || this.accessDenied || this.accessReloadRequired) return;
     const outcome = this.socketOutcomes.get(socket);
+    if (admittedAt !== undefined && outcome?.reason === "project_lease_expired") {
+      this.reconnect({ type: "leaseExpired" });
+      this.syncStatus({ type: "retrying" });
+      this.renderStatus();
+      this.emit();
+      return;
+    }
     if (outcome?.code === "page_deleted") {
       void this.markDeleted();
       return;
@@ -1378,8 +1386,7 @@ export class PageSession {
     if (
       !access ||
       !["owner", "editor", "commenter", "viewer", "none"].includes(access.role) ||
-      !Number.isSafeInteger(access.generation) ||
-      access.generation < 0 ||
+      !parseGrantGeneration(access.generation) ||
       !Number.isSafeInteger(access.revision) ||
       access.revision < 0
     )

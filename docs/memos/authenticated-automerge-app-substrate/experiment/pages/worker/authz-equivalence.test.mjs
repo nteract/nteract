@@ -92,15 +92,7 @@ function* matrix() {
             for (const namespace of Object.keys(namespaces))
               for (const proof of Object.keys(evidence))
                 yield {
-                  label: {
-                    lifecycle,
-                    domainView,
-                    row,
-                    expiry,
-                    canWrite,
-                    namespace,
-                    proof,
-                  },
+                  label: { lifecycle, domainView, row, expiry, canWrite, namespace, proof },
                   metadata: record(lifecycle, domainView, row),
                   identity: {
                     principal,
@@ -276,12 +268,15 @@ test("a decision inspects only the caller's member row, however many tombstones 
   }
 });
 
-test("projectObject grants no member a role: the owner is the only relation", () => {
-  // move_page's access guard (index.mjs planMoveEvent) relies on Projects
-  // being owner-only. If this fails, that guard must re-check access first.
+test("projectObject without member rows grants only the owner", () => {
   const record = { space_id: "prj_guard", owner: "user:owner", acl: { revision: 3 } };
   const object = projectObject(record);
-  assert.deepEqual(Object.keys(object.relations).sort(), ["editor", "owner", "viewer"]);
+  assert.deepEqual(Object.keys(object.relations).sort(), [
+    "commenter",
+    "editor",
+    "owner",
+    "viewer",
+  ]);
   assert.equal(object.relations.owner.length, 1);
   assert.deepEqual(object.relations.editor, []);
   assert.deepEqual(object.relations.viewer, []);

@@ -197,7 +197,7 @@ test("metadata and challenge use configured public origin; unknown OAuth routes 
   assert.deepEqual(await prm.json(), {
     resource: origin + "/mcp",
     authorization_servers: [origin],
-    scopes_supported: ["pages:read", "pages:write"],
+    scopes_supported: ["pages:read", "pages:write", "pages:share"],
     bearer_methods_supported: ["header"],
     resource_name: "Pages",
     resource_documentation: origin + "/connect",

@@ -233,6 +233,53 @@ test("guide documents account-safe onboarding and truthful listing metadata", ()
     assert.ok(prose.includes(fact), fact);
 });
 
+test("guide treats Project content as one surface while retaining backing API fields", () => {
+  const prose = agentGuide(env).replace(/\s+/g, " ");
+  assert.match(prose, /A Project has editable content and a hierarchy of Pages/);
+  assert.match(
+    prose,
+    /home_page_id, the backing Page ID accepted by read_page, edit_page and patch_page/,
+  );
+  assert.match(
+    prose,
+    /update_project changes catalog metadata, not the backing document's title or body/,
+  );
+  assert.match(prose, /A direct Page grant applies only to that Page, never its descendants/);
+  assert.doesNotMatch(prose, /home Page|Project is a container/);
+});
+
+test("guide distinguishes whole Project sharing from direct Page grants and editing consent", () => {
+  const prose = agentGuide(env).replace(/\s+/g, " ");
+  assert.match(prose, /All four access tools require separately approved pages:share for OAuth/);
+  assert.match(prose, /Editing consent alone never authorizes sharing/);
+  assert.match(
+    prose,
+    /Project membership covers the Project's content and its Pages at every depth/,
+  );
+  assert.match(prose, /removing Project membership does not remove a direct Page grant/);
+  assert.match(prose, /email is the sharing entry point/);
+  assert.match(prose, /No outbound email is sent or required/);
+  assert.match(prose, /Do not search an email directory or look up a principal ID/);
+  assert.match(prose, /claim requires the recipient's verified email/);
+  assert.match(prose, /Claim occurs on an authenticated get_project or list_projects call/);
+  assert.match(prose, /not asynchronously on sign-in/);
+  assert.match(prose, /backing Page's \/p\/\.\.\. link does not claim a Project invitation/);
+  assert.match(
+    prose,
+    /Without project_id, list_pages is not a complete inventory of inherited access/,
+  );
+  assert.match(prose, /removed members and internal signing generations are omitted/);
+  assert.match(prose, /Invites contain id, email, role and expiresAt \(epoch milliseconds\)/);
+  assert.match(prose, /an old receipt is not a fresh roster/);
+  assert.match(prose, /Project company-domain sharing is not supported/);
+  assert.match(prose, /up to 15 seconds after revocation/);
+  assert.match(prose, /Sharing tools do not issue retry_token authority/);
+  assert.doesNotMatch(
+    prose,
+    /Projects are owner-only|Only a Project's owner can open it|move changes no one's access/,
+  );
+});
+
 test("HEAD returns guide headers without a body; unsupported methods cannot mutate anything", async () => {
   const head = await worker.fetch(new Request(origin + "/llms.txt", { method: "HEAD" }), env);
   assert.equal(head.status, 200);
@@ -249,9 +296,9 @@ test("HEAD returns guide headers without a body; unsupported methods cannot muta
 
 test("guide permits loopback development but refuses missing or unsafe public-origin configuration", () => {
   assert.ok(
-    agentGuide({ NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "http://localhost:9894" }).includes(
-      "http://localhost:9894/mcp",
-    ),
+    agentGuide({
+      NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "http://localhost:9894",
+    }).includes("http://localhost:9894/mcp"),
   );
   for (const configured of [
     undefined,

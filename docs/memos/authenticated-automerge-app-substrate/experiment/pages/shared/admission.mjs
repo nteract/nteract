@@ -1,6 +1,7 @@
 // Client-safe admission outcomes. The Worker maps every internal denial reason
 // to exactly one of these codes; browsers receive only the code, never the
-// internal reason. For clients that send ADMISSION_CAPABILITY, a missing Page
+// internal reason, except the allowlisted scheduled Project lease boundary.
+// For clients that send ADMISSION_CAPABILITY, a missing Page
 // and a Page the caller cannot read share `page_access_denied`.
 //
 // `retry` describes what a client should do:
@@ -36,8 +37,14 @@ const byClose = new Map(
 
 /** Interpret a native sync socket close. Returns undefined for ordinary closes
  * (1000/1001/1006, or anything this protocol did not send). The close code is
- * authoritative; the reason string must agree or the close is ignored. */
+ * authoritative; the reason must agree or name the scheduled lease exception. */
 export function admissionCloseOutcome(event) {
+  if (event?.code === 4503 && event.reason === "project_lease_expired")
+    return {
+      code: "temporarily_unavailable",
+      ...ADMISSION_OUTCOMES.temporarily_unavailable,
+      reason: "project_lease_expired",
+    };
   const code = byClose.get(event?.code);
   if (!code || (event.reason !== undefined && event.reason !== "" && event.reason !== code))
     return undefined;

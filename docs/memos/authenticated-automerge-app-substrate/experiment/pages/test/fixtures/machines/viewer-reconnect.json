@@ -16,6 +16,7 @@
     "failed",
     "keyRefused",
     "stable",
+    "leaseExpired",
     "timer",
     "resume",
     "halt"
@@ -40,6 +41,36 @@
     ]
   },
   "rows": [
+    {
+      "label": "scheduled admitted lease starts at base backoff",
+      "state": { "name": "ready", "attempts": 8, "refusals": 2 },
+      "event": { "type": "leaseExpired" },
+      "expect": { "state": { "name": "waiting", "attempts": 1, "refusals": 0 }, "effects": [{ "type": "schedule", "step": 500 }] }
+    },
+    {
+      "label": "unadmitted lease is not a healthy connection",
+      "state": { "name": "handshaking", "attempts": 8, "refusals": 2 },
+      "event": { "type": "leaseExpired" },
+      "expect": { "state": { "name": "handshaking", "attempts": 8, "refusals": 2 }, "effects": [], "rejected": "No socket stayed admitted" }
+    },
+    {
+      "label": "late lease cannot change a pending retry",
+      "state": { "name": "waiting", "attempts": 8, "refusals": 2 },
+      "event": { "type": "leaseExpired" },
+      "expect": { "state": { "name": "waiting", "attempts": 8, "refusals": 2 }, "effects": [], "rejected": "No socket stayed admitted" }
+    },
+    {
+      "label": "lease cannot bypass key refusal",
+      "state": { "name": "refused", "attempts": 8, "refusals": 2 },
+      "event": { "type": "leaseExpired" },
+      "expect": { "state": { "name": "refused", "attempts": 8, "refusals": 2 }, "effects": [], "rejected": "No socket stayed admitted" }
+    },
+    {
+      "label": "lease cannot bypass pause",
+      "state": { "name": "paused", "attempts": 8, "refusals": 6 },
+      "event": { "type": "leaseExpired" },
+      "expect": { "state": { "name": "paused", "attempts": 8, "refusals": 6 }, "effects": [], "rejected": "No socket stayed admitted" }
+    },
     {
       "label": "the first retry waits about half a second",
       "case": "transient",

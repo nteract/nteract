@@ -323,22 +323,29 @@
         "page:in_project#project@project:team",
         "project:team#owner@user:alice",
         "project:team#editor@user:bob",
+        "project:team#commenter@user:dana",
+        "project:team#commenter@group:reviewers#member",
+        "group:reviewers#member@user:erin",
         "project:team#viewer@user:carol"
       ],
       "principals": [
         {
           "subject": "user:bob",
           "credential": "write",
-          "capabilities": [
-            "read",
-            "comment",
-            "edit",
-            "trash",
-            "restore",
-            "create_items",
-            "move_within"
-          ],
+          "capabilities": ["read", "comment", "edit"],
           "basis": { "relation": "editor", "via": "project" }
+        },
+        {
+          "subject": "user:dana",
+          "credential": "write",
+          "capabilities": ["read", "comment"],
+          "basis": { "relation": "commenter", "via": "project" }
+        },
+        {
+          "subject": "user:erin",
+          "credential": "write",
+          "capabilities": ["read", "comment"],
+          "basis": { "relation": "commenter", "via": "project" }
         },
         {
           "subject": "user:carol",
@@ -363,7 +370,7 @@
         {
           "subject": "user:bob",
           "credential": "write",
-          "capabilities": ["read", "trash", "restore", "create_items", "move_within"],
+          "capabilities": ["read"],
           "basis": { "relation": "editor", "via": "direct" }
         },
         {
@@ -392,15 +399,7 @@
         {
           "subject": "user:hana",
           "credential": "write",
-          "capabilities": [
-            "read",
-            "comment",
-            "edit",
-            "trash",
-            "restore",
-            "create_items",
-            "move_within"
-          ],
+          "capabilities": ["read", "comment", "edit"],
           "basis": { "relation": "editor", "via": "project" },
           "valid_until": 4600000
         },
@@ -414,7 +413,7 @@
       ]
     },
     {
-      "name": "Trash keeps restore for a project editor, and nothing for a project viewer",
+      "name": "Trash keeps restore only for a project owner",
       "modes": ["external"],
       "object": "page:trashed_in_project",
       "lifecycle": "trashed",
@@ -432,12 +431,7 @@
           "capabilities": ["read", "administer", "restore", "purge"],
           "basis": { "relation": "owner", "via": "project" }
         },
-        {
-          "subject": "user:bob",
-          "credential": "write",
-          "capabilities": ["read", "restore"],
-          "basis": { "relation": "editor", "via": "project" }
-        },
+        { "subject": "user:bob", "credential": "write", "capabilities": [] },
         { "subject": "user:carol", "credential": "write", "capabilities": [] }
       ]
     },

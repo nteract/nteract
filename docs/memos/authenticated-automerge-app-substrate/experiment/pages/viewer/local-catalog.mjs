@@ -4,6 +4,7 @@
 // Subduction WASM. local-pages.mjs owns the snapshot reads and merges, through
 // this module's one store instance.
 import { IndexedDBByteStore } from "@automerge/automerge-repo-subduction";
+import { compareGrantGenerations, replicaGrantGeneration } from "../shared/grant-generation.mjs";
 
 export const store = new IndexedDBByteStore({ database: "pages-local-catalog-v1" });
 export const encoder = new TextEncoder();
@@ -40,12 +41,6 @@ export async function listLocalPages(identity, { pendingOnly = false } = {}) {
       registered,
     }))
     .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
-}
-/** The grant generation a replica key names ("3:writer" is 3). An unknown
- * key compares as no generation, which no comparison finds newer. */
-export function grantGeneration(replicaKey) {
-  const match = /^(\d+):/.exec(typeof replicaKey === "string" ? replicaKey : "");
-  return match ? Number(match[1]) : NaN;
 }
 /** The grant of this account's stored checkpoint, `{ grant, revision }`
  * (its replica key and grant revision), or undefined. */
@@ -131,10 +126,11 @@ export function archiveSnapshot(records, identity, page, sequence) {
  *
  * `grant` is the replica key the refused session opened under and
  * `revision` the host access revision it last held. The stored entry belongs
- * to a newer grant when its replica key names a later member generation, or
+ * to a newer grant when its replica key names a later comparable generation, or
  * its `grant_revision` (writeLocalPage) is greater: company sharing and owner
  * access stay at generation 0 and change only the revision. Then the refusal
- * is stale for it: only the caller's own copy and drafts are archived, the
+ * is stale for it. Different incomparable sources also keep the stored entry;
+ * only a fresh host lookup may replace that grant. Only the caller's copy and drafts are archived, the
  * entry keeps its content and grant fields, and no marker is written. A field
  * either side lacks, such as a legacy entry's `grant_revision`, never makes
  * the entry newer.
@@ -170,11 +166,16 @@ export async function retireLocalPage(
         const base = previous ?? { principal: identity.principal, page_id: pageId };
         // A marker names no grant. A newer grant's entry can be its reset
         // marker, before that grant's first checkpoint.
+        const order = compareGrantGenerations(
+          replicaGrantGeneration(previous?.replicaKey),
+          replicaGrantGeneration(grant),
+        );
         const superseded =
           !!previous &&
           !previous.deleted &&
           !previous.revoked &&
-          (grantGeneration(previous.replicaKey) > grantGeneration(grant) ||
+          (order === 1 ||
+            (order === null && previous.replicaKey && grant && previous.replicaKey !== grant) ||
             (Number.isSafeInteger(previous.grant_revision) &&
               Number.isSafeInteger(revision) &&
               previous.grant_revision > revision));

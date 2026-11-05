@@ -4,6 +4,7 @@ import * as N from "@automerge/subduction";
 import { ActorAuthorship } from "./actor-authorship.mjs";
 import { Page } from "./index.mjs";
 import { DocumentPolicy, PermissionDenied } from "./policy.mjs";
+import { projectObject } from "./authz.mjs";
 
 const drain = () => new Promise(setImmediate);
 
@@ -654,6 +655,38 @@ test("real policy closes domain viewer sockets at the earlier proof deadline", a
   await drain();
   assert.equal(checks, 1, "proof expiry cancels further authorization checks");
   assert.deepEqual(f.writes, [], "proof expiry never changes the durable reader binding");
+});
+
+test("Project lease expiry reconnects an accepted member without expiring its credential", async (t) => {
+  let checks = 0;
+  const project = {
+    space_id: "prj_00000000-0000-4000-8000-000000000001",
+    owner: "user:owner",
+    acl: { revision: 1, members: { "user:member": { role: "editor", generation: 1 } } },
+  };
+  const metadata = {
+    owner: project.owner,
+    projectAccess: { ...projectObject(project), members: project.acl.members, valid_until: 16000 },
+  };
+  const f = fixture(t, undefined, {
+    identity: { principal: "user:member" },
+    metadata,
+    reauthenticate: async (identity) => {
+      checks++;
+      return identity;
+    },
+  });
+  await drain();
+  assert.ok(f.events.includes("admitted"));
+  t.mock.timers.tick(14999);
+  await drain();
+  assert.equal(f.page.wires.size, 1);
+  t.mock.timers.tick(1);
+  await f.background;
+  assert.equal(checks, 0, "expiry terminates rather than renewing unknown authority");
+  assert.deepEqual(f.socket.closed, { code: 4503, reason: "project_lease_expired" });
+  assert.equal(f.page.policy.sessions.size, 0);
+  assert.equal(f.page.policy.bindings.get("0".repeat(64)).retired, false);
 });
 
 for (const ending of ["disconnect", "expiry"]) {

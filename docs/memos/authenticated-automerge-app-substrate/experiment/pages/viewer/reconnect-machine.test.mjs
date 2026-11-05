@@ -17,8 +17,8 @@ const TABLE = new URL("../test/fixtures/machines/viewer-reconnect.json", import.
 
 test("the viewer-reconnect table runs through the pure machine", async () => {
   assert.deepEqual(await runTable(viewerReconnectMachine, loadTable(TABLE)), {
-    rows: 62,
-    pairs: 50,
+    rows: 67,
+    pairs: 55,
     unreachable: 0,
     cases: 10,
   });

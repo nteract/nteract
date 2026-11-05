@@ -1,4 +1,5 @@
 import * as A from "@automerge/automerge";
+import { compareGrantGenerations, parseGrantGeneration } from "../shared/grant-generation.mjs";
 import { mergeLocalEdits } from "./local-edits.mjs";
 import {
   archiveSnapshot,
@@ -34,6 +35,22 @@ export async function prepareLocalPageReload(identity, page, access, replicaKey)
         const previous = request.result ? JSON.parse(decoder.decode(request.result)) : page;
         if (previous.deleted) throw pageDeleted();
         if (previous.revoked) throw accessRevoked();
+        // Host-verified replacement is a compare-and-swap on the observed
+        // source. Project and direct generations have no shared numeric clock.
+        if (
+          previous.replicaKey &&
+          previous.replicaKey !== page.replicaKey &&
+          previous.replicaKey !== replicaKey
+        )
+          throw accessChanged();
+        const before = parseGrantGeneration(previous.access?.generation);
+        const after = parseGrantGeneration(access.generation);
+        const order = compareGrantGenerations(previous.access?.generation, access.generation);
+        if (
+          order === 1 ||
+          (order === null && before?.source === "project" && after?.project === before.project)
+        )
+          throw accessChanged();
         if ((previous.access?.revision ?? 0) > access.revision) throw accessChanged();
         let sequence = previous.recovery_sequence ?? 0;
         if (previous.snapshot) archiveSnapshot(records, identity, previous, ++sequence);

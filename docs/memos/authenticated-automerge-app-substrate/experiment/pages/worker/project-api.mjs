@@ -27,6 +27,8 @@ const INTERNAL_OPERATION = Object.freeze(
 );
 /** Results that can carry a Project or placement. Other bodies pass through. */
 const MAPPED_RESULTS = new Set([
+  "get_project_access",
+  "manage_project_access",
   ...Object.values(RENAMED_TOOLS),
   "create_page",
   "list_pages",

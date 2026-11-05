@@ -275,16 +275,16 @@ export const projectsRequest =
  */
 export const activityAt = (page) => page?.content_updated_at || page?.updated_at || null;
 
-/** A library row. Owned Pages in a Project name it; a Project the account
- * can't list (or that hasn't loaded) still links by ID. Shared Pages never
- * reveal their Project. `local` marks a copy only this browser lists
+/** A library row uses only the Project placement disclosed by the host.
+ * Direct-only shares omit placement; Project members can retain it.
+ * `local` marks a copy only this browser lists
  * (deviceRows): `pending` when it has never reached the server. */
 export function pageRow(page, projectTitles = new Map(), { local = false } = {}) {
-  const projectId = page.shared ? null : (page.project_id ?? null);
+  const projectId = page.project_id ?? null;
   return {
     id: page.page_id,
     title: page.title || "Untitled",
-    href: pagePath(page.page_id),
+    href: page.home && projectId ? projectPath(projectId) : pagePath(page.page_id),
     activityAt: activityAt(page),
     // The grid keys a card by it, so an edit since the last ask asks again.
     contentUpdatedAt: page.content_updated_at ?? null,

@@ -195,10 +195,7 @@ test("the gateway links Page edit receipts, and leaves refusals and unlinked cal
   const receipt = { page_id: pageId, heads: ["a".repeat(64)], result: { applied: 1 } };
   for (const operation of ["edit_page", "patch_page", "manage_page_comment", "read_page_changes"]) {
     const linked = await invokeProjectApi(answer(200, receipt), operation, {}, { env });
-    assert.deepEqual(await linked.json(), {
-      ...receipt,
-      url: `https://pages.invalid/p/${pageId}`,
-    });
+    assert.deepEqual(await linked.json(), { ...receipt, url: `https://pages.invalid/p/${pageId}` });
     assert.equal(linked.headers.get("retry-after"), "1", "headers survive");
   }
   // MCP calls without env and adds its own links; a refusal never gets one.
@@ -1321,7 +1318,7 @@ test("Project tools are concise and keep the untrusted-content rule", () => {
     assert.ok(tool, name);
     assert.ok(tool.description.length < 900, `${name} description stays short`);
   }
-  assert.match(byName.get("get_project").description, /home Page/);
+  assert.match(byName.get("get_project").description, /home_page_id/);
   assert.match(byName.get("get_project").description, /untrusted/);
   assert.deepEqual(byName.get("get_project").inputSchema.required, ["project_id"]);
   assert.equal(byName.get("list_projects").annotations.readOnlyHint, true);
@@ -1519,7 +1516,10 @@ test("breadcrumbs come from one Catalog call, and a viewer's stop at the first P
   ]);
   assert.equal(chain.parent_id, b);
   assert.equal(chain.project_id, undefined);
-  assert.equal(calls.filter((call) => call.path === "/internal/location").length, 1);
+  assert.ok(
+    calls.filter((call) => call.path === "/internal/location").length >= 1,
+    "each shared Page also resolves its authoritative Project access",
+  );
 });
 
 test("list_pages by Project lists every descendant; by parent, direct children, also under a shared parent", async (t) => {
@@ -1577,7 +1577,7 @@ test("list_pages by Project lists every descendant; by parent, direct children, 
   assert.equal(body.includes('"C2"'), false);
   assert.deepEqual(
     calls
-      .filter((call) => call.path === "/internal/location")
+      .filter((call) => call.path === "/internal/location" && call.body.children_of)
       .map(({ name, body }) => ({ name, body })),
     [{ name: w.owner, body: { children_of: b } }],
   );
@@ -1668,7 +1668,7 @@ test("list_pages access and sort combine with Project and parent filters; shared
       calls
         .filter(
           (call) =>
-            call.path === "/internal/location" ||
+            (call.path === "/internal/location" && call.body.children_of) ||
             (call.binding === "PAGES" && call.path === "/internal/catalog"),
         )
         .map((call) => call.name),

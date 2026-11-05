@@ -34,6 +34,8 @@
  * for STABLE_CONNECTION_MS), `timer` (the backoff timer fired), `resume` (an
  * explicit Retry, an `online` event, a re-authentication or a first open),
  * and `halt` (the phase stopped sync, so a pending retry is dropped).
+ * `leaseExpired` is an admitted socket's scheduled Project deadline: retry
+ * at the base step without counting a healthy lease cycle as an outage.
  *
  * Effects: `armHandshake` starts the handshake timer for `ms`,
  * `disarmHandshake` clears it, `abandonHandshake` ends the pending handshake
@@ -118,6 +120,7 @@ export const viewerReconnectSpec = Object.freeze({
     "failed",
     "keyRefused",
     "stable",
+    "leaseExpired",
     "timer",
     "resume",
     "halt",
@@ -159,6 +162,7 @@ export const viewerReconnectSpec = Object.freeze({
       },
       keyRefused: typed([]),
       stable: typed([]),
+      leaseExpired: typed([]),
       timer: typed([]),
       resume: typed([]),
       halt: typed([]),
@@ -219,6 +223,8 @@ function fail(state, refused, before = []) {
 }
 
 function transition(state, event) {
+  if (event.type === "leaseExpired")
+    return state.name === "ready" ? fail(fresh(), false) : reject(state, REJECT.unstable);
   // Resume clears both counters from any state and starts one attempt now. A
   // handshake still pending is abandoned so the new attempt replaces it.
   if (event.type === "resume") {

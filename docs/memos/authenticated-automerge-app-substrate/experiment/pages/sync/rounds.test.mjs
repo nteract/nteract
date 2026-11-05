@@ -46,8 +46,12 @@ const syncHello = (changes) => {
 };
 const ACTOR = "aa".repeat(16);
 
-for (const { title, failure, retry } of [
+for (const { title, failure, retry, bloomMiss } of [
   { title: "reply follow-ups wait across local persistence for the scheduled start" },
+  {
+    title: "reply follow-ups request Bloom-filter-missed history without another local edit",
+    bloomMiss: true,
+  },
   {
     title: "failed persistence schedules a release that resumes replies and later fan-out",
     failure: true,
@@ -68,13 +72,22 @@ for (const { title, failure, retry } of [
       },
     });
     const id = newId();
-    let local = A.from({ n: 0 });
+    // Fixed actors and timestamps exercise both a data-bearing fan-out and a
+    // Bloom false positive that needs another protocol round for its history.
+    const seed = bloomMiss ? 192 : 1;
+    let local = A.change(
+      A.init({ actor: (seed + 65536).toString(16).padStart(32, "0") }),
+      { time: 0 },
+      (d) => {
+        d.n = 0;
+      },
+    );
     const store = () => {
       const blob = A.getLastLocalChange(local);
       const { hash, deps } = A.decodeChange(blob);
       return backend.store(id, [{ kind: "commit", id: hash, parents: deps, blob }]);
     };
-    let peer = A.clone(local);
+    let peer = A.clone(local, { actor: seed.toString(16).padStart(32, "0") });
     let state = A.initSyncState();
     let receive;
     const sent = [];
@@ -101,7 +114,7 @@ for (const { title, failure, retry } of [
       while (sent.length) answer();
       await backend.flush();
 
-      local = A.change(local, (d) => {
+      local = A.change(local, { time: 0 }, (d) => {
         d.n = 1;
       });
       await store();
@@ -112,7 +125,7 @@ for (const { title, failure, retry } of [
       release = bytes.hold();
       if (failure) bytes.failSave(1);
       start = null;
-      local = A.change(local, (d) => {
+      local = A.change(local, { time: 0 }, (d) => {
         d.n = 2;
       });
       storing = store();
@@ -149,16 +162,20 @@ for (const { title, failure, retry } of [
         "the suppressed reply's waiter resumes",
       );
 
-      peer = A.change(peer, (d) => {
+      peer = A.change(peer, { time: 0 }, (d) => {
         d.remote = "fan-out";
       });
       let m;
       [state, m] = A.generateSyncMessage(peer, state);
       assert.ok(m);
+      assert.equal(A.decodeSyncMessage(m).changes.length > 0, !bloomMiss);
       receive({ t: "sync", doc: id, m, has: true, heads: A.getHeads(peer) });
       assert.equal(sent.length, 1, "later host fan-out is acked without another local edit");
       const ack = A.decodeSyncMessage(sent[0].m);
-      assert.deepEqual(ack.heads, A.getHeads(peer));
+      if (bloomMiss) {
+        assert.deepEqual(ack.heads, A.getHeads(local));
+        assert.deepEqual(ack.need, A.getHeads(peer), "the reply requests the omitted history");
+      } else assert.deepEqual(ack.heads, A.getHeads(peer));
       while (sent.length) answer();
       await backend.flush();
       const events = backend.open(id).events[Symbol.asyncIterator]();
