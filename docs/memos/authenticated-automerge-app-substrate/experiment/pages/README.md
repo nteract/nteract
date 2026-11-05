@@ -1101,7 +1101,17 @@ projection or report. Two marks make a check boot until that repair has run:
   retries the store alone, at most once every 30 s, with the title's first
   observation time, and clears the mark when it lands if the Catalogs already
   had that title.
-- The index report mark is written after a report fails, and synced.
+- The index report mark is written after a report fails, and synced. Index
+  repair is independent: a failed D1 report does not resend a title that the
+  Catalogs already received. Domain-reader discovery likewise cannot invalidate
+  delivery to the owner and explicit members.
+
+`worker/title-projection.mjs` owns the title observation's storage and delivery
+states. Either can finish first; both must succeed before clearing the pending
+mark. Attempt tokens reject late outcomes, including an A-to-B-to-A rename.
+The host serializes local mark, title-store and clear effects, so a delayed
+clear cannot erase a newer mark. Catalog delivery does not wait on that queue.
+The stored record and pending-key formats are unchanged.
 
 Each reader's reconcile pass also rewrites its own access row from the
 check's answer. Repeating a title projection is harmless since `keep_time`,

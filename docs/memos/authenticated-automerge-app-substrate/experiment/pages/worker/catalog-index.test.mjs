@@ -914,6 +914,50 @@ test("a crash between trash barriers leaves the Page indexable; trash and purge 
   assert.equal(f.db.rows("SELECT count(*) AS n FROM pages_catalog_access")[0].n, 0);
 });
 
+test("a D1-only title failure repairs once on the next request without repeating Catalog delivery", async (t) => {
+  const f = await catalogFixture(t);
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  const page = f.addPage(id(84), "Plan", {
+    revision: 1,
+    members: { [member]: { role: "viewer", generation: 1 } },
+  });
+  const sent = [];
+  // Isolate the Page's D1 report from the Catalogs' own index writes.
+  page.env = {
+    ...f.env,
+    CATALOGS: {
+      getByName: (principal) => ({
+        fetch: async (request) => {
+          sent.push({ principal, body: await request.json() });
+          return new Response(null);
+        },
+      }),
+    },
+  };
+  const reports = [];
+  const report = page.reportIndex.bind(page);
+  page.reportIndex = (details) => {
+    reports.push(details);
+    return report(details);
+  };
+  f.db.mode = "fail";
+  page.cacheTitle();
+  await f.settle();
+  assert.equal(sent.length, 2);
+  assert.equal(reports.length, 1);
+  assert.equal(await page.ctx.storage.get("host/index/report-pending"), true);
+  assert.equal(await page.ctx.storage.get("host/title-projection/pending"), undefined);
+  f.db.mode = "ok";
+  t.mock.timers.tick(60_000);
+  const response = await page.fetch(f.request(member, "/internal/catalog", {}));
+  assert.equal(response.status, 200);
+  await f.settle();
+  assert.equal(sent.length, 2, "successful Catalog delivery is not repeated");
+  assert.equal(reports.length, 2, "only the existing D1 repair path reports again");
+  assert.equal(reports[1].observedAt, reports[0].observedAt);
+  assert.equal(await page.ctx.storage.get("host/index/report-pending"), undefined);
+});
+
 test("a restarted Page host with an unchanged title moves no updated_at and reorders nothing", async (t) => {
   for (const index of ["1", null]) {
     await t.test(index ? "index" : "catalog", async (t) => {
@@ -1127,11 +1171,15 @@ test("an ACL commit and a restore move updated_at, including through a retried p
         f.db.mode = "ok";
         const record = await page.ctx.storage.get("host/title-projection");
         assert.equal(record.keep, false, "an observation lets no writer keep its time");
-        assert.deepEqual(page.titleObserved, { at: record.observed_at, keep: false });
+        assert.deepEqual(page.titleProjection.record, record);
 
         // The next request retries the projection, or repairs the report.
         if (failing === "catalog") {
-          assert.equal(page.cachedTitle, undefined, "the failed projection is retried");
+          assert.equal(
+            page.titleProjection.delivery.name,
+            "needed",
+            "the failed projection is retried",
+          );
           page.cacheTitle();
         } else {
           assert.equal(await page.ctx.storage.get("host/index/report-pending"), true);
@@ -1433,7 +1481,10 @@ test("shared title repair uses the Page host's observation time", async (t) => {
     found.body.pages.map((page) => page.title),
     ["Gamma"],
   );
-  assert.ok(restarted.titleObserved?.at, "the check ran this Page's first-use report");
+  assert.ok(
+    restarted.titleProjection?.record?.observed_at,
+    "the check ran this Page's first-use report",
+  );
   await f.settle();
   assert.equal(
     f.db.rows("SELECT title FROM pages_catalog_access WHERE principal = ?", member)[0].title,

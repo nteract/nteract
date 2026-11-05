@@ -178,8 +178,7 @@ test("a title projection stranded on a reset Catalog is sent again", async (t) =
         }),
       },
     },
-    // Storage that takes the title projection and its mark: a failed store
-    // would make the next request send the title again.
+    // Storage succeeds independently of Catalog delivery.
     ctx: {
       waitUntil: (promise) => jobs.push(promise),
       storage: { put: async () => {}, delete: async () => true },
@@ -193,12 +192,12 @@ test("a title projection stranded on a reset Catalog is sent again", async (t) =
   assert.deepEqual(sent, ["user:owner"], "a pending projection is not repeated");
   t.mock.timers.tick(serialQueueBounds.projectionMs);
   await Promise.all(jobs);
-  assert.equal(page.cachedTitle, undefined, "the timed-out projection clears the cache");
+  assert.equal(page.titleProjection.delivery.name, "needed", "the timed-out delivery is retried");
   answer = async () => Response.json({ ok: true });
   page.cacheTitle();
   await Promise.all(jobs);
   assert.deepEqual(sent, ["user:owner", "user:owner"]);
-  assert.equal(page.cachedTitle, "Renamed");
+  assert.equal(page.titleProjection.delivery.name, "delivered");
 });
 
 test("a Space queue resets the same way", async (t) => {
@@ -211,4 +210,40 @@ test("a Space queue resets the same way", async (t) => {
   await turns();
   t.mock.timers.tick(serialQueueBounds.runMs);
   assert.equal(ctx.aborts.length, 1);
+});
+
+test("an old failed A delivery cannot invalidate a newer delivered A after B", async () => {
+  let title = "A",
+    release;
+  const held = new Promise((resolve) => (release = resolve));
+  const jobs = [],
+    sent = [];
+  const page = Object.assign(Object.create(Page.prototype), {
+    ctx: {
+      waitUntil: (job) => jobs.push(job),
+      storage: { put: async () => {}, delete: async () => {} },
+    },
+    metadata: { pageId: "test-page", owner: "user:owner", acl: { members: {} } },
+    handle: { doc: () => ({ title }) },
+    env: {
+      CATALOGS: {
+        getByName: () => ({
+          fetch: () => {
+            sent.push(title);
+            return sent.length === 1 ? held : Promise.resolve(new Response(null));
+          },
+        }),
+      },
+    },
+  });
+  page.cacheTitle();
+  title = "B";
+  page.cacheTitle();
+  title = "A";
+  page.cacheTitle();
+  release(new Response(null, { status: 503 }));
+  while (jobs.length) await Promise.all(jobs.splice(0));
+  assert.equal(page.titleProjection.name, "settled");
+  page.cacheTitle();
+  assert.deepEqual(sent, ["A", "B", "A"]);
 });
