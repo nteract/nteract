@@ -4,10 +4,12 @@ import { runTable } from "../shared/machine-test.mjs";
 import {
   MAX_BACKOFF_MS,
   MAX_ATTEMPTS,
+  QUIET_MS,
   SLOT_MAX_AGE_MS,
   backoffMs,
   migrationSlot,
   migrationStart,
+  operatorRefusal,
   recordStorageMigration,
 } from "./record-storage-migration.mjs";
 
@@ -157,7 +159,83 @@ test("record-storage-migration covers every state and event", () => {
       event: { type: "elapsed" },
       expect: ok(s("connected")),
     },
+    // An operator's request converts now, from any state that isn't
+    // already converting or plain, open sockets or not.
+    {
+      label: "a host without the passive policy converts on request",
+      case: "disabled",
+      state: { name: "off" },
+      event: { type: "requested" },
+      expect: ok({ name: "converting", attempts: 0, quietMs: QUIET_MS, requested: "off" }, [
+        { type: "disarm" },
+        { type: "convert" },
+      ]),
+    },
+    {
+      case: "paused",
+      state: s("off", { attempts: MAX_ATTEMPTS, retryOnSocket: true }),
+      event: { type: "requested" },
+      expect: ok(s("converting", { attempts: MAX_ATTEMPTS, requested: "dormant" }), [
+        { type: "disarm" },
+        { type: "convert" },
+      ]),
+    },
+    ...["dormant", "connected", "quiet", "backoff"].map((name) => ({
+      state: s(name, { attempts: 1, ...(name === "backoff" && { busy: true }) }),
+      event: { type: "requested" },
+      expect: ok(s("converting", { attempts: 1, requested: "dormant" }), [
+        { type: "disarm" },
+        { type: "convert" },
+      ]),
+    })),
+    {
+      state: s("converting"),
+      event: { type: "requested" },
+      expect: no(s("converting"), "a conversion is already running"),
+    },
+    {
+      state: { name: "retired" },
+      event: { type: "requested" },
+      expect: no({ name: "retired" }, "the record already says plain"),
+    },
+    {
+      label: "a requested run that converts retires like any other",
+      state: s("converting", { requested: "off" }),
+      event: { type: "converted" },
+      expect: ok({ name: "retired" }, [{ type: "retire" }]),
+    },
+    // A requested run that doesn't convert arms nothing: the operator retries.
+    ...["skipped", "failed"].flatMap((type) => [
+      {
+        case: "requested",
+        state: s("converting", { requested: "off", busy: true }),
+        event: { type, ...(type === "skipped" && { reason: "busy" }) },
+        expect: ok({ name: "off" }),
+      },
+      {
+        case: "requested",
+        state: s("converting", { attempts: 2, requested: "dormant" }),
+        event: { type, ...(type === "skipped" && { reason: "busy" }) },
+        expect: ok(s("dormant", { attempts: 2 })),
+      },
+    ]),
   ]);
+});
+
+test("an operator conversion needs the plain switch and a live or trashed Subduction Page", () => {
+  const env = { PAGES_RECORD_STORAGE: "automerge" };
+  const live = { pageId: "p", documentId: "d", recordStorage: "buffered" };
+  assert.equal(operatorRefusal(env, live), null);
+  assert.equal(operatorRefusal(env, { ...live, recordStorage: undefined }), null);
+  assert.equal(operatorRefusal(env, { ...live, recordStorage: "local" }), null);
+  assert.equal(operatorRefusal(env, { ...live, deleted: true, trash: {} }), null);
+  assert.equal(operatorRefusal({}, live), "switch_off");
+  assert.equal(operatorRefusal({ PAGES_RECORD_STORAGE: "native" }, live), "switch_off");
+  assert.equal(operatorRefusal(env, undefined), "missing");
+  assert.equal(operatorRefusal(env, { ...live, recordStorage: "automerge" }), "plain");
+  assert.equal(operatorRefusal(env, { ...live, recordStorage: "other" }), "unsupported_storage");
+  assert.equal(operatorRefusal(env, { ...live, documentId: undefined }), "no_document");
+  assert.equal(operatorRefusal(env, { ...live, deleted: true }), "deleted");
 });
 
 test("slot waiters time out without running later or blocking subsequent waiters", async (t) => {

@@ -870,8 +870,10 @@ so the readers of older forms can be deleted. The code lives in
 production has migrated, with `scripts/content-migration.mjs`,
 `scripts/content-migration-operator.mjs`, the `/api/admin/content-migration`
 and `/api/operator/content-migration` routes and their Catalog and Page
-routes, the content listener's `contentMigrating` flag in `worker/index.mjs`,
-and the installer's `operatorMigration` secret (`scripts/deployment/`).
+routes and the content listener's `contentMigrating` flag in `worker/index.mjs`.
+The operator gate (`worker/operator-gate.mjs`, `scripts/operator-ssh.mjs`) and
+the installer's `operatorMigration` secret go with the last operator route
+(see [Operator conversion to plain sync](#operator-conversion-to-plain-sync)).
 
 Per Page, in one journaled host change (`host/operation/internal:content_norm_<digest of
 heads>`):
@@ -1078,6 +1080,106 @@ holds the revert records.
 **Rollback rule.** No schema feature is added, so earlier builds still edit a
 migrated Page. Every Page-body writer in this build and the one before writes
 the editor's form, so a rollback doesn't reintroduce old forms.
+
+### Operator conversion to plain sync
+
+The passive migration (README, "Migrating existing Pages") converts a listed
+Page only after its last tab closes and it's quiet for 30 s. The operator
+conversion converts named Pages now, open tabs or not, through the same Page
+host machine and conversion. It's lab only, behind the operator gate above,
+and marked for deletion with `worker/record-storage-operator.mjs`,
+`scripts/record-storage-operator.mjs`, the `requested` event in
+`worker/record-storage-migration.mjs` and its routes in `worker/index.mjs`.
+
+**Prerequisite.** An installed release whose profile sets
+`recordStorage: "automerge"` (and lists `automerge` in
+`RECORD_STORAGE_HISTORY`), so the target's hosts run with
+`PAGES_RECORD_STORAGE=automerge`. That's the switch: a host without it
+refuses with `switch_off`, and the script stops before converting anything.
+The same profile makes deployment refuse a rollback past #4795, the floor for
+a target holding plain Pages (see
+[Rollback and Page record storage](#rollback-and-page-record-storage)).
+Changing those vars restarts the service on install. The passive canary
+(`recordStorageMigration` or its operator file) isn't needed; the two compose,
+since both drive the same machine and a converted Page is plain for both.
+
+Per Page, in the host's serial request queue:
+
+1. The host checks the switch, the Page id, the owner the script names (from
+   the host's own status) and its record (`active` or `trashed`, Subduction
+   storage, a document).
+2. It steps its migration machine with `requested` and runs the conversion
+   inside `blockConcurrencyWhile`. It first closes every native socket with
+   close code 4503 (`temporarily_unavailable`, internal reason
+   `record_storage_migrating`); new sockets and frames wait behind the block.
+3. The existing conversion runs: flush, snapshot both documents into
+   `plain/`, flip `host/document` to `recordStorage: "automerge"` with
+   `recordStorageMigratedFrom` and `recordStorageMigratedAt`, retire, reset.
+   It refuses to flip if the live heads moved after the snapshot
+   (`heads_moved`). A skip or failure (`journal_pending`, `record_pending`,
+   `deadline_margin`, …) arms no retry: the Page stays on Subduction until the
+   operator asks again.
+
+Each attempt logs one `record_storage.migration` line with its `page_id` and
+`"trigger":"operator"`.
+
+What people see: a tab on a converted Page reconnects, its discovery names
+plain storage, and it shows "This Page's storage changed" with a reload. The
+reload opens a plain replica from the tab's checkpoint and sends the host any
+edit it lacks. Tabs on other Pages are untouched. MCP and HTTP tool calls that
+land during a conversion get a 503 and retry; agent harnesses need a restart
+only if one parks on that 503.
+
+Run it from `pages`, after a restore point (see
+[Restore points](#restore-points)). Read-only first:
+
+```sh
+node scripts/record-storage-operator.mjs --target pages --mode status --all > status.json
+```
+
+`--all` lists every `Page` cell with `celld cell list Page` (read-only) and
+reads each host's record without booting it. It also lists every account's
+Catalog (`page/` and `trash/`, so Project content and Trash are included)
+from the D1 projection; `catalog_only` names Pages a Catalog lists that no
+cell holds. `remaining` lists every `active` or `trashed` Page not yet plain.
+
+A canary, then everything:
+
+```sh
+node scripts/record-storage-operator.mjs --target pages --mode convert --page-id <uuid> --page-id <uuid>
+node scripts/record-storage-operator.mjs --target pages --mode convert --all --max 5
+node scripts/record-storage-operator.mjs --target pages --mode convert --all
+```
+
+`--principal P` (repeatable) limits a run to one account's Catalog. `--max N`
+stops after N conversions; `--pause-ms` paces them (default 500). Under
+`--all` each conversion addresses its cell id, which the route resolves to
+the Page its record names; the other scopes address the Page id. Each
+`convert` call answers `{cell_id, page_id, outcome, status}`. A converted
+object resets under its own request, so `outcome` may be an error; `status`
+is read from the next object and is what counts. The script converts every
+target its host calls convertible, reads them all again, and prints
+`converted`, `failed`, `not_converted`, `remaining`, `unreadable` (statuses
+that came back as errors: those Pages may still be on Subduction) and `done`.
+`done` is true only when `remaining` and `unreadable` are both empty. Either
+mode exits 0 only when `done` and no conversion failed, otherwise 2; run it
+again to retry. Every request and response is
+in the JSON-lines log (`--log`, default
+`record-storage-operator-<target>-<mode>-<time>.jsonl`).
+
+Verify:
+
+```sh
+node scripts/record-storage-operator.mjs --target pages --mode status --all > after.json
+ssh lab1 'sudo -n journalctl -u nteract-pages-live --since -1h | grep -c "\"trigger\":\"operator\""'
+```
+
+`after.json` must say `"done": true` (empty `remaining` and `unreadable`), and
+the script must exit 0; only `deleted` and `missing` cells may still name
+Subduction storage. Locally,
+`node scripts/e2e.mjs migration` runs both paths against celld and Chromium:
+a tab on a passively converted Page, and a tab open on a Page the operator
+converts, which reloads plain and keeps editing.
 
 ## Page quotas
 
