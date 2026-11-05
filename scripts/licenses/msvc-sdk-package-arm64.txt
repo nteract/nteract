@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
+  <metadata>
+    <id>Microsoft.Windows.SDK.CPP.arm64</id>
+    <version>10.0.26100.7705</version>
+    <title>Windows SDK for C++: ARM64</title>
+    <authors>Microsoft</authors>
+    <owners>Microsoft</owners>
+    <requireLicenseAcceptance>true</requireLicenseAcceptance>
+    <licenseUrl>https://aka.ms/WinSDKLicenseURL</licenseUrl>
+    <projectUrl>https://aka.ms/WinSDKProjectURL</projectUrl>
+    <iconUrl>https://aka.ms/WinSDKIconURL</iconUrl>
+    <description>The Windows SDK for C++: ARM64 enables developers to build ARM64 binaries for Windows platforms.</description>
+    <summary>The Windows SDK for C++: ARM64 enables developers to build ARM64 binaries for Windows platforms.</summary>
+    <copyright>© Microsoft Corporation. All rights reserved.</copyright>
+    <tags>WindowsSDK SDK native VC++ ARM64</tags>
+    <dependencies>
+      <dependency id="Microsoft.Windows.SDK.cpp" version="[10.0.26100.7705]" />
+    </dependencies>
+  </metadata>
+</package>

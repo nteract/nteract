@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import {execFileSync} from "node:child_process";
+import {execFileSync, spawnSync} from "node:child_process";
 import {chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
@@ -43,6 +43,40 @@ test("Linux publishers build on 22.04 and audit the installed tarball before upl
   const helpers = jobs.get("resolve-release");
   const copy = helpers.indexOf('cp scripts/ci/audit-linux-node.mjs "$RUNNER_TEMP/npm-release-tools/"');
   assert.ok(copy >= 0 && helpers.indexOf("uses: actions/upload-artifact@") > copy);
+});
+
+test("native attribution uses the producer checkout before packing and verifies retained payload before upload", () => {
+  const native = jobs.get("pack-native");
+  const order = [
+    "Require native attribution support in the release source",
+    "Stamp Node build versions",
+    "Build native binding",
+    "Assemble platform package",
+    "uses: ./.github/actions/install-cargo-about",
+    "Generate native binding attribution",
+    "Verify platform package",
+    "Pack platform package",
+    "Finalize packed platform manifest",
+    "Smoke installed native tarball and compiled channel",
+    "Verify attribution inside the installed native tarball",
+    "uses: actions/upload-artifact@",
+  ].map(text => native.indexOf(text));
+  assert.ok(order.every((position, index) => position >= 0 && (!index || position > order[index - 1])), `${order}`);
+  assert.match(native, /VERSION: \$\{\{ needs\.resolve-release\.outputs\.version \}\}/);
+  assert.match(native, /package-attribution\.mjs generate "\$TARGET" "\$VERSION" "\$NTERACT_BUILD_GIT_HASH"/);
+  assert.match(native, /package-attribution\.mjs verify "\$TARGET" "\$VERSION" "\$NTERACT_BUILD_GIT_HASH" "\$RUNNER_TEMP\/npm-native-smoke\/node_modules\/@runtimed\/node-\$TARGET"/);
+  assert.doesNotMatch(native, /build-runtime-artifacts|--kind runtimed\b|--kind notebook-ui|cargo xtask wasm/);
+});
+
+test("historic source without attribution fails clearly before native build", t => {
+  const directory = mkdtempSync(join(tmpdir(), "npm-no-attribution-"));
+  t.after(() => rmSync(directory, {recursive: true, force: true}));
+  const step = jobs.get("pack-native").split("      - name: Require native attribution support in the release source\n")[1].split("      - uses:")[0];
+  const shell = step.split("        run: |\n")[1].split("\n").map(line => line.replace(/^ {10}/, "")).join("\n");
+  const result = spawnSync("bash", ["-e", "-c", shell], {cwd: directory, encoding: "utf8"});
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /release source predates native npm attribution/);
+  assert.match(result.stdout, /do not attribute historical binaries from another checkout/);
 });
 
 for (const enabled of [undefined, "false", "true"]) {
@@ -293,6 +327,9 @@ test("tarball finalization preserves pnpm payload and modes, changing only its m
       writeFileSync(join(payload, "package.json"), JSON.stringify(stamped));
       const files = {
         LICENSE: "workspace license\n",
+        "LICENSE.nteract": "project license\n",
+        "THIRD_PARTY_NOTICES.txt": "binding-specific notices\n",
+        "sbom.cdx.json": '{"bomFormat":"CycloneDX"}\n',
         "src/binding.cjs": `module.exports = '${plan.version}';\n`,
         "runtimed-node.linux-x64-gnu.node": Buffer.from([0, 1, 255, 0, 42]),
         "cli.cjs": "#!/usr/bin/env node\n",

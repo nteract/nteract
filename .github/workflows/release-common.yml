@@ -231,6 +231,8 @@ jobs:
           fi
           cargo build --release --target "$TARGET" -p runt -p runtimed -p nteract-mcp
 
+      - uses: ./.github/actions/install-cargo-about
+
       - name: Rename binaries
         env:
           TARGET: ${{ matrix.platform.target }}
@@ -241,6 +243,19 @@ jobs:
             chmod +x "$bin-linux-$ARCH"
           done
 
+      - name: Generate standalone runtimed attribution
+        env:
+          TARGET: ${{ matrix.platform.target }}
+          ARCH: ${{ matrix.platform.arch }}
+          VERSION: ${{ needs.compute-version.outputs.version }}
+        run: |
+          ASSET="runtimed-linux-$ARCH"
+          node scripts/release-attribution.mjs --kind runtimed --target "$TARGET" \
+            --output daemon-attribution --version "$VERSION" --commit "$NTERACT_BUILD_GIT_HASH" --binary "$ASSET"
+          for name in LICENSE.nteract THIRD_PARTY_NOTICES.txt sbom.cdx.json; do
+            cp "daemon-attribution/$name" "$ASSET.$name"
+          done
+
       - name: Upload Linux executables
         uses: actions/upload-artifact@v7
         with:
@@ -249,6 +264,7 @@ jobs:
             runt-linux-${{ matrix.platform.arch }}
             nteract-cli-linux-${{ matrix.platform.arch }}
             runtimed-linux-${{ matrix.platform.arch }}
+            runtimed-linux-${{ matrix.platform.arch }}.*
             nteract-mcp-linux-${{ matrix.platform.arch }}
           if-no-files-found: error
 
@@ -301,6 +317,8 @@ jobs:
       - name: Build for macOS x64
         run: cargo build --release --target x86_64-apple-darwin -p runt -p runtimed
 
+      - uses: ./.github/actions/install-cargo-about
+
       - name: Rename binaries
         run: |
           cp target/aarch64-apple-darwin/release/runt runt-darwin-arm64
@@ -312,6 +330,21 @@ jobs:
           cp target/x86_64-apple-darwin/release/runtimed runtimed-darwin-x64
           chmod +x runtimed-darwin-x64
 
+      - name: Generate standalone runtimed attribution
+        env:
+          VERSION: ${{ needs.compute-version.outputs.version }}
+        run: |
+          for pair in aarch64-apple-darwin:arm64 x86_64-apple-darwin:x64; do
+            TARGET="${pair%:*}"
+            ARCH="${pair#*:}"
+            ASSET="runtimed-darwin-$ARCH"
+            node scripts/release-attribution.mjs --kind runtimed --target "$TARGET" \
+              --output "daemon-attribution/$TARGET" --version "$VERSION" --commit "$NTERACT_BUILD_GIT_HASH" --binary "$ASSET"
+            for name in LICENSE.nteract THIRD_PARTY_NOTICES.txt sbom.cdx.json; do
+              cp "daemon-attribution/$TARGET/$name" "$ASSET.$name"
+            done
+          done
+
       - name: Upload macOS executables
         uses: actions/upload-artifact@v7
         with:
@@ -321,6 +354,8 @@ jobs:
             runt-darwin-x64
             runtimed-darwin-arm64
             runtimed-darwin-x64
+            runtimed-darwin-arm64.*
+            runtimed-darwin-x64.*
 
   build-notebook-macos-arm64:
     name: Build macOS ARM64 Notebook
@@ -713,6 +748,28 @@ jobs:
           ref: ${{ env.NTERACT_BUILD_GIT_HASH }}
           fetch-depth: 0
 
+      # vcvarsall exports the same installed compiler/SDK environment for every
+      # subsequent build and attribution step; do not select a different SDK here.
+      - name: Activate producer MSVC environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: x64
+
+      - name: Verify producer MSVC environment
+        shell: pwsh
+        env:
+          EXPECTED_MSVC_ARCH: x64
+        run: |
+          foreach ($name in @('VCToolsInstallDir', 'VCToolsVersion', 'VSINSTALLDIR', 'WindowsSdkDir', 'UCRTVersion', 'LIB')) {
+            if (-not [Environment]::GetEnvironmentVariable($name)) { throw "Missing producer environment: $name" }
+          }
+          if ($env:VSCMD_ARG_TGT_ARCH -ne $env:EXPECTED_MSVC_ARCH) { throw 'MSVC target does not match the native release target' }
+          $compiler = (Get-Command cl.exe -ErrorAction Stop).Source
+          $tools = [IO.Path]::GetFullPath($env:VCToolsInstallDir).TrimEnd('\') + '\'
+          if (-not $compiler.StartsWith($tools, [StringComparison]::OrdinalIgnoreCase)) { throw 'cl.exe is outside the selected producer toolset' }
+          Write-Host "Producer compiler: $compiler"
+          Write-Host "Producer SDK: $env:WindowsSdkDir $env:UCRTVersion"
+
       - name: Set up Rust
         uses: dsherret/rust-toolchain-file@v1
 
@@ -882,11 +939,25 @@ jobs:
           mkdir -p daemon
           cp crates/notebook/binaries/runtimed-x86_64-pc-windows-msvc.exe daemon/runtimed-windows-x64.exe
 
+      - uses: ./.github/actions/install-cargo-about
+
+      - name: Generate standalone runtimed attribution
+        shell: bash
+        env:
+          VERSION: ${{ needs.compute-version.outputs.version }}
+        run: |
+          ASSET="daemon/runtimed-windows-x64.exe"
+          node scripts/release-attribution.mjs --kind runtimed --target x86_64-pc-windows-msvc \
+            --output daemon-attribution --version "$VERSION" --commit "$NTERACT_BUILD_GIT_HASH" --binary "$ASSET"
+          for name in LICENSE.nteract THIRD_PARTY_NOTICES.txt sbom.cdx.json; do
+            cp "daemon-attribution/$name" "$ASSET.$name"
+          done
+
       - name: Upload standalone runtimed binary
         uses: actions/upload-artifact@v7
         with:
           name: runtimed-windows-executable
-          path: daemon/runtimed-windows-x64.exe
+          path: daemon/runtimed-windows-x64.exe*
           if-no-files-found: error
 
   build-notebook-windows-arm64:
@@ -902,6 +973,26 @@ jobs:
           lfs: true
           ref: ${{ env.NTERACT_BUILD_GIT_HASH }}
           fetch-depth: 0
+
+      - name: Activate producer MSVC environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: arm64
+
+      - name: Verify producer MSVC environment
+        shell: pwsh
+        env:
+          EXPECTED_MSVC_ARCH: arm64
+        run: |
+          foreach ($name in @('VCToolsInstallDir', 'VCToolsVersion', 'VSINSTALLDIR', 'WindowsSdkDir', 'UCRTVersion', 'LIB')) {
+            if (-not [Environment]::GetEnvironmentVariable($name)) { throw "Missing producer environment: $name" }
+          }
+          if ($env:VSCMD_ARG_TGT_ARCH -ne $env:EXPECTED_MSVC_ARCH) { throw 'MSVC target does not match the native release target' }
+          $compiler = (Get-Command cl.exe -ErrorAction Stop).Source
+          $tools = [IO.Path]::GetFullPath($env:VCToolsInstallDir).TrimEnd('\') + '\'
+          if (-not $compiler.StartsWith($tools, [StringComparison]::OrdinalIgnoreCase)) { throw 'cl.exe is outside the selected producer toolset' }
+          Write-Host "Producer compiler: $compiler"
+          Write-Host "Producer SDK: $env:WindowsSdkDir $env:UCRTVersion"
 
       - name: Set up Rust
         uses: dsherret/rust-toolchain-file@v1
@@ -1095,11 +1186,25 @@ jobs:
           mkdir -p daemon
           cp crates/notebook/binaries/runtimed-aarch64-pc-windows-msvc.exe daemon/runtimed-windows-arm64.exe
 
+      - uses: ./.github/actions/install-cargo-about
+
+      - name: Generate standalone runtimed attribution
+        shell: bash
+        env:
+          VERSION: ${{ needs.compute-version.outputs.version }}
+        run: |
+          ASSET="daemon/runtimed-windows-arm64.exe"
+          node scripts/release-attribution.mjs --kind runtimed --target aarch64-pc-windows-msvc \
+            --output daemon-attribution --version "$VERSION" --commit "$NTERACT_BUILD_GIT_HASH" --binary "$ASSET"
+          for name in LICENSE.nteract THIRD_PARTY_NOTICES.txt sbom.cdx.json; do
+            cp "daemon-attribution/$name" "$ASSET.$name"
+          done
+
       - name: Upload standalone runtimed binary
         uses: actions/upload-artifact@v7
         with:
           name: runtimed-windows-arm64
-          path: daemon/runtimed-windows-arm64.exe
+          path: daemon/runtimed-windows-arm64.exe*
           if-no-files-found: error
 
   build-notebook-linux:
@@ -1166,6 +1271,17 @@ jobs:
       - name: Build frontend
         run: pnpm build
 
+      - uses: ./.github/actions/install-cargo-about
+        if: matrix.platform.package_notebook_ui
+
+      - name: Generate notebook UI attribution
+        if: matrix.platform.package_notebook_ui
+        env:
+          VERSION: ${{ needs.compute-version.outputs.version }}
+        run: |
+          node scripts/release-attribution.mjs --kind notebook-ui --target wasm32-unknown-unknown \
+            --output notebook-ui-attribution --version "$VERSION" --commit "$NTERACT_BUILD_GIT_HASH"
+
       - name: Package notebook UI for embedders
         if: matrix.platform.package_notebook_ui
         run: |
@@ -1173,7 +1289,7 @@ jobs:
           SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$NTERACT_BUILD_GIT_HASH")
           python3 scripts/package-notebook-ui.py \
             --dist apps/notebook/dist \
-            --license LICENSE \
+            --attribution notebook-ui-attribution \
             --output "notebook-ui-assets/nteract-${CHANNEL}-notebook-ui.tar.gz" \
             --channel "$CHANNEL" \
             --version "${{ needs.compute-version.outputs.version }}" \
@@ -1952,6 +2068,14 @@ jobs:
           cp executables/runtimed-darwin-x64 "release-assets/${DAEMON_NAME}-darwin-x64"
           cp executables/runtimed-windows-x64.exe "release-assets/${DAEMON_NAME}-windows-x64.exe"
           cp executables/runtimed-windows-arm64.exe "release-assets/${DAEMON_NAME}-windows-arm64.exe"
+          # Attribution follows the exact binary basename, including .exe and
+          # the nightly channel rename. Missing sidecars must fail publication.
+          for platform in linux-x64 linux-arm64 darwin-arm64 darwin-x64 windows-x64.exe windows-arm64.exe; do
+            for name in LICENSE.nteract THIRD_PARTY_NOTICES.txt sbom.cdx.json; do
+              test -s "executables/runtimed-$platform.$name"
+              cp "executables/runtimed-$platform.$name" "release-assets/${DAEMON_NAME}-$platform.$name"
+            done
+          done
           sed \
             -e "s/^DEFAULT_CHANNEL=\"stable\"$/DEFAULT_CHANNEL=\"${CHANNEL}\"/" \
             -e "s/^DEFAULT_TAG=\"\"$/DEFAULT_TAG=\"v${{ needs.compute-version.outputs.version }}\"/" \
@@ -2262,6 +2386,9 @@ jobs:
             ./release-assets/runt*-darwin-x64
             ./release-assets/runtimed*-windows-x64.exe
             ./release-assets/runtimed*-windows-arm64.exe
+            ./release-assets/runtimed*.LICENSE.nteract
+            ./release-assets/runtimed*.THIRD_PARTY_NOTICES.txt
+            ./release-assets/runtimed*.sbom.cdx.json
             ./release-assets/install-linux-release
             ./release-assets/nteract-${{ inputs.version_suffix }}-linux-x64.AppImage
             ./release-assets/nteract-${{ inputs.version_suffix }}-linux-x64.AppImage.sig

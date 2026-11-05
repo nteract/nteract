@@ -52,6 +52,7 @@ PyPI publication follows successful GitHub release creation and asset upload, be
 | Standalone daemon (Windows ARM64) | `runtimed-windows-arm64.exe` |
 | Standalone MCP server (Linux x64) | `nteract-mcp-linux-x64` |
 | Standalone MCP server (Linux ARM64) | `nteract-mcp-linux-arm64` |
+| Notebook UI | `nteract-{channel}-notebook-ui.tar.gz` + `.sha256` |
 | Updater manifest | `latest.json` |
 
 macOS builds are signed and notarized. Windows builds use Azure Trusted Signing
@@ -66,6 +67,127 @@ Linux users can also install the released AppImage with:
 ```bash
 curl -fsSL https://sh.nteract.io | bash
 ```
+
+### Attribution handoff for embedders
+
+Ship verified notices and the full dependency inventory with explicit notice
+exceptions, rather than withholding every artifact over incomplete upstream
+material. Four MIT-declared Plotly dependencies have reviewed, exact-version,
+digest-bound exceptions: `draw-svg-path@1.0.0`, `array-normalize@1.1.4`,
+`color-alpha@1.0.4`, and `jison-lex@0.3.4`. Missing notice evidence is not a finding
+that redistribution is prohibited. The shipped notices and SBOM disclose these
+gaps; neither claims complete attribution or legal approval.
+
+The exceptions are tracked in [#4858](https://github.com/nteract/nteract/issues/4858),
+owned by nteract maintainers, with the next review on 2026-12-05. Preserve the
+exception report when consolidating notices for an embedding application. CI
+warns when a review date is overdue; the date does not silently expire permission
+or block publication. Obtain
+upstream clarification covering the released sources or qualify a newer bundle.
+Do not invent copyright holders from npm author fields. New gaps, changed package
+versions, and changed artifact hashes still require review. Native Node attribution
+has a separate Cargo-only graph and does not depend on Plotly. Windows producer
+discovery and final packaging still require native CI verification.
+
+The notebook UI archive includes `LICENSE.nteract`, `THIRD_PARTY_NOTICES.txt`,
+and `sbom.cdx.json`. Its schema-1 manifest adds `license`, `notices`, and `sbom`
+paths. Every standalone daemon target publishes the same three files as adjacent
+sidecars: `<binary asset>.LICENSE.nteract`, `<binary asset>.THIRD_PARTY_NOTICES.txt`,
+and `<binary asset>.sbom.cdx.json`. Keep `.exe` before these suffixes on Windows.
+Nightly daemon names include `runtimed-nightly`; stable names remain `runtimed`.
+
+Release jobs generate these materials after building, using cargo-about 0.9.2,
+locked target-specific Cargo graphs, and installed pnpm dependencies. Missing or
+invalid attribution stops packaging. The CycloneDX SBOM is a conservative
+dependency inventory, not proof of exact linkage or a replacement for license
+texts and copyright notices.
+
+The checked native Cargo graphs select `option-ext@0.2.0` under MPL-2.0.
+Generated notices identify its exact source archive. Preserve that source-access
+information when consolidating notices into the host's legal screen or resources.
+Using an unchanged MPL dependency does not make the host's independent files
+MPL-licensed; modifications to covered files require separate attention.
+
+Supplemental upstream notices live under `scripts/licenses/`. They bind reviewed
+package versions, payloads, and license text with SHA-256. Dependency upgrades
+that change those inputs require a new review; do not replace a failed digest
+without checking the upstream license. KaTeX's font notices are separate from
+its JavaScript MIT license. Vega-Lite's adapted utility functions have their own
+MIT notices.
+
+`node scripts/prepare-npm-license-supplements.mjs --check` verifies the ordinary
+npm supplements offline after a frozen install. The same command without
+`--check` retrieves their pinned upstream texts. For Plotly's prebundled code,
+`node scripts/prepare-plotly-attribution.mjs` audits the pinned Plotly, Mapbox,
+and MapLibre source locks, verifies public package archive integrity, and prepares
+the reviewed supplement. This preparation is a maintainer step, not a release-time
+network fallback. Every gap must have verified material or an explicit reviewed
+exception; arbitrary missing material still fails. Unit tests do not replace a
+successful real attribution run.
+
+Windows MSVC builds statically link Microsoft runtime code. Build and attribution
+must use the same activated Visual Studio developer environment. Attribution
+records the producer edition, toolset, SDK, compiler, and static-library hashes.
+It also preserves the producer's Visual Studio and Windows SDK redistribution
+terms, plus installed `Redist.txt` and `ThirdPartyNotices.txt` as supplemental
+evidence, never as substitutes for the full grant. Checked-in official terms
+cover Visual Studio 2022 Enterprise/Professional 17.14 / MSVC 14.44 and
+Visual Studio 2026 Enterprise/Professional 18.x / MSVC 14.51. The
+[published VS2026 terms](https://visualstudio.microsoft.com/license-terms/vs2026-ga-pro-enterprise/)
+explicitly cover updates and revisions unless different terms apply. The original
+DOCX and complete extracted text are retained with SHA-256 provenance under
+`scripts/licenses/msvc*`. Preview installations and other toolset families require
+review; an edition name alone does not prove a valid full-use license.
+
+The SDK fallback covers the reviewed 26100 product family: installed product
+`10.1.26100.*`, library directory `10.0.26100.0`, and x64/arm64 static UCRT.
+The preserved Microsoft SDK package metadata links to the retained SDK terms,
+which expressly cover updates unless other terms accompany them. The package
+metadata establishes license applicability, not the origin of the installed
+library bytes. Exact detected servicing versions and static-library hashes remain
+in the evidence; a monthly servicing change alone does not require a new grant.
+The failing CI image manifests report SDK `10.1.26100.9457`:
+[Windows x64 image](https://github.com/actions/runner-images/blob/win25-vs2026/20261030.294/images/windows/Windows2025-VS2026-Readme.md)
+and [Windows ARM64 image](https://github.com/actions/runner-images/blob/win11-vs2026-arm64/20261101.203/images/windows/Windows11-VS2026-Arm64-Readme.md).
+These are runner documentation, not registry observations from the failed jobs.
+
+Installed terms take precedence. Maintainers must review changed or separately
+supplied terms, including the current published VS2026 terms, before release.
+Other SDK families require review or matching installed terms.
+If automatic discovery cannot locate those terms, set
+`NTERACT_MSVC_LICENSE_FILE` and `NTERACT_WINDOWS_SDK_LICENSE_FILE` to the correct
+plain-text terms files. Missing evidence stops Windows attribution. The
+Microsoft runtime is not BSD-licensed; preserving these documents does not replace
+review of the applicable Microsoft terms and REDIST lists.
+
+Embedding partners must:
+
+- Pin the release and source commit, verify the UI checksum, and retain attribution
+  with the exact UI and target-specific daemon they redistribute.
+- Ship the license and notice texts in an accessible third-party notices location,
+  including when repackaging or signing binaries under their own identity.
+- Make corresponding MPL-2.0-covered source, including changes to covered files,
+  available to recipients and tell them how to obtain it. Retain exact source
+  versions and review the supplied source references before distribution.
+- Review their own additions and distribution obligations separately. Downloaded
+  kernels/tools are outside this artifact scope. `@runtimed/node` platform tarballs
+  carry separate binding-specific attribution; daemon notices do not cover the
+  binding. These materials do not establish complete product compliance.
+
+Native npm builders generate attribution from the same release checkout and
+default-feature `runtimed-node` build as the `.node` file. The three files are
+inside each platform tarball, not external release sidecars. Packing verifies the
+source commit, npm version, target, and binary hash after installation. Historical
+source without attribution support fails explicitly; use a new qualified release,
+not a newer dependency graph attached to an older binary.
+
+The ZeroMQ dependency change is already in source: commit
+`90bd83bdfe62ff702c10413daa851dea58abcd51` upgrades `jupyter-zmq-client` to
+3.0.1 and `zeromq` to 0.7.0, removing the `win_uds` dependency with its
+Unlicense declaration. Kilo's inspected source pin
+`cea400364a391f6aee5753bf2a5ef6ea79d2991d` already contains that change.
+The partner still needs a new qualified artifact release for the attribution
+files; changing a version number alone does not retrofit old binaries.
 
 ### Crate publishing
 

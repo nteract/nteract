@@ -208,6 +208,33 @@ jobs:
           lfs: true
           ref: ${{ needs.resolve-release.outputs.source_sha }}
           persist-credentials: false
+      - name: Require native attribution support in the release source
+        shell: bash
+        run: |
+          if [ ! -f scripts/release-attribution.mjs ] || [ ! -f packages/runtimed-node/scripts/package-attribution.mjs ] || [ ! -f .github/actions/install-cargo-about/action.yml ]; then
+            echo "::error::This release source predates native npm attribution. Build a new release containing the generator and packaging helper; do not attribute historical binaries from another checkout."
+            exit 1
+          fi
+      - name: Activate producer MSVC environment
+        if: startsWith(matrix.target, 'win32-')
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: ${{ matrix.target == 'win32-arm64-msvc' && 'arm64' || 'x64' }}
+      - name: Verify producer MSVC environment
+        if: startsWith(matrix.target, 'win32-')
+        shell: pwsh
+        env:
+          EXPECTED_MSVC_ARCH: ${{ matrix.target == 'win32-arm64-msvc' && 'arm64' || 'x64' }}
+        run: |
+          foreach ($name in @('VCToolsInstallDir', 'VCToolsVersion', 'VSINSTALLDIR', 'WindowsSdkDir', 'UCRTVersion', 'LIB')) {
+            if (-not [Environment]::GetEnvironmentVariable($name)) { throw "Missing producer environment: $name" }
+          }
+          if ($env:VSCMD_ARG_TGT_ARCH -ne $env:EXPECTED_MSVC_ARCH) { throw 'MSVC target does not match the native release target' }
+          $compiler = (Get-Command cl.exe -ErrorAction Stop).Source
+          $tools = [IO.Path]::GetFullPath($env:VCToolsInstallDir).TrimEnd('\') + '\'
+          if (-not $compiler.StartsWith($tools, [StringComparison]::OrdinalIgnoreCase)) { throw 'cl.exe is outside the selected producer toolset' }
+          Write-Host "Producer compiler: $compiler"
+          Write-Host "Producer SDK: $env:WindowsSdkDir $env:UCRTVersion"
       - uses: actions/download-artifact@v8
         with:
           name: npm-release-tools
@@ -229,6 +256,13 @@ jobs:
         run: pnpm --dir packages/runtimed-node build
       - name: Assemble platform package
         run: pnpm --dir packages/runtimed-node assemble:platform -- --expected-target "${{ matrix.target }}"
+      - uses: ./.github/actions/install-cargo-about
+      - name: Generate native binding attribution
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.resolve-release.outputs.version }}
+        run: node packages/runtimed-node/scripts/package-attribution.mjs generate "$TARGET" "$VERSION" "$NTERACT_BUILD_GIT_HASH"
       - name: Audit Windows CRT imports
         if: startsWith(matrix.target, 'win32-')
         shell: bash
@@ -251,6 +285,12 @@ jobs:
           test "${#TARBALLS[@]}" -eq 1
           npm install --prefix "$RUNNER_TEMP/npm-native-smoke" --ignore-scripts --no-audit --no-fund "${TARBALLS[0]}"
           node "$RUNNER_TEMP/npm-release-tools/npm-release-cli.mjs" smoke "$RUNNER_TEMP/npm-release-tools/plan.json" "${{ matrix.target }}" "$RUNNER_TEMP/npm-native-smoke"
+      - name: Verify attribution inside the installed native tarball
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.resolve-release.outputs.version }}
+        run: node packages/runtimed-node/scripts/package-attribution.mjs verify "$TARGET" "$VERSION" "$NTERACT_BUILD_GIT_HASH" "$RUNNER_TEMP/npm-native-smoke/node_modules/@runtimed/node-$TARGET"
       - name: Audit installed Linux addon against Ubuntu 22.04
         if: startsWith(matrix.target, 'linux-')
         shell: bash
@@ -659,4 +699,3 @@ jobs:
         run: |
           echo "@nteract/sift-csv@$SIFT_CSV_VERSION npm publication is disabled until NPM_SIFT_CSV_ENABLED is true." >> "$GITHUB_STEP_SUMMARY"
           echo "Bootstrap it with the placeholder steps in RELEASING.md; npm-package-sift-csv holds this run's tarball." >> "$GITHUB_STEP_SUMMARY"
-

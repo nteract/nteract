@@ -26,13 +26,34 @@ directory containing:
 - the static frontend rooted at `index.html`;
 - the separately served `output-frame.html` document;
 - `nteract-notebook-ui.json`, which records the schema version, release
-  channel, nteract version, source commit, and entrypoint names; and
-- `LICENSE.nteract`.
+  channel, nteract version, source commit, and entrypoint names;
+- `LICENSE.nteract` and `THIRD_PARTY_NOTICES.txt`; and
+- `sbom.cdx.json`, a CycloneDX dependency inventory.
+
+Manifest schema 1 includes additive `license`, `notices`, and `sbom` paths to
+these files. Attribution is required when packaging the archive.
 
 Pin a unique release tag, verify the checksum, and serve the extracted files
 from a secure origin. The archive is the same platform-neutral frontend used by
 the nteract desktop release; the embedding host still supplies the authorized
 runtime transport and host capabilities described below.
+
+When redistributing, preserve the license and notice texts in an accessible
+third-party notices location. The SBOM does not replace them or prove exact
+artifact linkage. Make corresponding MPL-2.0-covered source, including changes to
+covered files, available to recipients and explain how to obtain it.
+
+Download all three attribution sidecars for the matching standalone daemon:
+`<binary asset>.LICENSE.nteract`, `<binary asset>.THIRD_PARTY_NOTICES.txt`, and
+`<binary asset>.sbom.cdx.json`. Windows names retain `.exe` before each suffix.
+Keep these with the binary when repackaging or signing it.
+
+This handoff covers the notebook UI archive and standalone daemon, not separately
+downloaded kernels/tools. `@runtimed/node` platform packages carry their own
+binding-specific attribution beside the `.node` file; preserve it separately.
+Hosts remain responsible for their additions and distribution
+obligations; this is not a complete product compliance claim. See
+[release attribution obligations](../../RELEASING.md#attribution-handoff-for-embedders).
 
 ## Electron topology
 
