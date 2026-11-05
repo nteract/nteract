@@ -29,7 +29,11 @@ The `pages` profile owns `pages.runtimed.run`:
 | Frozen neighbors | `page7`, `page8`, `page9` |
 
 It carries every Page10 flag, the Page quota default and D1 binding, and the
-same celld 0.6.3 runtime and OIDC client. The service and prefix end in `-live`
+same celld 0.6.3 runtime and OIDC client. Both serving targets set `memory` in their profile:
+celld sheds cells above `CELLD_MAX_RSS_MB=2560`, and systemd caps the unit at
+`MemoryMax=4G`. At the earlier 768 MB threshold production shed its D1 cell
+repeatedly, and signed-in requests failed with 503 while it restored. Changing
+either value changes the unit, so the next install restarts the service. The service and prefix end in `-live`
 because lab1 still holds a disabled `nteract-pages.service` and
 `/etc/nteract-pages` from an earlier prototype. The installer refuses any path,
 user or prefix it does not own, so the target must not share those names.

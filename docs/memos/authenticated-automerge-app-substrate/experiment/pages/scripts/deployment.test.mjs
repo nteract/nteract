@@ -2392,3 +2392,25 @@ test("lab installs carry a root-only operator secret for the content migration",
   assert.equal(config.vars.PAGES_OPERATOR_SECRET, undefined);
   assert.equal(fs.existsSync(other.local(other.configDir + "/operator-secret")), false);
 });
+
+test("serving targets shed above 2.5 GB and older targets keep their shipped limits", () => {
+  for (const target of ["page10", "pages"])
+    assert.deepEqual(profiles.unitMemory(profiles.deploymentProfile(target)), {
+      maxRssMb: 2560,
+      memoryMax: "4G",
+    });
+  assert.deepEqual(
+    profiles.unitMemory(profiles.deploymentProfile("page9")),
+    profiles.DEFAULT_MEMORY,
+  );
+  assert.deepEqual(profiles.DEFAULT_MEMORY, { maxRssMb: 768, memoryMax: "1G" });
+  for (const memory of [
+    { maxRssMb: 100, memoryMax: "4G" },
+    { maxRssMb: 2560.5, memoryMax: "4G" },
+    { maxRssMb: 2560, memoryMax: "4096M" },
+    { maxRssMb: 2560, memoryMax: "3G" },
+    { maxRssMb: 2560, memoryMax: "0G" },
+    { maxRssMb: 2560 },
+  ])
+    assert.throws(() => profiles.unitMemory({ memory }), /memory\./);
+});
