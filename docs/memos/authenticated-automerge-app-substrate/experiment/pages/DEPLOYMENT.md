@@ -734,6 +734,135 @@ load tries again. To recover a Page now, as its owner or with an agent:
 
 The replacement removes the preserved block, so nothing is left to convert.
 
+### Content migration
+
+One owner-run pass puts every Page document in the forms this build writes,
+so the readers of older forms can be deleted. The code lives in
+`model/content-normalization.mjs` (what changes in a document) and
+`worker/content-migration.mjs` (the run), both marked for deletion after
+production has migrated, with `scripts/content-migration.mjs`, the
+`/api/admin/content-migration`, Catalog and Page routes, and the content
+listener's `contentMigrating` flag in `worker/index.mjs`.
+
+Per Page, in one journaled host change (`host/operation/internal:content_norm_<digest of
+heads>`):
+
+- each rich block body is rewritten to the editor's canonical spans,
+  `encode(decode(spans).doc)`, with `A.updateSpans`, so unchanged text and
+  markers keep their identity (comment anchors, cursors, node ids). The old
+  forms it removes: an explicit marker before a top-level first paragraph
+  (`first_marker`), a quote without its own marker (`quote_marker`), `\n` in
+  prose instead of a hard break (`prose_newline`), marks on code text
+  (`code_marks`) and missing default attrs (`attrs`);
+- a Markdown-era block (no `format`) becomes rich text (`markdown_block`),
+  already in the editor's form after this one pass. One with no `kind` at
+  all is refused as `kind_missing` and one of another kind as `not_prose`,
+  so the dry run shows whether production holds any;
+  its selection comments detach, and the report counts them first;
+- the schema stamp is repaired to name what the content needs.
+
+A block is refused when its decode is lossy or throws, when it still holds a
+preserved block, when the rewrite would delete any character other than a
+prose `\n` (`identity_lost`) or add text (`text_changed`), or when it would
+detach a comment anchor (`anchors_detached`). Every character is checked,
+from the rewrite's own delete operations (a 256 KiB block plans in about
+100 ms). A Page
+with any refused block, or with on-load work still to do, is `partial`, and
+`apply` writes nothing to it: the gate holds in the Page host at apply time,
+against the Page as it is then, whatever its dry run said. Comment message
+bodies aren't touched. Preserved
+blocks, the comments move and the record's `comments_doc` field are the Page
+host's existing on-load work; the migration reports them and refuses a Page
+whose conversion fence is up (`held`). A Page with a live socket is skipped
+(`busy`) and visited again on the next pass. Permanent deletions an earlier
+build left half-finished (a `host/deleted/` tombstone beside a `trash/`
+entry) are reported under `tombstones`, not changed.
+
+The owner runs it, once per account, with an API key that has write access.
+It reaches only that account's Pages: every `page/` (Project content
+included), `trash/` and `host/deleted/` key in the owner's Catalog, plus any
+`page_ids` in the body, which the Page host checks against its record's
+owner. Every account with Pages needs its own run.
+
+```sh
+cd docs/memos/authenticated-automerge-app-substrate/experiment/pages
+PAGES_API_KEY=$ANACONDA_API_KEY node scripts/content-migration.mjs \
+  --origin https://pages.runtimed.run --mode dry_run > dry-run.json
+```
+
+The script calls the endpoint until it has covered every Page and prints one
+report. It appends every response, refusals included, to a JSON-lines log
+(`--log`, by default `content-migration-<mode>-<time>.jsonl`) as it arrives;
+for `apply` that log is where the per-block detail lives. A failed call stops
+the script, which still prints the report so far. One call by hand:
+
+```sh
+curl -sS https://pages.runtimed.run/api/admin/content-migration \
+  -H "Authorization: Bearer $ANACONDA_API_KEY" -H "Content-Type: application/json" \
+  -d '{"mode":"dry_run","limit":10}'
+```
+
+`dry_run` writes nothing of its own (booting a Page runs its on-load work, as
+any read does) and answers `{mode, targets: {total, page, trash, deleted,
+extra}, tombstones: [{page_id, trash_entry}], pages, visited, next, totals,
+progress}`. Pass `next` back as `after` until it is null. Each page reports
+`status` (`would_normalize`, `unchanged`, `partial`, `held`, `unavailable`,
+`record_pending`, `missing`, `deleted`, `not_owner`, `error`), `state`,
+`record_comments_doc`, `conversion`, `connected`, `heads`, `report` (per-block
+`forms`, markers kept, removed and added by type, characters before and
+after with `lost`, `newlines` and `unexpected`, anchors attached and detached; page `forms`, `refused`, `stamp_repair`,
+`preserved_blocks`, `comments_move_pending`, `refused_reasons`) and
+`problems`. `totals` counts pages by status, blocks by form and refusals by
+reason. Before `apply`, read the report: `partial` Pages won't be written, and
+`markdown_block` conversions detach the selection comments their `anchors`
+count.
+
+Page cells no Catalog key names don't appear. List the target's `Page` cells
+read-only with `celld cell list Page --bucket s3://<bucket>/<prefix> --region
+us-east-1 --all --json` and diff the ids against the union of every account's
+`visited`. Pass a leftover as `--page-id` in its owner's run.
+
+Then `apply`, after Kyle approves the dry-run reports:
+
+```sh
+PAGES_API_KEY=$ANACONDA_API_KEY node scripts/content-migration.mjs \
+  --origin https://pages.runtimed.run --mode apply > apply.json
+```
+
+Each call visits up to `limit` Pages (at most 25, and none after 60 s), so it
+stays inside the Catalog queue's 120 s bound. Progress is in
+`host/content-migration/state` (`{phase: applying | incomplete | done, ids,
+next, pass, pending}`), and each Page's latest result in
+`host/content-migration/result/<page_id>`. A pass ends `done` when every Page
+settled (`normalized`, `unchanged`, `deleted`, `missing`, `not_owner`),
+otherwise `incomplete` with `pending`; the next `apply` visits only those. A
+Page that changed between its plan and its write answers `stale` and is
+written on a later pass. An interrupted `apply` resumes at its cursor. A crash
+inside the Page's write replays the journaled change at its next boot. `done`
+is terminal: run `dry_run` again to verify. It should report
+`would_normalize: 0`, no `partial`, and `problems: []` on every Page.
+
+**Revert records.** Every write is recorded twice, durably, as `{key,
+before_heads, after_heads, blocks: [{block_id, action}]}`: in the Page's
+`host/content-migration/revert`, copied from its journal receipt before
+anything can drop that receipt, and in the Catalog's `result/<page_id>`
+`revert` list, which every later visit carries forward. The journal receipt
+itself is not a restore source: the next internal host intent deletes it.
+
+**Restore.** Page documents keep their history, so there are no before-images.
+To revert a Page, take each record from its `revert` list, newest first, and,
+as a host change, write `A.spans(A.view(doc, before_heads), path)` back to
+each listed `normalize` block with `A.updateSpans`; for an `enable_rich`
+block, delete `format` and `richText` (`markdown` still holds the source).
+This also undoes later edits to those blocks. Removed first-paragraph markers
+come back as new markers, so those nodes get new ids. To run the migration
+again, delete only `host/content-migration/state`; keep `result/*`, which
+holds the revert records.
+
+**Rollback rule.** No schema feature is added, so earlier builds still edit a
+migrated Page. Every Page-body writer in this build and the one before writes
+the editor's form, so a rollback doesn't reintroduce old forms.
+
 ## Page quotas
 
 Each account may hold a limited number of active Pages and, separately, the
