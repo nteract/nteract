@@ -111,6 +111,7 @@ try {
   await restart({
     PAGES_RECORD_STORAGE: "automerge",
     PAGES_MIGRATE_RECORD_STORAGE: "true",
+    PAGES_MIGRATE_PAGE_IDS: JSON.stringify([pageId]),
     PAGES_MIGRATE_QUIET_MS: "500",
   });
   await a.page.goto(`${origin}/p/${pageId}`);

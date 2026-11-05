@@ -185,8 +185,30 @@ export const recordStorageMigration = defineMachine({
 });
 
 /** The state a booted host starts in: `off` unless both switches are on and
- * its record is an installed, live Subduction Page. */
+ * its installed, live Subduction Page is in the explicit canary allowlist.
+ * A missing or malformed policy never widens the canary. */
 export function migrationStart(env, metadata) {
+  let pageIds;
+  try {
+    pageIds =
+      typeof env.PAGES_MIGRATE_PAGE_IDS === "string"
+        ? JSON.parse(env.PAGES_MIGRATE_PAGE_IDS)
+        : null;
+  } catch {
+    return { name: "off" };
+  }
+  if (
+    !Array.isArray(pageIds) ||
+    !pageIds.length ||
+    !pageIds.every(
+      (id) =>
+        typeof id === "string" &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id),
+    ) ||
+    new Set(pageIds).size !== pageIds.length ||
+    !pageIds.includes(metadata?.pageId)
+  )
+    return { name: "off" };
   const due =
     env.PAGES_MIGRATE_RECORD_STORAGE === "true" &&
     env.PAGES_RECORD_STORAGE === "automerge" &&

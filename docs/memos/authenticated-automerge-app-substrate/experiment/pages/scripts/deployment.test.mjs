@@ -14,6 +14,7 @@ import * as fs from "node:fs";
 import { createHash } from "node:crypto";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
+import { migrationStart } from "../worker/record-storage-migration.mjs";
 
 test("fingerprint follows imported auth source and ignores output/unrelated churn", () => {
   const root = mkdtempSync(path.join(tmpdir(), "pages-inputs-"));
@@ -343,6 +344,7 @@ function installFixture(
     installedRuntime,
     candidateVersion,
     qualify = profiles.assertQualifiedDeploymentTarget,
+    profile = profiles.deploymentProfile(target),
     // The unit's systemd state: { active, pid, startedAt (unix s),
     // needDaemonReload, dropIns (loaded paths), reloadSticks }.
     service = { active: false },
@@ -551,7 +553,11 @@ function installFixture(
     },
     "node:fs": filesystem,
     "node:path": path,
-    "./profiles.mjs": { ...profiles, assertQualifiedDeploymentTarget: qualify },
+    "./profiles.mjs": {
+      ...profiles,
+      assertQualifiedDeploymentTarget: qualify,
+      deploymentProfile: () => profile,
+    },
     "./activation.mjs": activation,
   };
   const read = (file) => fs.readFileSync(local(file), "utf8");
@@ -1457,6 +1463,110 @@ test("compaction maintenance and company viewing are enabled for Page7 through P
     // Plain Automerge sync for new Pages is on for Page10 only.
     assert.equal(config.vars.PAGES_RECORD_STORAGE, target === "page10" ? "automerge" : undefined);
   }
+});
+
+test("every shipped profile installs migration disabled with an empty canary", (t) => {
+  for (const target of [
+    "pages-next",
+    "page3",
+    "page4",
+    "page5",
+    "page6",
+    "page7",
+    "page8",
+    "page9",
+    "page10",
+    "pages",
+  ]) {
+    assert.deepEqual(profiles.deploymentProfile(target).recordStorageMigration, {
+      enabled: false,
+      pageIds: [],
+    });
+    const f = historicalInstallFixture(t, { target });
+    f.execute();
+    const { vars } = JSON.parse(f.read(f.release + "/wrangler.json"));
+    assert.equal(vars.PAGES_MIGRATE_RECORD_STORAGE, undefined);
+    assert.equal(vars.PAGES_MIGRATE_PAGE_IDS, undefined);
+  }
+});
+
+test("installer serializes only an explicit reviewed migration canary", (t) => {
+  const pageIds = ["55555555-5555-4555-8555-555555555555"];
+  const f = installFixture(t, {
+    target: "page10",
+    profile: {
+      ...profiles.deploymentProfile("page10"),
+      recordStorageMigration: { enabled: true, pageIds },
+    },
+  });
+  f.execute();
+  const { vars } = JSON.parse(f.read(f.release + "/wrangler.json"));
+  assert.equal(vars.PAGES_RECORD_STORAGE, "automerge");
+  assert.equal(vars.PAGES_MIGRATE_RECORD_STORAGE, "true");
+  assert.deepEqual(JSON.parse(vars.PAGES_MIGRATE_PAGE_IDS), pageIds);
+  const record = { pageId: pageIds[0], documentId: "d", recordStorage: "buffered" };
+  assert.equal(migrationStart(vars, record).name, "dormant");
+  assert.equal(migrationStart(vars, { ...record, pageId: crypto.randomUUID() }).name, "off");
+});
+
+test("missing or disabled profile policy cannot enable migration", (t) => {
+  const pageId = "55555555-5555-4555-8555-555555555555";
+  for (const policy of [undefined, { enabled: false, pageIds: [pageId] }]) {
+    const f = installFixture(t, {
+      target: "page10",
+      profile: { ...profiles.deploymentProfile("page10"), recordStorageMigration: policy },
+    });
+    // An activation flag in a built artifact is not reviewed profile policy.
+    const staged = JSON.parse(f.read(f.stage + "/release/wrangler.json"));
+    staged.vars = {
+      PAGES_MIGRATE_RECORD_STORAGE: "true",
+      PAGES_MIGRATE_PAGE_IDS: JSON.stringify([pageId]),
+    };
+    f.write(f.stage + "/release/wrangler.json", JSON.stringify(staged));
+    const manifest = JSON.parse(f.read(f.stage + "/manifest.json"));
+    manifest.files["release/wrangler.json"] = createHash("sha256")
+      .update(JSON.stringify(staged))
+      .digest("hex");
+    f.write(f.stage + "/manifest.json", JSON.stringify(manifest));
+    f.execute();
+    const { vars } = JSON.parse(f.read(f.release + "/wrangler.json"));
+    assert.equal(vars.PAGES_MIGRATE_RECORD_STORAGE, policy ? "false" : undefined);
+    assert.equal(vars.PAGES_MIGRATE_PAGE_IDS, policy ? JSON.stringify([pageId]) : undefined);
+    assert.equal(migrationStart(vars, { pageId, documentId: "d" }).name, "off");
+  }
+});
+
+test("installer refuses malformed migration policy before any host command", (t) => {
+  const pageId = "55555555-5555-4555-8555-555555555555";
+  for (const policy of [
+    null,
+    true,
+    {},
+    { enabled: "true", pageIds: [pageId] },
+    { enabled: true, pageIds: [] },
+    { enabled: true, pageIds: "*" },
+    { enabled: true, pageIds: [pageId, "bad"] },
+    { enabled: true, pageIds: [pageId, pageId] },
+    { enabled: true, pageIds: Array(1) },
+    { enabled: true, pageIds: ["AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"] },
+    { enabled: true, pageIds: [pageId], all: true },
+  ]) {
+    const f = installFixture(t, {
+      target: "page10",
+      profile: { ...profiles.deploymentProfile("page10"), recordStorageMigration: policy },
+    });
+    assert.throws(f.execute, /migration/i);
+    assert.deepEqual(f.calls, []);
+  }
+  const native = installFixture(t, {
+    target: "pages",
+    profile: {
+      ...profiles.deploymentProfile("pages"),
+      recordStorageMigration: { enabled: true, pageIds: [pageId] },
+    },
+  });
+  assert.throws(native.execute, /migration/i);
+  assert.deepEqual(native.calls, []);
 });
 
 test("Pages and Page10 retain the local build's isolated usage binding and UTC cron", (t) => {

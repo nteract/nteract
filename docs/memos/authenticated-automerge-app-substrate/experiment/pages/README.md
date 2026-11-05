@@ -2006,9 +2006,23 @@ Pages on this path.
 
 #### Migrating existing Pages
 
+Migration is default-off. The reviewed deployment profile's
+`recordStorageMigration: { enabled: false, pageIds: [] }` selects an explicit
+canary. Enabling it requires `recordStorage: "automerge"` and a nonempty list
+of unique Page UUIDs. The installer validates this policy before host commands
+and emits `PAGES_MIGRATE_RECORD_STORAGE` and the JSON array
+`PAGES_MIGRATE_PAGE_IDS`; it does not inherit activation from its environment.
+All shipped profiles remain disabled with empty lists. There is no wildcard
+or target-wide activation mode. The disabled, empty default emits neither
+migration variable, preserving existing deployment configuration and avoiding
+a restart just to install disabled controls.
+
 `PAGES_MIGRATE_RECORD_STORAGE=true`, together with
-`PAGES_RECORD_STORAGE=automerge`, converts a Subduction Page to plain sync once
-nobody is using it ([worker/record-storage-migration.mjs](worker/record-storage-migration.mjs)).
+`PAGES_RECORD_STORAGE=automerge`, converts only Pages named in a valid
+`PAGES_MIGRATE_PAGE_IDS` array once nobody is using them. Missing, malformed,
+empty, or duplicate-bearing allowlists disable migration
+([worker/record-storage-migration.mjs](worker/record-storage-migration.mjs)).
+The boolean flag alone is insufficient, including in local fixtures.
 A host becomes eligible when a browser connects to it; when its last socket
 closes and no request runs for a quiet window (30 s, or
 `PAGES_MIGRATE_QUIET_MS`), it converts in place inside

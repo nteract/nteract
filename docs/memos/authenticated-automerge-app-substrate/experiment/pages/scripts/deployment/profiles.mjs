@@ -77,8 +77,10 @@ const shared = {
   runtime: CELLD_RELEASE.path,
   requiredVersion: CELLD_RELEASE.version,
 };
+const DISABLED_MIGRATION = Object.freeze({ enabled: false, pageIds: Object.freeze([]) });
 const targets = Object.freeze({
   "pages-next": Object.freeze({
+    recordStorageMigration: DISABLED_MIGRATION,
     deployment: Object.freeze({
       host: shared.host,
       hostname: "pages-next.runtimed.run",
@@ -97,6 +99,7 @@ const targets = Object.freeze({
     asyncPersistence: false,
   }),
   page3: Object.freeze({
+    recordStorageMigration: DISABLED_MIGRATION,
     deployment: Object.freeze({
       host: shared.host,
       hostname: "page3.runtimed.run",
@@ -116,6 +119,7 @@ const targets = Object.freeze({
     tunnelService: "cloudflared-page3.service",
   }),
   page4: Object.freeze({
+    recordStorageMigration: DISABLED_MIGRATION,
     deployment: Object.freeze({
       host: shared.host,
       hostname: "page4.runtimed.run",
@@ -137,6 +141,7 @@ const targets = Object.freeze({
     frozenTargets: Object.freeze(["pages-next", "page3"]),
   }),
   page5: Object.freeze({
+    recordStorageMigration: DISABLED_MIGRATION,
     deployment: Object.freeze({
       host: shared.host,
       hostname: "page5.runtimed.run",
@@ -159,6 +164,7 @@ const targets = Object.freeze({
     frozenTargets: Object.freeze(["pages-next", "page3", "page4"]),
   }),
   page6: Object.freeze({
+    recordStorageMigration: DISABLED_MIGRATION,
     deployment: Object.freeze({
       host: shared.host,
       hostname: "page6.runtimed.run",
@@ -181,6 +187,7 @@ const targets = Object.freeze({
     frozenTargets: Object.freeze(["pages-next", "page3", "page4", "page5"]),
   }),
   page7: Object.freeze({
+    recordStorageMigration: DISABLED_MIGRATION,
     deployment: Object.freeze({
       host: shared.host,
       hostname: "page7.runtimed.run",
@@ -206,6 +213,7 @@ const targets = Object.freeze({
     frozenTargets: Object.freeze(["pages-next", "page3", "page4", "page5", "page6"]),
   }),
   page8: Object.freeze({
+    recordStorageMigration: DISABLED_MIGRATION,
     deployment: Object.freeze({
       host: shared.host,
       hostname: "page8.runtimed.run",
@@ -236,6 +244,7 @@ const targets = Object.freeze({
     frozenTargets: Object.freeze(["pages-next", "page3", "page4", "page5", "page6", "page7"]),
   }),
   page9: Object.freeze({
+    recordStorageMigration: DISABLED_MIGRATION,
     deployment: Object.freeze({
       host: shared.host,
       hostname: "page9.runtimed.run",
@@ -276,6 +285,7 @@ const targets = Object.freeze({
   }),
   // A fresh, empty target with no data or route compatibility with Page9.
   page10: Object.freeze({
+    recordStorageMigration: DISABLED_MIGRATION,
     deployment: Object.freeze({
       host: shared.host,
       hostname: "page10.runtimed.run",
@@ -339,6 +349,7 @@ const targets = Object.freeze({
   // disabled nteract-pages.service and /etc/nteract-pages from an earlier
   // prototype, and the installer must never treat those as this target's.
   pages: Object.freeze({
+    recordStorageMigration: DISABLED_MIGRATION,
     deployment: Object.freeze({
       host: shared.host,
       hostname: "pages.runtimed.run",
@@ -396,6 +407,37 @@ const targets = Object.freeze({
 export function deploymentProfile(target = "pages-next") {
   if (!Object.hasOwn(targets, target)) throw new Error("Unknown Pages deployment target");
   return targets[target];
+}
+
+/** Serialize only reviewed profile policy, never the installer's environment.
+ * This module is staged alone; keep validation independent of Worker imports. */
+export function migrationVars(profile) {
+  const policy =
+    profile.recordStorageMigration === undefined
+      ? DISABLED_MIGRATION
+      : profile.recordStorageMigration;
+  if (
+    !policy ||
+    typeof policy !== "object" ||
+    Array.isArray(policy) ||
+    Object.keys(policy).some((key) => !["enabled", "pageIds"].includes(key)) ||
+    typeof policy.enabled !== "boolean" ||
+    !Array.isArray(policy.pageIds) ||
+    !Array.from(policy.pageIds).every(
+      (id) =>
+        typeof id === "string" &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id),
+    ) ||
+    new Set(policy.pageIds).size !== policy.pageIds.length ||
+    (policy.enabled && (!policy.pageIds.length || profile.recordStorage !== "automerge"))
+  )
+    throw new Error("Invalid record storage migration canary policy");
+  // Preserve app-only adoption for targets that have never enabled migration.
+  if (!policy.enabled && !policy.pageIds.length) return {};
+  return {
+    PAGES_MIGRATE_RECORD_STORAGE: String(policy.enabled),
+    PAGES_MIGRATE_PAGE_IDS: JSON.stringify(policy.pageIds),
+  };
 }
 // This release is qualified for the isolated Page10 and Pages targets. Page10
 // stays deployable until its Projects are copied to Pages.

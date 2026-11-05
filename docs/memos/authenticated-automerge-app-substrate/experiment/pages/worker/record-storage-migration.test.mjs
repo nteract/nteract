@@ -78,6 +78,7 @@ async function fixture(t, { buffered = false } = {}) {
     ...base,
     PAGES_RECORD_STORAGE: "automerge",
     PAGES_MIGRATE_RECORD_STORAGE: "true",
+    PAGES_MIGRATE_PAGE_IDS: JSON.stringify([pageId]),
     PAGES_MIGRATE_QUIET_MS: "20",
   };
   const pages = [];
@@ -238,6 +239,21 @@ for (const buffered of [false, true]) {
     assert.equal(again.metadata.recordStorageMigratedAt, stored.recordStorageMigratedAt);
   });
 }
+
+test("a Page outside the canary stays native after its browser leaves", async (t) => {
+  const f = await fixture(t);
+  await f.nativePage();
+  const host = await f.open({
+    ...f.migrating,
+    PAGES_MIGRATE_PAGE_IDS: JSON.stringify([crypto.randomUUID()]),
+  });
+  await host.documentReady();
+  await f.session(host);
+  assert.equal(host.migration.name, "off");
+  assert.equal(host.migrationTimer, undefined);
+  assert.notEqual((await f.storage.get("host/document")).recordStorage, "automerge");
+  assert.deepEqual(f.storage.keys("plain/"), []);
+});
 
 test("nothing converts while a socket is open, and a new socket cancels the wait", async (t) => {
   const f = await fixture(t);
