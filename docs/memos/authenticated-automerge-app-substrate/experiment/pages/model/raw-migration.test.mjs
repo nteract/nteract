@@ -16,13 +16,18 @@ import {
 } from "./raw-migration.mjs";
 import {
   adapter,
+  adapterSpans,
+  pageSpans,
   exportMarkdown,
   parseAgentMarkdown,
+  parseMarkdown,
+  redundantFirstMarker,
   richDoc,
   schema,
   textPath,
   validateRich,
 } from "./richtext.mjs";
+import { decode, encode } from "./wordgard-doc.mjs";
 import {
   BUILD_FEATURES,
   documentFeatures,
@@ -203,6 +208,34 @@ test("preserved blocks in comment messages convert too", () => {
   assert.equal(projectComments(after)[0].messages[0].body, "Drop ~~this~~ and \\$x\\$");
 });
 
+// The comment length limit counts block markers, and a quote that opens with
+// a list has one more marker in the editor's form. Comment messages keep the
+// form comment writes use, so conversion moves no message across the limit.
+test("preserved blocks in comment messages convert to the adapter's span form", () => {
+  const source = "> - quoted item\n>\n> > # nested";
+  let { doc, id } = stored([p("We ship on Friday.")]);
+  ({ page: doc } = legacyComment(
+    doc,
+    { action: "add", block_id: id, body: "placeholder", body_format: "markdown" },
+    identity,
+  ));
+  const [threadId] = Object.keys(doc.comments);
+  const [messageId] = Object.keys(doc.comments[threadId].messages);
+  const path = ["comments", threadId, "messages", messageId, "richText"];
+  doc = A.change(doc, (draft) =>
+    A.updateSpans(
+      draft,
+      path,
+      pmNodeToSpans(adapter, schema.node("doc", null, [raw(source)])),
+      adapter.updateSpansConfig(),
+    ),
+  );
+  const spans = A.spans(convert(doc).doc, path);
+  const content = redundantFirstMarker(spans) ? spans.slice(1) : spans;
+  assert.equal(plainJson(content), plainJson(adapterSpans(parseMarkdown(source))));
+  assert.notEqual(plainJson(content), plainJson(pageSpans(parseMarkdown(source))));
+});
+
 test("text around a converted block keeps its identity: comment anchors and cursors survive", () => {
   let { doc, id } = stored([p("Anchor here."), raw("~~old~~ text"), p("Tail words.")]);
   const { comments } = comment(
@@ -285,6 +318,108 @@ test("conversion keeps every character of a lossy source", () => {
     for (const line of source.split("\n").filter(Boolean))
       assert.ok(tree.textContent.includes(line), `${source}: ${line}`);
   }
+});
+
+// Quotes and lists in several arrangements. The first three open a quote with
+// a list, where the adapter leaves out the quote's marker and the editor
+// writes it.
+const FORM_SOURCES = [
+  "> - quoted item\n>\n> > # nested",
+  "> 1. first\n> 2. second\n\nAfter",
+  "> - [x] done\n>\n> ---",
+  "Intro\n\n> # heading\n>\n> ```js\n> x\n> ```",
+  "- a\n\n  > b\n\n- [ ] task",
+];
+// Spans as plain JSON: strings for immutable strings, sorted keys, and `{}`
+// for a text span Automerge returns without marks.
+const plainJson = (value) =>
+  JSON.stringify(value, (_key, item) => {
+    if (A.isImmutableString(item)) return String(item);
+    if (!item || typeof item !== "object" || Array.isArray(item)) return item;
+    const span = item.type === "text" && !item.marks ? { ...item, marks: {} } : item;
+    return Object.fromEntries(
+      Object.keys(span)
+        .sort()
+        .map((key) => [key, span[key]]),
+    );
+  });
+
+// The editor's first structural edit re-encodes a block with encode, so
+// converted content in its form keeps its spans through that edit.
+// Preserved blocks nested in a list or quote, including one whose source is
+// a quote that opens with a list, where the two forms differ.
+const NESTED_FORM_SHAPES = [
+  ...SHAPES.filter(([label]) => label.startsWith("inside ")),
+  [
+    "a quote opening with a list, inside a list item",
+    [
+      schema.node("bullet_list", null, [
+        schema.node("list_item", null, [p("item"), raw("> - quoted item\n>\n> > # nested")]),
+      ]),
+    ],
+  ],
+];
+
+test("conversion writes the editor's span form", () => {
+  for (const source of FORM_SOURCES) {
+    const { doc, id } = stored([raw(source)]);
+    const spans = A.spans(convert(doc).doc, textPath(id));
+    // The marker the conversion adds where the preserved block began.
+    const content = redundantFirstMarker(spans) ? spans.slice(1) : spans;
+    assert.equal(plainJson(encode(decode(spans).doc)), plainJson(content), source);
+  }
+});
+
+// The spans that replaced the one preserved marker in `before`, with the
+// marker's parents removed. The fixture writes the list or quote around the
+// marker in the adapter's form, so only this region is the conversion's.
+function convertedRegion(before, after) {
+  const at = before.findIndex(
+    (span) => span.type === "block" && String(span.value.type) === "pages-opaque",
+  );
+  const depth = before[at].value.parents.length;
+  return after
+    .slice(at, after.length - (before.length - at - 1))
+    .map((span) =>
+      span.type === "block"
+        ? { ...span, value: { ...span.value, parents: span.value.parents.slice(depth) } }
+        : span,
+    );
+}
+
+test("conversion writes the editor's span form for nested preserved blocks", () => {
+  for (const [label, nodes] of NESTED_FORM_SHAPES) {
+    const { doc, id } = stored(nodes);
+    const region = convertedRegion(
+      A.spans(doc, textPath(id)),
+      A.spans(convert(doc).doc, textPath(id)),
+    );
+    const content = redundantFirstMarker(region) ? region.slice(1) : region;
+    assert.equal(plainJson(encode(decode(region).doc)), plainJson(content), label);
+  }
+});
+
+test("content an earlier build converted to the adapter's form reads the same", () => {
+  const differs = [];
+  for (const source of FORM_SOURCES) {
+    const { doc, id } = stored([raw(source)]);
+    const converted = convert(A.clone(doc)).doc;
+    const earlier = A.change(doc, (draft) =>
+      A.updateSpans(
+        draft,
+        textPath(id),
+        adapterSpans(parseMarkdown(source)),
+        adapter.updateSpansConfig(),
+      ),
+    );
+    if (plainJson(A.spans(earlier, textPath(id))) !== plainJson(A.spans(converted, textPath(id))))
+      differs.push(source);
+    validateRich(earlier.blocks[id]);
+    assert.equal(markdownOf(earlier, id), markdownOf(converted, id), source);
+    assert.deepEqual(names(earlier, id), names(converted, id), source);
+  }
+  // A quote that opens with a list is where the two forms differ.
+  assert.deepEqual(differs, FORM_SOURCES.slice(0, 3));
 });
 
 // A pre-cutover tab's own conversion, or its deletion of the block, is

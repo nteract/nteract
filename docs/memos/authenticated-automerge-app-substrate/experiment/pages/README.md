@@ -156,9 +156,12 @@ share one span encoder, Wordgard's `encode` (`model/wordgard-doc.mjs`):
 - Browser edits encode the editor's document.
 - Page-body Markdown writes parse with the ProseMirror codec, and `pageSpans`
   (`model/richtext-spans.mjs`) re-encodes the adapter's spans with `encode`.
+- Preserved-block conversion (`model/raw-migration.mjs`) writes `pageSpans`
+  output under the block's parents.
 
-Comments and preserved-content migration still write the ProseMirror adapter's
-spans directly.
+Agent-written comments still store the ProseMirror adapter's spans: moving
+them to `pageSpans` shifts the comment length rule, which counts block
+markers, so it waits for a decision on that rule.
 
 The codec is split by job; `model/richtext.mjs` lists the modules and
 re-exports their public names. Only `model/pm-*.mjs` import ProseMirror
