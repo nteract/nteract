@@ -381,6 +381,8 @@ function installFixture(
   const local = (file) => path.join(root, file);
   const write = (file, value) => {
     mkdirSync(path.dirname(local(file)), { recursive: true });
+    // The installer creates the service's config directory 0700; seeded ones match.
+    if (file.startsWith(configDir + "/")) fs.chmodSync(local(configDir), 0o700);
     writeFileSync(local(file), value);
   };
   const digest = (value) => createHash("sha256").update(value).digest("hex");
@@ -451,8 +453,19 @@ function installFixture(
     "statSync",
     "writeFileSync",
   ])
-    filesystem[name] = (file, ...args) => fs[name](local(file), ...args);
+    // A number is a descriptor from openSync, already inside the fixture root.
+    filesystem[name] = (file, ...args) =>
+      fs[name](typeof file === "number" ? file : local(file), ...args);
   filesystem.chmodSync = filesystem.chownSync = () => {};
+  // The fixture runs unprivileged while the installer sees uid 0, so files
+  // under the fixture root present as root-owned, as on the host.
+  const asRoot = (stat) =>
+    Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { uid: 0, gid: 0 });
+  filesystem.lstatSync = (file, ...args) => asRoot(fs.lstatSync(local(file), ...args));
+  filesystem.openSync = (file, ...args) => fs.openSync(local(file), ...args);
+  filesystem.fstatSync = (fd, ...args) => asRoot(fs.fstatSync(fd, ...args));
+  filesystem.closeSync = (fd) => fs.closeSync(fd);
+  filesystem.constants = fs.constants;
   filesystem.mkdtempSync = (prefix) => fs.mkdtempSync(local(prefix)).slice(root.length);
   filesystem.rmSync = (file, ...args) => fs.rmSync(local(file), ...args);
   filesystem.renameSync = (from, to) => fs.renameSync(local(from), local(to));
@@ -763,12 +776,18 @@ test("installation fills only missing verified artifacts after a partial copy", 
   assert.equal(fixture.calls.filter(({ command }) => command === "runuser").length, 1);
 });
 
-for (const tampering of ["artifact", "extra-file", "symlink", "audit-manifest"])
+for (const tampering of ["artifact", "extra-file", "symlink", "audit-manifest", "wrangler"])
   test(`installation retry rejects changed ${tampering}`, (t) => {
     const fixture = historicalInstallFixture(t, { failure: "deploy" });
     assert.throws(fixture.execute, /failed \(status 1\)/);
     if (tampering === "artifact") fixture.write(fixture.release + "/index.js", "modified");
     if (tampering === "extra-file") fixture.write(fixture.release + "/unexpected.js", "extra");
+    // Only vars may differ in an earlier configured wrangler.json.
+    if (tampering === "wrangler") {
+      const config = JSON.parse(fixture.read(fixture.release + "/wrangler.json"));
+      config.durable_objects.bindings.push({ name: "EXTRA", class_name: "Extra" });
+      fixture.write(fixture.release + "/wrangler.json", JSON.stringify(config));
+    }
     if (tampering === "symlink") {
       rmSync(fixture.local(fixture.release + "/index.js"));
       fs.symlinkSync(
@@ -1468,8 +1487,11 @@ test("compaction maintenance and company viewing are enabled for Page7 through P
       config.vars.PAGES_CATALOG_INDEX,
       ["page8", "page9", "page10", "pages"].includes(target) ? "1" : undefined,
     );
-    // Plain Automerge sync for new Pages is on for Page10 only.
-    assert.equal(config.vars.PAGES_RECORD_STORAGE, target === "page10" ? "automerge" : undefined);
+    // Plain Automerge sync for new Pages is on for Page10 and Pages only.
+    assert.equal(
+      config.vars.PAGES_RECORD_STORAGE,
+      ["page10", "pages"].includes(target) ? "automerge" : undefined,
+    );
   }
 });
 
@@ -1570,11 +1592,163 @@ test("installer refuses malformed migration policy before any host command", (t)
     target: "pages",
     profile: {
       ...profiles.deploymentProfile("pages"),
+      recordStorage: undefined,
       recordStorageMigration: { enabled: true, pageIds: [pageId] },
     },
   });
   assert.throws(native.execute, /migration/i);
   assert.deepEqual(native.calls, []);
+});
+
+// The operator's canary list lives on the host, beside the session secret.
+const CANARY = [
+  "11111111-1111-4111-8111-111111111111",
+  "22222222-2222-4222-8222-222222222222",
+  "33333333-3333-4333-8333-333333333333",
+];
+const operatorFile = (f, text, mode = 0o600) => {
+  const file = f.configDir + "/record-storage-migration.json";
+  f.write(file, text);
+  fs.chmodSync(f.local(file), mode);
+  return file;
+};
+
+test("the operator file names the canary on the host for a plain target", (t) => {
+  assert.equal(
+    profiles.migrationPolicyPath(profiles.deploymentProfile("pages")),
+    "/etc/nteract-pages-live/record-storage-migration.json",
+  );
+  const f = installFixture(t, { target: "pages" });
+  operatorFile(f, JSON.stringify({ enabled: true, pageIds: CANARY }));
+  f.execute();
+  const { vars } = JSON.parse(f.read(f.release + "/wrangler.json"));
+  assert.equal(vars.PAGES_RECORD_STORAGE, "automerge");
+  assert.equal(vars.PAGES_MIGRATE_RECORD_STORAGE, "true");
+  assert.deepEqual(JSON.parse(vars.PAGES_MIGRATE_PAGE_IDS), CANARY);
+  const record = { pageId: CANARY[1], documentId: "d", recordStorage: "buffered" };
+  assert.equal(migrationStart(vars, record).name, "dormant");
+  assert.equal(migrationStart(vars, { ...record, pageId: crypto.randomUUID() }).name, "off");
+});
+
+test("a disabled operator file installs the flag off with its list", (t) => {
+  const f = installFixture(t, { target: "pages" });
+  operatorFile(f, JSON.stringify({ enabled: false, pageIds: CANARY }));
+  f.execute();
+  const { vars } = JSON.parse(f.read(f.release + "/wrangler.json"));
+  assert.equal(vars.PAGES_MIGRATE_RECORD_STORAGE, "false");
+  assert.equal(migrationStart(vars, { pageId: CANARY[0], documentId: "d" }).name, "off");
+});
+
+test("installer refuses a malformed operator file before any host command", (t) => {
+  const many = Array.from({ length: profiles.MAX_MIGRATION_PAGE_IDS + 1 }, () =>
+    crypto.randomUUID(),
+  );
+  for (const text of [
+    "",
+    "not json",
+    "null",
+    "[]",
+    JSON.stringify(CANARY),
+    JSON.stringify({ enabled: true }),
+    JSON.stringify({ enabled: "true", pageIds: CANARY }),
+    JSON.stringify({ enabled: true, pageIds: [] }),
+    JSON.stringify({ enabled: true, pageIds: "*" }),
+    JSON.stringify({ enabled: true, pageIds: ["*"] }),
+    JSON.stringify({ enabled: true, pageIds: [CANARY[0], CANARY[0]] }),
+    JSON.stringify({ enabled: true, pageIds: ["AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"] }),
+    JSON.stringify({ enabled: true, pageIds: CANARY, all: true }),
+    JSON.stringify({ enabled: true, pageIds: many }),
+    JSON.stringify({ enabled: true, pageIds: CANARY, pad: "x".repeat(70_000) }),
+  ]) {
+    const f = installFixture(t, { target: "pages" });
+    operatorFile(f, text);
+    assert.throws(f.execute, /record storage migration canary file/, text.slice(0, 40));
+    assert.deepEqual(f.calls, []);
+    assert.equal(fs.existsSync(f.local(f.release)), false);
+  }
+});
+
+test("installer refuses a writable or linked operator file", (t) => {
+  const text = JSON.stringify({ enabled: true, pageIds: CANARY });
+  for (const mode of [0o620, 0o602, 0o666]) {
+    const f = installFixture(t, { target: "pages" });
+    operatorFile(f, text, mode);
+    assert.throws(f.execute, /must be a regular root-owned file, not group- or world-writable/);
+    assert.deepEqual(f.calls, []);
+  }
+  const f = installFixture(t, { target: "pages" });
+  const elsewhere = operatorFile(f, text).replace(".json", ".real.json");
+  fs.renameSync(f.local(f.configDir + "/record-storage-migration.json"), f.local(elsewhere));
+  fs.symlinkSync(f.local(elsewhere), f.local(f.configDir + "/record-storage-migration.json"));
+  assert.throws(f.execute, /is a symlink/);
+  assert.deepEqual(f.calls, []);
+});
+
+test("the operator file needs a plain profile and no profile canary", (t) => {
+  const text = JSON.stringify({ enabled: false, pageIds: [] });
+  const native = installFixture(t, {
+    target: "pages",
+    profile: { ...profiles.deploymentProfile("pages"), recordStorage: undefined },
+  });
+  operatorFile(native, text);
+  assert.throws(native.execute, /does not set recordStorage automerge/);
+  assert.deepEqual(native.calls, []);
+  const both = installFixture(t, {
+    target: "pages",
+    profile: {
+      ...profiles.deploymentProfile("pages"),
+      recordStorageMigration: { enabled: true, pageIds: [CANARY[0]] },
+    },
+  });
+  operatorFile(both, JSON.stringify({ enabled: true, pageIds: CANARY }));
+  assert.throws(both.execute, /both the profile and the operator file/);
+  assert.deepEqual(both.calls, []);
+});
+
+test("widening the operator canary reinstalls the same release and restarts", (t) => {
+  const f = liveFixture(t, { target: "pages" });
+  operatorFile(f, JSON.stringify({ enabled: true, pageIds: CANARY.slice(0, 1) }));
+  f.execute();
+  assert.deepEqual(f.outputs.at(-1).restart_reasons, ["config"]);
+  const first = JSON.parse(f.read(f.release + "/wrangler.json"));
+  assert.deepEqual(JSON.parse(first.vars.PAGES_MIGRATE_PAGE_IDS), CANARY.slice(0, 1));
+  const firstDeployment = f.read(f.configDir + "/deployment.json");
+  const firstVersion = JSON.parse(firstDeployment).version;
+  f.calls.length = 0;
+  operatorFile(f, JSON.stringify({ enabled: true, pageIds: CANARY }));
+  f.execute();
+  // The deployment the reinstall replaced stays on record by version.
+  const audit =
+    f.configDir +
+    "/rollout-" +
+    JSON.parse(
+      f.read(
+        f.configDir +
+          "/rollout-" +
+          fs
+            .readdirSync(f.local(f.configDir))
+            .find((n) => n.startsWith("rollout-"))
+            .slice(8) +
+          "/manifest.json",
+      ),
+    ).source_sha;
+  assert.equal(f.read(audit + "/deployment-" + firstVersion + ".json"), firstDeployment);
+  assert.equal(
+    f.calls.filter(({ command, args }) => command === "systemctl" && args[0] === "restart").length,
+    1,
+  );
+  assert.deepEqual(f.outputs.at(-1).restart_reasons, ["config"]);
+  const second = JSON.parse(f.read(f.release + "/wrangler.json"));
+  assert.deepEqual(JSON.parse(second.vars.PAGES_MIGRATE_PAGE_IDS), CANARY);
+  assert.deepEqual({ ...second, vars: null }, { ...first, vars: null });
+  // Removing the file turns migration off again with one more restart.
+  rmSync(f.local(f.configDir + "/record-storage-migration.json"));
+  f.calls.length = 0;
+  f.execute();
+  assert.deepEqual(f.outputs.at(-1).restart_reasons, ["config"]);
+  const third = JSON.parse(f.read(f.release + "/wrangler.json"));
+  assert.equal(third.vars.PAGES_MIGRATE_RECORD_STORAGE, undefined);
+  assert.equal(third.vars.PAGES_RECORD_STORAGE, "automerge");
 });
 
 test("Pages and Page10 retain the local build's isolated usage binding and UTC cron", (t) => {
@@ -2236,10 +2410,14 @@ test("plain targets refuse receipts that know automerge but not the current plai
       () => profiles.assertReleaseOpensTargetPages("page10", receipt),
       /plain_storage_formats.*doc-store-v2-host-actor-prefix/,
     );
-    assert.doesNotThrow(() => profiles.assertReleaseOpensTargetPages("pages", receipt));
+    assert.throws(
+      () => profiles.assertReleaseOpensTargetPages("pages", receipt),
+      /plain_storage_formats.*doc-store-v2-host-actor-prefix/,
+    );
+    assert.doesNotThrow(() => profiles.assertReleaseOpensTargetPages("page9", receipt));
     assert.throws(
       () =>
-        profiles.assertReleaseOpensTargetPages("pages", receipt, [
+        profiles.assertReleaseOpensTargetPages("page9", receipt, [
           { mode: "automerge", release: "old" },
         ]),
       /plain_storage_formats/,
@@ -2259,16 +2437,31 @@ test("install refuses an old plain format before any write", (t) => {
 });
 
 test("a target that never enabled plain storage accepts a release without it", () => {
-  assert.equal(profiles.targetRecordStorage("pages").size, 0);
-  assert.doesNotThrow(() => profiles.assertReleaseOpensTargetPages("pages", PRE_PLAIN));
+  assert.equal(profiles.targetRecordStorage("page9").size, 0);
+  assert.doesNotThrow(() => profiles.assertReleaseOpensTargetPages("page9", PRE_PLAIN));
   // Unless its host has run a release configured to create plain Pages.
   assert.throws(
     () =>
-      profiles.assertReleaseOpensTargetPages("pages", PRE_PLAIN, [
+      profiles.assertReleaseOpensTargetPages("page9", PRE_PLAIN, [
         { mode: "automerge", release: "a2c9d5dded35" },
       ]),
-    /pages may hold "automerge" Pages \(release a2c9d5dded35 on the host was configured with it\)/,
+    /page9 may hold "automerge" Pages \(release a2c9d5dded35 on the host was configured with it\)/,
   );
+});
+
+test("Pages refuses a release without plain storage from its history alone", () => {
+  // The restart deploy that turns plain Pages on may not have run yet; the
+  // history entry already refuses every build that could not open them.
+  assert.deepEqual(
+    [...profiles.targetRecordStorage("pages")],
+    [["automerge", ["RECORD_STORAGE_HISTORY lists it", "its profile sets recordStorage"]]],
+  );
+  for (const receipt of [PRE_PLAIN, { ...PRE_PLAIN, record_storage: ["local", "buffered"] }])
+    assert.throws(
+      () => profiles.assertReleaseOpensTargetPages("pages", receipt),
+      /^Error: Refusing release d{12} \(build 9ae4ed83e44e\) for pages: pages may hold "automerge" Pages \(RECORD_STORAGE_HISTORY lists it; its profile sets recordStorage\)/,
+    );
+  assert.doesNotThrow(() => profiles.assertReleaseOpensTargetPages("pages", PLAIN));
 });
 
 test("every target that sets recordStorage records it in RECORD_STORAGE_HISTORY", () => {
@@ -2289,6 +2482,7 @@ test("every target that sets recordStorage records it in RECORD_STORAGE_HISTORY"
   }
   // A Page keeps its mode for life, so history outlives the profile flag.
   assert.deepEqual(profiles.RECORD_STORAGE_HISTORY.page10, ["automerge"]);
+  assert.deepEqual(profiles.RECORD_STORAGE_HISTORY.pages, ["automerge"]);
 });
 
 test("the build receipt lists every record storage mode the Worker opens", async () => {
@@ -2321,16 +2515,35 @@ test("Page10 refuses to install a release without plain storage before any write
   assert.deepEqual(JSON.parse(f.read(f.configDir + "/deployment.json")), { id: "previous" });
 });
 
-test("Pages installs a release without plain storage", (t) => {
-  const f = installFixture(t, { target: "pages", buildReceipt: { build_id: PRE_PLAIN.build_id } });
+test("Pages refuses to install a release without plain storage before any write", (t) => {
+  const f = installFixture(t, {
+    target: "pages",
+    installedRuntime: { version: "celld 0.6.3", bytes: "qualified runtime" },
+    buildReceipt: { build_id: PRE_PLAIN.build_id },
+  });
+  assert.throws(f.execute, /Refusing release a{12} \(build 9ae4ed83e44e\) for pages: /);
+  assert.ok(f.calls.every(({ args }) => args[0] === "--version"));
+  assert.equal(fs.existsSync(f.local(f.release)), false);
+  assert.equal(fs.existsSync(f.local(f.audit)), false);
+  assert.deepEqual(JSON.parse(f.read(f.configDir + "/deployment.json")), { id: "previous" });
+});
+
+test("a target that never created plain Pages installs a release without plain storage", (t) => {
+  const f = historicalInstallFixture(t, {
+    target: "page9",
+    buildReceipt: { build_id: PRE_PLAIN.build_id },
+  });
   f.execute();
   assert.equal(f.outputs.at(-1).installed, true);
 });
 
 test("a host release configured with plain storage blocks a release without it", (t) => {
-  const f = installFixture(t, { target: "pages", buildReceipt: { build_id: PRE_PLAIN.build_id } });
+  const f = historicalInstallFixture(t, {
+    target: "page9",
+    buildReceipt: { build_id: PRE_PLAIN.build_id },
+  });
   f.write(
-    "/opt/nteract-pages-live/releases/" + "e".repeat(40) + "/wrangler.json",
+    "/opt/nteract-page9/releases/" + "e".repeat(40) + "/wrangler.json",
     JSON.stringify({ vars: { PAGES_RECORD_STORAGE: "automerge" } }),
   );
   assert.throws(f.execute, /release e{12} on the host was configured with it/);
