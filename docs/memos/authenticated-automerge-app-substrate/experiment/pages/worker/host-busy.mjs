@@ -25,8 +25,6 @@
  * thrown error is rethrown unchanged.
  */
 
-import { bufferedResponse } from "./tool-deadline.mjs";
-
 export const HOST_BUSY_TEXT = "cell request limit reached";
 
 /** What a refusal names, by the namespace the gateway called. */
@@ -156,6 +154,8 @@ export async function withRepeatSafety(response, safe, signal) {
     !response.headers.get("content-type")?.toLowerCase().includes("json")
   )
     return response;
+  // Only tool-body inspection needs the deadline module and its auth dependencies.
+  const { bufferedResponse } = await import("./tool-deadline.mjs");
   // Buffer under the tool deadline before cloning: teeing a live body would
   // leave an unread branch that prevents cancellation of the upstream stream.
   const buffered = await bufferedResponse(response, signal);

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import {
   HOST_BUSY_TEXT,
@@ -16,6 +17,34 @@ import {
 
 const hostRefusal = () =>
   new Response(HOST_BUSY_TEXT, { status: 503, headers: { "content-type": "text/plain" } });
+
+test("low-level persistence imports work with the parent experiment's tsconfig", () => {
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      "--input-type=module",
+      "--eval",
+      `
+        import assert from "node:assert/strict";
+        import { overloadRetryAfterMs } from "./pages/worker/host-busy.mjs";
+        import { encodeRecordBatch, decodeRecordBatch } from "./pages/worker/record-persistence.mjs";
+        assert.equal(overloadRetryAfterMs(() => 0), 2000);
+        const entries = [["record", new Uint8Array([1, 2, 3])]];
+        assert.deepEqual(decodeRecordBatch(encodeRecordBatch(entries)), entries);
+      `,
+    ],
+    {
+      cwd: new URL("../../", import.meta.url),
+      env: { ...process.env, TSX_TSCONFIG_PATH: "tsconfig.test.json" },
+      encoding: "utf8",
+      timeout: 10_000,
+    },
+  );
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+});
 
 test("celld's plain-text refusal becomes a JSON page_busy refusal with Retry-After", async () => {
   const response = await legibleHostRefusal(hostRefusal());
