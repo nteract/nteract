@@ -14,10 +14,10 @@ function units(doc) {
           text: true,
         });
     else if (node.isPlot) {
-      result.push({ key: JSON.stringify(node.tag.toJSON()), token: node.tag, length: 1 });
+      result.push({ token: node.tag, length: 1 });
       node.content.forEach(visit);
-      result.push({ key: "close", token: Plot.End, length: 1 });
-    } else result.push({ key: JSON.stringify(node.toJSON()), token: node, length: node.length });
+      result.push({ token: Plot.End, length: 1 });
+    } else result.push({ token: node, length: node.length });
   };
   doc.content.forEach(visit);
   return result;
@@ -35,7 +35,16 @@ export function projectChanges(before, after) {
     if (replacement) specs.push(replacement);
     replacement = null;
   };
-  for (const part of diffArrays(old, next, { comparator: (x, y) => x.key === y.key })) {
+  // Native attrs may arrive in a different key order. Match non-text tokens
+  // with Wordgard's equality, not JSON serialization that would replace them.
+  for (const part of diffArrays(old, next, {
+    comparator: (x, y) =>
+      x.text || y.text
+        ? x.key === y.key
+        : x.token === Plot.End || y.token === Plot.End
+          ? x.token === y.token
+          : x.token.eq(y.token),
+  })) {
     if (part.added || part.removed) {
       replacement ??= { from: pos, to: pos, insert: [] };
       if (part.removed) {
