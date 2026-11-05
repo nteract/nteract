@@ -1,8 +1,15 @@
 export const controllerAcquisitionCompatibility = "pages-acquire-v1";
-import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import path from "node:path";
 import { patchUpstream } from "./patch-upstream.mjs";
 import { patchWordgard } from "./patch-wordgard.mjs";
 import { subductionRelease, pinSubductionDependency } from "./native-version.mjs";
@@ -113,5 +120,5 @@ export function setup(
   if (!acquireOnly) execFileSync("npm", ["run", "build"], { stdio: "inherit" });
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href)
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href)
   setup(process.argv.slice(2));

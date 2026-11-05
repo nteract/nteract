@@ -1,6 +1,25 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { controllerAcquisitionCompatibility, revision, setup } from "./setup.mjs";
+
+test("symlinked CLI executes setup validation instead of silently succeeding", (t) => {
+  const directory = mkdtempSync(path.join(tmpdir(), "pages-setup-cli-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const link = path.join(directory, "setup.mjs");
+  symlinkSync(fileURLToPath(new URL("./setup.mjs", import.meta.url)), link);
+  const result = spawnSync(process.execPath, [link, "--unknown"], {
+    encoding: "utf8",
+    timeout: 5000,
+  });
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Usage: setup.mjs/);
+});
 
 function fixture({ lock = true, tracked = true, changed = false, regular = true } = {}) {
   const calls = [];
