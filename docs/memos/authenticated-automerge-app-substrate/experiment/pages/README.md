@@ -549,6 +549,13 @@ accounts and hosts are never merged. celld 0.6.3 supports
 [cron triggers](https://github.com/denoland/celld/blob/v0.6.3/docs/services/cron-triggers.md).
 No host-side provisioning is required.
 
+A second cron, `35 * * * *`, runs the auth sweep in
+[auth-maintenance.mjs](worker/auth-maintenance.mjs): it deletes expired sign-in
+transactions, sessions, OAuth rows and invitation index rows, and grants revoked
+more than an hour ago with their tokens and codes. The sweep also runs on the
+daily trigger, so the 00:xx hour sweeps twice. Usage maintenance runs on the
+daily trigger only.
+
 The existing `pages.usage.v1` emission path also queues an allowlisted projection:
 UTC day and timestamp, principal id, driver, surface, action, Page id, outcome.
 It stores no titles, content, emails, display names, client/model labels or
