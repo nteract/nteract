@@ -8,7 +8,7 @@ import {
   openingEffects,
   transition,
 } from "./connected-agents-machine.mjs";
-import { agentAccess } from "./ConnectedAgents.jsx";
+import { agentAccess, routeMissing } from "./ConnectedAgents.jsx";
 
 const kilo = { id: "a".repeat(43), name: "Kilo" };
 const chatgpt = { id: "b".repeat(43), name: "ChatGPT" };
@@ -111,4 +111,26 @@ test("access reads from the connection's scope", () => {
   assert.equal(agentAccess("pages:read"), "Read only");
   assert.equal(agentAccess("offline_access pages:read pages:write"), "Read and edit");
   assert.equal(agentAccess("pages:read pages:share pages:write"), "Read and edit, share");
+});
+
+test("a host without the account routes is unavailable, not an error", () => {
+  const { state, effects } = run(initialAgents(), {
+    type: "loadFailed",
+    message: "The server returned an unexpected response (404)",
+    unavailable: true,
+  });
+  assert.deepEqual(state.list, { status: "unavailable", agents: [], message: "" });
+  assert.equal(state.error, "");
+  assert.deepEqual(effects, [{ type: "unavailable" }]);
+  assert.equal(transition(state, { type: "confirm" }).state, state);
+  assert.equal(transition(state, { type: "retry" }).state, state);
+  assert.deepEqual(transition(state, { type: "close" }).effects, [{ type: "dismiss" }]);
+});
+
+test("a 404 from the Worker or from ingress means the route is missing", () => {
+  assert.equal(routeMissing({ status: 404 }), true);
+  assert.equal(routeMissing({ httpStatus: 404, code: "INVALID_RESPONSE" }), true);
+  assert.equal(routeMissing({ status: 401 }), false);
+  assert.equal(routeMissing({ httpStatus: 502, status: 502 }), false);
+  assert.equal(routeMissing(new TypeError("Failed to fetch")), false);
 });

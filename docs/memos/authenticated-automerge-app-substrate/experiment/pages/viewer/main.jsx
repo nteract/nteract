@@ -243,7 +243,10 @@ function App() {
     // { kind: "move", pageId, title, projectId }. Each runs its own machine.
     [containerDialog, setContainerDialog] = useState(null),
     // The Connected agents dialog, opened from the account menu.
-    [agentsOpen, setAgentsOpen] = useState(false);
+    [agentsOpen, setAgentsOpen] = useState(false),
+    // The host advertised account controls but its list route answered 404,
+    // as an older ingress does: the menu stops offering them.
+    [agentsMissing, setAgentsMissing] = useState(false);
   const [toolbar, setToolbar] = useState(null),
     [toolbarOpen, setToolbarOpen] = useState(false),
     [active, setActive] = useState(null),
@@ -1608,14 +1611,16 @@ function App() {
                   <Plug size={16} aria-hidden="true" /> Connect an agent
                   <span className="sr-only"> (opens in a new tab)</span>
                 </a>
-                <button
-                  onClick={() => {
-                    accountDisclosure.current.open = false;
-                    setAgentsOpen(true);
-                  }}
-                >
-                  <Unplug size={16} aria-hidden="true" /> Connected agents
-                </button>
+                {authentication.current?.accountControls === true && !agentsMissing && (
+                  <button
+                    onClick={() => {
+                      accountDisclosure.current.open = false;
+                      setAgentsOpen(true);
+                    }}
+                  >
+                    <Unplug size={16} aria-hidden="true" /> Connected agents
+                  </button>
+                )}
                 <button onClick={signout}>
                   <LogOut size={16} aria-hidden="true" /> Sign out
                 </button>
@@ -1627,6 +1632,7 @@ function App() {
               returnFocus={() => accountDisclosure.current?.querySelector("summary")}
               onClose={() => setAgentsOpen(false)}
               onSignedOut={() => void leaveSignedOut().catch(showError)}
+              onUnavailable={() => setAgentsMissing(true)}
             />
           )}
         </div>

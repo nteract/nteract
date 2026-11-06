@@ -1163,7 +1163,10 @@ principal in an indexed column, backfilled from the identity snapshot of older
 rows; sessions are found through an expression index on the session's principal
 ([oidc-session-store.ts](../../../../../apps/notebook-cloud/src/oidc-session-store.ts)).
 Grants issued before the column existed show no connection date. Last use is
-not recorded.
+not recorded. `GET /api/auth/session` answers `accountControls: true` for a
+browser session, and the viewer offers the dialog only then. If the list
+answers 404 anyway, as an ingress without these routes does, the dialog says
+they aren't available here, shows no error, and the menu stops offering them.
 
 An hourly cron (`35 * * * *` UTC, [shared/schedule.mjs](shared/schedule.mjs))
 sweeps the auth database (worker/auth-maintenance.mjs). It deletes expired

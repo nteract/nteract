@@ -1184,6 +1184,10 @@ const gateway = {
                 recordStorage: "automerge",
                 canWrite: identity.canWrite,
                 expiresAt: identity.expiresAt,
+                // This host serves account-auth.mjs, which only a browser
+                // session may call. A viewer shows Connected agents and Sign
+                // out everywhere only when this is true.
+                accountControls: identity.credentialKind === "oidc",
               }
             : { identity: null, canWrite: false },
         );

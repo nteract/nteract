@@ -7,7 +7,11 @@
 //      └───────────────signOutFailed──────────────────┘   (error shown)
 //
 // The list loads on open and has its own status:
-// `list` is `{ status: "loading" | "ready" | "failed", agents, message }`.
+// `list` is `{ status: "loading" | "ready" | "failed" | "unavailable", agents,
+// message }`. "unavailable" is a host that doesn't serve these routes (a 404):
+// the dialog shows neither the list nor Sign out everywhere, and the
+// `unavailable` effect lets the account menu hide the entry. It is not an
+// error.
 // While browsing, one agent at a time may be disconnecting (`revoking` is its
 // id). A `revoked` or `revokeFailed` for another id is stale and changes
 // nothing. A disconnect the host reports as already gone still leaves the
@@ -18,7 +22,7 @@
 // the component runs `finish`, which leaves the signed-in app.
 //
 // Events:
-//   { type: "loaded", agents }   { type: "loadFailed", message }
+//   { type: "loaded", agents }   { type: "loadFailed", message, unavailable? }
 //   { type: "retry" }
 //   { type: "revoke", id }       { type: "revoked", id }
 //   { type: "revokeFailed", id, message }
@@ -29,6 +33,7 @@
 //
 // Effects, run by the component after the transition, in order:
 //   { type: "load" }             GET /api/auth/grants
+//   { type: "unavailable" }      the host doesn't serve the account routes
 //   { type: "revoke", id }       POST /api/auth/grants/<id>/revoke
 //   { type: "signOut" }          POST /api/auth/logout-all
 //   { type: "finish" }           forget account data and leave
@@ -74,6 +79,11 @@ export function transition(state, event) {
     case "loaded":
     case "loadFailed": {
       if (state.list.status !== "loading" || state.name === "done") return stay(state);
+      if (event.type === "loadFailed" && event.unavailable === true)
+        return {
+          state: { ...state, list: { status: "unavailable", agents: [], message: "" } },
+          effects: [{ type: "unavailable" }],
+        };
       const list =
         event.type === "loaded"
           ? { status: "ready", agents: [...(event.agents ?? [])], message: "" }
@@ -115,7 +125,12 @@ export function transition(state, event) {
       if (state.revoking === null || state.revoking !== event.id) return stay(state);
       return { state: { ...state, revoking: null, error: failure(event.message) }, effects: [] };
     case "confirm":
-      if (state.name !== "browsing" || state.revoking !== null) return stay(state);
+      if (
+        state.name !== "browsing" ||
+        state.revoking !== null ||
+        state.list.status === "unavailable"
+      )
+        return stay(state);
       return { state: { ...state, name: "confirming", error: "" }, effects: [] };
     case "cancel":
       if (state.name !== "confirming") return stay(state);

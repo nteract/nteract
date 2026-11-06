@@ -19,14 +19,19 @@ function connectedOn(createdAt) {
     : "Connected earlier";
 }
 
-export function ConnectedAgents({ onClose, onSignedOut, returnFocus }) {
+/** Whether a failed request means the host doesn't serve the route: a 404,
+ * as JSON from the Worker or as a proxy's page from ingress. */
+export const routeMissing = (error) => error?.status === 404 || error?.httpStatus === 404;
+
+export function ConnectedAgents({ onClose, onSignedOut, onUnavailable, returnFocus }) {
   const [state, dispatch] = useContainerDialog(
     machine.initialAgents(),
     (effect, send) => {
       if (effect.type === "load")
         request("/api/auth/grants").then(
           (body) => send({ type: "loaded", agents: body.agents }),
-          (error) => send({ type: "loadFailed", message: error.message }),
+          (error) =>
+            send({ type: "loadFailed", message: error.message, unavailable: routeMissing(error) }),
         );
       else if (effect.type === "revoke")
         request(`/api/auth/grants/${encodeURIComponent(effect.id)}/revoke`, {
@@ -41,6 +46,7 @@ export function ConnectedAgents({ onClose, onSignedOut, returnFocus }) {
           (error) => send({ type: "signOutFailed", message: error.message }),
         );
       else if (effect.type === "finish") onSignedOut();
+      else if (effect.type === "unavailable") onUnavailable?.();
       else if (effect.type === "dismiss") onClose();
     },
     machine,
@@ -61,6 +67,9 @@ export function ConnectedAgents({ onClose, onSignedOut, returnFocus }) {
           Agents you approved act for you in Pages until you disconnect them.
         </p>
         {list.status === "loading" && <p role="status">Loading…</p>}
+        {list.status === "unavailable" && (
+          <p className="muted">Connected agents aren't available on this server yet.</p>
+        )}
         {list.status === "failed" && (
           <div className="connected-agents-failed">
             <p className="error picker-error" role="alert">
@@ -106,49 +115,51 @@ export function ConnectedAgents({ onClose, onSignedOut, returnFocus }) {
             {state.error}
           </p>
         )}
-        <div className="connected-agents-everywhere">
-          {state.name === "browsing" ? (
-            <>
-              <p className="muted container-note">
-                Sign out of Pages in every browser and disconnect every agent.
-              </p>
-              <div className="container-actions">
-                <button
-                  type="button"
-                  className="subtle-button danger"
-                  disabled={busy}
-                  onClick={() => dispatch({ type: "confirm" })}
-                >
-                  Sign out everywhere
-                </button>
-              </div>
-            </>
-          ) : (
-            <>
-              <p role="status">
-                Sign out of every browser, this one included, and disconnect every agent?
-              </p>
-              <div className="container-actions">
-                <button
-                  type="button"
-                  className="subtle-button"
-                  disabled={state.name !== "confirming"}
-                  onClick={() => dispatch({ type: "cancel" })}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  className="primary danger-action"
-                  disabled={state.name !== "confirming"}
-                  onClick={() => dispatch({ type: "signOut" })}
-                >
-                  {state.name === "confirming" ? "Sign out everywhere" : "Signing out…"}
-                </button>
-              </div>
-            </>
-          )}
-        </div>
+        {list.status !== "unavailable" && (
+          <div className="connected-agents-everywhere">
+            {state.name === "browsing" ? (
+              <>
+                <p className="muted container-note">
+                  Sign out of Pages in every browser and disconnect every agent.
+                </p>
+                <div className="container-actions">
+                  <button
+                    type="button"
+                    className="subtle-button danger"
+                    disabled={busy}
+                    onClick={() => dispatch({ type: "confirm" })}
+                  >
+                    Sign out everywhere
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p role="status">
+                  Sign out of every browser, this one included, and disconnect every agent?
+                </p>
+                <div className="container-actions">
+                  <button
+                    type="button"
+                    className="subtle-button"
+                    disabled={state.name !== "confirming"}
+                    onClick={() => dispatch({ type: "cancel" })}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="primary danger-action"
+                    disabled={state.name !== "confirming"}
+                    onClick={() => dispatch({ type: "signOut" })}
+                  >
+                    {state.name === "confirming" ? "Sign out everywhere" : "Signing out…"}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
       </div>
     </ContainerDialog>
   );

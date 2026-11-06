@@ -975,6 +975,17 @@ as index routes. Page9's publisher migrates only from its Project-link config
 to this one, so an older installation must publish the Project-link release
 first.
 
+Page10, Pages and Pages2 admit the account routes (`accountPaths` in
+[routes.mjs](scripts/deployment/routes.mjs)): `/api/auth/logout-all`,
+`/api/auth/grants` and `/api/auth/grants/<handle>/revoke`, where a handle is
+43 base64url characters. Each publisher migrates from its sealed config without
+that group, by the same handoff as any route change: the next publish rewrites
+`tunnel.yml` with the group added, starts the idle slot, waits for `/ready`,
+stops the old slot and seals the new receipt. Units and every other route stay
+byte-identical. Every older predecessor still migrates, straight to the new
+config. A pending receipt from an interrupted publish before this release is
+not recognized; the publisher stops and asks for inspection.
+
 The OIDC client must allow `https://<hostname>/oidc` as a redirect URI before
 sign-in works on a new target. For Pages, add
 `https://pages.runtimed.run/oidc` to client

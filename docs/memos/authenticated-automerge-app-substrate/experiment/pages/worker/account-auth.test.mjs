@@ -230,6 +230,15 @@ test("sign out everywhere ends the caller's browsers and agents and nobody else'
   assert.equal(again.status, 401);
 });
 
+test("the session answer advertises account controls to a browser session only", async (t) => {
+  const env = fixture(t);
+  const login = await signIn(env);
+  const session = async (options) =>
+    (await call(env, "/api/auth/session", { origin: null, ...options })).json();
+  assert.equal((await session({ cookie: login.cookie })).accountControls, true);
+  assert.equal((await session({})).accountControls, undefined);
+});
+
 test("sign out everywhere needs this origin and a browser session", async (t) => {
   const env = fixture(t);
   const login = await signIn(env);

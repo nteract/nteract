@@ -1150,6 +1150,69 @@ test("sign-out forgets the rows remembered for the account", async (t) => {
   await settle();
 });
 
+const withAccountControls = () =>
+  Response.json({
+    identity: { principal: "one", displayName: "Kyle" },
+    canWrite: true,
+    accountControls: true,
+  });
+const accountMenuItems = () =>
+  [
+    ...document.querySelectorAll(
+      ".account-actions .menu-popover > button, .account-actions .menu-popover > a",
+    ),
+  ].map((node) => node.textContent.trim());
+
+test("a host that doesn't advertise account controls offers no Connected agents", async (t) => {
+  cleanUp(t);
+  history.replaceState(null, "", "/pages");
+  const app = await boot(signedIn, catalog);
+  await settle();
+  assert.equal(
+    accountMenuItems().some((text) => text.includes("Connected agents")),
+    false,
+  );
+  assert.ok(accountMenuItems().some((text) => text.includes("Sign out")));
+  assert.equal(app.requests.includes("/api/auth/grants"), false);
+});
+
+test("a 404 from the account routes hides Connected agents without an error", async (t) => {
+  cleanUp(t);
+  history.replaceState(null, "", "/pages");
+  // What an ingress without the account routes answers: a proxy's HTML 404.
+  const app = await boot(withAccountControls, catalog, {
+    paths: {
+      "/api/auth/grants": () =>
+        new Response("<h1>Not Found</h1>", {
+          status: 404,
+          headers: { "content-type": "text/html" },
+        }),
+    },
+  });
+  await settle();
+  const entry = () =>
+    [...document.querySelectorAll(".account-actions button")].find((button) =>
+      button.textContent.includes("Connected agents"),
+    );
+  await click(entry());
+  await settle();
+  const dialog = document.querySelector(".connected-agents-dialog");
+  assert.match(dialog.textContent, /aren't available on this server yet/);
+  assert.equal(dialog.querySelector("[role=alert]"), null);
+  assert.equal(
+    [...dialog.querySelectorAll("button")].some((b) =>
+      b.textContent.includes("Sign out everywhere"),
+    ),
+    false,
+  );
+  assert.deepEqual(app.banners(), []);
+  await click(dialog.querySelector('[aria-label="Close Connected agents"]'));
+  await settle();
+  assert.equal(document.querySelector(".connected-agents-dialog"), null);
+  assert.equal(entry(), undefined, "the menu stops offering it");
+  assert.equal(app.requests.includes("/api/auth/logout-all"), false);
+});
+
 test("the account menu lists connected agents, disconnects one and signs out everywhere", async (t) => {
   cleanUp(t);
   history.replaceState(null, "", "/pages");
@@ -1171,7 +1234,7 @@ test("the account menu lists connected agents, disconnects one and signs out eve
     },
   ];
   const gate = {};
-  const app = await boot(signedIn, gatedCatalog(gate), {
+  const app = await boot(withAccountControls, gatedCatalog(gate), {
     paths: {
       "/api/auth/grants": () => Response.json({ agents }),
       [`/api/auth/grants/${handle(1)}/revoke`]: () => Response.json({ revoked: true }),
