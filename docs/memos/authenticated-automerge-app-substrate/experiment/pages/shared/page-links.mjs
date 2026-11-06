@@ -1,8 +1,9 @@
-// Links in Page content that go to this deployment's app, and which Page a
-// link names. One test for everything that treats such a link specially:
-// in-place navigation (viewer/heading-links.mjs inAppLink), the Page glyph
-// and hover card (viewer/link-destination.mjs linkAttributes), and later the
-// server, which will pass the deployment's public origin as `base`.
+// Links in Page content that go to this deployment's app, and which Page or
+// Project a link names. One test for everything that treats such a link
+// specially: in-place navigation (viewer/heading-links.mjs inAppLink), the
+// Page and Project glyphs and the hover card (viewer/link-destination.mjs
+// linkAttributes), and later the server, which will pass the deployment's
+// public origin as `base`.
 //
 // A link counts only when all of these hold:
 // - `safeUrl(href)` (model/marks.mjs): no spaces or control characters, and no
@@ -15,8 +16,10 @@
 // - It carries no user name or password. `https://pages.example@evil.example`
 //   already fails the origin test; this also refuses
 //   `https://someone@pages.example/p/<id>`, which nothing in Pages writes.
-// - readPageRoute reads its path as a Page or a Project. Anything longer than
-//   the route, such as `/p/<id>/meta.json`, reads as missing.
+// - readPageRoute reads its path as a Page (`/p/<uuid>`) or a Project
+//   (`/project/<prj_id>`, or the older `/s/<id>`, either with a `prj_` or an
+//   older `sp_` ID). Anything longer than the route, such as
+//   `/p/<id>/meta.json` or `/project/<id>/meta.json`, reads as missing.
 //
 // This module has no DOM or editor dependencies; the Worker can import it.
 import { safeUrl } from "../model/marks.mjs";
@@ -56,31 +59,63 @@ export function appRoute(href, base) {
 }
 
 /**
+ * What a link names: `{ kind: "page", pageId, anchor }`, `{ kind: "project",
+ * projectId, anchor }`, or null when `href` isn't a link to one of this
+ * deployment's Pages or Projects. `anchor` is the heading the fragment names
+ * (in a Project, a heading in its content), percent-decoded, or null.
+ */
+export function linkTarget(href, base) {
+  const target = appRoute(href, base);
+  if (!target) return null;
+  const anchor = anchorFromHash(target.url.hash);
+  return target.route.kind === "page"
+    ? { kind: "page", pageId: target.route.pageId, anchor }
+    : { kind: "project", projectId: target.route.projectId, anchor };
+}
+
+/**
  * The Page a link names: `{ pageId, anchor }`, or null when `href` isn't a
  * link to one of this deployment's Pages. `anchor` is the heading the
  * fragment names, percent-decoded, or null.
  */
 export function pageLink(href, base) {
-  const target = appRoute(href, base);
-  if (target?.route.kind !== "page") return null;
-  return { pageId: target.route.pageId, anchor: anchorFromHash(target.url.hash) };
+  const target = linkTarget(href, base);
+  return target?.kind === "page" ? { pageId: target.pageId, anchor: target.anchor } : null;
 }
 
 /**
- * A link to another Page: pageLink's answer, or null for a link to the Page
- * open now, which is a section link. That Page is `currentPageId`, or the
- * Page `base` shows. Links that pass get the Page glyph and the hover card.
+ * A link to another Page or Project: linkTarget's answer, or null for a link
+ * to what is open now. That is the Page open now (`currentPageId`, or the
+ * Page `base` shows), whose links are section links, and the Project whose
+ * content is open now (`currentProjectId`, or the Project `base` shows): on
+ * a Project's route the open document is its content. A Project link inside
+ * an ordinary Page of that Project still counts. Links that pass get a glyph
+ * and the hover card.
  */
-export function linkedPage(href, base, { currentPageId = null } = {}) {
-  const page = pageLink(href, base);
-  if (!page) return null;
-  if (currentPageId && page.pageId === currentPageId) return null;
+export function linkedTarget(href, base, { currentPageId = null, currentProjectId = null } = {}) {
+  const target = linkTarget(href, base);
+  if (!target) return null;
   let here;
   try {
     here = readPageRoute(base);
   } catch {
     return null;
   }
-  if (here.kind === "page" && here.pageId === page.pageId) return null;
-  return page;
+  if (target.kind === "page") {
+    if (currentPageId && target.pageId === currentPageId) return null;
+    if (here.kind === "page" && here.pageId === target.pageId) return null;
+  } else {
+    if (currentProjectId && target.projectId === currentProjectId) return null;
+    if (here.kind === "project" && here.projectId === target.projectId) return null;
+  }
+  return target;
+}
+
+/**
+ * A link to another Page: linkedTarget's answer for a Page, as `{ pageId,
+ * anchor }`, or null.
+ */
+export function linkedPage(href, base, { currentPageId = null } = {}) {
+  const target = linkedTarget(href, base, { currentPageId });
+  return target?.kind === "page" ? { pageId: target.pageId, anchor: target.anchor } : null;
 }

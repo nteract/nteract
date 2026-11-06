@@ -1,8 +1,8 @@
-/* The hover card for a link to another Page (PageLinkCard.jsx), drawn as
-   the design's mockup: the popover tokens, a 12px radius and a softer, wider
-   shadow than the link menu's surface (link-popover.css), so it reads as a
-   preview rather than a menu. Its first screen is the library grid's card
-   body (style.css .index-card-preview). */
+/* The hover card for a link to another Page or a Project (PageLinkCard.jsx),
+   drawn as the design's mockup: the popover tokens, a 12px radius and a
+   softer, wider shadow than the link menu's surface (link-popover.css), so
+   it reads as a preview rather than a menu. Its first screen is the library
+   grid's card body (style.css .index-card-preview). */
 .page-link-card {
   position: fixed;
   z-index: 100;
@@ -53,6 +53,33 @@
 .page-link-card-meta {
   margin-top: 2px;
   color: var(--muted-foreground);
+}
+/* A Project's card: a small kind label above the title, and its description
+   as plain text, at most three lines. */
+.page-link-card-kind {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 4px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-weight: 550;
+  letter-spacing: 0.01em;
+}
+.page-link-card-kind svg {
+  flex-shrink: 0;
+}
+.page-link-card-description {
+  display: -webkit-box;
+  overflow: hidden;
+  margin-top: 4px;
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+  unicode-bidi: isolate;
+  white-space: pre-line;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
 }
 .page-link-card-preview {
   margin-top: 10px;

@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { anchorFromHash, appRoute, linkedPage, pageLink } from "../shared/page-links.mjs";
+import {
+  anchorFromHash,
+  appRoute,
+  linkTarget,
+  linkedPage,
+  linkedTarget,
+  pageLink,
+} from "../shared/page-links.mjs";
 import { inAppLink } from "../viewer/heading-links.mjs";
 
 const here = "1a160b47-6df1-4983-81eb-489ca5a26812";
@@ -123,6 +130,117 @@ test("links to the open Page are section links, not linked Pages", () => {
   // Everything pageLink refuses, linkedPage refuses.
   for (const [href, expected] of ROWS)
     if (expected === null) assert.equal(linkedPage(href, base), null, JSON.stringify(href));
+});
+
+const legacy = `sp_${id}`;
+const projectAt = (projectId, anchor = null) => ({ kind: "project", projectId, anchor });
+
+// [href, linkTarget's answer against `base`] for Project links. Every link
+// that isn't exactly one of this deployment's Project routes is null; a Page
+// link is a Page target.
+const PROJECT_ROWS = [
+  [`/project/${project}`, projectAt(project)],
+  [`/project/${project}/`, projectAt(project)],
+  [`/project/${project}#guidance`, projectAt(project, "guidance")],
+  [`https://pages.runtimed.run/project/${project}`, projectAt(project)],
+  [`HTTPS://PAGES.RUNTIMED.RUN:443/project/${project}`, projectAt(project)],
+  [`//pages.runtimed.run/project/${project}`, projectAt(project)],
+  // Projects minted before the Project name keep their sp_ IDs.
+  [`/project/${legacy}`, projectAt(legacy)],
+  // The older /s/ route reads as the same Project.
+  [`/s/${project}`, projectAt(project)],
+  [`/s/${legacy}`, projectAt(legacy)],
+  [`https://pages.runtimed.run/s/${legacy}#plan`, projectAt(legacy, "plan")],
+  // A Page is a Page.
+  [`/p/${id}`, { kind: "page", pageId: id, anchor: null }],
+  // Look-alikes and other deployments.
+  [`https://pages.runtimed.run.evil.example/project/${project}`, null],
+  [`https://pages.runtimed.run@evil.example/project/${project}`, null],
+  [`https://pages.runtimed.run./project/${project}`, null],
+  [`https://someone@pages.runtimed.run/project/${project}`, null],
+  [`https://page2.runtimed.run/project/${project}`, null],
+  [`http://localhost:9894/project/${project}`, null],
+  [`http://pages.runtimed.run/project/${project}`, null],
+  // Only the route itself, with a well-formed ID.
+  [`/project/${project}/meta.json`, null],
+  [`/project/${project}/card.json`, null],
+  [`/s/${project}/meta.json`, null],
+  [`/project/${id}`, null],
+  [`/project/PRJ_${id}`, null],
+  [`/project/prj_${id.toUpperCase()}`, null],
+  [`/project/prj_1a160b47-6df1-1983-81eb-489ca5a26812`, null],
+  [`/project/xyz_${id}`, null],
+  [`/project/prj-${id}`, null],
+  [`/project/prj_`, null],
+  [`/project/${project}0`, null],
+  [`/project/%70rj_${id}`, null],
+  [`/projects/${project}`, null],
+  ["/projects", null],
+  [`javascript:location='/project/${project}'`, null],
+  [` /project/${project}`, null],
+];
+
+test("a link names a Project only through this deployment's Project route", () => {
+  for (const [href, expected] of PROJECT_ROWS)
+    assert.deepEqual(linkTarget(href, base), expected, JSON.stringify(href));
+  // Every Page row reads the same through linkTarget; the Page table's
+  // Project route is a Project target.
+  for (const [href, expected] of ROWS) {
+    const target = linkTarget(href, base);
+    if (target?.kind === "project") assert.equal(href, `/project/${project}`);
+    else assert.deepEqual(target, expected && { kind: "page", ...expected }, JSON.stringify(href));
+  }
+  // pageLink never answers for a Project.
+  for (const [href, expected] of PROJECT_ROWS)
+    if (expected?.kind === "project") assert.equal(pageLink(href, base), null, href);
+});
+
+test("in-place navigation and Project links can never disagree", () => {
+  for (const [href] of PROJECT_ROWS) {
+    const target = linkTarget(href, base);
+    const inApp = inAppLink(href, base);
+    assert.equal(inApp === null, target === null, JSON.stringify(href));
+    if (inApp?.route.kind === "project")
+      assert.deepEqual(target, projectAt(inApp.route.projectId, inApp.anchor), href);
+  }
+});
+
+test("links to what's open now are dropped: the open Page, and the open Project's own route", () => {
+  const pageBase = `https://pages.runtimed.run/p/${here}`;
+  const projectBase = `https://pages.runtimed.run/project/${project}`;
+  const other = `prj_${here}`;
+  // A Project link inside an ordinary Page of that Project still counts:
+  // only its content is the Project.
+  assert.deepEqual(linkedTarget(`/project/${project}`, pageBase), projectAt(project));
+  assert.deepEqual(
+    linkedTarget(`/project/${project}`, pageBase, { currentPageId: here }),
+    projectAt(project),
+  );
+  // On the Project's route its content is open: its own links are dropped,
+  // by the address or by name, in either route form.
+  assert.equal(linkedTarget(`/project/${project}`, projectBase), null);
+  assert.equal(linkedTarget(`/s/${project}#plan`, projectBase), null);
+  assert.equal(linkedTarget(`/project/${project}`, pageBase, { currentProjectId: project }), null);
+  assert.deepEqual(linkedTarget(`/project/${other}`, projectBase), projectAt(other));
+  // The open Project names no Page: Pages still need currentPageId.
+  assert.deepEqual(linkedTarget(`/p/${here}`, projectBase), {
+    kind: "page",
+    pageId: here,
+    anchor: null,
+  });
+  assert.equal(linkedTarget(`/p/${here}`, projectBase, { currentPageId: here }), null);
+  // A Page ID never matches a Project and the reverse.
+  assert.deepEqual(
+    linkedTarget(`/project/${project}`, pageBase, { currentPageId: id }),
+    projectAt(project),
+  );
+  assert.deepEqual(linkedTarget(`/p/${id}`, pageBase, { currentProjectId: project }), {
+    kind: "page",
+    pageId: id,
+    anchor: null,
+  });
+  for (const [href, expected] of PROJECT_ROWS)
+    if (expected === null) assert.equal(linkedTarget(href, pageBase), null, JSON.stringify(href));
 });
 
 test("a fragment names its anchor, percent-decoded", () => {

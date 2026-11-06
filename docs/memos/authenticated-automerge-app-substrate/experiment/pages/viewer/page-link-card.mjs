@@ -1,14 +1,15 @@
-// The hover card for links to other Pages (PageLinkCard.jsx draws it). One
-// controller per tab watches the document, as HeadingAnchors' click handler
-// does, so it covers Page links in Page blocks (editable and read-only), in
-// the boot preview and in comments: every link drawn with the Page glyph's
-// class and `data-page-id` (link-destination.mjs linkAttributes).
+// The hover card for links to other Pages and to Projects (PageLinkCard.jsx
+// draws it). One controller per tab watches the document, as HeadingAnchors'
+// click handler does, so it covers such links in Page blocks (editable and
+// read-only), in the boot preview and in comments: every link drawn with
+// the Page glyph's class and `data-page-id`, or the Project glyph's class
+// and `data-project-id` (link-destination.mjs linkAttributes).
 //
 // The card follows the page-link-card machine below; RxJS runs its one
 // timer. Pointing at a link opens the card after PAGE_LINK_OPEN_MS. Leaving
 // the link starts a short grace period, so the pointer can cross into the
 // card; entering the card keeps it open. Opening the card asks the ref store
-// for the Page's meta and card (page-refs.mjs).
+// for the target's meta and card (page-refs.mjs).
 //
 // Keyboard focus on a link opens its card at once. Only a link that takes
 // focus can do this: links in read-only blocks, comments and the loading
@@ -16,8 +17,9 @@
 // entering a link opens nothing. From a focused link, Tab moves into the
 // card's actions; Shift-Tab from the first goes back to the link, and Tab
 // past the last closes the card and moves on to whatever follows the link.
-// A polite live region, owned by the controller, announces the Page's title,
-// or "Page unavailable", once a keyboard-opened card's answer loads.
+// A polite live region, owned by the controller, announces the answer once
+// a keyboard-opened card's answer loads: a Page's title or "Page
+// unavailable", "Project: <title>" or "Project unavailable".
 //
 // Escape closes the card, and nothing else: the event is marked handled and
 // stopped, so a comments panel doesn't also back out of its thread. Focus
@@ -38,11 +40,11 @@
 // target, and crossing between them keeps the card.
 import { EMPTY, Subject, combineLatest, distinctUntilChanged, map, switchMap, timer } from "rxjs";
 import { defineMachine, reject } from "../shared/machine.mjs";
-import { linkedPage } from "../shared/page-links.mjs";
+import { linkedTarget } from "../shared/page-links.mjs";
 import { returnFocus } from "./editor-focus.mjs";
-import { PAGE_LINK_CLASS } from "./link-destination.mjs";
+import { PAGE_LINK_CLASS, PROJECT_LINK_CLASS } from "./link-destination.mjs";
 import { linkMenus } from "./link-menu.mjs";
-import { settledOf } from "./page-refs.mjs";
+import { refKey, settledOf } from "./page-refs.mjs";
 import { Store } from "./store.mjs";
 
 /** How long the pointer rests on a link before its card opens. */
@@ -55,10 +57,15 @@ export const PAGE_LINK_CARD_CLASS = "page-link-card";
  * links themselves do, so a comment draft is never navigated away from. */
 export const COMMENT_LINK_SCOPE = ".comment-rich-editor, .comment-rich-content";
 
+/** The links the card covers, by their glyph's class and data attribute. */
+const LINKS = `a.${PAGE_LINK_CLASS}[data-page-id], a.${PROJECT_LINK_CLASS}[data-project-id]`;
+
 const targetOf = (value) => {
   const target = value?.target;
-  if (!target || typeof target.pageId !== "string" || typeof target.key !== "string")
-    throw Error("needs a target with pageId and key");
+  if (!target || !["page", "project"].includes(target.kind))
+    throw Error("needs a target of kind page or project");
+  if (typeof target.id !== "string" || typeof target.key !== "string")
+    throw Error("needs a target with id and key");
   if (target.anchor !== null && typeof target.anchor !== "string")
     throw Error("anchor must be a string or null");
   if (typeof target.href !== "string") throw Error("needs an href");
@@ -72,7 +79,7 @@ const shown = (state) => {
 const same = (a, b) => a.key === b.key;
 
 /**
- * One tab's Page-link card.
+ * One tab's link card, for Page and Project links alike.
  *
  * States:
  * - closed: no card.
@@ -84,8 +91,8 @@ const same = (a, b) => a.key === b.key;
  *   no keyboard focus; the grace timer runs.
  *
  * Events:
- * - `hovered` (`target`): the pointer came onto a Page link.
- * - `focused` (`target`): keyboard focus came onto a Page link.
+ * - `hovered` (`target`): the pointer came onto a Page or Project link.
+ * - `focused` (`target`): keyboard focus came onto a Page or Project link.
  * - `left`: the pointer left the link or the card (not for one into the
  *   other or between fragments of one link: the controller filters those).
  * - `blurred`: focus left both the link and the card.
@@ -99,8 +106,14 @@ const same = (a, b) => a.key === b.key;
  *   past the card's last action, or an account change. With `restore`,
  *   focus goes back to the link.
  *
+ * A target is `{ key, kind, id, anchor, href, comment }`: the link's key, a
+ * Page (`kind` "page", `id` its page ID) or a Project (`kind` "project",
+ * `id` its project ID), the heading its fragment names, its resolved href,
+ * and whether it's in a comment.
+ *
  * Effects: `arm` (`ms`) and `disarm` the timer, `load` (ask the ref store
- * for `pageId`), `restore` (give focus back to the link, or its editor).
+ * for `kind` and `id`), `restore` (give focus back to the link, or its
+ * editor).
  */
 export const pageLinkCardMachine = defineMachine({
   name: "page-link-card",
@@ -154,7 +167,8 @@ export const pageLinkCardMachine = defineMachine({
       },
       disarm: () => {},
       load: (effect) => {
-        if (typeof effect.pageId !== "string") throw Error("load needs a pageId");
+        if (!["page", "project"].includes(effect.kind) || typeof effect.id !== "string")
+          throw Error("load needs a kind and an id");
       },
       restore: () => {},
     },
@@ -166,7 +180,7 @@ export const pageLinkCardMachine = defineMachine({
     });
     const open = (target, via, effects = []) => ({
       state: { name: "open", target, via, held: false },
-      effects: [...effects, { type: "load", pageId: target.pageId }],
+      effects: [...effects, { type: "load", kind: target.kind, id: target.id }],
     });
     const reopen = (changes, effects = []) => ({
       state: { ...state, name: "open", ...changes },
@@ -255,14 +269,17 @@ export const pageLinkCardMachine = defineMachine({
 const TEXTBLOCK = "p, li, h1, h2, h3, h4, h5, h6, td, th, pre, figcaption, wg-content";
 
 /** The fragments `element` draws its link with, in order: the contiguous
- * Page links in its textblock with the same href and no text between. */
+ * Page or Project links in its textblock with the same href and no text
+ * between. */
 export function linkRun(element) {
   const block = element.closest(TEXTBLOCK) ?? element.parentElement;
   if (!block) return [element];
-  const links = [...block.querySelectorAll(`a.${PAGE_LINK_CLASS}[data-page-id]`)];
+  const links = [...block.querySelectorAll(LINKS)];
   const href = element.getAttribute("href");
+  // Both fragments name this href: walking back, `after` is the fragment
+  // already in the run, so `before` is the one to check.
   const adjacent = (before, after) => {
-    if (after.getAttribute("href") !== href) return false;
+    if (before.getAttribute("href") !== href || after.getAttribute("href") !== href) return false;
     const range = element.ownerDocument.createRange();
     range.setStartAfter(before);
     range.setEndBefore(after);
@@ -277,25 +294,40 @@ export function linkRun(element) {
 }
 
 /**
- * The Page link `node` is in, as the card targets it: `{ element, elements,
- * pageId, anchor, href, comment }`, or null. `elements` is the link's run of
- * fragments (linkRun) and `element` its first. Only a link drawn with the
- * Page glyph's class counts, and the Page is always the one its href names,
- * read against `base`: a `data-page-id` that disagrees with it (a stale or
- * forged attribute) makes the link no target. None inside a card or a card
- * preview. `comment` says the link is in a comment.
+ * The Page or Project link `node` is in, as the card targets it: `{ element,
+ * elements, kind, id, anchor, href, comment }`, or null. `elements` is the
+ * link's run of fragments (linkRun) and `element` its first. Only a link
+ * drawn with a glyph's class counts, and its target is always the one its
+ * href names, read against `base`: a class or data attribute that disagrees
+ * with it (a stale or forged attribute, a Page class on a Project link) makes
+ * the link no target. Links to what's open (`currentPageId`,
+ * `currentProjectId`, or what `base` shows) don't count. None inside a card
+ * or a card preview. `comment` says the link is in a comment.
  */
-export function pageLinkAt(node, { base = globalThis.location?.href, currentPageId = null } = {}) {
-  const element = node?.closest?.(`a.${PAGE_LINK_CLASS}[data-page-id]`);
+export function linkAt(
+  node,
+  { base = globalThis.location?.href, currentPageId = null, currentProjectId = null } = {},
+) {
+  const element = node?.closest?.(LINKS);
   if (!element || element.closest(`.${PAGE_LINK_CARD_CLASS}, .page-card-preview`)) return null;
-  const page = linkedPage(element.getAttribute("href"), base, { currentPageId });
-  if (!page || page.pageId !== element.dataset.pageId) return null;
+  const target = linkedTarget(element.getAttribute("href"), base, {
+    currentPageId,
+    currentProjectId,
+  });
+  if (!target) return null;
+  const id = target.kind === "page" ? target.pageId : target.projectId;
+  const drawn =
+    target.kind === "page"
+      ? element.classList.contains(PAGE_LINK_CLASS) && element.dataset.pageId === id
+      : element.classList.contains(PROJECT_LINK_CLASS) && element.dataset.projectId === id;
+  if (!drawn) return null;
   const elements = linkRun(element);
   return {
     element: elements[0],
     elements,
-    pageId: page.pageId,
-    anchor: page.anchor,
+    kind: target.kind,
+    id,
+    anchor: target.anchor,
     href: element.href,
     comment: !!element.closest(COMMENT_LINK_SCOPE),
   };
@@ -340,12 +372,17 @@ const QUIET_KEYS = new Set([
   "Super",
 ]);
 
-/** What the live region says for a keyboard-opened card: the title once it
- * loads, "Page unavailable", or a failure; null while it loads. */
-export function announcement(meta) {
+/** What the live region says for a keyboard-opened card of `kind`: a
+ * Page's title or "Page unavailable", "Project: <title>" or "Project
+ * unavailable", or a failure; null while it loads. */
+export function announcement(meta, kind = "page") {
   const settled = settledOf(meta);
-  if (settled?.name === "readable") return settled.value.title || "Untitled";
-  if (settled?.name === "unavailable") return "Page unavailable";
+  const project = kind === "project";
+  if (settled?.name === "readable") {
+    const title = settled.value.title || "Untitled";
+    return project ? `Project: ${title}` : title;
+  }
+  if (settled?.name === "unavailable") return project ? "Project unavailable" : "Page unavailable";
   if (meta.name === "failed") return "Couldn't load a preview";
   return null;
 }
@@ -358,6 +395,8 @@ export function announcement(meta) {
  * - `canHover()`: whether this device hovers; false where `(hover: none)`.
  * - `focusVisible(element)`: whether focus came from the keyboard.
  * - `currentPageId()`: the Page open now, whose own links aren't Page links.
+ * - `currentProjectId()`: the Project whose content is open now, whose own
+ *   links aren't Project links.
  * - `menus`: the open link menu count (link-menu.mjs).
  * - `scheduler`: runs the timer; tests pass a virtual one.
  *
@@ -390,6 +429,7 @@ export class PageLinkCards {
       }
     },
     currentPageId = () => null,
+    currentProjectId = () => null,
     menus = linkMenus,
     scheduler,
   }) {
@@ -397,6 +437,7 @@ export class PageLinkCards {
     this.canHover = canHover;
     this.focusVisible = focusVisible;
     this.currentPageId = currentPageId;
+    this.currentProjectId = currentProjectId;
     this.menus = menus;
     this.scheduler = scheduler;
     this.store = new Store(pageLinkCardMachine.initial);
@@ -430,7 +471,7 @@ export class PageLinkCards {
       if (effect.type === "arm") this.#timer.next(effect.ms);
       else if (effect.type === "disarm") this.#timer.next(null);
       else if (effect.type === "load")
-        this.refs.want(effect.pageId, ["meta", "card"], { urgent: true });
+        this.refs.want({ kind: effect.kind, id: effect.id }, ["meta", "card"], { urgent: true });
       else if (effect.type === "restore") restore = true;
     }
     // A card that closes with focus inside gives it back to its link.
@@ -450,7 +491,7 @@ export class PageLinkCards {
     }
   }
 
-  /** The machine target for a link found by pageLinkAt. */
+  /** The machine target for a link found by linkAt. */
   #target(found) {
     let key = this.#keys.get(found.element);
     if (!key) {
@@ -460,7 +501,8 @@ export class PageLinkCards {
     this.#links.set(key, found.elements);
     return {
       key,
-      pageId: found.pageId,
+      kind: found.kind,
+      id: found.id,
       anchor: found.anchor,
       href: found.href,
       comment: found.comment,
@@ -475,7 +517,10 @@ export class PageLinkCards {
   }
 
   #find(node) {
-    return pageLinkAt(node, { currentPageId: this.currentPageId() });
+    return linkAt(node, {
+      currentPageId: this.currentPageId(),
+      currentProjectId: this.currentProjectId(),
+    });
   }
 
   #inCard(node) {
@@ -521,7 +566,7 @@ export class PageLinkCards {
     return false;
   }
 
-  /** Watch `document` for Page links. Returns the stop function. */
+  /** Watch `document` for Page and Project links. Returns the stop function. */
   attach(document) {
     const announcer = document.createElement("div");
     announcer.className = "sr-only";
@@ -548,7 +593,9 @@ export class PageLinkCards {
         .pipe(
           map(([state, refs]) => {
             if (state.name !== "open" || state.via !== "focus") return null;
-            const text = announcement(refs.get(`${state.target.pageId}:meta`) ?? { name: "idle" });
+            const { kind, id } = state.target;
+            const meta = refs.get(refKey({ kind, id }, "meta")) ?? { name: "idle" };
+            const text = announcement(meta, kind);
             return text === null ? null : `${state.target.key}\u0000${text}`;
           }),
           distinctUntilChanged(),

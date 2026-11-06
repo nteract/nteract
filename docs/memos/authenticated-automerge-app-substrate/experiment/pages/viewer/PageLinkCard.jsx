@@ -1,15 +1,21 @@
-// The hover card for a link to another Page (page-link-card.mjs runs it;
-// page-refs.mjs holds what it shows). It draws the card's four faces:
+// The hover card for a link to another Page or to a Project
+// (page-link-card.mjs runs it; page-refs.mjs holds what it shows). It draws
+// the card's four faces:
 //
-// - loading: a quiet skeleton while the Page's meta is asked for.
-// - readable: the Page's title, when it was edited, its first screen as the
-//   library grid draws it (PageCardPreview), Open (in place, through the
-//   same route opener in-app links use) and Open in new tab. A link in a
-//   comment offers only Open in new tab, as comment links always open, so
-//   a comment draft is never navigated away from.
-// - unavailable: a lock and "Page unavailable", nothing else. The same face
-//   shows for a Page that's private, trashed, deleted or missing, and for a
-//   host that didn't answer, so it claims no reason.
+// - loading: a quiet skeleton while the target's meta is asked for.
+// - readable:
+//   - for a Page, its title, when it was edited, and its first screen as the
+//     library grid draws it (PageCardPreview);
+//   - for a Project, a small "Project" label with the Project icon, its
+//     title, its description (at most three lines, omitted when empty), and
+//     its content document's first screen the same way;
+//   then Open (in place, through the same route opener in-app links use) and
+//   Open in new tab. A link in a comment offers only Open in new tab, as
+//   comment links always open, so a comment draft is never navigated away
+//   from.
+// - unavailable: a lock and "Page unavailable" or "Project unavailable",
+//   nothing else. The same face shows whatever the reason, and for a host
+//   that didn't answer, so it claims none.
 // - failed: "Couldn't load a preview".
 //
 // The card never takes focus when the pointer opens it. From a link that
@@ -20,13 +26,13 @@
 // as the link menu does (LinkPopover.jsx).
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ExternalLink, Lock } from "lucide-react";
+import { Boxes, ExternalLink, Lock } from "lucide-react";
 import { isPlainNavigation } from "../shared/routes.mjs";
 import { takesFocus } from "./editor-focus.mjs";
 import { openInNewTab } from "./link-destination.mjs";
 import { PAGE_LINK_CARD_CLASS, PageLinkCards } from "./page-link-card.mjs";
 import { PageCardPreview } from "./PageCardPreview.jsx";
-import { settledOf } from "./page-refs.mjs";
+import { refKey, settledOf } from "./page-refs.mjs";
 import { useStore } from "./store.mjs";
 import { toDate } from "./relative-time.mjs";
 import "./page-link-card.css";
@@ -67,19 +73,32 @@ export function cardFace(meta, card) {
   return { face: "loading" };
 }
 
+/** The route a target opens: a Page's or a Project's. */
+export const targetRoute = (target) =>
+  target.kind === "project"
+    ? { kind: "project", projectId: target.id }
+    : { kind: "page", pageId: target.id };
+
 /**
- * The tab's Page-link card. Mount it once.
+ * The tab's link card. Mount it once.
  *
  * - `refs`: the tab's PageRefs.
  * - `currentPageId`: the Page open now, whose links are section links.
- * - `onOpenRoute(route, anchor)`: open a Page in place, as an in-app link
- *   does (main.jsx openRoute).
+ * - `currentProjectId`: the Project whose content is open now, whose own
+ *   links get no card.
+ * - `onOpenRoute(route, anchor)`: open a Page or a Project in place, as an
+ *   in-app link does (main.jsx openRoute).
  */
-export function PageLinkCard({ refs, currentPageId = null, onOpenRoute }) {
+export function PageLinkCard({ refs, currentPageId = null, currentProjectId = null, onOpenRoute }) {
   const latest = useRef(null);
-  latest.current = { currentPageId, onOpenRoute };
+  latest.current = { currentPageId, currentProjectId, onOpenRoute };
   const [cards] = useState(
-    () => new PageLinkCards({ refs, currentPageId: () => latest.current.currentPageId }),
+    () =>
+      new PageLinkCards({
+        refs,
+        currentPageId: () => latest.current.currentPageId,
+        currentProjectId: () => latest.current.currentProjectId,
+      }),
   );
   useEffect(() => cards.attach(document), [cards]);
   const state = useStore(cards.store);
@@ -90,9 +109,8 @@ export function PageLinkCard({ refs, currentPageId = null, onOpenRoute }) {
       refs={refs}
       target={state.target}
       onOpen={() => {
-        const route = { kind: "page", pageId: state.target.pageId };
         cards.acted();
-        latest.current.onOpenRoute(route, state.target.anchor);
+        latest.current.onOpenRoute(targetRoute(state.target), state.target.anchor);
       }}
     />
   );
@@ -101,8 +119,10 @@ export function PageLinkCard({ refs, currentPageId = null, onOpenRoute }) {
 function CardBody({ cards, refs, target, onOpen }) {
   const element = useRef(null);
   const [position, setPosition] = useState({ left: 12, top: 12, visibility: "hidden" });
-  const meta = useStore(refs.store, (state) => state.refs.get(`${target.pageId}:meta`));
-  const card = useStore(refs.store, (state) => state.refs.get(`${target.pageId}:card`));
+  const ref = { kind: target.kind, id: target.id };
+  const meta = useStore(refs.store, (state) => state.refs.get(refKey(ref, "meta")));
+  const card = useStore(refs.store, (state) => state.refs.get(refKey(ref, "card")));
+  const project = target.kind === "project";
   const view = cardFace(meta ?? { name: "idle" }, card ?? { name: "idle" });
   const labelId = `page-link-card-${target.key}`;
   useLayoutEffect(() => {
@@ -167,6 +187,7 @@ function CardBody({ cards, refs, target, onOpen }) {
       ref={element}
       className={PAGE_LINK_CARD_CLASS}
       data-face={view.face}
+      data-kind={target.kind}
       style={position}
       role="group"
       aria-labelledby={labelId}
@@ -185,7 +206,7 @@ function CardBody({ cards, refs, target, onOpen }) {
         <div className="page-link-card-lock">
           <Lock size={18} aria-hidden="true" />
           <div className="page-link-card-title" id={labelId}>
-            Page unavailable
+            {project ? "Project unavailable" : "Page unavailable"}
           </div>
         </div>
       )}
@@ -210,13 +231,25 @@ function CardBody({ cards, refs, target, onOpen }) {
 }
 
 function Readable({ view, labelId, target, onOpen, onActed }) {
-  const edited = editedLabel(view.meta.content_updated_at);
+  const project = target.kind === "project";
+  const edited = project ? null : editedLabel(view.meta.content_updated_at);
   const title = view.meta.title || "Untitled";
+  const description = project ? view.meta.description?.trim() : "";
   return (
     <>
+      {project && (
+        <div className="page-link-card-kind">
+          <Boxes size={13} aria-hidden="true" /> Project
+        </div>
+      )}
       <bdi className="page-link-card-title" id={labelId} dir="auto" title={title}>
         {title}
       </bdi>
+      {description && (
+        <bdi className="page-link-card-description" dir="auto" title={description}>
+          {description}
+        </bdi>
+      )}
       {(edited || view.meta.state === "trashed") && (
         <div className="page-link-card-meta">
           {view.meta.state === "trashed" ? "In Trash" : edited}

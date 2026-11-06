@@ -74,7 +74,7 @@ const {
   PAGE_LINK_OPEN_MS,
   PageLinkCards,
   linkRun,
-  pageLinkAt,
+  linkAt,
   pageLinkCardMachine,
 } = await import("./page-link-card.mjs");
 const { PageRefs } = await import("./page-refs.mjs");
@@ -114,7 +114,8 @@ const { createRoot } = await import("react-dom/client");
 
 const target = (key = "a", pageId = other, comment = false) => ({
   key,
-  pageId,
+  kind: "page",
+  id: pageId,
   anchor: null,
   href: `/p/${pageId}`,
   comment,
@@ -130,7 +131,7 @@ const held = (via = "pointer", t = A) => open(via, t, true);
 const closing = (t = A) => ({ name: "closing", target: t, via: "pointer", held: false });
 const arm = (ms) => ({ type: "arm", ms });
 const disarm = { type: "disarm" };
-const load = (t = A) => ({ type: "load", pageId: t.pageId });
+const load = (t = A) => ({ type: "load", kind: t.kind, id: t.id });
 const restore = { type: "restore" };
 const hovered = (t = A) => ({ type: "hovered", target: t });
 const focused = (t = A) => ({ type: "focused", target: t });
@@ -450,9 +451,9 @@ function controller({ principal = "user:a", canHover = () => true, get } = {}) {
   const refs = new PageRefs({ get: get ?? (() => new Promise(() => {})), scheduler });
   refs.account(principal);
   const want = refs.want.bind(refs);
-  refs.want = (pageId, kinds, options) => {
-    wants.push({ pageId, kinds, urgent: options?.urgent ?? false });
-    return want(pageId, kinds, options);
+  refs.want = (target, files, options) => {
+    wants.push({ ...target, files, urgent: options?.urgent ?? false });
+    return want(target, files, options);
   };
   const menus = new Store(0);
   const cards = new PageLinkCards({
@@ -493,8 +494,8 @@ test("resting on a link opens its card after the delay and asks for meta and car
   assert.deepEqual(c.wants, []);
   c.advance(1);
   assert.equal(c.state().name, "open");
-  assert.equal(c.state().target.pageId, other);
-  assert.deepEqual(c.wants, [{ pageId: other, kinds: ["meta", "card"], urgent: true }]);
+  assert.equal(c.state().target.id, other);
+  assert.deepEqual(c.wants, [{ kind: "page", id: other, files: ["meta", "card"], urgent: true }]);
   assert.equal(c.cards.link, a);
   c.stop();
 });
@@ -536,7 +537,7 @@ test("leaving before the delay opens nothing; another link restarts it", () => {
   c.advance(PAGE_LINK_OPEN_MS - 1);
   assert.equal(c.state().name, "pending");
   c.advance(1);
-  assert.equal(c.state().target.pageId, third);
+  assert.equal(c.state().target.id, third);
   pointer("pointerout", b, { relatedTarget: document.body });
   c.advance(1);
   pointer("pointerover", a);
@@ -545,7 +546,7 @@ test("leaving before the delay opens nothing; another link restarts it", () => {
   c.advance(PAGE_LINK_OPEN_MS * 2);
   assert.equal(c.state().name, "closed");
   assert.deepEqual(
-    c.wants.map((want) => want.pageId),
+    c.wants.map((want) => want.id),
     [third],
   );
   c.stop();
@@ -565,7 +566,16 @@ test("a link drawn as several fragments is one target: crossing them keeps the c
   const [first, middle, last, separate] = block.querySelectorAll("a");
   assert.deepEqual(linkRun(middle), [first, middle, last]);
   assert.deepEqual(linkRun(separate), [separate], "text between links splits the run");
-  assert.equal(pageLinkAt(last).element, first);
+  // Two adjacent links to different Pages are two runs, from either end.
+  const pair = document.createElement("p");
+  pair.innerHTML =
+    `<a class="page-link" data-page-id="${other}" href="/p/${other}">one</a>` +
+    `<a class="page-link" data-page-id="${third}" href="/p/${third}">two</a>`;
+  document.body.append(pair);
+  const [one, two] = pair.querySelectorAll("a");
+  assert.deepEqual(linkRun(one), [one]);
+  assert.deepEqual(linkRun(two), [two]);
+  assert.equal(linkAt(last).element, first);
   pointer("pointerover", first);
   c.advance(PAGE_LINK_OPEN_MS);
   assert.equal(c.state().name, "open");
@@ -879,7 +889,7 @@ test("only Page links count, and always the Page their href names", () => {
   const card = c.card();
   const inCard = link(third, { parent: card });
   for (const element of [self, plain, forged, mismatched, inPreview, inCard]) {
-    assert.equal(pageLinkAt(element), null, element.outerHTML);
+    assert.equal(linkAt(element), null, element.outerHTML);
     pointer("pointerover", element);
     c.advance(PAGE_LINK_OPEN_MS);
     assert.notEqual(c.state().name, "open", element.outerHTML);
@@ -888,14 +898,15 @@ test("only Page links count, and always the Page their href names", () => {
   assert.deepEqual(c.wants, [], "nothing was asked for any of them");
   const good = link(other);
   good.innerHTML = "<b>the plan</b>";
-  assert.equal(pageLinkAt(good.firstChild).element, good);
-  const found = pageLinkAt(good.firstChild);
+  assert.equal(linkAt(good.firstChild).element, good);
+  const found = linkAt(good.firstChild);
   assert.deepEqual(
     { ...found, element: null, elements: found.elements.length },
     {
       element: null,
       elements: 1,
-      pageId: other,
+      kind: "page",
+      id: other,
       anchor: null,
       href: `https://pages.example/p/${other}`,
       comment: false,
@@ -904,7 +915,7 @@ test("only Page links count, and always the Page their href names", () => {
   const comment = document.createElement("div");
   comment.className = "comment-rich-content";
   document.body.append(comment);
-  assert.equal(pageLinkAt(link(other, { parent: comment })).comment, true);
+  assert.equal(linkAt(link(other, { parent: comment })).comment, true);
   c.stop();
 });
 
@@ -1186,7 +1197,7 @@ test("a formatted link draws as one element with one glyph target, in Page block
         assert.equal(links[0].textContent, "the evening focus", label);
         assert.equal(links[0].querySelector(tag)?.textContent, "evening", label);
         assert.equal(links[0].dataset.pageId, other, label);
-        assert.equal(pageLinkAt(links[0].querySelector(tag)).element, links[0], label);
+        assert.equal(linkAt(links[0].querySelector(tag)).element, links[0], label);
       } finally {
         editor.dom.remove();
       }
@@ -1230,17 +1241,25 @@ test("comments leave the open Page's own links without the glyph", async () => {
       ],
     );
     editor.dom.remove();
-    // CommentRichText passes the session's Page through CurrentPage to both
-    // its composer and its displayed messages.
+    // CommentRichText passes the session's Page and Project through
+    // CurrentPage and CurrentProject to its composer and its displayed
+    // messages, and Page blocks read CurrentProject too.
     const source = await readFile(new URL("./CommentRichText.jsx", import.meta.url), "utf8");
     assert.equal(source.match(/useContext\(CurrentPage\)/g)?.length, 2);
-    assert.equal(source.match(/nativeConfig\(\{ currentPageId: /g)?.length, 2);
+    assert.equal(source.match(/useContext\(CurrentProject\)/g)?.length, 2);
+    assert.equal(
+      source.match(/nativeConfig\(\{\s+currentPageId: [^}]+currentProjectId: /g)?.length,
+      2,
+    );
+    const editorSource = await readFile(new URL("./WordgardEditor.jsx", import.meta.url), "utf8");
+    assert.match(editorSource, /useContext\(CurrentProject\)/);
+    assert.match(editorSource, /currentProjectId: \(\) => currentProject\.current/);
   } finally {
     history.replaceState(null, "", `/p/${here}`);
   }
 });
 
-test("Page blocks and comments put the glyph's hooks only on links to other Pages", async () => {
+test("Page blocks and comments put the glyph's hooks only on links to other Pages and Projects", async () => {
   const { Wordgard } = await import("wordgard/editor");
   const { GardState } = await import("wordgard/state");
   const { Leaf } = await import("wordgard/doc");
@@ -1276,12 +1295,16 @@ test("Page blocks and comments put the glyph's hooks only on links to other Page
       const links = [...editor.dom.querySelectorAll("a")];
       assert.equal(links.length, hrefs.length);
       assert.deepEqual(
-        links.map((a) => [a.textContent, a.className, a.dataset.pageId ?? null]),
+        links.map((a) => [
+          a.textContent,
+          a.className,
+          a.dataset.pageId ?? a.dataset.projectId ?? null,
+        ]),
         [
           ["link 0", "page-link", other],
           ["link 1", "page-link", third],
           ["link 2", "", null],
-          ["link 3", "", null],
+          ["link 3", "project-link", `prj_${other}`],
           ["link 4", "", null],
           ["link 5", "", null],
           ["link 6", "", null],
@@ -1294,4 +1317,398 @@ test("Page blocks and comments put the glyph's hooks only on links to other Page
       editor.dom.remove();
     }
   }
+});
+
+// ---------------------------------------------------------------------------
+// Project links.
+
+const PROJECT = `prj_${other}`;
+const LEGACY = `sp_${third}`;
+
+function projectLink(projectId, { href = `/project/${projectId}`, parent = document.body } = {}) {
+  const block = document.createElement("p");
+  const a = document.createElement("a");
+  a.href = href;
+  a.className = "project-link";
+  a.dataset.projectId = projectId;
+  a.textContent = "the launch";
+  block.append(a);
+  parent.append(block);
+  return a;
+}
+
+test("Project links in Page blocks, comments and the preview get the Project glyph's hooks", async () => {
+  const { Wordgard } = await import("wordgard/editor");
+  const { GardState } = await import("wordgard/state");
+  const { Leaf } = await import("wordgard/doc");
+  const { schema, Paragraph, PagesLink, Strong } = await import("./wordgard-model.mjs");
+  const { pagesLinkShape } = await import("./page-link-shape.mjs");
+  const link = (href) => PagesLink.of({ href, title: null });
+  const doc = schema.doc([
+    Paragraph.create([
+      Leaf.text("the ", [link(`/project/${PROJECT}`)]),
+      Leaf.text(
+        "launch",
+        [link(`/project/${PROJECT}`), Strong].reduce((m, x) => x.addToSet(m), []),
+      ),
+      Leaf.text(" plan", [link(`/project/${PROJECT}`)]),
+      Leaf.text(" · "),
+      Leaf.text("older", [link(`/s/${LEGACY}#intro`)]),
+      Leaf.text(" · "),
+      Leaf.text("json", [link(`/project/${PROJECT}/meta.json`)]),
+      Leaf.text(" · "),
+      Leaf.text("upper", [link(`/project/PRJ_${other}`)]),
+      Leaf.text(" · "),
+      Leaf.text("evil", [link(`https://pages.example.evil.example/project/${PROJECT}`)]),
+    ]),
+  ]);
+  const draw = (shape) => {
+    const state = GardState.create({
+      doc,
+      config: [schema.elements.map((element) => GardState.schemaElement.of(element)), shape],
+    });
+    const editor = new Wordgard({ state, parent: document.body });
+    editor.flush();
+    const links = [...editor.dom.querySelectorAll("a")].map((a) => [
+      a.textContent,
+      a.className,
+      a.dataset.projectId ?? null,
+      a.dataset.pageId ?? null,
+    ]);
+    const bold = editor.dom.querySelector("a.project-link strong");
+    editor.dom.remove();
+    return { links, bold: bold?.textContent ?? null };
+  };
+  // In an ordinary Page (and in its comments), a Project link is decorated,
+  // formatted text included, as one element.
+  for (const shape of [pagesLinkShape({ currentPageId: () => here }), pagesLinkShape()]) {
+    const { links, bold } = draw(shape);
+    assert.deepEqual(links, [
+      ["the launch plan", "project-link", PROJECT, null],
+      ["older", "project-link", LEGACY, null],
+      ["json", "", null, null],
+      ["upper", "", null, null],
+      ["evil", "", null, null],
+    ]);
+    assert.equal(bold, "launch");
+  }
+  // In the Project's own content, links to it stay plain; others don't.
+  const own = draw(pagesLinkShape({ currentProjectId: () => PROJECT }));
+  assert.deepEqual(own.links.slice(0, 2), [
+    ["the launch plan", "", null, null],
+    ["older", "project-link", LEGACY, null],
+  ]);
+  // On the Project's route, the address names it.
+  history.replaceState(null, "", `/project/${PROJECT}`);
+  try {
+    assert.equal(draw(pagesLinkShape()).links[0][1], "");
+  } finally {
+    history.replaceState(null, "", `/p/${here}`);
+  }
+});
+
+test("the preview draws Project links with their glyph's hooks, except the open Project's", async () => {
+  const { previewNodes } = await import(
+    `data:text/javascript;base64,${Buffer.from(
+      (
+        await build({
+          entryPoints: [fileURLToPath(new URL("./PagePreview.jsx", import.meta.url))],
+          bundle: true,
+          write: false,
+          platform: "node",
+          format: "esm",
+          jsx: "automatic",
+          loader: { ".css": "empty" },
+          plugins: [
+            {
+              name: "test-component",
+              setup(build) {
+                build.onResolve({ filter: /^[^./]/ }, ({ path }) => ({
+                  path: pathToFileURL(require.resolve(path)).href,
+                  external: true,
+                }));
+              },
+            },
+          ],
+        })
+      ).outputFiles[0].contents,
+    ).toString("base64")}`
+  );
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const content = [
+    [
+      "p",
+      {},
+      ["a", { href: `/project/${PROJECT}` }, "the "],
+      ["strong", {}, ["a", { href: `/project/${PROJECT}` }, "launch"]],
+      " and ",
+      ["a", { href: `/project/${LEGACY}` }, "older"],
+    ],
+  ];
+  const html = renderToStaticMarkup(createElement("div", null, previewNodes(content, "b")));
+  assert.equal(html.match(/class="project-link"/g)?.length, 2, "one per link");
+  assert.match(html, new RegExp(`data-project-id="${PROJECT}">the <strong>launch</strong></a>`));
+  const own = renderToStaticMarkup(
+    createElement("div", null, previewNodes(content, "c", { currentProjectId: PROJECT })),
+  );
+  assert.equal(own.match(/class="project-link"/g)?.length, 1);
+  assert.match(own, new RegExp(`data-project-id="${LEGACY}"`));
+});
+
+test("a Project link's card asks for the Project, and a forged data-project-id opens nothing", () => {
+  const c = controller();
+  const a = projectLink(PROJECT);
+  pointer("pointerover", a);
+  c.advance(PAGE_LINK_OPEN_MS);
+  assert.equal(c.state().name, "open");
+  assert.deepEqual(
+    { kind: c.state().target.kind, id: c.state().target.id },
+    { kind: "project", id: PROJECT },
+  );
+  assert.deepEqual(c.wants, [
+    { kind: "project", id: PROJECT, files: ["meta", "card"], urgent: true },
+  ]);
+  pointer("pointerout", a, { relatedTarget: document.body });
+  c.advance(PAGE_LINK_GRACE_MS);
+  // Forged or mismatched attributes: a data-project-id that disagrees with
+  // the href, a Page class on a Project href, a Project class on a Page href,
+  // and a malformed Project href.
+  const forged = projectLink(`prj_${third}`, { href: `/project/${PROJECT}` });
+  const pageClass = projectLink(PROJECT);
+  pageClass.className = "page-link";
+  pageClass.dataset.pageId = PROJECT;
+  const projectClass = projectLink(other, { href: `/p/${other}` });
+  const malformed = projectLink(`PRJ_${other}`, { href: `/project/PRJ_${other}` });
+  const json = projectLink(PROJECT, { href: `/project/${PROJECT}/meta.json` });
+  for (const element of [forged, pageClass, projectClass, malformed, json]) {
+    assert.equal(linkAt(element), null, element.outerHTML);
+    pointer("pointerover", element);
+    c.advance(PAGE_LINK_OPEN_MS);
+    assert.notEqual(c.state().name, "open", element.outerHTML);
+    pointer("pointerout", element, { relatedTarget: document.body });
+  }
+  assert.equal(c.wants.length, 1, "nothing more was asked");
+  // The open Project's own links are none, by name or by address.
+  const own = projectLink(PROJECT);
+  assert.equal(linkAt(own, { currentProjectId: PROJECT }), null);
+  assert.equal(linkAt(own, { base: `https://pages.example/project/${PROJECT}` }), null);
+  assert.equal(linkAt(own, { currentProjectId: `prj_${third}` }).id, PROJECT);
+  // A legacy /s/ link with an sp_ ID is a Project target too.
+  const older = projectLink(LEGACY, { href: `/s/${LEGACY}#intro` });
+  assert.deepEqual(
+    { ...linkAt(older), element: null, elements: null },
+    {
+      element: null,
+      elements: null,
+      kind: "project",
+      id: LEGACY,
+      anchor: "intro",
+      href: `https://pages.example/s/${LEGACY}#intro`,
+      comment: false,
+    },
+  );
+  c.stop();
+});
+
+test("a Project link and a Page link in one run of text are separate targets", () => {
+  const c = controller();
+  const block = document.createElement("p");
+  block.innerHTML =
+    `<a class="project-link" data-project-id="${PROJECT}" href="/project/${PROJECT}">the </a>` +
+    `<strong><a class="project-link" data-project-id="${PROJECT}" href="/project/${PROJECT}">launch</a></strong>` +
+    `<a class="page-link" data-page-id="${other}" href="/p/${other}">plan</a>`;
+  document.body.append(block);
+  const [first, middle, page] = block.querySelectorAll("a");
+  assert.deepEqual(linkRun(middle), [first, middle]);
+  assert.deepEqual(linkRun(page), [page]);
+  pointer("pointerover", first);
+  c.advance(PAGE_LINK_OPEN_MS);
+  pointer("pointerout", first, { relatedTarget: middle });
+  pointer("pointerover", middle);
+  c.advance(PAGE_LINK_GRACE_MS * 2);
+  assert.equal(c.state().name, "open", "crossing the Project link's fragments keeps it");
+  pointer("pointerout", middle, { relatedTarget: page });
+  pointer("pointerover", page);
+  assert.equal(c.state().name, "pending", "the Page link is another target");
+  c.advance(PAGE_LINK_OPEN_MS);
+  assert.equal(c.state().target.kind, "page");
+  c.stop();
+});
+
+test("the live region announces a Project as 'Project: <title>' or 'Project unavailable'", async () => {
+  const { announcement } = await import("./page-link-card.mjs");
+  const readable = (title) => ({ name: "readable", value: { title }, stale: false });
+  assert.equal(announcement(readable("Launch"), "project"), "Project: Launch");
+  assert.equal(announcement(readable(""), "project"), "Project: Untitled");
+  assert.equal(
+    announcement({ name: "unavailable", stale: false }, "project"),
+    "Project unavailable",
+  );
+  assert.equal(announcement(readable("Plan")), "Plan");
+  assert.equal(announcement({ name: "unavailable", stale: false }), "Page unavailable");
+  const answers = [];
+  const c = controller({
+    get: (path) => new Promise((resolve, reject) => answers.push({ path, resolve, reject })),
+  });
+  const a = projectLink(PROJECT);
+  const region = document.querySelector("[data-page-link-announcer]");
+  a.focus();
+  assert.deepEqual(
+    answers.map((entry) => entry.path),
+    [`/project/${PROJECT}/meta.json`, `/project/${PROJECT}/card.json`],
+  );
+  answers[0].resolve({
+    v: 1,
+    kind: "project",
+    project_id: PROJECT,
+    title: "Launch",
+    description: "",
+    role: "viewer",
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(region.textContent, "Project: Launch");
+  a.blur();
+  const b = projectLink(LEGACY, { href: `/project/${LEGACY}` });
+  b.focus();
+  answers
+    .find((entry) => entry.path === `/project/${LEGACY}/meta.json`)
+    .reject(Object.assign(Error("x"), { status: 404, code: "project_unavailable" }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(region.textContent, "Project unavailable");
+  c.stop();
+});
+
+async function mountProjectCard({ parent } = {}) {
+  document.body.replaceChildren();
+  const scope = parent?.() ?? document.body;
+  const a = projectLink(PROJECT, { parent: scope });
+  const scheduler = new VirtualTimeScheduler();
+  const pending = [];
+  const refs = new PageRefs({
+    get: (path) => new Promise((resolve, reject) => pending.push({ path, resolve, reject })),
+    scheduler,
+  });
+  refs.account("user:a");
+  const opened = [];
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  await act(async () =>
+    root.render(
+      createElement(PageLinkCard, {
+        refs,
+        currentPageId: here,
+        onOpenRoute: (route, anchor) => opened.push({ route, anchor }),
+      }),
+    ),
+  );
+  await act(async () => a.focus());
+  const answer = async (file, outcome) => {
+    const call = pending.find((entry) => entry.path.endsWith(`${file}.json`));
+    await act(async () => {
+      if (outcome instanceof Error) call.reject(outcome);
+      else call.resolve(outcome);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  };
+  return { a, opened, root, answer, card: () => document.querySelector(".page-link-card") };
+}
+
+const PROJECT_META = {
+  v: 1,
+  kind: "project",
+  project_id: PROJECT,
+  title: "\u05e9\u05dc\u05d5\u05dd launch",
+  description: "Ship link previews.\nThen chits.",
+  role: "viewer",
+};
+
+test("a Project card draws its label, title, description, first screen and actions", async () => {
+  const m = await mountProjectCard();
+  assert.equal(m.card().dataset.face, "loading");
+  assert.equal(m.card().dataset.kind, "project");
+  await m.answer("meta", PROJECT_META);
+  assert.equal(m.card().dataset.face, "readable");
+  assert.equal(m.card().querySelector(".page-link-card-kind").textContent.trim(), "Project");
+  assert.ok(m.card().querySelector(".page-link-card-kind svg"));
+  const title = m.card().querySelector("bdi.page-link-card-title");
+  assert.equal(title.textContent, "\u05e9\u05dc\u05d5\u05dd launch");
+  assert.equal(title.getAttribute("dir"), "auto");
+  assert.equal(title.getAttribute("title"), "\u05e9\u05dc\u05d5\u05dd launch");
+  const description = m.card().querySelector("bdi.page-link-card-description");
+  assert.equal(description.textContent, "Ship link previews.\nThen chits.");
+  assert.equal(description.getAttribute("dir"), "auto");
+  // No edit time for a Project: its record's time isn't content.
+  assert.equal(m.card().querySelector(".page-link-card-meta"), null);
+  await m.answer("card", { v: 1, project_id: PROJECT, card: null });
+  assert.ok(m.card().querySelector(".index-card-placeholder"), "no card yet: the placeholder");
+  const [openLink, newTab] = m.card().querySelectorAll(".page-link-card-actions > *");
+  assert.equal(openLink.textContent, "Open");
+  assert.equal(openLink.getAttribute("href"), `https://pages.example/project/${PROJECT}`);
+  assert.match(newTab.textContent, /Open in new tab/);
+  await act(async () =>
+    openLink.dispatchEvent(
+      new dom.window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }),
+    ),
+  );
+  assert.deepEqual(m.opened, [{ route: { kind: "project", projectId: PROJECT }, anchor: null }]);
+  assert.equal(m.card(), null);
+  await act(async () => m.root.unmount());
+
+  // An empty description draws nothing; a stored card draws its first screen.
+  const bare = await mountProjectCard();
+  await bare.answer("meta", { ...PROJECT_META, description: "  " });
+  await bare.answer("card", {
+    v: 1,
+    project_id: PROJECT,
+    card: {
+      v: 1,
+      card_hash: "h",
+      title: "Launch",
+      blocks: [{ id: "b", content: [["p", {}, "Guidance for the launch."]] }],
+      truncated: false,
+    },
+  });
+  assert.equal(bare.card().querySelector(".page-link-card-description"), null);
+  assert.match(
+    bare.card().querySelector(".index-card-preview").textContent,
+    /Guidance for the launch/,
+  );
+  await act(async () => bare.root.unmount());
+});
+
+test("a Project card's unavailable and failed faces; a comment link offers only Open in new tab", async () => {
+  const refused = await mountProjectCard();
+  await refused.answer(
+    "meta",
+    Object.assign(Error("Project unavailable"), { status: 404, code: "project_unavailable" }),
+  );
+  assert.equal(refused.card().dataset.face, "unavailable");
+  assert.equal(refused.card().textContent, "Project unavailable");
+  assert.equal(refused.card().querySelector("a, button"), null);
+  await act(async () => refused.root.unmount());
+
+  const broken = await mountProjectCard();
+  await broken.answer("meta", Object.assign(Error("boom"), { status: 500 }));
+  assert.equal(broken.card().textContent, "Couldn't load a preview");
+  await act(async () => broken.root.unmount());
+
+  const inComment = await mountProjectCard({
+    parent: () => {
+      const comment = document.createElement("div");
+      comment.className = "comment-rich-content";
+      document.body.append(comment);
+      return comment;
+    },
+  });
+  await inComment.answer("meta", PROJECT_META);
+  await inComment.answer("card", { v: 1, project_id: PROJECT, card: null });
+  assert.deepEqual(
+    [...inComment.card().querySelectorAll(".page-link-card-actions > *")].map((action) => [
+      action.tagName,
+      action.textContent.trim(),
+    ]),
+    [["BUTTON", "Open in new tab"]],
+  );
+  await act(async () => inComment.root.unmount());
 });

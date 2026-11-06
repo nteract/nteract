@@ -71,7 +71,7 @@ import { listAllPages } from "./page-list.mjs";
 import { listingCache } from "./listing-cache.mjs";
 import { PageRefs } from "./page-refs.mjs";
 import { PageLinkCard } from "./PageLinkCard.jsx";
-import { CurrentPage } from "./current-page.mjs";
+import { CurrentPage, CurrentProject } from "./current-page.mjs";
 import { PickerWalk } from "./picker-walk.mjs";
 import { SignedOutRecovery } from "./signed-out-recovery.mjs";
 import { ProjectList } from "./project-list.mjs";
@@ -953,6 +953,12 @@ function App() {
   }, []);
   const page = session?.snapshot(),
     threads = page?.comments ?? [];
+  // The Project whose content is open. A link to it there is no Project link
+  // (current-page.mjs); in an ordinary Page of the Project it still is.
+  // projectOpen alone: it's set with the placement that finds the content and
+  // cleared the moment another Page opens, while `placement` lingers until the
+  // next session installs.
+  const currentProjectId = projectOpen ?? null;
   const shownPreview = page
     ? null
     : visiblePreview(bootPreviewState, {
@@ -1977,7 +1983,11 @@ function App() {
             />
           ) : opening ? (
             shownPreview ? (
-              <PagePreview preview={shownPreview} pageId={readPageRoute(location.href).pageId} />
+              <PagePreview
+                preview={shownPreview}
+                pageId={readPageRoute(location.href).pageId}
+                projectId={currentProjectId}
+              />
             ) : (
               <main className="welcome">
                 <p role="status">Opening…</p>
@@ -2067,17 +2077,23 @@ function App() {
           )}
         </>
       )}
-      {/* The hover card for links to other Pages, in Page blocks and
-          comments alike. It opens nothing while this tab knows no account. */}
+      {/* The hover card for links to other Pages and to Projects, in Page
+          blocks and comments alike. It opens nothing while this tab knows
+          no account. */}
       <PageLinkCard
         refs={pageRefs}
         currentPageId={session?.pageId ?? null}
+        currentProjectId={currentProjectId}
         onOpenRoute={openRoute}
       />
     </div>
   );
-  // Comments read the open Page, whose own links get no Page glyph.
-  return <CurrentPage.Provider value={session?.pageId ?? null}>{body}</CurrentPage.Provider>;
+  // Page blocks and comments read what's open, whose own links get no glyph.
+  return (
+    <CurrentPage.Provider value={session?.pageId ?? null}>
+      <CurrentProject.Provider value={currentProjectId}>{body}</CurrentProject.Provider>
+    </CurrentPage.Provider>
+  );
 }
 
 function useDismissibleDisclosure() {

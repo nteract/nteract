@@ -26,14 +26,19 @@ import { exchangeAuthorizationCode, issueAuthorizationCode } from "./oauth-store
 import {
   LINK_PREVIEW_PATH,
   PAGE_UNAVAILABLE,
+  PROJECT_UNAVAILABLE,
+  checkLinkPreview,
+  checkProjectPreview,
   foreignFetch,
   readLinkRoute,
 } from "./link-previews.mjs";
+import { invitedProjects } from "./project-invitations.mjs";
 import { cardKey, pageCard } from "../model/page-card.mjs";
 
 const origin = "https://pages.invalid";
 const namespace = "user:anaconda-fixture";
 const UNAVAILABLE = JSON.stringify(PAGE_UNAVAILABLE);
+const PROJECT_REFUSED = JSON.stringify(PROJECT_UNAVAILABLE);
 
 // ---------------------------------------------------------------------------
 // Through the gateway, against booted Page hosts (projects-fixture.mjs).
@@ -54,22 +59,27 @@ async function linksWorld(t) {
   };
   const principal = (who) =>
     who === "owner" ? w.owner : who === "member" ? w.member : `${namespace}:${who}-user`;
-  /** One request to a link route. `who` null sends no credential. */
-  const get = async (who, id, file = "meta", { method = "GET", headers = {} } = {}) => {
-    const response = await worker.fetch(
-      new Request(`${origin}/p/${id}/${file}.json`, {
-        method,
-        headers: { ...(who && { authorization: `Bearer ${tokens[who] ?? who}` }), ...headers },
-      }),
-      w.env,
-    );
-    const text = await response.text();
-    let body;
-    try {
-      body = JSON.parse(text);
-    } catch {}
-    return { status: response.status, headers: response.headers, text, body };
-  };
+  /** One request to a link route under `prefix` ("p" or "project"). `who`
+   * null sends no credential. */
+  const at =
+    (prefix) =>
+    async (who, id, file = "meta", { method = "GET", headers = {} } = {}) => {
+      const response = await worker.fetch(
+        new Request(`${origin}/${prefix}/${id}/${file}.json`, {
+          method,
+          headers: { ...(who && { authorization: `Bearer ${tokens[who] ?? who}` }), ...headers },
+        }),
+        w.env,
+      );
+      const text = await response.text();
+      let body;
+      try {
+        body = JSON.parse(text);
+      } catch {}
+      return { status: response.status, headers: response.headers, text, body };
+    };
+  const get = at("p");
+  const getProject = at("project");
   const settle = async () => {
     while (w.jobs.length) await Promise.allSettled(w.jobs.splice(0));
   };
@@ -119,7 +129,36 @@ async function linksWorld(t) {
     assert.equal(purged.status, 200, JSON.stringify(purged.body));
     await settle();
   };
-  return { w, assets, tokens, principal, get, settle, create, seedCard, setRole, trash, purge };
+  /** `who`'s membership role in Project `projectId`; null removes it. */
+  const projectRole = async (projectId, who, role) => {
+    const roster = await w.call("owner", "get_project_access", { project_id: projectId });
+    assert.equal(roster.status, 200, JSON.stringify(roster.body));
+    const changed = await w.call("owner", "manage_project_access", {
+      project_id: projectId,
+      action: "set_role",
+      principal: principal(who),
+      role,
+      expected_revision: roster.body.revision,
+      idempotency_key: w.key(),
+    });
+    assert.equal(changed.status, 200, JSON.stringify(changed.body));
+    await settle();
+  };
+  return {
+    w,
+    assets,
+    tokens,
+    principal,
+    get,
+    getProject,
+    settle,
+    create,
+    seedCard,
+    setRole,
+    trash,
+    purge,
+    projectRole,
+  };
 }
 
 const meta = (id, title, role, state = "active") => ({
@@ -565,12 +604,23 @@ test("a preview records no usage and writes no Catalog or host state", async (t)
   assert.ok(lines.some((line) => line.includes("pages.usage.v1")));
 });
 
-test("only the two JSON paths are routes; the gateway never forwards the host's route", async (t) => {
+test("only the four JSON paths are routes; the gateway never forwards a host's route", async (t) => {
   assert.deepEqual(readLinkRoute(`/p/${fixturePageId}/meta.json`), {
+    kind: "page",
     pageId: fixturePageId,
     file: "meta",
   });
-  assert.deepEqual(readLinkRoute(`/p/x/card.json`), { pageId: "x", file: "card" });
+  assert.deepEqual(readLinkRoute(`/p/x/card.json`), { kind: "page", pageId: "x", file: "card" });
+  assert.deepEqual(readLinkRoute(`/project/prj_${fixturePageId}/meta.json`), {
+    kind: "project",
+    projectId: `prj_${fixturePageId}`,
+    file: "meta",
+  });
+  assert.deepEqual(readLinkRoute(`/project/x/card.json`), {
+    kind: "project",
+    projectId: "x",
+    file: "card",
+  });
   for (const path of [
     `/p/${fixturePageId}`,
     `/p/${fixturePageId}/`,
@@ -579,7 +629,11 @@ test("only the two JSON paths are routes; the gateway never forwards the host's 
     `/p/${fixturePageId}/other.json`,
     `/p/${fixturePageId}/meta.json/card.json`,
     `/p//x/meta.json`,
-    `/project/prj_${fixturePageId}/meta.json`,
+    `/project/prj_${fixturePageId}`,
+    `/project/prj_${fixturePageId}/meta.json/`,
+    `/project/prj_${fixturePageId}/other.json`,
+    `/s/prj_${fixturePageId}/meta.json`,
+    `/projects/prj_${fixturePageId}/meta.json`,
   ])
     assert.equal(readLinkRoute(path), null, path);
   const l = await linksWorld(t);
@@ -598,6 +652,429 @@ test("only the two JSON paths are routes; the gateway never forwards the host's 
     assert.equal(response.status, 404);
   }
   assert.equal(run.mock.callCount(), 0);
+});
+
+// ---------------------------------------------------------------------------
+// Project routes, through the gateway, against Project (Space) hosts.
+
+const projectMeta = (id, title, description, role) => ({
+  v: 1,
+  kind: "project",
+  project_id: id,
+  title,
+  description,
+  role,
+});
+
+/** A world with one Project, its content document's id, and a stored card
+ * for that document. */
+async function projectWorld(t, { description = "Ship link previews this week." } = {}) {
+  const l = await linksWorld(t);
+  const project = await l.w.createProject("Launch", description);
+  await l.settle();
+  assert.match(project.document_id, /^[0-9a-f-]{36}$/);
+  return { ...l, project, projectId: project.project_id, documentId: project.document_id };
+}
+
+test("the owner and Project members read a Project's meta.json and card.json", async (t) => {
+  const p = await projectWorld(t);
+  for (const role of ["viewer", "commenter", "editor"])
+    await p.projectRole(p.projectId, role, role);
+  // No card stored for the content document yet: `card: null`.
+  const empty = await p.getProject("viewer", p.projectId, "card");
+  assert.equal(empty.status, 200, empty.text);
+  assert.deepEqual(empty.body, { v: 1, project_id: p.projectId, card: null });
+  const card = await p.seedCard(p.documentId);
+  for (const [who, role] of [
+    ["owner", "owner"],
+    ["viewer", "viewer"],
+    ["commenter", "commenter"],
+    ["editor", "editor"],
+  ]) {
+    const answer = await p.getProject(who, p.projectId);
+    assert.equal(answer.status, 200, `${who}: ${answer.text}`);
+    assert.deepEqual(
+      answer.body,
+      projectMeta(p.projectId, "Launch", "Ship link previews this week.", role),
+      who,
+    );
+    // Never the owner, revision, members or content document.
+    assert.doesNotMatch(
+      answer.text,
+      /"owner":|revision|members|acl|user:anaconda|document_id|created_at|updated_at/,
+      who,
+    );
+    assert.doesNotMatch(answer.text, new RegExp(p.documentId), who);
+    const cards = await p.getProject(who, p.projectId, "card");
+    assert.equal(cards.status, 200, `${who}: ${cards.text}`);
+    assert.deepEqual(cards.body, { v: 1, project_id: p.projectId, card }, who);
+    for (const [name, value] of [
+      ["content-type", "application/json"],
+      ["cache-control", "private, no-store"],
+      ["vary", "Cookie, Authorization"],
+      ["cross-origin-resource-policy", "same-origin"],
+      ["x-content-type-options", "nosniff"],
+    ])
+      assert.equal(cards.headers.get(name), value, `${who}: ${name}`);
+    assert.equal(cards.headers.get("etag"), null);
+    assert.equal(cards.headers.get("access-control-allow-origin"), null);
+  }
+  // An empty description is an empty string.
+  const bare = await projectWorld(t, { description: "" });
+  assert.equal((await bare.getProject("owner", bare.projectId)).body.description, "");
+  // HEAD: the same headers, no body; only GET and HEAD.
+  const head = await p.getProject("viewer", p.projectId, "meta", { method: "HEAD" });
+  assert.equal(head.status, 200);
+  assert.equal(head.text, "");
+  assert.equal(head.headers.get("cache-control"), "private, no-store");
+  assert.equal((await p.getProject("viewer", p.projectId, "card", { method: "HEAD" })).status, 200);
+  for (const method of ["POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
+    for (const file of ["meta", "card"]) {
+      const refused = await p.getProject("owner", p.projectId, file, { method });
+      assert.equal(refused.status, 405, method);
+      assert.equal(refused.headers.get("allow"), "GET, HEAD");
+    }
+});
+
+test("every Project refusal answers the same 404, and malformed IDs never reach a host", async (t) => {
+  const p = await projectWorld(t);
+  await p.seedCard(p.documentId);
+  await p.projectRole(p.projectId, "member", "viewer");
+  assert.equal((await p.getProject("member", p.projectId)).status, 200);
+  await p.projectRole(p.projectId, "member", null);
+  const reached = [];
+  const projects = p.w.env.PROJECTS;
+  p.w.env.PROJECTS = {
+    getByName: (name) => {
+      reached.push(name);
+      return projects.getByName(name);
+    },
+  };
+  const uuid = crypto.randomUUID();
+  const refusals = [
+    ["a non-member", "stranger", p.projectId],
+    ["a revoked member", "member", p.projectId],
+    ["a missing Project", "owner", `prj_${uuid}`],
+    ["a missing older Project", "owner", `sp_${uuid}`],
+  ];
+  const malformed = [
+    ["a Page ID", "owner", p.documentId],
+    ["an uppercase prefix", "owner", `PRJ_${uuid}`],
+    ["an uppercase UUID", "owner", `prj_${uuid.toUpperCase()}`],
+    ["a version 1 UUID", "owner", "prj_1a160b47-6df1-11e3-81eb-489ca5a26812"],
+    ["another prefix", "owner", `xyz_${uuid}`],
+    ["a dash for the underscore", "owner", `prj-${uuid}`],
+    ["a bare prefix", "owner", "prj_"],
+    ["an encoded ID", "owner", encodeURIComponent(`../${p.projectId}`)],
+    ["an ID with trailing text", "owner", `${p.projectId}0`],
+  ];
+  const seen = new Set();
+  for (const [label, who, target] of [...refusals, ...malformed])
+    for (const file of ["meta", "card"]) {
+      const before = p.assets.reads.length;
+      const answer = await p.getProject(who, target, file);
+      assert.equal(answer.status, 404, `${label} (${file}): ${answer.text}`);
+      assert.equal(answer.headers.get("cache-control"), "private, no-store", label);
+      assert.equal(answer.headers.get("x-content-type-options"), "nosniff", label);
+      // The content document's card is never read for a refused reader.
+      assert.equal(p.assets.reads.length, before, `${label}: no card read`);
+      seen.add(answer.text);
+    }
+  assert.deepEqual(
+    [...new Set(reached)].sort(),
+    [p.projectId, `prj_${uuid}`, `sp_${uuid}`].sort(),
+    "malformed IDs answer before any Project host",
+  );
+  // A host that fails or doesn't answer in time is refused the same way.
+  p.w.env.PROJECTS = projects;
+  p.w.faults.set(p.projectId, "before");
+  const failed = await p.getProject("owner", p.projectId);
+  assert.equal(failed.status, 404);
+  seen.add(failed.text);
+  const verify = catalogIndexTimeouts.verify;
+  catalogIndexTimeouts.verify = 30;
+  t.after(() => (catalogIndexTimeouts.verify = verify));
+  p.w.env.PROJECTS = { getByName: () => ({ fetch: () => new Promise(() => {}) }) };
+  const late = await p.getProject("owner", p.projectId);
+  seen.add(late.text);
+  p.w.env.PROJECTS = {
+    getByName: () => ({ fetch: async () => Response.json({ error: "Busy" }, { status: 503 }) }),
+  };
+  seen.add((await p.getProject("owner", p.projectId)).text);
+  // An answer for another Project, or one without a title, is refused too.
+  p.w.env.PROJECTS = {
+    getByName: () => ({
+      fetch: async () =>
+        Response.json({
+          space_id: `prj_${uuid}`,
+          title: "Other",
+          role: "owner",
+          document_id: uuid,
+        }),
+    }),
+  };
+  seen.add((await p.getProject("owner", p.projectId)).text);
+  p.w.env.PROJECTS = projects;
+  assert.deepEqual([...seen], [PROJECT_REFUSED]);
+  // The owner still reads it.
+  assert.equal((await p.getProject("owner", p.projectId)).status, 200);
+});
+
+test("a Page ID on a Project route and a Project ID on a Page route both get the uniform 404", async (t) => {
+  const p = await projectWorld(t);
+  const pageId = await p.create("Plain plan");
+  const pages = p.w.env.PAGES;
+  const projects = p.w.env.PROJECTS;
+  const reached = [];
+  p.w.env.PAGES = { getByName: (name) => (reached.push(["page", name]), pages.getByName(name)) };
+  p.w.env.PROJECTS = {
+    getByName: (name) => (reached.push(["project", name]), projects.getByName(name)),
+  };
+  for (const file of ["meta", "card"]) {
+    const crossed = await p.getProject("owner", pageId, file);
+    assert.equal(crossed.status, 404);
+    assert.equal(crossed.text, PROJECT_REFUSED);
+    const reverse = await p.get("owner", p.projectId, file);
+    assert.equal(reverse.status, 404);
+    assert.equal(reverse.text, UNAVAILABLE);
+  }
+  assert.deepEqual(reached, []);
+});
+
+test("a pending Project invitee is refused, the invitation stays pending, and nothing is discovered", async (t) => {
+  const p = await projectWorld(t);
+  const email = "fixture@example.invalid";
+  const invited = await p.w.call("owner", "manage_project_access", {
+    project_id: p.projectId,
+    action: "invite",
+    email,
+    role: "editor",
+    expected_revision: 0,
+    idempotency_key: p.w.key(),
+  });
+  assert.equal(invited.status, 200, JSON.stringify(invited.body));
+  await p.settle();
+  const invitee = { principal: p.w.member, namespace, verifiedEmail: email };
+  assert.deepEqual(await invitedProjects(p.w.env, invitee), [p.projectId]);
+  const lines = [];
+  t.mock.method(console, "info", (line) => lines.push(String(line)));
+  for (const file of ["meta", "card"]) {
+    const answer = await p.getProject("member", p.projectId, file);
+    assert.equal(answer.status, 404, answer.text);
+    assert.equal(answer.text, PROJECT_REFUSED);
+  }
+  await p.settle();
+  // The previews recorded no usage and accepted no invitation.
+  assert.deepEqual(
+    lines.filter((line) => /pages\.usage\.v1|invitation\.accepted/.test(line)),
+    [],
+  );
+  // Still pending: no member, the invite, its discovery index, and no
+  // Catalog discovery hint for the invitee.
+  const roster = await p.w.call("owner", "get_project_access", { project_id: p.projectId });
+  assert.equal(roster.body.invites.length, 1);
+  assert.equal(roster.body.members[p.w.member], undefined);
+  assert.deepEqual(await invitedProjects(p.w.env, invitee), [p.projectId]);
+  assert.equal(
+    (await p.w.catalogStorage(p.w.member).list({ prefix: "project-discovery/" })).size,
+    0,
+  );
+  // Opening the Project still claims it; then the preview answers.
+  const listed = await p.w.call("member", "list_projects");
+  assert.equal(listed.body.projects[0]?.project_id, p.projectId);
+  const claimed = await p.getProject("member", p.projectId);
+  assert.equal(claimed.status, 200, claimed.text);
+  assert.equal(claimed.body.role, "editor");
+});
+
+test("a Project preview writes no Space or Catalog state and records no usage", async (t) => {
+  const p = await projectWorld(t);
+  await p.seedCard(p.documentId);
+  await p.projectRole(p.projectId, "member", "viewer");
+  const lines = [];
+  t.mock.method(console, "info", (line) => lines.push(String(line)));
+  const catalogPaths = [];
+  const catalogs = p.w.env.CATALOGS;
+  p.w.env.CATALOGS = {
+    getByName: (principal) => {
+      const target = catalogs.getByName(principal);
+      return {
+        fetch: (request, init) => {
+          catalogPaths.push(new URL(request.url).pathname);
+          return target.fetch(request, init);
+        },
+        ctx: target.ctx,
+      };
+    },
+  };
+  const spaceStorage = p.w.projects.get(p.projectId).ctx.storage;
+  const missing = `prj_${crypto.randomUUID()}`;
+  const snapshot = () =>
+    JSON.stringify([
+      [...spaceStorage.values],
+      ...[p.w.owner, p.w.member, p.principal("stranger")].map((principal) => [
+        ...catalogs.getByName(principal).ctx.storage.values,
+      ]),
+      [...p.w.page(p.documentId).ctx.storage.values],
+    ]);
+  const before = snapshot();
+  for (const who of ["owner", "member", "stranger"])
+    for (const file of ["meta", "card"]) await p.getProject(who, p.projectId, file);
+  await p.getProject("owner", missing);
+  await p.settle();
+  assert.equal(snapshot(), before);
+  // A missing Project's host was only instantiated: nothing stored.
+  assert.equal(p.w.projects.get(missing).ctx.storage.values.size, 0);
+  assert.deepEqual(catalogPaths, [], "no Catalog is asked at all");
+  assert.deepEqual(
+    lines.filter((line) => line.includes("pages.usage.v1")),
+    [],
+  );
+  // The spy sees usage: a tool call records it.
+  await p.w.call("member", "get_project", { project_id: p.projectId });
+  assert.ok(lines.some((line) => line.includes("pages.usage.v1")));
+});
+
+test("a Project's card.json carries its content document's card image info; the images fail closed", async (t) => {
+  const p = await projectWorld(t);
+  const card = await p.seedCard(p.documentId);
+  const png = new Uint8Array(
+    Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAIAAAASFvFNAAAAFElEQVR4nGP07NrPAAZMEIqBgQEAHAoBlkMvCokAAAAASUVORK5CYII=",
+      "base64",
+    ),
+  );
+  for (const theme of ["light", "dark"]) {
+    const response = await worker.fetch(
+      new Request(
+        `${origin}/api/pages/${p.documentId}/card-image?hash=${card.card_hash}&theme=${theme}`,
+        {
+          method: "PUT",
+          headers: { authorization: `Bearer ${p.tokens.owner}`, "content-type": "image/png" },
+          body: png,
+        },
+      ),
+      p.w.env,
+    );
+    assert.equal(response.status, 201, await response.text());
+  }
+  await p.settle();
+  await p.projectRole(p.projectId, "member", "viewer");
+  const image = {
+    card_hash: card.card_hash,
+    light: `/api/pages/${p.documentId}/card-image/${card.card_hash}-light.png`,
+    dark: `/api/pages/${p.documentId}/card-image/${card.card_hash}-dark.png`,
+  };
+  for (const who of ["owner", "member"]) {
+    const answer = await p.getProject(who, p.projectId, "card");
+    assert.equal(answer.status, 200, answer.text);
+    assert.deepEqual(answer.body, { v: 1, project_id: p.projectId, card: { ...card, image } }, who);
+  }
+  const imageStatus = async (who) =>
+    (
+      await worker.fetch(
+        new Request(`${origin}${image.light}`, {
+          headers: { authorization: `Bearer ${p.tokens[who]}` },
+        }),
+        p.w.env,
+      )
+    ).status;
+  // The image route decides as page_cards does, from the reader's Catalog:
+  // the owner loads it; a member gets 404 and keeps the JSON card.
+  assert.equal(await imageStatus("owner"), 200);
+  assert.equal(await imageStatus("member"), 404);
+  assert.equal(await imageStatus("stranger"), 404);
+});
+
+test("Project routes: signed out, OAuth, upload capabilities and foreign fetches are refused", async (t) => {
+  const p = await projectWorld(t);
+  const reached = [];
+  const projects = p.w.env.PROJECTS;
+  p.w.env.PROJECTS = {
+    getByName: (name) => (reached.push(name), projects.getByName(name)),
+  };
+  const bodies = new Set();
+  for (const target of [p.projectId, `prj_${crypto.randomUUID()}`, "not-a-project"])
+    for (const file of ["meta", "card"]) {
+      const answer = await p.getProject(null, target, file);
+      assert.equal(answer.status, 401, answer.text);
+      assert.equal(answer.body.code, "auth_required");
+      assert.equal(answer.headers.get("cache-control"), "private, no-store");
+      bodies.add(answer.text);
+    }
+  assert.equal(bodies.size, 1);
+  for (const authorization of ["Pages-Upload pu1.a.b", "Bearer pu1.a.b"]) {
+    const refused = await p.getProject(null, p.projectId, "meta", { headers: { authorization } });
+    assert.equal(refused.status, 401, authorization);
+  }
+  for (const site of ["same-site", "cross-site"]) {
+    const refused = await p.getProject("owner", p.projectId, "meta", {
+      headers: { "sec-fetch-site": site },
+    });
+    assert.equal(refused.status, 403, site);
+    assert.doesNotMatch(refused.text, /Launch/);
+  }
+  assert.deepEqual(reached, [], "no refusal before authentication reaches the Project");
+  for (const site of ["same-origin", "none"])
+    assert.equal(
+      (await p.getProject("owner", p.projectId, "meta", { headers: { "sec-fetch-site": site } }))
+        .status,
+      200,
+    );
+  const clientId = "https://chatgpt.com/oauth/client.json";
+  const redirectUri = "https://chatgpt.com/connector_platform_oauth_redirect";
+  const verifier = "v".repeat(43);
+  const env = { ...p.w.env, NOTEBOOK_CLOUD_PUBLIC_ORIGIN: origin };
+  const { code } = await issueAuthorizationCode(env, {
+    clientId,
+    redirectUri,
+    resource: `${origin}/mcp`,
+    scope: "pages:read pages:write offline_access",
+    codeChallenge: await secretHash(verifier),
+    identity: { principal: p.w.owner, namespace, displayName: "Fixture" },
+  });
+  const { access_token: token } = await exchangeAuthorizationCode(env, {
+    code,
+    clientId,
+    redirectUri,
+    resource: `${origin}/mcp`,
+    codeVerifier: verifier,
+  });
+  for (const file of ["meta", "card"]) {
+    const refused = await p.getProject(token, p.projectId, file);
+    assert.equal(refused.status, 403, refused.text);
+    assert.doesNotMatch(refused.text, /Launch/);
+  }
+});
+
+test("a browser session cookie reads a Project's routes; sign-out everywhere doesn't", async (t) => {
+  const p = await projectWorld(t);
+  await p.projectRole(p.projectId, "member", "commenter");
+  const cookie = await browserSession(p, p.w.member);
+  const browser = (file, headers = {}) =>
+    p.getProject(null, p.projectId, file, {
+      headers: { cookie, "sec-fetch-site": "same-origin", ...headers },
+    });
+  for (const file of ["meta", "card"]) {
+    const answer = await browser(file);
+    assert.equal(answer.status, 200, `${file}: ${answer.text}`);
+    assert.equal(answer.body.project_id, p.projectId, file);
+  }
+  assert.equal((await browser("meta")).body.role, "commenter");
+  const foreign = await p.getProject(null, p.projectId, "meta", {
+    headers: { cookie, origin: "https://evil.example" },
+  });
+  assert.equal(foreign.status, 403);
+  const out = await worker.fetch(
+    new Request(`${origin}/api/auth/logout-all`, { method: "POST", headers: { cookie, origin } }),
+    p.w.env,
+  );
+  assert.equal(out.status, 200, await out.clone().text());
+  for (const file of ["meta", "card"]) {
+    const signedOut = await browser(file);
+    assert.equal(signedOut.status, 401, file);
+    assert.doesNotMatch(signedOut.text, /Launch/);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -866,4 +1343,29 @@ test("a boot another request starts during the check still answers an admitted r
     // A stranger checked under the same race is still refused.
     assert.deepEqual(await h.preview(page, "stranger"), refused, finish);
   }
+});
+
+test("a host binding that fails to set up refuses like any other host failure", async () => {
+  // A missing binding or a bad origin setting must not escape as a 500: it
+  // answers null, which the route turns into the kind's one 404.
+  const failures = [];
+  const logFailure = (error, stage) => failures.push(stage);
+  const broken = {
+    getByName() {
+      throw new Error("binding unavailable");
+    },
+  };
+  const request = new Request("https://pages.example/p/x/meta.json", {
+    headers: { authorization: "Bearer key" },
+  });
+  const env = {
+    PAGES: broken,
+    PROJECTS: broken,
+    NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.example",
+  };
+  const pageId = "a5531f64-5dcc-4696-9e97-0ca58113b61b";
+  const projectId = "prj_83b8d037-6749-448e-95d9-4c1ac8e530f9";
+  assert.equal(await checkLinkPreview(request, env, pageId, { logFailure }), null);
+  assert.equal(await checkProjectPreview(request, env, projectId, { logFailure }), null);
+  assert.deepEqual(failures, ["link-preview", "project-link-preview"]);
 });

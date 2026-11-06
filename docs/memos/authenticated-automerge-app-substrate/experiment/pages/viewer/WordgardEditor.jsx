@@ -1,6 +1,6 @@
 // Native transaction/selection approach adapted from rgbkrk/wordgard-automerge
 // c9c6ea8 (BSD-3-Clause). See WORDGARD-NOTICE for attribution.
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import * as A from "@automerge/automerge/slim";
 import { Wordgard, Decoration, KeyBinding } from "wordgard/editor";
@@ -101,6 +101,7 @@ import { selectionToolbarPosition } from "./selection-toolbar.mjs";
 import { linkDestination, openInNewTab, wantsNewTab } from "./link-destination.mjs";
 import { pagesLinkShape } from "./page-link-shape.mjs";
 import { registerEditor } from "./editor-focus.mjs";
+import { CurrentProject } from "./current-page.mjs";
 import { LinkPopover } from "./LinkPopover.jsx";
 import { collapseAtomOnLeave, selectedAtom, selectedImage } from "./image-selection.mjs";
 import { normalizePastedHTML } from "./clipboard-html.mjs";
@@ -185,6 +186,9 @@ export function WordgardEditor(props) {
   const toolbarUsable = editable || commentable;
   const latest = useRef(props);
   latest.current = props;
+  // The Project whose content this is, if it is one (current-page.mjs).
+  const currentProject = useRef(null);
+  currentProject.current = useContext(CurrentProject);
   const mount = useRef(null),
     caretLayer = useRef(null),
     ghostLayer = useRef(null),
@@ -365,9 +369,13 @@ export function WordgardEditor(props) {
         tablePresentation,
         tableKeys,
         GardState.schemaElement.of(elements),
-        // A link to another Page gets the Page glyph and the hover card's
-        // hooks; this Page's own links are section links.
-        pagesLinkShape({ currentPageId: () => replica.doc.page_id }),
+        // A link to another Page or a Project gets its glyph and the hover
+        // card's hooks; this Page's own links are section links, and a
+        // Project's content leaves links to its Project plain.
+        pagesLinkShape({
+          currentPageId: () => replica.doc.page_id,
+          currentProjectId: () => currentProject.current,
+        }),
         wordgardWidgets(),
         wordgardDataframes({ pageId: replica.doc.page_id }),
         wordgardImages(),

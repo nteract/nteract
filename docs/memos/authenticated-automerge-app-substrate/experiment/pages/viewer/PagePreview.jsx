@@ -8,9 +8,9 @@
 // the text. It never renders wg-content, so nothing that finds the editor by
 // that element finds the preview.
 import React, { createElement, useEffect, useRef } from "react";
-import { linkedPage } from "../shared/page-links.mjs";
+import { linkedTarget } from "../shared/page-links.mjs";
 import { imageLifecycle } from "./image-lifecycle.mjs";
-import { PAGE_LINK_CLASS } from "./link-destination.mjs";
+import { targetAttributes } from "./link-destination.mjs";
 
 const TAGS = new Set([
   "p",
@@ -75,7 +75,7 @@ export function previewSrc(value) {
     : null;
 }
 
-function props(tag, attrs, key, { currentPageId = null } = {}) {
+function props(tag, attrs, key, { currentPageId = null, currentProjectId = null } = {}) {
   const out = { key };
   if (!attrs || typeof attrs !== "object" || Array.isArray(attrs)) return out;
   for (const [name, value] of Object.entries(attrs)) {
@@ -84,14 +84,15 @@ function props(tag, attrs, key, { currentPageId = null } = {}) {
     else if (tag === "a" && name === "href") {
       const href = previewHref(value);
       if (href) out.href = href;
-      // The editor draws a link to another Page with its glyph
-      // (link-destination.mjs); so does the preview, so the swap to the
-      // editor doesn't move the text.
-      const page =
+      // The editor draws a link to another Page or a Project with its
+      // glyph (link-destination.mjs); so does the preview, so the swap to
+      // the editor doesn't move the text.
+      const target =
         href && globalThis.location
-          ? linkedPage(href, globalThis.location.href, { currentPageId })
+          ? linkedTarget(href, globalThis.location.href, { currentPageId, currentProjectId })
           : null;
-      if (page) Object.assign(out, { className: PAGE_LINK_CLASS, "data-page-id": page.pageId });
+      const { class: className, ...data } = targetAttributes(target);
+      if (className) Object.assign(out, { className, ...data });
     } else if (tag === "a" && name === "title") out.title = value;
     else if (tag === "img" && (name === "src" || name === "dark_src")) {
       const src = previewSrc(value);
@@ -160,20 +161,26 @@ export function joinLinks(content) {
  * does (PageCardPreview.jsx): links keep their text in a span, a task
  * checkbox becomes a drawn box, and images draw nothing. No interactive
  * element is rendered, so nothing nests inside the card's link.
- * `currentPageId` names the Page open now, whose own links get no glyph.
+ * `currentPageId` names the Page open now, whose own links get no glyph, and
+ * `currentProjectId` the Project whose content it is, whose own links get
+ * none either.
  */
 export function previewNodes(content, prefix = "n", options = {}) {
   if (!Array.isArray(content)) return [];
   return drawNodes(joinLinks(content), prefix, options);
 }
 
-function drawNodes(content, prefix, { inert = false, currentPageId = null } = {}) {
+function drawNodes(
+  content,
+  prefix,
+  { inert = false, currentPageId = null, currentProjectId = null } = {},
+) {
   return content.map((node, index) => {
     const key = `${prefix}.${index}`;
     if (typeof node === "string") return node;
     if (!Array.isArray(node) || typeof node[0] !== "string") return null;
     const [tag, attrs, ...children] = node;
-    const inner = drawNodes(children, key, { inert, currentPageId });
+    const inner = drawNodes(children, key, { inert, currentPageId, currentProjectId });
     if (!TAGS.has(tag)) return createElement(React.Fragment, { key }, inner);
     if (inert && tag === "a")
       return createElement("span", { key, className: "preview-link" }, ...inner);
@@ -184,7 +191,7 @@ function drawNodes(content, prefix, { inert = false, currentPageId = null } = {}
         className: "preview-check",
         "data-checked": typeof attrs?.checked === "string" ? "true" : "false",
       });
-    const elementProps = props(tag, attrs, key, { currentPageId });
+    const elementProps = props(tag, attrs, key, { currentPageId, currentProjectId });
     if (!elementProps) return null;
     if (tag === "img" && elementProps.dark_src) return createElement(PreviewImage, elementProps);
     return VOID.has(tag)
@@ -204,8 +211,9 @@ function PreviewImage({ src, dark_src, alt, title }) {
 }
 
 /** The preview of one Page, laid out like the open Page. `pageId` is the
- * Page it previews, whose own links are section links. */
-export function PagePreview({ preview, pageId = null }) {
+ * Page it previews, whose own links are section links; `projectId` the
+ * Project it is the content of, if known, whose own links get no glyph. */
+export function PagePreview({ preview, pageId = null, projectId = null }) {
   return (
     <main className="workspace document page-preview" aria-busy="true">
       <article>
@@ -218,7 +226,10 @@ export function PagePreview({ preview, pageId = null }) {
             <div className="rich-editor wordgard-editor">
               <div className="wordgard-document">
                 <div className="preview-content">
-                  {previewNodes(block.content, block.id, { currentPageId: pageId })}
+                  {previewNodes(block.content, block.id, {
+                    currentPageId: pageId,
+                    currentProjectId: projectId,
+                  })}
                 </div>
               </div>
             </div>

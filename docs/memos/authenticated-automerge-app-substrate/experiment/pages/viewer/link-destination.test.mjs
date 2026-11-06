@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   PAGE_LINK_CLASS,
+  PROJECT_LINK_CLASS,
   linkAttributes,
   linkDestination,
   openInNewTab,
@@ -68,6 +69,11 @@ test("only a link to another of this deployment's Pages draws with the Page glyp
     class: PAGE_LINK_CLASS,
     "data-page-id": pageId,
   });
+  const folder = (href, projectId) => ({
+    ...plain(href),
+    class: PROJECT_LINK_CLASS,
+    "data-project-id": projectId,
+  });
   const rows = [
     [`/p/${other}`, glyph(`https://pages.example/p/${other}`, other)],
     [
@@ -79,7 +85,14 @@ test("only a link to another of this deployment's Pages draws with the Page glyp
     // are ordinary links.
     [`/p/${here}#plan`, plain(`https://pages.example/p/${here}#plan`)],
     ["#plan", plain(`https://pages.example/p/${here}#plan`)],
-    [`/project/prj_${other}`, plain(`https://pages.example/project/prj_${other}`)],
+    // A Project link gets the Project glyph's hooks; its JSON route doesn't.
+    [`/project/prj_${other}`, folder(`https://pages.example/project/prj_${other}`, `prj_${other}`)],
+    [`/s/sp_${other}`, folder(`https://pages.example/s/sp_${other}`, `sp_${other}`)],
+    [
+      `/project/prj_${other}/meta.json`,
+      plain(`https://pages.example/project/prj_${other}/meta.json`),
+    ],
+    [`/project/PRJ_${other}`, plain(`https://pages.example/project/PRJ_${other}`)],
     [`/p/${other}/meta.json`, plain(`https://pages.example/p/${other}/meta.json`)],
     [
       `https://pages.example.evil.example/p/${other}`,
@@ -103,5 +116,21 @@ test("only a link to another of this deployment's Pages draws with the Page glyp
   assert.equal(
     linkAttributes({ href: `/p/${here}` }, { base: project, currentPageId: here })["data-page-id"],
     undefined,
+  );
+  // On its route, or once named, the open Project's own links stay plain.
+  assert.deepEqual(
+    linkAttributes({ href: `/project/prj_${other}` }, { base: project }),
+    plain(`https://pages.example/project/prj_${other}`),
+  );
+  assert.deepEqual(
+    linkAttributes(
+      { href: `/project/prj_${other}` },
+      { base: page, currentProjectId: `prj_${other}` },
+    ),
+    plain(`https://pages.example/project/prj_${other}`),
+  );
+  assert.equal(
+    linkAttributes({ href: `/project/prj_${here}` }, { base: project })["data-project-id"],
+    `prj_${here}`,
   );
 });

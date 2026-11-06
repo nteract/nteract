@@ -44,6 +44,19 @@ test("a Page's JSON routes are the Worker's, never a Page the app opens", () => 
     for (const path of [`/p/${id}/${file}`, `/p/${id}/${file}/`, `/p/${id}/${file}?v=1`])
       assert.equal(readPageRoute(path).kind, "missing", path);
 });
+test("a Project's JSON routes are the Worker's, never a Project the app opens", () => {
+  // The gateway answers /project/<id>/meta.json and /card.json; the older
+  // /s/ form has no JSON routes and stays the app's, read as missing too.
+  for (const projectId of [`prj_${id}`, `sp_${id}`])
+    for (const file of ["meta.json", "card.json"])
+      for (const path of [
+        `/project/${projectId}/${file}`,
+        `/project/${projectId}/${file}/`,
+        `/project/${projectId}/${file}?v=1`,
+        `/s/${projectId}/${file}`,
+      ])
+        assert.equal(readPageRoute(path).kind, "missing", path);
+});
 test("page and home navigation push history; canonicalization replaces without duplicating", () => {
   const calls = [];
   const location = { pathname: "/", search: "", hash: "" };
