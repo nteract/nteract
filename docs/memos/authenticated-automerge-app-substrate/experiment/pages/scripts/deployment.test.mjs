@@ -1712,8 +1712,8 @@ test("pages2 is a fresh lab2 target with Pages' flags and plain sync only", () =
     "tunnelSlots",
     "sharedTunnel",
     "frozenTargets",
-    // ONE-SHOT MIGRATION: pages2 started empty, after the comments change,
-    // so it holds no old comment forms and needs no operator route.
+    // ONE-SHOT MIGRATION: pages2 started empty, after the Subduction
+    // conversion, so it holds no PageRecords objects and needs no operator route.
     "operatorMigration",
   ];
   const flags = (name) =>
@@ -2426,8 +2426,8 @@ test("a timeout does not name a rollback to a release without the plain format c
   assert.match(message, /plain_storage_formats/);
 });
 
-// ONE-SHOT MIGRATION: delete with worker/comments-migration.mjs.
-test("lab installs carry a root-only operator secret for the comments migration", (t) => {
+// ONE-SHOT MIGRATION: delete with worker/page-records-sweep.mjs.
+test("lab installs carry a root-only operator secret for the operator routes", (t) => {
   for (const target of ["pages", "page10"]) {
     const f = installFixture(t, { target });
     f.execute();

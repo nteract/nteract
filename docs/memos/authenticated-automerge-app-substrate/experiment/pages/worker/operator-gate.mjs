@@ -1,6 +1,6 @@
 /**
- * The lab-only operator gate for the comments migration's all-account route
- * (worker/comments-migration.mjs). ONE-SHOT MIGRATION: delete with that
+ * The lab-only operator gate for the PageRecords sweep's route
+ * (worker/page-records-sweep.mjs). ONE-SHOT MIGRATION: delete with that
  * module, with the installer's `operatorMigration` secret
  * (scripts/deployment/install.mjs) and scripts/operator-ssh.mjs.
  *
@@ -43,23 +43,4 @@ export async function operatorAuthorized(request, env) {
   let difference = 0;
   for (let index = 0; index < a.length; index++) difference |= a[index] ^ b[index];
   return difference === 0;
-}
-
-/**
- * Every account principal the D1 catalog projection knows: Page and Project
- * owners and indexed accounts. The Catalog cells are authoritative, but the
- * Worker can't list Durable Objects, so this projection is the only list it
- * has; `celld cell list Catalog` and `Page` stay the cross-check, and a
- * Page cell no run reaches shows up in the operator script's `unreached`.
- */
-export async function operatorAccounts(db) {
-  const { results } = await db
-    .prepare(
-      `SELECT owner AS principal FROM pages_catalog_pages
-       UNION SELECT owner FROM pages_catalog_spaces
-       UNION SELECT principal FROM pages_catalog_accounts
-       ORDER BY principal`,
-    )
-    .all();
-  return results.map((row) => row.principal).filter((value) => typeof value === "string");
 }

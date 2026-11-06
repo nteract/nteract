@@ -79,15 +79,11 @@ import {
   isHistoryCapacityError,
   logIncompleteHistory,
 } from "./history-admission.mjs";
-import {
-  INTERNAL_PREFIX,
-  issueRetryToken,
-  inspectOperation,
-  reserveOperation,
-} from "./operation-journal.mjs";
+import { issueRetryToken, inspectOperation, reserveOperation } from "./operation-journal.mjs";
 import { STORAGE_KEYS_PER_CALL, guardContext } from "./storage-guard.mjs";
 import { pageRecordsCall } from "./page-records.mjs";
 import { operatorPageRecordsSweep } from "./page-records-sweep.mjs";
+import { operatorAuthorized } from "./operator-gate.mjs";
 export { PageRecords } from "./page-records.mjs";
 import { HOST_SENDER_ID, PlainSync, clearPrefixes, plainSessionReplaced } from "./plain-sync.mjs";
 import { logSyncRefused, logSyncRounds } from "./plain-sync-log.mjs";
@@ -229,19 +225,6 @@ import {
   restoreTarget,
 } from "./catalog-location.mjs";
 import { migrateLocationShape } from "./location-shape.mjs";
-// ONE-SHOT MIGRATION imports: delete with comments-migration.mjs.
-import {
-  commentsMigrationArguments,
-  operatorAuthorized,
-  operatorCommentsMigration,
-  runCommentsMigration,
-} from "./comments-migration.mjs";
-import {
-  applyCommentsNormalization,
-  commentsNormalizationBlocked,
-  commentsNormalizationProblems,
-  planCommentsNormalization,
-} from "../model/comments-normalization.mjs";
 import { LOCATION_REVISION_KEY, movePage } from "./move-page.mjs";
 import {
   PROJECT_ACCESS_EMPTY,
@@ -379,7 +362,6 @@ const lifecycleFingerprint = {
   restore_page: "restore_page",
   purge_page: "purge_page",
 };
-const toHex = (bytes) => [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 /** Whether `metadata`'s Page has a PageRecords object, and whether it may be
  * cleared: `clear` for a Page converted from `buffered` storage or a deleted
  * `buffered` Page, `held` for a live `buffered` one (its records are its only
@@ -449,11 +431,6 @@ export const sharedCheckBounds = { concurrency: 16 };
 const PAGE_CARD_STORE_TIMEOUT_MS = 10_000;
 /** How long a deletion waits on the card object's delete. */
 const PAGE_CARD_DELETE_TIMEOUT_MS = 2_000;
-/** ONE-SHOT MIGRATION: how long the Catalog waits for one Page's comments
- * migration call. A call stops starting visits after its batch budget
- * (comments-migration.mjs), so the last visit still ends inside the serial
- * queue's 120 s bound. */
-const COMMENTS_MIGRATION_PAGE_MS = 20_000;
 /** Budgets for reading Page lifecycles while the Catalog queue waits. */
 export const lifecycleBounds = { readMs: 2000, passMs: 5000, concurrency: 4 };
 const lifecycleUnsettled = () =>
@@ -1311,32 +1288,14 @@ const gateway = {
           recheckUpload: () => authorizeImage(request, env, pageId, false),
         });
       }
-      // ONE-SHOT MIGRATION route (comments-migration.mjs; delete with it). Lab
-      // only: without PAGES_OPERATOR_SECRET, with a wrong secret, or for a
-      // request the Cloudflare edge forwarded, it is the unknown path below.
-      if (
-        url.pathname === "/api/operator/comments-migration" &&
-        request.method === "POST" &&
-        (await operatorAuthorized(request, env))
-      )
-        return await operatorCommentsMigration(request, env);
       // ONE-SHOT MIGRATION route (page-records-sweep.mjs; delete with it).
-      // Behind the same lab operator gate.
+      // Behind the lab operator gate (operator-gate.mjs).
       if (
         url.pathname === "/api/operator/page-records" &&
         request.method === "POST" &&
         (await operatorAuthorized(request, env))
       )
         return await operatorPageRecordsSweep(request, env);
-      // ONE-SHOT MIGRATION route (comments-migration.mjs; delete with it).
-      if (url.pathname === "/api/admin/comments-migration" && request.method === "POST") {
-        const identity = await authenticate(request, env);
-        return await withRefusalCode(
-          await env.CATALOGS.getByName(identity.principal).fetch(
-            forwarded(request, "/internal/comments-migration", await readJson(request)),
-          ),
-        );
-      }
       if (url.pathname === "/api/access") {
         await authenticate(request, env);
         const pageId = url.searchParams.get("page");
@@ -1575,87 +1534,6 @@ export class Catalog {
   async locationShape() {
     return migrateLocationShape(this.storage);
   }
-  /**
-   * ONE-SHOT MIGRATION (comments-migration.mjs; delete with it). The owner's
-   * comments migration over this Catalog's Pages: `dry_run` reports a batch,
-   * `apply` advances the stored run by a batch. Runs in the serial queue; each
-   * Page call has its own deadline so a batch stays inside the queue's bound.
-   * Each Page host checks that its record names this owner.
-   */
-  async commentsMigration(request) {
-    const identity = await authenticate(request, this.env);
-    if (this.ctx.id.name && this.ctx.id.name !== identity.principal)
-      throw new HttpError(403, "Account access denied");
-    const args = Catalog.commentsMigrationArgs(await readJson(request));
-    if (args.mode === "apply") requireWrite(identity);
-    return json(await this.runOwnersCommentsMigration(identity.principal, args));
-  }
-
-  /**
-   * ONE-SHOT MIGRATION (comments-migration.mjs; delete with it). The
-   * operator's run over this Catalog, from the lab-only
-   * `/api/operator/comments-migration` route. Host only: a request that
-   * carries a credential is refused, so only the gateway's operator route (or
-   * another host object) reaches it. The run acts for this Catalog's own
-   * account; each Page host still checks that its record names that account
-   * as owner.
-   */
-  async operatorCommentsMigration(request) {
-    if (request.headers.has("authorization") || request.headers.has("cookie"))
-      return json({ error: "Not found" }, 404);
-    const body = (await readJson(request)) ?? {};
-    const principal = this.ctx.id.name;
-    if (!principal || body.principal !== principal)
-      throw new HttpError(400, "principal must name this Catalog's account", "invalid_arguments");
-    const { principal: _principal, ...rest } = body;
-    return json(
-      await this.runOwnersCommentsMigration(principal, Catalog.commentsMigrationArgs(rest)),
-    );
-  }
-
-  static commentsMigrationArgs(body) {
-    try {
-      return commentsMigrationArguments(body);
-    } catch (error) {
-      throw new HttpError(400, error.message, "invalid_arguments");
-    }
-  }
-
-  /** One call of the comments migration over this Catalog, acting for
-   * `owner`, the account the Page hosts check their records against. */
-  async runOwnersCommentsMigration(owner, args) {
-    const body = await runCommentsMigration(this.storage, {
-      args,
-      listAll,
-      visit: async (pageId, mode, options) => {
-        // The cell's id, so an operator can diff the run against
-        // `celld cell list Page`.
-        const cell = this.env.PAGES.idFromName ? String(this.env.PAGES.idFromName(pageId)) : null;
-        const response = await withTimeout(
-          this.env.PAGES.getByName(pageId).fetch(
-            new Request("https://pages.internal/internal/comments-migration", {
-              method: "POST",
-              body: JSON.stringify({
-                page_id: pageId,
-                owner,
-                mode,
-                include_connected: options?.include_connected === true,
-              }),
-            }),
-          ),
-          COMMENTS_MIGRATION_PAGE_MS,
-          "Page comments migration timed out",
-        );
-        const value = await response.json().catch(() => ({}));
-        const result = response.ok
-          ? value
-          : { status: "error", error: String(value.error ?? response.status).slice(0, 200) };
-        return cell ? { ...result, cell_id: cell } : result;
-      },
-    });
-    await this.storage.sync();
-    return body;
-  }
   async run(request) {
     try {
       const pathname = new URL(request.url).pathname;
@@ -1761,10 +1639,6 @@ export class Catalog {
           await this.storage.put(key, { ...previous, content_updated_at: content });
         return json({ ok: true });
       }
-      // ONE-SHOT MIGRATION routes (comments-migration.mjs; delete with it).
-      if (pathname === "/internal/comments-migration") return await this.commentsMigration(request);
-      if (pathname === "/internal/operator-comments-migration")
-        return await this.operatorCommentsMigration(request);
       const identity = await authenticate(request, this.env);
       if (this.ctx.id.name && this.ctx.id.name !== identity.principal)
         throw new HttpError(403, "Account access denied");
@@ -4599,159 +4473,6 @@ export class Page {
     this.cacheTitle(undefined, { observe: true });
   }
 
-  /**
-   * ONE-SHOT MIGRATION (model/comments-normalization.mjs and
-   * worker/comments-migration.mjs; delete with them). The owner's Catalog
-   * asks this host to report (`dry_run`) or normalize (`apply`) its comments
-   * document. Host only: a request that carries a credential is refused, and
-   * the named owner must be the record's.
-   *
-   * The host is the comments document's only writer here: the write is one
-   * journaled host change keyed by the comments heads it read, so a restart
-   * replays its recorded bytes and a later visit plans nothing. A peer's
-   * change that lands between the plan and the write fails the exact-heads
-   * check (`stale`). A Page with a live socket is skipped as `busy` unless the
-   * run passed `include_connected`; a blocked Page as `held`; a Page whose
-   * plan refuses any message as `partial`, with nothing written.
-   */
-  async commentsMigration(request) {
-    if (request.headers.has("authorization") || request.headers.has("cookie"))
-      throw spaceNotFound();
-    const {
-      page_id: pageId,
-      owner,
-      mode,
-      include_connected: includeConnected = false,
-    } = (await readJson(request)) ?? {};
-    const metadata = this.metadata;
-    // The operator's probe of a cell no run reached: who it belongs to.
-    if (mode === "probe")
-      return json({
-        page_id: metadata?.pageId ?? null,
-        owner: metadata?.owner ?? null,
-        state: metadata ? pageState(metadata) : "missing",
-      });
-    if (!["dry_run", "apply"].includes(mode))
-      throw new HttpError(400, 'mode must be "dry_run" or "apply"', "invalid_arguments");
-    if (!metadata || metadata.pageId !== pageId)
-      return json({ status: "missing", state: "missing" });
-    const state = pageState(metadata);
-    if (metadata.owner !== owner) return json({ status: "not_owner", state });
-    const base = { state, connected: this.wires.size };
-    if (state === "deleted") return json({ ...base, status: "deleted" });
-    if (this.pendingAccess || this.pendingLifecycle)
-      return json({ ...base, status: "record_pending" });
-    if (this.recoveryBlocked) return json({ ...base, status: "held" });
-    if (!this.handle || !this.commentsHandle) return json({ ...base, status: "unavailable" });
-    // Before the plan: nothing awaits between reading the heads and the
-    // journaled write but the write's own checks.
-    const revert = await this.commentsRevertRecords();
-    const comments = this.commentsHandle.doc();
-    const heads = A.getHeads(comments).sort();
-    const { report, writes } = planCommentsNormalization(comments);
-    // The gate holds here, against the comments as they are now: a blocked
-    // plan writes nothing, whatever its dry run said.
-    const blocked = commentsNormalizationBlocked(report);
-    if (mode === "dry_run" || !writes.length || blocked)
-      return json({
-        ...base,
-        status: blocked ? "partial" : writes.length ? "would_normalize" : "unchanged",
-        heads,
-        report,
-        problems: commentsNormalizationProblems(report),
-        ...(revert.length && { revert }),
-      });
-    if (this.wires.size && includeConnected !== true)
-      return json({ ...base, status: "busy", heads, report });
-    const digest = toHex(
-      new Uint8Array(
-        await crypto.subtle.digest("SHA-256", new TextEncoder().encode(heads.join(","))),
-      ),
-    ).slice(0, 32);
-    let receipt;
-    try {
-      receipt = await documentMutation({
-        storage: this.ctx.storage,
-        hostActorPrefix: this.plain.hostActorPrefix,
-        handle: this.commentsHandle,
-        doc: COMMENTS_DOC,
-        pageId: metadata.pageId,
-        operation: "normalize_comments",
-        args: { idempotency_key: `comments_norm_${digest}`, base_heads: heads },
-        identity: { principal: "service:pages", driver: "API" },
-        internal: true,
-        apply: (draft) => ({
-          writes: applyCommentsNormalization(draft, writes),
-          before_heads: heads,
-          messages: report.messages.map(({ thread_id, message_id, action, forms }) => ({
-            thread_id,
-            message_id,
-            action,
-            forms,
-          })),
-        }),
-        flush: () => this.flush(),
-      });
-    } catch (error) {
-      // A peer's change landed after the plan: nothing was written, and the
-      // next pass plans again from the new heads.
-      if (error?.code === "stale_heads")
-        return json({ ...base, status: "stale", heads, ...(revert.length && { revert }) });
-      throw error;
-    }
-    const recorded = await this.commentsRevertRecords();
-    const problems = commentsNormalizationProblems(
-      planCommentsNormalization(this.commentsHandle.doc()).report,
-    );
-    return json({
-      ...base,
-      status: problems.length ? "partial" : "normalized",
-      before_heads: heads,
-      after_heads: receipt.heads,
-      report,
-      problems,
-      revert: recorded,
-    });
-  }
-
-  /**
-   * ONE-SHOT MIGRATION (delete with commentsMigration). This Page's comments
-   * migration writes, `[{ key, before_heads, after_heads, messages }]`, kept
-   * in `host/comments-migration/revert`: the revert reference. Each comes
-   * from a finished `comments_norm_` journal receipt, copied here before it
-   * can be dropped. The journal drops finished internal receipts only when
-   * another internal intent reserves, and the next such reservation on a
-   * migrated Page is this route's own, which copies first. A write a crash
-   * cut short finishes in journal recovery at boot and is copied on the next
-   * visit.
-   */
-  async commentsRevertRecords() {
-    const key = "host/comments-migration/revert";
-    const records = (await this.ctx.storage.get(key)) ?? [];
-    const known = new Set(records.map((record) => record.key));
-    let added = false;
-    for (const [name, entry] of await this.ctx.storage.list({
-      prefix: `${INTERNAL_PREFIX}comments_norm_`,
-    })) {
-      if (known.has(name) || entry?.pending !== false || !entry.receipt?.result) continue;
-      const { result, heads } = entry.receipt;
-      records.push({
-        key: name,
-        before_heads: result.before_heads,
-        after_heads: heads,
-        messages: (result.messages ?? [])
-          .filter((message) => message.action !== "refused")
-          .map(({ thread_id, message_id, action }) => ({ thread_id, message_id, action })),
-      });
-      added = true;
-    }
-    if (added) {
-      await this.ctx.storage.put(key, records);
-      await this.ctx.storage.sync();
-    }
-    return records;
-  }
-
   /** The Page's comments document. The Page's `comments-doc` stamp says its
    * comments live there; a Page without the stamp fails closed. */
   commentsView() {
@@ -4879,9 +4600,6 @@ export class Page {
         }
         return json(this.metadata ? this.lifecycleCurrent() : { state: "missing" });
       }
-      // ONE-SHOT MIGRATION route (comments-migration.mjs; delete with it).
-      if (url.pathname === "/internal/comments-migration")
-        return await this.commentsMigration(request);
       // ONE-SHOT MIGRATION route (page-records-sweep.mjs; delete with it).
       if (url.pathname === "/internal/operator-page-records")
         return await this.operatorPageRecords(request);

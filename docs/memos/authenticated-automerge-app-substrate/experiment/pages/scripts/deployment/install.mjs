@@ -306,8 +306,8 @@ const configPath = release + "/wrangler.json",
   config = JSON.parse(readFileSync(stage + "/release/wrangler.json"));
 if (config.main !== "index.js" || config.no_bundle !== true || config.build || config.containers)
   throw new Error("Unexpected build configuration");
-// ONE-SHOT MIGRATION: the comments migration's operator secret
-// (worker/comments-migration.mjs, worker/operator-gate.mjs), created once on
+// ONE-SHOT MIGRATION: the PageRecords sweep's operator secret
+// (worker/page-records-sweep.mjs, worker/operator-gate.mjs), created once on
 // this host and kept root-only like the session secret. Delete with that
 // module.
 const operatorSecretPath = configDir + "/operator-secret";
