@@ -1,7 +1,8 @@
 # Pages deployment
 
-The current release is qualified for two isolated celld targets: **Pages**
-(`pages.runtimed.run`) and **Page10**. Page9 and earlier services are frozen.
+The current release is qualified for three isolated celld targets: **Pages**
+(`pages.runtimed.run`), **Page10**, and **Pages2** (`pages2.runt.run`, on its
+own host, lab2). Page9 and earlier services are frozen.
 Deployment helpers reject mutations to those targets and check their
 fingerprints when publishing Pages or Page10. Historical profiles remain in
 [profiles.mjs](scripts/deployment/profiles.mjs) for inspection and isolation
@@ -66,6 +67,82 @@ node scripts/deploy.mjs --target pages publish REMOTE_STAGE --apply
 including one an earlier prototype left behind. Remove such a record in
 Cloudflare by hand, after checking nothing serves from it, then rerun.
 
+## pages2 on lab2
+
+The `pages2` profile is a fresh, empty target on its own host:
+
+| Field | Value |
+| --- | --- |
+| Host | `lab2` (m7i.large, 8 GB) |
+| Hostname | `pages2.runt.run` |
+| Service and user | `nteract-pages2` |
+| Prefix | `standalone/pages2` in the lab fleet bucket |
+| Listeners | `127.0.0.1:9482`, internal `127.0.0.1:19482` |
+| Firewall | table `nteract_pages2`, mark `0x00080000` |
+| Tunnel connectors | `cloudflared-pages2-a.service` (metrics `127.0.0.1:29482`) and `cloudflared-pages2-b.service` (`127.0.0.1:29492`), tunnel `nteract-pages2` |
+| Frozen neighbors | none |
+
+It carries every Pages flag, memory limit, Page quota default and D1 binding.
+Every Page it creates uses plain Automerge sync, and `RECORD_STORAGE_HISTORY`
+lists `automerge` for it, so no Subduction Page ever exists there and the
+migration canary stays off. Its ports, table, mark and tunnel names differ from
+every lab1 profile; `deployment.test.mjs` checks that across all profiles.
+
+The D1 binding is Pages' `AUTH_D1` (`pages-next-auth`). Nothing needs creating
+by hand: celld keeps the database under `standalone/pages2` and creates it
+empty on first use, so pages2 has its own sessions, OAuth grants and quota
+rules. `quota-rules.mjs` and `d1.mjs` refuse to run until that first use has
+created the cell; one sign-in is enough.
+
+lab2 runs no shared cloudflared connector. The profile says so with
+`sharedTunnel: false`, and publication then checks that
+`/etc/cloudflared/config.yml` stays absent. If one appears, publication treats
+it like lab1's: a different tunnel ID, unchanged during the run.
+
+### Before the first install
+
+1. Provision the host with the sandbox's `provision-remote lab2`, and add lab2
+   to the `celld-lab` `node_hosts` so its instance role can read and write the
+   fleet bucket. Operator SSH must reach `lab2` with sudo.
+2. Install `/usr/local/bin/celld-v0.6.3` (the pinned sha256 in
+   [profiles.mjs](scripts/deployment/profiles.mjs)), `node`,
+   `/usr/local/bin/aws`, `nft`, `curl` and `/usr/bin/cloudflared` on lab2.
+3. Have a Cloudflare account token for `1cfb529b94b3d6cde3aaf49d1d6ed5e6` with
+   Tunnel edit and DNS edit on `runt.run`. The DNS step finds `runt.run` by name
+   and refuses unless it is the only active full zone with that name in that
+   account. Pin its zone ID in `DNS_ZONES` in
+   [dns.mjs](scripts/deployment/dns.mjs) once confirmed.
+4. Add `https://pages2.runt.run/oidc` as a redirect URI on OIDC client
+   `1a90d36b-5b97-4ebb-a1bc-f3de7ddb70e0`. Sign-in fails until the identity
+   provider allows it.
+
+### Deploy
+
+From `pages`, after review, commit, and a fresh build:
+
+```sh
+node scripts/deploy.mjs --target pages2 plan
+node scripts/deploy.mjs --target pages2 prepare
+node scripts/deploy.mjs --target pages2 upload LOCAL_STAGE
+node scripts/deploy.mjs --target pages2 install REMOTE_STAGE --apply
+CLOUDFLARE_API_TOKEN=... node scripts/deploy.mjs --target pages2 provision            # inspect
+CLOUDFLARE_API_TOKEN=... node scripts/deploy.mjs --target pages2 provision --apply    # first publication only
+node scripts/deploy.mjs --target pages2 publish REMOTE_STAGE --apply
+```
+
+`install` refuses a non-empty `standalone/pages2` prefix, an occupied
+listener, table or mark, and any existing `nteract-pages2` path or user.
+
+### Smoke checks
+
+```sh
+curl -fsS https://pages2.runt.run/health                        # {"ok":true,"prototype":"pages-celld-native",...}
+curl -s -o /dev/null -w '%{http_code}\n' https://pages2.runt.run/whoami   # 401 without a session
+```
+
+Then sign in at `https://pages2.runt.run/` in a browser, create a Page, and
+check `/whoami` from that session returns the account.
+
 ## Page10 release
 
 The allowlisted profile owns `page10.runtimed.run`, service `nteract-page10`,
@@ -103,7 +180,7 @@ is `0x00200000`, the next bit below Page9's `0x00400000`; Pages takes the next,
 `0x00100000`. The installer checks
 ownership and resource conflicts, preserves Durable Object bindings/migrations
 and persistent data, and touches only the selected service. Installation and
-publication require lab1 SSH and sudo.
+publication require SSH and sudo on the target's host (lab1, or lab2 for pages2).
 
 Each installation copies `firewall.mjs` and `profiles.mjs` into its own
 `/opt/<service>`, and its unit's `ExecStartPre` runs that copy. A frozen service
@@ -867,7 +944,8 @@ node scripts/deployment/dns.mjs --target pages TUNNEL_UUID [--apply]
 
 `provision` reads `CLOUDFLARE_API_TOKEN` from the environment only and never
 writes it. It is an account token for `1cfb529b94b3d6cde3aaf49d1d6ed5e6` with
-Cloudflare Tunnel edit and DNS edit on `runtimed.run`. Set it for the one command;
+Cloudflare Tunnel edit and DNS edit on `runtimed.run` (on `runt.run` for
+pages2; see [pages2 on lab2](#pages2-on-lab2)). Set it for the one command;
 never write it to a file. An operator can read it from a password manager. A
 1Password service account lets provisioning run without a person at the
 keyboard: with `OP_SERVICE_ACCOUNT_TOKEN` set in the runner's environment,

@@ -347,7 +347,7 @@ for (const target of ["pages-next", "page3", "page4", "page5", "page6", "page7",
       const h = host(etcFor(target));
       await assert.rejects(
         provisionTarget({ token, target, apply, fetchImpl: cf.fetchImpl, run: h.run }),
-        /qualified only for page10 and pages/,
+        /qualified only for page10, pages and pages2/,
       );
       assert.equal(cf.calls.length, 0);
       assert.equal(h.runs.length, 0);

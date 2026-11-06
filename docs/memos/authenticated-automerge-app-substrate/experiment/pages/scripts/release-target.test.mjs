@@ -14,15 +14,15 @@ import {
 const scripts = path.dirname(fileURLToPath(import.meta.url));
 const frozen = ["pages-next", "page3", "page4", "page5", "page6", "page7", "page8", "page9"];
 
-test("current build qualifies Page10 and Pages while historical profiles remain inspectable", () => {
-  assert.deepEqual(QUALIFIED_TARGETS, ["page10", "pages"]);
+test("current build qualifies Page10, Pages and Pages2 while historical profiles remain inspectable", () => {
+  assert.deepEqual(QUALIFIED_TARGETS, ["page10", "pages", "pages2"]);
   for (const target of QUALIFIED_TARGETS)
     assert.doesNotThrow(() => assertQualifiedDeploymentTarget(target), target);
   for (const target of frozen) {
     assert.ok(deploymentProfile(target).deployment.hostname);
     assert.throws(
       () => assertQualifiedDeploymentTarget(target),
-      /qualified only for page10 and pages/,
+      /qualified only for page10, pages and pages2/,
     );
   }
 });
@@ -48,7 +48,7 @@ test("operator entrypoints reject every frozen target and implicit default befor
       timeout: 5000,
     });
     assert.equal(result.status, 1, `${entry} ${args.join(" ")}: ${result.stderr}`);
-    assert.match(result.stderr, /This build is qualified only for page10 and pages/);
+    assert.match(result.stderr, /This build is qualified only for page10, pages and pages2/);
     assert.equal(existsSync(called), false, "qualification must precede SSH/SCP");
   };
   for (const target of [undefined, ...frozen]) {

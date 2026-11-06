@@ -87,6 +87,8 @@ function fixture(
     neverReady = false,
     readyConnections = 4,
     failStop = null,
+    // Whether the host runs lab1's shared connector config.
+    sharedTunnel = true,
   } = {},
 ) {
   const current = inputFor(target);
@@ -108,7 +110,7 @@ function fixture(
     [configDir + "/tunnel-provisioning.json", current.tunnelReceipt],
   ])
     write(file, JSON.stringify(value));
-  write("/etc/cloudflared/config.yml", sharedConfig);
+  if (sharedTunnel) write("/etc/cloudflared/config.yml", sharedConfig);
   fs.mkdirSync(local("/etc/systemd/system"), { recursive: true });
   for (const frozenTarget of profile.frozenTargets ?? []) {
     const frozen = deploymentProfile(frozenTarget);
@@ -2397,3 +2399,76 @@ for (const target of ["page10", "pages"])
     ]);
     assertNoGap(f);
   });
+
+test("pages2 publishes fresh on a host without a shared connector", (t) => {
+  const f = fixture(t, { target: "pages2", sharedTunnel: false });
+  const plan = isolatedPublicationPlan({ ...inputFor("pages2"), sharedConfig: null });
+  assert.match(plan.config, /hostname: pages2.runt.run/);
+  assert.match(plan.config, /http:\/\/127.0.0.1:9482/);
+  const result = f.execute();
+  assert.equal(result.published, true);
+  assert.equal(result.hostname, "pages2.runt.run");
+  assert.equal(result.routesUpdated, false);
+  assert.equal(result.connectorSlot, "a");
+  assert.equal(result.sharedTunnelAbsent, true);
+  assert.equal(result.sharedTunnelUnchanged, undefined);
+  assert.equal(result.frozenTargetsUnchanged, undefined);
+  assert.equal(fs.readFileSync(f.local(plan.configPath), "utf8"), plan.config);
+  assert.deepEqual(lifecycle(f), [
+    "start cloudflared-pages2-a.service",
+    "enable cloudflared-pages2-a.service",
+  ]);
+  assert.equal(fs.existsSync(f.local(plan.unitPath)), false, "no legacy unit on a fresh install");
+  assert.equal(fs.existsSync(f.local("/etc/cloudflared/config.yml")), false);
+  assert.ok(
+    f.calls.every(({ args }) => !args.includes("cloudflared.service")),
+    "a host without a shared connector never asks systemd about one",
+  );
+  assert.ok(
+    f.writes.every(
+      (file) =>
+        file.startsWith("/etc/nteract-pages2/") ||
+        /^\/etc\/systemd\/system\/cloudflared-pages2-[ab][.]service$/.test(file),
+    ),
+  );
+  // A retry is a no-op on the live slot.
+  f.calls.length = 0;
+  assert.equal(f.execute().published, true);
+  assert.deepEqual(lifecycle(f), [
+    "enable cloudflared-pages2-a.service",
+    "start cloudflared-pages2-a.service",
+  ]);
+});
+
+test("pages2 still checks a shared connector that appears on lab2", (t) => {
+  const f = fixture(t, { target: "pages2", sharedTunnel: false });
+  f.write("/etc/cloudflared/config.yml", "tunnel: " + tunnelId + "\n");
+  assert.throws(f.execute, /different tunnel/);
+  assert.deepEqual(lifecycle(f), []);
+  const g = fixture(t, { target: "pages2", sharedTunnel: false });
+  g.write("/etc/cloudflared/config.yml", sharedConfig);
+  assert.equal(g.execute().sharedTunnelUnchanged, true);
+});
+
+test("lab1 targets still require the shared connector config", (t) => {
+  assert.throws(
+    () => isolatedPublicationPlan({ ...inputFor("pages"), sharedConfig: null }),
+    /shared tunnel configuration is required on lab1/,
+  );
+  assert.doesNotThrow(() => isolatedPublicationPlan({ ...inputFor("pages2"), sharedConfig: null }));
+  const f = fixture(t, { target: "pages", sharedTunnel: false });
+  assert.throws(f.execute);
+  assert.deepEqual(lifecycle(f), []);
+  assert.equal(fs.existsSync(f.local("/etc/nteract-pages-live/tunnel-installation.json")), false);
+});
+
+test("pages2 serves the Pages route set under its own hostname and listener", () => {
+  const pages = deploymentProfile("pages").deployment;
+  const pages2 = deploymentProfile("pages2").deployment;
+  assert.equal(
+    routesFor("pages2"),
+    routesFor("pages")
+      .replaceAll("hostname: " + pages.hostname, "hostname: " + pages2.hostname)
+      .replace("http://" + pages.listen, "http://" + pages2.listen),
+  );
+});
