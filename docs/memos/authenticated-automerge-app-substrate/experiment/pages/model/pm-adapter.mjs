@@ -2,10 +2,11 @@
 // and model/pm-markdown-serializer.mjs are the only production Pages modules
 // that import ProseMirror packages (@automerge/prosemirror, prosemirror-*);
 // model/pm-boundary.test.mjs checks it. Other modules reach ProseMirror trees,
-// the span adapter and its traversal through these three.
+// and the span adapter through these three.
 //
 // The ProseMirror schema and its Automerge span adapter. Markdown import and
-// export, validation and node addressing still read Pages spans through it.
+// export and validation still read Pages spans through it. Node addressing
+// (ids, ranges, node_index) uses the Wordgard tree (model/node-addresses.mjs).
 import * as A from "@automerge/automerge/slim";
 import {
   basicSchemaAdapter,
@@ -19,12 +20,6 @@ import { validAlignment } from "./node-registry.mjs";
 import { DATAFRAME_BLOCK } from "../shared/dataset-assets.mjs";
 
 export { pmNodeToSpans, pmDocFromSpans };
-export {
-  amSpliceIdxToPmIdx,
-  eventsWithIndexChanges,
-  pmRangeToAmRange,
-  traverseSpans,
-} from "@automerge/prosemirror/dist/traversal.js";
 
 // Shared rich-text schema used by tool exports and ingress validation. Mark
 // names, order and expand rules come from the registry in marks.json.
