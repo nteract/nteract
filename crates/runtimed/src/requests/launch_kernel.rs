@@ -30,11 +30,12 @@ use crate::notebook_sync_server::{
     captured_env_for_runtime, captured_env_source_override, check_and_broadcast_sync_state,
     check_inline_deps, extract_pixi_toml_deps, get_inline_conda_channels, get_inline_conda_deps,
     get_inline_conda_python, get_inline_uv_deps, get_inline_uv_prerelease,
-    get_inline_uv_requires_python, missing_conda_env_yml_decision, promote_inline_deps_to_project,
-    publish_environment_launch_error, reset_starting_state, reset_starting_state_with_outcome,
-    resolve_metadata_snapshot, send_runtime_agent_request_with_captured_env_repair,
-    try_conda_pool_for_inline_deps, try_uv_pool_for_inline_deps, update_kernel_presence_locked,
-    CapturedEnvRuntime, KernelLaunchAttempt, KernelLaunchCommitRejection, KernelLaunchCompletion,
+    get_inline_uv_requires_python, missing_conda_env_yml_decision, prewarmed_acquire_error_details,
+    promote_inline_deps_to_project, publish_environment_launch_error, reset_starting_state,
+    reset_starting_state_with_outcome, resolve_metadata_snapshot,
+    send_runtime_agent_request_with_captured_env_repair, try_conda_pool_for_inline_deps,
+    try_uv_pool_for_inline_deps, update_kernel_presence_locked, CapturedEnvRuntime,
+    KernelLaunchAttempt, KernelLaunchCommitRejection, KernelLaunchCompletion,
     ManualLaunchAdmission, NotebookRoom, ResetOutcome,
 };
 use crate::protocol::NotebookResponse;
@@ -1042,18 +1043,11 @@ async fn handle_attempt(
                         Some(env)
                     }
                     Ok(None) => None,
-                    Err(()) => {
-                        let error = format!(
-                            "{} pool empty - no environment available",
-                            if matches!(parsed_resolved, EnvSource::Prewarmed(PackageManager::Uv)) {
-                                "UV"
-                            } else {
-                                "Conda"
-                            }
-                        );
-                        let details = format!(
-                            "Failed to acquire prewarmed environment for {}. {error}",
+                    Err(acquire_error) => {
+                        let error = acquire_error.to_string();
+                        let details = prewarmed_acquire_error_details(
                             parsed_resolved.as_str(),
+                            &acquire_error,
                         );
                         reset_starting_state(room, None).await;
                         publish_environment_launch_error(
@@ -1079,26 +1073,32 @@ async fn handle_attempt(
                 // For remaining conda sources, route to conda pool. Set
                 // runtime_agent_env_path BEFORE releasing the lease so the
                 // env is never momentarily unprotected.
-                let (env, guard) = if other.starts_with("conda:") {
-                    match daemon.take_conda_env().await {
-                        Some(taken) => taken,
-                        None => {
-                            reset_starting_state(room, None).await;
-                            return NotebookResponse::Error {
-                                error: "Conda pool empty".to_string(),
-                            };
-                        }
-                    }
+                let acquire_progress: std::sync::Arc<dyn kernel_env::ProgressHandler> =
+                    std::sync::Arc::new(
+                        crate::inline_env::RuntimeDocProgressHandler::new_for_launch(
+                            room.state.clone(),
+                            room.current_launch_cancellation_receiver(),
+                        ),
+                    );
+                let taken = if other.starts_with("conda:") {
+                    daemon.take_conda_env_with_progress(acquire_progress).await
                 } else {
                     // Prewarmed UV
-                    match daemon.take_uv_env().await {
-                        Some(taken) => taken,
-                        None => {
-                            reset_starting_state(room, None).await;
-                            return NotebookResponse::Error {
-                                error: "UV pool empty".to_string(),
-                            };
-                        }
+                    daemon.take_uv_env_with_progress(acquire_progress).await
+                };
+                let (env, guard) = match taken {
+                    Ok(taken) => taken,
+                    Err(acquire_error) => {
+                        let error = acquire_error.to_string();
+                        let details = prewarmed_acquire_error_details(other, &acquire_error);
+                        reset_starting_state(room, None).await;
+                        publish_environment_launch_error(
+                            room,
+                            other,
+                            Some(KernelErrorReason::EnvironmentPrepareFailed),
+                            &details,
+                        );
+                        return NotebookResponse::Error { error };
                     }
                 };
                 {

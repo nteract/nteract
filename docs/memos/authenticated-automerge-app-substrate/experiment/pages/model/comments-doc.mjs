@@ -32,8 +32,9 @@ import * as A from "@automerge/automerge/slim";
  * `format`), and rich messages in the ProseMirror adapter's span form with a
  * `body` copy of the Markdown they were first written from. The comments
  * migration rewrote every stored message, and this build reads neither form:
- * reads refuse a message without rich text or with a `body`
- * (`stored_form_unsupported`), and admission refuses a `body`, a message
+ * reads return a message without rich text or with a `body` as an empty
+ * body with `content_error: "stored_form_unsupported"`, writes refuse it,
+ * and admission refuses a `body`, a message
  * without the rich format and spans out of the editor's form
  * (`outdated_form`).
  *

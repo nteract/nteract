@@ -1045,8 +1045,13 @@ impl Pool {
         self.target.saturating_sub(current)
     }
 
-    fn set_target(&mut self, target: usize) {
+    /// Set the target size. Returns true when it changed, so the caller can
+    /// wake takes whose decision depends on it (for example a wait that
+    /// should become an on-demand build at target 0).
+    fn set_target(&mut self, target: usize) -> bool {
+        let changed = self.target != target;
         self.target = target;
+        changed
     }
 
     fn target(&self) -> usize {
@@ -1072,6 +1077,13 @@ impl Pool {
     /// Register a warming path so GC won't delete it while it's being set up.
     fn register_warming_path(&mut self, path: PathBuf) {
         self.warming_paths.insert(path);
+    }
+
+    /// Lease a path that is not a pool member (an on-demand build). Leased
+    /// paths are protected from orphan GC but are not counted by `stats()`
+    /// or `deficit()`.
+    fn lease_path(&mut self, path: &Path) {
+        self.leased_paths.insert(pool_env_root(path));
     }
 
     fn release_lease(&mut self, path: &Path) {
@@ -1251,7 +1263,14 @@ impl PoolLeaseGuard {
         // Always delete the top-level pool dir, not a sub-path — pixi
         // envs are nested under .pixi/envs/default and the orphan sweep
         // operates on `runtimed-pixi-*` roots.
-        if let Err(e) = tokio::fs::remove_dir_all(&self.leased_path).await {
+        // An on-demand build can fail before the directory exists.
+        if let Err(e) = tokio::fs::remove_dir_all(&self.leased_path)
+            .await
+            .or_else(|e| match e.kind() {
+                std::io::ErrorKind::NotFound => Ok(()),
+                _ => Err(e),
+            })
+        {
             warn!(
                 "[runtimed] release_and_delete: failed to remove {:?}: {}",
                 self.leased_path, e
@@ -1292,6 +1311,132 @@ impl Drop for PoolLeaseGuard {
             daemon.release_pool_lease(env_type, &path).await;
         });
     }
+}
+
+/// Infix after the pool prefix that marks an environment built for a single
+/// launch while the pool target is 0 (`runtimed-uv-ondemand-{uuid}`).
+///
+/// The pool prefix keeps kernel-teardown deletion, `pool_env_root`, and the
+/// orphan sweep treating the directory like a pool env: a running kernel
+/// protects it through `runtime_agent_env_path`, and an unowned one is swept.
+/// The infix keeps startup recovery and `Request::Return` from adopting it as
+/// a pool member. A UUID never starts with this infix.
+const ON_DEMAND_ENV_INFIX: &str = "ondemand-";
+
+fn on_demand_env_dir_name(pool_prefix: &str) -> String {
+    format!("{pool_prefix}{ON_DEMAND_ENV_INFIX}{}", uuid::Uuid::new_v4())
+}
+
+/// True for a `runtimed-{uv,conda}-ondemand-*` directory name.
+fn is_on_demand_env_dir(name: &str) -> bool {
+    [crate::POOL_PREFIX_UV, crate::POOL_PREFIX_CONDA]
+        .iter()
+        .any(|prefix| {
+            name.strip_prefix(prefix)
+                .is_some_and(|rest| rest.starts_with(ON_DEMAND_ENV_INFIX))
+        })
+}
+
+/// True when `path` lives inside an on-demand environment directory.
+fn is_on_demand_env_path(path: &Path) -> bool {
+    pool_env_root(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(is_on_demand_env_dir)
+}
+
+/// Why `Daemon::take_uv_env` / `take_conda_env` could not provide an env.
+#[derive(Debug, Clone)]
+pub enum EnvAcquireError {
+    /// The daemon committed shutdown before an env was ready.
+    ShuttingDown,
+    /// Pool-only take with a pool target of 0 and nothing left in the pool.
+    PoolEmpty { env_type: EnvType },
+    /// The pool has a nonzero target but no env became ready in time.
+    PoolWaitTimedOut { env_type: EnvType, waited_secs: u64 },
+    /// Building a dedicated env (pool target 0) failed.
+    BuildFailed { env_type: EnvType, reason: String },
+}
+
+impl std::fmt::Display for EnvAcquireError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ShuttingDown => write!(f, "daemon is shutting down"),
+            Self::PoolEmpty { env_type } => write!(f, "{env_type} pool is empty (target 0)"),
+            Self::PoolWaitTimedOut {
+                env_type,
+                waited_secs,
+            } => write!(
+                f,
+                "no {env_type} pool environment became ready within {waited_secs}s"
+            ),
+            Self::BuildFailed { env_type, reason } => {
+                write!(f, "{env_type} environment build failed: {reason}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for EnvAcquireError {}
+
+/// One observation of a pool, taken under its lock, that decides the next
+/// step of a `take_*_env` call.
+struct TakeSnapshot {
+    /// Env returned by `Pool::take()` (already leased when `Some`).
+    taken: Option<PooledEnv>,
+    target: usize,
+    /// Whether this take may build an env when the target is 0.
+    build_at_target_zero: bool,
+    shutting_down: bool,
+    wait_expired: bool,
+}
+
+/// Next step of a `take_*_env` call.
+#[derive(Debug)]
+enum TakeDecision {
+    /// Hand this leased pool env to the caller.
+    Pooled(PooledEnv),
+    /// The pool is meant to hold envs; wait for warming to produce one.
+    WaitForWarm,
+    /// The pool target is 0 and the caller allows it; build one env for
+    /// this caller only.
+    BuildOnDemand,
+    /// Stop with this error.
+    Unavailable(EnvAcquireError),
+}
+
+/// What a UV/Conda take does when the pool target is 0.
+enum AtTargetZero {
+    /// Report [`EnvAcquireError::PoolEmpty`].
+    Miss,
+    /// Build one env, reporting phases to the handler when given.
+    Build(Option<Arc<dyn kernel_env::ProgressHandler>>),
+}
+
+/// Pure transition for `take_*_env`. A ready env always wins, so a pool
+/// that still holds an env (for example a retired one after the target
+/// dropped to 0) is used before anything is built.
+fn decide_take(snapshot: TakeSnapshot, env_type: EnvType, wait_secs: u64) -> TakeDecision {
+    if let Some(env) = snapshot.taken {
+        return TakeDecision::Pooled(env);
+    }
+    if snapshot.shutting_down {
+        return TakeDecision::Unavailable(EnvAcquireError::ShuttingDown);
+    }
+    if snapshot.target == 0 {
+        return if snapshot.build_at_target_zero {
+            TakeDecision::BuildOnDemand
+        } else {
+            TakeDecision::Unavailable(EnvAcquireError::PoolEmpty { env_type })
+        };
+    }
+    if snapshot.wait_expired {
+        return TakeDecision::Unavailable(EnvAcquireError::PoolWaitTimedOut {
+            env_type,
+            waited_secs: wait_secs,
+        });
+    }
+    TakeDecision::WaitForWarm
 }
 
 /// The pool daemon state.
@@ -1515,12 +1660,23 @@ impl Daemon {
     /// Release a pool lease after ownership has transferred to a runtime,
     /// cache, return path, or explicit delete path.
     pub(crate) async fn release_pool_lease(&self, env_type: EnvType, path: &Path) {
-        let pool = match env_type {
+        self.pool_for(env_type).lock().await.release_lease(path);
+    }
+
+    fn pool_for(&self, env_type: EnvType) -> &Mutex<Pool> {
+        match env_type {
             EnvType::Uv => &self.uv_pool,
             EnvType::Conda => &self.conda_pool,
             EnvType::Pixi => &self.pixi_pool,
-        };
-        pool.lock().await.release_lease(path);
+        }
+    }
+
+    fn pool_ready_for(&self, env_type: EnvType) -> &Notify {
+        match env_type {
+            EnvType::Uv => &self.pool_ready_uv,
+            EnvType::Conda => &self.pool_ready_conda,
+            EnvType::Pixi => &self.pool_ready_pixi,
+        }
     }
 
     /// Delete `runtimed-{uv,conda,pixi}-*` directories under the cache that
@@ -2778,6 +2934,14 @@ impl Daemon {
         while let Ok(Some(entry)) = entries.next_entry().await {
             let name = entry.file_name().to_string_lossy().to_string();
             let env_path = entry.path();
+
+            // An on-demand env belonged to one launch of a previous daemon
+            // run. Startup reaps that run's kernels, so nothing owns it and
+            // it is never adopted into a pool.
+            if is_on_demand_env_dir(&name) {
+                orphans.push(env_path);
+                continue;
+            }
 
             // Check for runtimed-uv-* directories
             if name.starts_with(crate::POOL_PREFIX_UV) {
@@ -4766,55 +4930,168 @@ impl Daemon {
         Ok(())
     }
 
-    /// Take a UV environment from the pool for kernel launching.
+    /// Take a UV environment for kernel launching.
     ///
-    /// Returns `Some((env, guard))` if an environment is available, `None`
-    /// otherwise. The guard keeps the env in the daemon's per-pool
-    /// `leased_paths` set until the caller calls
-    /// [`PoolLeaseGuard::release`] (success) or
-    /// [`PoolLeaseGuard::release_and_delete`] (failure). Dropping the
-    /// guard without either releases the lease best-effort and warns.
-    /// Automatically triggers replenishment when an environment is taken.
-    pub async fn take_uv_env(self: &Arc<Self>) -> Option<(PooledEnv, PoolLeaseGuard)> {
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+    /// With a nonzero pool target this takes a pool env, waiting for warming
+    /// when the pool is empty, and triggers replenishment. With a target of
+    /// 0 it builds one env for this caller only; see
+    /// [`Daemon::build_on_demand_env`].
+    ///
+    /// The guard keeps the env in the daemon's per-pool `leased_paths` set
+    /// until the caller calls [`PoolLeaseGuard::release`] (success) or
+    /// [`PoolLeaseGuard::release_and_delete`] (failure). Dropping the guard
+    /// without either releases the lease best-effort and warns.
+    pub async fn take_uv_env(
+        self: &Arc<Self>,
+    ) -> Result<(PooledEnv, PoolLeaseGuard), EnvAcquireError> {
+        self.take_prewarmed_env(EnvType::Uv, AtTargetZero::Build(None))
+            .await
+    }
+
+    /// [`Daemon::take_uv_env`] that reports on-demand build progress.
+    pub async fn take_uv_env_with_progress(
+        self: &Arc<Self>,
+        progress: Arc<dyn kernel_env::ProgressHandler>,
+    ) -> Result<(PooledEnv, PoolLeaseGuard), EnvAcquireError> {
+        self.take_prewarmed_env(EnvType::Uv, AtTargetZero::Build(Some(progress)))
+            .await
+    }
+
+    /// Take a UV env only if the pool can supply one. With a target of 0
+    /// this returns [`EnvAcquireError::PoolEmpty`] instead of building.
+    /// For callers that have a cheaper fallback than an on-demand build
+    /// (inline-deps reuse) or that hand the env outside the daemon (the
+    /// pool RPC).
+    pub async fn take_pooled_uv_env(
+        self: &Arc<Self>,
+    ) -> Result<(PooledEnv, PoolLeaseGuard), EnvAcquireError> {
+        self.take_prewarmed_env(EnvType::Uv, AtTargetZero::Miss)
+            .await
+    }
+
+    /// Take a Conda environment for kernel launching. See
+    /// [`Daemon::take_uv_env`] for pool, on-demand, and lease semantics.
+    pub async fn take_conda_env(
+        self: &Arc<Self>,
+    ) -> Result<(PooledEnv, PoolLeaseGuard), EnvAcquireError> {
+        self.take_prewarmed_env(EnvType::Conda, AtTargetZero::Build(None))
+            .await
+    }
+
+    /// [`Daemon::take_conda_env`] that reports on-demand build progress.
+    pub async fn take_conda_env_with_progress(
+        self: &Arc<Self>,
+        progress: Arc<dyn kernel_env::ProgressHandler>,
+    ) -> Result<(PooledEnv, PoolLeaseGuard), EnvAcquireError> {
+        self.take_prewarmed_env(EnvType::Conda, AtTargetZero::Build(Some(progress)))
+            .await
+    }
+
+    /// Pool-only Conda take. See [`Daemon::take_pooled_uv_env`].
+    pub async fn take_pooled_conda_env(
+        self: &Arc<Self>,
+    ) -> Result<(PooledEnv, PoolLeaseGuard), EnvAcquireError> {
+        self.take_prewarmed_env(EnvType::Conda, AtTargetZero::Miss)
+            .await
+    }
+
+    /// Shared UV/Conda take loop. Each iteration observes the pool once and
+    /// acts on [`decide_take`].
+    async fn take_prewarmed_env(
+        self: &Arc<Self>,
+        env_type: EnvType,
+        at_target_zero: AtTargetZero,
+    ) -> Result<(PooledEnv, PoolLeaseGuard), EnvAcquireError> {
+        const POOL_WAIT_SECS: u64 = 120;
+        let (label, kind) = match env_type {
+            EnvType::Uv => ("UV", PoolKind::Uv),
+            EnvType::Conda => ("Conda", PoolKind::Conda),
+            EnvType::Pixi => {
+                return Err(EnvAcquireError::BuildFailed {
+                    env_type,
+                    reason: "pixi environments are not built on demand".to_string(),
+                })
+            }
+        };
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(POOL_WAIT_SECS);
 
         loop {
-            let (env, stale_paths) = self.uv_pool.lock().await.take();
+            // Register both wake-ups before observing the pool and the
+            // shutdown flag. `notify_waiters` stores no permit, so a
+            // notification between the snapshot and the wait below would
+            // otherwise be missed until the deadline.
+            let pool_ready = self.pool_ready_for(env_type).notified();
+            tokio::pin!(pool_ready);
+            pool_ready.as_mut().enable();
+            let shutdown = self.shutdown_notify.notified();
+            tokio::pin!(shutdown);
+            shutdown.as_mut().enable();
+
+            let (taken, stale_paths, target) = {
+                let mut pool = self.pool_for(env_type).lock().await;
+                let (taken, stale_paths) = pool.take();
+                (taken, stale_paths, pool.target())
+            };
             spawn_env_deletions(stale_paths);
+            let shutting_down = {
+                let shutdown = self.shutdown.lock().await;
+                *shutdown
+            };
+            let snapshot = TakeSnapshot {
+                taken,
+                target,
+                build_at_target_zero: matches!(at_target_zero, AtTargetZero::Build(_)),
+                shutting_down,
+                wait_expired: tokio::time::Instant::now() >= deadline,
+            };
 
-            if let Some(e) = env {
-                debug!(
-                    "[runtimed] Took UV env for kernel launch: {:?}",
-                    e.venv_path
-                );
-                // Backstop: re-vendor the launcher into this env. Pool entries
-                // warmed by a pre-upgrade daemon (or rehydrated from disk) may
-                // be missing the `nteract_kernel_launcher` package, or may
-                // have the pre-0.2.0 single-file module that vendor now
-                // cleans up. Idempotent and cheap. On failure, warn and
-                // continue -- the env is still usable for non-launcher
-                // kernels, and launcher-using kernels will fail with a
-                // clearer error at startup.
-                if let Err(err) = kernel_env::launcher::vendor_into_venv(&e.python_path).await {
-                    warn!(
-                        "[runtimed] Pool take (UV): failed to re-vendor launcher into {:?}: {}",
-                        e.python_path, err
+            match decide_take(snapshot, env_type, POOL_WAIT_SECS) {
+                TakeDecision::Pooled(e) => {
+                    debug!(
+                        "[runtimed] Took {label} env for kernel launch: {:?}",
+                        e.venv_path
                     );
+                    // Backstop: re-vendor the launcher into this env. Pool
+                    // entries warmed by a pre-upgrade daemon (or rehydrated
+                    // from disk) may be missing the `nteract_kernel_launcher`
+                    // package, or may have the pre-0.2.0 single-file module
+                    // that vendor now cleans up. Idempotent and cheap. On
+                    // failure, warn and continue -- the env is still usable
+                    // for non-launcher kernels, and launcher-using kernels
+                    // will fail with a clearer error at startup.
+                    if let Err(err) = kernel_env::launcher::vendor_into_venv(&e.python_path).await {
+                        warn!(
+                            "[runtimed] Pool take ({label}): failed to re-vendor launcher into {:?}: {}",
+                            e.python_path, err
+                        );
+                    }
+                    let daemon = self.clone();
+                    spawn_best_effort("pool-replenish", async move {
+                        daemon.replenish_env(kind).await;
+                    });
+                    let guard = PoolLeaseGuard::new(self, env_type, &e.venv_path);
+                    return Ok((e, guard));
                 }
-                let daemon = self.clone();
-                spawn_best_effort("uv-replenish", async move {
-                    daemon.replenish_env(PoolKind::Uv).await;
-                });
-                let guard = PoolLeaseGuard::new(self, EnvType::Uv, &e.venv_path);
-                return Some((e, guard));
-            }
-
-            if self.uv_pool.lock().await.target() == 0 {
-                return None;
+                TakeDecision::BuildOnDemand => {
+                    let progress = match &at_target_zero {
+                        AtTargetZero::Build(progress) => progress.as_deref(),
+                        AtTargetZero::Miss => None,
+                    };
+                    return self.build_on_demand_env(env_type, progress).await;
+                }
+                TakeDecision::Unavailable(error) => {
+                    if matches!(error, EnvAcquireError::PoolEmpty { .. }) {
+                        debug!("[runtimed] {label} env unavailable: {error}");
+                    } else {
+                        warn!("[runtimed] {label} env unavailable: {error}");
+                    }
+                    return Err(error);
+                }
+                TakeDecision::WaitForWarm => {}
             }
 
             let (warming, can_retry, retry_in_secs, should_spawn) = {
-                let mut pool = self.uv_pool.lock().await;
+                let mut pool = self.pool_for(env_type).lock().await;
                 let (_, warming) = pool.stats();
                 let can_retry = pool.should_retry();
                 let retry_in_secs = pool.retry_in_secs();
@@ -4828,120 +5105,150 @@ impl Daemon {
             }; // pool lock dropped
             if should_spawn {
                 let daemon = self.clone();
-                spawn_best_effort("uv-retry", async move {
-                    daemon.create_uv_env().await;
+                spawn_best_effort("pool-retry", async move {
+                    match kind {
+                        PoolKind::Uv => daemon.create_uv_env().await,
+                        PoolKind::Conda => daemon.create_conda_env().await,
+                        PoolKind::Pixi => daemon.create_pixi_env().await,
+                    }
                 });
             }
 
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                warn!("[runtimed] Timed out waiting for UV pool env");
-                return None;
-            }
-
             let wait_for = if warming > 0 {
                 remaining
             } else {
                 remaining.min(std::time::Duration::from_secs(retry_in_secs.max(1)))
             };
 
-            info!("[runtimed] UV pool empty, waiting for warming ({warming} in progress, retry ready: {can_retry})...");
+            info!("[runtimed] {label} pool empty, waiting for warming ({warming} in progress, retry ready: {can_retry})...");
 
+            // A timed-out sleep loops back so the next snapshot reports
+            // `wait_expired` after one last take attempt.
             tokio::select! {
-                _ = tokio::time::sleep(wait_for) => {
-                    if wait_for == remaining {
-                        warn!("[runtimed] Timed out waiting for UV pool env");
-                        return None;
-                    }
-                    continue;
-                }
-                _ = self.pool_ready_uv.notified() => continue,
-                _ = self.shutdown_notify.notified() => return None,
+                _ = tokio::time::sleep(wait_for) => continue,
+                _ = &mut pool_ready => continue,
+                _ = &mut shutdown => return Err(EnvAcquireError::ShuttingDown),
             }
         }
     }
 
-    /// Take a Conda environment from the pool for kernel launching.
+    /// Build one UV or Conda env for a single caller while the pool target
+    /// is 0.
     ///
-    /// Returns `Some((env, guard))` if an environment is available, `None`
-    /// otherwise. See [`Daemon::take_uv_env`] for lease semantics.
-    /// Automatically triggers replenishment when an environment is taken.
-    pub async fn take_conda_env(self: &Arc<Self>) -> Option<(PooledEnv, PoolLeaseGuard)> {
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+    /// The env is built by the same warm-env subprocess that fills the pool,
+    /// bounded by [`warm_env_timeout`], but it is never added to the pool
+    /// and does not trigger replenishment. Each call gets its own
+    /// `runtimed-{uv,conda}-ondemand-{uuid}` directory, so concurrent
+    /// launches never share an env.
+    ///
+    /// The directory is leased before the subprocess creates it, so orphan
+    /// GC cannot remove it mid-build, and the returned guard has the usual
+    /// release / release_and_delete semantics. Failure and shutdown kill and
+    /// reap the warm-env process tree, then delete the partial directory.
+    /// Dropping the future kills the process tree (the Unix process group,
+    /// or the Windows kill-on-close job) and leaves the directory to orphan
+    /// GC once the lease is released. On Windows a delete can still fail
+    /// while the job tears down; the startup sweep removes what is left.
+    async fn build_on_demand_env(
+        self: &Arc<Self>,
+        env_type: EnvType,
+        progress: Option<&dyn kernel_env::ProgressHandler>,
+    ) -> Result<(PooledEnv, PoolLeaseGuard), EnvAcquireError> {
+        let (prefix, packages, progress_label) = match env_type {
+            EnvType::Uv => (crate::POOL_PREFIX_UV, self.uv_pool_packages().await, "uv"),
+            EnvType::Conda => (
+                crate::POOL_PREFIX_CONDA,
+                self.conda_pool_packages().await,
+                "conda",
+            ),
+            EnvType::Pixi => {
+                return Err(EnvAcquireError::BuildFailed {
+                    env_type,
+                    reason: "pixi environments are not built on demand".to_string(),
+                })
+            }
+        };
+        let dir_name = on_demand_env_dir_name(prefix);
+        let env_path = self.config.cache_dir.join(&dir_name);
 
-        loop {
-            let (env, stale_paths) = self.conda_pool.lock().await.take();
-            spawn_env_deletions(stale_paths);
+        self.pool_for(env_type).lock().await.lease_path(&env_path);
+        let guard = PoolLeaseGuard::new(self, env_type, &env_path);
 
-            if let Some(e) = env {
-                debug!(
-                    "[runtimed] Took Conda env for kernel launch: {:?}",
-                    e.venv_path
+        // Register for the shutdown notification before reading the
+        // committed flag so a shutdown between the two is not missed.
+        let shutdown = self.shutdown_notify.notified();
+        tokio::pin!(shutdown);
+        shutdown.as_mut().enable();
+        let committed = {
+            let flag = self.shutdown.lock().await;
+            *flag
+        };
+        if committed {
+            guard.release_and_delete().await;
+            return Err(EnvAcquireError::ShuttingDown);
+        }
+
+        info!(
+            "[runtimed] {env_type} pool target is 0; building on-demand environment at {:?}",
+            env_path
+        );
+        if let Some(progress) = progress {
+            progress.on_progress(
+                progress_label,
+                kernel_env::EnvProgressPhase::Starting {
+                    env_hash: dir_name.clone(),
+                },
+            );
+        }
+        let started = Instant::now();
+
+        // Shutdown is passed in as the cancel signal so the subprocess tree
+        // is reaped before the directory is deleted below.
+        let outcome = self
+            .warm_env_at(env_type, &env_path, &packages, progress, shutdown)
+            .await;
+
+        match outcome {
+            Ok((venv_path, python_path)) => {
+                info!(
+                    "[runtimed] On-demand {env_type} environment ready at {:?} in {}s",
+                    venv_path,
+                    started.elapsed().as_secs()
                 );
-                // Backstop: re-vendor the launcher into this env. See take_uv_env
-                // for rationale. Warn-and-continue on failure.
-                if let Err(err) = kernel_env::launcher::vendor_into_venv(&e.python_path).await {
-                    warn!(
-                        "[runtimed] Pool take (Conda): failed to re-vendor launcher into {:?}: {}",
-                        e.python_path, err
+                if let Some(progress) = progress {
+                    progress.on_progress(
+                        progress_label,
+                        kernel_env::EnvProgressPhase::InstallComplete {
+                            elapsed_ms: started.elapsed().as_millis() as u64,
+                        },
                     );
                 }
-                let daemon = self.clone();
-                spawn_best_effort("conda-replenish", async move {
-                    daemon.replenish_env(PoolKind::Conda).await;
-                });
-                let guard = PoolLeaseGuard::new(self, EnvType::Conda, &e.venv_path);
-                return Some((e, guard));
+                Ok((
+                    PooledEnv {
+                        env_type,
+                        venv_path,
+                        python_path,
+                        prewarmed_packages: packages,
+                    },
+                    guard,
+                ))
             }
-
-            if self.conda_pool.lock().await.target() == 0 {
-                return None;
+            Err(error) if error.error_kind == WARM_ENV_CANCELLED_KIND => {
+                info!("[runtimed] Shutdown during on-demand {env_type} environment build");
+                guard.release_and_delete().await;
+                Err(EnvAcquireError::ShuttingDown)
             }
-
-            let (warming, can_retry, retry_in_secs, should_spawn) = {
-                let mut pool = self.conda_pool.lock().await;
-                let (_, warming) = pool.stats();
-                let can_retry = pool.should_retry();
-                let retry_in_secs = pool.retry_in_secs();
-
-                if warming == 0 && can_retry {
-                    pool.mark_warming(1);
-                    (1, can_retry, retry_in_secs, true)
-                } else {
-                    (warming, can_retry, retry_in_secs, false)
-                }
-            }; // pool lock dropped
-            if should_spawn {
-                let daemon = self.clone();
-                spawn_best_effort("conda-retry", async move {
-                    daemon.create_conda_env().await;
-                });
-            }
-
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                warn!("[runtimed] Timed out waiting for Conda pool env");
-                return None;
-            }
-
-            let wait_for = if warming > 0 {
-                remaining
-            } else {
-                remaining.min(std::time::Duration::from_secs(retry_in_secs.max(1)))
-            };
-
-            info!("[runtimed] Conda pool empty, waiting for warming ({warming} in progress, retry ready: {can_retry})...");
-
-            tokio::select! {
-                _ = tokio::time::sleep(wait_for) => {
-                    if wait_for == remaining {
-                        warn!("[runtimed] Timed out waiting for Conda pool env");
-                        return None;
-                    }
-                    continue;
-                }
-                _ = self.pool_ready_conda.notified() => continue,
-                _ = self.shutdown_notify.notified() => return None,
+            Err(error) => {
+                warn!(
+                    "[runtimed] On-demand {env_type} environment build failed: {}",
+                    error.error_message
+                );
+                guard.release_and_delete().await;
+                Err(EnvAcquireError::BuildFailed {
+                    env_type,
+                    reason: error.error_message,
+                })
             }
         }
     }
@@ -4978,9 +5285,11 @@ impl Daemon {
     async fn handle_request(self: Arc<Self>, request: Request) -> Response {
         match request {
             Request::Take { env_type } => {
+                // The RPC hands the env outside the daemon, so it never
+                // builds one on demand: a target of 0 is a miss.
                 let taken = match env_type {
-                    EnvType::Uv => self.take_uv_env().await,
-                    EnvType::Conda => self.take_conda_env().await,
+                    EnvType::Uv => self.take_pooled_uv_env().await.ok(),
+                    EnvType::Conda => self.take_pooled_conda_env().await.ok(),
                     EnvType::Pixi => self.take_pixi_env().await,
                 };
 
@@ -4988,9 +5297,8 @@ impl Daemon {
                     Some((env, guard)) => {
                         // RPC clients own the env from this point — the
                         // daemon has no handle to track their lifecycle, so
-                        // releasing the lease here matches today's behavior
-                        // (the orphan sweep collects it if the client never
-                        // calls Return).
+                        // the lease is released here and the orphan sweep
+                        // collects the env if the client never calls Return.
                         guard.release().await;
                         self.update_pool_doc().await;
                         Response::Env { env }
@@ -5005,49 +5313,23 @@ impl Daemon {
             Request::Return { env } => {
                 // Return an environment to the pool (e.g., if notebook closed without using it).
                 // Check if the pool is full under the lock, then drop the lock before
-                // any async filesystem cleanup.
-                let should_delete = match env.env_type {
-                    EnvType::Uv => {
-                        let mut pool = self.uv_pool.lock().await;
-                        pool.release_lease(&env.venv_path);
-                        if pool.available.len() < pool.target {
-                            pool.available.push_back(PoolEntry {
-                                env: env.clone(),
-                                created_at: Instant::now(),
-                            });
-                            debug!("[runtimed] Returned UV env: {:?}", env.venv_path);
-                            false
-                        } else {
-                            true
-                        }
-                    }
-                    EnvType::Conda => {
-                        let mut pool = self.conda_pool.lock().await;
-                        pool.release_lease(&env.venv_path);
-                        if pool.available.len() < pool.target {
-                            pool.available.push_back(PoolEntry {
-                                env: env.clone(),
-                                created_at: Instant::now(),
-                            });
-                            debug!("[runtimed] Returned Conda env: {:?}", env.venv_path);
-                            false
-                        } else {
-                            true
-                        }
-                    }
-                    EnvType::Pixi => {
-                        let mut pool = self.pixi_pool.lock().await;
-                        pool.release_lease(&env.venv_path);
-                        if pool.available.len() < pool.target {
-                            pool.available.push_back(PoolEntry {
-                                env: env.clone(),
-                                created_at: Instant::now(),
-                            });
-                            debug!("[runtimed] Returned Pixi env: {:?}", env.venv_path);
-                            false
-                        } else {
-                            true
-                        }
+                // any async filesystem cleanup. On-demand envs are never pool members.
+                let on_demand = is_on_demand_env_path(&env.venv_path);
+                let should_delete = {
+                    let mut pool = self.pool_for(env.env_type).lock().await;
+                    pool.release_lease(&env.venv_path);
+                    if !on_demand && pool.available.len() < pool.target {
+                        pool.available.push_back(PoolEntry {
+                            env: env.clone(),
+                            created_at: Instant::now(),
+                        });
+                        debug!(
+                            "[runtimed] Returned {} env: {:?}",
+                            env.env_type, env.venv_path
+                        );
+                        false
+                    } else {
+                        true
                     }
                 }; // pool lock dropped
                 if should_delete {
@@ -6429,6 +6711,41 @@ pub(crate) const BLOB_GC_GRACE_SECS: u64 = 30 * 24 * 3600;
 /// generous and can be raised further via [`WARM_ENV_TIMEOUT_ENV`].
 pub(crate) const WARM_ENV_TIMEOUT_SECS: u64 = 900;
 
+/// Error string from `spawn_warm_env` when its cancel signal won.
+const WARM_ENV_CANCELLED: &str = "warm-env subprocess cancelled";
+/// `PackageInstallError::error_kind` for a cancelled warm-env build.
+const WARM_ENV_CANCELLED_KIND: &str = "cancelled";
+
+/// Map a warm-env subprocess progress phase onto a typed launch phase.
+/// Phases with no typed counterpart (bootstrap, vendor, validating,
+/// warming, channels, specs, creating) return `None`.
+fn warm_env_progress_phase(
+    env_type: EnvType,
+    phase: &str,
+    detail: &str,
+    packages: &[String],
+) -> Option<kernel_env::EnvProgressPhase> {
+    use kernel_env::EnvProgressPhase;
+    match (env_type, phase) {
+        (EnvType::Uv, "venv") => Some(EnvProgressPhase::CreatingVenv),
+        (EnvType::Uv, "installing") => Some(EnvProgressPhase::InstallingPackages {
+            packages: packages.to_vec(),
+        }),
+        (EnvType::Conda | EnvType::Pixi, "resolving") => Some(EnvProgressPhase::Solving {
+            spec_count: packages.len(),
+        }),
+        // Conda reports the solved package count as "<n> packages".
+        (EnvType::Conda, "installing") => Some(EnvProgressPhase::Installing {
+            total: detail
+                .split_whitespace()
+                .next()
+                .and_then(|count| count.parse().ok())
+                .unwrap_or(packages.len()),
+        }),
+        _ => None,
+    }
+}
+
 /// Environment variable that overrides [`WARM_ENV_TIMEOUT_SECS`].
 ///
 /// Field escape hatch for environments where the download-dominated conda
@@ -6903,7 +7220,9 @@ impl Daemon {
 
             let (retired_count, retired_to_delete, deficit, should_retry, backoff_info) = {
                 let mut pool = self.uv_pool.lock().await;
-                pool.set_target(target);
+                if pool.set_target(target) {
+                    self.pool_ready_uv.notify_waiters();
+                }
                 let retired = pool.retire_mismatched_packages(&expected_packages);
                 let retired_to_delete = pool.retired_paths_if_available_at_target();
                 let d = pool.deficit();
@@ -7007,7 +7326,9 @@ impl Daemon {
 
             let (retired_count, retired_to_delete, deficit, should_retry, backoff_info) = {
                 let mut pool = self.conda_pool.lock().await;
-                pool.set_target(target);
+                if pool.set_target(target) {
+                    self.pool_ready_conda.notify_waiters();
+                }
                 let retired = pool.retire_mismatched_packages(&expected_packages);
                 let retired_to_delete = pool.retired_paths_if_available_at_target();
                 let d = pool.deficit();
@@ -7118,7 +7439,9 @@ impl Daemon {
 
             let (retired_count, retired_to_delete, deficit, should_retry, backoff_info) = {
                 let mut pool = self.pixi_pool.lock().await;
-                pool.set_target(target);
+                if pool.set_target(target) {
+                    self.pool_ready_pixi.notify_waiters();
+                }
                 let retired = pool.retire_mismatched_packages(&expected_packages);
                 let retired_to_delete = pool.retired_paths_if_available_at_target();
                 let d = pool.deficit();
@@ -7205,15 +7528,7 @@ impl Daemon {
     async fn create_conda_env(self: &Arc<Self>) {
         let temp_id = format!("{}{}", crate::POOL_PREFIX_CONDA, uuid::Uuid::new_v4());
         let env_path = self.config.cache_dir.join(&temp_id);
-
-        let conda_install_packages = {
-            let settings = self.settings.read().await;
-            let synced = settings.get_all();
-            conda_prewarmed_packages(
-                &synced.conda.default_packages,
-                synced.install_default_data_packages,
-            )
-        };
+        let conda_install_packages = self.conda_pool_packages().await;
 
         self.conda_pool
             .lock()
@@ -7223,83 +7538,115 @@ impl Daemon {
 
         info!("[runtimed] Creating Conda environment at {:?}", env_path);
 
-        match self
-            .spawn_warm_env(
+        let (venv_path, python_path) = match self
+            .warm_env_at(
                 EnvType::Conda,
                 &env_path,
                 &conda_install_packages,
-                &["conda-forge".to_string()],
+                None,
+                std::future::pending(),
             )
             .await
         {
+            Ok(paths) => paths,
+            Err(error) => {
+                guard.fail_with(Some(error)).await;
+                return;
+            }
+        };
+        guard.commit();
+        let retired_to_delete = {
+            let mut pool = self.conda_pool.lock().await;
+            pool.add(PooledEnv {
+                env_type: EnvType::Conda,
+                venv_path,
+                python_path,
+                prewarmed_packages: conda_install_packages,
+            });
+            pool.retired_paths_after_replacement()
+        };
+        if !retired_to_delete.is_empty() {
+            spawn_env_deletions(retired_to_delete);
+        }
+        {
+            let pool = self.conda_pool.lock().await;
+            info!(
+                "[runtimed] Conda environment ready: {:?} (pool: {}/{})",
+                env_path,
+                pool.stats().0,
+                pool.target()
+            );
+        }
+        self.update_pool_doc().await;
+    }
+
+    /// Run the warm-env subprocess for a UV or Conda env at `env_path` and
+    /// return its validated `(venv_path, python_path)`. Pool warming adds
+    /// the result to the pool; on-demand builds hand it to one caller.
+    ///
+    /// A completed `cancel` kills the subprocess tree and returns an error
+    /// with `error_kind` [`WARM_ENV_CANCELLED_KIND`].
+    async fn warm_env_at(
+        &self,
+        env_type: EnvType,
+        env_path: &Path,
+        packages: &[String],
+        progress: Option<&dyn kernel_env::ProgressHandler>,
+        cancel: impl std::future::Future<Output = ()>,
+    ) -> Result<(PathBuf, PathBuf), PackageInstallError> {
+        let (label, channels, default_python_path) = match env_type {
+            EnvType::Uv => {
+                #[cfg(target_os = "windows")]
+                let python = env_path.join("Scripts").join("python.exe");
+                #[cfg(not(target_os = "windows"))]
+                let python = env_path.join("bin").join("python");
+                ("UV", Vec::new(), python)
+            }
+            EnvType::Conda => {
+                #[cfg(target_os = "windows")]
+                let python = env_path.join("python.exe");
+                #[cfg(not(target_os = "windows"))]
+                let python = env_path.join("bin").join("python");
+                ("Conda", vec!["conda-forge".to_string()], python)
+            }
+            EnvType::Pixi => {
+                return Err(PackageInstallError {
+                    failed_package: None,
+                    error_message: "warm_env_at does not build pixi environments".to_string(),
+                    error_kind: "setup_failed".to_string(),
+                })
+            }
+        };
+
+        match self
+            .spawn_warm_env(env_type, env_path, packages, &channels, progress, cancel)
+            .await
+        {
             Ok(result) if result.success => {
-                let default_python_path = || {
-                    #[cfg(target_os = "windows")]
-                    {
-                        env_path.join("python.exe")
-                    }
-                    #[cfg(not(target_os = "windows"))]
-                    {
-                        env_path.join("bin").join("python")
-                    }
-                };
-                let (venv_path, python_path) = match Self::validated_warm_env_paths(
-                    result,
-                    env_path.clone(),
-                    default_python_path(),
-                ) {
-                    Ok(paths) => paths,
-                    Err(error) => {
-                        guard.fail_with(Some(error)).await;
-                        return;
-                    }
-                };
-                guard.commit();
-                let retired_to_delete = {
-                    let mut pool = self.conda_pool.lock().await;
-                    pool.add(PooledEnv {
-                        env_type: EnvType::Conda,
-                        venv_path,
-                        python_path,
-                        prewarmed_packages: conda_install_packages,
-                    });
-                    pool.retired_paths_after_replacement()
-                };
-                if !retired_to_delete.is_empty() {
-                    spawn_env_deletions(retired_to_delete);
-                }
-                {
-                    let pool = self.conda_pool.lock().await;
-                    info!(
-                        "[runtimed] Conda environment ready: {:?} (pool: {}/{})",
-                        env_path,
-                        pool.stats().0,
-                        pool.target()
-                    );
-                }
-                self.update_pool_doc().await;
+                Self::validated_warm_env_paths(result, env_path.to_path_buf(), default_python_path)
             }
-            Ok(result) => {
-                guard.fail_with(Some(Self::warm_env_failure(result))).await;
-            }
+            Ok(result) => Err(Self::warm_env_failure(result)),
+            Err(e) if e == WARM_ENV_CANCELLED => Err(PackageInstallError {
+                failed_package: None,
+                error_message: e,
+                error_kind: WARM_ENV_CANCELLED_KIND.to_string(),
+            }),
             Err(e) => {
-                error!("[runtimed] Conda warm-env subprocess failed: {}", e);
-                // A subprocess timeout is the #4017 signature (slow,
+                error!("[runtimed] {label} warm-env subprocess failed: {}", e);
+                // A Conda subprocess timeout is the #4017 signature (slow,
                 // download-dominated conda-forge install on Windows). Classify
                 // it as "timeout" so onboarding can show the retry-friendly
                 // message rather than a generic setup failure.
-                let error_kind = if e.contains("timed out") {
+                let error_kind = if env_type == EnvType::Conda && e.contains("timed out") {
                     "timeout"
                 } else {
                     "setup_failed"
                 };
-                guard
-                    .fail_with(Some(PackageInstallError {
-                        failed_package: None,
-                        error_message: e,
-                        error_kind: error_kind.to_string(),
-                    }))
-                    .await;
+                Err(PackageInstallError {
+                    failed_package: None,
+                    error_message: e,
+                    error_kind: error_kind.to_string(),
+                })
             }
         }
     }
@@ -7356,6 +7703,8 @@ impl Daemon {
                 &project_dir,
                 &packages,
                 &["conda-forge".to_string()],
+                None,
+                std::future::pending(),
             )
             .await
         {
@@ -7527,12 +7876,20 @@ impl Daemon {
     /// Windows, so inheriting stderr would drop those diagnostics on the floor
     /// (issue #4017). A [`warm_env_timeout`]-bounded overall timeout kills the
     /// child if it hangs.
+    ///
+    /// When `cancel` completes first, the whole subprocess tree is killed
+    /// and reaped before this returns [`WARM_ENV_CANCELLED`], so the caller
+    /// can delete the env directory without racing installer processes.
+    /// Progress events the subprocess reports are forwarded to `progress`
+    /// when they map onto an [`kernel_env::EnvProgressPhase`].
     async fn spawn_warm_env(
         &self,
         env_type: EnvType,
         env_dir: &Path,
         packages: &[String],
         channels: &[String],
+        progress: Option<&dyn kernel_env::ProgressHandler>,
+        cancel: impl std::future::Future<Output = ()>,
     ) -> Result<crate::warm_env::WarmEnvResult, String> {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
@@ -7636,6 +7993,13 @@ impl Daemon {
                 match serde_json::from_str::<crate::warm_env::WarmEnvEvent>(&line) {
                     Ok(crate::warm_env::WarmEnvEvent::Progress { phase, detail }) => {
                         debug!("[runtimed] warm-env {type_str}: [{phase}] {detail}");
+                        if let Some(progress) = progress {
+                            if let Some(mapped) =
+                                warm_env_progress_phase(env_type, &phase, &detail, packages)
+                            {
+                                progress.on_progress(type_str, mapped);
+                            }
+                        }
                     }
                     Ok(crate::warm_env::WarmEnvEvent::Result(result)) => {
                         last_result = Some(result);
@@ -7653,12 +8017,28 @@ impl Daemon {
                 let _ = task.await;
             }
             status
-        })
-        .await;
+        });
+        // `None` means `cancel` won. The losing future is dropped before the
+        // match, releasing its borrows of `child` for the reap below.
+        let operation = tokio::select! {
+            outcome = operation => Some(outcome),
+            () = cancel => None,
+        };
 
         let status = match operation {
-            Ok(status) => status,
-            Err(_) => {
+            Some(Ok(status)) => {
+                process_tree.disarm();
+                status
+            }
+            None => {
+                if let Some(task) = stderr_task.take() {
+                    task.abort();
+                    let _ = task.await;
+                }
+                crate::warm_env::reap_timed_out_child(&mut child, &mut process_tree).await;
+                return Err(WARM_ENV_CANCELLED.to_string());
+            }
+            Some(Err(_)) => {
                 // Stop the pipe reader before teardown so a descendant that
                 // inherited stderr cannot keep this timeout path blocked.
                 if let Some(task) = stderr_task.take() {
@@ -7722,91 +8102,57 @@ impl Daemon {
     /// Create a single UV environment and add it to the pool.
     async fn create_uv_env(self: &Arc<Self>) {
         let temp_id = format!("{}{}", crate::POOL_PREFIX_UV, uuid::Uuid::new_v4());
-        let venv_path = self.config.cache_dir.join(&temp_id);
-
-        // Read packages from settings before spawning
-        let install_packages = {
-            let settings = self.settings.read().await;
-            let synced = settings.get_all();
-            uv_prewarmed_packages(
-                &synced.uv.default_packages,
-                synced.install_default_data_packages,
-            )
-        };
+        let env_path = self.config.cache_dir.join(&temp_id);
+        let install_packages = self.uv_pool_packages().await;
 
         self.uv_pool
             .lock()
             .await
-            .register_warming_path(venv_path.clone());
-        let mut guard = WarmingGuard::new(self.clone(), venv_path.clone(), PoolKind::Uv);
+            .register_warming_path(env_path.clone());
+        let mut guard = WarmingGuard::new(self.clone(), env_path.clone(), PoolKind::Uv);
 
-        info!("[runtimed] Creating UV environment at {:?}", venv_path);
+        info!("[runtimed] Creating UV environment at {:?}", env_path);
 
-        match self
-            .spawn_warm_env(EnvType::Uv, &venv_path, &install_packages, &[])
+        let (venv_path, python_path) = match self
+            .warm_env_at(
+                EnvType::Uv,
+                &env_path,
+                &install_packages,
+                None,
+                std::future::pending(),
+            )
             .await
         {
-            Ok(result) if result.success => {
-                let default_python_path = || {
-                    #[cfg(target_os = "windows")]
-                    {
-                        venv_path.join("Scripts").join("python.exe")
-                    }
-                    #[cfg(not(target_os = "windows"))]
-                    {
-                        venv_path.join("bin").join("python")
-                    }
-                };
-                let (venv_path, python_path) = match Self::validated_warm_env_paths(
-                    result,
-                    venv_path.clone(),
-                    default_python_path(),
-                ) {
-                    Ok(paths) => paths,
-                    Err(error) => {
-                        guard.fail_with(Some(error)).await;
-                        return;
-                    }
-                };
-                guard.commit();
-                let retired_to_delete = {
-                    let mut pool = self.uv_pool.lock().await;
-                    pool.add(PooledEnv {
-                        env_type: EnvType::Uv,
-                        venv_path: venv_path.clone(),
-                        python_path,
-                        prewarmed_packages: install_packages,
-                    });
-                    pool.retired_paths_after_replacement()
-                };
-                if !retired_to_delete.is_empty() {
-                    spawn_env_deletions(retired_to_delete);
-                }
-                {
-                    let pool = self.uv_pool.lock().await;
-                    info!(
-                        "[runtimed] UV environment ready at {:?} (pool: {}/{})",
-                        venv_path,
-                        pool.stats().0,
-                        pool.target()
-                    );
-                }
-                self.update_pool_doc().await;
+            Ok(paths) => paths,
+            Err(error) => {
+                guard.fail_with(Some(error)).await;
+                return;
             }
-            Ok(result) => {
-                guard.fail_with(Some(Self::warm_env_failure(result))).await;
-            }
-            Err(e) => {
-                error!("[runtimed] UV warm-env subprocess failed: {}", e);
-                guard
-                    .fail_with(Some(PackageInstallError {
-                        failed_package: None,
-                        error_message: e,
-                        error_kind: "setup_failed".to_string(),
-                    }))
-                    .await;
-            }
+        };
+        guard.commit();
+        let retired_to_delete = {
+            let mut pool = self.uv_pool.lock().await;
+            pool.add(PooledEnv {
+                env_type: EnvType::Uv,
+                venv_path: venv_path.clone(),
+                python_path,
+                prewarmed_packages: install_packages,
+            });
+            pool.retired_paths_after_replacement()
+        };
+        if !retired_to_delete.is_empty() {
+            spawn_env_deletions(retired_to_delete);
         }
+        {
+            let pool = self.uv_pool.lock().await;
+            info!(
+                "[runtimed] UV environment ready at {:?} (pool: {}/{})",
+                venv_path,
+                pool.stats().0,
+                pool.target()
+            );
+        }
+        self.update_pool_doc().await;
     }
 }
 
@@ -11799,5 +12145,425 @@ mod tests {
             blob_store.get(&hash).await.unwrap().is_some(),
             "unreferenced blob within grace should survive"
         );
+    }
+
+    fn take_snapshot(
+        taken: Option<PooledEnv>,
+        target: usize,
+        shutting_down: bool,
+        wait_expired: bool,
+    ) -> TakeSnapshot {
+        TakeSnapshot {
+            taken,
+            target,
+            build_at_target_zero: true,
+            shutting_down,
+            wait_expired,
+        }
+    }
+
+    #[test]
+    fn decide_take_covers_every_pool_state() {
+        let temp_dir = TempDir::new().unwrap();
+        let env = create_test_env(&temp_dir, "runtimed-uv-decide");
+
+        // A ready env wins in every state, including target 0 and shutdown.
+        for target in [0, 3] {
+            for shutting_down in [false, true] {
+                for wait_expired in [false, true] {
+                    let decision = decide_take(
+                        take_snapshot(Some(env.clone()), target, shutting_down, wait_expired),
+                        EnvType::Uv,
+                        120,
+                    );
+                    assert!(
+                        matches!(decision, TakeDecision::Pooled(ref e) if e.venv_path == env.venv_path),
+                        "target={target} shutdown={shutting_down} expired={wait_expired}: {decision:?}"
+                    );
+                }
+            }
+        }
+
+        // Shutdown stops an empty take regardless of target or deadline.
+        for target in [0, 3] {
+            for wait_expired in [false, true] {
+                assert!(matches!(
+                    decide_take(
+                        take_snapshot(None, target, true, wait_expired),
+                        EnvType::Uv,
+                        120
+                    ),
+                    TakeDecision::Unavailable(EnvAcquireError::ShuttingDown)
+                ));
+            }
+        }
+
+        // Target 0 builds on demand; the pool wait deadline does not apply.
+        for wait_expired in [false, true] {
+            assert!(matches!(
+                decide_take(
+                    take_snapshot(None, 0, false, wait_expired),
+                    EnvType::Conda,
+                    120
+                ),
+                TakeDecision::BuildOnDemand
+            ));
+        }
+
+        // A pool-only take misses at target 0 instead of building.
+        assert!(matches!(
+            decide_take(
+                TakeSnapshot {
+                    build_at_target_zero: false,
+                    ..take_snapshot(None, 0, false, false)
+                },
+                EnvType::Uv,
+                120
+            ),
+            TakeDecision::Unavailable(EnvAcquireError::PoolEmpty {
+                env_type: EnvType::Uv
+            })
+        ));
+        // ...but still uses an env the pool holds.
+        assert!(matches!(
+            decide_take(
+                TakeSnapshot {
+                    build_at_target_zero: false,
+                    ..take_snapshot(Some(env.clone()), 0, false, false)
+                },
+                EnvType::Uv,
+                120
+            ),
+            TakeDecision::Pooled(_)
+        ));
+
+        // A nonzero target waits for warming until the deadline.
+        assert!(matches!(
+            decide_take(take_snapshot(None, 2, false, false), EnvType::Uv, 120),
+            TakeDecision::WaitForWarm
+        ));
+        assert!(matches!(
+            decide_take(take_snapshot(None, 2, false, true), EnvType::Conda, 120),
+            TakeDecision::Unavailable(EnvAcquireError::PoolWaitTimedOut {
+                env_type: EnvType::Conda,
+                waited_secs: 120,
+            })
+        ));
+    }
+
+    #[test]
+    fn on_demand_env_names_are_unique_pool_prefixed_and_recognised() {
+        let uv_a = on_demand_env_dir_name(crate::POOL_PREFIX_UV);
+        let uv_b = on_demand_env_dir_name(crate::POOL_PREFIX_UV);
+        let conda = on_demand_env_dir_name(crate::POOL_PREFIX_CONDA);
+        assert_ne!(uv_a, uv_b, "concurrent builds must never share a directory");
+        for name in [&uv_a, &uv_b, &conda] {
+            assert!(is_pool_env_dir(name), "{name} must keep the pool prefix");
+            assert!(is_on_demand_env_dir(name), "{name}");
+        }
+        assert!(uv_a.starts_with("runtimed-uv-ondemand-"));
+        assert!(conda.starts_with("runtimed-conda-ondemand-"));
+
+        assert!(!is_on_demand_env_dir(&format!(
+            "{}{}",
+            crate::POOL_PREFIX_UV,
+            uuid::Uuid::new_v4()
+        )));
+        assert!(!is_on_demand_env_dir("runtimed-pixi-ondemand-x"));
+        assert!(!is_on_demand_env_dir("abcdef0123456789"));
+
+        let nested = PathBuf::from("/cache")
+            .join(&uv_a)
+            .join("lib")
+            .join("python3.12");
+        assert!(is_on_demand_env_path(&nested));
+        assert!(!is_on_demand_env_path(Path::new("/cache/runtimed-uv-abc")));
+    }
+
+    #[test]
+    fn on_demand_leases_are_tracked_but_not_pool_members() {
+        let mut pool = Pool::new(0, 3600);
+        let a = PathBuf::from("/cache").join(on_demand_env_dir_name(crate::POOL_PREFIX_UV));
+        let b = PathBuf::from("/cache").join(on_demand_env_dir_name(crate::POOL_PREFIX_UV));
+        pool.lease_path(&a);
+        pool.lease_path(&b);
+
+        let tracked = pool.tracked_paths();
+        assert!(tracked.contains(&a) && tracked.contains(&b));
+        assert_eq!(pool.stats(), (0, 0));
+        assert_eq!(pool.deficit(), 0);
+
+        pool.release_lease(&a);
+        assert!(!pool.tracked_paths().contains(&a));
+        assert!(pool.tracked_paths().contains(&b));
+    }
+
+    #[tokio::test]
+    async fn find_existing_environments_never_adopts_on_demand_envs() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = DaemonConfig {
+            uv_pool_size: 2,
+            ..lease_test_config(&temp_dir)
+        };
+        std::fs::create_dir_all(&config.cache_dir).unwrap();
+        let expected = uv_prewarmed_packages(&[], true);
+        let on_demand = create_test_env_in(
+            &config.cache_dir,
+            &on_demand_env_dir_name(crate::POOL_PREFIX_UV),
+        );
+        // A completed on-demand build carries the same markers as a pool env.
+        write_pool_package_hash(&on_demand.venv_path, EnvType::Uv, &expected)
+            .await
+            .unwrap();
+
+        let daemon = Daemon::new_for_test(config).unwrap();
+        daemon.find_existing_environments().await;
+
+        assert!(daemon.uv_pool.lock().await.available.is_empty());
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        while on_demand.venv_path.exists() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "orphaned on-demand env should be deleted at startup"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn orphan_sweep_keeps_owned_on_demand_envs_and_removes_orphans() {
+        let temp_dir = TempDir::new().unwrap();
+        let daemon = Daemon::new_for_test(lease_test_config(&temp_dir)).unwrap();
+        let cache = daemon.config.cache_dir.clone();
+        let running = create_test_env_in(&cache, &on_demand_env_dir_name(crate::POOL_PREFIX_UV));
+        let building =
+            create_test_env_in(&cache, &on_demand_env_dir_name(crate::POOL_PREFIX_CONDA));
+        let orphan = create_test_env_in(&cache, &on_demand_env_dir_name(crate::POOL_PREFIX_UV));
+
+        daemon
+            .conda_pool
+            .lock()
+            .await
+            .lease_path(&building.venv_path);
+        let in_use = std::collections::HashSet::from([running.venv_path.clone()]);
+        let deleted = daemon.sweep_orphan_pool_envs(&in_use).await;
+
+        assert_eq!(deleted, 1);
+        assert!(running.venv_path.exists(), "kernel-owned env must survive");
+        assert!(building.venv_path.exists(), "leased build must survive");
+        assert!(!orphan.venv_path.exists(), "unowned env must be swept");
+    }
+
+    #[tokio::test]
+    async fn returned_on_demand_env_is_deleted_not_pooled() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = DaemonConfig {
+            uv_pool_size: 2,
+            ..lease_test_config(&temp_dir)
+        };
+        let daemon = Daemon::new_for_test(config).unwrap();
+        let env = create_test_env_in(
+            &daemon.config.cache_dir,
+            &on_demand_env_dir_name(crate::POOL_PREFIX_UV),
+        );
+        daemon.uv_pool.lock().await.lease_path(&env.venv_path);
+
+        let response = daemon
+            .clone()
+            .handle_request(Request::Return { env: env.clone() })
+            .await;
+
+        assert!(matches!(response, Response::Returned));
+        let pool = daemon.uv_pool.lock().await;
+        assert!(pool.available.is_empty());
+        assert!(pool.tracked_paths().is_empty());
+        assert!(!env.venv_path.exists());
+    }
+
+    #[tokio::test]
+    async fn take_at_target_zero_respects_committed_shutdown() {
+        let temp_dir = TempDir::new().unwrap();
+        let daemon = Daemon::new_for_test(lease_test_config(&temp_dir)).unwrap();
+        *daemon.shutdown.lock().await = true;
+
+        let result = daemon.take_conda_env().await;
+
+        assert!(matches!(result, Err(EnvAcquireError::ShuttingDown)));
+        assert!(daemon.conda_pool.lock().await.tracked_paths().is_empty());
+    }
+
+    /// Drives the real on-demand path to a build failure. `warm-env` is
+    /// spawned from `current_exe()`, which under `cargo test` is this test
+    /// binary; it exits without a result event, so the build must fail
+    /// with a reason, clean up, and leave the pool untouched.
+    #[tokio::test]
+    async fn take_at_target_zero_builds_on_demand_and_reports_failure() {
+        let temp_dir = TempDir::new().unwrap();
+        let daemon = Daemon::new_for_test(lease_test_config(&temp_dir)).unwrap();
+        std::fs::create_dir_all(&daemon.config.cache_dir).unwrap();
+        assert_eq!(daemon.uv_pool.lock().await.target(), 0);
+
+        let (a, b) = tokio::join!(daemon.take_uv_env(), daemon.take_uv_env());
+
+        for result in [a, b] {
+            match result {
+                Err(EnvAcquireError::BuildFailed { env_type, reason }) => {
+                    assert_eq!(env_type, EnvType::Uv);
+                    assert!(!reason.is_empty());
+                }
+                other => panic!("expected BuildFailed, got {:?}", other.map(|(env, _)| env)),
+            }
+        }
+        let pool = daemon.uv_pool.lock().await;
+        assert_eq!(
+            pool.stats(),
+            (0, 0),
+            "on-demand builds never touch the pool"
+        );
+        assert!(pool.tracked_paths().is_empty(), "leases are released");
+        drop(pool);
+        let leftovers: Vec<_> = std::fs::read_dir(&daemon.config.cache_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| is_on_demand_env_dir(&entry.file_name().to_string_lossy()))
+            .collect();
+        assert!(leftovers.is_empty(), "failed builds are deleted");
+    }
+
+    #[tokio::test]
+    async fn pooled_take_at_target_zero_misses_without_building() {
+        let temp_dir = TempDir::new().unwrap();
+        let daemon = Daemon::new_for_test(lease_test_config(&temp_dir)).unwrap();
+
+        let result = daemon.take_pooled_uv_env().await;
+
+        assert!(matches!(
+            result,
+            Err(EnvAcquireError::PoolEmpty {
+                env_type: EnvType::Uv
+            })
+        ));
+        assert!(daemon.uv_pool.lock().await.tracked_paths().is_empty());
+    }
+
+    #[test]
+    fn build_failure_message_names_the_reason() {
+        let error = EnvAcquireError::BuildFailed {
+            env_type: EnvType::Conda,
+            reason: "solver exploded".to_string(),
+        };
+        assert_eq!(
+            error.to_string(),
+            "conda environment build failed: solver exploded"
+        );
+    }
+
+    #[test]
+    fn warm_env_progress_maps_known_phases() {
+        use kernel_env::EnvProgressPhase;
+        let packages = vec!["ipykernel".to_string(), "pandas".to_string()];
+        assert!(matches!(
+            warm_env_progress_phase(EnvType::Uv, "venv", "creating", &packages),
+            Some(EnvProgressPhase::CreatingVenv)
+        ));
+        assert!(matches!(
+            warm_env_progress_phase(EnvType::Uv, "installing", "2 packages", &packages),
+            Some(EnvProgressPhase::InstallingPackages { packages: ref p }) if *p == packages
+        ));
+        assert!(matches!(
+            warm_env_progress_phase(EnvType::Conda, "resolving", "solving", &packages),
+            Some(EnvProgressPhase::Solving { spec_count: 2 })
+        ));
+        assert!(matches!(
+            warm_env_progress_phase(EnvType::Conda, "installing", "57 packages", &packages),
+            Some(EnvProgressPhase::Installing { total: 57 })
+        ));
+        assert!(matches!(
+            warm_env_progress_phase(EnvType::Conda, "installing", "many", &packages),
+            Some(EnvProgressPhase::Installing { total: 2 })
+        ));
+        for phase in [
+            "bootstrap",
+            "vendor",
+            "validating",
+            "warming",
+            "channels",
+            "specs",
+        ] {
+            assert!(warm_env_progress_phase(EnvType::Uv, phase, "", &packages).is_none());
+            assert!(warm_env_progress_phase(EnvType::Conda, phase, "", &packages).is_none());
+        }
+    }
+
+    #[test]
+    fn set_target_reports_changes() {
+        let mut pool = Pool::new(2, 3600);
+        assert!(!pool.set_target(2));
+        assert!(pool.set_target(0));
+        assert!(!pool.set_target(0));
+    }
+
+    /// A cancel signal that wins must reap the subprocess and report
+    /// cancellation instead of a build failure.
+    #[tokio::test]
+    async fn spawn_warm_env_reports_cancellation() {
+        let temp_dir = TempDir::new().unwrap();
+        let daemon = Daemon::new_for_test(lease_test_config(&temp_dir)).unwrap();
+        let env_dir = daemon.config.cache_dir.join("runtimed-uv-ondemand-cancel");
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            daemon.spawn_warm_env(
+                EnvType::Uv,
+                &env_dir,
+                &[],
+                &[],
+                None,
+                std::future::ready(()),
+            ),
+        )
+        .await
+        .expect("cancelled warm-env must be reaped promptly");
+
+        assert_eq!(result.err().as_deref(), Some(WARM_ENV_CANCELLED));
+    }
+
+    /// A take waiting for warming must notice the target dropping to 0.
+    #[tokio::test]
+    async fn waiting_take_wakes_when_target_drops_to_zero() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = DaemonConfig {
+            uv_pool_size: 1,
+            ..lease_test_config(&temp_dir)
+        };
+        let daemon = Daemon::new_for_test(config).unwrap();
+        // Hold the pool in backoff so the take waits instead of retrying.
+        daemon.uv_pool.lock().await.warming_failed_with_error(None);
+
+        let take = tokio::spawn({
+            let daemon = daemon.clone();
+            async move { daemon.take_pooled_uv_env().await.map(|(env, _)| env) }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(!take.is_finished(), "take should be waiting for warming");
+
+        // Same transition the warming loop applies on a settings change.
+        {
+            let mut pool = daemon.uv_pool.lock().await;
+            if pool.set_target(0) {
+                daemon.pool_ready_uv.notify_waiters();
+            }
+        }
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), take)
+            .await
+            .expect("take must wake on the target change")
+            .unwrap();
+        assert!(matches!(
+            result,
+            Err(EnvAcquireError::PoolEmpty {
+                env_type: EnvType::Uv
+            })
+        ));
     }
 }

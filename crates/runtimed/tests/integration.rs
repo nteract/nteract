@@ -1965,15 +1965,38 @@ async fn test_launch_kernel_environment_mode_controls_project_priority() {
         "project mode should stop at the untrusted project folder, got {project:?}"
     );
 
-    let (notebook, _notebook_handle) =
+    // Notebook mode falls through to the prewarmed UV source. The pool
+    // target is 0, so the daemon builds an env on demand; `warm-env` runs
+    // this test binary and fails. The manual launch can either run that
+    // build itself or join the auto-launch that is already running it, so
+    // the build failure is checked in RuntimeStateDoc.
+    let (notebook, notebook_handle) =
         launch_with_mode(CreateNotebookEnvironmentMode::Notebook, "notebook").await;
     assert!(
         matches!(
             notebook,
             NotebookResponse::Error { ref error }
-                if error.contains("UV pool empty") && !error.contains("not trusted")
+                if !error.contains("not trusted")
+                    && (error.contains("uv environment build failed")
+                        || error.contains("Kernel launch timed out or failed"))
         ),
         "notebook mode should ignore project files and fall through to notebook/prewarmed selection, got {notebook:?}"
+    );
+    let failed = wait_for_runtime_state(&notebook_handle, |s| {
+        s.kernel
+            .error_details
+            .as_deref()
+            .is_some_and(|details| details.contains("uv environment build failed"))
+    })
+    .await;
+    assert!(
+        failed
+            .kernel
+            .error_details
+            .as_deref()
+            .is_some_and(|details| details.contains("uv environment build failed")),
+        "the prewarmed fallback should report the on-demand build failure: {:?}",
+        failed.kernel
     );
 
     // A directory that does not contain the project is refused.
