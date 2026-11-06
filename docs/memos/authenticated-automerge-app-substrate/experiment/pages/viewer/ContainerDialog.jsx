@@ -1,21 +1,25 @@
-// The modal shell and machine binding shared by the New Project and Move to…
-// dialogs. The machine (container-dialog-machine.mjs) decides every step;
-// this file only runs its effects and renders.
+// The modal shell and machine binding shared by the New Project, Move to… and
+// Connected agents dialogs. The machine (container-dialog-machine.mjs, or the
+// one a dialog passes) decides every step; this file only runs its effects
+// and renders.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
-import { openingEffects, transition } from "./container-dialog-machine.mjs";
+import * as containerMachine from "./container-dialog-machine.mjs";
 
-/** Run the dialog machine from `initial`. `run(effect, dispatch)` performs
- * one effect; events it dispatches after the dialog unmounts are dropped. */
-export function useContainerDialog(initial, run) {
+/** Run a dialog machine from `initial`. `run(effect, dispatch)` performs one
+ * effect; events it dispatches after the dialog unmounts are dropped.
+ * `machine` supplies `transition` and `openingEffects`. */
+export function useContainerDialog(initial, run, machine = containerMachine) {
   const [state, setState] = useState(initial);
   const current = useRef(state);
   const runner = useRef(run);
+  // A dialog's machine is fixed for its lifetime.
+  const steps = useRef(machine);
   const mounted = useRef(true);
   runner.current = run;
   const dispatch = useCallback((event) => {
     if (!mounted.current) return;
-    const { state: next, effects } = transition(current.current, event);
+    const { state: next, effects } = steps.current.transition(current.current, event);
     if (next !== current.current) {
       current.current = next;
       setState(next);
@@ -24,7 +28,8 @@ export function useContainerDialog(initial, run) {
   }, []);
   useEffect(() => {
     mounted.current = true;
-    for (const effect of openingEffects(current.current)) runner.current(effect, dispatch);
+    for (const effect of steps.current.openingEffects(current.current))
+      runner.current(effect, dispatch);
     return () => {
       mounted.current = false;
     };

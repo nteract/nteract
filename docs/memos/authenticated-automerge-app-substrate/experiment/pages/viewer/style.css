@@ -3352,6 +3352,62 @@ html:has(.library-view) {
     flex: 1;
   }
 }
+
+/* Connected agents (ConnectedAgents.jsx). */
+.connected-agents {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.connected-agents li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.6rem 0;
+  border-top: 1px solid var(--border);
+}
+.connected-agents li:last-child {
+  border-bottom: 1px solid var(--border);
+}
+.connected-agents li > div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+  font-size: 0.875rem;
+}
+.connected-agents li .muted {
+  font-size: 0.8rem;
+}
+.connected-agents li button {
+  flex-shrink: 0;
+  min-height: 36px;
+}
+.connected-agents-failed {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.connected-agents-everywhere {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding-top: 0.4rem;
+}
+.connected-agents-everywhere > p {
+  margin: 0;
+}
+.primary.danger-action {
+  background: var(--destructive);
+  color: #fff;
+}
+.primary.danger-action:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--destructive) 85%, var(--surface));
+}
 .picker-section-heading {
   display: flex;
   align-items: center;

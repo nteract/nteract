@@ -1150,6 +1150,78 @@ test("sign-out forgets the rows remembered for the account", async (t) => {
   await settle();
 });
 
+test("the account menu lists connected agents, disconnects one and signs out everywhere", async (t) => {
+  cleanUp(t);
+  history.replaceState(null, "", "/pages");
+  const handle = (n) => String(n).repeat(43);
+  const agents = [
+    {
+      id: handle(1),
+      name: "Kilo",
+      scope: "pages:read pages:write",
+      created_at: "2026-11-01T12:00:00.000Z",
+      expires_at: "2026-12-01T12:00:00.000Z",
+    },
+    {
+      id: handle(2),
+      name: "ChatGPT",
+      scope: "pages:read",
+      created_at: null,
+      expires_at: "2026-12-01T12:00:00.000Z",
+    },
+  ];
+  const gate = {};
+  const app = await boot(signedIn, gatedCatalog(gate), {
+    paths: {
+      "/api/auth/grants": () => Response.json({ agents }),
+      [`/api/auth/grants/${handle(1)}/revoke`]: () => Response.json({ revoked: true }),
+      "/api/auth/logout-all": () => Response.json({ ok: true, sessions: 2, agents: 1 }),
+    },
+  });
+  await settle();
+  assert.deepEqual(rows(), ["Roadmap"]);
+  const menuButton = (text) =>
+    [...document.querySelectorAll(".account-actions button")].find((button) =>
+      button.textContent.includes(text),
+    );
+  const dialogButton = (text) =>
+    [...document.querySelectorAll(".connected-agents-dialog button")].find((button) =>
+      button.textContent.includes(text),
+    );
+  const listed = () =>
+    [...document.querySelectorAll(".connected-agents li strong")].map((node) => node.textContent);
+  await click(menuButton("Connected agents"));
+  await settle();
+  assert.deepEqual(listed(), ["Kilo", "ChatGPT"]);
+  assert.match(
+    document.querySelector(".connected-agents").textContent,
+    /Read and edit.*Connected earlier · Read only/,
+  );
+  await click(document.querySelector(`[aria-label="Disconnect Kilo"]`));
+  await settle();
+  assert.deepEqual(listed(), ["ChatGPT"]);
+  assert.ok(app.requests.includes(`/api/auth/grants/${handle(1)}/revoke`));
+
+  // Sign out everywhere asks first, and Cancel goes back.
+  await click(dialogButton("Sign out everywhere"));
+  assert.ok(dialogButton("Cancel"));
+  assert.equal(app.requests.includes("/api/auth/logout-all"), false);
+  await click(dialogButton("Cancel"));
+  assert.equal(dialogButton("Cancel"), undefined);
+  await click(dialogButton("Sign out everywhere"));
+  await click(dialogButton("Sign out everywhere"));
+  await settle();
+  assert.equal(app.requests.filter((path) => path === "/api/auth/logout-all").length, 1);
+  // Like Sign out, nothing remembered for the account paints afterwards.
+  await leaveForPage(PLAN);
+  Object.assign(gate, closed());
+  history.back();
+  await settle();
+  assert.deepEqual(rows(), [], "nothing paints from before the sign-out");
+  gate.release();
+  await settle();
+});
+
 test("a tool call refused as signed out forgets the rows, checks the session and asks for the Projects again", async (t) => {
   cleanUp(t);
   history.replaceState(null, "", "/pages");

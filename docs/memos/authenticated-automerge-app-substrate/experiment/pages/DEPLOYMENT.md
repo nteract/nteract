@@ -1107,13 +1107,13 @@ are deleted. Each line has `action`, `timestamp`, and, where known,
 |---|---|---|
 | `sign_in.succeeded` | An OIDC callback created a browser session. | |
 | `sign_in.failed` | An OIDC callback was refused. No principal. | `reason`, `phase`, `kind`, `outcome` (`failure_page` or `already_signed_in`) |
-| `sign_out` | `POST /api/auth/logout` deleted a live session. | |
+| `sign_out` | `POST /api/auth/logout` deleted a live session, or `POST /api/auth/logout-all` signed the account out everywhere. | `scope`: `all` for sign out everywhere |
 | `session.expired` | A session in use ended at refresh. | `reason`: `refresh_rejected`, `identity_rejected`, `lease_abandoned` |
 | `oauth.consent_granted`, `oauth.consent_denied` | A person chose Allow access or Cancel. | `client_id`, `scope` |
 | `oauth.code_issued` | An authorization code followed consent. | `client_id`, `scope` |
 | `oauth.token_issued` | `/oauth/token` issued tokens. | `grant`, `grant_type` (`authorization_code` or `refresh_token`), `scope`, `refresh` |
 | `oauth.token_refused` | `/oauth/token` refused a request, including a 503. | `grant_type`, `reason` (OAuth error code) |
-| `oauth.grant_revoked` | A grant stopped working. | `grant`, `revoked_by` (`rfc7009` for a client's revocation, `system` for replay or reuse; `user` is reserved), `reason` |
+| `oauth.grant_revoked` | A grant stopped working. | `grant`, `revoked_by` (`user` for a person in Pages, `rfc7009` for a client's revocation, `system` for replay or reuse), `reason` (`disconnected` or `sign_out_everywhere` for `user`) |
 | `oauth.code_replayed` | An authorization code was presented twice. Its grant is revoked. | `grant` |
 | `oauth.refresh_reused` | A spent refresh token was presented again. Its grant is revoked. | `grant` |
 | `api_key.accepted` | An Anaconda API key authenticated. One line per key per isolate per 60 s cache window, not per request. | `scope` (`editor` or `viewer`) |
