@@ -91,3 +91,19 @@ test("purging a Page that never had buffered storage asks no PageRecords object"
     assert.deepEqual(h.named, [], "no PageRecords object is created by purging");
   }
 });
+
+test("purging never clears a live or trashed buffered Page's records, its only history", async (t) => {
+  for (const record of [
+    { recordStorage: "buffered", deleted: false },
+    { recordStorage: "buffered", deleted: true, trash: { at: "2026-11-01T00:00:00Z" } },
+  ]) {
+    const h = await host(t, record);
+    await h.f.page.purgeConvertedRecords();
+    assert.equal(h.records.storage.values.size, 4, JSON.stringify(record));
+    assert.deepEqual(h.named, [], JSON.stringify(record));
+  }
+  // A deleted buffered Page has nothing left to keep its records for.
+  const h = await host(t, { recordStorage: "buffered", deleted: true, purged: true });
+  await h.f.page.purgeConvertedRecords();
+  assert.equal(h.records.storage.values.size, 0);
+});

@@ -4505,11 +4505,13 @@ export class Page {
 
   /** What a Page converted from Subduction still holds of it, which the
    * plain host never reads: native records, actor entries, signing-key
-   * bindings, the signer seed, and for a `buffered` Page its PageRecords
-   * object. Deleting the Page deletes them too. Each step is idempotent, so a
-   * repeated deletion finishes the job. */
+   * bindings, the signer seed, and its PageRecords object when
+   * pageRecordsHolder says `clear`. A live or trashed `buffered` Page's
+   * records are its only history (`held`), so they stay. Deleting the Page
+   * deletes the rest. Each step is idempotent, so a repeated deletion
+   * finishes the job. */
   async purgeConvertedRecords() {
-    if (pageRecordsHolder(this.metadata)) await this.pageRecords("clear");
+    if (pageRecordsHolder(this.metadata) === "clear") await this.pageRecords("clear");
     await clearPrefixes(this.ctx.storage, ["repo/", "host/actor/", "host/binding/"]);
     await this.ctx.storage.delete("host/signer");
   }
