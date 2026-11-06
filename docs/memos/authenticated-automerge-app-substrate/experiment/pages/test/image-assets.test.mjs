@@ -21,6 +21,7 @@ import {
 } from "../worker/image-assets.mjs";
 import { IMAGE_MAX_BYTES } from "../shared/image-assets.mjs";
 import { DATASET_MAX_BYTES, PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
+import { plainStub } from "../worker/plain-stub.mjs";
 
 // Actual 3x2 raster images encoded by Pillow, not hand-built header-only fixtures.
 const fixtures = {
@@ -139,6 +140,7 @@ async function fixture(t) {
   const pages = new Map();
   for (const id of [pageId, otherId]) {
     const page = Object.assign(Object.create(Page.prototype), {
+      plain: plainStub(),
       env,
       ready: Promise.resolve(),
       tail: Promise.resolve(),

@@ -2,11 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { randomBytes } from "node:crypto";
 import * as A from "@automerge/automerge";
-import {
-  documentIdToBinary,
-  generateAutomergeUrl,
-  interpretAsDocumentId,
-} from "@automerge/automerge-repo";
+import { generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import worker, { Catalog, Page } from "./index.mjs";
@@ -14,6 +10,7 @@ import { readRegistration } from "./registration.mjs";
 import { DEFAULT_PAGE_QUOTA } from "./page-quota.mjs";
 import { REPLAYED_RECEIPT_HEADER } from "./usage.mjs";
 import { fingerprint } from "./mutations.mjs";
+import { plainStub } from "./plain-stub.mjs";
 
 class Storage {
   values = new Map();
@@ -97,7 +94,9 @@ async function fixture(t) {
                 if (storage.fault === "flush") throw Error("simulated flush failure");
               },
             },
-            backend: { async flush() {} },
+            get plain() {
+              return plainStub(this.repo);
+            },
           });
           const entry = {
             page,
@@ -345,7 +344,7 @@ test("ordinary create_page is unchanged and registration is not exposed as an op
   assert.deepEqual(await (await f.send(body, { path: "/api/tools" })).json(), receipt);
 });
 
-test("native backend restart replays registration without replacing later persisted history", async (t) => {
+test("a restart replays registration without replacing later persisted history", async (t) => {
   const auth = await createAuthFixture();
   t.mock.method(globalThis, "fetch", auth.fetch);
   const storage = new Storage(),
@@ -365,22 +364,7 @@ test("native backend restart replays registration without replacing later persis
         body: JSON.stringify(args),
       }),
     );
-  const close = async (page) => {
-    await page.repo?.shutdown();
-    await page.backend?.close();
-    page.signer?.free();
-  };
-  // Use the actual native backend allocation rather than assuming the legacy
-  // 16-byte generateAutomergeUrl format matches client-created documents.
-  const source = new Page({ ...ctx(), storage: new Storage() }, auth.env);
-  try {
-    await source.ready;
-    await source.initializeRepo();
-    args.document_id = (await source.repo.import(A.save(doc))).documentId;
-    assert.equal(documentIdToBinary(args.document_id).byteLength, 32);
-  } finally {
-    await close(source);
-  }
+  const close = (page) => page.plain?.close();
   const first = new Page(ctx(), auth.env);
   storage.fault = "host/document";
   try {
@@ -588,31 +572,12 @@ test("registration refuses a draft stamped with a schema feature this host lacks
   assert.equal((await f.send(args)).status, 200);
 });
 
-test("a host without plain storage refuses a plain draft through the Catalog and frees its key", async (t) => {
-  const f = await fixture(t),
-    { args } = registration();
-  const refused = await f.send({ ...args, record_storage: "automerge" });
-  assert.equal(refused.status, 409);
-  assert.equal((await refused.json()).code, "record_storage_unsupported");
-  // The Page recorded nothing, so the Catalog released the reservation.
-  assert.equal(await f.catalog().storage.get("host/operation/register-fixture"), undefined);
-  assert.equal(await f.catalog().storage.get(`page/${pageId}`), undefined);
-  assert.equal(await f.page().storage.get("host/creation"), undefined);
-  // The same draft and key register once the draft is native.
-  const accepted = await f.send(args);
-  assert.equal(accepted.status, 200, await accepted.clone().text());
-  assert.equal((await accepted.json()).document_id, args.document_id);
-  assert.equal(f.page().page.metadata.recordStorage, "local");
-});
-
-test("a plain registration the Catalog recorded before the flag went off still replays", async (t) => {
+test("a registration replays from the Catalog's receipt, or from the Page's", async (t) => {
   const f = await fixture(t),
     { args } = registration({ record_storage: "automerge" });
-  f.env.PAGES_RECORD_STORAGE = "automerge";
   const first = await f.send(args);
   assert.equal(first.status, 200, await first.clone().text());
   assert.equal(f.page().page.metadata.recordStorage, "automerge");
-  delete f.env.PAGES_RECORD_STORAGE;
   // The Catalog answers from its receipt.
   const replayed = await f.send(args);
   assert.equal(replayed.status, 200, await replayed.clone().text());

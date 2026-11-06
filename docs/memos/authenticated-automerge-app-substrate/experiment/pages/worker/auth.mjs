@@ -386,7 +386,6 @@ export const CLIENT_ERROR_CODES = Object.freeze([
   "position_sibling_unknown",
   "lifecycle_unsettled",
   "unsupported_schema_feature",
-  "record_storage_unsupported",
   "unsupported_markdown",
   "markdownless_node",
   "node_not_found",
@@ -398,10 +397,7 @@ export const CLIENT_ERROR_CODES = Object.freeze([
 ]);
 
 export const RETRYABLE_SERVER_CODES = Object.freeze([
-  "record_persistence_timeout",
   "request_timeout",
-  // PageRecords threw an overload or a transient error (record-persistence.mjs).
-  "record_persistence_unavailable",
   // A listing met a shared Page or owner Catalog that did not answer.
   "shared_page_unavailable",
 ]);
@@ -461,18 +457,7 @@ export function logFailure(error, stage) {
     ...shape,
     ...(inner && typeof inner === "object" && { cause: failureShape(inner) }),
     ...(RETRYABLE_SERVER_CODES.includes(error?.code) ? { reason: error.code } : {}),
-    ...([
-      "native_admission_cancelled",
-      "native_admission_timeout",
-      "native_binding_pending",
-      "native_binding_persistence_failed",
-      "native_binding_mismatch",
-      "native_session_replaced",
-      "native_access_changed",
-      "native_acl_committing",
-    ].includes(error?.code)
-      ? { reason: error.code }
-      : {}),
+    ...(error?.code === "native_access_changed" ? { reason: error.code } : {}),
     timestamp: new Date().toISOString(),
   });
 }

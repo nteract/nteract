@@ -7,6 +7,7 @@ import { createPageData, initializePage } from "../model/page.mjs";
 import worker, { Page } from "./index.mjs";
 import { authenticate } from "./auth.mjs";
 import { DocumentPolicy } from "./policy.mjs";
+import { plainStub } from "./plain-stub.mjs";
 
 const pageId = "33333333-3333-4333-8333-333333333333";
 function request(token, path, body) {
@@ -42,6 +43,7 @@ async function fixture(t, role = "owner") {
     broadcast: (value) => broadcasts.push(value),
   });
   const page = Object.assign(Object.create(Page.prototype), {
+    plain: plainStub(),
     env: auth.env,
     ready: Promise.resolve(),
     tail: Promise.resolve(),
@@ -60,7 +62,6 @@ async function fixture(t, role = "owner") {
     cacheTitle: () => assert.fail("ephemeral tools must not update the catalog"),
   });
   page.policy = new DocumentPolicy({
-    storage,
     metadata: () => page.policyMetadata ?? page.metadata,
   });
   page.observeActivity();
@@ -162,19 +163,23 @@ test("change-feed gateway permits read scope and viewers but rechecks revoked Pa
   assert.equal(refusal.code, "access_denied");
 });
 
-test("native selection listener uses authenticated profile identity and session handshake includes a fresh snapshot", async (t) => {
+test("selection listener uses authenticated profile identity and session handshake includes a fresh snapshot", async (t) => {
   const f = await fixture(t);
-  const key = "a".repeat(64),
-    senderId = "browser-peer";
-  const release = await f.page.policy.bind(
-    key,
-    senderId,
-    { ...f.identity, driver: "Browser" },
-    {
-      reauthenticate: async () => f.identity,
-      disconnect() {},
-    },
-  );
+  const senderId = "browser-peer";
+  // The sender's open plain-sync connection names its principal.
+  let connected = true;
+  f.page.plain = plainStub(undefined, {
+    profiles: () =>
+      connected
+        ? {
+            [senderId]: {
+              principal: f.identity.principal,
+              displayName: f.identity.displayName,
+              driver: "Browser",
+            },
+          }
+        : {},
+  });
   const blockId = Object.keys(f.doc.blocks)[0],
     path = ["blocks", blockId, "richText"];
   const message = {
@@ -196,10 +201,10 @@ test("native selection listener uses authenticated profile identity and session 
   f.page.observeActivity();
   assert.equal(f.page.handle.listenerCount("ephemeral-message"), count);
   f.page.cacheTitle = () => {};
-  const connected = await f.page.run(request(f.token, "/api/connect"));
-  assert.equal(connected.status, 200);
-  assert.equal((await connected.json()).activity.epoch, f.page.activity.epoch);
-  release();
+  const discovered = await f.page.run(request(f.token, "/api/connect"));
+  assert.equal(discovered.status, 200);
+  assert.equal((await discovered.json()).activity.epoch, f.page.activity.epoch);
+  connected = false;
   f.page.activity.prune();
   assert.equal(f.page.activity.selections.size, 0);
   assert.deepEqual((await (await f.call("read_page_presence")).json()).participants, []);

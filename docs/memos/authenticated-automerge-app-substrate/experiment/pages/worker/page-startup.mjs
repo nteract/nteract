@@ -158,8 +158,8 @@ export const pageStartup = defineMachine({
 
 /** Whether the host record is one this build answers checks from without
  * booting. A live or trashed Page's record without a comments document name,
- * or a record with a storage mode the boot refuses, boots at once, and the
- * boot refuses it. A deleted Page's record needs no comments document: it
+ * or with a storage mode the boot refuses (a Subduction Page's), boots at
+ * once, and the boot refuses it. A deleted Page's record needs neither: it
  * answers as deleted either way. */
 export function recordAnswerable(record) {
   return (
@@ -168,7 +168,7 @@ export function recordAnswerable(record) {
     typeof record.pageId === "string" &&
     typeof record.documentId === "string" &&
     (typeof record.comments_doc === "string" || pageState(record) === "deleted") &&
-    (record.recordStorage === undefined || RECORD_STORAGE_MODES.includes(record.recordStorage))
+    (RECORD_STORAGE_MODES.includes(record.recordStorage) || pageState(record) === "deleted")
   );
 }
 

@@ -15,7 +15,6 @@ import * as fs from "node:fs";
 import { createHash } from "node:crypto";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
-import { migrationStart } from "../worker/record-storage-migration.mjs";
 
 test("fingerprint follows imported auth source and ignores output/unrelated churn", () => {
   const root = mkdtempSync(path.join(tmpdir(), "pages-inputs-"));
@@ -339,7 +338,7 @@ test("release staging copies only built artifacts, never development credentials
 // The deployment version the fixture's `celld deploy` reports.
 const DEPLOYED = "c0ffee0123456789";
 // What a build receipt lists as `record_storage` since the list exists.
-const CURRENT_RECORD_STORAGE = ["local", "buffered", "automerge"];
+const CURRENT_RECORD_STORAGE = ["automerge"];
 const CURRENT_PLAIN_STORAGE_FORMATS = ["doc-store-v2-host-actor-prefix"];
 function installFixture(
   t,
@@ -401,9 +400,9 @@ function installFixture(
       no_bundle: true,
       d1_databases: [profiles.AUTH_D1, profiles.USAGE_D1],
       triggers: { crons: [profiles.USAGE_CRON] },
-      durable_objects: { bindings: [{ name: "PAGE_RECORDS", class_name: "PageRecords" }] },
+      durable_objects: { bindings: [{ name: "PAGES", class_name: "Page" }] },
       r2_buckets: [{ binding: "PAGES_ASSETS", bucket_name: "pages-images" }],
-      migrations: [{ tag: "fixture", new_sqlite_classes: ["PageRecords"] }],
+      migrations: [{ tag: "fixture", new_sqlite_classes: ["Page"] }],
     }),
     "release/index.js": "export default {};",
     "release/public/app.js": "console.log('fixture');",
@@ -892,15 +891,12 @@ for (const target of ["pages-next", "page3", "page4", "page5", "page6"])
       config.vars.NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE,
       config.vars.NOTEBOOK_CLOUD_ANACONDA_API_KEY_PRINCIPAL_NAMESPACE,
     );
-    assert.equal(config.vars.PAGES_ASYNC_PERSISTENCE, target === "pages-next" ? undefined : "true");
     assert.equal(
       config.vars.PAGES_EDITOR,
       ["page4", "page5", "page6"].includes(target) ? "wordgard" : undefined,
     );
-    assert.deepEqual(config.durable_objects.bindings, [
-      { name: "PAGE_RECORDS", class_name: "PageRecords" },
-    ]);
-    assert.deepEqual(config.migrations, [{ tag: "fixture", new_sqlite_classes: ["PageRecords"] }]);
+    assert.deepEqual(config.durable_objects.bindings, [{ name: "PAGES", class_name: "Page" }]);
+    assert.deepEqual(config.migrations, [{ tag: "fixture", new_sqlite_classes: ["Page"] }]);
     assert.deepEqual(config.r2_buckets, [{ binding: "PAGES_ASSETS", bucket_name: "pages-images" }]);
     const unit = fixture.read("/etc/systemd/system/" + deployment.service + ".service");
     assert.match(unit, /Environment=CELLD_DURABILITY=bucket/);
@@ -1106,7 +1102,6 @@ test("page5 is explicitly allowlisted and cannot accept any frozen target's stag
   assert.equal(page5.deployment.internalListen, "127.0.0.1:19475");
   assert.equal(page5.deployment.prefix, "standalone/page5");
   assert.equal(page5.editor, "wordgard");
-  assert.equal(page5.asyncPersistence, true);
   assert.deepEqual(page5.frozenTargets, ["pages-next", "page3", "page4"]);
   assert.equal(page5.tunnelService, "cloudflared-page5.service");
   assert.throws(
@@ -1239,7 +1234,6 @@ test("page6 requires its own manifest and stage and freezes every prior deployme
   assert.equal(profile.deployment.internalListen, "127.0.0.1:19476");
   assert.equal(profile.deployment.prefix, "standalone/page6");
   assert.equal(profile.editor, "wordgard");
-  assert.equal(profile.asyncPersistence, true);
   assert.equal(profile.tunnelService, "cloudflared-page6.service");
   assert.deepEqual(profile.frozenTargets, ["pages-next", "page3", "page4", "page5"]);
   assert.equal(profiles.stageTarget("/tmp/nteract-page6-stage-abcd1234"), target);
@@ -1477,13 +1471,11 @@ for (const target of ["page7", "page8", "page9", "page10", "pages"])
     }
   });
 
-test("compaction maintenance and company viewing are enabled for Page7 through Pages", (t) => {
+test("company viewing and the catalog index are enabled for Page7 through Pages", (t) => {
   for (const target of ["page6", "page7", "page8", "page9", "page10", "pages"]) {
     const f = historicalInstallFixture(t, { target });
     f.execute();
     const config = JSON.parse(f.read(f.release + "/wrangler.json"));
-    assert.equal(config.vars.PAGES_ASYNC_PERSISTENCE, "true");
-    assert.equal(config.vars.PAGES_COMPACT_RECORDS, target !== "page6" ? "true" : undefined);
     assert.equal(
       config.vars.PAGES_COMPANY_VIEW_DOMAINS,
       target !== "page6" ? "anaconda.com" : undefined,
@@ -1492,268 +1484,16 @@ test("compaction maintenance and company viewing are enabled for Page7 through P
       config.vars.PAGES_CATALOG_INDEX,
       ["page8", "page9", "page10", "pages"].includes(target) ? "1" : undefined,
     );
-    // Plain Automerge sync for new Pages is on for Page10 and Pages only.
-    assert.equal(
-      config.vars.PAGES_RECORD_STORAGE,
-      ["page10", "pages"].includes(target) ? "automerge" : undefined,
-    );
+    // Subduction's switches are gone: every Page syncs with plain Automerge.
+    for (const name of [
+      "PAGES_ASYNC_PERSISTENCE",
+      "PAGES_COMPACT_RECORDS",
+      "PAGES_RECORD_STORAGE",
+      "PAGES_MIGRATE_RECORD_STORAGE",
+      "PAGES_MIGRATE_PAGE_IDS",
+    ])
+      assert.equal(config.vars[name], undefined, `${target} ${name}`);
   }
-});
-
-test("every shipped profile installs migration disabled with an empty canary", (t) => {
-  for (const target of [
-    "pages-next",
-    "page3",
-    "page4",
-    "page5",
-    "page6",
-    "page7",
-    "page8",
-    "page9",
-    "page10",
-    "pages",
-  ]) {
-    assert.deepEqual(profiles.deploymentProfile(target).recordStorageMigration, {
-      enabled: false,
-      pageIds: [],
-    });
-    const f = historicalInstallFixture(t, { target });
-    f.execute();
-    const { vars } = JSON.parse(f.read(f.release + "/wrangler.json"));
-    assert.equal(vars.PAGES_MIGRATE_RECORD_STORAGE, undefined);
-    assert.equal(vars.PAGES_MIGRATE_PAGE_IDS, undefined);
-  }
-});
-
-test("installer serializes only an explicit reviewed migration canary", (t) => {
-  const pageIds = ["55555555-5555-4555-8555-555555555555"];
-  const f = installFixture(t, {
-    target: "page10",
-    profile: {
-      ...profiles.deploymentProfile("page10"),
-      recordStorageMigration: { enabled: true, pageIds },
-    },
-  });
-  f.execute();
-  const { vars } = JSON.parse(f.read(f.release + "/wrangler.json"));
-  assert.equal(vars.PAGES_RECORD_STORAGE, "automerge");
-  assert.equal(vars.PAGES_MIGRATE_RECORD_STORAGE, "true");
-  assert.deepEqual(JSON.parse(vars.PAGES_MIGRATE_PAGE_IDS), pageIds);
-  const record = { pageId: pageIds[0], documentId: "d", recordStorage: "buffered" };
-  assert.equal(migrationStart(vars, record).name, "dormant");
-  assert.equal(migrationStart(vars, { ...record, pageId: crypto.randomUUID() }).name, "off");
-});
-
-test("missing or disabled profile policy cannot enable migration", (t) => {
-  const pageId = "55555555-5555-4555-8555-555555555555";
-  for (const policy of [undefined, { enabled: false, pageIds: [pageId] }]) {
-    const f = installFixture(t, {
-      target: "page10",
-      profile: { ...profiles.deploymentProfile("page10"), recordStorageMigration: policy },
-    });
-    // An activation flag in a built artifact is not reviewed profile policy.
-    const staged = JSON.parse(f.read(f.stage + "/release/wrangler.json"));
-    staged.vars = {
-      PAGES_MIGRATE_RECORD_STORAGE: "true",
-      PAGES_MIGRATE_PAGE_IDS: JSON.stringify([pageId]),
-    };
-    f.write(f.stage + "/release/wrangler.json", JSON.stringify(staged));
-    const manifest = JSON.parse(f.read(f.stage + "/manifest.json"));
-    manifest.files["release/wrangler.json"] = createHash("sha256")
-      .update(JSON.stringify(staged))
-      .digest("hex");
-    f.write(f.stage + "/manifest.json", JSON.stringify(manifest));
-    f.execute();
-    const { vars } = JSON.parse(f.read(f.release + "/wrangler.json"));
-    assert.equal(vars.PAGES_MIGRATE_RECORD_STORAGE, policy ? "false" : undefined);
-    assert.equal(vars.PAGES_MIGRATE_PAGE_IDS, policy ? JSON.stringify([pageId]) : undefined);
-    assert.equal(migrationStart(vars, { pageId, documentId: "d" }).name, "off");
-  }
-});
-
-test("installer refuses malformed migration policy before any host command", (t) => {
-  const pageId = "55555555-5555-4555-8555-555555555555";
-  for (const policy of [
-    null,
-    true,
-    {},
-    { enabled: "true", pageIds: [pageId] },
-    { enabled: true, pageIds: [] },
-    { enabled: true, pageIds: "*" },
-    { enabled: true, pageIds: [pageId, "bad"] },
-    { enabled: true, pageIds: [pageId, pageId] },
-    { enabled: true, pageIds: Array(1) },
-    { enabled: true, pageIds: ["AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"] },
-    { enabled: true, pageIds: [pageId], all: true },
-  ]) {
-    const f = installFixture(t, {
-      target: "page10",
-      profile: { ...profiles.deploymentProfile("page10"), recordStorageMigration: policy },
-    });
-    assert.throws(f.execute, /migration/i);
-    assert.deepEqual(f.calls, []);
-  }
-  const native = installFixture(t, {
-    target: "pages",
-    profile: {
-      ...profiles.deploymentProfile("pages"),
-      recordStorage: undefined,
-      recordStorageMigration: { enabled: true, pageIds: [pageId] },
-    },
-  });
-  assert.throws(native.execute, /migration/i);
-  assert.deepEqual(native.calls, []);
-});
-
-// The operator's canary list lives on the host, beside the session secret.
-const CANARY = [
-  "11111111-1111-4111-8111-111111111111",
-  "22222222-2222-4222-8222-222222222222",
-  "33333333-3333-4333-8333-333333333333",
-];
-const operatorFile = (f, text, mode = 0o600) => {
-  const file = f.configDir + "/record-storage-migration.json";
-  f.write(file, text);
-  fs.chmodSync(f.local(file), mode);
-  return file;
-};
-
-test("the operator file names the canary on the host for a plain target", (t) => {
-  assert.equal(
-    profiles.migrationPolicyPath(profiles.deploymentProfile("pages")),
-    "/etc/nteract-pages-live/record-storage-migration.json",
-  );
-  const f = installFixture(t, { target: "pages" });
-  operatorFile(f, JSON.stringify({ enabled: true, pageIds: CANARY }));
-  f.execute();
-  const { vars } = JSON.parse(f.read(f.release + "/wrangler.json"));
-  assert.equal(vars.PAGES_RECORD_STORAGE, "automerge");
-  assert.equal(vars.PAGES_MIGRATE_RECORD_STORAGE, "true");
-  assert.deepEqual(JSON.parse(vars.PAGES_MIGRATE_PAGE_IDS), CANARY);
-  const record = { pageId: CANARY[1], documentId: "d", recordStorage: "buffered" };
-  assert.equal(migrationStart(vars, record).name, "dormant");
-  assert.equal(migrationStart(vars, { ...record, pageId: crypto.randomUUID() }).name, "off");
-});
-
-test("a disabled operator file installs the flag off with its list", (t) => {
-  const f = installFixture(t, { target: "pages" });
-  operatorFile(f, JSON.stringify({ enabled: false, pageIds: CANARY }));
-  f.execute();
-  const { vars } = JSON.parse(f.read(f.release + "/wrangler.json"));
-  assert.equal(vars.PAGES_MIGRATE_RECORD_STORAGE, "false");
-  assert.equal(migrationStart(vars, { pageId: CANARY[0], documentId: "d" }).name, "off");
-});
-
-test("installer refuses a malformed operator file before any host command", (t) => {
-  const many = Array.from({ length: profiles.MAX_MIGRATION_PAGE_IDS + 1 }, () =>
-    crypto.randomUUID(),
-  );
-  for (const text of [
-    "",
-    "not json",
-    "null",
-    "[]",
-    JSON.stringify(CANARY),
-    JSON.stringify({ enabled: true }),
-    JSON.stringify({ enabled: "true", pageIds: CANARY }),
-    JSON.stringify({ enabled: true, pageIds: [] }),
-    JSON.stringify({ enabled: true, pageIds: "*" }),
-    JSON.stringify({ enabled: true, pageIds: ["*"] }),
-    JSON.stringify({ enabled: true, pageIds: [CANARY[0], CANARY[0]] }),
-    JSON.stringify({ enabled: true, pageIds: ["AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"] }),
-    JSON.stringify({ enabled: true, pageIds: CANARY, all: true }),
-    JSON.stringify({ enabled: true, pageIds: many }),
-    JSON.stringify({ enabled: true, pageIds: CANARY, pad: "x".repeat(70_000) }),
-  ]) {
-    const f = installFixture(t, { target: "pages" });
-    operatorFile(f, text);
-    assert.throws(f.execute, /record storage migration canary file/, text.slice(0, 40));
-    assert.deepEqual(f.calls, []);
-    assert.equal(fs.existsSync(f.local(f.release)), false);
-  }
-});
-
-test("installer refuses a writable or linked operator file", (t) => {
-  const text = JSON.stringify({ enabled: true, pageIds: CANARY });
-  for (const mode of [0o620, 0o602, 0o666]) {
-    const f = installFixture(t, { target: "pages" });
-    operatorFile(f, text, mode);
-    assert.throws(f.execute, /must be a regular root-owned file, not group- or world-writable/);
-    assert.deepEqual(f.calls, []);
-  }
-  const f = installFixture(t, { target: "pages" });
-  const elsewhere = operatorFile(f, text).replace(".json", ".real.json");
-  fs.renameSync(f.local(f.configDir + "/record-storage-migration.json"), f.local(elsewhere));
-  fs.symlinkSync(f.local(elsewhere), f.local(f.configDir + "/record-storage-migration.json"));
-  assert.throws(f.execute, /is a symlink/);
-  assert.deepEqual(f.calls, []);
-});
-
-test("the operator file needs a plain profile and no profile canary", (t) => {
-  const text = JSON.stringify({ enabled: false, pageIds: [] });
-  const native = installFixture(t, {
-    target: "pages",
-    profile: { ...profiles.deploymentProfile("pages"), recordStorage: undefined },
-  });
-  operatorFile(native, text);
-  assert.throws(native.execute, /does not set recordStorage automerge/);
-  assert.deepEqual(native.calls, []);
-  const both = installFixture(t, {
-    target: "pages",
-    profile: {
-      ...profiles.deploymentProfile("pages"),
-      recordStorageMigration: { enabled: true, pageIds: [CANARY[0]] },
-    },
-  });
-  operatorFile(both, JSON.stringify({ enabled: true, pageIds: CANARY }));
-  assert.throws(both.execute, /both the profile and the operator file/);
-  assert.deepEqual(both.calls, []);
-});
-
-test("widening the operator canary reinstalls the same release and restarts", (t) => {
-  const f = liveFixture(t, { target: "pages" });
-  operatorFile(f, JSON.stringify({ enabled: true, pageIds: CANARY.slice(0, 1) }));
-  f.execute();
-  assert.deepEqual(f.outputs.at(-1).restart_reasons, ["config"]);
-  const first = JSON.parse(f.read(f.release + "/wrangler.json"));
-  assert.deepEqual(JSON.parse(first.vars.PAGES_MIGRATE_PAGE_IDS), CANARY.slice(0, 1));
-  const firstDeployment = f.read(f.configDir + "/deployment.json");
-  const firstVersion = JSON.parse(firstDeployment).version;
-  f.calls.length = 0;
-  operatorFile(f, JSON.stringify({ enabled: true, pageIds: CANARY }));
-  f.execute();
-  // The deployment the reinstall replaced stays on record by version.
-  const audit =
-    f.configDir +
-    "/rollout-" +
-    JSON.parse(
-      f.read(
-        f.configDir +
-          "/rollout-" +
-          fs
-            .readdirSync(f.local(f.configDir))
-            .find((n) => n.startsWith("rollout-"))
-            .slice(8) +
-          "/manifest.json",
-      ),
-    ).source_sha;
-  assert.equal(f.read(audit + "/deployment-" + firstVersion + ".json"), firstDeployment);
-  assert.equal(
-    f.calls.filter(({ command, args }) => command === "systemctl" && args[0] === "restart").length,
-    1,
-  );
-  assert.deepEqual(f.outputs.at(-1).restart_reasons, ["config"]);
-  const second = JSON.parse(f.read(f.release + "/wrangler.json"));
-  assert.deepEqual(JSON.parse(second.vars.PAGES_MIGRATE_PAGE_IDS), CANARY);
-  assert.deepEqual({ ...second, vars: null }, { ...first, vars: null });
-  // Removing the file turns migration off again with one more restart.
-  rmSync(f.local(f.configDir + "/record-storage-migration.json"));
-  f.calls.length = 0;
-  f.execute();
-  assert.deepEqual(f.outputs.at(-1).restart_reasons, ["config"]);
-  const third = JSON.parse(f.read(f.release + "/wrangler.json"));
-  assert.equal(third.vars.PAGES_MIGRATE_RECORD_STORAGE, undefined);
-  assert.equal(third.vars.PAGES_RECORD_STORAGE, "automerge");
 });
 
 test("Pages and Page10 retain the local build's isolated usage binding and UTC cron", (t) => {
@@ -1785,8 +1525,6 @@ test("fresh Page10 installation owns its origin, storage, runtime and service", 
   assert.equal(config.vars.NOTEBOOK_CLOUD_PUBLIC_ORIGIN, "https://page10.runtimed.run");
   assert.equal(config.vars.NOTEBOOK_CLOUD_OIDC_REDIRECT_URI, "https://page10.runtimed.run/oidc");
   assert.equal(config.vars.PAGES_EDITOR, "wordgard");
-  assert.equal(config.vars.PAGES_ASYNC_PERSISTENCE, "true");
-  assert.equal(config.vars.PAGES_COMPACT_RECORDS, "true");
   assert.equal(config.vars.PAGES_COMPANY_VIEW_DOMAINS, "anaconda.com");
   assert.equal(config.vars.PAGES_CATALOG_INDEX, "1");
   assert.equal(config.vars.PAGES_DEFAULT_PAGE_QUOTA, "250");
@@ -1849,8 +1587,7 @@ test("fresh Pages installation owns pages.runtimed.run and its -live resources",
   assert.equal(profile.firewallTable, "nteract_pages_live");
   assert.equal(profile.firewallMark, "0x00100000");
   assert.equal(profile.tunnelService, "cloudflared-pages-live.service");
-  // Every Page10 flag carries over; only the owned resources differ, and
-  // flags Page10 is trying first (recordStorage: plain Automerge sync).
+  // Every Page10 flag carries over; only the owned resources differ.
   const owned = [
     "deployment",
     "firewallTable",
@@ -1858,7 +1595,6 @@ test("fresh Pages installation owns pages.runtimed.run and its -live resources",
     "firewallComment",
     "tunnelService",
     "tunnelSlots",
-    "recordStorage",
   ];
   const flags = (name) =>
     Object.fromEntries(
@@ -1982,14 +1718,10 @@ test("pages2 is a fresh lab2 target with Pages' flags and plain sync only", () =
       Object.entries(profiles.deploymentProfile(name)).filter(([key]) => !owned.includes(key)),
     );
   assert.deepEqual(flags("pages2"), flags("pages"));
-  assert.equal(profile.recordStorage, "automerge");
   assert.equal(profile.sharedTunnel, false);
   assert.equal(profile.frozenTargets, undefined);
   assert.deepEqual(profile.d1, profiles.AUTH_D1);
   assert.deepEqual(profiles.unitMemory(profile), { maxRssMb: 2560, memoryMax: "4G" });
-  // No migration: the canary is off and serializes nothing.
-  assert.deepEqual(profile.recordStorageMigration, { enabled: false, pageIds: [] });
-  assert.deepEqual(profiles.migrationVars(profile), {});
   assert.deepEqual(profiles.RECORD_STORAGE_HISTORY.pages2, ["automerge"]);
   // A build that can't open plain Pages is refused before it reaches lab2.
   assert.throws(
@@ -2015,7 +1747,7 @@ test("fresh pages2 installation owns page2.runtimed.run, its prefix and its unit
   const config = JSON.parse(f.read(f.release + "/wrangler.json"));
   assert.equal(config.vars.NOTEBOOK_CLOUD_PUBLIC_ORIGIN, "https://page2.runtimed.run");
   assert.equal(config.vars.NOTEBOOK_CLOUD_OIDC_REDIRECT_URI, "https://page2.runtimed.run/oidc");
-  assert.equal(config.vars.PAGES_RECORD_STORAGE, "automerge");
+  assert.equal(config.vars.PAGES_RECORD_STORAGE, undefined);
   assert.equal(config.vars.PAGES_MIGRATE_RECORD_STORAGE, undefined);
   assert.equal(config.vars.PAGES_MIGRATE_PAGE_IDS, undefined);
   assert.equal(config.vars.PAGES_DEFAULT_PAGE_QUOTA, "250");
@@ -2497,7 +2229,7 @@ test("a release without plain storage is refused for a target that has enabled i
       (error) => {
         assert.match(error.message, /^Refusing release d{12} \(build 9ae4ed83e44e\) for page10: /);
         assert.match(error.message, /page10 may hold "automerge" Pages/);
-        assert.match(error.message, /RECORD_STORAGE_HISTORY lists it; its profile sets/);
+        assert.match(error.message, /RECORD_STORAGE_HISTORY lists it\)/);
         assert.match(error.message, /Unsupported Page record storage mode/);
         return true;
       },
@@ -2559,17 +2291,17 @@ test("Pages refuses a release without plain storage from its history alone", () 
   // history entry already refuses every build that could not open them.
   assert.deepEqual(
     [...profiles.targetRecordStorage("pages")],
-    [["automerge", ["RECORD_STORAGE_HISTORY lists it", "its profile sets recordStorage"]]],
+    [["automerge", ["RECORD_STORAGE_HISTORY lists it"]]],
   );
   for (const receipt of [PRE_PLAIN, { ...PRE_PLAIN, record_storage: ["local", "buffered"] }])
     assert.throws(
       () => profiles.assertReleaseOpensTargetPages("pages", receipt),
-      /^Error: Refusing release d{12} \(build 9ae4ed83e44e\) for pages: pages may hold "automerge" Pages \(RECORD_STORAGE_HISTORY lists it; its profile sets recordStorage\)/,
+      /^Error: Refusing release d{12} \(build 9ae4ed83e44e\) for pages: pages may hold "automerge" Pages \(RECORD_STORAGE_HISTORY lists it\)/,
     );
   assert.doesNotThrow(() => profiles.assertReleaseOpensTargetPages("pages", PLAIN));
 });
 
-test("every target that sets recordStorage records it in RECORD_STORAGE_HISTORY", () => {
+test("serving targets hold plain Pages for good, and no profile names record storage", () => {
   for (const target of [
     "pages-next",
     "page3",
@@ -2581,13 +2313,15 @@ test("every target that sets recordStorage records it in RECORD_STORAGE_HISTORY"
     "page9",
     "page10",
     "pages",
+    "pages2",
   ]) {
-    const mode = profiles.deploymentProfile(target).recordStorage;
-    if (mode) assert.ok(profiles.RECORD_STORAGE_HISTORY[target]?.includes(mode), target);
+    const profile = profiles.deploymentProfile(target);
+    for (const key of ["recordStorage", "recordStorageMigration", "asyncPersistence"])
+      assert.equal(profile[key], undefined, `${target} ${key}`);
   }
-  // A Page keeps its mode for life, so history outlives the profile flag.
   assert.deepEqual(profiles.RECORD_STORAGE_HISTORY.page10, ["automerge"]);
   assert.deepEqual(profiles.RECORD_STORAGE_HISTORY.pages, ["automerge"]);
+  assert.deepEqual(profiles.RECORD_STORAGE_HISTORY.pages2, ["automerge"]);
 });
 
 test("the build receipt lists every record storage mode the Worker opens", async () => {

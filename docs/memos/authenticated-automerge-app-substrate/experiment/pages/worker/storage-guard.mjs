@@ -4,8 +4,8 @@
  * After a runtime reset the old object keeps running: its boot, timers and
  * requests still hold the storage the new object reads
  * (scripts/celld-boot-probe.mjs). A Page host wraps its context once, in the
- * constructor, so every storage user it builds (the policy, the record
- * store, the journal, actor persistence, content activity) shares one gate.
+ * constructor, so every storage user it builds (the policy, plain sync, the
+ * journal, content activity) shares one gate.
  * `refusal()` returns the error to refuse with, or nothing while writes are
  * allowed. Reads always pass, except through `sql.exec`.
  *
@@ -14,6 +14,9 @@
  * statement's text can't be trusted to say whether it writes (one call can
  * run several statements).
  */
+
+/** Durable Object storage takes at most 128 keys per put or delete call. */
+export const STORAGE_KEYS_PER_CALL = 128;
 
 /** Storage methods that write, or open a scope that writes. */
 export const STORAGE_WRITES = Object.freeze([
@@ -98,25 +101,4 @@ export function guardContext(ctx, refusal) {
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
-}
-
-/** A Durable Object stub whose writes are refused the same way. Every
- * request but a GET writes: PageRecords takes its lease and its records by
- * POST. */
-export function guardStub(stub, refusal) {
-  return {
-    fetch(input, init) {
-      const method = (
-        init?.method ?? (input instanceof Request ? input.method : "GET")
-      ).toUpperCase();
-      const error = method === "GET" ? undefined : refusal();
-      return error ? Promise.reject(error) : stub.fetch(input, init);
-    },
-  };
-}
-
-/** A stub factory whose every stub is guarded by `guardStub`. A caller that
- * replaces a broken stub (RemoteRecordSink) gets the same gate on each one. */
-export function guardStubs(stubs, refusal) {
-  return () => guardStub(stubs(), refusal);
 }

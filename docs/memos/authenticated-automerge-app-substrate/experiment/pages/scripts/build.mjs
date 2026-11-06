@@ -189,7 +189,6 @@ await writeFile(
         bindings: [
           { name: "PAGES", class_name: "Page" },
           { name: "CATALOGS", class_name: "Catalog" },
-          { name: "PAGE_RECORDS", class_name: "PageRecords" },
           // Projects keep the Space class: the class name is the storage identity for
           // Projects, and celld 0.6.3 refuses renamed_classes migrations.
           { name: "PROJECTS", class_name: "Space" },
@@ -197,6 +196,8 @@ await writeFile(
       },
       migrations: [
         { tag: "v1", new_sqlite_classes: ["Page", "Catalog"] },
+        // No Worker exports PageRecords now. v2 stays: a migration tag is
+        // history. Deleting the class needs a deleted_classes migration.
         { tag: "v2", new_sqlite_classes: ["PageRecords"] },
         { tag: "v3", new_sqlite_classes: ["Space"] },
       ],

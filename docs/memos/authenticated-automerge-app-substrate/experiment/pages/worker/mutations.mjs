@@ -71,7 +71,7 @@ export function requireHeads(doc, heads) {
     });
 }
 
-/** Journal the exact CRDT edit under shared native history admission. Retrying
+/** Journal the exact CRDT edit, then apply it through the host's queue. Retrying
  * never repeats the semantic operation; terminal receipts retain retry metadata.
  *
  * `doc` names the document `handle` holds (PAGE_DOC or COMMENTS_DOC); the
@@ -97,7 +97,6 @@ export async function documentMutation({
   prepare,
   apply,
   flush,
-  admission,
   hostActorPrefix,
   // The host's own migration: its key is in the reserved internal key space,
   // with its own journal capacity (operation-journal.mjs).
@@ -118,7 +117,6 @@ export async function documentMutation({
     retryToken: args.retry_token,
     scope,
     principal: identity.principal,
-    pendingEntry: admission?.pending(key),
   });
   let entry = inspected.entry;
   if (entry && entryDoc(entry) !== doc) {
@@ -132,11 +130,6 @@ export async function documentMutation({
   }
   let recorded = false;
   if (!entry) {
-    if (admission?.hasPending)
-      throw Object.assign(Error("Finish the pending operation before starting another edit"), {
-        status: 429,
-        code: "pending_operation_capacity",
-      });
     // A new intent never edits a Page stamped with a schema feature this build
     // can't express. A recorded receipt still replays.
     requireSupportedSchema(handle.doc());
@@ -165,7 +158,7 @@ export async function documentMutation({
       await prepare();
     }
     const before = handle.doc();
-    // Native edits can land while prepare awaits; check the exact base again.
+    // Browser edits can land while prepare awaits; check the exact base again.
     requireSupportedSchema(before);
     const guarded = targetScope
       ? guardPassageEdits(before, args.base_heads, args.operations)
@@ -228,15 +221,11 @@ export async function documentMutation({
         retry: inspected.retry,
       });
       // Persist the captured dependency base before the journal can survive a
-      // crash. Native admission may advance meanwhile; reserve checks its union.
+      // crash.
       await flush();
       entry = await reserveOperation(storage, { key, entry, retry: inspected.retry });
-      const persist = async () => {
-        await storage.put(key, entry);
-        await storage.sync();
-      };
-      if (admission) await admission.reserve(key, entry, after, before, persist);
-      else await persist();
+      await storage.put(key, entry);
+      await storage.sync();
       recorded = true;
     } finally {
       A.free(after ?? candidate);
@@ -249,8 +238,7 @@ export async function documentMutation({
       await storage.put(key, entry);
       await storage.sync();
     }
-    if (admission) await admission.replay(key, entry, handle);
-    else await handle.update((doc) => A.applyChanges(doc, entry.changes)[0], { internal });
+    await handle.update((doc) => A.applyChanges(doc, entry.changes)[0], { internal });
     if (!A.hasHeads(handle.doc(), entry.receipt.heads))
       throw new Error("Recorded edit dependencies are unavailable");
     await flush();
@@ -262,12 +250,11 @@ export async function documentMutation({
     // A prior attempt may have written the receipt before its barrier failed.
     await storage.sync();
   }
-  await admission?.release(key);
   return entry.receipt;
 }
 
 /** Replay every pending entry for document `doc` into `handle`. */
-export async function recoverDocumentMutations(storage, handle, flush, admission, doc = PAGE_DOC) {
+export async function recoverDocumentMutations(storage, handle, flush, doc = PAGE_DOC) {
   const pending = [...(await listOperationEntries(storage))].filter(
     ([, entry]) => entry.pending && entry.changes && entryDoc(entry) === doc,
   );
@@ -280,29 +267,17 @@ export async function recoverDocumentMutations(storage, handle, flush, admission
   try {
     if (pending.some(([, entry]) => !A.hasHeads(candidate, entry.receipt.heads)))
       throw new Error("Recorded edit dependencies are unavailable");
-    if (admission) {
-      // Every reservation is restored before native connections can open. The
-      // union is checked at the same boundary as incoming browser records.
-      for (const [key, entry] of pending)
-        await admission.reserve(key, entry, candidate, base, async () => {});
-      await admission.apply(
-        pending.map(([key]) => key),
-        changes,
-        handle,
-      );
-    } else {
-      // Apply the validated closure in causal order, preserving the capability
-      // of each journal entry rather than exempting a mixed recovery batch.
-      const internalHashes = new Set(
-        pending
-          .filter(([key]) => key.startsWith(INTERNAL_PREFIX))
-          .flatMap(([, entry]) => entry.changes.map((bytes) => A.decodeChange(bytes).hash)),
-      );
-      for (const bytes of A.getChanges(base, candidate))
-        await handle.update((doc) => A.applyChanges(doc, [bytes])[0], {
-          internal: internalHashes.has(A.decodeChange(bytes).hash),
-        });
-    }
+    // Apply the validated closure in causal order, preserving the capability
+    // of each journal entry rather than exempting a mixed recovery batch.
+    const internalHashes = new Set(
+      pending
+        .filter(([key]) => key.startsWith(INTERNAL_PREFIX))
+        .flatMap(([, entry]) => entry.changes.map((bytes) => A.decodeChange(bytes).hash)),
+    );
+    for (const bytes of A.getChanges(base, candidate))
+      await handle.update((doc) => A.applyChanges(doc, [bytes])[0], {
+        internal: internalHashes.has(A.decodeChange(bytes).hash),
+      });
   } finally {
     A.free(candidate);
   }
@@ -313,5 +288,4 @@ export async function recoverDocumentMutations(storage, handle, flush, admission
     await storage.put(key, completed);
   }
   await storage.sync();
-  for (const [key] of pending) await admission?.release(key);
 }

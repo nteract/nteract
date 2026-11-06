@@ -44,8 +44,6 @@ const contentActivity = process.argv.includes("--content-activity");
 const cards = process.argv.includes("--cards");
 const cardImages = process.argv.includes("--card-images");
 const listingBench = process.argv.includes("--listing-bench");
-// Starts native, then restarts celld with plain sync and migration on.
-const migration = process.argv.includes("--migration");
 if (
   [
     domainView,
@@ -64,11 +62,10 @@ if (
     cards,
     cardImages,
     listingBench,
-    migration,
   ].filter(Boolean).length > 1
 )
   throw new Error(
-    "Choose one qualification: --domain-view, --images, --datasets, --mcp-images, --task-lists, --admission, --build-update, --trash, --projects, --revocation, --cold-open, --commenter, --content-activity, --cards, --card-images, --listing-bench or --migration",
+    "Choose one qualification: --domain-view, --images, --datasets, --mcp-images, --task-lists, --admission, --build-update, --trash, --projects, --revocation, --cold-open, --commenter, --content-activity, --cards, --card-images or --listing-bench",
   );
 const children = new Set();
 let canceled = false;
@@ -248,7 +245,6 @@ try {
         NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE: "pages-e2e",
         NOTEBOOK_CLOUD_ANACONDA_API_KEY_PRINCIPAL_NAMESPACE: "pages-e2e",
         NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL: fixtureWhoamiUrl,
-        ...(migration && { PAGES_RECORD_STORAGE: "" }),
         ...vars,
       })
         .map(([key, value]) => `${key}=${value}`)
@@ -421,9 +417,7 @@ try {
                                     ? "scripts/build-update-smoke.mjs"
                                     : listingBench
                                       ? "scripts/listing-benchmark.mjs"
-                                      : migration
-                                        ? "scripts/record-storage-migration-smoke.mjs"
-                                        : "scripts/sharing-smoke.mjs",
+                                      : "scripts/sharing-smoke.mjs",
     ],
     {
       env: {
@@ -437,11 +431,11 @@ try {
           PAGES_E2E_FIXTURE_ID: imageSource.identity,
         }),
       },
-      ...((admission || buildUpdate || listingBench || migration) && {
+      ...((admission || buildUpdate || listingBench) && {
         stdio: ["inherit", "inherit", "inherit", "ipc"],
       }),
     },
-    admission || buildUpdate || listingBench || migration ? restartOnRequest : undefined,
+    admission || buildUpdate || listingBench ? restartOnRequest : undefined,
   );
   const result = JSON.parse(await readFile(path.join(output, "report.json"), "utf8"));
   if (!result.cleaned || result.failure)

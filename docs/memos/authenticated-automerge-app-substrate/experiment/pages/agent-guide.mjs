@@ -136,10 +136,6 @@ Branch on code, not on the error message:
 - edit_conflict, resync_required: see Guarded edits below.
 - unsupported_schema_feature: the Page uses features this version of Pages
   can't edit (listed in unsupported_features). Read it; don't retry the edit.
-- record_storage_unsupported (409): the Pages web app registered a browser draft
-  with plain Automerge storage, and this host doesn't accept it. Nothing was
-  created. The web app re-creates the draft with native storage and registers
-  again; tools never see this code.
 - unsupported_markdown: the Markdown has something Pages can't represent.
   unsupported gives construct ("math", "html", "wrapped-image",
   "table-cells", "empty-link", "definition" or "unrepresentable"), line,
@@ -232,11 +228,6 @@ Branch on code, not on the error message:
   verified email at that domain. Sign in again with it.
 - page_recovery_blocked: a pending edit exceeds the Page's history capacity;
   accepted content stays readable. Tell the person.
-- Retryable server waits (503, retryable:true): record_persistence_timeout
-  and record_persistence_unavailable. Retry the same request, including its
-  key and token. record_persistence_unavailable carries
-   retry_after_ms and Retry-After. For a tokenless write it is retryable:false:
-   read back and reconcile before retrying, since the write may have completed.
 - shared_page_unavailable (503, retryable:true): a listing met a shared Page,
   or its owner's Catalog, that did not answer. Retry the listing after
   retry_after_ms (also Retry-After), with exponential backoff if it repeats.

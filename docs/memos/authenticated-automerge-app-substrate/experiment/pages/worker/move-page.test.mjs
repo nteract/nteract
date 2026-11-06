@@ -14,7 +14,7 @@ import {
 import { Catalog } from "./index.mjs";
 import { locationEntries } from "./catalog-location.mjs";
 import { projectLifecycle } from "./catalog.mjs";
-import { STORAGE_KEYS_PER_CALL } from "./actor-authorship.mjs";
+import { STORAGE_KEYS_PER_CALL } from "./storage-guard.mjs";
 import { LOCATION_REVISION_KEY, MOVE_STATUS, movePage, movePageSpec } from "./move-page.mjs";
 import { CrashStorage } from "./operation-intent-fixture.mjs";
 import { Storage, ids, world } from "./projects-fixture.mjs";

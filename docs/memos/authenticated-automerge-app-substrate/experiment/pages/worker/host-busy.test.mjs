@@ -18,7 +18,7 @@ import {
 const hostRefusal = () =>
   new Response(HOST_BUSY_TEXT, { status: 503, headers: { "content-type": "text/plain" } });
 
-test("low-level persistence imports work with the parent experiment's tsconfig", () => {
+test("host-busy imports work with the parent experiment's tsconfig", () => {
   const result = spawnSync(
     process.execPath,
     [
@@ -29,10 +29,7 @@ test("low-level persistence imports work with the parent experiment's tsconfig",
       `
         import assert from "node:assert/strict";
         import { overloadRetryAfterMs } from "./pages/worker/host-busy.mjs";
-        import { encodeRecordBatch, decodeRecordBatch } from "./pages/worker/record-persistence.mjs";
         assert.equal(overloadRetryAfterMs(() => 0), 2000);
-        const entries = [["record", new Uint8Array([1, 2, 3])]];
-        assert.deepEqual(decodeRecordBatch(encodeRecordBatch(entries)), entries);
       `,
     ],
     {
@@ -346,61 +343,9 @@ test("a transient refusal restated for a tool request follows its repeat safety"
   assert.equal(await withRepeatSafety(ok, false), ok);
 });
 
-test("a Page storage refusal preserves its delay but requires tokenless writes to reconcile", async () => {
-  const body = {
-    error:
-      "Storage did not confirm its records. Retry after retry_after_ms with the same idempotency_key and retry_token.",
-    code: "record_persistence_unavailable",
-    retryable: true,
-    retry_after_ms: 3000,
-  };
-  for (const safe of [false, true, undefined]) {
-    const response = Response.json(body, {
-      status: 503,
-      headers: {
-        "retry-after": "3",
-        "x-custom": "kept",
-        "content-length": String(JSON.stringify(body).length),
-      },
-    });
-    const restated = await withRepeatSafety(response, safe, new AbortController().signal);
-    assert.equal(restated.status, 503);
-    assert.equal(restated.headers.get("retry-after"), "3");
-    assert.equal(restated.headers.get("x-custom"), "kept");
-    const actual = await restated.json();
-    assert.equal(actual.code, body.code);
-    assert.equal(actual.retry_after_ms, 3000);
-    assert.equal(actual.retryable, safe !== false);
-    if (safe === false) {
-      assert.equal(restated.headers.get("content-length"), null);
-      assert.match(actual.error, /Read back and reconcile before retrying/);
-      assert.doesNotMatch(actual.error, /Retry after retry_after_ms/);
-    } else {
-      assert.equal(restated, response);
-      assert.deepEqual(actual, body);
-    }
-  }
-});
-
-test("repeat-safety inspection propagates body read failures", async () => {
-  const failure = new Error("body read failed");
-  const response = new Response(
-    new ReadableStream({
-      start(controller) {
-        controller.error(failure);
-      },
-    }),
-    { status: 503, headers: { "content-type": "application/json" } },
-  );
-  await assert.rejects(
-    withRepeatSafety(response, false, new AbortController().signal),
-    (error) => error === failure,
-  );
-});
-
-test("repeat-safety inspection preserves other JSON, malformed and empty response bodies", async () => {
+test("repeat-safety leaves other JSON, malformed and empty response bodies unread", async () => {
   for (const text of [
-    '{ "code": "record_persistence_timeout", "retryable": true }',
+    '{ "code": "request_timeout", "retryable": true }',
     '{ "code": "page_busy", "retryable": true }',
     '{"unfinished":',
     "null",

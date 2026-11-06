@@ -11,7 +11,6 @@ import {
   logFailure,
 } from "./auth.mjs";
 import worker from "./index.mjs";
-import { recordPersistenceTimeout } from "./record-persistence.mjs";
 
 test("whoami returns only verified self-account data and credential capability", async (t) => {
   const fixture = await createAuthFixture();
@@ -538,11 +537,11 @@ test("server diagnostics identify the boundary without exposing provider errors 
   logFailure(
     Object.assign(Error("private principal and token"), {
       status: 503,
-      code: "native_admission_timeout",
+      code: "native_access_changed",
     }),
     "native-admission",
   );
-  assert.equal(logs[2][1].reason, "native_admission_timeout");
+  assert.equal(logs[2][1].reason, "native_access_changed");
   logFailure(
     Object.assign(Error("private body"), {
       status: 503,
@@ -596,12 +595,16 @@ test("an unexpected 500 logs where it was thrown, without its message", async (t
 
 test("retryable server failures tell the caller to repeat the same request", async (t) => {
   t.mock.method(console, "error", () => {});
-  const response = errorResponse(recordPersistenceTimeout(), "page");
+  const timeout = Object.assign(Error("This request took too long; retry it"), {
+    status: 503,
+    code: "request_timeout",
+  });
+  const response = errorResponse(timeout, "page");
   assert.equal(response.status, 503);
   const body = await response.json();
-  assert.equal(body.code, "record_persistence_timeout");
+  assert.equal(body.code, "request_timeout");
   assert.equal(body.retryable, true);
-  assert.match(body.error, /same idempotency_key and retry_token/);
+  assert.match(body.error, /retry it/);
   // Other server failures keep the generic message.
   const hidden = errorResponse(Object.assign(Error("private"), { status: 503, code: "x" }));
   assert.deepEqual(await hidden.json(), { error: "Pages request failed" });

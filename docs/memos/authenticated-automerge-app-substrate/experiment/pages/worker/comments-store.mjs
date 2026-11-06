@@ -1,5 +1,4 @@
-import { documentIdToBinary, interpretAsDocumentId } from "@automerge/automerge-repo";
-import { logicalId } from "./policy.mjs";
+import { interpretAsDocumentId } from "@automerge/automerge-repo";
 
 /**
  * Naming a Page's comments document.
@@ -36,9 +35,4 @@ export function commentsDocumentId(uuid) {
   return interpretAsDocumentId(
     Uint8Array.from(String(uuid).replaceAll("-", "").match(/../g), (pair) => parseInt(pair, 16)),
   );
-}
-
-/** The native tree the policy and storage name it by. */
-export function commentsTreeOf(uuid) {
-  return logicalId(documentIdToBinary(commentsDocumentId(uuid)));
 }

@@ -17,6 +17,7 @@ import {
   revokeOAuthToken,
   rotateRefreshToken,
 } from "./oauth-store.mjs";
+import { plainStub } from "./plain-stub.mjs";
 
 const origin = "https://page7.example";
 const resource = `${origin}/mcp`;
@@ -503,7 +504,10 @@ class Storage {
 }
 
 function readPageFixture(t, f, role) {
-  const initial = A.change(A.from(createPageData({ pageId, title: "Private read fixture" })), (draft) => initializePage(draft));
+  const initial = A.change(
+    A.from(createPageData({ pageId, title: "Private read fixture" })),
+    (draft) => initializePage(draft),
+  );
   const blockId = Object.keys(initial.blocks)[0];
   let threadId;
   const doc = A.change(initial, (draft) => {
@@ -548,7 +552,7 @@ function readPageFixture(t, f, role) {
     commentsHandle: { doc: () => commented.comments },
     cacheTitle() {},
   });
-  page.policy = new DocumentPolicy({ storage, metadata: () => page.metadata });
+  page.policy = new DocumentPolicy({ metadata: () => page.metadata });
   f.env.PAGES = {
     getByName(id) {
       assert.equal(id, pageId);
@@ -656,7 +660,9 @@ for (const scope of ["pages:read pages:write offline_access", "pages:read offlin
 
 test("a live Page ACL downgrade and revocation override an existing OAuth write grant", async (t) => {
   const f = await fixture(t);
-  const doc = A.change(A.from(createPageData({ pageId, title: "ACL fixture" })), (draft) => initializePage(draft));
+  const doc = A.change(A.from(createPageData({ pageId, title: "ACL fixture" })), (draft) =>
+    initializePage(draft),
+  );
   const comments = newCommentsDoc();
   t.after(() => A.free(doc));
   const storage = new Storage();
@@ -679,7 +685,7 @@ test("a live Page ACL downgrade and revocation override an existing OAuth write 
     commentsHandle: { doc: () => comments },
     cacheTitle() {},
   });
-  page.policy = new DocumentPolicy({ storage, metadata: () => page.metadata });
+  page.policy = new DocumentPolicy({ metadata: () => page.metadata });
   f.env.PAGES = {
     getByName(id) {
       assert.equal(id, pageId);
@@ -747,7 +753,10 @@ test("OAuth domain viewing rechecks company policy, explicit denial, and proof e
     env: companyEnv,
     identity: { ...person, emailProof: { ...session, provider: "app-session" } },
   });
-  const document = A.change(A.from(createPageData({ pageId, title: "Company-only Page" })), (draft) => initializePage(draft));
+  const document = A.change(
+    A.from(createPageData({ pageId, title: "Company-only Page" })),
+    (draft) => initializePage(draft),
+  );
   t.after(() => A.free(document));
   const jobs = [],
     catalogues = new Map(),
@@ -780,7 +789,7 @@ test("OAuth domain viewing rechecks company policy, explicit denial, and proof e
     },
     handle: { doc: () => document },
   });
-  page.policy = new DocumentPolicy({ storage, metadata: () => page.metadata });
+  page.policy = new DocumentPolicy({ metadata: () => page.metadata });
   f.env.PAGES = {
     getByName() {
       return page;
@@ -853,9 +862,11 @@ test("OAuth MCP clients trash, restore, preview and confirm permanent deletion",
         removed++;
       },
     },
-    backend: { async flush() {} },
+    get plain() {
+      return plainStub(this.repo);
+    },
   });
-  page.policy = new DocumentPolicy({ storage: pageStorage, metadata: () => page.metadata });
+  page.policy = new DocumentPolicy({ metadata: () => page.metadata });
   const catalog = new Catalog({ id: { name: person.principal }, storage: catalogStorage }, f.env);
   await catalogStorage.put(`page/${pageId}`, { page_id: pageId, title: "OAuth lifecycle" });
   f.env.CATALOGS = { getByName: () => ({ fetch: (request) => catalog.fetch(request) }) };

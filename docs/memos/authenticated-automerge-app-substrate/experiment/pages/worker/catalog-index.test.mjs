@@ -33,6 +33,7 @@ import {
   titleKey,
   titleMatches,
 } from "./catalog-index.mjs";
+import { plainStub } from "./plain-stub.mjs";
 
 class Storage {
   values = new Map();
@@ -432,11 +433,12 @@ async function catalogFixture(t, { index = "1" } = {}) {
       handle: { doc: () => doc, broadcast() {} },
       wires: new Set(),
       repo: { delete: async () => {} },
-      backend: { flush: async () => {} },
+      get plain() {
+        return plainStub(this.repo);
+      },
       calls: 0,
     });
     page.policy = new DocumentPolicy({
-      storage,
       metadata: () => page.policyMetadata ?? page.metadata,
     });
     page.policy.refreshAccess = async () => {};

@@ -8,7 +8,6 @@ import {
   schemaUnsupported,
 } from "../model/schema-features.mjs";
 import { BLOCKING, commentAdmission } from "../sync/comments.mjs";
-import { DocStore } from "../sync/doc-store.mjs";
 import { HostRepo, hostTreeOf } from "../sync/host-handle.mjs";
 import { Refusal, SyncHost } from "../sync/host.mjs";
 import { socketTransport } from "../sync/wire.mjs";
@@ -21,15 +20,14 @@ import {
 import { ROUNDS_EMPTY, roundsStep } from "./plain-sync-log.mjs";
 import { PermissionDenied, credentialExpired } from "./policy.mjs";
 
-// The Page host for `recordStorage: "automerge"` Pages: plain Automerge sync
-// in place of Subduction. Browsers connect to a SyncHost (sync/host.mjs). The
+// The Page host's sync: plain Automerge sync, `recordStorage: "automerge"`.
+// Browsers connect to a SyncHost (sync/host.mjs). The
 // HostRepo facade gives worker code handles over that same live document.
 // Trusted edits and durability barriers use SyncHost's admission queue.
 // History and actor claims live in the Page's own storage under `plain/`.
 //
-// Access comes from DocumentPolicy.account(identity): the same ACL, trash,
-// recovery and credential rules as native connections, checked on every frame
-// and every delivery instead of through signing-key bindings.
+// Access comes from DocumentPolicy.account(identity): the ACL, trash,
+// recovery and credential rules, checked on every frame and every delivery.
 
 const PREFIX = "plain/";
 const BLOCKED = "host/comments-blocked/";
@@ -89,7 +87,7 @@ const accessShape = (access) => ({
 
 /** Delete every key plain sync stores for a Page: history, orphaned parts,
  * actor claims and comment blocks. Idempotent. */
-export async function clearPlainStorage(storage) {
+async function clearPlainStorage(storage) {
   await clearPrefixes(storage, [PREFIX, BLOCKED]);
 }
 
@@ -104,53 +102,6 @@ export async function clearPrefixes(storage, prefixes) {
   }
 }
 
-/** A native `host/actor/<actor>` entry as a plain claim (sync/host.mjs), or
- * null for an entry plain sync has no use for. A conflict stays a claim no
- * connection can write as. */
-export function claimFromNative(entry, now) {
-  if (!entry || typeof entry !== "object") return null;
-  if (entry.conflict === true) return { conflict: true, firstSeen: now };
-  if (entry.host === true) return { host: true, firstSeen: now };
-  if (typeof entry.principal !== "string") return null;
-  return {
-    principal: entry.principal,
-    ...(typeof entry.displayName === "string" && {
-      displayName: entry.displayName,
-    }),
-    ...(typeof entry.driver === "string" && { driver: entry.driver }),
-    firstSeen: Number.isFinite(entry.firstSeen) ? entry.firstSeen : now,
-  };
-}
-
-/**
- * Write a Subduction Page's history in plain form: for each document one
- * `A.save()` snapshot under its manifest, with the actor claims in the first
- * document's write, then the principals whose comment writes stay blocked.
- * Clears plain storage first, so a retry after a crash starts over. The caller
- * flips `recordStorage` afterwards; until then the keys are unread.
- */
-export async function writeMigratedHistory(
-  storage,
-  { documents, actors = [], blocked = [], now = Date.now() },
-) {
-  await clearPlainStorage(storage);
-  const store = new DocStore(new PlainByteStore(storage));
-  const claims = [];
-  for (const [actor, entry] of actors) {
-    const claim = claimFromNative(entry, now);
-    if (claim) claims.push([`actor/${actor}`, new Uint8Array(cbor.encode(claim))]);
-  }
-  let bytes = 0;
-  for (const [index, { documentId, doc }] of documents.entries()) {
-    const save = A.save(doc);
-    bytes += save.byteLength;
-    await store.compact(treeOf(documentId), save, A.getHeads(doc), index === 0 ? claims : []);
-  }
-  for (const principal of new Set(blocked))
-    await storage.put(BLOCKED + principal, { code: "migrated", at: now });
-  return { claims: claims.length, bytes };
-}
-
 export const treeOf = hostTreeOf;
 
 const SENDER_ID = /^b-[0-9a-f-]{36}$/;
@@ -160,8 +111,7 @@ const SENDER_ID = /^b-[0-9a-f-]{36}$/;
  * replaces. A tab keeps its `sender` across reconnects, so a socket that asks
  * for an id held by the same principal and driver is that tab reconnecting,
  * usually after its old socket died without the close reaching the host: the
- * new socket takes the id and the old one is replaced, as a native signing
- * key replaces its stale session. A missing, malformed or foreign-held id is
+ * new socket takes the id and the old one is replaced. A missing, malformed or foreign-held id is
  * replaced by a fresh one; ids are visible to every reader, so only the
  * holder's own principal and driver can claim one.
  */
@@ -358,7 +308,7 @@ export class PlainSync {
   /**
    * A successful credential renewal. Access must be unchanged. An API key's
    * lease moves to the renewed credential's deadline; OIDC keeps its original
-   * absolute deadline, as native sessions do.
+   * absolute deadline.
    */
   renew(conn, renewed) {
     const access = accessShape(this.policy.account(renewed));
@@ -433,7 +383,7 @@ export class PlainSync {
     if (conn.trusted) return null;
     if (conn.expiresAt !== undefined && conn.expiresAt <= now)
       return refusalFrom(credentialExpired());
-    // As native sessions: any change to what this connection may do (losing
+    // Any change to what this connection may do (losing
     // access, trash, a role or generation change, recovery) ends it with
     // access_changed, and the browser's rediscovery reports the new state.
     let access;
@@ -511,7 +461,7 @@ export class PlainSync {
         };
     }
     // The Page document's readers hear who wrote its changes before they
-    // receive them, as with native admission; comment authors aren't named.
+    // receive them; comment authors aren't named.
     if (doc.kind === "page")
       this.publish(doc, {
         kind: "actor-profiles",

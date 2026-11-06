@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
 import { Catalog, Page } from "./index.mjs";
+import { plainStub } from "./plain-stub.mjs";
 
 class Storage {
   values = new Map();
@@ -126,6 +127,7 @@ test("Page ingress independently rejects the same invalid create fields", async 
   const f = await fixture(t);
   const pageId = "33333333-3333-4333-8333-333333333333";
   const page = Object.assign(Object.create(Page.prototype), {
+    plain: plainStub(),
     ready: Promise.resolve(),
     env: f.auth.env,
     ctx: { id: { name: pageId }, storage: f.storage },
