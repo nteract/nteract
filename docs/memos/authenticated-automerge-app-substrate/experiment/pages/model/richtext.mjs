@@ -12,7 +12,7 @@
 // - richtext-page.mjs: Page block writers and Markdown projection.
 // - richtext-notices.mjs: notices and labels for nodes Markdown can't hold.
 export { safeUrl, RICH_FORMAT, textPath, isRich, codeTextUnmarked } from "./richtext-format.mjs";
-export { richSize, redundantFirstMarker } from "./richtext-format.mjs";
+export { richSize, redundantFirstMarker, isBlankBlock } from "./richtext-format.mjs";
 export { adapter, schema } from "./pm-adapter.mjs";
 export { unknownNodeNotice, quotableNodeType, dataframeLabel } from "./richtext-notices.mjs";
 export { MATH_SYNTAX, unsupportedMarkdown, unsupportedMarkdownError } from "./markdown-scan.mjs";
