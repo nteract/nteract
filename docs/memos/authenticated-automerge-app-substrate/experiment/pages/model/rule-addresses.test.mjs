@@ -221,3 +221,23 @@ test("a paragraph gaining its own marker inside a list item or quote keeps its a
     );
   }
 });
+
+test("node_index refuses a block whose stored and readable node counts disagree", () => {
+  // Peer-written markers with parent chains no writer produces: the Markdown
+  // projection reads two top-level nodes here, the stored spans three.
+  const { doc, id } = pageWithSpans([
+    text("a"),
+    block("future-x"),
+    { type: "block", value: { type: S("hard-break"), parents: [], attrs: {}, isEmbed: true } },
+    block("future-x", ["future-x", "aside"]),
+    text("d"),
+  ]);
+  assert.throws(() => visibleNodeRange(doc, id, 2), /node_index can't address this block/);
+  assert.throws(() => visibleNodeRange(doc, id, 0), /node_index can't address this block/);
+  assert.throws(
+    () => replace(doc, id, { match_text: "d", replacement: "e", node_index: 1 }),
+    /node_index can't address this block/,
+  );
+  // Without node_index the passage still matches.
+  assert.match(replace(doc, id, { match_text: "d", replacement: "e" }).blocks[id].richText, /e$/);
+});
