@@ -309,6 +309,9 @@ const targets = Object.freeze({
     // Sift's hashed WASM, for Parquet dataframe nodes.
     siftTables: true,
     whoami: true,
+    // /api/auth/logout-all and /api/auth/grants[/<handle>/revoke]: sign out
+    // everywhere and connected agents (worker/account-auth.mjs).
+    accountRoutes: true,
     firewallTable: "nteract_page10",
     firewallMark: "0x00200000",
     firewallComment: "nteract/preview-infra standalone-page10",
@@ -371,6 +374,9 @@ const targets = Object.freeze({
     // Sift's hashed WASM, for Parquet dataframe nodes.
     siftTables: true,
     whoami: true,
+    // /api/auth/logout-all and /api/auth/grants[/<handle>/revoke]: sign out
+    // everywhere and connected agents (worker/account-auth.mjs).
+    accountRoutes: true,
     firewallTable: "nteract_pages_live",
     firewallMark: "0x00100000",
     firewallComment: "nteract/preview-infra standalone-pages-live",
@@ -423,6 +429,9 @@ const targets = Object.freeze({
     indexRoutes: true,
     siftTables: true,
     whoami: true,
+    // /api/auth/logout-all and /api/auth/grants[/<handle>/revoke]: sign out
+    // everywhere and connected agents (worker/account-auth.mjs).
+    accountRoutes: true,
     firewallTable: "nteract_pages2",
     firewallMark: "0x00080000",
     firewallComment: "nteract/preview-infra standalone-pages2",

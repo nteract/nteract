@@ -42,9 +42,9 @@ export const AUTH_ACTIONS = Object.freeze([
   "invitation.accepted",
   "invitation.revoked",
 ]);
-/** Who revoked a grant. `user` is reserved for a person disconnecting a
- * client from Pages; `rfc7009` is a client's revocation request; `system` is
- * a replay or reuse defence. */
+/** Who revoked a grant. `user` is a person disconnecting an agent or signing
+ * out everywhere in Pages; `rfc7009` is a client's revocation request;
+ * `system` is a replay or reuse defence. */
 export const REVOKED_BY = Object.freeze(["user", "rfc7009", "system"]);
 export const KNOWN_CLIENT_IDS = Object.freeze([
   "https://chatgpt.com/oauth/client.json",
@@ -89,9 +89,11 @@ const principalOf = (value) =>
     : undefined;
 const clientOf = (value) =>
   value === undefined ? undefined : KNOWN_CLIENT_IDS.includes(value) ? value : "unknown";
-const scopeOf = (value) => {
+const scopeOf = (value, action) => {
   if (typeof value !== "string") return undefined;
   if (API_KEY_SCOPES.includes(value)) return value;
+  // A sign-out from every browser and agent; one from this browser has none.
+  if (action === "sign_out") return value === "all" ? value : undefined;
   const parts = value.split(" ").filter(Boolean);
   return parts.length && parts.every((part) => SCOPES.has(part))
     ? [...new Set(parts)].sort().join(" ")
@@ -133,7 +135,7 @@ export function authEvent({
     client_id: clientOf(clientId),
     grant: refOf(grant),
     grant_type: oneOf(GRANT_TYPES)(grantType),
-    scope: scopeOf(scope),
+    scope: scopeOf(scope, action),
     refresh: boolOf(refresh),
     revoked_by: oneOf(REVOKED_BY)(revokedBy),
     reason: enumOf(reason),

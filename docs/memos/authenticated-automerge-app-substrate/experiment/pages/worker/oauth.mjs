@@ -147,6 +147,15 @@ export function mcpAuthChallenge(env, original) {
   });
 }
 
+/** The name a person knows a client by, for the consent screen and for a
+ * stored grant in the account's "Connected agents" list. */
+export function oauthClientName(clientId) {
+  if ([CHATGPT_CLIENT, "pages-chatgpt"].includes(clientId)) return "ChatGPT";
+  if (clientId === "pages-kilo") return "Kilo";
+  if (clientId === "pages-local-e2e") return "Local test client";
+  return "Unknown client";
+}
+
 // Only these explicit public clients and a loopback-only fixture are recognized.
 // Arbitrary client URLs, redirects, dynamic registration, and metadata redirects
 // are deliberately unsupported. Metadata never controls a network destination.
@@ -154,12 +163,17 @@ function knownClient(clientId, env) {
   if ([CHATGPT_CLIENT, "pages-chatgpt"].includes(clientId))
     return {
       id: clientId,
-      name: "ChatGPT",
+      name: oauthClientName(clientId),
       site: "https://chatgpt.com/",
       redirectUri: CHATGPT_REDIRECT,
     };
   if (clientId === "pages-kilo")
-    return { id: clientId, name: "Kilo", site: "https://kilo.ai/", redirectUri: KILO_REDIRECT };
+    return {
+      id: clientId,
+      name: oauthClientName(clientId),
+      site: "https://kilo.ai/",
+      redirectUri: KILO_REDIRECT,
+    };
   const origin = pagesPublicOrigin(env);
   if (
     clientId === "pages-local-e2e" &&
@@ -169,7 +183,7 @@ function knownClient(clientId, env) {
   )
     return {
       id: clientId,
-      name: "Local test client",
+      name: oauthClientName(clientId),
       site: origin,
       redirectUri: origin + "/oauth/test/callback",
     };
@@ -483,11 +497,21 @@ async function authorize(request, env, context) {
     await logAuthEvent({ action: "oauth.consent_denied", ...audit });
     return redirect(saved, origin, { error: "access_denied" });
   }
+  let code;
+  try {
+    // The approving session must still exist when the code is written: a
+    // sign-out everywhere after the session check above leaves no code.
+    ({ code } = await issueAuthorizationCode(
+      env,
+      { ...saved, identity: consentIdentity(current.session) },
+      { sessionId: current.row.id },
+    ));
+  } catch (error) {
+    if (error instanceof OAuthStoreError && error.error === "access_denied")
+      throw new OAuthError("access_denied", "Your sign-in ended. Sign in and start again.", 403);
+    throw error;
+  }
   await logAuthEvent({ action: "oauth.consent_granted", ...audit });
-  const { code } = await issueAuthorizationCode(env, {
-    ...saved,
-    identity: consentIdentity(current.session),
-  });
   await logAuthEvent({ action: "oauth.code_issued", ...audit });
   return redirect(saved, origin, { code });
 }

@@ -5,15 +5,20 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { secretHash } from "@cloud/oidc-session-store.ts";
+import { captureConsole } from "./auth-events-fixture.mjs";
 import {
   cleanupOAuthStore,
   consumeConsent,
   exchangeAuthorizationCode,
+  grantHandle,
   issueAuthorizationCode,
   issueConsent,
+  listGrantsFor,
   OAuthStoreError,
   readAccessToken,
   readConsent,
+  revokeGrantFor,
+  revokeGrantsFor,
   revokeOAuthToken,
   rotateRefreshToken,
 } from "./oauth-store.mjs";
@@ -110,9 +115,9 @@ async function request(scope = "pages:read pages:write") {
     state: "client-state",
   };
 }
-async function authorize(f, scope, now = start) {
+async function authorize(f, scope, now = start, who = identity) {
   const input = { ...(await request(scope)), allowRefresh: true };
-  const { code } = await issueAuthorizationCode(f.env, { ...input, identity }, { now });
+  const { code } = await issueAuthorizationCode(f.env, { ...input, identity: who }, { now });
   return {
     input,
     code,
@@ -125,8 +130,8 @@ async function authorize(f, scope, now = start) {
     },
   };
 }
-async function grant(f, scope, now = start) {
-  const authorization = await authorize(f, scope, now);
+async function grant(f, scope, now = start, who = identity) {
+  const authorization = await authorize(f, scope, now, who);
   return {
     ...authorization,
     tokens: await exchangeAuthorizationCode(f.env, authorization.exchange, { now }),
@@ -743,4 +748,284 @@ test("failed code replay transaction cannot leave partial revocation or issue an
     invalidGrant,
   );
   assert.equal(await readAccessToken(f.env, g.tokens.access_token, { now: start + 1 }), null);
+});
+
+const other = { ...identity, principal: "user:anaconda:other", displayName: "Other Person" };
+const storeContext = (env) =>
+  JSON.stringify([
+    origin,
+    env.NOTEBOOK_CLOUD_OIDC_ISSUER,
+    env.NOTEBOOK_CLOUD_OIDC_CLIENT_ID,
+    env.NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE,
+    "",
+  ]);
+// The grants table as it shipped before `principal` and `created_at`.
+function legacyGrantSchema(f) {
+  f.env.DB.sqlite.exec(`CREATE TABLE pages_oauth_grants (
+    id TEXT PRIMARY KEY, context TEXT NOT NULL, client_id TEXT NOT NULL,
+    resource TEXT NOT NULL, scope TEXT NOT NULL, identity_json TEXT NOT NULL,
+    expires_at INTEGER NOT NULL, revoked_at INTEGER
+  )`);
+}
+function insertLegacyGrants(f, rows) {
+  const insert = f.env.DB.sqlite.prepare(`INSERT INTO pages_oauth_grants
+    (id, context, client_id, resource, scope, identity_json, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+  f.env.DB.sqlite.exec("BEGIN");
+  for (const { id, identityJson, expiresAt = start + 3600 } of rows)
+    insert.run(
+      id,
+      storeContext(f.env),
+      "pages-kilo",
+      resource,
+      "pages:read",
+      identityJson,
+      expiresAt,
+    );
+  f.env.DB.sqlite.exec("COMMIT");
+}
+const grantColumn = (f, column, id) =>
+  f.env.DB.sqlite.prepare(`SELECT ${column} AS value FROM pages_oauth_grants WHERE id = ?`).get(id)
+    .value;
+const legacyId = (n) => `legacy${String(n).padStart(37, "0")}`;
+
+test("old grants gain an indexed principal from their identity snapshot", async (t) => {
+  const f = fixture(t);
+  legacyGrantSchema(f);
+  insertLegacyGrants(f, [
+    { id: legacyId(1), identityJson: JSON.stringify({ principal: identity.principal }) },
+    { id: legacyId(2), identityJson: JSON.stringify({ principal: other.principal }) },
+    { id: legacyId(3), identityJson: "not json" },
+  ]);
+  const listed = await listGrantsFor(f.env, identity.principal, { now: start });
+  assert.deepEqual(
+    listed.map(({ clientId, createdAt }) => ({ clientId, createdAt })),
+    [{ clientId: "pages-kilo", createdAt: null }],
+  );
+  assert.equal(listed[0].handle, await grantHandle(legacyId(1)));
+  assert.equal(grantColumn(f, "principal", legacyId(2)), other.principal);
+  // An unreadable snapshot matches no account and leaves the backfill window.
+  assert.equal(grantColumn(f, "principal", legacyId(3)), "");
+  const plan = f.env.DB.sqlite
+    .prepare("EXPLAIN QUERY PLAN SELECT id FROM pages_oauth_grants WHERE principal = ?")
+    .all("x")
+    .map((row) => row.detail)
+    .join(" ");
+  assert.match(plan, /pages_oauth_grants_principal/);
+  // New grants carry their principal and issue time from the start.
+  const g = await grant(f, "pages:read", start + 5);
+  const row = f.env.DB.sqlite
+    .prepare("SELECT principal, created_at FROM pages_oauth_grants WHERE created_at IS NOT NULL")
+    .get();
+  assert.deepEqual({ ...row }, { principal: identity.principal, created_at: start + 5 });
+  assert.ok(g.tokens.access_token);
+});
+
+test("setup backfills a bounded number of grants and each account read fills more", async (t) => {
+  const f = fixture(t);
+  legacyGrantSchema(f);
+  // More rows than setup's 20 batches of 500.
+  const total = 10_250;
+  insertLegacyGrants(
+    f,
+    Array.from({ length: total }, (_, n) => ({
+      id: legacyId(n),
+      identityJson: JSON.stringify({ principal: n % 2 ? identity.principal : other.principal }),
+    })),
+  );
+  const missing = () =>
+    f.env.DB.sqlite
+      .prepare("SELECT count(*) AS n FROM pages_oauth_grants WHERE principal IS NULL")
+      .get().n;
+  await cleanupOAuthStore(f.env, { now: start });
+  assert.equal(missing(), total - 10_000);
+  await listGrantsFor(f.env, other.principal, { now: start });
+  assert.equal(missing(), 0);
+});
+
+test("two isolates can race the grant principal migration", async (t) => {
+  const f = fixture(t);
+  legacyGrantSchema(f);
+  insertLegacyGrants(f, [
+    { id: legacyId(1), identityJson: JSON.stringify({ principal: identity.principal }) },
+  ]);
+  const second = { ...f.env, DB: new SqliteD1(f.path) };
+  t.after(() => second.DB.sqlite.close());
+  let readers = 0,
+    release;
+  const bothRead = new Promise((resolve) => {
+    release = resolve;
+  });
+  for (const db of [f.env.DB, second.DB]) {
+    const prepare = db.prepare.bind(db);
+    t.mock.method(db, "prepare", (sql) => {
+      const query = prepare(sql);
+      if (sql !== "PRAGMA table_info(pages_oauth_grants)") return query;
+      return {
+        ...query,
+        all: async () => {
+          const result = await query.all();
+          if (!result.results.some((column) => column.name === "principal")) {
+            if (++readers === 2) release();
+            await bothRead;
+          }
+          return result;
+        },
+      };
+    });
+  }
+  const results = await Promise.all([
+    listGrantsFor(f.env, identity.principal, { now: start }),
+    listGrantsFor(second, identity.principal, { now: start }),
+  ]);
+  assert.equal(readers, 2);
+  assert.deepEqual(
+    results.map((rows) => rows.length),
+    [1, 1],
+  );
+});
+
+test("revoking an account's grants ends its tokens and pending approvals, and no one else's", async (t) => {
+  const f = fixture(t);
+  const mine = [await grant(f), await grant(f, "pages:read", start + 1)];
+  const theirs = await grant(f, "pages:read pages:write", start, other);
+  // Approvals under way: a consent screen and an unexchanged code for each.
+  for (const who of [identity, other]) {
+    await issueConsent(
+      f.env,
+      { request: await request(), sessionId: "session", principal: who.principal },
+      { now: start + 2 },
+    );
+    await authorize(f, "pages:read", start + 2, who);
+  }
+  const pending = await authorize(f, "pages:read", start + 2);
+  const capture = captureConsole(t);
+  assert.equal(await revokeGrantsFor(f.env, identity.principal, { now: start + 3 }), 2);
+  for (const { tokens, input } of mine) {
+    assert.equal(await readAccessToken(f.env, tokens.access_token, { now: start + 3 }), null);
+    await assert.rejects(
+      rotateRefreshToken(
+        f.env,
+        { refreshToken: tokens.refresh_token, clientId: input.clientId, resource },
+        { now: start + 3 },
+      ),
+      invalidGrant,
+    );
+  }
+  await assert.rejects(
+    exchangeAuthorizationCode(f.env, pending.exchange, { now: start + 3 }),
+    invalidGrant,
+  );
+  assert.ok(await readAccessToken(f.env, theirs.tokens.access_token, { now: start + 3 }));
+  const count = (sql, ...values) => f.env.DB.sqlite.prepare(sql).get(...values).n;
+  assert.equal(
+    count("SELECT count(*) AS n FROM pages_oauth_consents WHERE principal = ?", identity.principal),
+    0,
+  );
+  assert.equal(
+    count("SELECT count(*) AS n FROM pages_oauth_consents WHERE principal = ?", other.principal),
+    1,
+  );
+  // Consumed codes stay as replay evidence; only unexchanged ones go.
+  assert.equal(
+    count(
+      `SELECT count(*) AS n FROM pages_oauth_codes WHERE consumed_by IS NULL
+      AND json_extract(identity_json, '$.principal') = ?`,
+      identity.principal,
+    ),
+    0,
+  );
+  assert.equal(
+    count(
+      `SELECT count(*) AS n FROM pages_oauth_codes WHERE consumed_by IS NULL
+      AND json_extract(identity_json, '$.principal') = ?`,
+      other.principal,
+    ),
+    1,
+  );
+  assert.equal(
+    count("SELECT count(*) AS n FROM pages_oauth_codes WHERE consumed_by IS NOT NULL"),
+    3,
+  );
+  const revoked = capture.find("oauth.grant_revoked");
+  assert.deepEqual(
+    revoked.map(({ principal, revoked_by, reason }) => ({ principal, revoked_by, reason })),
+    Array(2).fill({
+      principal: identity.principal,
+      revoked_by: "user",
+      reason: "sign_out_everywhere",
+    }),
+  );
+  // Nothing left to revoke the second time.
+  assert.equal(await revokeGrantsFor(f.env, identity.principal, { now: start + 4 }), 0);
+  assert.deepEqual(await listGrantsFor(f.env, identity.principal, { now: start + 4 }), []);
+});
+
+test("the connected agents list names the caller's live grants by handle only", async (t) => {
+  const f = fixture(t);
+  const newer = await grant(f, "pages:read", start + 10);
+  await grant(f, "pages:read pages:write", start);
+  await grant(f, "pages:read", start, other);
+  const listed = await listGrantsFor(f.env, identity.principal, { now: start + 20 });
+  assert.deepEqual(
+    listed.map(({ scope, createdAt, expiresAt }) => ({ scope, createdAt, expiresAt })),
+    [
+      { scope: "pages:read", createdAt: start + 10, expiresAt: start + 10 + 30 * 24 * 60 * 60 },
+      {
+        scope: "pages:read pages:write",
+        createdAt: start,
+        expiresAt: start + 30 * 24 * 60 * 60,
+      },
+    ],
+  );
+  const text = JSON.stringify(listed);
+  const ids = f.env.DB.sqlite
+    .prepare("SELECT id FROM pages_oauth_grants")
+    .all()
+    .map((row) => row.id);
+  for (const id of ids) assert.equal(text.includes(id), false);
+  assert.equal(text.includes("pages_"), false);
+  // Expired grants drop out.
+  assert.deepEqual(await listGrantsFor(f.env, identity.principal, { now: start + 2_600_000 }), []);
+  assert.ok(newer.tokens.access_token);
+});
+
+test("disconnecting one agent revokes only the caller's matching grant", async (t) => {
+  const f = fixture(t);
+  const kept = await grant(f, "pages:read", start);
+  const dropped = await grant(f, "pages:read", start + 1);
+  const theirs = await grant(f, "pages:read", start, other);
+  const [newest] = await listGrantsFor(f.env, identity.principal, { now: start + 2 });
+  const [otherHandle] = (await listGrantsFor(f.env, other.principal, { now: start + 2 })).map(
+    (row) => row.handle,
+  );
+  assert.equal(
+    await revokeGrantFor(f.env, identity.principal, otherHandle, { now: start + 2 }),
+    false,
+  );
+  assert.equal(
+    await revokeGrantFor(f.env, identity.principal, "x".repeat(43), { now: start + 2 }),
+    false,
+  );
+  assert.equal(
+    await revokeGrantFor(f.env, identity.principal, "../grants", { now: start + 2 }),
+    false,
+  );
+  const capture = captureConsole(t);
+  assert.equal(
+    await revokeGrantFor(f.env, identity.principal, newest.handle, { now: start + 2 }),
+    true,
+  );
+  assert.equal(
+    await revokeGrantFor(f.env, identity.principal, newest.handle, { now: start + 3 }),
+    false,
+  );
+  assert.equal(await readAccessToken(f.env, dropped.tokens.access_token, { now: start + 3 }), null);
+  assert.ok(await readAccessToken(f.env, kept.tokens.access_token, { now: start + 3 }));
+  assert.ok(await readAccessToken(f.env, theirs.tokens.access_token, { now: start + 3 }));
+  assert.deepEqual(
+    capture
+      .find("oauth.grant_revoked")
+      .map(({ principal, revoked_by, reason }) => ({ principal, revoked_by, reason })),
+    [{ principal: identity.principal, revoked_by: "user", reason: "disconnected" }],
+  );
 });

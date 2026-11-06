@@ -1151,6 +1151,27 @@ An OAuth client uploads a local image through `create_page_asset_upload`, whose
 Page-scoped capability names its grant and stops working when the grant is
 revoked (see [Upload capabilities](#upload-capabilities)).
 
+The account menu's Connected agents dialog lists the account's live OAuth
+connections (`GET /api/auth/grants`: client name, scope, issue and expiry
+times, and an opaque per-grant handle) and disconnects one
+(`POST /api/auth/grants/<handle>/revoke`). Sign out everywhere
+(`POST /api/auth/logout-all`) revokes every grant the account holds, deletes its
+pending consents and unexchanged codes, then deletes its browser sessions here,
+this one included. An approval writes its code only while the approving
+session row still exists, in the same statement, so an approval racing the
+sign-out gets `access_denied` and no code. Anaconda API keys aren't OAuth
+grants: they aren't listed and keep working; people revoke them in Anaconda.
+Only a browser session cookie reaches these routes; a bearer
+credential is refused, and writes need this origin. Grants record their
+principal in an indexed column, backfilled from the identity snapshot of older
+rows; sessions are found through an expression index on the session's principal
+([oidc-session-store.ts](../../../../../apps/notebook-cloud/src/oidc-session-store.ts)).
+Grants issued before the column existed show no connection date. Last use is
+not recorded. `GET /api/auth/session` answers `accountControls: true` for a
+browser session, and the viewer offers the dialog only then. If the list
+answers 404 anyway, as an ingress without these routes does, the dialog says
+they aren't available here, shows no error, and the menu stops offering them.
+
 An hourly cron (`35 * * * *` UTC, [shared/schedule.mjs](shared/schedule.mjs))
 sweeps the auth database (worker/auth-maintenance.mjs). It deletes expired
 sign-in transactions and server sessions, expired OAuth consents, codes, tokens

@@ -58,6 +58,7 @@ import { agentGuideResponse, pagesPublicOrigin } from "../agent-guide.mjs";
 import { connectAgentResponse } from "../connect-agent.mjs";
 import { handleOAuth, mcpAuthChallenge } from "./oauth.mjs";
 import { oauthGrantActive } from "./oauth-store.mjs";
+import { handleAccountAuth } from "./account-auth.mjs";
 import {
   ASSET_AUTHORIZE_PATH,
   ASSET_UPLOAD_OPERATION,
@@ -1157,6 +1158,8 @@ const gateway = {
           });
         return signedOut;
       }
+      const account = await handleAccountAuth(request, env);
+      if (account) return account;
       if (url.pathname === "/api/auth/session" && request.method === "GET") {
         let refreshed;
         if (!request.headers.has("authorization")) {
@@ -1181,6 +1184,10 @@ const gateway = {
                 recordStorage: "automerge",
                 canWrite: identity.canWrite,
                 expiresAt: identity.expiresAt,
+                // This host serves account-auth.mjs, which only a browser
+                // session may call. A viewer shows Connected agents and Sign
+                // out everywhere only when this is true.
+                accountControls: identity.credentialKind === "oidc",
               }
             : { identity: null, canWrite: false },
         );

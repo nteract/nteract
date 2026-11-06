@@ -175,6 +175,40 @@ export async function revokeServerSession(
     .run();
 }
 
+// An expression index, so finding an account's sessions needs no new column
+// and the sign-in code that writes session_json stays as it is. Only
+// revokeServerSessionsFor creates and uses it.
+const SESSION_PRINCIPAL_INDEX = `CREATE INDEX IF NOT EXISTS oidc_session_principal
+  ON oidc_server_sessions(json_extract(session_json, '$.principal'))`;
+const principalIndexes = new WeakSet<D1Database>();
+
+/**
+ * Deletes every server session `principal` holds for this deployment's issuer,
+ * client and `origin`, including the caller's own, and returns how many. A
+ * refresh that held one of them fails its generation-and-lease check, so it
+ * can't bring a session back. A session created after this runs survives.
+ */
+export async function revokeServerSessionsFor(
+  env: ServerSessionEnvironment,
+  principal: string,
+  origin: string,
+): Promise<number> {
+  if (typeof principal !== "string" || !principal || principal.length > 512)
+    throw new Error("Invalid principal");
+  const db = await oidcDatabase(env);
+  if (!principalIndexes.has(db)) {
+    await db.prepare(SESSION_PRINCIPAL_INDEX).run();
+    principalIndexes.add(db);
+  }
+  const result = await db
+    .prepare(`DELETE FROM oidc_server_sessions
+    WHERE json_extract(session_json, '$.principal') = ? AND context = ?`)
+    .bind(principal, serverSessionContext(env, new URL(origin).origin))
+    .run();
+  const changes = result.meta.changes;
+  return typeof changes === "number" ? changes : 0;
+}
+
 export function serverSessionCookie(token: string, maxAge = SERVER_SESSION_IDLE_SECONDS): string {
   return `${SERVER_SESSION_COOKIE}=${token}; Path=/; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Lax`;
 }

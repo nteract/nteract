@@ -204,6 +204,15 @@ test("an auth record has a fixed shape and drops anything outside its allowlists
   assert.equal(AUTH_ACTIONS.length, new Set(AUTH_ACTIONS).size);
 });
 
+test("only a sign-out carries the scope all, and a sign-out carries no OAuth scope", () => {
+  const scope = (action, value) => authEvent({ action, principal, scope: value }).scope;
+  assert.equal(scope("sign_out", "all"), "all");
+  assert.equal(scope("sign_out", "pages:read"), undefined);
+  assert.equal(scope("sign_out", "everything"), undefined);
+  assert.equal(scope("oauth.token_issued", "all"), undefined);
+  assert.equal(scope("oauth.token_issued", "pages:read"), "pages:read");
+});
+
 test("grant and invitation ids leave only as short SHA-256 references", async (t) => {
   const capture = captureConsole(t);
   const grantId = randomSecret();
@@ -553,6 +562,7 @@ test("the secret scan flags every forbidden shape", () => {
 // callbacks. Test names and the runner's own lines are excluded; everything
 // the code under test printed is scanned.
 const AUTH_SUITES = [
+  "worker/account-auth.test.mjs",
   "worker/oauth.test.mjs",
   "worker/oauth-store.test.mjs",
   "worker/oauth-auth.test.mjs",

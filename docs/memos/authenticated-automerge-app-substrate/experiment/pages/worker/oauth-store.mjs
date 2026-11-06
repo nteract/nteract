@@ -23,10 +23,13 @@ const SCHEMA = [
     consumed_by TEXT, allow_refresh INTEGER NOT NULL DEFAULT 0
   )`,
   `CREATE INDEX IF NOT EXISTS pages_oauth_codes_expiry ON pages_oauth_codes(expires_at)`,
+  // `principal` copies identity_json's principal so an account's grants can be
+  // found by index; `created_at` is when the grant was issued. Both are NULL
+  // in rows written before they existed (see ADDED_COLUMNS).
   `CREATE TABLE IF NOT EXISTS pages_oauth_grants (
     id TEXT PRIMARY KEY, context TEXT NOT NULL, client_id TEXT NOT NULL,
     resource TEXT NOT NULL, scope TEXT NOT NULL, identity_json TEXT NOT NULL,
-    expires_at INTEGER NOT NULL, revoked_at INTEGER
+    expires_at INTEGER NOT NULL, revoked_at INTEGER, principal TEXT, created_at INTEGER
   )`,
   `CREATE INDEX IF NOT EXISTS pages_oauth_grants_expiry ON pages_oauth_grants(expires_at)`,
   `CREATE TABLE IF NOT EXISTS pages_oauth_access_tokens (
@@ -137,26 +140,55 @@ function identitySnapshot(identity) {
   }
   return snapshot;
 }
+// Columns added after their table first shipped: [table, column, definition].
+// Old codes keep the permissions approved on their original screen
+// (allow_refresh defaults to 0). Old grants get `principal` from the backfill
+// below; their `created_at` stays NULL, because it was never recorded.
+const ADDED_COLUMNS = [
+  ["pages_oauth_codes", "allow_refresh", "INTEGER NOT NULL DEFAULT 0"],
+  ["pages_oauth_grants", "principal", "TEXT"],
+  ["pages_oauth_grants", "created_at", "INTEGER"],
+];
+// Created only once ADDED_COLUMNS exist, since an old table lacks them.
+const ADDED_INDEXES = [
+  `CREATE INDEX IF NOT EXISTS pages_oauth_grants_principal ON pages_oauth_grants(principal)`,
+];
+// Grants backfilled per statement. A row whose identity can't be read gets an
+// empty principal, which matches no account, so it never holds the window.
+const BACKFILL_ROWS = 500;
+// Setup backfills at most this many batches; every by-account read runs one
+// more batch first, so rows left over, or written by an isolate still running
+// the previous release, are filled before they are needed.
+const BACKFILL_SETUP_BATCHES = 20;
+const backfillGrantPrincipals = (db) =>
+  db
+    .prepare(
+      `UPDATE pages_oauth_grants SET principal = COALESCE(CASE WHEN json_valid(identity_json)
+      THEN json_extract(identity_json, '$.principal') END, '')
+      WHERE id IN (SELECT id FROM pages_oauth_grants WHERE principal IS NULL LIMIT ?)`,
+    )
+    .bind(BACKFILL_ROWS);
+
 // Concurrent requests never await one another's schema setup; see isolate-setup.mjs.
 const schemaReady = isolateSetup(async (db) => {
   await db.batch(SCHEMA.map((sql) => db.prepare(sql)));
-  const hasRefreshConsent = async () => {
-    const result = await db.prepare("PRAGMA table_info(pages_oauth_codes)").all();
-    return result.results?.some((column) => column.name === "allow_refresh") ?? false;
-  };
-  if (!(await hasRefreshConsent())) {
+  for (const [table, column, definition] of ADDED_COLUMNS) {
+    const present = async () => {
+      const result = await db.prepare(`PRAGMA table_info(${table})`).all();
+      return result.results?.some((row) => row.name === column) ?? false;
+    };
+    if (await present()) continue;
     try {
-      // Old codes keep the permissions approved on their original screen.
-      await db
-        .prepare(
-          "ALTER TABLE pages_oauth_codes ADD COLUMN allow_refresh INTEGER NOT NULL DEFAULT 0",
-        )
-        .run();
+      await db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`).run();
     } catch (error) {
       // Another isolate may have completed the same additive migration.
-      if (!(await hasRefreshConsent())) throw error;
+      if (!(await present())) throw error;
     }
   }
+  await db.batch(ADDED_INDEXES.map((sql) => db.prepare(sql)));
+  // Idempotent, so isolates racing it fill disjoint or identical rows.
+  for (let batch = 0; batch < BACKFILL_SETUP_BATCHES; batch++)
+    if (changesOf(await backfillGrantPrincipals(db).run()) < BACKFILL_ROWS) break;
 });
 async function database(env) {
   const db = env.DB;
@@ -329,18 +361,31 @@ export async function consumeConsent(
   return row ? JSON.parse(row.request_json) : null;
 }
 
-export async function issueAuthorizationCode(env, input, { now } = {}) {
+/**
+ * Issues a code for an approved consent. With `sessionId`, the code is
+ * written only if that browser session row (oidc_server_sessions, in the same
+ * database) still exists and hasn't expired, in the same statement. A sign-out
+ * everywhere that deletes the session after the approval's own session check
+ * then leaves no code behind; this throws `access_denied` instead.
+ */
+export async function issueAuthorizationCode(env, input, { now, sessionId } = {}) {
   now = seconds(now);
   const value = authorizationRequest(env, input);
   const identity = identitySnapshot(input.identity);
+  if (sessionId !== undefined) boundedString(sessionId);
   const code = randomSecret(),
     db = await database(env);
   await cleanupOAuthStore(env, { now });
-  await statement(
+  const sessionLive =
+    sessionId === undefined
+      ? ""
+      : `WHERE EXISTS (SELECT 1 FROM oidc_server_sessions WHERE id = ?
+        AND idle_expires_at > ? AND absolute_expires_at > ?)`;
+  const inserted = await statement(
     db,
     `INSERT INTO pages_oauth_codes
     (code_hash, context, client_id, redirect_uri, resource, scope, challenge, identity_json, expires_at, allow_refresh)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? ${sessionLive}`,
     await secretHash(code),
     contextFor(env),
     value.clientId,
@@ -351,7 +396,9 @@ export async function issueAuthorizationCode(env, input, { now } = {}) {
     JSON.stringify(identity),
     now + CODE_SECONDS,
     value.allowRefresh === true ? 1 : 0,
+    ...(sessionId === undefined ? [] : [sessionId, now, now]),
   ).run();
+  if (changesOf(inserted) !== 1) throw new OAuthStoreError("access_denied");
   return { code, expiresAt: now + CODE_SECONDS };
 }
 
@@ -429,11 +476,14 @@ export async function exchangeAuthorizationCode(env, input, { now } = {}) {
     statement(
       db,
       `INSERT INTO pages_oauth_grants
-      (id, context, client_id, resource, scope, identity_json, expires_at)
-      SELECT ?, context, client_id, resource, scope, identity_json, ? FROM pages_oauth_codes
+      (id, context, client_id, resource, scope, identity_json, expires_at, principal, created_at)
+      SELECT ?, context, client_id, resource, scope, identity_json, ?, ?, ? FROM pages_oauth_codes
       WHERE code_hash = ? AND consumed_by = ?`,
       grantId,
       absoluteExpiry,
+      // A code's identity was bounded by identitySnapshot when it was issued.
+      snapshotPrincipal(row.identity_json) ?? "",
+      now,
       codeHash,
       grantId,
     ),
@@ -660,4 +710,144 @@ export async function revokeOAuthToken(env, { token, clientId }, { now } = {}) {
       grantId: grant.id,
       revokedBy: "rfc7009",
     });
+}
+
+// Grants a person sees as connected agents, newest first.
+const LISTED_GRANTS = 100;
+// Revoking one grant looks among this many of the account's live grants.
+const SEARCHED_GRANTS = 1000;
+
+/** The public handle for a grant in the account's "Connected agents" list.
+ * It is a one-way digest, so a handle can't be turned back into the grant id
+ * that upload capabilities name, and it differs from the telemetry `grant`
+ * reference. It only selects among the caller's own grants. */
+export async function grantHandle(grantId) {
+  return secretHash(`pages/grant-handle/v1:${grantId}`);
+}
+
+async function accountDatabase(env, principal) {
+  boundedString(principal, 512);
+  const db = await database(env);
+  await backfillGrantPrincipals(db).run();
+  return db;
+}
+
+async function liveGrantsFor(db, env, principal, now, limit) {
+  const rows = await statement(
+    db,
+    `SELECT id, client_id, scope, created_at, expires_at FROM pages_oauth_grants
+    WHERE principal = ? AND context = ? AND revoked_at IS NULL AND expires_at > ?
+    ORDER BY created_at IS NULL, created_at DESC, expires_at DESC LIMIT ?`,
+    principal,
+    contextFor(env),
+    now,
+    limit,
+  ).all();
+  return rows.results ?? [];
+}
+
+/** The account's live grants in this deployment, newest first. No token,
+ * grant id or identity snapshot leaves this function: each grant is named by
+ * its `grantHandle`. `createdAt` is null for grants issued before it was
+ * recorded. Times are seconds. */
+export async function listGrantsFor(env, principal, { now } = {}) {
+  now = seconds(now);
+  const db = await accountDatabase(env, principal);
+  const rows = await liveGrantsFor(db, env, principal, now, LISTED_GRANTS);
+  return Promise.all(
+    rows.map(async (row) => ({
+      handle: await grantHandle(row.id),
+      clientId: row.client_id,
+      scope: row.scope,
+      createdAt: row.created_at ?? null,
+      expiresAt: row.expires_at,
+    })),
+  );
+}
+
+async function revokeGrantRows(db, env, sql, values, reason) {
+  const revoked = await statement(db, sql, ...values).all();
+  for (const grant of revoked.results ?? [])
+    await logAuthEvent({
+      action: "oauth.grant_revoked",
+      principal: snapshotPrincipal(grant.identity_json),
+      credential: "oauth",
+      clientId: grant.client_id,
+      grantId: grant.id,
+      revokedBy: "user",
+      reason,
+    });
+  return revoked.results?.length ?? 0;
+}
+
+/** A person disconnects one agent from the "Connected agents" list. Only the
+ * caller's own live grant can match `handle`. Returns whether a grant was
+ * revoked; an unknown or already revoked handle returns false. Its tokens
+ * stop working at once, and the auth sweep deletes the rows later. */
+export async function revokeGrantFor(env, principal, handle, { now } = {}) {
+  now = seconds(now);
+  if (typeof handle !== "string" || !secretPattern.test(handle)) return false;
+  const db = await accountDatabase(env, principal);
+  let target;
+  for (const row of await liveGrantsFor(db, env, principal, now, SEARCHED_GRANTS))
+    if ((await grantHandle(row.id)) === handle) target = row.id;
+  if (!target) return false;
+  const count = await revokeGrantRows(
+    db,
+    env,
+    `UPDATE pages_oauth_grants SET revoked_at = ?
+    WHERE id = ? AND principal = ? AND context = ? AND revoked_at IS NULL
+    RETURNING id, client_id, identity_json`,
+    [now, target, principal, contextFor(env)],
+    "disconnected",
+  );
+  return count === 1;
+}
+
+/**
+ * Ends every OAuth connection the account holds in this deployment: its live
+ * grants are revoked, so their access and refresh tokens stop working, and its
+ * pending consent screens and unexchanged authorization codes are deleted, so
+ * an approval already under way can't produce a new grant. Consumed codes stay
+ * as replay evidence. Returns the number of grants revoked. The auth sweep
+ * (auth-maintenance.mjs) deletes the revoked rows later.
+ *
+ * Pending consents and codes go first. An exchange that already consumed its
+ * code has created its grant, which the revocation then finds; one that
+ * hasn't finds no code. Each step is a single statement, so a concurrent
+ * request sees it whole.
+ */
+export async function revokeGrantsFor(
+  env,
+  principal,
+  { now, reason = "sign_out_everywhere" } = {},
+) {
+  now = seconds(now);
+  const db = await accountDatabase(env, principal);
+  const context = contextFor(env);
+  await db.batch([
+    statement(
+      db,
+      "DELETE FROM pages_oauth_consents WHERE principal = ? AND context = ?",
+      principal,
+      context,
+    ),
+    // consumed_by IS NULL is served by pages_oauth_codes_grant.
+    statement(
+      db,
+      `DELETE FROM pages_oauth_codes WHERE consumed_by IS NULL AND context = ?
+      AND CASE WHEN json_valid(identity_json) THEN json_extract(identity_json, '$.principal') END = ?`,
+      context,
+      principal,
+    ),
+  ]);
+  return revokeGrantRows(
+    db,
+    env,
+    `UPDATE pages_oauth_grants SET revoked_at = ?
+    WHERE principal = ? AND context = ? AND revoked_at IS NULL AND expires_at > ?
+    RETURNING id, client_id, identity_json`,
+    [now, principal, context, now],
+    reason,
+  );
 }

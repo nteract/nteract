@@ -975,6 +975,17 @@ as index routes. Page9's publisher migrates only from its Project-link config
 to this one, so an older installation must publish the Project-link release
 first.
 
+Page10, Pages and Pages2 admit the account routes (`accountPaths` in
+[routes.mjs](scripts/deployment/routes.mjs)): `/api/auth/logout-all`,
+`/api/auth/grants` and `/api/auth/grants/<handle>/revoke`, where a handle is
+43 base64url characters. Each publisher migrates from its sealed config without
+that group, by the same handoff as any route change: the next publish rewrites
+`tunnel.yml` with the group added, starts the idle slot, waits for `/ready`,
+stops the old slot and seals the new receipt. Units and every other route stay
+byte-identical. Every older predecessor still migrates, straight to the new
+config. A pending receipt from an interrupted publish before this release is
+not recognized; the publisher stops and asks for inspection.
+
 The OIDC client must allow `https://<hostname>/oidc` as a redirect URI before
 sign-in works on a new target. For Pages, add
 `https://pages.runtimed.run/oidc` to client
@@ -1107,13 +1118,13 @@ are deleted. Each line has `action`, `timestamp`, and, where known,
 |---|---|---|
 | `sign_in.succeeded` | An OIDC callback created a browser session. | |
 | `sign_in.failed` | An OIDC callback was refused. No principal. | `reason`, `phase`, `kind`, `outcome` (`failure_page` or `already_signed_in`) |
-| `sign_out` | `POST /api/auth/logout` deleted a live session. | |
+| `sign_out` | `POST /api/auth/logout` deleted a live session, or `POST /api/auth/logout-all` signed the account out everywhere. | `scope`: `all` for sign out everywhere |
 | `session.expired` | A session in use ended at refresh. | `reason`: `refresh_rejected`, `identity_rejected`, `lease_abandoned` |
 | `oauth.consent_granted`, `oauth.consent_denied` | A person chose Allow access or Cancel. | `client_id`, `scope` |
 | `oauth.code_issued` | An authorization code followed consent. | `client_id`, `scope` |
 | `oauth.token_issued` | `/oauth/token` issued tokens. | `grant`, `grant_type` (`authorization_code` or `refresh_token`), `scope`, `refresh` |
 | `oauth.token_refused` | `/oauth/token` refused a request, including a 503. | `grant_type`, `reason` (OAuth error code) |
-| `oauth.grant_revoked` | A grant stopped working. | `grant`, `revoked_by` (`rfc7009` for a client's revocation, `system` for replay or reuse; `user` is reserved), `reason` |
+| `oauth.grant_revoked` | A grant stopped working. | `grant`, `revoked_by` (`user` for a person in Pages, `rfc7009` for a client's revocation, `system` for replay or reuse), `reason` (`disconnected` or `sign_out_everywhere` for `user`) |
 | `oauth.code_replayed` | An authorization code was presented twice. Its grant is revoked. | `grant` |
 | `oauth.refresh_reused` | A spent refresh token was presented again. Its grant is revoked. | `grant` |
 | `api_key.accepted` | An Anaconda API key authenticated. One line per key per isolate per 60 s cache window, not per request. | `scope` (`editor` or `viewer`) |

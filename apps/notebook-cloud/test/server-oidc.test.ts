@@ -25,7 +25,7 @@ import {
   ServerOidcIdentityRejected,
   type ServerOidcAuthEvent,
 } from "../src/server-oidc.ts";
-import { SERVER_SESSION_COOKIE } from "../src/oidc-session-store.ts";
+import { revokeServerSessionsFor, SERVER_SESSION_COOKIE } from "../src/oidc-session-store.ts";
 import { AuthError } from "../src/identity.ts";
 
 // The repository's Node 20 type definitions predate node:sqlite, while the
@@ -1220,6 +1220,79 @@ describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
     assert.equal(await readCloudAppSession(f.env, request), null);
     assert.equal(f.countRows(), 0);
     assert.equal(f.calls.length, 1);
+  });
+
+  it("revokes every session one principal holds here and no other session", async (t) => {
+    const f = await fixture(t);
+    const first = await f.login();
+    const second = await f.login();
+    const { session_json: sessionJson } = f.db.sqlite
+      .prepare("SELECT session_json FROM oidc_server_sessions LIMIT 1")
+      .get()! as { session_json: string };
+    const principal = (JSON.parse(sessionJson) as { principal: string }).principal;
+    const copy = (id: string, set: string) =>
+      f.db.sqlite
+        .prepare(`INSERT INTO oidc_server_sessions
+          (id, context, session_json, sealed, access_expires_at, idle_expires_at, absolute_expires_at)
+          SELECT ?, ${set} FROM oidc_server_sessions LIMIT 1`)
+        .run(id);
+    // Another account here, and the same account at another deployment.
+    copy(
+      "other-account",
+      "context, json_set(session_json, '$.principal', 'user:other'), sealed, access_expires_at, idle_expires_at, absolute_expires_at",
+    );
+    copy(
+      "other-deployment",
+      "'elsewhere', session_json, sealed, access_expires_at, idle_expires_at, absolute_expires_at",
+    );
+    assert.equal(f.countRows(), 4);
+    assert.equal(await revokeServerSessionsFor(f.env, principal, ORIGIN), 2);
+    for (const login of [first, second])
+      assert.equal(
+        await readCloudAppSession(f.env, f.request(undefined, login.sessionCookie)),
+        null,
+      );
+    assert.deepEqual(
+      f.db.sqlite
+        .prepare("SELECT id FROM oidc_server_sessions ORDER BY id")
+        .all()
+        .map((row) => row.id),
+      ["other-account", "other-deployment"],
+    );
+    assert.equal(await revokeServerSessionsFor(f.env, principal, ORIGIN), 0);
+    const plan = f.db.sqlite
+      .prepare(
+        "EXPLAIN QUERY PLAN SELECT id FROM oidc_server_sessions WHERE json_extract(session_json, '$.principal') = ?",
+      )
+      .all("x")
+      .map((row) => String(row.detail))
+      .join(" ");
+    assert.match(plan, /oidc_session_principal/);
+  });
+
+  it("does not restore a session when revoke-by-principal races an idle extension", async (t) => {
+    const f = await fixture(t, { tokenTtlSeconds: 12 * 60 * 60 });
+    const { sessionCookie } = await f.login();
+    const request = f.request(undefined, sessionCookie);
+    const row = f.db.sqlite
+      .prepare("SELECT idle_expires_at, session_json FROM oidc_server_sessions")
+      .get()!;
+    const principal = (JSON.parse(String(row.session_json)) as { principal: string }).principal;
+    t.mock.method(Date, "now", () => (Number(row.idle_expires_at) - 30) * 1000);
+    const read = deferred();
+    const resume = deferred();
+    f.db.afterNextRead = async () => {
+      read.resolve();
+      await resume.promise;
+    };
+    const pending = serverOidcSessionStatus(request, f.env, noopProfile);
+    await read.promise;
+    assert.equal(await revokeServerSessionsFor(f.env, principal, ORIGIN), 1);
+    resume.resolve();
+    const response = await pending;
+    assert.equal((await response.json()).session, null);
+    assert.equal(await readCloudAppSession(f.env, request), null);
+    assert.equal(f.countRows(), 0);
   });
 
   it("treats Anaconda auth_required as rejected refresh authority rather than a temporary outage", async (t) => {

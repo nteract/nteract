@@ -15,6 +15,7 @@ import {
   Type,
   Trash2,
   UserRound,
+  Unplug,
 } from "lucide-react";
 import { observeSignedOut, request, tool } from "./request.mjs";
 import {
@@ -57,6 +58,7 @@ import "./save-status.css";
 import { PagePicker } from "./PagePicker.jsx";
 import { ProjectCreator } from "./ProjectCreator.jsx";
 import { MoveDialog } from "./MoveDialog.jsx";
+import { ConnectedAgents } from "./ConnectedAgents.jsx";
 import { moveOrigin } from "./container-dialog-machine.mjs";
 import { TrashView } from "./TrashView.jsx";
 import { Breadcrumbs, ProjectChip, ProjectPages } from "./ProjectView.jsx";
@@ -239,7 +241,12 @@ function App() {
     [projectPages, setProjectPages] = useState(null),
     // The New Project or Move to… dialog: null, { kind: "create" } or
     // { kind: "move", pageId, title, projectId }. Each runs its own machine.
-    [containerDialog, setContainerDialog] = useState(null);
+    [containerDialog, setContainerDialog] = useState(null),
+    // The Connected agents dialog, opened from the account menu.
+    [agentsOpen, setAgentsOpen] = useState(false),
+    // The host advertised account controls but its list route answered 404,
+    // as an older ingress does: the menu stops offering them.
+    [agentsMissing, setAgentsMissing] = useState(false);
   const [toolbar, setToolbar] = useState(null),
     [toolbarOpen, setToolbarOpen] = useState(false),
     [active, setActive] = useState(null),
@@ -1303,14 +1310,18 @@ function App() {
   async function signout() {
     try {
       await request("/api/auth/logout", { method: "POST" });
-      forgetAccountData();
-      let failed;
-      await host.close(host.current, { onError: (error) => (failed = error) });
-      if (failed) throw failed;
-      location.href = "/";
+      await leaveSignedOut();
     } catch (error) {
       showError(error);
     }
+  }
+  /** The host has ended this browser's session: forget the account here. */
+  async function leaveSignedOut() {
+    forgetAccountData();
+    let failed;
+    await host.close(host.current, { onError: (error) => (failed = error) });
+    if (failed) throw failed;
+    location.href = "/";
   }
   // Comment on a selection opens the inline composer beside it. Readers
   // without comment access get the thread list instead.
@@ -1600,11 +1611,29 @@ function App() {
                   <Plug size={16} aria-hidden="true" /> Connect an agent
                   <span className="sr-only"> (opens in a new tab)</span>
                 </a>
+                {authentication.current?.accountControls === true && !agentsMissing && (
+                  <button
+                    onClick={() => {
+                      accountDisclosure.current.open = false;
+                      setAgentsOpen(true);
+                    }}
+                  >
+                    <Unplug size={16} aria-hidden="true" /> Connected agents
+                  </button>
+                )}
                 <button onClick={signout}>
                   <LogOut size={16} aria-hidden="true" /> Sign out
                 </button>
               </div>
             </details>
+          )}
+          {account && agentsOpen && (
+            <ConnectedAgents
+              returnFocus={() => accountDisclosure.current?.querySelector("summary")}
+              onClose={() => setAgentsOpen(false)}
+              onSignedOut={() => void leaveSignedOut().catch(showError)}
+              onUnavailable={() => setAgentsMissing(true)}
+            />
           )}
         </div>
       </header>

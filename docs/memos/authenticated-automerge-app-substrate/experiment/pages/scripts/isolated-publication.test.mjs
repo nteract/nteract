@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import {
   routesFor,
+  accountPaths,
   assetPaths,
   imagePaths,
   indexPaths,
@@ -358,7 +359,7 @@ function priorConfig(config, target) {
         : target === "page9"
           ? config.replace(indexPaths, "")
           : target === "page10" || target === "pages"
-            ? config.replace(whoamiPaths, "")
+            ? config.replace(accountPaths, "").replace(whoamiPaths, "")
             : config.replace("|mermaid[.]js|", "|");
 }
 const configDir = (target) => "/etc/" + deploymentProfile(target).deployment.service;
@@ -685,6 +686,7 @@ test("Page10 serves Page9's route set on its own origin while every older route 
   assert.equal(current.split(siftPaths).length, 2, "the Sift route appears once");
   assert.equal(
     current
+      .replace(accountPaths, "")
       .replace(whoamiPaths, "")
       .replace(siftPaths, "")
       .replaceAll(page10.hostname, page9.hostname)
@@ -736,7 +738,7 @@ test("whoami predecessors retain the exact Sift and pre-Sift route bytes", () =>
       "4aa6f96562532f3c5739fe7ffc44728cd210432abf45a80f74fef383081e6ce5",
     ],
   ]) {
-    const prior = routesFor(target).replace(whoamiPaths, "");
+    const prior = routesFor(target).replace(accountPaths, "").replace(whoamiPaths, "");
     assert.equal(digest(prior), sift);
     assert.equal(digest(prior.replace(siftPaths, "")), beforeSift);
   }
@@ -1784,7 +1786,7 @@ for (const target of ["page10", "pages"]) {
     test(`${target} resumes unchanged-Sift legacy handoff at ${phase}, rolls back and retries`, (t) => {
       const f = fixture(t, { target, neverReady: true });
       const plan = isolatedPublicationPlan(inputFor(target));
-      const sift = plan.config.replace(whoamiPaths, "");
+      const sift = plan.config.replace(accountPaths, "").replace(whoamiPaths, "");
       const hash = digest(sift);
       // HEAD's predecessor(plan.config, true): routes did not change, units did.
       const historical = slotReceipt(sift, plan.unitSha256, {
@@ -1819,7 +1821,7 @@ for (const target of ["page10", "pages"]) {
 
   test(`${target} unchanged-Sift pending receipt rejects pre-Sift or edited files`, (t) => {
     const plan = isolatedPublicationPlan(inputFor(target));
-    const sift = plan.config.replace(whoamiPaths, "");
+    const sift = plan.config.replace(accountPaths, "").replace(whoamiPaths, "");
     for (const config of [sift.replace(siftPaths, ""), sift + "# foreign\n"]) {
       const f = fixture(t, { target });
       f.write(plan.configPath, config);
@@ -1849,7 +1851,7 @@ for (const target of ["page10", "pages"]) {
       test(`${target} migrates exact pre-whoami Sift history: ${legacy ? "legacy" : "slots"} ${state}`, (t) => {
         const f = fixture(t, { target });
         const plan = isolatedPublicationPlan(inputFor(target));
-        const sift = plan.config.replace(whoamiPaths, "");
+        const sift = plan.config.replace(accountPaths, "").replace(whoamiPaths, "");
         const beforeSift = sift.replace(siftPaths, "");
         const config = state.endsWith("new") ? sift : beforeSift;
         const unit = legacy ? digest(plan.unit) : plan.unitSha256;
@@ -1887,8 +1889,8 @@ for (const target of ["page10", "pages"]) {
   test(`${target} refuses arbitrary edits to either whoami predecessor even with matching receipts`, (t) => {
     const plan = isolatedPublicationPlan(inputFor(target));
     for (const base of [
-      plan.config.replace(whoamiPaths, ""),
-      plan.config.replace(whoamiPaths, "").replace(siftPaths, ""),
+      plan.config.replace(accountPaths, "").replace(whoamiPaths, ""),
+      plan.config.replace(accountPaths, "").replace(whoamiPaths, "").replace(siftPaths, ""),
     ])
       for (const changed of [
         base + "# foreign edit\n",
@@ -2472,3 +2474,154 @@ test("pages2 serves the Pages route set under its own hostname and listener", ()
       .replace("http://" + pages.listen, "http://" + pages2.listen),
   );
 });
+
+const ACCOUNT_TARGETS = ["page10", "pages", "pages2"];
+const handle = "A".repeat(43);
+const accountAdmitted = [
+  "/api/auth/logout-all",
+  "/api/auth/grants",
+  `/api/auth/grants/${handle}/revoke`,
+  "/api/auth/grants/aZ09_-aZ09_-aZ09_-aZ09_-aZ09_-aZ09_-aZ09_-a/revoke",
+];
+const accountRejected = [
+  "/api/auth/logout-all/",
+  "/api/auth/logout-all/private",
+  "/api/auth/logoutall",
+  "/api/auth/grants/",
+  `/api/auth/grants/${handle}`,
+  `/api/auth/grants/${handle}/`,
+  `/api/auth/grants/${"A".repeat(42)}/revoke`,
+  `/api/auth/grants/${"A".repeat(44)}/revoke`,
+  `/api/auth/grants/${"A".repeat(42)}.revoke`,
+  `/api/auth/grants/${handle}/revoke/private`,
+  `/api/auth/grants/${"A".repeat(42)}%2F/revoke`,
+  "/api/auth/other",
+  "/auth/grants",
+];
+
+test("only page10, pages and pages2 admit the exact account routes, never legacy routes", () => {
+  for (const target of [
+    "pages-next",
+    "page3",
+    "page4",
+    "page5",
+    "page6",
+    "page7",
+    "page8",
+    "page9",
+    ...ACCOUNT_TARGETS,
+  ]) {
+    const enabled = ACCOUNT_TARGETS.includes(target);
+    assert.equal(deploymentProfile(target).accountRoutes === true, enabled, target);
+    const current = routesFor(target);
+    assert.equal(current.split(accountPaths).length, enabled ? 2 : 1, target);
+    for (const legacy of [false, true]) {
+      const route = new RegExp(/^    path: (.+)$/m.exec(routesFor(target, legacy))[1]);
+      for (const pathname of accountAdmitted)
+        assert.equal(route.test(pathname), enabled && !legacy, `${target} ${pathname}`);
+      for (const pathname of accountRejected)
+        assert.equal(route.test(pathname), false, `${target} ${pathname}`);
+      // The routes that were there stay admitted.
+      for (const pathname of ["/api/auth/login", "/api/auth/logout", "/api/auth/session"])
+        assert.equal(route.test(pathname), true, `${target} ${pathname}`);
+    }
+  }
+});
+
+test("the account routes are the only difference from the last sealed route set", () => {
+  // routesFor(target) as published before the account routes existed.
+  for (const [target, sealed] of [
+    ["page10", "5c1fc74e475e84d586539900096e1d44e4187a75caabfd0ec0822d6d517dabba"],
+    ["pages", "188d8940a17166b111085dfb351c84777851e7eaadd752ef9f1bd4158d54f153"],
+    ["pages2", "64ab836acaa2aaa3acf0f10bdc8f0fab573294dfecf58c860199882ea286d658"],
+  ]) {
+    const prior = routesFor(target).replace(accountPaths, "");
+    assert.equal(digest(prior), sealed, target);
+    assert.equal(prior.includes("logout-all"), false);
+    assert.equal(routesFor(target).length - prior.length, accountPaths.length);
+  }
+});
+
+function accountInstall(f, { state = "sealed", edit = (config) => config } = {}) {
+  const plan = isolatedPublicationPlan(inputFor(f.target));
+  const base = plan.config.replace(accountPaths, "");
+  const onDisk = state === "pending-new" ? plan.config : edit(base);
+  const receipt =
+    state === "sealed"
+      ? slotReceipt(edit(base), plan.unitSha256)
+      : slotReceipt(plan.config, plan.unitSha256, {
+          previous_config_sha256: digest(base),
+          previous_unit_sha256: plan.unitSha256,
+        });
+  f.write(plan.configPath, onDisk);
+  for (const slot of plan.slots) f.write(slot.unitPath, slot.unit);
+  f.write(configDir(f.target) + "/tunnel-installation.json", receipt);
+  f.write(
+    recordPath(f.target),
+    JSON.stringify({ schema: 1, phase: "serving", live: "a", config: digest(base) }),
+  );
+  f.activate(plan.slots[0].service);
+  return { plan, base, receipt };
+}
+
+for (const target of ACCOUNT_TARGETS) {
+  for (const state of ["sealed", "pending-old", "pending-new"])
+    test(`${target} adds the account routes to its sealed installation (${state})`, (t) => {
+      const f = fixture(t, { target, sharedTunnel: target !== "pages2" });
+      const x = accountInstall(f, { state });
+      const units = x.plan.slots.map((slot) => fs.readFileSync(f.local(slot.unitPath), "utf8"));
+      // A failed new connector rolls back to the sealed pre-account
+      // installation, which stays retryable.
+      f.failNextStart();
+      assert.throws(f.execute, /injected connector startup failure/);
+      assert.equal(installedReceipt(f), slotReceipt(x.base, x.plan.unitSha256));
+      assert.equal(fs.readFileSync(f.local(x.plan.configPath), "utf8"), x.base);
+      const result = f.execute();
+      assert.equal(result.routesUpdated, true);
+      assert.equal(result.connectorHandoff, true);
+      assert.equal(fs.readFileSync(f.local(x.plan.configPath), "utf8"), x.plan.config);
+      assert.equal(installedReceipt(f), slotReceipt(x.plan.config, x.plan.unitSha256));
+      assert.deepEqual(connectorRecord(f), {
+        schema: 1,
+        phase: "serving",
+        live: "b",
+        config: digest(x.plan.config),
+      });
+      // The slot units and the legacy unit are untouched; only the routes changed.
+      assert.deepEqual(
+        x.plan.slots.map((slot) => fs.readFileSync(f.local(slot.unitPath), "utf8")),
+        units,
+      );
+      assert.equal(fs.existsSync(f.local(x.plan.unitPath)), false);
+      assertNoGap(f);
+      assert.deepEqual([...f.activeUnits].sort(), [x.plan.slots[1].service]);
+      f.calls.length = 0;
+      assert.equal(f.execute().routesUpdated, false);
+      assert.equal(installedReceipt(f), slotReceipt(x.plan.config, x.plan.unitSha256));
+    });
+
+  test(`${target} refuses an edited pre-account route set even with a matching receipt`, (t) => {
+    for (const edit of [
+      (config) => config + "# foreign edit\n",
+      (config) => config.replace("health|", "health|private|"),
+    ]) {
+      const f = fixture(t, { target, sharedTunnel: target !== "pages2" });
+      accountInstall(f, { edit });
+      assert.throws(f.execute, /installation differs/);
+      assert.equal(f.writes.length, 0);
+      assert.deepEqual(lifecycle(f), []);
+    }
+  });
+
+  test(`${target} refuses misrouted account paths before connector activation`, (t) => {
+    for (const misroutePath of [
+      "/api/auth/logout-all",
+      `/api/auth/grants/${handle}/revoke`,
+      "/api/auth/grants/",
+    ]) {
+      const f = fixture(t, { target, misroutePath, sharedTunnel: target !== "pages2" });
+      assert.throws(f.execute, /route validation failed/);
+      assert.deepEqual(lifecycle(f), []);
+    }
+  });
+}
