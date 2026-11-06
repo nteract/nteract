@@ -8,7 +8,9 @@
 // the text. It never renders wg-content, so nothing that finds the editor by
 // that element finds the preview.
 import React, { createElement, useEffect, useRef } from "react";
+import { linkedPage } from "../shared/page-links.mjs";
 import { imageLifecycle } from "./image-lifecycle.mjs";
+import { PAGE_LINK_CLASS } from "./link-destination.mjs";
 
 const TAGS = new Set([
   "p",
@@ -82,6 +84,11 @@ function props(tag, attrs, key) {
     else if (tag === "a" && name === "href") {
       const href = previewHref(value);
       if (href) out.href = href;
+      // The editor draws a link to another Page with its glyph
+      // (link-destination.mjs); so does the preview, so the swap to the
+      // editor doesn't move the text.
+      const page = href && globalThis.location ? linkedPage(href, globalThis.location.href) : null;
+      if (page) Object.assign(out, { className: PAGE_LINK_CLASS, "data-page-id": page.pageId });
     } else if (tag === "a" && name === "title") out.title = value;
     else if (tag === "img" && (name === "src" || name === "dark_src")) {
       const src = previewSrc(value);

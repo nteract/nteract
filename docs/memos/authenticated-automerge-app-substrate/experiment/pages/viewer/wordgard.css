@@ -189,6 +189,28 @@
   text-underline-offset: 3px;
   cursor: pointer;
 }
+/* A link to another of this deployment's Pages (link-destination.mjs
+   linkAttributes) ends in a small Page glyph, lucide's FileText. CSS draws
+   it, so no widget enters the editor: a pseudo-element is never selected,
+   copied or a caret position, and the link text is unchanged. It is an
+   inline box holding a word joiner, so the glyph never wraps away from the
+   link's last word; the icon is the box's padding, masked. */
+.wordgard-document :is(wg-content, :where(.preview-content)) a.page-link::after {
+  content: "\2060";
+  margin-inline-start: 0.16em;
+  padding-inline-start: 0.85em;
+  background-color: var(--muted-foreground);
+  -webkit-mask: var(--page-link-glyph) left center / 0.85em 0.85em no-repeat;
+  mask: var(--page-link-glyph) left center / 0.85em 0.85em no-repeat;
+  user-select: none;
+}
+.wordgard-document :is(wg-content, :where(.preview-content)) a.page-link:dir(rtl)::after {
+  -webkit-mask-position: right center;
+  mask-position: right center;
+}
+.wordgard-document {
+  --page-link-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z'/%3E%3Cpath d='M14 2v5a1 1 0 0 0 1 1h5'/%3E%3Cpath d='M10 9H8M16 13H8M16 17H8'/%3E%3C/svg%3E");
+}
 .wordgard-document :is(wg-content, :where(.preview-content)) s {
   text-decoration-thickness: 1px;
 }

@@ -69,6 +69,8 @@ import { listProjectPages, pageLocation, watchPageLocation } from "./projects.mj
 import { closeTrashedSessions, moveToTrashError, restorePage } from "./trash.mjs";
 import { listAllPages } from "./page-list.mjs";
 import { listingCache } from "./listing-cache.mjs";
+import { PageRefs } from "./page-refs.mjs";
+import { PageLinkCard } from "./PageLinkCard.jsx";
 import { PickerWalk } from "./picker-walk.mjs";
 import { SignedOutRecovery } from "./signed-out-recovery.mjs";
 import { ProjectList } from "./project-list.mjs";
@@ -164,6 +166,10 @@ const picker = new PickerWalk({
   onOtherAccount: () => accountHooks.otherAccount(),
   generation: () => accountHooks.generation(),
 });
+// What links to other Pages show this tab's reader (page-refs.mjs): titles
+// and cards read with this tab's session, in memory only. Forgotten with the
+// account, like the listing cache.
+const pageRefs = new PageRefs();
 /** Forget the rows and Projects remembered for the account: it signed out or
  * another one signed in. The Browse picker closes and drops its walk; nothing
  * here starts a request. */
@@ -171,6 +177,7 @@ function forgetAccountData() {
   listingCache.clear();
   projectList.reset();
   picker.forget();
+  pageRefs.clear(null);
 }
 /** The same, for a tool call the server refused as signed out, before the
  * session check says who is signed in. The Browse picker drops its rows but
@@ -181,6 +188,7 @@ function forgetRefusedAccountData() {
   listingCache.clear();
   projectList.reset();
   picker.refused();
+  pageRefs.clear();
 }
 const NO_PROJECTS = Object.freeze([]);
 // How long a new thread's passage stays emphasized after the inline composer
@@ -812,6 +820,8 @@ function App() {
   }
   // Publish the visual viewport's edges for the mobile bar and header.
   useEffect(() => trackVisualViewport(), []);
+  // Link previews resolve for the account shown; another drops them all.
+  useEffect(() => pageRefs.account(account?.principal ?? null), [account]);
   // The Browse picker reports here.
   useEffect(() => {
     pickerHooks.report = (message) => setPickerError(message);
@@ -2048,6 +2058,13 @@ function App() {
           )}
         </>
       )}
+      {/* The hover card for links to other Pages, in Page blocks and
+          comments alike. It opens nothing while this tab knows no account. */}
+      <PageLinkCard
+        refs={pageRefs}
+        currentPageId={session?.pageId ?? null}
+        onOpenRoute={openRoute}
+      />
     </div>
   );
 }

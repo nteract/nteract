@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import * as A from "@automerge/automerge/slim";
-import { Wordgard, Decoration, KeyBinding } from "wordgard/editor";
+import { Wordgard, KeyBinding } from "wordgard/editor";
 import { GardState, Transaction } from "wordgard/state";
 import { Command, toggleMark, toggleList, listIsActive, canAddMarkInRange } from "wordgard/command";
 import { history } from "wordgard/history";
@@ -54,6 +54,7 @@ import {
 } from "./wordgard-binding.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
 import { linkDestination } from "./link-destination.mjs";
+import { pagesLinkShape } from "./page-link-shape.mjs";
 import { PROSE_ENTRY_ATTRIBUTES } from "./prose-entry.mjs";
 import {
   COMMENT_MAX_BYTES,
@@ -105,15 +106,9 @@ function nativeConfig() {
     wordgardListStarts,
     codeHighlighting,
     KeyBinding.of({ key: "Shift-Enter", run: insertPlainLineBreak }),
-    Decoration.Mark.shape(PagesLink, {
-      element: "a",
-      attributes: (value) => {
-        const href = linkDestination(value.href, location.href);
-        return href
-          ? { href, title: value.title ?? "", target: "_blank", rel: "noopener noreferrer" }
-          : {};
-      },
-    }),
+    // The same shape as Page blocks: a link to another Page gets its glyph
+    // and the hover card's hooks.
+    pagesLinkShape(),
   ];
 }
 
