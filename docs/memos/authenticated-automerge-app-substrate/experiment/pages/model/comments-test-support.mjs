@@ -8,13 +8,14 @@ export function newCommentsDoc(uuid = crypto.randomUUID()) {
 }
 
 /** Tests only. One comment action on `comments`, anchored in `page`.
+ * `nativeSpans` stands in for the browser composer's draft.
  * Returns `{ comments, result }`; `comments` is the next document. */
 export function comment(
   page,
   comments,
   input,
   identity = {},
-  { role = "editor", ...options } = {},
+  { role = "editor", nativeSpans, ...options } = {},
 ) {
   let result;
   const next = A.change(comments, (draft) => {
@@ -22,7 +23,7 @@ export function comment(
       draft,
       input,
       { principal: "user:test", displayName: "Test", driver: "Test", ...identity },
-      undefined,
+      nativeSpans,
       { page, role, ...options },
     );
   });

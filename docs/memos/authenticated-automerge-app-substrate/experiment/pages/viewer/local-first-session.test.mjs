@@ -1157,7 +1157,7 @@ test("an offline comment survives a reload: both documents restore from the chec
   });
   const threads = Object.values(restored.commentsDoc.threads);
   assert.equal(threads.length, 1);
-  assert.equal(String(Object.values(threads[0].messages)[0].body), "Typed offline");
+  assert.equal(String(Object.values(threads[0].messages)[0].richText), "Typed offline");
   assert.match(restored.exportRecovery().markdown, /Typed offline/);
 });
 

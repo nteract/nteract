@@ -2482,10 +2482,9 @@ export class PageSession {
     if (!this.alive) throw Error("Page closed");
     if (!this.canComment) throw Error("Commenting is not available on this Page right now");
     const page = this.doc;
-    // The reader's own draft: Markdown it can't represent stays as text.
+    // The composer's draft is its spans, written as they are.
     return this.#write(this.commentsHandle, (doc) =>
       applyComment(doc, input, this.identity, nativeSpans, {
-        literal: true,
         page,
         role: this.access?.role,
       }),

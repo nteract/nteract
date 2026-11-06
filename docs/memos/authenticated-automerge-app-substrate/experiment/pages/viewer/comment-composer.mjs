@@ -1,14 +1,32 @@
 // Interprets comment-composer-machine.mjs for the viewer.
 //
 // The store holds the machine state, the captured passage (`composer`) and the
-// draft body. The body is local UI text, either a Markdown string or
-// `{ markdown, spans }` from the rich comment editor; it reaches the shared
-// document only through `send`.
+// draft body. The body is local UI state: `{ text, spans }` from the rich
+// comment editor (CommentRichText), where `spans` are the editor's spans and
+// `text` their readable text for copy and recovery, or "" when empty. It
+// reaches the shared document only through `send`.
 import { commentComposerMachine } from "./comment-composer-machine.mjs";
 import { Store } from "./store.mjs";
+import { commentSpansMeasure } from "../model/comment-text.mjs";
 
-/** Whether a stored draft body has text worth keeping. */
-export const hasDraftText = (value) => Boolean((value?.markdown ?? value)?.trim());
+/** Whether a draft body has content worth keeping and sending: by the
+ * comment content rule, text that isn't whitespace or an image. */
+export const hasDraftText = (value) =>
+  Array.isArray(value?.spans)
+    ? commentSpansMeasure(value.spans).content
+    : Boolean((typeof value === "string" ? value : "").trim());
+
+/** A draft body's readable text, for copy, display and recovery. */
+export const draftText = (value) =>
+  typeof value === "string" ? value : typeof value?.text === "string" ? value.text : "";
+
+/** The comment write for a draft body, as `[input, spans]` for
+ * `session.comment`: a rich draft's spans as the editor wrote them, or a bare
+ * string as literal text. */
+export const draftComment = (value) =>
+  Array.isArray(value?.spans)
+    ? [{}, value.spans]
+    : [{ body: draftText(value), body_format: "plain" }, undefined];
 
 const EMPTY = Object.freeze({ state: commentComposerMachine.initial, composer: null, body: "" });
 
@@ -117,3 +135,11 @@ export class CommentComposer {
     );
   }
 }
+
+/** What a recovery record keeps of a draft body: its text and, for a rich
+ * draft, its spans as plain data (IndexedDB keeps no class instances), so the
+ * archive can export its formatting and images. */
+export const draftRecord = (value) => ({
+  body: draftText(value),
+  ...(Array.isArray(value?.spans) && { spans: JSON.parse(JSON.stringify(value.spans)) }),
+});

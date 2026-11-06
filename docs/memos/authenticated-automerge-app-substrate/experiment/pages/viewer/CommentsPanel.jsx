@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { resolveCommentDraft } from "./comment-draft.mjs";
 import { reloadGate } from "./build-freshness.mjs";
-import { hasDraftText } from "./comment-composer.mjs";
+import { draftComment, draftRecord, draftText, hasDraftText } from "./comment-composer.mjs";
 import { Store, useStore } from "./store.mjs";
 import { COMMENTS_SHEET_QUERY } from "./comments-layout.mjs";
 import { CommentRichText } from "./CommentRichText.jsx";
@@ -178,7 +178,7 @@ export function CommentsPanel({
             return {
               kind: "reply",
               thread_id: thread.id,
-              body: value?.markdown ?? value,
+              ...draftRecord(value),
               quote:
                 thread.selectionContext?.status === "attached" ? thread.selectionContext.text : "",
             };
@@ -541,9 +541,7 @@ export function CommentsPanel({
                         again.
                       </p>
                     )}
-                    <p className="comment-kept-draft-text">
-                      {keptDraft.body?.markdown ?? keptDraft.body}
-                    </p>
+                    <p className="comment-kept-draft-text">{draftText(keptDraft.body)}</p>
                     <div className="comment-form-actions">
                       {session.canComment && !draftProblem && (
                         <button type="button" className="primary" onClick={continueDraft}>
@@ -704,7 +702,7 @@ export function CommentsPanel({
   );
 }
 
-const hasDraft = (value) => Boolean((value?.markdown ?? value)?.trim());
+const hasDraft = hasDraftText;
 
 /** Whether `principal` started or replied in a thread. */
 function involves(thread, principal) {
@@ -1144,12 +1142,13 @@ function ThreadView({
                   requestAnimationFrame(() => replyButton.current?.focus({ preventScroll: true }));
                 }
               }}
-              submit={(body, spans) =>
-                session.comment(
-                  { action: "reply", thread_id: thread.id, body, body_format: "markdown" },
+              submit={(draft) => {
+                const [content, spans] = draftComment(draft);
+                return session.comment(
+                  { action: "reply", thread_id: thread.id, ...content },
                   spans,
-                )
-              }
+                );
+              }}
               onBusyChange={onSending}
               onSuccess={() => {
                 const restore = form.current?.contains(document.activeElement);
@@ -1201,7 +1200,8 @@ function CommentForm({
   onDiscard,
   images,
 }) {
-  const body = value.markdown ?? value;
+  const body = draftText(value);
+  const ready = hasDraftText(value);
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
@@ -1216,12 +1216,12 @@ function CommentForm({
     };
   }, []);
   async function send() {
-    if (busy || uploading || disabled || draftError || !body.trim()) return;
+    if (busy || uploading || disabled || draftError || !ready) return;
     setBusy(true);
     onBusyChange?.(true);
     setError("");
     try {
-      await submit(body, value.spans);
+      await submit(value);
       // The draft belongs to the panel, so a send that finishes after this
       // form unmounted (the thread was left mid-send) still clears it.
       onChange("");
@@ -1254,9 +1254,8 @@ function CommentForm({
         <span className={compact ? "sr-only" : undefined}>{label}</span>
         <CommentRichText
           label={label}
-          value={body}
-          nativeSpans={value.spans}
-          onChange={(markdown, spans) => onChange(spans ? { markdown, spans } : markdown)}
+          value={value}
+          onChange={onChange}
           onError={setDraftError}
           disabled={busy || disabled}
           images={images}
@@ -1271,7 +1270,7 @@ function CommentForm({
       <div className="comment-form-actions">
         <button
           className="primary comment-send"
-          disabled={busy || uploading || disabled || draftError || !body.trim()}
+          disabled={busy || uploading || disabled || draftError || !ready}
           title="Send (⌘/Ctrl+Enter)"
         >
           Send <kbd aria-hidden="true">⌘↵</kbd>
@@ -1297,7 +1296,7 @@ function CommentForm({
             {copied ? "Copied" : "Copy"}
           </button>
         )}
-        {onDiscard && body.trim() && (
+        {onDiscard && ready && (
           <button type="button" className="subtle-button" onClick={onDiscard} disabled={busy}>
             Discard
           </button>
