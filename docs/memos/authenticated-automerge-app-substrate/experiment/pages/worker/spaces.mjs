@@ -23,7 +23,7 @@ import { validPageId } from "./registration.mjs";
 import { NO_ACTOR_CHAIN, decide, heldRelation, principalOf, projectObject } from "./authz.mjs";
 import { serialQueue } from "./serial-queue.mjs";
 import { claimInvitation, proposeSharingMutation } from "./sharing.mjs";
-import { indexProjectInvitations } from "./project-invitations.mjs";
+import { indexProjectInvitations, pruneProjectInvitations } from "./project-invitations.mjs";
 import { logAuthEvent } from "./auth-events.mjs";
 
 export const SPACE_LIMIT = 50;
@@ -35,6 +35,9 @@ const receiptKey = (operationKey) => `host/receipt/${operationKey.slice("host/op
 /** Invitations in `after` that `before` lacks, as [id, invite] pairs. */
 const addedInvites = (before, after) =>
   Object.entries(after?.acl?.invites ?? {}).filter(([id]) => !before?.acl?.invites?.[id]);
+
+/** Sharing actions that add or remove pending invitations. */
+const indexedAction = (action) => action === "invite" || action === "revoke_invite";
 
 /** New Projects get `prj_` IDs. `sp_` IDs were minted before Projects had
  * their name and stay valid. IDs are not storage keys' names, so either shape
@@ -243,6 +246,9 @@ export class Space {
               inviteId,
               role: record.acl.members?.[identity.principal]?.role,
             });
+          // The claim is committed; a stale hint only names a Project whose
+          // invite is gone, and the scheduled sweep drops it at expiry.
+          await pruneProjectInvitations(this.env, record).catch(() => {});
         }
       }
       // A Space the caller cannot read looks exactly like a missing one.
@@ -301,6 +307,8 @@ export class Space {
                 "idempotency_conflict",
               );
             await this.ctx.storage.sync();
+            // Repeats a hint removal that failed after the ACL committed.
+            if (indexedAction(args.action)) await pruneProjectInvitations(this.env, record);
             return json(publicProjectAccess(previous.receipt));
           }
           const proposed = await proposeSharingMutation(
@@ -344,6 +352,10 @@ export class Space {
                 inviteId: args.invite_id,
               });
           }
+          // Hints for invites the committed ACL no longer holds (revoked or
+          // replaced) go after the audit line, so a failure here leaves the
+          // retry, which replays the receipt above, to finish the removal.
+          if (indexedAction(args.action)) await pruneProjectInvitations(this.env, next);
           if (args.action === "set_role" && args.role === null)
             await this.env.CATALOGS.getByName(args.principal).fetch(
               new Request("https://pages.internal/internal/project-discovery", {
