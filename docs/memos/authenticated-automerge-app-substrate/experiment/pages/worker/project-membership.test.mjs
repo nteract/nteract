@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { world } from "./projects-fixture.mjs";
 import { invitedProjects } from "./project-invitations.mjs";
 import { publicProjectAccess, projectContentMarkdown } from "./spaces.mjs";
+import { captureConsole, secretLines } from "./auth-events-fixture.mjs";
 
 for (const cleared of [false, true]) {
   test(`an older Project resolution cannot undo a real owner revocation${cleared ? " after access clears" : ""}`, async (t) => {
@@ -215,6 +216,7 @@ for (const role of ["editor", "commenter", "viewer"])
     const w = await world(t);
     const project = await w.createProject("Email Project");
     const child = (await w.createPage({ title: "Child", project_id: project.project_id })).body;
+    const capture = captureConsole(t);
     const args = {
       project_id: project.project_id,
       action: "invite",
@@ -249,6 +251,25 @@ for (const role of ["editor", "commenter", "viewer"])
       .body;
     assert.equal(roster.invites.length, 0);
     assert.equal(roster.members[w.member].email, args.email);
+    // One created and one accepted line, joined by the invitation reference.
+    // An exact retry of the invite records nothing more.
+    const [created, ...moreCreated] = capture.find("invitation.created");
+    const [accepted, ...moreAccepted] = capture.find("invitation.accepted");
+    assert.deepEqual([moreCreated, moreAccepted], [[], []]);
+    assert.match(created.invite, /^[0-9a-f]{12}$/);
+    assert.deepEqual(
+      [created, accepted].map(({ principal, project_id, invite, role: granted }) => ({
+        principal,
+        project_id,
+        invite,
+        role: granted,
+      })),
+      [
+        { principal: w.owner, project_id: project.project_id, invite: created.invite, role },
+        { principal: w.member, project_id: project.project_id, invite: created.invite, role },
+      ],
+    );
+    assert.deepEqual(secretLines(capture.events.map((event) => JSON.stringify(event))), []);
     const changed = await w.call("owner", "manage_project_access", {
       ...args,
       role: "viewer",
@@ -295,6 +316,7 @@ test("revoked and nonmatching exact-email invites never discover or authorize Pr
     idempotency_key: w.key(),
   });
   const invite = pending.body.invites.find((row) => row.email === "fixture@example.invalid");
+  const capture = captureConsole(t);
   const revoked = await w.call("owner", "manage_project_access", {
     project_id: project.project_id,
     action: "revoke_invite",
@@ -303,6 +325,21 @@ test("revoked and nonmatching exact-email invites never discover or authorize Pr
     idempotency_key: w.key(),
   });
   assert.equal(revoked.status, 200);
+  const [line] = capture.find("invitation.revoked");
+  assert.deepEqual(
+    { ...line, timestamp: undefined },
+    {
+      service: "nteract-pages-native",
+      event: "pages.auth.v1",
+      action: "invitation.revoked",
+      principal: w.owner,
+      project_id: project.project_id,
+      invite: line.invite,
+      timestamp: undefined,
+    },
+  );
+  assert.match(line.invite, /^[0-9a-f]{12}$/);
+  assert.equal(JSON.stringify(capture.events).includes(invite.id), false);
   assert.deepEqual((await w.call("member", "list_projects")).body.projects, []);
 });
 

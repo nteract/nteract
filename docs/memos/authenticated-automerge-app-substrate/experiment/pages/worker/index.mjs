@@ -8,6 +8,8 @@ import {
   serverOidcSessionStatus,
 } from "@cloud/server-oidc.ts";
 import { handleLocalOidcRequest } from "@cloud/dev-oidc.ts";
+import { loadServerSession } from "@cloud/oidc-session-store.ts";
+import { logAuthEvent, recordOidcEvent, sessionRowPrincipal } from "./auth-events.mjs";
 import {
   createPageData,
   initializePage,
@@ -1100,12 +1102,26 @@ const gateway = {
         return completeServerOidcLogin(request, env, noop, signInCallbackOptions);
       if (url.pathname === "/api/auth/logout" && request.method === "POST") {
         requireSameOrigin(request, env);
-        return deleteServerOidcSession(request, env);
+        // The audit line names who signed out; a missing or unreadable
+        // session still signs out.
+        const signedIn = await loadServerSession(env, request, Math.floor(Date.now() / 1000)).catch(
+          () => null,
+        );
+        const signedOut = await deleteServerOidcSession(request, env);
+        if (signedIn)
+          await logAuthEvent({
+            action: "sign_out",
+            principal: sessionRowPrincipal(signedIn),
+            credential: "oidc",
+          });
+        return signedOut;
       }
       if (url.pathname === "/api/auth/session" && request.method === "GET") {
         let refreshed;
         if (!request.headers.has("authorization")) {
-          refreshed = await serverOidcSessionStatus(request, env, noop);
+          refreshed = await serverOidcSessionStatus(request, env, noop, {
+            onAuthEvent: recordOidcEvent,
+          });
           if (!refreshed.ok) return refreshed;
         }
         let identity = null;
