@@ -229,3 +229,22 @@ describe("SharingPanel host boundary", () => {
     expect(remove.mock.calls[0][0].acl).toEqual(acl);
   });
 });
+
+describe("concealEmail", () => {
+  it("masks the local part with a fixed width and keeps the domain", async () => {
+    const { concealEmail } = await import("../SharingPanel");
+    expect(concealEmail("kkelley@anaconda.com")).toBe("k•••@anaconda.com");
+    expect(concealEmail("rgbkrk@gmail.com")).toBe("r•••@gmail.com");
+    expect(concealEmail("Kyle Kelley")).toBe("Kyle Kelley");
+  });
+
+  it("reveals emails while the row is hovered", () => {
+    render(<SharingPanel {...props()} concealEmails />);
+    const row = screen.getByText("k•••@example.com").closest("li")!;
+    expect(row.getAttribute("title")).toBeNull();
+    fireEvent.pointerEnter(row);
+    expect(within(row).getByText("kyle@example.com")).toBeTruthy();
+    fireEvent.pointerLeave(row);
+    expect(within(row).getByText("k•••@example.com")).toBeTruthy();
+  });
+});

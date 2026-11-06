@@ -1,8 +1,13 @@
 import { useEffect, useEffectEvent, useId, useReducer, useRef, useState } from "react";
 import { defer } from "rxjs";
 import { Share2 } from "lucide-react";
+import {
+  SharingPanel,
+  nativePrimitives,
+} from "../../../../../../src/components/sharing/SharingPanel.tsx";
 import { projectPath } from "../shared/routes.mjs";
 import { ROLE_LABELS } from "./sharing-roles.mjs";
+import "./sharing-panel.css";
 
 export function projectSharingTransition(state, event) {
   if (event.type === "load" && !["loading", "saving"].includes(state.name))
@@ -18,6 +23,85 @@ export function projectSharingTransition(state, event) {
   if (event.type === "failed" && ["loading", "saving"].includes(state.name))
     return { name: "failed", value: null, error: event.error };
   return state;
+}
+
+const ROLE_OPTIONS = Object.entries(ROLE_LABELS).map(([value, label]) => ({ value, label }));
+const primitives = {
+  ...nativePrimitives,
+  ScopeSelect: ({ id, value, onValueChange }) => (
+    <select id={id} value={value} onChange={(event) => onValueChange(event.target.value)}>
+      {ROLE_OPTIONS.map(({ value, label }) => (
+        <option key={value} value={value}>
+          {label}
+        </option>
+      ))}
+    </select>
+  ),
+};
+
+const row = (value) => ({
+  detail: "",
+  title: value.label,
+  stateLabel: null,
+  stateTone: null,
+  removable: false,
+  ...value,
+});
+
+/**
+ * Rows for the shared panel. The owner row comes from the signed-in identity:
+ * only the owner reads the ACL, so the viewer is the owner. Members carry
+ * `role` so the panel renders their role picker; invites are revoke-only.
+ */
+export function projectAccessRows(value, identity, now = Date.now()) {
+  if (!value) return [];
+  const rows = [
+    row({
+      id: "owner",
+      kind: "acl",
+      label: identity?.displayName || "You",
+      detail: identity?.email || "",
+      badge: "Owner",
+    }),
+  ];
+  for (const [principal, member] of Object.entries(value.members ?? {})) {
+    if (!Object.hasOwn(ROLE_LABELS, member.role)) continue;
+    rows.push(
+      row({
+        id: principal,
+        kind: "acl",
+        principal,
+        label: member.displayName || member.email || "Collaborator",
+        detail: member.displayName ? member.email || "" : "",
+        badge: ROLE_LABELS[member.role],
+        role: member.role,
+        removable: true,
+      }),
+    );
+  }
+  for (const invite of value.invites ?? []) {
+    const expired = invite.expiresAt <= now;
+    rows.push(
+      row({
+        id: invite.id,
+        kind: "invite",
+        label: invite.email,
+        detail: expired ? "Invite expired" : "Waiting for them to open the Project",
+        badge: ROLE_LABELS[invite.role] || "Access unavailable",
+        stateLabel: expired ? "Expired" : "Pending",
+        stateTone: expired ? null : "pending",
+        removable: true,
+      }),
+    );
+  }
+  return rows;
+}
+
+function description(project, owner) {
+  if (owner) return "Members can open every Page in this Project.";
+  if (project.role === "unknown") return "Loading Project access…";
+  const role = ROLE_LABELS[project.role];
+  return `${role ? `${role}.` : "Project access unavailable."} Only the Project owner can manage members.`;
 }
 
 /** Project ACLs are separate from a Page's direct grants. No email lookup. */
@@ -47,28 +131,40 @@ export function ProjectSharing({
   }, [open, owner]);
   useEffect(() => {
     if (!owner || !["loading", "saving"].includes(state.name)) return;
+    const request = state.request;
     const subscription = defer(() =>
       tool(state.name === "loading" ? "get_project_access" : "manage_project_access", {
         project_id: project.project_id,
-        ...state.request,
+        ...request,
       }),
     ).subscribe({
-      next: (value) => dispatch({ type: "loaded", value }),
+      next: (value) => {
+        if (request?.action === "invite") setEmail("");
+        dispatch({ type: "loaded", value });
+      },
       error: (error) => dispatch({ type: "failed", error: error.message }),
     });
     return () => subscription.unsubscribe();
   }, [state, owner, project.project_id, tool]);
   const dismiss = useEffectEvent(() => onOpenChange(false));
+  const escape = useEffectEvent(() => close());
   useEffect(() => {
     if (!open) return;
     const outside = (event) => {
       if (!root.current?.contains(event.target)) dismiss();
     };
+    // Document-level: a button that disables mid-save drops focus to <body>,
+    // and Escape must still close the panel.
+    const key = (event) => {
+      if (event.key === "Escape") escape();
+    };
     document.addEventListener("pointerdown", outside);
     document.addEventListener("focusin", outside);
+    document.addEventListener("keydown", key);
     return () => {
       document.removeEventListener("pointerdown", outside);
       document.removeEventListener("focusin", outside);
+      document.removeEventListener("keydown", key);
     };
   }, [open]);
   const save = (change) => {
@@ -96,6 +192,18 @@ export function ProjectSharing({
       setCopyStatus("Could not copy the Project link.");
     }
   };
+  const request = state.name === "saving" ? state.request : null;
+  const busyAction = request
+    ? request.action === "invite"
+      ? "invite"
+      : (request.principal ?? request.invite_id)
+    : null;
+  const failed = state.name === "failed";
+  const message =
+    (failed && state.error) ||
+    copyStatus ||
+    state.message ||
+    (state.name === "saving" ? "Updating Project access…" : "");
   return (
     <div className="page-sharing" ref={root}>
       {trigger && (
@@ -111,7 +219,8 @@ export function ProjectSharing({
           aria-expanded={open}
           onClick={() => onOpenChange(!open)}
         >
-          <Share2 size={18} aria-hidden="true" /> Share
+          <Share2 size={17} aria-hidden="true" />
+          <span>Share</span>
         </button>
       )}
       {open && (
@@ -125,147 +234,86 @@ export function ProjectSharing({
             panel.current = node;
             if (panelRef) panelRef.current = node;
           }}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.stopPropagation();
-              close();
-            }
-          }}
         >
-          <h2>Share Project</h2>
-          <p>
-            Project members can access every Page in this Project. Direct Page grants are managed
-            separately and remain when membership is removed.
-          </p>
-          <button type="button" onClick={copyLink}>
-            Copy Project link
-          </button>
-          <p role="status">
-            {copyStatus ||
-              state.message ||
-              (state.name === "saving" ? "Updating Project access…" : "")}
-          </p>
-          {project.role === "unknown" ? (
-            <p role="status">Loading Project access…</p>
-          ) : (
-            !owner && (
-              <p>
-                {ROLE_LABELS[project.role] || "Project access unavailable"}. Only the Project owner
-                can manage members.
-              </p>
-            )
+          <SharingPanel
+            resourceLabel="Project"
+            title="Share Project"
+            description={description(project, owner)}
+            sections={{
+              publicAccess: false,
+              invites: owner && !failed,
+              accessRequests: false,
+              runtimeAccess: false,
+            }}
+            emptyAccessMessage={
+              failed
+                ? "Members could not be loaded."
+                : owner
+                  ? "Only you have access."
+                  : "Members are visible to the Project owner."
+            }
+            accessProjection={{
+              accessRows: owner ? projectAccessRows(state.value, session?.identity) : [],
+              accessSummary: null,
+              accessRequestRows: [],
+              accessRequestSummary: null,
+              runtimeAccessRows: [],
+              runtimeAccessSummary: null,
+            }}
+            busyAction={busyAction}
+            copyLinkLabel="Copy Project link"
+            compactCopyLinkLabel="Copy link"
+            onCopyLink={copyLink}
+            formError={null}
+            message={message || null}
+            messageKind={failed ? "error" : "info"}
+            inviteEmail={email}
+            onInviteEmailChange={setEmail}
+            inviteScope={role}
+            onInviteScopeChange={setRole}
+            inviteReady={state.name === "ready" && !!email.trim()}
+            onSubmitInvite={(event) => {
+              event.preventDefault();
+              if (email.trim() && event.currentTarget.checkValidity())
+                save({ action: "invite", email: email.trim(), role });
+            }}
+            onRemoveAccessRow={(row) =>
+              save(
+                row.kind === "invite"
+                  ? { action: "revoke_invite", invite_id: row.id }
+                  : { action: "set_role", principal: row.principal, role: null },
+              )
+            }
+            roleOptions={ROLE_OPTIONS}
+            onChangeAccessRowRole={(row, role) =>
+              save({ action: "set_role", principal: row.principal, role })
+            }
+            onResolveAccessRequest={() => {}}
+            onTogglePublicAccess={() => {}}
+            publicBusy={false}
+            publicEnabled={false}
+            showInitialAccessLoading={
+              project.role === "unknown" || (owner && ["idle", "loading"].includes(state.name))
+            }
+            primitives={primitives}
+            concealEmails
+          />
+          {failed && (
+            <button
+              type="button"
+              className="subtle-button page-sharing-retry"
+              onClick={() => dispatch({ type: "load" })}
+            >
+              Reload members
+            </button>
           )}
-          {owner && (
-            <>
-              <p>
-                Enter the person's exact email. Access stays pending until they open the Project
-                while signed in with that verified email. No email is sent; share the Project link
-                yourself.
-              </p>
-              {state.name === "loading" && <p role="status">Loading members…</p>}
-              {state.name === "failed" && (
-                <>
-                  <p role="alert">{state.error}</p>
-                  <button type="button" onClick={() => dispatch({ type: "load" })}>
-                    Reload members
-                  </button>
-                </>
-              )}
-              {state.value && (
-                <>
-                  <ul>
-                    {Object.entries(state.value.members ?? {})
-                      .filter(([, member]) => Object.hasOwn(ROLE_LABELS, member.role))
-                      .map(([id, member]) => (
-                        <li key={id}>
-                          <span>{member.email || member.displayName || id}</span>{" "}
-                          <select
-                            aria-label={`Role for ${member.email || member.displayName || id}`}
-                            value={member.role}
-                            disabled={state.name !== "ready"}
-                            onChange={(event) =>
-                              save({ action: "set_role", principal: id, role: event.target.value })
-                            }
-                          >
-                            {Object.entries(ROLE_LABELS).map(([role, label]) => (
-                              <option key={role} value={role}>
-                                {label}
-                              </option>
-                            ))}
-                          </select>{" "}
-                          <button
-                            type="button"
-                            disabled={state.name !== "ready"}
-                            onClick={() => save({ action: "set_role", principal: id, role: null })}
-                          >
-                            Remove
-                          </button>
-                        </li>
-                      ))}
-                  </ul>
-                  {!!state.value.invites?.length && (
-                    <section aria-label="Pending access">
-                      <h3>Pending access</h3>
-                      <ul>
-                        {state.value.invites.map((invite) => (
-                          <li key={invite.id}>
-                            <span>
-                              {invite.email}: {ROLE_LABELS[invite.role] || "Access unavailable"} ·{" "}
-                              {invite.expiresAt <= Date.now() ? "Expired" : "Pending"}
-                            </span>{" "}
-                            <button
-                              type="button"
-                              disabled={state.name !== "ready"}
-                              onClick={() =>
-                                save({ action: "revoke_invite", invite_id: invite.id })
-                              }
-                            >
-                              Revoke pending access
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    </section>
-                  )}
-                  <form
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      if (event.currentTarget.checkValidity())
-                        save({ action: "invite", email: email.trim(), role });
-                    }}
-                  >
-                    <label>
-                      Email{" "}
-                      <input
-                        type="email"
-                        autoComplete="email"
-                        value={email}
-                        onChange={(event) => setEmail(event.target.value)}
-                        required
-                      />
-                    </label>
-                    <label>
-                      Project role{" "}
-                      <select value={role} onChange={(event) => setRole(event.target.value)}>
-                        {Object.entries(ROLE_LABELS).map(([role, label]) => (
-                          <option key={role} value={role}>
-                            {label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <button type="submit" disabled={state.name !== "ready" || !email.trim()}>
-                      Add access
-                    </button>
-                  </form>
-                </>
-              )}
-              <p>Changes to live inherited access can take up to 15 seconds.</p>
-            </>
+          {owner && !failed && (
+            <p className="page-sharing-note">
+              No email is sent. Share the Project link yourself; access stays pending until they
+              open it signed in with that verified email. Changes reach open Pages within 15
+              seconds.
+            </p>
           )}
-          <button type="button" className="subtle-button" onClick={close}>
-            Close
-          </button>
         </section>
       )}
     </div>

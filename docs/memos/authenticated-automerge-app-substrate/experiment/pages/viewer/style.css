@@ -1631,6 +1631,30 @@ span.unknown-node {
 .page-sharing-popover .sharing-panel [data-tone="pending"] {
   color: var(--warning);
 }
+/* The panel takes focus on open so Tab starts inside it; that is not a
+   keyboard focus target worth ringing. */
+.page-sharing-popover:focus {
+  outline: none;
+}
+/* Host notes and actions under the shared panel align with its 16px gutter. */
+.page-sharing-popover > .page-sharing-note {
+  margin: 0;
+  padding: 10px 16px 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+.page-sharing-popover > .page-sharing-retry {
+  margin: 0 16px 12px;
+}
+.page-sharing-popover .sharing-panel [data-sharing-badges] select {
+  width: auto;
+  height: 30px;
+  padding: 2px 6px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
 .page-sharing-export {
   padding: 10px 16px;
   border-top: 1px solid var(--border);
@@ -3420,19 +3444,4 @@ html:has(.library-view) {
   gap: 0.3rem;
   min-height: 32px;
   font-size: 0.8rem;
-}
-.project-sharing-panel {
-  overflow: auto;
-  overflow-wrap: anywhere;
-  padding: 1rem;
-  border: 1px solid var(--border);
-  border-radius: 0.75rem;
-  background: var(--surface, #fff);
-  color: inherit;
-  box-shadow: 0 8px 30px #0002;
-}
-.project-sharing-panel form,
-.project-sharing-panel label {
-  display: grid;
-  gap: 0.5rem;
 }

@@ -213,7 +213,9 @@ test("a write completing while closed updates the cache and keeps busy on reopen
   await f.toggle();
   await f.settle(response, json(updated));
   await f.toggle();
-  assert.match(f.container.textContent, /colleague@example.com/);
+  // Emails stay masked until the row is hovered or focused.
+  assert.match(f.container.textContent, /c•••@example\.com/);
+  assert.doesNotMatch(f.container.textContent, /colleague@example\.com/);
   assert.equal(gets, 1);
 });
 

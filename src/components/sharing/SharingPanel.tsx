@@ -1,6 +1,7 @@
 import { Check, Globe2, Link2, Mail, ServerCog, Trash2, UserRound, X } from "lucide-react";
 import {
   useId,
+  useState,
   type ButtonHTMLAttributes,
   type ComponentType,
   type FormEvent,
@@ -24,6 +25,19 @@ export interface SharingAccessRow {
   stateLabel: string | null;
   stateTone: "success" | "pending" | null;
   removable: boolean;
+  /** Current role for a row whose role the host lets the viewer change. */
+  role?: string;
+}
+export interface SharingRoleOption {
+  value: string;
+  label: string;
+}
+export interface SharingRoleSelectProps {
+  value: string;
+  options: readonly SharingRoleOption[];
+  disabled: boolean;
+  "aria-label": string;
+  onValueChange: (value: string) => void;
 }
 export interface SharingAccessProjection<Row extends SharingAccessRow> {
   accessRows: readonly Row[];
@@ -48,6 +62,8 @@ export interface SharingPrimitives {
   Input: ComponentType<InputHTMLAttributes<HTMLInputElement>>;
   Label: ComponentType<LabelHTMLAttributes<HTMLLabelElement>>;
   ScopeSelect: ComponentType<SharingScopeSelectProps>;
+  /** Per-row role picker. Hosts without row roles can leave it out. */
+  RoleSelect?: ComponentType<SharingRoleSelectProps>;
   Separator: ComponentType;
 }
 export interface SharingPanelProps<Row extends SharingAccessRow = SharingAccessRow> {
@@ -82,6 +98,14 @@ export interface SharingPanelProps<Row extends SharingAccessRow = SharingAccessR
     runtimeAccess?: boolean;
   };
   primitives?: SharingPrimitives;
+  /**
+   * Show emails as `k•••@example.com` until the row is hovered or focused, so
+   * a screen recording or screenshot does not capture full addresses.
+   */
+  concealEmails?: boolean;
+  /** Roles a row with `role` set can switch between. */
+  roleOptions?: readonly SharingRoleOption[];
+  onChangeAccessRowRole?: (row: Row, role: string) => void;
 }
 
 function NativeButton({ variant, size, ...props }: ComponentProps<SharingPrimitives["Button"]>) {
@@ -103,10 +127,35 @@ export const nativePrimitives: SharingPrimitives = {
       <option value="editor">Can edit</option>
     </select>
   ),
+  RoleSelect: ({ value, options, disabled, onValueChange, ...props }) => (
+    <select
+      value={value}
+      disabled={disabled}
+      aria-label={props["aria-label"]}
+      onChange={(event) => onValueChange(event.target.value)}
+    >
+      {options.map((option) => (
+        <option key={option.value} value={option.value}>
+          {option.label}
+        </option>
+      ))}
+    </select>
+  ),
   Separator: () => <hr />,
 };
 const classes = (...values: (string | false | null | undefined)[]) =>
   values.filter(Boolean).join(" ");
+
+const EMAIL = /^([^\s@])[^\s@]*(@[^\s@]+)$/;
+/**
+ * `kkelley@anaconda.com` becomes `k•••@anaconda.com`. The fixed-width mask
+ * hides the local part's length; the domain stays so two accounts with the
+ * same display name remain distinguishable. Non-email text is unchanged.
+ */
+export function concealEmail(text: string): string {
+  const match = EMAIL.exec(text);
+  return match ? `${match[1]}•••${match[2]}` : text;
+}
 
 /**
  * Presentational sharing body used by the cloud notebook and Elements. Hosts supply access facts
@@ -139,8 +188,12 @@ export function SharingPanel<Row extends SharingAccessRow>({
   emptyAccessMessage = `Only the owner can access this ${resourceLabel}.`,
   sections = {},
   primitives = nativePrimitives,
+  concealEmails = false,
+  roleOptions,
+  onChangeAccessRowRole,
 }: SharingPanelProps<Row>) {
   const { Button, Input, Label, ScopeSelect, Separator } = primitives;
+  const RoleSelect = primitives.RoleSelect ?? nativePrimitives.RoleSelect!;
   const inputId = useId();
   return (
     <div className="sharing-panel">
@@ -272,7 +325,7 @@ export function SharingPanel<Row extends SharingAccessRow>({
             </div>
             <ul className="divide-y divide-border/70">
               {accessProjection.accessRequestRows.map((row) => (
-                <SharingRow key={row.id} row={row}>
+                <SharingRow key={row.id} row={row} conceal={concealEmails}>
                   <SharingRowAction
                     Button={Button}
                     label={`Approve ${row.label}`}
@@ -323,7 +376,22 @@ export function SharingPanel<Row extends SharingAccessRow>({
         ) : (
           <ul className="divide-y divide-border/70">
             {accessProjection.accessRows.map((row) => (
-              <SharingRow key={row.id} row={row}>
+              <SharingRow
+                key={row.id}
+                row={row}
+                conceal={concealEmails}
+                badge={
+                  row.role !== undefined && roleOptions && onChangeAccessRowRole ? (
+                    <RoleSelect
+                      value={row.role}
+                      options={roleOptions}
+                      disabled={busyAction !== null}
+                      aria-label={`Role for ${row.label}`}
+                      onValueChange={(role) => onChangeAccessRowRole(row, role)}
+                    />
+                  ) : undefined
+                }
+              >
                 {row.removable ? (
                   <SharingRowAction
                     Button={Button}
@@ -354,7 +422,7 @@ export function SharingPanel<Row extends SharingAccessRow>({
             </div>
             <ul className="divide-y divide-border/70">
               {accessProjection.runtimeAccessRows.map((row) => (
-                <SharingRow key={row.id} row={row} />
+                <SharingRow key={row.id} row={row} conceal={concealEmails} />
               ))}
             </ul>
           </section>
@@ -371,6 +439,7 @@ export function SharingPanel<Row extends SharingAccessRow>({
                 : "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
             )}
             data-kind={messageKind}
+            role={messageKind === "error" ? "alert" : "status"}
           >
             {message}
           </div>
@@ -385,21 +454,51 @@ export function SharingPanel<Row extends SharingAccessRow>({
  * column is reserved even when a row has no buttons, and is pulled right by the
  * icon button's 6px padding so glyphs — not button boxes — land on the content
  * edge, matching where plain text ends in button-less rows.
+ *
+ * With `conceal`, emails stay masked until the pointer is over the row or
+ * focus is inside it. The row tooltip is dropped while masked so it cannot
+ * leak the address either.
  */
-function SharingRow({ row, children }: { row: SharingAccessRow; children?: ReactNode }) {
+function SharingRow({
+  row,
+  conceal = false,
+  badge,
+  children,
+}: {
+  row: SharingAccessRow;
+  conceal?: boolean;
+  badge?: ReactNode;
+  children?: ReactNode;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const masked = conceal && !hovered && !focused;
+  const show = (text: string) => (masked ? concealEmail(text) : text);
   return (
     <li
       data-sharing-row
-      title={row.title}
+      data-concealed={conceal ? String(masked) : undefined}
+      title={masked ? undefined : row.title}
+      onPointerEnter={conceal ? () => setHovered(true) : undefined}
+      onPointerLeave={conceal ? () => setHovered(false) : undefined}
+      onFocus={conceal ? () => setFocused(true) : undefined}
+      onBlur={
+        conceal
+          ? (event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+                setFocused(false);
+            }
+          : undefined
+      }
       className="grid grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-x-3 py-2.5 [&>svg]:size-4 [&>svg]:shrink-0"
     >
       <SharingRowIcon row={row} />
       <div data-sharing-person className="min-w-0">
-        <strong className="block truncate text-sm font-medium">{row.label}</strong>
-        <span className="block truncate text-xs text-muted-foreground">{row.detail}</span>
+        <strong className="block truncate text-sm font-medium">{show(row.label)}</strong>
+        <span className="block truncate text-xs text-muted-foreground">{show(row.detail)}</span>
       </div>
       <div data-sharing-badges className="flex items-center gap-1.5">
-        <span className="text-xs font-medium text-muted-foreground">{row.badge}</span>
+        {badge ?? <span className="text-xs font-medium text-muted-foreground">{row.badge}</span>}
         {row.stateLabel ? (
           <SharingStateLabel tone={row.stateTone}>{row.stateLabel}</SharingStateLabel>
         ) : null}
