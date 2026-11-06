@@ -1,3 +1,6 @@
+// Codes that mean the signer authored a change the rules forbid: one list
+// for native records and plain sync.
+import { BLOCKING } from "../sync/comments.mjs";
 import * as A from "@automerge/automerge";
 import { decodeRecordFrame } from "@automerge/automerge-repo-subduction";
 import { REJECTION, admitCommentChanges } from "../model/comment-authority.mjs";
@@ -43,17 +46,6 @@ import { signedIssuer } from "./actor-authorship.mjs";
 
 const RECORD_PATH = /^subduction-v1\/([0-9a-f]{64})\/(commits|fragments)\/([0-9a-f]{64})$/;
 
-/** Codes that mean the signer authored a change the rules forbid. */
-const BLOCKING = new Set(
-  Object.values(REJECTION).filter(
-    (code) =>
-      ![
-        REJECTION.MISSING_DEPENDENCIES,
-        REJECTION.INVALID_PRINCIPAL,
-        REJECTION.MALFORMED_CHANGE,
-      ].includes(code),
-  ),
-);
 export const ADMISSION_ERROR = "admission_error";
 
 /** The tree, kind, signer and blob of a saved record, or null when `path`

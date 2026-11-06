@@ -1369,8 +1369,9 @@ A refused record is never stored or delivered. The store throws a refusal
 it as a storage failure ([../patch-record-refusal.mjs](../patch-record-refusal.mjs)):
 the native engine keeps running and every other connection stays up. When the
 signer broke a rule, its key is blocked from authoring comments, durably, and
-only its connection closes. A missing dependency, an unreadable frame or a
-checker error refuses the record without blocking anyone. So a refusal is not a
+only its connection closes. A missing dependency, an unreadable frame, a
+checker error or a form only an earlier build writes (`outdated_form`: a
+stale tab that hasn't reloaded) refuses the record without blocking anyone. So a refusal is not a
 lever over other peers, whatever a principal does with fresh keys. An honest
 client never writes a refused change. A flush already waiting on a refused save
 filters the refusal out of its results, so a Page mutation's flush doesn't fail

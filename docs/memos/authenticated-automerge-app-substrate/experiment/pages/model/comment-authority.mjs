@@ -72,6 +72,10 @@ export const REJECTION = Object.freeze({
   INVALID_VALUE: "invalid_value",
   INVALID_ID: "invalid_id",
   UNSUPPORTED_FEATURE: "unsupported_feature",
+  // A form an earlier build wrote (a `body`, adapter-form spans). A stale
+  // tab isn't an attack, so this refusal never blocks the key
+  // (sync/comments.mjs BLOCKING); the tab must reload (viewer protocol 3).
+  OUTDATED_FORM: "outdated_form",
 });
 
 const MAX_ID_LENGTH = 128;
@@ -191,7 +195,7 @@ function validateBody(message, where, { created = false, contentWritten = false 
       reject(REJECTION.INVALID_VALUE, "richText needs the rich format", where);
     if (body === undefined) reject(REJECTION.INVALID_VALUE, "Message body must be text", where);
   } else if (created && own(message, "body"))
-    reject(REJECTION.INVALID_VALUE, "A new message stores no body: its spans are the message", where);
+    reject(REJECTION.OUTDATED_FORM, "A new message stores no body: its spans are the message", where);
   // The shared content rule (comment-content.mjs): the same one the tools and
   // the browser apply before writing, so an honest write always passes here.
   let spans;
@@ -208,7 +212,7 @@ function validateBody(message, where, { created = false, contentWritten = false 
     reject(REJECTION.INVALID_VALUE, error.message, where);
   }
   if (format === RICH_FORMAT && (created || contentWritten) && !isEditorForm(spans))
-    reject(REJECTION.INVALID_VALUE, "Comment spans must be in the Pages editor's form", where);
+    reject(REJECTION.OUTDATED_FORM, "Comment spans must be in the Pages editor's form", where);
 }
 
 /** Mutable message fields; author-only once the message exists. */
@@ -382,7 +386,7 @@ function checkMessageOperation(op, full, ctx, threadId, thread, isCreate, where)
   // No writer stores `body` any more; removing an earlier build's copy is
   // part of rewriting a message.
   if (field === "body" && !(op.action === "del" && full.length === 5))
-    reject(REJECTION.INVALID_VALUE, "A message's body is no longer written", where);
+    reject(REJECTION.OUTDATED_FORM, "A message's body is no longer written", where);
   if (field === "richText" || field === "format")
     ctx.plan.contentWrites.add(threadId, messageId);
   ctx.plan.editedMessages.add(threadId, messageId);

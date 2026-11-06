@@ -7,6 +7,7 @@ import { commentDecision } from "./comment-rules.mjs";
 import { commentsGenesis } from "./comments-doc.mjs";
 import { markdownCommentSpans } from "./comment-content.mjs";
 import { adapterSpans } from "./richtext-spans.mjs";
+import { BLOCKING } from "../sync/comments.mjs";
 import { parseMarkdown } from "./markdown-import.mjs";
 import { RICH_FORMAT } from "./richtext-format.mjs";
 
@@ -306,7 +307,7 @@ test("a new message is rich text; a bare literal body is refused", () => {
   const copy = admit(doc, BOB, "commenter", (d) => {
     d.threads[ids.aliceThread].messages.copy = { ...richMessage("hello", BOB), body: "hello" };
   });
-  assert.equal(copy.reason?.code, REJECTION.INVALID_VALUE);
+  assert.equal(copy.reason?.code, REJECTION.OUTDATED_FORM);
   assert.match(copy.reason.message, /body/);
   for (const bodyFormat of ["markdown", "html"]) {
     const result = admit(doc, BOB, "commenter", (d) => {
@@ -532,11 +533,11 @@ test("new writes must be in the editor's span form; old-form messages stay delet
     d.threads[ids.aliceThread].messages.adapter = richMessage("", BOB);
     A.updateSpans(d, ["threads", ids.aliceThread, "messages", "adapter", "richText"], adapter);
   });
-  assert.equal(created.reason?.code, REJECTION.INVALID_VALUE);
+  assert.equal(created.reason?.code, REJECTION.OUTDATED_FORM);
   assert.match(created.reason.message, /editor/);
   const bobText = ["threads", ids.bobThread, "messages", ids.bobMessage, "richText"];
   const edited = admit(seeded, BOB, "commenter", (d) => A.updateSpans(d, bobText, adapter));
-  assert.equal(edited.reason?.code, REJECTION.INVALID_VALUE);
+  assert.equal(edited.reason?.code, REJECTION.OUTDATED_FORM);
   const editor = admit(seeded, BOB, "commenter", (d) =>
     A.updateSpans(d, bobText, markdownCommentSpans("One\n\nTwo")),
   );
@@ -554,10 +555,16 @@ test("new writes must be in the editor's span form; old-form messages stay delet
   const copy = admit(doc, BOB, "commenter", (d) =>
     A.updateText(d, ["threads", ids.bobThread, "messages", ids.bobMessage, "body"], "new copy"),
   );
-  assert.equal(copy.reason?.code, REJECTION.INVALID_VALUE);
+  assert.equal(copy.reason?.code, REJECTION.OUTDATED_FORM);
   const rewritten = admit(doc, BOB, "commenter", (d) => {
     delete d.threads[ids.bobThread].messages[ids.bobMessage].body;
     A.updateSpans(d, bobText, markdownCommentSpans("One\n\nTwo"));
   });
   assert.equal(rewritten.ok, true, JSON.stringify(rewritten.reason));
+});
+
+test("an old form is refused without blocking the key: a stale tab isn't an attack", () => {
+  assert.equal(REJECTION.OUTDATED_FORM, "outdated_form");
+  assert.equal(BLOCKING.has(REJECTION.OUTDATED_FORM), false);
+  assert.equal(BLOCKING.has(REJECTION.INVALID_VALUE), true);
 });
