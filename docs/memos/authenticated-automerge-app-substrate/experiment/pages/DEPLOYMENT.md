@@ -1064,6 +1064,47 @@ sign-in works on a new target. For Pages, add
 `1a90d36b-5b97-4ebb-a1bc-f3de7ddb70e0`. That change is made in the identity
 provider; no helper here does it.
 
+### HTTPS and HSTS
+
+Every public target is HTTPS-only. The hop from cloudflared to the celld
+listener is plain HTTP, so the Worker sees `http:` in every request URL. It
+reads the visitor's scheme from `CF-Visitor`, which the Cloudflare edge adds to
+each proxied request and cloudflared passes through to celld and the Worker
+([transport-security.mjs](worker/transport-security.mjs)):
+
+| `CF-Visitor` scheme | Answer |
+| --- | --- |
+| `http` | `308` to `https:` on the `NOTEBOOK_CLOUD_PUBLIC_ORIGIN` host (the request's host when unset), path and query kept, before any routing. This covers every method and path, `/health`, `/api/*` and `/mcp` included. A WebSocket upgrade gets the same `308` and no socket. |
+| `https` | Served, with `Strict-Transport-Security: max-age=31536000` |
+| absent or malformed | Served as-is, without HSTS |
+
+No route is exempt. The deploy helpers poll `/health` and `/state` on the
+local listener, which carries no Cloudflare headers, and outside probes use
+`https://`. The same goes for operator calls on the host such as
+`curl -H 'Host: pages.runtimed.run' http://127.0.0.1:9481/...`, and for
+`npm run dev` on localhost. `X-Forwarded-Proto` is not read: the gateway treats
+it as untrusted client input.
+
+HSTS has no `includeSubDomains` or `preload`. Other `runtimed.run` hosts are not
+Pages', so this host does not pin them. The header is set per request, not in
+`public/_headers`, because it depends on the visitor's scheme.
+
+After an install or publish, check both answers through the edge:
+
+```sh
+curl -sI https://<host>/health | grep -i strict-transport-security   # must print the header
+curl -sI http://<host>/health | grep -iE '^HTTP|^location'           # 308, location: https://<host>/health
+```
+
+If the HTTPS response has no `strict-transport-security`, the Worker did not
+see `CF-Visitor` (for example, celld dropped it), so plain HTTP is not being
+redirected either. With Always Use HTTPS on, the second check shows
+Cloudflare's own redirect instead.
+
+Cloudflare's **Always Use HTTPS** zone setting redirects at the edge before a
+request reaches the tunnel. It complements the Worker redirect. It is a zone
+setting an operator changes in the Cloudflare dashboard; no helper here sets it.
+
 ### Connector handoff
 
 Page10 and Pages run their tunnel on two connector units, slots `a` and `b`
