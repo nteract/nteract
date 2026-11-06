@@ -82,12 +82,47 @@ export const richDoc = (block, pageId) => {
 export const readTree = (block, pageId) => {
   const spans = codeTextUnmarked(A.spans(block, ["richText"]));
   try {
-    return decode(readableSpans(spans, false, pageId)).doc;
+    return decodeOrRefuse(readableSpans(spans, false, pageId));
   } catch (error) {
     if (!markdownlessNode(block, pageId)) throw error;
-    return decode(readableSpans(spans, true, pageId)).doc;
+    return decodeOrRefuse(readableSpans(spans, true, pageId));
   }
 };
+/** decode's tree, or a refusal with code `unreadable_rich_spans`. decode
+ * and the Wordgard schema refuse spans they can't read or place (a heading
+ * level out of range, an image inside a code block) with an Error, a
+ * Wordgard ValidationError or a RangeError. A TypeError, ReferenceError or
+ * SyntaxError is a bug and propagates unchanged. */
+const BUGS = [TypeError, ReferenceError, SyntaxError];
+function decodeOrRefuse(spans) {
+  try {
+    return decode(spans).doc;
+  } catch (error) {
+    if (!(error instanceof Error) || BUGS.some((type) => error instanceof type)) throw error;
+    throw Object.assign(Error(error.message, { cause: error }), {
+      code: "unreadable_rich_spans",
+    });
+  }
+}
+/** richDoc for read projections: outlines, slices and change reads. A block
+ * the adapter can't place but readTree reads (a hard break stored in a code
+ * block) reads as the adapter's tree for the editor's spans of that tree, so
+ * read_page, read_page_changes and blockMarkdown read the same blocks. */
+export function projectionDoc(block, pageId) {
+  try {
+    return richDoc(block, pageId);
+  } catch (error) {
+    if (adapterRead(block)) throw error;
+    let tree;
+    try {
+      tree = readTree(block, pageId);
+    } catch {
+      // The adapter's refusal is the one to report.
+      throw error;
+    }
+    return pmDocFromSpans(adapter, encode(tree));
+  }
+}
 /** Whether a block's projection must read it through the ProseMirror
  * adapter (richDoc) instead of readTree, because the Wordgard tree reads it
  * differently:

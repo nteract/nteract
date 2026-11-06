@@ -12,8 +12,15 @@
 // ProseMirror adapter's span form; deeper random trees; the shapes below; and
 // the corpus and seeded random sources through the parser.
 //
-// Regenerate only when an input or an intended projection changes:
-// PAGES_UPDATE_MARKDOWN=1 npm exec -- tsx --tsconfig tsconfig.json --test model/markdown-serializer.test.mjs
+// Provenance: this file was written by running this test, with these inputs,
+// at dc6781a7a, where every projection went through
+// model/pm-markdown-serializer.mjs (the ProseMirror serializer). Rerunning it
+// there reproduces the committed file byte for byte.
+//
+// Rewriting the file writes what the current serializer produces, so it can
+// hide a regression. Do it only after reviewing the failing entries, when an
+// input or an intended projection changes:
+// PAGES_REWRITE_MARKDOWN_GOLDEN=reviewed npm exec -- tsx --tsconfig tsconfig.json --test model/markdown-serializer.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -23,11 +30,12 @@ import markdownCorpus from "./markdown-corpus.json" with { type: "json" };
 import { commentBodyProjection } from "./comment-content.mjs";
 import { updateSpansConfig } from "./marks.mjs";
 import { parseAgentMarkdown, parseMarkdown } from "./markdown-import.mjs";
+import { projectReadChanges } from "./read-changes.mjs";
 import { projectReadContent } from "./read-content.mjs";
 import { RICH_FORMAT, textPath } from "./richtext-format.mjs";
 import { exportMarkdown } from "./richtext.mjs";
 import { blockMarkdown } from "./richtext-page.mjs";
-import { adapterSpans } from "./richtext-spans.mjs";
+import { adapterSpans, readTree } from "./richtext-spans.mjs";
 import {
   PAGE_ID,
   pageWithSpans,
@@ -38,7 +46,7 @@ import {
 } from "../test/address-inputs.mjs";
 
 const GOLDEN = new URL("./markdown-serializer.golden.json", import.meta.url);
-const update = process.env.PAGES_UPDATE_MARKDOWN === "1";
+const rewrite = process.env.PAGES_REWRITE_MARKDOWN_GOLDEN === "reviewed";
 
 const S = (value) => new A.ImmutableString(value);
 const block = (type, parents = [], attrs = {}, isEmbed = false) => ({
@@ -399,7 +407,7 @@ const observeAll = () => [
 const serialize = (entries) =>
   `[\n${entries.map((entry) => JSON.stringify(entry)).join(",\n")}\n]\n`;
 
-if (update) writeFileSync(GOLDEN, serialize(observeAll()));
+if (rewrite) writeFileSync(GOLDEN, serialize(observeAll()));
 
 test("every projection matches the frozen Markdown", () => {
   const golden = JSON.parse(readFileSync(GOLDEN, "utf8"));
@@ -428,4 +436,43 @@ test("a hard break stored in a code block reads as a line of the code", () => {
     text("b"),
   ]);
   assert.equal(blockMarkdown(doc.blocks[id], doc.page_id), "```js\na\nb\n```");
+});
+
+test("the refusal readTree reports for unreadable spans is the only one blockMarkdown reads around", () => {
+  const { doc, id } = pageWithSpans([block("heading", [], { level: 9 }), text("x")]);
+  assert.throws(() => readTree(doc.blocks[id], doc.page_id), { code: "unreadable_rich_spans" });
+  // The adapter still reads it, as it always did.
+  assert.equal(blockMarkdown(doc.blocks[id], doc.page_id), "######### x");
+  // Anything else readTree throws is not a refusal and propagates.
+  assert.throws(() => blockMarkdown({ format: RICH_FORMAT, richText: "plain" }, PAGE_ID));
+});
+
+test("read_page and read_page_changes read a hard break stored in a code block", () => {
+  const spans = [
+    block("code-block", [], { params: "js" }),
+    text("a"),
+    block("hard-break", ["code-block"], {}, true),
+    text("b"),
+  ];
+  const { doc, id } = pageWithSpans(spans);
+  const read = projectReadContent(doc, {});
+  assert.equal(read.blocks[0].markdown, "```js\na\nb\n```");
+  assert.deepEqual(
+    read.outline.map((entry) => entry.type),
+    ["code-block"],
+  );
+  const slice = projectReadContent(doc, {
+    node_range: { block_id: id, from: 0, to: 1 },
+    expected_heads: A.getHeads(doc),
+  });
+  assert.equal(slice.blocks[0].markdown, "```js\na\nb\n```");
+  const before = A.getHeads(doc);
+  const after = A.change(A.clone(doc), (draft) =>
+    A.updateSpans(draft, textPath(id), [...spans, text("c")], updateSpansConfig),
+  );
+  const changes = projectReadChanges(after, { since_heads: before });
+  assert.deepEqual(
+    changes.changes.map(({ scope, markdown }) => ({ scope, markdown })),
+    [{ scope: "node", markdown: "```js\na\nbc\n```" }],
+  );
 });

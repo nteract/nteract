@@ -29,7 +29,8 @@ export function blockMarkdown(block, pageId) {
     let tree;
     try {
       tree = readTree(block, pageId);
-    } catch {
+    } catch (error) {
+      if (error?.code !== "unreadable_rich_spans") throw error;
       tree = null;
     }
     if (tree) return treeMarkdown(tree);

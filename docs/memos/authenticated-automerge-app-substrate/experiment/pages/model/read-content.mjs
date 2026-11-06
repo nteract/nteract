@@ -8,7 +8,7 @@ import { headingAnchorsByBlock } from "./heading-anchors.mjs";
 import { quotableNodeType } from "./richtext-notices.mjs";
 import { schema } from "./pm-adapter.mjs";
 import { exportMarkdown } from "./markdown-serializer.mjs";
-import { richDoc } from "./richtext-spans.mjs";
+import { projectionDoc } from "./richtext-spans.mjs";
 import { projectedBlock } from "./richtext-page.mjs";
 
 const utf8 = new TextEncoder();
@@ -105,7 +105,7 @@ function indexNodes(doc) {
     anchorsByBlock = headingAnchorsByBlock(doc);
   for (const blockId of orderedBlockIds(doc)) {
     const block = requireRich(doc.blocks[blockId]),
-      tree = richDoc(block, doc.page_id),
+      tree = projectionDoc(block, doc.page_id),
       ids = readableNodeIds(doc, blockId, tree),
       imageIds = readableImageIds(doc, blockId, tree),
       anchors = blockAnchors(tree, anchorsByBlock.get(blockId) ?? []);
