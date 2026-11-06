@@ -293,3 +293,50 @@ test("the # beside a hovered heading copies its link", async () => {
   assert.equal(document.querySelector(".heading-anchor"), null);
   await act(async () => root.unmount());
 });
+
+test("the # follows the heading's row across the gutter and a still pointer's scroll", async () => {
+  history.replaceState(null, "", `/p/${pageId}`);
+  const { article, root } = await mount();
+  drawBlock(article, "two", "<h2>Plan</h2><p>Body</p><h2>Getting lean: Automerge</h2>");
+  const [plan, body] = [article.querySelector("h2"), article.querySelector("p")];
+  // A 24px gutter left of an 800px content column; the middle of the column
+  // at the pointer's height is `under`.
+  article.style.paddingLeft = "24px";
+  article.getBoundingClientRect = () => ({
+    left: 0,
+    top: 0,
+    right: 848,
+    width: 848,
+  });
+  let under = plan;
+  document.elementFromPoint = (x) => (x < 24 ? article : under);
+  const move = (target, clientX) =>
+    act(async () =>
+      target.dispatchEvent(new window.MouseEvent("pointermove", { bubbles: true, clientX })),
+    );
+  const shown = () => document.querySelector(".heading-anchor")?.getAttribute("aria-label");
+  try {
+    await move(article, 10);
+    await frames();
+    assert.equal(shown(), "Copy link to section Plan", "the gutter beside a heading shows its #");
+
+    under = body;
+    await move(body, 100);
+    await frames();
+    assert.equal(shown(), "Copy link to section Plan", "a brief detour keeps the #");
+    await act(() => new Promise((resolve) => setTimeout(resolve, 200)));
+    assert.equal(shown(), undefined, "off the row, the # goes");
+
+    under = plan;
+    await act(async () => window.dispatchEvent(new window.Event("scroll")));
+    await frames();
+    assert.equal(
+      shown(),
+      "Copy link to section Plan",
+      "scrolling a heading under the pointer shows its #",
+    );
+  } finally {
+    delete document.elementFromPoint;
+    await act(async () => root.unmount());
+  }
+});

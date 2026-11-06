@@ -8,7 +8,18 @@
 // editor owns its DOM, so nothing here writes ids into it: a heading is
 // found by its block and its ordinal among the block's headings.
 import { useEffect, useRef, useState } from "react";
-import { Observable, animationFrameScheduler, auditTime, fromEvent, merge, timer } from "rxjs";
+import {
+  Observable,
+  animationFrameScheduler,
+  auditTime,
+  filter,
+  fromEvent,
+  map,
+  merge,
+  of,
+  switchMap,
+  timer,
+} from "rxjs";
 import { Hash } from "lucide-react";
 import { pageHeadingAnchors } from "../model/heading-anchors.mjs";
 import {
@@ -31,6 +42,8 @@ import { routeIdOf } from "./heading-scroll.mjs";
 import { useStore } from "./store.mjs";
 
 const BUTTON_SIZE = 24;
+/** How long the "#" stays after the pointer leaves its heading's row. */
+const HIDE_GRACE_MS = 150;
 /** How often scrolling records the history entry's position. Browsers
  * throttle history.replaceState, so not on every scroll event. */
 const SCROLL_RECORD_MS = 200;
@@ -189,30 +202,55 @@ export function HeadingAnchors({
     return () => document.removeEventListener("click", click);
   }, []);
 
-  // The "#" beside the heading under the pointer.
+  // The "#" beside the heading under the pointer. A heading's row reaches
+  // left across the gutter the "#" sits in, so the pointer can approach the
+  // "#" from either side. The pointer's position is checked again on scroll,
+  // which moves headings under a still pointer, and leaving a row hides the
+  // "#" after a short grace, so a path from the text to it may cut a corner.
   useEffect(() => {
     const element = article.current;
     if (!element) return;
-    const place = (event) => {
-      if (event.target.closest?.(".heading-anchor")) return;
-      const position = headingPosition(event.target);
-      if (!position) {
-        setHovered(null);
-        return;
+    /** Where the pointer is, in the viewport, while it is over the article. */
+    let pointer = null;
+    /** The heading level with gutter point (x, y). Headings span the content
+     * column, so its middle finds one past any block indent. */
+    const probeGutter = (x, y) => {
+      if (typeof document.elementFromPoint !== "function") return null;
+      const box = element.getBoundingClientRect();
+      const contentLeft = box.left + (parseFloat(getComputedStyle(element).paddingLeft) || 0);
+      if (x >= contentLeft || x < box.left) return null;
+      return headingPosition(document.elementFromPoint(box.left + box.width / 2, y));
+    };
+    let anchorsFor = null;
+    let anchors = [];
+    /** The open Page's anchors, computed again only when its doc changes. */
+    const currentAnchors = () => {
+      const doc = latest.current.session?.doc ?? null;
+      if (doc !== anchorsFor) {
+        anchorsFor = doc;
+        anchors = doc ? pageHeadingAnchors(doc) : [];
       }
-      const entry = anchorsNow().find(
+      return anchors;
+    };
+    /** "keep" over the "#", the hovered heading's state, or null. */
+    const resolve = ({ target, x, y }) => {
+      const hit =
+        target ??
+        (typeof document.elementFromPoint === "function" ? document.elementFromPoint(x, y) : null);
+      if (hit?.closest?.(".heading-anchor")) return "keep";
+      if (hit && !element.contains(hit)) return null;
+      const position = headingPosition(hit) ?? (Number.isFinite(x) ? probeGutter(x, y) : null);
+      if (!position) return null;
+      const entry = currentAnchors().find(
         (anchor) => anchor.blockId === position.blockId && anchor.index === position.index,
       );
-      if (!entry) {
-        setHovered(null);
-        return;
-      }
+      if (!entry) return null;
       const box = element.getBoundingClientRect();
       const heading = position.heading.getBoundingClientRect();
       const line = parseFloat(getComputedStyle(position.heading).lineHeight);
       const lineHeight = Number.isFinite(line) ? Math.min(line, heading.height) : heading.height;
       const gutter = heading.left - box.left;
-      setHovered({
+      return {
         anchor: entry.anchor,
         text: entry.text,
         top: heading.top - box.top + Math.max(0, (lineHeight - BUTTON_SIZE) / 2),
@@ -223,15 +261,42 @@ export function HeadingAnchors({
           heading.left >= BUTTON_SIZE + 4
             ? gutter - BUTTON_SIZE
             : heading.right - box.left - BUTTON_SIZE,
-      });
+      };
     };
-    const leave = () => setHovered(null);
+    const sameSpot = (a, b) =>
+      a === b || (!!a && !!b && a.anchor === b.anchor && a.top === b.top && a.left === b.left);
+    const show = (next) => {
+      // A sample taken before the pointer left the article arrives late.
+      if (next === "keep" || (next !== null && pointer === null)) return;
+      setHovered((current) => (sameSpot(current, next) ? current : next));
+    };
+    const fromPointer = (event) => {
+      pointer = { x: event.clientX, y: event.clientY };
+      return { target: event.target, x: event.clientX, y: event.clientY };
+    };
     const subscription = merge(
-      fromEvent(element, "pointerover").pipe(auditTime(0, animationFrameScheduler)),
-      fromEvent(element, "pointermove").pipe(auditTime(100)),
-    ).subscribe(place);
+      merge(fromEvent(element, "pointerover"), fromEvent(element, "pointermove")).pipe(
+        map(fromPointer),
+      ),
+      fromEvent(window, "scroll", { passive: true }).pipe(
+        filter(() => pointer !== null),
+        map(() => ({ target: null, ...pointer })),
+      ),
+    )
+      .pipe(
+        auditTime(0, animationFrameScheduler),
+        map(resolve),
+        switchMap((next) =>
+          next === null ? timer(HIDE_GRACE_MS).pipe(map(() => null)) : of(next),
+        ),
+      )
+      .subscribe(show);
+    const leave = () => {
+      pointer = null;
+      setHovered(null);
+    };
     subscription.add(fromEvent(element, "pointerleave").subscribe(leave));
-    subscription.add(fromEvent(element, "keydown").subscribe(leave));
+    subscription.add(fromEvent(element, "keydown").subscribe(() => setHovered(null)));
     return () => {
       subscription.unsubscribe();
       setHovered(null);
