@@ -10782,10 +10782,7 @@ mod tests {
         };
         let parked = WarmRetry::Parked { failures: 5 };
 
-        for state in [
-            WarmRetry::Healthy,
-            WarmRetry::TakeRequested { failures: 5 },
-        ] {
+        for state in [WarmRetry::Healthy, WarmRetry::TakeRequested { failures: 5 }] {
             assert!(state.retry_wait(Some(Duration::ZERO), backoff).is_zero());
         }
         assert!(backing_off.retry_wait(None, backoff).is_zero());
@@ -10820,7 +10817,10 @@ mod tests {
         pool.warming_failed_with_error(None);
         assert!(pool.is_parked());
         assert!(pool.reports_parked());
-        assert!(!pool.should_retry(), "parked pools skip the regular backoff");
+        assert!(
+            !pool.should_retry(),
+            "parked pools skip the regular backoff"
+        );
         assert!(!pool.reserve_replenishment());
         let retry_in = pool.retry_in_secs();
         assert!(

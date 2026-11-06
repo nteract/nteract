@@ -128,8 +128,7 @@ impl PoolDoc {
             .expect("scaffold uv.consecutive_failures");
         doc.put(&uv, "retry_in_secs", 0u64)
             .expect("scaffold uv.retry_in_secs");
-        doc.put(&uv, "parked", false)
-            .expect("scaffold uv.parked");
+        doc.put(&uv, "parked", false).expect("scaffold uv.parked");
         // error and failed_package are optional — only set when present
 
         // conda/

@@ -5560,7 +5560,10 @@ mod tests {
 
         let plan = plan_active_envs([
             (Stable, ActiveEnvQuery::Active([stable_env.clone()].into())),
-            (Nightly, ActiveEnvQuery::Active([nightly_env.clone()].into())),
+            (
+                Nightly,
+                ActiveEnvQuery::Active([nightly_env.clone()].into()),
+            ),
         ]);
         assert!(plan.in_use.contains(&stable_env) && plan.in_use.contains(&nightly_env));
         assert!(plan.skipped.is_empty());
