@@ -111,8 +111,6 @@ pub async fn install_from_lock(
     handler: std::sync::Arc<dyn crate::progress::ProgressHandler>,
     env_type: &str,
 ) -> Result<()> {
-    use rattler::install::Installer;
-
     handler.on_progress(env_type, crate::progress::EnvProgressPhase::LockFileHit);
 
     let download_client = crate::channels::download_client()?;
@@ -128,7 +126,7 @@ pub async fn install_from_lock(
 
     let reporter = crate::progress::RattlerReporter::new_with_env_type(handler.clone(), env_type);
 
-    Installer::new()
+    crate::rattler_installer()
         .with_download_client(download_client)
         .with_target_platform(install_platform)
         .with_reporter(reporter)

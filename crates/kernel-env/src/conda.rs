@@ -6,7 +6,7 @@
 
 use anyhow::{anyhow, Context, Result};
 use log::{info, warn};
-use rattler::{default_cache_dir, install::Installer};
+use rattler::default_cache_dir;
 use rattler_conda_types::{
     ChannelConfig, MatchSpec, ParseMatchSpecOptions, ParseStrictness, Platform, PrefixRecord,
     Version, VersionSpec,
@@ -605,7 +605,7 @@ async fn install_conda_env(
     // Clone packages before install (which consumes them) so we can write the lock file
     let packages_for_lock = required_packages.clone();
 
-    match Installer::new()
+    match crate::rattler_installer()
         .with_download_client(download_client)
         .with_target_platform(install_platform)
         .with_reporter(reporter)
@@ -997,7 +997,7 @@ pub async fn sync_dependencies(
     let reporter = RattlerReporter::new(handler.clone());
     let install_start = Instant::now();
 
-    Installer::new()
+    crate::rattler_installer()
         .with_download_client(download_client)
         .with_target_platform(install_platform)
         .with_installed_packages(installed_packages)
