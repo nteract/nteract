@@ -2,6 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {sendPagesDeployment,pagesStepSummary,pagesJournalSummary,pagesFailureDiagnostic,pagesPollTransition,PAGES_DEPLOY_TIMEOUT_MS,
+  resolvePagesArtifact,pagesSendArtifact,PAGES_ARTIFACT_MAX_BYTES,
   PAGES_POLL_INTERVAL_MS,PAGES_POLL_MAX_FAILURES,PAGES_POLL_MAX_BACKOFF_MS} from './pages-client.mjs';
 const sha='a'.repeat(40),id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const env={PAGES_PAGE10_ENABLED:'true',GITHUB_REPOSITORY:'nteract/nteract',GITHUB_EVENT_NAME:'workflow_run',GITHUB_RUN_ID:'10',GITHUB_RUN_ATTEMPT:'1',
@@ -306,4 +307,85 @@ test('retries stop at the overall deadline instead of waiting past it',async()=>
   const late=pollHarness(Array.from({length:10},()=>new Error('x')),{sleep:ms=>++m===1?47*60*1000+50000:ms});
   await assert.rejects(late.run,error=>{assert.equal(pagesFailureDiagnostic(error).phase,'status');return true;});
   assert.ok(late.stats().time<48*60*1000);assert.equal(late.stats().posts,1);
+});
+
+// Release artifact: resolution and opt-in request fields.
+const digest=`sha256:${'c'.repeat(64)}`;
+const artifact={id:30,name:'pages-release',expired:false,size_in_bytes:24*1024*1024,digest,workflow_run:{id:20,head_sha:sha}};
+const listing=(...artifacts)=>({total_count:artifacts.length,artifacts});
+test('artifact resolution returns the single unexpired pages-release of the build run',()=>{
+  assert.deepEqual(resolvePagesArtifact(listing(artifact),{buildRunId:20,sha}),{artifactId:'30',artifactDigest:digest});
+  assert.deepEqual(resolvePagesArtifact(listing({...artifact,id:31,name:'other'},artifact),{buildRunId:'20',sha}),{artifactId:'30',artifactDigest:digest});
+});
+test('artifact resolution fails closed on zero, duplicate, expired, oversized or incomplete listings',()=>{
+  assert.throws(()=>resolvePagesArtifact(listing(),{buildRunId:20,sha}),/exactly one/);
+  assert.throws(()=>resolvePagesArtifact(listing({...artifact,name:'pages-release-x'}),{buildRunId:20,sha}),/exactly one/);
+  assert.throws(()=>resolvePagesArtifact(listing(artifact,{...artifact,id:31}),{buildRunId:20,sha}),/exactly one/);
+  assert.throws(()=>resolvePagesArtifact(listing({...artifact,expired:true}),{buildRunId:20,sha}),/expired/);
+  for(const expired of [undefined,'false',null]) assert.throws(()=>resolvePagesArtifact(listing({...artifact,expired}),{buildRunId:20,sha}),/expired/);
+  for(const size_in_bytes of [0,PAGES_ARTIFACT_MAX_BYTES+1,'1',undefined]) assert.throws(()=>resolvePagesArtifact(listing({...artifact,size_in_bytes}),{buildRunId:20,sha}),/64 MiB/);
+  for(const bad of [undefined,{},{total_count:2,artifacts:[artifact]},{total_count:101,artifacts:Array(101).fill(artifact)},{total_count:1,artifacts:{}}])
+    assert.throws(()=>resolvePagesArtifact(bad,{buildRunId:20,sha}),/incomplete/);
+});
+test('artifact resolution refuses another run or revision, bad ids and malformed digests',()=>{
+  for(const workflow_run of [{id:21,head_sha:sha},{id:20,head_sha:'b'.repeat(40)},undefined,{id:20}])
+    assert.throws(()=>resolvePagesArtifact(listing({...artifact,workflow_run}),{buildRunId:20,sha}),/another run or revision/);
+  for(const id of [0,-1,'01',undefined,1.5]) assert.throws(()=>resolvePagesArtifact(listing({...artifact,id}),{buildRunId:20,sha}),/artifact id/);
+  for(const bad of ['c'.repeat(64),`sha256:${'C'.repeat(64)}`,`sha256:${'c'.repeat(63)}`,`sha512:${'c'.repeat(64)}`,`sha256:${'c'.repeat(64)}\n`,undefined,null])
+    assert.throws(()=>resolvePagesArtifact(listing({...artifact,digest:bad}),{buildRunId:20,sha}),/artifact digest/);
+});
+test('artifact sending is off unless PAGES_SEND_ARTIFACT is exactly true',()=>{
+  for(const value of [undefined,'','false']) assert.equal(pagesSendArtifact({PAGES_SEND_ARTIFACT:value}),false);
+  assert.equal(pagesSendArtifact({}),false);assert.equal(pagesSendArtifact({PAGES_SEND_ARTIFACT:'true'}),true);
+  for(const value of ['TRUE','1','yes',' true']) assert.throws(()=>pagesSendArtifact({PAGES_SEND_ARTIFACT:value}),/PAGES_SEND_ARTIFACT/);
+});
+const artifactHarness=(sendEnv,{artifacts=listing(artifact),status=result,listStatus=200}={})=>{
+  let time=0;const posts=[],lists=[];
+  const run=sendPagesDeployment({...env,...sendEnv},event,{clock:{now:()=>time,sleep:async ms=>time+=ms},fetchImpl:async(url,options)=>{
+    const target=new URL(url);
+    if(target.hostname==='api.github.com') {lists.push({url:target,options});return Response.json(artifacts,{status:listStatus});}
+    if(target.hostname.endsWith('actions.githubusercontent.com')) return Response.json({value:'a.b.c'});
+    if(options.method==='POST') {posts.push(JSON.parse(options.body));return Response.json({operationId:id},{status:202});}
+    return Response.json(status);
+  }});
+  return {run,posts,lists};
+};
+test('admission body carries artifact fields only when enabled',async()=>{
+  for(const sendEnv of [{},{PAGES_SEND_ARTIFACT:'false'}]) {
+    const {run,posts,lists}=artifactHarness(sendEnv);await run;
+    assert.equal(lists.length,0);assert.equal(posts.length,1);
+    assert.ok(!('artifactId' in posts[0])&&!('artifactDigest' in posts[0]));
+  }
+  const {run,posts,lists}=artifactHarness({PAGES_SEND_ARTIFACT:'true'});await run;
+  assert.equal(lists.length,1);
+  assert.equal(lists[0].url.href,'https://api.github.com/repos/nteract/nteract/actions/runs/20/artifacts?name=pages-release&per_page=100');
+  assert.equal(lists[0].options.headers.Authorization,'Bearer secret');assert.equal(lists[0].options.redirect,'error');
+  assert.equal(posts.length,1);assert.equal(posts[0].artifactId,'30');assert.equal(posts[0].artifactDigest,digest);
+  assert.equal(posts[0].buildRunId,20);assert.equal(posts[0].sha,sha);
+  // Manual dispatch resolves against the input build run.
+  const manual=artifactHarness({PAGES_SEND_ARTIFACT:'true',GITHUB_EVENT_NAME:'workflow_dispatch',INPUT_SHA:sha,INPUT_BUILD_RUN_ID:'20',INPUT_BUILD_RUN_ATTEMPT:'2'});
+  await manual.run;assert.match(manual.lists[0].url.pathname,/\/runs\/20\/artifacts$/);assert.equal(manual.posts[0].artifactId,'30');
+});
+test('unresolvable artifact fails before admission with safe diagnostics',async()=>{
+  for(const [options,code,httpStatus] of [[{artifacts:listing()},'provenance'],[{artifacts:listing(artifact,{...artifact,id:31})},'provenance'],
+    [{artifacts:listing({...artifact,expired:true})},'provenance'],[{artifacts:listing({...artifact,workflow_run:{id:20,head_sha:'b'.repeat(40)}})},'provenance'],
+    [{listStatus:404},'http',404]]) {
+    const {run,posts}=artifactHarness({PAGES_SEND_ARTIFACT:'true'},options);
+    await assert.rejects(run,error=>{
+      assert.deepEqual(pagesFailureDiagnostic(error),{phase:'artifact',code,elapsedMs:0,pollCount:0,...(httpStatus?{httpStatus}:{})});return true;
+    });
+    assert.equal(posts.length,0);
+  }
+  const {run,posts}=artifactHarness({PAGES_SEND_ARTIFACT:'yes'});
+  await assert.rejects(run,error=>pagesFailureDiagnostic(error).phase==='context');assert.equal(posts.length,0);
+});
+test('result artifact evidence must match the sent artifact and appears in the summary',async()=>{
+  const evidence={id:'30',digest};
+  assert.equal((await artifactHarness({PAGES_SEND_ARTIFACT:'true'},{status:{...result,artifact:evidence}}).run).artifact.id,'30');
+  for(const [sendEnv,artifactEvidence] of [[{PAGES_SEND_ARTIFACT:'true'},{id:'31',digest}],[{PAGES_SEND_ARTIFACT:'true'},{id:'30',digest:`sha256:${'d'.repeat(64)}`}],
+    [{},evidence],[{PAGES_SEND_ARTIFACT:'true'},null]])
+    await assert.rejects(artifactHarness(sendEnv,{status:{...result,artifact:artifactEvidence}}).run,error=>pagesFailureDiagnostic(error).code==='evidence');
+  assert.match(pagesStepSummary({...result,artifact:evidence}),new RegExp(`CI artifact 30 \\(\`${digest}\`\\)`));
+  assert.match(pagesStepSummary(result),/\| Host build \|/);
+  for(const bad of [{id:'0',digest},{id:'30',digest:'x'},null]) assert.throws(()=>pagesStepSummary({...result,artifact:bad}));
 });

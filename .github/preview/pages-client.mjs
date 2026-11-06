@@ -52,6 +52,35 @@ const retryAfterMs=response=>{
   const value=response.headers?.get?.('retry-after');
   return typeof value==='string'&&/^(0|[1-9][0-9]{0,3})$/.test(value)&&Number(value)<=3600?Number(value)*1000:undefined;
 };
+export const PAGES_ARTIFACT_NAME='pages-release';
+export const PAGES_ARTIFACT_MAX_BYTES=64*1024*1024;
+const PAGES_ARTIFACT_DIGEST=/^sha256:[0-9a-f]{64}$/;
+// Artifact sending is opt-in. lab1 refuses artifact fields unless its policy
+// `pages.releaseSource` is `artifact-optional` or `artifact-required`, so the
+// reusable workflow sets PAGES_SEND_ARTIFACT only after that policy is live.
+export function pagesSendArtifact(env) {
+  const value=env.PAGES_SEND_ARTIFACT;
+  check(value===undefined||value===''||value==='false'||value==='true','invalid PAGES_SEND_ARTIFACT');
+  return value==='true';
+}
+// Picks the gate run's single `pages-release` artifact. The controller repeats
+// these checks and also binds the artifact to the green attempt's release job.
+export function resolvePagesArtifact(listing,{buildRunId,sha}) {
+  check(listing&&Number.isSafeInteger(listing.total_count)&&listing.total_count>=0&&listing.total_count<=100&&
+    Array.isArray(listing.artifacts)&&listing.total_count===listing.artifacts.length,'incomplete Pages artifact listing');
+  const matches=listing.artifacts.filter(artifact=>artifact?.name===PAGES_ARTIFACT_NAME);
+  check(matches.length===1,'Pages build run must publish exactly one pages-release artifact');
+  const [artifact]=matches;
+  check(artifact.expired===false,'Pages artifact expired');
+  check(Number.isSafeInteger(artifact.size_in_bytes)&&artifact.size_in_bytes>0&&artifact.size_in_bytes<=PAGES_ARTIFACT_MAX_BYTES,
+    'Pages artifact size is outside the 64 MiB cap');
+  check(String(artifact.workflow_run?.id)===String(buildRunId)&&artifact.workflow_run?.head_sha===sha,
+    'Pages artifact belongs to another run or revision');
+  const artifactId=String(artifact.id);
+  check(/^[1-9][0-9]{0,19}$/.test(artifactId),'invalid Pages artifact id');
+  check(typeof artifact.digest==='string'&&PAGES_ARTIFACT_DIGEST.test(artifact.digest),'invalid Pages artifact digest');
+  return {artifactId,artifactDigest:artifact.digest};
+}
 const failures=new WeakMap();
 const operationIdPattern=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 export function pagesFailureDiagnostic(error) {
@@ -87,6 +116,7 @@ export async function sendPagesDeployment(env,event,{fetchImpl,clock,onAccepted=
   };
   try {
   check(env.PAGES_PAGE10_ENABLED==='true','Pages caller is disabled');
+  const sendArtifact=pagesSendArtifact(env);
   check(env.GITHUB_REPOSITORY==='nteract/nteract' && ['workflow_run','workflow_dispatch'].includes(env.GITHUB_EVENT_NAME),'invalid Pages caller context');
   const automatic=env.GITHUB_EVENT_NAME==='workflow_run',run=event.workflow_run;
   if(automatic) check(run?.event==='push' && run.head_branch==='main' && run.conclusion==='success' && run.status==='completed',
@@ -95,6 +125,14 @@ export async function sendPagesDeployment(env,event,{fetchImpl,clock,onAccepted=
   const body={action:'pages',target:'page10',sha,runId:env.GITHUB_RUN_ID,runAttempt:env.GITHUB_RUN_ATTEMPT,
     buildRunId:automatic?run.id:env.INPUT_BUILD_RUN_ID,buildRunAttempt:automatic?run.run_attempt:env.INPUT_BUILD_RUN_ATTEMPT,githubToken:env.GITHUB_TOKEN};
   for(const key of ['runId','runAttempt','buildRunId','buildRunAttempt']) check(/^[1-9][0-9]{0,19}$/.test(String(body[key])),'invalid Pages run identity');
+  if(sendArtifact) {
+    const response=await transport('artifact',`https://api.github.com/repos/nteract/nteract/actions/runs/${body.buildRunId}/artifacts?name=${PAGES_ARTIFACT_NAME}&per_page=100`,
+      {headers:{Authorization:`Bearer ${env.GITHUB_TOKEN}`,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'},redirect:'error'},30000);
+    stage('artifact','http');ok(response,'Pages artifact listing failed');
+    const listing=await json('artifact',response);stage('artifact','provenance');
+    Object.assign(body,resolvePagesArtifact(listing,{buildRunId:body.buildRunId,sha}));
+  }
+  stage('context','validation');
   const oidc=new URL(env.ACTIONS_ID_TOKEN_REQUEST_URL);
   check(oidc.protocol==='https:' && !oidc.username && !oidc.password && !oidc.port &&
     (oidc.hostname==='actions.githubusercontent.com'||oidc.hostname.endsWith('.actions.githubusercontent.com')),'invalid OIDC endpoint');
@@ -145,7 +183,12 @@ export async function sendPagesDeployment(env,event,{fetchImpl,clock,onAccepted=
     if(result.status==='succeeded') {
       stage('status','evidence');
       check(result.sha===sha && /^[a-f0-9]{12}$/.test(result.build) && typeof result.restorePointKey==='string' &&
-        result.counts,'Pages result missing verified release evidence');pagesJournalSummary(result.counts);return result;
+        result.counts,'Pages result missing verified release evidence');pagesJournalSummary(result.counts);
+      // A v1 source still builds on the host, so artifact evidence may be absent.
+      // When present it must name exactly the artifact this request sent.
+      check(result.artifact===undefined||(sendArtifact&&result.artifact?.id===body.artifactId&&result.artifact.digest===body.artifactDigest),
+        'Pages result names another release artifact');
+      return result;
     }
     ({state:poll,effect:{delayMs}}=pagesPollTransition(poll,{type:'running'}));
   }
@@ -159,5 +202,8 @@ export function pagesStepSummary(result) {
   check(/^[a-f0-9]{12}$/.test(result.build) && /^standalone\/page10-snapshots\/[a-z0-9-]+\/versions.json$/.test(result.restorePointKey) &&
     result.counts,'invalid Pages summary evidence');
   const journal=pagesJournalSummary(result.counts);
-  return `Page10 deployed at \`${result.sha}\`.\n\n| Build | Restore point | HTTP error observations (lab1 journal) |\n| --- | --- | --- |\n| ${result.build} | ${result.restorePointKey} | ${journal} |\n`;
+  check(result.artifact===undefined||(/^[1-9][0-9]{0,19}$/.test(String(result.artifact?.id))&&
+    typeof result.artifact.digest==='string'&&PAGES_ARTIFACT_DIGEST.test(result.artifact.digest)),'invalid Pages artifact evidence');
+  const source=result.artifact?`CI artifact ${result.artifact.id} (\`${result.artifact.digest}\`)`:'Host build';
+  return `Page10 deployed at \`${result.sha}\`.\n\n| Build | Release source | Restore point | HTTP error observations (lab1 journal) |\n| --- | --- | --- | --- |\n| ${result.build} | ${source} | ${result.restorePointKey} | ${journal} |\n`;
 }
