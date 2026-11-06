@@ -381,6 +381,12 @@ try {
         steps: 8,
       });
       await expect(copy).toBeVisible();
+      // The gutter is part of the heading's row: pointing straight at the
+      // "#" from away from the heading shows it.
+      await page.mouse.move(text.x + text.width / 2, text.y + text.height + 200);
+      await expect(copy).toBeHidden();
+      await page.mouse.move(button.x + button.width / 2, button.y + button.height / 2);
+      await expect(copy).toBeVisible();
       await copy.click();
       await expect(page.getByText("Link to section copied")).toBeVisible();
       // The copied link is the viewer's anchor, and the outline's.
