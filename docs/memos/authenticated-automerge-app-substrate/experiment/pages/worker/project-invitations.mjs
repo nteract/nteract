@@ -37,6 +37,24 @@ export async function indexProjectInvitations(env, record) {
   }
 }
 
+/**
+ * Deletes this Project's index rows whose invitation is no longer in
+ * `record.acl.invites`: revoked, accepted or replaced. Rows for invitations
+ * still pending stay. Idempotent, so a retry or replay can repeat it.
+ */
+export async function pruneProjectInvitations(env, record) {
+  const db = await database(env);
+  const live = Object.keys(record.acl?.invites ?? {});
+  const result = await db
+    .prepare(
+      `DELETE FROM pages_project_invitations WHERE project_id = ?
+      AND invite_id NOT IN (SELECT value FROM json_each(?))`,
+    )
+    .bind(record.space_id, JSON.stringify(live))
+    .run();
+  return result.meta?.changes ?? 0;
+}
+
 /** Deletes at most `limit` expired index rows. `now` is in milliseconds, like expires_at. */
 export async function deleteExpiredProjectInvitations(env, { now, limit }) {
   if (!Number.isSafeInteger(now) || now < 0) throw new Error("Invalid invitation cleanup time");
