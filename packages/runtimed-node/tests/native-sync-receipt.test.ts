@@ -32,6 +32,13 @@ describe.skipIf(!nativeEnabled)("native NotebookDoc sync receipts", () => {
       "debug",
       process.platform === "win32" ? "runtimed.exe" : "runtimed",
     );
+    // Pools are 0, so a notebook without dependencies builds a uv env on
+    // demand. Keep that build to the kernel packages; these tests never
+    // import the default data stack.
+    fs.writeFileSync(
+      path.join(directory, "settings.json"),
+      JSON.stringify({ install_default_data_packages: false }),
+    );
     daemon = spawn(
       binary,
       [
@@ -84,7 +91,10 @@ describe.skipIf(!nativeEnabled)("native NotebookDoc sync receipts", () => {
         await exited;
       }
     }
-    if (directory) fs.rmSync(directory, { recursive: true, force: true });
+    // An installer that outlives the daemon can still be writing into the
+    // env directory; retry ENOTEMPTY briefly instead of failing teardown.
+    if (directory)
+      fs.rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   });
 
   it("confirms an edit that an independent peer can read", async () => {

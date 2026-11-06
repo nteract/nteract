@@ -5146,8 +5146,9 @@ impl Daemon {
     /// GC cannot remove it mid-build, and the returned guard has the usual
     /// release / release_and_delete semantics. Failure and shutdown kill and
     /// reap the warm-env process tree, then delete the partial directory.
-    /// Dropping the future kills the process tree (the Unix process group,
-    /// or the Windows kill-on-close job) and leaves the directory to orphan
+    /// Dropping the future stops the process tree (SIGTERM to the Unix
+    /// process group, so the subprocess kills its installer groups, then
+    /// SIGKILL; or the Windows kill-on-close job) and leaves the directory to orphan
     /// GC once the lease is released. On Windows a delete can still fail
     /// while the job tears down; the startup sweep removes what is left.
     async fn build_on_demand_env(
@@ -7918,14 +7919,16 @@ impl Daemon {
             .arg("warm-env")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+            .stderr(Stdio::piped());
+        // No kill_on_drop: a direct SIGKILL would orphan the installer
+        // groups the subprocess owns. Dropping `process_tree` sends SIGTERM
+        // first so the subprocess can kill them.
         crate::warm_env::configure_process_tree(&mut command);
 
         let mut child = command
             .spawn()
             .map_err(|e| format!("Failed to spawn warm-env: {e}"))?;
-        let mut process_tree = match crate::warm_env::own_process_tree(&child) {
+        let mut process_tree = match crate::warm_env::own_leader_process_tree(&child) {
             Ok(process_tree) => process_tree,
             Err(error) => {
                 let _ = child.kill().await;
@@ -8035,7 +8038,7 @@ impl Daemon {
                     task.abort();
                     let _ = task.await;
                 }
-                crate::warm_env::reap_timed_out_child(&mut child, &mut process_tree).await;
+                crate::warm_env::stop_leader_child(&mut child, &mut process_tree).await;
                 return Err(WARM_ENV_CANCELLED.to_string());
             }
             Some(Err(_)) => {
@@ -8045,7 +8048,7 @@ impl Daemon {
                     task.abort();
                     let _ = task.await;
                 }
-                crate::warm_env::reap_timed_out_child(&mut child, &mut process_tree).await;
+                crate::warm_env::stop_leader_child(&mut child, &mut process_tree).await;
                 let tail = drain_stderr_tail(&stderr_tail);
                 return Err(format!(
                     "warm-env subprocess timed out after {}s{}",
