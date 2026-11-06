@@ -1,120 +1,425 @@
-// Heading links in a real browser, against the running Wordgard fixture: an
-// address with a fragment scrolls to its heading, a link to a heading in a
-// table cell goes there through the link menu, the # beside a heading copies
-// its link, and a link to another Page's heading opens it in place.
+// Heading links in a real browser, against a running local Wordgard fixture.
+//
+// One long Page carries a table with in-page links at the top, two headings
+// named "Notes", an image drawn late just above its target heading, and a
+// heading with accents, a symbol and CJK. A second Page links to the target's
+// heading. The owner edits both; alice@localhost reads the target as a viewer.
+//
+//   PAGES_ORIGIN=http://localhost:9894 node scripts/heading-anchors-smoke.mjs
+//
+// Each check waits on what the reader sees (a heading's position, the address,
+// a loaded image), never on a fixed delay.
 import assert from "node:assert/strict";
+import { mkdir } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
+
 const origin = process.env.PAGES_ORIGIN || "http://localhost:9894";
-assert.equal(new URL(origin).hostname, "localhost");
+assert.equal(new URL(origin).hostname, "localhost", "Generated fixture requires local OIDC");
+const output = process.env.PAGES_SCREENSHOTS || "/tmp/pages-heading-anchors";
+await mkdir(output, { recursive: true });
 const browser = await chromium.launch({ headless: true });
 const errors = [];
-const api = async (page, operation, args = {}) => {
-  const response = await page.request.post(origin + "/api/tools", {
-    data: { operation, arguments: args },
-    headers: { Origin: origin },
-  });
-  assert.ok(response.ok(), await response.text());
-  return response.json();
+const completed = [];
+const VIEWPORT = { width: 1280, height: 800 };
+const TARGET = "Getting lean: Automerge";
+const TARGET_ANCHOR = "getting-lean-automerge";
+const UNICODE = "Café ✨ 東京";
+const UNICODE_ANCHOR = "café-東京";
+const IMAGE_ALT = "Sync diagram";
+
+const checkpoint = (name) => {
+  completed.push(name);
+  console.log("PASS " + name);
 };
-const filler = Array.from(
-  { length: 40 },
-  (_, i) => `Paragraph ${i + 1} keeps the heading below the fold.`,
-).join("\n\n");
-// The heading's top edge sits just under the sticky header and toolbar.
-const headingInView = async (page, name) => {
-  const heading = page.getByRole("heading", { name, exact: true });
-  await expect(heading).toBeVisible();
-  await expect
-    .poll(async () => (await heading.boundingBox())?.y ?? -1, { timeout: 15000 })
-    .toBeGreaterThan(40);
-  await expect
-    .poll(async () => (await heading.boundingBox())?.y ?? 9999, { timeout: 15000 })
-    .toBeLessThan(260);
-};
-try {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
-  await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin });
+const filler = (label, count) =>
+  Array.from({ length: count }, (_, i) => `${label} paragraph ${i + 1}.`).join("\n\n");
+
+/** A signed-in context for `email` at the loopback issuer. */
+async function signIn(email, options = {}) {
+  const context = await browser.newContext({ viewport: VIEWPORT, ...options });
   const page = await context.newPage();
-  page.on("pageerror", (error) => errors.push(error.message));
-  await page.goto(origin + "/api/auth/login");
-  await expect(page.getByRole("button", { name: "New Page", exact: true })).toBeVisible();
-  const target = await api(page, "create_page", {
+  page.on("pageerror", (error) => errors.push(`${email}: ${error.message}`));
+  const begin = await context.request.get(`${origin}/api/auth/login`, { maxRedirects: 0 });
+  assert.equal(begin.status(), 302);
+  const authorize = new URL(begin.headers().location);
+  authorize.searchParams.set("login_hint", email);
+  await page.goto(authorize.href, { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("button", { name: /, switch page$/ })).toBeVisible({
+    timeout: 30000,
+  });
+  return { context, page };
+}
+
+async function api(page, path, body) {
+  const response = await page.request.fetch(origin + path, {
+    method: body === undefined ? "GET" : "POST",
+    headers: { Origin: origin },
+    ...(body === undefined ? {} : { data: body }),
+  });
+  assert.ok(response.ok(), `${path}: ${response.status()} ${await response.text()}`);
+  return response.json();
+}
+const tool = (page, operation, args = {}) =>
+  api(page, "/api/tools", { operation, arguments: args });
+const key = () => "anchors-" + crypto.randomUUID();
+
+const heading = (page, name, nth = 0) =>
+  page.locator("wg-content").getByRole("heading", { name, exact: true }).nth(nth);
+const top = async (locator) => (await locator.boundingBox())?.y ?? Number.NaN;
+const docTop = (locator) =>
+  locator.evaluate((element) => element.getBoundingClientRect().top + window.scrollY);
+// Two animation frames: a scroll the Page would make from what is drawn now
+// has happened by then.
+const frames = (page) =>
+  page.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+  );
+
+/** The heading's top edge sits just under the sticky header and toolbar. */
+async function expectInView(locator, timeout = 15000) {
+  await expect(locator).toBeVisible({ timeout });
+  await expect.poll(() => top(locator), { timeout }).toBeGreaterThan(40);
+  await expect.poll(() => top(locator), { timeout }).toBeLessThan(260);
+}
+async function expectBelowView(locator) {
+  await expect(locator).toBeAttached();
+  expect(await top(locator)).toBeGreaterThan(VIEWPORT.height);
+}
+
+/** Holds image asset responses until release(): an image that draws after
+ * the Page and its heading. */
+async function holdImages(context) {
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  const seen = [];
+  await context.route("**/api/pages/*/assets/*", async (route) => {
+    seen.push(route.request().url());
+    await gate;
+    await route.continue().catch(() => {});
+  });
+  return { release, seen };
+}
+const imageLoaded = (page) =>
+  expect
+    .poll(
+      () =>
+        page
+          .locator("wg-content img")
+          .first()
+          .evaluate((img) => img.complete && img.naturalWidth > 0)
+          .catch(() => false),
+      { timeout: 15000 },
+    )
+    .toBe(true);
+
+let stage = "sign in";
+try {
+  const owner = await signIn("dev@localhost");
+  await owner.context.grantPermissions(["clipboard-read", "clipboard-write"], { origin });
+
+  stage = "create the Pages";
+  // Block 1: the table of links, then enough text to put everything below
+  // the fold, then the first "Notes".
+  const target = await tool(owner.page, "create_page", {
     title: "Heading anchors " + Date.now(),
-    idempotency_key: "anchors-" + crypto.randomUUID(),
-    markdown: `Intro.\n\n| Topic | Where |\n| --- | --- |\n| Sync | See [*Getting lean: Automerge*](#getting-lean-automerge) |\n\n${filler}\n\n## Getting lean: Automerge\n\nThe section.\n\n${filler}`,
+    idempotency_key: key(),
+    markdown: [
+      "Intro.",
+      "| Topic | Where |\n| --- | --- |\n" +
+        `| Sync | See [*${TARGET}*](#${TARGET_ANCHOR}) |\n` +
+        "| Later notes | [the second Notes](#notes-1) |",
+      filler("Lead", 40),
+      "## Notes",
+      "First notes.",
+      filler("Middle", 20),
+    ].join("\n\n"),
   });
-  const outline = await api(page, "read_page", {
-    page_id: target.page_id,
-    include_content: false,
+  const pageId = target.page_id;
+  const first = (await tool(owner.page, "read_page", { page_id: pageId })).blocks[0].id;
+  // Block 2: an image a few lines above the target heading.
+  const png = await owner.page.evaluate(() => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 720;
+    canvas.height = 480;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#dbe7f3";
+    ctx.fillRect(0, 0, 720, 480);
+    ctx.fillStyle = "#1d3557";
+    ctx.font = "bold 40px sans-serif";
+    ctx.fillText("Sync diagram", 40, 80);
+    return canvas.toDataURL("image/png").split(",")[1];
   });
-  assert.equal(
-    outline.outline.entries.find((entry) => entry.type === "heading")?.anchor,
-    "getting-lean-automerge",
-  );
-  const source = await api(page, "create_page", {
+  const uploaded = await owner.page.request.post(`${origin}/api/pages/${pageId}/assets`, {
+    data: Buffer.from(png, "base64"),
+    headers: { Origin: origin, "Content-Type": "image/png" },
+  });
+  assert.equal(uploaded.status(), 201, await uploaded.text());
+  const asset = await uploaded.json();
+  let read = await tool(owner.page, "read_page", { page_id: pageId, include_content: false });
+  const inserted = await tool(owner.page, "edit_page", {
+    page_id: pageId,
+    base_heads: read.heads,
+    idempotency_key: key(),
+    operations: [
+      { op: "insert_image", after_block_id: first, asset_id: asset.asset_id, alt: IMAGE_ALT },
+    ],
+  });
+  // Block 3: the target heading, the second "Notes", and the Unicode heading.
+  await tool(owner.page, "edit_page", {
+    page_id: pageId,
+    base_heads: inserted.heads,
+    idempotency_key: key(),
+    operations: [
+      {
+        op: "insert_markdown",
+        after_block_id: inserted.result.inserted_images[0].block_id,
+        markdown: [
+          "Just above the section.",
+          `## ${TARGET}`,
+          "The section.",
+          filler("After", 20),
+          "## Notes",
+          "Second notes.",
+          filler("Late", 10),
+          `### ${UNICODE}`,
+          "Last section.",
+          filler("Tail", 40),
+        ].join("\n\n"),
+      },
+    ],
+  });
+  const source = await tool(owner.page, "create_page", {
     title: "Links elsewhere " + Date.now(),
-    idempotency_key: "anchors-" + crypto.randomUUID(),
-    markdown: `Read [the Automerge section](/p/${target.page_id}#getting-lean-automerge).`,
+    idempotency_key: key(),
+    markdown: [
+      filler("Before", 30),
+      `Read [the Automerge section](/p/${pageId}#${TARGET_ANCHOR}).`,
+      filler("Beyond", 30),
+    ].join("\n\n"),
+  });
+  const targetUrl = (anchor) => `${origin}/p/${pageId}#${encodeURIComponent(anchor)}`;
+
+  // alice reads the target Page as a viewer.
+  const access = await api(owner.page, `/api/access?page=${pageId}`);
+  await api(owner.page, `/api/access?page=${pageId}`, {
+    action: "invite",
+    email: "alice@localhost",
+    role: "viewer",
+    expected_revision: access.access.revision,
+    idempotency_key: key(),
   });
 
-  // An address with a fragment scrolls once the Page draws.
-  await page.goto(`${origin}/p/${target.page_id}#getting-lean-automerge`);
-  await headingInView(page, "Getting lean: Automerge");
-  expect(page.url()).toBe(`${origin}/p/${target.page_id}#getting-lean-automerge`);
+  stage = "read_page outline anchors";
+  const outline = [];
+  for (let offset = 0, heads; offset !== null; ) {
+    read = await tool(owner.page, "read_page", {
+      page_id: pageId,
+      include_content: false,
+      outline_offset: offset,
+      ...(heads ? { expected_heads: heads } : {}),
+    });
+    heads = read.heads;
+    for (const entry of read.outline.entries)
+      if (entry.type === "heading") outline.push(entry.anchor);
+    offset = read.outline.next_offset ?? null;
+  }
+  assert.deepEqual(outline, ["notes", TARGET_ANCHOR, "notes-1", UNICODE_ANCHOR]);
+  checkpoint("read_page's outline names every heading's anchor, duplicates numbered");
 
-  // The table cell's link: the link menu offers Go to section.
-  await page.evaluate(() => window.scrollTo(0, 0));
-  await page.getByRole("link", { name: "Getting lean: Automerge" }).click();
-  const go = page.getByRole("link", { name: "Go to section" });
-  await expect(go).toBeVisible();
-  await go.click();
-  await expect(page.getByRole("dialog", { name: "Link" })).toHaveCount(0);
-  await headingInView(page, "Getting lean: Automerge");
-  expect(context.pages()).toHaveLength(1);
+  stage = "cold load of a shared link";
+  {
+    const { page } = owner;
+    const images = await holdImages(owner.context);
+    await page.goto(targetUrl(TARGET_ANCHOR));
+    const section = heading(page, TARGET);
+    await expectInView(section);
+    expect(page.url()).toBe(targetUrl(TARGET_ANCHOR));
+    // The image above the heading draws only now, pushing the heading down
+    // the document; the heading stays in view.
+    const before = await docTop(section);
+    images.release();
+    await imageLoaded(page);
+    await expect.poll(() => docTop(section)).toBeGreaterThan(before + 100);
+    await expectInView(section);
+    await frames(page);
+    await expectInView(section);
+    await owner.context.unroute("**/api/pages/*/assets/*");
+    checkpoint("a shared link scrolls to its heading and holds it through a late image");
+  }
 
-  // The # beside a hovered heading copies its link.
-  await page.goto(`${origin}/p/${target.page_id}`);
-  await expect(page.getByRole("status", { name: "All changes saved", exact: true })).toBeVisible({
-    timeout: 20000,
-  });
-  const heading = page.getByRole("heading", { name: "Getting lean: Automerge", exact: true });
-  await expect(heading).toBeVisible();
-  await heading.hover();
-  const copy = page.getByRole("button", {
-    name: "Copy link to section Getting lean: Automerge",
-  });
-  await expect(copy).toBeVisible();
-  // It sits left of the heading's text, and stays while the pointer walks to it.
-  const [textBox, copyBox] = [await heading.boundingBox(), await copy.boundingBox()];
-  assert.ok(copyBox.x + copyBox.width <= textBox.x + 1, "the # is left of the heading");
-  await page.mouse.move(copyBox.x + copyBox.width / 2, copyBox.y + copyBox.height / 2, {
-    steps: 12,
-  });
-  await expect(copy).toBeVisible();
-  if (process.env.PAGES_SMOKE_SCREENSHOT)
-    await page.screenshot({ path: process.env.PAGES_SMOKE_SCREENSHOT });
-  await copy.click();
-  await expect(page.getByText("Link to section copied")).toBeVisible();
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
-    `${origin}/p/${target.page_id}#getting-lean-automerge`,
+  stage = "warm reload";
+  // From the top, so the browser's own scroll restoration can't pass for it.
+  await owner.page.evaluate(() => window.scrollTo(0, 0));
+  await owner.page.reload();
+  await expectInView(heading(owner.page, TARGET));
+  checkpoint("a reload with the Page cached scrolls to the heading again");
+
+  stage = "fresh browser context";
+  const reader = await signIn("alice@localhost");
+  await reader.page.goto(targetUrl(TARGET_ANCHOR));
+  await expectInView(heading(reader.page, TARGET), 30000);
+  await expect(reader.page.locator("wg-content").first()).not.toHaveAttribute(
+    "contenteditable",
+    "true",
   );
+  checkpoint("the link scrolls in a fresh context with nothing cached, read-only");
 
-  // Another Page's heading opens in place: no reload, no new tab.
-  await page.goto(`${origin}/p/${source.page_id}`);
-  await expect(page.getByRole("status", { name: "All changes saved", exact: true })).toBeVisible({
-    timeout: 20000,
-  });
-  await page.evaluate(() => (window.__sameDocument = true));
-  await page.locator("wg-content a", { hasText: "the Automerge section" }).click();
-  await page.getByRole("link", { name: "Open link" }).click();
-  await expect(page).toHaveURL(`${origin}/p/${target.page_id}#getting-lean-automerge`);
-  await headingInView(page, "Getting lean: Automerge");
-  expect(await page.evaluate(() => window.__sameDocument)).toBe(true);
-  expect(context.pages()).toHaveLength(1);
-  await page.goBack();
-  await expect(page).toHaveURL(`${origin}/p/${source.page_id}`);
+  stage = "duplicate headings";
+  // about:blank first, so each goto loads the Page instead of changing the
+  // fragment of the one open.
+  await reader.page.goto("about:blank");
+  await reader.page.goto(targetUrl("notes-1"));
+  await expectInView(heading(reader.page, "Notes", 1));
+  expect(await top(heading(reader.page, "Notes", 0))).toBeLessThan(0);
+  checkpoint("#notes-1 shows the second heading named Notes");
+
+  stage = "Unicode heading";
+  // Same Page, new fragment: a hash change, as if typed into the address bar.
+  await reader.page.goto(targetUrl(UNICODE_ANCHOR));
+  await expectInView(heading(reader.page, UNICODE));
+  checkpoint("a fragment changed in the address finds a percent-encoded Unicode heading");
+
+  stage = "unknown anchor";
+  {
+    const { page } = reader;
+    const before = errors.length;
+    await page.goto("about:blank");
+    await page.goto(targetUrl("no-such-heading"));
+    // The whole Page has drawn, so a matching heading would have been found.
+    await expect(page.locator("wg-content").last()).toContainText("Tail paragraph 40.");
+    await frames(page);
+    expect(await page.evaluate(() => window.scrollY)).toBe(0);
+    await expectBelowView(heading(page, "Notes"));
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    expect(errors.slice(before)).toEqual([]);
+    checkpoint("an unknown anchor leaves the Page at its top without an error");
+  }
+
+  stage = "in-page link, read-only";
+  {
+    const { page } = reader;
+    // Still at the top from the unknown anchor.
+    await page.evaluate(() => (window.__anchorMarker = "same document"));
+    await page.locator("wg-content table a", { hasText: TARGET }).click();
+    await expect(page).toHaveURL(targetUrl(TARGET_ANCHOR));
+    await expectInView(heading(page, TARGET));
+    await expect(page.getByRole("dialog", { name: "Link" })).toHaveCount(0);
+    expect(await page.evaluate(() => window.__anchorMarker)).toBe("same document");
+    expect(reader.context.pages()).toHaveLength(1);
+    checkpoint("a table cell's in-page link scrolls a read-only Page without a reload");
+  }
+
+  stage = "in-page link, editor";
+  {
+    const { page } = owner;
+    await page.goto(`${origin}/p/${pageId}`);
+    await expect(page.locator("wg-content").last()).toContainText("Tail paragraph 40.");
+    await page.evaluate(() => (window.__anchorMarker = "same document"));
+    await page.locator("wg-content table a", { hasText: "the second Notes" }).click();
+    const go = page.getByRole("link", { name: "Go to section" });
+    await expect(go).toBeVisible();
+    await go.click();
+    await expect(page.getByRole("dialog", { name: "Link" })).toHaveCount(0);
+    await expect(page).toHaveURL(targetUrl("notes-1"));
+    await expectInView(heading(page, "Notes", 1));
+    expect(await page.evaluate(() => window.__anchorMarker)).toBe("same document");
+    expect(owner.context.pages()).toHaveLength(1);
+    checkpoint("the editor's link menu offers Go to section and goes there in place");
+  }
+
+  stage = "copy a heading's link";
+  {
+    const { page } = owner;
+    await page.goto(`${origin}/p/${pageId}`);
+    for (const [name, nth, anchor] of [
+      [TARGET, 0, TARGET_ANCHOR],
+      ["Notes", 1, "notes-1"],
+      [UNICODE, 0, UNICODE_ANCHOR],
+    ]) {
+      const section = heading(page, name, nth);
+      await section.scrollIntoViewIfNeeded();
+      await section.hover();
+      const copy = page.getByRole("button", { name: `Copy link to section ${name}` });
+      await expect(copy).toBeVisible();
+      // It sits left of the heading's text and stays while the pointer walks to it.
+      const [text, button] = [await section.boundingBox(), await copy.boundingBox()];
+      assert.ok(button.x + button.width <= text.x + 1, "the # is left of the heading");
+      await page.mouse.move(button.x + button.width / 2, button.y + button.height / 2, {
+        steps: 8,
+      });
+      await expect(copy).toBeVisible();
+      await copy.click();
+      await expect(page.getByText("Link to section copied")).toBeVisible();
+      // The copied link is the viewer's anchor, and the outline's.
+      expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(targetUrl(anchor));
+      await expect(page).toHaveURL(targetUrl(anchor));
+    }
+    await page.screenshot({ path: `${output}/heading-anchor-copy.png` });
+    checkpoint("the # copies the full link, matching read_page's anchors");
+  }
+
+  stage = "cross-Page link";
+  {
+    const { page } = owner;
+    await page.goto(`${origin}/p/${source.page_id}`);
+    const link = page.locator("wg-content a", { hasText: "the Automerge section" });
+    await link.scrollIntoViewIfNeeded();
+    await expect(link).toBeInViewport();
+    const position = await page.evaluate(() => window.scrollY);
+    expect(position).toBeGreaterThan(0);
+    await page.evaluate(() => (window.__anchorMarker = "same document"));
+    await link.click();
+    await page.getByRole("link", { name: "Open link" }).click();
+    await expect(page).toHaveURL(targetUrl(TARGET_ANCHOR));
+    await expectInView(heading(page, TARGET));
+    expect(await page.evaluate(() => window.__anchorMarker)).toBe("same document");
+    expect(owner.context.pages()).toHaveLength(1);
+    // Back shows the source Page again in the same document. It opens at
+    // its top: the app doesn't restore a Page's scroll position on Back.
+    await page.goBack();
+    await expect(page).toHaveURL(`${origin}/p/${source.page_id}`);
+    await expect(link).toBeAttached();
+    expect(await page.evaluate(() => window.__anchorMarker)).toBe("same document");
+    // Forward returns to the heading.
+    await page.goForward();
+    await expect(page).toHaveURL(targetUrl(TARGET_ANCHOR));
+    await expectInView(heading(page, TARGET));
+    expect(await page.evaluate(() => window.__anchorMarker)).toBe("same document");
+    checkpoint("another Page's heading opens in place; Back and Forward stay in the app");
+  }
+
+  stage = "reader scrolls while the heading settles";
+  {
+    // A fresh context, so the image isn't in its cache.
+    const late = await signIn("dev@localhost");
+    const { page } = late;
+    const images = await holdImages(late.context);
+    await page.goto(targetUrl(TARGET_ANCHOR));
+    const section = heading(page, TARGET);
+    await expectInView(section);
+    // The reader scrolls back up; the image then draws above the heading.
+    await page.mouse.move(640, 400);
+    await page.mouse.wheel(0, -400);
+    await expect.poll(() => top(section)).toBeGreaterThan(400);
+    images.release();
+    await imageLoaded(page);
+    await frames(page);
+    expect(await top(section)).toBeGreaterThan(400);
+    checkpoint("scrolling during the settle stops the scroll to the heading");
+    await late.context.close();
+  }
+
   assert.deepEqual(errors, []);
-  console.log("heading anchors smoke passed");
+  console.log(JSON.stringify({ page_id: pageId, checks: completed }));
+} catch (error) {
+  console.error(`Failed at: ${stage}`);
+  for (const [i, context] of browser.contexts().entries())
+    for (const [j, page] of context.pages().entries())
+      await page
+        .screenshot({ path: `${output}/failure-${i}-${j}.png`, fullPage: false })
+        .catch(() => {});
+  console.error("Browser errors:", errors);
+  throw error;
 } finally {
   await browser.close();
 }

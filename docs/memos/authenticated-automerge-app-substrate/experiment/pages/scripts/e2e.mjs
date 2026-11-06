@@ -61,6 +61,11 @@ const SUITES = Object.freeze([
     timeout: 3 * minute,
   },
   {
+    name: "heading-anchors",
+    script: "scripts/heading-anchors-smoke.mjs",
+    timeout: 3 * minute,
+  },
+  {
     name: "passages",
     script: "scripts/passages-changes-smoke.mjs",
     timeout: 3 * minute,
