@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
+import { expectPendingInvite } from "./sharing-rows.mjs";
 const origin = process.env.PAGES_ORIGIN || "http://localhost:9894";
 assert.equal(new URL(origin).hostname, "localhost");
 assert.equal(new URL(origin).protocol, "http:");
@@ -165,7 +166,11 @@ try {
   await owner.getByLabel("Invite by email").fill("alice@localhost");
   await owner.getByLabel("Access", { exact: true }).selectOption("editor");
   await owner.getByRole("button", { name: "Invite", exact: true }).click();
-  await expect(owner.getByText("alice@localhost", { exact: true })).toBeVisible();
+  await expectPendingInvite(
+    owner.getByRole("dialog", { name: "Share Page" }),
+    "alice@localhost",
+    "editor",
+  );
   await owner.screenshot({ path: `${output}/sharing-wide.png` });
   assert.equal(
     (await access({ action: "invite", email: "bob@localhost", role: "viewer" })).status,

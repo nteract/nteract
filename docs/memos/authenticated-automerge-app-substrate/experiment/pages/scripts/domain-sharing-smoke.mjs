@@ -4,6 +4,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
 import { purgeTrashedFixture } from "./purge-fixture.mjs";
+import { expectPendingInvite } from "./sharing-rows.mjs";
 
 const origin = process.env.PAGES_ORIGIN;
 assert.equal(new URL(origin).origin, origin);
@@ -259,7 +260,11 @@ try {
   await owner.getByLabel("Invite by email").fill("alice@localhost");
   await owner.getByLabel("Access", { exact: true }).selectOption("editor");
   await owner.getByRole("button", { name: "Invite", exact: true }).click();
-  await expect(owner.getByText("alice@localhost", { exact: true })).toBeVisible();
+  await expectPendingInvite(
+    owner.getByRole("dialog", { name: "Share Page" }),
+    "alice@localhost",
+    "editor",
+  );
   assert.equal(
     (await access({ action: "invite", email: "pending@example.org", role: "viewer" })).status,
     200,
