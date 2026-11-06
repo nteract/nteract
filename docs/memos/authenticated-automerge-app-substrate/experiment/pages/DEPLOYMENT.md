@@ -725,6 +725,124 @@ Page's record needs none: it names no comments document and answers as deleted.
 page10 holds one such record (59361b99-fc53-40ec-a733-a74a4db24630). Don't
 restore a backup taken before 2026-11-05 onto a target running this build.
 
+### Comments migration
+
+One owner-run pass puts every comment message in the form this build writes:
+rich text in the editor's spans, the form every Page body is in, with no
+`body` copy. Earlier builds stored plain messages as a bare `body`, and rich
+messages in the ProseMirror adapter's span form beside a `body` copy of the
+Markdown they were first written from. This build still reads and admits
+both on existing messages; a follow-up deletes those readers once this run
+has been applied and verified everywhere.
+
+The code is marked ONE-SHOT for deletion with that follow-up:
+`model/comments-normalization.mjs` (what changes in a comments document),
+`worker/comments-migration.mjs` (the Catalog run), their tests,
+`scripts/comments-migration.mjs`, and the routes in `worker/index.mjs`:
+`POST /api/admin/comments-migration`, the Catalog's
+`/internal/comments-migration`, and the Page host's
+`/internal/comments-migration` with its revert-record copier. The follow-up
+also deletes the old-form readers: the `!isRich(message)` paths in
+`model/comment-content.mjs` and `model/comment-authority.mjs`, the `body`
+fallback in `commentBodyProjection`, `body` in `MESSAGE_FIELDS`, and the
+adapter-form tolerance in `plainCommentText`.
+
+Per Page, in one journaled host change on the comments document
+(`host/operation/internal:comments_norm_<digest of comments heads>`):
+
+- a plain message (`plain_body`) becomes the spans a plain write stores (one
+  paragraph, each newline a hard break, no marks) and `bodyFormat: "plain"`,
+  so reads still return the text literally. The text must read back exactly;
+- a rich message's spans become `encode(decode(spans).doc)` through
+  `A.updateSpans`, so unchanged text and markers keep their identity. The old
+  span forms are the ones the content migration removed from Page bodies:
+  `first_marker`, `quote_marker`, `prose_newline`, `code_marks`, `attrs`. Its
+  `body` copy is removed (`markdown_copy`). Its reads stay Markdown.
+- deleted messages are rewritten too, and stay deleted.
+
+Every message keeps its id, author, timestamps and thread. The Page document
+is never written, so passage anchors can't move; the plan checks every
+thread's anchor anyway (`anchors_changed`). A message is refused when its
+decode is lossy (`lossy`) or throws (`undecodable`), when the rewrite would
+delete a character other than a prose newline (`identity_lost`) or change the
+text (`text_changed`), or when the result fails the comment content rule
+(`invalid_content`: for example a plain body whose newlines would need more
+than 64 KiB of hard-break markers). A Page with any refused message is
+`partial`, and `apply` writes nothing to it: the gate holds in the Page host
+at apply time. With the text-only length rule, no message can cross the
+16,000-character limit by changing form.
+
+A Page with a live socket is skipped (`busy`) unless the run passes
+`include_connected: true` (`--include-connected`). With it, the change reaches
+connected peers over sync like any host change. A peer's change that reaches
+the host between the plan and the write fails the write's exact-heads check
+on the comments document: the Page answers `stale`, nothing is written, and
+the next pass plans again.
+
+Run it as the owner with an API key that has write access. It reaches only
+that account's Pages: every `page/` (Project content included) and `trash/`
+key in the owner's Catalog, plus any `page_ids` in the body, which the Page
+host checks against its record's owner.
+
+```sh
+cd docs/memos/authenticated-automerge-app-substrate/experiment/pages
+PAGES_API_KEY=$ANACONDA_API_KEY node scripts/comments-migration.mjs \
+  --origin https://pages.runtimed.run --mode dry_run > comments-dry-run.json
+```
+
+`dry_run` writes nothing of its own and answers `{mode, targets: {total, page,
+trash, extra}, pages, visited, next, totals, progress}`; the script follows
+`next` until the end and logs every response as a JSON line (`--log`, default
+`comments-migration-<mode>-<time>.jsonl`). Each page reports `status`
+(`would_normalize`, `unchanged`, `partial`, `held`, `unavailable`,
+`record_pending`, `missing`, `deleted`, `not_owner`, `error`), `state`,
+`connected`, `heads` (comments heads), `report` (per message: `forms`,
+markers removed and added by type, characters before and after with `lost`,
+`newlines` and `unexpected`; page `forms`, `refused`, `refused_reasons`) and
+`problems`. `totals` counts pages by status, messages by form and refusals by
+reason.
+
+Then `apply`, after the dry-run reports are approved:
+
+```sh
+PAGES_API_KEY=$ANACONDA_API_KEY node scripts/comments-migration.mjs \
+  --origin https://pages.runtimed.run --mode apply > comments-apply.json
+```
+
+Each call visits up to `limit` Pages (at most 25, and none after 60 s).
+Progress is in the Catalog's `host/comments-migration/state` (`{phase:
+applying | incomplete | done, ids, next, pass, pending}`), and each Page's
+latest result in `host/comments-migration/result/<page_id>`. A pass ends
+`done` when every Page settled (`normalized`, `unchanged`, `deleted`,
+`missing`, `not_owner`), otherwise `incomplete` with `pending`; the next
+`apply` visits only those. An interrupted `apply` resumes at its cursor; a
+crash inside the Page's write replays the journaled change at its next boot.
+`done` is terminal: run `dry_run` again to verify. It should report
+`would_normalize: 0`, no `partial`, and `problems: []` on every Page.
+
+**Revert records.** Every write is recorded twice, durably, as `{key,
+before_heads, after_heads, messages: [{thread_id, message_id, action}]}`: in
+the Page's `host/comments-migration/revert`, copied from its journal receipt
+before anything can drop that receipt, and in the Catalog's
+`result/<page_id>` `revert` list, which every later visit carries forward.
+
+**Restore.** Comments documents keep their history. To revert a Page, take
+each record from its `revert` list, newest first, and, as a host change on
+the comments document, put each listed message back as it was at
+`before_heads`: for a `normalize` message, write `A.spans(A.view(doc,
+before_heads), [...path, "richText"])` with `A.updateSpans` and restore its
+`body`; for a `plain` message, delete `format`, `richText` and `bodyFormat`
+and restore `body`. This also undoes later edits to those messages. To run
+the migration again, delete only `host/comments-migration/state`; keep
+`result/*`, which holds the revert records.
+
+**Rollback rule.** No schema feature is added. Every message this build
+writes, migrated or new, has no `body`. The build before it reads such a
+message (it ignores `bodyFormat`, so a plain message reads as escaped
+Markdown), but its admission requires `body` on every message: its host
+would refuse a later edit or deletion of one. Roll back only to a build that
+has this change.
+
 ### Plain sync on pages.runtimed.run
 
 Every Page on pages.runtimed.run is on plain Automerge sync: an operator
