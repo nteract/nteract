@@ -19,9 +19,8 @@
 //
 // An id is meaningful only with its block_id: cursors are per text object.
 import * as A from "@automerge/automerge/slim";
-import { codeTextUnmarked, textPath } from "./richtext-format.mjs";
-import { adapter, eventsWithIndexChanges, pmDocFromSpans, traverseSpans } from "./pm-adapter.mjs";
-import { richDoc } from "./richtext-spans.mjs";
+import { textPath } from "./richtext-format.mjs";
+import { blockAddresses } from "./node-addresses.mjs";
 
 // A cursor is `<counter>@<actor hex>`; Pages accepts actors of up to 64 bytes
 // (worker/actor-authorship.mjs), 128 hex characters.
@@ -29,45 +28,27 @@ export const MAX_NODE_ID = 192;
 
 /** For each top-level node of rich block `blockId`, in order: `{ id, at }`,
  * the cursor at its opening marker and that marker's index in the text, or
- * `{ id: null, at: null }` for the implicit first paragraph. `tree` is the
- * block's richDoc, when the caller already has it; the ids line up with its
- * nodes. Throws when the binding can't place a stored marker. */
-export function nodeIds(doc, blockId, tree = richDoc(doc.blocks[blockId], doc.page_id)) {
+ * `{ id: null, at: null }` for the implicit first paragraph. Addresses come
+ * from the stored spans (model/node-addresses.mjs). `tree` is the block's
+ * richDoc, when the caller pairs the ids with its nodes; the ids line up with
+ * them, or this throws. Also throws when the block holds a node this build
+ * can't place where it was stored. */
+export function nodeIds(doc, blockId, tree) {
   const path = textPath(blockId);
-  // Ranges come from the stored spans, the ones the traversal walks. richDoc
-  // can read a node through notice text (a dataframe naming another Page's
-  // asset), which changes its size but never the number of top-level nodes.
-  const spans = codeTextUnmarked(A.spans(doc, path));
-  const stored = pmDocFromSpans(adapter, spans);
-  if (stored.childCount !== tree.childCount)
+  const { nodes, placed } = blockAddresses(A.spans(doc, path));
+  if (!placed) throw Error("This block holds a node this build can't place");
+  // richDoc can read a node through notice text (a dataframe naming another
+  // Page's asset), which changes its size but never the number of top-level
+  // nodes.
+  if (tree && tree.childCount !== nodes.length)
     throw Error("The stored and readable trees disagree on top-level nodes");
-  const ranges = [];
-  stored.forEach((node, offset) =>
-    ranges.push({ end: offset + node.nodeSize, id: null, at: null }),
-  );
-  // One pass over the binding's indexed traversal. A node's opening marker is
-  // the first non-embed block marker inside its ProseMirror range.
-  let index = 0;
-  let leafClosures = 0;
-  for (const state of eventsWithIndexChanges(traverseSpans(adapter, spans))) {
-    // The binding can emit open/close tags for leaves such as rules. A PM
-    // leaf occupies one position, so its closing tag adds no width.
-    if (state.event.type === "closeTag" && adapter.schema.nodes[state.event.tag].isLeaf)
-      leafClosures++;
-    while (index < ranges.length && state.after.pmIdx - leafClosures >= ranges[index].end) index++;
-    const range = ranges[index];
-    if (!range || range.at !== null) continue;
-    if (state.event.type !== "block" || state.event.block.isEmbed) continue;
-    range.at = state.after.amIdx;
-    range.id = A.getCursor(doc, path, range.at);
-  }
-  return ranges.map(({ id, at }) => ({ id, at }));
+  return nodes.map(({ at }) => ({ id: at === null ? null : A.getCursor(doc, path, at), at }));
 }
 
-/** nodeIds, or no ids (all null) when the binding can't place one of the
- * block's markers: a node a newer build wrote inside a table cell, say.
- * richDoc still reads such a block, through text it rewrites, so its
- * positions don't name stored markers and no id is better than a wrong one. */
+/** nodeIds, or no ids (all null) when the block holds a node this build
+ * can't place: a node a newer build wrote inside a table cell, say. richDoc
+ * still reads such a block, through text it rewrites, so its positions don't
+ * name stored markers and no id is better than a wrong one. */
 export function readableNodeIds(doc, blockId, tree) {
   try {
     return nodeIds(doc, blockId, tree);

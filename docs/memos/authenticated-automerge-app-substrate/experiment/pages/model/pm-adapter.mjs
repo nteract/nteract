@@ -5,7 +5,8 @@
 // the span adapter and its traversal through these three.
 //
 // The ProseMirror schema and its Automerge span adapter. Markdown import and
-// export, validation and node addressing still read Pages spans through it.
+// export, validation and passage addressing still read Pages spans through
+// it. Node ids are computed on the Wordgard tree (model/node-addresses.mjs).
 import * as A from "@automerge/automerge/slim";
 import {
   basicSchemaAdapter,
@@ -19,12 +20,9 @@ import { validAlignment } from "./node-registry.mjs";
 import { DATAFRAME_BLOCK } from "../shared/dataset-assets.mjs";
 
 export { pmNodeToSpans, pmDocFromSpans };
-export {
-  amSpliceIdxToPmIdx,
-  eventsWithIndexChanges,
-  pmRangeToAmRange,
-  traverseSpans,
-} from "@automerge/prosemirror/dist/traversal.js";
+// Passage addressing in model/replace-match.mjs still maps between Automerge
+// text indexes and ProseMirror positions through the binding's traversal.
+export { amSpliceIdxToPmIdx, pmRangeToAmRange } from "@automerge/prosemirror/dist/traversal.js";
 
 // Shared rich-text schema used by tool exports and ingress validation. Mark
 // names, order and expand rules come from the registry in marks.json.

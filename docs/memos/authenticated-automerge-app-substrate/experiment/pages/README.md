@@ -162,8 +162,9 @@ Authoring receipts warn about likely duplicates without removing or hiding text.
 
 Wordgard is the sole editor and applies native text splices, marks, and
 structural spans. The shared Markdown codec still uses ProseMirror schema and
-traversal libraries for import/export, validation, outlines and `node_index`,
-change reads, and passage-address mapping. It does not own an editor or mediate
+traversal libraries for import/export, validation, the node content outlines
+and change reads report, and passage-address mapping. It does not own an
+editor or mediate
 Wordgard keystrokes. Page-body Markdown writes and browser structural edits
 share one span encoder, Wordgard's `encode` (`model/wordgard-doc.mjs`):
 
@@ -188,7 +189,11 @@ The ProseMirror schema and serializer, Wordgard's decode and encode, and
 A top-level node's id (`model/node-ids.mjs`) is an Automerge cursor at the
 block marker that opens it. Outlines and change reads report it as `node_id`,
 and `delete_node` takes it, so an agent can remove a node with no text. A
-paragraph that opens its block has no marker and no id. `set_node` still
+paragraph that opens its block has no marker and no id. Ids and node ranges
+come from Wordgard's decoded tree and its position maps
+(`model/node-addresses.mjs`), checked against frozen expectations over the
+Markdown corpus, random editor trees and stored shapes
+(`model/node-addresses.test.mjs`). `set_node` still
 addresses nodes through `match_text`. Replacing the codec means, in order: one
 span encoder for every writer; node reads by id; then outlines, change reads
 and Markdown on that node tree instead of ProseMirror.
