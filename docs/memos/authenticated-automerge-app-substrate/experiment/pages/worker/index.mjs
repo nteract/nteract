@@ -275,7 +275,12 @@ import {
 } from "./catalog-location.mjs";
 import { migrateLocationShape } from "./location-shape.mjs";
 // ONE-SHOT MIGRATION imports: delete with comments-migration.mjs.
-import { commentsMigrationArguments, runCommentsMigration } from "./comments-migration.mjs";
+import {
+  commentsMigrationArguments,
+  operatorAuthorized,
+  operatorCommentsMigration,
+  runCommentsMigration,
+} from "./comments-migration.mjs";
 import {
   applyCommentsNormalization,
   commentsNormalizationBlocked,
@@ -1372,6 +1377,15 @@ const gateway = {
           recheckUpload: () => authorizeImage(request, env, pageId, false),
         });
       }
+      // ONE-SHOT MIGRATION route (comments-migration.mjs; delete with it). Lab
+      // only: without PAGES_OPERATOR_SECRET, with a wrong secret, or for a
+      // request the Cloudflare edge forwarded, it is the unknown path below.
+      if (
+        url.pathname === "/api/operator/comments-migration" &&
+        request.method === "POST" &&
+        (await operatorAuthorized(request, env))
+      )
+        return await operatorCommentsMigration(request, env);
       // ONE-SHOT MIGRATION route (comments-migration.mjs; delete with it).
       if (url.pathname === "/api/admin/comments-migration" && request.method === "POST") {
         const identity = await authenticate(request, env);
@@ -1630,18 +1644,51 @@ export class Catalog {
     const identity = await authenticate(request, this.env);
     if (this.ctx.id.name && this.ctx.id.name !== identity.principal)
       throw new HttpError(403, "Account access denied");
-    let args;
+    const args = Catalog.commentsMigrationArgs(await readJson(request));
+    if (args.mode === "apply") requireWrite(identity);
+    return json(await this.runOwnersCommentsMigration(identity.principal, args));
+  }
+
+  /**
+   * ONE-SHOT MIGRATION (comments-migration.mjs; delete with it). The
+   * operator's run over this Catalog, from the lab-only
+   * `/api/operator/comments-migration` route. Host only: a request that
+   * carries a credential is refused, so only the gateway's operator route (or
+   * another host object) reaches it. The run acts for this Catalog's own
+   * account; each Page host still checks that its record names that account
+   * as owner.
+   */
+  async operatorCommentsMigration(request) {
+    if (request.headers.has("authorization") || request.headers.has("cookie"))
+      return json({ error: "Not found" }, 404);
+    const body = (await readJson(request)) ?? {};
+    const principal = this.ctx.id.name;
+    if (!principal || body.principal !== principal)
+      throw new HttpError(400, "principal must name this Catalog's account", "invalid_arguments");
+    const { principal: _principal, ...rest } = body;
+    return json(
+      await this.runOwnersCommentsMigration(principal, Catalog.commentsMigrationArgs(rest)),
+    );
+  }
+
+  static commentsMigrationArgs(body) {
     try {
-      args = commentsMigrationArguments(await readJson(request));
+      return commentsMigrationArguments(body);
     } catch (error) {
       throw new HttpError(400, error.message, "invalid_arguments");
     }
-    if (args.mode === "apply") requireWrite(identity);
-    const owner = identity.principal;
+  }
+
+  /** One call of the comments migration over this Catalog, acting for
+   * `owner`, the account the Page hosts check their records against. */
+  async runOwnersCommentsMigration(owner, args) {
     const body = await runCommentsMigration(this.storage, {
       args,
       listAll,
       visit: async (pageId, mode, options) => {
+        // The cell's id, so an operator can diff the run against
+        // `celld cell list Page`.
+        const cell = this.env.PAGES.idFromName ? String(this.env.PAGES.idFromName(pageId)) : null;
         const response = await withTimeout(
           this.env.PAGES.getByName(pageId).fetch(
             new Request("https://pages.internal/internal/comments-migration", {
@@ -1658,13 +1705,14 @@ export class Catalog {
           "Page comments migration timed out",
         );
         const value = await response.json().catch(() => ({}));
-        return response.ok
+        const result = response.ok
           ? value
           : { status: "error", error: String(value.error ?? response.status).slice(0, 200) };
+        return cell ? { ...result, cell_id: cell } : result;
       },
     });
     await this.storage.sync();
-    return json(body);
+    return body;
   }
   async run(request) {
     try {
@@ -1771,8 +1819,10 @@ export class Catalog {
           await this.storage.put(key, { ...previous, content_updated_at: content });
         return json({ ok: true });
       }
-      // ONE-SHOT MIGRATION route (comments-migration.mjs; delete with it).
+      // ONE-SHOT MIGRATION routes (comments-migration.mjs; delete with it).
       if (pathname === "/internal/comments-migration") return await this.commentsMigration(request);
+      if (pathname === "/internal/operator-comments-migration")
+        return await this.operatorCommentsMigration(request);
       const identity = await authenticate(request, this.env);
       if (this.ctx.id.name && this.ctx.id.name !== identity.principal)
         throw new HttpError(403, "Account access denied");
@@ -4935,9 +4985,16 @@ export class Page {
       mode,
       include_connected: includeConnected = false,
     } = (await readJson(request)) ?? {};
+    const metadata = this.metadata;
+    // The operator's probe of a cell no run reached: who it belongs to.
+    if (mode === "probe")
+      return json({
+        page_id: metadata?.pageId ?? null,
+        owner: metadata?.owner ?? null,
+        state: metadata ? pageState(metadata) : "missing",
+      });
     if (!["dry_run", "apply"].includes(mode))
       throw new HttpError(400, 'mode must be "dry_run" or "apply"', "invalid_arguments");
-    const metadata = this.metadata;
     if (!metadata || metadata.pageId !== pageId)
       return json({ status: "missing", state: "missing" });
     const state = pageState(metadata);

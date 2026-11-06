@@ -344,6 +344,10 @@ const targets = Object.freeze({
     // Each account's Page limit when no quota rule matches it
     // (worker/page-quota.mjs). It also bounds that account's Trash.
     pageQuota: "250",
+    // ONE-SHOT MIGRATION: the installer gives this lab target an operator
+    // secret for the comments migration's all-account route
+    // (worker/comments-migration.mjs). Delete with that module.
+    operatorMigration: true,
     // The D1 database holding pages_quota_rules, for scripts/quota-rules.mjs.
     d1: AUTH_D1,
     // The Cloudflare edge forwards an unsampled traceparent, and celld's
@@ -414,6 +418,10 @@ const targets = Object.freeze({
     // Each account's Page limit when no quota rule matches it
     // (worker/page-quota.mjs). It also bounds that account's Trash.
     pageQuota: "250",
+    // ONE-SHOT MIGRATION: the installer gives this lab target an operator
+    // secret for the comments migration's all-account route
+    // (worker/comments-migration.mjs). Delete with that module.
+    operatorMigration: true,
     // The D1 database holding pages_quota_rules, for scripts/quota-rules.mjs.
     d1: AUTH_D1,
     // The Cloudflare edge forwards an unsampled traceparent, and celld's

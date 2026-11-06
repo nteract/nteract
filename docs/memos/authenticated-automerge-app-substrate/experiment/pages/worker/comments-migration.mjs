@@ -10,7 +10,9 @@
  * "limit"?, "after"?, "page_ids"?, "include_connected"? }`. The gateway
  * forwards it to the caller's own Catalog, which runs it in its serial queue
  * and calls each Page host's host-only `/internal/comments-migration` route
- * with the owner's principal. The Page host checks that principal against
+ * with the owner's principal. On a lab target an operator runs it for every
+ * account instead (`operatorCommentsMigration` below, behind
+ * worker/operator-gate.mjs; scripts/comments-migration-operator.mjs). The Page host checks that principal against
  * its record and is the only writer of its comments document (worker/index.mjs
  * `commentsMigration`).
  *
@@ -34,6 +36,7 @@
  * visit, so a crash between its write and this put loses nothing.
  */
 import { validPageId } from "./registration.mjs";
+import { operatorAccounts } from "./operator-gate.mjs";
 
 export const COMMENTS_MIGRATION_MODES = Object.freeze(["dry_run", "apply"]);
 export const COMMENTS_MIGRATION_STATE_KEY = "host/comments-migration/state";
@@ -309,4 +312,74 @@ export async function runCommentsMigration(
     totals: summarize(pages),
     progress: progressOf(state),
   };
+}
+
+// --- The operator path (lab only) --------------------------------------------
+//
+// `POST /api/operator/comments-migration` runs this migration for every
+// account on a celld lab deployment, behind the operator gate
+// (worker/operator-gate.mjs), so no owner has to run it themselves.
+
+export { OPERATOR_SECRET_HEADER, operatorAccounts, operatorAuthorized } from "./operator-gate.mjs";
+
+const respond = (body, status = 200) => Response.json(body, { status });
+const CELL_ID = /^[0-9a-f]{64}$/;
+
+/**
+ * The operator route, behind `operatorAuthorized`. Body `action`:
+ * - `accounts`: `{ principals, source }` from operatorAccounts.
+ * - `run`: one call of the run over `principal`'s Catalog, with the owner-run
+ *   arguments (`mode`, `limit`, `after`, `page_ids`, `include_connected`).
+ *   The run acts for that account; each Page host still checks that its
+ *   record names it as owner.
+ * - `probe`: for each of `cell_ids` (from `celld cell list Page`), what its
+ *   Page host records: `{ cell_id, page_id, owner, state }`, so a cell no run
+ *   reached can be passed to its owner's run as `page_ids`.
+ */
+export async function operatorCommentsMigration(request, env) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return respond({ error: "Body must be JSON", code: "invalid_arguments" }, 400);
+  }
+  const { action, ...rest } = body ?? {};
+  if (action === "accounts") {
+    if (!env.DB?.prepare) return respond({ error: "No catalog database" }, 503);
+    return respond({ principals: await operatorAccounts(env.DB), source: "d1_projection" });
+  }
+  if (action === "run") {
+    if (typeof rest.principal !== "string" || !rest.principal)
+      return respond({ error: "principal is required", code: "invalid_arguments" }, 400);
+    return env.CATALOGS.getByName(rest.principal).fetch(
+      new Request("https://pages.internal/internal/operator-comments-migration", {
+        method: "POST",
+        body: JSON.stringify(rest),
+      }),
+    );
+  }
+  if (action === "probe") {
+    const ids = rest.cell_ids;
+    if (
+      !Array.isArray(ids) ||
+      ids.length > COMMENTS_MIGRATION_LIMITS.extraIds ||
+      ids.some((id) => !CELL_ID.test(String(id)))
+    )
+      return respond(
+        { error: "cell_ids must be up to 100 cell ids", code: "invalid_arguments" },
+        400,
+      );
+    const cells = [];
+    for (const cell_id of ids) {
+      const response = await env.PAGES.get(env.PAGES.idFromString(cell_id)).fetch(
+        new Request("https://pages.internal/internal/comments-migration", {
+          method: "POST",
+          body: JSON.stringify({ mode: "probe" }),
+        }),
+      );
+      cells.push({ cell_id, ...(await response.json().catch(() => ({ status: "error" }))) });
+    }
+    return respond({ cells });
+  }
+  return respond({ error: "action must be accounts, run or probe", code: "invalid_arguments" }, 400);
 }

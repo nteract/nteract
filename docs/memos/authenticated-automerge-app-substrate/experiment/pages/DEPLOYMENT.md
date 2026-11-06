@@ -741,11 +741,14 @@ applied and verified everywhere.
 
 The code is marked ONE-SHOT for deletion with that follow-up:
 `model/comments-normalization.mjs` (what changes in a comments document),
-`worker/comments-migration.mjs` (the Catalog run), their tests,
-`scripts/comments-migration.mjs`, and the routes in `worker/index.mjs`:
-`POST /api/admin/comments-migration`, the Catalog's
-`/internal/comments-migration`, and the Page host's
-`/internal/comments-migration` with its revert-record copier. The follow-up
+`worker/comments-migration.mjs` (the Catalog run and the operator route),
+`worker/operator-gate.mjs`, their tests, `scripts/comments-migration.mjs`,
+`scripts/comments-migration-operator.mjs`, `scripts/operator-ssh.mjs`, the
+installer's `operatorMigration` secret, and the routes in `worker/index.mjs`:
+`POST /api/admin/comments-migration`, `POST /api/operator/comments-migration`,
+the Catalog's `/internal/comments-migration` and
+`/internal/operator-comments-migration`, and the Page host's
+`/internal/comments-migration` with its probe and revert-record copier. The follow-up
 also deletes the old-form readers: the `!isRich(message)` paths in
 `model/comment-content.mjs` and `model/comment-authority.mjs`, the `body`
 fallback in `commentBodyProjection`, `body` in `MESSAGE_FIELDS`, and the
@@ -825,6 +828,50 @@ latest result in `host/comments-migration/result/<page_id>`. A pass ends
 crash inside the Page's write replays the journaled change at its next boot.
 `done` is terminal: run `dry_run` again to verify. It should report
 `would_normalize: 0`, no `partial`, and `problems: []` on every Page.
+
+#### Every account on a lab target (operator)
+
+On pages and page10 an operator runs the migration for every account, so no
+owner has to. The routes exist only where the installer wrote the lab
+operator secret (`operatorMigration` profiles: pages and page10, not pages2,
+which started after this change):
+
+- `POST /api/operator/comments-migration` on the gateway, behind
+  worker/operator-gate.mjs: the secret in `x-pages-operator-secret`, compared
+  in constant time; refused with the plain unknown-path 404 when no secret is
+  configured, when it's wrong, or when the request carries a Cloudflare edge
+  header (`cf-ray`, `cf-connecting-ip`, `cf-visitor`, `cdn-loop`).
+- Actions: `accounts` lists principals from the D1 catalog projection
+  (`pages_catalog_pages`, `pages_catalog_spaces`, `pages_catalog_accounts`);
+  `run` drives one account's Catalog through the host-only
+  `/internal/operator-comments-migration`, the same run as the owner's;
+  `probe` asks a Page cell which Page and owner it holds.
+- Each Page host still checks the request's owner against its record, so the
+  operator chooses which Catalog runs, never which account a Page belongs
+  to.
+
+`scripts/comments-migration-operator.mjs` drives it over SSH to lab1: one
+SSH command per call, which reads `/etc/<service>/operator-secret` with sudo
+and posts on the public listener's loopback address as the service user. It
+lists the accounts, runs each to the end, then diffs the cells it reached
+against `celld cell list Page` and probes each cell no run reached
+(`unreached`). Every response is appended to a JSON-lines log.
+
+```sh
+cd docs/memos/authenticated-automerge-app-substrate/experiment/pages
+node scripts/comments-migration-operator.mjs --target pages --mode dry_run > comments-operator-dry-run.json
+node scripts/comments-migration-operator.mjs --target pages --mode apply > comments-operator-apply.json
+node scripts/comments-migration-operator.mjs --target pages --mode dry_run > comments-operator-verify.json
+```
+
+`--principal P` (repeatable) limits the run to some accounts;
+`--include-connected`, `--limit`, `--log`, `--no-cells`, `--ssh-host` and
+`--max-calls` work as in the owner script. A cell in `unreached` names its
+owner: pass its `page_id` to that owner's run with `--principal`.
+
+The install that adds `PAGES_OPERATOR_SECRET` changes wrangler.json, so celld
+restarts once (activation reason `config`); so does the install that removes
+it with this migration.
 
 **Before deleting the old-form readers**, run `dry_run` again on every target
 after this build is deployed there, and after any tab of an earlier build has
