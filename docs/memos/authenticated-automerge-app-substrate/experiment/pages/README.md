@@ -554,6 +554,13 @@ accounts and hosts are never merged. celld 0.6.3 supports
 [cron triggers](https://github.com/denoland/celld/blob/v0.6.3/docs/services/cron-triggers.md).
 No host-side provisioning is required.
 
+A second cron, `35 * * * *`, runs the auth sweep in
+[auth-maintenance.mjs](worker/auth-maintenance.mjs): it deletes expired sign-in
+transactions, sessions, OAuth rows and invitation index rows, and grants revoked
+more than an hour ago with their tokens and codes. The sweep also runs on the
+daily trigger, so the 00:xx hour sweeps twice. Usage maintenance runs on the
+daily trigger only.
+
 The existing `pages.usage.v1` emission path also queues an allowlisted projection:
 UTC day and timestamp, principal id, driver, surface, action, Page id, outcome.
 It stores no titles, content, emails, display names, client/model labels or
@@ -1134,6 +1141,17 @@ single-use; access tokens last ten minutes, with rotating refresh tokens bounded
 by an absolute thirty-day grant. Correctly bound code/refresh replay revokes its
 family. Provider tokens stay on the server. Refresh does not refresh verified
 email evidence, and MCP tokens cannot authorize raw HTTP assets, sharing, or sync.
+
+An hourly cron (`35 * * * *` UTC, [shared/schedule.mjs](shared/schedule.mjs))
+sweeps the auth database (worker/auth-maintenance.mjs). It deletes expired
+sign-in transactions and server sessions, expired OAuth consents, codes, tokens
+and grants (keeping a consumed code while its grant lives), grants revoked more
+than an hour ago with their tokens and codes, and expired Project invitation
+index rows. Each run deletes at most 5,000 rows in batches of 500 within 15
+seconds; phases take turns and a persisted cursor resumes the next run where
+this one stopped. It logs counts and phase names only. Request paths keep their
+opportunistic cleanup. Deleted rows remain in celld's storage history and
+bucket versions until those expire.
 
 `/connect` and the public `/llms.txt` are the maintained client setup guides.
 They lead with API keys, the method for coding agents, scripts, and anything

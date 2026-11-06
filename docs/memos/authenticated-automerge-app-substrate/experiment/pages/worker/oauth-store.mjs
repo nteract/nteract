@@ -39,6 +39,11 @@ const SCHEMA = [
     scope TEXT NOT NULL, expires_at INTEGER NOT NULL, consumed_by TEXT
   )`,
   `CREATE INDEX IF NOT EXISTS pages_oauth_refresh_expiry ON pages_oauth_refresh_tokens(expires_at)`,
+  // Revoked-grant cleanup finds a grant's tokens and codes through these.
+  `CREATE INDEX IF NOT EXISTS pages_oauth_access_grant ON pages_oauth_access_tokens(grant_id)`,
+  `CREATE INDEX IF NOT EXISTS pages_oauth_refresh_grant ON pages_oauth_refresh_tokens(grant_id)`,
+  `CREATE INDEX IF NOT EXISTS pages_oauth_codes_grant ON pages_oauth_codes(consumed_by)`,
+  `CREATE INDEX IF NOT EXISTS pages_oauth_grants_revoked ON pages_oauth_grants(revoked_at)`,
 ];
 
 export class OAuthStoreError extends Error {
@@ -170,35 +175,97 @@ function snapshotPrincipal(identityJson) {
   }
 }
 
+// Each table's primary key, in cleanup order: a code is kept while its grant
+// lives, so codes go before grants.
+const EXPIRY_KEYS = {
+  pages_oauth_consents: "id_hash",
+  pages_oauth_codes: "code_hash",
+  pages_oauth_access_tokens: "token_hash",
+  pages_oauth_refresh_tokens: "token_hash",
+  pages_oauth_grants: "id",
+};
+export const OAUTH_EXPIRY_TABLES = Object.freeze(Object.keys(EXPIRY_KEYS));
+function cleanupLimit(limit) {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000)
+    throw new OAuthStoreError("invalid_request");
+  return limit;
+}
+function expiryStatement(db, table, now, limit) {
+  const key = EXPIRY_KEYS[table];
+  if (!key) throw new OAuthStoreError("invalid_request");
+  // A consumed code is replay evidence for every token in its grant, even
+  // after the code's own five-minute exchange window has closed.
+  const retainedCode = table === "pages_oauth_codes";
+  const expiry = retainedCode
+    ? `expires_at <= ? AND (consumed_by IS NULL OR NOT EXISTS
+      (SELECT 1 FROM pages_oauth_grants WHERE id = pages_oauth_codes.consumed_by AND expires_at > ?))`
+    : "expires_at <= ?";
+  return statement(
+    db,
+    `DELETE FROM ${table} WHERE ${key} IN (SELECT ${key} FROM ${table} WHERE ${expiry} ORDER BY expires_at LIMIT ?)`,
+    ...(retainedCode ? [now, now, limit] : [now, limit]),
+  );
+}
+const changesOf = (result) => result.meta?.changes ?? 0;
+
 /** Expiry cleanup is bounded and never discards a still-valid replay tombstone. */
 export async function cleanupOAuthStore(env, { now, limit = 100 } = {}) {
   now = seconds(now);
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000)
-    throw new OAuthStoreError("invalid_request");
+  cleanupLimit(limit);
   const db = await database(env);
   const results = await db.batch(
-    [
-      ["pages_oauth_consents", "id_hash"],
-      ["pages_oauth_codes", "code_hash"],
-      ["pages_oauth_access_tokens", "token_hash"],
-      ["pages_oauth_refresh_tokens", "token_hash"],
-      ["pages_oauth_grants", "id"],
-    ].map(([table, key]) => {
-      // A consumed code is replay evidence for every token in its grant, even
-      // after the code's own five-minute exchange window has closed.
-      const retainedCode = table === "pages_oauth_codes";
-      const expiry = retainedCode
-        ? `expires_at <= ? AND (consumed_by IS NULL OR NOT EXISTS
-          (SELECT 1 FROM pages_oauth_grants WHERE id = pages_oauth_codes.consumed_by AND expires_at > ?))`
-        : "expires_at <= ?";
-      return statement(
-        db,
-        `DELETE FROM ${table} WHERE ${key} IN (SELECT ${key} FROM ${table} WHERE ${expiry} ORDER BY expires_at LIMIT ?)`,
-        ...(retainedCode ? [now, now, limit] : [now, limit]),
-      );
-    }),
+    OAUTH_EXPIRY_TABLES.map((table) => expiryStatement(db, table, now, limit)),
   );
-  return results.reduce((total, result) => total + (result.meta?.changes ?? 0), 0);
+  return results.reduce((total, result) => total + changesOf(result), 0);
+}
+
+/** The same expiry rule as cleanupOAuthStore, for one table at a time. */
+export async function cleanupOAuthTable(env, table, { now, limit } = {}) {
+  now = seconds(now);
+  cleanupLimit(limit);
+  const db = await database(env);
+  return changesOf(await expiryStatement(db, table, now, limit).run());
+}
+
+// Rows that hang off a revoked grant, deleted before the grant itself. Every
+// read and exchange already refuses them, because the grant is revoked.
+const REVOKED_CHILDREN = {
+  pages_oauth_access_tokens: ["token_hash", "grant_id"],
+  pages_oauth_refresh_tokens: ["token_hash", "grant_id"],
+  pages_oauth_codes: ["code_hash", "consumed_by"],
+};
+export const OAUTH_REVOKED_TABLES = Object.freeze([
+  ...Object.keys(REVOKED_CHILDREN),
+  "pages_oauth_grants",
+]);
+const revokedBy = (table, [, link]) =>
+  `SELECT 1 FROM ${table} WHERE ${table}.${link} = pages_oauth_grants.id`;
+
+/**
+ * Deletes at most `limit` rows of one table that belong to grants revoked at
+ * or before `revokedBefore` (seconds). A grant row goes only once none of its
+ * tokens or codes remain, so a partial run never orphans them.
+ */
+export async function deleteRevokedGrantRows(env, table, { revokedBefore, limit } = {}) {
+  revokedBefore = seconds(revokedBefore);
+  cleanupLimit(limit);
+  const db = await database(env);
+  const child = REVOKED_CHILDREN[table];
+  let sql;
+  if (child) {
+    const [key, link] = child;
+    sql = `DELETE FROM ${table} WHERE ${key} IN (SELECT ${table}.${key} FROM ${table}
+      JOIN pages_oauth_grants ON pages_oauth_grants.id = ${table}.${link}
+      WHERE pages_oauth_grants.revoked_at IS NOT NULL AND pages_oauth_grants.revoked_at <= ? LIMIT ?)`;
+  } else if (table === "pages_oauth_grants") {
+    const orphanless = Object.entries(REVOKED_CHILDREN)
+      .map(([name, columns]) => `NOT EXISTS (${revokedBy(name, columns)})`)
+      .join(" AND ");
+    sql = `DELETE FROM pages_oauth_grants WHERE id IN (SELECT id FROM pages_oauth_grants
+      WHERE revoked_at IS NOT NULL AND revoked_at <= ? AND ${orphanless}
+      ORDER BY revoked_at LIMIT ?)`;
+  } else throw new OAuthStoreError("invalid_request");
+  return changesOf(await statement(db, sql, revokedBefore, limit).run());
 }
 
 export async function issueConsent(env, { request, sessionId, principal }, { now } = {}) {

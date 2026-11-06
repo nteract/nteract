@@ -44,7 +44,8 @@ import {
   usageDropped,
   usageOperation,
 } from "./usage.mjs";
-import { flushUsage, runUsageMaintenance } from "./usage-store.mjs";
+import { flushUsage } from "./usage-store.mjs";
+import { runScheduled } from "./scheduled.mjs";
 import { BrowserWrites, UsageSession } from "./usage-session.mjs";
 import {
   RENAMED_TOOLS,
@@ -1053,8 +1054,8 @@ export default {
       flushUsage(env, ctx);
     }
   },
-  async scheduled(_controller, env) {
-    await runUsageMaintenance(env);
+  async scheduled(controller, env) {
+    await runScheduled(controller, env);
   },
 };
 
