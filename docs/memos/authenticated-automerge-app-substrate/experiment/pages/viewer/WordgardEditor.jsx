@@ -100,11 +100,13 @@ import { pageNodes } from "./wordgard-page-config.mjs";
 import { selectionToolbarPosition } from "./selection-toolbar.mjs";
 import { linkDestination, openInNewTab, wantsNewTab } from "./link-destination.mjs";
 import { pagesLinkShape } from "./page-link-shape.mjs";
+import { pageChits } from "./page-chits.mjs";
 import { registerEditor } from "./editor-focus.mjs";
 import { CurrentProject } from "./current-page.mjs";
 import { LinkPopover } from "./LinkPopover.jsx";
 import { collapseAtomOnLeave, selectedAtom, selectedImage } from "./image-selection.mjs";
 import { normalizePastedHTML } from "./clipboard-html.mjs";
+import { bareLinkPaste } from "./bare-links.mjs";
 import {
   IMAGE_ACCEPT,
   captureImageInsertion,
@@ -376,6 +378,11 @@ export function WordgardEditor(props) {
           currentPageId: () => replica.doc.page_id,
           currentProjectId: () => currentProject.current,
         }),
+        // A bare link to another Page or a Project draws as a chit.
+        pageChits({
+          currentPageId: () => replica.doc.page_id,
+          currentProjectId: () => currentProject.current,
+        }),
         wordgardWidgets(),
         wordgardDataframes({ pageId: replica.doc.page_id }),
         wordgardImages(),
@@ -390,6 +397,8 @@ export function WordgardEditor(props) {
         Wordgard.clipboardInputHTMLFilter.of((html) =>
           filterPastedDataframes(normalizePastedHTML(html), replica.doc.page_id),
         ),
+        // A pasted URL becomes a bare link.
+        bareLinkPaste(),
         Wordgard.domEventObserver("focusout", (event, wg) => {
           collapseAtomOnLeave(wg, event);
         }),
@@ -872,8 +881,11 @@ export function WordgardEditor(props) {
           return;
         }
         event.preventDefault();
-        const position =
-          event.detail === 0
+        // A chit sits just before its hidden link text: step inside the
+        // link, so a link right before it isn't the one that opens.
+        const position = anchor.classList.contains("wg-chit")
+          ? editor.posAtDOM(anchor, 0) + 1
+          : event.detail === 0
             ? editor.posAtDOM(anchor, 0)
             : editor.posAtCoords({ x: event.clientX, y: event.clientY }).pos;
         if (Number.isSafeInteger(position)) openLink(position);

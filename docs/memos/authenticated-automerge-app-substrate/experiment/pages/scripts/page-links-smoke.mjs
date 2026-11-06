@@ -3,7 +3,10 @@
 // however its text is formatted), the hover card's faces for both kinds,
 // crossing a formatted link, Escape, keyboard access from a comment link,
 // Open in place for a Page and a Project, the open Project's own links left
-// plain, and the caret around a glyph link in an editable block.
+// plain, and the caret around a glyph link in an editable block. Then
+// chits: bare links drawing titles or Page unavailable, their hover card and
+// link menu, reveal on caret, pasting a URL (undo, paste as plain text),
+// copying, and chits in comments.
 //
 // dev@localhost owns a target Page, a Project, and a Page that links to
 // them, to a Page and a Project alice@localhost keeps private, to a heading
@@ -516,6 +519,176 @@ try {
   await expect(self).not.toHaveClass(/project-link/);
   await expect(link(page, target.page_id)).toHaveText("the evening focus");
   checkpoint("Open goes to the Project in place, whose content leaves its own link plain");
+
+  stage = "chits";
+  {
+    // Bare links: an agent's autolinks, to the target, alice's Page and the
+    // Project, and a comment holding one.
+    const targetUrl = `${origin}/p/${target.page_id}`;
+    const chits = await tool(owner.page, "create_page", {
+      title: "Chits",
+      idempotency_key: key(),
+      markdown: [
+        `See <${targetUrl}> for tonight's list; <${origin}/p/${secret.page_id}> is Alice's.`,
+        `Plans: <${origin}/project/${project.project_id}>. Docs: <https://nteract.io>.`,
+        "Paste here:",
+      ].join("\n\n"),
+    });
+    const chitsRead = await tool(owner.page, "read_page", { page_id: chits.page_id });
+    const { result: chitComment } = await tool(owner.page, "manage_page_comment", {
+      page_id: chits.page_id,
+      action: "add",
+      block_id: chitsRead.blocks[0].id,
+      body: `Start from <${targetUrl}>.`,
+      body_format: "markdown",
+      idempotency_key: key(),
+    });
+    const chitsUrl = `${origin}/p/${chits.page_id}`;
+    const chit = (page, id) =>
+      page.locator(`wg-content a.wg-chit:is([data-page-id="${id}"], [data-project-id="${id}"])`);
+    const paragraph = (page, index) => page.locator("article wg-content p").nth(index);
+    await owner.context.grantPermissions(["clipboard-read", "clipboard-write"], { origin });
+    const page = owner.page;
+    await page.goto(chitsUrl);
+    await expect(chit(page, target.page_id)).toHaveText(TARGET_TITLE, { timeout: 30000 });
+    await expect(chit(page, secret.page_id)).toHaveText("Page unavailable");
+    await expect(chit(page, project.project_id)).toHaveText(PROJECT_TITLE);
+    // The external autolink stays a plain link showing its URL.
+    await expect(paragraph(page, 1).locator('a[href="https://nteract.io/"]')).toHaveText(
+      "https://nteract.io",
+    );
+    await expect(page.locator("wg-content .wg-chit-source").first()).toBeHidden();
+    checkpoint("bare links draw as chits with each reader's title, or Page unavailable");
+
+    await hover(page, chit(page, target.page_id), "readable");
+    await expect(card(page).locator(".page-link-card-title")).toHaveText(TARGET_TITLE);
+    await page.mouse.move(2, 2);
+    await expect(card(page)).toHaveCount(0, { timeout: 5000 });
+    await chit(page, target.page_id).click();
+    await expect(page.getByRole("dialog", { name: "Link" })).toBeVisible();
+    await expect(page.getByRole("dialog", { name: "Link" })).toContainText(targetUrl);
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog", { name: "Link" })).toHaveCount(0);
+    checkpoint("a chit opens the hover card, and a click opens the link menu");
+
+    // The caret reveals the URL as text; leaving closes the chit again.
+    const first = paragraph(page, 0);
+    const box = await first.boundingBox();
+    await page.mouse.click(box.x + 2, box.y + box.height / 2);
+    await page.keyboard.press("Home");
+    for (let i = 0; i < "See ".length; i++) await page.keyboard.press("ArrowRight");
+    await expect(chit(page, target.page_id)).toHaveCount(0);
+    await expect(first).toContainText(targetUrl);
+    await page.keyboard.press("Home");
+    await expect(chit(page, target.page_id)).toHaveText(TARGET_TITLE);
+    checkpoint("arrowing into a chit shows its URL as text; leaving closes it");
+
+    // Pasting a Page URL makes a bare link, a chit once the caret moves on.
+    const third = paragraph(page, 2);
+    await third.click();
+    await page.keyboard.press("End");
+    await page.keyboard.type(" ");
+    await page.evaluate((text) => navigator.clipboard.writeText(text), targetUrl);
+    await page.keyboard.press("ControlOrMeta+V");
+    await expect(third.locator(`a[href="${targetUrl}"]`)).toHaveText(targetUrl);
+    await page.keyboard.type(" and on");
+    await expect(third.locator("a.wg-chit")).toHaveText(TARGET_TITLE);
+    await expect(third).toContainText("and on");
+    // Undo takes the typing back, then the link, leaving the URL as text;
+    // redo puts both back.
+    await page.keyboard.press("ControlOrMeta+Z");
+    await page.keyboard.press("ControlOrMeta+Z");
+    await expect(third.locator("a")).toHaveCount(0);
+    await expect(third).toContainText(targetUrl);
+    await page.keyboard.press("ControlOrMeta+Shift+Z");
+    await page.keyboard.press("ControlOrMeta+Shift+Z");
+    await expect(third.locator("a.wg-chit")).toHaveText(TARGET_TITLE);
+    await expect(third).toContainText("and on");
+    // Paste as plain text keeps plain text.
+    await page.keyboard.press("End");
+    await page.keyboard.type(" ");
+    // Paste and Match Style (Shift held). Playwright's key table has no
+    // editing command for it, so send the key with the command over CDP.
+    {
+      const cdp = await page.context().newCDPSession(page);
+      const shift = { modifiers: 8, key: "Shift", code: "ShiftLeft", windowsVirtualKeyCode: 16 };
+      await cdp.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...shift });
+      const v = { modifiers: 8 | 4 | 2, key: "V", code: "KeyV", windowsVirtualKeyCode: 86 };
+      await cdp.send("Input.dispatchKeyEvent", {
+        type: "rawKeyDown",
+        ...v,
+        commands: ["pasteAndMatchStyle"],
+      });
+      await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...v });
+      await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...shift, modifiers: 0 });
+      await cdp.detach();
+    }
+    await page.keyboard.type(" plain");
+    // One stored link: the chit's hidden source.
+    await expect(third.locator("a:not(.wg-chit)")).toHaveCount(1);
+    await expect(async () => {
+      const read = await tool(page, "read_page", { page_id: chits.page_id, comments: "none" });
+      const markdown = read.blocks.map((block) => block.markdown).join("\n\n");
+      assert.match(markdown, new RegExp(`Paste here: <${targetUrl}> and on ${targetUrl} plain`));
+    }).toPass({ timeout: 15000 });
+    checkpoint("a pasted URL is a bare link (<url> to agents); paste as plain text stays text");
+
+    // Copying a chit copies the ordinary link.
+    await first.click();
+    await page.keyboard.press("Home");
+    await page.keyboard.press("Shift+End");
+    await page.keyboard.press("ControlOrMeta+C");
+    const copied = await page.evaluate(() => navigator.clipboard.readText());
+    assert.ok(copied.includes(targetUrl), copied);
+    await page.keyboard.press("Home");
+    checkpoint("copying across a chit copies its URL");
+
+    // A comment's bare link is a chit too, and a URL pasted into a reply
+    // becomes a bare link.
+    await page.getByRole("button", { name: /^Comments/ }).click();
+    await page.locator(`.thread-row[data-thread-id="${chitComment.thread_id}"]`).click();
+    await expect(
+      page.locator(
+        `#page-comments .comment-rich-content a.wg-chit[data-page-id="${target.page_id}"]`,
+      ),
+    ).toHaveText(TARGET_TITLE, { timeout: 15000 });
+    await page.getByRole("button", { name: "Reply", exact: true }).click();
+    const reply = page.locator(".thread-view .comment-rich-editor wg-content").last();
+    await expect(reply).toBeFocused();
+    await page.evaluate((text) => navigator.clipboard.writeText(text), targetUrl);
+    await page.keyboard.press("ControlOrMeta+V");
+    await page.keyboard.type(" ok");
+    await expect(reply.locator("a.wg-chit")).toHaveText(TARGET_TITLE);
+    // A plain click on a chit in a draft doesn't follow it.
+    const opened = owner.context.waitForEvent("page", { timeout: 1500 }).catch(() => null);
+    await reply.locator("a.wg-chit").click();
+    assert.equal(await opened, null, "a draft's chit opened a tab");
+    await page.keyboard.press("Escape");
+    checkpoint(
+      "comments draw chits, and a URL pasted into a reply becomes one that a click doesn't follow",
+    );
+
+    for (const scheme of ["light", "dark"])
+      for (const [label, viewport] of [
+        ["desktop", DESKTOP],
+        ["phone", PHONE],
+      ]) {
+        const context = await browser.newContext({
+          viewport,
+          colorScheme: scheme,
+          storageState: await owner.context.storageState(),
+        });
+        const shot = await context.newPage();
+        shot.on("pageerror", (error) => errors.push(`chits-${label}-${scheme}: ${error.message}`));
+        await shot.goto(chitsUrl);
+        await expect(chit(shot, target.page_id).first()).toHaveText(TARGET_TITLE, {
+          timeout: 30000,
+        });
+        await shot.screenshot({ path: `${output}/${label}-${scheme}-chits.png` });
+        await context.close();
+      }
+    checkpoint(`chit screenshots in ${output}`);
+  }
 
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ page_id: source.page_id, checks: completed }));

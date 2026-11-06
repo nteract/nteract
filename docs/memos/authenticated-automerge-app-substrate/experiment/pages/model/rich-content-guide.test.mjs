@@ -8,6 +8,7 @@ import {
   NODE_OPERATIONS,
   checkCoverage,
   markdownSyntax,
+  pageLinks,
   richContentGuide,
   richContentInstructions,
 } from "./rich-content-guide.mjs";
@@ -115,4 +116,18 @@ test("/llms.txt has the rich content section with the language menu", () => {
   for (const language of CODE_LANGUAGES) assert.ok(guide.includes(language), language);
   for (const op of editOps) assert.ok(guide.includes(op), op);
   assert.match(guide, /"op": "set_node".*"checked": true/);
+});
+
+test("agents learn to link Pages and Projects with autolinks, wherever they read Markdown", () => {
+  const sentence = pageLinks();
+  assert.match(sentence, /autolink, <https:\/\/…\/p\/<page_id>>/);
+  assert.match(sentence, /don't turn an autolink into \[Title\]\(url\)/);
+  const markdown = tools.find((tool) => tool.name === "create_page").inputSchema.properties.markdown
+    .description;
+  for (const text of [
+    markdown,
+    richContentInstructions("https://pages.example"),
+    agentGuide({ NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.example" }),
+  ])
+    assert.ok(text.replace(/\s+/g, " ").includes(sentence), text.slice(0, 80));
 });

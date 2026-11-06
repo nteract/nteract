@@ -133,7 +133,7 @@ was a caret race in the smoke; the editor side is
 | Passage edits and revision deltas | `PAGES_ORIGIN=http://localhost:9894 node scripts/passages-changes-smoke.mjs` | Uses the running Wordgard fixture |
 | Reload banner placement, browser presence labels, leaving a final code block, checkbox indent | `PAGES_ORIGIN=http://localhost:9894 node scripts/editor-chrome-smoke.mjs` | Uses the running Wordgard fixture |
 | Heading links: a fragment scrolls to its heading on a cold load, a warm reload and in a fresh context, and holds it while an image above draws late; `#notes-1` picks the second Notes; an unknown anchor stays at the top; table cell links go there read-only and through Go to section; the # copies the link `read_page` names; another Page's heading opens in place; Back and Forward restore each entry's position on the same Page and across Pages; scrolling during the settle, or scrolling the preview while sync is held, stops it | `PAGES_ORIGIN=http://localhost:9894 node scripts/heading-anchors-smoke.mjs` | Uses the running Wordgard fixture |
-| Links between Pages and to Projects: the Page glyph only on links to other Pages and the Project glyph on Project links, once per link however its text is formatted, typing and copying around it, the hover card's readable, unavailable and loading faces for Pages and Projects, crossing a formatted link without closing, Escape, Tab into a comment link's card and back, Open in place, and screenshots light and dark at 1280 and 390 px | `PAGES_ORIGIN=http://localhost:9894 node scripts/page-links-smoke.mjs` | Uses the running Wordgard fixture |
+| Links between Pages and to Projects: the Page glyph only on links to other Pages and the Project glyph on Project links, once per link however its text is formatted, typing and copying around it, the hover card's readable, unavailable and loading faces for Pages and Projects, crossing a formatted link without closing, Escape, Tab into a comment link's card and back, Open in place, chits for bare links (titles, unavailable, hover card, link menu, reveal on caret, paste, undo, paste as plain text, copy, comments), and screenshots light and dark at 1280 and 390 px | `PAGES_ORIGIN=http://localhost:9894 node scripts/page-links-smoke.mjs` | Uses the running Wordgard fixture |
 | Local creation and navigation | `PAGES_ORIGIN=http://localhost:9894 node scripts/navigation-smoke.mjs` | Uses the running Wordgard fixture |
 | Editing, comments, links, diagrams, and recovery | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:editor` | Uses the running Wordgard fixture |
 | History growth and typing latency | `PAGES_ORIGIN=http://localhost:9894 node scripts/latency-smoke.mjs` | Uses the running Wordgard fixture |
@@ -456,9 +456,30 @@ references; it does not publish the Page or change asset access.
   for 60 s, or 15 s when unavailable, a failure retries after a doubling
   backoff from 2 s, concurrent asks share a request, and at most 6 run at
   once, of both kinds. Another account, sign-out or any 401 drops them all.
-  Refs load only when a card opens; the store takes a non-urgent ask so a
-  viewport observer can drive it later. The routes are under
+  Refs load when a card opens or a chit draws; a mounted chit asks again
+  once its answer is stale, dropped, or failed past its backoff, so a rename
+  shows within a minute. The store takes a non-urgent
+  ask so a viewport observer can drive it later. The routes are under
   [Link previews](#link-previews).
+- **Bare links and chits:** a plain-text paste of exactly one absolute
+  http(s) URL, into a Page block or a comment, inserts a bare link: the URL
+  as text with a link mark whose href is that text and no title
+  ([`viewer/bare-links.mjs`](viewer/bare-links.mjs)). Paste as plain text,
+  a paste into code or an existing link, and anything else on the clipboard
+  stay text; HTML takes the HTML path. Undo first takes the link off, then
+  the text. Markdown reads a bare link as an autolink, `<url>`, and agents are
+  told to write Page and Project links that way (`pageLinks` in
+  [`model/rich-content-guide.mjs`](model/rich-content-guide.mjs)). A bare
+  link that `linkedTarget` accepts draws as a chit: the glyph, then the
+  title this reader's session resolves, "Page unavailable" or "Project
+  unavailable" ([`viewer/page-chits.mjs`](viewer/page-chits.mjs)). Nothing is
+  stored: a range wrapper hides the URL and a point widget draws the chit,
+  an `<a>` with the link's class and data attribute, so a click opens the
+  link menu in an editable block and the hover card treats it like any other
+  Page or Project link. In a focused editable block, a local caret inside
+  the URL or at either edge, or a selection end strictly inside it, shows the
+  URL as ordinary text; peers' edits and read-only blocks never do. The
+  loading preview draws bare links as links, not chits.
 - **Code and diagrams:** three backticks on an empty paragraph followed by Enter
   or Space creates code; a language can follow the backticks. Mermaid renders
   through nteract's Pele renderer and SVG sanitizer. Compact Edit diagram,
