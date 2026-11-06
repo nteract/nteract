@@ -3,8 +3,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
-import { HorizontalRule, Paragraph } from "wordgard/types";
-import { encode, schema } from "./wordgard-doc.mjs";
+import { Leaf } from "wordgard/doc";
+import { Blockquote, HorizontalRule, Paragraph } from "wordgard/types";
+import { encode, PagesDataframe, schema } from "./wordgard-doc.mjs";
 import { applyPageOperation, createPageData, initializePage, orderedBlockIds } from "./page.mjs";
 import { adapterSpans, blockMarkdown, parseMarkdown, richDoc, textPath } from "./richtext.mjs";
 import { updateSpansConfig } from "./marks.mjs";
@@ -577,6 +578,44 @@ test("delete_node beside a peer typing into the same node merges into a valid tr
   assert.doesNotMatch(markdown, /quoted/);
   assert.match(markdown, /- two text\n/);
   assert.equal(outline(merged, id).length, outline(deleted, id).length);
+});
+
+test("text a peer typed into a node deleted after a rule or dataframe reads as a paragraph", () => {
+  const src = `/api/pages/${pageId}/assets/${assetId}`;
+  const doomed = () => Paragraph.create([Leaf.text("doomed words")]);
+  for (const [leaf, types, markdown] of [
+    [HorizontalRule, ["paragraph", "horizontal-rule", "paragraph"], "Intro\n\n---\n\nkept"],
+    [
+      Blockquote.create([PagesDataframe.of({ src, media_type: "application/vnd.apache.parquet" })]),
+      ["paragraph", "blockquote"],
+      `Intro\n\n> [Dataframe](${src})\n>\n> kept`,
+    ],
+  ]) {
+    let doc = A.from(createPageData({ pageId, title: "Node ids" }));
+    const id = orderedBlockIds(doc)[0];
+    const tree = schema.doc([Paragraph.create([Leaf.text("Intro")]), leaf, doomed()]);
+    doc = A.change(doc, (draft) => {
+      draft.blocks[id].format = "automerge-rich-text-v1";
+      draft.blocks[id].richText = "";
+      A.updateSpans(draft, textPath(id), encode(tree), updateSpansConfig);
+    });
+    const last = outline(doc, id).at(-1).node_id;
+    const deleted = edit(A.clone(doc, { actor: "04".repeat(16) }), [
+      { op: "delete_node", block_id: id, node_id: last },
+    ]).doc;
+    const typed = patch(A.clone(doc, { actor: "05".repeat(16) }), [
+      { op: "replace_match", block_id: id, match_text: "doomed", replacement: "kept" },
+    ]);
+    const merged = A.merge(A.clone(deleted), typed);
+    // The peer's characters follow the leaf directly. They read as a
+    // paragraph beside it, as the editor draws them.
+    assert.deepEqual(
+      outline(merged, id).map((entry) => entry.type),
+      types,
+    );
+    assert.equal(blockMarkdown(merged.blocks[id], pageId), markdown);
+    richDoc(merged.blocks[id], pageId).check();
+  }
 });
 
 test("a list's id is its first item's marker, and goes when that marker does", () => {
