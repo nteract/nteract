@@ -155,6 +155,9 @@ pub(crate) fn restart_env_source_for(prev: Option<&str>) -> String {
         EnvSource::Prewarmed(PackageManager::Uv) => "auto:uv".to_string(),
         EnvSource::Prewarmed(PackageManager::Conda) => "auto:conda".to_string(),
         EnvSource::Prewarmed(PackageManager::Pixi) => "auto:pixi".to_string(),
+        // A borrowed Conda prefix re-resolves through the conda family so
+        // an applied selection or a host-bound environment serves it.
+        EnvSource::ExistingConda => "auto:conda".to_string(),
         other => other.as_str().to_string(),
     }
 }
@@ -2595,6 +2598,14 @@ mod tests {
         assert_eq!(restart_env_source_for(Some("uv:inline")), "uv:inline");
         assert_eq!(restart_env_source_for(Some("conda:inline")), "conda:inline");
         assert_eq!(restart_env_source_for(Some("uv:pyproject")), "uv:pyproject");
+    }
+
+    #[test]
+    fn test_restart_env_source_borrowed_conda_reresolves() {
+        assert_eq!(
+            restart_env_source_for(Some("conda:existing:local")),
+            "auto:conda"
+        );
     }
 
     #[test]

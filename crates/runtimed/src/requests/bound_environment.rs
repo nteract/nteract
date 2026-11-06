@@ -16,7 +16,9 @@
 
 use std::path::PathBuf;
 
-use notebook_protocol::connection::{EnvSource, LocalEnvironmentBindingStatus};
+use notebook_protocol::connection::{
+    EnvSource, LaunchSpec, LocalEnvironmentBindingStatus, PackageManager,
+};
 use notebook_protocol::protocol::LocalCondaEnvironment;
 
 use crate::local_conda_environments::LocalCondaEnvironments;
@@ -39,7 +41,9 @@ pub(crate) enum BoundEnvironmentState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum BoundEnvironmentEvent {
     /// A `CreateNotebook` request carried a prefix and it was validated.
-    /// Always replaces the current state: the latest host request wins.
+    /// A valid prefix replaces the current state: the latest host request
+    /// wins. An invalid one never downgrades a working binding, so a
+    /// reconnect with a bad prefix cannot strand a bound room.
     Requested(Result<LocalCondaEnvironment, (PathBuf, String)>),
     /// A launch revalidated the bound prefix. `prefix` fences the event to the
     /// binding it read, so a late result cannot overwrite a newer request.
@@ -58,6 +62,7 @@ pub(crate) fn transition(
     use BoundEnvironmentState as State;
     match (state, event) {
         (_, Event::Requested(Ok(environment))) => State::Bound(environment),
+        (State::Bound(current), Event::Requested(Err(_))) => State::Bound(current.clone()),
         (_, Event::Requested(Err((prefix, error)))) => State::Rejected { prefix, error },
         (State::Bound(current), Event::LaunchRevalidated { prefix, result })
             if current.prefix == prefix =>
@@ -111,6 +116,30 @@ pub(crate) fn decide(
     }
 }
 
+/// Rewrite a concrete `conda:existing:local` launch for a room without an
+/// applied picker selection.
+///
+/// Restart helpers echo the running kernel's env source back as a concrete
+/// launch. For a room running from its host binding that is
+/// `conda:existing:local`, which only an applied selection can satisfy.
+/// Re-resolve it as `auto:conda` instead: inline Conda deps still win,
+/// otherwise the conda fallback is filled by the binding again.
+pub(crate) fn existing_conda_launch_spec(
+    spec: LaunchSpec,
+    has_applied_selection: bool,
+    state: &BoundEnvironmentState,
+) -> Result<LaunchSpec, String> {
+    match spec {
+        LaunchSpec::Concrete(EnvSource::ExistingConda) if !has_applied_selection => match state {
+            BoundEnvironmentState::Bound(_) => Ok(LaunchSpec::AutoScoped(PackageManager::Conda)),
+            BoundEnvironmentState::Unbound | BoundEnvironmentState::Rejected { .. } => {
+                Err("A local Conda launch requires an applied environment selection".into())
+            }
+        },
+        spec => Ok(spec),
+    }
+}
+
 /// Wire projection of the state, reported in the `CreateNotebook` reply.
 pub(crate) fn status(state: &BoundEnvironmentState) -> Option<LocalEnvironmentBindingStatus> {
     match state {
@@ -147,7 +176,8 @@ impl BoundEnvironment {
 
 /// Validate a `CreateNotebook` prefix with the local environment picker's
 /// rules (absolute Conda prefix, Python inside it, ipykernel present) and
-/// record the verdict on the room.
+/// record the verdict on the room. Returns the room's effective binding: a
+/// rejected prefix on an already bound room reports the existing binding.
 pub(crate) async fn bind_on_create(
     room: &NotebookRoom,
     environments: &LocalCondaEnvironments,
@@ -164,7 +194,7 @@ pub(crate) async fn bind_on_create(
             environment.prefix.display()
         ),
         Err(error) => tracing::warn!(
-            "[runtimed] CreateNotebook rejected local environment {}: {}; using normal selection",
+            "[runtimed] CreateNotebook rejected local environment {}: {}; keeping any existing binding",
             prefix.display(),
             error
         ),
@@ -230,7 +260,7 @@ pub(crate) async fn resolve_for_launch(
 mod tests {
     use super::*;
     use crate::notebook_sync_server::claimed_auto_python_env_source;
-    use notebook_protocol::connection::{CreateNotebookEnvironmentMode as Mode, PackageManager};
+    use notebook_protocol::connection::CreateNotebookEnvironmentMode as Mode;
     use std::sync::Arc;
 
     fn environment(prefix: &str) -> LocalCondaEnvironment {
@@ -339,15 +369,32 @@ mod tests {
     }
 
     #[test]
-    fn requests_always_replace_the_binding() {
+    fn rejected_request_keeps_a_working_binding() {
+        assert_eq!(
+            transition(
+                &bound(),
+                BoundEnvironmentEvent::Requested(Err(("/envs/bad".into(), "nope".into())))
+            ),
+            bound()
+        );
+    }
+
+    #[test]
+    fn valid_requests_replace_and_invalid_requests_reject_unbound_rooms() {
         let states = [
             BoundEnvironmentState::Unbound,
-            bound(),
             BoundEnvironmentState::Rejected {
                 prefix: "/envs/gone".into(),
                 error: "missing".into(),
             },
         ];
+        assert_eq!(
+            transition(
+                &bound(),
+                BoundEnvironmentEvent::Requested(Ok(environment("/envs/new")))
+            ),
+            BoundEnvironmentState::Bound(environment("/envs/new"))
+        );
         for state in &states {
             assert_eq!(
                 transition(
@@ -443,6 +490,15 @@ mod tests {
             })
         );
 
+        // A reconnect with a bad prefix reports, and keeps, the binding.
+        let status = bind_on_create(&room, &environments, PathBuf::from("relative/env")).await;
+        assert_eq!(
+            status,
+            Some(LocalEnvironmentBindingStatus::Bound {
+                prefix: canonical.clone()
+            })
+        );
+
         // A project file claims the launch: the binding waits.
         assert!(
             resolve_for_launch(&room, &environments, true, Some(&EnvSource::EnvYml))
@@ -485,6 +541,33 @@ mod tests {
         assert!(resolve_for_launch(&room, &environments, true, None)
             .await
             .is_none());
+    }
+
+    #[test]
+    fn existing_conda_relaunch_re_resolves_only_for_bound_rooms() {
+        let existing = || LaunchSpec::parse("conda:existing:local");
+        assert_eq!(
+            existing_conda_launch_spec(existing(), false, &bound()),
+            Ok(LaunchSpec::AutoScoped(PackageManager::Conda))
+        );
+        // An applied picker selection serves the concrete launch itself.
+        assert_eq!(
+            existing_conda_launch_spec(existing(), true, &bound()),
+            Ok(existing())
+        );
+        for state in [
+            BoundEnvironmentState::Unbound,
+            BoundEnvironmentState::Rejected {
+                prefix: "/envs/gone".into(),
+                error: "missing".into(),
+            },
+        ] {
+            assert!(existing_conda_launch_spec(existing(), false, &state).is_err());
+        }
+        assert_eq!(
+            existing_conda_launch_spec(LaunchSpec::Auto, false, &bound()),
+            Ok(LaunchSpec::Auto)
+        );
     }
 
     #[test]

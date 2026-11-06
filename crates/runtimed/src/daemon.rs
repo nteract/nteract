@@ -4603,7 +4603,8 @@ impl Daemon {
 
         // Bind before the handshake reply so auto-launch, which starts once
         // the peer syncs, already sees the verdict. A request without a
-        // binding leaves an existing room's binding in place.
+        // binding, or with an invalid one, leaves an existing room's
+        // binding in place.
         let local_environment_status = match local_environment {
             Some(binding) => {
                 crate::requests::bound_environment::bind_on_create(

@@ -15590,6 +15590,105 @@ async fn local_environment_initial_apply_connect_timeout_cleans_spawned_agent() 
 }
 
 #[tokio::test]
+async fn bound_room_restart_with_existing_conda_source_reuses_the_binding() {
+    use notebook_protocol::protocol::{RuntimeAgentRequest, RuntimeAgentResponse};
+    let (tmp, room) = gate_test_room();
+    let daemon = crate::daemon::Daemon::new_for_test(test_daemon_config(&tmp)).unwrap();
+    let prefix = tmp.path().join("kilo-env");
+    std::fs::create_dir_all(prefix.join("conda-meta")).unwrap();
+    let python_path = crate::project_file::conda_python_path(&prefix);
+    std::fs::create_dir_all(python_path.parent().unwrap()).unwrap();
+    std::fs::write(&python_path, "not executable; no preflight probes").unwrap();
+    std::fs::write(
+        prefix.join("conda-meta/python-3.12.1-0.json"),
+        r#"{"name":"python","version":"3.12.1"}"#,
+    )
+    .unwrap();
+    #[cfg(windows)]
+    let ipykernel = prefix.join("Lib/site-packages/ipykernel");
+    #[cfg(not(windows))]
+    let ipykernel = prefix.join("lib/python3.12/site-packages/ipykernel");
+    std::fs::create_dir_all(&ipykernel).unwrap();
+    std::fs::write(ipykernel.join("__init__.py"), "").unwrap();
+    let status = crate::requests::bound_environment::bind_on_create(
+        &room,
+        &daemon.local_conda_environments,
+        prefix.clone(),
+    )
+    .await;
+    assert!(matches!(
+        status,
+        Some(notebook_protocol::connection::LocalEnvironmentBindingStatus::Bound { .. })
+    ));
+    // No applied picker selection: only the host binding backs this room.
+    assert!(room
+        .local_environment_selection
+        .snapshot()
+        .applied
+        .is_none());
+    *room.current_runtime_agent_id.write().await = Some("test-agent".into());
+    room.expect_runtime_agent("test-agent");
+    assert!(room.mark_runtime_agent_connected("test-agent"));
+    let (tx, mut messages) = mpsc::channel(1);
+    *room.runtime_agent_request_tx.lock().await = Some(tx);
+
+    // MCP and Python restart helpers echo the running env source back.
+    let restart = tokio::spawn({
+        let room = room.clone();
+        let daemon = daemon.clone();
+        async move {
+            crate::requests::launch_kernel::handle(
+                &room,
+                &daemon,
+                "python".into(),
+                notebook_protocol::connection::LaunchSpec::parse("conda:existing:local"),
+                None,
+            )
+            .await
+        }
+    });
+    let RuntimeAgentMessage::Query(envelope, reply) =
+        tokio::time::timeout(std::time::Duration::from_secs(5), messages.recv())
+            .await
+            .unwrap()
+            .unwrap()
+    else {
+        panic!("expected restart query")
+    };
+    let RuntimeAgentRequest::RestartKernel {
+        env_source,
+        launched_config,
+        ..
+    } = envelope.request
+    else {
+        panic!("expected restart")
+    };
+    assert_eq!(
+        env_source,
+        notebook_protocol::connection::EnvSource::ExistingConda
+    );
+    assert_eq!(
+        launched_config.venv_path,
+        Some(std::fs::canonicalize(&prefix).unwrap())
+    );
+    reply
+        .send(RuntimeAgentResponse::KernelRestarted { env_source })
+        .unwrap();
+    assert!(matches!(
+        restart.await.unwrap(),
+        crate::protocol::NotebookResponse::KernelLaunched { .. }
+    ));
+    // The binding never becomes a picker selection, and the prefix survives.
+    assert!(room
+        .local_environment_selection
+        .snapshot()
+        .applied
+        .is_none());
+    assert!(room.runtime_agent_env_path.read().await.is_none());
+    assert!(prefix.join("conda-meta").exists());
+}
+
+#[tokio::test]
 async fn local_environment_apply_uses_fixed_target_and_commits_running_identity() {
     use notebook_protocol::protocol::{RuntimeAgentRequest, RuntimeAgentResponse};
     let (tmp, room) = gate_test_room();

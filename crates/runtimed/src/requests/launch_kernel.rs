@@ -317,12 +317,17 @@ pub(crate) async fn handle(
     } else {
         room.local_environment_selection.snapshot().applied
     };
-    if binding.is_none() && matches!(env_source, LaunchSpec::Concrete(EnvSource::ExistingConda)) {
-        launch_attempt.release_without_cooldown();
-        return NotebookResponse::EnvironmentSelectionRejected {
-            error: "A local Conda launch requires an applied environment selection".into(),
-        };
-    }
+    let env_source = match super::bound_environment::existing_conda_launch_spec(
+        env_source,
+        binding.is_some(),
+        &room.bound_environment.snapshot(),
+    ) {
+        Ok(env_source) => env_source,
+        Err(error) => {
+            launch_attempt.release_without_cooldown();
+            return NotebookResponse::EnvironmentSelectionRejected { error };
+        }
+    };
     let binding = match binding {
         Some(environment) => match daemon
             .local_conda_environments

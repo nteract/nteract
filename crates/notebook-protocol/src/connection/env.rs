@@ -89,7 +89,8 @@ pub struct LocalEnvironmentBinding {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum LocalEnvironmentBindingStatus {
-    /// The prefix validated and is bound to the room.
+    /// The room is bound to `prefix`. A rejected re-request on an already
+    /// bound room reports the existing binding here.
     Bound { prefix: PathBuf },
     /// The prefix failed validation. The room uses normal auto selection.
     Rejected { prefix: PathBuf, error: String },
