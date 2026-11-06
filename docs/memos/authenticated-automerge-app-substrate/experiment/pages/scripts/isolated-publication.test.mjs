@@ -2403,11 +2403,11 @@ for (const target of ["page10", "pages"])
 test("pages2 publishes fresh on a host without a shared connector", (t) => {
   const f = fixture(t, { target: "pages2", sharedTunnel: false });
   const plan = isolatedPublicationPlan({ ...inputFor("pages2"), sharedConfig: null });
-  assert.match(plan.config, /hostname: pages2.runt.run/);
+  assert.match(plan.config, /hostname: page2.runtimed.run/);
   assert.match(plan.config, /http:\/\/127.0.0.1:9482/);
   const result = f.execute();
   assert.equal(result.published, true);
-  assert.equal(result.hostname, "pages2.runt.run");
+  assert.equal(result.hostname, "page2.runtimed.run");
   assert.equal(result.routesUpdated, false);
   assert.equal(result.connectorSlot, "a");
   assert.equal(result.sharedTunnelAbsent, true);

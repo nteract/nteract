@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { sourceFingerprint } from "./source-fingerprint.mjs";
 import { insertRoutes, routes } from "./deployment/publish.mjs";
-import { configureDns, zoneForHostname } from "./deployment/dns.mjs";
+import { configureDns } from "./deployment/dns.mjs";
 import { accountId as tunnelAccountId } from "./deployment/tunnel.mjs";
 import { pagesFirewall } from "./deployment/firewall.mjs";
 import * as profiles from "./deployment/profiles.mjs";
@@ -174,117 +174,6 @@ test("DNS transport errors do not echo credentials", async () => {
     }),
     (error) => !error.message.includes("secret-value"),
   );
-});
-
-test("DNS picks the zone by hostname suffix from the allowlist only", () => {
-  assert.deepEqual(zoneForHostname("pages.runtimed.run"), {
-    name: "runtimed.run",
-    id: "7de7c86232f80c97a7aabfc880186b63",
-  });
-  assert.deepEqual(zoneForHostname("pages2.runt.run"), { name: "runt.run", id: null });
-  for (const hostname of [
-    "runt.run",
-    "runtimed.run",
-    "pages2.example.com",
-    "pages2.runt.run.example.com",
-    "pages2.notruntimed.run",
-    "pages2runt.run",
-    "a.b.runt.run",
-    "-x.runt.run",
-    "PAGES2.runt.run",
-    "",
-    undefined,
-  ])
-    assert.throws(
-      () => zoneForHostname(hostname),
-      /one label under runtimed.run or runt.run/,
-      hostname,
-    );
-  // Every profile's hostname resolves, so provisioning can't hit an unknown zone.
-  for (const target of profiles.DEPLOYMENT_TARGETS)
-    assert.doesNotThrow(() =>
-      zoneForHostname(profiles.deploymentProfile(target).deployment.hostname),
-    );
-});
-
-// A Cloudflare fake holding runt.run zones listed by name; records as in dnsFixture.
-function runtRunFixture(zones = [runtRunZone]) {
-  let records = [];
-  const calls = [];
-  return {
-    calls,
-    fetchImpl: async (url, options) => {
-      calls.push({ url, method: options.method });
-      const { pathname, searchParams } = new URL(url);
-      if (pathname.endsWith("/zones")) {
-        assert.equal(searchParams.get("name"), "runt.run");
-        assert.equal(searchParams.get("account.id"), tunnelAccountId);
-        return Response.json({ success: true, result: zones });
-      }
-      if (options.method === "POST") {
-        records = [{ ...JSON.parse(options.body), id: "a".repeat(32) }];
-        return Response.json({ success: true, result: records[0] });
-      }
-      assert.match(pathname, new RegExp(`/zones/${runtRunZone.id}/dns_records$`));
-      return Response.json({
-        success: true,
-        result: records,
-        result_info: { page: 1, count: records.length, total_count: records.length },
-      });
-    },
-  };
-}
-const runtRunZone = {
-  id: "c".repeat(32),
-  name: "runt.run",
-  status: "active",
-  type: "full",
-  account: { id: tunnelAccountId },
-};
-
-test("pages2 DNS finds the runt.run zone by name and creates its owned CNAME", async () => {
-  const fixture = runtRunFixture();
-  const args = { token: "fixture", tunnelId, target: "pages2", fetchImpl: fixture.fetchImpl };
-  assert.equal((await configureDns(args)).present, false);
-  assert.ok(fixture.calls.every(({ method }) => method === "GET"));
-  const created = await configureDns({ ...args, apply: true });
-  assert.deepEqual(created, {
-    name: "pages2.runt.run",
-    target: `${tunnelId}.cfargotunnel.com`,
-    present: true,
-    recordId: "a".repeat(32),
-    changed: true,
-  });
-  const post = fixture.calls.find(({ method }) => method === "POST");
-  assert.match(post.url, new RegExp(`/zones/${runtRunZone.id}/dns_records$`));
-  assert.equal((await configureDns({ ...args, apply: true })).changed, false);
-});
-
-test("pages2 DNS refuses a missing, ambiguous, foreign or inactive runt.run zone", async () => {
-  for (const zones of [
-    [],
-    [runtRunZone, { ...runtRunZone, id: "d".repeat(32) }],
-    [{ ...runtRunZone, account: { id: "e".repeat(32) } }],
-    [{ ...runtRunZone, status: "pending" }],
-    [{ ...runtRunZone, type: "partial" }],
-    [{ ...runtRunZone, name: "runtimed.run" }],
-    [{ ...runtRunZone, id: "not-a-zone-id" }],
-  ]) {
-    const fixture = runtRunFixture(zones);
-    await assert.rejects(
-      configureDns({
-        token: "fixture",
-        tunnelId,
-        target: "pages2",
-        apply: true,
-        fetchImpl: fixture.fetchImpl,
-      }),
-      /zone/,
-      JSON.stringify(zones),
-    );
-    assert.ok(fixture.calls.every(({ method }) => method === "GET"));
-    assert.equal(fixture.calls.length, 1);
-  }
 });
 
 test("release staging copies only built artifacts, never development credentials/state", async () => {
@@ -2065,7 +1954,7 @@ test("pages2 is a fresh lab2 target with Pages' flags and plain sync only", () =
   assert.doesNotThrow(() => profiles.assertQualifiedDeploymentTarget("pages2"));
   assert.deepEqual(profile.deployment, {
     host: "lab2",
-    hostname: "pages2.runt.run",
+    hostname: "page2.runtimed.run",
     service: "nteract-pages2",
     bucket: profiles.deploymentProfile("pages").deployment.bucket,
     prefix: "standalone/pages2",
@@ -2120,12 +2009,12 @@ test("pages2 is a fresh lab2 target with Pages' flags and plain sync only", () =
   );
 });
 
-test("fresh pages2 installation owns pages2.runt.run, its prefix and its unit", (t) => {
+test("fresh pages2 installation owns page2.runtimed.run, its prefix and its unit", (t) => {
   const f = installFixture(t, { target: "pages2", fresh: true });
   f.execute();
   const config = JSON.parse(f.read(f.release + "/wrangler.json"));
-  assert.equal(config.vars.NOTEBOOK_CLOUD_PUBLIC_ORIGIN, "https://pages2.runt.run");
-  assert.equal(config.vars.NOTEBOOK_CLOUD_OIDC_REDIRECT_URI, "https://pages2.runt.run/oidc");
+  assert.equal(config.vars.NOTEBOOK_CLOUD_PUBLIC_ORIGIN, "https://page2.runtimed.run");
+  assert.equal(config.vars.NOTEBOOK_CLOUD_OIDC_REDIRECT_URI, "https://page2.runtimed.run/oidc");
   assert.equal(config.vars.PAGES_RECORD_STORAGE, "automerge");
   assert.equal(config.vars.PAGES_MIGRATE_RECORD_STORAGE, undefined);
   assert.equal(config.vars.PAGES_MIGRATE_PAGE_IDS, undefined);
@@ -2136,7 +2025,7 @@ test("fresh pages2 installation owns pages2.runt.run, its prefix and its unit", 
   );
   assert.deepEqual(JSON.parse(f.read("/etc/nteract-pages2/ownership.json")), {
     prefix: "standalone/pages2",
-    hostname: "pages2.runt.run",
+    hostname: "page2.runtimed.run",
   });
   const unit = f.read("/etc/systemd/system/nteract-pages2.service");
   assert.match(unit, /User=nteract-pages2\n/);
