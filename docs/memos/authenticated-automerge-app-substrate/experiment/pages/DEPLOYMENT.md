@@ -1089,6 +1089,18 @@ HSTS has no `includeSubDomains` or `preload`. Other `runtimed.run` hosts are not
 Pages', so this host does not pin them. The header is set per request, not in
 `public/_headers`, because it depends on the visitor's scheme.
 
+After an install or publish, check both answers through the edge:
+
+```sh
+curl -sI https://<host>/health | grep -i strict-transport-security   # must print the header
+curl -sI http://<host>/health | grep -iE '^HTTP|^location'           # 308, location: https://<host>/health
+```
+
+If the HTTPS response has no `strict-transport-security`, the Worker did not
+see `CF-Visitor` (for example, celld dropped it), so plain HTTP is not being
+redirected either. With Always Use HTTPS on, the second check shows
+Cloudflare's own redirect instead.
+
 Cloudflare's **Always Use HTTPS** zone setting redirects at the edge before a
 request reaches the tunnel. It complements the Worker redirect. It is a zone
 setting an operator changes in the Cloudflare dashboard; no helper here sets it.

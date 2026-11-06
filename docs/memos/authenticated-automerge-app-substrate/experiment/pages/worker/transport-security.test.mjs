@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import worker from "./index.mjs";
-import { edgeScheme } from "./transport-security.mjs";
+import { HSTS, edgeScheme } from "./transport-security.mjs";
 
 // The tunnel's last hop is plain HTTP, so every request URL is http: even
 // when the visitor used HTTPS. Only CF-Visitor tells them apart.
@@ -175,4 +176,12 @@ test("CF-Visitor is parsed defensively", () => {
   assert.equal(scheme('{"scheme":1}'), null);
   assert.equal(scheme('{"scheme":"ws"}'), null);
   assert.equal(scheme(`{"scheme":"http","pad":"${"x".repeat(300)}"}`), null);
+});
+
+test("DEPLOYMENT.md's HTTPS section has a post-install HSTS smoke check", async () => {
+  const doc = await readFile(new URL("../DEPLOYMENT.md", import.meta.url), "utf8");
+  const section = doc.split("### HTTPS and HSTS")[1]?.split("\n### ")[0] ?? "";
+  assert.match(section, /curl -sI https:\/\/<host>\/health/);
+  assert.match(section, /strict-transport-security/i);
+  assert.ok(section.includes(HSTS), "the documented header value matches the code");
 });
