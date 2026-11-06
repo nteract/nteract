@@ -167,9 +167,8 @@ share one span encoder, Wordgard's `encode` (`model/wordgard-doc.mjs`):
 - Page-body Markdown writes parse with the ProseMirror codec, and `pageSpans`
   (`model/richtext-spans.mjs`) re-encodes the adapter's spans with `encode`.
 
-Agent-written comments still store the ProseMirror adapter's spans: moving
-them to `pageSpans` shifts the comment length rule, which counts block
-markers, so it waits for a decision on that rule.
+Agent-written comments take the same path: `markdownCommentSpans`
+(`model/comment-content.mjs`) stores `pageSpans` of the parsed Markdown.
 
 The codec is split by job; `model/richtext.mjs` lists the modules and
 re-exports their public names. Only `model/pm-*.mjs` import ProseMirror
@@ -227,10 +226,10 @@ references; it does not publish the Page or change asset access.
   so reads return the text literally without a format marker, as plain reads
   always have. Omitting the format when editing retains the message's current
   kind. Thread/message IDs and passage anchors stay unchanged. No Markdown copy
-  (`body`) is stored; messages earlier builds wrote with only a `body`, or with
-  a `body` copy beside adapter-form spans, still read and validate until the
-  comments migration rewrites them (DEPLOYMENT.md). If native content cannot be
-  decoded, reads return an earlier build's copy or the bare text with
+  (`body`) is stored. A message an earlier build stored with only a `body`, or
+  with a `body` copy beside its spans, answers `409 stored_form_unsupported`;
+  the comments migration rewrote every one (DEPLOYMENT.md). If native content
+  cannot be decoded, reads return its bare text with
   `content_error: "rich_text_unavailable"` rather than failing the entire Page.
   A message holds at most 16,000 text characters (block markers don't count,
   so the span form never changes a message's length) and 64 KiB of stored
@@ -1342,12 +1341,15 @@ for the sending principal and role. Content is checked by the same rule the
 tools and the browser apply (`validateCommentSpans` in
 [model/comment-content.mjs](model/comment-content.mjs)): non-whitespace text or
 a valid embed, so an image-only comment is content, at most 16,000 text
-characters and 64 KiB of spans. A new message must be rich text in the
-editor's span form with no `body`, and a write to a message's spans must leave
-them in that form. A bare literal `body`, or adapter-form spans beside a
-`body` copy, is admitted only on a message an earlier build already stored,
-until it's rewritten; `body` can only be removed. Viewers before protocol 3
-wrote those forms and must reload.
+characters and 64 KiB of spans. Every message a change creates or touches,
+a soft delete included, must be rich text with no `body`. A new message, or
+a write to a message's `richText`, `format` or `bodyFormat`, must also leave
+its spans in the editor's form; a soft delete doesn't check it, so a Wordgard
+release that encodes differently never blocks deleting older messages.
+Earlier builds stored a bare literal `body`, or adapter-form spans beside a
+`body` copy; the comments migration rewrote them, and a change that writes
+either form is refused as `outdated_form`. Viewers before protocol 3 wrote
+those forms and must reload.
 
 A refused change is never stored or delivered, and every other connection
 stays up. When the sender broke a rule, its principal is blocked from

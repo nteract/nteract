@@ -2,13 +2,12 @@
 // Page's Subduction records. Every Page now keeps its history in its own plain
 // storage, and nothing reads or writes these records. The class stays only so
 // they can be deleted: a Page converted from `buffered` clears its
-// PageRecords object when it is purged (Page `purgeConvertedRecords`), and the
-// one-shot operator sweep clears the rest (worker/page-records-sweep.mjs).
+// PageRecords object when it is purged (Page `purgeConvertedRecords`).
 //
 // Delete-only: `inspect` counts what the object holds, `clear` deletes all of
 // it. There is no read or write of a record. Remove the class, its binding and
-// this module with a `deleted_classes` migration once the sweep has cleared
-// every object on every target (DEPLOYMENT.md: Old PageRecords objects).
+// this module with a `deleted_classes` migration once celld accepts one
+// (DEPLOYMENT.md: Old PageRecords objects).
 import { holdUntilSettled } from "./request-hold.mjs";
 
 /** A page of a storage listing; small enough for one response's memory. */

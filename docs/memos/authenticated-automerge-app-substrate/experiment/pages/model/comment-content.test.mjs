@@ -19,7 +19,6 @@ const projectReadChanges = (doc, args) =>
   projectReadChangesOf(doc, { ...args, since_comment_heads: args.since_heads }, doc);
 import {
   commentMarkdown,
-  validateCommentContent,
   validateCommentSpans,
   markdownCommentSpans,
   plainCommentSpans,
@@ -145,10 +144,11 @@ test("an edit switches between plain and Markdown in place", () => {
   assert.equal(commentMarkdown(messageAt(doc, path)), "**literal**");
 });
 
-test("a message in an old stored form reads as before and converts on its next edit", () => {
+test("a message in an old stored form is refused on read and on write", () => {
   const { doc: seeded, ids, path } = add(fixture(), "placeholder");
+  const refused = { code: "stored_form_unsupported", status: 409 };
   // A plain message and an adapter-form rich message with its Markdown copy,
-  // as builds before this one wrote them.
+  // as builds before the comments migration wrote them.
   const legacy = A.change(A.clone(seeded), (d) => {
     const thread = d.threads[ids.thread_id];
     thread.messages[ids.message_id] = {
@@ -158,26 +158,24 @@ test("a message in an old stored form reads as before and converts on its next e
       deletedAt: null,
     };
   });
-  assert.equal(projectComments(legacy)[0].messages[0].body, "**literal** | <b>text</b>");
-  assert.doesNotThrow(() => validateCommentContent(messageAt(legacy, path)));
-  const after = A.change(legacy, (d) =>
-    applyComment(d, { action: "edit", ...ids, body: "**Rich now**" }, identity),
-  );
-  const message = messageAt(after, path);
-  assert.equal(message.format, RICH_FORMAT);
-  assert.equal(message.body, undefined, "the old copy goes with the conversion");
-  assert.equal(message.bodyFormat, "plain", "an old plain message stays plain by default");
-  assert.equal(projectComments(after)[0].messages[0].body, "**Rich now**");
-
-  const tree = parseAgentMarkdown("Adapter **form**\n\nTwo");
   const adapter = A.change(A.clone(seeded), (d) => {
     const old = d.threads[ids.thread_id].messages[ids.message_id];
     old.body = "frozen copy";
-    A.updateSpans(d, [...path, "richText"], adapterSpans(tree));
+    A.updateSpans(
+      d,
+      [...path, "richText"],
+      adapterSpans(parseAgentMarkdown("Adapter **form**\n\nTwo")),
+    );
   });
-  assert.equal(String(A.spans(messageAt(adapter, path), ["richText"])[0].value.type), "paragraph");
-  assert.equal(projectReadComments(adapter)[0].messages[0].body, "Adapter **form**\n\nTwo");
-  assert.equal(projectReadComments(adapter)[0].messages[0].body_format, "markdown");
+  for (const doc of [legacy, adapter]) {
+    assert.throws(() => projectComments(doc), refused);
+    assert.throws(() => projectReadComments(doc), refused);
+    assert.throws(
+      () =>
+        A.change(doc, (d) => applyComment(d, { action: "edit", ...ids, body: "New" }, identity)),
+      refused,
+    );
+  }
 });
 
 test("the length limit counts text characters, not block markers", () => {
@@ -253,7 +251,7 @@ test("comment inputs bound source and structural size and reject invalid format"
   ])
     assert.throws(() => add(fixture(), body, extra), error);
   const { doc, path } = add(fixture());
-  assert.doesNotThrow(() => validateCommentContent(messageAt(doc, path)));
+  assert.doesNotThrow(() => validateCommentSpans(A.spans(messageAt(doc, path), ["richText"])));
 });
 
 test("concurrent rich replies preserve both messages and the original selection anchor", () => {
@@ -303,22 +301,15 @@ test("browser submission stores the editor's spans without a Markdown round trip
   assert.match(projectComments(saved)[0].messages[0].body, /example.com/);
 });
 
-test("one unreadable native comment preserves Page reads and reports frozen provenance", () => {
+test("one unreadable native comment preserves Page reads", () => {
   const { doc: before, ids, path } = add(fixture(), "Original import");
   const heads = A.getHeads(before);
   const after = A.change(before, (d) => {
-    const message = messageAt(d, path);
-    message.richText = 7; // A malformed peer payload, never accepted by applyComment.
-    message.body = "Original import"; // The Markdown copy an earlier build kept.
+    messageAt(d, path).richText = 7; // A malformed peer payload, never accepted by applyComment.
   });
-  const bare = A.change(A.clone(before), (d) => {
-    messageAt(d, path).richText = 7;
-  });
-  assert.equal(projectReadComments(bare)[0].messages[0].body, "");
-  assert.equal(projectReadComments(bare)[0].messages[0].content_error, "rich_text_unavailable");
   for (const projected of [projectComments(after), projectReadComments(after)]) {
     const message = projected[0].messages[0];
-    assert.equal(message.body, "Original import");
+    assert.equal(message.body, "");
     assert.equal(message.body_format, "plain");
     assert.equal(message.content_error, "rich_text_unavailable");
     assert.equal(message.id, ids.message_id);

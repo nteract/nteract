@@ -1,5 +1,6 @@
 import * as A from "@automerge/automerge/slim";
 import { RICH_FORMAT, isRich } from "./richtext-format.mjs";
+import { storedFormUnsupported } from "./stored-form.mjs";
 import { parseAgentMarkdown } from "./markdown-import.mjs";
 import { updateSpansConfig } from "./marks.mjs";
 import { exportMarkdown } from "./pm-markdown-serializer.mjs";
@@ -32,10 +33,11 @@ export function commentMarkdown(message) {
  *   `body_format`, the way plain messages always have. That holds while its
  *   spans are still plain text; once they hold formatting, it reads as
  *   Markdown.
- * - A message an earlier build stored with only a `body` reads as `body`.
+ * - A message in a form an earlier build stored (a bare `body`, or a `body`
+ *   copy beside its spans) is refused with `stored_form_unsupported`.
  */
 export function commentBodyProjection(message) {
-  if (!isRich(message)) return { body: String(message.body ?? "") };
+  requireStoredMessage(message);
   try {
     if (String(message.bodyFormat ?? "") === PLAIN_FORMAT) {
       const text = plainCommentText(A.spans(message, ["richText"]));
@@ -43,20 +45,26 @@ export function commentBodyProjection(message) {
     }
     return { body: exportMarkdown(richDoc(message)), body_format: "markdown" };
   } catch {
-    // Keep the rest of a Page readable: an earlier build's Markdown copy, or
-    // the bare characters of text that can't be read as spans (a JSON copy
-    // of the document). Never repair or overwrite shared data on read.
+    // Keep the rest of a Page readable: the bare characters of text that
+    // can't be read as spans (a JSON copy of the document). Never repair or
+    // overwrite shared data on read.
     return {
       body:
-        message.body !== undefined
-          ? String(message.body)
-          : typeof message.richText === "string"
-            ? message.richText.replaceAll("\ufffc", "\n").trim()
-            : "",
+        typeof message.richText === "string"
+          ? message.richText.replaceAll("\ufffc", "\n").trim()
+          : "",
       body_format: "plain",
       content_error: "rich_text_unavailable",
     };
   }
+}
+
+/** Refuse a message stored in a form an earlier build wrote: no rich text,
+ * or a `body` copy beside it. The comments migration rewrote every stored
+ * message, so meeting one means it didn't come through that rewrite. */
+function requireStoredMessage(message) {
+  if (!isRich(message) || message.body !== undefined)
+    throw storedFormUnsupported("a comment on this Page");
 }
 
 /** `spans` in the editor's form: what Wordgard's `encode` writes for the
@@ -99,9 +107,10 @@ function storedForm(spans) {
 
 /** Whether `spans` are in the editor's form: exactly what `encode` writes
  * for the tree they decode to, with nothing the editor can't hold. Every
- * writer in this build stores that form. The adapter's form, which earlier
- * builds wrote, isn't: it opens with a paragraph marker, leaves out a quote's
- * marker, or keeps a prose newline as text. */
+ * writer in this build stores that form, and admission refuses anything
+ * else (comment-authority.mjs). The ProseMirror adapter's form isn't: it
+ * opens with a paragraph marker, leaves out a quote's marker, or keeps a
+ * prose newline as text. */
 export function isEditorForm(spans) {
   try {
     const decoded = decode(spans);
@@ -171,21 +180,8 @@ export function validateCommentSpans(spans) {
   validateRichSpans(spans, COMMENT_MAX_BYTES);
 }
 
-/** The rule for a message an earlier build stored as a literal `body`. */
-export function validateCommentBody(body) {
-  const text = String(body ?? "");
-  if (!text.trim() || text.length > COMMENT_MAX_LENGTH) throw Error(LENGTH_MESSAGE);
-}
-
-/** Validate a stored message's current content: its spans once it's rich,
- * its literal body if an earlier build stored it that way. */
-export function validateCommentContent(message) {
-  if (!isRich(message)) return validateCommentBody(message.body);
-  validateCommentSpans(A.spans(message, ["richText"]));
-}
-
 /** The format a write without `body_format` keeps: plain for a message
- * written as plain text (or stored as a bare `body`), Markdown otherwise. */
+ * written as plain text or not written yet, Markdown otherwise. */
 const currentFormat = (message) =>
   message && isRich(message) && String(message.bodyFormat ?? "") !== PLAIN_FORMAT
     ? "markdown"
@@ -226,26 +222,27 @@ export function setCommentContent(doc, path, input, nativeSpans) {
 
 /** Store editor-form `spans` as the message at `path`, inside the caller's
  * change, keeping the message's identity: its id, author and timestamps,
- * and the unchanged characters of its text. */
+ * and the unchanged characters of its text. A new message (no content yet)
+ * gets its rich text here; a message in an earlier build's form is refused. */
 export function writeCommentSpans(doc, path, spans, { plain = false } = {}) {
   const message = path.reduce((value, key) => value[key], doc);
-  if (!isRich(message)) {
+  if (message.format === undefined && message.body === undefined) {
     message.format = RICH_FORMAT;
     message.richText = "";
-  }
+  } else requireStoredMessage(message);
   A.updateSpans(doc, [...path, "richText"], spans, updateSpansConfig);
   if (plain) {
     if (message.bodyFormat !== PLAIN_FORMAT) message.bodyFormat = PLAIN_FORMAT;
   } else if (message.bodyFormat !== undefined) delete message.bodyFormat;
-  if (message.body !== undefined) delete message.body;
   // Comments share the Page's mark and block registry, so they share its stamp.
   stampSpans(doc, spans);
-  validateCommentContent(message);
+  validateCommentSpans(A.spans(message, ["richText"]));
 }
 
 // JSON values omit marks and table marker attributes; change feeds must include spans.
+// A message without spans (a historical view from before the comments
+// migration) compares as unreadable, so it reads as changed.
 export function commentMessageState(message) {
-  if (!isRich(message)) return { ...message };
   try {
     return { ...message, spans: A.spans(message, ["richText"]) };
   } catch {
