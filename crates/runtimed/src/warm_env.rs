@@ -704,7 +704,6 @@ async fn create_uv(env_dir: &Path, packages: &[String]) {
 // -- Conda env creation ---------------------------------------------------
 
 async fn create_conda(env_dir: &Path, packages: &[String], channels: &[String]) {
-    use rattler::install::Installer;
     use rattler_conda_types::{ChannelConfig, Platform};
     use rattler_solve::{resolvo, SolverImpl, SolverTask};
 
@@ -859,7 +858,7 @@ async fn create_conda(env_dir: &Path, packages: &[String], channels: &[String]) 
         "installing",
         &format!("{} packages", required_packages.len()),
     );
-    if let Err(e) = Installer::new()
+    if let Err(e) = kernel_env::rattler_installer()
         .with_download_client(download_client)
         .with_target_platform(install_platform)
         .install(env_dir, required_packages)

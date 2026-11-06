@@ -49,6 +49,8 @@ pub use kernel_launch::CommandOutputExt;
 #[cfg(feature = "runtime")]
 pub mod python;
 #[cfg(feature = "runtime")]
+pub mod rattler_install;
+#[cfg(feature = "runtime")]
 pub mod repodata;
 #[cfg(feature = "runtime")]
 pub mod uv;
@@ -63,6 +65,8 @@ pub use platform::{
     virtual_package_overrides_for_solve,
 };
 pub use progress::{EnvProgressPhase, LogHandler, ProgressHandler};
+#[cfg(feature = "runtime")]
+pub use rattler_install::{rattler_installer, rattler_link_options};
 #[cfg(feature = "runtime")]
 pub use uv::{
     omit_default_pyarrow, uv_base_packages, uv_base_packages_for_strip, UvDependencies,

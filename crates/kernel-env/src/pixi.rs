@@ -15,7 +15,7 @@
 
 use anyhow::{anyhow, Context, Result};
 use log::{debug, info, warn};
-use rattler::{default_cache_dir, install::Installer};
+use rattler::default_cache_dir;
 use rattler_conda_types::{ChannelConfig, Platform};
 use rattler_solve::{resolvo, SolverImpl, SolverTask};
 use std::path::{Path, PathBuf};
@@ -332,7 +332,7 @@ async fn install_pixi_env(
     let reporter = RattlerReporter::new_with_env_type(handler.clone(), "pixi");
     let install_start = Instant::now();
 
-    match Installer::new()
+    match crate::rattler_installer()
         .with_download_client(download_client)
         .with_target_platform(install_platform)
         .with_reporter(reporter)
