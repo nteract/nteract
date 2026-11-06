@@ -230,6 +230,54 @@ test("sign out everywhere ends the caller's browsers and agents and nobody else'
   assert.equal(again.status, 401);
 });
 
+test("an approval whose session ends before its code is written issues no code", async (t) => {
+  const env = fixture(t);
+  const login = await signIn(env);
+  const query = new URLSearchParams({
+    client_id: "pages-kilo",
+    redirect_uri: kiloCallback,
+    response_type: "code",
+    resource: origin + "/mcp",
+    code_challenge: await secretHash(verifier),
+    code_challenge_method: "S256",
+    scope: "pages:read pages:write",
+    state: "client-state-value",
+  });
+  const screen = await handleOAuth(get("/oauth/authorize?" + query, { cookie: login.cookie }), env);
+  const text = await screen.text();
+  const field = (name) => text.match(new RegExp(`name="${name}" value="([^"]+)"`))[1];
+  // Sign out everywhere lands after the approval's session check and consent
+  // consumption, just before the code insert.
+  const prepare = env.DB.prepare.bind(env.DB);
+  let raced = false;
+  t.mock.method(env.DB, "prepare", (sql) => {
+    if (sql.trimStart().startsWith("INSERT INTO pages_oauth_codes") && !raced) {
+      raced = true;
+      env.DB.sqlite.exec("DELETE FROM oidc_server_sessions");
+    }
+    return prepare(sql);
+  });
+  const capture = captureConsole(t);
+  const approved = await handleOAuth(
+    post(
+      "/oauth/authorize",
+      { consent_id: field("consent_id"), csrf_token: field("csrf_token"), decision: "approve" },
+      { Origin: origin, Cookie: login.cookie },
+    ),
+    env,
+  );
+  assert.equal(raced, true);
+  // The client gets access_denied on its callback, and no code.
+  assert.equal(approved.status, 303);
+  const back = new URL(approved.headers.get("location"));
+  assert.equal(`${back.origin}${back.pathname}`, kiloCallback);
+  assert.equal(back.searchParams.get("error"), "access_denied");
+  assert.equal(back.searchParams.has("code"), false);
+  assert.equal(env.DB.sqlite.prepare("SELECT count(*) AS n FROM pages_oauth_codes").get().n, 0);
+  assert.equal(capture.find("oauth.code_issued").length, 0);
+  assert.equal(capture.find("oauth.consent_granted").length, 0);
+});
+
 test("the session answer advertises account controls to a browser session only", async (t) => {
   const env = fixture(t);
   const login = await signIn(env);

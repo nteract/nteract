@@ -497,11 +497,21 @@ async function authorize(request, env, context) {
     await logAuthEvent({ action: "oauth.consent_denied", ...audit });
     return redirect(saved, origin, { error: "access_denied" });
   }
+  let code;
+  try {
+    // The approving session must still exist when the code is written: a
+    // sign-out everywhere after the session check above leaves no code.
+    ({ code } = await issueAuthorizationCode(
+      env,
+      { ...saved, identity: consentIdentity(current.session) },
+      { sessionId: current.row.id },
+    ));
+  } catch (error) {
+    if (error instanceof OAuthStoreError && error.error === "access_denied")
+      throw new OAuthError("access_denied", "Your sign-in ended. Sign in and start again.", 403);
+    throw error;
+  }
   await logAuthEvent({ action: "oauth.consent_granted", ...audit });
-  const { code } = await issueAuthorizationCode(env, {
-    ...saved,
-    identity: consentIdentity(current.session),
-  });
   await logAuthEvent({ action: "oauth.code_issued", ...audit });
   return redirect(saved, origin, { code });
 }

@@ -64,7 +64,8 @@ export function ConnectedAgents({ onClose, onSignedOut, onUnavailable, returnFoc
     >
       <div className="container-form">
         <p className="muted container-note">
-          Agents you approved act for you in Pages until you disconnect them.
+          Agents connected through Pages sign-in act for you until you disconnect them. Agents using
+          an Anaconda API key aren't listed here; manage API keys in your Anaconda account.
         </p>
         {list.status === "loading" && <p role="status">Loading…</p>}
         {list.status === "unavailable" && (
@@ -120,7 +121,8 @@ export function ConnectedAgents({ onClose, onSignedOut, onUnavailable, returnFoc
             {state.name === "browsing" ? (
               <>
                 <p className="muted container-note">
-                  Sign out of Pages in every browser and disconnect every agent.
+                  Sign out of Pages in every browser and disconnect every agent connected through
+                  Pages sign-in. API keys keep working until you revoke them in Anaconda.
                 </p>
                 <div className="container-actions">
                   <button
@@ -136,7 +138,8 @@ export function ConnectedAgents({ onClose, onSignedOut, onUnavailable, returnFoc
             ) : (
               <>
                 <p role="status">
-                  Sign out of every browser, this one included, and disconnect every agent?
+                  Sign out of every browser, this one included, and disconnect every agent connected
+                  through Pages sign-in?
                 </p>
                 <div className="container-actions">
                   <button

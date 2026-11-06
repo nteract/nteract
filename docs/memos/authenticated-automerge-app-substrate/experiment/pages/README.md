@@ -1157,7 +1157,11 @@ times, and an opaque per-grant handle) and disconnects one
 (`POST /api/auth/grants/<handle>/revoke`). Sign out everywhere
 (`POST /api/auth/logout-all`) revokes every grant the account holds, deletes its
 pending consents and unexchanged codes, then deletes its browser sessions here,
-this one included. Only a browser session cookie reaches these routes; a bearer
+this one included. An approval writes its code only while the approving
+session row still exists, in the same statement, so an approval racing the
+sign-out gets `access_denied` and no code. Anaconda API keys aren't OAuth
+grants: they aren't listed and keep working; people revoke them in Anaconda.
+Only a browser session cookie reaches these routes; a bearer
 credential is refused, and writes need this origin. Grants record their
 principal in an indexed column, backfilled from the identity snapshot of older
 rows; sessions are found through an expression index on the session's principal

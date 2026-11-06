@@ -361,18 +361,31 @@ export async function consumeConsent(
   return row ? JSON.parse(row.request_json) : null;
 }
 
-export async function issueAuthorizationCode(env, input, { now } = {}) {
+/**
+ * Issues a code for an approved consent. With `sessionId`, the code is
+ * written only if that browser session row (oidc_server_sessions, in the same
+ * database) still exists and hasn't expired, in the same statement. A sign-out
+ * everywhere that deletes the session after the approval's own session check
+ * then leaves no code behind; this throws `access_denied` instead.
+ */
+export async function issueAuthorizationCode(env, input, { now, sessionId } = {}) {
   now = seconds(now);
   const value = authorizationRequest(env, input);
   const identity = identitySnapshot(input.identity);
+  if (sessionId !== undefined) boundedString(sessionId);
   const code = randomSecret(),
     db = await database(env);
   await cleanupOAuthStore(env, { now });
-  await statement(
+  const sessionLive =
+    sessionId === undefined
+      ? ""
+      : `WHERE EXISTS (SELECT 1 FROM oidc_server_sessions WHERE id = ?
+        AND idle_expires_at > ? AND absolute_expires_at > ?)`;
+  const inserted = await statement(
     db,
     `INSERT INTO pages_oauth_codes
     (code_hash, context, client_id, redirect_uri, resource, scope, challenge, identity_json, expires_at, allow_refresh)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? ${sessionLive}`,
     await secretHash(code),
     contextFor(env),
     value.clientId,
@@ -383,7 +396,9 @@ export async function issueAuthorizationCode(env, input, { now } = {}) {
     JSON.stringify(identity),
     now + CODE_SECONDS,
     value.allowRefresh === true ? 1 : 0,
+    ...(sessionId === undefined ? [] : [sessionId, now, now]),
   ).run();
+  if (changesOf(inserted) !== 1) throw new OAuthStoreError("access_denied");
   return { code, expiresAt: now + CODE_SECONDS };
 }
 

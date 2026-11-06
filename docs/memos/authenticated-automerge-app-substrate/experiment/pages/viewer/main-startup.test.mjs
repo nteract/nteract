@@ -1256,6 +1256,12 @@ test("the account menu lists connected agents, disconnects one and signs out eve
   await click(menuButton("Connected agents"));
   await settle();
   assert.deepEqual(listed(), ["Kilo", "ChatGPT"]);
+  // API-key agents aren't listed or signed out; the copy says so.
+  const copy = document.querySelector(".connected-agents-dialog").textContent;
+  assert.match(copy, /connected through Pages sign-in/);
+  assert.match(copy, /Anaconda API key aren't listed here/);
+  assert.match(copy, /API keys keep working until you revoke them in Anaconda/);
+  assert.doesNotMatch(copy, /disconnect every agent\./);
   assert.match(
     document.querySelector(".connected-agents").textContent,
     /Read and edit.*Connected earlier · Read only/,
