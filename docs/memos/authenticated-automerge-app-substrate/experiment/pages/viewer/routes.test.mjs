@@ -37,6 +37,13 @@ test("canonical and existing shared Page links resolve to the same document", ()
     assert.equal(readPageRoute(path).kind, "missing");
   assert.throws(() => pagePath("../api/auth/logout"), /Invalid Page/);
 });
+test("a Page's JSON routes are the Worker's, never a Page the app opens", () => {
+  // The gateway answers /p/<id>/meta.json and /card.json; if one ever
+  // reaches the app shell, the router shows it as missing, not as the Page.
+  for (const file of ["meta.json", "card.json"])
+    for (const path of [`/p/${id}/${file}`, `/p/${id}/${file}/`, `/p/${id}/${file}?v=1`])
+      assert.equal(readPageRoute(path).kind, "missing", path);
+});
 test("page and home navigation push history; canonicalization replaces without duplicating", () => {
   const calls = [];
   const location = { pathname: "/", search: "", hash: "" };
