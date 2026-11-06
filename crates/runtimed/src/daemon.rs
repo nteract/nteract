@@ -359,23 +359,30 @@ struct PoolEntry {
     created_at: Instant,
 }
 
-/// Consecutive warm failures after which a pool stops retrying on its own.
+/// Consecutive non-network warm failures after which a pool parks.
 const MAX_CONSECUTIVE_WARM_FAILURES: u32 = 5;
+
+/// How often a parked pool still tries one warm on its own.
+const PARKED_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
 /// Retry lifecycle of a pool's warming loop.
 ///
-/// A pool that keeps failing would otherwise rebuild forever, every 5
-/// minutes at most, writing and deleting a whole environment each time.
-/// After [`MAX_CONSECUTIVE_WARM_FAILURES`] it parks: no automatic retries
-/// until a launch asks this pool for an env, or settings change.
+/// A pool that keeps failing would otherwise rebuild every 5 minutes at
+/// most, writing and deleting a whole environment each time. After
+/// [`MAX_CONSECUTIVE_WARM_FAILURES`] non-network failures (strikes) it
+/// parks: it retries when a launch asks it for an env, when its settings
+/// change, or every [`PARKED_RETRY_INTERVAL`]. Network failures keep their
+/// short backoff and never park a pool; being offline is not a broken
+/// configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum WarmRetry {
     /// No recent failures; warm whenever there is a deficit.
     #[default]
     Healthy,
-    /// Retry after the exponential backoff delay.
-    BackingOff { failures: u32 },
-    /// Retry only after a take or a settings change.
+    /// Retry after the exponential backoff delay. `strikes` counts only
+    /// non-network failures.
+    BackingOff { failures: u32, strikes: u32 },
+    /// Retry after a take, a settings change, or the slow parked interval.
     Parked { failures: u32 },
     /// A take asked a parked pool for another attempt; retry now.
     /// Another failure parks the pool again.
@@ -385,7 +392,7 @@ enum WarmRetry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WarmRetryEvent {
     WarmSucceeded,
-    WarmFailed,
+    WarmFailed { network: bool },
     SettingsChanged,
     TakeWaiting,
 }
@@ -395,12 +402,20 @@ impl WarmRetry {
     fn next(self, event: WarmRetryEvent) -> Self {
         match event {
             WarmRetryEvent::WarmSucceeded | WarmRetryEvent::SettingsChanged => Self::Healthy,
-            WarmRetryEvent::WarmFailed => {
+            WarmRetryEvent::WarmFailed { network } => {
                 let failures = self.failures().saturating_add(1);
-                if failures >= MAX_CONSECUTIVE_WARM_FAILURES {
+                let strikes = match self {
+                    Self::Healthy => 0,
+                    Self::BackingOff { strikes, .. } => strikes,
+                    // Already parked: any failure keeps it parked.
+                    Self::Parked { .. } | Self::TakeRequested { .. } => {
+                        return Self::Parked { failures };
+                    }
+                } + u32::from(!network);
+                if strikes >= MAX_CONSECUTIVE_WARM_FAILURES {
                     Self::Parked { failures }
                 } else {
-                    Self::BackingOff { failures }
+                    Self::BackingOff { failures, strikes }
                 }
             }
             WarmRetryEvent::TakeWaiting => match self {
@@ -413,10 +428,27 @@ impl WarmRetry {
     fn failures(self) -> u32 {
         match self {
             Self::Healthy => 0,
-            Self::BackingOff { failures }
+            Self::BackingOff { failures, .. }
             | Self::Parked { failures }
             | Self::TakeRequested { failures } => failures,
         }
+    }
+
+    /// Time left before a warm may start, given the time since the last
+    /// failure (`None` if there was none) and the current backoff delay.
+    fn retry_wait(
+        self,
+        since_last_failure: Option<std::time::Duration>,
+        backoff: std::time::Duration,
+    ) -> std::time::Duration {
+        let wait = match self {
+            Self::Healthy | Self::TakeRequested { .. } => return std::time::Duration::ZERO,
+            Self::BackingOff { .. } => backoff,
+            Self::Parked { .. } => PARKED_RETRY_INTERVAL,
+        };
+        since_last_failure.map_or(std::time::Duration::ZERO, |elapsed| {
+            wait.saturating_sub(elapsed)
+        })
     }
 }
 
@@ -1053,7 +1085,6 @@ impl Pool {
     /// Mark that warming failed with error details.
     fn warming_failed_with_error(&mut self, error: Option<PackageInstallError>) {
         self.warming = self.warming.saturating_sub(1);
-        self.failure_state.retry = self.failure_state.retry.next(WarmRetryEvent::WarmFailed);
         self.failure_state.last_failure = Some(Instant::now());
 
         if let Some(err) = error {
@@ -1064,6 +1095,9 @@ impl Pool {
         } else {
             self.failure_state.is_network_failure = false;
         }
+        self.failure_state.retry = self.failure_state.retry.next(WarmRetryEvent::WarmFailed {
+            network: self.failure_state.is_network_failure,
+        });
     }
 
     /// Mark that warming failed for a specific path (unregisters the path and records the error).
@@ -1091,6 +1125,14 @@ impl Pool {
 
     fn is_parked(&self) -> bool {
         matches!(self.failure_state.retry, WarmRetry::Parked { .. })
+    }
+
+    /// Parked for status reporting, including a take's retry in flight.
+    fn reports_parked(&self) -> bool {
+        matches!(
+            self.failure_state.retry,
+            WarmRetry::Parked { .. } | WarmRetry::TakeRequested { .. }
+        )
     }
 
     /// Calculate backoff delay based on consecutive failures.
@@ -1132,16 +1174,16 @@ impl Pool {
     }
 
     /// Whether a warm may start now: healthy, a take asked for one, or the
-    /// backoff delay has passed. A parked pool never retries on its own.
+    /// backoff (or slow parked) interval has passed.
     fn should_retry(&self) -> bool {
-        match self.failure_state.retry {
-            WarmRetry::Healthy | WarmRetry::TakeRequested { .. } => true,
-            WarmRetry::Parked { .. } => false,
-            WarmRetry::BackingOff { .. } => match self.failure_state.last_failure {
-                Some(last) => last.elapsed() >= self.backoff_delay(),
-                None => true,
-            },
-        }
+        self.retry_wait().is_zero()
+    }
+
+    fn retry_wait(&self) -> std::time::Duration {
+        self.failure_state.retry.retry_wait(
+            self.failure_state.last_failure.map(|last| last.elapsed()),
+            self.backoff_delay(),
+        )
     }
 
     /// Calculate deficit (how many more we need).
@@ -1211,20 +1253,9 @@ impl Pool {
         (self.available.len(), self.warming)
     }
 
-    /// Seconds until the next retry (0 if healthy, parked, or retry is
-    /// imminent).
+    /// Seconds until the next automatic retry (0 if healthy or imminent).
     fn retry_in_secs(&self) -> u64 {
-        if !matches!(self.failure_state.retry, WarmRetry::BackingOff { .. }) {
-            return 0;
-        }
-        self.failure_state
-            .last_failure
-            .map(|last| {
-                self.backoff_delay()
-                    .saturating_sub(last.elapsed())
-                    .as_secs()
-            })
-            .unwrap_or(0)
+        self.retry_wait().as_secs()
     }
 }
 
@@ -1309,7 +1340,7 @@ impl WarmingGuardInner {
         if let Some(failures) = parked_failures {
             warn!(
                 "[runtimed] {} pool parked after {failures} consecutive warm failures; \
-                 it retries when a launch needs it or settings change",
+                 it retries when a launch needs it, settings change, or every 30 minutes",
                 self.kind.label()
             );
         }
@@ -7433,6 +7464,8 @@ impl Daemon {
                 let d = pool.deficit();
                 let retry = pool.should_retry();
                 let parked = pool.is_parked();
+                // A parked pool's slow retry is one warm, not a full refill.
+                let d = if parked { d.min(1) } else { d };
                 let info = if pool.failure_state.consecutive_failures() > 0 {
                     Some((
                         pool.failure_state.consecutive_failures(),
@@ -7474,7 +7507,7 @@ impl Daemon {
                 } else if parked {
                     debug!(
                         "[runtimed] UV pool parked after repeated warm failures; \
-                         waiting for a launch or a settings change"
+                         waiting for a launch, a settings change, or the 30-minute retry"
                     );
                 } else if let Some((failures, backoff_secs, failed_pkg, is_network)) = backoff_info
                 {
@@ -7558,6 +7591,8 @@ impl Daemon {
                 let d = pool.deficit();
                 let retry = pool.should_retry();
                 let parked = pool.is_parked();
+                // A parked pool's slow retry is one warm, not a full refill.
+                let d = if parked { d.min(1) } else { d };
                 let info = if pool.failure_state.consecutive_failures() > 0 {
                     Some((
                         pool.failure_state.consecutive_failures(),
@@ -7604,7 +7639,7 @@ impl Daemon {
                 } else if parked {
                     debug!(
                         "[runtimed] Conda pool parked after repeated warm failures; \
-                         waiting for a launch or a settings change"
+                         waiting for a launch, a settings change, or the 30-minute retry"
                     );
                 } else if let Some((failures, backoff_secs, last_error, is_network)) = backoff_info
                 {
@@ -7690,6 +7725,8 @@ impl Daemon {
                 let d = pool.deficit();
                 let retry = pool.should_retry();
                 let parked = pool.is_parked();
+                // A parked pool's slow retry is one warm, not a full refill.
+                let d = if parked { d.min(1) } else { d };
                 let info = if pool.failure_state.consecutive_failures() > 0 {
                     Some((
                         pool.failure_state.consecutive_failures(),
@@ -7734,7 +7771,7 @@ impl Daemon {
                 } else if parked {
                     debug!(
                         "[runtimed] Pixi pool parked after repeated warm failures; \
-                         waiting for a launch or a settings change"
+                         waiting for a launch, a settings change, or the 30-minute retry"
                     );
                 } else if let Some((failures, backoff_secs, last_error, is_network)) = backoff_info
                 {
@@ -8028,6 +8065,7 @@ impl Daemon {
                 error_kind: pool.failure_state.error_kind.clone(),
                 consecutive_failures: pool.failure_state.consecutive_failures(),
                 retry_in_secs: pool.retry_in_secs(),
+                parked: pool.reports_parked(),
             }
         };
         let conda = {
@@ -8042,6 +8080,7 @@ impl Daemon {
                 error_kind: pool.failure_state.error_kind.clone(),
                 consecutive_failures: pool.failure_state.consecutive_failures(),
                 retry_in_secs: pool.retry_in_secs(),
+                parked: pool.reports_parked(),
             }
         };
 
@@ -8057,6 +8096,7 @@ impl Daemon {
                 error_kind: pool.failure_state.error_kind.clone(),
                 consecutive_failures: pool.failure_state.consecutive_failures(),
                 retry_in_secs: pool.retry_in_secs(),
+                parked: pool.reports_parked(),
             }
         };
 
@@ -10608,10 +10648,18 @@ mod tests {
         use WarmRetry::*;
         use WarmRetryEvent::*;
         let max = MAX_CONSECUTIVE_WARM_FAILURES;
+        let fail = WarmFailed { network: false };
+        let offline = WarmFailed { network: true };
         let states = [
             Healthy,
-            BackingOff { failures: 1 },
-            BackingOff { failures: max - 1 },
+            BackingOff {
+                failures: 1,
+                strikes: 1,
+            },
+            BackingOff {
+                failures: 9,
+                strikes: max - 1,
+            },
             Parked { failures: max },
             TakeRequested { failures: max },
         ];
@@ -10620,29 +10668,95 @@ mod tests {
             assert_eq!(state.next(SettingsChanged), Healthy, "{state:?}");
         }
 
-        assert_eq!(Healthy.next(WarmFailed), BackingOff { failures: 1 });
+        // Ordinary failures strike; the fifth parks.
         assert_eq!(
-            BackingOff { failures: 1 }.next(WarmFailed),
-            BackingOff { failures: 2 }
+            Healthy.next(fail),
+            BackingOff {
+                failures: 1,
+                strikes: 1
+            }
         );
         assert_eq!(
-            BackingOff { failures: max - 1 }.next(WarmFailed),
+            BackingOff {
+                failures: 1,
+                strikes: 1
+            }
+            .next(fail),
+            BackingOff {
+                failures: 2,
+                strikes: 2
+            }
+        );
+        assert_eq!(
+            BackingOff {
+                failures: max - 1,
+                strikes: max - 1
+            }
+            .next(fail),
             Parked { failures: max }
         );
+
+        // Network failures count as failures (backoff, status) but never
+        // strike, so being offline cannot park a pool.
         assert_eq!(
-            Parked { failures: max }.next(WarmFailed),
-            Parked { failures: max + 1 }
+            Healthy.next(offline),
+            BackingOff {
+                failures: 1,
+                strikes: 0
+            }
+        );
+        let mut state = Healthy;
+        for _ in 0..100 {
+            state = state.next(offline);
+        }
+        assert_eq!(
+            state,
+            BackingOff {
+                failures: 100,
+                strikes: 0
+            }
         );
         assert_eq!(
-            TakeRequested { failures: max }.next(WarmFailed),
-            Parked { failures: max + 1 },
-            "a take-requested attempt that fails parks again"
+            BackingOff {
+                failures: 9,
+                strikes: max - 1
+            }
+            .next(offline),
+            BackingOff {
+                failures: 10,
+                strikes: max - 1
+            }
+        );
+        assert_eq!(
+            BackingOff {
+                failures: 10,
+                strikes: max - 1
+            }
+            .next(fail),
+            Parked { failures: 11 }
         );
 
+        // Any failure while parked, or during a take's retry, stays parked.
+        for event in [fail, offline] {
+            assert_eq!(
+                Parked { failures: max }.next(event),
+                Parked { failures: max + 1 }
+            );
+            assert_eq!(
+                TakeRequested { failures: max }.next(event),
+                Parked { failures: max + 1 },
+                "a take-requested attempt that fails parks again"
+            );
+        }
+
         assert_eq!(Healthy.next(TakeWaiting), Healthy);
+        let backing_off = BackingOff {
+            failures: 2,
+            strikes: 2,
+        };
         assert_eq!(
-            BackingOff { failures: 2 }.next(TakeWaiting),
-            BackingOff { failures: 2 },
+            backing_off.next(TakeWaiting),
+            backing_off,
             "takes do not skip an active backoff"
         );
         assert_eq!(
@@ -10655,8 +10769,47 @@ mod tests {
         );
     }
 
+    /// Retry timing is a pure function of elapsed time, so it is tested on a
+    /// virtual clock rather than by sleeping.
     #[test]
-    fn pool_parks_after_max_failures_until_take_or_settings_change() {
+    fn warm_retry_wait_on_a_virtual_clock() {
+        use std::time::Duration;
+        let backoff = Duration::from_secs(120);
+        let minute = Duration::from_secs(60);
+        let backing_off = WarmRetry::BackingOff {
+            failures: 3,
+            strikes: 3,
+        };
+        let parked = WarmRetry::Parked { failures: 5 };
+
+        for state in [
+            WarmRetry::Healthy,
+            WarmRetry::TakeRequested { failures: 5 },
+        ] {
+            assert!(state.retry_wait(Some(Duration::ZERO), backoff).is_zero());
+        }
+        assert!(backing_off.retry_wait(None, backoff).is_zero());
+        assert!(parked.retry_wait(None, backoff).is_zero());
+
+        assert_eq!(backing_off.retry_wait(Some(minute), backoff), minute);
+        assert!(backing_off.retry_wait(Some(backoff), backoff).is_zero());
+
+        // Parked ignores the backoff and waits for the slow interval.
+        assert_eq!(
+            parked.retry_wait(Some(backoff), backoff),
+            PARKED_RETRY_INTERVAL - backoff
+        );
+        assert_eq!(
+            parked.retry_wait(Some(PARKED_RETRY_INTERVAL - minute), backoff),
+            minute
+        );
+        assert!(parked
+            .retry_wait(Some(PARKED_RETRY_INTERVAL), backoff)
+            .is_zero());
+    }
+
+    #[test]
+    fn pool_parks_after_max_failures_until_take_settings_or_slow_retry() {
         let mut pool = Pool::new(1, 3600);
         for _ in 0..MAX_CONSECUTIVE_WARM_FAILURES - 1 {
             pool.mark_warming(1);
@@ -10666,24 +10819,49 @@ mod tests {
         pool.mark_warming(1);
         pool.warming_failed_with_error(None);
         assert!(pool.is_parked());
-        assert!(!pool.should_retry(), "parked pools never retry on a timer");
+        assert!(pool.reports_parked());
+        assert!(!pool.should_retry(), "parked pools skip the regular backoff");
         assert!(!pool.reserve_replenishment());
-        assert_eq!(pool.retry_in_secs(), 0);
-        // Even long after the last failure, the pool stays parked.
+        let retry_in = pool.retry_in_secs();
+        assert!(
+            retry_in > PARKED_RETRY_INTERVAL.as_secs() - 5
+                && retry_in <= PARKED_RETRY_INTERVAL.as_secs(),
+            "status reports the slow retry: {retry_in}"
+        );
+        // Once the slow interval passes, one automatic retry is due.
         pool.failure_state.last_failure =
-            Some(Instant::now() - std::time::Duration::from_secs(3600));
-        assert!(!pool.should_retry());
+            Some(Instant::now() - PARKED_RETRY_INTERVAL - std::time::Duration::from_secs(1));
+        assert!(pool.should_retry());
+        assert!(pool.is_parked());
+        pool.failure_state.last_failure = Some(Instant::now());
 
         pool.request_retry_for_take();
         assert!(pool.should_retry(), "a waiting take gets one attempt");
+        assert!(pool.reports_parked());
         assert!(pool.reserve_replenishment());
         pool.warming_failed_with_error(None);
         assert!(pool.is_parked(), "that attempt failing parks again");
 
         pool.reset_failure_state();
-        assert!(!pool.is_parked());
+        assert!(!pool.reports_parked());
         assert!(pool.should_retry());
         assert_eq!(pool.failure_state.consecutive_failures(), 0);
+    }
+
+    #[test]
+    fn pool_offline_failures_never_park() {
+        let mut pool = Pool::new(1, 3600);
+        for _ in 0..20 {
+            pool.mark_warming(1);
+            pool.warming_failed_with_error(Some(PackageInstallError {
+                failed_package: None,
+                error_message: "Failed to fetch repodata: dns error".to_string(),
+                error_kind: "setup_failed".to_string(),
+            }));
+        }
+        assert!(!pool.reports_parked());
+        assert_eq!(pool.failure_state.consecutive_failures(), 20);
+        assert_eq!(pool.backoff_delay(), std::time::Duration::from_secs(60));
     }
 
     #[test]
@@ -11214,7 +11392,10 @@ mod tests {
     #[test]
     fn test_pool_network_backoff_shorter() {
         let mut pool = Pool::new(3, 3600);
-        pool.failure_state.retry = WarmRetry::BackingOff { failures: 1 };
+        pool.failure_state.retry = WarmRetry::BackingOff {
+            failures: 1,
+            strikes: 1,
+        };
         pool.failure_state.is_network_failure = true;
         let network_delay = pool.backoff_delay();
 
@@ -11232,7 +11413,10 @@ mod tests {
     #[test]
     fn test_pool_non_network_backoff_unchanged() {
         let mut pool = Pool::new(3, 3600);
-        pool.failure_state.retry = WarmRetry::BackingOff { failures: 3 };
+        pool.failure_state.retry = WarmRetry::BackingOff {
+            failures: 3,
+            strikes: 3,
+        };
         pool.failure_state.is_network_failure = false;
         let delay = pool.backoff_delay();
         // 30s * 2^2 = 120s
@@ -11249,6 +11433,7 @@ mod tests {
         for (i, &expected_secs) in expected.iter().enumerate() {
             pool.failure_state.retry = WarmRetry::BackingOff {
                 failures: (i + 1) as u32,
+                strikes: 0,
             };
             assert_eq!(
                 pool.backoff_delay().as_secs(),

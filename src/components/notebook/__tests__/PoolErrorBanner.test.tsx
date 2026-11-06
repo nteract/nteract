@@ -116,4 +116,45 @@ describe("PoolErrorBanner", () => {
 
     expect(screen.getByText("UV environment warmup failed")).toBeInTheDocument();
   });
+  it("says retries are automatic only while the pool is not parked", () => {
+    const base = {
+      message: "warm-env subprocess timed out",
+      error_kind: "timeout",
+      consecutive_failures: 2,
+      retry_in_secs: 60,
+      receivedAt: Date.now(),
+    };
+    const { rerender } = render(
+      <PoolErrorBanner
+        uvError={base}
+        condaError={null}
+        pixiError={null}
+        onDismissUv={() => {}}
+        onDismissConda={() => {}}
+        onDismissPixi={() => {}}
+        onOpenSettings={() => {}}
+      />,
+    );
+    expect(screen.getByText("Retrying automatically")).toBeInTheDocument();
+    expect(screen.queryByText("Settings")).toBeNull();
+
+    rerender(
+      <PoolErrorBanner
+        uvError={{ ...base, consecutive_failures: 5, retry_in_secs: 1800, parked: true }}
+        condaError={null}
+        pixiError={null}
+        onDismissUv={() => {}}
+        onDismissConda={() => {}}
+        onDismissPixi={() => {}}
+        onOpenSettings={() => {}}
+      />,
+    );
+    expect(screen.queryByText("Retrying automatically")).toBeNull();
+    expect(
+      screen.getByText(
+        "Paused after repeated failures. Retries when you start a UV kernel, when uv settings change, or every 30 minutes",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Settings")).toBeInTheDocument();
+  });
 });

@@ -20,6 +20,12 @@ export interface RuntimePoolState {
   consecutive_failures: number;
   /** Seconds until next retry (0 if retry is imminent or healthy). */
   retry_in_secs: number;
+  /**
+   * The pool stopped regular retries after repeated failures. It retries when
+   * a launch needs it, when its settings change, or after `retry_in_secs`.
+   * Absent from older daemons.
+   */
+  parked?: boolean;
 }
 
 /** Full pool state snapshot from the PoolDoc. */

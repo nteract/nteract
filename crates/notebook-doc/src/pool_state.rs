@@ -15,6 +15,7 @@
 //!     pool_size: u64
 //!     consecutive_failures: u64
 //!     retry_in_secs: u64
+//!     parked: bool (absent on docs from older daemons; read as false)
 //!     error: Str (optional — deleted when None)
 //!     failed_package: Str (optional — deleted when None)
 //!     error_kind: Str (optional — "timeout"|"invalid_package"|"import_error"|"setup_failed")
@@ -24,6 +25,7 @@
 //!     pool_size: u64
 //!     consecutive_failures: u64
 //!     retry_in_secs: u64
+//!     parked: bool (absent on docs from older daemons; read as false)
 //!     error: Str (optional — deleted when None)
 //!     failed_package: Str (optional — deleted when None)
 //!     error_kind: Str (optional — "timeout"|"invalid_package"|"import_error"|"setup_failed")
@@ -33,6 +35,7 @@
 //!     pool_size: u64
 //!     consecutive_failures: u64
 //!     retry_in_secs: u64
+//!     parked: bool (absent on docs from older daemons; read as false)
 //!     error: Str (optional — deleted when None)
 //!     failed_package: Str (optional — deleted when None)
 //!     error_kind: Str (optional — "timeout"|"invalid_package"|"import_error"|"setup_failed")
@@ -72,6 +75,11 @@ pub struct RuntimePoolState {
     /// Seconds until next retry (0 if retry is imminent or healthy).
     #[serde(default)]
     pub retry_in_secs: u64,
+    /// The pool stopped regular retries after repeated failures. It still
+    /// retries when a launch needs it, when its settings change, and on a
+    /// slow timer (`retry_in_secs`).
+    #[serde(default)]
+    pub parked: bool,
 }
 
 /// Full pool state snapshot.
@@ -120,6 +128,8 @@ impl PoolDoc {
             .expect("scaffold uv.consecutive_failures");
         doc.put(&uv, "retry_in_secs", 0u64)
             .expect("scaffold uv.retry_in_secs");
+        doc.put(&uv, "parked", false)
+            .expect("scaffold uv.parked");
         // error and failed_package are optional — only set when present
 
         // conda/
@@ -136,6 +146,8 @@ impl PoolDoc {
             .expect("scaffold conda.consecutive_failures");
         doc.put(&conda, "retry_in_secs", 0u64)
             .expect("scaffold conda.retry_in_secs");
+        doc.put(&conda, "parked", false)
+            .expect("scaffold conda.parked");
 
         // pixi/
         let pixi = doc
@@ -151,6 +163,8 @@ impl PoolDoc {
             .expect("scaffold pixi.consecutive_failures");
         doc.put(&pixi, "retry_in_secs", 0u64)
             .expect("scaffold pixi.retry_in_secs");
+        doc.put(&pixi, "parked", false)
+            .expect("scaffold pixi.parked");
 
         Self {
             doc,
@@ -220,6 +234,7 @@ impl PoolDoc {
             state.consecutive_failures as u64,
         )?;
         self.doc.put(&obj, "retry_in_secs", state.retry_in_secs)?;
+        self.doc.put(&obj, "parked", state.parked)?;
 
         // Error: set string when Some, delete key when None
         match &state.error {
@@ -302,6 +317,17 @@ impl PoolDoc {
             error_kind: get_str("error_kind"),
             consecutive_failures: get_u64("consecutive_failures") as u32,
             retry_in_secs: get_u64("retry_in_secs"),
+            // Absent on docs from older daemons.
+            parked: self
+                .doc
+                .get(&obj, "parked")
+                .ok()
+                .flatten()
+                .and_then(|(v, _)| match v {
+                    Value::Scalar(s) => s.as_bool(),
+                    _ => None,
+                })
+                .unwrap_or(false),
         }
     }
 
@@ -452,6 +478,7 @@ mod tests {
                 error_kind: None,
                 consecutive_failures: 0,
                 retry_in_secs: 0,
+                parked: false,
             },
             conda: RuntimePoolState::default(),
             pixi: RuntimePoolState::default(),
@@ -491,6 +518,7 @@ mod tests {
                 error_kind: None,
                 consecutive_failures: 0,
                 retry_in_secs: 0,
+                parked: false,
             },
             conda: RuntimePoolState {
                 available: 2,
@@ -501,6 +529,7 @@ mod tests {
                 error_kind: Some("invalid_package".into()),
                 consecutive_failures: 2,
                 retry_in_secs: 30,
+                parked: false,
             },
             pixi: RuntimePoolState::default(),
         };
@@ -537,8 +566,9 @@ mod tests {
                 error: Some("test error".into()),
                 failed_package: Some("badpkg".into()),
                 error_kind: Some("timeout".into()),
-                consecutive_failures: 3,
-                retry_in_secs: 60,
+                consecutive_failures: 6,
+                retry_in_secs: 1800,
+                parked: true,
             },
             conda: RuntimePoolState::default(),
             pixi: RuntimePoolState::default(),

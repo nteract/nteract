@@ -139,9 +139,11 @@ The daemon maintains pre-created environments (base set + user's `default_packag
 
 Warm-env failures must surface in pool status with a real `error_kind` so
 onboarding does not spin forever waiting for `available > 0`. A failed warm
-deletes its partial directory. After five consecutive failures a pool parks
-(`WarmRetry` in `crates/runtimed/src/daemon.rs`): it stops retrying until a
-launch waits on it (one attempt) or its target or package list changes.
+deletes its partial directory. After five consecutive non-network failures a
+pool parks (`WarmRetry` in `crates/runtimed/src/daemon.rs`, reported as
+`parked` in pool status): it retries once when a launch waits on it, when its
+target or package list changes, and every 30 minutes. Network failures keep
+the short backoff and never park a pool.
 Pool warmups import kernel modules; they never `compileall` site-packages.
 
 With a UV or Conda pool target of 0, a launch that needs a prewarmed env
