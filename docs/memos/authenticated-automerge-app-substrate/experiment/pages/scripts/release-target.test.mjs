@@ -61,6 +61,8 @@ test("operator entrypoints reject every frozen target and implicit default befor
     reject("deploy.mjs", [...prefix, "provision"]);
     reject("deploy.mjs", [...prefix, "provision", "--apply"]);
     reject("deploy.mjs", [...prefix, "publish", stage, "--apply"]);
+    reject("deploy.mjs", [...prefix, "rotate-key"]);
+    reject("deploy.mjs", [...prefix, "retire-key", "--apply", "--from", "k2"]);
     reject("deployment/firewall.mjs", prefix);
     reject("deployment/dns.mjs", [...prefix, "12345678-1234-4123-8123-123456789abc", "--apply"]);
     reject("deployment/tunnel.mjs", [...prefix, "--apply"]);
@@ -182,4 +184,49 @@ test("install --restart reaches the host installer; other extra flags do not", (
     assert.match(result.stderr, /Unexpected deployment argument/);
     assert.equal(existsSync(log), false, "rejected flags must not reach SSH");
   }
+});
+
+test("rotate-key streams this checkout's keyring helper to the host under the deployment lock", (t) => {
+  const directory = mkdtempSync(path.join(tmpdir(), "page10-rotate-key-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const log = path.join(directory, "ssh-args");
+  const input = path.join(directory, "ssh-stdin");
+  writeFileSync(
+    path.join(directory, "ssh"),
+    `#!/bin/sh\nprintf '%s\\n' "$@" > '${log}'\ncat > '${input}'\necho '{"applied":false}'\n`,
+    { mode: 0o700 },
+  );
+  const env = { ...process.env, PATH: directory + path.delimiter + process.env.PATH };
+  const deploy = (...args) =>
+    spawnSync(process.execPath, [path.join(scripts, "deploy.mjs"), "--target", "page10", ...args], {
+      env,
+      encoding: "utf8",
+      timeout: 5000,
+    });
+  const result = deploy("rotate-key", "--apply", "--from", "k1");
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), '{"applied":false}');
+  const [, , host, command] = readFileSync(log, "utf8").trim().split("\n");
+  assert.equal(host, deploymentProfile("page10").deployment.host);
+  assert.equal(
+    command,
+    "sudo flock -n /run/nteract-pages-next-deploy.lock node --input-type=module - 'rotate' " +
+      "'--file' '/etc/nteract-page10/session-keys.json' " +
+      "'--secret-file' '/etc/nteract-page10/session-secret' '--move-secret' '--apply' '--from' 'k1'",
+  );
+  assert.equal(
+    readFileSync(input, "utf8"),
+    readFileSync(path.join(scripts, "deployment", "session-keys.mjs"), "utf8"),
+  );
+  // Page10 issues OAuth grants, so retiring waits their 30-day lifetime.
+  assert.equal(deploy("retire-key").status, 0);
+  assert.match(
+    readFileSync(log, "utf8"),
+    /'--installed'\n?.*'\/etc\/nteract-page10\/session-keys-active.json' '--state-url' 'http:\/\/127[.]0[.]0[.]1:19480\/state' '--overlap-days' '30'/,
+  );
+  rmSync(log);
+  const refused = deploy("rotate-key", "--force");
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /Usage: session-keys/);
+  assert.equal(existsSync(log), false, "bad options never reach the host");
 });

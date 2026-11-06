@@ -12,6 +12,7 @@ import { pagesFirewall } from "./deployment/firewall.mjs";
 import * as profiles from "./deployment/profiles.mjs";
 import { CRONS } from "../shared/schedule.mjs";
 import * as activation from "./deployment/activation.mjs";
+import * as sessionKeys from "./deployment/session-keys.mjs";
 import * as fs from "node:fs";
 import { createHash } from "node:crypto";
 import { runInNewContext } from "node:vm";
@@ -581,6 +582,7 @@ function installFixture(
       deploymentProfile: () => profile,
     },
     "./activation.mjs": activation,
+    "./session-keys.mjs": sessionKeys,
   };
   const read = (file) => fs.readFileSync(local(file), "utf8");
   const execute = (flags = []) =>
@@ -1515,6 +1517,44 @@ test("Pages and Page10 retain the local build's isolated usage binding and UTC c
   );
 });
 
+test("the installer writes the single session secret until a keyring file exists", (t) => {
+  const f = installFixture(t, { target: "page10" });
+  f.execute();
+  const vars = JSON.parse(f.read(f.release + "/wrangler.json")).vars;
+  assert.equal(vars.NOTEBOOK_CLOUD_APP_SESSION_SECRET, "fixture-only-session-secret");
+  assert.equal(vars.NOTEBOOK_CLOUD_APP_SESSION_KEYS, undefined);
+});
+
+test("the installer writes a keyring file as the session keys var and drops the secret", (t) => {
+  const f = installFixture(t, { target: "page10" });
+  const keyring = {
+    active: "k2",
+    keys: { k1: "k1-fixture-session-key-".repeat(2), k2: "k2-fixture-session-key-".repeat(2) },
+    activated_at: { k2: "2026-11-06T00:00:00.000Z" },
+  };
+  f.write(f.configDir + "/session-keys.json", JSON.stringify(keyring, null, 2) + "\n");
+  f.execute();
+  const vars = JSON.parse(f.read(f.release + "/wrangler.json")).vars;
+  assert.deepEqual(JSON.parse(vars.NOTEBOOK_CLOUD_APP_SESSION_KEYS), keyring);
+  assert.equal(vars.NOTEBOOK_CLOUD_APP_SESSION_SECRET, undefined);
+});
+
+test("the installer refuses a malformed keyring file before it writes anything", (t) => {
+  const f = installFixture(t, { target: "page10" });
+  f.write(
+    f.configDir + "/session-keys.json",
+    JSON.stringify({ active: "k2", keys: { k1: "k1-fixture-session-key-".repeat(2) } }),
+  );
+  assert.throws(f.execute, /Session keyring is invalid: active must name a kid/);
+  assert.equal(fs.existsSync(f.local(f.release)), false);
+  assert.equal(fs.existsSync(f.local(f.audit)), false);
+  // Only the runtime version probes ran; no host command changed anything.
+  assert.deepEqual(
+    f.calls.filter(({ args }) => args[0] !== "--version"),
+    [],
+  );
+});
+
 test("fresh Page10 installation owns its origin, storage, runtime and service", (t) => {
   const target = "page10";
   const profile = profiles.deploymentProfile(target);
@@ -2444,4 +2484,116 @@ test("serving targets shed above 2.5 GB and older targets keep their shipped lim
     { maxRssMb: 2560 },
   ])
     assert.throws(() => profiles.unitMemory({ memory }), /memory\./);
+});
+
+const FIXTURE_KEYRING = {
+  active: "k2",
+  keys: { k1: "k1-fixture-session-key-".repeat(2), k2: "k2-fixture-session-key-".repeat(2) },
+};
+
+test("the installer refuses a host with neither a keyring nor the single secret", (t) => {
+  const f = installFixture(t, { target: "page10" });
+  fs.rmSync(f.local(f.configDir + "/session-secret"));
+  assert.throws(f.execute, /Neither .*session-keys[.]json nor .*session-secret exists/);
+  assert.equal(fs.existsSync(f.local(f.release)), false);
+  assert.ok(f.calls.every(({ args }) => args[0] === "--version"));
+});
+
+test("a keyring install records when the Worker began signing and carries it along one line", (t) => {
+  const f = liveFixture(t);
+  assert.equal(fs.existsSync(f.local(f.configDir + "/session-keys-active.json")), false);
+  f.write(f.configDir + "/session-keys.json", JSON.stringify(FIXTURE_KEYRING));
+  fs.rmSync(f.local(f.configDir + "/session-secret"));
+  nextRelease(f);
+  f.execute();
+  const record = JSON.parse(f.read(f.configDir + "/session-keys-active.json"));
+  assert.equal(record.active, "k2");
+  assert.equal(record.deployment_version, DEPLOYED);
+  assert.ok(!Number.isNaN(Date.parse(record.activated_at)));
+  assert.deepEqual(f.outputs.at(-1).session_key, {
+    active: "k2",
+    signing_since: record.activated_at,
+  });
+  // The node reported the recorded deployment before this install: same line.
+  assert.ok(
+    f.calls.some(
+      ({ command, args }) => command === "curl" && args.at(-1) === "http://127.0.0.1:19480/state",
+    ),
+  );
+  nextRelease(f, "cd9876543210", "d");
+  f.execute();
+  assert.deepEqual(JSON.parse(f.read(f.configDir + "/session-keys-active.json")), record);
+});
+
+test("a keyring install gives older release configs the current session vars", (t) => {
+  const f = liveFixture(t);
+  const earlier = f.release + "/wrangler.json";
+  const before = JSON.parse(f.read(earlier));
+  assert.equal(before.vars.NOTEBOOK_CLOUD_APP_SESSION_SECRET, "fixture-only-session-secret");
+  f.write(f.configDir + "/session-keys.json", JSON.stringify(FIXTURE_KEYRING));
+  nextRelease(f);
+  f.execute();
+  const after = JSON.parse(f.read(earlier));
+  assert.equal(after.vars.NOTEBOOK_CLOUD_APP_SESSION_SECRET, undefined);
+  assert.deepEqual(JSON.parse(after.vars.NOTEBOOK_CLOUD_APP_SESSION_KEYS), FIXTURE_KEYRING);
+  const { NOTEBOOK_CLOUD_APP_SESSION_SECRET: _secret, ...otherVars } = before.vars;
+  const { NOTEBOOK_CLOUD_APP_SESSION_KEYS: _keys, ...keptVars } = after.vars;
+  assert.deepEqual(keptVars, otherVars);
+  assert.deepEqual({ ...after, vars: null }, { ...before, vars: null });
+  // After a retire, the next install takes the retired key off the disk too.
+  f.write(
+    f.configDir + "/session-keys.json",
+    JSON.stringify({ active: "k2", keys: { k2: FIXTURE_KEYRING.keys.k2 } }),
+  );
+  nextRelease(f, "cd9876543210", "d");
+  f.execute();
+  for (const sha of ["a", "c"])
+    assert.doesNotMatch(
+      f.read("/opt/nteract-page10/releases/" + sha.repeat(40) + "/wrangler.json"),
+      /k1-fixture-session-key/,
+    );
+});
+
+for (const [label, keyringBuild] of [
+  ["refuses", false],
+  ["names", true],
+])
+  test(`a keyring timeout ${label} a rollback to a release ${keyringBuild ? "with" : "without"} the keyring`, (t) => {
+    const clock = { now: 1_000_000 };
+    const f = liveFixture(t, {
+      clock,
+      health: () =>
+        JSON.stringify({ ok: true, prototype: "pages-celld-native", build: "0123456789ab" }),
+    });
+    if (keyringBuild) {
+      const earlier = f.audit + "/manifest.json";
+      const recorded = JSON.parse(f.read(earlier));
+      f.write(
+        earlier,
+        JSON.stringify({ ...recorded, files: { ...recorded.files, "session-keys.mjs": "0" } }),
+      );
+    }
+    f.write(f.configDir + "/session-keys.json", JSON.stringify(FIXTURE_KEYRING));
+    nextRelease(f);
+    let message = "";
+    try {
+      f.execute(["--restart"]);
+    } catch (error) {
+      message = error.message;
+    }
+    assert.match(message, /did not serve within 240000 ms/);
+    if (keyringBuild) assert.match(message, /Roll back with/);
+    else {
+      assert.match(message, /but do not roll back to it. It predates the session keyring/);
+      assert.doesNotMatch(message, /Roll back with/);
+    }
+    assert.equal(fs.existsSync(f.local(f.configDir + "/session-keys-active.json")), false);
+  });
+
+test("an install without a keyring drops a stale activation record", (t) => {
+  const f = liveFixture(t);
+  f.write(f.configDir + "/session-keys-active.json", JSON.stringify({ active: "k2" }));
+  nextRelease(f);
+  f.execute();
+  assert.equal(fs.existsSync(f.local(f.configDir + "/session-keys-active.json")), false);
 });

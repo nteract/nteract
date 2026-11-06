@@ -34,6 +34,7 @@ import {
   type ServerSessionRow,
 } from "./oidc-session-store.ts";
 import { cloudLog } from "./observability.ts";
+import { SessionKeyringError, sessionKeyring } from "./session-keyring.ts";
 
 // Server login also serves small celld applications without notebook rooms.
 export type ServerOidcEnvironment = Omit<NotebookEnvironment, "NOTEBOOK_ROOMS">;
@@ -134,7 +135,9 @@ export interface ServerOidcCallbackOptions {
  *   session (`already_signed_in`) or shown the failure page (`failure_page`).
  * - `session_expired`: a session in use ended because the provider refused
  *   its refresh (`refresh_rejected`), refused the account
- *   (`identity_rejected`), or a refresh owner crashed (`lease_abandoned`).
+ *   (`identity_rejected`), a refresh owner crashed (`lease_abandoned`), or
+ *   its sealed refresh token no longer opens (`seal_unreadable`): a key it
+ *   names was retired, or a build without the keyring meets a `kid.` seal.
  */
 export type ServerOidcAuthEvent =
   | { type: "sign_in"; principal: string }
@@ -148,7 +151,7 @@ export type ServerOidcAuthEvent =
   | {
       type: "session_expired";
       principal?: string;
-      reason: "refresh_rejected" | "identity_rejected" | "lease_abandoned";
+      reason: "refresh_rejected" | "identity_rejected" | "lease_abandoned" | "seal_unreadable";
     };
 export type ServerOidcAuthEventListener = (event: ServerOidcAuthEvent) => void;
 
@@ -309,12 +312,8 @@ function logFailure(
 function configFor(env: Env, request: Request): Config {
   const issuer = env.NOTEBOOK_CLOUD_OIDC_ISSUER?.trim();
   const clientId = env.NOTEBOOK_CLOUD_OIDC_CLIENT_ID?.trim();
-  if (
-    !issuer ||
-    !clientId ||
-    !env.DB ||
-    (env.NOTEBOOK_CLOUD_APP_SESSION_SECRET?.length ?? 0) < 32
-  ) {
+  // A malformed keyring throws its own error here rather than reading as unset.
+  if (!issuer || !clientId || !env.DB || !sessionKeyring(env)) {
     throw new Error("Server sign-in is not configured");
   }
   const origin = new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN?.trim() || request.url).origin;
@@ -813,11 +812,31 @@ async function refreshSession(
       });
     return null;
   }
-  const bundle = await openServerSecret<TokenBundle>(
-    env,
-    initial.sealed,
-    `session:${initial.id}:${config.context}`,
-  );
+  let bundle: TokenBundle;
+  try {
+    bundle = await openServerSecret<TokenBundle>(
+      env,
+      initial.sealed,
+      `session:${initial.id}:${config.context}`,
+    );
+  } catch (error) {
+    // No key here opens it, so no later request can either: end the session
+    // like any other expiry instead of failing every renewal. A malformed
+    // keyring is a configuration fault and still fails the request.
+    if (error instanceof SessionKeyringError) throw error;
+    logFailure("auth.server_session.expired", "refresh", error);
+    const removed = await db
+      .prepare("DELETE FROM oidc_server_sessions WHERE id = ? AND generation = ?")
+      .bind(initial.id, initial.generation)
+      .run();
+    if (removed.meta?.changes === 1)
+      notifyAuthEvent(options.onAuthEvent, {
+        type: "session_expired",
+        principal: sessionPrincipal(initial),
+        reason: "seal_unreadable",
+      });
+    return null;
+  }
   if (!bundle.refreshToken) return initial.access_expires_at > now ? initial : null;
   const lease = randomSecret();
   const claimed = await db

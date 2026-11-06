@@ -9,6 +9,8 @@ import {
 } from "@cloud/server-oidc.ts";
 import { handleLocalOidcRequest } from "@cloud/dev-oidc.ts";
 import { loadServerSession } from "@cloud/oidc-session-store.ts";
+import { assertSessionKeyring } from "@cloud/session-keyring.ts";
+import { sessionKeysFailure } from "./session-keys.mjs";
 import { logAuthEvent, recordOidcEvent, sessionRowPrincipal } from "./auth-events.mjs";
 import {
   createPageData,
@@ -1090,12 +1092,15 @@ export default {
     // celld answers a stub fetch to a saturated object itself, with a plain
     // 503; the gateway is the first code that can name it (host-busy.mjs).
     try {
+      const misconfigured = sessionKeysFailure(env);
+      if (misconfigured) return misconfigured;
       return advertiseBuild(request, await gateway.fetch(request, legibleEnv(env)));
     } finally {
       flushUsage(env, ctx);
     }
   },
   async scheduled(controller, env) {
+    assertSessionKeyring(env);
     await runScheduled(controller, env);
   },
 };

@@ -15,6 +15,7 @@ import {
   createCloudAppSessionCookie,
   readCloudAppSession,
   appSessionAccountKey,
+  appSessionConfigured,
   type CloudAppSession,
 } from "../src/app-session";
 import type { AuthenticatedConnection } from "../src/identity";
@@ -672,5 +673,101 @@ describe("verified email domain proof", () => {
         false,
       );
     }
+  });
+});
+
+describe("session keyring", () => {
+  const NEXT_SECRET = "fedcba9876543210fedcba9876543210-next";
+  const legacy = { NOTEBOOK_CLOUD_APP_SESSION_SECRET: SESSION_SECRET };
+  const keyring = (active: string, keys: Record<string, string>) => ({
+    NOTEBOOK_CLOUD_APP_SESSION_KEYS: JSON.stringify({ active, keys }),
+  });
+  const rotated = keyring("k2", { k1: SESSION_SECRET, k2: NEXT_SECRET });
+  const retired = keyring("k2", { k2: NEXT_SECRET });
+  const read = (env: object, cookie: string, now: number) =>
+    readCloudAppSession(
+      env,
+      new Request("https://cloud.test/n", { headers: { Cookie: cookie } }),
+      now,
+    );
+
+  it("signs the same bytes as the single secret when the keyring names only k1", async () => {
+    const single = keyring("k1", { k1: SESSION_SECRET });
+    const fromSecret = await createServerAppSession(legacy, oidcIdentity(), "c", 9_000, 1_000);
+    const fromKeyring = await createServerAppSession(single, oidcIdentity(), "c", 9_000, 1_000);
+    assert.deepEqual(fromKeyring, fromSecret);
+  });
+
+  it("verifies cookies and email proofs from old and new keys, and signs with the active one", async () => {
+    const now = 30_000;
+    const oldCookie = await createCloudAppSessionCookie(legacy, oidcIdentity(), now);
+    const newCookie = await createCloudAppSessionCookie(rotated, oidcIdentity(), now);
+    for (const [cookie, label] of [
+      [oldCookie, "k1"],
+      [newCookie, "k2"],
+    ] as const) {
+      const session = await read(rotated, cookie, now);
+      assert.ok(session, `${label} cookie reads under the rotated keyring`);
+      const identity = sessionIdentity(session);
+      assert.equal(
+        await appSessionHasFreshVerifiedEmail(rotated, identity, "user@example.test", now),
+        true,
+      );
+      assert.equal(
+        await appSessionHasFreshVerifiedEmailDomain(rotated, identity, "example.test", now),
+        true,
+      );
+    }
+    // The k2 cookie is signed with k2: the single k1 secret refuses it, and a
+    // keyring without k1 refuses the old cookie.
+    assert.equal(await read(legacy, newCookie, now), null);
+    assert.ok(await read(retired, newCookie, now));
+    assert.equal(await read(retired, oldCookie, now), null);
+    const oldSession = (await read(rotated, oldCookie, now))!;
+    assert.equal(
+      await appSessionHasFreshVerifiedEmail(
+        retired,
+        sessionIdentity(oldSession),
+        "user@example.test",
+        now,
+      ),
+      false,
+    );
+  });
+
+  it("renews an old-key cookie under the active key", async () => {
+    const issuedAt = 40_000;
+    const oldCookie = await createCloudAppSessionCookie(legacy, oidcIdentity(), issuedAt);
+    const now = issuedAt + NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS / 2 + 1;
+    const session = await read(rotated, oldCookie, now);
+    const renewed = await appSessionRenewalCookie(rotated, session, now);
+    assert.ok(renewed);
+    const value = renewed.split(";", 1)[0]!;
+    const renewedSession = await read(retired, value, now);
+    assert.ok(renewedSession, "the renewed cookie verifies without k1");
+    assert.equal(
+      await appSessionHasFreshVerifiedEmail(
+        retired,
+        sessionIdentity(renewedSession),
+        "user@example.test",
+        now,
+      ),
+      false,
+      "renewal keeps the original k1 proof rather than minting a new one",
+    );
+  });
+
+  it("fails closed on a malformed keyring instead of using the single secret", async () => {
+    const cookie = await createCloudAppSessionCookie(legacy, oidcIdentity(), 50_000);
+    const malformed = {
+      ...legacy,
+      NOTEBOOK_CLOUD_APP_SESSION_KEYS: JSON.stringify({ active: "k1", keys: { k1: "short" } }),
+    };
+    assert.throws(() => appSessionConfigured(malformed), /key k1 is shorter than 32 bytes/);
+    assert.equal(await read(malformed, cookie, 50_000), null);
+    await assert.rejects(
+      createCloudAppSessionCookie(malformed, oidcIdentity(), 50_000),
+      /NOTEBOOK_CLOUD_APP_SESSION_KEYS is invalid/,
+    );
   });
 });

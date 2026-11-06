@@ -39,6 +39,7 @@ import {
   runningRecord,
   unitInput,
 } from "./activation.mjs";
+import { installedRecord, parseKeyring, sessionVars, withSessionVars } from "./session-keys.mjs";
 const [stage, apply, ...flags] = process.argv.slice(2);
 const target = stageTarget(stage);
 assertQualifiedDeploymentTarget(target);
@@ -88,7 +89,7 @@ if (
   throw new Error("Stage file set differs from manifest");
 for (const [file, digest] of Object.entries(manifest.files)) {
   if (
-    !/^(release\/[A-Za-z0-9_./-]+|(install|activation|firewall|publish|profiles|isolated-publication|connector-slots|routes)[.]mjs)$/.test(
+    !/^(release\/[A-Za-z0-9_./-]+|(install|activation|firewall|publish|profiles|isolated-publication|connector-slots|routes|session-keys)[.]mjs)$/.test(
       file,
     ) ||
     file.split("/").includes("..")
@@ -121,6 +122,20 @@ if (owned) {
   if (ownership.prefix !== expected.prefix || ownership.hostname !== expected.hostname)
     throw new Error("Existing service has different ownership");
 }
+// A keyring file (written by `deploy.mjs rotate-key`) replaces the single
+// session secret in the Worker's vars; rotation moves `session-secret` aside,
+// so only one of them is read. Check before anything is written, so a
+// malformed keyring or a missing secret stops the installation here.
+const keyringPath = configDir + "/session-keys.json";
+const secretPath = configDir + "/session-secret";
+const activeRecordPath = configDir + "/session-keys-active.json";
+const keyringText =
+  owned && existsSync(keyringPath) ? readFileSync(keyringPath, "utf8") : undefined;
+const keyring = keyringText === undefined ? undefined : parseKeyring(keyringText);
+if (owned && !keyring && !existsSync(secretPath))
+  throw new Error(
+    `Neither ${keyringPath} nor ${secretPath} exists; restore the keyring before installing`,
+  );
 // The record storage every release installed here was configured to create
 // Pages with. With the target's history, it names the Pages this target may
 // hold; a release that can't open them is refused before any write.
@@ -322,7 +337,7 @@ config.vars = {
   NOTEBOOK_CLOUD_OIDC_USERINFO: "true",
   NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL: "https://anaconda.com/api/auth/sessions/whoami",
   NOTEBOOK_CLOUD_ANACONDA_API_KEY_PRINCIPAL_NAMESPACE: "runtimed-pages-next-anaconda",
-  NOTEBOOK_CLOUD_APP_SESSION_SECRET: readFileSync(configDir + "/session-secret", "utf8").trim(),
+  ...sessionVars({ keyring: keyringText, secret: () => readFileSync(secretPath, "utf8") }),
 };
 const configured = JSON.stringify(config, null, 2) + "\n";
 const releaseFiles = Object.fromEntries(
@@ -408,6 +423,25 @@ for (const file of Object.keys(releaseFiles)) {
   }
 }
 writeFileSync(configPath, configured, { mode: 0o640 });
+// Older release directories carry the session vars they were installed with.
+// Give them the current keyring: a `celld deploy` rollback to one then signs
+// with the current keys, a retired key can't come back with it, and retired
+// secrets leave the disk. Their other vars stay as installed.
+if (keyring)
+  for (const sha of installedReleases) {
+    const file = base + "/releases/" + sha + "/wrangler.json";
+    if (sha === manifest.source_sha || !existsSync(file)) continue;
+    let earlier;
+    try {
+      earlier = JSON.parse(readFileSync(file, "utf8"));
+    } catch {
+      // A partial copy from an interrupted install has no configured vars yet.
+      continue;
+    }
+    const scrubbed = JSON.stringify(withSessionVars(earlier, config.vars), null, 2) + "\n";
+    if (JSON.stringify(earlier, null, 2) + "\n" !== scrubbed)
+      writeFileSync(file, scrubbed, { mode: 0o640 });
+  }
 function permissions(directory) {
   chownSync(directory, 0, gid);
   chmodSync(directory, 0o750);
@@ -459,6 +493,25 @@ if (loaded.needDaemonReload)
     "systemd still reports NeedDaemonReload=yes after daemon-reload; refusing to start a stale definition",
   );
 run("systemctl", ["enable", expected.service]);
+// Which deployment the local node runs before this one, for the keyring's
+// activation record. Unknown starts the overlap afresh.
+let liveBefore = null;
+if (keyring)
+  try {
+    liveBefore =
+      JSON.parse(
+        run("curl", [
+          "--fail",
+          "--silent",
+          "--show-error",
+          "--max-time",
+          "5",
+          "http://" + expected.internalListen + "/state",
+        ]),
+      ).deployment?.version ?? null;
+  } catch {
+    liveBefore = null;
+  }
 const receipt = run("runuser", [
   "-u",
   expected.service,
@@ -541,6 +594,11 @@ function rollback(error) {
     } catch (reason) {
       refusal = reason.message;
     }
+  // A release from before the keyring reads only the single secret, which
+  // rotation moved aside: it would deploy without any session key.
+  if (!refusal && keyring && earlier && !Object.hasOwn(earlier.files ?? {}, "session-keys.mjs"))
+    refusal =
+      "It predates the session keyring, so it would run without a session key; install a release with the keyring instead.";
   if (refusal)
     return new Error(
       `${error.message}. The fleet pointer names ${deployedVersion}; the previous deployment ` +
@@ -650,6 +708,29 @@ const fleet = wait({
   timeoutMs: 120_000,
   intervalMs: 3000,
 });
+// Every node now signs with the keyring's active key. Record when that began,
+// carried forward only while the same deployment line keeps the same key;
+// `retire-key` measures the overlap from it.
+const previousRecord = existsSync(activeRecordPath)
+  ? (() => {
+      try {
+        return JSON.parse(readFileSync(activeRecordPath, "utf8"));
+      } catch {
+        return null;
+      }
+    })()
+  : null;
+const record = installedRecord({
+  previous: previousRecord,
+  active: keyring?.active,
+  liveBefore,
+  deployedVersion,
+  now: Date.now(),
+});
+if (record)
+  writeFileSync(activeRecordPath, JSON.stringify(record, null, 2) + "\n", { mode: 0o600 });
+else if (previousRecord !== null || existsSync(activeRecordPath))
+  rmSync(activeRecordPath, { force: true });
 console.log(
   JSON.stringify({
     installed: true,
@@ -665,6 +746,7 @@ console.log(
     deployment_version: deployedVersion,
     fleet_nodes: fleet.nodes,
     fleet_serving_after_ms: fleet.waitedMs,
+    ...(record && { session_key: { active: record.active, signing_since: record.activated_at } }),
     published: false,
   }),
 );

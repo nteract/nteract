@@ -190,3 +190,58 @@ test("a proxied cookie sharing write still requires and preserves the explicit p
   assert.equal(fixture.forwarded[0].headers.get("origin"), publicOrigin);
   assert.equal((await fixture.forwarded[0].json()).read, false);
 });
+
+test("a session from the single secret keeps working after the keyring rotates to k2", async (t) => {
+  const fixture = await gatewayFixture(t);
+  // The Page reads the same env object, so both the gateway and the Page see k2.
+  fixture.env.NOTEBOOK_CLOUD_APP_SESSION_KEYS = JSON.stringify({
+    active: "k2",
+    keys: {
+      k1: fixture.env.NOTEBOOK_CLOUD_APP_SESSION_SECRET,
+      k2: "rotated-gateway-session-key-".repeat(2),
+    },
+  });
+  const response = await worker.fetch(
+    fixture.request({ headers: { cookie: fixture.cookie } }),
+    fixture.env,
+  );
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.equal((await response.json()).access.role, "owner");
+
+  fixture.env.NOTEBOOK_CLOUD_APP_SESSION_KEYS = JSON.stringify({
+    active: "k2",
+    keys: { k2: "rotated-gateway-session-key-".repeat(2) },
+  });
+  const retired = await worker.fetch(
+    fixture.request({ headers: { cookie: fixture.cookie } }),
+    fixture.env,
+  );
+  assert.equal(retired.status, 401, "a k1 session id is unknown once k1 is retired");
+});
+
+test("a malformed session keyring fails every request, health included, without logging a secret", async (t) => {
+  const fixture = await gatewayFixture(t);
+  const secret = "private-short-secret";
+  fixture.env.NOTEBOOK_CLOUD_APP_SESSION_KEYS = JSON.stringify({
+    active: "k2",
+    keys: { k2: secret },
+  });
+  const logged = [];
+  t.mock.method(console, "error", (...args) => logged.push(args));
+  for (const url of [`${privateOrigin}/health`, fixture.request().url]) {
+    const response = await worker.fetch(
+      new Request(url, { headers: { cookie: fixture.cookie } }),
+      fixture.env,
+    );
+    assert.equal(response.status, 500);
+    assert.deepEqual(await response.json(), {
+      error: "Pages is misconfigured",
+      code: "server_misconfigured",
+    });
+  }
+  assert.equal(fixture.forwarded.length, 0);
+  assert.equal(logged.length, 2);
+  assert.equal(logged[0][1].event, "config.session_keys_invalid");
+  assert.match(logged[0][1].reason, /key k2 is shorter than 32 bytes/);
+  assert.doesNotMatch(JSON.stringify(logged), /private-short-secret/);
+});

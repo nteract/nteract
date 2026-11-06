@@ -5,6 +5,7 @@ import {
   serverOidcEnabled,
   type ServerSessionEnvironment,
 } from "./oidc-session-store.ts";
+import { sessionKeyring } from "./session-keyring.ts";
 
 export interface AppSessionEnvironment extends ServerSessionEnvironment {
   NOTEBOOK_CLOUD_APP_SESSION_SECRET?: string;
@@ -46,8 +47,9 @@ export const APP_SESSION_ACCOUNT_KEY_HEADER = "X-Nteract-Session-Account-Key";
 
 const SESSION_SIGNING_ALGORITHM = { name: "HMAC", hash: "SHA-256" };
 
+/** Throws `SessionKeyringError` when the keyring variable is malformed. */
 export function appSessionConfigured(env: AppSessionEnvironment): boolean {
-  return appSessionSecret(env) !== null;
+  return appSessionSecrets(env) !== null;
 }
 
 export async function createCloudAppSessionCookie(
@@ -229,9 +231,15 @@ export async function appSessionHasFreshVerifiedEmail(
   )
     return false;
   try {
-    const expected = await verifiedEmailBindingBytes(env, identity, email, identityVerifiedAt);
     const actual = base64UrlDecodeBytes(verifiedEmailBinding);
-    return actual !== null && timingSafeBytesEqual(expected, actual);
+    return (
+      actual !== null &&
+      (await verifyHmac(
+        env,
+        verifiedEmailBindingMessage(identity, email, identityVerifiedAt),
+        actual,
+      ))
+    );
   } catch {
     return false;
   }
@@ -263,14 +271,15 @@ export async function appSessionHasFreshVerifiedEmailDomain(
   )
     return false;
   try {
-    const expected = await verifiedEmailDomainBindingBytes(
-      env,
-      identity,
-      domain,
-      identityVerifiedAt,
-    );
     const actual = base64UrlDecodeBytes(verifiedEmailDomainBinding);
-    return actual !== null && timingSafeBytesEqual(expected, actual);
+    return (
+      actual !== null &&
+      (await verifyHmac(
+        env,
+        verifiedEmailDomainBindingMessage(identity, domain, identityVerifiedAt),
+        actual,
+      ))
+    );
   } catch {
     return false;
   }
@@ -284,23 +293,19 @@ function isNormalizedEmailDomain(domain: string): boolean {
   );
 }
 
-function verifiedEmailDomainBindingBytes(
-  env: AppSessionEnvironment,
+function verifiedEmailDomainBindingMessage(
   identity: AuthenticatedConnection,
   domain: string,
   verifiedAt: number,
-): Promise<Uint8Array> {
-  return hmacSha256(
-    env,
-    JSON.stringify([
-      "app-session-verified-email-domain:v1",
-      "oidc",
-      identity.metadata.principalNamespace,
-      identity.principal,
-      domain,
-      verifiedAt,
-    ]),
-  );
+): string {
+  return JSON.stringify([
+    "app-session-verified-email-domain:v1",
+    "oidc",
+    identity.metadata.principalNamespace,
+    identity.principal,
+    domain,
+    verifiedAt,
+  ]);
 }
 
 async function verifiedEmailProof(
@@ -328,35 +333,31 @@ async function verifiedEmailProof(
   return {
     identity_verified_at: nowSeconds,
     verified_email_binding: base64UrlEncodeBytes(
-      await verifiedEmailBindingBytes(env, identity, email, nowSeconds),
+      await hmacSha256(env, verifiedEmailBindingMessage(identity, email, nowSeconds)),
     ),
     ...(canProveDomain
       ? {
           verified_email_domain_binding: base64UrlEncodeBytes(
-            await verifiedEmailDomainBindingBytes(env, identity, domain, nowSeconds),
+            await hmacSha256(env, verifiedEmailDomainBindingMessage(identity, domain, nowSeconds)),
           ),
         }
       : {}),
   };
 }
 
-function verifiedEmailBindingBytes(
-  env: AppSessionEnvironment,
+function verifiedEmailBindingMessage(
   identity: AuthenticatedConnection,
   email: string,
   verifiedAt: number,
-): Promise<Uint8Array> {
-  return hmacSha256(
-    env,
-    JSON.stringify([
-      "app-session-verified-email:v1",
-      "oidc",
-      identity.metadata.principalNamespace,
-      identity.principal,
-      normalizeInviteEmail(email),
-      verifiedAt,
-    ]),
-  );
+): string {
+  return JSON.stringify([
+    "app-session-verified-email:v1",
+    "oidc",
+    identity.metadata.principalNamespace,
+    identity.principal,
+    normalizeInviteEmail(email),
+    verifiedAt,
+  ]);
 }
 
 function validIdentityProof(payload: CloudAppSessionPayload, nowSeconds: number): boolean {
@@ -426,9 +427,8 @@ async function verifyCloudAppSession(
     return null;
   }
 
-  const expected = await hmacSha256(env, encodedPayload).catch(() => null);
   const actual = base64UrlDecodeBytes(encodedSignature);
-  if (!expected || !actual || !timingSafeBytesEqual(expected, actual)) {
+  if (!actual || !(await verifyHmac(env, encodedPayload, actual).catch(() => false))) {
     return null;
   }
 
@@ -444,11 +444,38 @@ async function verifyCloudAppSession(
   return parsed;
 }
 
+/**
+ * Signs with the active key. Cache and account keys are signed this way too:
+ * they change once when the active key changes, which only costs a cache miss
+ * (the viewer's notebook list is scoped by `account_key`).
+ */
 async function hmacSha256(env: AppSessionEnvironment, value: string): Promise<Uint8Array> {
-  const secret = appSessionSecret(env);
-  if (!secret) {
+  const secrets = appSessionSecrets(env);
+  if (!secrets) {
     throw new Error("app session signing is not configured");
   }
+  return hmacWith(secrets[0]!, value);
+}
+
+/** True when `actual` is `value`'s HMAC under any configured key. */
+async function verifyHmac(
+  env: AppSessionEnvironment,
+  value: string,
+  actual: Uint8Array,
+): Promise<boolean> {
+  const secrets = appSessionSecrets(env);
+  if (!secrets) {
+    throw new Error("app session signing is not configured");
+  }
+  let matched = false;
+  for (const secret of secrets) {
+    // Check every key, so timing doesn't reveal which one signed the value.
+    if (timingSafeBytesEqual(await hmacWith(secret, value), actual)) matched = true;
+  }
+  return matched;
+}
+
+async function hmacWith(secret: string, value: string): Promise<Uint8Array> {
   const key = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(secret),
@@ -464,12 +491,18 @@ async function hmacSha256(env: AppSessionEnvironment, value: string): Promise<Ui
   return new Uint8Array(signature);
 }
 
-function appSessionSecret(env: AppSessionEnvironment): string | null {
-  const secret = env.NOTEBOOK_CLOUD_APP_SESSION_SECRET?.trim();
-  if (!secret || secret.length < NOTEBOOK_CLOUD_APP_SESSION_SECRET_MIN_LENGTH) {
-    return null;
+/**
+ * Signing secrets, active first. The single configured secret is trimmed as
+ * it always has been; keyring secrets are validated to have no whitespace.
+ */
+function appSessionSecrets(env: AppSessionEnvironment): string[] | null {
+  const keyring = sessionKeyring(env);
+  if (!keyring) return null;
+  if (keyring.source === "secret") {
+    const secret = keyring.active.secret.trim();
+    return secret.length < NOTEBOOK_CLOUD_APP_SESSION_SECRET_MIN_LENGTH ? null : [secret];
   }
-  return secret;
+  return keyring.keys.map(({ secret }) => secret);
 }
 
 function appSessionDisplayName(value: string | undefined): string | undefined {

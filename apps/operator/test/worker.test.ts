@@ -285,8 +285,24 @@ test("origin protection, logout and configuration fail closed", async (t) => {
   f.env.NOTEBOOK_CLOUD_LOCAL_OIDC = "true";
   assert.equal((await f.request("/operator/")).status, 503);
   delete f.env.NOTEBOOK_CLOUD_LOCAL_OIDC;
+  f.env.NOTEBOOK_CLOUD_APP_SESSION_KEYS = JSON.stringify({ active: "k2", keys: { k1: "short" } });
+  assert.equal((await f.request("/operator/")).status, 503);
+  delete f.env.NOTEBOOK_CLOUD_APP_SESSION_KEYS;
   delete f.env.OPERATOR_ALLOWED_EMAILS;
   assert.equal((await f.request("/")).status, 503);
+});
+
+test("a session keyring alone configures sign-in, and a session survives its rotation", async (t) => {
+  const f = await fixture(t);
+  const { cookie } = await f.login();
+  assert.ok(cookie);
+  const legacy = f.env.NOTEBOOK_CLOUD_APP_SESSION_SECRET!;
+  delete f.env.NOTEBOOK_CLOUD_APP_SESSION_SECRET;
+  f.env.NOTEBOOK_CLOUD_APP_SESSION_KEYS = JSON.stringify({
+    active: "k2",
+    keys: { k1: legacy, k2: "rotated-operator-session-key-32-bytes" },
+  });
+  assert.equal((await f.request("/api/operator/metrics", { headers: { cookie } })).status, 200);
 });
 
 test("static shell avoids index.html canonical redirects; unknown assets cannot expose worker files", async (t) => {

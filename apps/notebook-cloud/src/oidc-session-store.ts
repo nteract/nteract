@@ -1,10 +1,18 @@
 import type { D1Database, D1Value } from "./cloudflare-types.ts";
 import type { CloudAppSession } from "./app-session.ts";
+import {
+  sessionKeyByKid,
+  sessionKeyring,
+  splitSealed,
+  type SessionKey,
+  type SessionKeyring,
+} from "./session-keyring.ts";
 
 export interface ServerSessionEnvironment {
   DB?: D1Database;
   NOTEBOOK_CLOUD_OIDC_FLOW?: string;
   NOTEBOOK_CLOUD_APP_SESSION_SECRET?: string;
+  NOTEBOOK_CLOUD_APP_SESSION_KEYS?: string;
   NOTEBOOK_CLOUD_PUBLIC_ORIGIN?: string;
   NOTEBOOK_CLOUD_OIDC_ISSUER?: string;
   NOTEBOOK_CLOUD_OIDC_CLIENT_ID?: string;
@@ -113,10 +121,11 @@ export async function loadServerSession(
   const token = cookieValue(request, SERVER_SESSION_COOKIE);
   if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) return null;
   const db = await oidcDatabase(env);
+  const ids = await serverSessionIds(env, token);
   const row = await db
-    .prepare(`SELECT * FROM oidc_server_sessions WHERE id = ?
+    .prepare(`SELECT * FROM oidc_server_sessions WHERE ${idMatch(ids)}
     AND idle_expires_at > ? AND absolute_expires_at > ?`)
-    .bind(await serverSessionId(env, token), now, now)
+    .bind(...ids, now, now)
     .first<ServerSessionRow>();
   const origin = env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN?.trim() || new URL(request.url).origin;
   return row?.context === serverSessionContext(env, new URL(origin).origin) ? row : null;
@@ -169,10 +178,16 @@ export async function revokeServerSession(
   const token = cookieValue(request, SERVER_SESSION_COOKIE);
   if (!token) return;
   const db = await oidcDatabase(env);
+  const ids = await serverSessionIds(env, token);
   await db
-    .prepare("DELETE FROM oidc_server_sessions WHERE id = ?")
-    .bind(await serverSessionId(env, token))
+    .prepare(`DELETE FROM oidc_server_sessions WHERE ${idMatch(ids)}`)
+    .bind(...ids)
     .run();
+}
+
+// One id is the single-key query unchanged; a keyring matches any of its ids.
+function idMatch(ids: readonly string[]): string {
+  return ids.length === 1 ? "id = ?" : `id IN (${ids.map(() => "?").join(", ")})`;
 }
 
 // An expression index, so finding an account's sessions needs no new column
@@ -231,15 +246,39 @@ export async function secretHash(value: string): Promise<string> {
   );
 }
 
+/** The session id a new row stores: the token's HMAC under the active key. */
 export async function serverSessionId(
   env: ServerSessionEnvironment,
   token: string,
 ): Promise<string> {
-  const secret = env.NOTEBOOK_CLOUD_APP_SESSION_SECRET;
-  if (!secret || secret.length < 32) throw new Error("Server sign-in requires a session secret");
-  const key = await crypto.subtle.importKey(
+  return sessionIdFor(requiredKeyring(env).active, token);
+}
+
+/**
+ * Every id `token` may be stored under, active key first. A row keeps the id
+ * it was created with: the id is the primary key, the refresh and touch
+ * fences, and part of the sealed bundle's binding, so moving a row to the
+ * active key's id would need a reseal racing a refresh that holds a lease on
+ * the old id. A row under a retiring key is found here until it expires,
+ * which takes at most `SERVER_SESSION_ABSOLUTE_SECONDS`, the rotation overlap.
+ */
+export async function serverSessionIds(
+  env: ServerSessionEnvironment,
+  token: string,
+): Promise<string[]> {
+  return Promise.all(requiredKeyring(env).keys.map((key) => sessionIdFor(key, token)));
+}
+
+function requiredKeyring(env: ServerSessionEnvironment): SessionKeyring {
+  const keyring = sessionKeyring(env);
+  if (!keyring) throw new Error("Server sign-in requires a session secret");
+  return keyring;
+}
+
+async function sessionIdFor(key: SessionKey, token: string): Promise<string> {
+  const hmac = await crypto.subtle.importKey(
     "raw",
-    new TextEncoder().encode(secret),
+    new TextEncoder().encode(key.secret),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"],
@@ -248,19 +287,17 @@ export async function serverSessionId(
     new Uint8Array(
       await crypto.subtle.sign(
         "HMAC",
-        key,
+        hmac,
         new TextEncoder().encode(`nteract/server-session-id/v1:${token}`),
       ),
     ),
   );
 }
 
-async function encryptionKey(env: ServerSessionEnvironment): Promise<CryptoKey> {
-  const secret = env.NOTEBOOK_CLOUD_APP_SESSION_SECRET;
-  if (!secret || secret.length < 32) throw new Error("Server sign-in requires a session secret");
+async function encryptionKey(key: SessionKey): Promise<CryptoKey> {
   const material = await crypto.subtle.importKey(
     "raw",
-    new TextEncoder().encode(secret),
+    new TextEncoder().encode(key.secret),
     "HKDF",
     false,
     ["deriveKey"],
@@ -279,30 +316,42 @@ async function encryptionKey(env: ServerSessionEnvironment): Promise<CryptoKey> 
   );
 }
 
+/**
+ * Seals with the active key: `kid.iv.ct` under a keyring, the bare `iv.ct`
+ * when only `NOTEBOOK_CLOUD_APP_SESSION_SECRET` is configured.
+ */
 export async function sealServerSecret(
   env: ServerSessionEnvironment,
   value: unknown,
   binding: string,
 ): Promise<string> {
+  const keyring = requiredKeyring(env);
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const bytes = await crypto.subtle.encrypt(
     { name: "AES-GCM", iv, additionalData: new TextEncoder().encode(binding) },
-    await encryptionKey(env),
+    await encryptionKey(keyring.active),
     new TextEncoder().encode(JSON.stringify(value)),
   );
-  return `${encode(iv)}.${encode(new Uint8Array(bytes))}`;
+  const sealed = `${encode(iv)}.${encode(new Uint8Array(bytes))}`;
+  return keyring.source === "keyring" ? `${keyring.active.kid}.${sealed}` : sealed;
 }
 
+/** Opens with the key its kid names; a bare `iv.ct` is `k1`. An unknown kid fails. */
 export async function openServerSecret<T>(
   env: ServerSessionEnvironment,
   value: string,
   binding: string,
 ): Promise<T> {
-  const [iv, ciphertext] = value.split(".");
-  if (!iv || !ciphertext) throw new Error("Invalid encrypted session");
+  const {
+    kid,
+    rest: [iv, ciphertext, extra],
+  } = splitSealed(value);
+  const key = sessionKeyByKid(requiredKeyring(env), kid);
+  if (!key || !iv || !ciphertext || extra !== undefined)
+    throw new Error("Invalid encrypted session");
   const bytes = await crypto.subtle.decrypt(
     { name: "AES-GCM", iv: decode(iv), additionalData: new TextEncoder().encode(binding) },
-    await encryptionKey(env),
+    await encryptionKey(key),
     decode(ciphertext),
   );
   return JSON.parse(new TextDecoder().decode(bytes));
