@@ -34,6 +34,7 @@ import {
   type ServerSessionRow,
 } from "./oidc-session-store.ts";
 import { cloudLog } from "./observability.ts";
+import { sessionKeyring } from "./session-keyring.ts";
 
 // Server login also serves small celld applications without notebook rooms.
 export type ServerOidcEnvironment = Omit<NotebookEnvironment, "NOTEBOOK_ROOMS">;
@@ -309,12 +310,8 @@ function logFailure(
 function configFor(env: Env, request: Request): Config {
   const issuer = env.NOTEBOOK_CLOUD_OIDC_ISSUER?.trim();
   const clientId = env.NOTEBOOK_CLOUD_OIDC_CLIENT_ID?.trim();
-  if (
-    !issuer ||
-    !clientId ||
-    !env.DB ||
-    (env.NOTEBOOK_CLOUD_APP_SESSION_SECRET?.length ?? 0) < 32
-  ) {
+  // A malformed keyring throws its own error here rather than reading as unset.
+  if (!issuer || !clientId || !env.DB || !sessionKeyring(env)) {
     throw new Error("Server sign-in is not configured");
   }
   const origin = new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN?.trim() || request.url).origin;

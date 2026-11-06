@@ -42,6 +42,7 @@ export const controllerDeploymentHelpers = Object.freeze([
   "isolated-publication.mjs",
   "connector-slots.mjs",
   "routes.mjs",
+  "session-keys.mjs",
 ]);
 const usage =
   "Usage: controller-deploy.mjs prepare SOURCE_CHECKOUT STAGE [--source-sha FULL_SHA] | install STAGE --apply | publish STAGE --apply";
@@ -246,7 +247,11 @@ export function prepareControllerStage(
   );
   if (config.main !== "index.js" || config.no_bundle !== true || config.build || config.containers)
     throw new Error("Build a static no_bundle Worker before preparing");
-  if (Object.keys(config.vars ?? {}).some((key) => /SECRET|TOKEN|PASSWORD|PRIVATE_KEY/.test(key)))
+  if (
+    Object.keys(config.vars ?? {}).some((key) =>
+      /SECRET|TOKEN|PASSWORD|PRIVATE_KEY|SESSION_KEYS/.test(key),
+    )
+  )
     throw new Error("Deployment artifacts must not contain secret variables");
   if (fsOps.existsSync(plan.stage))
     throw new Error("Prepared stage already exists; inspect it instead of replacing it");

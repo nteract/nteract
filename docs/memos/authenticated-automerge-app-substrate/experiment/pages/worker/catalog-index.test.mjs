@@ -207,6 +207,31 @@ test("cursors are sealed, opaque and bound to principal, query and in_trash", as
   await rejects(openCursor(env, context, legacy));
 });
 
+test("cursors from every keyring key open and new cursors use the active key", async () => {
+  const k1 = "s".repeat(32),
+    k2 = "u".repeat(40);
+  const legacy = { NOTEBOOK_CLOUD_APP_SESSION_SECRET: k1 };
+  const keyring = (active, keys) => ({
+    NOTEBOOK_CLOUD_APP_SESSION_KEYS: JSON.stringify({ active, keys }),
+  });
+  const rotated = keyring("k2", { k1, k2 });
+  const retired = keyring("k2", { k2 });
+  const context = { principal: owner, needle: "", inTrash: false };
+  const position = { updated_at: at(5), page_id: id(42) };
+  const before = await sealCursor(legacy, context, position);
+  const after = await sealCursor(rotated, context, position);
+  assert.deepEqual(await openCursor(rotated, context, before), position);
+  assert.deepEqual(await openCursor(rotated, context, after), position);
+  assert.deepEqual(await openCursor(retired, context, after), position);
+  const rejects = (promise) => assert.rejects(promise, { status: 400, code: "invalid_cursor" });
+  await rejects(openCursor(legacy, context, after));
+  await rejects(openCursor(retired, context, before));
+  await rejects(openCursor(rotated, { ...context, principal: member }, before));
+  const malformed = keyring("k3", { k1 });
+  await assert.rejects(openCursor(malformed, context, before), /active must name a kid/);
+  await assert.rejects(sealCursor(malformed, context, position), /active must name a kid/);
+});
+
 test("a delayed trash retirement cannot undo a restore or a later regrant", async (t) => {
   const { db, env } = await seededIndex(t);
   const viewer = { [member]: { role: "viewer", generation: 1 } };

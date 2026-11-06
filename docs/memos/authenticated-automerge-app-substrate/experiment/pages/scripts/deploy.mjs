@@ -26,6 +26,7 @@ import {
   parseRuntimeVersion,
 } from "./deployment/profiles.mjs";
 import { provisionTarget } from "./deployment/provision.mjs";
+import { hostKeyCommand } from "./deployment/session-keys.mjs";
 
 const scripts = path.dirname(fileURLToPath(import.meta.url));
 const pages = path.dirname(scripts);
@@ -65,7 +66,11 @@ function prepare() {
   const config = JSON.parse(readFileSync(path.join(dist, "wrangler.json")));
   if (config.main !== "index.js" || config.no_bundle !== true || config.build || config.containers)
     throw new Error("Build a static no_bundle Worker before preparing");
-  if (Object.keys(config.vars ?? {}).some((key) => /SECRET|TOKEN|PASSWORD|PRIVATE_KEY/.test(key)))
+  if (
+    Object.keys(config.vars ?? {}).some((key) =>
+      /SECRET|TOKEN|PASSWORD|PRIVATE_KEY|SESSION_KEYS/.test(key),
+    )
+  )
     throw new Error("Deployment artifacts must not contain secret variables");
   const runtime = JSON.parse(
     ssh(
@@ -91,6 +96,7 @@ function prepare() {
     "isolated-publication.mjs",
     "connector-slots.mjs",
     "routes.mjs",
+    "session-keys.mjs",
   ])
     cpSync(path.join(scripts, "deployment", name), path.join(output, name));
   const manifest = {
@@ -122,12 +128,38 @@ const [mode = "plan", stage, flag, extra, ...rest] = args;
 // `install ... --apply --restart` restarts the service even when nothing it
 // reads at startup changed.
 const restart = mode === "install" && extra === "--restart";
-if ((extra && !restart) || rest.length) throw new Error("Unexpected deployment argument");
-if (["prepare", "upload", "install", "provision", "publish"].includes(mode))
+const keyMode = ["rotate-key", "retire-key"].includes(mode);
+if (!keyMode && ((extra && !restart) || rest.length))
+  throw new Error("Unexpected deployment argument");
+if (
+  ["prepare", "upload", "install", "provision", "publish", "rotate-key", "retire-key"].includes(
+    mode,
+  )
+)
   assertQualifiedDeploymentTarget(target);
 if (mode === "plan" && !stage) console.log(JSON.stringify(deployment, null, 2));
 else if (mode === "prepare" && !stage) prepare();
-else if (mode === "provision" && [undefined, "--apply"].includes(stage) && !flag) {
+else if (keyMode) {
+  // Edits /etc/<service>/session-keys.json on the host. The helper comes from
+  // this checkout over SSH stdin and runs as root under the deployment lock;
+  // a new secret is generated there and never leaves the host. Without
+  // --apply it prints the plan. The Worker sees the change on the next
+  // `install REMOTE_STAGE --apply`.
+  const command = hostKeyCommand(mode, args.slice(1), deployment.service);
+  console.log(
+    run(
+      "ssh",
+      [
+        "-o",
+        "BatchMode=yes",
+        deployment.host,
+        "sudo flock -n /run/nteract-pages-next-deploy.lock node --input-type=module - " +
+          command.map(quote).join(" "),
+      ],
+      { input: readFileSync(path.join(scripts, "deployment", "session-keys.mjs")) },
+    ),
+  );
+} else if (mode === "provision" && [undefined, "--apply"].includes(stage) && !flag) {
   // The token comes from the environment only. The result never holds it or
   // the tunnel secret.
   const result = await provisionTarget({
@@ -172,5 +204,5 @@ else if (mode === "provision" && [undefined, "--apply"].includes(stage) && !flag
   );
 } else
   throw new Error(
-    "Usage: deploy.mjs [--target pages-next|page3|page4|page5|page6|page7|page8|page9|page10|pages|pages2] [plan | prepare | upload LOCAL_STAGE | install REMOTE_STAGE --apply [--restart] | provision [--apply] | publish REMOTE_STAGE --apply]",
+    "Usage: deploy.mjs [--target pages-next|page3|page4|page5|page6|page7|page8|page9|page10|pages|pages2] [plan | prepare | upload LOCAL_STAGE | install REMOTE_STAGE --apply [--restart] | provision [--apply] | publish REMOTE_STAGE --apply | rotate-key [--apply --from ACTIVE_KID] | retire-key [--kid KID] [--force] [--apply --from ACTIVE_KID]]",
   );

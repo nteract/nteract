@@ -28,6 +28,7 @@
  * the same records: `pages_catalog_spaces`, the `space_id` column and the
  * `host/index/spaces-*` markers. project-api.mjs maps `space_id` in results.
  */
+import { sessionKeyring } from "@cloud/session-keyring.ts";
 import { pageGrant, pageState } from "./access.mjs";
 import {
   accountIndexMachine,
@@ -887,12 +888,18 @@ const fromBase64url = (text) =>
     char.charCodeAt(0),
   );
 
-/** AES-GCM key derived from the deployment's session secret. Without one
- * (tests), each isolate seals with its own random key; a cursor from another
- * isolate then fails closed and the client restarts from the first page. */
-function cursorKey(env) {
-  const configured = env?.NOTEBOOK_CLOUD_APP_SESSION_SECRET;
-  const secret = typeof configured === "string" && configured.length >= 32 ? configured : "";
+/** AES-GCM keys derived from the deployment's session keyring, the active key
+ * first (see `sessionKeyring`). A cursor is sealed with the active key and
+ * opens under any key, so cursors issued before a rotation keep working until
+ * they expire. Without a key (tests), each isolate seals with its own random
+ * key; a cursor from another isolate then fails closed and the client
+ * restarts from the first page. A malformed keyring throws. */
+function cursorKeysFor(env) {
+  const keyring = sessionKeyring(env);
+  return keyring ? keyring.keys.map(({ secret }) => cursorKey(secret)) : [cursorKey("")];
+}
+
+function cursorKey(secret) {
   let key = cursorKeys.get(secret);
   if (!key) {
     key = secret
@@ -968,7 +975,7 @@ export async function sealCursor(
   const sealed = new Uint8Array(
     await crypto.subtle.encrypt(
       { name: "AES-GCM", iv, additionalData: cursorContext(context) },
-      await cursorKey(env),
+      await cursorKeysFor(env)[0],
       encoder.encode(JSON.stringify(position)),
     ),
   );
@@ -992,15 +999,26 @@ export async function openCursor(
     new HttpError(400, "Invalid cursor; restart from the first page", "invalid_cursor");
   if (typeof cursor !== "string" || cursor.length > maxLength || !cursor.startsWith(CURSOR_PREFIX))
     throw invalid();
+  // Outside the try: a malformed keyring is a server fault, not a bad cursor.
+  const keys = cursorKeysFor(env);
   let value;
   try {
     const bytes = fromBase64url(cursor.slice(CURSOR_PREFIX.length));
     if (bytes.length < 29) throw invalid();
-    const plain = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv: bytes.slice(0, 12), additionalData: cursorContext(context) },
-      await cursorKey(env),
-      bytes.slice(12),
-    );
+    let plain;
+    for (const key of keys) {
+      try {
+        plain = await crypto.subtle.decrypt(
+          { name: "AES-GCM", iv: bytes.slice(0, 12), additionalData: cursorContext(context) },
+          await key,
+          bytes.slice(12),
+        );
+        break;
+      } catch {
+        // AES-GCM authenticates: a wrong key fails here, and the next is tried.
+      }
+    }
+    if (!plain) throw invalid();
     value = JSON.parse(decoder.decode(plain));
   } catch {
     throw invalid();

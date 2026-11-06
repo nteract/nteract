@@ -39,6 +39,7 @@ import {
   runningRecord,
   unitInput,
 } from "./activation.mjs";
+import { parseKeyring, sessionVars } from "./session-keys.mjs";
 const [stage, apply, ...flags] = process.argv.slice(2);
 const target = stageTarget(stage);
 assertQualifiedDeploymentTarget(target);
@@ -88,7 +89,7 @@ if (
   throw new Error("Stage file set differs from manifest");
 for (const [file, digest] of Object.entries(manifest.files)) {
   if (
-    !/^(release\/[A-Za-z0-9_./-]+|(install|activation|firewall|publish|profiles|isolated-publication|connector-slots|routes)[.]mjs)$/.test(
+    !/^(release\/[A-Za-z0-9_./-]+|(install|activation|firewall|publish|profiles|isolated-publication|connector-slots|routes|session-keys)[.]mjs)$/.test(
       file,
     ) ||
     file.split("/").includes("..")
@@ -121,6 +122,13 @@ if (owned) {
   if (ownership.prefix !== expected.prefix || ownership.hostname !== expected.hostname)
     throw new Error("Existing service has different ownership");
 }
+// A keyring file (written by `deploy.mjs rotate-key`) replaces the single
+// session secret in the Worker's vars. Check it before anything is written,
+// so a malformed keyring stops the installation here.
+const keyringPath = configDir + "/session-keys.json";
+const keyringText =
+  owned && existsSync(keyringPath) ? readFileSync(keyringPath, "utf8") : undefined;
+if (keyringText !== undefined) parseKeyring(keyringText);
 // The record storage every release installed here was configured to create
 // Pages with. With the target's history, it names the Pages this target may
 // hold; a release that can't open them is refused before any write.
@@ -322,7 +330,10 @@ config.vars = {
   NOTEBOOK_CLOUD_OIDC_USERINFO: "true",
   NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL: "https://anaconda.com/api/auth/sessions/whoami",
   NOTEBOOK_CLOUD_ANACONDA_API_KEY_PRINCIPAL_NAMESPACE: "runtimed-pages-next-anaconda",
-  NOTEBOOK_CLOUD_APP_SESSION_SECRET: readFileSync(configDir + "/session-secret", "utf8").trim(),
+  ...sessionVars({
+    keyring: keyringText,
+    secret: readFileSync(configDir + "/session-secret", "utf8"),
+  }),
 };
 const configured = JSON.stringify(config, null, 2) + "\n";
 const releaseFiles = Object.fromEntries(

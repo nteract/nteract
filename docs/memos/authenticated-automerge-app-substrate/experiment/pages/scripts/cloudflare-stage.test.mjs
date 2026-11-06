@@ -65,7 +65,7 @@ test("Cloudflare staging separates native modules from browser assets and exclud
   assert.equal(config.routes, undefined, "domain reassignment is a separate verified action");
   assert.equal(config.vars.NOTEBOOK_CLOUD_OIDC_REDIRECT_URI, "https://preview.runt.run/oidc");
   assert.equal(
-    Object.keys(config.vars).some((k) => /SECRET|DEV_TOKEN|LOCAL_OIDC/.test(k)),
+    Object.keys(config.vars).some((k) => /SECRET|SESSION_KEYS|DEV_TOKEN|LOCAL_OIDC/.test(k)),
     false,
   );
   assert.throws(() => stageCloudflareFiles(dist, destination, id), /must be new/);

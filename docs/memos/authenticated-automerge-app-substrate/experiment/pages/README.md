@@ -664,7 +664,7 @@ guarded by the revision the listing read. A listing looks ahead for one verified
 row past its page; only a scan that stops at its bound (`2 × limit + 16`
 candidates) returns a cursor without one, and that can only reflect stale rows
 carrying titles the caller was previously authorized to see. `next_cursor` is sealed (AES-GCM, keyed from
-`NOTEBOOK_CLOUD_APP_SESSION_SECRET`) to the caller, query, `in_trash` and filters,
+the active session key; see [Session key rotation](DEPLOYMENT.md#session-key-rotation)) to the caller, query, `in_trash` and filters,
 and expires after 24 hours. Pagination is best-effort: a Page whose title or sharing
 changes mid-traversal can move across the cursor, and so can a Page whose content
 changes under the activity sort.

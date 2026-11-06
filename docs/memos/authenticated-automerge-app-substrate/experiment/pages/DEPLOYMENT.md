@@ -356,8 +356,8 @@ a rollback, accounts repair their index within six hours of their next listing, 
 immediately when the `PAGES_CATALOG_INDEX` value changes. Index migrations run
 lazily on first use and must stay additive so a rollback build keeps working
 against the newer schema. Listing cursors are sealed with a key derived from the
-session secret and expire after 24 hours; rotating that secret invalidates
-outstanding cursors. Migration 2 adds per-principal title snapshots and clears the
+active session key and expire after 24 hours; a cursor opens under any key in
+the keyring (see [Session key rotation](#session-key-rotation)). Migration 2 adds per-principal title snapshots and clears the
 reconcile markers, so each account rebuilds its rows on its next listings. Migration 3
 adds `lifecycle_revision` to Page rows; older builds ignore it. Lifecycle state
 changes, retirements and access writes apply only from a revision at least as
@@ -1166,6 +1166,87 @@ arrival to its ack for frames that stored changes (`latency_ms_sum`,
 `latency_ms_max`, `wait_ms_sum` and `latency_ms_buckets` by inclusive upper
 bound), every 256 rounds and at close.
 See the [pinned runtime telemetry contract](https://github.com/denoland/celld/blob/8702f6d186c77698dbfb30cf29e3b1922a88f008/docs/telemetry.md).
+
+## Session key rotation
+
+One session key signs server session ids, seals refresh tokens and login
+transactions, signs email and domain proofs, and seals listing cursors. It
+lives in one of two Worker variables:
+
+- `NOTEBOOK_CLOUD_APP_SESSION_KEYS`: a keyring,
+  `{"active":"k2","keys":{"k1":"…","k2":"…"},"activated_at":{"k2":"<ISO>"}}`.
+  New values use `active`; values from any listed key still verify or open.
+  It holds 1 to 4 keys, each at least 32 bytes, with kids of `A-Z a-z 0-9 _ -`.
+- `NOTEBOOK_CLOUD_APP_SESSION_SECRET`: the single secret. Without a keyring the
+  Worker reads it as `k1` and seals in the bare `iv.ct` form, as builds before
+  the keyring did.
+
+A malformed keyring fails closed: every request, `/health` included, answers
+`500` with `server_misconfigured`, and the log names the problem without the
+secret. The Worker never falls back to the single secret.
+
+The overlap is 7 days, the server session's absolute lifetime. A session row
+keeps the id its key derived until it expires, so the Worker looks a cookie up
+under every key and doesn't move rows to the new key; refresh reseals a row's
+refresh token under the active key. Proofs and cursors last 6 and 24 hours.
+Retiring a key before the overlap ends signs out sessions created under it.
+
+A rotation also changes notebook-cloud's `account_key` once, which only resets
+its viewer's cached notebook list. A rollback to a build without the keyring
+reads only the single secret, so it signs out sessions created after the
+rotation.
+
+### On lab1
+
+`/etc/<service>/session-keys.json` (root, `0600`) holds the keyring. Without
+it, the installer writes `session-secret` as the single secret, as before.
+With it, the installer writes the keyring variable and drops the single secret;
+a malformed file stops the installation before it writes anything.
+
+From `pages`, with a prepared stage of the running release on the host. The
+stage must come from a build with the keyring: an older stage's installer
+ignores `session-keys.json` and writes only the single secret.
+
+```sh
+node scripts/deploy.mjs --target page10 rotate-key                      # plan
+node scripts/deploy.mjs --target page10 rotate-key --apply --from k1
+node scripts/deploy.mjs --target page10 install REMOTE_STAGE --apply
+# 7 days later
+node scripts/deploy.mjs --target page10 retire-key                      # plan
+node scripts/deploy.mjs --target page10 retire-key --apply --from k2
+node scripts/deploy.mjs --target page10 install REMOTE_STAGE --apply
+```
+
+`rotate-key` and `retire-key` stream
+[session-keys.mjs](scripts/deployment/session-keys.mjs) from this checkout to the
+host and run it as root under the deployment lock. Rotation generates the new
+secret on the host. The first rotation seeds `k1` from `session-secret`, so
+every existing session, proof and cursor still verifies. Plans and receipts
+list kids and times, never secrets. `--from` names the active kid the plan
+showed: a retried `--apply` after an uncertain result finds a different active
+kid and refuses, rather than adding a second key. `retire-key` refuses until the
+active key's `activated_at` is 7 days old; `--kid` retires one key, and
+`--force` skips the wait and signs out the retired key's sessions. Neither
+command touches the Worker. The keyring reaches it on the next install.
+
+### On Cloudflare
+
+Store the keyring as a Worker secret. Workers secrets are write-only, so keep
+the current keyring in the team secret store and edit a local copy with the
+same helper:
+
+```sh
+node scripts/deployment/session-keys.mjs rotate --file KEYRING.json --secret-file SECRET   # plan
+node scripts/deployment/session-keys.mjs rotate --file KEYRING.json --apply --from k1
+wrangler secret put NOTEBOOK_CLOUD_APP_SESSION_KEYS --config WRANGLER_JSON < KEYRING.json
+```
+
+`--secret-file` seeds `k1` from the current single secret on the first
+rotation only. `retire --file KEYRING.json --apply --from k2` and another
+`wrangler secret put` finish the rotation 7 days later. Save the new keyring
+back to the secret store and delete the local copy. Once the keyring secret is
+in place, `wrangler secret delete NOTEBOOK_CLOUD_APP_SESSION_SECRET` removes the
+single secret. `prepare` refuses either variable in a build's committed vars.
 
 ## Cloudflare packaging fixture
 

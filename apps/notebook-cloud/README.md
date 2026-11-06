@@ -514,7 +514,10 @@ wildcard such as `https://*.example.com/oidc`.
 
 Keep the existing issuer, client ID, audience and principal namespace settings.
 Server mode additionally requires `DB` and a strong
-`NOTEBOOK_CLOUD_APP_SESSION_SECRET` of at least 32 characters. Supply
+`NOTEBOOK_CLOUD_APP_SESSION_SECRET` of at least 32 characters, or a keyring in
+`NOTEBOOK_CLOUD_APP_SESSION_KEYS` (`{"active":"k2","keys":{"k1":"…","k2":"…"}}`)
+for rotating it; see `src/session-keyring.ts`. When the keyring is set, the
+single secret is ignored. A malformed keyring fails closed. Supply
 `NOTEBOOK_CLOUD_OIDC_CLIENT_SECRET` as a runtime secret for confidential clients;
 the default token authentication method is `client_secret_basic` when present,
 otherwise `none`. `NOTEBOOK_CLOUD_OIDC_TOKEN_AUTH_METHOD` can explicitly select

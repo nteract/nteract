@@ -12,6 +12,7 @@ import { pagesFirewall } from "./deployment/firewall.mjs";
 import * as profiles from "./deployment/profiles.mjs";
 import { CRONS } from "../shared/schedule.mjs";
 import * as activation from "./deployment/activation.mjs";
+import * as sessionKeys from "./deployment/session-keys.mjs";
 import * as fs from "node:fs";
 import { createHash } from "node:crypto";
 import { runInNewContext } from "node:vm";
@@ -581,6 +582,7 @@ function installFixture(
       deploymentProfile: () => profile,
     },
     "./activation.mjs": activation,
+    "./session-keys.mjs": sessionKeys,
   };
   const read = (file) => fs.readFileSync(local(file), "utf8");
   const execute = (flags = []) =>
@@ -1512,6 +1514,44 @@ test("Pages and Page10 retain the local build's isolated usage binding and UTC c
   assert.notEqual(
     profiles.deploymentProfile("page10").deployment.prefix,
     profiles.deploymentProfile("pages").deployment.prefix,
+  );
+});
+
+test("the installer writes the single session secret until a keyring file exists", (t) => {
+  const f = installFixture(t, { target: "page10" });
+  f.execute();
+  const vars = JSON.parse(f.read(f.release + "/wrangler.json")).vars;
+  assert.equal(vars.NOTEBOOK_CLOUD_APP_SESSION_SECRET, "fixture-only-session-secret");
+  assert.equal(vars.NOTEBOOK_CLOUD_APP_SESSION_KEYS, undefined);
+});
+
+test("the installer writes a keyring file as the session keys var and drops the secret", (t) => {
+  const f = installFixture(t, { target: "page10" });
+  const keyring = {
+    active: "k2",
+    keys: { k1: "k1-fixture-session-key-".repeat(2), k2: "k2-fixture-session-key-".repeat(2) },
+    activated_at: { k2: "2026-11-06T00:00:00.000Z" },
+  };
+  f.write(f.configDir + "/session-keys.json", JSON.stringify(keyring, null, 2) + "\n");
+  f.execute();
+  const vars = JSON.parse(f.read(f.release + "/wrangler.json")).vars;
+  assert.deepEqual(JSON.parse(vars.NOTEBOOK_CLOUD_APP_SESSION_KEYS), keyring);
+  assert.equal(vars.NOTEBOOK_CLOUD_APP_SESSION_SECRET, undefined);
+});
+
+test("the installer refuses a malformed keyring file before it writes anything", (t) => {
+  const f = installFixture(t, { target: "page10" });
+  f.write(
+    f.configDir + "/session-keys.json",
+    JSON.stringify({ active: "k2", keys: { k1: "k1-fixture-session-key-".repeat(2) } }),
+  );
+  assert.throws(f.execute, /Session keyring is invalid: active must name a kid/);
+  assert.equal(fs.existsSync(f.local(f.release)), false);
+  assert.equal(fs.existsSync(f.local(f.audit)), false);
+  // Only the runtime version probes ran; no host command changed anything.
+  assert.deepEqual(
+    f.calls.filter(({ args }) => args[0] !== "--version"),
+    [],
   );
 });
 
