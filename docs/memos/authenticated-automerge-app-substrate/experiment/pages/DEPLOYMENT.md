@@ -650,6 +650,12 @@ cleared those objects on both targets: 138 Pages on pages and 79 on page10,
 and the verifying dry runs found nothing left. The sweep's code and route are
 gone.
 
+The comments migration and this sweep were the last users of the lab operator
+gate, so it is gone with them. The first install of this build on pages and
+page10 restarts the service once with `restart_reasons: ["config"]`: the
+configured `wrangler.json` drops `PAGES_OPERATOR_SECRET`. The root-only
+`/etc/<service>/operator-secret` file stays on each host; nothing reads it.
+
 This build keeps the `PageRecords` class and `PAGE_RECORDS` binding
 delete-only (worker/page-records.mjs): `inspect` counts keys and bytes,
 `clear` deletes everything. No read or write path is left. Purge uses it:
