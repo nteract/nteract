@@ -305,11 +305,19 @@ import {
 } from "./page-lifecycle.mjs";
 import {
   pageStartup,
+  recordAnswerable,
   recordCommentsUuid,
   recordFallback,
   startupOf,
   storedTitleProjection,
 } from "./page-startup.mjs";
+import {
+  LINK_PREVIEW_PATH,
+  PAGE_UNAVAILABLE,
+  handleLinkPreview,
+  linkUnavailable,
+  readLinkRoute,
+} from "./link-previews.mjs";
 import { titleProjection } from "./title-projection.mjs";
 
 const operations = new Set([
@@ -1399,6 +1407,10 @@ const gateway = {
           return admissionErrorResponse(error, { stage: "gateway", identity });
         }
       }
+      // What a link to a Page shows its reader (link-previews.mjs). Only
+      // these two paths; everything else under /p/ is the app's.
+      const linkRoute = readLinkRoute(url.pathname);
+      if (linkRoute) return await handleLinkPreview(request, env, linkRoute, { logFailure });
       if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/internal/"))
         return json({ error: "Not found" }, 404);
       return env.ASSETS.fetch(request);
@@ -3858,6 +3870,118 @@ export class Page {
     );
   }
 
+  /** linkPreview's answer, or the one refusal for every reason it has. */
+  async linkPreviewResponse(request) {
+    try {
+      return await this.linkPreview(request);
+    } catch (error) {
+      if (!(error?.status < 500)) logFailure(error, "link-preview-host");
+      return Response.json(PAGE_UNAVAILABLE, { status: 404 });
+    }
+  }
+
+  /**
+   * A link preview's check (link-previews.mjs): `{ page_id, title, state,
+   * role, content_updated_at }` for a caller who may open this Page, or
+   * linkUnavailable for anyone else.
+   *
+   * It decides as a shared-Page check from the record does
+   * (catalogFromRecord), with the host record as the authority, but it has no
+   * side effects:
+   *
+   * - It never claims an invitation. A pending invitee is refused like a
+   *   stranger; opening the Page still claims it.
+   * - Every refusal is decided before any boot, from the record alone. It
+   *   boots only for a reader it admitted, when the record can't name the
+   *   title (no stored projection, or one not yet seen to land), and then
+   *   decides again over the loaded record.
+   * - It writes nothing: no usage, no title projection, no index report and
+   *   no Catalog entry. `identify` isn't used, so not even the cached
+   *   Project access changes.
+   *
+   * State is `active`, or `trashed` for a caller who may restore it; anyone
+   * else is refused for a Page in Trash. A loaded host whose recovery is
+   * blocked refuses too; one that hasn't booted can't know that yet.
+   */
+  async linkPreview(request) {
+    // Only the caller's own credentials: an upload capability opens nothing.
+    if (hostUploadCapability(request) !== undefined) throw linkUnavailable();
+    // Who asks comes first, so a missing Page and a refused one do the same
+    // work before they answer.
+    const identity = await this.linkIdentity(request);
+    for (;;) {
+      const { serve } = this.stepStartup({ type: "catalog" }).response;
+      if (serve === "record" || serve === "document") break;
+      if (serve === "failed") throw linkUnavailable();
+      await this.settledBoot();
+    }
+    const loaded = this.startup.name === "ready";
+    const storage = this.ctx.storage;
+    const [stored, creation, projection, activity, projectionPending] = await Promise.all([
+      loaded ? (this.policyMetadata ?? this.metadata) : storage.get("host/document"),
+      storage.get("host/creation"),
+      storage.get(TITLE_PROJECTION_KEY),
+      storage.get(CONTENT_ACTIVITY_KEY),
+      storage.get(PROJECTION_PENDING),
+    ]);
+    // A record this build can't answer from (recordAnswerable) is one the
+    // boot refuses: refused here, without the boot.
+    if (!stored || creation || this.pendingLifecycle || (!loaded && !recordAnswerable(stored)))
+      throw linkUnavailable();
+    const projectAccess =
+      identity.principal === stored.owner
+        ? null
+        : await resolveProjectAccess(this.env, stored).catch(() => null);
+    const admit = (metadata) => {
+      const effective = { ...metadata, projectAccess };
+      if (
+        this.hiddenRefusal(identity, false, effective) ||
+        this.deletedRefusal(identity, false, effective)
+      )
+        throw linkUnavailable();
+      let access;
+      try {
+        access = new DocumentPolicy({ storage, metadata: () => effective }).account(identity);
+      } catch {
+        throw linkUnavailable();
+      }
+      if (access.trashed && !access.canRestore) throw linkUnavailable();
+      return effective;
+    };
+    let effective = admit(stored);
+    let title, contentUpdatedAt;
+    const projected = projectionPending === true ? null : storedTitleProjection(projection);
+    if (loaded && this.handle) {
+      title = this.handle.doc().title;
+      contentUpdatedAt = this.contentActivity?.value ?? null;
+    } else if (projected) {
+      title = projected.title;
+      contentUpdatedAt = acceptedTime(activity?.content_updated_at);
+    } else if (this.startup.name === "metadata") {
+      // An admitted reader whose title the record can't name: boot.
+      await this.documentReady();
+      if (this.pendingLifecycle || !this.handle) throw linkUnavailable();
+      effective = admit(this.policyMetadata ?? this.metadata);
+      title = this.handle.doc().title;
+      contentUpdatedAt = this.contentActivity?.value ?? null;
+    } else throw linkUnavailable();
+    if (this.recoveryBlocked) throw linkUnavailable();
+    const answer = catalogAnswer(effective, identity, { title, contentUpdatedAt });
+    return json({
+      page_id: answer.page_id,
+      title: answer.title,
+      state: answer.state,
+      role: answer.role,
+      content_updated_at: answer.content_updated_at,
+    });
+  }
+
+  /** The caller of a link preview's check: its own session or API key,
+   * authenticated as every host route does. */
+  linkIdentity(request) {
+    return authenticate(request, this.env);
+  }
+
   /** Authenticate a request's caller with its own credentials. The asset
    * authorization route alone also takes an upload capability, which this
    * Page verifies with its own key (asset-uploads.mjs); the identity it
@@ -4652,6 +4776,9 @@ export class Page {
     let identity;
     try {
       await this.ready;
+      // A link preview's check (link-previews.mjs) never reaches the code
+      // below: it writes nothing and boots only for a reader it admitted.
+      if (url.pathname === LINK_PREVIEW_PATH) return await this.linkPreviewResponse(request);
       // A shared-Page check of a host that hasn't booted answers from its
       // record when it can (page-startup.mjs).
       if (url.pathname === "/internal/catalog") {
