@@ -841,7 +841,7 @@ pub async fn find_existing_prewarmed_environments_in(cache_dir: &Path) -> Vec<Co
     found
 }
 
-/// Warm up a conda environment by running Python to trigger .pyc compilation.
+/// Warm up a conda environment by importing its kernel modules.
 pub async fn warmup_environment(env: &CondaEnvironment) -> Result<()> {
     let warmup_start = Instant::now();
     info!(
@@ -849,8 +849,7 @@ pub async fn warmup_environment(env: &CondaEnvironment) -> Result<()> {
         env.env_path
     );
 
-    let site_packages = find_site_packages(&env.env_path);
-    let warmup_script = crate::warmup::build_warmup_command(&[], true, site_packages.as_deref());
+    let warmup_script = crate::warmup::build_warmup_command(&[], true);
 
     let output = tokio::process::Command::new(&env.python_path)
         .args(["-c", &warmup_script])
@@ -1275,30 +1274,28 @@ fn normalize_bare_versions(constraint: &str) -> Option<String> {
     }
 }
 
-/// Find the site-packages directory inside a venv/env.
-fn find_site_packages(base_path: &std::path::Path) -> Option<String> {
-    let lib_dir = base_path.join("lib");
-    if let Ok(entries) = std::fs::read_dir(&lib_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    if name.starts_with("python") {
-                        let sp = path.join("site-packages");
-                        if sp.is_dir() {
-                            return sp.to_str().map(String::from);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pool warmer records its lock with `solve_spec_strings` over the
+    /// base package set. A captured env with no user packages rebuilds
+    /// with `build_spec_strings`, so the two must match for the lock to be
+    /// used.
+    #[test]
+    fn pool_lock_specs_match_a_captured_env_rebuild() {
+        let mut pool_packages = conda_base_packages();
+        pool_packages.reverse();
+        let lock_specs = crate::python::solve_spec_strings(&pool_packages).unwrap();
+        let lock = crate::lock::LockFile::new(lock_specs, vec![], vec![]);
+        let captured = CondaDependencies {
+            dependencies: vec![],
+            channels: vec!["conda-forge".to_string()],
+            python: None,
+            env_id: Some("env-id".to_string()),
+        };
+        assert!(lock.matches(&build_spec_strings(&captured), &[]));
+    }
 
     #[test]
     fn test_compute_env_hash_stable() {

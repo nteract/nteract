@@ -138,7 +138,11 @@ The daemon maintains pre-created environments (base set + user's `default_packag
 - Pool entries named `runtimed-{uv,conda,pixi}-{uuid}`, content-free, claimable by any notebook
 
 Warm-env failures must surface in pool status with a real `error_kind` so
-onboarding does not spin forever waiting for `available > 0`.
+onboarding does not spin forever waiting for `available > 0`. A failed warm
+deletes its partial directory. After five consecutive failures a pool parks
+(`WarmRetry` in `crates/runtimed/src/daemon.rs`): it stops retrying until a
+launch waits on it (one attempt) or its target or package list changes.
+Pool warmups import kernel modules; they never `compileall` site-packages.
 
 With a UV or Conda pool target of 0, a launch that needs a prewarmed env
 builds one on demand with the same warm-env subprocess

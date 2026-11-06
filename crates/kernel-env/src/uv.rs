@@ -1078,13 +1078,12 @@ pub async fn find_existing_prewarmed_environments_in(cache_dir: &Path) -> Vec<Uv
     found
 }
 
-/// Warm up a UV environment by running Python to trigger .pyc compilation.
+/// Warm up a UV environment by importing its kernel modules.
 pub async fn warmup_environment(env: &UvEnvironment) -> Result<()> {
     let warmup_start = std::time::Instant::now();
     info!("[prewarm] Warming up UV environment at {:?}", env.venv_path);
 
-    let site_packages = find_site_packages(&env.venv_path);
-    let warmup_script = crate::warmup::build_warmup_command(&[], true, site_packages.as_deref());
+    let warmup_script = crate::warmup::build_warmup_command(&[], true);
 
     let output = tokio::process::Command::new(&env.python_path)
         .args(["-c", &warmup_script])
@@ -1206,27 +1205,6 @@ async fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Find the site-packages directory inside a venv/env.
-fn find_site_packages(base_path: &std::path::Path) -> Option<String> {
-    let lib_dir = base_path.join("lib");
-    if let Ok(entries) = std::fs::read_dir(&lib_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    if name.starts_with("python") {
-                        let sp = path.join("site-packages");
-                        if sp.is_dir() {
-                            return sp.to_str().map(String::from);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
 }
 
 #[cfg(test)]

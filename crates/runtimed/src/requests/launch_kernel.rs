@@ -1460,7 +1460,7 @@ async fn handle_attempt(
                         }
                     } else {
                         // No name or prefix — use a hash-based env in cache
-                        let cache_dir = crate::paths::default_cache_dir().join("conda-envs");
+                        let cache_dir = crate::paths::env_yml_conda_cache_dir();
                         let conda_deps_tmp = kernel_env::CondaDependencies {
                             dependencies: env_config.dependencies.clone(),
                             channels: env_config.channels.clone(),
@@ -1590,6 +1590,10 @@ async fn handle_attempt(
                     let python_path = crate::project_file::conda_python_path(&conda_prefix);
 
                     if python_path.exists() && python_version_ok {
+                        // Env GC evicts the env.yml cache by last use.
+                        if conda_prefix.starts_with(crate::paths::env_yml_conda_cache_dir()) {
+                            kernel_env::gc::touch_last_used(&conda_prefix).await;
+                        }
                         // Existing env with correct Python — sync deps into it
                         let conda_env = kernel_env::CondaEnvironment {
                             env_path: conda_prefix.clone(),

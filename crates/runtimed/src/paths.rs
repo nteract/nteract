@@ -44,6 +44,13 @@ pub use notebook_doc::notebook_doc_filename;
 // Local helpers — moved from daemon.rs / notebook_sync_server.rs.
 // ---------------------------------------------------------------------------
 
+/// Content-addressed cache for daemon-owned `environment.yml` envs that set
+/// neither `name:` nor `prefix:` (`{default_cache_dir}/conda-envs/{hash}`).
+/// Env GC scans it like the other managed caches.
+pub(crate) fn env_yml_conda_cache_dir() -> PathBuf {
+    default_cache_dir().join("conda-envs")
+}
+
 /// Normalize a user-supplied save target: append `.ipynb` if missing, reject
 /// relative paths, and return the path that `save_notebook_to_disk` will use.
 pub(crate) fn normalize_save_target(target: &str) -> Result<PathBuf, String> {
