@@ -4640,18 +4640,29 @@ struct EnvCacheDir {
 /// reflect the full on-disk picture — whether the user invoked the
 /// stable or nightly binary.
 ///
-/// Reaches through `cache_namespace_for` directly rather than
+/// Each channel has two roots: the managed `nteract[-nightly]` root that new
+/// caches use, and the legacy `runt[-nightly]` root that existing caches
+/// keep using in place (see `runt_workspace::managed_cache_dir`). Both are
+/// listed.
+///
+/// Reaches through the namespace helpers directly rather than
 /// `daemon_base_dir_for` so a dev-mode invocation lists the canonical
 /// channel roots instead of scoping into the current worktree. The CLI
 /// is meant to show the whole cache, not just one worktree's slice.
 fn get_env_cache_dirs() -> Vec<EnvCacheDir> {
-    use runt_workspace::{cache_namespace_for, daemon_base_dir, is_dev_mode, BuildChannel};
+    use runt_workspace::{
+        cache_namespace_for, daemon_base_dir, is_dev_mode, managed_cache_namespace_for,
+        BuildChannel,
+    };
 
     // Leaf dirs a daemon writes directly under its base. Kept as
     // (subdir, human-label) pairs so the listing stays consistent even
-    // when we add a new env backend.
+    // when we add a new env backend. `envs/conda-envs` holds env.yml envs
+    // that set neither name nor prefix; it is listed separately so
+    // `env clean --all` never removes it wholesale from `envs/`.
     const ENV_SUBDIRS: &[(&str, &str)] = &[
         ("envs", "UV envs"),
+        ("envs/conda-envs", "Conda env.yml envs"),
         ("conda-envs", "Conda envs"),
         ("pixi-envs", "Pixi envs"),
         ("inline-envs", "Inline envs"),
@@ -4659,22 +4670,40 @@ fn get_env_cache_dirs() -> Vec<EnvCacheDir> {
     ];
 
     let cache_root = dirs::cache_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    let mut dirs = Vec::with_capacity(ENV_SUBDIRS.len() * 2 + 2);
+    let mut dirs = Vec::with_capacity(ENV_SUBDIRS.len() * 4 + 2);
     for channel in [BuildChannel::Stable, BuildChannel::Nightly] {
-        let base = cache_root.join(cache_namespace_for(channel));
-        let suffix = match channel {
-            BuildChannel::Stable => "",
-            BuildChannel::Nightly => " (nightly)",
+        let channel_label = match channel {
+            BuildChannel::Stable => None,
+            BuildChannel::Nightly => Some("nightly"),
         };
-        for (sub, label) in ENV_SUBDIRS {
-            dirs.push(EnvCacheDir {
-                label: format!("{label}{suffix}"),
-                path: base.join(sub),
-            });
+        let roots = [
+            (managed_cache_namespace_for(channel), None),
+            (cache_namespace_for(channel), Some("legacy")),
+        ];
+        for (namespace, root_label) in roots {
+            let tags: Vec<&str> = channel_label.into_iter().chain(root_label).collect();
+            let suffix = if tags.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", tags.join(", "))
+            };
+            let base = cache_root.join(namespace);
+            for (sub, label) in ENV_SUBDIRS {
+                dirs.push(EnvCacheDir {
+                    label: format!("{label}{suffix}"),
+                    path: base.join(sub),
+                });
+            }
         }
+        // Dev worktree state only lives under the legacy root.
+        let suffix = channel_label
+            .map(|label| format!(" ({label})"))
+            .unwrap_or_default();
         dirs.push(EnvCacheDir {
             label: format!("Worktrees{suffix}"),
-            path: base.join("worktrees"),
+            path: cache_root
+                .join(cache_namespace_for(channel))
+                .join("worktrees"),
         });
     }
 
@@ -4696,15 +4725,35 @@ fn get_env_cache_dirs() -> Vec<EnvCacheDir> {
     dirs
 }
 
+/// Pool and prewarm dirs are owned by the daemon's pools; `env clean`
+/// leaves them to `daemon flush` and the daemon's orphan sweep.
+fn is_daemon_pool_dir(name: &str) -> bool {
+    [
+        runtimed_client::POOL_PREFIX_UV,
+        runtimed_client::POOL_PREFIX_CONDA,
+        runtimed_client::POOL_PREFIX_PIXI,
+        "prewarm-",
+    ]
+    .iter()
+    .any(|prefix| name.starts_with(prefix))
+}
+
 async fn env_stats() -> anyhow::Result<()> {
     println!("Environment cache disk usage:\n");
 
     let mut total = 0u64;
-    for dir in get_env_cache_dirs() {
+    // Shared across dirs so the total counts a hardlinked file once.
+    let mut seen_total = SeenFiles::default();
+    let dirs = get_env_cache_dirs();
+    for dir in &dirs {
         if !dir.path.exists() {
             continue;
         }
-        let size = calculate_dir_size(&dir.path);
+        let (size, unique) = calculate_dir_size_shared(&dir.path, &mut seen_total);
+        // A nested cache dir (`envs/conda-envs`) is already in its parent.
+        let nested = dirs
+            .iter()
+            .any(|other| other.path != dir.path && dir.path.starts_with(&other.path));
         let count = std::fs::read_dir(&dir.path)
             .map(|rd| {
                 rd.filter_map(|e| e.ok())
@@ -4719,7 +4768,9 @@ async fn env_stats() -> anyhow::Result<()> {
             count,
             dir.path.display()
         );
-        total += size;
+        if !nested {
+            total += unique;
+        }
     }
 
     println!("\n  {:20} {:>10}", "Total", format_size(total));
@@ -4805,7 +4856,7 @@ async fn env_clean(
 
     if all {
         println!("Removing ALL cached environments...");
-        println!("Note: pool envs (runtimed-uv-*, runtimed-conda-*) are skipped.");
+        println!("Note: pool envs (runtimed-uv-*, runtimed-conda-*, runtimed-pixi-*) are skipped.");
         println!("      Use '{command_name} daemon flush' to reset the pool.\n");
         if dry_run {
             println!("(dry run — nothing will be deleted)\n");
@@ -4821,6 +4872,9 @@ async fn env_clean(
             .filter(|d| !d.label.starts_with("Worktrees"))
             .map(|d| d.path)
             .collect();
+        // A cache dir nested in another (`envs/conda-envs`) is cleaned as
+        // its own entry, entry by entry, so in-use envs inside it survive.
+        let cache_dir_set: std::collections::HashSet<&PathBuf> = dirs_to_clean.iter().collect();
 
         let mut total_removed = 0;
         for dir in &dirs_to_clean {
@@ -4830,17 +4884,15 @@ async fn env_clean(
             let size = calculate_dir_size(dir);
             println!("  {} — {}", dir.display(), format_size(size));
             if !dry_run {
-                // Remove content-addressed subdirs only — skip pool envs
-                // (runtimed-uv-*, runtimed-conda-*) and envs backing
-                // running kernels.
+                // Remove cached env subdirs only — skip daemon pool envs,
+                // nested cache dirs, and envs backing running kernels.
                 if let Ok(rd) = std::fs::read_dir(dir) {
                     for entry in rd.filter_map(|e| e.ok()) {
                         let name = entry.file_name().to_string_lossy().to_string();
                         let path = entry.path();
                         if path.is_dir()
-                            && !name.starts_with("runtimed-uv-")
-                            && !name.starts_with("runtimed-conda-")
-                            && !name.starts_with("prewarm-")
+                            && !is_daemon_pool_dir(&name)
+                            && !cache_dir_set.contains(&path)
                             && !in_use.contains(&path)
                         {
                             std::fs::remove_dir_all(&path).ok();
@@ -4997,15 +5049,53 @@ async fn query_active_env_paths() -> std::collections::HashSet<PathBuf> {
     }
 }
 
-/// Calculate total size of a directory
+/// Files already counted, keyed by (device, inode) on Unix. Conda envs
+/// hardlink files from the package cache and from each other, so summing
+/// lengths overcounts disk use. Other platforms count every file.
+#[derive(Default)]
+struct SeenFiles(std::collections::HashSet<(u64, u64)>);
+
+impl SeenFiles {
+    /// True the first time this file's storage is seen.
+    fn first_sighting(&mut self, metadata: &std::fs::Metadata) -> bool {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if metadata.nlink() > 1 {
+                return self.0.insert((metadata.dev(), metadata.ino()));
+            }
+        }
+        let _ = metadata;
+        true
+    }
+}
+
+/// Disk use of a directory, counting each hardlinked file once.
 fn calculate_dir_size(path: &Path) -> u64 {
-    walkdir::WalkDir::new(path)
+    calculate_dir_size_shared(path, &mut SeenFiles::default()).0
+}
+
+/// Returns `(size of this dir, bytes not already in `seen`)`. The first
+/// value dedupes hardlinks within the dir; the second also dedupes against
+/// earlier calls that shared `seen`.
+fn calculate_dir_size_shared(path: &Path, seen: &mut SeenFiles) -> (u64, u64) {
+    let mut local = SeenFiles::default();
+    let mut size = 0;
+    let mut unique = 0;
+    for metadata in walkdir::WalkDir::new(path)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter_map(|e| e.metadata().ok())
         .filter(|m| m.is_file())
-        .map(|m| m.len())
-        .sum()
+    {
+        if local.first_sighting(&metadata) {
+            size += metadata.len();
+        }
+        if seen.first_sighting(&metadata) {
+            unique += metadata.len();
+        }
+    }
+    (size, unique)
 }
 
 /// Format bytes into human-readable size
@@ -5379,6 +5469,57 @@ mod entrypoint_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn env_cache_dirs_cover_managed_and_legacy_roots() {
+        let cache_root = dirs::cache_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+        let paths: Vec<PathBuf> = get_env_cache_dirs().into_iter().map(|d| d.path).collect();
+        for namespace in ["nteract", "nteract-nightly", "runt", "runt-nightly"] {
+            for sub in ["envs", "envs/conda-envs", "conda-envs", "inline-envs"] {
+                let expected = cache_root.join(namespace).join(sub);
+                assert!(paths.contains(&expected), "missing {expected:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn env_clean_skips_every_pool_kind() {
+        for name in [
+            "runtimed-uv-1234",
+            "runtimed-conda-1234",
+            "runtimed-pixi-1234",
+            "runtimed-uv-ondemand-1234",
+            "prewarm-1234",
+        ] {
+            assert!(is_daemon_pool_dir(name), "{name}");
+        }
+        assert!(!is_daemon_pool_dir("0123456789abcdef"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dir_size_counts_hardlinked_files_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let a = temp.path().join("a");
+        let b = temp.path().join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("lib.so"), vec![0u8; 1000]).unwrap();
+        std::fs::hard_link(a.join("lib.so"), a.join("lib-copy.so")).unwrap();
+        std::fs::hard_link(a.join("lib.so"), b.join("lib.so")).unwrap();
+        std::fs::write(b.join("own.py"), vec![0u8; 10]).unwrap();
+
+        assert_eq!(calculate_dir_size(temp.path()), 1010);
+        assert_eq!(calculate_dir_size(&a), 1000);
+
+        let mut seen = SeenFiles::default();
+        assert_eq!(calculate_dir_size_shared(&a, &mut seen), (1000, 1000));
+        assert_eq!(
+            calculate_dir_size_shared(&b, &mut seen),
+            (1010, 10),
+            "b's own size includes the link; the shared total does not"
+        );
+    }
 
     #[test]
     fn recovery_command_preserves_canonical_channel_and_legacy_name() {

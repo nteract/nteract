@@ -79,6 +79,13 @@ fn config_namespace_for(channel: BuildChannel) -> &'static str {
     }
 }
 
+/// Cache-root directory name for new managed env/tool caches (see
+/// [`managed_cache_dir`]). Legacy caches under [`cache_namespace_for`] are
+/// still reused in place, so tools that inspect every cache check both.
+pub fn managed_cache_namespace_for(channel: BuildChannel) -> &'static str {
+    config_namespace_for(channel)
+}
+
 pub fn daemon_binary_basename_for(channel: BuildChannel) -> &'static str {
     match channel {
         BuildChannel::Stable => "runtimed",
