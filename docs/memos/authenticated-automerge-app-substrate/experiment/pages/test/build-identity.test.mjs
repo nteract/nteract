@@ -23,7 +23,10 @@ test("protocol 3: a viewer that writes comments in old forms must reload", () =>
   // Earlier viewers write a Markdown `body` beside adapter-form comment spans;
   // the host refuses both, so those tabs are required to reload, not offered.
   assert.equal(MIN_VIEWER_PROTOCOL, 3);
-  assert.equal(compareBuild({ build: B, minViewerProtocol: MIN_VIEWER_PROTOCOL }, viewer), "required");
+  assert.equal(
+    compareBuild({ build: B, minViewerProtocol: MIN_VIEWER_PROTOCOL }, viewer),
+    "required",
+  );
 });
 
 test("build and protocol comparison", () => {

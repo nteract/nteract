@@ -819,7 +819,9 @@ delete-only (worker/page-records.mjs): `inspect` counts keys and bytes,
   `buffered` and not deleted: its records are its only history, so they stay;
   no deployed Page should report this), `would_clear` or `empty` with
   `records: {keys, bytes}` on a dry run, `cleared` with `cleared` and `after`
-  on apply, `missing` for a cell without a Page record.
+  on apply, `missing` for a cell without a Page record. A live or trashed Page
+  whose record is still `buffered` refuses to boot on this build, so it reports
+  `error` with an HTTP status instead of `held`; its records are left alone.
 
 ```sh
 cd docs/memos/authenticated-automerge-app-substrate/experiment/pages

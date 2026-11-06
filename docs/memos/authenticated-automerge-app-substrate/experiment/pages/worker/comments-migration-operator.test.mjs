@@ -79,7 +79,11 @@ test("end to end: the operator lists every account and runs each one's Catalog",
   assert.deepEqual(ownerRun.body.visited, [mine]);
   // This fixture's Page hosts open no comments document; the Page still
   // answered for its owner (not `not_owner`), which is what this checks.
-  assert.equal(ownerRun.body.pages[0].status, "unavailable", JSON.stringify(ownerRun.body.pages[0]));
+  assert.equal(
+    ownerRun.body.pages[0].status,
+    "unavailable",
+    JSON.stringify(ownerRun.body.pages[0]),
+  );
   const memberRun = await operator({ action: "run", principal: w.member, mode: "dry_run" });
   assert.deepEqual(memberRun.body.visited, [theirs]);
   // The operator picks the Catalog; the Page still checks its record's owner.

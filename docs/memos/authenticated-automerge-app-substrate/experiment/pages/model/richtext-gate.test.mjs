@@ -3,7 +3,14 @@ import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import MarkdownIt from "markdown-it";
 import markdownCorpus from "./markdown-corpus.json" with { type: "json" };
-import { exportMarkdown, nativeImportLoss, parseAgentMarkdown, parseMarkdown, richDoc, unsupportedMarkdown } from "./richtext.mjs";
+import {
+  exportMarkdown,
+  nativeImportLoss,
+  parseAgentMarkdown,
+  parseMarkdown,
+  richDoc,
+  unsupportedMarkdown,
+} from "./richtext.mjs";
 import { richFromSource } from "./richtext-test-support.mjs";
 
 const nodeNames = (doc) => {

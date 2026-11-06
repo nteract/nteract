@@ -4,7 +4,14 @@ import * as A from "@automerge/automerge";
 import { Leaf } from "wordgard/doc";
 import { GardState, GardSelection } from "wordgard/state";
 import { addColumn, addRow, deleteColumn, deleteRow, tables } from "wordgard/table";
-import { textPath, validateRich, blockMarkdown, parseMarkdown, exportMarkdown, adapter } from "../model/richtext.mjs";
+import {
+  textPath,
+  validateRich,
+  blockMarkdown,
+  parseMarkdown,
+  exportMarkdown,
+  adapter,
+} from "../model/richtext.mjs";
 import { richFromSource } from "../model/richtext-test-support.mjs";
 import { pmNodeToSpans } from "@automerge/prosemirror";
 import {
