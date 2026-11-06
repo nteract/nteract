@@ -1045,8 +1045,13 @@ impl Pool {
         self.target.saturating_sub(current)
     }
 
-    fn set_target(&mut self, target: usize) {
+    /// Set the target size. Returns true when it changed, so the caller can
+    /// wake takes whose decision depends on it (for example a wait that
+    /// should become an on-demand build at target 0).
+    fn set_target(&mut self, target: usize) -> bool {
+        let changed = self.target != target;
         self.target = target;
+        changed
     }
 
     fn target(&self) -> usize {
@@ -4992,6 +4997,17 @@ impl Daemon {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(POOL_WAIT_SECS);
 
         loop {
+            // Register both wake-ups before observing the pool and the
+            // shutdown flag. `notify_waiters` stores no permit, so a
+            // notification between the snapshot and the wait below would
+            // otherwise be missed until the deadline.
+            let pool_ready = self.pool_ready_for(env_type).notified();
+            tokio::pin!(pool_ready);
+            pool_ready.as_mut().enable();
+            let shutdown = self.shutdown_notify.notified();
+            tokio::pin!(shutdown);
+            shutdown.as_mut().enable();
+
             let (taken, stale_paths, target) = {
                 let mut pool = self.pool_for(env_type).lock().await;
                 let (taken, stale_paths) = pool.take();
@@ -5092,8 +5108,8 @@ impl Daemon {
             // `wait_expired` after one last take attempt.
             tokio::select! {
                 _ = tokio::time::sleep(wait_for) => continue,
-                _ = self.pool_ready_for(env_type).notified() => continue,
-                _ = self.shutdown_notify.notified() => return Err(EnvAcquireError::ShuttingDown),
+                _ = &mut pool_ready => continue,
+                _ = &mut shutdown => return Err(EnvAcquireError::ShuttingDown),
             }
         }
     }
@@ -5109,9 +5125,12 @@ impl Daemon {
     ///
     /// The directory is leased before the subprocess creates it, so orphan
     /// GC cannot remove it mid-build, and the returned guard has the usual
-    /// release / release_and_delete semantics. Failure and shutdown delete
-    /// the partial directory. Dropping the future kills the subprocess
-    /// (`kill_on_drop`) and leaves the directory to orphan GC.
+    /// release / release_and_delete semantics. Failure and shutdown kill and
+    /// reap the warm-env process tree, then delete the partial directory.
+    /// Dropping the future kills the process tree (the Unix process group,
+    /// or the Windows kill-on-close job) and leaves the directory to orphan
+    /// GC once the lease is released. On Windows a delete can still fail
+    /// while the job tears down; the startup sweep removes what is left.
     async fn build_on_demand_env(
         self: &Arc<Self>,
         env_type: EnvType,
@@ -5162,25 +5181,17 @@ impl Daemon {
                     env_hash: dir_name.clone(),
                 },
             );
-            let phase = match env_type {
-                EnvType::Conda => kernel_env::EnvProgressPhase::Installing {
-                    total: packages.len(),
-                },
-                _ => kernel_env::EnvProgressPhase::InstallingPackages {
-                    packages: packages.clone(),
-                },
-            };
-            progress.on_progress(progress_label, phase);
         }
         let started = Instant::now();
 
-        let outcome = tokio::select! {
-            result = self.warm_env_at(env_type, &env_path, &packages) => Some(result),
-            _ = &mut shutdown => None,
-        };
+        // Shutdown is passed in as the cancel signal so the subprocess tree
+        // is reaped before the directory is deleted below.
+        let outcome = self
+            .warm_env_at(env_type, &env_path, &packages, progress, shutdown)
+            .await;
 
         match outcome {
-            Some(Ok((venv_path, python_path))) => {
+            Ok((venv_path, python_path)) => {
                 info!(
                     "[runtimed] On-demand {env_type} environment ready at {:?} in {}s",
                     venv_path,
@@ -5204,7 +5215,12 @@ impl Daemon {
                     guard,
                 ))
             }
-            Some(Err(error)) => {
+            Err(error) if error.error_kind == WARM_ENV_CANCELLED_KIND => {
+                info!("[runtimed] Shutdown during on-demand {env_type} environment build");
+                guard.release_and_delete().await;
+                Err(EnvAcquireError::ShuttingDown)
+            }
+            Err(error) => {
                 warn!(
                     "[runtimed] On-demand {env_type} environment build failed: {}",
                     error.error_message
@@ -5214,11 +5230,6 @@ impl Daemon {
                     env_type,
                     reason: error.error_message,
                 })
-            }
-            None => {
-                info!("[runtimed] Shutdown during on-demand {env_type} environment build");
-                guard.release_and_delete().await;
-                Err(EnvAcquireError::ShuttingDown)
             }
         }
     }
@@ -6681,6 +6692,41 @@ pub(crate) const BLOB_GC_GRACE_SECS: u64 = 30 * 24 * 3600;
 /// generous and can be raised further via [`WARM_ENV_TIMEOUT_ENV`].
 pub(crate) const WARM_ENV_TIMEOUT_SECS: u64 = 900;
 
+/// Error string from `spawn_warm_env` when its cancel signal won.
+const WARM_ENV_CANCELLED: &str = "warm-env subprocess cancelled";
+/// `PackageInstallError::error_kind` for a cancelled warm-env build.
+const WARM_ENV_CANCELLED_KIND: &str = "cancelled";
+
+/// Map a warm-env subprocess progress phase onto a typed launch phase.
+/// Phases with no typed counterpart (bootstrap, vendor, validating,
+/// warming, channels, specs, creating) return `None`.
+fn warm_env_progress_phase(
+    env_type: EnvType,
+    phase: &str,
+    detail: &str,
+    packages: &[String],
+) -> Option<kernel_env::EnvProgressPhase> {
+    use kernel_env::EnvProgressPhase;
+    match (env_type, phase) {
+        (EnvType::Uv, "venv") => Some(EnvProgressPhase::CreatingVenv),
+        (EnvType::Uv, "installing") => Some(EnvProgressPhase::InstallingPackages {
+            packages: packages.to_vec(),
+        }),
+        (EnvType::Conda | EnvType::Pixi, "resolving") => Some(EnvProgressPhase::Solving {
+            spec_count: packages.len(),
+        }),
+        // Conda reports the solved package count as "<n> packages".
+        (EnvType::Conda, "installing") => Some(EnvProgressPhase::Installing {
+            total: detail
+                .split_whitespace()
+                .next()
+                .and_then(|count| count.parse().ok())
+                .unwrap_or(packages.len()),
+        }),
+        _ => None,
+    }
+}
+
 /// Environment variable that overrides [`WARM_ENV_TIMEOUT_SECS`].
 ///
 /// Field escape hatch for environments where the download-dominated conda
@@ -7155,7 +7201,9 @@ impl Daemon {
 
             let (retired_count, retired_to_delete, deficit, should_retry, backoff_info) = {
                 let mut pool = self.uv_pool.lock().await;
-                pool.set_target(target);
+                if pool.set_target(target) {
+                    self.pool_ready_uv.notify_waiters();
+                }
                 let retired = pool.retire_mismatched_packages(&expected_packages);
                 let retired_to_delete = pool.retired_paths_if_available_at_target();
                 let d = pool.deficit();
@@ -7259,7 +7307,9 @@ impl Daemon {
 
             let (retired_count, retired_to_delete, deficit, should_retry, backoff_info) = {
                 let mut pool = self.conda_pool.lock().await;
-                pool.set_target(target);
+                if pool.set_target(target) {
+                    self.pool_ready_conda.notify_waiters();
+                }
                 let retired = pool.retire_mismatched_packages(&expected_packages);
                 let retired_to_delete = pool.retired_paths_if_available_at_target();
                 let d = pool.deficit();
@@ -7370,7 +7420,9 @@ impl Daemon {
 
             let (retired_count, retired_to_delete, deficit, should_retry, backoff_info) = {
                 let mut pool = self.pixi_pool.lock().await;
-                pool.set_target(target);
+                if pool.set_target(target) {
+                    self.pool_ready_pixi.notify_waiters();
+                }
                 let retired = pool.retire_mismatched_packages(&expected_packages);
                 let retired_to_delete = pool.retired_paths_if_available_at_target();
                 let d = pool.deficit();
@@ -7468,7 +7520,13 @@ impl Daemon {
         info!("[runtimed] Creating Conda environment at {:?}", env_path);
 
         let (venv_path, python_path) = match self
-            .warm_env_at(EnvType::Conda, &env_path, &conda_install_packages)
+            .warm_env_at(
+                EnvType::Conda,
+                &env_path,
+                &conda_install_packages,
+                None,
+                std::future::pending(),
+            )
             .await
         {
             Ok(paths) => paths,
@@ -7506,11 +7564,16 @@ impl Daemon {
     /// Run the warm-env subprocess for a UV or Conda env at `env_path` and
     /// return its validated `(venv_path, python_path)`. Pool warming adds
     /// the result to the pool; on-demand builds hand it to one caller.
+    ///
+    /// A completed `cancel` kills the subprocess tree and returns an error
+    /// with `error_kind` [`WARM_ENV_CANCELLED_KIND`].
     async fn warm_env_at(
         &self,
         env_type: EnvType,
         env_path: &Path,
         packages: &[String],
+        progress: Option<&dyn kernel_env::ProgressHandler>,
+        cancel: impl std::future::Future<Output = ()>,
     ) -> Result<(PathBuf, PathBuf), PackageInstallError> {
         let (label, channels, default_python_path) = match env_type {
             EnvType::Uv => {
@@ -7537,13 +7600,18 @@ impl Daemon {
         };
 
         match self
-            .spawn_warm_env(env_type, env_path, packages, &channels)
+            .spawn_warm_env(env_type, env_path, packages, &channels, progress, cancel)
             .await
         {
             Ok(result) if result.success => {
                 Self::validated_warm_env_paths(result, env_path.to_path_buf(), default_python_path)
             }
             Ok(result) => Err(Self::warm_env_failure(result)),
+            Err(e) if e == WARM_ENV_CANCELLED => Err(PackageInstallError {
+                failed_package: None,
+                error_message: e,
+                error_kind: WARM_ENV_CANCELLED_KIND.to_string(),
+            }),
             Err(e) => {
                 error!("[runtimed] {label} warm-env subprocess failed: {}", e);
                 // A Conda subprocess timeout is the #4017 signature (slow,
@@ -7616,6 +7684,8 @@ impl Daemon {
                 &project_dir,
                 &packages,
                 &["conda-forge".to_string()],
+                None,
+                std::future::pending(),
             )
             .await
         {
@@ -7787,12 +7857,20 @@ impl Daemon {
     /// Windows, so inheriting stderr would drop those diagnostics on the floor
     /// (issue #4017). A [`warm_env_timeout`]-bounded overall timeout kills the
     /// child if it hangs.
+    ///
+    /// When `cancel` completes first, the whole subprocess tree is killed
+    /// and reaped before this returns [`WARM_ENV_CANCELLED`], so the caller
+    /// can delete the env directory without racing installer processes.
+    /// Progress events the subprocess reports are forwarded to `progress`
+    /// when they map onto an [`kernel_env::EnvProgressPhase`].
     async fn spawn_warm_env(
         &self,
         env_type: EnvType,
         env_dir: &Path,
         packages: &[String],
         channels: &[String],
+        progress: Option<&dyn kernel_env::ProgressHandler>,
+        cancel: impl std::future::Future<Output = ()>,
     ) -> Result<crate::warm_env::WarmEnvResult, String> {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
@@ -7896,6 +7974,13 @@ impl Daemon {
                 match serde_json::from_str::<crate::warm_env::WarmEnvEvent>(&line) {
                     Ok(crate::warm_env::WarmEnvEvent::Progress { phase, detail }) => {
                         debug!("[runtimed] warm-env {type_str}: [{phase}] {detail}");
+                        if let Some(progress) = progress {
+                            if let Some(mapped) =
+                                warm_env_progress_phase(env_type, &phase, &detail, packages)
+                            {
+                                progress.on_progress(type_str, mapped);
+                            }
+                        }
                     }
                     Ok(crate::warm_env::WarmEnvEvent::Result(result)) => {
                         last_result = Some(result);
@@ -7913,12 +7998,28 @@ impl Daemon {
                 let _ = task.await;
             }
             status
-        })
-        .await;
+        });
+        // `None` means `cancel` won. The losing future is dropped before the
+        // match, releasing its borrows of `child` for the reap below.
+        let operation = tokio::select! {
+            outcome = operation => Some(outcome),
+            () = cancel => None,
+        };
 
         let status = match operation {
-            Ok(status) => status,
-            Err(_) => {
+            Some(Ok(status)) => {
+                process_tree.disarm();
+                status
+            }
+            None => {
+                if let Some(task) = stderr_task.take() {
+                    task.abort();
+                    let _ = task.await;
+                }
+                crate::warm_env::reap_timed_out_child(&mut child, &mut process_tree).await;
+                return Err(WARM_ENV_CANCELLED.to_string());
+            }
+            Some(Err(_)) => {
                 // Stop the pipe reader before teardown so a descendant that
                 // inherited stderr cannot keep this timeout path blocked.
                 if let Some(task) = stderr_task.take() {
@@ -7994,7 +8095,13 @@ impl Daemon {
         info!("[runtimed] Creating UV environment at {:?}", env_path);
 
         let (venv_path, python_path) = match self
-            .warm_env_at(EnvType::Uv, &env_path, &install_packages)
+            .warm_env_at(
+                EnvType::Uv,
+                &env_path,
+                &install_packages,
+                None,
+                std::future::pending(),
+            )
             .await
         {
             Ok(paths) => paths,
@@ -12330,5 +12437,114 @@ mod tests {
             error.to_string(),
             "conda environment build failed: solver exploded"
         );
+    }
+
+    #[test]
+    fn warm_env_progress_maps_known_phases() {
+        use kernel_env::EnvProgressPhase;
+        let packages = vec!["ipykernel".to_string(), "pandas".to_string()];
+        assert!(matches!(
+            warm_env_progress_phase(EnvType::Uv, "venv", "creating", &packages),
+            Some(EnvProgressPhase::CreatingVenv)
+        ));
+        assert!(matches!(
+            warm_env_progress_phase(EnvType::Uv, "installing", "2 packages", &packages),
+            Some(EnvProgressPhase::InstallingPackages { packages: ref p }) if *p == packages
+        ));
+        assert!(matches!(
+            warm_env_progress_phase(EnvType::Conda, "resolving", "solving", &packages),
+            Some(EnvProgressPhase::Solving { spec_count: 2 })
+        ));
+        assert!(matches!(
+            warm_env_progress_phase(EnvType::Conda, "installing", "57 packages", &packages),
+            Some(EnvProgressPhase::Installing { total: 57 })
+        ));
+        assert!(matches!(
+            warm_env_progress_phase(EnvType::Conda, "installing", "many", &packages),
+            Some(EnvProgressPhase::Installing { total: 2 })
+        ));
+        for phase in [
+            "bootstrap",
+            "vendor",
+            "validating",
+            "warming",
+            "channels",
+            "specs",
+        ] {
+            assert!(warm_env_progress_phase(EnvType::Uv, phase, "", &packages).is_none());
+            assert!(warm_env_progress_phase(EnvType::Conda, phase, "", &packages).is_none());
+        }
+    }
+
+    #[test]
+    fn set_target_reports_changes() {
+        let mut pool = Pool::new(2, 3600);
+        assert!(!pool.set_target(2));
+        assert!(pool.set_target(0));
+        assert!(!pool.set_target(0));
+    }
+
+    /// A cancel signal that wins must reap the subprocess and report
+    /// cancellation instead of a build failure.
+    #[tokio::test]
+    async fn spawn_warm_env_reports_cancellation() {
+        let temp_dir = TempDir::new().unwrap();
+        let daemon = Daemon::new_for_test(lease_test_config(&temp_dir)).unwrap();
+        let env_dir = daemon.config.cache_dir.join("runtimed-uv-ondemand-cancel");
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            daemon.spawn_warm_env(
+                EnvType::Uv,
+                &env_dir,
+                &[],
+                &[],
+                None,
+                std::future::ready(()),
+            ),
+        )
+        .await
+        .expect("cancelled warm-env must be reaped promptly");
+
+        assert_eq!(result.err().as_deref(), Some(WARM_ENV_CANCELLED));
+    }
+
+    /// A take waiting for warming must notice the target dropping to 0.
+    #[tokio::test]
+    async fn waiting_take_wakes_when_target_drops_to_zero() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = DaemonConfig {
+            uv_pool_size: 1,
+            ..lease_test_config(&temp_dir)
+        };
+        let daemon = Daemon::new_for_test(config).unwrap();
+        // Hold the pool in backoff so the take waits instead of retrying.
+        daemon.uv_pool.lock().await.warming_failed_with_error(None);
+
+        let take = tokio::spawn({
+            let daemon = daemon.clone();
+            async move { daemon.take_pooled_uv_env().await.map(|(env, _)| env) }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(!take.is_finished(), "take should be waiting for warming");
+
+        // Same transition the warming loop applies on a settings change.
+        {
+            let mut pool = daemon.uv_pool.lock().await;
+            if pool.set_target(0) {
+                daemon.pool_ready_uv.notify_waiters();
+            }
+        }
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), take)
+            .await
+            .expect("take must wake on the target change")
+            .unwrap();
+        assert!(matches!(
+            result,
+            Err(EnvAcquireError::PoolEmpty {
+                env_type: EnvType::Uv
+            })
+        ));
     }
 }

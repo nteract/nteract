@@ -233,9 +233,28 @@ where
     Ok(output)
 }
 
+/// Owns a spawned subprocess and every process it starts.
+///
+/// On Unix the child leads its own process group. Until the child has been
+/// waited on (`disarm`) or the group killed, dropping this kills the whole
+/// group, so a cancelled caller does not leave installer grandchildren
+/// running. On Windows the kill-on-close job does the same when dropped.
 #[cfg(unix)]
 pub(crate) struct ChildProcessTree {
     pgid: i32,
+    /// True while the group may still hold live processes that this owner
+    /// is responsible for. Cleared after the leader exits normally or the
+    /// group is killed, so a reused process-group id is never signalled.
+    armed: bool,
+}
+
+#[cfg(unix)]
+impl Drop for ChildProcessTree {
+    fn drop(&mut self) {
+        if self.armed {
+            terminate_process_tree(self);
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -245,6 +264,17 @@ pub(crate) struct ChildProcessTree {
 
 #[cfg(not(any(unix, windows)))]
 pub(crate) struct ChildProcessTree;
+
+impl ChildProcessTree {
+    /// The child exited normally and its pipes closed; dropping this no
+    /// longer signals the process group.
+    pub(crate) fn disarm(&mut self) {
+        #[cfg(unix)]
+        {
+            self.armed = false;
+        }
+    }
+}
 
 pub(crate) fn configure_process_tree(_command: &mut tokio::process::Command) {
     #[cfg(unix)]
@@ -258,7 +288,7 @@ pub(crate) fn own_process_tree(child: &tokio::process::Child) -> io::Result<Chil
             .id()
             .ok_or_else(|| io::Error::other("spawned child has no process id"))?
             as i32;
-        Ok(ChildProcessTree { pgid })
+        Ok(ChildProcessTree { pgid, armed: true })
     }
 
     #[cfg(windows)]
@@ -302,6 +332,7 @@ fn terminate_process_tree(process_tree: &mut ChildProcessTree) {
                 );
             }
         }
+        process_tree.armed = false;
     }
 
     #[cfg(windows)]
@@ -384,7 +415,10 @@ async fn run_output_with_timeout(
     };
 
     match tokio::time::timeout(timeout, collect_output).await {
-        Ok(Ok(output)) => TimedResult::Completed(output),
+        Ok(Ok(output)) => {
+            process_tree.disarm();
+            TimedResult::Completed(output)
+        }
         Ok(Err(error)) => TimedResult::Failed(error),
         Err(_) => {
             // The collection future owns the pipe readers, so timing it out
@@ -1268,5 +1302,79 @@ mod tests {
     #[test]
     fn uv_offline_probe_has_shorter_timeout_than_online_fallback() {
         assert!(UV_OFFLINE_INSTALL_TIMEOUT < UV_ONLINE_INSTALL_TIMEOUT);
+    }
+
+    /// Spawn `sh` as a process-group leader that starts a background
+    /// `sleep` grandchild, and return the child, its tree, and the
+    /// grandchild pid.
+    #[cfg(unix)]
+    async fn spawn_group_with_grandchild() -> (tokio::process::Child, ChildProcessTree, i32) {
+        use tokio::io::AsyncBufReadExt;
+
+        let mut command = tokio::process::Command::new("sh");
+        command
+            .args(["-c", "sleep 30 & echo $!; wait"])
+            .stdout(Stdio::piped())
+            .kill_on_drop(true);
+        configure_process_tree(&mut command);
+        let mut child = command.spawn().unwrap();
+        let tree = own_process_tree(&child).unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let mut lines = tokio::io::BufReader::new(stdout).lines();
+        let grandchild: i32 = lines
+            .next_line()
+            .await
+            .unwrap()
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        (child, tree, grandchild)
+    }
+
+    #[cfg(unix)]
+    fn process_alive(pid: i32) -> bool {
+        nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok()
+    }
+
+    #[cfg(unix)]
+    async fn wait_until_gone(pid: i32) -> bool {
+        for _ in 0..200 {
+            if !process_alive(pid) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        false
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_armed_process_tree_kills_grandchildren() {
+        let (child, tree, grandchild) = spawn_group_with_grandchild().await;
+        assert!(process_alive(grandchild));
+
+        // A cancelled caller drops both; the tree drops first.
+        drop(tree);
+        drop(child);
+
+        assert!(
+            wait_until_gone(grandchild).await,
+            "grandchild {grandchild} outlived its dropped process tree"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_disarmed_process_tree_leaves_group_alone() {
+        let (mut child, mut tree, grandchild) = spawn_group_with_grandchild().await;
+        tree.disarm();
+        drop(tree);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(process_alive(grandchild), "disarmed drop must not signal");
+
+        let mut tree = own_process_tree(&child).unwrap();
+        reap_timed_out_child(&mut child, &mut tree).await;
+        assert!(wait_until_gone(grandchild).await);
     }
 }
