@@ -14,6 +14,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
 import * as A from "@automerge/automerge";
 import { plainPeer } from "./plain-peer.mjs";
+import { expectPendingInvite } from "./sharing-rows.mjs";
 
 const origin = process.env.PAGES_ORIGIN || "http://localhost:9894";
 assert.equal(new URL(origin).hostname, "localhost");
@@ -154,7 +155,7 @@ try {
   await dialog.getByLabel("Invite by email").fill("alice@localhost");
   await dialog.getByLabel("Access", { exact: true }).selectOption("commenter");
   await dialog.getByRole("button", { name: "Invite", exact: true }).click();
-  await expect(dialog.getByText("alice@localhost", { exact: true })).toBeVisible();
+  await expectPendingInvite(dialog, "alice@localhost", "commenter");
   const invited = await api(owner, `/api/access?page=${pageId}`);
   assert.equal(invited.body.invites[0]?.role, "commenter", JSON.stringify(invited.body));
   await owner.screenshot({ path: `${output}/share-commenter.png` });
