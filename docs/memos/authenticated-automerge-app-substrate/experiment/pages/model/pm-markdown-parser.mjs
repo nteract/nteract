@@ -2,7 +2,7 @@
 // and model/pm-markdown-serializer.mjs are the only production Pages modules
 // that import ProseMirror packages (@automerge/prosemirror, prosemirror-*);
 // model/pm-boundary.test.mjs checks it. Other modules reach ProseMirror trees,
-// the span adapter and its traversal through these three.
+// and the span adapter through these three.
 //
 // markdown-it tokens to a ProseMirror tree: the token table for the Pages
 // schema, the parser over already-read tokens, and literal-text documents.
