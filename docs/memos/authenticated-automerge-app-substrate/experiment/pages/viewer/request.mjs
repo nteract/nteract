@@ -201,8 +201,8 @@ export async function tool(operation, args = {}, { signal } = {}) {
 export const READ_TIMEOUT_MS = 10_000;
 
 /** GET one of this origin's JSON routes with this tab's session, as `tool`
- * calls do: a structured 401 counts as signed out. The browser revalidates
- * its cached copy with the route's ETag. */
+ * calls do: a structured 401 counts as signed out. The link-preview routes
+ * answer `private, no-store`, so nothing is kept in the browser's cache. */
 export async function getJson(path, { signal, timeoutMs = READ_TIMEOUT_MS } = {}) {
   try {
     return await request(

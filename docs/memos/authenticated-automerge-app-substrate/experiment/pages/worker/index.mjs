@@ -4785,7 +4785,8 @@ export class Page {
     try {
       await this.ready;
       // A link preview's check (link-previews.mjs) never reaches the code
-      // below: it writes nothing and boots only for a reader it admitted.
+      // below: it records no usage, claims no invitation, writes no
+      // projection or Catalog entry, and boots only for a reader it admitted.
       if (url.pathname === LINK_PREVIEW_PATH) return await this.linkPreviewResponse(request);
       // A shared-Page check of a host that hasn't booted answers from its
       // record when it can (page-startup.mjs).

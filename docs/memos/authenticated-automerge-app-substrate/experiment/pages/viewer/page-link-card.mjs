@@ -229,9 +229,13 @@ export const pageLinkCardMachine = defineMachine({
       case "acted":
         if (state.name !== "open" && state.name !== "closing")
           return reject(state, "no card is drawn");
+        // No restore effect: dispatch gives focus back when it was in the
+        // card. A click that didn't focus the button (Safari, Firefox on
+        // macOS, a middle click) leaves focus wherever the reader had it,
+        // such as a comment reply.
         return {
           state: { name: "closed" },
-          effects: [...(state.name === "closing" ? [{ type: "disarm" }] : []), { type: "restore" }],
+          effects: state.name === "closing" ? [{ type: "disarm" }] : [],
         };
       case "elapsed":
         if (state.name === "pending") return open(state.target, "pointer");

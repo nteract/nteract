@@ -304,7 +304,7 @@ const ROWS = [
     label: "using an action closes the card",
     state: held(),
     event: acted,
-    expect: ok(closed, [restore]),
+    expect: ok(closed, []),
   },
   { state: open(), event: { type: "elapsed" }, expect: no(open(), "no timer is running") },
   {
@@ -370,7 +370,7 @@ const ROWS = [
     event: cardFocused(false),
     expect: no(closing(), "only keyboard focus holds the card"),
   },
-  { state: closing(), event: acted, expect: ok(closed, [disarm, restore]) },
+  { state: closing(), event: acted, expect: ok(closed, [disarm]) },
   { state: closing(), event: { type: "elapsed" }, expect: ok(closed) },
   {
     case: "restore",
@@ -673,12 +673,18 @@ test("a clicked action closes the card; only keyboard focus holds it open", () =
   assert.equal(c.state().name, "closing", "the pointer leaving closes it");
   c.advance(PAGE_LINK_GRACE_MS);
   assert.equal(c.state().name, "closed");
-  // Using an action closes the card at once.
+  // Using an action closes the card at once. A click that didn't focus the
+  // button (Safari, Firefox on macOS) leaves focus where the reader had it.
+  const reply = document.createElement("textarea");
+  document.body.append(reply);
+  reply.focus();
   pointer("pointerover", a);
   c.advance(PAGE_LINK_OPEN_MS);
   c.card();
   c.cards.acted();
   assert.equal(c.state().name, "closed");
+  assert.equal(document.activeElement, reply, "focus stays in the reply");
+  reply.remove();
   // Keyboard focus in a pointer-opened card holds it when the pointer leaves.
   pointer("pointerover", a);
   c.advance(PAGE_LINK_OPEN_MS);
