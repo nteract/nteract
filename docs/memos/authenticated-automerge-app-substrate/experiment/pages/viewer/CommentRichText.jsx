@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import * as A from "@automerge/automerge/slim";
-import { Wordgard, Decoration, KeyBinding } from "wordgard/editor";
+import { Wordgard, KeyBinding } from "wordgard/editor";
 import { GardState, Transaction } from "wordgard/state";
 import { Command, toggleMark, toggleList, listIsActive, canAddMarkInRange } from "wordgard/command";
 import { history } from "wordgard/history";
@@ -54,6 +54,9 @@ import {
 } from "./wordgard-binding.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
 import { linkDestination } from "./link-destination.mjs";
+import { pagesLinkShape } from "./page-link-shape.mjs";
+import { CurrentPage } from "./current-page.mjs";
+import { registerEditor } from "./editor-focus.mjs";
 import { PROSE_ENTRY_ATTRIBUTES } from "./prose-entry.mjs";
 import {
   COMMENT_MAX_BYTES,
@@ -80,7 +83,9 @@ const controls = [
 // Comments use the document's native vocabulary, so tables and images an agent
 // writes render here too. Drafts stay local until Send; posted messages are
 // never edited by a viewer selection.
-function nativeConfig() {
+/** `currentPageId()` names the Page open in this tab, whose own links get
+ * no Page glyph. */
+function nativeConfig({ currentPageId = () => null } = {}) {
   return [
     blockDoc(),
     paragraph(),
@@ -105,15 +110,9 @@ function nativeConfig() {
     wordgardListStarts,
     codeHighlighting,
     KeyBinding.of({ key: "Shift-Enter", run: insertPlainLineBreak }),
-    Decoration.Mark.shape(PagesLink, {
-      element: "a",
-      attributes: (value) => {
-        const href = linkDestination(value.href, location.href);
-        return href
-          ? { href, title: value.title ?? "", target: "_blank", rel: "noopener noreferrer" }
-          : {};
-      },
-    }),
+    // The same shape as Page blocks: a link to another Page gets its glyph
+    // and the hover card's hooks; the open Page's own links don't.
+    pagesLinkShape({ currentPageId }),
   ];
 }
 
@@ -144,8 +143,17 @@ export function CommentRichText({
   const mount = useRef(null),
     view = useRef(null),
     compartment = useRef(new GardState.Compartment());
+  const currentPageId = useContext(CurrentPage);
   const latest = useRef({ value, onChange, onError, disabled, images });
-  latest.current = { value, onChange, onError, disabled, images, onUploadingChange };
+  latest.current = {
+    value,
+    onChange,
+    onError,
+    disabled,
+    images,
+    onUploadingChange,
+    currentPageId,
+  };
   const lastValue = useRef(value);
   const uploader = useRef(null);
   const [editor, setEditor] = useState(null),
@@ -252,7 +260,7 @@ export function CommentRichText({
       parent: mount.current,
       doc: draftDoc(latest.current.value),
       config: [
-        ...nativeConfig(),
+        ...nativeConfig({ currentPageId: () => latest.current.currentPageId }),
         uploadPreviews,
         Wordgard.domEventHandler("paste", (event) => acceptImages(imageFiles(event.clipboardData))),
         Wordgard.domEventHandler("drop", (event) => {
@@ -305,10 +313,12 @@ export function CommentRichText({
       ],
     });
     view.current = editor;
+    const forget = registerEditor(editor);
     editor.dom.classList.add("wordgard-document");
     setEditor(editor);
     refreshFormatting(editor.state);
     return () => {
+      forget();
       images.destroy();
       latest.current.onUploadingChange?.(false);
       alive = false;
@@ -483,6 +493,9 @@ export function CommentRichText({
 
 export function CommentContent({ message, source }) {
   const mount = useRef(null);
+  const currentPageId = useContext(CurrentPage);
+  const currentPage = useRef(currentPageId);
+  currentPage.current = currentPageId;
   const unavailable = message.content_error === "rich_text_unavailable";
   const [problem, setProblem] = useState(false);
   useEffect(() => {
@@ -494,7 +507,7 @@ export function CommentContent({ message, source }) {
         parent: mount.current,
         doc: decode(A.spans(source, ["richText"])).doc,
         config: [
-          ...nativeConfig(),
+          ...nativeConfig({ currentPageId: () => currentPage.current }),
           ...permissions(false),
           Wordgard.exceptionSink.of(() => setProblem(true)),
         ],

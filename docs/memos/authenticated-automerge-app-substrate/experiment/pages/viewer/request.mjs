@@ -169,6 +169,17 @@ export function observeSignedOut(fn) {
   return () => signedOutObservers.delete(fn);
 }
 
+/** Tell the signed-out observers about a structured 401, unless its caller
+ * had already cancelled the request. */
+function reportSignedOut(error, signal) {
+  if (error?.status !== 401 || signal?.aborted) return;
+  for (const observe of signedOutObservers) {
+    try {
+      observe(error);
+    } catch {}
+  }
+}
+
 /** Call one Pages tool through /api/tools. Once `signal` aborts, the call
  * rejects with its reason and its answer is never read; a call its caller
  * cancelled never counts as signed out, whatever the server answered. */
@@ -181,12 +192,31 @@ export async function tool(operation, args = {}, { signal } = {}) {
       ...(signal && { signal }),
     });
   } catch (error) {
-    if (error?.status === 401 && !signal?.aborted)
-      for (const observe of signedOutObservers) {
-        try {
-          observe(error);
-        } catch {}
-      }
+    reportSignedOut(error, signal);
+    throw error;
+  }
+}
+
+/** How long a JSON read (getJson) waits: a preview nobody waits on for long. */
+export const READ_TIMEOUT_MS = 10_000;
+
+/** GET one of this origin's JSON routes with this tab's session, as `tool`
+ * calls do: a structured 401 counts as signed out. The link-preview routes
+ * answer `private, no-store`, so nothing is kept in the browser's cache. */
+export async function getJson(path, { signal, timeoutMs = READ_TIMEOUT_MS } = {}) {
+  try {
+    return await request(
+      path,
+      {
+        method: "GET",
+        headers: { Accept: "application/json" },
+        credentials: "same-origin",
+        ...(signal && { signal }),
+      },
+      { timeoutMs },
+    );
+  } catch (error) {
+    reportSignedOut(error, signal);
     throw error;
   }
 }

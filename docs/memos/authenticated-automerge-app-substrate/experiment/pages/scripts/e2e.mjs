@@ -66,6 +66,11 @@ const SUITES = Object.freeze([
     timeout: 3 * minute,
   },
   {
+    name: "page-links",
+    script: "scripts/page-links-smoke.mjs",
+    timeout: 3 * minute,
+  },
+  {
     name: "passages",
     script: "scripts/passages-changes-smoke.mjs",
     timeout: 3 * minute,

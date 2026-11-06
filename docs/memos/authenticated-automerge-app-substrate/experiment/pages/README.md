@@ -133,6 +133,7 @@ was a caret race in the smoke; the editor side is
 | Passage edits and revision deltas | `PAGES_ORIGIN=http://localhost:9894 node scripts/passages-changes-smoke.mjs` | Uses the running Wordgard fixture |
 | Reload banner placement, browser presence labels, leaving a final code block, checkbox indent | `PAGES_ORIGIN=http://localhost:9894 node scripts/editor-chrome-smoke.mjs` | Uses the running Wordgard fixture |
 | Heading links: a fragment scrolls to its heading on a cold load, a warm reload and in a fresh context, and holds it while an image above draws late; `#notes-1` picks the second Notes; an unknown anchor stays at the top; table cell links go there read-only and through Go to section; the # copies the link `read_page` names; another Page's heading opens in place; Back and Forward restore each entry's position on the same Page and across Pages; scrolling during the settle, or scrolling the preview while sync is held, stops it | `PAGES_ORIGIN=http://localhost:9894 node scripts/heading-anchors-smoke.mjs` | Uses the running Wordgard fixture |
+| Links between Pages: the Page glyph only on links to other Pages, once per link however its text is formatted, typing and copying around it, the hover card's readable, unavailable and loading faces, crossing a formatted link without closing, Escape, Tab into a comment link's card and back, Open in place, and screenshots light and dark at 1280 and 390 px | `PAGES_ORIGIN=http://localhost:9894 node scripts/page-links-smoke.mjs` | Uses the running Wordgard fixture |
 | Local creation and navigation | `PAGES_ORIGIN=http://localhost:9894 node scripts/navigation-smoke.mjs` | Uses the running Wordgard fixture |
 | Editing, comments, links, diagrams, and recovery | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:editor` | Uses the running Wordgard fixture |
 | History growth and typing latency | `PAGES_ORIGIN=http://localhost:9894 node scripts/latency-smoke.mjs` | Uses the running Wordgard fixture |
@@ -377,6 +378,59 @@ references; it does not publish the Page or change asset access.
   modified clicks still open a tab. The editor's DOM gets no ids: a heading is
   found by its block and its ordinal among the block's headings. Touch screens
   have no hover, so copying a heading's link there needs the address bar.
+- **Links between Pages:** a link stores only its href; the target's title is
+  never written into the document. One test
+  ([`shared/page-links.mjs`](shared/page-links.mjs)) decides which links go to
+  this deployment's Pages: `safeUrl`, then exactly this origin once resolved
+  (so `HTTPS://Host:443/p/<id>` and a relative `/p/<id>` count, and a
+  look-alike host, user info, a trailing dot or another deployment don't), then
+  `readPageRoute` reads a Page or a Project. In-place navigation and the
+  glyph both use it, so they can't disagree. A link to another Page (not the
+  one open, whose links are section links, and not a Project) draws with the
+  `page-link` class, `data-page-id` and a small muted Page glyph after its text,
+  in Page blocks, the loading preview and comments
+  ([`viewer/link-destination.mjs`](viewer/link-destination.mjs),
+  [`viewer/page-link-shape.mjs`](viewer/page-link-shape.mjs)). CSS draws the
+  glyph (`::after` with a mask and empty alternative text), so no widget
+  enters the editor: the caret, selection, typing at the link's end and
+  copying behave as for any link. A link draws as one element however its
+  text is formatted, so it has one glyph: `PagesLink` has Wordgard's link rank
+  and nests outside bold, italic, strike, code and highlight
+  (`model/wordgard-doc.mjs`; stored spans keep their mark order), and the
+  loading preview joins the fragments the host renders
+  (`PagePreview.jsx` `joinLinks`).
+  Resting the pointer on one for 300 ms opens a hover card
+  ([`viewer/PageLinkCard.jsx`](viewer/PageLinkCard.jsx),
+  [`viewer/page-link-card.mjs`](viewer/page-link-card.mjs)). It shows the
+  title the reader's own session resolves (two lines at most, direction
+  isolated), when the Page was edited, its first screen as the library grid
+  draws it, Open (in place) and Open in new tab; a link in a comment offers
+  only Open in new tab, as comment links always open, so a draft is never
+  navigated away from. A Page the reader can't open shows a lock and "Page
+  unavailable", nothing else: the same answer stands for a host that didn't
+  respond, so it gives no reason. Loading shows a skeleton, and a failure
+  "Couldn't load a preview". The pointer has 200 ms to cross from the link
+  into the card. Using an action closes it, and so do a keypress (for a card
+  the pointer opened) and the link menu opening. It never opens while the
+  link menu is open, while a mouse button is down, for touch or pen input,
+  where the device can't hover, or for a link inside a card.
+  Keyboard focus opens the card at once for links that take focus: in
+  read-only blocks, comments and the loading preview. In an editable block
+  focus stays on the editor, so a caret entering a link opens nothing. From a
+  focused link, Tab moves into the card's actions, Shift-Tab from the first
+  returns to the link, and Tab past the last closes the card and moves on.
+  The link is `aria-describedby` the card while it shows, and a polite live
+  region announces the title or "Page unavailable" once it loads. Escape
+  closes the card, marked handled so a comments panel doesn't also back out,
+  and returns focus to the link, or to the editor (keeping its selection)
+  when the link is editable content. Titles and cards live in one in-memory
+  store per tab ([`viewer/page-refs.mjs`](viewer/page-refs.mjs)): each
+  `(account, Page, kind)` ref is fresh for 60 s, or 15 s when unavailable, a
+  failure retries after a doubling backoff from 2 s, concurrent asks share a
+  request, and at most 6 run at once. Another account, sign-out or any 401
+  drops them all. Refs load only when a card opens; the store takes a
+  non-urgent ask so a viewport observer can drive it later. The routes are
+  under [Link previews](#link-previews).
 - **Code and diagrams:** three backticks on an empty paragraph followed by Enter
   or Space creates code; a language can follow the backticks. Mermaid renders
   through nteract's Pele renderer and SVG sanitizer. Compact Edit diagram,
@@ -2259,8 +2313,9 @@ return the OAuth challenge without one, so MCP clients still start sign-in from
 `initialize`. A presented credential that fails still gets the challenge.
 
 Other endpoints include `/api/access` for sharing, `/api/connect` for native
-admission details, `/api/sync` for binary WebSockets, and `/api/saved` for durable
-receipts. OAuth metadata is public at
+admission details, `/api/sync` for binary WebSockets, `/api/saved` for durable
+receipts, and the browser routes `/p/<page_id>/meta.json` and `card.json`
+([Link previews](#link-previews)). OAuth metadata is public at
 `/.well-known/oauth-protected-resource/mcp` and
 `/.well-known/oauth-authorization-server`; authorization, token exchange/refresh,
 and revocation use `/oauth/authorize`, `/oauth/token`, and `/oauth/revoke`.
@@ -2364,6 +2419,63 @@ A container's first paragraph has no marker of its own, so a type change there
 names the quote or list item and is refused. In target scope a concurrent
 change to the node's attributes is a `target_structure_changed` conflict, and a
 `set_node` may share its passage with another operation.
+
+### Link previews
+
+Two browser routes tell a reader what a link to a Page shows them
+([`worker/link-previews.mjs`](worker/link-previews.mjs)). They are for this
+origin's viewer; they're not tools and aren't in `/llms.txt`.
+
+- `GET /p/<page_id>/meta.json`: `{ v: 1, page_id, title, state, role,
+  content_updated_at }`. `state` is `active`, or `trashed` only for a reader
+  who may restore the Page. No owner, members or ACL.
+- `GET /p/<page_id>/card.json`: `{ v: 1, page_id, card }`, where `card` is
+  the stored card `page_cards` reads, with the same `image` when both themes
+  exist ([Card images](#card-images)), or `null` when the reader can open the
+  Page but it has no card yet. The image route still decides as `page_cards`
+  does, so a reader without a Catalog entry for the Page (a Project member, a
+  company reader) gets the JSON card: the image's 404 leaves it showing.
+
+Only these two paths, with a lowercase version 4 UUID, and only GET and HEAD
+(other methods get 405). The caller authenticates as on other gateway routes:
+the session cookie, or an Anaconda API key as a bearer; an MCP OAuth token is
+refused. No credential is the same 401 for every ID. A request whose
+`Sec-Fetch-Site` is present and neither `same-origin` nor `none` gets 403
+before authentication: a sibling deployment on the same site sends this
+origin's cookie with its requests, and CORS alone would still let it time the
+answers.
+
+The target's Page host decides, from its stored record, through the
+host-internal `/internal/link-preview` (the gateway never forwards a client
+path there; `/internal/*` stays 404). The owner, direct grants, Project
+members and company-domain readers all count, unlike `page_cards`, which
+starts from the reader's own Catalog. The check claims no invitation (a
+pending invitee is refused until they open the Page), records no usage or
+presence, and writes no Catalog entry, title projection or index report. It
+decides every refusal from the record without starting a boot itself, and
+starts or waits for one only for a reader it admitted whose title the record
+can't supply. Like every route, the first request to a cold host whose record
+starts eagerly boots it in the constructor, and the shared request cleanup
+may flush content activity earlier requests deferred. A Page whose recovery
+is blocked answers as usual, as opening it read only does. A missing Page, a
+malformed ID, a refusal, a deleted or purged Page, Trash (for anyone who
+can't restore it), a pending invitation, a host error or busy answer, and a
+timeout (the shared-Page check's bound) all answer one
+`404 {"error":"Page unavailable","code":"page_unavailable"}`, so that answer
+can't say why.
+
+Every answer is `Cache-Control: private, no-store`, as Page assets are, so a
+title or first screen never stays in the browser's disk cache after sign-out.
+There is no `ETag`: each look runs the access check again, and a revoked
+reader is refused at the next one. Answers also carry
+`Vary: Cookie, Authorization`, `Cross-Origin-Resource-Policy: same-origin`
+and `nosniff`, and no CORS headers. The viewer's router reads both paths as
+missing, never as the Page.
+
+The host check runs in the Page's serial request queue, so a burst of
+previews waits behind edits to that Page, and the reverse. It needs only the
+record; moving it out of the queue is a follow-up before viewport loading
+raises the request volume.
 
 ### Refusal codes and tool hints
 

@@ -73,6 +73,12 @@ export const Alignment = Mark.Type.define("PagesCellAlignment", {
   ],
 });
 export const PagesLink = Mark.Type.define("PagesLink", {
+  // Wordgard's own Link rank: a link draws around emphasis, bold, strike,
+  // code and highlight (rank 40 to 100), so one link is one <a> however its
+  // text is formatted. Rank orders only the in-memory mark set and the DOM:
+  // encoded spans keep their mark order (toMarks), so storage, node
+  // addresses and Markdown are unchanged.
+  rank: 20,
   inclusive: false,
   validate(value) {
     if (!value || !safeUrl(value.href) || (value.title != null && typeof value.title !== "string"))
@@ -455,9 +461,27 @@ export function fromMarks(marks = {}) {
   if (Object.keys(foreign).length) set.push(PagesForeignMarks.of(foreign));
   return set.reduce((result, mark) => mark.addToSet(result), Mark.none);
 }
+// The order encoded spans name their marks in. A mark set orders marks by
+// rank, which also decides how they nest in the DOM (PagesLink's rank draws a
+// link around the other marks); encoded spans keep this fixed order instead,
+// the one they had before PagesLink had a rank, so a document encodes to the
+// same JSON whatever the marks' ranks.
+const ENCODED_MARK_ORDER = [
+  "Strikethrough",
+  "Emphasis",
+  "Strong",
+  "Code",
+  "PagesForeignMarks",
+  "PagesHighlight",
+  "PagesLink",
+];
+const encodedRank = (mark) => {
+  const index = ENCODED_MARK_ORDER.indexOf(mark.type.name);
+  return index < 0 ? ENCODED_MARK_ORDER.length : index;
+};
 export function toMarks(marks) {
   const result = {};
-  for (const mark of marks) {
+  for (const mark of [...marks].sort((a, b) => encodedRank(a) - encodedRank(b))) {
     if (mark.type === PagesForeignMarks) {
       Object.assign(result, mark.value);
       continue;

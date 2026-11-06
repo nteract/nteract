@@ -26,7 +26,7 @@ const bundled = await build({
     },
   ],
 });
-const { PagePreview, previewHref, previewSrc } = await import(
+const { PagePreview, joinLinks, previewHref, previewSrc, previewNodes } = await import(
   `data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].contents).toString("base64")}`
 );
 const asset = `/api/pages/5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70/assets/${"a".repeat(64)}`;
@@ -120,4 +120,77 @@ test("preview link and image rules", () => {
   assert.equal(previewSrc("https://cdn.example/a.png"), "https://cdn.example/a.png");
   for (const bad of ["http://x/a.png", "/api/pages/x/assets/y", "data:image/png;base64,AA"])
     assert.equal(previewSrc(bad), null);
+});
+
+test("a link the host split into fragments draws once, with its formatting inside", () => {
+  const here = "1a160b47-6df1-4983-81eb-489ca5a26812";
+  const other = "2b160b47-6df1-4983-81eb-489ca5a26812";
+  const a = (text) => ["a", { href: `/p/${other}`, title: null }, text];
+  // As model/page-preview.mjs renders one text node at a time.
+  const content = [
+    [
+      "p",
+      {},
+      "See ",
+      a("the "),
+      ["strong", {}, a("evening")],
+      ["mark", { "data-highlight": "yellow" }, ["code", {}, a("now")]],
+      a(" focus"),
+      ", then ",
+      a("again"),
+      ["a", { href: "https://nteract.io" }, "docs"],
+    ],
+  ];
+  assert.deepEqual(joinLinks(content), [
+    [
+      "p",
+      {},
+      "See ",
+      [
+        "a",
+        { href: `/p/${other}`, title: null },
+        "the ",
+        ["strong", {}, "evening"],
+        ["mark", { "data-highlight": "yellow" }, ["code", {}, "now"]],
+        " focus",
+      ],
+      ", then ",
+      a("again"),
+      ["a", { href: "https://nteract.io" }, "docs"],
+    ],
+  ]);
+  // A link that is the only thing in a mark, with nothing after, stays put.
+  assert.deepEqual(joinLinks([["em", {}, a("x"), "y"]]), [["em", {}, a("x"), "y"]]);
+  const globals = { location: globalThis.location };
+  globalThis.location = new URL(`https://pages.example/project/prj_${other}`);
+  try {
+    const html = renderToStaticMarkup(
+      createElement("div", null, previewNodes(content, "b", { currentPageId: here })),
+    );
+    assert.equal(html.match(/class="page-link"/g)?.length, 2, "one per link, not per fragment");
+    assert.match(
+      html,
+      /<a href="\/p\/2b[^"]*" class="page-link" data-page-id="2b[^"]*">the <strong>evening<\/strong>/,
+    );
+    // The open Page's own links, which a Project route doesn't name, get none.
+    const own = renderToStaticMarkup(
+      createElement(
+        "div",
+        null,
+        previewNodes([["p", {}, ["a", { href: `/p/${here}#plan` }, "plan"]]], "c", {
+          currentPageId: here,
+        }),
+      ),
+    );
+    assert.doesNotMatch(own, /page-link/);
+    const html2 = renderToStaticMarkup(
+      createElement(PagePreview, {
+        preview: { title: "T", blocks: [{ id: "b", content: content }], truncated: false },
+        pageId: other,
+      }),
+    );
+    assert.doesNotMatch(html2, /page-link/, "the previewed Page's own links");
+  } finally {
+    globalThis.location = globals.location;
+  }
 });

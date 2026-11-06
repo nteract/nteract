@@ -25,7 +25,7 @@ import {
   unsupportedMarkdown,
   validateRich,
 } from "./richtext.mjs";
-import { expand } from "./wordgard-doc.mjs";
+import { expand, fromMarks, toMarks } from "./wordgard-doc.mjs";
 
 function fixture(markdown) {
   let doc = A.from(createPageData({ pageId: "page_fixture", title: "Marks" }));
@@ -291,4 +291,40 @@ test("format_match refuses code text, and stray code marks don't break reads", (
     A.mark(d, textPath(id), { start: 1, end: 6, expand: "none" }, "strong", true),
   );
   assert.equal(projectPage(marked).blocks[0].markdown, "```\nalpha\nbeta\n```");
+});
+
+test("encoded spans name their marks in one fixed order, whatever the marks' ranks", () => {
+  // The order stored spans had before PagesLink took Wordgard's link rank,
+  // which draws a link around its other marks. Rank must never reorder what
+  // is stored: node addresses and receipts compare encoded JSON. Marks this
+  // build doesn't know sit together between code and highlight, in the order
+  // they arrived.
+  const BEFORE = ["strike", "em", "strong", "code"];
+  const AFTER = ["highlight", "link"];
+  const values = {
+    strike: true,
+    em: true,
+    strong: true,
+    code: true,
+    "x-foreign": 1,
+    "y-foreign": "two",
+    highlight: "green",
+    link: encodeMarkValue("link", { href: "https://example.com/" }),
+  };
+  const names = Object.keys(values);
+  const known = [...BEFORE, ...AFTER];
+  for (let bits = 1; bits < 1 << names.length; bits++) {
+    const chosen = names.filter((_, index) => bits & (1 << index));
+    for (const marks of [chosen, [...chosen].reverse()]) {
+      const encoded = toMarks(
+        fromMarks(Object.fromEntries(marks.map((name) => [name, values[name]]))),
+      );
+      const expected = [
+        ...BEFORE.filter((name) => chosen.includes(name)),
+        ...marks.filter((name) => !known.includes(name)),
+        ...AFTER.filter((name) => chosen.includes(name)),
+      ];
+      assert.deepEqual(Object.keys(encoded), expected, marks.join(", "));
+    }
+  }
 });

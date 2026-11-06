@@ -341,7 +341,9 @@ try {
   await expect(thread.getByRole("textbox", { name: "Comment link URL" })).toHaveCount(0);
   await thread.getByRole("button", { name: "Hide reply" }).click();
   await thread.getByRole("button", { name: "Continue reply" }).click();
-  await expect(editor.locator("strong")).toContainText("Draft");
+  // "Prefix " typed before the bold link is bold too (an inclusive mark), so
+  // the link draws as its own <a> around a second <strong>: find the word.
+  await expect(editor.locator("a strong", { hasText: "Draft" })).toHaveText("Draft");
   checkpoint("native formatting and hidden draft survive without submission");
   await editor.press("ControlOrMeta+End");
   await editor.press("Enter");
@@ -396,9 +398,9 @@ try {
   const reply = latest.comments.find((t) => t.id === added.thread_id).messages.at(-1);
   assert.equal(reply.body_format, "markdown");
   assert.match(reply.body, /Draft/);
-  await expect(thread.locator(".thread-replies .comment-rich-content strong")).toContainText(
-    "Draft",
-  );
+  await expect(
+    thread.locator(".thread-replies .comment-rich-content a strong", { hasText: "Draft" }),
+  ).toHaveText("Draft");
   await expect(thread.locator(".thread-replies .comment-rich-content a")).toHaveAttribute(
     "href",
     "https://example.com/discussion",

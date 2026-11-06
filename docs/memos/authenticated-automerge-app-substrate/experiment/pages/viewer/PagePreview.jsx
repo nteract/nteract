@@ -8,7 +8,9 @@
 // the text. It never renders wg-content, so nothing that finds the editor by
 // that element finds the preview.
 import React, { createElement, useEffect, useRef } from "react";
+import { linkedPage } from "../shared/page-links.mjs";
 import { imageLifecycle } from "./image-lifecycle.mjs";
+import { PAGE_LINK_CLASS } from "./link-destination.mjs";
 
 const TAGS = new Set([
   "p",
@@ -73,7 +75,7 @@ export function previewSrc(value) {
     : null;
 }
 
-function props(tag, attrs, key) {
+function props(tag, attrs, key, { currentPageId = null } = {}) {
   const out = { key };
   if (!attrs || typeof attrs !== "object" || Array.isArray(attrs)) return out;
   for (const [name, value] of Object.entries(attrs)) {
@@ -82,6 +84,14 @@ function props(tag, attrs, key) {
     else if (tag === "a" && name === "href") {
       const href = previewHref(value);
       if (href) out.href = href;
+      // The editor draws a link to another Page with its glyph
+      // (link-destination.mjs); so does the preview, so the swap to the
+      // editor doesn't move the text.
+      const page =
+        href && globalThis.location
+          ? linkedPage(href, globalThis.location.href, { currentPageId })
+          : null;
+      if (page) Object.assign(out, { className: PAGE_LINK_CLASS, "data-page-id": page.pageId });
     } else if (tag === "a" && name === "title") out.title = value;
     else if (tag === "img" && (name === "src" || name === "dark_src")) {
       const src = previewSrc(value);
@@ -96,6 +106,53 @@ function props(tag, attrs, key) {
   return out;
 }
 
+/** Inline marks a link can sit inside in preview content. */
+const LINK_WRAPPERS = new Set(["strong", "em", "s", "code", "mark", "span"]);
+
+/** `node`'s link when `node` is one, or a chain of single-child inline marks
+ * around one: `{ attrs, unwrap }`, where `unwrap()` is `node` without that
+ * link. Otherwise null. */
+function linkInside(node) {
+  if (!Array.isArray(node) || typeof node[0] !== "string") return null;
+  const [tag, attrs, ...children] = node;
+  if (tag === "a") return { attrs: attrs ?? {}, unwrap: () => children };
+  if (!LINK_WRAPPERS.has(tag) || children.length !== 1) return null;
+  const inner = linkInside(children[0]);
+  return inner && { attrs: inner.attrs, unwrap: () => [[tag, attrs, ...inner.unwrap()]] };
+}
+
+const sameLink = (a, b) => a.href === b.href && (a.title ?? null) === (b.title ?? null);
+
+/**
+ * Preview content with each link drawn once. The host renders text runs one
+ * at a time, so a link whose text is formatted arrives as sibling fragments:
+ * `<a>the </a><strong><a>evening</a></strong><a> focus</a>`. This joins
+ * adjacent fragments with one href into one link around the formatting,
+ * `<a>the <strong>evening</strong> focus</a>`, as the editor draws it, so
+ * the Page glyph appears once and the swap to the editor doesn't move text.
+ */
+export function joinLinks(content) {
+  if (!Array.isArray(content)) return content;
+  const out = [];
+  let run = null;
+  for (const node of content) {
+    const joined = Array.isArray(node) ? [node[0], node[1], ...joinLinks(node.slice(2))] : node;
+    const link = linkInside(joined);
+    if (link && run && sameLink(run.attrs, link.attrs)) {
+      run.node.push(...link.unwrap());
+      continue;
+    }
+    if (link) {
+      run = { attrs: link.attrs, node: ["a", link.attrs, ...link.unwrap()] };
+      out.push(run.node);
+      continue;
+    }
+    run = null;
+    out.push(joined);
+  }
+  return out;
+}
+
 /**
  * React nodes for preview content: strings and [tag, attrs, ...children].
  *
@@ -103,15 +160,20 @@ function props(tag, attrs, key) {
  * does (PageCardPreview.jsx): links keep their text in a span, a task
  * checkbox becomes a drawn box, and images draw nothing. No interactive
  * element is rendered, so nothing nests inside the card's link.
+ * `currentPageId` names the Page open now, whose own links get no glyph.
  */
-export function previewNodes(content, prefix = "n", { inert = false } = {}) {
+export function previewNodes(content, prefix = "n", options = {}) {
   if (!Array.isArray(content)) return [];
+  return drawNodes(joinLinks(content), prefix, options);
+}
+
+function drawNodes(content, prefix, { inert = false, currentPageId = null } = {}) {
   return content.map((node, index) => {
     const key = `${prefix}.${index}`;
     if (typeof node === "string") return node;
     if (!Array.isArray(node) || typeof node[0] !== "string") return null;
     const [tag, attrs, ...children] = node;
-    const inner = previewNodes(children, key, { inert });
+    const inner = drawNodes(children, key, { inert, currentPageId });
     if (!TAGS.has(tag)) return createElement(React.Fragment, { key }, inner);
     if (inert && tag === "a")
       return createElement("span", { key, className: "preview-link" }, ...inner);
@@ -122,7 +184,7 @@ export function previewNodes(content, prefix = "n", { inert = false } = {}) {
         className: "preview-check",
         "data-checked": typeof attrs?.checked === "string" ? "true" : "false",
       });
-    const elementProps = props(tag, attrs, key);
+    const elementProps = props(tag, attrs, key, { currentPageId });
     if (!elementProps) return null;
     if (tag === "img" && elementProps.dark_src) return createElement(PreviewImage, elementProps);
     return VOID.has(tag)
@@ -141,8 +203,9 @@ function PreviewImage({ src, dark_src, alt, title }) {
   return <span className="pages-image" ref={ref} />;
 }
 
-/** The preview of one Page, laid out like the open Page. */
-export function PagePreview({ preview }) {
+/** The preview of one Page, laid out like the open Page. `pageId` is the
+ * Page it previews, whose own links are section links. */
+export function PagePreview({ preview, pageId = null }) {
   return (
     <main className="workspace document page-preview" aria-busy="true">
       <article>
@@ -154,7 +217,9 @@ export function PagePreview({ preview }) {
           <section className="page-block" data-preview-block={block.id} key={block.id}>
             <div className="rich-editor wordgard-editor">
               <div className="wordgard-document">
-                <div className="preview-content">{previewNodes(block.content, block.id)}</div>
+                <div className="preview-content">
+                  {previewNodes(block.content, block.id, { currentPageId: pageId })}
+                </div>
               </div>
             </div>
           </section>

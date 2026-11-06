@@ -4,40 +4,24 @@
 //
 // This module reaches neither Automerge nor the editor, so the shell
 // (main.jsx) can import it before the editor chunk loads.
-import { safeUrl } from "../model/marks.mjs";
-import { readPageRoute } from "../shared/routes.mjs";
+import { anchorFromHash, appRoute } from "../shared/page-links.mjs";
 
-/** The anchor a fragment names, percent-decoded, or null for none. */
-export function anchorFromHash(hash) {
-  const raw = String(hash ?? "").replace(/^#/, "");
-  if (!raw) return null;
-  try {
-    return decodeURIComponent(raw);
-  } catch {
-    return raw;
-  }
-}
+export { anchorFromHash };
 
 /**
  * Where a link in Page content goes, when this app can show it without a
  * reload: `{ route, anchor, samePage }`, or null for a link the browser
  * should follow. `route` is readPageRoute's answer (a Page or a Project);
  * `samePage` says the link only changes the fragment of `base`, the
- * address showing now. Links to another origin, other app routes and
- * executable schemes are null.
+ * address showing now. Which links count is shared/page-links.mjs's one
+ * test (appRoute), so a link opens in place exactly when it gets the Page
+ * glyph or is a Project link.
  */
 export function inAppLink(href, base) {
-  if (typeof href !== "string" || !href || !safeUrl(href)) return null;
-  let url, here;
-  try {
-    here = new URL(base);
-    url = new URL(href, here);
-  } catch {
-    return null;
-  }
-  if (url.origin !== here.origin) return null;
-  const route = readPageRoute(url.href);
-  if (route.kind !== "page" && route.kind !== "project") return null;
+  const target = appRoute(href, base);
+  if (!target) return null;
+  const { route, url } = target;
+  const here = new URL(base);
   return {
     route,
     anchor: anchorFromHash(url.hash),

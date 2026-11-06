@@ -99,6 +99,8 @@ import { wordgardImages } from "./wordgard-images.mjs";
 import { pageNodes } from "./wordgard-page-config.mjs";
 import { selectionToolbarPosition } from "./selection-toolbar.mjs";
 import { linkDestination, openInNewTab, wantsNewTab } from "./link-destination.mjs";
+import { pagesLinkShape } from "./page-link-shape.mjs";
+import { registerEditor } from "./editor-focus.mjs";
 import { LinkPopover } from "./LinkPopover.jsx";
 import { collapseAtomOnLeave, selectedAtom, selectedImage } from "./image-selection.mjs";
 import { normalizePastedHTML } from "./clipboard-html.mjs";
@@ -363,20 +365,9 @@ export function WordgardEditor(props) {
         tablePresentation,
         tableKeys,
         GardState.schemaElement.of(elements),
-        Decoration.Mark.shape(PagesLink, {
-          element: "a",
-          attributes: (value) => {
-            try {
-              const attrs = value;
-              const href = linkDestination(attrs.href, location.href);
-              return href
-                ? { href, title: attrs.title ?? "", target: "_blank", rel: "noopener noreferrer" }
-                : {};
-            } catch {
-              return {};
-            }
-          },
-        }),
+        // A link to another Page gets the Page glyph and the hover card's
+        // hooks; this Page's own links are section links.
+        pagesLinkShape({ currentPageId: () => replica.doc.page_id }),
         wordgardWidgets(),
         wordgardDataframes({ pageId: replica.doc.page_id }),
         wordgardImages(),
@@ -512,6 +503,8 @@ export function WordgardEditor(props) {
       ],
     });
     view.current = editor;
+    // A card or menu that closes gives focus back here (editor-focus.mjs).
+    const forgetEditor = registerEditor(editor);
     setImageStatus(null);
     imageTarget.current = null;
     const uploader = createImageUploader({
@@ -927,6 +920,7 @@ export function WordgardEditor(props) {
       collab.destroy();
       bound.destroy();
       if (replica.presenceValue?.block_id === id) replica.publishPresence(null);
+      forgetEditor();
       editor.contentDOM.removeEventListener("focusout", focusout);
       editor.contentDOM.removeEventListener("pointerdown", pointerdown);
       editor.contentDOM.removeEventListener("click", click);
