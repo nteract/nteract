@@ -29,6 +29,21 @@ export const indexPaths = "projects/?|pages/?|";
 export const accountPaths = "auth/(logout-all|grants(/[A-Za-z0-9_-]{43}/revoke)?)|";
 export const imagePaths =
   "pages/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/assets(/[0-9a-f]{64})?|";
+// A lowercase v4 UUID, as the groups above spell it out.
+const uuid = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+// What a link shows its reader (worker/link-previews.mjs readLinkRoute):
+// /p/<page_id>/meta.json and /card.json, and the same two files under
+// /project/<prj|sp>_<uuid>. No trailing slash; /s/<id> has no JSON routes.
+export const linkPreviewPaths = `(p/${uuid}|project/(prj|sp)_${uuid})/(meta|card)[.]json|`;
+// Grid card images (worker/card-images.mjs): GET /api/pages/<id>/card-image
+// (the stored hash) and the owner's PUT ?hash=&theme= upload, which ingress
+// matches by path alone, then GET|HEAD of one image, named as card-images.mjs
+// CARD_IMAGE_FILE names it. Inside the api/( group.
+export const cardImagePaths = `pages/${uuid}/card-image(/[0-9a-f]{64}-(light|dark)[.](webp|png|jpg))?|`;
+// A Project's assets, which belong to its content document (the gateway's
+// /api/(pages|projects)/<id>/assets route): the upload and one asset by its
+// sha256. Inside the api/( group.
+export const projectAssetPaths = `projects/(prj|sp)_${uuid}/assets(/[0-9a-f]{64})?|`;
 
 export function routesFor(target = "pages-next", legacy = false) {
   const profile = deploymentProfile(target);
@@ -60,10 +75,13 @@ export function routesFor(target = "pages-next", legacy = false) {
       "(automerge|subduction)[.]wasm|health|mcp|llms[.]txt|p/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/?|" +
       projects +
       index +
+      (profile.linkPreviews === true ? linkPreviewPaths : "") +
       "api/(" +
       access +
       (authenticatedAssets ? imagePaths : "") +
       (profile.accountRoutes === true ? accountPaths : "") +
+      (profile.cardImages === true ? cardImagePaths : "") +
+      (profile.projectAssets === true ? projectAssetPaths : "") +
       "tools|connect|sync|saved|pages/register|auth/(login|logout|session))|oidc";
   return `  - hostname: ${hostname}
     path: ^/(${paths})?$

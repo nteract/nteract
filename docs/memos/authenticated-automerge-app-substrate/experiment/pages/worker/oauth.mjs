@@ -27,7 +27,9 @@ const MAX_INPUT_BYTES = 16_384;
 // This single fixed, public metadata document is shared by all requests in an
 // isolate. Never retain failed validation or use stale metadata after expiry.
 const clientMetadataCache = { validUntil: 0, pending: null };
-const routes = new Set([
+/** Every path handleOAuth answers. The live tunnels admit exactly these
+ * (scripts/deployment/routes.mjs oauthPaths). */
+export const OAUTH_ROUTES = new Set([
   "/.well-known/oauth-protected-resource",
   "/.well-known/oauth-protected-resource/mcp",
   "/.well-known/oauth-authorization-server",
@@ -562,7 +564,7 @@ async function revoke(request, env) {
 
 export async function handleOAuth(request, env) {
   const url = new URL(request.url);
-  if (!routes.has(url.pathname)) {
+  if (!OAUTH_ROUTES.has(url.pathname)) {
     return url.pathname.startsWith("/oauth/") || url.pathname.startsWith("/.well-known/oauth-")
       ? json({ error: "not_found" }, 404)
       : null;

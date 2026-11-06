@@ -995,8 +995,12 @@ service/connector configuration and PIDs. Do not use `cloudflared service
 install`, which targets the shared connector.
 
 The DNS step creates only an absent owned CNAME; conflicts are rejected.
-Public ingress allows application, auth, sharing, MCP, asset, and sync routes,
-then ends in a catch-all 404. Internal Durable Object routes stay private.
+Public ingress allows application, auth, sharing, MCP, asset, card image, link
+preview and sync routes, then ends in a catch-all 404. Internal Durable Object
+routes stay private. The catch-all is the edge's: an empty 404 with no content
+type, which the Worker never sees. A gateway route that ingress doesn't admit
+works locally, where celld runs without a tunnel, and fails only through the
+edge ([Gateway routes and the allowlist](#gateway-routes-and-the-allowlist)).
 Page10 serves Page9's route set on its own hostname and listener, plus Sift's
 WASM route. Its only predecessor is its own config without that route; the
 publisher refuses any other installation receipt, including Page9's earlier
@@ -1058,11 +1062,60 @@ byte-identical. Every older predecessor still migrates, straight to the new
 config. A pending receipt from an interrupted publish before this release is
 not recognized; the publisher stops and asks for inspection.
 
+Page10, Pages and Pages2 also admit link previews, card images and Project
+assets (`linkPreviewPaths`, `cardImagePaths` and `projectAssetPaths` in
+[routes.mjs](scripts/deployment/routes.mjs), behind the profile flags
+`linkPreviews`, `cardImages` and `projectAssets`):
+
+- `/p/<uuid>/meta.json` and `/p/<uuid>/card.json`, and the same two files
+  under `/project/<id>` with a `prj_` or `sp_` ID
+  ([link-previews.mjs](worker/link-previews.mjs)). No trailing slash, and
+  nothing under `/s/<id>`.
+- `/api/pages/<uuid>/card-image`, which serves the stored hash and takes the
+  owner's `PUT ?hash=&theme=` upload (ingress matches the path only), and
+  `/api/pages/<uuid>/card-image/<sha256>-<light|dark>.<webp|png|jpg>`, the
+  shape `CARD_IMAGE_FILE` in [card-images.mjs](worker/card-images.mjs) names.
+- `/api/projects/<id>/assets` and `/api/projects/<id>/assets/<sha256>`: a
+  Project's assets, which the gateway serves from its content document.
+
+IDs are lowercase v4 UUIDs, as in every other group. Until a target publishes
+these routes, the edge refuses them: hover cards on Page links show "Couldn't
+load a preview" and keep retrying, the library grid never shows a card image,
+and the owner's tab never uploads one. Each publisher migrates from the
+account-route config it sealed, by the same handoff as any route change; units
+and every other route stay byte-identical, and every older predecessor still
+migrates straight to the new config. A pending receipt from an interrupted
+account-route publish is not recognized: finish that publish from its own
+stage, then publish this one.
+
 The OIDC client must allow `https://<hostname>/oidc` as a redirect URI before
 sign-in works on a new target. For Pages, add
 `https://pages.runtimed.run/oidc` to client
 `1a90d36b-5b97-4ebb-a1bc-f3de7ddb70e0`. That change is made in the identity
 provider; no helper here does it.
+
+### Gateway routes and the allowlist
+
+[tunnel-routes.test.mjs](scripts/tunnel-routes.test.mjs) holds a request for
+every route the gateway in `worker/index.mjs` answers, and every viewer route
+and shell file it serves from `ASSETS`, and checks that each live target's
+ingress admits them. It also sends each request through the gateway to confirm
+the route is really answered there, and lists paths kept off the tunnel on
+purpose (`/internal/*`, `/state`, the loopback `/dev/oidc` issuer) and near
+misses that must stay refused. A scan of the gateway's dispatch finds every
+exact path, path regex and route handler. A new one fails the test until its
+paths have samples there and a route group in routes.mjs, or are listed as
+kept off.
+
+After a publish that adds routes, check through the edge that the Worker
+answers them. Without a session, each answers JSON:
+
+```sh
+id=08c583e5-d29e-4f1e-b06b-333965254e94
+for path in /p/$id/meta.json /api/pages/$id/card-image /api/projects/prj_$id/assets; do
+  curl -s -o /dev/null -w "$path %{http_code} %{content_type}\n" "https://pages.runtimed.run$path"
+done   # 401 application/json each; an empty 404 is the edge refusing the path
+```
 
 ### HTTPS and HSTS
 

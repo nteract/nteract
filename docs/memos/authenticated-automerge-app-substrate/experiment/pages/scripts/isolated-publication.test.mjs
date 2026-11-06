@@ -8,8 +8,11 @@ import {
   routesFor,
   accountPaths,
   assetPaths,
+  cardImagePaths,
   imagePaths,
   indexPaths,
+  linkPreviewPaths,
+  projectAssetPaths,
   projectPaths,
   siftPaths,
   whoamiPaths,
@@ -349,6 +352,10 @@ test("dedicated publisher refuses unowned or changed files instead of replacing 
 });
 
 const digest = (text) => createHash("sha256").update(text).digest("hex");
+// A live target's routes without link previews, card images and Project
+// assets: the route set the release before them sealed.
+const beforePreviews = (config) =>
+  config.replace(linkPreviewPaths, "").replace(cardImagePaths, "").replace(projectAssetPaths, "");
 function priorConfig(config, target) {
   return target === "page5"
     ? config.replace("|connect|connect[.]js|", "|")
@@ -359,7 +366,7 @@ function priorConfig(config, target) {
         : target === "page9"
           ? config.replace(indexPaths, "")
           : target === "page10" || target === "pages"
-            ? config.replace(accountPaths, "").replace(whoamiPaths, "")
+            ? beforePreviews(config).replace(accountPaths, "").replace(whoamiPaths, "")
             : config.replace("|mermaid[.]js|", "|");
 }
 const configDir = (target) => "/etc/" + deploymentProfile(target).deployment.service;
@@ -685,7 +692,7 @@ test("Page10 serves Page9's route set on its own origin while every older route 
   // hostname and listener differ.
   assert.equal(current.split(siftPaths).length, 2, "the Sift route appears once");
   assert.equal(
-    current
+    beforePreviews(current)
       .replace(accountPaths, "")
       .replace(whoamiPaths, "")
       .replace(siftPaths, "")
@@ -738,7 +745,9 @@ test("whoami predecessors retain the exact Sift and pre-Sift route bytes", () =>
       "4aa6f96562532f3c5739fe7ffc44728cd210432abf45a80f74fef383081e6ce5",
     ],
   ]) {
-    const prior = routesFor(target).replace(accountPaths, "").replace(whoamiPaths, "");
+    const prior = beforePreviews(routesFor(target))
+      .replace(accountPaths, "")
+      .replace(whoamiPaths, "");
     assert.equal(digest(prior), sift);
     assert.equal(digest(prior.replace(siftPaths, "")), beforeSift);
   }
@@ -1786,7 +1795,7 @@ for (const target of ["page10", "pages"]) {
     test(`${target} resumes unchanged-Sift legacy handoff at ${phase}, rolls back and retries`, (t) => {
       const f = fixture(t, { target, neverReady: true });
       const plan = isolatedPublicationPlan(inputFor(target));
-      const sift = plan.config.replace(accountPaths, "").replace(whoamiPaths, "");
+      const sift = beforePreviews(plan.config).replace(accountPaths, "").replace(whoamiPaths, "");
       const hash = digest(sift);
       // HEAD's predecessor(plan.config, true): routes did not change, units did.
       const historical = slotReceipt(sift, plan.unitSha256, {
@@ -1821,7 +1830,7 @@ for (const target of ["page10", "pages"]) {
 
   test(`${target} unchanged-Sift pending receipt rejects pre-Sift or edited files`, (t) => {
     const plan = isolatedPublicationPlan(inputFor(target));
-    const sift = plan.config.replace(accountPaths, "").replace(whoamiPaths, "");
+    const sift = beforePreviews(plan.config).replace(accountPaths, "").replace(whoamiPaths, "");
     for (const config of [sift.replace(siftPaths, ""), sift + "# foreign\n"]) {
       const f = fixture(t, { target });
       f.write(plan.configPath, config);
@@ -1851,7 +1860,7 @@ for (const target of ["page10", "pages"]) {
       test(`${target} migrates exact pre-whoami Sift history: ${legacy ? "legacy" : "slots"} ${state}`, (t) => {
         const f = fixture(t, { target });
         const plan = isolatedPublicationPlan(inputFor(target));
-        const sift = plan.config.replace(accountPaths, "").replace(whoamiPaths, "");
+        const sift = beforePreviews(plan.config).replace(accountPaths, "").replace(whoamiPaths, "");
         const beforeSift = sift.replace(siftPaths, "");
         const config = state.endsWith("new") ? sift : beforeSift;
         const unit = legacy ? digest(plan.unit) : plan.unitSha256;
@@ -1889,8 +1898,11 @@ for (const target of ["page10", "pages"]) {
   test(`${target} refuses arbitrary edits to either whoami predecessor even with matching receipts`, (t) => {
     const plan = isolatedPublicationPlan(inputFor(target));
     for (const base of [
-      plan.config.replace(accountPaths, "").replace(whoamiPaths, ""),
-      plan.config.replace(accountPaths, "").replace(whoamiPaths, "").replace(siftPaths, ""),
+      beforePreviews(plan.config).replace(accountPaths, "").replace(whoamiPaths, ""),
+      beforePreviews(plan.config)
+        .replace(accountPaths, "")
+        .replace(whoamiPaths, "")
+        .replace(siftPaths, ""),
     ])
       for (const changed of [
         base + "# foreign edit\n",
@@ -2528,23 +2540,27 @@ test("only page10, pages and pages2 admit the exact account routes, never legacy
   }
 });
 
-test("the account routes are the only difference from the last sealed route set", () => {
+test("the account routes are the only difference from the route set before them", () => {
   // routesFor(target) as published before the account routes existed.
   for (const [target, sealed] of [
     ["page10", "5c1fc74e475e84d586539900096e1d44e4187a75caabfd0ec0822d6d517dabba"],
     ["pages", "188d8940a17166b111085dfb351c84777851e7eaadd752ef9f1bd4158d54f153"],
     ["pages2", "64ab836acaa2aaa3acf0f10bdc8f0fab573294dfecf58c860199882ea286d658"],
   ]) {
-    const prior = routesFor(target).replace(accountPaths, "");
+    const withAccount = beforePreviews(routesFor(target));
+    const prior = withAccount.replace(accountPaths, "");
     assert.equal(digest(prior), sealed, target);
     assert.equal(prior.includes("logout-all"), false);
-    assert.equal(routesFor(target).length - prior.length, accountPaths.length);
+    assert.equal(withAccount.length - prior.length, accountPaths.length);
   }
 });
 
-function accountInstall(f, { state = "sealed", edit = (config) => config } = {}) {
+// An installation on slot units at the route set `from(plan.config)`:
+// sealed, or interrupted after its pending receipt with the old (pending-old)
+// or new (pending-new) config on disk.
+function slotInstall(f, from, { state = "sealed", edit = (config) => config } = {}) {
   const plan = isolatedPublicationPlan(inputFor(f.target));
-  const base = plan.config.replace(accountPaths, "");
+  const base = from(plan.config);
   const onDisk = state === "pending-new" ? plan.config : edit(base);
   const receipt =
     state === "sealed"
@@ -2563,6 +2579,10 @@ function accountInstall(f, { state = "sealed", edit = (config) => config } = {})
   f.activate(plan.slots[0].service);
   return { plan, base, receipt };
 }
+// Before the account routes, which also predate link previews, card images
+// and Project assets: it migrates straight to plan.config.
+const accountInstall = (f, options) =>
+  slotInstall(f, (config) => beforePreviews(config).replace(accountPaths, ""), options);
 
 for (const target of ACCOUNT_TARGETS) {
   for (const state of ["sealed", "pending-old", "pending-new"])
@@ -2621,6 +2641,224 @@ for (const target of ACCOUNT_TARGETS) {
     ]) {
       const f = fixture(t, { target, misroutePath, sharedTunnel: target !== "pages2" });
       assert.throws(f.execute, /route validation failed/);
+      assert.deepEqual(lifecycle(f), []);
+    }
+  });
+}
+
+// Link previews, card images and Project assets: the same live targets.
+const PREVIEW_TARGETS = ACCOUNT_TARGETS;
+const previewUuid = "08c583e5-d29e-4f1e-b06b-333965254e94";
+const previewHash = "0123456789abcdef".repeat(4);
+const previewAdmitted = [
+  `/p/${previewUuid}/meta.json`,
+  `/p/${previewUuid}/card.json`,
+  `/project/prj_${previewUuid}/meta.json`,
+  `/project/sp_${previewUuid}/card.json`,
+  `/api/pages/${previewUuid}/card-image`,
+  `/api/pages/${previewUuid}/card-image/${previewHash}-light.webp`,
+  `/api/pages/${previewUuid}/card-image/${previewHash}-dark.png`,
+  `/api/pages/${previewUuid}/card-image/${previewHash}-light.jpg`,
+  `/api/projects/prj_${previewUuid}/assets`,
+  `/api/projects/sp_${previewUuid}/assets/${previewHash}`,
+];
+const previewRejected = [
+  `/p/${previewUuid}/meta.json/`,
+  `/p/${previewUuid}/other.json`,
+  `/p/${previewUuid}/meta.json/private`,
+  `/p/${previewUuid.toUpperCase()}/meta.json`,
+  `/project/${previewUuid}/meta.json`,
+  `/project/prj_${previewUuid.toUpperCase()}/meta.json`,
+  `/project/prj_${previewUuid}/card.json/`,
+  `/s/sp_${previewUuid}/meta.json`,
+  `/api/pages/${previewUuid}/card-image/`,
+  `/api/pages/${previewUuid}/card-image/${previewHash.slice(1)}-light.webp`,
+  `/api/pages/${previewUuid}/card-image/${previewHash}0-dark.webp`,
+  `/api/pages/${previewUuid}/card-image/${previewHash}-sepia.webp`,
+  `/api/pages/${previewUuid}/card-image/${previewHash}-light.gif`,
+  `/api/pages/${previewUuid}/card-image/${previewHash}-light.webp/private`,
+  `/api/pages/${previewUuid.toUpperCase()}/card-image`,
+  `/api/projects/${previewUuid}/assets`,
+  `/api/projects/prj_${previewUuid}/assets/private`,
+  `/api/projects/prj_${previewUuid}/assets/${previewHash}/private`,
+];
+
+test("only page10, pages and pages2 admit link previews, card images and Project assets, never legacy routes", () => {
+  for (const target of [
+    "pages-next",
+    "page3",
+    "page4",
+    "page5",
+    "page6",
+    "page7",
+    "page8",
+    "page9",
+    ...PREVIEW_TARGETS,
+  ]) {
+    const enabled = PREVIEW_TARGETS.includes(target);
+    const profile = deploymentProfile(target);
+    for (const flag of ["linkPreviews", "cardImages", "projectAssets"])
+      assert.equal(profile[flag] === true, enabled, `${target} ${flag}`);
+    const current = routesFor(target);
+    for (const group of [linkPreviewPaths, cardImagePaths, projectAssetPaths])
+      assert.equal(current.split(group).length, enabled ? 2 : 1, `${target} ${group}`);
+    for (const legacy of [false, true]) {
+      const route = new RegExp(/^    path: (.+)$/m.exec(routesFor(target, legacy))[1]);
+      for (const pathname of previewAdmitted)
+        assert.equal(route.test(pathname), enabled && !legacy, `${target} ${pathname}`);
+      for (const pathname of previewRejected)
+        assert.equal(route.test(pathname), false, `${target} ${pathname}`);
+    }
+    // The viewer routes beside them stay as they were.
+    if (enabled) {
+      const route = new RegExp(/^    path: (.+)$/m.exec(current)[1]);
+      for (const pathname of [
+        `/p/${previewUuid}`,
+        `/p/${previewUuid}/`,
+        `/project/prj_${previewUuid}`,
+        `/api/pages/${previewUuid}/assets/${previewHash}`,
+      ])
+        assert.equal(route.test(pathname), true, `${target} ${pathname}`);
+    }
+  }
+});
+
+test("link previews, card images and Project assets are the only difference from the last sealed route set", () => {
+  // routesFor(target) as the account-route release published it.
+  for (const [target, sealed] of [
+    ["page10", "28021152f7762d52cd7ffeb4d539544697755f5afb0031a7c62aaf19733043b8"],
+    ["pages", "52527063f9c1a57c4a0e54c57025dc12f896ccfb03a1dae537205d9a188bfd02"],
+    ["pages2", "fc8123d752d159dfae99503b41dbd37490cbb7d9b6e0088f79136beaf7d4bf56"],
+  ]) {
+    const current = routesFor(target);
+    const prior = beforePreviews(current);
+    assert.equal(digest(prior), sealed, target);
+    assert.equal(prior.includes("meta|card"), false);
+    assert.equal(prior.includes("card-image"), false);
+    assert.equal(prior.includes("projects/(prj|sp)"), false);
+    assert.equal(
+      current.length - prior.length,
+      linkPreviewPaths.length + cardImagePaths.length + projectAssetPaths.length,
+    );
+  }
+});
+
+// The installation the account-route release sealed, without this release's
+// groups.
+const previewInstall = (f, options) => slotInstall(f, beforePreviews, options);
+
+for (const target of PREVIEW_TARGETS) {
+  const shared = { target, sharedTunnel: target !== "pages2" };
+  for (const state of ["sealed", "pending-old", "pending-new"])
+    test(`${target} adds link previews, card images and Project assets to its sealed installation (${state})`, (t) => {
+      const f = fixture(t, shared);
+      const x = previewInstall(f, { state });
+      const units = x.plan.slots.map((slot) => fs.readFileSync(f.local(slot.unitPath), "utf8"));
+      // A failed new connector rolls back to the sealed installation, which
+      // stays retryable.
+      f.failNextStart();
+      assert.throws(f.execute, /injected connector startup failure/);
+      assert.equal(installedReceipt(f), slotReceipt(x.base, x.plan.unitSha256));
+      assert.equal(fs.readFileSync(f.local(x.plan.configPath), "utf8"), x.base);
+      const result = f.execute();
+      assert.equal(result.routesUpdated, true);
+      assert.equal(result.connectorHandoff, true);
+      assert.equal(fs.readFileSync(f.local(x.plan.configPath), "utf8"), x.plan.config);
+      assert.equal(installedReceipt(f), slotReceipt(x.plan.config, x.plan.unitSha256));
+      assert.deepEqual(connectorRecord(f), {
+        schema: 1,
+        phase: "serving",
+        live: "b",
+        config: digest(x.plan.config),
+      });
+      // Only the routes changed: the slot units are untouched and the legacy
+      // unit stays absent.
+      assert.deepEqual(
+        x.plan.slots.map((slot) => fs.readFileSync(f.local(slot.unitPath), "utf8")),
+        units,
+      );
+      assert.equal(fs.existsSync(f.local(x.plan.unitPath)), false);
+      assertNoGap(f);
+      assert.deepEqual([...f.activeUnits].sort(), [x.plan.slots[1].service]);
+      f.calls.length = 0;
+      assert.equal(f.execute().routesUpdated, false);
+      assert.equal(installedReceipt(f), slotReceipt(x.plan.config, x.plan.unitSha256));
+    });
+
+  test(`${target} hands the sealed route set from its legacy connector to slot a with this release's routes`, (t) => {
+    const f = fixture(t, shared);
+    const plan = isolatedPublicationPlan(inputFor(target));
+    const sealed = beforePreviews(plan.config);
+    f.write(plan.configPath, sealed);
+    f.write(plan.unitPath, plan.unit);
+    f.write(
+      configDir(target) + "/tunnel-installation.json",
+      slotReceipt(sealed, digest(plan.unit)),
+    );
+    f.activate(plan.service);
+    const result = f.execute();
+    assert.equal(result.routesUpdated, true);
+    assert.equal(result.connectorSlot, "a");
+    assert.equal(fs.readFileSync(f.local(plan.configPath), "utf8"), plan.config);
+    assert.equal(installedReceipt(f), slotReceipt(plan.config, plan.unitSha256));
+    assertNoGap(f);
+    assert.deepEqual([...f.activeUnits].sort(), [plan.slots[0].service]);
+  });
+
+  test(`${target} refuses an edited sealed route set even with a matching receipt`, (t) => {
+    for (const edit of [
+      (config) => config + "# foreign edit\n",
+      (config) => config.replace("health|", "health|private|"),
+      // Only one of this release's groups, as no release published it.
+      (config) => config.replace("api/(", "api/(" + cardImagePaths),
+    ]) {
+      const f = fixture(t, shared);
+      previewInstall(f, { edit });
+      assert.throws(f.execute, /installation differs/);
+      assert.equal(f.writes.length, 0);
+      assert.deepEqual(lifecycle(f), []);
+    }
+  });
+
+  test(`${target} stops for inspection at a pending receipt from the account-route publish`, (t) => {
+    // That publish was interrupted after its pending receipt: this release
+    // doesn't resume it. Finish it with that release's stage first.
+    const f = fixture(t, shared);
+    const plan = isolatedPublicationPlan(inputFor(target));
+    const sealed = beforePreviews(plan.config);
+    const before = sealed.replace(accountPaths, "");
+    f.write(plan.configPath, sealed);
+    for (const slot of plan.slots) f.write(slot.unitPath, slot.unit);
+    f.write(
+      configDir(target) + "/tunnel-installation.json",
+      slotReceipt(sealed, plan.unitSha256, {
+        previous_config_sha256: digest(before),
+        previous_unit_sha256: plan.unitSha256,
+      }),
+    );
+    f.write(
+      recordPath(target),
+      JSON.stringify({ schema: 1, phase: "serving", live: "a", config: digest(sealed) }),
+    );
+    f.activate(plan.slots[0].service);
+    assert.throws(f.execute, /installation differs/);
+    assert.equal(f.writes.length, 0);
+    assert.deepEqual(lifecycle(f), []);
+  });
+
+  test(`${target} refuses misrouted preview, card image and Project asset paths before connector activation`, (t) => {
+    for (const misroutePath of [
+      `/p/${previewUuid}/meta.json`,
+      `/project/sp_${previewUuid}/card.json`,
+      `/p/${previewUuid}/meta.json/`,
+      `/api/pages/${previewUuid}/card-image`,
+      `/api/pages/${previewUuid}/card-image/${"a".repeat(64)}-light.webp`,
+      `/api/pages/${previewUuid}/card-image/${"a".repeat(64)}-sepia.webp`,
+      `/api/projects/prj_${previewUuid}/assets`,
+      `/api/projects/${previewUuid}/assets`,
+    ]) {
+      const f = fixture(t, { ...shared, misroutePath });
+      assert.throws(f.execute, /route validation failed/, misroutePath);
       assert.deepEqual(lifecycle(f), []);
     }
   });
