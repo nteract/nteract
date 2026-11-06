@@ -353,7 +353,7 @@ if (!owned) {
     JSON.stringify({ prefix: expected.prefix, hostname: expected.hostname }) + "\n",
     { mode: 0o600, flag: "wx" },
   );
-  // This random secret is created and remains on lab1. Never copied from Pages m.
+  // This random secret is created and remains on the target host. Never copied from Pages m.
   writeFileSync(configDir + "/session-secret", randomBytes(48).toString("base64url"), {
     mode: 0o600,
     flag: "wx",

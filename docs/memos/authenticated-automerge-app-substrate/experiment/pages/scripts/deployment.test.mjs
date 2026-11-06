@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { sourceFingerprint } from "./source-fingerprint.mjs";
 import { insertRoutes, routes } from "./deployment/publish.mjs";
-import { configureDns } from "./deployment/dns.mjs";
+import { configureDns, zoneForHostname } from "./deployment/dns.mjs";
+import { accountId as tunnelAccountId } from "./deployment/tunnel.mjs";
 import { pagesFirewall } from "./deployment/firewall.mjs";
 import * as profiles from "./deployment/profiles.mjs";
 import * as activation from "./deployment/activation.mjs";
@@ -173,6 +174,117 @@ test("DNS transport errors do not echo credentials", async () => {
     }),
     (error) => !error.message.includes("secret-value"),
   );
+});
+
+test("DNS picks the zone by hostname suffix from the allowlist only", () => {
+  assert.deepEqual(zoneForHostname("pages.runtimed.run"), {
+    name: "runtimed.run",
+    id: "7de7c86232f80c97a7aabfc880186b63",
+  });
+  assert.deepEqual(zoneForHostname("pages2.runt.run"), { name: "runt.run", id: null });
+  for (const hostname of [
+    "runt.run",
+    "runtimed.run",
+    "pages2.example.com",
+    "pages2.runt.run.example.com",
+    "pages2.notruntimed.run",
+    "pages2runt.run",
+    "a.b.runt.run",
+    "-x.runt.run",
+    "PAGES2.runt.run",
+    "",
+    undefined,
+  ])
+    assert.throws(
+      () => zoneForHostname(hostname),
+      /one label under runtimed.run or runt.run/,
+      hostname,
+    );
+  // Every profile's hostname resolves, so provisioning can't hit an unknown zone.
+  for (const target of profiles.DEPLOYMENT_TARGETS)
+    assert.doesNotThrow(() =>
+      zoneForHostname(profiles.deploymentProfile(target).deployment.hostname),
+    );
+});
+
+// A Cloudflare fake holding runt.run zones listed by name; records as in dnsFixture.
+function runtRunFixture(zones = [runtRunZone]) {
+  let records = [];
+  const calls = [];
+  return {
+    calls,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, method: options.method });
+      const { pathname, searchParams } = new URL(url);
+      if (pathname.endsWith("/zones")) {
+        assert.equal(searchParams.get("name"), "runt.run");
+        assert.equal(searchParams.get("account.id"), tunnelAccountId);
+        return Response.json({ success: true, result: zones });
+      }
+      if (options.method === "POST") {
+        records = [{ ...JSON.parse(options.body), id: "a".repeat(32) }];
+        return Response.json({ success: true, result: records[0] });
+      }
+      assert.match(pathname, new RegExp(`/zones/${runtRunZone.id}/dns_records$`));
+      return Response.json({
+        success: true,
+        result: records,
+        result_info: { page: 1, count: records.length, total_count: records.length },
+      });
+    },
+  };
+}
+const runtRunZone = {
+  id: "c".repeat(32),
+  name: "runt.run",
+  status: "active",
+  type: "full",
+  account: { id: tunnelAccountId },
+};
+
+test("pages2 DNS finds the runt.run zone by name and creates its owned CNAME", async () => {
+  const fixture = runtRunFixture();
+  const args = { token: "fixture", tunnelId, target: "pages2", fetchImpl: fixture.fetchImpl };
+  assert.equal((await configureDns(args)).present, false);
+  assert.ok(fixture.calls.every(({ method }) => method === "GET"));
+  const created = await configureDns({ ...args, apply: true });
+  assert.deepEqual(created, {
+    name: "pages2.runt.run",
+    target: `${tunnelId}.cfargotunnel.com`,
+    present: true,
+    recordId: "a".repeat(32),
+    changed: true,
+  });
+  const post = fixture.calls.find(({ method }) => method === "POST");
+  assert.match(post.url, new RegExp(`/zones/${runtRunZone.id}/dns_records$`));
+  assert.equal((await configureDns({ ...args, apply: true })).changed, false);
+});
+
+test("pages2 DNS refuses a missing, ambiguous, foreign or inactive runt.run zone", async () => {
+  for (const zones of [
+    [],
+    [runtRunZone, { ...runtRunZone, id: "d".repeat(32) }],
+    [{ ...runtRunZone, account: { id: "e".repeat(32) } }],
+    [{ ...runtRunZone, status: "pending" }],
+    [{ ...runtRunZone, type: "partial" }],
+    [{ ...runtRunZone, name: "runtimed.run" }],
+    [{ ...runtRunZone, id: "not-a-zone-id" }],
+  ]) {
+    const fixture = runtRunFixture(zones);
+    await assert.rejects(
+      configureDns({
+        token: "fixture",
+        tunnelId,
+        target: "pages2",
+        apply: true,
+        fetchImpl: fixture.fetchImpl,
+      }),
+      /zone/,
+      JSON.stringify(zones),
+    );
+    assert.ok(fixture.calls.every(({ method }) => method === "GET"));
+    assert.equal(fixture.calls.length, 1);
+  }
 });
 
 test("release staging copies only built artifacts, never development credentials/state", async () => {
@@ -623,7 +735,7 @@ function historicalInstallFixture(t, options = {}) {
 for (const target of ["pages-next", "page3", "page4", "page5", "page6", "page7", "page8", "page9"])
   test(`current installer refuses frozen ${target} before host commands or release writes`, (t) => {
     const fixture = installFixture(t, { target });
-    assert.throws(fixture.execute, /qualified only for page10 and pages/);
+    assert.throws(fixture.execute, /qualified only for page10, pages and pages2/);
     assert.deepEqual(fixture.calls, []);
     assert.equal(fs.existsSync(fixture.local(fixture.release)), false);
     assert.equal(fs.existsSync(fixture.local(fixture.audit)), false);
@@ -1368,7 +1480,10 @@ const frozenBy = {
   pages: ["page7", "page8", "page9"],
 };
 test("every deploy profile owns distinct hosts, ports, prefixes and firewall resources", () => {
-  const targets = [
+  // Every profile, so a new one can't skip the check. Ports are compared
+  // across hosts too: a profile may move hosts, and its ports must stay free.
+  const targets = profiles.DEPLOYMENT_TARGETS;
+  assert.deepEqual(targets, [
     "pages-next",
     "page3",
     "page4",
@@ -1379,7 +1494,8 @@ test("every deploy profile owns distinct hosts, ports, prefixes and firewall res
     "page9",
     "page10",
     "pages",
-  ];
+    "pages2",
+  ]);
   const seen = new Map();
   const claim = (kind, value, target) => {
     if (value === undefined) return;
@@ -1938,6 +2054,106 @@ test("fresh Pages installation owns pages.runtimed.run and its -live resources",
   assert.match(rules, /table inet nteract_pages_live \{/);
   assert.match(rules, /ct mark set ct mark \| 0x00100000/);
   assert.match(rules, /"system[.]slice\/nteract-pages-live[.]service"/);
+});
+
+test("pages2 is a fresh lab2 target with Pages' flags and plain sync only", () => {
+  const profile = profiles.deploymentProfile("pages2");
+  assert.deepEqual(profiles.selectTarget(["--target", "pages2", "plan"]), {
+    target: "pages2",
+    args: ["plan"],
+  });
+  assert.doesNotThrow(() => profiles.assertQualifiedDeploymentTarget("pages2"));
+  assert.deepEqual(profile.deployment, {
+    host: "lab2",
+    hostname: "pages2.runt.run",
+    service: "nteract-pages2",
+    bucket: profiles.deploymentProfile("pages").deployment.bucket,
+    prefix: "standalone/pages2",
+    region: "us-east-1",
+    listen: "127.0.0.1:9482",
+    internalListen: "127.0.0.1:19482",
+    runtime: profiles.CELLD_RELEASE.path,
+    requiredVersion: "celld 0.6.3",
+  });
+  assert.equal(profiles.stageTarget("/tmp/nteract-pages2-stage-abcd1234"), "pages2");
+  // Pages' flags carry over. Only owned resources differ, plus lab2's lack of
+  // a shared connector and of frozen neighbors.
+  const owned = [
+    "deployment",
+    "firewallTable",
+    "firewallMark",
+    "firewallComment",
+    "tunnelService",
+    "tunnelSlots",
+    "sharedTunnel",
+    "frozenTargets",
+  ];
+  const flags = (name) =>
+    Object.fromEntries(
+      Object.entries(profiles.deploymentProfile(name)).filter(([key]) => !owned.includes(key)),
+    );
+  assert.deepEqual(flags("pages2"), flags("pages"));
+  assert.equal(profile.recordStorage, "automerge");
+  assert.equal(profile.sharedTunnel, false);
+  assert.equal(profile.frozenTargets, undefined);
+  assert.deepEqual(profile.d1, profiles.AUTH_D1);
+  assert.deepEqual(profiles.unitMemory(profile), { maxRssMb: 2560, memoryMax: "4G" });
+  // No migration: the canary is off and serializes nothing.
+  assert.deepEqual(profile.recordStorageMigration, { enabled: false, pageIds: [] });
+  assert.deepEqual(profiles.migrationVars(profile), {});
+  assert.deepEqual(profiles.RECORD_STORAGE_HISTORY.pages2, ["automerge"]);
+  // A build that can't open plain Pages is refused before it reaches lab2.
+  assert.throws(
+    () =>
+      profiles.assertReleaseOpensTargetPages("pages2", {
+        source_sha: "a".repeat(40),
+        build_id: "0123456789ab",
+        record_storage: [],
+      }),
+    /pages2 may hold "automerge" Pages/,
+  );
+  assert.doesNotThrow(() =>
+    profiles.assertReleaseOpensTargetPages("pages2", {
+      record_storage: CURRENT_RECORD_STORAGE,
+      plain_storage_formats: CURRENT_PLAIN_STORAGE_FORMATS,
+    }),
+  );
+});
+
+test("fresh pages2 installation owns pages2.runt.run, its prefix and its unit", (t) => {
+  const f = installFixture(t, { target: "pages2", fresh: true });
+  f.execute();
+  const config = JSON.parse(f.read(f.release + "/wrangler.json"));
+  assert.equal(config.vars.NOTEBOOK_CLOUD_PUBLIC_ORIGIN, "https://pages2.runt.run");
+  assert.equal(config.vars.NOTEBOOK_CLOUD_OIDC_REDIRECT_URI, "https://pages2.runt.run/oidc");
+  assert.equal(config.vars.PAGES_RECORD_STORAGE, "automerge");
+  assert.equal(config.vars.PAGES_MIGRATE_RECORD_STORAGE, undefined);
+  assert.equal(config.vars.PAGES_MIGRATE_PAGE_IDS, undefined);
+  assert.equal(config.vars.PAGES_DEFAULT_PAGE_QUOTA, "250");
+  assert.deepEqual(
+    config.d1_databases.find((db) => db.binding === "DB"),
+    profiles.AUTH_D1,
+  );
+  assert.deepEqual(JSON.parse(f.read("/etc/nteract-pages2/ownership.json")), {
+    prefix: "standalone/pages2",
+    hostname: "pages2.runt.run",
+  });
+  const unit = f.read("/etc/systemd/system/nteract-pages2.service");
+  assert.match(unit, /User=nteract-pages2\n/);
+  assert.match(unit, /Environment=CELLD_MAX_RSS_MB=2560\n/);
+  assert.match(unit, /MemoryMax=4G\n/);
+  assert.match(
+    unit,
+    /ExecStart=\/opt\/nteract-pages2\/celld --bucket s3:\/\/[^ ]+\/standalone\/pages2 /,
+  );
+  assert.match(unit, /--listen 127[.]0[.]0[.]1:9482 --internal-listen 127[.]0[.]0[.]1:19482/);
+  const prefixCheck = f.calls.find(
+    ({ command, args }) => command === "/usr/local/bin/aws" && args.includes("--prefix"),
+  );
+  assert.equal(prefixCheck.args[prefixCheck.args.indexOf("--prefix") + 1], "standalone/pages2/");
+  const rules = pagesFirewall(999, false, "pages2");
+  assert.match(rules, /table inet nteract_pages2 \{/);
+  assert.match(rules, /ct mark set ct mark \| 0x00080000/);
 });
 
 // Activation: a running node adopts a new pointer without a restart unless

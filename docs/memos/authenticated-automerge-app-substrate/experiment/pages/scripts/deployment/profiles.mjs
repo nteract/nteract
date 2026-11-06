@@ -432,7 +432,64 @@ const targets = Object.freeze({
     // Page10 stays deployable, so it is not frozen here.
     frozenTargets: Object.freeze(["page7", "page8", "page9"]),
   }),
+  // pages2.runt.run: a fresh, empty target on its own host, lab2 (m7i.large,
+  // 8 GB). Pages' flags with plain Automerge sync from its first Page, so it
+  // never holds a Subduction Page and has nothing to migrate. Its listeners,
+  // firewall table and mark, tunnel and prefix are distinct from every lab1
+  // profile, so neither host can mistake the other's resources for its own.
+  pages2: Object.freeze({
+    recordStorageMigration: DISABLED_MIGRATION,
+    deployment: Object.freeze({
+      host: "lab2",
+      hostname: "pages2.runt.run",
+      service: "nteract-pages2",
+      bucket: shared.bucket,
+      prefix: "standalone/pages2",
+      region: shared.region,
+      listen: "127.0.0.1:9482",
+      internalListen: "127.0.0.1:19482",
+      runtime: shared.runtime,
+      requiredVersion: shared.requiredVersion,
+    }),
+    sharing: true,
+    oauth: true,
+    theme: true,
+    viewerChunks: true,
+    viewerAssets: true,
+    projectLinks: true,
+    indexRoutes: true,
+    siftTables: true,
+    whoami: true,
+    firewallTable: "nteract_pages2",
+    firewallMark: "0x00080000",
+    firewallComment: "nteract/preview-infra standalone-pages2",
+    asyncPersistence: true,
+    compactRecords: true,
+    companyViewDomains: "anaconda.com",
+    catalogIndex: "1",
+    recordStorage: "automerge",
+    pageQuota: "250",
+    // The same binding and database_id as Pages. celld keeps the database
+    // under this target's prefix and creates it empty on first use, so
+    // pages2 starts with its own auth, OIDC and quota tables.
+    d1: AUTH_D1,
+    otelTracesSampler: "always_on",
+    editor: "wordgard",
+    // m7i.large has 8 GB. MemoryMax 4G leaves the host room for cloudflared.
+    memory: SERVING_MEMORY,
+    // lab2 runs no shared cloudflared connector (/etc/cloudflared/config.yml);
+    // publication checks it only if one appears.
+    sharedTunnel: false,
+    tunnelService: "cloudflared-pages2.service",
+    tunnelSlots: Object.freeze({
+      a: Object.freeze({ service: "cloudflared-pages2-a.service", metrics: "127.0.0.1:29482" }),
+      b: Object.freeze({ service: "cloudflared-pages2-b.service", metrics: "127.0.0.1:29492" }),
+    }),
+    // lab2 holds no other Pages target, so nothing is frozen beside it.
+  }),
 });
+/** Every deployment profile name, qualified or not. */
+export const DEPLOYMENT_TARGETS = Object.freeze(Object.keys(targets));
 export function deploymentProfile(target = "pages-next") {
   if (!Object.hasOwn(targets, target)) throw new Error("Unknown Pages deployment target");
   return targets[target];
@@ -527,15 +584,15 @@ export function migrationVars(profile, operatorText) {
     PAGES_MIGRATE_PAGE_IDS: JSON.stringify(policy.pageIds),
   };
 }
-// This release is qualified for the isolated Page10 and Pages targets. Page10
-// stays deployable until its Projects are copied to Pages.
+// This release is qualified for the isolated Page10, Pages and Pages2 targets.
+// Page10 stays deployable until its Projects are copied to Pages.
 // Historical profiles remain readable for comparison and frozen-release checks.
-export const QUALIFIED_TARGETS = Object.freeze(["page10", "pages"]);
+export const QUALIFIED_TARGETS = Object.freeze(["page10", "pages", "pages2"]);
 export function assertQualifiedDeploymentTarget(target) {
   deploymentProfile(target);
   if (!QUALIFIED_TARGETS.includes(target))
     throw new Error(
-      "This build is qualified only for page10 and pages; earlier deployments are frozen",
+      "This build is qualified only for page10, pages and pages2; earlier deployments are frozen",
     );
 }
 
@@ -547,9 +604,11 @@ export function assertQualifiedDeploymentTarget(target) {
 // pages creates `automerge` Pages once a release configured from its profile
 // runs there. Its entry holds whether or not that install has happened, so no
 // checkout that knows the profile can install a build without plain sync.
+// pages2 creates only `automerge` Pages from its first release.
 export const RECORD_STORAGE_HISTORY = Object.freeze({
   page10: Object.freeze(["automerge"]),
   pages: Object.freeze(["automerge"]),
+  pages2: Object.freeze(["automerge"]),
 });
 const NATIVE_RECORD_STORAGE = Object.freeze(["local", "buffered"]);
 

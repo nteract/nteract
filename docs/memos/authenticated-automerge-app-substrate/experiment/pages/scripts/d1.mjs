@@ -1,6 +1,6 @@
 // Run SQL against a celld target's D1 database from an operator machine.
 //
-// The lab targets (`pages`, `page10`) are test deployments, so reads and
+// The lab targets (`pages`, `page10`, `pages2`) are test deployments, so reads and
 // writes by hand are allowed. The SQL goes over SSH stdin to the same fixed
 // remote command quota-rules.mjs uses: it checks the celld version, refuses
 // to run unless the database's cell already exists (celld creates an empty
@@ -29,9 +29,9 @@ export const USAGE = `Usage:
   echo "SELECT 1" | node scripts/d1.mjs --target pages -
 
 Options:
-  --target NAME     Required: pages or page10.
+  --target NAME     Required: pages, page10 or pages2.
   --file PATH       Read the SQL from a file. "-" as the SQL reads stdin.
-  --ssh-host HOST   SSH destination; the profile's host (lab1) by default.
+  --ssh-host HOST   SSH destination; the profile's host (lab1, or lab2 for pages2) by default.
 
 The database also holds the auth and OIDC tables. A failed write may still
 have committed: read the row back before running it again.`;
