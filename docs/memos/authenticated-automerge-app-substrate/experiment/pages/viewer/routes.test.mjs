@@ -58,6 +58,39 @@ test("page and home navigation push history; canonicalization replaces without d
     { method: "replaceState", path: `/p/${id}` },
   ]);
 });
+test("heading fragments: an anchor is written encoded, a replace keeps the visit's fragment", () => {
+  const calls = [];
+  const location = { pathname: "/", search: "", hash: "" };
+  const history = Object.fromEntries(
+    ["pushState", "replaceState"].map((method) => [
+      method,
+      (state, _, path) => {
+        calls.push({ method, path });
+        const url = new URL(path, "https://pages.invalid");
+        Object.assign(location, { pathname: url.pathname, search: url.search, hash: url.hash });
+      },
+    ]),
+  );
+  writePageRoute(id, { history, location, anchor: "café-notes" });
+  // The same address again writes nothing.
+  writePageRoute(id, { history, location, anchor: "café-notes" });
+  // Canonicalizing the visit (a legacy link, a Project's document) keeps it.
+  Object.assign(location, { pathname: "/", search: `?page=${id}` });
+  writePageRoute(id, { history, location, replace: true });
+  const project = `prj_${id}`;
+  writePageRoute(project, { history, location, replace: true });
+  // A new visit and the library start without one.
+  writePageRoute(id, { history, location });
+  location.hash = "#kept";
+  writePageRoute(null, { history, location, replace: true });
+  assert.deepEqual(calls, [
+    { method: "pushState", path: `/p/${id}#caf%C3%A9-notes` },
+    { method: "replaceState", path: `/p/${id}#caf%C3%A9-notes` },
+    { method: "replaceState", path: `/project/${project}#caf%C3%A9-notes` },
+    { method: "pushState", path: `/p/${id}` },
+    { method: "replaceState", path: "/" },
+  ]);
+});
 test("/projects and /pages are exact index routes with an optional trailing slash", () => {
   for (const path of ["/projects", "/projects/", "/projects?from=home"])
     assert.deepEqual(readPageRoute(path), { kind: "projects", path: PROJECTS_PATH });

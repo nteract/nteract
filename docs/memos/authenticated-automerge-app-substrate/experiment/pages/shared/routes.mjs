@@ -182,9 +182,27 @@ export function isPlainNavigation(event) {
   );
 }
 
+/** The fragment that names heading anchor `anchor`. */
+export const anchorFragment = (anchor) => (anchor ? `#${encodeURIComponent(anchor)}` : "");
+
+/**
+ * Show Page or Project `id` in the address (`/` for none). `anchor` names a
+ * heading to add as the fragment. Without one, a replace keeps the current
+ * fragment: it rewrites the same visit's address into canonical form, and a
+ * heading link that opened the Page still names its heading. A push is a new
+ * visit and starts without one.
+ */
 export function writePageRoute(id, options = {}) {
+  const { anchor = null, location = globalThis.location, ...rest } = options;
   const path = id ? (isProjectId(id) ? projectPath(id) : pagePath(id)) : "/";
-  writeRoute(path, { ...options, state: { pageId: id ?? null } });
+  const fragment = !id
+    ? ""
+    : anchor
+      ? anchorFragment(anchor)
+      : rest.replace
+        ? (location?.hash ?? "")
+        : "";
+  writeRoute(`${path}${fragment}`, { ...rest, location, state: { pageId: id ?? null } });
 }
 
 /** Push (or replace) `path` unless the address already shows it. */

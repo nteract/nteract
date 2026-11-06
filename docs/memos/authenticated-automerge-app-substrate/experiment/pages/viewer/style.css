@@ -819,6 +819,37 @@ details.document-actions > div button {
 .toolbar-select:hover {
   background: var(--accent);
 }
+/* A heading scrolled to by its link (HeadingAnchors.jsx) clears the sticky
+   header and the formatting toolbar. */
+.page-block :is(h1, h2, h3, h4, h5, h6) {
+  scroll-margin-top: calc(64px + 49px + 1rem);
+}
+/* The "#" beside the heading under the pointer copies its link. */
+.heading-anchor {
+  position: absolute;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+.heading-anchor:hover,
+.heading-anchor:focus-visible {
+  background: var(--accent-soft);
+  color: var(--primary);
+}
+@media print {
+  .heading-anchor {
+    display: none;
+  }
+}
 .page-block {
   position: relative;
 }

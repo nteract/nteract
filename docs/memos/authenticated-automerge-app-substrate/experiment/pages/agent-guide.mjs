@@ -1075,8 +1075,12 @@ include_content:false; this returns its title, heads, retry authority and outlin
 without body content or comments. The outline has entries, total, offset and
 next_offset; use outline_offset to fetch another page (outline_limit is at most 100).
 Each entry has block_id, node_index, node_id, type, heading_path and
-markdown_bytes, plus heading and level for a heading, and typed fields where they
-apply.
+markdown_bytes, plus heading, level and anchor for a heading, and typed fields
+where they apply. anchor is the heading's link fragment: write [text](#anchor) to
+link to it from the same Page, or [text](/p/<page_id>#anchor) from another. It is
+a slug of the heading's visible text (lowercase, punctuation dropped, spaces as
+hyphens), numbered -1, -2, … for repeats in document order, so it changes when
+the heading's text does.
 ${typedReadFields()}
 node_index and node_range describe the returned heads and shift with edits;
 node_id lasts as long as the node's opening marker does. A replace_block_markdown

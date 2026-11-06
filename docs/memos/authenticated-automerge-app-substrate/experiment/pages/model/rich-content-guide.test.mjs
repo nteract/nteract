@@ -60,6 +60,9 @@ test("every surface an MCP agent reads names the rich content people get", () =>
   for (const op of editOps) assert.ok(instructions.includes(op), `instructions lack ${op}`);
   assert.ok(instructions.endsWith("https://pages.example/llms.txt."));
   assert.equal(markdown.includes(markdownSyntax()), true);
+  // Agents learn to link to headings wherever they learn link syntax.
+  for (const text of [markdown, instructions])
+    assert.ok(text.includes("[text](#anchor)"), "heading links are described");
 });
 
 test("patch_page advertises set_node, occurrence, all and replacement_markdown", () => {
