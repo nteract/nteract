@@ -13,9 +13,12 @@
 // scripts/binding-benchmark.mjs's:
 //   marked 115 KB  docs/adr/automerge-document-storage.md, seven times
 //   plain 118 KB   one paragraph of repeated prose
-// Cases: type one character at native index 4; bold four characters; split
-// the opening node with a paragraph marker (a block marker, which reads the
-// block whole).
+// Cases: type one character at native index 4; delete one and twelve
+// characters there (each deleted index is probed for a marker); bold four
+// characters; split the opening node with a paragraph marker (a block
+// marker, which reads the block whole); and type one character from a peer
+// that hadn't seen another peer's character (judged at the writer's base,
+// through cursors).
 // Writes test-results/admission-benchmark.json (every sample) and prints
 // median [p10, p90] milliseconds.
 import assert from "node:assert/strict";
@@ -51,10 +54,13 @@ const pageId = "66666666-6666-4666-8666-666666666666";
 
 const cases = {
   "type one character": (d, at) => A.splice(d, at, 4, 0, "x"),
+  "delete one character": (d, at) => A.splice(d, at, 4, 1),
+  "delete twelve characters": (d, at) => A.splice(d, at, 4, 12),
   "bold four characters": (d, at) =>
     A.mark(d, at, { start: 4, end: 8, expand: "after" }, "strong", true),
   // Enter inside the opening heading: a new paragraph marker.
   "split a block": (d, at) => A.splitBlock(d, at, 6, { type: "paragraph", parents: [], attrs: {} }),
+  "type one character, concurrent": (d, at) => A.splice(d, at, 4, 0, "x"),
 };
 const checks = {
   "patch path": (live, preview) => {
@@ -96,17 +102,22 @@ for (const [fixture, source] of Object.entries(fixtures)) {
     // The preview as SyncHost builds it: a clone of the live document with
     // the browser's change loaded.
     const change = A.getLastLocalChange(A.change(A.clone(live), (d) => edit(d, at)));
+    // A concurrent case's host already holds another peer's character.
+    const host = name.endsWith("concurrent")
+      ? A.change(A.clone(live), (d) => A.splice(d, at, 100, 0, "p"))
+      : live;
     for (const [label, check] of Object.entries(checks)) {
       const samples = [];
       let fullReads = 0;
       for (let i = -WARMUP; i < SAMPLES; i++) {
-        const preview = A.loadIncremental(A.clone(live), change);
+        const preview = A.loadIncremental(A.clone(host), change);
         const start = performance.now();
-        fullReads = check(live, preview, at);
+        fullReads = check(host, preview, at);
         const ms = performance.now() - start;
         A.free(preview);
         if (i >= 0) samples.push(ms);
       }
+      if (host !== live && label === Object.keys(checks).at(-1)) A.free(host);
       results.results.push({
         fixture,
         case: name,

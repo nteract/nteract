@@ -138,7 +138,7 @@ was a caret race in the smoke; the editor side is
 | Editing, comments, links, diagrams, and recovery | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:editor` | Uses the running Wordgard fixture |
 | History growth and typing latency | `PAGES_ORIGIN=http://localhost:9894 node scripts/latency-smoke.mjs` | Uses the running Wordgard fixture |
 | One keystroke, a hard line break, and one remote character through the Wordgard binding on 115 KB marked, 16 KB marked and 118 KB plain blocks, base revision against this checkout (records timings, gates on nothing) | `node scripts/binding-benchmark.mjs` | Node only, no server or DOM; `PAGES_BINDING_BASE` picks the base (default `origin/main`); writes `test-results/binding-benchmark.json` |
-| Page-body admission for one typed character, four bolded characters and a block split on 115 KB marked and 118 KB plain blocks, patch path against whole-block validation (records timings, gates on nothing) | `node scripts/admission-benchmark.mjs` | Node only; writes `test-results/admission-benchmark.json` |
+| Page-body admission for one typed character, one and twelve deleted characters, four bolded characters, a block split and a concurrent typed character on 115 KB marked and 118 KB plain blocks, patch path against whole-block validation (records timings, gates on nothing) | `node scripts/admission-benchmark.mjs` | Node only; writes `test-results/admission-benchmark.json` |
 | `list_pages` for 50 shared Pages with cold and warm Page hosts, p50/p95 (records timings, gates on nothing) | `node scripts/local-sharing-e2e.mjs --listing-bench` | Starts an isolated fixture and restarts it between cold samples; writes `listing-benchmark.json` |
 
 The editor checks exercise the same Wordgard path used by deployed Pages.
@@ -2037,23 +2037,48 @@ the live document and the preview (`A.diff`), not the whole document:
 
 | Path written | Rule |
 | --- | --- |
-| Root key | One of `page_id`, `title`, `blocks`, `schema`. `page_id` never changes; `page_id`, `title` and `blocks` are never deleted. |
+| Root key | One of `page_id`, `title`, `blocks`, `schema`. `page_id` never changes; `page_id`, `title` and `blocks` are never deleted. Deleting any other key is cleanup and is admitted. |
 | `title` | Text or a string, at most 1,024 UTF-16 units, or no longer than before. |
 | `schema` | The stamp keeps every id and gains only well-formed ones. A newer build may stamp an id this build doesn't know; the schema gate then holds the Page for builds without it. |
-| Block entry | A new entry has a UUID key and exactly the fields `id`, `position`, `kind`, `format`, `markdown`, `richText`, `metadata`, each valid ([model/page-shape.mjs](model/page-shape.mjs), shared with registration). A written field passes its rule; no other key. |
-| Mark | A mark patch's name and value: a known mark with a registry value (`validateMarkValue`), or null. Text typed under a mark carries it in its splice patch; a mark the block already held isn't new. |
-| Block marker | Each inserted or changed marker, read alone at its final index (`A.block`), passes `validateMarkerValue`: known type and parents, and the attrs the adapter reads. |
+| Block entry | A new entry has a UUID key and exactly the fields `id`, `position`, `kind`, `format`, `markdown`, `richText`, `metadata`, each valid ([model/page-shape.mjs](model/page-shape.mjs), shared with registration). A written field passes its rule; no other key, though deleting one is admitted. |
+| Conflicts | A key the batch puts is checked on every value it holds at the batch's tips (`getAll`), not only the winner the patches show. Two block entries or text objects under one key are refused. |
+| Mark | A mark patch's name and value: a known mark with a registry value (`validateMarkValue`), or null. Text inserted with a mark carries it in its splice patch; an unknown or invalid one is admitted only when the text on either side of the insertion point already held exactly that mark and value. |
+| Typed text | Text inserted straight after a rule or dataframe marker, which no reader places, is refused unless text already sat there. One marker read per insertion. |
+| Block marker | Each inserted or changed marker, read alone at its final index (`getBlock`), passes `validateMarkerValue`: known type and parents, and the attrs the adapter reads. |
 | Block size | A block whose native length grows ends at most 262,144 UTF-16 units (markers count one), read from the backend length. |
 
 A batch that inserts, changes or deletes a block marker can move nodes in ways
-no patch shows, so that block alone is read whole: `validateRichSpans` on its
-spans after the batch. If it fails there, the block as admitted is checked
-too, and the batch is refused only when it made a readable block unreadable. A
-new block, a replaced text object, and a marker the patch path can't place are
-also read whole. Typing, deleting text, formatting and title edits never read a
-block. `node scripts/admission-benchmark.mjs` times one keystroke on a 115 KB
-block: about 0.04 ms on the patch path, against 22 ms to validate the block
-whole.
+no patch shows, so that block alone is read whole (`spanTreeErrors` on its
+spans after the batch, and on the block as admitted when those fail). The
+batch is refused only for a tree error it adds: the block was readable and
+isn't, it holds more text straight after a rule or dataframe, or it no longer
+reads once projected. A text delete finds the markers it removed by probing
+the admitted block at each deleted index, up to 64 characters; a longer delete
+reads its block. A new block, a replaced text object, a `richText` that isn't
+text and a marker the patch path can't place are also read whole. Typing,
+short deletes, formatting and title edits never read a block.
+`node scripts/admission-benchmark.mjs` on a 115 KB block: typing one character
+costs about 0.2 ms and deleting one about 0.1 ms on the patch path, against
+22 ms to validate the block whole.
+
+A batch is judged against the live document. When its writer hadn't seen
+everything the host holds (concurrent edits) and the batch is refused for its
+structure, size or title, which another writer's edits can cause, it is judged
+again as its writer made it: between views of the preview at the heads its
+changes depend on and at its own tips. That answer stands, so an honest frame
+is admitted whichever concurrent frame arrived first. Merging two admitted
+frames can still leave shapes the tree check refuses, such as text one peer
+typed into a paragraph another deleted after a rule; readers repair those. The
+second judgment reads at older heads, which costs about a whole-document read
+(roughly 100 ms on the 115 KB block), so only those refusals pay for it.
+
+Known limits. A concurrent mark or marker attribute that loses to another
+within one batch isn't seen: patches show the winner, and a losing mark never
+surfaces in reads. Marker attributes and block `metadata` have no per-block
+size bound of their own; the 16 MiB history bound covers them. A block whose
+stored content already fails its tree check in a way projection can't repair,
+such as a legacy marker attribute the adapter refuses, has its later structural errors judged only by
+the counts above.
 
 Content stored before these rules stays readable and editable: a write is
 judged by what it writes, so a Page with an unknown mark, an extra field or an
