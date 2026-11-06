@@ -91,10 +91,7 @@ describe.skipIf(!nativeEnabled)("native NotebookDoc sync receipts", () => {
         await exited;
       }
     }
-    // An installer that outlives the daemon can still be writing into the
-    // env directory; retry ENOTEMPTY briefly instead of failing teardown.
-    if (directory)
-      fs.rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    if (directory) fs.rmSync(directory, { recursive: true, force: true });
   });
 
   it("confirms an edit that an independent peer can read", async () => {

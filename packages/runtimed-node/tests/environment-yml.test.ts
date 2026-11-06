@@ -102,10 +102,7 @@ describe.skipIf(!nativeEnabled)("explicit environment.yml initialization", () =>
         await exited;
       }
     }
-    // An installer that outlives the daemon can still be writing into the
-    // env directory; retry ENOTEMPTY briefly instead of failing teardown.
-    if (directory)
-      fs.rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    if (directory) fs.rmSync(directory, { recursive: true, force: true });
   });
 
   it("rejects invalid specs and existing manifests through the public binding", async () => {
