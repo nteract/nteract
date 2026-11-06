@@ -704,7 +704,12 @@ export function WordgardEditor(props) {
           }
         }
         editor.dispatch({
-          changes: projectChanges(editor.state.doc, event.after.doc),
+          // The binding's change set starts from its previous tree; reuse it
+          // when the editor shows that same tree.
+          changes:
+            editor.state.doc === event.before.doc
+              ? event.changes
+              : projectChanges(editor.state.doc, event.after.doc),
           selection,
           // The native cursor can move even when the rendered text is equal
           // (a peer deletes one "a" and adds another), so re-resolve always.

@@ -1,7 +1,7 @@
 // Adapted from rgbkrk/wordgard-automerge c9c6ea8 (BSD-3-Clause).
 import * as A from "@automerge/automerge/slim";
 import { stickyCaret, stickyCaretPosition } from "../model/sticky-caret.mjs";
-import { ChangeSet, Leaf, Token } from "wordgard/doc";
+import { ChangeSet, Leaf, Mark, Token } from "wordgard/doc";
 import { Correction, GardSelection, GardState, Transaction } from "wordgard/state";
 import { insertLineBreak } from "wordgard/command";
 import { history } from "wordgard/history";
@@ -9,6 +9,7 @@ import {
   decode,
   encode,
   expand,
+  fromMarks,
   toMarks,
   markNames,
   CodeBlock,
@@ -154,33 +155,171 @@ export function commitEditorTransactions(
   }
 }
 
+const sameHeads = (a, b) => a.length === b.length && a.every((hash) => b.includes(hash));
+const textOnly = (tokens) =>
+  [...tokens].every((token) => token.tokenType === Token.Type.Node && token.isText);
+// Characters decode draws as something other than text: a newline becomes a
+// LineBreak leaf, and U+FFFC stands for a node.
+const SPECIAL_TEXT = /[\n\uFFFC]/;
+const inlineParent = (pos) => !!pos.parent.node.type.spec.inlineContent;
+// Automerge won't split a surrogate pair, so a native splice there lands
+// elsewhere than the editor's.
+const splitsPair = (doc, pos) => {
+  const before = doc.resolve(pos).nodeBefore;
+  return !!before?.isText && /[\uD800-\uDBFF]$/.test(String(before.param));
+};
+const nativeLength = (doc, id) => String(doc.blocks?.[id]?.richText ?? "").length;
+
+/** Position maps after replacing editor range `[from, to)` with `length`
+ * characters of text, where the replaced range and the new text are plain
+ * text: one editor position per native index. */
+export function spliceProjectionMap({ wgToAm, amToWg }, from, to, length) {
+  const start = wgToAm[from],
+    end = wgToAm[to],
+    shift = length - (to - from),
+    nextWgToAm = wgToAm.slice(0, from),
+    nextAmToWg = amToWg.slice(0, start);
+  for (let i = 0; i < length; i++) {
+    nextWgToAm.push(start + i);
+    nextAmToWg.push(from + i);
+  }
+  for (let i = to; i < wgToAm.length; i++) nextWgToAm.push(wgToAm[i] + shift);
+  for (let i = end; i < amToWg.length; i++) nextAmToWg.push(amToWg[i] + shift);
+  return { wgToAm: nextWgToAm, amToWg: nextAmToWg };
+}
+
+// The editor position where decode would draw text inserted at native
+// `index`, or null when it would land outside a textblock (decode would
+// create a paragraph for it). Text inserted before a block marker, or at the
+// end, joins the content before it: the first editor position sharing that
+// native index.
+function insertionPoint(doc, map, index) {
+  let pos = map.amToWg[index];
+  if (pos === undefined || map.wgToAm[pos] !== index) return null;
+  const at = doc.resolve(pos);
+  if (!(inlineParent(at) && at.nodeAfter)) while (pos > 0 && map.wgToAm[pos - 1] === index) pos--;
+  return inlineParent(doc.resolve(pos)) ? pos : null;
+}
+
+/** Apply Automerge text patches to a decoded block without reading it again.
+ * Handles plain-text insertions and deletions inside textblocks; returns null
+ * for anything else (marks, block markers, newlines, unknown actions), and
+ * the caller reads the block instead. */
+export function applyTextPatches(projection, patches, path) {
+  let { doc, map } = projection,
+    changes = null;
+  for (const patch of patches) {
+    const at = patch.path;
+    if (!Array.isArray(at)) return null;
+    const shared = Math.min(at.length, path.length);
+    if (!path.slice(0, shared).every((part, index) => part === at[index])) continue;
+    const index = at[path.length];
+    if (at.length !== path.length + 1 || typeof index !== "number") return null;
+    let step;
+    try {
+      if (patch.action === "del") {
+        const length = patch.length ?? 1,
+          from = map.amToWg[index],
+          to = from + length;
+        if (from === undefined || map.wgToAm[from] !== index || map.wgToAm[to] !== index + length)
+          return null;
+        if (!textOnly(doc.slice(from, to))) return null;
+        step = ChangeSet.create(doc, { from, to });
+        // An emptied textblock may have no native marker of its own, and
+        // decode draws no paragraph for it.
+        if (!step.apply(doc).resolve(from).parent.node.content.length) return null;
+        map = spliceProjectionMap(map, from, to, 0);
+      } else if (patch.action === "splice") {
+        const text = patch.value;
+        if (typeof text !== "string" || !text || SPECIAL_TEXT.test(text)) return null;
+        const from = insertionPoint(doc, map, index);
+        if (from === null) return null;
+        // Code text carries no marks in the editor (see decode).
+        const marks =
+          doc.resolve(from).parent.node.type === CodeBlock.type
+            ? Mark.none
+            : fromMarks(
+                Object.fromEntries(
+                  Object.entries(patch.marks ?? {}).filter(([, value]) => value != null),
+                ),
+              );
+        step = ChangeSet.create(doc, { from, insert: [Leaf.text(text, marks)] });
+        map = spliceProjectionMap(map, from, from, text.length);
+      } else return null;
+    } catch {
+      return null;
+    }
+    doc = step.apply(doc);
+    changes = changes ? changes.compose(step) : step;
+  }
+  if (!changes) return null;
+  // Applying the composed set to the starting tree gives the same object the
+  // editor gets when it dispatches these changes (ChangeSet caches apply).
+  return { projection: { doc: changes.apply(projection.doc), map, lossy: false }, changes };
+}
+
 // `encodeSpans` exists for mixed-version tests that stand in for an older
 // build's encoder. The editor always uses the current `encode`.
-export function createWordgardBinding(replica, id, { encodeSpans = encode } = {}) {
+//
+// The binding keeps the decoded block (`current`) with the heads it describes.
+// A whole-block read (A.spans + decode) happens when that projection can't be
+// carried forward: on creation, when heads moved without this binding seeing
+// the change, for structural or formatting writes (once, as their check), and
+// for remote patches applyTextPatches can't map. Plain local typing and
+// remote plain-text patches update the tree and position maps in place, and
+// check the native text length. `verify` reads and compares after every local
+// write instead.
+export function createWordgardBinding(replica, id, { encodeSpans = encode, verify = false } = {}) {
   const path = ["blocks", id, "richText"],
     listeners = new Set();
-  let current = decode(A.spans(replica.doc, path));
+  const read = (doc) => decode(A.spans(doc, path));
+  const touches = (at) =>
+    Array.isArray(at) &&
+    path.slice(0, Math.min(path.length, at.length)).every((part, index) => part === at[index]);
+  let current = read(replica.doc),
+    currentHeads = A.getHeads(replica.doc),
+    // The projection a local write produced, until its change event arrives.
+    pending = null;
   const stop = replica.observeChange((event) => {
-    // A Pages session publishes the whole document stream. Only this canonical
-    // text path (or an ancestor replacement) can change this editor projection.
-    if (
-      Array.isArray(event.patches) &&
-      !event.patches.some(
-        (patch) =>
-          Array.isArray(patch.path) &&
-          path
-            .slice(0, Math.min(path.length, patch.path.length))
-            .every((part, index) => part === patch.path[index]),
-      )
-    )
-      return;
     const nativeBefore = event.patchInfo?.before ?? event.before;
     const nativeAfter = event.patchInfo?.after ?? event.after;
-    if (!nativeAfter.blocks?.[id]) return;
+    const patches = Array.isArray(event.patches) ? event.patches : null;
+    // A Pages session publishes the whole document stream. Only this canonical
+    // text path (or an ancestor replacement) can change this editor projection;
+    // the projection still describes the text after any other change.
+    if (patches && !patches.some((patch) => touches(patch.path))) {
+      if (nativeBefore && currentHeads && sameHeads(currentHeads, A.getHeads(nativeBefore)))
+        currentHeads = A.getHeads(nativeAfter);
+      return;
+    }
+    if (!nativeAfter.blocks?.[id]) {
+      currentHeads = null;
+      return;
+    }
     const before = current,
-      after = decode(A.spans(nativeAfter, path));
+      beforeHeads = nativeBefore ? A.getHeads(nativeBefore) : null;
+    let after = null,
+      changes = null;
+    if (!event.remote && pending && beforeHeads && sameHeads(pending.heads, beforeHeads)) {
+      // Plain typing skipped the read; its native length is the cheap check.
+      // (Reading the text after the change costs nothing: the document keeps
+      // it materialized.)
+      if (pending.projection.map.wgToAm.at(-1) === nativeLength(nativeAfter, id))
+        after = pending.projection;
+    } else if (
+      patches &&
+      beforeHeads &&
+      currentHeads &&
+      !before.lossy &&
+      sameHeads(currentHeads, beforeHeads)
+    ) {
+      const next = applyTextPatches(before, patches, path);
+      if (next && next.projection.map.wgToAm.at(-1) === nativeLength(nativeAfter, id))
+        ({ projection: after, changes } = next);
+    }
+    after ??= read(nativeAfter);
     current = after;
-    const changes = projectChanges(before.doc, after.doc);
+    currentHeads = A.getHeads(nativeAfter);
     const remoteChanges = event.remote
       ? A.getChangesMetaSince(nativeAfter, A.getHeads(nativeBefore))
       : [];
@@ -195,18 +334,22 @@ export function createWordgardBinding(replica, id, { encodeSpans = encode } = {}
       startOp,
       maxOp,
     }));
-    for (const listener of listeners)
-      listener({
-        before,
-        after,
-        nativeBefore,
-        nativeAfter,
-        changes,
-        remote: !!event.remote,
-        actors,
-        hashes,
-        changeOps,
-      });
+    // `changes` maps `before.doc` to `after.doc`. Remote text patches supply
+    // it; otherwise the projection diff runs only when a listener reads it.
+    const payload = {
+      before,
+      after,
+      nativeBefore,
+      nativeAfter,
+      get changes() {
+        return (changes ??= projectChanges(before.doc, after.doc));
+      },
+      remote: !!event.remote,
+      actors,
+      hashes,
+      changeOps,
+    };
+    for (const listener of listeners) listener(payload);
   });
   return {
     get current() {
@@ -218,12 +361,13 @@ export function createWordgardBinding(replica, id, { encodeSpans = encode } = {}
     },
     applyEditorTransaction(tr) {
       if (!tr.docChanged || tr.annotation(Transaction.remote)) return;
-      const original = decode(A.spans(replica.doc, path));
+      const heads = A.getHeads(replica.doc);
+      const original = currentHeads && sameHeads(currentHeads, heads) ? current : read(replica.doc);
       // The editor couldn't draw this block as stored (a node or container
       // from a newer build); any write would reshape what it left out.
       if (original.lossy)
         throw Error("This block holds content from a newer version of Pages. Reload to edit it.");
-      if (!original.doc.eq(tr.startState.doc))
+      if (original.doc !== tr.startState.doc && !original.doc.eq(tr.startState.doc))
         throw Error("Wordgard editor is behind its Pages document");
       const replacements = [],
         formats = [];
@@ -231,12 +375,7 @@ export function createWordgardBinding(replica, id, { encodeSpans = encode } = {}
       tr.changes.iterChanges(
         (from, to, fromB, toB, inserted) => {
           const removed = tr.startState.doc.slice(from, to);
-          if (
-            [...inserted, ...removed].some(
-              (token) => token.tokenType !== Token.Type.Node || !token.isText,
-            )
-          )
-            structural = true;
+          if (!textOnly([...inserted, ...removed])) structural = true;
           if (to - from !== original.map.wgToAm[to] - original.map.wgToAm[from]) structural = true;
           replacements.push({ from, to, fromB, toB, inserted });
         },
@@ -254,68 +393,119 @@ export function createWordgardBinding(replica, id, { encodeSpans = encode } = {}
           }
         },
       );
-      return replica.change((d) => {
-        // Schema features this transaction's content needs join the Page's
-        // stamp in the same change.
-        if (structural) {
-          const spans = encodeSpans(tr.newDoc);
-          A.updateSpans(d, path, spans, expand);
-          stampSpans(d, spans);
-        } else {
-          const written = new Set();
-          for (const range of [...replacements].reverse()) {
-            const from = original.map.wgToAm[range.from],
-              to = original.map.wgToAm[range.to];
-            A.splice(
-              d,
-              path,
-              from,
-              to - from,
-              range.inserted.map((token) => String(token.param)).join(""),
-            );
-          }
-          // Positions come from the actual native text, not a canonical re-encode.
-          const next = decode(A.spans(d, path)).map;
-          for (const range of replacements) {
-            let pos = next.wgToAm[range.fromB];
-            for (const token of range.inserted) {
-              const length = String(token.param).length,
-                desired = toMarks(token.marks);
-              const present = A.marks(d, path).filter(
-                (mark) => mark.start < pos + length && mark.end > pos,
-              );
-              const names = new Set([
-                ...MARK_NAMES,
-                ...Object.keys(desired),
-                ...present.map((mark) => mark.name),
-              ]);
-              for (const name of names) {
-                const range = { start: pos, end: pos + length, expand: markExpand(name) };
-                if (desired[name] !== undefined) {
-                  A.mark(d, path, range, name, desired[name]);
-                  written.add(name);
-                } else if (present.some((mark) => mark.name === name))
-                  A.unmark(d, path, range, name);
+      // Plain typing: the native text decodes to exactly the editor's tree, so
+      // the new projection is `tr.newDoc` with shifted position maps. Inserted
+      // text must decode as text with the same marks: no newline or U+FFFC,
+      // marks that survive the native codec, and none inside code.
+      const plain =
+        !verify &&
+        !structural &&
+        !formats.length &&
+        replacements.every(
+          (range) =>
+            !splitsPair(tr.startState.doc, range.from) &&
+            !splitsPair(tr.startState.doc, range.to) &&
+            // An emptied textblock may have no native marker of its own, and
+            // decode draws no paragraph for it.
+            tr.newDoc.resolve(range.fromB).parent.node.content.length > 0 &&
+            range.inserted.every((token) => {
+              if (SPECIAL_TEXT.test(String(token.param))) return false;
+              if (!token.marks.length) return true;
+              try {
+                return (
+                  tr.newDoc.resolve(range.fromB).parent.node.type !== CodeBlock.type &&
+                  Mark.sameSet(fromMarks(toMarks(token.marks)), token.marks)
+                );
+              } catch {
+                return false;
               }
-              pos += length;
-            }
-          }
-          for (const format of formats) {
-            const start = next.wgToAm[format.from],
-              end = next.wgToAm[format.to];
-            if (end <= start) continue;
-            for (const name of format.remove ?? [])
-              A.unmark(d, path, { start, end, expand: "both" }, name);
-            for (const [name, value] of Object.entries(format.add ?? {})) {
-              A.mark(d, path, { start, end, expand: markExpand(name) }, name, value);
-              written.add(name);
-            }
-          }
-          stampMarks(d, written);
+            }),
+        );
+      // Replacements are text for text, so native offsets move one for one
+      // with editor positions: this maps a position in `tr.newDoc` to the
+      // native index after the splices.
+      const nativeAt = (posB) => {
+        let shift = 0;
+        for (const range of replacements) {
+          if (posB < range.fromB) break;
+          if (posB <= range.toB)
+            return original.map.wgToAm[range.from] + shift + posB - range.fromB;
+          shift += range.toB - range.fromB - (range.to - range.from);
         }
-        if (!decode(A.spans(d, path)).doc.eq(tr.newDoc))
-          throw Error("Wordgard operation did not reproduce its native Pages projection");
-      });
+        return original.map.wgToAm[posB - shift] + shift;
+      };
+      try {
+        return replica.change((d) => {
+          // Schema features this transaction's content needs join the Page's
+          // stamp in the same change.
+          if (structural) {
+            const spans = encodeSpans(tr.newDoc);
+            A.updateSpans(d, path, spans, expand);
+            stampSpans(d, spans);
+          } else {
+            const written = new Set();
+            for (const range of [...replacements].reverse()) {
+              const from = original.map.wgToAm[range.from],
+                to = original.map.wgToAm[range.to];
+              A.splice(
+                d,
+                path,
+                from,
+                to - from,
+                range.inserted.map((token) => String(token.param)).join(""),
+              );
+            }
+            for (const range of replacements) {
+              let pos = nativeAt(range.fromB);
+              for (const token of range.inserted) {
+                const length = String(token.param).length,
+                  desired = toMarks(token.marks);
+                const present = A.marks(d, path)
+                  .filter((mark) => mark.start < pos + length && mark.end > pos)
+                  .map((mark) => mark.name);
+                const names = new Set([...MARK_NAMES, ...Object.keys(desired), ...present]);
+                for (const name of names) {
+                  const range = { start: pos, end: pos + length, expand: markExpand(name) };
+                  if (desired[name] !== undefined) {
+                    A.mark(d, path, range, name, desired[name]);
+                    written.add(name);
+                  } else if (present.includes(name)) A.unmark(d, path, range, name);
+                }
+                pos += length;
+              }
+            }
+            for (const format of formats) {
+              const start = nativeAt(format.from),
+                end = nativeAt(format.to);
+              if (end <= start) continue;
+              for (const name of format.remove ?? [])
+                A.unmark(d, path, { start, end, expand: "both" }, name);
+              for (const [name, value] of Object.entries(format.add ?? {})) {
+                A.mark(d, path, { start, end, expand: markExpand(name) }, name, value);
+                written.add(name);
+              }
+            }
+            stampMarks(d, written);
+          }
+          let projection = null;
+          if (plain) {
+            const map = replacements.reduceRight(
+              (result, range) =>
+                spliceProjectionMap(result, range.from, range.to, range.toB - range.fromB),
+              original.map,
+            );
+            projection = { doc: tr.newDoc, map, lossy: false };
+          }
+          if (!projection) {
+            projection = read(d);
+            if (!projection.doc.eq(tr.newDoc))
+              throw Error("Wordgard operation did not reproduce its native Pages projection");
+          }
+          pending = { heads, projection };
+        });
+      } finally {
+        pending = null;
+      }
     },
     destroy() {
       stop();
