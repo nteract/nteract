@@ -212,7 +212,7 @@ test("sending a draft adds one thread anchored to the captured characters", asyn
         occurrence: 3,
         action: "add",
         body: "Look at this one",
-        body_format: "markdown",
+        body_format: "plain",
       },
       spans: undefined,
     },
@@ -227,7 +227,7 @@ test("sending a draft adds one thread anchored to the captured characters", asyn
   );
 });
 
-test("sending a rich draft passes its native spans and Markdown together", async () => {
+test("sending a rich draft passes its spans and no Markdown", async () => {
   const doc = page("rich passage"),
     id = orderedBlockIds(doc)[0],
     draft = captureCommentDraft(doc, id, { text: "passage", occurrence: 1 });
@@ -240,10 +240,15 @@ test("sending a rich draft passes its native spans and Markdown together", async
       return Promise.resolve();
     },
   };
-  const spans = [{ type: "text", value: "Bold" }];
-  assert.equal(await sendCommentDraft(session, draft, { markdown: "**Bold**", spans }), null);
-  assert.equal(session.calls[0].input.body, "**Bold**");
+  const spans = [{ type: "text", value: "Bold", marks: { strong: true } }];
+  assert.equal(await sendCommentDraft(session, draft, { text: "Bold", spans }), null);
+  assert.equal(session.calls[0].input.body, undefined);
+  assert.equal(session.calls[0].input.body_format, undefined);
   assert.equal(session.calls[0].spans, spans);
+  await assert.rejects(
+    sendCommentDraft(session, draft, { text: " ", spans: [{ type: "text", value: " " }] }),
+    /Write a comment first/,
+  );
 });
 
 test("a draft whose passage was removed is not sent", async () => {

@@ -102,16 +102,9 @@ test("pasted HTML keeps its text: strikethrough and rules are native, other tags
   assert.ok(decode(encode(pasted)).doc.eq(pasted));
 });
 
-test("a browser comment draft keeps unsupported Markdown as literal text", () => {
-  const spans = markdownCommentSpans("Math $x$ and <b>tag</b> and ~~gone~~", { literal: true });
-  assert.ok(
-    spans.every((span) => span.type !== "block" || String(span.value.type) !== "pages-opaque"),
-  );
-  const text = spans
-    .filter((span) => span.type === "text")
-    .map((span) => span.value)
-    .join("");
-  assert.equal(text, "Math $x$ and <b>tag</b> and gone");
+test("comment Markdown from an agent refuses math and HTML, as a Page body's does", () => {
+  const spans = markdownCommentSpans("Text and ~~gone~~");
   assert.ok(spans.some((span) => span.type === "text" && span.marks?.strike));
   assert.throws(() => markdownCommentSpans("Math $x$"), { code: "unsupported_markdown" });
+  assert.throws(() => markdownCommentSpans("<b>tag</b>"), { code: "unsupported_markdown" });
 });

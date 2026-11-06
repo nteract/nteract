@@ -61,7 +61,7 @@ export function projectComments(page, commentsDoc) {
     selectionContext: selectionContext(page, t.target),
     messages: Object.entries(t.messages ?? {})
       .map(([id, m]) => {
-        const { body: _body, richText: _richText, ...rest } = m;
+        const { body: _body, richText: _richText, bodyFormat: _bodyFormat, ...rest } = m;
         return { ...rest, id, ...(!m.deletedAt && commentBodyProjection(m)) };
       })
       // Messages written in the same millisecond keep one order everywhere.
@@ -182,17 +182,12 @@ function applyThreadStatuses(threads, action, ids, now) {
  * `page` is the Page document (or a view of it) that anchors resolve
  * against: a new comment's block must exist there, and a passage comment
  * captures cursors into it. `role` is the caller's Page role; comment-rules
- * decides what it may do. `literal: true` keeps Markdown math and HTML in a
- * body as text, for the browser's own drafts; agent writes leave it false and
- * get `unsupported_markdown` instead.
+ * decides what it may do. `nativeSpans` is the browser composer's draft;
+ * without it, `input.body` and `input.body_format` are the content
+ * (comment-content.mjs setCommentContent). Agent Markdown refuses math and
+ * HTML with `unsupported_markdown`.
  */
-export function applyComment(
-  commentsDoc,
-  input,
-  identity,
-  nativeSpans,
-  { literal = false, page, role } = {},
-) {
+export function applyComment(commentsDoc, input, identity, nativeSpans, { page, role } = {}) {
   const action = input.action ?? "add",
     now = new Date().toISOString();
   if (!page) throw Error("A comment needs its Page");
@@ -209,9 +204,6 @@ export function applyComment(
     displayName: identity?.displayName ?? "Collaborator",
     driver: identity?.driver ?? "Browser",
   };
-  const body = String(input.body ?? "");
-  if (["add", "reply", "edit"].includes(action) && (!body.trim() || body.length > 16000))
-    throw Error("Comment must contain 1–16000 characters");
   const threadId = action === "add" ? crypto.randomUUID() : input.thread_id;
   const messageId = ["add", "reply"].includes(action) ? crypto.randomUUID() : input.message_id;
   const path = (id) => ["threads", threadId, "messages", id];
@@ -231,17 +223,17 @@ export function applyComment(
       author,
       createdAt: now,
       status: { value: "open", at: now },
-      messages: { [messageId]: { body, author, createdAt: now, deletedAt: null } },
+      messages: { [messageId]: { author, createdAt: now, deletedAt: null } },
     };
-    setCommentContent(commentsDoc, path(messageId), input, nativeSpans, { literal });
+    setCommentContent(commentsDoc, path(messageId), input, nativeSpans);
     return { thread_id: threadId, message_id: messageId };
   }
   const thread = hasThread(threads, threadId) && threads[threadId];
   if (!thread) throw Error("Comment not found");
   if (action === "reply") {
     requireCommentDecision(commentDecision({ action, role, principal, thread }));
-    thread.messages[messageId] = { body, author, createdAt: now, deletedAt: null };
-    setCommentContent(commentsDoc, path(messageId), input, nativeSpans, { literal });
+    thread.messages[messageId] = { author, createdAt: now, deletedAt: null };
+    setCommentContent(commentsDoc, path(messageId), input, nativeSpans);
   } else if (action === "resolve" || action === "reopen") {
     requireCommentDecision(commentDecision({ action, role, principal, thread }));
     thread.status = { value: action === "resolve" ? "resolved" : "open", at: now };
@@ -249,8 +241,7 @@ export function applyComment(
     const message = Object.hasOwn(thread.messages, messageId) && thread.messages[messageId];
     if (!message || message.deletedAt) throw Error("Comment message not found");
     requireCommentDecision(commentDecision({ action, role, principal, thread, message }));
-    if (action === "edit")
-      setCommentContent(commentsDoc, path(messageId), input, nativeSpans, { literal });
+    if (action === "edit") setCommentContent(commentsDoc, path(messageId), input, nativeSpans);
     else message.deletedAt = now;
   } else if (action === "delete_thread") {
     requireCommentDecision(commentDecision({ action, role, principal, thread }));

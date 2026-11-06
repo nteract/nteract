@@ -9,6 +9,7 @@ export const BLOCKING = new Set(
         REJECTION.MISSING_DEPENDENCIES,
         REJECTION.INVALID_PRINCIPAL,
         REJECTION.MALFORMED_CHANGE,
+        REJECTION.OUTDATED_FORM,
       ].includes(code),
   ),
 );

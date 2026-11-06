@@ -15,8 +15,11 @@
 // Protocol 2: Markdown import writes no preserved blocks, and strikethrough
 // and horizontal rules are native. A protocol 1 viewer can still write a
 // preserved block.
-export const VIEWER_PROTOCOL = 2;
-export const MIN_VIEWER_PROTOCOL = 2;
+// Protocol 3: comments are stored in the editor's span form with no `body`.
+// A protocol 2 viewer writes a Markdown `body` beside adapter-form spans,
+// which the host refuses (model/comment-authority.mjs).
+export const VIEWER_PROTOCOL = 3;
+export const MIN_VIEWER_PROTOCOL = 3;
 
 /* global __PAGES_BUILD__ */
 export const PAGES_BUILD =

@@ -723,6 +723,190 @@ Page's record needs none: it names no comments document and answers as deleted.
 page10 holds one such record (59361b99-fc53-40ec-a733-a74a4db24630). Don't
 restore a backup taken before 2026-11-05 onto a target running this build.
 
+### Comments migration
+
+One owner-run pass puts every comment message in the form this build writes:
+rich text in the editor's spans, the form every Page body is in, with no
+`body` copy. Earlier builds stored plain messages as a bare `body`, and rich
+messages in the ProseMirror adapter's span form beside a `body` copy of the
+Markdown they were first written from. This build still reads and admits
+both on existing messages, and refuses them on anything new: a new message
+with a `body` or adapter-form spans, a write that leaves a message's spans in
+the adapter's form, and any write to `body` but its removal. Earlier viewers
+write those forms, so this build raises `MIN_VIEWER_PROTOCOL` to 3 and their
+tabs must reload. A follow-up deletes the readers once this run has been
+applied and verified everywhere.
+
+The code is marked ONE-SHOT for deletion with that follow-up:
+`model/comments-normalization.mjs` (what changes in a comments document),
+`worker/comments-migration.mjs` (the Catalog run and the operator route),
+`worker/operator-gate.mjs`, their tests, `scripts/comments-migration.mjs`,
+`scripts/comments-migration-operator.mjs`, `scripts/operator-ssh.mjs`, the
+installer's `operatorMigration` secret, and the routes in `worker/index.mjs`:
+`POST /api/admin/comments-migration`, `POST /api/operator/comments-migration`,
+the Catalog's `/internal/comments-migration` and
+`/internal/operator-comments-migration`, and the Page host's
+`/internal/comments-migration` with its probe and revert-record copier. The follow-up
+also deletes the old-form readers: the `!isRich(message)` paths in
+`model/comment-content.mjs` and `model/comment-authority.mjs`, the `body`
+fallback in `commentBodyProjection`, `body` in `MESSAGE_FIELDS`, and the
+adapter-form tolerance in `plainCommentText`.
+
+Per Page, in one journaled host change on the comments document
+(`host/operation/internal:comments_norm_<digest of comments heads>`):
+
+- a plain message (`plain_body`) becomes the spans a plain write stores (one
+  paragraph, each newline a hard break, no marks) and `bodyFormat: "plain"`,
+  so reads still return the text literally. The text must read back exactly;
+- a rich message's spans become `encode(decode(spans).doc)` through
+  `A.updateSpans`, so unchanged text and markers keep their identity. The old
+  span forms are the ones the content migration removed from Page bodies:
+  `first_marker`, `quote_marker`, `prose_newline`, `code_marks`, `attrs`. Its
+  `body` copy is removed (`markdown_copy`). Its reads stay Markdown.
+- deleted messages are rewritten too, and stay deleted.
+
+Every message keeps its id, author, timestamps and thread. The Page document
+is never written, so passage anchors can't move; the plan checks every
+thread's anchor anyway (`anchors_changed`). A message is refused when its
+decode is lossy (`lossy`) or throws (`undecodable`), when the rewrite would
+delete a character other than a prose newline (`identity_lost`) or change the
+text (`text_changed`), or when the result fails the comment content rule
+(`invalid_content`). A plain body with so many lines that its hard-break
+markers would take more than 64 KiB (roughly 700 short lines) is refused as
+`too_many_lines`, with its line count, so a dry run finds those messages
+before apply; the author can split one into replies, or delete it. A Page with any refused message is
+`partial`, and `apply` writes nothing to it: the gate holds in the Page host
+at apply time. With the text-only length rule, no message can cross the
+16,000-character limit by changing form.
+
+A Page with a live socket is skipped (`busy`) unless the run passes
+`include_connected: true` (`--include-connected`). With it, the change reaches
+connected peers over sync like any host change. A peer's change that reaches
+the host between the plan and the write fails the write's exact-heads check
+on the comments document: the Page answers `stale`, nothing is written, and
+the next pass plans again.
+
+Run it as the owner with an API key that has write access. It reaches only
+that account's Pages: every `page/` (Project content included) and `trash/`
+key in the owner's Catalog, plus any `page_ids` in the body, which the Page
+host checks against its record's owner.
+
+```sh
+cd docs/memos/authenticated-automerge-app-substrate/experiment/pages
+PAGES_API_KEY=$ANACONDA_API_KEY node scripts/comments-migration.mjs \
+  --origin https://pages.runtimed.run --mode dry_run > comments-dry-run.json
+```
+
+`dry_run` writes nothing of its own and answers `{mode, targets: {total, page,
+trash, extra}, pages, visited, next, totals, progress}`; the script follows
+`next` until the end and logs every response as a JSON line (`--log`, default
+`comments-migration-<mode>-<time>.jsonl`). Each page reports `status`
+(`would_normalize`, `unchanged`, `partial`, `held`, `unavailable`,
+`record_pending`, `missing`, `deleted`, `not_owner`, `error`), `state`,
+`connected`, `heads` (comments heads), `report` (per message: `forms`,
+markers removed and added by type, characters before and after with `lost`,
+`newlines` and `unexpected`; page `forms`, `refused`, `refused_reasons`) and
+`problems`. `totals` counts pages by status, messages by form and refusals by
+reason.
+
+Then `apply`, after the dry-run reports are approved:
+
+```sh
+PAGES_API_KEY=$ANACONDA_API_KEY node scripts/comments-migration.mjs \
+  --origin https://pages.runtimed.run --mode apply > comments-apply.json
+```
+
+Each call visits up to `limit` Pages (at most 25, and none after 60 s).
+Progress is in the Catalog's `host/comments-migration/state` (`{phase:
+applying | incomplete | done, ids, next, pass, pending}`), and each Page's
+latest result in `host/comments-migration/result/<page_id>`. A pass ends
+`done` when every Page settled (`normalized`, `unchanged`, `deleted`,
+`missing`, `not_owner`), otherwise `incomplete` with `pending`; the next
+`apply` visits only those. An interrupted `apply` resumes at its cursor; a
+crash inside the Page's write replays the journaled change at its next boot.
+`done` is terminal: run `dry_run` again to verify. It should report
+`would_normalize: 0`, no `partial`, and `problems: []` on every Page.
+
+#### Every account on a lab target (operator)
+
+On pages and page10 an operator runs the migration for every account, so no
+owner has to. The routes exist only where the installer wrote the lab
+operator secret (`operatorMigration` profiles: pages and page10, not pages2,
+which started after this change):
+
+- `POST /api/operator/comments-migration` on the gateway, behind
+  worker/operator-gate.mjs: the secret in `x-pages-operator-secret`, compared
+  in constant time; refused with the plain unknown-path 404 when no secret is
+  configured, when it's wrong, or when the request carries a Cloudflare edge
+  header (`cf-ray`, `cf-connecting-ip`, `cf-visitor`, `cdn-loop`).
+- Actions: `accounts` lists principals from the D1 catalog projection
+  (`pages_catalog_pages`, `pages_catalog_spaces`, `pages_catalog_accounts`);
+  `run` drives one account's Catalog through the host-only
+  `/internal/operator-comments-migration`, the same run as the owner's;
+  `probe` asks a Page cell which Page and owner it holds.
+- Each Page host still checks the request's owner against its record, so the
+  operator chooses which Catalog runs, never which account a Page belongs
+  to.
+
+`scripts/comments-migration-operator.mjs` drives it over SSH to lab1: one
+SSH command per call, which reads `/etc/<service>/operator-secret` with sudo
+and posts on the public listener's loopback address as the service user. It
+lists the accounts, runs each to the end, then diffs the cells it reached
+against `celld cell list Page` and probes each cell no run reached
+(`unreached`). Every response is appended to a JSON-lines log.
+
+```sh
+cd docs/memos/authenticated-automerge-app-substrate/experiment/pages
+node scripts/comments-migration-operator.mjs --target pages --mode dry_run > comments-operator-dry-run.json
+node scripts/comments-migration-operator.mjs --target pages --mode apply > comments-operator-apply.json
+node scripts/comments-migration-operator.mjs --target pages --mode dry_run > comments-operator-verify.json
+```
+
+`--principal P` (repeatable) limits the run to some accounts;
+`--include-connected`, `--limit`, `--log`, `--no-cells`, `--ssh-host` and
+`--max-calls` work as in the owner script. A cell in `unreached` names its
+owner: pass its `page_id` to that owner's run with `--principal`.
+
+The install that adds `PAGES_OPERATOR_SECRET` changes wrangler.json, so celld
+restarts once (activation reason `config`); so does the install that removes
+it with this migration.
+
+**Before deleting the old-form readers**, run `dry_run` again on every target
+after this build is deployed there, and after any tab of an earlier build has
+had time to reload. This build raises `MIN_VIEWER_PROTOCOL` to 3, so earlier
+tabs must reload before they edit, and its admission refuses a `body` and
+adapter-form spans on anything new. The verifying dry run is what shows no
+old form was written between the apply and the deploy. Delete the readers only
+when it reports `would_normalize: 0` and no `partial` everywhere.
+
+**Revert records.** Every write is recorded twice, durably, as `{key,
+before_heads, after_heads, messages: [{thread_id, message_id, action}]}`: in
+the Page's `host/comments-migration/revert`, copied from its journal receipt
+before anything can drop that receipt, and in the Catalog's
+`result/<page_id>` `revert` list, which every later visit carries forward.
+
+**Restore.** Comments documents keep their history. To revert a Page, take
+each record from its `revert` list, newest first, and, as a host change on
+the comments document, put each listed message back as it was at
+`before_heads`: for a `normalize` message, write `A.spans(A.view(doc,
+before_heads), [...path, "richText"])` with `A.updateSpans` and restore its
+`body`; for a `plain` message, delete `format`, `richText` and `bodyFormat`
+and restore `body`. This also undoes later edits to those messages. To run
+the migration again, delete only `host/comments-migration/state`; keep
+`result/*`, which holds the revert records.
+
+**Rollback rule.** No schema feature is added. Every message this build
+writes, migrated or new, has no `body`. The build before it reads such a
+message (it ignores `bodyFormat`, so a plain message reads as escaped
+Markdown), but its admission requires `body` on every message: its host
+would refuse a later edit or deletion of one. Roll back only to a build that
+has this change.
+
+Reverting this change on `main` is a forbidden rollback, not a fix. page10
+deploys `main` automatically, so a revert would ship the earlier admission to
+a target whose comments documents already hold messages without `body`. Fix
+forward on `main` instead.
+
 ### Plain sync on pages.runtimed.run
 
 Every Page on pages.runtimed.run is on plain Automerge sync: an operator

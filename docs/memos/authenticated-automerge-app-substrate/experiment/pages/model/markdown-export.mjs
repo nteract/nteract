@@ -1,4 +1,8 @@
+import * as A from "@automerge/automerge/slim";
 import MarkdownIt from "markdown-it";
+import { adapter, pmDocFromSpans } from "./pm-adapter.mjs";
+import { exportMarkdown } from "./pm-markdown-serializer.mjs";
+import { codeTextUnmarked } from "./richtext-format.mjs";
 
 const markdown = new MarkdownIt({ html: false });
 // Titles, names and passages are user input. `\s+` consumes a whole run per
@@ -78,11 +82,47 @@ export function unsentCommentsMarkdown(page, saved) {
   return `\n---\n\n## Unsent comments\n\n${note}\n\n${sections.join("\n\n")}\n`;
 }
 
+/** A draft's Markdown: from its editor spans when the record kept them, so
+ * formatting and images survive; otherwise its plain text. */
+function draftMarkdown(draft) {
+  if (Array.isArray(draft?.spans))
+    try {
+      // A record holds plain JSON; stored spans name block types and parents
+      // with Automerge's immutable strings, which the adapter reads.
+      const immutable = (value) =>
+        typeof value === "string" ? new A.ImmutableString(value) : value;
+      const spans = draft.spans.map((span) =>
+        span?.type === "block"
+          ? {
+              ...span,
+              value: {
+                ...span.value,
+                type: immutable(span.value?.type),
+                parents: (span.value?.parents ?? []).map(immutable),
+                attrs: Object.fromEntries(
+                  Object.entries(span.value?.attrs ?? {}).map(([key, value]) => [
+                    key,
+                    immutable(value),
+                  ]),
+                ),
+              },
+            }
+          : span,
+      );
+      return exportMarkdown(pmDocFromSpans(adapter, codeTextUnmarked(spans)));
+    } catch {
+      // A record this build can't read as spans still has its text.
+    }
+  return draft?.body;
+}
+
 /** A Markdown section for comment drafts the person typed but never sent:
  * `{ kind: "comment" | "reply", body, quote?, thread_id? }`, as recovery
- * records keep them. Returns "" when there are none. */
+ * records keep them, with `spans` when the editor wrote them. Returns "" when
+ * there are none. */
 export function commentDraftsMarkdown(drafts) {
   const sections = (drafts ?? [])
+    .map((draft) => ({ ...draft, body: draftMarkdown(draft) }))
     .filter((draft) => typeof draft?.body === "string" && draft.body.trim())
     .map((draft) => {
       const anchor = singleLine(draft.quote ?? "").slice(0, 120);

@@ -56,11 +56,11 @@ import { projectChanges } from "./wordgard-projection.mjs";
 import { linkDestination } from "./link-destination.mjs";
 import { PROSE_ENTRY_ATTRIBUTES } from "./prose-entry.mjs";
 import {
-  markdownCommentSpans,
-  commentSpansMarkdown,
-  COMMENT_MAX_LENGTH,
   COMMENT_MAX_BYTES,
-} from "../model/comment-content.mjs";
+  COMMENT_MAX_LENGTH,
+  commentDraftText,
+  commentSpansMeasure,
+} from "../model/comment-text.mjs";
 import { isRich } from "../model/richtext-format.mjs";
 import "./wordgard.css";
 
@@ -118,7 +118,16 @@ function nativeConfig() {
   ];
 }
 
+/** The editor tree a draft body (comment-composer.mjs) shows: its spans,
+ * or an empty paragraph. */
+const draftDoc = (value) => decode(Array.isArray(value?.spans) ? value.spans : []).doc;
+
 /**
+ * `value` is the draft body: `{ text, spans }` or "" for an empty draft.
+ * Each edit calls `onChange({ text, spans })` with the editor's own spans
+ * (encode), which are what Send stores; no Markdown is involved. Replacing
+ * `value` with a different object (a cleared draft) resets the editor.
+ *
  * `images` turns on image paste and drop: `{ pageId, canUpload }`. Uploads use
  * the Page's asset endpoint, and the draft gets the asset URL the way Page
  * Markdown does. `onUploadingChange(boolean)` lets the form hold Send while
@@ -126,7 +135,6 @@ function nativeConfig() {
  */
 export function CommentRichText({
   value,
-  nativeSpans,
   onChange,
   onError,
   disabled,
@@ -137,8 +145,8 @@ export function CommentRichText({
   const mount = useRef(null),
     view = useRef(null),
     compartment = useRef(new GardState.Compartment());
-  const latest = useRef({ value, nativeSpans, onChange, onError, disabled, images });
-  latest.current = { value, nativeSpans, onChange, onError, disabled, images, onUploadingChange };
+  const latest = useRef({ value, onChange, onError, disabled, images });
+  latest.current = { value, onChange, onError, disabled, images, onUploadingChange };
   const lastValue = useRef(value);
   const uploader = useRef(null);
   const [editor, setEditor] = useState(null),
@@ -243,9 +251,7 @@ export function CommentRichText({
     };
     const editor = Wordgard.create({
       parent: mount.current,
-      doc: decode(
-        latest.current.nativeSpans ?? markdownCommentSpans(latest.current.value, { literal: true }),
-      ).doc,
+      doc: draftDoc(latest.current.value),
       config: [
         ...nativeConfig(),
         uploadPreviews,
@@ -278,11 +284,13 @@ export function CommentRichText({
             if (images.state.name === "failed") images.cancel();
             try {
               const spans = encode(tr.state.doc),
-                markdown = commentSpansMarkdown(spans);
-              lastValue.current = markdown;
-              latest.current.onChange(markdown, spans);
+                draft = { text: commentDraftText(spans), spans };
+              lastValue.current = draft;
+              latest.current.onChange(draft);
+              // The content rule's limits (comment-content.mjs): text
+              // characters, not block markers, and the stored bytes.
               latest.current.onError(
-                markdown.length > COMMENT_MAX_LENGTH ||
+                commentSpansMeasure(spans).length > COMMENT_MAX_LENGTH ||
                   new TextEncoder().encode(JSON.stringify(spans)).length > COMMENT_MAX_BYTES
                   ? "This comment is too large. Shorten it before sending."
                   : "",
@@ -322,14 +330,11 @@ export function CommentRichText({
     // The draft was replaced: an upload's insertion point is gone with it.
     if (uploader.current?.state.name === "uploading") uploader.current.cancel();
     view.current.dispatch({
-      changes: projectChanges(
-        view.current.state.doc,
-        decode(nativeSpans ?? markdownCommentSpans(value, { literal: true })).doc,
-      ),
+      changes: projectChanges(view.current.state.doc, draftDoc(value)),
       effects: view.current.state.field(uploadPreview, false) ? setUploadPreview.of(null) : [],
       annotations: quiet(),
     });
-  }, [value, nativeSpans]);
+  }, [value]);
   function run(command, arg) {
     if (!editor?.editable) return;
     try {
