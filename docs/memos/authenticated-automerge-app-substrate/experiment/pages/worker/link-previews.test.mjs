@@ -27,6 +27,8 @@ import {
   LINK_PREVIEW_PATH,
   PAGE_UNAVAILABLE,
   PROJECT_UNAVAILABLE,
+  checkLinkPreview,
+  checkProjectPreview,
   foreignFetch,
   readLinkRoute,
 } from "./link-previews.mjs";
@@ -1341,4 +1343,29 @@ test("a boot another request starts during the check still answers an admitted r
     // A stranger checked under the same race is still refused.
     assert.deepEqual(await h.preview(page, "stranger"), refused, finish);
   }
+});
+
+test("a host binding that fails to set up refuses like any other host failure", async () => {
+  // A missing binding or a bad origin setting must not escape as a 500: it
+  // answers null, which the route turns into the kind's one 404.
+  const failures = [];
+  const logFailure = (error, stage) => failures.push(stage);
+  const broken = {
+    getByName() {
+      throw new Error("binding unavailable");
+    },
+  };
+  const request = new Request("https://pages.example/p/x/meta.json", {
+    headers: { authorization: "Bearer key" },
+  });
+  const env = {
+    PAGES: broken,
+    PROJECTS: broken,
+    NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.example",
+  };
+  const pageId = "a5531f64-5dcc-4696-9e97-0ca58113b61b";
+  const projectId = "prj_83b8d037-6749-448e-95d9-4c1ac8e530f9";
+  assert.equal(await checkLinkPreview(request, env, pageId, { logFailure }), null);
+  assert.equal(await checkProjectPreview(request, env, projectId, { logFailure }), null);
+  assert.deepEqual(failures, ["link-preview", "project-link-preview"]);
 });

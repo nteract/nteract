@@ -2496,7 +2496,8 @@ the caller with their own credentials, reads the record, and answers only a
 caller who may read the Project: its owner and its viewer, commenter and
 editor members. With `claim: false` it claims no invitation (a pending
 invitee is refused until they open the Project), writes no storage,
-publishes no Catalog discovery hint and logs no usage or audit line; asking
+publishes no Catalog discovery hint and logs no usage line or invitation
+event (authenticating an API key may still log its periodic acceptance line); asking
 about a missing Project instantiates its object and stores nothing. No
 Catalog is asked at all.
 

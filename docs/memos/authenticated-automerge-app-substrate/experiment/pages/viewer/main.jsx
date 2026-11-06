@@ -953,11 +953,12 @@ function App() {
   }, []);
   const page = session?.snapshot(),
     threads = page?.comments ?? [];
-  // The Project whose content is open: its route, or a content document
-  // its placement names. A link to it there is no Project link
+  // The Project whose content is open. A link to it there is no Project link
   // (current-page.mjs); in an ordinary Page of the Project it still is.
-  const currentProjectId =
-    projectOpen ?? (placement?.kind === "project" ? placement.project_id : null) ?? null;
+  // projectOpen alone: it's set with the placement that finds the content and
+  // cleared the moment another Page opens, while `placement` lingers until the
+  // next session installs.
+  const currentProjectId = projectOpen ?? null;
   const shownPreview = page
     ? null
     : visiblePreview(bootPreviewState, {

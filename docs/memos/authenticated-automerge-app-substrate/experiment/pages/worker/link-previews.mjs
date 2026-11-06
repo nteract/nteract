@@ -43,7 +43,8 @@
 // addresses already use: it authenticates the caller, reads the record, and
 // answers only a caller who may read the Project. With `claim: false` it
 // claims no invitation, writes no storage, publishes no discovery hint and
-// logs no audit line; a missing record costs only the object's
+// logs no usage line or invitation event (authenticating an API key may
+// still log its periodic acceptance line); a missing record costs only the object's
 // instantiation. The owner and members (viewer, commenter, editor) read
 // it; a pending invitee doesn't until they open the Project. The answer
 // keeps only `title`, `description` and `role`, never the owner or
@@ -207,13 +208,15 @@ export function projectMetaBody(project) {
 }
 
 /**
- * POST `hostRequest` to `stub` and return its 200 JSON answer, or null for
+ * Call `send()` (a host fetch) and return its 200 JSON answer, or null for
  * any other status, an error or a timeout (logged through `logFailure`).
+ * Building the stub and request inside `send` keeps a setup failure (a
+ * missing binding, a bad origin setting) on the same uniform refusal.
  */
-async function askHost(stub, hostCall, stage, logFailure) {
+async function askHost(send, stage, logFailure) {
   try {
     const response = await withTimeout(
-      stub.fetch(hostCall),
+      send(),
       linkPreviewBounds.hostMs,
       "Link preview check timed out",
     );
@@ -237,8 +240,7 @@ async function askHost(stub, hostCall, stage, logFailure) {
 export async function checkLinkPreview(request, env, pageId, { logFailure = () => {} } = {}) {
   if (!validPageId(pageId)) return null;
   const page = await askHost(
-    env.PAGES.getByName(pageId),
-    hostRequest(request, env),
+    () => env.PAGES.getByName(pageId).fetch(hostRequest(request, env)),
     "link-preview",
     logFailure,
   );
@@ -256,8 +258,10 @@ export async function checkLinkPreview(request, env, pageId, { logFailure = () =
 export async function checkProjectPreview(request, env, projectId, { logFailure = () => {} } = {}) {
   if (!validSpaceId(projectId)) return null;
   const project = await askHost(
-    env.PROJECTS.getByName(projectId),
-    hostRequest(request, env, PROJECT_READ_PATH, { space_id: projectId, claim: false }),
+    () =>
+      env.PROJECTS.getByName(projectId).fetch(
+        hostRequest(request, env, PROJECT_READ_PATH, { space_id: projectId, claim: false }),
+      ),
     "project-link-preview",
     logFailure,
   );
