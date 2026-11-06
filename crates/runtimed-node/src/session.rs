@@ -77,6 +77,163 @@ impl From<CreateNotebookEnvironmentMode>
     }
 }
 
+/// Existing Python environment bound to a new notebook room.
+///
+/// The prefix must be an absolute Conda environment directory with Python and
+/// ipykernel. It replaces only the prewarmed fallback: inline dependencies,
+/// PEP 723 blocks, a captured environment, and a trusted project file still
+/// win. The daemon borrows the prefix and never deletes it.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct LocalEnvironmentOptions {
+    pub prefix: String,
+}
+
+impl From<LocalEnvironmentOptions> for notebook_protocol::connection::LocalEnvironmentBinding {
+    fn from(value: LocalEnvironmentOptions) -> Self {
+        Self {
+            prefix: PathBuf::from(value.prefix),
+        }
+    }
+}
+
+/// Daemon verdict on a requested `localEnvironment`.
+#[napi(string_enum = "lowercase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LocalEnvironmentBindingState {
+    /// The prefix validated and is bound to the room.
+    Bound,
+    /// The prefix failed validation; the room uses normal auto selection.
+    Rejected,
+}
+
+/// Verdict on `localEnvironment`, reported by the daemon at creation.
+/// Absent when none was requested or the daemon predates the option.
+#[napi(object)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalEnvironmentStatus {
+    pub status: LocalEnvironmentBindingState,
+    /// Canonical prefix when bound; the requested prefix when rejected.
+    pub prefix: String,
+    pub error: Option<String>,
+}
+
+impl From<notebook_protocol::connection::LocalEnvironmentBindingStatus> for LocalEnvironmentStatus {
+    fn from(value: notebook_protocol::connection::LocalEnvironmentBindingStatus) -> Self {
+        use notebook_protocol::connection::LocalEnvironmentBindingStatus as Wire;
+        match value {
+            Wire::Bound { prefix } => Self {
+                status: LocalEnvironmentBindingState::Bound,
+                prefix: prefix.to_string_lossy().into_owned(),
+                error: None,
+            },
+            Wire::Rejected { prefix, error } => Self {
+                status: LocalEnvironmentBindingState::Rejected,
+                prefix: prefix.to_string_lossy().into_owned(),
+                error: Some(error),
+            },
+        }
+    }
+}
+
+/// Kind of local environment selection target.
+#[napi(string_enum = "lowercase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnvironmentSelectionTargetKind {
+    /// Use the daemon's automatic environment policy.
+    Automatic,
+    /// Borrow an existing Conda prefix.
+    Conda,
+}
+
+/// Target for `Session.setEnvironmentSelection()`. `prefix` is required for
+/// `"conda"` and ignored for `"automatic"`.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct EnvironmentSelectionTarget {
+    pub kind: EnvironmentSelectionTargetKind,
+    pub prefix: Option<String>,
+}
+
+impl TryFrom<EnvironmentSelectionTarget> for notebook_protocol::protocol::LocalEnvironmentTarget {
+    type Error = Error;
+
+    fn try_from(value: EnvironmentSelectionTarget) -> Result<Self> {
+        match value.kind {
+            EnvironmentSelectionTargetKind::Automatic => Ok(Self::Automatic),
+            EnvironmentSelectionTargetKind::Conda => value
+                .prefix
+                .map(|prefix| Self::Conda {
+                    prefix: PathBuf::from(prefix),
+                })
+                .ok_or_else(|| Error::from_reason("A conda target requires a prefix")),
+        }
+    }
+}
+
+/// A validated local Conda environment.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct LocalCondaEnvironmentInfo {
+    pub id: String,
+    pub name: String,
+    pub prefix: String,
+    pub python_path: String,
+    pub python_version: Option<String>,
+}
+
+impl From<notebook_protocol::protocol::LocalCondaEnvironment> for LocalCondaEnvironmentInfo {
+    fn from(value: notebook_protocol::protocol::LocalCondaEnvironment) -> Self {
+        Self {
+            id: value.id,
+            name: value.name,
+            prefix: value.prefix.to_string_lossy().into_owned(),
+            python_path: value.python_path.to_string_lossy().into_owned(),
+            python_version: value.python_version,
+        }
+    }
+}
+
+/// Daemon-session environment intent, separate from the running kernel.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct EnvironmentSelection {
+    /// Pass back as `expectedRevision` to set or apply.
+    pub revision: i64,
+    /// Staged target. Null means Automatic.
+    pub selected: Option<LocalCondaEnvironmentInfo>,
+    /// Target the running kernel was applied with. Null means Automatic.
+    pub applied: Option<LocalCondaEnvironmentInfo>,
+    pub applying: bool,
+}
+
+impl From<notebook_protocol::protocol::EnvironmentSelectionSnapshot> for EnvironmentSelection {
+    fn from(value: notebook_protocol::protocol::EnvironmentSelectionSnapshot) -> Self {
+        Self {
+            revision: i64::try_from(value.revision).unwrap_or(i64::MAX),
+            selected: value.selected.map(Into::into),
+            applied: value.applied.map(Into::into),
+            applying: value.applying,
+        }
+    }
+}
+
+fn environment_selection_response(response: NotebookResponse) -> Result<EnvironmentSelection> {
+    match response {
+        NotebookResponse::EnvironmentSelection { selection } => Ok(selection.into()),
+        NotebookResponse::EnvironmentSelectionRejected { error } => Err(Error::from_reason(error)),
+        NotebookResponse::GuardRejected { reason } => Err(Error::from_reason(reason)),
+        NotebookResponse::Error { error } => Err(Error::from_reason(error)),
+        other => Err(Error::from_reason(format!(
+            "Unexpected response: {other:?}"
+        ))),
+    }
+}
+
+fn expected_revision(revision: i64) -> Result<u64> {
+    u64::try_from(revision).map_err(|_| Error::from_reason("expectedRevision must be >= 0"))
+}
+
 /// Options for `createNotebook()`.
 #[napi(object)]
 #[derive(Default)]
@@ -99,6 +256,8 @@ pub struct CreateNotebookOptions {
     pub package_manager: Option<PackageManager>,
     /// Environment source mode. Defaults to auto.
     pub environment_mode: Option<CreateNotebookEnvironmentMode>,
+    /// Existing environment prefix to use instead of the prewarmed fallback.
+    pub local_environment: Option<LocalEnvironmentOptions>,
 }
 
 /// Options for `openNotebook()` and `openNotebookPath()`.
@@ -475,6 +634,7 @@ struct ExecutionResultParts<'a> {
 #[napi]
 pub struct Session {
     notebook_id: String,
+    local_environment: Option<LocalEnvironmentStatus>,
     state: Arc<Mutex<SessionState>>,
     closed_tx: tokio::sync::watch::Sender<bool>,
 }
@@ -546,6 +706,13 @@ impl Session {
     #[napi(getter)]
     pub fn notebook_id(&self) -> String {
         self.notebook_id.clone()
+    }
+
+    /// Daemon verdict on `createNotebook({ localEnvironment })`. Null for
+    /// opened sessions, when none was requested, or on older daemons.
+    #[napi(getter)]
+    pub fn local_environment(&self) -> Option<LocalEnvironmentStatus> {
+        self.local_environment.clone()
     }
 
     /// Subscribe to RuntimeStateDoc snapshots. Callback receives a JSON string.
@@ -1057,6 +1224,69 @@ impl Session {
         .await
     }
 
+    /// Read the staged and applied local environment selection.
+    #[napi]
+    pub async fn get_environment_selection(&self) -> Result<EnvironmentSelection> {
+        let handle = session_handle(&self.state).await?;
+        environment_selection_response(
+            handle
+                .send_request(NotebookRequest::GetEnvironmentSelection {})
+                .await
+                .map_err(to_napi_err)?,
+        )
+    }
+
+    /// Stage a local environment target. Does not touch the running kernel;
+    /// call `applyEnvironmentSelection()` to launch with it.
+    #[napi]
+    pub async fn set_environment_selection(
+        &self,
+        target: EnvironmentSelectionTarget,
+        expected_revision: i64,
+    ) -> Result<EnvironmentSelection> {
+        let target = target.try_into()?;
+        let expected_revision = self::expected_revision(expected_revision)?;
+        let handle = session_handle(&self.state).await?;
+        environment_selection_response(
+            handle
+                .send_request(NotebookRequest::SetEnvironmentSelection {
+                    target,
+                    expected_revision,
+                })
+                .await
+                .map_err(to_napi_err)?,
+        )
+    }
+
+    /// Start or restart the kernel with the staged selection after trust
+    /// checks. `observedHeads` defaults to this session's current heads.
+    #[napi]
+    pub async fn apply_environment_selection(
+        &self,
+        expected_revision: i64,
+        observed_heads: Option<Vec<String>>,
+    ) -> Result<EnvironmentSelection> {
+        let expected_revision = self::expected_revision(expected_revision)?;
+        let handle = session_handle(&self.state).await?;
+        handle.confirm_sync().await.map_err(to_napi_err)?;
+        let observed_heads = match observed_heads {
+            Some(heads) => heads,
+            None => handle.current_heads_hex().map_err(to_napi_err)?,
+        };
+        environment_selection_response(
+            handle
+                .send_request_after_heads(
+                    NotebookRequest::ApplyEnvironmentSelection {
+                        expected_revision,
+                        observed_heads: observed_heads.clone(),
+                    },
+                    observed_heads,
+                )
+                .await
+                .map_err(to_napi_err)?,
+        )
+    }
+
     /// Ask the daemon to hot-install any pending dependency changes into
     /// the running kernel's env. Starts the kernel first if needed.
     /// Returns once the install finishes.
@@ -1356,6 +1586,7 @@ pub async fn create_notebook(options: Option<CreateNotebookOptions>) -> Result<S
     let dependencies = opts.dependencies.unwrap_or_default();
     let package_manager = opts.package_manager.map(Into::into);
     let environment_mode = opts.environment_mode.map(Into::into);
+    let local_environment = opts.local_environment.map(Into::into);
 
     let result = notebook_sync::connect::connect_create(
         socket_path.clone(),
@@ -1365,11 +1596,18 @@ pub async fn create_notebook(options: Option<CreateNotebookOptions>) -> Result<S
             package_manager,
             dependencies,
             environment_mode,
+            local_environment,
             ..notebook_sync::connect::CreateNotebookSpec::new(runtime.as_str())
         },
     )
     .await
     .map_err(to_napi_err)?;
+    let local_environment = result
+        .info
+        .capabilities
+        .local_environment
+        .clone()
+        .map(LocalEnvironmentStatus::from);
 
     result
         .handle
@@ -1399,6 +1637,7 @@ pub async fn create_notebook(options: Option<CreateNotebookOptions>) -> Result<S
 
     Ok(Session {
         notebook_id,
+        local_environment,
         state: Arc::new(Mutex::new(state)),
         closed_tx: tokio::sync::watch::channel(false).0,
     })
@@ -1487,6 +1726,7 @@ pub async fn open_notebook_path(
 
     Ok(Session {
         notebook_id,
+        local_environment: None,
         state: Arc::new(Mutex::new(state)),
         closed_tx: tokio::sync::watch::channel(false).0,
     })
@@ -1537,6 +1777,7 @@ pub async fn open_notebook(
 
     Ok(Session {
         notebook_id,
+        local_environment: None,
         state: Arc::new(Mutex::new(state)),
         closed_tx: tokio::sync::watch::channel(false).0,
     })

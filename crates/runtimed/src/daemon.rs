@@ -4467,15 +4467,17 @@ impl Daemon {
             dependencies,
             typed_bootstrap,
             operator,
+            local_environment,
         } = request;
         let typed_bootstrap = typed_bootstrap.unwrap_or(false);
 
         info!(
-            "[runtimed] CreateNotebook requested (runtime={}, working_dir={:?}, notebook_id_hint={:?}, environment_mode={})",
+            "[runtimed] CreateNotebook requested (runtime={}, working_dir={:?}, notebook_id_hint={:?}, environment_mode={}, local_environment={:?})",
             runtime,
             working_dir,
             notebook_id_hint,
-            environment_mode.unwrap_or_default().as_str()
+            environment_mode.unwrap_or_default().as_str(),
+            local_environment.as_ref().map(|binding| &binding.prefix)
         );
         let connection_identity =
             crate::notebook_sync_server::RoomConnectionIdentity::local(operator).await?;
@@ -4599,6 +4601,21 @@ impl Daemon {
             *mode = environment_mode;
         }
 
+        // Bind before the handshake reply so auto-launch, which starts once
+        // the peer syncs, already sees the verdict. A request without a
+        // binding leaves an existing room's binding in place.
+        let local_environment_status = match local_environment {
+            Some(binding) => {
+                crate::requests::bound_environment::bind_on_create(
+                    &room,
+                    &self.local_conda_environments,
+                    binding.prefix,
+                )
+                .await
+            }
+            None => None,
+        };
+
         // When the caller explicitly passed deps to CreateNotebook AND we
         // actually populated a fresh doc from those deps, the tool call is
         // the consent event — auto-seed those names into the trusted-package
@@ -4662,7 +4679,8 @@ impl Daemon {
                     connection_identity.scope().as_str(),
                 )
                 .with_comments_doc_identity(comments_doc_id, comments_notebook_ref)
-                .with_keyed_doc_kinds(room.keyed_docs.advertised_kinds()),
+                .with_keyed_doc_kinds(room.keyed_docs.advertised_kinds())
+                .with_local_environment(local_environment_status),
             notebook_id: room.id.to_string(),
             cell_count,
             needs_trust_approval,

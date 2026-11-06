@@ -68,6 +68,10 @@ class Session {
     return this._native.notebookId;
   }
 
+  get localEnvironment() {
+    return this._native.localEnvironment ?? null;
+  }
+
   queueCell(source, options) {
     return this._native.queueCell(source, options);
   }
@@ -208,6 +212,18 @@ class Session {
 
   syncEnvironment() {
     return this._native.syncEnvironment();
+  }
+
+  getEnvironmentSelection() {
+    return this._native.getEnvironmentSelection();
+  }
+
+  setEnvironmentSelection(target, expectedRevision) {
+    return this._native.setEnvironmentSelection(target, expectedRevision);
+  }
+
+  applyEnvironmentSelection(expectedRevision, observedHeads) {
+    return this._native.applyEnvironmentSelection(expectedRevision, observedHeads);
   }
 
   getExecutionView() {

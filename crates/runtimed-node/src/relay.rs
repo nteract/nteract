@@ -18,7 +18,8 @@ use notebook_sync::RelayHandle;
 
 use crate::error::to_napi_err;
 use crate::session::{
-    spawn_event_task, CreateNotebookEnvironmentMode, EventSubscription, PackageManager,
+    spawn_event_task, CreateNotebookEnvironmentMode, EventSubscription, LocalEnvironmentOptions,
+    LocalEnvironmentStatus, PackageManager,
 };
 
 type FrameCallback =
@@ -48,6 +49,8 @@ pub struct CreateRelayOptions {
     pub package_manager: Option<PackageManager>,
     /// Project/notebook environment inheritance mode.
     pub environment_mode: Option<CreateNotebookEnvironmentMode>,
+    /// Existing environment prefix to use instead of the prewarmed fallback.
+    pub local_environment: Option<LocalEnvironmentOptions>,
 }
 
 #[napi(object)]
@@ -99,6 +102,9 @@ pub struct RelayInfo {
     pub actor_label: Option<String>,
     pub connection_scope: Option<String>,
     pub local_environment_selection: Option<bool>,
+    /// Daemon verdict on `createRelay({ localEnvironment })`. Absent when none
+    /// was requested or the daemon predates the option.
+    pub local_environment: Option<LocalEnvironmentStatus>,
     pub comments_doc_id: Option<String>,
     /// Keyed document kinds the daemon routes for this room; hosts pass them
     /// to the ready payload so the browser only syncs supported kinds.
@@ -234,6 +240,7 @@ pub async fn create_relay(options: Option<CreateRelayOptions>) -> Result<NativeR
             dependencies: opts.dependencies.unwrap_or_default(),
             package_manager: opts.package_manager.map(Into::into),
             environment_mode: opts.environment_mode.map(Into::into),
+            local_environment: opts.local_environment.map(Into::into),
             ..notebook_sync::connect::CreateNotebookSpec::new(runtime.as_str())
         },
         frame_tx,
@@ -416,6 +423,7 @@ fn relay_info_from_capabilities(
         actor_label: capabilities.actor_label,
         connection_scope: capabilities.connection_scope,
         local_environment_selection: Some(capabilities.local_environment_selection),
+        local_environment: capabilities.local_environment.map(Into::into),
         comments_doc_id: capabilities.comments_doc_id,
         keyed_doc_kinds: capabilities.keyed_doc_kinds,
         comments_notebook_ref_json,
@@ -509,6 +517,40 @@ mod tests {
             );
             assert_eq!(info.local_environment_selection, Some(supported));
         }
+    }
+
+    #[test]
+    fn relay_reports_local_environment_verdict_only_when_present() {
+        let info = relay_info_from_capabilities(
+            "notebook-1".into(),
+            ProtocolCapabilities::v4(None),
+            None,
+            PathBuf::from("/tmp/runtimed.sock"),
+            None,
+        );
+        assert_eq!(info.local_environment, None);
+
+        let capabilities = ProtocolCapabilities::v4(None).with_local_environment(Some(
+            notebook_protocol::connection::LocalEnvironmentBindingStatus::Rejected {
+                prefix: "/envs/kilo".into(),
+                error: "missing conda-meta".into(),
+            },
+        ));
+        let info = relay_info_from_capabilities(
+            "notebook-1".into(),
+            capabilities,
+            None,
+            PathBuf::from("/tmp/runtimed.sock"),
+            None,
+        );
+        assert_eq!(
+            info.local_environment,
+            Some(LocalEnvironmentStatus {
+                status: crate::session::LocalEnvironmentBindingState::Rejected,
+                prefix: "/envs/kilo".into(),
+                error: Some("missing conda-meta".into()),
+            })
+        );
     }
 
     #[test]

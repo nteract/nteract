@@ -3,7 +3,10 @@
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use super::env::{CreateNotebookEnvironmentMode, PackageManager};
+use super::env::{
+    CreateNotebookEnvironmentMode, LocalEnvironmentBinding, LocalEnvironmentBindingStatus,
+    PackageManager,
+};
 use super::framing::{self, NotebookFrameType};
 
 /// Channel handshake — the first frame on every connection.
@@ -147,6 +150,11 @@ pub struct CreateNotebookRequest {
     /// Self-declared operator suffix for the authenticated actor label.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operator: Option<String>,
+    /// Existing environment prefix to use instead of the prewarmed fallback.
+    /// Older daemons ignore it; they also omit
+    /// [`ProtocolCapabilities::local_environment`] from the reply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_environment: Option<LocalEnvironmentBinding>,
 }
 
 impl CreateNotebookRequest {
@@ -164,6 +172,7 @@ impl CreateNotebookRequest {
             dependencies: Vec::new(),
             typed_bootstrap: None,
             operator: None,
+            local_environment: None,
         }
     }
 }
@@ -227,6 +236,10 @@ pub struct ProtocolCapabilities {
     /// listed kinds.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keyed_doc_kinds: Vec<String>,
+    /// Verdict on the `CreateNotebook` request's `local_environment`.
+    /// Present only when the request carried one and the daemon understood it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_environment: Option<LocalEnvironmentBindingStatus>,
 }
 
 impl ProtocolCapabilities {
@@ -252,7 +265,14 @@ impl ProtocolCapabilities {
             comments_notebook_ref: None,
             // Per room: each connection builder adds the kinds its room routes.
             keyed_doc_kinds: Vec::new(),
+            local_environment: None,
         }
+    }
+
+    /// Report the verdict on a `CreateNotebook` local environment binding.
+    pub fn with_local_environment(mut self, status: Option<LocalEnvironmentBindingStatus>) -> Self {
+        self.local_environment = status;
+        self
     }
 
     /// Advertise the keyed document kinds this room routes.

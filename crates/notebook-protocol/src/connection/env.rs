@@ -1,6 +1,6 @@
 //! Environment and launch-source protocol helpers.
 
-use std::{fmt, str::FromStr};
+use std::{fmt, path::PathBuf, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
@@ -66,6 +66,33 @@ impl<'de> Deserialize<'de> for CreateNotebookEnvironmentMode {
         let raw = String::deserialize(d)?;
         Self::parse(&raw).map_err(serde::de::Error::custom)
     }
+}
+
+/// Existing Python environment prefix that a host binds to a new notebook
+/// room at `CreateNotebook` time.
+///
+/// The binding replaces only the daemon's prewarmed-pool fallback. Notebook
+/// inline dependencies, PEP 723 blocks, a captured environment on disk, and a
+/// trusted project file still take precedence. The daemon borrows the prefix:
+/// it never installs into it and never deletes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalEnvironmentBinding {
+    /// Absolute path to a Conda environment prefix with Python and ipykernel.
+    pub prefix: PathBuf,
+}
+
+/// Daemon verdict on a requested [`LocalEnvironmentBinding`], reported in the
+/// `CreateNotebook` connection info.
+///
+/// Absent when the request carried no binding or the daemon predates the
+/// field, so hosts can tell "ignored" apart from "rejected".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum LocalEnvironmentBindingStatus {
+    /// The prefix validated and is bound to the room.
+    Bound { prefix: PathBuf },
+    /// The prefix failed validation. The room uses normal auto selection.
+    Rejected { prefix: PathBuf, error: String },
 }
 
 /// Supported package managers for Python notebooks.

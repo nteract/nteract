@@ -2672,6 +2672,7 @@ fn test_room_with_path_and_store(
         connections: RoomConnections::default(),
         hosted: AtomicBool::new(false),
         local_environment_selection: Default::default(),
+        bound_environment: Default::default(),
         preparing_kernel_env_path: std::sync::Mutex::new(None),
         evicted: AtomicBool::new(false),
         blob_store,

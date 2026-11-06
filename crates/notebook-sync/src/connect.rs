@@ -26,8 +26,8 @@ use tokio::sync::{mpsc, watch};
 
 use notebook_protocol::connection::{
     self, ConnectionBootstrap, CreateNotebookEnvironmentMode, CreateNotebookRequest, FrameSink,
-    FrameSource, Handshake, NotebookConnectionInfo, PackageManager, ProtocolCapabilities,
-    PROTOCOL_V4,
+    FrameSource, Handshake, LocalEnvironmentBinding, NotebookConnectionInfo, PackageManager,
+    ProtocolCapabilities, PROTOCOL_V4,
 };
 use notebook_protocol::protocol::NotebookBroadcast;
 
@@ -138,6 +138,11 @@ pub struct CreateNotebookSpec {
 
     /// Environment inheritance mode. `None` lets the daemon default to auto.
     pub environment_mode: Option<CreateNotebookEnvironmentMode>,
+
+    /// Existing environment prefix that replaces the prewarmed fallback for
+    /// this room. The daemon reports its verdict in
+    /// `NotebookConnectionInfo::capabilities.local_environment`.
+    pub local_environment: Option<LocalEnvironmentBinding>,
 }
 
 impl CreateNotebookSpec {
@@ -153,6 +158,7 @@ impl CreateNotebookSpec {
             package_manager: None,
             dependencies: Vec::new(),
             environment_mode: None,
+            local_environment: None,
         }
     }
 
@@ -169,6 +175,7 @@ impl CreateNotebookSpec {
             dependencies: self.dependencies,
             typed_bootstrap: Some(true),
             operator: operator_from_actor_label(&self.actor_label),
+            local_environment: self.local_environment,
         }
     }
 }

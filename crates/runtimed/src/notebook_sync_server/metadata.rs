@@ -140,16 +140,24 @@ pub(crate) fn select_auto_python_env_source(
     project_source: Option<notebook_protocol::connection::EnvSource>,
     fallback: notebook_protocol::connection::EnvSource,
 ) -> notebook_protocol::connection::EnvSource {
+    claimed_auto_python_env_source(environment_mode, notebook_source, project_source)
+        .unwrap_or(fallback)
+}
+
+/// The notebook or project source that claims an automatic Python launch,
+/// or `None` when the launch falls back to the prewarmed pool (or to a
+/// host-bound environment, see `requests::bound_environment`).
+pub(crate) fn claimed_auto_python_env_source(
+    environment_mode: notebook_protocol::connection::CreateNotebookEnvironmentMode,
+    notebook_source: Option<notebook_protocol::connection::EnvSource>,
+    project_source: Option<notebook_protocol::connection::EnvSource>,
+) -> Option<notebook_protocol::connection::EnvSource> {
     match environment_mode {
-        notebook_protocol::connection::CreateNotebookEnvironmentMode::Project => {
-            project_source.or(notebook_source).unwrap_or(fallback)
+        notebook_protocol::connection::CreateNotebookEnvironmentMode::Project
+        | notebook_protocol::connection::CreateNotebookEnvironmentMode::Auto => {
+            project_source.or(notebook_source)
         }
-        notebook_protocol::connection::CreateNotebookEnvironmentMode::Auto => {
-            project_source.or(notebook_source).unwrap_or(fallback)
-        }
-        notebook_protocol::connection::CreateNotebookEnvironmentMode::Notebook => {
-            notebook_source.unwrap_or(fallback)
-        }
+        notebook_protocol::connection::CreateNotebookEnvironmentMode::Notebook => notebook_source,
     }
 }
 
@@ -3142,6 +3150,51 @@ pub(crate) async fn release_attempt_and_readmit_if_peer_waiting(
     attempt.release_and_readmit_auto_if_peer_waiting()
 }
 
+/// Selection inputs `auto_launch_kernel_attempt` has resolved before it
+/// picks a kernel type and environment.
+struct AutoLaunchSources<'a> {
+    notebook_kernel_type: Option<&'a str>,
+    default_runtime: &'a crate::runtime::Runtime,
+    environment_mode: notebook_protocol::connection::CreateNotebookEnvironmentMode,
+    inline_source: Option<&'a notebook_protocol::connection::EnvSource>,
+    project_source: Option<&'a notebook_protocol::connection::EnvSource>,
+}
+
+/// Bound environment for this auto-launch, mirroring the kernel-type rules
+/// of the selection match in `auto_launch_kernel_attempt`: an unknown
+/// kernelspec always takes the prewarmed fallback, so nothing claims it.
+async fn bound_environment_for_auto_launch(
+    room: &NotebookRoom,
+    daemon: &crate::daemon::Daemon,
+    sources: AutoLaunchSources<'_>,
+) -> Option<notebook_protocol::protocol::LocalCondaEnvironment> {
+    use notebook_protocol::connection::EnvSource;
+    let inline_is_deno = matches!(sources.inline_source, Some(EnvSource::Deno));
+    let claim = || {
+        claimed_auto_python_env_source(
+            sources.environment_mode,
+            sources.inline_source.filter(|_| !inline_is_deno).cloned(),
+            sources.project_source.cloned(),
+        )
+    };
+    let (launches_python, claimed) = match sources.notebook_kernel_type {
+        Some("deno") => (false, None),
+        Some("python") => (true, claim()),
+        None => (
+            !inline_is_deno && !matches!(sources.default_runtime, crate::runtime::Runtime::Deno),
+            claim(),
+        ),
+        Some(_) => (true, None),
+    };
+    crate::requests::bound_environment::resolve_for_launch(
+        room,
+        &daemon.local_conda_environments,
+        launches_python,
+        claimed.as_ref(),
+    )
+    .await
+}
+
 /// One admitted auto-launch attempt, owned end to end.
 ///
 /// Resolves the metadata snapshot from the Automerge doc (if the first client
@@ -3447,6 +3500,53 @@ async fn auto_launch_kernel_attempt(
     }
     let project_source: Option<notebook_protocol::connection::EnvSource> =
         detected_project_file.as_ref().map(|d| d.to_env_source());
+
+    // A host-bound prefix fills the prewarmed slot. Decide before the match
+    // below so the pool is never touched when the binding applies.
+    if let Some(environment) = bound_environment_for_auto_launch(
+        room,
+        &daemon,
+        AutoLaunchSources {
+            notebook_kernel_type: notebook_kernel_type.as_deref(),
+            default_runtime: &default_runtime,
+            environment_mode,
+            inline_source: inline_source.as_ref(),
+            project_source: project_source.as_ref(),
+        },
+    )
+    .await
+    {
+        // Untitled rooms usually report NoDependencies here, which passes.
+        // A binding only applies when no inline deps claimed the launch.
+        if crate::requests::guarded::ensure_trusted(room)
+            .await
+            .is_err()
+        {
+            reset_auto_launch_error_with_trust_check(
+                room,
+                None,
+                None,
+                "Trust changed before the bound environment could launch",
+            )
+            .await;
+            return None;
+        }
+        if room.connections.active_peers.load(Ordering::Relaxed) == 0 {
+            return release_attempt_and_readmit_if_peer_waiting(room, attempt).await;
+        }
+        let _ = crate::requests::launch_kernel::handle_admitted(
+            room,
+            &daemon,
+            "auto".into(),
+            notebook_protocol::connection::LaunchSpec::Auto,
+            None,
+            attempt,
+            Some(environment),
+            None,
+        )
+        .await;
+        return None;
+    }
 
     // Determine kernel type and environment
     use notebook_protocol::connection::{EnvSource, PackageManager};

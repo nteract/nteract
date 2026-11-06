@@ -548,6 +548,9 @@ async fn handle_attempt(
     // A directory the user chose the notebook environment for drops out of
     // auto-selection below.
     let mut declined_project_state = None;
+    // Set when auto selection lands on the prewarmed fallback, the only slot
+    // a host-bound environment may fill.
+    let mut bound_environment_eligible = false;
     let resolved_env_source = if resolved_kernel_type == "deno" {
         match &launch_spec {
             LaunchSpec::Auto | LaunchSpec::AutoScoped(_) => {
@@ -746,6 +749,9 @@ async fn handle_attempt(
                     "[notebook-sync] No project file detected, using {}",
                     fallback.as_str()
                 );
+                // The bound prefix is Conda; uv- and pixi-scoped launches
+                // keep their own family.
+                bound_environment_eligible = matches!(auto_scope, None | Some("conda"));
                 fallback
             }
         }
@@ -755,6 +761,24 @@ async fn handle_attempt(
             LaunchSpec::Concrete(source) => source,
             LaunchSpec::Auto | LaunchSpec::AutoScoped(_) => unreachable!("auto handled above"),
         }
+    };
+    let bound_environment = if bound_environment_eligible {
+        super::bound_environment::resolve_for_launch(
+            room,
+            &daemon.local_conda_environments,
+            true,
+            None,
+        )
+        .await
+    } else {
+        None
+    };
+    // An apply lease commits the user's selection, never a host binding that
+    // filled the Automatic fallback.
+    let applied_selection = local_environment.clone();
+    let (local_environment, resolved_env_source) = match bound_environment {
+        Some(environment) => (Some(environment), EnvSource::ExistingConda),
+        None => (local_environment, resolved_env_source),
     };
 
     let parsed_resolved = resolved_env_source.clone();
@@ -2075,7 +2099,7 @@ async fn handle_attempt(
                         &resolved_kernel_type,
                         &es,
                         &launched_config,
-                        apply.map(|lease| (lease, local_environment.clone())),
+                        apply.map(|lease| (lease, applied_selection.clone())),
                     )
                     .await
                     {
@@ -2367,7 +2391,7 @@ async fn handle_attempt(
                             &resolved_kernel_type,
                             &es,
                             &launched_config,
-                            apply.map(|lease| (lease, local_environment.clone())),
+                            apply.map(|lease| (lease, applied_selection.clone())),
                         )
                         .await
                         {
