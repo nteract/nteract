@@ -144,7 +144,7 @@ test("an edit switches between plain and Markdown in place", () => {
   assert.equal(commentMarkdown(messageAt(doc, path)), "**literal**");
 });
 
-test("a message in an old stored form is refused on read and on write", () => {
+test("a message in an old stored form reads as a placeholder and is refused on write", () => {
   const { doc: seeded, ids, path } = add(fixture(), "placeholder");
   const refused = { code: "stored_form_unsupported", status: 409 };
   // A plain message and an adapter-form rich message with its Markdown copy,
@@ -168,14 +168,73 @@ test("a message in an old stored form is refused on read and on write", () => {
     );
   });
   for (const doc of [legacy, adapter]) {
-    assert.throws(() => projectComments(doc), refused);
-    assert.throws(() => projectReadComments(doc), refused);
+    // Reads show a placeholder for that one message, never its stored text.
+    for (const projected of [projectComments(doc), projectReadComments(doc)]) {
+      const [message] = projected[0].messages;
+      assert.equal(message.id, ids.message_id);
+      assert.equal(message.body, "");
+      assert.equal(message.body_format, "plain");
+      assert.equal(message.content_error, "stored_form_unsupported");
+      assert.equal(message.author.principal, "fixture", "the author line stays");
+    }
     assert.throws(
       () =>
         A.change(doc, (d) => applyComment(d, { action: "edit", ...ids, body: "New" }, identity)),
       refused,
     );
   }
+});
+
+test("a stale replica's concurrent body write survives a merge and reads as a placeholder", async () => {
+  const { admitCommentChanges } = await import("./comment-authority.mjs");
+  // The shared history: one message in today's form, and one bare `body`
+  // message as builds before the comments migration wrote it.
+  const { doc: seeded, ids } = add(fixture(), "Readable sibling", { body_format: "plain" });
+  const staleId = "stale-message";
+  const stalePath = ["threads", ids.thread_id, "messages", staleId];
+  const base = A.change(seeded, (d) => {
+    d.threads[ids.thread_id].messages[staleId] = {
+      body: "Old form",
+      author: { ...identity },
+      createdAt: "2026-11-05T18:00:00.000Z",
+      deletedAt: null,
+    };
+  });
+  // The host migrates the message: rich text in, `body` out.
+  const migrated = A.change(A.clone(base), (d) => {
+    const message = messageAt(d, stalePath);
+    message.format = RICH_FORMAT;
+    message.richText = "";
+    A.updateSpans(d, [...stalePath, "richText"], plainCommentSpans("Old form"));
+    message.bodyFormat = "plain";
+    delete message.body;
+  });
+  const byId = (messages, id) => messages.find((message) => message.id === id);
+  assert.equal(byId(projectComments(migrated)[0].messages, staleId).body, "Old form");
+  // A tab that never saw the migration edits the message the old way.
+  const stale = A.change(A.clone(base), (d) => {
+    messageAt(d, stalePath).body = "Edited offline";
+  });
+  // The concurrent put wins over the delete it never saw.
+  const merged = A.merge(A.clone(migrated), stale);
+  assert.equal(messageAt(merged, stalePath).body, "Edited offline");
+  assert.equal(messageAt(merged, stalePath).format, RICH_FORMAT);
+  for (const projected of [projectComments(merged), projectReadComments(merged)]) {
+    const readable = byId(projected[0].messages, ids.message_id);
+    const unreadable = byId(projected[0].messages, staleId);
+    assert.equal(readable.body, "Readable sibling", "the rest of the thread reads");
+    assert.equal(unreadable.body, "", "the stale text is never shown");
+    assert.equal(unreadable.content_error, "stored_form_unsupported");
+    assert.equal(unreadable.createdAt, "2026-11-05T18:00:00.000Z");
+  }
+  // The host refuses the stale change on admission, so it can't reach the
+  // stored copy: only the replica that wrote it holds the merged form.
+  const staleChanges = A.getChanges(base, stale);
+  const decision = admitCommentChanges(migrated, staleChanges, identity.principal, {
+    role: "editor",
+  });
+  assert.equal(decision.ok, false);
+  assert.equal(decision.reason.code, "outdated_form");
 });
 
 test("the length limit counts text characters, not block markers", () => {

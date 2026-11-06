@@ -234,8 +234,10 @@ references; it does not publish the Page or change asset access.
   always have. Omitting the format when editing retains the message's current
   kind. Thread/message IDs and passage anchors stay unchanged. No Markdown copy
   (`body`) is stored. A message an earlier build stored with only a `body`, or
-  with a `body` copy beside its spans, answers `409 stored_form_unsupported`;
-  the comments migration rewrote every one (DEPLOYMENT.md). If native content
+  with a `body` copy beside its spans, reads with an empty body and
+  `content_error: "stored_form_unsupported"`, shows as a placeholder in the
+  viewer, and refuses edits with `409 stored_form_unsupported`; the comments
+  migration rewrote every one (DEPLOYMENT.md). If native content
   cannot be decoded, reads return its bare text with
   `content_error: "rich_text_unavailable"` rather than failing the entire Page.
   A message holds at most 16,000 text characters (block markers don't count,
