@@ -16,9 +16,11 @@
 // Cases: type one character at native index 4; delete one and twelve
 // characters there (each deleted index is probed for a marker); bold four
 // characters; split the opening node with a paragraph marker (a block
-// marker, which reads the block whole); and type one character from a peer
-// that hadn't seen another peer's character (judged at the writer's base,
-// through cursors).
+// marker, which reads the block whole); type one character from a peer that
+// hadn't seen another peer's character; and the costliest frame a client
+// can send cheaply, a stale frame of 1,000 scattered one-character deletes
+// (past the probe budget, so its block is read once), admitted and refused
+// for its title.
 // Writes test-results/admission-benchmark.json (every sample) and prints
 // median [p10, p90] milliseconds.
 import assert from "node:assert/strict";
@@ -52,20 +54,60 @@ const fixtures = {
 };
 const pageId = "66666666-6666-4666-8666-666666666666";
 
+/** Up to `count` non-marker indexes, spread across the block, last first. */
+function textIndexes(d, at, count) {
+  const text = String(d.blocks[at[1]].richText);
+  const step = Math.max(1, Math.floor(text.length / (count + 1)));
+  const out = [];
+  for (let i = step; i < text.length && out.length < count; i += step)
+    if (text[i] !== "\uFFFC") out.push(i);
+  return out.reverse();
+}
+// A host that took another peer's character, and one whose title sits at
+// the bound, so the frame's title growth is refused once merged.
+const peerTyped = (d, at) => A.splice(d, at, 100, 0, "p");
+const longTitle = (d) => A.updateText(d, ["title"], "t".repeat(1020));
+/** Each case: the frame's edit, an optional host edit concurrent with it,
+ * and whether admission should accept it. */
 const cases = {
-  "type one character": (d, at) => A.splice(d, at, 4, 0, "x"),
-  "delete one character": (d, at) => A.splice(d, at, 4, 1),
-  "delete twelve characters": (d, at) => A.splice(d, at, 4, 12),
-  "bold four characters": (d, at) =>
-    A.mark(d, at, { start: 4, end: 8, expand: "after" }, "strong", true),
+  "type one character": { edit: (d, at) => A.splice(d, at, 4, 0, "x") },
+  "delete one character": { edit: (d, at) => A.splice(d, at, 4, 1) },
+  "delete twelve characters": { edit: (d, at) => A.splice(d, at, 4, 12) },
+  "bold four characters": {
+    edit: (d, at) => A.mark(d, at, { start: 4, end: 8, expand: "after" }, "strong", true),
+  },
   // Enter inside the opening heading: a new paragraph marker.
-  "split a block": (d, at) => A.splitBlock(d, at, 6, { type: "paragraph", parents: [], attrs: {} }),
-  "type one character, concurrent": (d, at) => A.splice(d, at, 4, 0, "x"),
+  "split a block": {
+    edit: (d, at) => A.splitBlock(d, at, 6, { type: "paragraph", parents: [], attrs: {} }),
+  },
+  "type one character, concurrent": {
+    edit: (d, at) => A.splice(d, at, 4, 0, "x"),
+    host: peerTyped,
+  },
+  // The worst case a client can send cheaply: a stale frame of scattered
+  // one-character deletes, refused for its title once merged.
+  "1,000 scattered deletes, stale, refused": {
+    edit: (d, at) => {
+      for (const i of textIndexes(d, at, 1000)) A.splice(d, at, i, 1);
+      A.splice(d, ["title"], 0, 0, "abcdefgh");
+    },
+    host: (d, at) => {
+      peerTyped(d, at);
+      longTitle(d);
+    },
+    ok: false,
+  },
+  "1,000 scattered deletes, stale": {
+    edit: (d, at) => {
+      for (const i of textIndexes(d, at, 1000)) A.splice(d, at, i, 1);
+    },
+    host: peerTyped,
+  },
 };
 const checks = {
-  "patch path": (live, preview) => {
+  "patch path": (live, preview, _at, expected = true) => {
     const result = admitPageChanges(live, preview);
-    assert.equal(result.ok, true, JSON.stringify(result.reason));
+    assert.equal(result.ok, expected, JSON.stringify(result.reason));
     return result.stats.fullReads;
   },
   "full validation": (_live, preview, at) => {
@@ -98,21 +140,18 @@ for (const [fixture, source] of Object.entries(fixtures)) {
     nativeLength: live.blocks[at[1]].richText.length,
     spanBytes: Buffer.byteLength(JSON.stringify(A.spans(live, at))),
   };
-  for (const [name, edit] of Object.entries(cases)) {
+  for (const [name, { edit, host: hostEdit, ok = true }] of Object.entries(cases)) {
     // The preview as SyncHost builds it: a clone of the live document with
     // the browser's change loaded.
     const change = A.getLastLocalChange(A.change(A.clone(live), (d) => edit(d, at)));
-    // A concurrent case's host already holds another peer's character.
-    const host = name.endsWith("concurrent")
-      ? A.change(A.clone(live), (d) => A.splice(d, at, 100, 0, "p"))
-      : live;
+    const host = hostEdit ? A.change(A.clone(live), (d) => hostEdit(d, at)) : live;
     for (const [label, check] of Object.entries(checks)) {
       const samples = [];
       let fullReads = 0;
       for (let i = -WARMUP; i < SAMPLES; i++) {
         const preview = A.loadIncremental(A.clone(host), change);
         const start = performance.now();
-        fullReads = check(host, preview, at);
+        fullReads = check(host, preview, at, ok);
         const ms = performance.now() - start;
         A.free(preview);
         if (i >= 0) samples.push(ms);
