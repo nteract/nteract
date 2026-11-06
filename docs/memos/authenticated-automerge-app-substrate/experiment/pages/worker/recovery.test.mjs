@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
-import * as N from "@automerge/subduction";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
-import { Catalog, Page, PageRecords } from "./index.mjs";
+import { Catalog, Page } from "./index.mjs";
 import { documentMutation, recoverDocumentMutations } from "./mutations.mjs";
+import { plainStub } from "./plain-stub.mjs";
 
 class Storage {
   values = new Map();
@@ -116,7 +116,7 @@ test("Page restart recovers an intent based on an unflushed WebSocket edit", asy
         await storage.put("fixture/document", A.save(restored));
       },
     };
-    this.backend = { async flush() {} };
+    this.plain = plainStub(this.repo);
   });
   const restarted = new Page(contextFor(storage), {});
   await restarted.ready;
@@ -186,7 +186,7 @@ test("the base barrier precedes intent storage without dropping a concurrent edi
   assert.ok(A.hasHeads(A.load(persisted), receipt.heads));
 });
 
-test("unknown Page lookups write no signer, repository, or host state", async (t) => {
+test("unknown Page lookups write no plain storage, repository, or host state", async (t) => {
   const auth = await createAuthFixture();
   t.mock.method(globalThis, "fetch", auth.fetch);
   const token = auth.apiKey();
@@ -209,22 +209,18 @@ test("unknown Page lookups write no signer, repository, or host state", async (t
       });
     assert.equal(storage.values.size, 0);
     assert.deepEqual(storage.writes, []);
-    assert.equal(page.signer, undefined);
+    assert.equal(page.plain, undefined);
     assert.equal(page.repo, undefined);
   }
 });
 
-test("valid creation and concurrent initialization share one persisted signer", async (t) => {
+test("valid creation and concurrent initialization share one plain boot", async (t) => {
   const auth = await createAuthFixture();
   t.mock.method(globalThis, "fetch", auth.fetch);
   const storage = new Storage();
   const page = new Page(contextFor(storage), auth.env);
   await page.ready;
-  t.after(async () => {
-    await page.repo?.shutdown();
-    await page.backend?.close();
-    page.signer?.free();
-  });
+  t.after(() => page.plain?.close());
   const get = storage.get.bind(storage);
   let release, started;
   const waiting = new Promise((resolve) => {
@@ -234,7 +230,7 @@ test("valid creation and concurrent initialization share one persisted signer", 
     started = resolve;
   });
   storage.get = async (key) => {
-    if (key === "host/signer") {
+    if (key === "plain/host-actor-prefix") {
       started();
       await waiting;
     }
@@ -253,7 +249,11 @@ test("valid creation and concurrent initialization share one persisted signer", 
   release();
   assert.equal((await creating).status, 201);
   await Promise.all(initialization);
-  assert.equal(storage.writes.filter((key) => key === "host/signer").length, 1);
+  assert.equal(
+    storage.writes.filter((key) => key.includes("host-actor-prefix")).length,
+    1,
+    "one boot stored the host actor prefix",
+  );
   assert.equal(page.handle.doc().title, "Created lazily");
   assert.ok(await storage.get("host/document"));
   assert.equal(await storage.get("host/creation"), undefined);
@@ -269,7 +269,11 @@ test("a new purge key completes failed deletion barriers before clearing its cat
     storage.syncs++;
     if (failing) throw Error("deletion sync failed");
   };
-  const doc = A.from({ page_id: pageId, text: "Delete me" });
+  const doc = A.from({
+    page_id: pageId,
+    text: "Delete me",
+    schema: { features: ["comments-doc"] },
+  });
   let deletions = 0;
   const page = Object.assign(Object.create(Page.prototype), {
     ready: Promise.resolve(),
@@ -289,7 +293,9 @@ test("a new purge key completes failed deletion barriers before clearing its cat
         deletions++;
       },
     },
-    backend: { async flush() {} },
+    get plain() {
+      return plainStub(this.repo);
+    },
   });
   const catalogStorage = new Storage();
   await catalogStorage.put(`page/${pageId}`, { page_id: pageId, title: "Delete me" });
@@ -411,30 +417,21 @@ test("cached tool receipts retry a failed final durability barrier", async () =>
   assert.deepEqual(durableReceipt, recorded);
 });
 
-for (const fault of ["signer-read", "signer-write", "policy-load"]) {
+for (const fault of ["prefix-read", "prefix-write"]) {
   test(`create retries ${fault} initialization failure with its exact recorded history`, async (t) => {
     const auth = await createAuthFixture();
     t.mock.method(globalThis, "fetch", auth.fetch);
     const storage = new Storage();
     const page = new Page(contextFor(storage), auth.env);
     await page.ready;
-    t.after(async () => {
-      await page.repo?.shutdown();
-      await page.backend?.close();
-      page.signer?.free();
-    });
-    let freed = 0;
-    const free = N.MemorySigner.prototype.free;
-    t.mock.method(N.MemorySigner.prototype, "free", function () {
-      freed++;
-      return free.call(this);
-    });
+    t.after(() => page.plain?.close());
     let failing = true;
     let attempts = 0;
+    const named = (key) =>
+      (typeof key === "string" ? key : Object.keys(key ?? {}).join()).includes("host-actor-prefix");
     for (const [method, matches] of [
-      ["get", (key) => key === "host/signer" && fault === "signer-read"],
-      ["put", (key) => key === "host/signer" && fault === "signer-write"],
-      ["list", (options) => options.prefix === "host/binding/" && fault === "policy-load"],
+      ["get", (key) => named(key) && fault === "prefix-read"],
+      ["put", (key) => named(key) && fault === "prefix-write"],
     ]) {
       const original = storage[method].bind(storage);
       storage[method] = async (...args) => {
@@ -452,9 +449,8 @@ for (const fault of ["signer-read", "signer-write", "policy-load"]) {
     assert.ok(intent);
     assert.equal(page.metadata, undefined);
     assert.equal(page.initializing, undefined);
-    assert.equal(page.signer, undefined);
+    assert.equal(page.plain, undefined);
     assert.equal(page.repo, undefined);
-    assert.equal(freed, fault === "policy-load" ? 1 : 0);
     failing = false;
     const attacker = auth.apiKey({ userId: "another-account" });
     assert.equal((await page.fetch(requestFor(attacker, "/internal/create", args))).status, 403);
@@ -480,269 +476,10 @@ for (const fault of ["signer-read", "signer-write", "policy-load"]) {
     assert.equal(page.handle.doc().title, "Original title");
     assert.equal(await storage.get("host/creation"), undefined);
     assert.equal(storage.writes.filter((key) => key === "host/creation").length, 1);
-    assert.equal(attempts, 2);
+    assert.ok(attempts > 1, "the retry booted again");
     assert.equal(page.initializing, undefined);
   });
 }
-
-/** PageRecords storage: multi-key put and delete, like Durable Object storage. */
-class RecordStorage {
-  values = new Map();
-  async get(key) {
-    return this.values.get(key);
-  }
-  async put(values) {
-    for (const [key, value] of Object.entries(values))
-      this.values.set(key, typeof value === "string" ? value : value.slice());
-  }
-  async delete(keys) {
-    for (const key of keys) this.values.delete(key);
-  }
-  async sync() {}
-  async list({ prefix, startAfter = "", limit }) {
-    return new Map(
-      [...this.values]
-        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-        .filter(([key]) => key.startsWith(prefix) && key > startAfter)
-        .slice(0, limit),
-    );
-  }
-}
-
-/** Apply one change as a loose commit: a hash with a leading zero byte would
- * head a fragment instead, so search fixed timestamps for the shape. */
-async function looseChange(page, actor, change) {
-  for (let time = 1_790_000_000; time < 1_790_004_096; time++) {
-    const next = A.change(A.clone(page.handle.doc(), { actor }), { time }, change);
-    const [head] = A.getHeads(next);
-    const bytes = A.getLastLocalChange(next);
-    A.free(next);
-    if (head.startsWith("00")) continue;
-    await page.handle.update((doc) => A.applyChanges(doc, [bytes])[0]);
-    return { hash: head, bytes };
-  }
-  throw Error("No loose-commit change within the timestamp search bound");
-}
-
-const ACTORS = { left: "1a".repeat(16), right: "1b".repeat(16), merge: "1c".repeat(16) };
-
-// Each shape names the stored change it loses and the frontier the Page must
-// start on. A lost root leaves nothing buildable: startup fails, bounded.
-const SHAPES = {
-  "missing branch of a merge": async (page) => {
-    const left = await looseChange(page, ACTORS.left, (doc) => {
-      doc.left = "left";
-    });
-    const right = await looseChange(page, ACTORS.right, (doc) => {
-      doc.right = "right";
-    });
-    await looseChange(page, ACTORS.merge, (doc) => {
-      doc.merged = "merged";
-    });
-    return { lost: right, frontier: [left.hash] };
-  },
-  "missing middle of a chain": async (page) => {
-    const first = await looseChange(page, ACTORS.left, (doc) => {
-      doc.one = "one";
-    });
-    const middle = await looseChange(page, ACTORS.left, (doc) => {
-      doc.two = "two";
-    });
-    await looseChange(page, ACTORS.left, (doc) => {
-      doc.three = "three";
-    });
-    return { lost: middle, frontier: [first.hash] };
-  },
-  "missing root": async (page) => {
-    await looseChange(page, ACTORS.left, (doc) => {
-      doc.one = "one";
-    });
-    const [root] = A.getAllChanges(page.handle.doc()).map((change) => A.decodeChange(change));
-    return { lost: { hash: root.hash, root: true }, frontier: [] };
-  },
-};
-
-async function bufferedPages(t) {
-  const auth = await createAuthFixture();
-  t.mock.method(globalThis, "fetch", auth.fetch);
-  const warnings = [];
-  t.mock.method(console, "warn", (line) => warnings.push(line));
-  const storage = new Storage();
-  const records = new RecordStorage();
-  const env = {
-    ...auth.env,
-    PAGES_ASYNC_PERSISTENCE: "true",
-    PAGE_RECORDS: { getByName: () => new PageRecords({ storage: records }) },
-    CATALOGS: { getByName: () => ({ fetch: async () => Response.json({}) }) },
-  };
-  const pages = [];
-  t.after(async () => {
-    for (const page of pages) {
-      await page.repo?.shutdown();
-      await page.backend?.close();
-      page.signer?.free();
-    }
-  });
-  const open = (context = contextFor(storage)) => {
-    const page = new Page(context, env);
-    pages.push(page);
-    return page;
-  };
-  return { owner: auth.apiKey(), storage, records, warnings, env, open };
-}
-
-const within = (promise, label) => {
-  let timer;
-  return Promise.race([
-    promise,
-    new Promise((_, reject) => {
-      timer = setTimeout(() => reject(Error(`${label} did not settle`)), 5000);
-    }),
-  ]).finally(() => clearTimeout(timer));
-};
-
-test("an abandoned buffered Page sends PageRecords no write", async (t) => {
-  const f = await bufferedPages(t);
-  const sent = [];
-  let stubs = 0;
-  const getByName = f.env.PAGE_RECORDS.getByName;
-  f.env.PAGE_RECORDS.getByName = (name) => {
-    stubs++;
-    const stub = getByName(name);
-    return {
-      fetch: (request) => {
-        sent.push(`${request.method} ${new URL(request.url).pathname}`);
-        return stub.fetch(request);
-      },
-    };
-  };
-  const first = f.open();
-  await first.ready;
-  const created = await first.fetch(
-    requestFor(f.owner, "/internal/create", { page_id: pageId, title: "Kept", markdown: "Body" }),
-  );
-  assert.equal(created.status, 201);
-  await first.flush();
-  assert.ok(sent.includes("POST /lease"), "a live buffered Page takes its lease by POST");
-  // A new object over the same storage: its first request boots it, and the
-  // runtime gives up on that boot while it reads its signer.
-  const get = f.storage.get;
-  let reading = false;
-  let releaseRead;
-  const read = new Promise((resolve) => (releaseRead = resolve));
-  f.storage.get = async function (key) {
-    if (key === "host/signer" && !reading) {
-      reading = true;
-      await read;
-    }
-    return get.call(this, key);
-  };
-  let calls = 0;
-  let giveUp;
-  const next = f.open({
-    ...contextFor(f.storage),
-    blockConcurrencyWhile: async (fn) => {
-      const ended = calls++ === 1 ? new Promise((_, reject) => (giveUp = reject)) : undefined;
-      return await (ended ? Promise.race([fn(), ended]) : fn());
-    },
-  });
-  await next.ready;
-  assert.equal(next.startup.name, "metadata", "a buffered record boots on demand");
-  const opened = next.documentReady();
-  await within(
-    (async () => {
-      while (!reading) await new Promise((resolve) => setImmediate(resolve));
-    })(),
-    "the boot reading its signer",
-  );
-  giveUp(Error("blockConcurrencyWhile waited for too long"));
-  await assert.rejects(opened, /waited for too long/);
-  assert.equal(next.startup.name, "abandoned");
-  const stubsBefore = stubs;
-  const sentBefore = sent.length;
-  releaseRead();
-  await within(next.bootFinished, "the abandoned boot");
-  assert.equal(stubs, stubsBefore + 1, "the boot went on to build its record sink");
-  assert.deepEqual(sent.slice(sentBefore), [], "and PageRecords got no request from it");
-  assert.equal(next.recordStore, undefined);
-});
-
-for (const [shape, build] of Object.entries(SHAPES))
-  for (const journal of [false, true]) {
-    if (shape === "missing root" && journal) continue;
-    test(`a buffered Page restarts with a ${shape}${journal ? " and replays the intent that holds it" : ""}`, async (t) => {
-      const f = await bufferedPages(t);
-      const first = f.open();
-      await first.ready;
-      const created = await first.fetch(
-        requestFor(f.owner, "/internal/create", {
-          page_id: pageId,
-          title: "Kept",
-          markdown: "Body",
-        }),
-      );
-      assert.equal(created.status, 201);
-      const { lost, frontier } = await build(first);
-      const complete = A.getHeads(first.handle.doc());
-      await first.flush();
-      // Records stored without causal ordering can hold a child without its
-      // parent. Drop the stored record that holds the lost change.
-      const keys = [...f.records.values.keys()];
-      const removed = lost.root
-        ? keys.filter((key) => key.endsWith(`/commits/${lost.hash}`) || key.includes("/fragments/"))
-        : keys.filter((key) => key.endsWith(`/commits/${lost.hash}`));
-      assert.ok(removed.length, "the lost change is stored");
-      for (const key of removed) f.records.values.delete(key);
-      if (journal)
-        // An interrupted API edit whose receipt was never written holds it.
-        await f.storage.put("host/operation/lost-edit", {
-          fingerprint: "fixture",
-          pending: true,
-          changes: [lost.bytes],
-          receipt: { page_id: pageId, heads: [lost.hash] },
-        });
-
-      const restarted = f.open();
-      // The first request that needs the document boots the restarted host.
-      const booted = restarted.ready.then(() => restarted.documentReady());
-      if (!frontier.length) {
-        await assert.rejects(within(booted, "Page startup"), /unavailable/);
-        return;
-      }
-      await within(booted, "Page startup");
-      const read = async () => {
-        const response = await restarted.fetch(
-          requestFor(f.owner, "/internal/tool", {
-            operation: "read_page",
-            arguments: { page_id: pageId, include_content: false },
-          }),
-        );
-        assert.equal(response.status, 200);
-        return response.json();
-      };
-      const connect = async () =>
-        (await restarted.fetch(requestFor(f.owner, "/api/connect"))).json();
-      const logged = f.warnings.map((line) => JSON.parse(line));
-      assert.deepEqual(
-        logged.map(({ event }) => event),
-        ["page.history_incomplete"],
-        "startup logs the incomplete history once",
-      );
-      if (journal) {
-        assert.deepEqual(A.getHeads(restarted.handle.doc()).sort(), [...complete].sort());
-        assert.equal((await f.storage.get("host/operation/lost-edit")).pending, false);
-        assert.equal((await read()).history_incomplete, undefined);
-        assert.equal((await connect()).historyIncomplete, undefined);
-      } else {
-        assert.deepEqual(A.getHeads(restarted.handle.doc()), frontier);
-        assert.equal(restarted.handle.doc().title, "Kept");
-        const body = await read();
-        assert.equal(body.history_incomplete.code, "page_history_incomplete");
-        assert.equal(body.history_incomplete.missing_dependencies, 1);
-        assert.equal((await connect()).historyIncomplete.missing_dependencies, 1);
-      }
-    });
-  }
 
 test("startup recovery finds pending edits beyond a full default storage page", async () => {
   const storage = new Storage();

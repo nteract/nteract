@@ -34,12 +34,10 @@ export const VIEWER_ASSETS = Object.freeze([
   "theme.js",
   "mermaid.js",
   "automerge.wasm",
-  "subduction.wasm",
   "sift.wasm",
 ]);
 // Staging and the page9 ingress route admit exactly these shapes.
-const VIEWER_ASSET =
-  /^public\/(app|theme|mermaid|automerge|subduction|sift)-([A-Z2-7]{8})\.(js|css|wasm)$/;
+const VIEWER_ASSET = /^public\/(app|theme|mermaid|automerge|sift)-([A-Z2-7]{8})\.(js|css|wasm)$/;
 export const IMMUTABLE = "public, max-age=31536000, immutable";
 
 const BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
@@ -108,7 +106,6 @@ export function viewerBuildOptions(app, dist, define = {}, urls = {}) {
       browserSiftPlugin(app, urls["sift.wasm"] ?? SIFT_WASM_URL),
       browserWasmPlugin(app, {
         automerge: urls["automerge.wasm"] ?? BROWSER_WASM_URLS.automerge,
-        subduction: urls["subduction.wasm"] ?? BROWSER_WASM_URLS.subduction,
       }),
     ],
   };
@@ -198,7 +195,6 @@ const HTML_REFERENCES = Object.freeze({
   "theme.js": 'src="/theme.js"',
   "app.css": 'href="/app.css"',
   "automerge.wasm": 'href="/automerge.wasm"',
-  "subduction.wasm": 'href="/subduction.wasm"',
   "app.js": 'src="/app.js"',
 });
 

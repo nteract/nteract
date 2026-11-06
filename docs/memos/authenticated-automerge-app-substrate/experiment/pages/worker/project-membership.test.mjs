@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { world } from "./projects-fixture.mjs";
 import { invitedProjects } from "./project-invitations.mjs";
 import { publicProjectAccess, projectContentMarkdown } from "./spaces.mjs";
+import { captureConsole, secretLines } from "./auth-events-fixture.mjs";
 
 for (const cleared of [false, true]) {
   test(`an older Project resolution cannot undo a real owner revocation${cleared ? " after access clears" : ""}`, async (t) => {
@@ -215,6 +216,7 @@ for (const role of ["editor", "commenter", "viewer"])
     const w = await world(t);
     const project = await w.createProject("Email Project");
     const child = (await w.createPage({ title: "Child", project_id: project.project_id })).body;
+    const capture = captureConsole(t);
     const args = {
       project_id: project.project_id,
       action: "invite",
@@ -249,6 +251,25 @@ for (const role of ["editor", "commenter", "viewer"])
       .body;
     assert.equal(roster.invites.length, 0);
     assert.equal(roster.members[w.member].email, args.email);
+    // One created and one accepted line, joined by the invitation reference.
+    // An exact retry of the invite records nothing more.
+    const [created, ...moreCreated] = capture.find("invitation.created");
+    const [accepted, ...moreAccepted] = capture.find("invitation.accepted");
+    assert.deepEqual([moreCreated, moreAccepted], [[], []]);
+    assert.match(created.invite, /^[0-9a-f]{12}$/);
+    assert.deepEqual(
+      [created, accepted].map(({ principal, project_id, invite, role: granted }) => ({
+        principal,
+        project_id,
+        invite,
+        role: granted,
+      })),
+      [
+        { principal: w.owner, project_id: project.project_id, invite: created.invite, role },
+        { principal: w.member, project_id: project.project_id, invite: created.invite, role },
+      ],
+    );
+    assert.deepEqual(secretLines(capture.events.map((event) => JSON.stringify(event))), []);
     const changed = await w.call("owner", "manage_project_access", {
       ...args,
       role: "viewer",
@@ -295,6 +316,7 @@ test("revoked and nonmatching exact-email invites never discover or authorize Pr
     idempotency_key: w.key(),
   });
   const invite = pending.body.invites.find((row) => row.email === "fixture@example.invalid");
+  const capture = captureConsole(t);
   const revoked = await w.call("owner", "manage_project_access", {
     project_id: project.project_id,
     action: "revoke_invite",
@@ -303,6 +325,21 @@ test("revoked and nonmatching exact-email invites never discover or authorize Pr
     idempotency_key: w.key(),
   });
   assert.equal(revoked.status, 200);
+  const [line] = capture.find("invitation.revoked");
+  assert.deepEqual(
+    { ...line, timestamp: undefined },
+    {
+      service: "nteract-pages-native",
+      event: "pages.auth.v1",
+      action: "invitation.revoked",
+      principal: w.owner,
+      project_id: project.project_id,
+      invite: line.invite,
+      timestamp: undefined,
+    },
+  );
+  assert.match(line.invite, /^[0-9a-f]{12}$/);
+  assert.equal(JSON.stringify(capture.events).includes(invite.id), false);
   assert.deepEqual((await w.call("member", "list_projects")).body.projects, []);
 });
 
@@ -435,4 +472,113 @@ test("Project sharing output hides tombstones and internal ACL fields including 
   assert.deepEqual(projected.members, {});
   assert.deepEqual(Object.keys(projected.invites[0]).sort(), ["email", "expiresAt", "id", "role"]);
   assert.doesNotMatch(projectContentMarkdown(), /home Page/);
+});
+
+const indexRows = async (w) =>
+  (
+    await w.env.DB.prepare(
+      "SELECT project_id, invite_id, email FROM pages_project_invitations ORDER BY project_id, email",
+    ).all()
+  ).results.map((row) => ({ ...row }));
+const inviteTo = (w, projectId, email, expected_revision) =>
+  w.call("owner", "manage_project_access", {
+    project_id: projectId,
+    action: "invite",
+    email,
+    role: "editor",
+    expected_revision,
+    idempotency_key: w.key(),
+  });
+
+test("revoking an invitation drops its index row and leaves other invitations", async (t) => {
+  const w = await world(t);
+  const first = await w.createProject("Revoked here");
+  const second = await w.createProject("Kept there");
+  await inviteTo(w, first.project_id, "fixture@example.invalid", 0);
+  const pending = await inviteTo(w, first.project_id, "other@example.invalid", 1);
+  await inviteTo(w, second.project_id, "fixture@example.invalid", 0);
+  assert.equal((await indexRows(w)).length, 3);
+  const invite = pending.body.invites.find((row) => row.email === "fixture@example.invalid");
+  const capture = captureConsole(t);
+  const args = {
+    project_id: first.project_id,
+    action: "revoke_invite",
+    invite_id: invite.id,
+    expected_revision: pending.body.revision,
+    idempotency_key: w.key(),
+  };
+  assert.equal((await w.call("owner", "manage_project_access", args)).status, 200);
+  const remaining = pending.body.invites.find((row) => row.email === "other@example.invalid");
+  const expected = [
+    { project_id: first.project_id, invite_id: remaining.id, email: "other@example.invalid" },
+    {
+      project_id: second.project_id,
+      invite_id: (await w.call("owner", "get_project_access", { project_id: second.project_id }))
+        .body.invites[0].id,
+      email: "fixture@example.invalid",
+    },
+  ].sort((a, b) => a.project_id.localeCompare(b.project_id));
+  assert.deepEqual(await indexRows(w), expected);
+  // An exact retry replays the receipt and repeats the removal harmlessly.
+  assert.equal((await w.call("owner", "manage_project_access", args)).status, 200);
+  assert.deepEqual(await indexRows(w), expected);
+  assert.equal(capture.find("invitation.revoked").length, 1);
+  // The recipient still discovers the other Project's pending invitation.
+  assert.deepEqual(
+    await invitedProjects(w.env, {
+      principal: w.member,
+      namespace: "user:anaconda-fixture",
+      verifiedEmail: "fixture@example.invalid",
+    }),
+    [second.project_id],
+  );
+});
+
+test("a revocation whose index removal fails finishes the removal on retry", async (t) => {
+  const w = await world(t);
+  const project = await w.createProject("Retried");
+  const pending = await inviteTo(w, project.project_id, "fixture@example.invalid", 0);
+  const prepare = w.env.DB.prepare.bind(w.env.DB);
+  let fail = true;
+  t.mock.method(w.env.DB, "prepare", (sql) => {
+    if (fail && sql.includes("json_each")) {
+      fail = false;
+      throw new Error("injected D1 outage");
+    }
+    return prepare(sql);
+  });
+  const capture = captureConsole(t);
+  const args = {
+    project_id: project.project_id,
+    action: "revoke_invite",
+    invite_id: pending.body.invites[0].id,
+    expected_revision: pending.body.revision,
+    idempotency_key: w.key(),
+  };
+  assert.equal((await w.call("owner", "manage_project_access", args)).status, 500);
+  // The ACL committed; only the hint is left behind.
+  assert.equal((await indexRows(w)).length, 1);
+  const retried = await w.call("owner", "manage_project_access", args);
+  assert.equal(retried.status, 200);
+  assert.deepEqual(retried.body.invites, []);
+  assert.deepEqual(await indexRows(w), []);
+  assert.equal(capture.find("invitation.revoked").length, 1);
+});
+
+test("accepting an invitation drops its index row and leaves other invitations", async (t) => {
+  const w = await world(t);
+  const project = await w.createProject("Accepted");
+  await inviteTo(w, project.project_id, "fixture@example.invalid", 0);
+  const pending = await inviteTo(w, project.project_id, "other@example.invalid", 1);
+  const capture = captureConsole(t);
+  const listed = await w.call("member", "list_projects");
+  assert.equal(listed.body.projects[0]?.project_id, project.project_id);
+  const other = pending.body.invites.find((row) => row.email === "other@example.invalid");
+  assert.deepEqual(await indexRows(w), [
+    { project_id: project.project_id, invite_id: other.id, email: "other@example.invalid" },
+  ]);
+  assert.equal(capture.find("invitation.accepted").length, 1);
+  // Membership no longer depends on the index row.
+  assert.equal((await w.call("member", "list_projects")).body.projects.length, 1);
+  assert.equal(capture.find("invitation.accepted").length, 1);
 });

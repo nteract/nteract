@@ -3,7 +3,6 @@ import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { applyComment } from "../model/comments.mjs";
 import { fixture } from "./trash-fixture.mjs";
-import { BufferedRecordStore } from "./record-persistence.mjs";
 
 // A heavily commented Page under tool writes (#4654). celld counts a request
 // against the Page's per-cell limit until its context is quiet: response sent,
@@ -13,10 +12,10 @@ import { BufferedRecordStore } from "./record-persistence.mjs";
 
 const THREADS = 200;
 const MESSAGES = 1000;
-/** Generous for CI; the local in-process handler cost is tens of milliseconds,
- * and the background work is the one-second persistence flush wait plus the
- * flush. A regression that re-resolves or re-projects the whole comments
- * document per write, or chains another timer, lands well above these. */
+/** Generous for CI; the local in-process handler cost is tens of
+ * milliseconds, and the background work is a flush. A regression that
+ * re-resolves or re-projects the whole comments document per write, or chains
+ * another timer, lands well above these. */
 const BUDGET = Object.freeze({ handlerMs: 1500, backgroundMs: 2500 });
 
 const sorted = (values) => [...values].sort((a, b) => a - b);
@@ -92,32 +91,6 @@ async function settled(f) {
     await Promise.allSettled(batch);
   }
   return performance.now() - t0;
-}
-
-/**
- * Give the fixture Page the production record path: a BufferedRecordStore
- * over an in-memory PageRecords, dirtied by every repo flush, which schedules
- * the one-second persistence flush under waitUntil. The fixture's repo is a
- * stub, so no document records flow through it on their own; this stands in
- * for the records a real flush saves.
- */
-function bufferedPersistence(f) {
-  const committed = [];
-  const sink = {
-    async *snapshot() {},
-    async commit(batch) {
-      committed.push(batch.map(([key]) => key));
-    },
-  };
-  const store = new BufferedRecordStore(sink, { onDirty: () => f.page.schedulePersistence() });
-  f.page.recordStore = store;
-  let records = 0;
-  const flush = f.page.repo.flush.bind(f.page.repo);
-  f.page.repo.flush = async (...args) => {
-    await flush(...args);
-    await store.save(`commit/${records++}`, new Uint8Array(16));
-  };
-  return { store, committed };
 }
 
 async function heavyPage(t) {
@@ -217,7 +190,6 @@ test(
   { timeout: 120_000 },
   async (t) => {
     const { f, read, retry, threads, commentWriteP50 } = await heavyPage(t);
-    const persistence = bufferedPersistence(f);
     await settled(f);
     f.tasks.length = 0;
     const before = f.commentHeads();
@@ -243,8 +215,8 @@ test(
     assert.deepEqual(during[0].body.heads, edit.body.heads);
     assert.deepEqual(f.commentHeads(), before, "a Page edit never touches the comments document");
 
-    // The write's records flush one second later, under waitUntil: the one
-    // hold a write keeps, and it ends when the flush does.
+    // The write's background work settles quickly and holds no timer: the
+    // handler's own flush made it durable.
     const backgroundMs = await timers.drain(f);
     assert.ok(
       backgroundMs < BUDGET.backgroundMs,
@@ -252,14 +224,9 @@ test(
     );
     assert.deepEqual(
       timers.held().map((timer) => timer.ms),
-      [1000],
-      "one persistence flush timer held the write, and nothing else",
+      [],
+      "no timer held the write",
     );
-    // The handler's own flush already committed the write's records; the
-    // timer's flush found nothing left and did not reschedule.
-    const commits = persistence.committed.length;
-    assert.ok(commits >= 1, "the write's records reached PageRecords");
-    assert.equal(persistence.store.dirty, false);
     // The caret's fade and expiry travel with the presence entry; no timer
     // outlives the request's background work to announce them.
     assert.deepEqual(
@@ -283,11 +250,9 @@ test(
     assert.deepEqual(timers.pending(), [], "a comment write leaves no timer pending");
     assert.deepEqual(
       timers.held().map((timer) => timer.ms),
-      [1000, 1000],
-      "one more persistence flush timer, and nothing else",
+      [],
+      "no timer held the comment write",
     );
-    assert.ok(persistence.committed.length > commits);
-    assert.equal(persistence.store.dirty, false);
     t.diagnostic(
       `patch_page ${Math.round(handlerMs)} ms, background ${Math.round(backgroundMs)} ms, tool comment write p50 ${Math.round(commentWriteP50)} ms at ~${MESSAGES} messages`,
     );

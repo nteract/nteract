@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "canonicalMIT": {
+    "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MIT.txt",
+    "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+  },
+  "incorporatedMIT": {
+    "native-promise-only@0.8.1": {"path": "package/README.md", "sha256": "d6772b9845bc1ab0c3e568f6c64d091f8eaa022b492c805fdb750afd59b13fbf", "link": "http://getify.mit-license.org/", "url": "https://getify.mit-license.org/license.txt", "licenseSha256": "df8fa74ab1b93aacf025afb8593444d92cc2df816d580ccc8c7c839284a7a875"},
+    "bytewise@1.1.0": {"path": "package/README.md", "sha256": "44d2caf5d42ee1f3c4ab70ff35c4b7633be27cb6840b83856a59aed4bd93a3cc", "link": "http://deanlandolt.mit-license.org/", "url": "https://deanlandolt.mit-license.org/license.txt", "licenseSha256": "6f317f62bfe5a58671ef2780ad19c216491ca0d2aa670c71deeb59e8f1aed528"},
+    "typewise@1.0.3": {"path": "package/README.md", "sha256": "e0150974f80df6540fc03867c6214e5b3c3f60c5247c5fd1fb7c51d01457f01e", "link": "http://deanlandolt.mit-license.org/", "url": "https://deanlandolt.mit-license.org/license.txt", "licenseSha256": "6f317f62bfe5a58671ef2780ad19c216491ca0d2aa670c71deeb59e8f1aed528"}
+  },
+  "assembledMIT": {
+    "bitmap-sdf@1.0.3": {"path": "package/readme.md", "sha256": "9e01290978fea7b6e19baed3d004bddd0964574ca05a72e653d72f253054e376", "declaration": "(c) 2017 Dima Yv. MIT License", "copyright": "(c) 2017 Dima Yv."},
+    "color-normalize@1.5.0": {"path": "package/readme.md", "sha256": "3806730899e83a81dff818bafb9384ec15b4bc6478dde1b55ccf6ebde2e4e031", "declaration": "(c) 2017 Dima Yv. MIT License", "copyright": "(c) 2017 Dima Yv."},
+    "color-rgba@2.4.0": {"path": "package/readme.md", "sha256": "895ad3639e69419340e47ed8cd3da96dcd2faa47f76381d00ed6f517ad71277a", "declaration": "(c) 2017 Dima Yv. MIT License", "copyright": "(c) 2017 Dima Yv."},
+    "convert-hex@0.1.0": {"path": "package/README.md", "sha256": "936d5419ec81f158716a13f3505f26656afa0e404d9f900251653b01c4869d3a", "declaration": "(MIT License)", "copyright": "Copyright 2013, JP Richardson  <jprichardson@gmail.com>"},
+    "convert-string@0.1.0": {"path": "package/README.md", "sha256": "576090b1fe4a5990b1dca76e85cdfd801ce69e6707495e6e3437a655cd4616d9", "declaration": "(MIT License)", "copyright": "Copyright 2013, JP Richardson  <jprichardson@gmail.com>"},
+    "detect-kerning@2.1.2": {"path": "package/readme.md", "sha256": "53530cc1d1681a3e326c15cfc0ac5cb4fd0ffce0853bc33a63a0c1e58344f1a1", "declaration": "© 2018 Dmitry Yv. MIT License", "copyright": "© 2018 Dmitry Yv."},
+    "font-measure@1.2.2": {"path": "package/readme.md", "sha256": "8d9cbfa80765f99ee64d1dc739472272e730b6f83e75302db3d68fdd1a29ed46", "declaration": "© 2018 Dima Yv. MIT License", "copyright": "© 2018 Dima Yv."},
+    "gl-util@3.1.3": {"path": "package/readme.md", "sha256": "2aa13902204af630ad6b4211299858895888ea9791893ff3559ed719ffeba37c", "declaration": "(c) 2018 Dmitry Yv. MIT License", "copyright": "(c) 2018 Dmitry Yv."},
+    "pick-by-alias@1.2.0": {"path": "package/readme.md", "sha256": "d144e1d8bf473606029810010198fb724dc0a58d8930fbab7ca4669d685a5f00", "declaration": "(c) 2017 Dima Yv. MIT License", "copyright": "(c) 2017 Dima Yv."},
+    "string-split-by@1.0.0": {"path": "package/readme.md", "sha256": "cfb9fa8129e7e5b1b545fc5d6360c1be6e42ec01c61e29ae25c12e72344421d1", "declaration": "© 2018 Dmitry Yv. MIT License", "copyright": "© 2018 Dmitry Yv."},
+    "svg-path-bounds@1.0.1": {"path": "package/readme.md", "sha256": "89899a30c2e2ceecd44c9553a09102be106756cae8ee1a7fe700f363aea74f5b", "declaration": "MIT © Dima Yv", "copyright": "© Dima Yv"},
+    "svg-path-sdf@1.1.3": {"path": "package/readme.md", "sha256": "8c61358d740013ed2da14e27f7fd40ec9ddb1cdec4502660b2e7ba8d6f1508a3", "declaration": "(c) 2017 Dima Yv. MIT License", "copyright": "(c) 2017 Dima Yv."},
+    "update-diff@1.1.0": {"path": "package/readme.md", "sha256": "7a74afc2c6fcf4ce02e4ac572f11c1d69a90819aaa03aaee12c84d707a28bf80", "declaration": "© 2017 Dima Yv. MIT License", "copyright": "© 2017 Dima Yv."}
+  }
+}

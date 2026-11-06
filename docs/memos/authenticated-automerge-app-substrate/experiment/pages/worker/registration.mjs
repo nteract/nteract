@@ -5,6 +5,8 @@ import { assertDocumentLimits } from "../model/limits.mjs";
 import { RICH_FORMAT } from "../model/richtext-format.mjs";
 import { validateRich } from "../model/richtext-spans.mjs";
 import { requireSupportedSchema } from "../model/schema-features.mjs";
+import { commentsMigrated } from "../model/comments.mjs";
+import { STORED_FORM_UNSUPPORTED, storedFormUnsupported } from "../model/stored-form.mjs";
 import { HttpError } from "./auth.mjs";
 
 export const validPageId = (id) =>
@@ -32,8 +34,8 @@ export function readRegistration(args) {
     throw new HttpError(400, "Invalid document_id");
   if (typeof args.title !== "string" || args.title.length > 500)
     throw new HttpError(400, "Invalid title");
-  // The draft's local storage: "automerge" for a browser replica on plain
-  // Automerge sync. Absent (older builds) or "native" means Subduction.
+  // The draft's local storage, as viewers name it. Every Page syncs with
+  // plain Automerge sync whatever it says.
   if (![undefined, "native", "automerge"].includes(args.record_storage))
     throw new HttpError(400, "Invalid record_storage");
   const source = args.initial_snapshot_base64;
@@ -55,15 +57,16 @@ export function readRegistration(args) {
       doc.page_id !== args.page_id ||
       doc.title !== args.title ||
       !map(doc.blocks) ||
-      // A bootstrap from before the comments document carries an empty map;
-      // a current one carries none.
-      (doc.comments !== undefined && (!map(doc.comments) || Object.keys(doc.comments).length))
+      doc.comments !== undefined
     )
       throw Error("Invalid Page bootstrap");
     // A draft from a newer build can use features this host can't express.
     // Check the stamp before validating content against this build's schema,
     // so a future mark is refused as a feature, not as a malformed snapshot.
     requireSupportedSchema(doc);
+    // A draft's comments live in their own document, which its stamp says.
+    // A draft from a build before that is in a form this build doesn't read.
+    if (!commentsMigrated(doc)) throw storedFormUnsupported("this draft Page");
     for (const [id, block] of Object.entries(doc.blocks)) {
       if (
         !validPageId(id) ||
@@ -91,6 +94,7 @@ export function readRegistration(args) {
       throw Object.assign(new HttpError(409, error.message, error.code), {
         details: error.details,
       });
+    if (error.code === STORED_FORM_UNSUPPORTED) throw new HttpError(409, error.message, error.code);
     throw new HttpError(400, "Invalid initial Page snapshot");
   }
 }

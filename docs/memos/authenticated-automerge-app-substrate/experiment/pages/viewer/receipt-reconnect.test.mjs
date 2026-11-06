@@ -1,11 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
-import * as N from "@automerge/subduction";
 import { generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
-import { PageSession } from "./session.mjs";
+import { PageSession, connectionFailureRetries } from "./session.mjs";
 import {
   HANDSHAKE_TIMEOUT_MS,
+  MAX_STEP_MS,
   OUTAGE_ATTEMPTS,
   OUTAGE_MS,
   REFUSAL_LIMIT,
@@ -63,7 +63,6 @@ function fixture(t, { random, date = false, scheduler } = {}) {
     sockets = [],
     hooks = {};
   let added = 0,
-    freed = 0,
     synchronized = 0;
   session.repo = { flush: async () => hooks.flush?.() };
   session.backend = {
@@ -91,23 +90,33 @@ function fixture(t, { random, date = false, scheduler } = {}) {
     const events = new EventTarget();
     Object.defineProperty(this, "binaryType", { value: "blob", writable: true });
     this.addEventListener = events.addEventListener.bind(events);
+    this.removeEventListener = events.removeEventListener.bind(events);
     this.dispatchEvent = events.dispatchEvent.bind(events);
+    Object.defineProperty(this, "readyState", { value: 0, writable: true });
     this.closed = 0;
+    this.send = () => {};
     this.close = () => {
       this.closed++;
     };
+    let ended = false;
+    events.addEventListener("close", () => {
+      ended = true;
+    });
     sockets.push(this);
-  });
-  t.mock.method(N.SubductionWebSocket, "setup", async (_socket, _signer, _peer, onDisconnect) => {
-    // The native wrapper's disconnect callback, for a close under a pending setup.
-    hooks.disconnect = onDisconnect;
-    await hooks.setup?.();
-    return {
-      free() {
-        freed++;
-      },
-      toTransport: () => ({ free() {} }),
-    };
+    // The socket opens once `hooks.setup` resolves; a rejection is a socket
+    // that closed before it opened.
+    void Promise.resolve()
+      .then(() => hooks.setup?.())
+      .then(
+        () => {
+          if (ended || this.readyState !== 0) return;
+          this.readyState = 1;
+          events.dispatchEvent(new Event("open"));
+        },
+        () => {
+          if (!ended) events.dispatchEvent(new Event("close"));
+        },
+      );
   });
   t.mock.method(globalThis, "fetch", async (url, options) => {
     if (url.startsWith("/api/connect?"))
@@ -117,7 +126,6 @@ function fixture(t, { random, date = false, scheduler } = {}) {
           identity,
           documentId,
           access: { role: "owner", generation: 0, revision: 0, canRead: true, canWrite: true },
-          serverPeerId: "00".repeat(32),
           serverSenderId: "fixture-host",
           peerProfiles: {},
         })
@@ -147,7 +155,7 @@ function fixture(t, { random, date = false, scheduler } = {}) {
     mutate(text = "New edit") {
       doc = A.change(doc, (draft) => A.updateText(draft, ["text"], text));
     },
-    counts: () => ({ added, freed, synchronized }),
+    counts: () => ({ added, synchronized }),
     async advance(ms) {
       t.mock.timers.tick(ms);
       await drain();
@@ -227,28 +235,26 @@ test("duplicate notifications and reconnect do not postpone the same-head deboun
   assert.equal(f.requests.length, 1);
 });
 
-test("duplicate events and a successful receipt cannot erase a failed native connection", async (t) => {
+test("duplicate events and a successful receipt cannot erase a failed connection", async (t) => {
   const f = fixture(t);
   await f.start();
   f.hooks.setup = () => {
     throw Error("Native handshake failed");
   };
   await f.session.retryConnection();
+  // A socket that closes before it opens is transient: Offline, no banner.
   assert.equal(f.session.status, "Offline");
   assert.equal(f.session.statusRetry, true);
-  assert.equal(f.session.problem, "Native handshake failed");
+  assert.equal(f.session.problem, "");
   f.session.queueSaved();
   assert.equal(f.session.status, "Offline");
-  assert.equal(f.session.problem, "Native handshake failed");
   assert.equal(f.requests.length, 1, "same heads retain their pending receipt");
   f.requests[0].resolve(Response.json({ durableHeads: f.requests[0].heads }));
   await drain();
   assert.deepEqual(f.session.savedHeads, f.requests[0].heads, "the HTTP durability proof is valid");
-  assert.equal(f.session.status, "Offline", "durability does not prove native connectivity");
-  assert.equal(f.session.connectionProblem, "Native handshake failed");
+  assert.equal(f.session.status, "Offline", "durability does not prove a sync connection");
   f.session.queueSaved();
   assert.equal(f.session.status, "Offline");
-  assert.equal(f.session.problem, "Native handshake failed");
 });
 
 test("same-head reconnect preserves an asynchronous local change error while flush is pending", async (t) => {
@@ -356,7 +362,7 @@ test("a new edit restarts an exhausted cycle while unchanged-head reconnect does
   assert.equal(f.session.problem, "");
 });
 
-test("explicit Retry can obtain a receipt even when native reconnect still fails", async (t) => {
+test("explicit Retry can obtain a receipt even when the sync socket still fails", async (t) => {
   const f = fixture(t);
   f.hooks.receipt = () => Response.json({ error: "Storage unavailable" }, { status: 500 });
   await f.start();
@@ -371,12 +377,7 @@ test("explicit Retry can obtain a receipt even when native reconnect still fails
   assert.equal(f.requests.length, 5);
   assert.deepEqual(f.session.savedHeads, A.getHeads(f.session.doc));
   assert.equal(f.session.receiptRetryAttempts, 0);
-  assert.equal(
-    f.session.status,
-    "Offline",
-    "receipt success does not claim native connection success",
-  );
-  assert.equal(f.session.problem, "Native connection unavailable");
+  assert.equal(f.session.status, "Offline", "receipt success does not claim a sync connection");
 });
 
 test("heads advancing before notification cannot let an older receipt claim the new edit", async (t) => {
@@ -500,7 +501,7 @@ test("late receipt success cannot overwrite sign-in, access, deletion or closed-
 });
 
 test("native completion after socket loss or expired sign-in cannot announce a connection", async (t) => {
-  for (const phase of ["setup", "addConnection"]) {
+  for (const phase of ["setup"]) {
     for (const stop of ["socket", "sign-in"]) {
       await t.test(`${phase}: ${stop}`, async (t) => {
         const f = fixture(t);
@@ -518,7 +519,6 @@ test("native completion after socket loss or expired sign-in cannot announce a c
         assert.equal(f.session.savedTimer, undefined);
         assert.equal(f.requests.length, 0);
         assert.equal(f.counts().added, phase === "setup" ? 0 : 1);
-        assert.equal(f.counts().freed, phase === "setup" ? 1 : 0);
       });
     }
   }
@@ -778,7 +778,7 @@ test("sign-in loss during a stalled handshake settles the attempt, and Retry aft
   assert.equal(f.sockets.length, 3);
 });
 
-test("a handshake that answers after its timeout is disposed while the successor keeps its own deadline", async (t) => {
+test("a socket that opens after its timeout installs nothing while the successor keeps its own deadline", async (t) => {
   const f = fixture(t, { random: () => 0 });
   await f.start();
   const late = deferred();
@@ -795,11 +795,9 @@ test("a handshake that answers after its timeout is disposed while the successor
   assert.equal(f.session.reconnect$.snapshot().name, "handshaking");
   const deadline = f.session.handshakeTimer;
   assert.ok(deadline);
-  const freedBefore = f.counts().freed;
-  // The abandoned socket's handshake finishes now.
+  // The abandoned socket opens now.
   late.resolve();
   await drain();
-  assert.equal(f.counts().freed, freedBefore + 1, "the late wrapper is freed");
   assert.equal(f.counts().added, 1, "it installs nothing");
   assert.equal(f.session.reconnect$.snapshot().name, "handshaking", "the successor is untouched");
   assert.equal(f.session.handshakeTimer, deadline, "its deadline is intact");
@@ -841,12 +839,10 @@ test("at the deadline, whichever of the handshake and the timer lands first wins
         assert.deepEqual(transitions, [{ name: "ready", attempts: 0, refusals: 0 }]);
         assert.equal(f.session.retryTimer, undefined, "no retry");
         assert.equal(f.counts().added, 2);
-        assert.equal(f.counts().freed, 0);
       } else {
         assert.deepEqual(transitions, [{ name: "waiting", attempts: 1, refusals: 0 }]);
         assert.ok(f.session.retryTimer, "exactly one retry is pending");
         assert.equal(f.counts().added, 1, "the late handshake installs nothing");
-        assert.equal(f.counts().freed, 1, "and is disposed");
         f.hooks.setup = undefined;
         await f.advance(backoffStep(0) / 2);
         assert.deepEqual(transitions.at(-1), { name: "ready", attempts: 1, refusals: 0 });
@@ -860,8 +856,8 @@ test("at the deadline, whichever of the handshake and the timer lands first wins
 });
 
 /** After a handshake and its deadline raced, exactly one of them settled the
- * attempt: the socket was installed, or the late wrapper was disposed and one
- * retry is pending. Returns which. */
+ * attempt: the socket was installed, or the late socket installed nothing
+ * and one retry is pending. Returns which. */
 function assertOneWinner(f, transitions) {
   assert.equal(
     transitions.length,
@@ -873,12 +869,10 @@ function assertOneWinner(f, transitions) {
   const [{ name }] = transitions;
   if (name === "ready") {
     assert.equal(f.counts().added, 2, "the socket joined the backend once");
-    assert.equal(f.counts().freed, 0);
     assert.equal(f.session.retryTimer, undefined, "no retry");
   } else {
     assert.equal(name, "waiting");
     assert.equal(f.counts().added, 1, "the late handshake installs nothing");
-    assert.equal(f.counts().freed, 1, "and its wrapper is disposed once");
     assert.ok(f.session.retryTimer, "exactly one retry is pending");
   }
   return name;
@@ -920,7 +914,6 @@ test("a same-tick tie between the handshake and its deadline has exactly one win
         ["waiting", "ready", "handshaking", "ready"],
       );
       assert.equal(f.counts().added, 2);
-      assert.equal(f.counts().freed, 1);
       assert.equal(f.sockets.length, 3);
     });
   }
@@ -948,7 +941,6 @@ test("a late winner never disturbs the successor's deadline", async (t) => {
   await drain();
   assert.deepEqual(transitions, [], "the loser's late result changes nothing");
   assert.equal(f.session.handshakeTimer, deadline);
-  assert.equal(f.counts().freed, 1);
   await f.advance(HANDSHAKE_TIMEOUT_MS - 1);
   assert.equal(
     f.session.reconnect$.snapshot().name,
@@ -961,46 +953,10 @@ test("a late winner never disturbs the successor's deadline", async (t) => {
   assert.equal(f.counts().added, 2);
 });
 
-test("the socket's disconnect callback under a pending setup settles the attempt and backs off", async (t) => {
-  const f = fixture(t, { random: () => 0 });
-  await f.start();
-  const setup = deferred();
-  f.hooks.setup = () => setup.promise;
-  const attempt = f.session.retryConnection();
-  await f.advance(1000);
-  assert.equal(f.session.reconnect$.snapshot().name, "handshaking");
-  const socket = f.sockets.at(-1);
-  const transitions = [];
-  f.session.reconnect$.select((state) => state).subscribe((state) => transitions.push(state));
-  transitions.length = 0;
-  // The native wrapper reports the close itself; setup stays pending.
-  f.hooks.disconnect();
-  await drain();
-  await attempt;
-  assert.deepEqual(transitions, [{ name: "waiting", attempts: 1, refusals: 0 }]);
-  assert.equal(f.session.connecting, undefined, "the pending setup no longer holds connect()");
-  assert.equal(f.session.handshakeTimer, undefined);
-  assert.ok(socket.closed > 0);
-  assert.equal(f.session.status, "Reconnecting");
-  // Its late answer is disposed; the retry connects on the first backoff step.
-  setup.resolve();
-  await drain();
-  assert.equal(f.counts().freed, 1);
-  assert.equal(f.counts().added, 1);
-  assert.equal(transitions.length, 1);
-  f.hooks.setup = undefined;
-  await f.advance(backoffStep(0) / 2);
-  assert.deepEqual(transitions.at(-1), { name: "ready", attempts: 1, refusals: 0 });
-  assert.equal(f.counts().added, 2);
-  await f.advance(HANDSHAKE_TIMEOUT_MS * 2);
-  assert.equal(f.sockets.length, 3);
-});
-
 test("a socket closed before its handshake retries on the first backoff step", async (t) => {
   const f = fixture(t, { random: () => 0 });
   await f.start();
-  // What Subduction rejects with when the socket closes mid-handshake: no
-  // status, no admission code.
+  // A socket that closes before it opens: no status, no admission code.
   f.hooks.setup = () => {
     throw Error("handshake failed: transport error: inbound channel closed");
   };
@@ -1025,7 +981,7 @@ test("jittered reconnect delays stay within [step / 2, step] up to a 60 s ceilin
     await t.test(label, async (t) => {
       const f = fixture(t, { random });
       await f.start();
-      // Transient: the native connection fails without an admission close.
+      // Transient: the socket fails without an admission close.
       f.hooks.setup = () => {
         throw Error("Native connection unavailable");
       };
@@ -1047,7 +1003,6 @@ test("jittered reconnect delays stay within [step / 2, step] up to a 60 s ceilin
       assert.equal(f.session.syncPaused, false);
       assert.equal(f.session.reconnect$.snapshot().refusals, 0);
       assert.equal(f.session.status, "Offline");
-      assert.equal(f.session.connectionProblem, "Native connection unavailable");
     });
   }
 });
@@ -1251,6 +1206,190 @@ test("a refusal the next discovery answers with 401 or 403 stops there", async (
       else assert.equal(f.session.accessDenied, true);
       assert.equal(f.session.syncPaused, false);
       await f.advance(3_600_000);
+      assert.equal(f.sockets.length, 1);
+    });
+  }
+});
+
+test("only definitive answers stop automatic reconnects", () => {
+  const cases = [
+    [{ status: 401 }, false],
+    [{ status: 403 }, false],
+    [{ status: 403, code: "signing_key_rejected" }, false],
+    [{ code: "SIGNING_KEY_REFUSED" }, false],
+    [{ status: 409, code: "RECORD_STORAGE_CHANGED" }, true],
+    [{ status: 409, code: "STORAGE_SWITCH_FAILED" }, true],
+    [{ status: 409, code: "unsupported_schema_feature" }, false],
+    [{ status: 409, code: "stored_form_unsupported" }, false],
+    [{}, true],
+    [{ code: "RECORD_STORAGE_CHANGED" }, true],
+    [{ status: 500 }, true],
+    [{ status: 503 }, true],
+    [{ code: "INVALID_RESPONSE", httpStatus: 404 }, true],
+    [{ status: 400 }, true],
+    [{ status: 404 }, true],
+    [{ status: 404, code: "page_not_found" }, true],
+    [{ status: 408 }, true],
+    [{ status: 409 }, true],
+    [{ status: 409, code: "page_busy" }, true],
+    [{ status: 409, code: "page_quota_exceeded" }, true],
+    [{ status: 410 }, true],
+    [{ status: 425 }, true],
+    [{ status: 429 }, true],
+  ];
+  for (const [fields, retries] of cases)
+    assert.equal(
+      connectionFailureRetries(Object.assign(Error("failed"), fields)),
+      retries,
+      JSON.stringify(fields),
+    );
+});
+
+// During a deploy cutover discovery can answer with a 4xx the session has no
+// meaning for. The host may answer differently in a moment, so it retries.
+const unrecognizedRefusals = [
+  ["a 404 without page_deleted", 404, { error: "Route not found" }],
+  ["a 404 with another code", 404, { error: "Page not found", code: "page_not_found" }],
+  ["a 400", 400, { error: "Invalid request" }],
+  ["a 408", 408, { error: "Request timed out" }],
+  ["a 409", 409, { error: "Page is busy", code: "page_busy" }],
+  ["a 425", 425, { error: "Too early" }],
+  ["a 429", 429, { error: "Too many connections" }],
+];
+
+test("an unrecognized 4xx from discovery keeps retrying, then reconnects", async (t) => {
+  for (const [label, status, body] of unrecognizedRefusals) {
+    await t.test(label, async (t) => {
+      const f = fixture(t, { random: () => 0 });
+      await f.start();
+      f.hooks.connect = () => Response.json(body, { status });
+      await failReconnects(f, 4);
+      assert.equal(f.sockets.length, 1, "no discovery admitted a socket");
+      assert.equal(f.session.problem, body.error);
+      assert.ok(f.session.retryTimer, "it keeps retrying");
+      assert.deepEqual(f.session.reconnect$.snapshot(), {
+        name: "waiting",
+        attempts: 4,
+        refusals: 0,
+      });
+      assert.equal(f.session.syncPaused, false);
+      assert.equal(f.session.authRequired, false);
+      assert.equal(f.session.accessDenied, false);
+
+      f.mutate("Typed during the cutover");
+      f.hooks.connect = undefined;
+      await f.advance(backoffStep(f.session.retryAttempts - 1) / 2);
+      assert.equal(f.sockets.length, 2, "the next discovery admitted a socket");
+      assert.equal(f.session.retryTimer, undefined);
+      assert.equal(f.session.problem, "");
+      await f.advance(300);
+      const receipt = f.requests.at(-1);
+      assert.deepEqual(receipt.heads, A.getHeads(f.session.doc));
+    });
+  }
+});
+
+test("an unrecognized 4xx backs off to the 60 s cap and never pauses", async (t) => {
+  const f = fixture(t, { random: () => 0 });
+  await f.start();
+  f.requests[0].resolve(Response.json({ durableHeads: f.requests[0].heads }));
+  await drain();
+  let asks = 0;
+  f.hooks.connect = () => {
+    asks++;
+    return Response.json({ error: "Route not found" }, { status: 404 });
+  };
+  f.session.socketDisconnected(f.sockets.at(-1));
+  const delays = [];
+  for (let attempt = 1; attempt <= 12; attempt++) {
+    const delay = backoffStep(attempt - 1) / 2;
+    delays.push(delay);
+    await f.advance(delay - 1);
+    assert.equal(asks, attempt - 1, `attempt ${attempt} waits its whole step`);
+    await f.advance(1);
+    assert.equal(asks, attempt);
+    assert.equal(f.session.reconnect$.snapshot().refusals, 0);
+    assert.ok(f.session.retryTimer, `attempt ${attempt} schedules the next`);
+  }
+  assert.deepEqual(delays.slice(-4), Array(4).fill(MAX_STEP_MS / 2));
+  assert.equal(f.session.syncPaused, false);
+  assert.equal(f.session.problem, "Route not found", "the specific answer stays in front");
+  assert.equal(f.session.status, "Offline");
+});
+
+test("a 429's Retry-After is the least wait before the next attempt, up to the cap", async (t) => {
+  for (const [retryAfter, wait] of [
+    ["5", 5000],
+    ["3600", MAX_STEP_MS],
+  ]) {
+    await t.test(`Retry-After: ${retryAfter}`, async (t) => {
+      const f = fixture(t, { random: () => 0 });
+      await f.start();
+      let asks = 0;
+      f.hooks.connect = () => {
+        asks++;
+        return Response.json(
+          { error: "Too many connections" },
+          { status: 429, headers: { "Retry-After": retryAfter } },
+        );
+      };
+      f.session.socketDisconnected(f.sockets.at(-1));
+      await f.advance(backoffStep(0) / 2);
+      assert.equal(asks, 1);
+      await f.advance(wait - 1);
+      assert.equal(asks, 1, "the backoff alone would have retried sooner");
+      await f.advance(1);
+      assert.equal(asks, 2);
+      assert.ok(f.session.retryTimer);
+    });
+  }
+});
+
+test("definitive refusals from discovery stay parked", async (t) => {
+  for (const [label, status, body, parked] of [
+    ["401", 401, { error: "Sign in" }, (s) => s.authRequired],
+    ["403 without a code", 403, { error: "Forbidden" }, (s) => s.accessDenied],
+    [
+      "403 page_access_denied",
+      403,
+      { error: "Document access denied", code: "page_access_denied" },
+      (s) => s.accessDenied,
+    ],
+    ["403 page_trashed", 403, { error: "In Trash", code: "page_trashed" }, (s) => s.accessDenied],
+    [
+      "403 signing_key_rejected",
+      403,
+      { error: "Signing key refused", code: "signing_key_rejected" },
+      (s) => s.problem === "Signing key refused",
+    ],
+    [
+      "404 page_deleted",
+      404,
+      { error: "Page was deleted", code: "page_deleted" },
+      (s) => s.deleted,
+    ],
+    [
+      "409 unsupported_schema_feature",
+      409,
+      { error: "Reload for the newest version", code: "unsupported_schema_feature" },
+      (s) => s.problem === "Reload for the newest version",
+    ],
+  ]) {
+    await t.test(label, async (t) => {
+      const f = fixture(t, { random: () => 0 });
+      await f.start();
+      let asks = 0;
+      f.hooks.connect = () => {
+        asks++;
+        return Response.json(body, { status });
+      };
+      f.session.socketDisconnected(f.sockets.at(-1));
+      await f.advance(backoffStep(0) / 2);
+      assert.equal(asks, 1);
+      assert.ok(parked(f.session), "the refusal took effect");
+      assert.equal(f.session.retryTimer, undefined);
+      await f.advance(3_600_000);
+      assert.equal(asks, 1, "no automatic retry");
       assert.equal(f.sockets.length, 1);
     });
   }
@@ -1730,7 +1869,6 @@ test("a same-head reconnect after a saved receipt, then a collaborator's edit, s
   // The socket drops and comes back with no change on either side. The
   // receipt dedupes; the probe still answers for the new socket.
   f.sockets[0].dispatchEvent(new Event("close"));
-  f.hooks.disconnect();
   await drain();
   await f.session.openConnection(false);
   await drain();
@@ -1756,7 +1894,6 @@ test("a socket lost mid catch-up hands the status line to the connection", async
   f.until(CATCH_UP_SHOW_MS);
   assert.equal(f.session.status, "Catching up…");
   f.sockets[0].dispatchEvent(new Event("close"));
-  f.hooks.disconnect();
   await drain();
   assert.notEqual(f.session.status, "Catching up…");
   assert.equal(f.session.catchUp.store.snapshot().name, "detached");

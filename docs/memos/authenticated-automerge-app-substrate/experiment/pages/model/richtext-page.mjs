@@ -10,51 +10,34 @@ import {
   parseAssetPath,
   readDataframe,
 } from "../shared/dataset-assets.mjs";
-import { adapter, pmDocFromSpans, pmNodeToSpans, schema } from "./pm-adapter.mjs";
-import { paragraphFirstItems, plainImportParser } from "./pm-markdown-parser.mjs";
-import { exportMarkdown } from "./pm-markdown-serializer.mjs";
-import { unsupportedMarkdown } from "./markdown-scan.mjs";
+import { schema } from "./pm-adapter.mjs";
+import { paragraphFirstItems } from "./pm-markdown-parser.mjs";
+import { exportMarkdown, treeMarkdown } from "./markdown-serializer.mjs";
 import { parseAgentMarkdown, parseMarkdown } from "./markdown-import.mjs";
-import { RICH_FORMAT, isRich, textPath } from "./richtext-format.mjs";
-import { pageSpans, richDoc } from "./richtext-spans.mjs";
+import { requireRich, textPath } from "./richtext-format.mjs";
+import { adapterRead, pageSpans, readTree, richDoc } from "./richtext-spans.mjs";
 import { dataframeLabel, unknownNodeNotice } from "./richtext-notices.mjs";
 
-/** `pageId` is the Page holding the block; a dataframe naming another
- * Page's asset then reads as an unknown-node notice. */
+/** A block's Markdown projection. `pageId` is the Page holding the block; a
+ * dataframe naming another Page's asset then reads as an unknown-node
+ * notice. It reads the block's Wordgard tree; content that tree reads
+ * differently or can't hold (adapterRead, or spans decode refuses, such as
+ * a heading level out of range) reads through richDoc. */
 export function blockMarkdown(block, pageId) {
-  if (!isRich(block)) return block.markdown;
-  const current = exportMarkdown(richDoc(block, pageId));
-  // Source that holds math or HTML is provenance only: its current projection
-  // is the escaped literal text an agent can write back.
-  if (unsupportedMarkdown(block.markdown)) return current;
-  const baseline = exportMarkdown(
-    pmDocFromSpans(adapter, pmNodeToSpans(adapter, parseMarkdown(block.markdown))),
-  );
-  if (current === baseline) return block.markdown;
-  // Before native tables, pipe syntax without outer pipes was imported as
-  // prose. Retain its original source while that native content is unchanged;
-  // merely reading it must not flatten the original table into one line.
-  if (
-    block.markdown.includes("|") &&
-    current ===
-      exportMarkdown(
-        pmDocFromSpans(adapter, pmNodeToSpans(adapter, plainImportParser.parse(block.markdown))),
-      )
-  )
-    return block.markdown;
-  return current;
+  requireRich(block);
+  if (!adapterRead(block)) {
+    let tree;
+    try {
+      tree = readTree(block, pageId);
+    } catch (error) {
+      if (error?.code !== "unreadable_rich_spans") throw error;
+      tree = null;
+    }
+    if (tree) return treeMarkdown(tree);
+  }
+  return exportMarkdown(richDoc(block, pageId));
 }
 
-// markdown remains immutable import provenance once a block is rich. Snapshots
-// and semantic tool edits use the rich field, never this old source string.
-export function enableRich(doc, id) {
-  const block = doc.blocks[id];
-  if (isRich(block)) return;
-  if (block.kind !== "markdown") throw Error("Only prose blocks support rich editing");
-  block.format = RICH_FORMAT;
-  block.richText = "";
-  setRichMarkdown(doc, id, block.markdown, { literal: true });
-}
 // Rich writers stamp the schema features their spans need in the same change.
 // Agent-written Markdown refuses math and HTML (`parseAgentMarkdown`); pass
 // `literal: true` for stored source, which keeps them as text instead.
@@ -103,12 +86,10 @@ export function setRichNode(doc, id, { type, attrs }) {
  * - reads like a dataframe the block doesn't hold.
  */
 export function setRichMarkdownKeepingNodes(doc, id, source) {
-  const block = doc.blocks[id];
-  const images = isRich(block)
-    ? A.spans(block, ["richText"]).filter(
-        (s) => s.type === "block" && String(s.value.type) === "image",
-      )
-    : [];
+  const block = requireRich(doc.blocks[id]);
+  const images = A.spans(block, ["richText"]).filter(
+    (s) => s.type === "block" && String(s.value.type) === "image",
+  );
   const refuseImage = () => {
     throw Object.assign(
       Error(
@@ -143,14 +124,13 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
   // Each dataframe with its container path: the node types from the block's
   // root down to it, "" at the top level.
   const existing = [];
-  if (isRich(block))
-    (function collect(node, path) {
-      node.forEach((child) => {
-        if (child.type.name === "dataframe") existing.push({ node: child, path });
-        else if (!child.isTextblock && !child.isLeaf)
-          collect(child, path ? `${path}/${child.type.name}` : child.type.name);
-      });
-    })(richDoc(block), "");
+  (function collect(node, path) {
+    node.forEach((child) => {
+      if (child.type.name === "dataframe") existing.push({ node: child, path });
+      else if (!child.isTextblock && !child.isLeaf)
+        collect(child, path ? `${path}/${child.type.name}` : child.type.name);
+    });
+  })(richDoc(block), "");
   // Every dataframe counts, readable or not: one whose attrs this build can't
   // read never matches a line, so the rewrite is refused rather than dropping
   // it.

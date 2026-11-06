@@ -4,7 +4,7 @@
 // the sharing UI. Alice's browser opens the Page read-only, comments on a
 // selection, and the owner sees it live. Her comment never moves the Page's
 // heads. She resolves the owner's thread, but can't edit the owner's message;
-// a raw native write that tries is refused by the host. MCP follows the same
+// a raw sync write that tries is refused by the host. MCP follows the same
 // rules with her API key.
 //
 // Runs under local-sharing-e2e.mjs --commenter, which supplies PAGES_ORIGIN,
@@ -13,9 +13,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
 import * as A from "@automerge/automerge";
-import * as N from "@automerge/subduction";
 import { plainPeer } from "./plain-peer.mjs";
-import { closePeers, createPeer } from "../../backend.mjs";
 
 const origin = process.env.PAGES_ORIGIN || "http://localhost:9894";
 assert.equal(new URL(origin).hostname, "localhost");
@@ -68,10 +66,9 @@ async function mcp(name, operation, args) {
   };
 }
 const content = (page) => page.locator("article wg-content").first();
-const bytes = (value) => Uint8Array.from(value.match(/../g), (pair) => parseInt(pair, 16));
-/** A raw native peer for `page`'s signed-in account: it syncs the comments
- * document directly, with none of the viewer's or tools' rules. */
-async function nativeCommentsPeer(page) {
+/** A raw peer for `page`'s signed-in account: it syncs the comments document
+ * directly, with none of the viewer's or tools' rules. */
+async function rawCommentsPeer(page) {
   const cookie = (await page.context().cookies(origin))
     .map((c) => `${c.name}=${c.value}`)
     .join("; ");
@@ -81,63 +78,15 @@ async function nativeCommentsPeer(page) {
   }).then((r) => r.json());
   assert.ok(discovery.commentsDocumentId, JSON.stringify(discovery));
   const features = ["comments-doc", "horizontal-rule", "preserved-markdown-converted", "strike"];
-  if (discovery.recordStorage === "automerge") {
-    const plain = await plainPeer({
-      origin,
-      pageId,
-      cookie,
-      discovery,
-      features,
-    });
-    const handle = await plain.repo.find(discovery.commentsDocumentId);
-    return {
-      handle,
-      async change(fn) {
-        handle.change(fn);
-        await plain.repo.flush().catch(() => {});
-      },
-      close: () => plain.close(),
-    };
-  }
-  const peer = createPeer({ seed: crypto.getRandomValues(new Uint8Array(32)) });
-  const address = new URL(`/api/sync?page=${pageId}`, origin);
-  address.protocol = "ws:";
-  if (discovery.activity?.epoch)
-    address.searchParams.set("activity_epoch", discovery.activity.epoch);
-  address.searchParams.set(
-    "schema_features",
-    "comments-doc,horizontal-rule,preserved-markdown-converted,strike",
-  );
-  const socket = new WebSocket(address, { headers: { cookie, origin } });
-  socket.binaryType = "arraybuffer";
-  const expected = new N.PeerId(bytes(discovery.serverPeerId));
-  try {
-    const authenticated = await N.SubductionWebSocket.setup(
-      socket,
-      peer.signer,
-      expected,
-      () => {},
-    );
-    const transport = authenticated.toTransport();
-    try {
-      await peer.backend.addConnection(transport);
-    } finally {
-      transport.free();
-    }
-  } finally {
-    expected.free();
-  }
-  const handle = await peer.repo.find(discovery.commentsDocumentId);
+  const plain = await plainPeer({ origin, pageId, cookie, discovery, features });
+  const handle = await plain.repo.find(discovery.commentsDocumentId);
   return {
     handle,
     async change(fn) {
       handle.change(fn);
-      await peer.repo.flush().catch(() => {});
+      await plain.repo.flush().catch(() => {});
     },
-    async close() {
-      socket.close();
-      await closePeers([peer]);
-    },
+    close: () => plain.close(),
   };
 }
 const checkpoint = (name) => {
@@ -266,7 +215,7 @@ try {
 
   // The owner sees it live in the thread list.
   await owner.getByRole("button", { name: /^Comments/ }).click();
-  await expect(owner.locator(".thread", { hasText: "Alice was here" })).toBeVisible();
+  await expect(owner.locator(".thread-row", { hasText: "Alice was here" })).toBeVisible();
   checkpoint("the owner sees the commenter's thread live");
 
   // Typing in the Page reaches nothing.
@@ -304,13 +253,13 @@ try {
   assert.equal(rewrite.body.code, "comment_not_author");
   checkpoint("a commenter resolves any thread but can't edit the Page or another's message");
 
-  // A raw native peer as alice skips every rule and rewrites the owner's
+  // A raw sync peer as alice skips every rule and rewrites the owner's
   // message in the comments document. The host's per-author check refuses
   // it before storage, so nobody ever sees it.
   await commenter.getByRole("button", { name: /^Comments/ }).click();
   const ownerSockets = owner.sockets.length,
     commenterSockets = commenter.sockets.length;
-  const raw = await nativeCommentsPeer(commenter);
+  const raw = await rawCommentsPeer(commenter);
   const ownerThreadId = ownerComment.body.result.thread_id;
   const ownerMessageId = ownerComment.body.result.message_id;
   await expect
@@ -319,7 +268,7 @@ try {
     })
     .toBe(true);
   await raw.change((doc) =>
-    A.updateText(doc, ["threads", ownerThreadId, "messages", ownerMessageId, "body"], "Forged"),
+    A.updateText(doc, ["threads", ownerThreadId, "messages", ownerMessageId, "richText"], "Forged"),
   );
   await commenter.waitForTimeout(3000);
   await raw.close();
@@ -349,7 +298,7 @@ try {
   const aliceCard = (page) => page.locator(`[data-thread-id="${aliceThread.id}"]`);
   for (const page of [owner, commenter])
     await expect(aliceCard(page)).toContainText("1 reply", { timeout: 10000 });
-  // Only the forging key was blocked: alice herself still comments.
+  // Only the forged change was refused: alice herself still comments.
   const receipts = [];
   const observeReceipt = (response) => {
     const url = new URL(response.url());
@@ -375,11 +324,12 @@ try {
   assert.equal(owner.sockets.length, ownerSockets, "the owner's tab never reconnected");
   assert.equal(commenter.sockets.length, commenterSockets, "alice's tab never reconnected");
   checkpoint(
-    "a raw native edit of another author's message is refused; every other peer keeps syncing",
+    "a raw sync edit of another author's message is refused; every other peer keeps syncing",
   );
 
   // Her thread list offers the comment controls a commenter holds.
-  const ownThread = commenter.locator(`[data-thread-id="${aliceThread.id}"]`);
+  await commenter.locator(`.thread-row[data-thread-id="${aliceThread.id}"]`).click();
+  const ownThread = commenter.locator(`.thread-view[data-thread-id="${aliceThread.id}"]`);
   await expect(ownThread).toBeVisible();
   await expect(ownThread.getByRole("button", { name: "Resolve", exact: true })).toBeEnabled();
   await expect(ownThread.getByRole("button", { name: "Reply", exact: true })).toBeEnabled();

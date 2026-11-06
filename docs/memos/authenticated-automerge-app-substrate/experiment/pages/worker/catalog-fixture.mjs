@@ -7,6 +7,7 @@ import { createAuthFixture } from "../../auth-fixtures.mjs";
 import { sqliteD1 } from "../test/sqlite-d1.mjs";
 import { Catalog, Page } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";
+import { plainStub } from "./plain-stub.mjs";
 import { Storage } from "./projects-fixture.mjs";
 
 export const namespace = "user:anaconda-fixture";
@@ -77,7 +78,7 @@ export async function catalogFixture(t, { index = "1" } = {}) {
     assert.equal(status, 200, JSON.stringify(body));
     return { source, body };
   };
-  /** A real Page host with stubbed native resources. */
+  /** A real Page host with stubbed sync resources. */
   const addPage = (pageId, title, acl = { revision: 0, members: {} }) => {
     const storage = new Storage();
     const doc = A.from({ page_id: pageId, title });
@@ -90,13 +91,11 @@ export async function catalogFixture(t, { index = "1" } = {}) {
       handle: { doc: () => doc, broadcast() {} },
       wires: new Set(),
       repo: { delete: async () => {} },
-      backend: { flush: async () => {} },
     });
+    page.plain = plainStub(page.repo);
     page.policy = new DocumentPolicy({
-      storage,
       metadata: () => page.policyMetadata ?? page.metadata,
     });
-    page.policy.refreshAccess = async () => {};
     page.fetch = page.run.bind(page);
     pages.set(pageId, page);
     return page;

@@ -14,6 +14,7 @@ import { Catalog, Page, lifecycleBounds } from "./index.mjs";
 import { CrashStorage, describe, normalize, scrubbed } from "./operation-intent-fixture.mjs";
 import { LOCATION_SHAPE_KEY, shapeRecord } from "./location-shape.mjs";
 import { DocumentPolicy } from "./policy.mjs";
+import { plainStub } from "./plain-stub.mjs";
 
 const auth = await createAuthFixture();
 const owner = `user:anaconda-fixture:${auth.subject}`;
@@ -21,7 +22,6 @@ const member = "user:anaconda-fixture:member-user";
 const token = auth.apiKey();
 const pageId = "33333333-3333-4333-8333-333333333333";
 const parentId = "22222222-2222-4222-8222-222222222222";
-const serverKey = "f".repeat(64);
 const CREATED = "2026-10-01T00:00:00.000Z";
 const KEY = "sweep-key-0001";
 const LIMIT = 100;
@@ -104,15 +104,14 @@ async function world({ location } = {}) {
     metadata: { ...base, ownerName: "Owner", deleted: false, acl },
     handle: { doc: () => doc, broadcast() {}, on() {}, off() {} },
     wires: new Set(),
-    serverKey,
     serverSenderId: "server-sender",
     repo: { async delete() {} },
-    backend: { async flush() {} },
+    get plain() {
+      return plainStub(this.repo);
+    },
   });
   page.policy = new DocumentPolicy({
-    storage: pageStorage,
     metadata: () => page.metadata,
-    serverKey,
   });
   storage.values.set(`page/${pageId}`, {
     page_id: pageId,

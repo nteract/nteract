@@ -1,8 +1,10 @@
 import { celldCborPlugin } from "./celld-cbor.mjs";
-import { AUTH_D1, USAGE_CRON, USAGE_D1 } from "./deployment/profiles.mjs";
+import { AUTH_D1, USAGE_D1 } from "./deployment/profiles.mjs";
+import { CRONS } from "../shared/schedule.mjs";
 import { mermaidSource } from "./browser-mermaid.mjs";
 import { siftWasmPath } from "./browser-sift.mjs";
 import { sourceFingerprint, writeBuildReceipt } from "./source-fingerprint.mjs";
+import { releaseFilesOf } from "./stage-artifacts.mjs";
 import {
   VIEWER_ASSETS,
   hashedAssetPath,
@@ -82,11 +84,10 @@ await writeAsset(
     }),
   ),
 );
-for (const [module, name] of [
-  ["@automerge/automerge/automerge.wasm", "automerge.wasm"],
-  ["@automerge/subduction/wasm", "subduction.wasm"],
-])
-  await writeAsset(name, await readFile(require.resolve(module)));
+await writeAsset(
+  "automerge.wasm",
+  await readFile(require.resolve("@automerge/automerge/automerge.wasm")),
+);
 // Sift's WASM loads only when a Page shows a Parquet dataframe (viewer/sift-table.jsx).
 await writeAsset("sift.wasm", await readFile(siftWasmPath(app)));
 
@@ -96,10 +97,7 @@ const viewer = await build(
     dist,
     buildDefine,
     Object.fromEntries(
-      ["mermaid.js", "automerge.wasm", "subduction.wasm", "sift.wasm"].map((name) => [
-        name,
-        publicUrl(assets[name]),
-      ]),
+      ["mermaid.js", "automerge.wasm", "sift.wasm"].map((name) => [name, publicUrl(assets[name])]),
     ),
   ),
 );
@@ -138,10 +136,11 @@ await build({
       name: "compiled-wasm",
       setup(b) {
         b.onResolve({ filter: /\.wasm$/ }, async (args) => {
-          const absolute = path.resolve(args.resolveDir, args.path);
-          const name = absolute.includes("subduction") ? "subduction.wasm" : "automerge.wasm";
-          await copyFile(absolute, path.join(dist, name));
-          return { path: `./${name}`, external: true };
+          await copyFile(
+            path.resolve(args.resolveDir, args.path),
+            path.join(dist, "automerge.wasm"),
+          );
+          return { path: "./automerge.wasm", external: true };
         });
       },
     },
@@ -188,6 +187,8 @@ await writeFile(
         bindings: [
           { name: "PAGES", class_name: "Page" },
           { name: "CATALOGS", class_name: "Catalog" },
+          // Delete-only: purge clears old buffered records
+          // (worker/page-records.mjs).
           { name: "PAGE_RECORDS", class_name: "PageRecords" },
           // Projects keep the Space class: the class name is the storage identity for
           // Projects, and celld 0.6.3 refuses renamed_classes migrations.
@@ -207,7 +208,7 @@ await writeFile(
         },
         USAGE_D1,
       ],
-      triggers: { crons: [USAGE_CRON] },
+      triggers: { crons: [...CRONS] },
       // celld scopes this bucket beneath the deployment's fleet prefix.
       r2_buckets: [{ binding: "PAGES_ASSETS", bucket_name: "pages-images" }],
       vars: { NOTEBOOK_CLOUD_OIDC_FLOW: "server" },
@@ -220,5 +221,6 @@ writeBuildReceipt(app, {
   expectedFingerprint,
   viewerChunks,
   viewerAssets: Object.values(assets),
+  releaseFiles: releaseFilesOf(viewerChunks, Object.values(assets)),
 });
 console.log("Built native Pages Worker, WASM and viewer into pages/dist.");

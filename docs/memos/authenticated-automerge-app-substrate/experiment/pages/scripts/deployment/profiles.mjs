@@ -68,7 +68,6 @@ export const USAGE_D1 = Object.freeze({
   database_name: "pages-usage",
   database_id: "pages-usage",
 });
-export const USAGE_CRON = "5 0 * * *";
 
 const shared = {
   host: "lab1",
@@ -77,10 +76,26 @@ const shared = {
   runtime: CELLD_RELEASE.path,
   requiredVersion: CELLD_RELEASE.version,
 };
-const DISABLED_MIGRATION = Object.freeze({ enabled: false, pageIds: Object.freeze([]) });
+// Unit limits for targets without a memory field, matching what they shipped with.
+export const DEFAULT_MEMORY = Object.freeze({ maxRssMb: 768, memoryMax: "1G" });
+const SERVING_MEMORY = Object.freeze({ maxRssMb: 2560, memoryMax: "4G" });
+/**
+ * The celld shedding threshold and systemd ceiling for a profile's unit.
+ * MemoryMax must leave headroom above the shedding threshold, or systemd kills
+ * celld before it sheds.
+ */
+export function unitMemory(profile) {
+  const { maxRssMb, memoryMax } = profile.memory ?? DEFAULT_MEMORY;
+  if (!Number.isSafeInteger(maxRssMb) || maxRssMb < 256 || maxRssMb > 16384)
+    throw new Error("memory.maxRssMb must be an integer from 256 to 16384");
+  const match = /^([1-9][0-9]?)G$/.exec(memoryMax ?? "");
+  if (!match) throw new Error("memory.memoryMax must be whole gigabytes, such as 4G");
+  if (Number(match[1]) * 1024 < maxRssMb * 1.25)
+    throw new Error("memory.memoryMax must be at least 25% above memory.maxRssMb");
+  return { maxRssMb, memoryMax };
+}
 const targets = Object.freeze({
   "pages-next": Object.freeze({
-    recordStorageMigration: DISABLED_MIGRATION,
     deployment: Object.freeze({
       host: shared.host,
       hostname: "pages-next.runtimed.run",
@@ -96,10 +111,8 @@ const targets = Object.freeze({
     firewallTable: "nteract_pages_next",
     firewallMark: "0x20000000",
     firewallComment: "nteract/preview-infra standalone-pages-next",
-    asyncPersistence: false,
   }),
   page3: Object.freeze({
-    recordStorageMigration: DISABLED_MIGRATION,
     deployment: Object.freeze({
       host: shared.host,
       hostname: "page3.runtimed.run",
@@ -115,11 +128,9 @@ const targets = Object.freeze({
     firewallTable: "nteract_page3",
     firewallMark: "0x10000000",
     firewallComment: "nteract/preview-infra standalone-page3",
-    asyncPersistence: true,
     tunnelService: "cloudflared-page3.service",
   }),
   page4: Object.freeze({
-    recordStorageMigration: DISABLED_MIGRATION,
     deployment: Object.freeze({
       host: shared.host,
       hostname: "page4.runtimed.run",
@@ -135,13 +146,11 @@ const targets = Object.freeze({
     firewallTable: "nteract_page4",
     firewallMark: "0x08000000",
     firewallComment: "nteract/preview-infra standalone-page4",
-    asyncPersistence: true,
     editor: "wordgard",
     tunnelService: "cloudflared-page4.service",
     frozenTargets: Object.freeze(["pages-next", "page3"]),
   }),
   page5: Object.freeze({
-    recordStorageMigration: DISABLED_MIGRATION,
     deployment: Object.freeze({
       host: shared.host,
       hostname: "page5.runtimed.run",
@@ -158,13 +167,11 @@ const targets = Object.freeze({
     firewallTable: "nteract_page5",
     firewallMark: "0x04000000",
     firewallComment: "nteract/preview-infra standalone-page5",
-    asyncPersistence: true,
     editor: "wordgard",
     tunnelService: "cloudflared-page5.service",
     frozenTargets: Object.freeze(["pages-next", "page3", "page4"]),
   }),
   page6: Object.freeze({
-    recordStorageMigration: DISABLED_MIGRATION,
     deployment: Object.freeze({
       host: shared.host,
       hostname: "page6.runtimed.run",
@@ -181,13 +188,11 @@ const targets = Object.freeze({
     firewallTable: "nteract_page6",
     firewallMark: "0x02000000",
     firewallComment: "nteract/preview-infra standalone-page6",
-    asyncPersistence: true,
     editor: "wordgard",
     tunnelService: "cloudflared-page6.service",
     frozenTargets: Object.freeze(["pages-next", "page3", "page4", "page5"]),
   }),
   page7: Object.freeze({
-    recordStorageMigration: DISABLED_MIGRATION,
     deployment: Object.freeze({
       host: shared.host,
       hostname: "page7.runtimed.run",
@@ -205,15 +210,12 @@ const targets = Object.freeze({
     firewallTable: "nteract_page7",
     firewallMark: "0x01000000",
     firewallComment: "nteract/preview-infra standalone-page7",
-    asyncPersistence: true,
-    compactRecords: true,
     companyViewDomains: "anaconda.com",
     editor: "wordgard",
     tunnelService: "cloudflared-page7.service",
     frozenTargets: Object.freeze(["pages-next", "page3", "page4", "page5", "page6"]),
   }),
   page8: Object.freeze({
-    recordStorageMigration: DISABLED_MIGRATION,
     deployment: Object.freeze({
       host: shared.host,
       hostname: "page8.runtimed.run",
@@ -232,8 +234,6 @@ const targets = Object.freeze({
     firewallTable: "nteract_page8",
     firewallMark: "0x00800000",
     firewallComment: "nteract/preview-infra standalone-page8",
-    asyncPersistence: true,
-    compactRecords: true,
     companyViewDomains: "anaconda.com",
     catalogIndex: "1",
     // The Cloudflare edge forwards an unsampled traceparent, and celld's
@@ -244,7 +244,6 @@ const targets = Object.freeze({
     frozenTargets: Object.freeze(["pages-next", "page3", "page4", "page5", "page6", "page7"]),
   }),
   page9: Object.freeze({
-    recordStorageMigration: DISABLED_MIGRATION,
     deployment: Object.freeze({
       host: shared.host,
       hostname: "page9.runtimed.run",
@@ -272,8 +271,6 @@ const targets = Object.freeze({
     firewallTable: "nteract_page9",
     firewallMark: "0x00400000",
     firewallComment: "nteract/preview-infra standalone-page9",
-    asyncPersistence: true,
-    compactRecords: true,
     companyViewDomains: "anaconda.com",
     catalogIndex: "1",
     // The Cloudflare edge forwards an unsampled traceparent, and celld's
@@ -285,7 +282,6 @@ const targets = Object.freeze({
   }),
   // A fresh, empty target with no data or route compatibility with Page9.
   page10: Object.freeze({
-    recordStorageMigration: DISABLED_MIGRATION,
     deployment: Object.freeze({
       host: shared.host,
       hostname: "page10.runtimed.run",
@@ -313,16 +309,14 @@ const targets = Object.freeze({
     // Sift's hashed WASM, for Parquet dataframe nodes.
     siftTables: true,
     whoami: true,
+    // /api/auth/logout-all and /api/auth/grants[/<handle>/revoke]: sign out
+    // everywhere and connected agents (worker/account-auth.mjs).
+    accountRoutes: true,
     firewallTable: "nteract_page10",
     firewallMark: "0x00200000",
     firewallComment: "nteract/preview-infra standalone-page10",
-    asyncPersistence: true,
-    compactRecords: true,
     companyViewDomains: "anaconda.com",
     catalogIndex: "1",
-    // New Pages sync with plain Automerge sync instead of Subduction
-    // (README: Plain Automerge sync). Existing Pages keep their mode.
-    recordStorage: "automerge",
     // Each account's Page limit when no quota rule matches it
     // (worker/page-quota.mjs). It also bounds that account's Trash.
     pageQuota: "250",
@@ -332,6 +326,10 @@ const targets = Object.freeze({
     // default parent-based sampler then drops every request-scoped log line.
     otelTracesSampler: "always_on",
     editor: "wordgard",
+    // celld sheds cells above CELLD_MAX_RSS_MB. At 768 MB production shed its
+    // D1 cell repeatedly and signed-in requests failed while it restored.
+    // lab1 has 31 GB; MemoryMax stays above the shedding threshold.
+    memory: SERVING_MEMORY,
     // tunnelService is the single connector unit earlier releases installed.
     // Publication hands the tunnel to these two slots and alternates between
     // them, so a route change never stops the last connector
@@ -349,7 +347,6 @@ const targets = Object.freeze({
   // disabled nteract-pages.service and /etc/nteract-pages from an earlier
   // prototype, and the installer must never treat those as this target's.
   pages: Object.freeze({
-    recordStorageMigration: DISABLED_MIGRATION,
     deployment: Object.freeze({
       host: shared.host,
       hostname: "pages.runtimed.run",
@@ -377,11 +374,12 @@ const targets = Object.freeze({
     // Sift's hashed WASM, for Parquet dataframe nodes.
     siftTables: true,
     whoami: true,
+    // /api/auth/logout-all and /api/auth/grants[/<handle>/revoke]: sign out
+    // everywhere and connected agents (worker/account-auth.mjs).
+    accountRoutes: true,
     firewallTable: "nteract_pages_live",
     firewallMark: "0x00100000",
     firewallComment: "nteract/preview-infra standalone-pages-live",
-    asyncPersistence: true,
-    compactRecords: true,
     companyViewDomains: "anaconda.com",
     catalogIndex: "1",
     // Each account's Page limit when no quota rule matches it
@@ -393,6 +391,8 @@ const targets = Object.freeze({
     // default parent-based sampler then drops every request-scoped log line.
     otelTracesSampler: "always_on",
     editor: "wordgard",
+    // Same limits as Page10; see its memory comment.
+    memory: SERVING_MEMORY,
     // The single connector unit earlier releases installed, then the two
     // slots publication alternates between (see Page10).
     tunnelService: "cloudflared-pages-live.service",
@@ -403,69 +403,96 @@ const targets = Object.freeze({
     // Page10 stays deployable, so it is not frozen here.
     frozenTargets: Object.freeze(["page7", "page8", "page9"]),
   }),
+  // page2.runtimed.run (target pages2): a fresh, empty target on its own host, lab2 (m7i.large,
+  // 8 GB). Pages' flags; it has only ever held plain Automerge Pages. Its listeners,
+  // firewall table and mark, tunnel and prefix are distinct from every lab1
+  // profile, so neither host can mistake the other's resources for its own.
+  pages2: Object.freeze({
+    deployment: Object.freeze({
+      host: "lab2",
+      hostname: "page2.runtimed.run",
+      service: "nteract-pages2",
+      bucket: shared.bucket,
+      prefix: "standalone/pages2",
+      region: shared.region,
+      listen: "127.0.0.1:9482",
+      internalListen: "127.0.0.1:19482",
+      runtime: shared.runtime,
+      requiredVersion: shared.requiredVersion,
+    }),
+    sharing: true,
+    oauth: true,
+    theme: true,
+    viewerChunks: true,
+    viewerAssets: true,
+    projectLinks: true,
+    indexRoutes: true,
+    siftTables: true,
+    whoami: true,
+    // /api/auth/logout-all and /api/auth/grants[/<handle>/revoke]: sign out
+    // everywhere and connected agents (worker/account-auth.mjs).
+    accountRoutes: true,
+    firewallTable: "nteract_pages2",
+    firewallMark: "0x00080000",
+    firewallComment: "nteract/preview-infra standalone-pages2",
+    companyViewDomains: "anaconda.com",
+    catalogIndex: "1",
+    pageQuota: "250",
+    // The same binding and database_id as Pages. celld keeps the database
+    // under this target's prefix and creates it empty on first use, so
+    // pages2 starts with its own auth, OIDC and quota tables.
+    d1: AUTH_D1,
+    otelTracesSampler: "always_on",
+    editor: "wordgard",
+    // m7i.large has 8 GB. MemoryMax 4G leaves the host room for cloudflared.
+    memory: SERVING_MEMORY,
+    // lab2 runs no shared cloudflared connector (/etc/cloudflared/config.yml);
+    // publication checks it only if one appears.
+    sharedTunnel: false,
+    tunnelService: "cloudflared-pages2.service",
+    tunnelSlots: Object.freeze({
+      a: Object.freeze({ service: "cloudflared-pages2-a.service", metrics: "127.0.0.1:29482" }),
+      b: Object.freeze({ service: "cloudflared-pages2-b.service", metrics: "127.0.0.1:29492" }),
+    }),
+    // lab2 holds no other Pages target, so nothing is frozen beside it.
+  }),
 });
+/** Every deployment profile name, qualified or not. */
+export const DEPLOYMENT_TARGETS = Object.freeze(Object.keys(targets));
 export function deploymentProfile(target = "pages-next") {
   if (!Object.hasOwn(targets, target)) throw new Error("Unknown Pages deployment target");
   return targets[target];
 }
 
-/** Serialize only reviewed profile policy, never the installer's environment.
- * This module is staged alone; keep validation independent of Worker imports. */
-export function migrationVars(profile) {
-  const policy =
-    profile.recordStorageMigration === undefined
-      ? DISABLED_MIGRATION
-      : profile.recordStorageMigration;
-  if (
-    !policy ||
-    typeof policy !== "object" ||
-    Array.isArray(policy) ||
-    Object.keys(policy).some((key) => !["enabled", "pageIds"].includes(key)) ||
-    typeof policy.enabled !== "boolean" ||
-    !Array.isArray(policy.pageIds) ||
-    !Array.from(policy.pageIds).every(
-      (id) =>
-        typeof id === "string" &&
-        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id),
-    ) ||
-    new Set(policy.pageIds).size !== policy.pageIds.length ||
-    (policy.enabled && (!policy.pageIds.length || profile.recordStorage !== "automerge"))
-  )
-    throw new Error("Invalid record storage migration canary policy");
-  // Preserve app-only adoption for targets that have never enabled migration.
-  if (!policy.enabled && !policy.pageIds.length) return {};
-  return {
-    PAGES_MIGRATE_RECORD_STORAGE: String(policy.enabled),
-    PAGES_MIGRATE_PAGE_IDS: JSON.stringify(policy.pageIds),
-  };
-}
-// This release is qualified for the isolated Page10 and Pages targets. Page10
-// stays deployable until its Projects are copied to Pages.
+// This release is qualified for the isolated Page10, Pages and Pages2 targets.
+// Page10 stays deployable until its Projects are copied to Pages.
 // Historical profiles remain readable for comparison and frozen-release checks.
-export const QUALIFIED_TARGETS = Object.freeze(["page10", "pages"]);
+export const QUALIFIED_TARGETS = Object.freeze(["page10", "pages", "pages2"]);
 export function assertQualifiedDeploymentTarget(target) {
   deploymentProfile(target);
   if (!QUALIFIED_TARGETS.includes(target))
     throw new Error(
-      "This build is qualified only for page10 and pages; earlier deployments are frozen",
+      "This build is qualified only for page10, pages and pages2; earlier deployments are frozen",
     );
 }
 
-// Record storage modes beyond the native ones (`local`, `buffered`) that each
-// target has been configured to create Pages with. A Page keeps its mode for
-// life, so an entry stays after the profile stops setting `recordStorage`: the
-// target still holds those Pages. Remove one only once the target's data holds
-// no Page with that mode. page10 has created `automerge` Pages since a2c9d5dde.
+// The record storage each target holds Pages in, beyond the native modes
+// (`local`, `buffered`) of earlier builds. Every Page on page10, pages and
+// pages2 syncs with plain Automerge sync, so a release there must open
+// `automerge` Pages: assertReleaseOpensTargetPages refuses one that can't,
+// including a rollback to a build from before plain sync.
 export const RECORD_STORAGE_HISTORY = Object.freeze({
   page10: Object.freeze(["automerge"]),
+  pages: Object.freeze(["automerge"]),
+  pages2: Object.freeze(["automerge"]),
 });
 const NATIVE_RECORD_STORAGE = Object.freeze(["local", "buffered"]);
 
 /** The record storage modes beyond the native ones that `target` may hold
- * Pages in: its history, its profile, and any `observed` on the host (the
+ * Pages in: its history, and any `observed` on the host (the
  * PAGES_RECORD_STORAGE of releases installed there). Each maps to why. */
 export function targetRecordStorage(target, observed = []) {
-  const profile = deploymentProfile(target);
+  deploymentProfile(target);
   const reasons = new Map();
   const note = (mode, reason) => {
     if (typeof mode !== "string" || !mode || NATIVE_RECORD_STORAGE.includes(mode)) return;
@@ -473,7 +500,6 @@ export function targetRecordStorage(target, observed = []) {
   };
   for (const mode of RECORD_STORAGE_HISTORY[target] ?? [])
     note(mode, "RECORD_STORAGE_HISTORY lists it");
-  note(profile.recordStorage, "its profile sets recordStorage");
   for (const { mode, release } of observed)
     note(mode, `release ${release} on the host was configured with it`);
   return reasons;

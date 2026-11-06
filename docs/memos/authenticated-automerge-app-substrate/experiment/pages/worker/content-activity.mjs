@@ -7,10 +7,7 @@ import { defineMachine, reject } from "../shared/machine.mjs";
  * time it accepted a change to either, from a browser, an agent tool or any
  * other writer, on its own clock: an author's clock never sets it. Comments
  * live in their own document, and presence, ACL and lifecycle changes live
- * outside the Page document, so none of them count. Neither do the host's own
- * migrations (preserved Markdown conversion, moving legacy comments out),
- * which rewrite how content is stored but not what it says; the host ignores
- * changes while its conversion machine is `converting`.
+ * outside the Page document, so none of them count.
  *
  * Writes coalesce. The first change after a quiet window flushes at once; later
  * changes in the window keep only the newest time in memory, and one flush at

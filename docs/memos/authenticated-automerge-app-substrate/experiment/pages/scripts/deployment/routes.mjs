@@ -23,6 +23,10 @@ export const projectPaths =
 // slash; /pages keeps its search in the query string, which ingress doesn't
 // match.
 export const indexPaths = "projects/?|pages/?|";
+// A person's own sign-ins and agent connections (worker/account-auth.mjs):
+// /api/auth/logout-all, /api/auth/grants and /api/auth/grants/<handle>/revoke,
+// where a handle is 43 base64url characters. Inside the api/( group.
+export const accountPaths = "auth/(logout-all|grants(/[A-Za-z0-9_-]{43}/revoke)?)|";
 export const imagePaths =
   "pages/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/assets(/[0-9a-f]{64})?|";
 
@@ -59,6 +63,7 @@ export function routesFor(target = "pages-next", legacy = false) {
       "api/(" +
       access +
       (authenticatedAssets ? imagePaths : "") +
+      (profile.accountRoutes === true ? accountPaths : "") +
       "tools|connect|sync|saved|pages/register|auth/(login|logout|session))|oidc";
   return `  - hostname: ${hostname}
     path: ^/(${paths})?$

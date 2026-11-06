@@ -1,11 +1,13 @@
 import { randomSecret, secretHash } from "@cloud/oidc-session-store.ts";
 import { pagesPublicOrigin } from "../agent-guide.mjs";
 import { isolateSetup } from "./isolate-setup.mjs";
+import { logAuthEvent } from "./auth-events.mjs";
+import { OAUTH_REFRESH_SECONDS } from "../shared/oauth-grant.mjs";
 
 const CODE_SECONDS = 300;
 const CONSENT_SECONDS = 600;
 const ACCESS_SECONDS = 600;
-const REFRESH_SECONDS = 30 * 24 * 60 * 60;
+const REFRESH_SECONDS = OAUTH_REFRESH_SECONDS;
 const tokenPattern = /^pages_(?:at|rt)_[A-Za-z0-9_-]{43}$/;
 const secretPattern = /^[A-Za-z0-9_-]{43}$/;
 const SCHEMA = [
@@ -22,10 +24,13 @@ const SCHEMA = [
     consumed_by TEXT, allow_refresh INTEGER NOT NULL DEFAULT 0
   )`,
   `CREATE INDEX IF NOT EXISTS pages_oauth_codes_expiry ON pages_oauth_codes(expires_at)`,
+  // `principal` copies identity_json's principal so an account's grants can be
+  // found by index; `created_at` is when the grant was issued. Both are NULL
+  // in rows written before they existed (see ADDED_COLUMNS).
   `CREATE TABLE IF NOT EXISTS pages_oauth_grants (
     id TEXT PRIMARY KEY, context TEXT NOT NULL, client_id TEXT NOT NULL,
     resource TEXT NOT NULL, scope TEXT NOT NULL, identity_json TEXT NOT NULL,
-    expires_at INTEGER NOT NULL, revoked_at INTEGER
+    expires_at INTEGER NOT NULL, revoked_at INTEGER, principal TEXT, created_at INTEGER
   )`,
   `CREATE INDEX IF NOT EXISTS pages_oauth_grants_expiry ON pages_oauth_grants(expires_at)`,
   `CREATE TABLE IF NOT EXISTS pages_oauth_access_tokens (
@@ -38,6 +43,11 @@ const SCHEMA = [
     scope TEXT NOT NULL, expires_at INTEGER NOT NULL, consumed_by TEXT
   )`,
   `CREATE INDEX IF NOT EXISTS pages_oauth_refresh_expiry ON pages_oauth_refresh_tokens(expires_at)`,
+  // Revoked-grant cleanup finds a grant's tokens and codes through these.
+  `CREATE INDEX IF NOT EXISTS pages_oauth_access_grant ON pages_oauth_access_tokens(grant_id)`,
+  `CREATE INDEX IF NOT EXISTS pages_oauth_refresh_grant ON pages_oauth_refresh_tokens(grant_id)`,
+  `CREATE INDEX IF NOT EXISTS pages_oauth_codes_grant ON pages_oauth_codes(consumed_by)`,
+  `CREATE INDEX IF NOT EXISTS pages_oauth_grants_revoked ON pages_oauth_grants(revoked_at)`,
 ];
 
 export class OAuthStoreError extends Error {
@@ -131,26 +141,55 @@ function identitySnapshot(identity) {
   }
   return snapshot;
 }
+// Columns added after their table first shipped: [table, column, definition].
+// Old codes keep the permissions approved on their original screen
+// (allow_refresh defaults to 0). Old grants get `principal` from the backfill
+// below; their `created_at` stays NULL, because it was never recorded.
+const ADDED_COLUMNS = [
+  ["pages_oauth_codes", "allow_refresh", "INTEGER NOT NULL DEFAULT 0"],
+  ["pages_oauth_grants", "principal", "TEXT"],
+  ["pages_oauth_grants", "created_at", "INTEGER"],
+];
+// Created only once ADDED_COLUMNS exist, since an old table lacks them.
+const ADDED_INDEXES = [
+  `CREATE INDEX IF NOT EXISTS pages_oauth_grants_principal ON pages_oauth_grants(principal)`,
+];
+// Grants backfilled per statement. A row whose identity can't be read gets an
+// empty principal, which matches no account, so it never holds the window.
+const BACKFILL_ROWS = 500;
+// Setup backfills at most this many batches; every by-account read runs one
+// more batch first, so rows left over, or written by an isolate still running
+// the previous release, are filled before they are needed.
+const BACKFILL_SETUP_BATCHES = 20;
+const backfillGrantPrincipals = (db) =>
+  db
+    .prepare(
+      `UPDATE pages_oauth_grants SET principal = COALESCE(CASE WHEN json_valid(identity_json)
+      THEN json_extract(identity_json, '$.principal') END, '')
+      WHERE id IN (SELECT id FROM pages_oauth_grants WHERE principal IS NULL LIMIT ?)`,
+    )
+    .bind(BACKFILL_ROWS);
+
 // Concurrent requests never await one another's schema setup; see isolate-setup.mjs.
 const schemaReady = isolateSetup(async (db) => {
   await db.batch(SCHEMA.map((sql) => db.prepare(sql)));
-  const hasRefreshConsent = async () => {
-    const result = await db.prepare("PRAGMA table_info(pages_oauth_codes)").all();
-    return result.results?.some((column) => column.name === "allow_refresh") ?? false;
-  };
-  if (!(await hasRefreshConsent())) {
+  for (const [table, column, definition] of ADDED_COLUMNS) {
+    const present = async () => {
+      const result = await db.prepare(`PRAGMA table_info(${table})`).all();
+      return result.results?.some((row) => row.name === column) ?? false;
+    };
+    if (await present()) continue;
     try {
-      // Old codes keep the permissions approved on their original screen.
-      await db
-        .prepare(
-          "ALTER TABLE pages_oauth_codes ADD COLUMN allow_refresh INTEGER NOT NULL DEFAULT 0",
-        )
-        .run();
+      await db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`).run();
     } catch (error) {
       // Another isolate may have completed the same additive migration.
-      if (!(await hasRefreshConsent())) throw error;
+      if (!(await present())) throw error;
     }
   }
+  await db.batch(ADDED_INDEXES.map((sql) => db.prepare(sql)));
+  // Idempotent, so isolates racing it fill disjoint or identical rows.
+  for (let batch = 0; batch < BACKFILL_SETUP_BATCHES; batch++)
+    if (changesOf(await backfillGrantPrincipals(db).run()) < BACKFILL_ROWS) break;
 });
 async function database(env) {
   const db = env.DB;
@@ -160,36 +199,106 @@ async function database(env) {
   return db;
 }
 const statement = (db, sql, ...values) => db.prepare(sql).bind(...values);
+/** The principal in a stored identity snapshot, for audit lines only. */
+function snapshotPrincipal(identityJson) {
+  try {
+    return JSON.parse(identityJson)?.principal;
+  } catch {
+    return undefined;
+  }
+}
+
+// Each table's primary key, in cleanup order: a code is kept while its grant
+// lives, so codes go before grants.
+const EXPIRY_KEYS = {
+  pages_oauth_consents: "id_hash",
+  pages_oauth_codes: "code_hash",
+  pages_oauth_access_tokens: "token_hash",
+  pages_oauth_refresh_tokens: "token_hash",
+  pages_oauth_grants: "id",
+};
+export const OAUTH_EXPIRY_TABLES = Object.freeze(Object.keys(EXPIRY_KEYS));
+function cleanupLimit(limit) {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000)
+    throw new OAuthStoreError("invalid_request");
+  return limit;
+}
+function expiryStatement(db, table, now, limit) {
+  const key = EXPIRY_KEYS[table];
+  if (!key) throw new OAuthStoreError("invalid_request");
+  // A consumed code is replay evidence for every token in its grant, even
+  // after the code's own five-minute exchange window has closed.
+  const retainedCode = table === "pages_oauth_codes";
+  const expiry = retainedCode
+    ? `expires_at <= ? AND (consumed_by IS NULL OR NOT EXISTS
+      (SELECT 1 FROM pages_oauth_grants WHERE id = pages_oauth_codes.consumed_by AND expires_at > ?))`
+    : "expires_at <= ?";
+  return statement(
+    db,
+    `DELETE FROM ${table} WHERE ${key} IN (SELECT ${key} FROM ${table} WHERE ${expiry} ORDER BY expires_at LIMIT ?)`,
+    ...(retainedCode ? [now, now, limit] : [now, limit]),
+  );
+}
+const changesOf = (result) => result.meta?.changes ?? 0;
 
 /** Expiry cleanup is bounded and never discards a still-valid replay tombstone. */
 export async function cleanupOAuthStore(env, { now, limit = 100 } = {}) {
   now = seconds(now);
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000)
-    throw new OAuthStoreError("invalid_request");
+  cleanupLimit(limit);
   const db = await database(env);
   const results = await db.batch(
-    [
-      ["pages_oauth_consents", "id_hash"],
-      ["pages_oauth_codes", "code_hash"],
-      ["pages_oauth_access_tokens", "token_hash"],
-      ["pages_oauth_refresh_tokens", "token_hash"],
-      ["pages_oauth_grants", "id"],
-    ].map(([table, key]) => {
-      // A consumed code is replay evidence for every token in its grant, even
-      // after the code's own five-minute exchange window has closed.
-      const retainedCode = table === "pages_oauth_codes";
-      const expiry = retainedCode
-        ? `expires_at <= ? AND (consumed_by IS NULL OR NOT EXISTS
-          (SELECT 1 FROM pages_oauth_grants WHERE id = pages_oauth_codes.consumed_by AND expires_at > ?))`
-        : "expires_at <= ?";
-      return statement(
-        db,
-        `DELETE FROM ${table} WHERE ${key} IN (SELECT ${key} FROM ${table} WHERE ${expiry} ORDER BY expires_at LIMIT ?)`,
-        ...(retainedCode ? [now, now, limit] : [now, limit]),
-      );
-    }),
+    OAUTH_EXPIRY_TABLES.map((table) => expiryStatement(db, table, now, limit)),
   );
-  return results.reduce((total, result) => total + (result.meta?.changes ?? 0), 0);
+  return results.reduce((total, result) => total + changesOf(result), 0);
+}
+
+/** The same expiry rule as cleanupOAuthStore, for one table at a time. */
+export async function cleanupOAuthTable(env, table, { now, limit } = {}) {
+  now = seconds(now);
+  cleanupLimit(limit);
+  const db = await database(env);
+  return changesOf(await expiryStatement(db, table, now, limit).run());
+}
+
+// Rows that hang off a revoked grant, deleted before the grant itself. Every
+// read and exchange already refuses them, because the grant is revoked.
+const REVOKED_CHILDREN = {
+  pages_oauth_access_tokens: ["token_hash", "grant_id"],
+  pages_oauth_refresh_tokens: ["token_hash", "grant_id"],
+  pages_oauth_codes: ["code_hash", "consumed_by"],
+};
+export const OAUTH_REVOKED_TABLES = Object.freeze([
+  ...Object.keys(REVOKED_CHILDREN),
+  "pages_oauth_grants",
+]);
+const revokedBy = (table, [, link]) =>
+  `SELECT 1 FROM ${table} WHERE ${table}.${link} = pages_oauth_grants.id`;
+
+/**
+ * Deletes at most `limit` rows of one table that belong to grants revoked at
+ * or before `revokedBefore` (seconds). A grant row goes only once none of its
+ * tokens or codes remain, so a partial run never orphans them.
+ */
+export async function deleteRevokedGrantRows(env, table, { revokedBefore, limit } = {}) {
+  revokedBefore = seconds(revokedBefore);
+  cleanupLimit(limit);
+  const db = await database(env);
+  const child = REVOKED_CHILDREN[table];
+  let sql;
+  if (child) {
+    const [key, link] = child;
+    sql = `DELETE FROM ${table} WHERE ${key} IN (SELECT ${table}.${key} FROM ${table}
+      JOIN pages_oauth_grants ON pages_oauth_grants.id = ${table}.${link}
+      WHERE pages_oauth_grants.revoked_at IS NOT NULL AND pages_oauth_grants.revoked_at <= ? LIMIT ?)`;
+  } else if (table === "pages_oauth_grants") {
+    const orphanless = Object.entries(REVOKED_CHILDREN)
+      .map(([name, columns]) => `NOT EXISTS (${revokedBy(name, columns)})`)
+      .join(" AND ");
+    sql = `DELETE FROM pages_oauth_grants WHERE id IN (SELECT id FROM pages_oauth_grants
+      WHERE revoked_at IS NOT NULL AND revoked_at <= ? AND ${orphanless}
+      ORDER BY revoked_at LIMIT ?)`;
+  } else throw new OAuthStoreError("invalid_request");
+  return changesOf(await statement(db, sql, revokedBefore, limit).run());
 }
 
 export async function issueConsent(env, { request, sessionId, principal }, { now } = {}) {
@@ -253,18 +362,31 @@ export async function consumeConsent(
   return row ? JSON.parse(row.request_json) : null;
 }
 
-export async function issueAuthorizationCode(env, input, { now } = {}) {
+/**
+ * Issues a code for an approved consent. With `sessionId`, the code is
+ * written only if that browser session row (oidc_server_sessions, in the same
+ * database) still exists and hasn't expired, in the same statement. A sign-out
+ * everywhere that deletes the session after the approval's own session check
+ * then leaves no code behind; this throws `access_denied` instead.
+ */
+export async function issueAuthorizationCode(env, input, { now, sessionId } = {}) {
   now = seconds(now);
   const value = authorizationRequest(env, input);
   const identity = identitySnapshot(input.identity);
+  if (sessionId !== undefined) boundedString(sessionId);
   const code = randomSecret(),
     db = await database(env);
   await cleanupOAuthStore(env, { now });
-  await statement(
+  const sessionLive =
+    sessionId === undefined
+      ? ""
+      : `WHERE EXISTS (SELECT 1 FROM oidc_server_sessions WHERE id = ?
+        AND idle_expires_at > ? AND absolute_expires_at > ?)`;
+  const inserted = await statement(
     db,
     `INSERT INTO pages_oauth_codes
     (code_hash, context, client_id, redirect_uri, resource, scope, challenge, identity_json, expires_at, allow_refresh)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? ${sessionLive}`,
     await secretHash(code),
     contextFor(env),
     value.clientId,
@@ -275,7 +397,9 @@ export async function issueAuthorizationCode(env, input, { now } = {}) {
     JSON.stringify(identity),
     now + CODE_SECONDS,
     value.allowRefresh === true ? 1 : 0,
+    ...(sessionId === undefined ? [] : [sessionId, now, now]),
   ).run();
+  if (changesOf(inserted) !== 1) throw new OAuthStoreError("access_denied");
   return { code, expiresAt: now + CODE_SECONDS };
 }
 
@@ -353,11 +477,14 @@ export async function exchangeAuthorizationCode(env, input, { now } = {}) {
     statement(
       db,
       `INSERT INTO pages_oauth_grants
-      (id, context, client_id, resource, scope, identity_json, expires_at)
-      SELECT ?, context, client_id, resource, scope, identity_json, ? FROM pages_oauth_codes
+      (id, context, client_id, resource, scope, identity_json, expires_at, principal, created_at)
+      SELECT ?, context, client_id, resource, scope, identity_json, ?, ?, ? FROM pages_oauth_codes
       WHERE code_hash = ? AND consumed_by = ?`,
       grantId,
       absoluteExpiry,
+      // A code's identity was bounded by identitySnapshot when it was issued.
+      snapshotPrincipal(row.identity_json) ?? "",
+      now,
       codeHash,
       grantId,
     ),
@@ -381,7 +508,30 @@ export async function exchangeAuthorizationCode(env, input, { now } = {}) {
       ),
     );
   const result = await db.batch(batch);
+  const audit = {
+    principal: snapshotPrincipal(row.identity_json),
+    credential: "oauth",
+    clientId: row.client_id,
+  };
+  if ((result[0].meta?.changes ?? 0) > 0) {
+    await logAuthEvent({ action: "oauth.code_replayed", ...audit, grantId: row.consumed_by });
+    await logAuthEvent({
+      action: "oauth.grant_revoked",
+      ...audit,
+      grantId: row.consumed_by,
+      revokedBy: "system",
+      reason: "code_replayed",
+    });
+  }
   if (result[1].meta?.changes !== 1) invalid();
+  await logAuthEvent({
+    action: "oauth.token_issued",
+    ...audit,
+    grantId,
+    grantType: "authorization_code",
+    scope: row.scope,
+    refresh: Boolean(tokens.refreshToken),
+  });
   return tokenResponse(tokens, row.scope, now);
 }
 
@@ -461,7 +611,29 @@ export async function rotateRefreshToken(env, input, { now } = {}) {
       ),
     );
   const result = await db.batch(batch);
+  const audit = {
+    principal: snapshotPrincipal(row.identity_json),
+    credential: "oauth",
+    clientId: row.client_id,
+    grantId: row.id,
+  };
+  if (result[0].meta?.changes === 1) {
+    await logAuthEvent({ action: "oauth.refresh_reused", ...audit });
+    await logAuthEvent({
+      action: "oauth.grant_revoked",
+      ...audit,
+      revokedBy: "system",
+      reason: "refresh_reused",
+    });
+  }
   if (result[1].meta?.changes !== 1) invalid();
+  await logAuthEvent({
+    action: "oauth.token_issued",
+    ...audit,
+    grantType: "refresh_token",
+    scope,
+    refresh: true,
+  });
   return tokenResponse(tokens, scope, now);
 }
 
@@ -492,22 +664,191 @@ export async function readAccessToken(env, token, { resource, now } = {}) {
     : null;
 }
 
+/** Whether an OAuth grant is still live: this deployment's, not revoked and
+ * not expired. An upload capability issued under a grant checks this when it
+ * is used (asset-uploads.mjs), so revoking a connection ends its uploads too.
+ * The grant ID authorizes nothing by itself. */
+export async function oauthGrantActive(env, grantId, { now } = {}) {
+  now = seconds(now);
+  if (typeof grantId !== "string" || !secretPattern.test(grantId)) return false;
+  const db = await database(env);
+  const row = await statement(
+    db,
+    `SELECT 1 AS live FROM pages_oauth_grants
+    WHERE id = ? AND revoked_at IS NULL AND expires_at > ? AND context = ?`,
+    grantId,
+    now,
+    contextFor(env),
+  ).first();
+  return row !== null;
+}
+
 /** RFC 7009: unknown tokens/wrong clients succeed without revealing membership. */
 export async function revokeOAuthToken(env, { token, clientId }, { now } = {}) {
   now = seconds(now);
   if (!tokenPattern.test(token) || typeof clientId !== "string") return;
   const db = await database(env),
     hash = await secretHash(token);
-  await statement(
+  const revoked = await statement(
     db,
     `UPDATE pages_oauth_grants SET revoked_at = ?
     WHERE client_id = ? AND context = ? AND revoked_at IS NULL AND id IN
     (SELECT grant_id FROM pages_oauth_access_tokens WHERE token_hash = ?
-     UNION SELECT grant_id FROM pages_oauth_refresh_tokens WHERE token_hash = ?)`,
+     UNION SELECT grant_id FROM pages_oauth_refresh_tokens WHERE token_hash = ?)
+    RETURNING id, client_id, identity_json`,
     now,
     clientId,
     contextFor(env),
     hash,
     hash,
-  ).run();
+  ).all();
+  for (const grant of revoked.results ?? [])
+    await logAuthEvent({
+      action: "oauth.grant_revoked",
+      principal: snapshotPrincipal(grant.identity_json),
+      credential: "oauth",
+      clientId: grant.client_id,
+      grantId: grant.id,
+      revokedBy: "rfc7009",
+    });
+}
+
+// Grants a person sees as connected agents, newest first.
+const LISTED_GRANTS = 100;
+// Revoking one grant looks among this many of the account's live grants.
+const SEARCHED_GRANTS = 1000;
+
+/** The public handle for a grant in the account's "Connected agents" list.
+ * It is a one-way digest, so a handle can't be turned back into the grant id
+ * that upload capabilities name, and it differs from the telemetry `grant`
+ * reference. It only selects among the caller's own grants. */
+export async function grantHandle(grantId) {
+  return secretHash(`pages/grant-handle/v1:${grantId}`);
+}
+
+async function accountDatabase(env, principal) {
+  boundedString(principal, 512);
+  const db = await database(env);
+  await backfillGrantPrincipals(db).run();
+  return db;
+}
+
+async function liveGrantsFor(db, env, principal, now, limit) {
+  const rows = await statement(
+    db,
+    `SELECT id, client_id, scope, created_at, expires_at FROM pages_oauth_grants
+    WHERE principal = ? AND context = ? AND revoked_at IS NULL AND expires_at > ?
+    ORDER BY created_at IS NULL, created_at DESC, expires_at DESC LIMIT ?`,
+    principal,
+    contextFor(env),
+    now,
+    limit,
+  ).all();
+  return rows.results ?? [];
+}
+
+/** The account's live grants in this deployment, newest first. No token,
+ * grant id or identity snapshot leaves this function: each grant is named by
+ * its `grantHandle`. `createdAt` is null for grants issued before it was
+ * recorded. Times are seconds. */
+export async function listGrantsFor(env, principal, { now } = {}) {
+  now = seconds(now);
+  const db = await accountDatabase(env, principal);
+  const rows = await liveGrantsFor(db, env, principal, now, LISTED_GRANTS);
+  return Promise.all(
+    rows.map(async (row) => ({
+      handle: await grantHandle(row.id),
+      clientId: row.client_id,
+      scope: row.scope,
+      createdAt: row.created_at ?? null,
+      expiresAt: row.expires_at,
+    })),
+  );
+}
+
+async function revokeGrantRows(db, env, sql, values, reason) {
+  const revoked = await statement(db, sql, ...values).all();
+  for (const grant of revoked.results ?? [])
+    await logAuthEvent({
+      action: "oauth.grant_revoked",
+      principal: snapshotPrincipal(grant.identity_json),
+      credential: "oauth",
+      clientId: grant.client_id,
+      grantId: grant.id,
+      revokedBy: "user",
+      reason,
+    });
+  return revoked.results?.length ?? 0;
+}
+
+/** A person disconnects one agent from the "Connected agents" list. Only the
+ * caller's own live grant can match `handle`. Returns whether a grant was
+ * revoked; an unknown or already revoked handle returns false. Its tokens
+ * stop working at once, and the auth sweep deletes the rows later. */
+export async function revokeGrantFor(env, principal, handle, { now } = {}) {
+  now = seconds(now);
+  if (typeof handle !== "string" || !secretPattern.test(handle)) return false;
+  const db = await accountDatabase(env, principal);
+  let target;
+  for (const row of await liveGrantsFor(db, env, principal, now, SEARCHED_GRANTS))
+    if ((await grantHandle(row.id)) === handle) target = row.id;
+  if (!target) return false;
+  const count = await revokeGrantRows(
+    db,
+    env,
+    `UPDATE pages_oauth_grants SET revoked_at = ?
+    WHERE id = ? AND principal = ? AND context = ? AND revoked_at IS NULL
+    RETURNING id, client_id, identity_json`,
+    [now, target, principal, contextFor(env)],
+    "disconnected",
+  );
+  return count === 1;
+}
+
+/**
+ * Ends every OAuth connection the account holds in this deployment: its live
+ * grants are revoked, so their access and refresh tokens stop working, and its
+ * pending consent screens and unexchanged authorization codes are deleted, so
+ * an approval already under way can't produce a new grant. Consumed codes stay
+ * as replay evidence. Returns the number of grants revoked. The auth sweep
+ * (auth-maintenance.mjs) deletes the revoked rows later.
+ *
+ * Pending consents and codes go first. An exchange that already consumed its
+ * code has created its grant, which the revocation then finds; one that
+ * hasn't finds no code. Each step is a single statement, so a concurrent
+ * request sees it whole.
+ */
+export async function revokeGrantsFor(
+  env,
+  principal,
+  { now, reason = "sign_out_everywhere" } = {},
+) {
+  now = seconds(now);
+  const db = await accountDatabase(env, principal);
+  const context = contextFor(env);
+  await db.batch([
+    statement(
+      db,
+      "DELETE FROM pages_oauth_consents WHERE principal = ? AND context = ?",
+      principal,
+      context,
+    ),
+    // consumed_by IS NULL is served by pages_oauth_codes_grant.
+    statement(
+      db,
+      `DELETE FROM pages_oauth_codes WHERE consumed_by IS NULL AND context = ?
+      AND CASE WHEN json_valid(identity_json) THEN json_extract(identity_json, '$.principal') END = ?`,
+      context,
+      principal,
+    ),
+  ]);
+  return revokeGrantRows(
+    db,
+    env,
+    `UPDATE pages_oauth_grants SET revoked_at = ?
+    WHERE principal = ? AND context = ? AND revoked_at IS NULL AND expires_at > ?
+    RETURNING id, client_id, identity_json`,
+    [now, principal, context, now],
+    reason,
+  );
 }

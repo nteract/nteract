@@ -49,7 +49,6 @@ function fixture({ lock = true, tracked = true, changed = false, regular = true 
             : JSON.stringify({
                 dependencies: {
                   debug: "catalog:",
-                  "@automerge/subduction": "0.23.0",
                 },
               }),
       },

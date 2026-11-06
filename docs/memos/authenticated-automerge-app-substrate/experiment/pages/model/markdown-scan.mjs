@@ -37,7 +37,7 @@ export const MATH_SYNTAX =
 //
 // Agent writes refuse such source with `unsupported_markdown`, naming the
 // construct, line and column (`parseAgentMarkdown`). Everything else
-// (preserved-block migration, legacy blocks, read projections) keeps it as
+// (stored source, comment drafts, read projections) keeps it as
 // literal, editable text: the scan's ranges are backslash-escaped before
 // parsing, so math keeps its exact characters (`parseMarkdown`). Export
 // escapes the same ranges, so read-then-write never trips the refusal.

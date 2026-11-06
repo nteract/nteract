@@ -34,7 +34,7 @@ export class OutboundSync {
     return this.#state;
   }
 
-  /** SubductionBackend's `scheduleLocalSync` option. A tree's later request
+  /** AutomergeSyncBackend's `scheduleLocalSync` option. A tree's later request
    * replaces its earlier one: either starts the same coalescing round. */
   scheduleLocalSync = (id, start) => {
     this.#syncs.set(id, start);

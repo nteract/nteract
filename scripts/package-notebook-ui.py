@@ -15,7 +15,8 @@ from pathlib import Path
 
 BUNDLE_ROOT = "nteract-notebook-ui"
 REQUIRED_FILES = ("index.html", "output-frame.html")
-RESERVED_FILES = ("LICENSE.nteract", "nteract-notebook-ui.json")
+ATTRIBUTION_FILES = ("LICENSE.nteract", "THIRD_PARTY_NOTICES.txt", "sbom.cdx.json")
+RESERVED_FILES = (*ATTRIBUTION_FILES, "nteract-notebook-ui.json")
 TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
@@ -23,7 +24,7 @@ COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dist", type=Path, required=True)
-    parser.add_argument("--license", dest="license_path", type=Path, required=True)
+    parser.add_argument("--attribution", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--channel", choices=("stable", "nightly"), required=True)
     parser.add_argument("--version", required=True)
@@ -35,8 +36,55 @@ def parse_args() -> argparse.Namespace:
 def validate_args(args: argparse.Namespace) -> None:
     if not args.dist.is_dir():
         raise ValueError(f"notebook UI directory does not exist: {args.dist}")
-    if not args.license_path.is_file():
-        raise ValueError(f"license file does not exist: {args.license_path}")
+    if not args.attribution.is_dir():
+        raise ValueError(f"attribution directory does not exist: {args.attribution}")
+    for name in ATTRIBUTION_FILES:
+        path = args.attribution / name
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"attribution requires a regular file: {name}")
+        text = path.read_text(encoding="utf-8")
+        if not text.strip() or "\x00" in text:
+            raise ValueError(f"attribution file is empty or invalid: {name}")
+        if name == "sbom.cdx.json":
+            sbom = json.loads(text)
+            if (
+                not isinstance(sbom, dict)
+                or sbom.get("bomFormat") != "CycloneDX"
+                or sbom.get("specVersion") != "1.6"
+                or type(sbom.get("version")) is not int
+                or sbom["version"] < 1
+                or not isinstance(sbom.get("components"), list)
+                or not sbom["components"]
+                or any(
+                    not isinstance(component, dict)
+                    or not isinstance(component.get("name"), str)
+                    or not component["name"].strip()
+                    or not component.get("type")
+                    for component in sbom["components"]
+                )
+            ):
+                raise ValueError("invalid CycloneDX 1.6 attribution SBOM")
+            metadata = sbom.get("metadata")
+            if not isinstance(metadata, dict):
+                raise ValueError("attribution SBOM is missing release identity")
+            component = metadata.get("component")
+            properties = metadata.get("properties")
+            if (
+                not isinstance(component, dict)
+                or component.get("type") != "application"
+                or component.get("name") != "notebook-ui"
+                or component.get("version") != args.version
+                or not isinstance(properties, list)
+                or any(not isinstance(item, dict) for item in properties)
+            ):
+                raise ValueError("attribution SBOM does not match notebook UI release")
+            for key, expected in (
+                ("nteract:source-commit", args.commit),
+                ("nteract:target", "wasm32-unknown-unknown"),
+            ):
+                values = [item.get("value") for item in properties if item.get("name") == key]
+                if values != [expected]:
+                    raise ValueError(f"attribution SBOM does not match release {key}")
     if not TOKEN_PATTERN.fullmatch(args.version):
         raise ValueError("version may contain only letters, digits, dots, underscores, and hyphens")
     if not COMMIT_PATTERN.fullmatch(args.commit):
@@ -48,7 +96,7 @@ def validate_args(args: argparse.Namespace) -> None:
         if not (args.dist / relative_path).is_file():
             raise ValueError(f"notebook UI is missing required file: {relative_path}")
     for relative_path in RESERVED_FILES:
-        if (args.dist / relative_path).exists():
+        if (args.dist / relative_path).exists() or (args.dist / relative_path).is_symlink():
             raise ValueError(f"notebook UI contains reserved bundle file: {relative_path}")
 
 
@@ -91,12 +139,15 @@ def create_archive(args: argparse.Namespace) -> str:
         "channel": args.channel,
         "commit": args.commit,
         "entrypoint": "index.html",
+        "license": "LICENSE.nteract",
+        "notices": "THIRD_PARTY_NOTICES.txt",
         "outputDocument": "output-frame.html",
+        "sbom": "sbom.cdx.json",
         "schemaVersion": 1,
         "version": args.version,
     }
     manifest_bytes = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
-    license_bytes = args.license_path.read_bytes()
+    attribution = [(name, (args.attribution / name).read_bytes()) for name in ATTRIBUTION_FILES]
 
     with (
         args.output.open("wb") as raw_output,
@@ -110,12 +161,8 @@ def create_archive(args: argparse.Namespace) -> str:
             (entry.relative_to(args.dist).as_posix(), entry)
             for entry in iter_dist_entries(args.dist)
         ]
-        entries.extend(
-            [
-                ("LICENSE.nteract", license_bytes),
-                ("nteract-notebook-ui.json", manifest_bytes),
-            ]
-        )
+        entries.extend(attribution)
+        entries.append(("nteract-notebook-ui.json", manifest_bytes))
         for relative, entry in sorted(entries, key=lambda item: item[0]):
             archive_name = f"{BUNDLE_ROOT}/{relative}"
             if isinstance(entry, bytes):

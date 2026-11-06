@@ -7,14 +7,16 @@ import path from "node:path";
 import { sourceFingerprint } from "./source-fingerprint.mjs";
 import { insertRoutes, routes } from "./deployment/publish.mjs";
 import { configureDns } from "./deployment/dns.mjs";
+import { accountId as tunnelAccountId } from "./deployment/tunnel.mjs";
 import { pagesFirewall } from "./deployment/firewall.mjs";
 import * as profiles from "./deployment/profiles.mjs";
+import { CRONS } from "../shared/schedule.mjs";
 import * as activation from "./deployment/activation.mjs";
+import * as sessionKeys from "./deployment/session-keys.mjs";
 import * as fs from "node:fs";
 import { createHash } from "node:crypto";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
-import { migrationStart } from "../worker/record-storage-migration.mjs";
 
 test("fingerprint follows imported auth source and ignores output/unrelated churn", () => {
   const root = mkdtempSync(path.join(tmpdir(), "pages-inputs-"));
@@ -176,7 +178,8 @@ test("DNS transport errors do not echo credentials", async () => {
 });
 
 test("release staging copies only built artifacts, never development credentials/state", async () => {
-  const { stageArtifacts, releaseArtifacts } = await import("./stage-artifacts.mjs");
+  const { stageArtifacts, releaseArtifacts, releaseFilesOf } =
+    await import("./stage-artifacts.mjs");
   const { readFileSync, readdirSync, symlinkSync } = await import("node:fs");
   const root = mkdtempSync(path.join(tmpdir(), "pages-artifacts-"));
   const dist = path.join(root, "dist"),
@@ -206,9 +209,16 @@ test("release staging copies only built artifacts, never development credentials
   const certifiedAssets = Object.fromEntries(
     Object.entries(assetBytes).map(([file, bytes]) => [file, sha256(bytes)]),
   );
-  const receipt = JSON.stringify({ viewer_chunks: certified, viewer_assets: certifiedAssets });
   const contents = (artifact) =>
     artifact === "build-receipt.json" ? receipt : (assetBytes[artifact] ?? "artifact:" + artifact);
+  const releaseFiles = Object.fromEntries(
+    releaseFilesOf(chunks, assets).map((file) => [file, sha256(contents(file))]),
+  );
+  const receipt = JSON.stringify({
+    viewer_chunks: certified,
+    viewer_assets: certifiedAssets,
+    files: releaseFiles,
+  });
   const hashed = [...chunks, ...assets];
   const theme = assets.find((file) => file.startsWith("public/theme-"));
   try {
@@ -330,7 +340,7 @@ test("release staging copies only built artifacts, never development credentials
 // The deployment version the fixture's `celld deploy` reports.
 const DEPLOYED = "c0ffee0123456789";
 // What a build receipt lists as `record_storage` since the list exists.
-const CURRENT_RECORD_STORAGE = ["local", "buffered", "automerge"];
+const CURRENT_RECORD_STORAGE = ["automerge"];
 const CURRENT_PLAIN_STORAGE_FORMATS = ["doc-store-v2-host-actor-prefix"];
 function installFixture(
   t,
@@ -373,6 +383,8 @@ function installFixture(
   const local = (file) => path.join(root, file);
   const write = (file, value) => {
     mkdirSync(path.dirname(local(file)), { recursive: true });
+    // The installer creates the service's config directory 0700; seeded ones match.
+    if (file.startsWith(configDir + "/")) fs.chmodSync(local(configDir), 0o700);
     writeFileSync(local(file), value);
   };
   const digest = (value) => createHash("sha256").update(value).digest("hex");
@@ -389,10 +401,10 @@ function installFixture(
       main: "index.js",
       no_bundle: true,
       d1_databases: [profiles.AUTH_D1, profiles.USAGE_D1],
-      triggers: { crons: [profiles.USAGE_CRON] },
-      durable_objects: { bindings: [{ name: "PAGE_RECORDS", class_name: "PageRecords" }] },
+      triggers: { crons: [...CRONS] },
+      durable_objects: { bindings: [{ name: "PAGES", class_name: "Page" }] },
       r2_buckets: [{ binding: "PAGES_ASSETS", bucket_name: "pages-images" }],
-      migrations: [{ tag: "fixture", new_sqlite_classes: ["PageRecords"] }],
+      migrations: [{ tag: "fixture", new_sqlite_classes: ["Page"] }],
     }),
     "release/index.js": "export default {};",
     "release/public/app.js": "console.log('fixture');",
@@ -443,8 +455,19 @@ function installFixture(
     "statSync",
     "writeFileSync",
   ])
-    filesystem[name] = (file, ...args) => fs[name](local(file), ...args);
+    // A number is a descriptor from openSync, already inside the fixture root.
+    filesystem[name] = (file, ...args) =>
+      fs[name](typeof file === "number" ? file : local(file), ...args);
   filesystem.chmodSync = filesystem.chownSync = () => {};
+  // The fixture runs unprivileged while the installer sees uid 0, so files
+  // under the fixture root present as root-owned, as on the host.
+  const asRoot = (stat) =>
+    Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { uid: 0, gid: 0 });
+  filesystem.lstatSync = (file, ...args) => asRoot(fs.lstatSync(local(file), ...args));
+  filesystem.openSync = (file, ...args) => fs.openSync(local(file), ...args);
+  filesystem.fstatSync = (fd, ...args) => asRoot(fs.fstatSync(fd, ...args));
+  filesystem.closeSync = (fd) => fs.closeSync(fd);
+  filesystem.constants = fs.constants;
   filesystem.mkdtempSync = (prefix) => fs.mkdtempSync(local(prefix)).slice(root.length);
   filesystem.rmSync = (file, ...args) => fs.rmSync(local(file), ...args);
   filesystem.renameSync = (from, to) => fs.renameSync(local(from), local(to));
@@ -559,6 +582,7 @@ function installFixture(
       deploymentProfile: () => profile,
     },
     "./activation.mjs": activation,
+    "./session-keys.mjs": sessionKeys,
   };
   const read = (file) => fs.readFileSync(local(file), "utf8");
   const execute = (flags = []) =>
@@ -602,7 +626,7 @@ function historicalInstallFixture(t, options = {}) {
 for (const target of ["pages-next", "page3", "page4", "page5", "page6", "page7", "page8", "page9"])
   test(`current installer refuses frozen ${target} before host commands or release writes`, (t) => {
     const fixture = installFixture(t, { target });
-    assert.throws(fixture.execute, /qualified only for page10 and pages/);
+    assert.throws(fixture.execute, /qualified only for page10, pages and pages2/);
     assert.deepEqual(fixture.calls, []);
     assert.equal(fs.existsSync(fixture.local(fixture.release)), false);
     assert.equal(fs.existsSync(fixture.local(fixture.audit)), false);
@@ -755,12 +779,18 @@ test("installation fills only missing verified artifacts after a partial copy", 
   assert.equal(fixture.calls.filter(({ command }) => command === "runuser").length, 1);
 });
 
-for (const tampering of ["artifact", "extra-file", "symlink", "audit-manifest"])
+for (const tampering of ["artifact", "extra-file", "symlink", "audit-manifest", "wrangler"])
   test(`installation retry rejects changed ${tampering}`, (t) => {
     const fixture = historicalInstallFixture(t, { failure: "deploy" });
     assert.throws(fixture.execute, /failed \(status 1\)/);
     if (tampering === "artifact") fixture.write(fixture.release + "/index.js", "modified");
     if (tampering === "extra-file") fixture.write(fixture.release + "/unexpected.js", "extra");
+    // Only vars may differ in an earlier configured wrangler.json.
+    if (tampering === "wrangler") {
+      const config = JSON.parse(fixture.read(fixture.release + "/wrangler.json"));
+      config.durable_objects.bindings.push({ name: "EXTRA", class_name: "Extra" });
+      fixture.write(fixture.release + "/wrangler.json", JSON.stringify(config));
+    }
     if (tampering === "symlink") {
       rmSync(fixture.local(fixture.release + "/index.js"));
       fs.symlinkSync(
@@ -864,15 +894,12 @@ for (const target of ["pages-next", "page3", "page4", "page5", "page6"])
       config.vars.NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE,
       config.vars.NOTEBOOK_CLOUD_ANACONDA_API_KEY_PRINCIPAL_NAMESPACE,
     );
-    assert.equal(config.vars.PAGES_ASYNC_PERSISTENCE, target === "pages-next" ? undefined : "true");
     assert.equal(
       config.vars.PAGES_EDITOR,
       ["page4", "page5", "page6"].includes(target) ? "wordgard" : undefined,
     );
-    assert.deepEqual(config.durable_objects.bindings, [
-      { name: "PAGE_RECORDS", class_name: "PageRecords" },
-    ]);
-    assert.deepEqual(config.migrations, [{ tag: "fixture", new_sqlite_classes: ["PageRecords"] }]);
+    assert.deepEqual(config.durable_objects.bindings, [{ name: "PAGES", class_name: "Page" }]);
+    assert.deepEqual(config.migrations, [{ tag: "fixture", new_sqlite_classes: ["Page"] }]);
     assert.deepEqual(config.r2_buckets, [{ binding: "PAGES_ASSETS", bucket_name: "pages-images" }]);
     const unit = fixture.read("/etc/systemd/system/" + deployment.service + ".service");
     assert.match(unit, /Environment=CELLD_DURABILITY=bucket/);
@@ -1078,7 +1105,6 @@ test("page5 is explicitly allowlisted and cannot accept any frozen target's stag
   assert.equal(page5.deployment.internalListen, "127.0.0.1:19475");
   assert.equal(page5.deployment.prefix, "standalone/page5");
   assert.equal(page5.editor, "wordgard");
-  assert.equal(page5.asyncPersistence, true);
   assert.deepEqual(page5.frozenTargets, ["pages-next", "page3", "page4"]);
   assert.equal(page5.tunnelService, "cloudflared-page5.service");
   assert.throws(
@@ -1211,7 +1237,6 @@ test("page6 requires its own manifest and stage and freezes every prior deployme
   assert.equal(profile.deployment.internalListen, "127.0.0.1:19476");
   assert.equal(profile.deployment.prefix, "standalone/page6");
   assert.equal(profile.editor, "wordgard");
-  assert.equal(profile.asyncPersistence, true);
   assert.equal(profile.tunnelService, "cloudflared-page6.service");
   assert.deepEqual(profile.frozenTargets, ["pages-next", "page3", "page4", "page5"]);
   assert.equal(profiles.stageTarget("/tmp/nteract-page6-stage-abcd1234"), target);
@@ -1341,7 +1366,10 @@ const frozenBy = {
   pages: ["page7", "page8", "page9"],
 };
 test("every deploy profile owns distinct hosts, ports, prefixes and firewall resources", () => {
-  const targets = [
+  // Every profile, so a new one can't skip the check. Ports are compared
+  // across hosts too: a profile may move hosts, and its ports must stay free.
+  const targets = profiles.DEPLOYMENT_TARGETS;
+  assert.deepEqual(targets, [
     "pages-next",
     "page3",
     "page4",
@@ -1352,7 +1380,8 @@ test("every deploy profile owns distinct hosts, ports, prefixes and firewall res
     "page9",
     "page10",
     "pages",
-  ];
+    "pages2",
+  ]);
   const seen = new Map();
   const claim = (kind, value, target) => {
     if (value === undefined) return;
@@ -1445,13 +1474,11 @@ for (const target of ["page7", "page8", "page9", "page10", "pages"])
     }
   });
 
-test("compaction maintenance and company viewing are enabled for Page7 through Pages", (t) => {
+test("company viewing and the catalog index are enabled for Page7 through Pages", (t) => {
   for (const target of ["page6", "page7", "page8", "page9", "page10", "pages"]) {
     const f = historicalInstallFixture(t, { target });
     f.execute();
     const config = JSON.parse(f.read(f.release + "/wrangler.json"));
-    assert.equal(config.vars.PAGES_ASYNC_PERSISTENCE, "true");
-    assert.equal(config.vars.PAGES_COMPACT_RECORDS, target !== "page6" ? "true" : undefined);
     assert.equal(
       config.vars.PAGES_COMPANY_VIEW_DOMAINS,
       target !== "page6" ? "anaconda.com" : undefined,
@@ -1460,116 +1487,19 @@ test("compaction maintenance and company viewing are enabled for Page7 through P
       config.vars.PAGES_CATALOG_INDEX,
       ["page8", "page9", "page10", "pages"].includes(target) ? "1" : undefined,
     );
-    // Plain Automerge sync for new Pages is on for Page10 only.
-    assert.equal(config.vars.PAGES_RECORD_STORAGE, target === "page10" ? "automerge" : undefined);
+    // Subduction's switches are gone: every Page syncs with plain Automerge.
+    for (const name of [
+      "PAGES_ASYNC_PERSISTENCE",
+      "PAGES_COMPACT_RECORDS",
+      "PAGES_RECORD_STORAGE",
+      "PAGES_MIGRATE_RECORD_STORAGE",
+      "PAGES_MIGRATE_PAGE_IDS",
+    ])
+      assert.equal(config.vars[name], undefined, `${target} ${name}`);
   }
 });
 
-test("every shipped profile installs migration disabled with an empty canary", (t) => {
-  for (const target of [
-    "pages-next",
-    "page3",
-    "page4",
-    "page5",
-    "page6",
-    "page7",
-    "page8",
-    "page9",
-    "page10",
-    "pages",
-  ]) {
-    assert.deepEqual(profiles.deploymentProfile(target).recordStorageMigration, {
-      enabled: false,
-      pageIds: [],
-    });
-    const f = historicalInstallFixture(t, { target });
-    f.execute();
-    const { vars } = JSON.parse(f.read(f.release + "/wrangler.json"));
-    assert.equal(vars.PAGES_MIGRATE_RECORD_STORAGE, undefined);
-    assert.equal(vars.PAGES_MIGRATE_PAGE_IDS, undefined);
-  }
-});
-
-test("installer serializes only an explicit reviewed migration canary", (t) => {
-  const pageIds = ["55555555-5555-4555-8555-555555555555"];
-  const f = installFixture(t, {
-    target: "page10",
-    profile: {
-      ...profiles.deploymentProfile("page10"),
-      recordStorageMigration: { enabled: true, pageIds },
-    },
-  });
-  f.execute();
-  const { vars } = JSON.parse(f.read(f.release + "/wrangler.json"));
-  assert.equal(vars.PAGES_RECORD_STORAGE, "automerge");
-  assert.equal(vars.PAGES_MIGRATE_RECORD_STORAGE, "true");
-  assert.deepEqual(JSON.parse(vars.PAGES_MIGRATE_PAGE_IDS), pageIds);
-  const record = { pageId: pageIds[0], documentId: "d", recordStorage: "buffered" };
-  assert.equal(migrationStart(vars, record).name, "dormant");
-  assert.equal(migrationStart(vars, { ...record, pageId: crypto.randomUUID() }).name, "off");
-});
-
-test("missing or disabled profile policy cannot enable migration", (t) => {
-  const pageId = "55555555-5555-4555-8555-555555555555";
-  for (const policy of [undefined, { enabled: false, pageIds: [pageId] }]) {
-    const f = installFixture(t, {
-      target: "page10",
-      profile: { ...profiles.deploymentProfile("page10"), recordStorageMigration: policy },
-    });
-    // An activation flag in a built artifact is not reviewed profile policy.
-    const staged = JSON.parse(f.read(f.stage + "/release/wrangler.json"));
-    staged.vars = {
-      PAGES_MIGRATE_RECORD_STORAGE: "true",
-      PAGES_MIGRATE_PAGE_IDS: JSON.stringify([pageId]),
-    };
-    f.write(f.stage + "/release/wrangler.json", JSON.stringify(staged));
-    const manifest = JSON.parse(f.read(f.stage + "/manifest.json"));
-    manifest.files["release/wrangler.json"] = createHash("sha256")
-      .update(JSON.stringify(staged))
-      .digest("hex");
-    f.write(f.stage + "/manifest.json", JSON.stringify(manifest));
-    f.execute();
-    const { vars } = JSON.parse(f.read(f.release + "/wrangler.json"));
-    assert.equal(vars.PAGES_MIGRATE_RECORD_STORAGE, policy ? "false" : undefined);
-    assert.equal(vars.PAGES_MIGRATE_PAGE_IDS, policy ? JSON.stringify([pageId]) : undefined);
-    assert.equal(migrationStart(vars, { pageId, documentId: "d" }).name, "off");
-  }
-});
-
-test("installer refuses malformed migration policy before any host command", (t) => {
-  const pageId = "55555555-5555-4555-8555-555555555555";
-  for (const policy of [
-    null,
-    true,
-    {},
-    { enabled: "true", pageIds: [pageId] },
-    { enabled: true, pageIds: [] },
-    { enabled: true, pageIds: "*" },
-    { enabled: true, pageIds: [pageId, "bad"] },
-    { enabled: true, pageIds: [pageId, pageId] },
-    { enabled: true, pageIds: Array(1) },
-    { enabled: true, pageIds: ["AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"] },
-    { enabled: true, pageIds: [pageId], all: true },
-  ]) {
-    const f = installFixture(t, {
-      target: "page10",
-      profile: { ...profiles.deploymentProfile("page10"), recordStorageMigration: policy },
-    });
-    assert.throws(f.execute, /migration/i);
-    assert.deepEqual(f.calls, []);
-  }
-  const native = installFixture(t, {
-    target: "pages",
-    profile: {
-      ...profiles.deploymentProfile("pages"),
-      recordStorageMigration: { enabled: true, pageIds: [pageId] },
-    },
-  });
-  assert.throws(native.execute, /migration/i);
-  assert.deepEqual(native.calls, []);
-});
-
-test("Pages and Page10 retain the local build's isolated usage binding and UTC cron", (t) => {
+test("Pages and Page10 retain the local build's isolated usage binding and UTC crons", (t) => {
   for (const target of ["page10", "pages"]) {
     const f = installFixture(t, { target });
     f.execute();
@@ -1579,11 +1509,49 @@ test("Pages and Page10 retain the local build's isolated usage binding and UTC c
       profiles.USAGE_D1,
     );
     assert.notEqual(profiles.USAGE_D1.database_id, profiles.AUTH_D1.database_id);
-    assert.deepEqual(config.triggers, { crons: ["5 0 * * *"] });
+    assert.deepEqual(config.triggers, { crons: ["5 0 * * *", "35 * * * *"] });
   }
   assert.notEqual(
     profiles.deploymentProfile("page10").deployment.prefix,
     profiles.deploymentProfile("pages").deployment.prefix,
+  );
+});
+
+test("the installer writes the single session secret until a keyring file exists", (t) => {
+  const f = installFixture(t, { target: "page10" });
+  f.execute();
+  const vars = JSON.parse(f.read(f.release + "/wrangler.json")).vars;
+  assert.equal(vars.NOTEBOOK_CLOUD_APP_SESSION_SECRET, "fixture-only-session-secret");
+  assert.equal(vars.NOTEBOOK_CLOUD_APP_SESSION_KEYS, undefined);
+});
+
+test("the installer writes a keyring file as the session keys var and drops the secret", (t) => {
+  const f = installFixture(t, { target: "page10" });
+  const keyring = {
+    active: "k2",
+    keys: { k1: "k1-fixture-session-key-".repeat(2), k2: "k2-fixture-session-key-".repeat(2) },
+    activated_at: { k2: "2026-11-06T00:00:00.000Z" },
+  };
+  f.write(f.configDir + "/session-keys.json", JSON.stringify(keyring, null, 2) + "\n");
+  f.execute();
+  const vars = JSON.parse(f.read(f.release + "/wrangler.json")).vars;
+  assert.deepEqual(JSON.parse(vars.NOTEBOOK_CLOUD_APP_SESSION_KEYS), keyring);
+  assert.equal(vars.NOTEBOOK_CLOUD_APP_SESSION_SECRET, undefined);
+});
+
+test("the installer refuses a malformed keyring file before it writes anything", (t) => {
+  const f = installFixture(t, { target: "page10" });
+  f.write(
+    f.configDir + "/session-keys.json",
+    JSON.stringify({ active: "k2", keys: { k1: "k1-fixture-session-key-".repeat(2) } }),
+  );
+  assert.throws(f.execute, /Session keyring is invalid: active must name a kid/);
+  assert.equal(fs.existsSync(f.local(f.release)), false);
+  assert.equal(fs.existsSync(f.local(f.audit)), false);
+  // Only the runtime version probes ran; no host command changed anything.
+  assert.deepEqual(
+    f.calls.filter(({ args }) => args[0] !== "--version"),
+    [],
   );
 });
 
@@ -1598,8 +1566,6 @@ test("fresh Page10 installation owns its origin, storage, runtime and service", 
   assert.equal(config.vars.NOTEBOOK_CLOUD_PUBLIC_ORIGIN, "https://page10.runtimed.run");
   assert.equal(config.vars.NOTEBOOK_CLOUD_OIDC_REDIRECT_URI, "https://page10.runtimed.run/oidc");
   assert.equal(config.vars.PAGES_EDITOR, "wordgard");
-  assert.equal(config.vars.PAGES_ASYNC_PERSISTENCE, "true");
-  assert.equal(config.vars.PAGES_COMPACT_RECORDS, "true");
   assert.equal(config.vars.PAGES_COMPANY_VIEW_DOMAINS, "anaconda.com");
   assert.equal(config.vars.PAGES_CATALOG_INDEX, "1");
   assert.equal(config.vars.PAGES_DEFAULT_PAGE_QUOTA, "250");
@@ -1662,8 +1628,7 @@ test("fresh Pages installation owns pages.runtimed.run and its -live resources",
   assert.equal(profile.firewallTable, "nteract_pages_live");
   assert.equal(profile.firewallMark, "0x00100000");
   assert.equal(profile.tunnelService, "cloudflared-pages-live.service");
-  // Every Page10 flag carries over; only the owned resources differ, and
-  // flags Page10 is trying first (recordStorage: plain Automerge sync).
+  // Every Page10 flag carries over; only the owned resources differ.
   const owned = [
     "deployment",
     "firewallTable",
@@ -1671,7 +1636,6 @@ test("fresh Pages installation owns pages.runtimed.run and its -live resources",
     "firewallComment",
     "tunnelService",
     "tunnelSlots",
-    "recordStorage",
   ];
   const flags = (name) =>
     Object.fromEntries(
@@ -1756,6 +1720,102 @@ test("fresh Pages installation owns pages.runtimed.run and its -live resources",
   assert.match(rules, /table inet nteract_pages_live \{/);
   assert.match(rules, /ct mark set ct mark \| 0x00100000/);
   assert.match(rules, /"system[.]slice\/nteract-pages-live[.]service"/);
+});
+
+test("pages2 is a fresh lab2 target with Pages' flags and plain sync only", () => {
+  const profile = profiles.deploymentProfile("pages2");
+  assert.deepEqual(profiles.selectTarget(["--target", "pages2", "plan"]), {
+    target: "pages2",
+    args: ["plan"],
+  });
+  assert.doesNotThrow(() => profiles.assertQualifiedDeploymentTarget("pages2"));
+  assert.deepEqual(profile.deployment, {
+    host: "lab2",
+    hostname: "page2.runtimed.run",
+    service: "nteract-pages2",
+    bucket: profiles.deploymentProfile("pages").deployment.bucket,
+    prefix: "standalone/pages2",
+    region: "us-east-1",
+    listen: "127.0.0.1:9482",
+    internalListen: "127.0.0.1:19482",
+    runtime: profiles.CELLD_RELEASE.path,
+    requiredVersion: "celld 0.6.3",
+  });
+  assert.equal(profiles.stageTarget("/tmp/nteract-pages2-stage-abcd1234"), "pages2");
+  // Pages' flags carry over. Only owned resources differ, plus lab2's lack of
+  // a shared connector and of frozen neighbors.
+  const owned = [
+    "deployment",
+    "firewallTable",
+    "firewallMark",
+    "firewallComment",
+    "tunnelService",
+    "tunnelSlots",
+    "sharedTunnel",
+    "frozenTargets",
+  ];
+  const flags = (name) =>
+    Object.fromEntries(
+      Object.entries(profiles.deploymentProfile(name)).filter(([key]) => !owned.includes(key)),
+    );
+  assert.deepEqual(flags("pages2"), flags("pages"));
+  assert.equal(profile.sharedTunnel, false);
+  assert.equal(profile.frozenTargets, undefined);
+  assert.deepEqual(profile.d1, profiles.AUTH_D1);
+  assert.deepEqual(profiles.unitMemory(profile), { maxRssMb: 2560, memoryMax: "4G" });
+  assert.deepEqual(profiles.RECORD_STORAGE_HISTORY.pages2, ["automerge"]);
+  // A build that can't open plain Pages is refused before it reaches lab2.
+  assert.throws(
+    () =>
+      profiles.assertReleaseOpensTargetPages("pages2", {
+        source_sha: "a".repeat(40),
+        build_id: "0123456789ab",
+        record_storage: [],
+      }),
+    /pages2 may hold "automerge" Pages/,
+  );
+  assert.doesNotThrow(() =>
+    profiles.assertReleaseOpensTargetPages("pages2", {
+      record_storage: CURRENT_RECORD_STORAGE,
+      plain_storage_formats: CURRENT_PLAIN_STORAGE_FORMATS,
+    }),
+  );
+});
+
+test("fresh pages2 installation owns page2.runtimed.run, its prefix and its unit", (t) => {
+  const f = installFixture(t, { target: "pages2", fresh: true });
+  f.execute();
+  const config = JSON.parse(f.read(f.release + "/wrangler.json"));
+  assert.equal(config.vars.NOTEBOOK_CLOUD_PUBLIC_ORIGIN, "https://page2.runtimed.run");
+  assert.equal(config.vars.NOTEBOOK_CLOUD_OIDC_REDIRECT_URI, "https://page2.runtimed.run/oidc");
+  assert.equal(config.vars.PAGES_RECORD_STORAGE, undefined);
+  assert.equal(config.vars.PAGES_MIGRATE_RECORD_STORAGE, undefined);
+  assert.equal(config.vars.PAGES_MIGRATE_PAGE_IDS, undefined);
+  assert.equal(config.vars.PAGES_DEFAULT_PAGE_QUOTA, "250");
+  assert.deepEqual(
+    config.d1_databases.find((db) => db.binding === "DB"),
+    profiles.AUTH_D1,
+  );
+  assert.deepEqual(JSON.parse(f.read("/etc/nteract-pages2/ownership.json")), {
+    prefix: "standalone/pages2",
+    hostname: "page2.runtimed.run",
+  });
+  const unit = f.read("/etc/systemd/system/nteract-pages2.service");
+  assert.match(unit, /User=nteract-pages2\n/);
+  assert.match(unit, /Environment=CELLD_MAX_RSS_MB=2560\n/);
+  assert.match(unit, /MemoryMax=4G\n/);
+  assert.match(
+    unit,
+    /ExecStart=\/opt\/nteract-pages2\/celld --bucket s3:\/\/[^ ]+\/standalone\/pages2 /,
+  );
+  assert.match(unit, /--listen 127[.]0[.]0[.]1:9482 --internal-listen 127[.]0[.]0[.]1:19482/);
+  const prefixCheck = f.calls.find(
+    ({ command, args }) => command === "/usr/local/bin/aws" && args.includes("--prefix"),
+  );
+  assert.equal(prefixCheck.args[prefixCheck.args.indexOf("--prefix") + 1], "standalone/pages2/");
+  const rules = pagesFirewall(999, false, "pages2");
+  assert.match(rules, /table inet nteract_pages2 \{/);
+  assert.match(rules, /ct mark set ct mark \| 0x00080000/);
 });
 
 // Activation: a running node adopts a new pointer without a restart unless
@@ -2210,7 +2270,7 @@ test("a release without plain storage is refused for a target that has enabled i
       (error) => {
         assert.match(error.message, /^Refusing release d{12} \(build 9ae4ed83e44e\) for page10: /);
         assert.match(error.message, /page10 may hold "automerge" Pages/);
-        assert.match(error.message, /RECORD_STORAGE_HISTORY lists it; its profile sets/);
+        assert.match(error.message, /RECORD_STORAGE_HISTORY lists it\)/);
         assert.match(error.message, /Unsupported Page record storage mode/);
         return true;
       },
@@ -2228,10 +2288,14 @@ test("plain targets refuse receipts that know automerge but not the current plai
       () => profiles.assertReleaseOpensTargetPages("page10", receipt),
       /plain_storage_formats.*doc-store-v2-host-actor-prefix/,
     );
-    assert.doesNotThrow(() => profiles.assertReleaseOpensTargetPages("pages", receipt));
+    assert.throws(
+      () => profiles.assertReleaseOpensTargetPages("pages", receipt),
+      /plain_storage_formats.*doc-store-v2-host-actor-prefix/,
+    );
+    assert.doesNotThrow(() => profiles.assertReleaseOpensTargetPages("page9", receipt));
     assert.throws(
       () =>
-        profiles.assertReleaseOpensTargetPages("pages", receipt, [
+        profiles.assertReleaseOpensTargetPages("page9", receipt, [
           { mode: "automerge", release: "old" },
         ]),
       /plain_storage_formats/,
@@ -2251,19 +2315,34 @@ test("install refuses an old plain format before any write", (t) => {
 });
 
 test("a target that never enabled plain storage accepts a release without it", () => {
-  assert.equal(profiles.targetRecordStorage("pages").size, 0);
-  assert.doesNotThrow(() => profiles.assertReleaseOpensTargetPages("pages", PRE_PLAIN));
+  assert.equal(profiles.targetRecordStorage("page9").size, 0);
+  assert.doesNotThrow(() => profiles.assertReleaseOpensTargetPages("page9", PRE_PLAIN));
   // Unless its host has run a release configured to create plain Pages.
   assert.throws(
     () =>
-      profiles.assertReleaseOpensTargetPages("pages", PRE_PLAIN, [
+      profiles.assertReleaseOpensTargetPages("page9", PRE_PLAIN, [
         { mode: "automerge", release: "a2c9d5dded35" },
       ]),
-    /pages may hold "automerge" Pages \(release a2c9d5dded35 on the host was configured with it\)/,
+    /page9 may hold "automerge" Pages \(release a2c9d5dded35 on the host was configured with it\)/,
   );
 });
 
-test("every target that sets recordStorage records it in RECORD_STORAGE_HISTORY", () => {
+test("Pages refuses a release without plain storage from its history alone", () => {
+  // The restart deploy that turns plain Pages on may not have run yet; the
+  // history entry already refuses every build that could not open them.
+  assert.deepEqual(
+    [...profiles.targetRecordStorage("pages")],
+    [["automerge", ["RECORD_STORAGE_HISTORY lists it"]]],
+  );
+  for (const receipt of [PRE_PLAIN, { ...PRE_PLAIN, record_storage: ["local", "buffered"] }])
+    assert.throws(
+      () => profiles.assertReleaseOpensTargetPages("pages", receipt),
+      /^Error: Refusing release d{12} \(build 9ae4ed83e44e\) for pages: pages may hold "automerge" Pages \(RECORD_STORAGE_HISTORY lists it\)/,
+    );
+  assert.doesNotThrow(() => profiles.assertReleaseOpensTargetPages("pages", PLAIN));
+});
+
+test("serving targets hold plain Pages for good, and no profile names record storage", () => {
   for (const target of [
     "pages-next",
     "page3",
@@ -2275,12 +2354,15 @@ test("every target that sets recordStorage records it in RECORD_STORAGE_HISTORY"
     "page9",
     "page10",
     "pages",
+    "pages2",
   ]) {
-    const mode = profiles.deploymentProfile(target).recordStorage;
-    if (mode) assert.ok(profiles.RECORD_STORAGE_HISTORY[target]?.includes(mode), target);
+    const profile = profiles.deploymentProfile(target);
+    for (const key of ["recordStorage", "recordStorageMigration", "asyncPersistence"])
+      assert.equal(profile[key], undefined, `${target} ${key}`);
   }
-  // A Page keeps its mode for life, so history outlives the profile flag.
   assert.deepEqual(profiles.RECORD_STORAGE_HISTORY.page10, ["automerge"]);
+  assert.deepEqual(profiles.RECORD_STORAGE_HISTORY.pages, ["automerge"]);
+  assert.deepEqual(profiles.RECORD_STORAGE_HISTORY.pages2, ["automerge"]);
 });
 
 test("the build receipt lists every record storage mode the Worker opens", async () => {
@@ -2291,7 +2373,7 @@ test("the build receipt lists every record storage mode the Worker opens", async
   const { PLAIN_STORAGE_FORMATS } = await import("../shared/record-storage.mjs");
   assert.deepEqual(PLAIN_STORAGE_FORMATS, CURRENT_PLAIN_STORAGE_FORMATS);
   assert.match(source, /plain_storage_formats: \[\.\.\.PLAIN_STORAGE_FORMATS\]/);
-  for (const entry of ["deploy.mjs", "deployment/install.mjs", "rollback-qualification.mjs"])
+  for (const entry of ["deploy.mjs", "deployment/install.mjs"])
     assert.match(
       fs.readFileSync(new URL(entry, import.meta.url), "utf8"),
       /assertReleaseOpensTargetPages\(/,
@@ -2313,16 +2395,35 @@ test("Page10 refuses to install a release without plain storage before any write
   assert.deepEqual(JSON.parse(f.read(f.configDir + "/deployment.json")), { id: "previous" });
 });
 
-test("Pages installs a release without plain storage", (t) => {
-  const f = installFixture(t, { target: "pages", buildReceipt: { build_id: PRE_PLAIN.build_id } });
+test("Pages refuses to install a release without plain storage before any write", (t) => {
+  const f = installFixture(t, {
+    target: "pages",
+    installedRuntime: { version: "celld 0.6.3", bytes: "qualified runtime" },
+    buildReceipt: { build_id: PRE_PLAIN.build_id },
+  });
+  assert.throws(f.execute, /Refusing release a{12} \(build 9ae4ed83e44e\) for pages: /);
+  assert.ok(f.calls.every(({ args }) => args[0] === "--version"));
+  assert.equal(fs.existsSync(f.local(f.release)), false);
+  assert.equal(fs.existsSync(f.local(f.audit)), false);
+  assert.deepEqual(JSON.parse(f.read(f.configDir + "/deployment.json")), { id: "previous" });
+});
+
+test("a target that never created plain Pages installs a release without plain storage", (t) => {
+  const f = historicalInstallFixture(t, {
+    target: "page9",
+    buildReceipt: { build_id: PRE_PLAIN.build_id },
+  });
   f.execute();
   assert.equal(f.outputs.at(-1).installed, true);
 });
 
 test("a host release configured with plain storage blocks a release without it", (t) => {
-  const f = installFixture(t, { target: "pages", buildReceipt: { build_id: PRE_PLAIN.build_id } });
+  const f = historicalInstallFixture(t, {
+    target: "page9",
+    buildReceipt: { build_id: PRE_PLAIN.build_id },
+  });
   f.write(
-    "/opt/nteract-pages-live/releases/" + "e".repeat(40) + "/wrangler.json",
+    "/opt/nteract-page9/releases/" + "e".repeat(40) + "/wrangler.json",
     JSON.stringify({ vars: { PAGES_RECORD_STORAGE: "automerge" } }),
   );
   assert.throws(f.execute, /release e{12} on the host was configured with it/);
@@ -2361,4 +2462,138 @@ test("a timeout does not name a rollback to a release without the plain format c
   assert.match(message, /Refusing release a{12} \(build 0123456789ab\) for page10: /);
   assert.doesNotMatch(message, /Roll back with/);
   assert.match(message, /plain_storage_formats/);
+});
+
+test("serving targets shed above 2.5 GB and older targets keep their shipped limits", () => {
+  for (const target of ["page10", "pages"])
+    assert.deepEqual(profiles.unitMemory(profiles.deploymentProfile(target)), {
+      maxRssMb: 2560,
+      memoryMax: "4G",
+    });
+  assert.deepEqual(
+    profiles.unitMemory(profiles.deploymentProfile("page9")),
+    profiles.DEFAULT_MEMORY,
+  );
+  assert.deepEqual(profiles.DEFAULT_MEMORY, { maxRssMb: 768, memoryMax: "1G" });
+  for (const memory of [
+    { maxRssMb: 100, memoryMax: "4G" },
+    { maxRssMb: 2560.5, memoryMax: "4G" },
+    { maxRssMb: 2560, memoryMax: "4096M" },
+    { maxRssMb: 2560, memoryMax: "3G" },
+    { maxRssMb: 2560, memoryMax: "0G" },
+    { maxRssMb: 2560 },
+  ])
+    assert.throws(() => profiles.unitMemory({ memory }), /memory\./);
+});
+
+const FIXTURE_KEYRING = {
+  active: "k2",
+  keys: { k1: "k1-fixture-session-key-".repeat(2), k2: "k2-fixture-session-key-".repeat(2) },
+};
+
+test("the installer refuses a host with neither a keyring nor the single secret", (t) => {
+  const f = installFixture(t, { target: "page10" });
+  fs.rmSync(f.local(f.configDir + "/session-secret"));
+  assert.throws(f.execute, /Neither .*session-keys[.]json nor .*session-secret exists/);
+  assert.equal(fs.existsSync(f.local(f.release)), false);
+  assert.ok(f.calls.every(({ args }) => args[0] === "--version"));
+});
+
+test("a keyring install records when the Worker began signing and carries it along one line", (t) => {
+  const f = liveFixture(t);
+  assert.equal(fs.existsSync(f.local(f.configDir + "/session-keys-active.json")), false);
+  f.write(f.configDir + "/session-keys.json", JSON.stringify(FIXTURE_KEYRING));
+  fs.rmSync(f.local(f.configDir + "/session-secret"));
+  nextRelease(f);
+  f.execute();
+  const record = JSON.parse(f.read(f.configDir + "/session-keys-active.json"));
+  assert.equal(record.active, "k2");
+  assert.equal(record.deployment_version, DEPLOYED);
+  assert.ok(!Number.isNaN(Date.parse(record.activated_at)));
+  assert.deepEqual(f.outputs.at(-1).session_key, {
+    active: "k2",
+    signing_since: record.activated_at,
+  });
+  // The node reported the recorded deployment before this install: same line.
+  assert.ok(
+    f.calls.some(
+      ({ command, args }) => command === "curl" && args.at(-1) === "http://127.0.0.1:19480/state",
+    ),
+  );
+  nextRelease(f, "cd9876543210", "d");
+  f.execute();
+  assert.deepEqual(JSON.parse(f.read(f.configDir + "/session-keys-active.json")), record);
+});
+
+test("a keyring install gives older release configs the current session vars", (t) => {
+  const f = liveFixture(t);
+  const earlier = f.release + "/wrangler.json";
+  const before = JSON.parse(f.read(earlier));
+  assert.equal(before.vars.NOTEBOOK_CLOUD_APP_SESSION_SECRET, "fixture-only-session-secret");
+  f.write(f.configDir + "/session-keys.json", JSON.stringify(FIXTURE_KEYRING));
+  nextRelease(f);
+  f.execute();
+  const after = JSON.parse(f.read(earlier));
+  assert.equal(after.vars.NOTEBOOK_CLOUD_APP_SESSION_SECRET, undefined);
+  assert.deepEqual(JSON.parse(after.vars.NOTEBOOK_CLOUD_APP_SESSION_KEYS), FIXTURE_KEYRING);
+  const { NOTEBOOK_CLOUD_APP_SESSION_SECRET: _secret, ...otherVars } = before.vars;
+  const { NOTEBOOK_CLOUD_APP_SESSION_KEYS: _keys, ...keptVars } = after.vars;
+  assert.deepEqual(keptVars, otherVars);
+  assert.deepEqual({ ...after, vars: null }, { ...before, vars: null });
+  // After a retire, the next install takes the retired key off the disk too.
+  f.write(
+    f.configDir + "/session-keys.json",
+    JSON.stringify({ active: "k2", keys: { k2: FIXTURE_KEYRING.keys.k2 } }),
+  );
+  nextRelease(f, "cd9876543210", "d");
+  f.execute();
+  for (const sha of ["a", "c"])
+    assert.doesNotMatch(
+      f.read("/opt/nteract-page10/releases/" + sha.repeat(40) + "/wrangler.json"),
+      /k1-fixture-session-key/,
+    );
+});
+
+for (const [label, keyringBuild] of [
+  ["refuses", false],
+  ["names", true],
+])
+  test(`a keyring timeout ${label} a rollback to a release ${keyringBuild ? "with" : "without"} the keyring`, (t) => {
+    const clock = { now: 1_000_000 };
+    const f = liveFixture(t, {
+      clock,
+      health: () =>
+        JSON.stringify({ ok: true, prototype: "pages-celld-native", build: "0123456789ab" }),
+    });
+    if (keyringBuild) {
+      const earlier = f.audit + "/manifest.json";
+      const recorded = JSON.parse(f.read(earlier));
+      f.write(
+        earlier,
+        JSON.stringify({ ...recorded, files: { ...recorded.files, "session-keys.mjs": "0" } }),
+      );
+    }
+    f.write(f.configDir + "/session-keys.json", JSON.stringify(FIXTURE_KEYRING));
+    nextRelease(f);
+    let message = "";
+    try {
+      f.execute(["--restart"]);
+    } catch (error) {
+      message = error.message;
+    }
+    assert.match(message, /did not serve within 240000 ms/);
+    if (keyringBuild) assert.match(message, /Roll back with/);
+    else {
+      assert.match(message, /but do not roll back to it. It predates the session keyring/);
+      assert.doesNotMatch(message, /Roll back with/);
+    }
+    assert.equal(fs.existsSync(f.local(f.configDir + "/session-keys-active.json")), false);
+  });
+
+test("an install without a keyring drops a stale activation record", (t) => {
+  const f = liveFixture(t);
+  f.write(f.configDir + "/session-keys-active.json", JSON.stringify({ active: "k2" }));
+  nextRelease(f);
+  f.execute();
+  assert.equal(fs.existsSync(f.local(f.configDir + "/session-keys-active.json")), false);
 });

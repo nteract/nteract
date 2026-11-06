@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import * as A from "@automerge/automerge";
 import MarkdownIt from "markdown-it";
-import { pageMarkdown, unsentCommentsMarkdown } from "./markdown-export.mjs";
+import { commentDraftsMarkdown, pageMarkdown, unsentCommentsMarkdown } from "./markdown-export.mjs";
 import { applyPageOperation, createPageData, initializePage, projectPage } from "./page.mjs";
 
 const page = (title, ...blocks) => ({ title, blocks: blocks.map((markdown) => ({ markdown })) });
@@ -128,4 +128,35 @@ test("unsent comments quote their passage and list only what the saved state lac
   assert.doesNotMatch(section, /> Sent|Gone/);
   assert.equal(unsentCommentsMarkdown(saved, saved), "");
   assert.match(unsentCommentsMarkdown(saved, null), /may not have reached the server[\s\S]*> Sent/);
+});
+
+test("a comment draft archived with its spans exports their formatting and images", () => {
+  // As a recovery record stores them: plain JSON from the editor's encode.
+  const spans = JSON.parse(
+    JSON.stringify([
+      { type: "text", value: "Ship ", marks: {} },
+      { type: "text", value: "Friday", marks: { strong: true } },
+      {
+        type: "block",
+        value: {
+          type: "image",
+          parents: ["paragraph"],
+          attrs: { src: "https://example.org/chart.png", alt: "chart", title: null },
+          isEmbed: true,
+        },
+      },
+    ]),
+  );
+  const exported = commentDraftsMarkdown([
+    { kind: "comment", body: "Ship Fridaychart", spans, quote: "plan" },
+    { kind: "reply", thread_id: "t1", body: "Plain only" },
+  ]);
+  assert.match(exported, /Ship \*\*Friday\*\*/);
+  assert.match(exported, /!\[chart\]\(https:\/\/example\.org\/chart\.png\)/);
+  assert.match(exported, /Plain only/);
+  // An image-only draft has no text, and is still exported.
+  assert.match(
+    commentDraftsMarkdown([{ kind: "comment", body: "", spans: [spans[2]] }]),
+    /!\[chart\]/,
+  );
 });

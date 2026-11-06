@@ -4,7 +4,6 @@ import * as A from "@automerge/automerge";
 import MarkdownIt from "markdown-it";
 import markdownCorpus from "./markdown-corpus.json" with { type: "json" };
 import {
-  enableRich,
   exportMarkdown,
   nativeImportLoss,
   parseAgentMarkdown,
@@ -12,6 +11,7 @@ import {
   richDoc,
   unsupportedMarkdown,
 } from "./richtext.mjs";
+import { richFromSource } from "./richtext-test-support.mjs";
 
 const nodeNames = (doc) => {
   const names = [];
@@ -398,7 +398,7 @@ test("a table break tag with an attribute stays literal through import and expor
   const source = '| a<br class="x">b |\n| --- |\n| c |';
   const native = A.change(
     A.from({ blocks: { one: { id: "one", kind: "markdown", markdown: source } } }),
-    (doc) => enableRich(doc, "one"),
+    (doc) => richFromSource(doc, "one"),
   );
   const imported = richDoc(native.blocks.one);
   assert.ok(nodeNames(imported).includes("table"));
@@ -461,7 +461,7 @@ test("entity-only linked newlines are refused for agents and preserved literally
       assert.deepEqual(nativeImportLoss(source), { kind: "link", value: "https://example.org" });
       const native = A.change(
         A.from({ blocks: { one: { id: "one", kind: "markdown", markdown: source } } }),
-        (doc) => enableRich(doc, "one"),
+        (doc) => richFromSource(doc, "one"),
       );
       assert.equal(richDoc(native.blocks.one).textContent, source);
     }

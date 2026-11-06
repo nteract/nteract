@@ -13,6 +13,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PACKAGER = REPO_ROOT / "scripts" / "package-notebook-ui.py"
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
+ATTRIBUTION_FILES = ("LICENSE.nteract", "THIRD_PARTY_NOTICES.txt", "sbom.cdx.json")
 
 
 class PackageNotebookUiTests(unittest.TestCase):
@@ -24,8 +25,34 @@ class PackageNotebookUiTests(unittest.TestCase):
         (self.dist / "index.html").write_text("<main>notebook</main>\n", encoding="utf-8")
         (self.dist / "output-frame.html").write_text("<main>output</main>\n", encoding="utf-8")
         (self.dist / "assets" / "main-example.js").write_text("export {};\n", encoding="utf-8")
-        self.license_path = self.root / "LICENSE"
-        self.license_path.write_text("BSD-3-Clause\n", encoding="utf-8")
+        self.attribution = self.root / "attribution"
+        self.attribution.mkdir()
+        (self.attribution / "LICENSE.nteract").write_text("BSD-3-Clause\n", encoding="utf-8")
+        (self.attribution / "THIRD_PARTY_NOTICES.txt").write_text(
+            "Example dependency\nCopyright Example\nMIT license text\n", encoding="utf-8"
+        )
+        (self.attribution / "sbom.cdx.json").write_text(
+            json.dumps(
+                {
+                    "bomFormat": "CycloneDX",
+                    "specVersion": "1.6",
+                    "version": 1,
+                    "metadata": {
+                        "component": {
+                            "type": "application",
+                            "name": "notebook-ui",
+                            "version": "2.7.0-nightly.202608180909",
+                        },
+                        "properties": [
+                            {"name": "nteract:source-commit", "value": COMMIT},
+                            {"name": "nteract:target", "value": "wasm32-unknown-unknown"},
+                        ],
+                    },
+                    "components": [{"type": "library", "name": "example", "version": "1.0.0"}],
+                }
+            ),
+            encoding="utf-8",
+        )
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
@@ -37,8 +64,8 @@ class PackageNotebookUiTests(unittest.TestCase):
                 str(PACKAGER),
                 "--dist",
                 str(self.dist),
-                "--license",
-                str(self.license_path),
+                "--attribution",
+                str(self.attribution),
                 "--output",
                 str(output),
                 "--channel",
@@ -73,12 +100,18 @@ class PackageNotebookUiTests(unittest.TestCase):
             self.assertIn("nteract-notebook-ui/index.html", names)
             self.assertIn("nteract-notebook-ui/output-frame.html", names)
             self.assertIn("nteract-notebook-ui/LICENSE.nteract", names)
+            for name in ATTRIBUTION_FILES:
+                with archive.extractfile(f"nteract-notebook-ui/{name}") as contents:
+                    self.assertEqual(contents.read(), (self.attribution / name).read_bytes())
             manifest_file = archive.extractfile("nteract-notebook-ui/nteract-notebook-ui.json")
             self.assertIsNotNone(manifest_file)
             manifest = json.loads(manifest_file.read())
             self.assertEqual(manifest["schemaVersion"], 1)
             self.assertEqual(manifest["channel"], "nightly")
             self.assertEqual(manifest["commit"], COMMIT)
+            self.assertEqual(manifest["license"], "LICENSE.nteract")
+            self.assertEqual(manifest["notices"], "THIRD_PARTY_NOTICES.txt")
+            self.assertEqual(manifest["sbom"], "sbom.cdx.json")
 
         checksum = first.with_name(first.name + ".sha256").read_text(encoding="utf-8")
         self.assertEqual(
@@ -92,10 +125,104 @@ class PackageNotebookUiTests(unittest.TestCase):
         self.assertIn("missing required file: output-frame.html", result.stderr)
 
     def test_rejects_a_reserved_bundle_file(self) -> None:
-        (self.dist / "LICENSE.nteract").write_text("unexpected\n", encoding="utf-8")
-        result = self.run_packager(self.root / "reserved.tar.gz")
+        for name in (*ATTRIBUTION_FILES, "nteract-notebook-ui.json"):
+            with self.subTest(name=name):
+                path = self.dist / name
+                path.write_text("unexpected\n", encoding="utf-8")
+                result = self.run_packager(self.root / "reserved.tar.gz")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f"contains reserved bundle file: {name}", result.stderr)
+                path.unlink()
+
+    def test_requires_each_attribution_file(self) -> None:
+        for name in ATTRIBUTION_FILES:
+            with self.subTest(name=name):
+                path = self.attribution / name
+                contents = path.read_bytes()
+                path.unlink()
+                output = self.root / "missing.tar.gz"
+                result = self.run_packager(output)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f"attribution requires a regular file: {name}", result.stderr)
+                self.assertFalse(output.exists())
+                path.write_bytes(contents)
+
+    def test_rejects_empty_or_invalid_attribution_text(self) -> None:
+        for name in ATTRIBUTION_FILES:
+            path = self.attribution / name
+            original = path.read_bytes()
+            for contents in (b"", b" \n\t", b"\x00", b"\xff"):
+                with self.subTest(name=name, contents=contents):
+                    path.write_bytes(contents)
+                    result = self.run_packager(self.root / "invalid.tar.gz")
+                    self.assertNotEqual(result.returncode, 0)
+            path.write_bytes(original)
+
+    def test_rejects_invalid_sbom(self) -> None:
+        path = self.attribution / "sbom.cdx.json"
+        valid = json.loads(path.read_text(encoding="utf-8"))
+        invalid = ["{", "null", "[]", "{}"]
+        for key, value in (
+            ("bomFormat", "SPDX"),
+            ("specVersion", "bogus"),
+            ("version", True),
+            ("version", 0),
+            ("components", []),
+            ("components", {}),
+            ("components", [None]),
+            ("components", [{"name": "", "type": "library"}]),
+        ):
+            invalid.append(json.dumps({**valid, key: value}))
+        for contents in invalid:
+            with self.subTest(contents=contents):
+                path.write_text(contents, encoding="utf-8")
+                result = self.run_packager(self.root / "invalid.tar.gz")
+                self.assertNotEqual(result.returncode, 0)
+
+    def test_rejects_mismatched_sbom_identity(self) -> None:
+        path = self.attribution / "sbom.cdx.json"
+        original = path.read_text(encoding="utf-8")
+        for field, value in (
+            ("metadata", None),
+            ("name", "runtimed"),
+            ("version", "1.0.0"),
+            ("nteract:source-commit", "f" * 40),
+            ("nteract:target", "aarch64-apple-darwin"),
+            ("properties", []),
+            ("properties", [None]),
+        ):
+            with self.subTest(field=field, value=value):
+                sbom = json.loads(original)
+                if field == "metadata":
+                    sbom[field] = value
+                elif field == "properties":
+                    sbom["metadata"][field] = value
+                elif field.startswith("nteract:"):
+                    for prop in sbom["metadata"]["properties"]:
+                        if prop["name"] == field:
+                            prop["value"] = value
+                else:
+                    sbom["metadata"]["component"][field] = value
+                path.write_text(json.dumps(sbom), encoding="utf-8")
+                output = self.root / "wrong-identity.tar.gz"
+                result = self.run_packager(output)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("attribution SBOM", result.stderr)
+                self.assertFalse(output.exists())
+
+    def test_rejects_attribution_symlinks(self) -> None:
+        path = self.attribution / "LICENSE.nteract"
+        path.unlink()
+        os.symlink(self.dist / "index.html", path)
+        result = self.run_packager(self.root / "symlink.tar.gz")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("contains reserved bundle file: LICENSE.nteract", result.stderr)
+        self.assertIn("attribution requires a regular file: LICENSE.nteract", result.stderr)
+
+    def test_rejects_missing_attribution_directory(self) -> None:
+        self.attribution = self.root / "missing"
+        result = self.run_packager(self.root / "missing.tar.gz")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("attribution directory does not exist", result.stderr)
 
     def test_rejects_a_symbolic_link(self) -> None:
         os.symlink(self.dist / "index.html", self.dist / "linked-index.html")

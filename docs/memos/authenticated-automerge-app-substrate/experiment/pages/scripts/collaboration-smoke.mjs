@@ -414,7 +414,8 @@ try {
     )
     .toMatchObject({ status: "attached", text: "brown small fox" });
   await b.getByRole("button", { name: /^Comments/ }).click();
-  const thread = b.locator(".thread").first();
+  await b.locator(".thread-row").first().click();
+  const thread = b.locator(".thread-view");
   await expect(thread).toContainText("Is it brown?");
   await thread.getByRole("button", { name: "Reply" }).click();
   await expect(thread.getByRole("textbox", { name: "Reply" })).toBeFocused();
@@ -422,16 +423,14 @@ try {
   await thread.getByRole("button", { name: "Send" }).click();
   await a.getByRole("button", { name: /^Comments/ }).click();
   await thread.getByRole("button", { name: "Resolve" }).click();
-  await expect(a.locator("details.resolved-threads > summary")).toHaveText(/Resolved \(1\)/);
-  const resolved = a.locator("details.resolved-threads");
-  if (!(await resolved.evaluate((element) => element.open)))
-    await resolved.locator("summary").click();
-  // Replies may already be showing (sending a reply expands them).
-  const repliesToggle = resolved.locator(".thread .thread-replies-toggle");
-  if ((await repliesToggle.getAttribute("aria-expanded")) !== "true") await repliesToggle.click();
-  await expect(resolved.locator(".thread")).toContainText("Yes, brown.");
-  await resolved.locator(".thread").getByRole("button", { name: "Reopen" }).click();
-  await expect(b.locator(".thread:not(.resolved)")).toHaveCount(1);
+  const resolvedTab = a.getByRole("tab", { name: /^Resolved/ });
+  await expect(resolvedTab).toHaveText("Resolved1");
+  await resolvedTab.click();
+  await a.locator(".thread-row").first().click();
+  const resolved = a.locator(".thread-view");
+  await expect(resolved).toContainText("Yes, brown.");
+  await resolved.getByRole("button", { name: "Reopen" }).click();
+  await expect(b.locator(".thread-view").getByRole("button", { name: "Resolve" })).toBeVisible();
   complete(stage);
 
   stage = "Move to Trash refused by a peer's edit says so in plain words";

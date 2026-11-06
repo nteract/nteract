@@ -4,18 +4,18 @@ import * as A from "@automerge/automerge";
 import {
   parseMarkdown,
   exportMarkdown,
-  enableRich,
   setRichMarkdown,
   textPath,
   validateRich,
   blockMarkdown,
 } from "./richtext.mjs";
+import { richFromSource } from "./richtext-test-support.mjs";
 import { decode, encode, TaskList, TaskChecked } from "./wordgard-doc.mjs";
 
 const path = textPath("one");
 const fixture = (markdown) =>
   A.change(A.from({ blocks: { one: { id: "one", kind: "markdown", markdown } } }), (doc) =>
-    enableRich(doc, "one"),
+    richFromSource(doc, "one"),
   );
 const checkedStates = (doc) =>
   A.spans(doc, path)
@@ -42,7 +42,12 @@ test("task Markdown imports native checked values and round trips through Wordga
     validateRich(rewritten.blocks.one);
     assert.ok(decode(spans).doc.eq(tree), source);
     assert.deepEqual(checkedStates(rewritten), checkedStates(native), source);
-    assert.equal(blockMarkdown(rewritten.blocks.one), source);
+    // The projection reads back as the same content.
+    assert.deepEqual(
+      parseMarkdown(blockMarkdown(rewritten.blocks.one)).toJSON(),
+      parseMarkdown(source).toJSON(),
+      source,
+    );
     const projected = exportMarkdown(parseMarkdown(source));
     assert.deepEqual(parseMarkdown(projected).toJSON(), parseMarkdown(source).toJSON());
   }
@@ -65,7 +70,11 @@ test("checkbox-like prose, code, escapes, and invalid markers stay literal", () 
   ]) {
     const native = fixture(source);
     assert.deepEqual(checkedStates(native), [], source);
-    assert.equal(blockMarkdown(native.blocks.one), source);
+    assert.deepEqual(
+      parseMarkdown(blockMarkdown(native.blocks.one)).toJSON(),
+      parseMarkdown(source).toJSON(),
+      source,
+    );
     validateRich(native.blocks.one);
   }
 });

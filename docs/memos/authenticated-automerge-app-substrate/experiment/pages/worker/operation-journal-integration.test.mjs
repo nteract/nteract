@@ -10,6 +10,7 @@ import { comment, newCommentsDoc } from "../model/comments-test-support.mjs";
 import { stampFeatures } from "../model/schema-features.mjs";
 import { documentMutation, recoverDocumentMutations } from "./mutations.mjs";
 import { issueRetryToken, JOURNAL_LIMITS, RETRY_LIFETIME_MS } from "./operation-journal.mjs";
+import { plainStub } from "./plain-stub.mjs";
 
 const start = Date.parse("2026-10-25T00:00:00Z");
 const pageId = "33333333-3333-4333-8333-333333333333";
@@ -738,6 +739,7 @@ async function pageFixture(t, { readContent = false } = {}) {
     threadId = result.thread_id;
   }
   const page = Object.assign(Object.create(Page.prototype), {
+    plain: plainStub(),
     ready: Promise.resolve(),
     tail: Promise.resolve(),
     env: auth.env,
@@ -770,9 +772,7 @@ async function pageFixture(t, { readContent = false } = {}) {
     cacheTitle() {},
   });
   page.policy = new DocumentPolicy({
-    storage,
     metadata: () => page.metadata,
-    serverKey: "a".repeat(64),
   });
   const token = auth.apiKey();
   const request = (operation, args = {}) =>
@@ -1249,7 +1249,7 @@ test("Page dataframe preflight refuses missing, image and malformed assets befor
   }
 });
 
-test("recovery-blocked Page keeps accepted content readable and rejects tool and native writes", async (t) => {
+test("recovery-blocked Page keeps accepted content readable and rejects tool and sync writes", async (t) => {
   t.mock.method(Date, "now", () => start);
   const f = await pageFixture(t);
   f.page.metadata.recoveryBlocked = { code: "history_capacity" };
@@ -1267,8 +1267,7 @@ test("recovery-blocked Page keeps accepted content readable and rejects tool and
   assert.equal(edit.status, 409);
   assert.equal((await edit.json()).code, "page_recovery_blocked");
   assert.equal(f.updates(), 0);
-  const key = "b".repeat(64);
-  let disconnects = 0;
+  // Sync connections read but can't write.
   const identity = {
     principal: f.principal,
     displayName: "Owner",
@@ -1276,33 +1275,10 @@ test("recovery-blocked Page keeps accepted content readable and rejects tool and
     canWrite: true,
     expiresAt: start + 60_000,
   };
-  await f.page.policy.bind(key, "fixture-browser", identity, {
-    reauthenticate: async () => identity,
-    disconnect: async () => {
-      disconnects++;
-    },
+  f.page.policy.account(identity);
+  assert.throws(() => f.page.policy.account(identity, true), {
+    status: 409,
+    code: "page_recovery_blocked",
   });
-  let freed = 0;
-  const resource = (hex) => ({
-    toBytes: () => Uint8Array.from(Buffer.from(hex, "hex")),
-    free() {
-      freed++;
-    },
-  });
-  const native = f.page.policy.native();
-  await native.authorizeFetch(resource(key), resource(f.page.metadata.tree));
-  await assert.rejects(
-    native.authorizePut(resource(key), resource(key), resource(f.page.metadata.tree)),
-    {
-      status: 409,
-      code: "page_recovery_blocked",
-    },
-  );
-  assert.equal(disconnects, 1);
-  assert.equal(
-    freed,
-    5,
-    "native request resources are freed on both accepted reads and denied writes",
-  );
   assert.equal(f.page.handle.doc().title, "Accepted content");
 });

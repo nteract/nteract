@@ -1,0 +1,47 @@
+Plotly attribution status: reviewed-with-exceptions
+
+These exact MIT-declared sources have incomplete notice material. Shipping these verified materials is a documented nteract maintenance exception, not a claim of complete attribution or legal approval. No copyright holder is inferred from author metadata. No exception permits integrity, network, or unknown-license failures.
+
+array-normalize@1.1.4
+Declared license: MIT
+Missing material: Full MIT permission/disclaimer text and an authoritative copyright notice for this released source.
+Tarball SHA256: e11abdabce87fb80301de2383796b56ead33a6173d32b91ab3027ce3882dcaa8
+Source gitHead: 10c4d70820e264a4c315a085172ce2a85fa6b181
+Plotly 3.4.0 bundle SHA256: 28498fa2ea4ba45c8633218088eb223436ca0ca02fc57027fd6fa841ad1901f9
+Evidence: Exact published source declares MIT in package.json but supplies no copyright notice. Later upstream license addition follows functional range/NaN changes and is not verified to cover this version. Author metadata is preserved as metadata, not inferred as a copyright holder.
+Owner: nteract maintainers
+Review date: 2026-12-05
+Tracking: https://github.com/nteract/nteract/issues/4858
+
+color-alpha@1.0.4
+Declared license: MIT
+Missing material: Full MIT permission/disclaimer text and an authoritative copyright notice for this released source.
+Tarball SHA256: 9173bae32403e6b9dda3beea02ff752c397259494de2964203c1c6001c6155fd
+Source gitHead: 9d0b7b2091ef0d6341171c5a8e667b372749135f
+Plotly 3.4.0 bundle SHA256: 28498fa2ea4ba45c8633218088eb223436ca0ca02fc57027fd6fa841ad1901f9
+Evidence: Exact published source declares MIT in package.json but supplies no copyright notice. Later upstream license addition follows functional CJS-to-ESM/default-alpha changes and is not verified to cover this version. Author metadata is not a copyright notice.
+Owner: nteract maintainers
+Review date: 2026-12-05
+Tracking: https://github.com/nteract/nteract/issues/4858
+
+draw-svg-path@1.0.0
+Declared license: MIT
+Missing material: Full MIT permission/disclaimer text and an accepted upstream copyright notice.
+Tarball SHA256: ea308040951545a16c99d540f7958fa66517ecdb454f77e012d86bdb0c2d4374
+Source gitHead: not known
+Plotly 3.4.0 bundle SHA256: 28498fa2ea4ba45c8633218088eb223436ca0ca02fc57027fd6fa841ad1901f9
+Evidence: Published package.json and README explicitly declare MIT. Accepted upstream history contains no copyright notice. The third-party proposal at https://github.com/michaelrhodes/draw-svg-path/pull/2 was not merged or approved and is not used as evidence of a grant.
+Owner: nteract maintainers
+Review date: 2026-12-05
+Tracking: https://github.com/nteract/nteract/issues/4858
+
+jison-lex@0.3.4
+Declared license: MIT
+Missing material: Full notice covering the current lexer source and substantive changes after extraction from Jison; the inherited historical notice alone does not resolve this gap.
+Tarball SHA256: 871a664d52eb7407a542e3eb45a2a19f1fd0049d5640ee228dcea01b1ad784be
+Source gitHead: 28aa5ac329310ac74eff0d4259fcf594429134f7
+Plotly 3.4.0 bundle SHA256: 28498fa2ea4ba45c8633218088eb223436ca0ca02fc57027fd6fa841ad1901f9
+Evidence: Published README and runtime header explicitly declare MIT. Runtime matches upstream commit 28aa5ac329310ac74eff0d4259fcf594429134f7, although npm metadata has no gitHead. Jison extraction fd891080f7975c7e29bf9d33d2b198700d4752e6 establishes an inherited 2012 Zachary Carter notice. That original notice is preserved as historical material, not claimed to cover later substantive modifications. A parent dependency does not supply a blanket current-source notice.
+Owner: nteract maintainers
+Review date: 2026-12-05
+Tracking: https://github.com/nteract/nteract/issues/4858

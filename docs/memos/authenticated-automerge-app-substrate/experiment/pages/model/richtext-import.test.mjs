@@ -21,6 +21,7 @@ import {
   orderedBlockIds,
   projectPage,
 } from "./page.mjs";
+import { currentForm } from "./richtext-test-support.mjs";
 
 // An agent comment that rendered as one opaque monospace block. Its prose
 // mentions two dollar amounts, which the import gate read as inline math.
@@ -75,11 +76,14 @@ test("the diagnosis body's Markdown export reimports to the same document", () =
 });
 
 test("manage_page_comment add with body_format markdown stores the diagnosis as native rich text", () => {
-  const page = A.from({
-    page_id: "comments",
-    title: "Test",
-    blocks: { one: { markdown: "A passage", position: "a0" } },
-  });
+  const page = A.change(
+    A.from({
+      page_id: "comments",
+      title: "Test",
+      blocks: { one: { markdown: "A passage", position: "a0" } },
+    }),
+    currentForm,
+  );
   const { comments, result: ids } = comment(
     page,
     A.from({ threads: {} }),

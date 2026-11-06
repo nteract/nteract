@@ -38,14 +38,15 @@ const { Wordgard } = await import("wordgard/editor");
 const { GardState, GardSelection } = await import("wordgard/state");
 const { tables } = await import("wordgard/table");
 const { Cell, HeaderCell } = await import("wordgard/types");
-const { enableRich, textPath } = await import("../model/richtext.mjs");
+const { textPath } = await import("../model/richtext.mjs");
+const { richFromSource } = await import("../model/richtext-test-support.mjs");
 const { decode, schema } = await import("./wordgard-model.mjs");
 const { selectedTable, tableKeys } = await import("./wordgard-tables.mjs");
 
 function editor(markdown) {
   const native = A.change(
     A.from({ blocks: { one: { id: "one", kind: "markdown", markdown } } }),
-    (d) => enableRich(d, "one"),
+    (d) => richFromSource(d, "one"),
   );
   const state = GardState.create({
     doc: decode(A.spans(native, textPath("one"))).doc,

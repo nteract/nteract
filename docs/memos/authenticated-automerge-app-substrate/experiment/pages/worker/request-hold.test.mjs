@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { SqliteD1 } from "../test/sqlite-d1.mjs";
 import { catalogIndexDatabase, catalogIndexTimeouts } from "./catalog-index.mjs";
-import { Catalog, Page, PageRecords } from "./index.mjs";
+import { Catalog, Page } from "./index.mjs";
 import { holdUntilSettled } from "./request-hold.mjs";
 import { serialQueue } from "./serial-queue.mjs";
+import { plainStub } from "./plain-stub.mjs";
 
 const turns = async (n = 20) => {
   for (let i = 0; i < n; i++) await new Promise((resolve) => setImmediate(resolve));
@@ -68,6 +69,7 @@ function page() {
   const { held, ctx } = holding();
   const runs = [];
   const value = Object.assign(Object.create(Page.prototype), {
+    plain: plainStub(),
     ctx,
     tail: Promise.resolve(),
     run: () => {
@@ -108,20 +110,6 @@ for (const [path, method] of [
   });
 }
 
-test("PageRecords holds each queued write until it settles", async () => {
-  const { held, ctx } = holding();
-  const records = new PageRecords({ ...ctx, storage: {} });
-  const write = deferred();
-  records.run = () => write.promise;
-  const response = records.fetch(new Request("https://records.test/records", { method: "POST" }));
-  assert.equal(held.length, 1);
-  await turns();
-  assert.equal(await state(held[0]), "pending");
-  write.resolve(new Response(null, { status: 204 }));
-  assert.equal((await response).status, 204);
-  assert.equal(await state(held[0]), "settled");
-});
-
 test("a Catalog holds a shared lifecycle read after its caller stops waiting", async () => {
   const { held, ctx } = holding();
   const read = deferred();
@@ -158,6 +146,7 @@ test("a Page holds the index migration it starts past its reporting deadline", a
   };
   const pageId = "55555555-5555-4555-8555-555555555555";
   const host = Object.assign(Object.create(Page.prototype), {
+    plain: plainStub(),
     ctx,
     env: { DB: db, PAGES_CATALOG_INDEX: "1" },
     metadata: { pageId, owner: "user:owner", deleted: false, acl: { revision: 0, members: {} } },

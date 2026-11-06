@@ -1,21 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import * as A from "@automerge/automerge";
-import { pmNodeToSpans } from "@automerge/prosemirror";
-import { closePeers, connectPeers, createPeer, eventually } from "../../backend.mjs";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
-import { orderedBlockIds } from "../model/page.mjs";
-import { hasPreservedBlocks } from "../model/raw-migration.mjs";
-import { adapter, schema, textPath } from "../model/richtext.mjs";
-import { BUILD_FEATURES } from "../model/schema-features.mjs";
 import { sqliteD1 } from "../test/sqlite-d1.mjs";
 import { CONTENT_ACTIVITY_KEY } from "./content-activity.mjs";
 import { Page } from "./index.mjs";
 import { Storage } from "./trash-fixture.mjs";
 
-// Content activity on a real Page host: the repository and SubductionBackend
-// the host serves from, the DocHandle's own `change` events, and real tool,
-// native-sync, comment and conversion paths. No fake handle.
+// Content activity on a real Page host: the plain-sync repository the host
+// serves from, the handle's own `change` events, and real tool and comment
+// paths. No fake handle.
 
 const pageId = "44444444-4444-4444-8444-444444444444";
 const requestFor = (token, path, body) =>
@@ -56,15 +49,10 @@ async function host(t, { catalog = () => Response.json({ ok: true }) } = {}) {
     },
   };
   const pages = [];
-  const peers = [];
-  const wires = [];
   t.after(async () => {
-    for (const page of pages) page.contentActivity?.stop();
-    await closePeers(peers, wires);
     for (const page of pages) {
-      await page.repo?.shutdown();
-      await page.backend?.close();
-      page.signer?.free();
+      page.contentActivity?.stop();
+      await page.plain?.close();
     }
   });
   /** A host over the shared storage. `boot: false` leaves it as a restart
@@ -94,32 +82,12 @@ async function host(t, { catalog = () => Response.json({ ok: true }) } = {}) {
       pageId,
     )[0]?.content_updated_at ?? null;
   const contentReports = () => calls.filter((entry) => entry.path === "/internal/content-activity");
-  /** A native peer bound as the owner, connected to `page`'s backend. */
-  const nativePeer = async (page) => {
-    const peer = createPeer();
-    peers.push(peer);
-    await page.policy.bind(
-      peer.keyId,
-      peer.senderId,
-      {
-        principal: page.metadata.owner,
-        displayName: "Owner",
-        driver: "Browser",
-        canWrite: true,
-        expiresAt: Date.now() + 600_000,
-      },
-      {
-        reauthenticate: async () => ({ principal: page.metadata.owner, canWrite: true }),
-        disconnect: async () => {},
-        features: [...BUILD_FEATURES].sort(),
-      },
-    );
-    wires.push(await connectPeers(peer, page));
-    const handle = await peer.repo.find(page.metadata.documentId);
-    await eventually(
-      () => A.getHeads(handle.doc()).join() === A.getHeads(page.handle.doc()).join(),
-    );
-    return handle;
+  /** A change applied to `page`'s document outside any request, as a
+   * browser's edit arrives over its sync socket. */
+  const outsideEdit = async (page, title) => {
+    await page.handle.change((doc) => {
+      doc.title = title;
+    });
   };
   return {
     auth,
@@ -134,7 +102,7 @@ async function host(t, { catalog = () => Response.json({ ok: true }) } = {}) {
     settle,
     ownerRow,
     contentReports,
-    nativePeer,
+    outsideEdit,
   };
 }
 
@@ -200,14 +168,10 @@ test("a tool edit on a real Page host records a time and reports it on its own r
   assert.equal(h.contentReports().length, 1);
 });
 
-test("a native peer's edit records a time, run by a live request rather than the repository's loop", async (t) => {
+test("an edit outside a request records a time, run by a live request rather than the repository's loop", async (t) => {
   const h = await host(t);
   const page = await created(h);
-  const peerHandle = await h.nativePeer(page);
-  peerHandle.change((doc) => {
-    doc.title = "Launch plan, revised";
-  });
-  await eventually(() => page.handle.doc().title === "Launch plan, revised");
+  await h.outsideEdit(page, "Launch plan, revised");
   await h.settle();
   // The host's `change` event came from its repository's loop, which on celld
   // keeps a finished request's context: nothing may start there.
@@ -233,24 +197,17 @@ test("a native peer's edit records a time, run by a live request rather than the
   // After the socket closed, a change inside the window waits, and its timer
   // waits for a live request to arm it.
   await new Promise((resolve) => setTimeout(resolve, 5));
-  peerHandle.change((doc) => {
-    doc.title = "Launch plan, final";
-  });
-  await eventually(() => page.handle.doc().title === "Launch plan, final");
+  await h.outsideEdit(page, "Launch plan, final");
   await h.settle();
   assert.equal(page.contentActivity.state.name, "waiting");
   assert.equal(page.contentActivity.pending, true);
   assert.ok(page.contentActivity.value > value);
 });
 
-test("the next request runs a native edit's flush when no socket serves it", async (t) => {
+test("the next request runs an outside edit's flush when no socket serves it", async (t) => {
   const h = await host(t);
   const page = await created(h);
-  const peerHandle = await h.nativePeer(page);
-  peerHandle.change((doc) => {
-    doc.title = "Launch plan, from a tab";
-  });
-  await eventually(() => page.handle.doc().title === "Launch plan, from a tab");
+  await h.outsideEdit(page, "Launch plan, from a tab");
   await h.settle();
   assert.equal(page.contentActivity.pending, true);
   const read = await h.tool(page, "read_page", { comments: "none" });
@@ -258,53 +215,6 @@ test("the next request runs a native edit's flush when no socket serves it", asy
   await h.settle();
   assert.equal(page.contentActivity.pending, false);
   assert.equal(h.ownerRow(), page.contentActivity.value);
-});
-
-test("a preserved Markdown conversion on load records nothing; an edit after it does", async (t) => {
-  const h = await host(t);
-  const first = await created(h);
-  // A preserved block, as an earlier build stored one, written by the host.
-  const block = orderedBlockIds(first.handle.doc())[0];
-  const tree = schema.node("doc", null, [
-    schema.node("paragraph", null, [schema.text("We ship on Friday.")]),
-    schema.node("raw", { source: "Old ~~text~~.", importId: "", kind: "markdown" }),
-  ]);
-  first.contentActivity.stop();
-  first.unwatchContent();
-  await first.handle.update((doc) =>
-    A.change(doc, (draft) =>
-      A.updateSpans(
-        draft,
-        textPath(block),
-        pmNodeToSpans(adapter, tree),
-        adapter.updateSpansConfig(),
-      ),
-    ),
-  );
-  await first.flush();
-  assert.equal(hasPreservedBlocks(first.handle.doc()), true);
-  await first.repo.shutdown();
-  await first.backend.close();
-  first.signer.free();
-  first.repo = first.backend = first.signer = undefined;
-
-  const page = await h.open();
-  await h.settle();
-  assert.equal(hasPreservedBlocks(page.handle.doc()), false, "the host converted it on load");
-  assert.equal(page.contentActivity.value, null);
-  assert.equal(page.contentActivity.pending, false);
-  assert.equal(await h.storage.get(CONTENT_ACTIVITY_KEY), undefined);
-  assert.equal(h.contentReports().length, 0);
-  const read = await h.tool(page, "read_page", { comments: "none" });
-  const edit = await h.tool(page, "edit_page", {
-    base_heads: read.body.heads,
-    idempotency_key: "content-activity-host-after-conversion",
-    operations: [{ op: "insert_markdown", markdown: "One more line." }],
-  });
-  assert.equal(edit.status, 200, JSON.stringify(edit.body));
-  await h.settle();
-  assert.ok(page.contentActivity.value);
-  assert.equal(h.contentReports().length, 1);
 });
 
 test("a Catalog from before the content route answers non-OK, and the flush retries", async (t) => {
@@ -349,11 +259,14 @@ test("deleting a Page stops recording, detaches the listener and forgets the sto
   });
   await h.settle();
   assert.ok(await h.storage.get(CONTENT_ACTIVITY_KEY));
-  const handle = page.handle;
-  assert.equal(handle.listenerCount("change") > 0, true);
+  const off = t.mock.method(page.handle, "off");
   await page.applyLifecycle([{ type: "closePolicy" }, { type: "deleteDocument" }], {});
   assert.equal(page.contentActivity.state.name, "stopped");
-  assert.equal(handle.listenerCount("change"), 0);
+  assert.ok(
+    off.mock.calls.some(
+      ({ arguments: [name, listener] }) => name === "change" && listener === page.contentListener,
+    ),
+  );
   assert.equal(await h.storage.get(CONTENT_ACTIVITY_KEY), undefined);
   page.contentActivity.changed();
   page.contentActivity.pump();
@@ -403,10 +316,14 @@ test("a tombstone forgets the stored time and title projection, as a purge does"
   await h.settle();
   assert.ok(await h.storage.get(CONTENT_ACTIVITY_KEY));
   assert.ok(await h.storage.get("host/title-projection"));
-  const handle = page.handle;
+  const off = t.mock.method(page.handle, "off");
   await page.applyLifecycle([{ type: "dropDocument" }], {});
   assert.equal(page.contentActivity.state.name, "stopped");
-  assert.equal(handle.listenerCount("change"), 0);
+  assert.ok(
+    off.mock.calls.some(
+      ({ arguments: [name, listener] }) => name === "change" && listener === page.contentListener,
+    ),
+  );
   assert.equal(await h.storage.get(CONTENT_ACTIVITY_KEY), undefined);
   assert.equal(await h.storage.get("host/title-projection"), undefined);
 });
@@ -425,10 +342,8 @@ test("a restarted host projects an unchanged title with the time it first observ
   const before = rowTimes();
   first.contentActivity.stop();
   first.unwatchContent();
-  await first.repo.shutdown();
-  await first.backend.close();
-  first.signer.free();
-  first.repo = first.backend = first.signer = undefined;
+  await first.plain.close();
+  first.repo = first.plain = undefined;
   await new Promise((resolve) => setTimeout(resolve, 5));
 
   const page = await h.open();
@@ -474,10 +389,8 @@ test("a restarted host answers checks from its record, then boots for an edit th
   assert.equal(projected.title, "Launch plan");
   first.contentActivity.stop();
   first.unwatchContent();
-  await first.repo.shutdown();
-  await first.backend.close();
-  first.signer.free();
-  first.repo = first.backend = first.signer = undefined;
+  await first.plain.close();
+  first.repo = first.plain = undefined;
 
   const page = await h.open({ boot: false });
   assert.equal(page.startup.name, "metadata");

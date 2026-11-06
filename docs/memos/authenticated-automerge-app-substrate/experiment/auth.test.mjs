@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createAuthenticator } from "./auth.mjs";
 import { createAuthFixture } from "./auth-fixtures.mjs";
-import { AccessRegistry, PermissionDenied } from "./policy.mjs";
 
 test("wrapper uses production verifiers with explicit OIDC and API-key namespace mapping", async (t) => {
   const fixture = await createAuthFixture();
@@ -137,83 +136,3 @@ test("credential admission rejects invalid lifetime configuration and past OIDC 
     /expired/,
   );
 });
-
-test("key enrollment refuses fabricated and copied identities even with a real credential's fields", async (t) => {
-  const fixture = await createAuthFixture();
-  t.mock.method(globalThis, "fetch", fixture.fetch);
-  const auth = await createAuthenticator({ env: fixture.env });
-  const identity = await auth.authenticateOidcIdToken(await fixture.sign(), {
-    nonce: fixture.nonce,
-    driver: "mobile",
-  });
-  const registry = new AccessRegistry({ isVerifiedIdentity: auth.isVerifiedIdentity });
-  const signer = await createSigningKey();
-  assert.throws(() => registry.beginBinding({ ...identity }, signer.key), PermissionDenied);
-  assert.throws(
-    () => registry.beginBinding({ ...identity, principal: "system", canWrite: true }, signer.key),
-    PermissionDenied,
-  );
-  // A registry without its trusted verifier must fail closed, including for an
-  // object verified by some other registry's independent authenticator.
-  assert.throws(() => new AccessRegistry().beginBinding(identity, signer.key), PermissionDenied);
-  const challenge = registry.beginBinding(identity, signer.key);
-  const binding = await registry.finishBinding(challenge.id, await signer.sign(challenge.message));
-  assert.equal(binding.principal, identity.principal);
-});
-
-test("OIDC and API-key credentials bind the same account to distinct signed drivers with trusted presence", async (t) => {
-  const fixture = await createAuthFixture();
-  t.mock.method(globalThis, "fetch", fixture.fetch);
-  const auth = await createAuthenticator({ env: fixture.env });
-  const oidc = await auth.authenticateOidcIdToken(await fixture.sign(), {
-    nonce: fixture.nonce,
-    driver: "mobile",
-  });
-  const api = await auth.authenticateApiKey(fixture.apiKey(), { driver: "ChatGPT", write: true });
-  const registry = new AccessRegistry({ isVerifiedIdentity: auth.isVerifiedIdentity });
-  const documentId = "11".repeat(32);
-  registry.setDocument(documentId, { grants: { [oidc.principal]: "writer" } });
-  const mobileKey = await createSigningKey();
-  const agentKey = await createSigningKey();
-  for (const [identity, signer] of [
-    [oidc, mobileKey],
-    [api, agentKey],
-  ]) {
-    const challenge = registry.beginBinding(identity, signer.key);
-    const binding = await registry.finishBinding(
-      challenge.id,
-      await signer.sign(challenge.message),
-    );
-    assert.equal(binding.principal, oidc.principal);
-    assert.equal(binding.driver, identity.driver);
-    assert.doesNotThrow(() => registry.policy().authorizePut(signer.key, signer.key, documentId));
-  }
-  assert.notEqual(mobileKey.key, agentKey.key);
-  const mobilePresence = registry.presence(mobileKey.key, documentId, {
-    principal: "system",
-    displayName: "Forged",
-    driver: "ChatGPT",
-    anchor: "block:1",
-  });
-  const agentPresence = registry.presence(agentKey.key, documentId, {
-    principal: "system",
-    displayName: "Forged",
-    driver: "mobile",
-    anchor: "block:2",
-  });
-  assert.equal(mobilePresence.principal, oidc.principal);
-  assert.equal(agentPresence.principal, oidc.principal);
-  assert.equal(mobilePresence.displayName, "Fixture Person");
-  assert.equal(agentPresence.displayName, "Fixture Person");
-  assert.equal(mobilePresence.driver, "mobile");
-  assert.equal(agentPresence.driver, "ChatGPT");
-});
-
-async function createSigningKey() {
-  const pair = await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"]);
-  return {
-    key: Buffer.from(await crypto.subtle.exportKey("raw", pair.publicKey)).toString("hex"),
-    sign: async (message) =>
-      new Uint8Array(await crypto.subtle.sign("Ed25519", pair.privateKey, message)),
-  };
-}

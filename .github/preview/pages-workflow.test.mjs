@@ -25,5 +25,7 @@ test('Pages reusable checks out only pinned public nteract helpers and stays opt
   assert.match(text,/repository: nteract\/nteract/);assert.match(text,/ref: [a-f0-9]{40}/);
   assert.match(text,/sparse-checkout: .github\/preview/);assert.match(text,/persist-credentials: false/);
   assert.match(text,/node .github\/preview\/send-pages-deployment.mjs/);
+  // Resolving the gate run's pages-release artifact lists run artifacts.
+  assert.match(text,/^      actions: read$/m);
   assert.doesNotMatch(text,/nteract\/preview-infra|secrets: inherit|download-artifact|ref: \$\{\{ inputs/);
 });

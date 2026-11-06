@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, rmSync, readFileSyn
 import os from "node:os";
 import path from "node:path";
 import { stageCloudflareFiles, cloudflareConfig } from "./cloudflare-stage.mjs";
-import { releaseArtifacts } from "./stage-artifacts.mjs";
+import { releaseArtifacts, releaseFilesOf } from "./stage-artifacts.mjs";
 import { VIEWER_ASSETS, hashedAssetPath } from "./viewer-chunks.mjs";
 
 test("Cloudflare staging separates native modules from browser assets and excludes local secrets/state", (t) => {
@@ -19,6 +19,7 @@ test("Cloudflare staging separates native modules from browser assets and exclud
     VIEWER_ASSETS.map((name) => [hashedAssetPath(name, name), name]),
   );
   mkdirSync(path.join(dist, "public/chunks"));
+  const contents = (file) => assets[file] ?? file;
   for (const file of [...releaseArtifacts, chunk, ...Object.keys(assets)])
     writeFileSync(
       path.join(dist, file),
@@ -28,8 +29,14 @@ test("Cloudflare staging separates native modules from browser assets and exclud
             viewer_assets: Object.fromEntries(
               Object.entries(assets).map(([path, bytes]) => [path, sha256(bytes)]),
             ),
+            files: Object.fromEntries(
+              releaseFilesOf([chunk], Object.keys(assets)).map((file) => [
+                file,
+                sha256(contents(file)),
+              ]),
+            ),
           })
-        : (assets[file] ?? file),
+        : contents(file),
     );
   writeFileSync(path.join(dist, ".dev.vars"), "secret-that-must-stay-local");
   mkdirSync(path.join(dist, ".celld"));
@@ -46,7 +53,6 @@ test("Cloudflare staging separates native modules from browser assets and exclud
   assert.deepEqual(readdirSync(path.join(destination, "worker")).sort(), [
     "automerge.wasm",
     "index.js",
-    "subduction.wasm",
   ]);
   const mermaid = hashedAssetPath("mermaid.js", "mermaid.js");
   assert.equal(readFileSync(path.join(destination, mermaid), "utf8"), "mermaid.js");
@@ -59,7 +65,7 @@ test("Cloudflare staging separates native modules from browser assets and exclud
   assert.equal(config.routes, undefined, "domain reassignment is a separate verified action");
   assert.equal(config.vars.NOTEBOOK_CLOUD_OIDC_REDIRECT_URI, "https://preview.runt.run/oidc");
   assert.equal(
-    Object.keys(config.vars).some((k) => /SECRET|DEV_TOKEN|LOCAL_OIDC/.test(k)),
+    Object.keys(config.vars).some((k) => /SECRET|SESSION_KEYS|DEV_TOKEN|LOCAL_OIDC/.test(k)),
     false,
   );
   assert.throws(() => stageCloudflareFiles(dist, destination, id), /must be new/);

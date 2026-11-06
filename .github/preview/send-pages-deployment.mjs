@@ -6,7 +6,8 @@ let acceptedOperationId,result;
 try {
   const event=JSON.parse(await readFile(process.env.GITHUB_EVENT_PATH,'utf8'));
   result=await sendPagesDeployment(process.env,event,{fetchImpl:fetch,clock:{now:Date.now,sleep},
-    onAccepted:({operationId})=>{acceptedOperationId=operationId;console.log(JSON.stringify({event:'pages_deployment_accepted',operationId}));}});
+    onAccepted:({operationId})=>{acceptedOperationId=operationId;console.log(JSON.stringify({event:'pages_deployment_accepted',operationId}));},
+    onStatusRetry:retry=>console.log(JSON.stringify({event:'pages_deployment_status_retry',...retry}))});
 } catch(error) {
   console.error(JSON.stringify({event:'pages_deployment_failed',...(acceptedOperationId?{operationId:acceptedOperationId}:{}),...pagesFailureDiagnostic(error)}));
   console.error('Pages deployment did not complete; inspect the controller operation. No automatic retry of accepted operations.');process.exitCode=1;

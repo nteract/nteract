@@ -1,6 +1,6 @@
 import * as A from "@automerge/automerge/slim";
 import { RICH_FORMAT } from "./richtext-format.mjs";
-import { validateCommentBody, validateCommentSpans } from "./comment-content.mjs";
+import { PLAIN_FORMAT, isEditorForm, validateCommentSpans } from "./comment-content.mjs";
 import {
   MESSAGE_EDITABLE,
   MESSAGE_FIELDS,
@@ -67,9 +67,17 @@ export const REJECTION = Object.freeze({
   INVALID_VALUE: "invalid_value",
   INVALID_ID: "invalid_id",
   UNSUPPORTED_FEATURE: "unsupported_feature",
+  // A form an earlier build wrote (a `body`, a message without the rich
+  // format, adapter-form spans). A stale tab isn't an attack, so this
+  // refusal never blocks the key (sync/comments.mjs BLOCKING); the tab must
+  // reload (viewer protocol 3).
+  OUTDATED_FORM: "outdated_form",
 });
 
 const MAX_ID_LENGTH = 128;
+/** Message fields whose write changes its content, so admission checks the
+ * span form again. */
+const CONTENT_FIELDS = Object.freeze(["richText", "format", "bodyFormat"]);
 const MAX_FIELD_LENGTH = 512;
 
 class Rejection extends Error {
@@ -164,37 +172,50 @@ function validateStatus(status) {
   );
 }
 
-/** A message's current content: the literal body, and native spans once the
- * message is rich. */
-function validateBody(message, where) {
-  const format = own(message, "format") ? scalar(message.format) : undefined;
-  if (own(message, "format") && format !== RICH_FORMAT)
-    reject(REJECTION.INVALID_VALUE, "Unsupported message format", where);
-  const body = scalar(message.body);
-  if (body === undefined) reject(REJECTION.INVALID_VALUE, "Message body must be text", where);
-  if (format !== RICH_FORMAT && own(message, "richText"))
-    reject(REJECTION.INVALID_VALUE, "richText needs the rich format", where);
+/** A message's current content, on every message a batch creates or
+ * touches: rich text with no `body`, and `bodyFormat: "plain"` when its
+ * author wrote literal text. Earlier builds stored a bare `body` or
+ * adapter-form spans beside a `body` copy; the comments migration rewrote
+ * them, and a `body` or a missing rich format is refused as `outdated_form`
+ * on any write, a soft delete included.
+ *
+ * The span form is checked only when `contentWritten`: on a new message or
+ * a write to its `richText`, `format` or `bodyFormat`. It compares the spans
+ * with what the editor's `encode` writes today, so a Wordgard release that
+ * encodes differently must not stop people from deleting messages stored
+ * before it. */
+function validateBody(message, where, { contentWritten = true } = {}) {
+  if (own(message, "body"))
+    reject(REJECTION.OUTDATED_FORM, "A message stores no body: its spans are the message", where);
+  if (scalar(message.format) !== RICH_FORMAT)
+    reject(
+      own(message, "format") ? REJECTION.INVALID_VALUE : REJECTION.OUTDATED_FORM,
+      own(message, "format") ? "Unsupported message format" : "A message must be rich text",
+      where,
+    );
+  if (own(message, "bodyFormat") && scalar(message.bodyFormat) !== PLAIN_FORMAT)
+    reject(REJECTION.INVALID_VALUE, 'bodyFormat must be "plain"', where);
   // The shared content rule (comment-content.mjs): the same one the tools and
   // the browser apply before writing, so an honest write always passes here.
   let spans;
-  if (format === RICH_FORMAT)
-    try {
-      spans = A.spans(message, ["richText"]);
-    } catch {
-      reject(REJECTION.INVALID_VALUE, "richText must be rich text", where);
-    }
   try {
-    if (format === RICH_FORMAT) validateCommentSpans(spans);
-    else validateCommentBody(body);
+    spans = A.spans(message, ["richText"]);
+  } catch {
+    reject(REJECTION.INVALID_VALUE, "richText must be rich text", where);
+  }
+  try {
+    validateCommentSpans(spans);
   } catch (error) {
     reject(REJECTION.INVALID_VALUE, error.message, where);
   }
+  if (contentWritten && !isEditorForm(spans))
+    reject(REJECTION.OUTDATED_FORM, "Comment spans must be in the Pages editor's form", where);
 }
 
 /** Mutable message fields; author-only once the message exists. */
-function validateMessageEdits(message, where) {
+function validateMessageEdits(message, where, options) {
   if (!isMap(message)) reject(REJECTION.INVALID_VALUE, "Message must be a map", where);
-  validateBody(message, where);
+  validateBody(message, where, options);
   const deleted = message.deletedAt;
   if (deleted !== null && deleted !== undefined && !timestamp(deleted))
     reject(REJECTION.INVALID_VALUE, "deletedAt must be null or a timestamp", where);
@@ -202,6 +223,8 @@ function validateMessageEdits(message, where) {
 
 function validateNewMessage(message, principal, where) {
   if (!isMap(message)) reject(REJECTION.INVALID_VALUE, "Message must be a map", where);
+  if (own(message, "body"))
+    reject(REJECTION.OUTDATED_FORM, "A message stores no body: its spans are the message", where);
   for (const key of Object.keys(message))
     if (!MESSAGE_FIELDS.includes(key))
       reject(REJECTION.UNKNOWN_PATH, "Unknown message field", { ...where, field: key });
@@ -356,9 +379,13 @@ function checkMessageOperation(op, full, ctx, threadId, thread, isCreate, where)
   const field = full[4];
   if (field === "author" || field === "createdAt")
     reject(REJECTION.IMMUTABLE_FIELD, `${field} is immutable`, where);
+  // Earlier builds wrote a `body`; no message holds one now.
+  if (field === "body")
+    reject(REJECTION.OUTDATED_FORM, "A message's body is no longer written", where);
   if (!MESSAGE_EDITABLE.includes(field))
     reject(REJECTION.UNKNOWN_PATH, "Unknown message field", where);
   allowed(ctx, "edit", thread, before, REJECTION.NOT_MESSAGE_AUTHOR, where);
+  if (CONTENT_FIELDS.includes(field)) ctx.plan.contentWrites.add(threadId, messageId);
   ctx.plan.editedMessages.add(threadId, messageId);
 }
 
@@ -379,7 +406,11 @@ function finalize(after, plan, ctx) {
   for (const [threadId, messageId] of plan.editedMessages) {
     const thread = own(threads, threadId) ? threads[threadId] : undefined;
     if (!thread || !own(thread.messages, messageId)) continue;
-    validateMessageEdits(thread.messages[messageId], { thread: threadId, message: messageId });
+    validateMessageEdits(
+      thread.messages[messageId],
+      { thread: threadId, message: messageId },
+      { contentWritten: plan.contentWrites.has(threadId, messageId) },
+    );
   }
   for (const threadId of plan.status) {
     if (!own(threads, threadId)) continue;
@@ -504,6 +535,7 @@ export function admitCommentChanges(admitted, changes, principal, options = {}) 
         deletedThreads: new Set(),
         newMessages: new EntitySet(),
         editedMessages: new EntitySet(),
+        contentWrites: new EntitySet(),
         status: new Set(),
         anchors: new Set(),
         schema: false,

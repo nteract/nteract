@@ -7,6 +7,7 @@ import { createAuthFixture } from "../../auth-fixtures.mjs";
 import { sqliteD1 } from "../test/sqlite-d1.mjs";
 import worker, { Catalog, Page, Space } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";
+import { plainStub } from "./plain-stub.mjs";
 import { LOCATION_SHAPE_KEY, shapeState } from "./location-shape.mjs";
 
 export class Storage {
@@ -122,7 +123,6 @@ export async function world(t, { index = "1", storage: newStorage = () => new St
       tail: Promise.resolve(),
       ctx: { id: { name: id }, storage, waitUntil: (promise) => jobs.push(promise) },
       wires: new Set(),
-      serverKey: "f".repeat(64),
       serverSenderId: "server-sender",
       repo: {
         async import(bytes) {
@@ -132,15 +132,13 @@ export async function world(t, { index = "1", storage: newStorage = () => new St
         async flush() {},
         async delete() {},
       },
-      backend: { async flush() {} },
     });
+    page.plain = plainStub(page.repo);
     page.policy = new DocumentPolicy({
-      storage,
       metadata: () => ({
         ...(page.policyMetadata ?? page.metadata),
         projectAccess: page.projectAccess,
       }),
-      serverKey: "f".repeat(64),
     });
     pages.set(id, page);
     return page;

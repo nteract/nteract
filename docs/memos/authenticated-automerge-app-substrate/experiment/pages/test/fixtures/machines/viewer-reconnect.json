@@ -1,6 +1,6 @@
 {
   "machine": "viewer-reconnect",
-  "description": "Automatic reconnects for one viewer PageSession: a 10 s deadline on each socket's authenticated handshake, exponential backoff with a 60 s cap for transient failures, a stop on a refused signing key, a pause after six admission refusals in a row, and an outage report from the seventh transient failure in a row while retries continue. Runs against viewer/reconnect-machine.mjs in viewer/reconnect-machine.test.mjs.",
+  "description": "Automatic reconnects for one viewer PageSession: a 10 s deadline on each socket's authenticated handshake, exponential backoff with a 60 s cap for transient failures, a stop on a refused signing key, a host's Retry-After as the least wait (capped at 60 s), a pause after six admission refusals in a row, and an outage report from the seventh transient failure in a row while retries continue. Runs against viewer/reconnect-machine.mjs in viewer/reconnect-machine.test.mjs.",
   "states": [
     "ready",
     "handshaking",
@@ -27,13 +27,15 @@
       "transient",
       "outage",
       "refusal",
-      "last-refusal"
+      "last-refusal",
+      "retry-after"
     ],
     "handshaking/failed": [
       "transient",
       "outage",
       "refusal",
-      "last-refusal"
+      "last-refusal",
+      "retry-after"
     ],
     "handshaking/handshakeTimeout": [
       "transient",
@@ -284,6 +286,93 @@
           {
             "type": "schedule",
             "step": 60000
+          }
+        ]
+      }
+    },
+    {
+      "label": "a Retry-After longer than the step is the least wait",
+      "case": "retry-after",
+      "state": {
+        "name": "ready",
+        "attempts": 1,
+        "refusals": 0
+      },
+      "event": {
+        "type": "failed",
+        "refused": false,
+        "retryAfterMs": 5000
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "attempts": 2,
+          "refusals": 0
+        },
+        "effects": [
+          {
+            "type": "schedule",
+            "step": 1000,
+            "minMs": 5000
+          }
+        ]
+      }
+    },
+    {
+      "label": "a Retry-After past the backoff cap waits the cap",
+      "case": "retry-after",
+      "state": {
+        "name": "ready",
+        "attempts": 2,
+        "refusals": 1
+      },
+      "event": {
+        "type": "failed",
+        "refused": false,
+        "retryAfterMs": 3600000
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "attempts": 3,
+          "refusals": 1
+        },
+        "effects": [
+          {
+            "type": "schedule",
+            "step": 2000,
+            "minMs": 60000
+          }
+        ]
+      }
+    },
+    {
+      "label": "a Retry-After still reports an outage on the seventh failure",
+      "case": "retry-after",
+      "state": {
+        "name": "ready",
+        "attempts": 6,
+        "refusals": 0
+      },
+      "event": {
+        "type": "failed",
+        "refused": false,
+        "retryAfterMs": 1000
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "attempts": 7,
+          "refusals": 0
+        },
+        "effects": [
+          {
+            "type": "schedule",
+            "step": 32000,
+            "minMs": 1000
+          },
+          {
+            "type": "reportOutage"
           }
         ]
       }
@@ -1024,6 +1113,41 @@
           {
             "type": "schedule",
             "step": 2000
+          }
+        ]
+      }
+    },
+    {
+      "label": "a Retry-After on a socket closed during the handshake is the least wait",
+      "case": "retry-after",
+      "state": {
+        "name": "handshaking",
+        "attempts": 0,
+        "refusals": 0
+      },
+      "event": {
+        "type": "failed",
+        "refused": false,
+        "retryAfterMs": 2000
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "attempts": 1,
+          "refusals": 0
+        },
+        "effects": [
+          {
+            "type": "disarmHandshake"
+          },
+          {
+            "type": "abandonHandshake",
+            "reason": "failed"
+          },
+          {
+            "type": "schedule",
+            "step": 500,
+            "minMs": 2000
           }
         ]
       }

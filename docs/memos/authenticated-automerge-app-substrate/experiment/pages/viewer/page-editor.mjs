@@ -12,6 +12,7 @@ export { isEmptyPage, writingContinuation } from "./writing-continuation.mjs";
 export { WordgardEditor } from "./WordgardEditor.jsx";
 export { onRendererUnavailable } from "./wordgard-widgets.mjs";
 export { CommentsPanel } from "./CommentsPanel.jsx";
+export { HeadingAnchors } from "./HeadingAnchors.jsx";
 export { CommentPopover } from "./CommentPopover.jsx";
 export { SaveStatus } from "./SaveStatus.jsx";
 export { PageControls } from "./PageControls.jsx";

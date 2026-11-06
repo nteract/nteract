@@ -24,64 +24,21 @@ export const ADMISSION_REASONS = Object.freeze({
   project_lease_expired: "temporarily_unavailable",
   connection_capacity: "temporarily_unavailable",
   receipt_heads_missing: "temporarily_unavailable",
-  // A receipt for edits the native gate refused: the tab's declared build
-  // lacks a feature the Page is stamped with.
+  // A receipt for edits SyncHost's schema gate refused: the tab's declared
+  // build lacks a feature the Page is stamped with.
   schema_unsupported: "schema_unsupported",
-  // The host is converting the Page's preserved Markdown blocks.
-  preserved_markdown_converting: "temporarily_unavailable",
-  // Native signing-key admission after the WebSocket upgrade.
-  native_handshake_failed: "temporarily_unavailable",
-  native_admission_cancelled: "temporarily_unavailable",
-  native_admission_timeout: "temporarily_unavailable",
-  native_binding_stalled: "temporarily_unavailable",
-  native_binding_pending: "temporarily_unavailable",
-  native_binding_persistence_failed: "temporarily_unavailable",
-  native_connection_failed: "temporarily_unavailable",
+  // Access changed under a live plain-sync connection.
   native_access_changed: "access_changed",
-  // A newer connection with the same signing key replaced this one. Its tab
-  // already moved to the new socket; a tab that somehow still uses this one
-  // rediscovers, and counts the close toward pausing sync.
-  native_session_replaced: "access_changed",
   // A newer plain-sync socket from the same tab (same principal, driver and
   // presence id) replaced this one.
   plain_session_replaced: "access_changed",
-  // The native per-author check refused a comment record (comment-admission.mjs).
-  // The key's comment authority is gone; discovery reports what remains.
-  comment_change_refused: "access_changed",
-  // The signer's principal spent its refusal budget; it may reconnect after
-  // backing off, and its keys keep their authority.
-  comment_admission_budget: "temporarily_unavailable",
-  native_acl_committing: "access_changed",
-  // Byte-transport refusals of native input, before or after admission.
+  // The socket transport refused a frame, before or after admission.
   native_frame_unsupported: "request_rejected",
   native_frame_too_large: "request_rejected",
-  native_receive_queue_full: "temporarily_unavailable",
-  native_send_buffer_full: "temporarily_unavailable",
-  native_binding_mismatch: "signing_key_rejected",
-  native_invalid_key: "signing_key_rejected",
-  native_key_capacity: "signing_key_rejected",
   server_error: "temporarily_unavailable",
 });
 
 export const ADMISSION_CODES = ADMISSION_OUTCOMES;
-
-const transportReasons = Object.freeze({
-  unsupported_frame: "native_frame_unsupported",
-  frame_too_large: "native_frame_too_large",
-  receive_queue_full: "native_receive_queue_full",
-  send_buffer_full: "native_send_buffer_full",
-});
-
-/** Error for a WebSocketByteTransport refusal category. */
-export function transportRefusal(category) {
-  const reason = transportReasons[category] ?? "server_error";
-  return withAdmissionReason(
-    Object.assign(new Error("Native transport refused input"), {
-      status: ADMISSION_CODES[ADMISSION_REASONS[reason]].status,
-    }),
-    reason,
-  );
-}
 
 export const ADMISSION_ROUTES = Object.freeze(["/api/connect", "/api/sync", "/api/saved"]);
 

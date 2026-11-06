@@ -59,8 +59,8 @@ import { defineMachine, reject } from "../shared/machine.mjs";
 /** How long after a socket is admitted catch-up may run before it shows. */
 export const CATCH_UP_SHOW_MS = 300;
 /** How long after a socket is admitted catch-up may show at all. Catching
- * up 2,000 changes takes about 0.5 s in Node (catch-up-benchmark.mjs), and
- * 1.4 s in the browser over a link that delays each frame 150 ms. 15 s leaves
+ * up 2,000 changes took 1.4 s in the browser over a link that delays each
+ * frame 150 ms. 15 s leaves
  * an order of magnitude for IndexedDB, editor work and a slow link. It ends
  * before OUTAGE_MS (20 s), so a stuck label never sits beside the outage
  * notice. Past it, the receipt status still reports real save problems. */

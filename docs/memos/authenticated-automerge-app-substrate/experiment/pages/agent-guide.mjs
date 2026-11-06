@@ -1,4 +1,5 @@
 import {
+  assetUploadCommand,
   checkAccountCommand,
   codexConfig,
   codexHeaderHelper,
@@ -25,8 +26,19 @@ export function pagesPublicOrigin(env) {
   return url.origin;
 }
 
+/** The guide's upload line, built as create_page_asset_upload builds its
+ * example field. */
+export const guideUploadCommand = (origin) =>
+  assetUploadCommand({
+    file: "mockup.png",
+    contentType: "image/png",
+    token: "<token>",
+    uploadUrl: `${origin}/api/pages/<page_id>/assets`,
+  });
+
 export function agentGuide(env) {
   const origin = pagesPublicOrigin(env);
+  const uploadCommand = guideUploadCommand(origin);
   return `# ${PRODUCT_NAME}
 
 Shared documents that people and agents edit together. Agents connect over MCP
@@ -71,7 +83,8 @@ project_id instead of page_id:
 
 Content tools accept exactly one of page_id or project_id: read_page,
 read_page_changes, edit_page, patch_page, list_page_comments, manage_page_comment,
-reply_page_comment, read_page_presence, report_page_progress and import_page_image.
+reply_page_comment, read_page_presence, report_page_progress, import_page_image
+and create_page_asset_upload.
 A project_id address needs read access to the Project and never widens it; the
 content document's own permissions still decide each operation. For retries,
 replace only the selector in the same payload position; keep all other
@@ -136,10 +149,6 @@ Branch on code, not on the error message:
 - edit_conflict, resync_required: see Guarded edits below.
 - unsupported_schema_feature: the Page uses features this version of Pages
   can't edit (listed in unsupported_features). Read it; don't retry the edit.
-- record_storage_unsupported (409): the Pages web app registered a browser draft
-  with plain Automerge storage, and this host doesn't accept it. Nothing was
-  created. The web app re-creates the draft with native storage and registers
-  again; tools never see this code.
 - unsupported_markdown: the Markdown has something Pages can't represent.
   unsupported gives construct ("math", "html", "wrapped-image",
   "table-cells", "empty-link", "definition" or "unrepresentable"), line,
@@ -155,16 +164,16 @@ Branch on code, not on the error message:
     format_match or set_node, or remove it with delete_node.
 - node_not_found: delete_node's node_id doesn't name a node in that block. The
   node was deleted, or the id came from another block: read the outline again.
-  It's also returned for a Markdown block, and for a block holding a node this
-  version can't place; neither has node ids, so use delete_block or
-  replace_block_markdown there. Repeating the request unchanged fails again.
+  It's also returned for a block holding a node this version can't place,
+  which has no node ids, so use delete_block or replace_block_markdown there.
+  Repeating the request unchanged fails again.
 - nodes_would_join: delete_node would leave two lists or quotes of the same
   kind side by side, and they'd merge into one. Each delete is checked as it
   applies, so put a delete_node for one of them before this one in the batch,
   or rewrite the block with replace_block_markdown.
-- preserved_markdown_converting (503): Pages is converting Markdown an older
-  version saved on this Page. read_page still works. Wait, read_page again,
-  retry; if it persists, the Page needs an operator.
+- stored_form_unsupported (409): part of this Page is stored in a form from an
+  earlier version of Pages that this build doesn't read. Retrying doesn't
+  help; tell the person, since the Page needs an operator.
 - idempotency_conflict: the key was used for a different request. Use a new key.
 - operation_pending (409): an earlier request with this key is still being
   applied. Retry the same request shortly.
@@ -219,6 +228,15 @@ Branch on code, not on the error message:
 - request_canceled (408): an image import or upload was canceled before it
   finished, usually because the client disconnected. Import the same file
   again; identical bytes reuse one asset.
+- Upload URLs (create_page_asset_upload): upload_capability_expired (401;
+  request a new upload URL), upload_capability_invalid (401; the token isn't a
+  valid upload capability for this Page, it was used on an asset route for
+  anything but a POST to its upload_url or sent as a Bearer token, or its OAuth
+  connection was revoked; request a new one), upload_mismatch (400; the file's
+  type, size or SHA-256 differs from what the URL was issued for). On other
+  routes a Pages-Upload header gets the ordinary credential refusal. Losing
+  edit access after issue gives access_denied (403); a Page in Trash gives
+  page_trashed (409).
 - Reads: invalid_read_selector, invalid_change_selector, read_target_not_found,
   ambiguous_section, comment_not_found (fix the selector),
   read_revision_changed (choose again from the fresh outline it returns),
@@ -232,15 +250,6 @@ Branch on code, not on the error message:
   verified email at that domain. Sign in again with it.
 - page_recovery_blocked: a pending edit exceeds the Page's history capacity;
   accepted content stays readable. Tell the person.
-- Retryable server waits (503, retryable:true): record_persistence_timeout,
-  record_persistence_unavailable, comments_migrating and
-  location_migration_required. Retry the same request, including its key and
-  token. location_migration_required also names the reason, page_id and
-  space_id blocking the pass; when the reason says the owner's Catalog needs a
-  one-time migration, retrying does not help until an operator runs it, so
-  tell the person. record_persistence_unavailable carries
-   retry_after_ms and Retry-After. For a tokenless write it is retryable:false:
-   read back and reconcile before retrying, since the write may have completed.
 - shared_page_unavailable (503, retryable:true): a listing met a shared Page,
   or its owner's Catalog, that did not answer. Retry the listing after
   retry_after_ms (also Retry-After), with exponential backoff if it repeats.
@@ -525,7 +534,9 @@ refresh token as replay and revokes the whole grant. Do not use OAuth for
 several concurrent agents or CLI runs; use an API key there.
 
 OAuth credentials work on /mcp and authenticated GET /whoami, not the JSON API,
-sharing API, or native sync.
+sharing API, or native sync. To add a local image, an OAuth client calls
+create_page_asset_upload and sends the file to the upload URL it returns; see
+Images below.
 After authorization, call list_pages from the actual connected chat. A
 configured plugin alone isn't proof.
 
@@ -731,22 +742,108 @@ access again. An uncertain request can be retried with its identical key and bod
 ${richContentGuide()}
 ## Images
 
-In the browser, use Insert image, paste a screenshot, or drop an image into an
-editable block. PNG, JPEG, and static WebP are supported up to 5 MiB; dimensions
-are limited to 8192 pixels per side and 25 million pixels. An upload completes
-before its reference is inserted into the shared document.
-
 Images are private Page assets, separate from Automerge history. The document
 contains a stable relative URL and alt text, never image bytes or an expiring
 signed URL. Each image read checks the Page's current permissions. Do not
 replace these URLs with public hosting or put base64 image data in Markdown.
 
-An API-key client can POST raw image bytes to
-${origin}/api/pages/<page_id>/assets with its configured bearer header and image
-Content-Type. The response contains asset_id, asset_url (also url for existing
-clients), mime_type, size, width, and height. Repeating the same upload to that
-Page returns the same asset reference. GET or HEAD of the returned path also
-requires this Page's current read permission.
+### Which path to use
+
+- ChatGPT, with an attached or generated file: import_page_image.
+- Any agent with a shell or HTTP client, signed in with an API key or OAuth
+  (Kilo, Claude Code, Codex, Cursor, scripts): call create_page_asset_upload,
+  then send the file to the upload_url it returns with curl.
+- An API-key script may also POST the file directly to
+  ${origin}/api/pages/<page_id>/assets with its own bearer header.
+- No shell and no file parameters (for example a web chat): ask the person to
+  use Insert image in the browser, or to paste or drop the file into the Page.
+  Don't insert a placeholder link.
+
+### Add images end to end
+
+1. Prepare the file. PNG, JPEG and static WebP are supported up to 5 MiB, 8192
+   pixels per side and 25 million pixels; not SVG, GIF or animated WebP. Pages
+   shows an image at its natural pixel width, capped at the column: about 960
+   CSS pixels on a desktop and about 350 on a phone. It ignores pixel density
+   and has no width setting, so a 2x screenshot shows at twice its design size
+   on a desktop. Choose the width for where people will read it. A full-width
+   diagram reads well at about 960 to 1920 pixels. A text-heavy phone mockup
+   exported at 2x of a 380-pixel design (about 760 pixels) stays legible on a
+   phone but looks large on a desktop; export it at 1x if desktop matters more.
+2. Upload it. Call create_page_asset_upload with page_id (or project_id). It
+   needs write access (pages:write for OAuth, cloud:write for an API key) and
+   edit access to the Page. Its example field is a ready curl command; put in
+   your file's path and run it:
+
+   ${uploadCommand}
+
+   Send the raw bytes, not multipart or base64. The answer has asset_id,
+   asset_url (also url for existing clients), mime_type and size, plus width
+   and height for an image.
+
+   - Repeating an upload is safe: the same bytes always return the same
+     asset_id.
+   - One URL takes several files until its expires_at, 10 minutes after you
+     asked; then request another.
+   - Optional content_type, size and sha256 arguments bind the URL to one file.
+   - The Pages-Upload header works only on that upload route. Never send your
+     own API key there, and keep the token out of Page content and comments.
+   - Access is checked again at upload: if your access is removed before you
+     upload, the upload is refused. Revoking an API key doesn't end the URLs
+     it already issued; they stop at expires_at.
+3. Insert it. Call read_page, then edit_page with insert_image, the asset_id
+   and descriptive alt text. after_block_id is optional (omitted appends; null
+   prepends). For a dark-theme variant, upload the dark file to the same Page
+   and pass its asset_id as dark_asset_id; that marks the Page with the
+   image-theme-variants schema feature.
+4. Interleave images with text. insert_image always makes its own block, so
+   split the text into blocks in one edit_page batch: run
+   replace_block_markdown on the Page's only block (a new Page from
+   create_page has one), or its last block, with the first section, then
+   alternate insert_image and insert_markdown with after_block_id omitted.
+   Operations apply in order, and each append lands after the previous one at
+   the end of the Page. replace_block_markdown rewrites the whole block, so
+   include anything already in it that should stay; to keep a Page's existing
+   blocks untouched, skip it and start with insert_markdown. To insert after
+   any other block, give every operation
+   that block's ID as after_block_id and list them in reverse order: each
+   lands directly after it, ahead of the ones listed before. A batch takes up
+   to 100 operations and applies all or none.
+5. Verify. read_page lists each image in its outline entry's summary.images
+   with asset_id, dark_asset_id, alt and image_id, in block order. An outline
+   returns at most 100 entries per read: on a long Page, pass outline.next_offset
+   as outline_offset, with that read's heads as expected_heads, until it is
+   null. An API-key client can also GET ${origin}<asset_url> with its bearer
+   header to confirm the image serves.
+
+Step 4 as one batch, with a dark variant on the first image:
+
+\`\`\`json
+{
+  "operation": "edit_page",
+  "arguments": {
+    "page_id": "<page_id>",
+    "base_heads": ["<head from read_page>"],
+    "retry_token": "<retry_token from read_page>",
+    "idempotency_key": "<retry_key_prefix><new UUID>",
+    "operations": [
+      {"op": "replace_block_markdown", "block_id": "<last block's id>", "markdown": "## Sign in\\n\\nThe first section."},
+      {"op": "insert_image", "asset_id": "<light asset_id>", "dark_asset_id": "<dark asset_id>", "alt": "Sign-in screen with an email field"},
+      {"op": "insert_markdown", "markdown": "## Settings\\n\\nThe next section."},
+      {"op": "insert_image", "asset_id": "<asset_id>", "alt": "Settings screen"}
+    ]
+  }
+}
+\`\`\`
+
+In the browser, use Insert image, paste a screenshot, or drop an image into an
+editable block. The same limits apply. An upload completes before its reference
+is inserted into the shared document.
+
+The API-key byte route takes the same body and Content-Type at
+${origin}/api/pages/<page_id>/assets with the client's configured bearer header,
+and answers the same way. GET or HEAD of the returned path requires this Page's
+current read permission.
 
 ChatGPT can transfer an attached image through import_page_image. Pass page_id
 and the file descriptor supplied by ChatGPT: file has download_url and file_id,
@@ -765,10 +862,11 @@ No additional API key or public hosting is needed. If ChatGPT does not expose th
 tool list. Newly generated images must be available as transferable files in
 that client; this handoff still needs a separate live ChatGPT trial. An uploaded
 attachment and a generated image are not interchangeable proof of support.
-If the client cannot supply a file descriptor, ask the human to upload through
-Pages' image control instead of inserting a broken placeholder link.
+If the client cannot supply a file descriptor but can run curl, use
+create_page_asset_upload; otherwise ask the human to upload through Pages'
+image control instead of inserting a broken placeholder link.
 
-After either import or byte upload, call read_page and insert the returned
+After any upload or import, call read_page and insert the returned
 asset_id through edit_page. The dedicated insert_image operation creates one
 rich-text block containing the image. Supply descriptive alt text; after_block_id
 is optional (omitted appends; null prepends). The asset must already exist in
@@ -814,9 +912,15 @@ file download, even if the temporary source link has expired. A fresh insertion
 requires a new read and operation key. Verify the block through read_page and
 the authenticated Page; an upload receipt alone does not mean it was inserted.
 
-OAuth credentials remain restricted to /mcp; they do not authorize the raw-image
-HTTP endpoint above. MCP can import files and preserve image references, but it
-does not return image pixels. A reference from read_page is not evidence that an
+An OAuth token itself works only on /mcp and never authorizes the asset route.
+OAuth clients upload with create_page_asset_upload instead: its Pages-Upload
+capability is a separate, Page-scoped credential, not the OAuth token, and
+revoking the connection also ends the upload URLs it issued. Revoking an API
+key doesn't end upload URLs it already issued; they stop at expires_at, at
+most 10 minutes. Removing the principal's Page access ends them at once. MCP can import
+files and preserve image references, but it does not return image pixels. Pages
+has no tool that fetches an arbitrary remote URL, and image bytes don't go in
+tool arguments. A reference from read_page is not evidence that an
 agent has seen the image. Copying a document to another deployment also requires
 transferring its private assets; copying Markdown alone is insufficient.
 
@@ -824,7 +928,9 @@ transferring its private assets; copying Markdown alone is insufficient.
 
 A Page can show a Parquet file as an interactive table. The file is a private
 Page asset like an image, up to 5 MiB, and the same upload route stores it:
-POST the raw bytes to ${origin}/api/pages/<page_id>/assets with Content-Type
+get an upload URL from create_page_asset_upload (content_type
+application/vnd.apache.parquet) and POST the raw bytes there, or POST them to
+${origin}/api/pages/<page_id>/assets with Content-Type
 application/vnd.apache.parquet and your API-key bearer header. The response
 contains asset_id, asset_url, mime_type and size. In the browser, an editor can
 drop or paste a .parquet file into a block.
@@ -871,8 +977,9 @@ Quick start above.
 read_page returns title, ordered blocks, comments, heads, retry_token, retry_key_prefix, and
 retry_until. Keep the returned page_id and block IDs. Every tool that takes page_id
 (read_page, read_page_changes, edit_page, patch_page, list_page_comments,
-manage_page_comment, read_page_presence, report_page_progress, import_page_image)
-takes project_id in its place to address a Project's content; give one, never both
+manage_page_comment, read_page_presence, report_page_progress, import_page_image,
+create_page_asset_upload) takes project_id in its place to address a Project's
+content; give one, never both
 (invalid_arguments). Such a read answers with kind "project", project_id and the
 content's page_id, which its retry_token is scoped to. list_pages also returns a
 retry_token for catalog operations (create_page, move_page, delete_page,
@@ -927,6 +1034,9 @@ page_quota_exceeded with limit and count; tell the person rather than retrying.
   reopen also take thread_ids to change up to 100 threads in one call. See Comments below.
 - import_page_image: page_id and a ChatGPT-supplied file descriptor; returns a
   private asset_id and asset_url for a subsequent insert_image edit. See Images above.
+- create_page_asset_upload: page_id and optional content_type, size and sha256;
+  returns a 10-minute upload_url, headers and a curl example for sending a local
+  image or Parquet file. See Images above.
 - delete_page: page_id, idempotency_key and the list_pages retry_token move a Page
   you own to Trash; base_heads is an optional guard. See Trash below.
 - restore_page: page_id, idempotency_key and the list_pages retry_token.
@@ -1088,8 +1198,12 @@ include_content:false; this returns its title, heads, retry authority and outlin
 without body content or comments. The outline has entries, total, offset and
 next_offset; use outline_offset to fetch another page (outline_limit is at most 100).
 Each entry has block_id, node_index, node_id, type, heading_path and
-markdown_bytes, plus heading and level for a heading, and typed fields where they
-apply.
+markdown_bytes, plus heading, level and anchor for a heading, and typed fields
+where they apply. anchor is the heading's link fragment: write [text](#anchor) to
+link to it from the same Page, or [text](/p/<page_id>#anchor) from another. It is
+a slug of the heading's visible text (lowercase, punctuation dropped, spaces as
+hyphens), numbered -1, -2, … for repeats in document order, so it changes when
+the heading's text does.
 ${typedReadFields()}
 node_index and node_range describe the returned heads and shift with edits;
 node_id lasts as long as the node's opening marker does. A replace_block_markdown
@@ -1431,9 +1545,11 @@ people can read in the discussion. Rich message reads return body as Markdown
 with body_format: "markdown". Omitted format keeps new messages literal plain
 text and retains Markdown for edits to an existing rich message. Explicit
 body_format: "plain" inserts the supplied text literally, including its markers.
-Existing plain messages are not automatically reinterpreted. Bodies are limited
-to 16,000 characters and rich structure to 64 KiB; split larger discussions into
-replies or put the detailed table in the document.
+Existing plain messages are not automatically reinterpreted. A message holds at
+most 16,000 text characters (formatting and structure don't count) and 64 KiB of
+rich text, where each line break takes stored space of its own (a comment of
+roughly 700 short lines is refused with comment_too_many_lines); split larger
+discussions into replies or put the detailed table in the document.
 
 ## Hosted MCP
 

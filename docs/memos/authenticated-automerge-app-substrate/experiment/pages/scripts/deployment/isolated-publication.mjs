@@ -12,7 +12,14 @@ import {
   settleConnector,
 } from "./connector-slots.mjs";
 import { deploymentProfile, stageTarget, verifyDeployment } from "./profiles.mjs";
-import { routesFor, imagePaths, indexPaths, siftPaths, whoamiPaths } from "./routes.mjs";
+import {
+  accountPaths,
+  routesFor,
+  imagePaths,
+  indexPaths,
+  siftPaths,
+  whoamiPaths,
+} from "./routes.mjs";
 
 const accountId = "1cfb529b94b3d6cde3aaf49d1d6ed5e6";
 function publicationPaths(target) {
@@ -65,7 +72,11 @@ export function isolatedPublicationPlan({
     throw new Error(
       "Dedicated " + target + " tunnel credentials and provisioning receipt required",
     );
-  for (const config of [sharedConfig, ...frozenTunnelConfigs]) {
+  // `sharedConfig` is null only on a host without a shared connector, which
+  // the profile must declare with `sharedTunnel: false`.
+  if (sharedConfig === null && deploymentProfile(target).sharedTunnel !== false)
+    throw new Error("The shared tunnel configuration is required on " + deployment.host);
+  for (const config of [...(sharedConfig === null ? [] : [sharedConfig]), ...frozenTunnelConfigs]) {
     const existingId = /^tunnel:\s*["']?([a-f0-9-]{36})["']?\s*$/m.exec(config)?.[1];
     if (!existingId || existingId === tunnelId)
       throw new Error("Isolated targets must use a different tunnel from frozen connectors");
@@ -173,13 +184,15 @@ export function publishIsolated(
       throw new Error("Invalid or unsafe dedicated tunnel JSON file: " + file);
     }
   };
-  const sharedConfig = read("/etc/cloudflared/config.yml");
-  const sharedPid = run("systemctl", [
-    "show",
-    "cloudflared.service",
-    "--property=MainPID",
-    "--value",
-  ]);
+  // lab1 runs a shared connector beside the isolated ones, and publication
+  // must leave it untouched. A host declared without one (`sharedTunnel:
+  // false`) checks it the same way if it exists, and otherwise that it stays absent.
+  const sharedConfigPath = "/etc/cloudflared/config.yml";
+  const shared = profile.sharedTunnel !== false || filesystem.existsSync(sharedConfigPath);
+  const sharedConfig = shared ? read(sharedConfigPath) : null;
+  const sharedPid = shared
+    ? run("systemctl", ["show", "cloudflared.service", "--property=MainPID", "--value"])
+    : null;
   const frozenConfigs = new Map(),
     frozenPids = new Map();
   const frozenTunnelConfigs = [];
@@ -233,21 +246,26 @@ export function publishIsolated(
       ...extra,
     }) + "\n";
   const receipt = receiptFor(plan.config);
+  // The route set before the account routes (accountPaths). Every history
+  // below is stated against it, so those predecessors keep their exact bytes,
+  // and each one migrates straight to plan.config.
+  const accountRoutes = profile.accountRoutes === true;
+  const base = accountRoutes ? plan.config.replace(accountPaths, "") : plan.config;
   // Only the exact known predecessor for this target may migrate. Other targets
   // and arbitrary local edits still require inspection instead of adoption.
   const previousConfig =
     target === "page3"
-      ? plan.config.replace("|mermaid[.]js|", "|")
+      ? base.replace("|mermaid[.]js|", "|")
       : target === "page5"
-        ? plan.config.replace("|connect|connect[.]js|", "|")
+        ? base.replace("|connect|connect[.]js|", "|")
         : target === "page7"
-          ? plan.config.replace(imagePaths, "")
+          ? base.replace(imagePaths, "")
           : target === "page8"
-            ? plan.config.replace("|theme[.]js|", "|")
+            ? base.replace("|theme[.]js|", "|")
             : target === "page9"
-              ? plan.config.replace(indexPaths, "")
+              ? base.replace(indexPaths, "")
               : target === "page10" || target === "pages"
-                ? plan.config.replace(whoamiPaths, "")
+                ? base.replace(whoamiPaths, "")
                 : null;
   // Each predecessor is an exact (config, units) pair this run may migrate
   // from. A slotted target also migrates from its legacy single unit, with or
@@ -283,7 +301,9 @@ export function publishIsolated(
     }
     predecessor(plan.config, true);
   }
-  if (profile.whoami === true) {
+  // A target that served /whoami from its first release (pages2) has no
+  // earlier route set, so none of these histories apply to it.
+  if (profile.whoami === true && previousConfig !== null) {
     // The prior release also handed unchanged Sift routes from legacy to slots.
     // That pending receipt can only accompany the exact Sift config.
     predecessors.push({
@@ -313,6 +333,14 @@ export function publishIsolated(
         for (const sealed of historical) predecessors.push({ ...entry, sealed });
       }
     }
+  }
+  if (accountRoutes) {
+    // The installation the last release sealed: the same route set without
+    // the account routes, on slot units. A target still on its legacy unit at
+    // that route set migrates too. Nothing else changes: units and every
+    // other route stay byte-identical.
+    predecessor(base, false);
+    if (slotted) predecessor(base, true);
   }
   const exactly = (file, contents) => filesystem.existsSync(file) && read(file) === contents;
   const slotUnitsInstalled = () => plan.slots.every((slot) => exactly(slot.unitPath, slot.unit));
@@ -496,6 +524,20 @@ export function publishIsolated(
       ["/pagesX", "http_status:404"],
       ["/page", "http_status:404"],
       ["/Pages", "http_status:404"],
+      ["/api/auth/logout", plan.listen],
+      ["/api/auth/session", plan.listen],
+      ["/api/auth/logout-all", accountRoutes ? plan.listen : "http_status:404"],
+      ["/api/auth/grants", accountRoutes ? plan.listen : "http_status:404"],
+      [
+        `/api/auth/grants/${"A".repeat(43)}/revoke`,
+        accountRoutes ? plan.listen : "http_status:404",
+      ],
+      ["/api/auth/grants/", "http_status:404"],
+      [`/api/auth/grants/${"A".repeat(42)}/revoke`, "http_status:404"],
+      [`/api/auth/grants/${"A".repeat(43)}`, "http_status:404"],
+      [`/api/auth/grants/${"A".repeat(43)}/revoke/private`, "http_status:404"],
+      ["/api/auth/logout-all/private", "http_status:404"],
+      ["/api/auth/other", "http_status:404"],
       ["/api/sync", plan.listen],
       ["/api/access", sharing ? plan.listen : "http_status:404"],
       ["/api/access/private", "http_status:404"],
@@ -671,8 +713,11 @@ export function publishIsolated(
     }
   }
   if (
-    read("/etc/cloudflared/config.yml") !== sharedConfig ||
-    run("systemctl", ["show", "cloudflared.service", "--property=MainPID", "--value"]) !== sharedPid
+    shared
+      ? read(sharedConfigPath) !== sharedConfig ||
+        run("systemctl", ["show", "cloudflared.service", "--property=MainPID", "--value"]) !==
+          sharedPid
+      : filesystem.existsSync(sharedConfigPath)
   )
     throw new Error("Shared tunnel changed during publication; inspect before claiming isolation");
   for (const [file, contents] of frozenConfigs)
@@ -702,7 +747,7 @@ export function publishIsolated(
       ? { connectorSlot: connector.slot.name, connectorHandoff: connector.handoff }
       : {}),
     dnsConfigured: false,
-    sharedTunnelUnchanged: true,
+    ...(shared ? { sharedTunnelUnchanged: true } : { sharedTunnelAbsent: true }),
     ...(profile.frozenTargets ? { frozenTargetsUnchanged: profile.frozenTargets } : {}),
   };
 }

@@ -1,12 +1,12 @@
 // The local Page catalog in IndexedDB: one JSON record per Page this browser
 // holds for an account. Listing and retiring Pages read and write JSON only,
-// so the viewer shell imports this module without loading Automerge or
-// Subduction WASM. local-pages.mjs owns the snapshot reads and merges, through
-// this module's one store instance.
-import { IndexedDBByteStore } from "@automerge/automerge-repo-subduction";
+// so the viewer shell imports this module without loading Automerge WASM.
+// local-pages.mjs owns the snapshot reads and merges, through this module's
+// one store instance.
+import { LocalStore } from "./local-store.mjs";
 import { compareGrantGenerations, replicaGrantGeneration } from "../shared/grant-generation.mjs";
 
-export const store = new IndexedDBByteStore({ database: "pages-local-catalog-v1" });
+export const store = new LocalStore({ database: "pages-local-catalog-v1" });
 export const encoder = new TextEncoder();
 export const decoder = new TextDecoder();
 const prefix = (identity) => `account/${encodeURIComponent(identity.principal)}/`;

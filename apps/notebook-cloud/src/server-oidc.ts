@@ -34,6 +34,7 @@ import {
   type ServerSessionRow,
 } from "./oidc-session-store.ts";
 import { cloudLog } from "./observability.ts";
+import { SessionKeyringError, sessionKeyring } from "./session-keyring.ts";
 
 // Server login also serves small celld applications without notebook rooms.
 export type ServerOidcEnvironment = Omit<NotebookEnvironment, "NOTEBOOK_ROOMS">;
@@ -118,6 +119,67 @@ export interface ServerOidcCallbackOptions {
   homePath?: string;
   /** Renders the browser-facing failure. It gets no failure detail, only its class. */
   failurePage?: (failure: ServerOidcCallbackFailure) => Response;
+  /** Receives sign-in outcomes for an application's audit log. */
+  onAuthEvent?: ServerOidcAuthEventListener;
+}
+
+/**
+ * Sign-in and session outcomes for an application's audit log. Fields are a
+ * principal and coded enums only: no tokens, state, cookies, emails or provider
+ * detail.
+ *
+ * - `sign_in`: a callback created a session.
+ * - `sign_in_failed`: a callback was refused. `reason` is a coded cause when
+ *   one is known (the same code `auth.server_callback.failed` logs), and
+ *   `outcome` says whether the browser was sent home because it already had a
+ *   session (`already_signed_in`) or shown the failure page (`failure_page`).
+ * - `session_expired`: a session in use ended because the provider refused
+ *   its refresh (`refresh_rejected`), refused the account
+ *   (`identity_rejected`), a refresh owner crashed (`lease_abandoned`), or
+ *   its sealed refresh token no longer opens (`seal_unreadable`): a key it
+ *   names was retired, or a build without the keyring meets a `kid.` seal.
+ */
+export type ServerOidcAuthEvent =
+  | { type: "sign_in"; principal: string }
+  | {
+      type: "sign_in_failed";
+      phase: string;
+      kind: string;
+      reason?: string;
+      outcome: "already_signed_in" | "failure_page";
+    }
+  | {
+      type: "session_expired";
+      principal?: string;
+      reason: "refresh_rejected" | "identity_rejected" | "lease_abandoned" | "seal_unreadable";
+    };
+export type ServerOidcAuthEventListener = (event: ServerOidcAuthEvent) => void;
+
+export interface ServerOidcSessionOptions {
+  /** Receives session expiry outcomes for an application's audit log. */
+  onAuthEvent?: ServerOidcAuthEventListener;
+}
+
+/** A listener never fails or changes the sign-in flow. */
+function notifyAuthEvent(
+  listener: ServerOidcAuthEventListener | undefined,
+  event: ServerOidcAuthEvent,
+): void {
+  if (!listener) return;
+  try {
+    listener(event);
+  } catch {
+    // Audit delivery is best effort.
+  }
+}
+
+function sessionPrincipal(row: ServerSessionRow): string | undefined {
+  try {
+    const principal = (JSON.parse(row.session_json) as { principal?: unknown }).principal;
+    return typeof principal === "string" ? principal : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 const escapeHtml = (value: string) =>
@@ -211,7 +273,11 @@ const VALIDATION_FAILURE_REASONS = new Map<string, string>([
   ["OIDC UserInfo picture is invalid", "userinfo_picture_invalid"],
 ]);
 
-function logFailure(event: string, phase: string, error: unknown): void {
+function logFailure(
+  event: string,
+  phase: string,
+  error: unknown,
+): { kind: string; reason?: string } {
   // Provider bodies, exception messages, URLs, subjects and tokens never enter logs.
   const reason =
     error instanceof CallbackRejected
@@ -224,32 +290,30 @@ function logFailure(event: string, phase: string, error: unknown): void {
               ? "oidc_userinfo_validation_failed"
               : undefined))
         : undefined;
+  const kind =
+    error instanceof CallbackRejected
+      ? "callback_rejected"
+      : error instanceof InvalidGrant
+        ? "grant_rejected"
+        : error instanceof ProviderUnavailable
+          ? "provider_unavailable"
+          : "validation_or_storage";
   cloudLog("warn", event, {
     phase,
-    kind:
-      error instanceof CallbackRejected
-        ? "callback_rejected"
-        : error instanceof InvalidGrant
-          ? "grant_rejected"
-          : error instanceof ProviderUnavailable
-            ? "provider_unavailable"
-            : "validation_or_storage",
+    kind,
     ...(reason ? { reason } : {}),
     ...(error instanceof ProviderUnavailable && error.status
       ? { provider_status: error.status }
       : {}),
   });
+  return { kind, ...(reason ? { reason } : {}) };
 }
 
 function configFor(env: Env, request: Request): Config {
   const issuer = env.NOTEBOOK_CLOUD_OIDC_ISSUER?.trim();
   const clientId = env.NOTEBOOK_CLOUD_OIDC_CLIENT_ID?.trim();
-  if (
-    !issuer ||
-    !clientId ||
-    !env.DB ||
-    (env.NOTEBOOK_CLOUD_APP_SESSION_SECRET?.length ?? 0) < 32
-  ) {
+  // A malformed keyring throws its own error here rather than reading as unset.
+  if (!issuer || !clientId || !env.DB || !sessionKeyring(env)) {
     throw new Error("Server sign-in is not configured");
   }
   const origin = new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN?.trim() || request.url).origin;
@@ -609,12 +673,24 @@ export async function completeServerOidcLogin(
       Location: safeReturnTo(transaction.returnTo, config.origin),
       "Set-Cookie": serverSessionCookie(sessionToken),
     });
+    notifyAuthEvent(options.onAuthEvent, {
+      type: "sign_in",
+      principal: verified.identity.principal,
+    });
   } catch (error) {
-    logFailure("auth.server_callback.failed", phase, error);
-    response =
-      (origin && error instanceof CallbackRejected
+    const failure = logFailure("auth.server_callback.failed", phase, error);
+    const home =
+      origin && error instanceof CallbackRejected
         ? await signedInRedirect(request, env, origin, options.homePath)
-        : null) ??
+        : null;
+    notifyAuthEvent(options.onAuthEvent, {
+      type: "sign_in_failed",
+      phase,
+      ...failure,
+      outcome: home ? "already_signed_in" : "failure_page",
+    });
+    response =
+      home ??
       (options.failurePage ?? serverOidcCallbackFailurePage)(
         error instanceof ServerOidcIdentityRejected
           ? { status: 403, accountRejected: true }
@@ -649,12 +725,13 @@ export async function serverOidcSessionStatus(
   request: Request,
   env: Env,
   syncProfile: (identity: AuthenticatedConnection) => Promise<void>,
+  options: ServerOidcSessionOptions = {},
 ): Promise<Response> {
   const now = Math.floor(Date.now() / 1000);
   try {
     let row = await loadServerSession(env, request, now);
     if (row && row.access_expires_at <= now + REFRESH_WINDOW_SECONDS)
-      row = await refreshSession(request, env, row, syncProfile);
+      row = await refreshSession(request, env, row, syncProfile, options);
     const current = Math.floor(Date.now() / 1000);
     if (row) row = await touchServerSession(env, request, row, current);
     const session: CloudAppSession | null =
@@ -714,6 +791,7 @@ async function refreshSession(
   env: Env,
   initial: ServerSessionRow,
   syncProfile: (identity: AuthenticatedConnection) => Promise<void>,
+  options: ServerOidcSessionOptions = {},
 ): Promise<ServerSessionRow | null> {
   const config = configFor(env, request),
     db = await oidcDatabase(env);
@@ -722,17 +800,43 @@ async function refreshSession(
   if (initial.lease && initial.lease_until <= now) {
     // A crashed owner may have consumed a rotating refresh token. Do not let
     // another process reuse it, or let a late owner resurrect the session.
-    await db
+    const removed = await db
       .prepare("DELETE FROM oidc_server_sessions WHERE id = ? AND generation = ? AND lease = ?")
       .bind(initial.id, initial.generation, initial.lease)
       .run();
+    if (removed.meta?.changes === 1)
+      notifyAuthEvent(options.onAuthEvent, {
+        type: "session_expired",
+        principal: sessionPrincipal(initial),
+        reason: "lease_abandoned",
+      });
     return null;
   }
-  const bundle = await openServerSecret<TokenBundle>(
-    env,
-    initial.sealed,
-    `session:${initial.id}:${config.context}`,
-  );
+  let bundle: TokenBundle;
+  try {
+    bundle = await openServerSecret<TokenBundle>(
+      env,
+      initial.sealed,
+      `session:${initial.id}:${config.context}`,
+    );
+  } catch (error) {
+    // No key here opens it, so no later request can either: end the session
+    // like any other expiry instead of failing every renewal. A malformed
+    // keyring is a configuration fault and still fails the request.
+    if (error instanceof SessionKeyringError) throw error;
+    logFailure("auth.server_session.expired", "refresh", error);
+    const removed = await db
+      .prepare("DELETE FROM oidc_server_sessions WHERE id = ? AND generation = ?")
+      .bind(initial.id, initial.generation)
+      .run();
+    if (removed.meta?.changes === 1)
+      notifyAuthEvent(options.onAuthEvent, {
+        type: "session_expired",
+        principal: sessionPrincipal(initial),
+        reason: "seal_unreadable",
+      });
+    return null;
+  }
   if (!bundle.refreshToken) return initial.access_expires_at > now ? initial : null;
   const lease = randomSecret();
   const claimed = await db
@@ -796,6 +900,11 @@ async function refreshSession(
         .prepare("DELETE FROM oidc_server_sessions WHERE id = ? AND generation = ? AND lease = ?")
         .bind(initial.id, initial.generation, lease)
         .run();
+      notifyAuthEvent(options.onAuthEvent, {
+        type: "session_expired",
+        principal: sessionPrincipal(initial),
+        reason: error instanceof InvalidGrant ? "refresh_rejected" : "identity_rejected",
+      });
       if (error instanceof ServerOidcIdentityRejected) throw error;
       return null;
     }

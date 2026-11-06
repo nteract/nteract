@@ -1,7 +1,8 @@
 # Pages deployment
 
-The current release is qualified for two isolated celld targets: **Pages**
-(`pages.runtimed.run`) and **Page10**. Page9 and earlier services are frozen.
+The current release is qualified for three isolated celld targets: **Pages**
+(`pages.runtimed.run`), **Page10**, and **Pages2** (`page2.runtimed.run`, on its
+own host, lab2). Page9 and earlier services are frozen.
 Deployment helpers reject mutations to those targets and check their
 fingerprints when publishing Pages or Page10. Historical profiles remain in
 [profiles.mjs](scripts/deployment/profiles.mjs) for inspection and isolation
@@ -29,7 +30,13 @@ The `pages` profile owns `pages.runtimed.run`:
 | Frozen neighbors | `page7`, `page8`, `page9` |
 
 It carries every Page10 flag, the Page quota default and D1 binding, and the
-same celld 0.6.3 runtime and OIDC client. The service and prefix end in `-live`
+same celld 0.6.3 runtime and OIDC client. Like Page10, every Page syncs with
+plain Automerge sync ([Plain sync on pages.runtimed.run](#plain-sync-on-pagesruntimedrun)).
+Both serving targets set `memory` in their profile:
+celld sheds cells above `CELLD_MAX_RSS_MB=2560`, and systemd caps the unit at
+`MemoryMax=4G`. At the earlier 768 MB threshold production shed its D1 cell
+repeatedly, and signed-in requests failed with 503 while it restored. Changing
+either value changes the unit, so the next install restarts the service. The service and prefix end in `-live`
 because lab1 still holds a disabled `nteract-pages.service` and
 `/etc/nteract-pages` from an earlier prototype. The installer refuses any path,
 user or prefix it does not own, so the target must not share those names.
@@ -59,12 +66,152 @@ node scripts/deploy.mjs --target pages publish REMOTE_STAGE --apply
 including one an earlier prototype left behind. Remove such a record in
 Cloudflare by hand, after checking nothing serves from it, then rerun.
 
+### Promote production from the CI artifact
+
+Every green push to `main` uploads the gate's `pages-release` artifact. Page10
+deploys from it, and its `build_id` equals a local build of the same commit.
+Production can take the same bytes. Pick the gate run whose release Page10
+qualified, then check that browser E2E passed for its SHA. From `pages`, with
+`gh` signed in:
+
+```sh
+git fetch origin main
+node scripts/deploy.mjs --target pages plan
+node scripts/deploy.mjs --target pages prepare --from-artifact GATE_RUN_ID --worktree
+node scripts/deploy.mjs --target pages upload LOCAL_STAGE
+node scripts/deploy.mjs --target pages install REMOTE_STAGE --apply
+node scripts/deploy.mjs --target pages publish REMOTE_STAGE --apply
+```
+
+`--attempt N` names a rerun attempt; the default is the run's latest.
+
+GitHub provenance is the trust root for the bytes. Before anything is written,
+`prepare --from-artifact` uses `gh api --hostname github.com` to require:
+
+- The run is `.github/workflows/authenticated-automerge-spike.yml` in
+  `nteract/nteract` (repository and owner checked by id), a `push` to `main`,
+  and green at that attempt. Its head SHA is the release's source.
+- The run holds exactly one `pages-release` artifact. It is unexpired, at most
+  64 MiB, and created while that attempt's `Pages release bundle` job ran
+  successfully.
+
+The artifact metadata is read again just before download and must keep the
+same id, digest and size. The ZIP downloads to a temp file, and its sha256
+must equal that digest before it is parsed. Extraction refuses symlinks,
+absolute paths, `..` or `.git` segments, more than 64 entries, or more than
+128 MiB. The file set must be exactly the receipt's `files` plus
+`build-receipt.json`, and each file must match its sha256. The receipt must
+name the run's SHA and a clean tree.
+
+These follow the lab1 controller's provenance and archive checks; change both
+together. The controller also requires allowlisted GitHub actors for the run.
+This command has no actor check: the operator choosing the run replaces it.
+
+The existing `prepare` then runs on a checkout at the run's SHA, so code and
+source are the same commit. Its fingerprint check binds the receipt to that
+source, as for a local build. Without `--worktree`, that is this checkout: it
+must be clean, at the run's SHA, and have no `dist`; a failure after extraction
+removes the `dist` it wrote. `--worktree` creates a detached worktree at
+`.context/pages-promote/<sha>` and runs that worktree's own
+`scripts/deploy.mjs prepare --from-artifact GATE_RUN_ID --attempt N`, which
+checks the run and artifact again and does the download, extraction and
+staging. The worktree has no `node_modules`, so `NODE_PATH` lends it this
+checkout's TypeScript, which the fingerprint uses only to follow imports. If
+that fails, the worktree is removed. Either way the gate SHA must already
+contain `--from-artifact`; an older SHA's `deploy.mjs` refuses the arguments.
+
+The stage manifest records the artifact as `release_artifact`: repository,
+run, attempt, artifact id, digest, size, creation and expiry times, `build_id`,
+receipt sha256, and `code_sha`, the commit whose scripts staged it. `prepare`
+refuses a `release_artifact` whose `head_sha` or `code_sha` is not its HEAD. The
+stage is the printed `prepared` path: `.context/pages-deploy/<sha>` of the
+checkout that ran `prepare`, which with `--worktree` is inside the worktree.
+Remove the worktree with `git worktree remove` after publishing.
+
+This removes two constraints. Production no longer needs a build on an
+operator's laptop. Production also no longer has to be promoted from Page10's
+build directory on lab1 before the next Page10 deploy prunes it. The artifact
+lasts 30 days, so promote within that window or rebuild locally.
+
+## pages2 on lab2
+
+The `pages2` profile is a fresh, empty target on its own host:
+
+| Field | Value |
+| --- | --- |
+| Host | `lab2` (m7i.large, 8 GB) |
+| Hostname | `page2.runtimed.run` |
+| Service and user | `nteract-pages2` |
+| Prefix | `standalone/pages2` in the lab fleet bucket |
+| Listeners | `127.0.0.1:9482`, internal `127.0.0.1:19482` |
+| Firewall | table `nteract_pages2`, mark `0x00080000` |
+| Tunnel connectors | `cloudflared-pages2-a.service` (metrics `127.0.0.1:29482`) and `cloudflared-pages2-b.service` (`127.0.0.1:29492`), tunnel `nteract-pages2` |
+| Frozen neighbors | none |
+
+It carries every Pages flag, memory limit, Page quota default and D1 binding.
+Every Page it creates uses plain Automerge sync, and `RECORD_STORAGE_HISTORY`
+lists `automerge` for it. Its ports, table, mark and tunnel names differ from
+every lab1 profile; `deployment.test.mjs` checks that across all profiles.
+
+The D1 binding is Pages' `AUTH_D1` (`pages-next-auth`). Nothing needs creating
+by hand: celld keeps the database under `standalone/pages2` and creates it
+empty on first use, so pages2 has its own sessions, OAuth grants and quota
+rules. `quota-rules.mjs` and `d1.mjs` refuse to run until that first use has
+created the cell; one sign-in is enough.
+
+lab2 runs no shared cloudflared connector. The profile says so with
+`sharedTunnel: false`, and publication then checks that
+`/etc/cloudflared/config.yml` stays absent. If one appears, publication treats
+it like lab1's: a different tunnel ID, unchanged during the run.
+
+### Before the first install
+
+1. Provision the host with the sandbox's `provision-remote lab2`, and add lab2
+   to the `celld-lab` `node_hosts` so its instance role can read and write the
+   fleet bucket. Operator SSH must reach `lab2` with sudo.
+2. Install `/usr/local/bin/celld-v0.6.3` (the pinned sha256 in
+   [profiles.mjs](scripts/deployment/profiles.mjs)), `node`,
+   `/usr/local/bin/aws`, `nft`, `curl` and `/usr/bin/cloudflared` on lab2.
+3. Have a Cloudflare account token for `1cfb529b94b3d6cde3aaf49d1d6ed5e6` with
+   Tunnel edit and DNS edit on `runtimed.run`, the same token as the lab1
+   targets.
+4. Nothing on the identity provider: OIDC client
+   `1a90d36b-5b97-4ebb-a1bc-f3de7ddb70e0` accepts redirect URIs under
+   `*.runtimed.run`, which covers `https://page2.runtimed.run/oidc`.
+
+### Deploy
+
+From `pages`, after review, commit, and a fresh build:
+
+```sh
+node scripts/deploy.mjs --target pages2 plan
+node scripts/deploy.mjs --target pages2 prepare
+node scripts/deploy.mjs --target pages2 upload LOCAL_STAGE
+node scripts/deploy.mjs --target pages2 install REMOTE_STAGE --apply
+CLOUDFLARE_API_TOKEN=... node scripts/deploy.mjs --target pages2 provision            # inspect
+CLOUDFLARE_API_TOKEN=... node scripts/deploy.mjs --target pages2 provision --apply    # first publication only
+node scripts/deploy.mjs --target pages2 publish REMOTE_STAGE --apply
+```
+
+`install` refuses a non-empty `standalone/pages2` prefix, an occupied
+listener, table or mark, and any existing `nteract-pages2` path or user.
+
+### Smoke checks
+
+```sh
+curl -fsS https://page2.runtimed.run/health                        # {"ok":true,"prototype":"pages-celld-native",...}
+curl -s -o /dev/null -w '%{http_code}\n' https://page2.runtimed.run/whoami   # 401 without a session
+```
+
+Then sign in at `https://page2.runtimed.run/` in a browser, create a Page, and
+check `/whoami` from that session returns the account.
+
 ## Page10 release
 
 The allowlisted profile owns `page10.runtimed.run`, service `nteract-page10`,
 listeners `127.0.0.1:9480` / `127.0.0.1:19480`, and the `standalone/page10`
 prefix in the lab1 fleet bucket. It carries every Page9 flag: Wordgard editor,
-buffered persistence, lossless cleanup with `CELLD_DURABILITY=bucket`, sharing,
+lossless cleanup with `CELLD_DURABILITY=bucket`, sharing,
 OAuth, the catalog index, and the hashed-asset, Project-link and index routes.
 It uses production Anaconda verification.
 
@@ -96,7 +243,7 @@ is `0x00200000`, the next bit below Page9's `0x00400000`; Pages takes the next,
 `0x00100000`. The installer checks
 ownership and resource conflicts, preserves Durable Object bindings/migrations
 and persistent data, and touches only the selected service. Installation and
-publication require lab1 SSH and sudo.
+publication require SSH and sudo on the target's host (lab1, or lab2 for pages2).
 
 Each installation copies `firewall.mjs` and `profiles.mjs` into its own
 `/opt/<service>`, and its unit's `ExecStartPre` runs that copy. A frozen service
@@ -262,13 +409,8 @@ pauses editing in tabs that read the floor until they reload; it does not stop
 older viewers or API clients (see the Build updates policy in the README). A
 rollback publishes a different build id too, so open tabs see the banner again.
 
-Rollback must retain binary record readers and the `PageRecords` binding and
-buffered-storage implementation. A legacy hex-only build cannot read updated
-records, and an older synchronous-only build cannot read buffered Pages.
-Causal record ordering changes only the order and grouping of writes; keys and
-frames are unchanged, so earlier builds read the result. A rollback build still waits
-forever on stored history whose parent never became durable; startup recovery
-from that shape needs this build or later.
+A rollback build must open plain Automerge Pages; see [Rollback and Page
+record storage](#rollback-and-page-record-storage).
 
 The Page8, Page9, Page10 and Pages profiles set `PAGES_CATALOG_INDEX=1`. Changing this epoch label starts
 account reconciliation on the next listing. Reconciliation may take several
@@ -281,8 +423,8 @@ a rollback, accounts repair their index within six hours of their next listing, 
 immediately when the `PAGES_CATALOG_INDEX` value changes. Index migrations run
 lazily on first use and must stay additive so a rollback build keeps working
 against the newer schema. Listing cursors are sealed with a key derived from the
-session secret and expire after 24 hours; rotating that secret invalidates
-outstanding cursors. Migration 2 adds per-principal title snapshots and clears the
+active session key and expire after 24 hours; a cursor opens under any key in
+the keyring (see [Session key rotation](#session-key-rotation)). Migration 2 adds per-principal title snapshots and clears the
 reconcile markers, so each account rebuilds its rows on its next listings. Migration 3
 adds `lifecycle_revision` to Page rows; older builds ignore it. Lifecycle state
 changes, retirements and access writes apply only from a revision at least as
@@ -317,8 +459,7 @@ records wait for a roll forward. Such a build does not refuse to trash a Page
 with sub-pages and does not protect a Project's content document. After rolling
 forward, a Page whose parent is in Trash shows at the top level of the Project
 view and a resumed creation under such a parent answers `parent_unavailable`.
-Rolling back that far is only possible before the content migration below has
-run. At startup a build without the `Space` class logs `celld runtime start failed for
+Rolling back that far is no longer possible (see the rollback rule below). At startup a build without the `Space` class logs `celld runtime start failed for
 Space:<id>: no Worker exports Durable Object class Space` once per Project cell
 celld resumes, then serves normally. On Cloudflare, removing a Durable Object
 class takes a `deleted_classes` migration that erases its storage, so a
@@ -336,112 +477,21 @@ row and any direct grants stay where they were) marked `project_content:
 `document_id`. This is location shape 2 (`LOCATION_SHAPE_VERSION` in
 `worker/location-shape.mjs`, stamped in `host/location/shape`).
 
-Shape 1, which every build before this one wrote, kept the content as a Page: a
-root entry flagged `home: true` whose children were the Project's top level, and
-`space/<id>.home_page_id` naming it. Nothing in this build reads that shape.
-Every reader of the retired fields lives in one module,
-`worker/home-removal-migration.mjs`, marked for deletion once production has
-migrated, together with the imports that call it from `location-shape`,
-`catalog-location`, `spaces` and `index`. The one other trace is D1 migration 4's
-historical `CREATE TABLE`, which migration 8 rebuilds without the column.
+Shape 1, which builds before #4853 wrote, kept the content as a Page: a root
+entry flagged `home: true` whose children were the Project's top level, and
+`space/<id>.home_page_id` naming it. Nothing in this build reads or checks for
+that shape. An owner-run one-shot migration converted production's only account
+with Projects on 2026-11-05; no other production account held a Project. On
+page10, which deploys main automatically, the same migration had already run:
+every Project there carries `document_id`. The
+one other trace is D1 migration 4's historical `CREATE TABLE`, which migration 8
+rebuilds without the column.
 
-**Fail closed.** A Catalog that still holds `home: true` entries or a
-`space/<id>.home_page_id`, and a Space record without `document_id`, answer `503
-location_migration_required` with `details.reason: "home_removal_required"` on
-every location read and write: `list_projects`, `get_project`, `list_pages` and
-`read_page` by `project_id`, `create_page` into the Project, moves, Trash and
-restore. Loose Pages and reads by `page_id` keep working. Nothing is converted on
-its own. A Catalog with no Project (every account without one) stamps shape 2 on
-its next queued write. Code that meets the old shape anywhere else refuses the
-request rather than guessing where a Page belongs.
-
-**The migration.** The owner runs it, once per account, as a signed-in session or
-with an API key (Pages OAuth tokens are not allowlisted):
-
-```sh
-curl -sS https://pages.runtimed.run/api/admin/home-removal \
-  -H "Authorization: Bearer $ANACONDA_API_KEY" -H "Content-Type: application/json" \
-  -d '{"mode":"dry_run"}'
-```
-
-`dry_run` writes nothing and answers `200 {mode, projects: [{project_id,
-document_id, content_found, reparented, reparented_trashed}], entries_changed,
-intents_changed, blockers: [{code, page_id, project_id}], writes}`. `apply` with
-the same body answers `409 home_removal_blocked` with `details.blockers` when any
-blocker exists (`content_trashed`: the content document is in Trash;
-`content_not_root`: it sits under another Page) and otherwise rewrites, in the
-owner Catalog's serial queue:
-
-1. each live Space record and its stored receipts (`home_page_id` →
-   `document_id`, `home_page_title` dropped);
-2. the Catalog, in transactional batches: the content entry loses `home`,
-   `space_id`, `parent_id` and `position` and gains `project_content`; its
-   children, active and trashed, become roots with `parent_id: null` and
-   `space_id`, re-keyed where positions tie; pending `create_project` intents and
-   receipts take the new field names (`home_created` → `content_created`,
-   `homeTitle` → `contentTitle`), so a create retried with the same key and
-   payload finishes without the old fields;
-3. the D1 Space rows are marked dirty and `host/location/shape` is stamped
-   version 2, `migrated`.
-
-Before each batch, the prior value of every key it changes is saved once and
-never overwritten; the value `{"home_removal_absent": true}` records a key that
-did not exist. In the Catalog: `host/home-removal/before/<key>` for every
-rewritten `page/`, `trash/`, `space/` and `host/operation/` key, plus
-`host/home-removal/before/host/location/shape`. In each Space object:
-`host/home-removal/before/space/record` and
-`host/home-removal/before/host/receipt/<id>`. Progress is kept in
-`host/home-removal/state` (`{phase: planning | applying | done | failed, next,
-total, problems}`) with the saved plan under `host/home-removal/plan/<8-digit
-index>`, so an interrupted `apply` resumes the same plan in the same order rather
-than replanning over half-converted siblings. Both responses carry `progress`;
-`apply` answers `409 home_removal_invalid` with `details.problems` when the saved
-plan no longer matches what is stored. The response otherwise carries the
-`dry_run` fields plus `shape: "migrated"`. The operation is idempotent and
-resumable: a rerun plans only what is left, and a second `apply` reports
-`writes: 0`. There are no pending create intents or receipts to carry across
-this deployment by hand: the migration finalizes or renames them, including a
-Project whose create was still pending, and a Catalog that is refused `503` has
-not accepted new ones. Run `dry_run` first and have Kyle approve its report
-before `apply` on production; the production inventory (10 Projects, one content
-document each, direct editor grants on nine of them, and since 2026-11-05 one
-editor member on all ten) is the expected shape of that report, and
-`content_found: true` on every row is the gate. Project ACLs are not touched by
-the migration; verify after `apply` that the member still sees all ten through
-`list_projects`, reads each content through `project_id`, and lists each tree.
-
-To restore by hand: copy each before-image back over its key (delete the keys
-whose image is the absent value), in the Catalog and in every Space object, then
-delete `host/home-removal/state` and `host/home-removal/plan/*`.
-
-Direct grants survive by construction: the content entry and the Page record it
-points at don't move, and the migration makes no call to any Page, so a
-collaborator with a grant on the content document (by its `document_id`) opens
-it after `apply` exactly as before, as `kind: "page"`, without learning of the
-Project; a `project_id` read by that collaborator stays `project_not_found`. The integration test turns a live
-account back into shape 1 and checks the 503, a dry run that writes nothing,
-`apply`, a no-op second `apply`, the backups, the surviving direct grant, reads
-through `project_id` and `document_id`, and a pending create receipt replayed
-without the old fields.
-
-**Rollback rule.** Rolling back to a build before this one is safe only while no
-Catalog has had `apply` run: those builds read and write shape 1, and this build
-goes on refusing that shape until the owner migrates, so nothing written in
-between is misread. After `apply`, never roll back past this build. The older
-build's location pass takes shape 2 for shape 1 and would move the now-root Pages
-back under the content document; its D1 Space upserts also fail against schema
-8. If a rollback is unavoidable, restore each key from
-`host/home-removal/before/` first. And any future rewrite of location entries
-must bump `LOCATION_SHAPE_VERSION` (to 3) so every Catalog is checked again: a
-roll-forward after a rollback that wrote shape 1 is exactly that case. The
-older lazy pass (shape 1's own, which nested roots under the content document)
-is gone with it; a Catalog from before that pass is shape 1 too and is migrated
-by the same operation.
-
-`scripts/migration-inventory.mjs` audits offline Catalog evidence from either
-side of the migration: a `space/` record with `document_id` is counted as
-`content`, one with the retired field as `legacy_content` with the issue
-`project_content_unmigrated`, and one with both or neither is invalid.
+**Rollback rule.** Never roll back past #4853. An older build's location pass
+takes shape 2 for shape 1 and would move a Project's root Pages back under its
+content document; its D1 Space upserts also fail against schema 8. Any future
+rewrite of location entries must bump `LOCATION_SHAPE_VERSION` (to 3) and check
+for the shape it retires before stamping a Catalog.
 
 Rollback past #4712. Builds before #4712 can't replay a `move_page` receipt
 for a request with `parent_id: null`. The move already landed, so after such a
@@ -449,14 +499,15 @@ rollback a client should read or list the Page instead of retrying the move.
 
 ### Rollback and Page record storage
 
-A Page keeps the record storage it was created with. A build that doesn't
-know a Page's mode refuses to open it ("Unsupported Page record storage
-mode"), and builds before a2c9d5dde don't know `automerge`. So a target that
-has created plain Automerge Pages can't run such a build.
+A Page's host record names its record storage. This build opens only
+`automerge` (plain Automerge sync) and refuses any other mode with
+"Unsupported Page record storage mode", except on a deleted Page, which serves
+nothing. Builds before a2c9d5dde don't know `automerge`, so a target that holds
+plain Automerge Pages can't run them.
 
 Each build receipt lists the modes its Worker opens as `record_storage`
 (`shared/record-storage.mjs`); the release manifest carries the receipt. A
-receipt without the list counts as opening only the native modes, which
+receipt without the list counts as opening only the Subduction modes, which
 covers every build before the list existed, including a2c9d5dde and #4770.
 
 Plain targets also require `plain_storage_formats` to include
@@ -471,10 +522,9 @@ viewer bundles sharing IndexedDB see no manifest for upgraded documents and
 must resync, rather than interpreting a v2 manifest as a v1 document.
 
 A target may hold a mode when `RECORD_STORAGE_HISTORY` in
-`scripts/deployment/profiles.mjs` lists it, its profile sets `recordStorage`,
-or a release installed on the host was configured with that
-`PAGES_RECORD_STORAGE`. History outlives the profile flag: turning
-`recordStorage` off stops new plain Pages, but the existing ones remain.
+`scripts/deployment/profiles.mjs` lists it, or a release installed on the host
+was configured with that `PAGES_RECORD_STORAGE`. Page10 and Pages list
+`automerge`.
 
 A release that lacks one of those modes is refused, naming the target, the
 release and the reason, by:
@@ -487,14 +537,14 @@ release and the reason, by:
 - `install.mjs` itself, before any write, which also reads the configured
   `wrangler.json` of every release under `/opt/<service>/releases`;
 - the timeout message, which doesn't name a `celld deploy` rollback to such a
-  release;
-- `scripts/rollback-qualification.mjs`, for both builds it runs.
+  release.
 
 There is no override. A direct `celld deploy` of a release directory bypasses
 every check. Page10 holds `automerge` Pages, so it can't roll back past
 a2c9d5dde, and can't install a2c9d5dde or #4770 through deploy.mjs either,
 because their receipts predate the list. Builds listing `automerge` but lacking
-`doc-store-v2-host-actor-prefix` are also unsafe and refused.
+`doc-store-v2-host-actor-prefix` are also unsafe and refused. Pages is held to
+the same floor.
 
 ### Projects and their storage identity
 
@@ -535,16 +585,13 @@ and a Durable Object that stores one value showed:
 New Projects get `prj_` IDs; `sp_` IDs stay valid. IDs aren't key names, so a
 `prj_` Project is stored under `space/prj_<uuid>` like any other.
 
-Because stored intents are unchanged, work 3548b9750 left pending resumes here
-once the account's Catalog has run the content migration above, which renames
-the intent's phases and receipts. A `create_space` interrupted before its content
-document finishes when retried as `create_project` with the same key and
-payload: the fingerprint still uses the stored operation name. A `create_page` interrupted before its Page finishes
-when retried with `project_id`, the same key and the arguments in the same
-order: its pending Catalog entry holds the location. Fingerprints have always covered argument order.
-Both cases are tested by writing the intent through the Catalog exactly as the
-3548b9750 gateway does, then retrying through the Project API. So Page8 needs no
-cleanup of pending intents before this build deploys.
+Stored intents keep the Space names. A `create_space` interrupted before its
+content document finishes when retried as `create_project` with the same key
+and payload: the fingerprint still uses the stored operation name. A
+`create_page` interrupted before its Page finishes when retried with
+`project_id`, the same key and the arguments in the same order: its pending
+Catalog entry holds the location. Fingerprints have always covered argument
+order.
 
 Clients with a cached tool list or bundle are refused before anything runs, so
 no idempotency key is consumed. The old tool names answer
@@ -552,94 +599,8 @@ no idempotency key is consumed. The old tool names answer
 same for the other three). A `space_id` argument answers
 `` `space_id` is now `project_id` `` (`argument_renamed`).
 
-Rolling back to 3548b9750 is subject to the rollback rule above: possible only
-before `apply` has run on the account. Until then that build serves every Space
-and every Page it wrote. It can't address `prj_` IDs: `get_space` on one answers
-`Invalid space_id`, and its `list_spaces` skips them. It refuses a child under a
-Page in a `prj_` Project rather than file it elsewhere. Its
-restore-to-top-level path rejects a `prj_` placement, because its
-`validatePlacement` accepts only `sp_` IDs, so a Page never drops out of its
-Project. Rolling forward refuses its shape-1 writes until the owner migrates,
-then serves everything again.
-
-### Rollback qualification for Projects
-
-`scripts/rollback-qualification.mjs` runs four phases on local celld 0.6.3 with
-one persistent data directory: the previous build, this build, the previous
-build, this build. Build the previous commit in a separate checkout first. A
-`git archive` of the experiment and the sources it imports (`src`,
-`apps/notebook-cloud/src`, `packages/local-oidc`, `packages/runtimed/src`, the
-root `package.json` and `pnpm-lock.yaml`), committed into a scratch repository
-so the build receipt can read it, works. Then:
-
-```sh
-CELLD_BIN=<celld 0.6.3> node scripts/rollback-qualification.mjs --target <target> --previous <previous pages dir>
-```
-
-`--target` names the deployment the rollback is for. The script refuses a
-previous build that can't open every record storage the target may hold (see
-Rollback and Page record storage) before it starts celld, and the fixture
-creates Pages with the target's `recordStorage`. 3548b9750 can still be
-qualified for `pages`; for `page10` it is refused.
-
-The phases qualify the one rollback that is supported, before `apply`, and the
-migration itself:
-
-1. The previous build creates a Space with a Page and lists both, so D1 holds
-   Space rows and the Catalog shape 1.
-2. This build fails closed: `list_projects`, `get_project`, `list_pages` and
-   `read_page` by `project_id` and `create_page` into the Space all answer
-   `location_migration_required`, reason `home_removal_required`,
-   `retryable: true`. A `dry_run` reports the Space with its `document_id`,
-   `content_found: true`, no blockers and a positive `writes`; the refusals hold
-   after it. A loose Page is created normally.
-3. The previous build serves its Space untouched at revision 0, updates it,
-   lists the loose Page, creates a second Space with a nested Page and trashes
-   the child.
-4. This build still fails closed over everything the previous build wrote, then
-   `apply` reports both Spaces converted (`reparented: 1` for the second: its
-   top-level Page became a root; the trashed child stayed under it) and
-   `shape: "migrated"`; a second `apply` reports `writes: 0`. `list_projects`
-   names both with `document_id` and `role: "owner"`; the first shows the
-   previous build's title at revision 1 and takes another update. Each Project
-   lists only its Pages, at the top level with `parent_id: null`, never the
-   content document; the trashed child is still in Trash. The content reads by
-   `project_id` as `kind: "project"` with one Project breadcrumb, an edit by
-   `project_id` is read back by `document_id` with the same heads, and giving
-   both selectors is `invalid_arguments`. `delete_page` and `move_page` on the
-   content document answer `project_content_protected`. A new Project carries
-   `document_id` and no retired field, its Pages land with `parent_id: null`
-   and Project › parent breadcrumbs, the trashed child restores under its
-   parent, and trashing either parent is refused with `page_has_children`.
-
-Not run, by design: the previous build over a migrated directory. The report
-records `rollback_after_apply: "unsupported"`. This revision of the script has
-not yet been run against a built previous commit; the recorded run below is from
-the Space-to-Project build and predates the content migration.
-
-Against 3548b9750 (build `9ae4ed83e44e`), with the catalog index on, before the
-content migration existed:
-
-1. The previous build created a Space with a Page and listed both, so D1 held
-   Space rows.
-2. This build listed that Space as a Project with its `sp_` ID and both Pages,
-   and updated its title (revision 1). It created a `prj_` Project, a top-level
-   Page and two Pages nested under it.
-3. The previous build read the Space with this build's title at revision 1,
-   updated it again (revision 2) and listed it. It listed, read and edited the
-   nested Page and trashed the other one. `get_space` on the `prj_` ID answered
-   `Invalid space_id`, and a child under the `prj_` Project's top-level Page was
-   refused. It created a second Space with two nested Pages.
-4. This build listed all three Projects. The first showed the previous build's
-   title at revision 2 and took another update (revision 3). The second Space
-   answered `get_project` with `org: null`, listed its three Pages, and showed
-   breadcrumbs Project › parent. A new Page landed in it by `project_id`. The
-   `prj_` Project kept its Pages, the edit and its breadcrumbs, and the refused
-   child existed nowhere. The trashed child restored under its parent, and
-   trashing either parent was refused with `page_has_children`.
-
-celld logged no errors (only its usual allocator and `fleet_sample_failed`
-lines), and nothing crashed.
+Rolling back to 3548b9750 is not supported: it predates #4853 (see the rollback
+rule above).
 
 ### Creation intent conflicts
 
@@ -682,57 +643,105 @@ There is no repair tool. To repair a Page:
    the receipts. Restore it from a backup, or ask the owner to grant access
    again.
 
-### Preserved Markdown conversion
+### Stored forms this build refuses
 
-Older builds stored Markdown they couldn't import as one read-only preserved
-block. The Page host converts each one when it loads, creates, registers or
-restores a Page (README, "Preserved blocks"). While it converts, the Page is
-read-only: viewers connect and sync it down, discovery reports `converting`
-and the viewer shows a read-only notice, native puts are refused, and HTTP
-edits get `503 preserved_markdown_converting`. A restart while records still
-can't be stored doesn't stop the Page from starting; it stays readable and
-keeps retrying.
+Every Page on pages and page10 was rewritten to the current stored forms on
+2026-11-05: rich-text blocks, comments in their own document, `comments_doc`
+in every live or trashed host record. On pages, the verifying dry run at 19:27
+UTC reported 137 Pages unchanged, 1 deleted, 0 writes pending and 0 problems,
+with `comments_doc` on every host record. On page10, the run from 22:24 to
+22:27 UTC reported 86 unchanged, 19 deleted (their tombstones finished), 0
+problems, no preserved blocks and no pending comments move.
 
-The conversion journals in its own key space (`host/operation/internal:`),
-outside the client receipt budgets, so a full legacy receipt store can't
-block it. A run that fails for a reason that passes (storage, a pending edit)
-retries with backoff, 5 seconds doubling to 5 minutes. Connections and edits
-don't start retries early.
+This build doesn't read the earlier forms. A Page that still holds one answers
+`409 stored_form_unsupported` on the read or write that meets it, and a live or
+trashed Page's host record without `comments_doc` fails at boot. A deleted
+Page's record needs none: it names no comments document and answers as deleted.
+page10 holds one such record (59361b99-fc53-40ec-a733-a74a4db24630). Don't
+restore a backup taken before 2026-11-05 onto a target running this build.
 
-Once a run's journal entry is reserved, the host retries that exact intent,
-indefinitely, whatever the failure, and the Page stays fenced and read-only.
-It never reauthors or abandons the run, because its change may already be in
-the serving document. A restart replays the same journal entry. Every five
-failures it logs `page.preserved_markdown_stuck` (below). Such a Page usually
-can't store records at all, for example a `413` on record capacity, so it
-couldn't take writes anyway. An operator frees storage or record capacity
-(see Page quotas); the host's next retry then finishes the same intent on its
-own, and the fence clears.
+### Comments migration
 
-A run that fails before anything is reserved, for a reason that won't pass
-(the change is too large, the conversion throws, or a request-shaped
-refusal), retries once converting each source as plain text. If that fails
-too, the host logs one line:
+Every comment message on pages and page10 is in the form this build writes:
+rich text in the editor's spans, the form every Page body is in, with no
+`body` copy. Earlier builds stored plain messages as a bare `body`, and rich
+messages in the ProseMirror adapter's span form beside a `body` copy of the
+Markdown they were first written from. An owner and operator migration
+rewrote both forms in one journaled host change per Page. Its verifying dry
+runs on 2026-11-06 were clean: pages reported 142 Pages unchanged and 0
+writes, page10 86 unchanged and 0 writes. The migration's code and routes are
+gone. A Page that wrote a migration change keeps its revert records in
+`host/comments-migration/revert`, and each owner's Catalog keeps
+`host/comments-migration/state` and `result/*`; nothing reads them.
 
-```json
-{"service":"nteract-pages-native","event":"page.preserved_markdown_stuck","page_id":"…","reason":"history_capacity","timestamp":"…"}
-```
+This build reads and admits neither old form. A read that meets a message
+with no rich text or with a `body` answers `409 stored_form_unsupported`, and
+the tools refuse to edit one the same way. Admission refuses, as
+`outdated_form`, a change that creates or touches a message with a `body` or
+without the rich format, a soft delete included, and a new message or content
+write whose spans are out of the editor's form.
+That refusal never blocks the sender: earlier viewers write those forms, so
+`MIN_VIEWER_PROTOCOL` is 3 and their tabs must reload.
 
-`reason` is a bounded code (`history_capacity`, `conversion_error`, an error
-code, or `status_<n>`); the line carries no content. After a deploy, search the
-target's logs for `page.preserved_markdown_stuck`. If the Page is still
-fenced (reads work, edits get `preserved_markdown_converting`), it is retrying
-a reserved run: free storage or capacity as above. Otherwise the Page is stuck
-and not fenced: it edits normally, and its preserved blocks stay read-only with a notice. The next
-load tries again. To recover a Page now, as its owner or with an agent:
+**Rollback rule.** Every message this build writes has no `body`. A build
+before the comments change (#4884) reads such a message (it ignores
+`bodyFormat`, so a plain message reads as escaped Markdown), but its
+admission requires `body` on every message: its host would refuse a later
+edit or deletion of one. Roll back only to a build that has #4884. A build
+between #4884 and this one still reads the old forms, so rolling back to it
+is safe.
 
-1. `read_page` the Page. A preserved block reads as the Markdown it would
-   convert to.
-2. `edit_page` with `replace_block_markdown` on that block, passing the
-   Markdown from step 1. If it's refused with `unsupported_markdown` or for
-   size, simplify or split the Markdown and retry.
+Reverting #4884 on `main` is a forbidden rollback, not a fix. page10 deploys
+`main` automatically, so a revert would ship the earlier admission to a target
+whose comments documents already hold messages without `body`. Fix forward on
+`main` instead.
 
-The replacement removes the preserved block, so nothing is left to convert.
+### Plain sync on pages.runtimed.run
+
+Every Page on pages.runtimed.run is on plain Automerge sync: an operator
+conversion on 2026-11-05 left 136 active and 3 trashed Pages on `automerge`, 0
+remaining and 0 unreadable. Page10 was converted the same way. The conversion's
+own operator route is gone. This build has no Subduction code: it can't open
+or convert a Subduction Page, and refuses one with "Unsupported Page record
+storage mode".
+
+The first install of this build restarts the service with
+`restart_reasons: ["config"]`: the configured `wrangler.json` drops the
+`PAGES_ASYNC_PERSISTENCE`, `PAGES_COMPACT_RECORDS` and `PAGES_RECORD_STORAGE`
+vars. Bindings and migrations are unchanged. Pages that converted from
+Subduction keep their old records in their own storage (`repo/`,
+`host/actor/`, `host/binding/`, `host/signer`) until they are purged, which
+deletes them; nothing reads them.
+
+### Old PageRecords objects
+
+A `buffered` Page kept its Subduction records in a separate PageRecords
+object, named by its Page id. Conversion copied the history into the Page's
+plain storage and left the PageRecords object as it was. An operator sweep
+cleared those objects on both targets: 138 Pages on pages and 79 on page10,
+and the verifying dry runs found nothing left. The sweep's code and route are
+gone.
+
+The comments migration and this sweep were the last users of the lab operator
+gate, so it is gone with them. The first install of this build on pages and
+page10 restarts the service once with `restart_reasons: ["config"]`: the
+configured `wrangler.json` drops `PAGES_OPERATOR_SECRET`. The root-only
+`/etc/<service>/operator-secret` file stays on each host; nothing reads it.
+
+This build keeps the `PageRecords` class and `PAGE_RECORDS` binding
+delete-only (worker/page-records.mjs): `inspect` counts keys and bytes,
+`clear` deletes everything. No read or write path is left. Purge uses it:
+deleting a Page converted from `buffered` storage clears its PageRecords
+object with the rest of its converted records (`purgeConvertedRecords`).
+Purge stays permanent.
+
+**Removing the class.** Deleting `PageRecords`, its binding and
+worker/page-records.mjs needs a `deleted_classes` migration. celld 0.6.3 has
+no sign of supporting one: its binary knows `new_sqlite_classes`, `old_tag`,
+`new_tag` and `steps`, not `deleted_classes`, and it already refuses
+`renamed_classes` (see the Space binding in scripts/build.mjs). Until celld
+accepts it, the class stays delete-only and empty, and the
+`v2 new_sqlite_classes: ["PageRecords"]` migration tag stays too.
 
 ## Page quotas
 
@@ -1005,6 +1014,15 @@ receipt maps each to its sha256, and the name's hash must be the first 40 bits
 of that digest. `prepare` stages exactly those seven files, checks their bytes
 first, and refuses any other file of that shape in `public`.
 
+The receipt's `files` maps every file the release carries, except
+`build-receipt.json` itself, to its sha256: `index.js`, both WASM modules,
+`wrangler.json`, `public/index.html`, `public/connect.js`, `public/_headers`,
+and the hashed chunks and shell assets above. Staging refuses a receipt whose
+`files` lists anything else or leaves one out, and a file whose bytes changed
+since the build. The gate workflow's `release` job builds from a clean
+checkout, stages the bundle this way, and uploads it as the `pages-release`
+artifact.
+
 Page10 and Pages admit `sift-<hash>.wasm` through their own route group, which
 Page9 never had. Each publisher migrates only from its config without that
 group, so the first release with Sift tables hands off that target's connector
@@ -1023,6 +1041,17 @@ ingress matches the path only. These are the paths `shared/routes.mjs` opens
 as index routes. Page9's publisher migrates only from its Project-link config
 to this one, so an older installation must publish the Project-link release
 first.
+
+Page10, Pages and Pages2 admit the account routes (`accountPaths` in
+[routes.mjs](scripts/deployment/routes.mjs)): `/api/auth/logout-all`,
+`/api/auth/grants` and `/api/auth/grants/<handle>/revoke`, where a handle is
+43 base64url characters. Each publisher migrates from its sealed config without
+that group, by the same handoff as any route change: the next publish rewrites
+`tunnel.yml` with the group added, starts the idle slot, waits for `/ready`,
+stops the old slot and seals the new receipt. Units and every other route stay
+byte-identical. Every older predecessor still migrates, straight to the new
+config. A pending receipt from an interrupted publish before this release is
+not recognized; the publisher stops and asks for inspection.
 
 The OIDC client must allow `https://<hostname>/oidc` as a redirect URI before
 sign-in works on a new target. For Pages, add
@@ -1144,6 +1173,55 @@ counted, and the next line carries the count as `dropped`.
 [scripts/usage-report.sql](scripts/usage-report.sql) summarizes them with
 duckdb straight from the log Parquet.
 
+Auth events are `pages.auth.v1` JSON log lines from
+[worker/auth-events.mjs](worker/auth-events.mjs), on the same channel and with
+the same 30-day retention. They are the record of who signed in or connected
+an agent: the auth tables hold only live state, and expired or revoked rows
+are deleted. Each line has `action`, `timestamp`, and, where known,
+`principal`, `credential` (`oidc`, `oauth` or `api-key`), `client_id`,
+`grant`, `scope` and a coded `reason`:
+
+| `action` | When | Extra fields |
+|---|---|---|
+| `sign_in.succeeded` | An OIDC callback created a browser session. | |
+| `sign_in.failed` | An OIDC callback was refused. No principal. | `reason`, `phase`, `kind`, `outcome` (`failure_page` or `already_signed_in`) |
+| `sign_out` | `POST /api/auth/logout` deleted a live session, or `POST /api/auth/logout-all` signed the account out everywhere. | `scope`: `all` for sign out everywhere |
+| `session.expired` | A session in use ended at refresh. | `reason`: `refresh_rejected`, `identity_rejected`, `lease_abandoned`, `seal_unreadable` |
+| `oauth.consent_granted`, `oauth.consent_denied` | A person chose Allow access or Cancel. | `client_id`, `scope` |
+| `oauth.code_issued` | An authorization code followed consent. | `client_id`, `scope` |
+| `oauth.token_issued` | `/oauth/token` issued tokens. | `grant`, `grant_type` (`authorization_code` or `refresh_token`), `scope`, `refresh` |
+| `oauth.token_refused` | `/oauth/token` refused a request, including a 503. | `grant_type`, `reason` (OAuth error code) |
+| `oauth.grant_revoked` | A grant stopped working. | `grant`, `revoked_by` (`user` for a person in Pages, `rfc7009` for a client's revocation, `system` for replay or reuse), `reason` (`disconnected` or `sign_out_everywhere` for `user`) |
+| `oauth.code_replayed` | An authorization code was presented twice. Its grant is revoked. | `grant` |
+| `oauth.refresh_reused` | A spent refresh token was presented again. Its grant is revoked. | `grant` |
+| `api_key.accepted` | An Anaconda API key authenticated. One line per key per isolate per 60 s cache window, not per request. | `scope` (`editor` or `viewer`) |
+| `invitation.created`, `invitation.revoked` | A Project owner invited an email or revoked an invitation. `principal` is the owner. | `project_id`, `invite`, `role` |
+| `invitation.accepted` | A verified recipient claimed a Project invitation. `principal` is the recipient. | `project_id`, `invite`, `role` |
+
+`grant` and `invite` are the first 12 hex digits of SHA-256 over the stored
+grant or invitation id. They join the lines of one grant or invitation and
+name nothing else. Lines never carry tokens, authorization codes, consent or
+CSRF values, OAuth state, cookies, session ids, sealed values, emails, IP
+addresses or display names, and a principal containing `@` is dropped.
+[worker/auth-events.test.mjs](worker/auth-events.test.mjs) runs the auth test
+suites and fails if their console output contains `pages_at_`, `pages_rt_`,
+`Bearer`, `code=`, `state=`, `@` or a sealed `iv.ct` value.
+
+Who signed in or connected an agent, by day:
+
+```sh
+duckdb -c "
+INSTALL httpfs; LOAD httpfs; INSTALL json; LOAD json;
+CREATE OR REPLACE SECRET (TYPE s3, PROVIDER credential_chain);
+SELECT CAST(CAST(body->>'timestamp' AS TIMESTAMP) AS DATE) AS day,
+       body->>'principal' AS principal, body->>'action' AS action,
+       coalesce(body->>'client_id', body->>'credential') AS via, count(*) AS n
+FROM read_parquet('s3://<fleet-bucket>/<fleet-prefix>/telemetry/logs/**/*.parquet', union_by_name = true)
+WHERE json_valid(body) AND body->>'event' = 'pages.auth.v1'
+  AND body->>'action' IN ('sign_in.succeeded', 'oauth.token_issued', 'api_key.accepted')
+GROUP BY ALL ORDER BY day DESC, principal;"
+```
+
 Pages on plain Automerge sync add two lines from
 [worker/plain-sync-log.mjs](worker/plain-sync-log.mjs), with the Page id but
 no principal: `page.sync_refused` for a browser frame the host refused
@@ -1155,6 +1233,148 @@ arrival to its ack for frames that stored changes (`latency_ms_sum`,
 `latency_ms_max`, `wait_ms_sum` and `latency_ms_buckets` by inclusive upper
 bound), every 256 rounds and at close.
 See the [pinned runtime telemetry contract](https://github.com/denoland/celld/blob/8702f6d186c77698dbfb30cf29e3b1922a88f008/docs/telemetry.md).
+
+## Session key rotation
+
+One session key signs server session ids, seals refresh tokens and login
+transactions, signs email and domain proofs, and seals listing cursors. It
+lives in one of two Worker variables:
+
+- `NOTEBOOK_CLOUD_APP_SESSION_KEYS`: a keyring,
+  `{"active":"k2","keys":{"k1":"…","k2":"…"},"activated_at":{"k2":"<ISO>"}}`.
+  New values use `active`; values from any listed key still verify or open.
+  It holds 1 to 4 keys, each at least 32 bytes with no surrounding whitespace,
+  with kids of `A-Z a-z 0-9 _ -`.
+- `NOTEBOOK_CLOUD_APP_SESSION_SECRET`: the single secret. Without a keyring the
+  Worker reads it as `k1` and seals in the bare `iv.ct` form, as builds before
+  the keyring did.
+
+A bare `iv.ct` seal always opens as `k1`. A hand-written first keyring must
+list the old single secret as `k1`, or every existing session, refresh token
+and proof stops verifying. The rotation commands below do this for you.
+
+A malformed keyring fails closed: every request, `/health` included, answers
+`500` with `server_misconfigured`, and the log names the problem without the
+secret. The Worker never falls back to the single secret. A sealed refresh
+token that no configured key opens (its key was retired, or its kid is
+unknown) ends that session like any other expiry: the row is deleted, session
+status reports signed out and clears the cookie, authenticated routes answer
+`401`, and `session.expired` is logged with `seal_unreadable`.
+
+### The overlap
+
+The overlap counts from when the Worker starts signing with the new key: the
+install on lab1, the `wrangler secret put` on Cloudflare. It does not count
+from the rotation. It is the longest a value signed with an older key stays in
+use:
+
+- **30 days** on targets with OAuth (every current Pages target).
+  OAuth grants keep a snapshot of the session's email proof for the grant's
+  lifetime (`OAUTH_REFRESH_SECONDS`, `shared/oauth-grant.mjs`). Page quota
+  and domain-view rules check those proofs against their own verification
+  time, with no age limit. Retiring the key sooner silently drops quota and
+  domain rules for older grants until the client signs in again.
+- **7 days** without OAuth: the server session's absolute lifetime. A session
+  row keeps the id its key derived until it expires, so the Worker looks a
+  cookie up under every key and doesn't move rows to the new key. Refresh
+  reseals a row's refresh token under the active key.
+
+Cookies, proofs and cursors signed by the active key are all shorter-lived.
+A rotation also changes notebook-cloud's `account_key` once, which only resets
+its viewer's cached notebook list.
+
+### On lab1
+
+`/etc/<service>/session-keys.json` (root, `0600`) holds the keyring. Without
+it, the installer reads `session-secret` and writes it as the single secret, as
+before. With it, the installer writes only the keyring variable and never reads
+`session-secret`. A malformed keyring, or neither file, stops the installation
+before it writes anything.
+
+From `pages`, with a prepared stage of the running release on the host. The
+stage must come from a build with the keyring (its manifest lists
+`session-keys.mjs`).
+
+```sh
+node scripts/deploy.mjs --target page10 rotate-key                      # plan
+node scripts/deploy.mjs --target page10 rotate-key --apply --from k1
+node scripts/deploy.mjs --target page10 install REMOTE_STAGE --apply
+# 30 days after that install (7 without OAuth)
+node scripts/deploy.mjs --target page10 retire-key                      # plan
+node scripts/deploy.mjs --target page10 retire-key --apply --from k2
+node scripts/deploy.mjs --target page10 install REMOTE_STAGE --apply
+```
+
+`rotate-key` and `retire-key` stream
+[session-keys.mjs](scripts/deployment/session-keys.mjs) from this checkout to the
+host and run it as root under the deployment lock. Plans and receipts list kids
+and times, never secrets. `--from` names the active kid the plan showed: a
+retried `--apply` after an uncertain result finds a different active kid and
+refuses, rather than adding a second key. Neither command touches the Worker.
+The keyring reaches it on the next install.
+
+**Rotate.** The first rotation seeds `k1` from `session-secret`, then moves
+that file to `session-secret.k1` before it writes the keyring. Rotation
+generates the new secret on the host. A secret with surrounding whitespace is
+refused rather than seeded, because the Worker would read different bytes. An
+interrupted rotation resumes from `session-secret.k1`. Moving the file aside
+makes an installer from before the keyring fail early. It reads
+`session-secret` before it writes any release file, so it can't deploy `k1`
+alone and sign out everyone who signed in under the new key.
+
+**Install.** The installer records in `/etc/<service>/session-keys-active.json`
+when every node began serving the keyring's active key, and which deployment
+that was. The record carries forward only while each install replaces the
+deployment it names with the same active key. A new active key, a rollback, a
+failed install or an install without the keyring in between restarts the
+clock. Each keyring install also rewrites the session variables in every older
+`/opt/<service>/releases/*/wrangler.json` to the current keyring and leaves
+their other variables as installed. A `celld deploy` rollback to one of them
+then signs with the current keys. A retired key can't come back with it, and
+retired secrets leave the host's disk at the next install. Earlier deployments
+in the bucket keep the variables they were deployed with.
+
+**Retire.** `retire-key` refuses until the installer's record names the
+keyring's active key, and the local node's `/state` reports the deployment that
+record names. It then waits the overlap from the record's time. `--kid`
+retires one key. `--force` skips the wait and the record check, and signs out
+whatever the retired keys still protect. Retiring `k1` deletes
+`session-secret.k1`. A retried retire reports `nothing_to_do`.
+
+**Rollback.** A timeout's rollback advice refuses a release from before the
+keyring, because it reads only `session-secret`, which rotation moved aside.
+`deploy.mjs install` of such a stage fails for the same reason. A direct
+`celld deploy` of such a release directory bypasses both. After a keyring
+install that directory carries only the keyring, which that build doesn't
+read, so it runs with no session key: it refuses every sign-in and reads no
+session rather than signing with a stale key. Even with `session-secret` restored, a build from before the
+keyring can't open `kid.iv.ct` seals: its refresh path fails with `503` for
+those sessions until they sign in again.
+
+### On Cloudflare
+
+Store the keyring as a Worker secret. Workers secrets are write-only, so keep
+the current keyring in the team secret store and edit a local copy with the
+same helper:
+
+```sh
+node scripts/deployment/session-keys.mjs rotate --file KEYRING.json --secret-file SECRET   # plan
+node scripts/deployment/session-keys.mjs rotate --file KEYRING.json --apply --from k1
+wrangler secret put NOTEBOOK_CLOUD_APP_SESSION_KEYS --config WRANGLER_JSON < KEYRING.json
+```
+
+`--secret-file` seeds `k1` from the current single secret on the first
+rotation only. Here `retire` measures the overlap (30 days by default) from
+`activated_at`, which `rotate` sets to the time of the rotation. Put the secret
+right after rotating. If the put came later, wait the overlap from the put:
+nothing on Cloudflare records it. Then `retire --file KEYRING.json --apply
+--from k2` and another `wrangler secret put` finish the rotation. Save the new
+keyring back to the secret store and delete the local copy. Once the keyring
+secret is in place, `wrangler secret delete NOTEBOOK_CLOUD_APP_SESSION_SECRET`
+removes the single secret. Before a `wrangler rollback` across a rotation,
+check which `NOTEBOOK_CLOUD_APP_SESSION_KEYS` the target version runs with: a
+version from before the keyring reads only the single secret. `prepare`
+refuses either variable in a build's committed vars.
 
 ## Cloudflare packaging fixture
 
@@ -1280,8 +1500,8 @@ Project again from a source running the current Pages. A source whose
 `markdown` is the body: the Page's blocks joined by a blank line. `blocks`
 appears only when a Page has more than one block. Each block is written
 separately. A Page10 target refuses math and HTML with `unsupported_markdown`,
-so import writes such a block as the literal text it reads as, the same text
-the target's own conversion of a preserved block produces. If you edit a Page's
+so import writes such a block as the literal text it reads as, as the
+target's literal Markdown import would. If you edit a Page's
 `markdown`, edit `blocks` to match or delete it; import refuses a mismatch.
 
 `dataframes` lists a Page's dataframes from its outline, and `assets` holds each

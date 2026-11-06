@@ -1,5 +1,6 @@
-// Pasted content never becomes a preserved block: Markdown-looking text and
-// HTML Pages has no node for stay as editable text in ordinary paragraphs.
+// Pasted content never becomes a node Pages doesn't know: Markdown-looking
+// text and HTML Pages has no node for stay as editable text in ordinary
+// paragraphs.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
@@ -18,15 +19,14 @@ import {
   schema,
   CodeBlock,
   HorizontalRule,
-  OpaqueBlock,
-  PRESERVED_NOTICE,
+  PagesUnknownBlock,
   Strikethrough,
 } from "./wordgard-model.mjs";
 
 const hasOpaque = (doc) => {
   let found = false;
   doc.iterate((node) => {
-    found ||= node.type === OpaqueBlock;
+    found ||= node.type === PagesUnknownBlock;
   });
   return found;
 };
@@ -102,31 +102,9 @@ test("pasted HTML keeps its text: strikethrough and rules are native, other tags
   assert.ok(decode(encode(pasted)).doc.eq(pasted));
 });
 
-test("a copied preserved block pastes as an editable code block holding its source", (t) => {
-  const dom = new JSDOM();
-  t.after(() => dom.window.close());
-  const source = "$x$ <div>kept</div>";
-  const copied = serialize(
-    schema.doc([OpaqueBlock.of({ source, importId: "", kind: "markdown" })]),
-  ).toDOM(dom.window.document);
-  assert.equal(copied.querySelector("section").getAttribute("data-pages-notice"), PRESERVED_NOTICE);
-  const pasted = parse(schema, copied);
-  assert.ok(!hasOpaque(pasted));
-  assert.equal(pasted.content.length, 1);
-  assert.equal(pasted.content[0].type, CodeBlock.type ?? CodeBlock);
-  assert.equal(pasted.textContent(), source);
-});
-
-test("a browser comment draft keeps unsupported Markdown as literal text", () => {
-  const spans = markdownCommentSpans("Math $x$ and <b>tag</b> and ~~gone~~", { literal: true });
-  assert.ok(
-    spans.every((span) => span.type !== "block" || String(span.value.type) !== "pages-opaque"),
-  );
-  const text = spans
-    .filter((span) => span.type === "text")
-    .map((span) => span.value)
-    .join("");
-  assert.equal(text, "Math $x$ and <b>tag</b> and gone");
+test("comment Markdown from an agent refuses math and HTML, as a Page body's does", () => {
+  const spans = markdownCommentSpans("Text and ~~gone~~");
   assert.ok(spans.some((span) => span.type === "text" && span.marks?.strike));
   assert.throws(() => markdownCommentSpans("Math $x$"), { code: "unsupported_markdown" });
+  assert.throws(() => markdownCommentSpans("<b>tag</b>"), { code: "unsupported_markdown" });
 });

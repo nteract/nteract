@@ -2,14 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Leaf } from "wordgard/doc";
 import { GardState, GardSelection, Transaction } from "wordgard/state";
-import {
-  schema,
-  Paragraph,
-  Strong,
-  PagesLink,
-  OpaqueBlock,
-  PagesImage,
-} from "./wordgard-model.mjs";
+import { schema, Paragraph, Strong, PagesLink, PagesImage } from "./wordgard-model.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
 const doc = (...nodes) => schema.doc([Paragraph.create(nodes)]);
 test("reordered image attrs beside remote text preserve the image and its node selection", () => {
@@ -53,11 +46,6 @@ test("disjoint changes map untouched selections and preserve link titles", () =>
   const changes = projectChanges(before, after);
   assert.ok(changes.apply(before).eq(after));
   assert.equal(changes.mapPos(8), 8);
-});
-test("opaque source updates project as intact leaf changes", () => {
-  const before = schema.doc([OpaqueBlock.of({ source: "old", importId: "", kind: "markdown" })]);
-  const after = schema.doc([OpaqueBlock.of({ source: "new", importId: "", kind: "markdown" })]);
-  assert.ok(projectChanges(before, after).apply(before).eq(after));
 });
 test("a changed opaque image attr still replaces the image", () => {
   const attrs = { src: "https://example.com/image.png", alt: "Diagram", future: "before" };

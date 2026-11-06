@@ -717,13 +717,14 @@ try {
   await expect(b.locator(".comment-passage")).toHaveText("fox");
   await b.getByRole("button", { name: "Comments", exact: true }).click();
   await expect(b.locator(".comment-composer")).toHaveCount(0);
-  await expect(b.locator(".thread .message")).toContainText("Discuss this shared passage.");
-  await b.locator(".thread .quote").click();
+  await b.locator(".thread-row").first().click();
+  await expect(b.locator(".thread-view .message")).toContainText("Discuss this shared passage.");
+  await b.locator(".thread-passage-jump").click();
   await expect(b.locator(".comment-passage-active")).toHaveText("fox");
-  await expect(b.locator(".thread-active")).toBeVisible();
+  await expect(b.locator(".thread-view")).toBeVisible();
   await b.screenshot({ path: output + "/comment-desktop.png", fullPage: true });
   await b.setViewportSize({ width: 390, height: 844 });
-  await b.locator(".thread .quote").click();
+  await b.locator(".thread-passage-jump").click();
   await expect(b.locator("#page-comments")).not.toBeVisible();
   await expect(b.locator(".comment-passage-active")).toHaveText("fox");
   await b.screenshot({ path: output + "/comment-mobile.png", fullPage: true });
@@ -1420,13 +1421,11 @@ try {
         const scope = await digest(`${identity.principal}\0${pageId}`);
         const seed = sessionStorage.getItem(`pages-native:${scope}`);
         if (!seed) throw Error("Active fixture signer is missing after Saved");
-        // A native replica's records, or a plain one's chunks
-        // (PAGES_RECORD_STORAGE=automerge): either is named by the tab's seed.
+        // The replica's chunks, named by the tab's seed.
         const names = new Set((await indexedDB.databases()).map((entry) => entry.name));
-        const database = [
-          `pages-native-${scope}-${seed.slice(0, 16)}`,
-          `pages-plain-${scope}-${seed.slice(0, 16)}`,
-        ].find((name) => names.has(name));
+        const database = [`pages-plain-${scope}-${seed.slice(0, 16)}`].find((name) =>
+          names.has(name),
+        );
         // Return fingerprints only, never the private signer seed.
         return {
           signer: await digest(seed),

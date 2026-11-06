@@ -29,6 +29,8 @@ export function cloudflareConfig(databaseId) {
       bindings: [
         { name: "PAGES", class_name: "Page" },
         { name: "CATALOGS", class_name: "Catalog" },
+        // Delete-only: purge clears old buffered records
+        // (worker/page-records.mjs).
         { name: "PAGE_RECORDS", class_name: "PageRecords" },
         // Projects keep the Space class: the class name is the storage identity for
         // Projects, and celld 0.6.3 refuses renamed_classes migrations.
@@ -66,7 +68,7 @@ export function stageCloudflareFiles(dist, destination, databaseId) {
   const config = cloudflareConfig(databaseId);
   stageArtifacts(dist, destination);
   mkdirSync(path.join(destination, "worker"));
-  for (const file of ["index.js", "automerge.wasm", "subduction.wasm"])
+  for (const file of ["index.js", "automerge.wasm"])
     renameSync(path.join(destination, file), path.join(destination, "worker", file));
   // Keeping the assets outside the entrypoint directory prevents Wrangler from
   // attaching the browser WASM copies as duplicate Worker modules.

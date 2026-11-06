@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import worker from "../worker/index.mjs";
-import { agentGuide } from "../agent-guide.mjs";
+import { agentGuide, guideUploadCommand } from "../agent-guide.mjs";
+import { issueAssetUpload } from "../worker/asset-uploads.mjs";
 import { MCP_ERROR_CODES, tools } from "../mcp.mjs";
 import { CLIENT_ERROR_CODES, RETRYABLE_SERVER_CODES } from "../worker/auth.mjs";
 import { MOVE_STATUS } from "../worker/move-page.mjs";
@@ -333,4 +334,72 @@ test("guide permits loopback development but refuses missing or unsafe public-or
     "javascript:alert(1)",
   ])
     assert.throws(() => agentGuide({ NOTEBOOK_CLOUD_PUBLIC_ORIGIN: configured }));
+});
+
+/** The guide's Images section, up to the next top-level section. */
+function imagesSection() {
+  const guide = agentGuide(env);
+  const start = guide.indexOf("\n## Images\n");
+  assert.notEqual(start, -1);
+  return guide.slice(start, guide.indexOf("\n## ", start + 1));
+}
+
+test("the Images section teaches which path to use and the end-to-end workflow", () => {
+  const images = imagesSection();
+  const paths = images.slice(
+    images.indexOf("### Which path to use"),
+    images.indexOf("### Add images"),
+  );
+  for (const fact of [
+    /^- ChatGPT, with an attached or generated file: import_page_image\.$/m,
+    /^- Any agent with a shell or HTTP client, signed in with an API key or OAuth$/m,
+    /call create_page_asset_upload,\s+then send the file to the upload_url it returns with curl/,
+    /^- An API-key script may also POST the file directly to$/m,
+    /^- No shell and no file parameters .*: ask the person to$/m,
+    /use Insert image in the browser/,
+  ])
+    assert.match(paths, fact);
+  for (const fact of [
+    /Authorization: Pages-Upload <token>/,
+    /pages:write for OAuth, cloud:write for an API key/,
+    /about 960\s+CSS pixels on a desktop and about 350 on a phone/,
+    /a 2x screenshot shows at twice its design size/,
+    /if your access is removed before you\s+upload, the upload is refused/,
+    /Revoking an API key doesn't end the URLs\s+it already issued; they stop at expires_at/,
+    /dark_asset_id; that marks the Page with the\s+image-theme-variants schema feature/,
+    /replace_block_markdown on the Page's only block \(a new Page from\s+create_page has one\), or its last block/,
+    /give every operation\s+that block's ID as after_block_id and list them in reverse order/,
+    /summary\.images/,
+    /pass outline\.next_offset\s+as outline_offset, with that read's heads as expected_heads/,
+    /"block_id": "<last block's id>"/,
+  ])
+    assert.match(images, fact);
+  assert.doesNotMatch(images, /first block's id/);
+});
+
+test("the guide's curl line and create_page_asset_upload's example send the same headers", async () => {
+  const pageId = crypto.randomUUID();
+  const values = new Map();
+  const storage = {
+    get: async (key) => values.get(key),
+    put: async (key, value) => void values.set(key, value),
+    sync: async () => {},
+  };
+  const issued = await issueAssetUpload(storage, {
+    pageId,
+    identity: { principal: "user:anaconda:guide", credentialKind: "api-key" },
+    args: { page_id: pageId, content_type: "image/png" },
+    origin,
+  });
+  const token = issued.headers.Authorization.replace(/^Pages-Upload /, "");
+  // The tool's example, with the guide's placeholders put back.
+  const example = issued.example
+    .replace(token, "<token>")
+    .replace(pageId, "<page_id>")
+    .replace("@path/to/file.png", "@mockup.png");
+  assert.equal(example, guideUploadCommand(origin));
+  assert.ok(agentGuide(env).includes(guideUploadCommand(origin)));
+  // Every -H value is a whole header: curl drops one without a colon.
+  for (const [, value] of example.matchAll(/-H '([^']*)'/g)) assert.match(value, /^[A-Za-z-]+: \S/);
+  assert.match(example, /-H 'Authorization: Pages-Upload <token>'/);
 });

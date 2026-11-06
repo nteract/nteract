@@ -113,21 +113,21 @@ export async function readLocalPage(identity, pageId, { markers = false } = {}) 
   return (page.deleted || page.revoked) && !markers ? null : page;
 }
 /** Write a checkpoint, merging it into the stored one. `replica` is the
- * writing session's native replica; it decides that replica's localEdits
- * entries (local-edits.mjs). `regrant` says the host has just verified this
- * account's access, so the checkpoint may replace an access marker.
- * `storageFromHost` says `recordStorage` is the host's discovery answer, so
- * it may name plain storage over a record that names native. */
+ * writing session's replica; it decides that replica's localEdits entries
+ * (local-edits.mjs). `regrant` says the host has just verified this account's
+ * access, so the checkpoint may replace an access marker. `replace` says the
+ * stored copy had no checkpoint this build can read and was discarded: the
+ * host's copy replaces it without a merge. A marker still wins. */
 export async function writeLocalPage(
   identity,
   page,
-  { replica, regrant = false, storageFromHost = false } = {},
+  { replica, regrant = false, replace = false } = {},
 ) {
   if (!identity?.principal || page.principal !== identity.principal)
     throw Error("Local Page account does not match");
   // Cache checkpoints are shared by independent tab replicas. Merge inside one
   // IndexedDB transaction so a slower tab cannot overwrite another draft's
-  // unsynced history. Native per-tab databases remain the live storage owners.
+  // unsynced history. Per-tab replica databases remain the live storage owners.
   const result = await store.run("readwrite", (records, done, fail) => {
     const request = records.get(key(identity, page.page_id));
     request.onsuccess = () => {
@@ -165,6 +165,16 @@ export async function writeLocalPage(
             done({ revoked: true });
             return;
           }
+          if (replace) {
+            const next = withGrantRevision(
+              { ...page, recovery_sequence: previous.recovery_sequence ?? 0 },
+              page,
+            );
+            delete next.registrationSupersedes;
+            records.put(encoder.encode(JSON.stringify(next)), key(identity, page.page_id));
+            done(next);
+            return;
+          }
           if (previous.document_id !== page.document_id)
             throw Error("Local Page document identity does not match");
           // A delayed writer from a retired grant must not merge its old history
@@ -192,11 +202,6 @@ export async function writeLocalPage(
               }),
             recovery_sequence: previous.recovery_sequence ?? 0,
           };
-          // A Page never changes storage mode, so a record that names native
-          // storage keeps it: a stale tab still holding a plain replica of a
-          // draft another tab moved can't write plain storage back. Only the
-          // host's own answer (`storageFromHost`) sets it.
-          if (!previous.recordStorage && !storageFromHost) delete next.recordStorage;
           if (
             (previous.access?.revision ?? -1) > (page.access?.revision ?? -1) ||
             ((previous.access?.revision ?? -1) === (page.access?.revision ?? -1) &&

@@ -19,7 +19,6 @@
 //   quotes, asides and list items; a list item's label already names the item,
 //   a quote's says "first paragraph".
 // - `feature`: the model/features.json feature that gates it, or null.
-// - `readOnly`: no writer creates it (preserved Markdown).
 // - `label` / `plural`: how a refusal names a node, or several, of this type.
 // - `retype`: set_node may change a node between types that share this group
 //   (a paragraph and a heading).
@@ -50,7 +49,6 @@ const entry = (block, fields) =>
     plural: null,
     governsFirstParagraph: false,
     feature: null,
-    readOnly: false,
     attrs: Object.freeze({}),
     insert: null,
     ...fields,
@@ -154,12 +152,6 @@ export const NODE_TYPES = Object.freeze([
     insert: Object.freeze({ op: "insert_image", asset: "image" }),
   }),
   entry("hard-break", { pm: "hard_break", kind: "embed", label: "a line break" }),
-  entry("pages-opaque", {
-    pm: "raw",
-    kind: "leaf",
-    readOnly: true,
-    label: "preserved Markdown",
-  }),
   entry("dataframe", {
     pm: "dataframe",
     kind: "leaf",

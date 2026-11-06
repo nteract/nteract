@@ -99,6 +99,7 @@ test("authentication and write scopes precede Project lookup", async (t) => {
     "manage_page_comment",
     "report_page_progress",
     "import_page_image",
+    "create_page_asset_upload",
   ])
     assert.equal((await w.call("reader", operation, args)).status, 403, operation);
 });
@@ -539,15 +540,6 @@ test("membership removal never removes an independent direct content grant", asy
     403,
   );
   assert.equal(w.page(project.document_id).projectAccess.revision, 2);
-});
-
-test("an owner Catalog awaiting its home-removal migration answers 503 to the selector", async (t) => {
-  const w = await world(t);
-  const project = await w.createProject();
-  await w.catalogStorage().put("host/home-removal/state", { phase: "applying", next: 0, total: 1 });
-  const result = await w.call("owner", "read_page", { project_id: project.project_id });
-  assert.equal(result.status, 503, JSON.stringify(result.body));
-  assert.equal(result.body.code, "location_migration_required");
 });
 
 test("reply_page_comment takes the content selector too", () => {

@@ -5,6 +5,7 @@ import { readAccessToken } from "./oauth-store.mjs";
 import { domainAccessForIdentity } from "./domain-access.mjs";
 import { withAdmissionReason } from "./admission-reasons.mjs";
 import { isolateSingleFlight } from "./isolate-setup.mjs";
+import { firstApiKeyUse, logAuthEvent } from "./auth-events.mjs";
 
 // The API-key verifier caches one pending provider lookup per token for 60 s
 // (ANACONDA_API_KEY_CACHE_TTL_MS in @cloud/identity.ts); see isolate-setup.mjs.
@@ -138,6 +139,15 @@ export async function authenticate(request, env) {
   if (authorization) {
     if (!/^Bearer \S+$/i.test(authorization)) throw new HttpError(401, "Use a bearer credential");
     const token = authorization.slice(7);
+    // An upload capability (asset-uploads.mjs) sent as a bearer credential is
+    // refused here, so it never reaches the API-key provider. API keys are
+    // JWT-shaped and can't start with this prefix.
+    if (token.startsWith("pu1."))
+      throw new HttpError(
+        401,
+        "Send an upload capability only to its upload_url, as Authorization: Pages-Upload <token>",
+        "upload_capability_invalid",
+      );
     if (token.startsWith("pages_")) {
       // Internal routes are only reachable through host namespace forwarding.
       // An MCP grant cannot be used to change ACLs or open a native sync socket.
@@ -201,6 +211,9 @@ export async function authenticate(request, env) {
           canWrite: scopes.has("pages:write"),
           canShare: scopes.has("pages:share"),
           credentialKind: "oauth",
+          // Host-internal, like emailProof: an upload capability names its
+          // grant so revoking the connection ends it (asset-uploads.mjs).
+          grantId: grant.grantId,
           namespace: grant.identity.namespace,
           emailProof: grant.identity.emailProof,
           expiresAt: grant.expiresAt * 1000,
@@ -248,6 +261,13 @@ export async function authenticate(request, env) {
         );
       throw error;
     }
+    if (firstApiKeyUse(token))
+      await logAuthEvent({
+        action: "api_key.accepted",
+        principal: identity.principal,
+        credential: "api-key",
+        scope: identity.scope,
+      });
     return withDomainAccess(
       {
         principal: identity.principal,
@@ -357,6 +377,9 @@ export const CLIENT_ERROR_CODES = Object.freeze([
   "resync_required",
   "image_not_found",
   "dataset_not_found",
+  "upload_capability_invalid",
+  "upload_capability_expired",
+  "upload_mismatch",
   "invalid_presence_target",
   "presence_revision_changed",
   "presence_target_not_found",
@@ -386,27 +409,18 @@ export const CLIENT_ERROR_CODES = Object.freeze([
   "position_sibling_unknown",
   "lifecycle_unsettled",
   "unsupported_schema_feature",
-  "record_storage_unsupported",
   "unsupported_markdown",
   "markdownless_node",
   "node_not_found",
   "nodes_would_join",
-  "preserved_markdown_converting",
+  "stored_form_unsupported",
   "comment_not_author",
   "comment_access_denied",
   "operation_pending",
 ]);
 
 export const RETRYABLE_SERVER_CODES = Object.freeze([
-  "record_persistence_timeout",
   "request_timeout",
-  // The host is moving a Page's comments to their own document.
-  "comments_migrating",
-  // The owner's Catalog isn't in the current location shape yet
-  // (location-shape.mjs); the next write tries the pass again.
-  "location_migration_required",
-  // PageRecords threw an overload or a transient error (record-persistence.mjs).
-  "record_persistence_unavailable",
   // A listing met a shared Page or owner Catalog that did not answer.
   "shared_page_unavailable",
 ]);
@@ -466,18 +480,7 @@ export function logFailure(error, stage) {
     ...shape,
     ...(inner && typeof inner === "object" && { cause: failureShape(inner) }),
     ...(RETRYABLE_SERVER_CODES.includes(error?.code) ? { reason: error.code } : {}),
-    ...([
-      "native_admission_cancelled",
-      "native_admission_timeout",
-      "native_binding_pending",
-      "native_binding_persistence_failed",
-      "native_binding_mismatch",
-      "native_session_replaced",
-      "native_access_changed",
-      "native_acl_committing",
-    ].includes(error?.code)
-      ? { reason: error.code }
-      : {}),
+    ...(error?.code === "native_access_changed" ? { reason: error.code } : {}),
     timestamp: new Date().toISOString(),
   });
 }
@@ -515,14 +518,6 @@ export function errorResponse(error, stage = "request") {
         Number.isSafeInteger(error.details?.count) && {
           limit: error.details.limit,
           count: error.details.count,
-        }),
-      // A blocked location pass names what stands in its way; the gateway
-      // renames space_id to project_id.
-      ...(error?.code === "location_migration_required" &&
-        typeof error.details?.reason === "string" && {
-          reason: error.details.reason.slice(0, 64),
-          page_id: String(error.details.page_id ?? "").slice(0, 64) || null,
-          space_id: String(error.details.space_id ?? "").slice(0, 64) || null,
         }),
       ...(error?.code === "unsupported_schema_feature" &&
         Array.isArray(error.details?.features) && {

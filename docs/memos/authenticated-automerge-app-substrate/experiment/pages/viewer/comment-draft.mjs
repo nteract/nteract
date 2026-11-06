@@ -1,8 +1,11 @@
 import * as A from "@automerge/automerge/slim";
 import { selectionContext } from "../model/comments.mjs";
-import { isRich } from "../model/richtext-format.mjs";
+import { requireRich } from "../model/richtext-format.mjs";
+import { draftComment, hasDraftText } from "./comment-composer.mjs";
 
-const textField = (block) => (isRich(block) ? "richText" : "markdown");
+// A block without rich text is in a form this build doesn't read; commenting
+// on it fails closed.
+const textField = (block) => (requireRich(block), "richText");
 const changedPassage = () => Error("Selected passage was removed or replaced; select it again");
 
 function commentBlock(doc, blockId) {
@@ -90,14 +93,11 @@ export function resolveCommentDraft(doc, draft) {
  * local change, which applies synchronously.
  */
 export async function sendCommentDraft(session, draft, body) {
-  const markdown = body?.markdown ?? body;
-  if (typeof markdown !== "string" || !markdown.trim()) throw Error("Write a comment first");
+  if (!hasDraftText(body)) throw Error("Write a comment first");
   const target = resolveCommentDraft(session.doc, draft);
   const before = new Set(Object.keys(session.commentThreads ?? {}));
-  const stored = session.comment(
-    { ...target, action: "add", body: markdown, body_format: "markdown" },
-    body?.spans,
-  );
+  const [content, spans] = draftComment(body);
+  const stored = session.comment({ ...target, action: "add", ...content }, spans);
   const threadId = Object.keys(session.commentThreads ?? {}).find((id) => !before.has(id)) ?? null;
   await stored;
   return threadId;

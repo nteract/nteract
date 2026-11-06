@@ -1,0 +1,305 @@
+{
+  "schemaVersion": 1,
+  "packages": {
+    "@radix-ui/number@1.1.1": {
+      "files": {
+        "package.json": "c1a398060a438655c46112033017bff1688a85e3264b5296e3589119e391d49e"
+      },
+      "covers": [
+        "full-license"
+      ],
+      "notices": [
+        {
+          "path": "npm-missing/radix-ui.txt",
+          "sha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "source": "https://raw.githubusercontent.com/radix-ui/primitives/fcef0668a5c827e5a4baac405474d75680f9a4eb/LICENSE"
+        }
+      ]
+    },
+    "@radix-ui/react-compose-refs@1.1.2": {
+      "files": {
+        "package.json": "4373969b0a688de99b33ed5c24cf91d707f638573f24fbd2dd2ad2c441c9b34c"
+      },
+      "covers": [
+        "full-license"
+      ],
+      "notices": [
+        {
+          "path": "npm-missing/radix-ui.txt",
+          "sha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "source": "https://raw.githubusercontent.com/radix-ui/primitives/fcef0668a5c827e5a4baac405474d75680f9a4eb/LICENSE"
+        }
+      ]
+    },
+    "@radix-ui/react-context@1.1.2": {
+      "files": {
+        "package.json": "70bee29bb1a5a8cc5fca28805bc5a4b9ddbe56ec7c914a28163b3e8bfe6edcb7"
+      },
+      "covers": [
+        "full-license"
+      ],
+      "notices": [
+        {
+          "path": "npm-missing/radix-ui.txt",
+          "sha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "source": "https://raw.githubusercontent.com/radix-ui/primitives/fcef0668a5c827e5a4baac405474d75680f9a4eb/LICENSE"
+        }
+      ]
+    },
+    "@radix-ui/react-direction@1.1.1": {
+      "files": {
+        "package.json": "cf9134c4c5e4495c71fb536c77dd2588cfbab3886c18b049ee39c9d120ea502f"
+      },
+      "covers": [
+        "full-license"
+      ],
+      "notices": [
+        {
+          "path": "npm-missing/radix-ui.txt",
+          "sha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "source": "https://raw.githubusercontent.com/radix-ui/primitives/fcef0668a5c827e5a4baac405474d75680f9a4eb/LICENSE"
+        }
+      ]
+    },
+    "@radix-ui/react-id@1.1.1": {
+      "files": {
+        "package.json": "7f478427006dd8e521ac26a963bd63de2237b5cc4cb592ca936881a68eccb365"
+      },
+      "covers": [
+        "full-license"
+      ],
+      "notices": [
+        {
+          "path": "npm-missing/radix-ui.txt",
+          "sha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "source": "https://raw.githubusercontent.com/radix-ui/primitives/fcef0668a5c827e5a4baac405474d75680f9a4eb/LICENSE"
+        }
+      ]
+    },
+    "@radix-ui/react-use-callback-ref@1.1.1": {
+      "files": {
+        "package.json": "5440709ff10a782eed7151b71e5ad1d0e76de5c14e38502b45d22de8a3400ea4"
+      },
+      "covers": [
+        "full-license"
+      ],
+      "notices": [
+        {
+          "path": "npm-missing/radix-ui.txt",
+          "sha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "source": "https://raw.githubusercontent.com/radix-ui/primitives/fcef0668a5c827e5a4baac405474d75680f9a4eb/LICENSE"
+        }
+      ]
+    },
+    "@radix-ui/react-use-escape-keydown@1.1.1": {
+      "files": {
+        "package.json": "a1706f4010a2ed8309b0c109d2b884cf13aa02d27765b27ba755e7eb2a495d35"
+      },
+      "covers": [
+        "full-license"
+      ],
+      "notices": [
+        {
+          "path": "npm-missing/radix-ui.txt",
+          "sha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "source": "https://raw.githubusercontent.com/radix-ui/primitives/fcef0668a5c827e5a4baac405474d75680f9a4eb/LICENSE"
+        }
+      ]
+    },
+    "@radix-ui/react-use-layout-effect@1.1.1": {
+      "files": {
+        "package.json": "b18e430ab5bbaf53945f55b495838dd71582f4203193747a939e2a7593f76744"
+      },
+      "covers": [
+        "full-license"
+      ],
+      "notices": [
+        {
+          "path": "npm-missing/radix-ui.txt",
+          "sha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "source": "https://raw.githubusercontent.com/radix-ui/primitives/fcef0668a5c827e5a4baac405474d75680f9a4eb/LICENSE"
+        }
+      ]
+    },
+    "@radix-ui/react-use-previous@1.1.1": {
+      "files": {
+        "package.json": "ca657d76c2581244474df4988dca5727fc3187f4a947c52c252a8be6dc0d735a"
+      },
+      "covers": [
+        "full-license"
+      ],
+      "notices": [
+        {
+          "path": "npm-missing/radix-ui.txt",
+          "sha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "source": "https://raw.githubusercontent.com/radix-ui/primitives/fcef0668a5c827e5a4baac405474d75680f9a4eb/LICENSE"
+        }
+      ]
+    },
+    "@radix-ui/react-use-rect@1.1.1": {
+      "files": {
+        "package.json": "9c977de80b701b018e1240e6f750544deda622233dc0d73094b2cfae28801e7a"
+      },
+      "covers": [
+        "full-license"
+      ],
+      "notices": [
+        {
+          "path": "npm-missing/radix-ui.txt",
+          "sha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "source": "https://raw.githubusercontent.com/radix-ui/primitives/fcef0668a5c827e5a4baac405474d75680f9a4eb/LICENSE"
+        }
+      ]
+    },
+    "@radix-ui/react-use-size@1.1.1": {
+      "files": {
+        "package.json": "eb31b5e5e1220a8c0a1657937e24d9f639d73521bce8e9ec9522f28c46b989e0"
+      },
+      "covers": [
+        "full-license"
+      ],
+      "notices": [
+        {
+          "path": "npm-missing/radix-ui.txt",
+          "sha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "source": "https://raw.githubusercontent.com/radix-ui/primitives/fcef0668a5c827e5a4baac405474d75680f9a4eb/LICENSE"
+        }
+      ]
+    },
+    "@radix-ui/rect@1.1.1": {
+      "files": {
+        "package.json": "d59c3d6bd0117489e3de453a2f858e4614bf1903c7a394bf4f4460e81fb4b7b1"
+      },
+      "covers": [
+        "full-license"
+      ],
+      "notices": [
+        {
+          "path": "npm-missing/radix-ui.txt",
+          "sha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "source": "https://raw.githubusercontent.com/radix-ui/primitives/fcef0668a5c827e5a4baac405474d75680f9a4eb/LICENSE"
+        }
+      ]
+    },
+    "@uiw/react-json-view@2.0.0-alpha.41": {
+      "files": {
+        "package.json": "07d0762e4c5f386cb0298fa3aa6ea0703a02c9cc190fb4b1bb39b15ab3a25586"
+      },
+      "covers": [
+        "full-license"
+      ],
+      "notices": [
+        {
+          "path": "npm-missing/uiw-react-json-view.txt",
+          "sha256": "d6c29a4acc00299dddc5ffb5d07a6480c1ddcc73adf3ade50743988b13c43808",
+          "source": "https://raw.githubusercontent.com/uiwjs/react-json-view/4685111ae16e3ec6d6d543c2db0b5009b5142eae/LICENSE"
+        }
+      ]
+    },
+    "ansi-to-react@6.2.6": {
+      "files": {
+        "package.json": "6669789531a5fb393815b54aaa6ee853be53a60e00054c9de436dfc11a90c6ae"
+      },
+      "covers": [
+        "full-license"
+      ],
+      "notices": [
+        {
+          "path": "npm-missing/ansi-to-react.txt",
+          "sha256": "866e6fa48cb8810d36d8d85a3085d7aa1c4317d3731f0ef84919428fee87bf71",
+          "source": "https://raw.githubusercontent.com/nteract/archived-desktop-app/d58b7ba291f5902c5ea36f78462d4bc607ea6f0d/LICENSE"
+        }
+      ]
+    },
+    "react-remove-scroll-bar@2.3.8": {
+      "files": {
+        "package.json": "e372f857ce05f266137c65293436b5380fec42ac311e6acb9378ed78b98d75d0"
+      },
+      "covers": [
+        "full-license"
+      ],
+      "notices": [
+        {
+          "path": "npm-missing/react-remove-scroll-bar.txt",
+          "sha256": "a79aae0c0f21990d9d963bb3c5a79cdcea9a46f8523ba55c58d7fe776b6ebc84",
+          "source": "https://raw.githubusercontent.com/theKashey/react-remove-scroll-bar/8ca9ba5ea52de03308fe8ced94f7b159a44d28ff/LICENSE"
+        }
+      ]
+    },
+    "rehype-katex@7.0.1": {
+      "files": {
+        "package.json": "c8a2a4b5fafa4145ef6c073806608967187be300c523685273fb188bc8d398bc"
+      },
+      "covers": [
+        "full-license"
+      ],
+      "notices": [
+        {
+          "path": "npm-missing/rehype-katex.txt",
+          "sha256": "cb992262f361a5359e6771c28740d33c7041e15332ae8537fae40538992591a9",
+          "source": "https://raw.githubusercontent.com/remarkjs/remark-math/88a9497e1ede93b958237c85edbf5651faeca7af/license"
+        }
+      ]
+    },
+    "remark-math@6.0.0": {
+      "files": {
+        "package.json": "936d400d2c2a3f121c4d2b6b84b8a891af02852032b0dcb31f0407d2d6a4364f"
+      },
+      "covers": [
+        "full-license"
+      ],
+      "notices": [
+        {
+          "path": "npm-missing/remark-math.txt",
+          "sha256": "cb992262f361a5359e6771c28740d33c7041e15332ae8537fae40538992591a9",
+          "source": "https://raw.githubusercontent.com/remarkjs/remark-math/d5d0660b150810a535bbb07eac6cc96a4510aa24/license"
+        }
+      ]
+    },
+    "vega-functions@6.1.1": {
+      "files": {
+        "package.json": "6f4aef6176fe4a3b8b09ef023f5b998af539cd2138fe09ebd6bb922aef503791"
+      },
+      "covers": [
+        "full-license"
+      ],
+      "notices": [
+        {
+          "path": "npm-missing/vega-functions.txt",
+          "sha256": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8",
+          "source": "https://raw.githubusercontent.com/vega/vega/d8add5819346e5af597d82ef8253742acc0283ba/LICENSE"
+        }
+      ]
+    },
+    "vega-interpreter@2.2.1": {
+      "files": {
+        "package.json": "95fdef90d9e0020c6a0c3e564dd0c662d5d6007e1ba7c6d67b433cd562713848"
+      },
+      "covers": [
+        "full-license"
+      ],
+      "notices": [
+        {
+          "path": "npm-missing/vega-interpreter.txt",
+          "sha256": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8",
+          "source": "https://raw.githubusercontent.com/vega/vega/ce060407bf65acbe9eb07004f08ac5b4bc8b7108/LICENSE"
+        }
+      ]
+    },
+    "vega-selections@6.1.2": {
+      "files": {
+        "package.json": "c8e28873695136d9dd78d6f480dc4224abd31936a147b54d477625d06147dfad"
+      },
+      "covers": [
+        "full-license"
+      ],
+      "notices": [
+        {
+          "path": "npm-missing/vega-selections.txt",
+          "sha256": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8",
+          "source": "https://raw.githubusercontent.com/vega/vega/7514fd2ad718646ac6cc9ace2beefe1577c85f78/LICENSE"
+        }
+      ]
+    }
+  }
+}

@@ -97,8 +97,8 @@ test("reviewKey maps J/K/R/E/Escape and ignores keys while typing", async () => 
   const key = (key, extra = {}) => ({ key, target: { closest: () => null }, ...extra });
   assert.equal(reviewKey(key("j")), "next");
   assert.equal(reviewKey(key("K")), "previous");
-  assert.equal(reviewKey(key("r")), "resolve");
-  assert.equal(reviewKey(key("e")), "reply");
+  assert.equal(reviewKey(key("r")), "reply");
+  assert.equal(reviewKey(key("e")), "resolve");
   assert.equal(reviewKey(key("Escape")), "exit");
   assert.equal(reviewKey(key("x")), null);
   assert.equal(reviewKey(key("j", { metaKey: true })), null);

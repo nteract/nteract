@@ -182,34 +182,6 @@ test("the purge preview counts the comments document's threads", async (t) => {
   assert.ok(A.getHeads(f.commentsDoc()).length > 0);
 });
 
-test("a refused key stops writing comments at once; its connection alone closes", async (t) => {
-  const f = await fixture(t);
-  const editorKey = "ab".repeat(32),
-    otherKey = "cd".repeat(32);
-  await f.bind(editorKey, f.member);
-  await f.bind(otherKey, f.owner);
-  await f.page.policy.put(editorKey, editorKey, "c".repeat(32));
-  const persisted = f.page.policy.refuseComments(editorKey);
-  // In memory at once, before the binding write lands.
-  await assert.rejects(f.page.policy.put(editorKey, editorKey, "c".repeat(32)));
-  await persisted;
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.deepEqual(f.disconnected, [editorKey], "only the refused key's connection closed");
-  // Reconnecting with the same key: still an editor of the Page, never again
-  // a comment author.
-  await f.bind(editorKey, f.member);
-  await assert.rejects(f.page.policy.put(editorKey, editorKey, "c".repeat(32)), /read-only|author/);
-  // That attempt closed its own connection too; a fresh one still edits.
-  await f.bind(editorKey, f.member);
-  await f.page.policy.put(editorKey, editorKey, f.page.metadata.tree);
-  // The owner's key keeps writing both documents.
-  await f.page.policy.put(otherKey, otherKey, "c".repeat(32));
-  await f.page.policy.put(otherKey, otherKey, f.page.metadata.tree);
-  // Durable: a restart keeps the block.
-  const restarted = await f.restart();
-  assert.equal(restarted.policy.bindings.get(editorKey).commentsBlocked, true);
-});
-
 test("a comment receipt's heads are the Page revision it read, stable across retries", async (t) => {
   const f = await fixture(t);
   const before = f.heads();
@@ -271,33 +243,4 @@ test("receipts journaled before the comments document keep their Page heads", as
   assert.equal(pending.status, 409, JSON.stringify(pending.body));
   assert.equal(pending.body.code, "operation_pending");
   assert.deepEqual(f.commentHeads(), commentHeads);
-});
-
-test("a throttled signer's connection closes retryably and its key keeps comment authority", async (t) => {
-  const { admissionCloseCode, admissionCode } = await import("./admission-reasons.mjs");
-  const f = await fixture(t);
-  const memberKey = "ef".repeat(32),
-    ownerKey = "12".repeat(32);
-  await f.bind(memberKey, f.member);
-  await f.bind(ownerKey, f.owner);
-  f.page.policy.throttleComments(memberKey);
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.deepEqual(f.disconnected, [memberKey], "only the throttled connection closed");
-  const [error] = f.disconnectErrors;
-  assert.equal(admissionCode(error), "temporarily_unavailable");
-  assert.equal(admissionCloseCode(error), 4503);
-  // Not blocked: after reconnecting, the same key writes comments again.
-  await f.bind(memberKey, f.member);
-  await f.page.policy.put(memberKey, memberKey, "c".repeat(32));
-  await f.page.policy.put(ownerKey, ownerKey, "c".repeat(32));
-});
-
-test("a rule refusal closes its connection with access_changed, not a grant denial", async (t) => {
-  const { admissionCode } = await import("./admission-reasons.mjs");
-  const f = await fixture(t);
-  const key = "34".repeat(32);
-  await f.bind(key, f.member);
-  await f.page.policy.refuseComments(key);
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.equal(admissionCode(f.disconnectErrors[0]), "access_changed");
 });

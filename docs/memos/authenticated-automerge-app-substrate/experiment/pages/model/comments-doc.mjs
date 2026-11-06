@@ -14,9 +14,9 @@ import * as A from "@automerge/automerge/slim";
  *       status: { value: "open" | "resolved", at: ISO string },
  *       messages: {
  *         [messageId]: {
- *           body: text,            // literal source; frozen once richText exists
- *           format?: "automerge-rich-text-v1",
- *           richText?: rich text,  // native spans, the Page's mark registry
+ *           format: "automerge-rich-text-v1",
+ *           richText: rich text,   // the editor's spans, as a Page body holds
+ *           bodyFormat?: "plain",  // written as literal text; reads return it
  *           author: { principal, displayName, driver },
  *           createdAt: ISO string,
  *           deletedAt: null | ISO string,   // soft delete
@@ -27,6 +27,15 @@ import * as A from "@automerge/automerge/slim";
  *   schema?: { features: [...] },  // the stamp rich comment content needs
  * }
  * ```
+ *
+ * Earlier builds also stored messages with only a literal `body` (no
+ * `format`), and rich messages in the ProseMirror adapter's span form with a
+ * `body` copy of the Markdown they were first written from. The comments
+ * migration rewrote every stored message, and this build reads neither form:
+ * reads refuse a message without rich text or with a `body`
+ * (`stored_form_unsupported`), and admission refuses a `body`, a message
+ * without the rich format and spans out of the editor's form
+ * (`outdated_form`).
  *
  * A thread is the shape a thread had inside the Page document, unchanged, so
  * the migration copies it whole and every reader projects it the same way.
@@ -46,15 +55,15 @@ import * as A from "@automerge/automerge/slim";
  */
 export const THREAD_FIELDS = Object.freeze(["target", "author", "createdAt", "status", "messages"]);
 export const MESSAGE_FIELDS = Object.freeze([
-  "body",
   "format",
   "richText",
+  "bodyFormat",
   "author",
   "createdAt",
   "deletedAt",
 ]);
 /** Fields an author may change on their own message after creating it. */
-export const MESSAGE_EDITABLE = Object.freeze(["body", "format", "richText", "deletedAt"]);
+export const MESSAGE_EDITABLE = Object.freeze(["format", "richText", "bodyFormat", "deletedAt"]);
 export const THREAD_STATUSES = Object.freeze(["open", "resolved"]);
 /** The schema feature a Page carries once its comments moved out. A build
  * without it would write comments into the Page document, so it opens the

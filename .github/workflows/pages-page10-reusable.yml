@@ -42,7 +42,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: nteract/nteract
-          ref: 1ebf1d185e432879092f591b6588d6cf15aef5ed # Reviewed main helpers with explicit HTTP coverage
+          ref: 25b0cd6bcdd9fc4ee0f2b3042ede5ecaea1f88f6 # Reviewed main helpers: send the pages-release artifact (#4892)
           persist-credentials: false
           sparse-checkout: .github/preview
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -55,6 +55,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PAGES_PAGE10_ENABLED: 'true'
+          # lab1 policy pages.releaseSource must be artifact-optional or artifact-required.
+          PAGES_SEND_ARTIFACT: 'true'
           INPUT_SHA: ${{ inputs.sha }}
           INPUT_BUILD_RUN_ID: ${{ inputs.build_run_id }}
           INPUT_BUILD_RUN_ATTEMPT: ${{ inputs.build_run_attempt }}

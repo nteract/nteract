@@ -1,10 +1,18 @@
 import type { D1Database, D1Value } from "./cloudflare-types.ts";
 import type { CloudAppSession } from "./app-session.ts";
+import {
+  sessionKeyByKid,
+  sessionKeyring,
+  splitSealed,
+  type SessionKey,
+  type SessionKeyring,
+} from "./session-keyring.ts";
 
 export interface ServerSessionEnvironment {
   DB?: D1Database;
   NOTEBOOK_CLOUD_OIDC_FLOW?: string;
   NOTEBOOK_CLOUD_APP_SESSION_SECRET?: string;
+  NOTEBOOK_CLOUD_APP_SESSION_KEYS?: string;
   NOTEBOOK_CLOUD_PUBLIC_ORIGIN?: string;
   NOTEBOOK_CLOUD_OIDC_ISSUER?: string;
   NOTEBOOK_CLOUD_OIDC_CLIENT_ID?: string;
@@ -50,6 +58,39 @@ export async function oidcDatabase(env: ServerSessionEnvironment): Promise<D1Dat
   return db;
 }
 
+export type ExpiredOidcTable = "oidc_login_transactions" | "oidc_server_sessions";
+
+const EXPIRED_OIDC_ROWS: Record<ExpiredOidcTable, string> = {
+  oidc_login_transactions: `DELETE FROM oidc_login_transactions WHERE state_hash IN
+    (SELECT state_hash FROM oidc_login_transactions WHERE expires_at <= ?1
+     ORDER BY expires_at LIMIT ?2)`,
+  oidc_server_sessions: `DELETE FROM oidc_server_sessions WHERE id IN
+    (SELECT id FROM oidc_server_sessions WHERE idle_expires_at <= ?1 OR absolute_expires_at <= ?1
+     ORDER BY idle_expires_at LIMIT ?2)`,
+};
+
+/**
+ * Deletes at most `limit` expired rows from one sign-in table and returns the
+ * number deleted. Expiry matches what `loadServerSession` and the callback
+ * already refuse, so no usable row is removed. `now` is in seconds.
+ */
+export async function deleteExpiredOidcRows(
+  env: ServerSessionEnvironment,
+  table: ExpiredOidcTable,
+  now: number,
+  limit: number,
+): Promise<number> {
+  const sql = EXPIRED_OIDC_ROWS[table];
+  if (!sql) throw new Error("Unknown sign-in table");
+  if (!Number.isSafeInteger(now) || now < 0) throw new Error("Invalid sign-in cleanup time");
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000)
+    throw new Error("Invalid sign-in cleanup limit");
+  const db = await oidcDatabase(env);
+  const result = await db.prepare(sql).bind(now, limit).run();
+  const changes = result.meta.changes;
+  return typeof changes === "number" ? changes : 0;
+}
+
 export interface ServerSessionRow {
   id: string;
   context: string;
@@ -80,10 +121,11 @@ export async function loadServerSession(
   const token = cookieValue(request, SERVER_SESSION_COOKIE);
   if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) return null;
   const db = await oidcDatabase(env);
+  const ids = await serverSessionIds(env, token);
   const row = await db
-    .prepare(`SELECT * FROM oidc_server_sessions WHERE id = ?
+    .prepare(`SELECT * FROM oidc_server_sessions WHERE ${idMatch(ids)}
     AND idle_expires_at > ? AND absolute_expires_at > ?`)
-    .bind(await serverSessionId(env, token), now, now)
+    .bind(...ids, now, now)
     .first<ServerSessionRow>();
   const origin = env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN?.trim() || new URL(request.url).origin;
   return row?.context === serverSessionContext(env, new URL(origin).origin) ? row : null;
@@ -136,10 +178,50 @@ export async function revokeServerSession(
   const token = cookieValue(request, SERVER_SESSION_COOKIE);
   if (!token) return;
   const db = await oidcDatabase(env);
+  const ids = await serverSessionIds(env, token);
   await db
-    .prepare("DELETE FROM oidc_server_sessions WHERE id = ?")
-    .bind(await serverSessionId(env, token))
+    .prepare(`DELETE FROM oidc_server_sessions WHERE ${idMatch(ids)}`)
+    .bind(...ids)
     .run();
+}
+
+// One id is the single-key query unchanged; a keyring matches any of its ids.
+function idMatch(ids: readonly string[]): string {
+  return ids.length === 1 ? "id = ?" : `id IN (${ids.map(() => "?").join(", ")})`;
+}
+
+// An expression index, so finding an account's sessions needs no new column
+// and the sign-in code that writes session_json stays as it is. Only
+// revokeServerSessionsFor creates and uses it.
+const SESSION_PRINCIPAL_INDEX = `CREATE INDEX IF NOT EXISTS oidc_session_principal
+  ON oidc_server_sessions(json_extract(session_json, '$.principal'))`;
+const principalIndexes = new WeakSet<D1Database>();
+
+/**
+ * Deletes every server session `principal` holds for this deployment's issuer,
+ * client and `origin`, including the caller's own, and returns how many. A
+ * refresh that held one of them fails its generation-and-lease check, so it
+ * can't bring a session back. A session created after this runs survives.
+ */
+export async function revokeServerSessionsFor(
+  env: ServerSessionEnvironment,
+  principal: string,
+  origin: string,
+): Promise<number> {
+  if (typeof principal !== "string" || !principal || principal.length > 512)
+    throw new Error("Invalid principal");
+  const db = await oidcDatabase(env);
+  if (!principalIndexes.has(db)) {
+    await db.prepare(SESSION_PRINCIPAL_INDEX).run();
+    principalIndexes.add(db);
+  }
+  const result = await db
+    .prepare(`DELETE FROM oidc_server_sessions
+    WHERE json_extract(session_json, '$.principal') = ? AND context = ?`)
+    .bind(principal, serverSessionContext(env, new URL(origin).origin))
+    .run();
+  const changes = result.meta.changes;
+  return typeof changes === "number" ? changes : 0;
 }
 
 export function serverSessionCookie(token: string, maxAge = SERVER_SESSION_IDLE_SECONDS): string {
@@ -164,15 +246,39 @@ export async function secretHash(value: string): Promise<string> {
   );
 }
 
+/** The session id a new row stores: the token's HMAC under the active key. */
 export async function serverSessionId(
   env: ServerSessionEnvironment,
   token: string,
 ): Promise<string> {
-  const secret = env.NOTEBOOK_CLOUD_APP_SESSION_SECRET;
-  if (!secret || secret.length < 32) throw new Error("Server sign-in requires a session secret");
-  const key = await crypto.subtle.importKey(
+  return sessionIdFor(requiredKeyring(env).active, token);
+}
+
+/**
+ * Every id `token` may be stored under, active key first. A row keeps the id
+ * it was created with: the id is the primary key, the refresh and touch
+ * fences, and part of the sealed bundle's binding, so moving a row to the
+ * active key's id would need a reseal racing a refresh that holds a lease on
+ * the old id. A row under a retiring key is found here until it expires,
+ * which takes at most `SERVER_SESSION_ABSOLUTE_SECONDS`, the rotation overlap.
+ */
+export async function serverSessionIds(
+  env: ServerSessionEnvironment,
+  token: string,
+): Promise<string[]> {
+  return Promise.all(requiredKeyring(env).keys.map((key) => sessionIdFor(key, token)));
+}
+
+function requiredKeyring(env: ServerSessionEnvironment): SessionKeyring {
+  const keyring = sessionKeyring(env);
+  if (!keyring) throw new Error("Server sign-in requires a session secret");
+  return keyring;
+}
+
+async function sessionIdFor(key: SessionKey, token: string): Promise<string> {
+  const hmac = await crypto.subtle.importKey(
     "raw",
-    new TextEncoder().encode(secret),
+    new TextEncoder().encode(key.secret),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"],
@@ -181,19 +287,17 @@ export async function serverSessionId(
     new Uint8Array(
       await crypto.subtle.sign(
         "HMAC",
-        key,
+        hmac,
         new TextEncoder().encode(`nteract/server-session-id/v1:${token}`),
       ),
     ),
   );
 }
 
-async function encryptionKey(env: ServerSessionEnvironment): Promise<CryptoKey> {
-  const secret = env.NOTEBOOK_CLOUD_APP_SESSION_SECRET;
-  if (!secret || secret.length < 32) throw new Error("Server sign-in requires a session secret");
+async function encryptionKey(key: SessionKey): Promise<CryptoKey> {
   const material = await crypto.subtle.importKey(
     "raw",
-    new TextEncoder().encode(secret),
+    new TextEncoder().encode(key.secret),
     "HKDF",
     false,
     ["deriveKey"],
@@ -212,30 +316,42 @@ async function encryptionKey(env: ServerSessionEnvironment): Promise<CryptoKey> 
   );
 }
 
+/**
+ * Seals with the active key: `kid.iv.ct` under a keyring, the bare `iv.ct`
+ * when only `NOTEBOOK_CLOUD_APP_SESSION_SECRET` is configured.
+ */
 export async function sealServerSecret(
   env: ServerSessionEnvironment,
   value: unknown,
   binding: string,
 ): Promise<string> {
+  const keyring = requiredKeyring(env);
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const bytes = await crypto.subtle.encrypt(
     { name: "AES-GCM", iv, additionalData: new TextEncoder().encode(binding) },
-    await encryptionKey(env),
+    await encryptionKey(keyring.active),
     new TextEncoder().encode(JSON.stringify(value)),
   );
-  return `${encode(iv)}.${encode(new Uint8Array(bytes))}`;
+  const sealed = `${encode(iv)}.${encode(new Uint8Array(bytes))}`;
+  return keyring.source === "keyring" ? `${keyring.active.kid}.${sealed}` : sealed;
 }
 
+/** Opens with the key its kid names; a bare `iv.ct` is `k1`. An unknown kid fails. */
 export async function openServerSecret<T>(
   env: ServerSessionEnvironment,
   value: string,
   binding: string,
 ): Promise<T> {
-  const [iv, ciphertext] = value.split(".");
-  if (!iv || !ciphertext) throw new Error("Invalid encrypted session");
+  const {
+    kid,
+    rest: [iv, ciphertext, extra],
+  } = splitSealed(value);
+  const key = sessionKeyByKid(requiredKeyring(env), kid);
+  if (!key || !iv || !ciphertext || extra !== undefined)
+    throw new Error("Invalid encrypted session");
   const bytes = await crypto.subtle.decrypt(
     { name: "AES-GCM", iv: decode(iv), additionalData: new TextEncoder().encode(binding) },
-    await encryptionKey(env),
+    await encryptionKey(key),
     decode(ciphertext),
   );
   return JSON.parse(new TextDecoder().decode(bytes));

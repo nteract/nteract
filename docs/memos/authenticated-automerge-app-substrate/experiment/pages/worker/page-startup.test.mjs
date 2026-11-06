@@ -7,6 +7,7 @@ import {
   recordFallback,
   startupOf,
   storedTitleProjection,
+  recordCommentsUuid,
 } from "./page-startup.mjs";
 
 const TABLE = new URL("../test/fixtures/machines/page-startup.json", import.meta.url);
@@ -20,7 +21,7 @@ const record = {
   owner: "user:anaconda:owner",
   documentId: "document",
   comments_doc: "c0000000-0000-4000-8000-000000000001",
-  recordStorage: "buffered",
+  recordStorage: "automerge",
   deleted: false,
 };
 const projection = { title: "Launch plan", observed_at: "2026-10-20T10:00:00.000Z", keep: true };
@@ -30,11 +31,14 @@ test("only a current record without a creation intent starts lazily", () => {
   assert.equal(startupOf(undefined, { metadata: record }), "eager");
   assert.equal(startupOf(record, { metadata: record }), "eager");
   assert.equal(startupOf(record, undefined), "lazy");
-  assert.equal(startupOf({ ...record, recordStorage: undefined }, undefined), "lazy");
-  assert.equal(startupOf({ ...record, recordStorage: "local" }, undefined), "lazy");
-  assert.equal(startupOf({ ...record, recordStorage: "automerge" }, undefined), "lazy");
-  // The boot refuses this mode; it fails in the constructor, as before.
-  assert.equal(startupOf({ ...record, recordStorage: "remote" }, undefined), "eager");
+  // The boot refuses a Subduction Page's modes; it fails in the constructor.
+  for (const recordStorage of [undefined, "local", "buffered", "remote"])
+    assert.equal(startupOf({ ...record, recordStorage }, undefined), "eager", recordStorage);
+  // A deleted one answers as deleted whatever its mode.
+  assert.equal(
+    startupOf({ ...record, recordStorage: "buffered", deleted: true }, undefined),
+    "lazy",
+  );
   // The boot writes the comments document's name into an older record.
   const { comments_doc: _comments, ...unnamed } = record;
   assert.equal(recordAnswerable(unnamed), false);
@@ -78,4 +82,26 @@ test("a stored projection stands in for the title only with its observation time
   assert.equal(storedTitleProjection({ ...projection, title: 7 }), null);
   assert.equal(storedTitleProjection({ title: "Launch plan" }), null);
   assert.equal(storedTitleProjection(undefined), null);
+});
+
+test("a host record names its comments document; one without the name fails closed", () => {
+  assert.equal(recordCommentsUuid(undefined), undefined);
+  assert.equal(recordCommentsUuid({}), undefined);
+  assert.equal(recordCommentsUuid({ pageId: "p", comments_doc: "uuid" }), "uuid");
+  for (const record of [{ pageId: "p" }, { pageId: "p", comments_doc: 3 }])
+    assert.throws(() => recordCommentsUuid(record), { code: "stored_form_unsupported" });
+});
+
+test("a deleted Page's record without comments_doc names none, and answers from the record", () => {
+  const tombstone = { pageId: "p", documentId: "d", deleted: true };
+  const purged = { ...tombstone, purged: { purged_at: "2026-11-05T00:00:00.000Z" } };
+  for (const record of [tombstone, purged]) {
+    assert.equal(recordCommentsUuid(record), undefined);
+    assert.equal(recordAnswerable(record), true);
+    assert.equal(startupOf(record, undefined), "lazy");
+  }
+  // A trashed Page still needs its comments document.
+  const trashed = { pageId: "p", documentId: "d", deleted: true, trash: {} };
+  assert.throws(() => recordCommentsUuid(trashed), { code: "stored_form_unsupported" });
+  assert.equal(recordAnswerable(trashed), false);
 });

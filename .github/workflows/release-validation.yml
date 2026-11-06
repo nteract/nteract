@@ -47,12 +47,24 @@ on:
       - scripts/tests/runtime-peer-image-debug.test.mjs
       - scripts/tests/stage-notebook-sidecars.test.mjs
       - scripts/tests/npm-*.mjs
+      - scripts/release-attribution.mjs
+      - scripts/release-about.toml
+      - scripts/licenses/**
+      - scripts/prepare-plotly-attribution.mjs
+      - scripts/prepare-npm-license-supplements.mjs
+      - scripts/lib/bundled-npm-licenses.mjs
+      - scripts/package-notebook-ui.py
+      - scripts/tests/release-attribution.test.mjs
+      - scripts/tests/bundled-npm-licenses.test.mjs
+      - scripts/tests/prepare-plotly-attribution.test.mjs
+      - scripts/tests/test_package_notebook_ui.py
       - crates/runtimed-node/**
       - crates/runtimed-py/**
       - Cargo.lock
       - Cargo.toml
       - rust-toolchain.toml
       - packages/runtimed-node/**
+      - packages/runtimed-node/scripts/**
       - packages/sift/package.json
       - packages/sift-csv/package.json
       - python/runtimed/pyproject.toml
@@ -75,8 +87,113 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
+      - name: Warn about overdue license exception reviews
+        shell: bash
+        run: |
+          node --input-type=module <<'JS'
+          import { readFileSync } from 'node:fs';
+          const { exceptions } = JSON.parse(readFileSync('scripts/licenses/plotly-exceptions.json', 'utf8'));
+          const today = new Date().toISOString().slice(0, 10);
+          for (const exception of exceptions) {
+            if (today <= exception.reviewDate) continue;
+            const message = `${exception.name}@${exception.version}: license exception review overdue since ${exception.reviewDate}; owner: ${exception.owner}; ${exception.trackingUrl}`;
+            console.log(`::warning::${message.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A')}`);
+          }
+          JS
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: node scripts/prepare-npm-license-supplements.mjs --check
       - run: node --test scripts/tests/audit-linux-node.test.mjs scripts/tests/audit-windows-crt-imports.test.mjs scripts/tests/release-workflow.test.mjs scripts/tests/notebook-cloud-assets.test.mjs scripts/tests/editor-assets-release.test.mjs scripts/tests/runtime-peer-image-debug.test.mjs scripts/tests/stage-notebook-sidecars.test.mjs scripts/tests/npm-*.mjs
       - run: python3 -m unittest scripts/tests/test_release_tag.py -v
+      - run: node --test scripts/tests/release-attribution.test.mjs scripts/tests/bundled-npm-licenses.test.mjs
+      - run: node --test scripts/tests/prepare-plotly-attribution.test.mjs
+      - run: python3 -m unittest scripts/tests/test_package_notebook_ui.py -v
+
+  native-rust-attribution:
+    name: Native Rust attribution preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dsherret/rust-toolchain-file@v1
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - uses: ./.github/actions/install-cargo-about
+      - name: Validate native Cargo attribution without building artifacts
+        shell: bash
+        run: |
+          node --input-type=module <<'JS'
+          import { collectRust } from './scripts/release-attribution.mjs';
+          for (const kind of ['runtimed', 'runtimed-node']) {
+            for (const target of ['x86_64-unknown-linux-gnu', 'aarch64-apple-darwin', 'x86_64-pc-windows-msvc']) {
+              const inventory = collectRust(process.cwd(), { kind, target });
+              console.log(`${kind} (${target}): ${inventory.components.length} components, ${inventory.materials.length} license materials`);
+            }
+          }
+          JS
+
+  windows-crt-attribution:
+    name: Windows CRT attribution preflight (${{ matrix.runner }}, ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            arch: x64
+            target: x86_64-pc-windows-msvc
+          - runner: windows-latest
+            arch: x64
+            target: x86_64-pc-windows-msvc
+          - runner: windows-11-vs2026-arm
+            arch: arm64
+            target: aarch64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v6
+      - name: Activate producer MSVC environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: ${{ matrix.arch }}
+      - name: Verify producer MSVC environment
+        shell: pwsh
+        env:
+          EXPECTED_MSVC_ARCH: ${{ matrix.arch }}
+        run: |
+          foreach ($name in @('VCToolsInstallDir', 'VCToolsVersion', 'VSINSTALLDIR', 'WindowsSdkDir', 'UCRTVersion', 'LIB')) {
+            if (-not [Environment]::GetEnvironmentVariable($name)) { throw "Missing producer environment: $name" }
+          }
+          if ($env:VSCMD_ARG_TGT_ARCH -ne $env:EXPECTED_MSVC_ARCH) { throw 'MSVC target does not match the native release target' }
+          $compiler = (Get-Command cl.exe -ErrorAction Stop).Source
+          $tools = [IO.Path]::GetFullPath($env:VCToolsInstallDir).TrimEnd('\') + '\'
+          if (-not $compiler.StartsWith($tools, [StringComparison]::OrdinalIgnoreCase)) { throw 'cl.exe is outside the selected producer toolset' }
+          Write-Host "Producer compiler: $compiler"
+          Write-Host "Producer SDK: $env:WindowsSdkDir $env:UCRTVersion"
+      - name: Report installed SDK servicing products
+        shell: pwsh
+        run: |
+          Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue |
+            Where-Object { $_.DisplayName -like 'Windows Software Development Kit*' } |
+            Select-Object DisplayName,DisplayVersion | Format-Table -AutoSize
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          architecture: ${{ matrix.arch }}
+      # Missing producer terms must fail here, before a publishing workflow.
+      # Installed or pinned terms must match the identified producer.
+      - name: Validate installed producer CRT attribution without compiling
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          node --input-type=module <<'JS'
+          import { collectMsvcRuntime } from './scripts/release-attribution.mjs';
+          const inventory = collectMsvcRuntime({ kind: 'runtimed-node', target: process.env.TARGET }, process.env);
+          console.log(`${process.env.TARGET}: ${inventory.components.length} components, ${inventory.materials.length} license materials`);
+          JS
 
   runtime-peer-image:
     name: Runtime-peer image build and smoke

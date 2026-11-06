@@ -4,12 +4,12 @@ import * as A from "@automerge/automerge";
 import { proposeAccessUpdate } from "./access.mjs";
 import { CONTENT_ACTIVITY_KEY } from "./content-activity.mjs";
 import { errorResponse } from "./auth.mjs";
+import { plainStub } from "./plain-stub.mjs";
 import { Page } from "./index.mjs";
-import { ActorPersistence } from "./actor-authorship.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { proposeSharingMutation } from "./sharing.mjs";
 import { trashRecord } from "./trash.mjs";
-import { commentsUuid, fixture, pageId, serverKey } from "./trash-fixture.mjs";
+import { commentsUuid, fixture, pageId } from "./trash-fixture.mjs";
 
 // A shared-Page check (`/internal/catalog`) on a Page host that hasn't booted
 // answers from the host record (page-startup.mjs). These hosts are built by
@@ -44,14 +44,9 @@ async function hosts(t, options = {}) {
   t.mock.method(Page.prototype, "initializeRepo", async function () {
     boots++;
     this.policy = new DocumentPolicy({
-      storage: this.ctx.storage,
       metadata: () => this.metadata,
-      serverKey,
     });
-    await this.policy.load();
-    this.serverKey = serverKey;
     this.serverSenderId = "server-sender";
-    this.backend = { async flush() {} };
     const page = this;
     this.repo = {
       find: async () => handleOf(page, f.doc),
@@ -62,6 +57,7 @@ async function hosts(t, options = {}) {
       async delete() {},
       async flush() {},
     };
+    this.plain = plainStub(this.repo);
     this.commentsUuid = commentsUuid;
     await host.onBoot?.(this);
   });
@@ -497,7 +493,7 @@ for (const fails of [false, true]) {
   });
 }
 
-test("a creation intent or a legacy record boots in the constructor, as every host did", async (t) => {
+test("a creation intent or a record without comments_doc boots in the constructor", async (t) => {
   const h = await hosts(t);
   await h.f.storage.put("host/creation", {
     metadata: h.f.initial,
@@ -510,14 +506,14 @@ test("a creation intent or a legacy record boots in the constructor, as every ho
   assert.equal(await h.f.storage.get("host/creation"), undefined, "the boot replayed it");
   assert.equal((await h.check(page, "member")).status, 200);
 
+  // A record without its comments document name boots at once
+  // (recordCommentsUuid refuses it there).
   const legacy = await hosts(t);
   const { comments_doc: _named, ...unnamed } = legacy.f.initial;
   await legacy.record(unnamed);
   const old = legacy.cold();
   await old.ready;
-  assert.equal(old.startup.name, "ready");
   assert.equal(legacy.boots(), 1);
-  assert.equal((await legacy.f.storage.get("host/document")).comments_doc, commentsUuid);
 });
 
 test("checks around a request that needs the document boot the repo once, before any read", async (t) => {
@@ -753,33 +749,20 @@ for (const within of ["request", "constructor"])
       await h.record(unnamed);
     }
     const retired = [];
-    let actorFailures = 0;
     let reached = false;
     let release;
     const held = new Promise((resolve) => (release = resolve));
-    let actorPersistence;
-    t.after(() => actorPersistence?.stop());
     t.mock.method(Page.prototype, "initializeRepo", async function () {
       reached = true;
       await held;
-      // As the real setup does, it assigns the policy, backend, signer and
-      // actor persistence together at its end, and replays actor effects.
-      // Its retries wait one turn and aren't held, so a drain ends even
-      // while it would retry forever.
-      actorPersistence = new ActorPersistence(this.ctx.storage, {
-        sleep: () => new Promise((resolve) => setImmediate(resolve)),
-        onError: () => actorFailures++,
-      });
+      // As the real setup does, it assigns the policy and plain sync
+      // together at its end.
       Object.assign(this, {
         policy: { close: async () => retired.push("policy") },
-        backend: { async flush() {}, close: async () => retired.push("backend") },
-        signer: { free: () => retired.push("signer") },
-        actorPersistence,
-        serverKey,
+        plain: { close: async () => retired.push("plain") },
         serverSenderId: "server-sender",
         commentsUuid,
       });
-      actorPersistence.enqueue({ put: [["a".repeat(32), { key: "x" }]] });
     });
     let giveUp;
     const ends = within === "request" ? 1 : 0;
@@ -799,11 +782,7 @@ for (const within of ["request", "constructor"])
     const before = structuredClone(h.f.storage.values);
     release();
     await drain(h);
-    assert.deepEqual(retired, ["policy", "backend", "signer"]);
-    assert.equal(actorPersistence.state.phase, "stopped");
-    const failures = actorFailures;
-    await drain(h);
-    assert.equal(actorFailures, failures, "actor persistence retries nothing more");
+    assert.deepEqual(retired, ["plain"]);
     assert.deepEqual(h.f.storage.values, before, "nothing written after the reset");
   });
 
@@ -844,8 +823,8 @@ function holdJournalListing(h, nth) {
 
 test("an object abandoned during comments recovery writes nothing after the reset", async (t) => {
   const h = await hosts(t);
-  // An older record: after comments recovery the boot writes its comments
-  // document name into host/document.
+  // A record without comments_doc boots in the constructor. This harness
+  // stubs initializeRepo, so the boot gets as far as comments recovery.
   const { comments_doc: _named, ...unnamed } = h.f.initial;
   await h.record(unnamed);
   const held = holdJournalListing(h, 2);
@@ -859,42 +838,6 @@ test("an object abandoned during comments recovery writes nothing after the rese
   held.release();
   await drain(h);
   assert.deepEqual(h.f.storage.values, before, "no write landed after the reset");
-  assert.equal((await h.f.storage.get("host/document")).comments_doc, undefined);
-});
-
-test("an abandoned object's conversion run writes nothing and leaves no retry armed", async (t) => {
-  const h = await hosts(t);
-  let runs = 0;
-  let releaseRun;
-  const firstRun = new Promise((resolve) => (releaseRun = resolve));
-  t.mock.method(Page.prototype, "convertPreservedOnce", async function () {
-    runs++;
-    if (runs === 1) await firstRun;
-    // The run's journal write, after the reset.
-    await this.ctx.storage.put("host/operation/internal-conversion", { pending: true });
-  });
-  // An unfinished migration: the conversion machine runs it during the boot.
-  h.onBoot = (page) => {
-    page.conversionIntent = { replayKeys: [] };
-  };
-  const { comments_doc: _named, ...unnamed } = h.f.initial;
-  await h.record(unnamed);
-  const { page, giveUp } = abandonable(h);
-  await until(() => runs === 1, "the boot awaits the conversion run");
-  giveUp();
-  await assert.rejects(page.ready, /waited for too long/);
-  assert.equal(page.startup.name, "abandoned");
-  const before = structuredClone(h.f.storage.values);
-  releaseRun();
-  await drain(h);
-  assert.deepEqual(h.f.storage.values, before, "no write landed after the reset");
-  assert.equal(page.conversionRetry, undefined, "no retry timer is armed");
-  // A later observation, as a retry timer armed before the reset would make,
-  // starts no run either.
-  page.observeConversion({ due: true });
-  await drain(h);
-  assert.equal(runs, 1, "and no run starts again");
-  assert.equal(page.conversionRetry, undefined);
 });
 
 test("an object abandoned during the creation commit leaves the intent for the new object", async (t) => {

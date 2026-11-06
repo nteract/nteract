@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import { projectReadChanges } from "./read-changes.mjs";
 import { projectReadContent } from "./read-content.mjs";
-import { enableRich, setRichMarkdown, textPath } from "./richtext.mjs";
+import { setRichMarkdown, textPath } from "./richtext.mjs";
+import { richFromSource } from "./richtext-test-support.mjs";
+import { stampFeatures } from "./schema-features.mjs";
 import { replaceMatch } from "./replace-match.mjs";
 import { applyComment as applyCommentTo } from "./comments.mjs";
 import { comment, newCommentsDoc } from "./comments-test-support.mjs";
@@ -11,7 +13,7 @@ import { comment, newCommentsDoc } from "./comments-test-support.mjs";
 const author = { principal: "user", displayName: "Collaborator", driver: "Browser" };
 function page(markdown = "# Start\n\nFirst paragraph.\n\n## Later\n\nSecond paragraph.") {
   return A.change(
-    A.from({ page_id: "changes-fixture", title: "Page title", blocks: {}, comments: {} }),
+    A.from({ page_id: "changes-fixture", title: "Page title", blocks: {} }),
     (doc) => {
       doc.blocks.one = {
         id: "one",
@@ -20,7 +22,8 @@ function page(markdown = "# Start\n\nFirst paragraph.\n\n## Later\n\nSecond para
         markdown,
         metadata: {},
       };
-      enableRich(doc, "one");
+      richFromSource(doc, "one");
+      stampFeatures(doc, ["comments-doc"]);
     },
   );
 }
@@ -243,7 +246,7 @@ test("block insert, move, metadata and deletion stay explicit without raw extens
       markdown: "Added",
       metadata: {},
     };
-    enableRich(draft, "two");
+    richFromSource(draft, "two");
     draft.blocks.one.position = new A.RawString("a2");
     draft.blocks.one.metadata.private = "never returned";
   });
@@ -319,24 +322,6 @@ test("edit then undo to the same visible state is not presented as an audit even
   assert.deepEqual(read(doc, before).changes, []);
 });
 
-test("legacy opaque blocks fall back to a whole-block current projection", () => {
-  let doc = A.from({
-    page_id: "legacy",
-    title: "T",
-    blocks: {
-      one: { id: "one", kind: "instruction", position: "a0", markdown: "Old preserved content" },
-    },
-    comments: {},
-  });
-  const before = A.getHeads(doc);
-  doc = A.change(doc, (draft) => {
-    draft.blocks.one.markdown = "Current preserved content";
-  });
-  assert.deepEqual(read(doc, before).changes, [
-    { block_id: "one", scope: "block", change: "updated", markdown: "Current preserved content" },
-  ]);
-});
-
 test("native changes ignore immutable Markdown import provenance", () => {
   let doc = page();
   const before = A.getHeads(doc);
@@ -390,43 +375,6 @@ test("an unprojectable baseline returns safe resync guidance after current conte
   assert.deepEqual(A.save(doc), bytes);
   assert.deepEqual(A.getHeads(doc), heads);
   assert.deepEqual(read(doc, heads).changes, []);
-});
-
-test("synced thread keys outside selector limits require resync without a partial delta", () => {
-  for (const id of ["x".repeat(257), "thread\nkey"]) {
-    let doc = page();
-    const before = A.getHeads(doc);
-    doc = A.change(doc, (draft) => {
-      setRichMarkdown(draft, "one", "CURRENT PASSAGE CONTENT");
-      draft.comments[id] = {
-        status: { value: "open" },
-        target: { kind: "block", blockId: "one" },
-        messages: { message: { body: "PRIVATE COMMENT BODY", author } },
-      };
-    });
-    const bytes = A.save(doc),
-      heads = A.getHeads(doc);
-    for (const comments of ["summary", "all"])
-      assert.throws(
-        () => read(doc, before, { comments }),
-        (error) => {
-          assert.equal(error.status, 409);
-          assert.equal(error.code, "resync_required");
-          assert.match(error.message, /same since_heads with comments: "none"/);
-          assert.match(error.message, /No partial delta/);
-          assert.doesNotMatch(error.message, /CURRENT PASSAGE|PRIVATE COMMENT|thread_ids|256/);
-          assert.equal(error.details, undefined);
-          assert.equal(error.cause, undefined);
-          return true;
-        },
-      );
-    assert.deepEqual(A.save(doc), bytes);
-    assert.deepEqual(A.getHeads(doc), heads);
-    const contentOnly = read(doc, before, { comments: "none" });
-    assert.deepEqual(contentOnly.comments, []);
-    assert.ok(contentOnly.changes.some((entry) => entry.markdown === "CURRENT PASSAGE CONTENT"));
-    assert.doesNotMatch(JSON.stringify(contentOnly), /PRIVATE COMMENT/);
-  }
 });
 
 test("comment defaults return compact changes and all mode only changed current messages", () => {

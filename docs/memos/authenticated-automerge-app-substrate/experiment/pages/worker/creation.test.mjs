@@ -4,6 +4,7 @@ import * as A from "@automerge/automerge";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
 import { initializePage } from "../model/page.mjs";
 import { Page } from "./index.mjs";
+import { plainStub } from "./plain-stub.mjs";
 
 class Storage {
   values = new Map();
@@ -54,7 +55,9 @@ for (const fault of ["metadata", "flush", "final-sync"]) {
           if (storage.fault === "flush") throw Error("flush failed");
         },
       },
-      backend: { async flush() {} },
+      get plain() {
+        return plainStub(this.repo);
+      },
     });
     const token = auth.apiKey();
     const request = () =>
@@ -107,6 +110,8 @@ for (const fault of ["metadata", "flush", "final-sync"]) {
 
 test("restart does not replay an old creation over a persisted deletion", async (t) => {
   const storage = new Storage();
+  // A deleted Page's record from an earlier build has no comments_doc; it
+  // still boots and answers as deleted.
   const metadata = { pageId, documentId: "unused", deleted: true };
   await storage.put("host/document", metadata);
   await storage.put("host/creation", {
@@ -120,11 +125,7 @@ test("restart does not replay an old creation over a persisted deletion", async 
     this.handle = {};
   });
   const page = new Page({ storage, blockConcurrencyWhile: (fn) => fn() }, {});
-  t.after(async () => {
-    await page.repo?.shutdown();
-    await page.backend?.close();
-    page.signer?.free();
-  });
+  t.after(() => page.plain?.close());
   await page.ready;
   assert.equal(replays, 0);
   assert.equal(page.metadata.deleted, true);

@@ -6,6 +6,7 @@ import {
   serverOidcSessionStatus,
 } from "../../notebook-cloud/src/server-oidc.ts";
 import { AuthError } from "../../notebook-cloud/src/identity.ts";
+import { sessionKeyring } from "../../notebook-cloud/src/session-keyring.ts";
 import {
   allowedEmails,
   authorizeOperator,
@@ -65,8 +66,15 @@ function configured(env: OperatorEnvironment, request: Request, localDevelopment
     "NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE",
   ] as const)
     if (!env[field]) configurationFailure(field);
-  if ((env.NOTEBOOK_CLOUD_APP_SESSION_SECRET?.length ?? 0) < 32)
-    configurationFailure("NOTEBOOK_CLOUD_APP_SESSION_SECRET");
+  // The shared sign-in code reads the keyring when it's set and the single
+  // secret otherwise; a malformed keyring is a configuration failure.
+  let keyring;
+  try {
+    keyring = sessionKeyring(env);
+  } catch {
+    configurationFailure("NOTEBOOK_CLOUD_APP_SESSION_KEYS");
+  }
+  if (!keyring) configurationFailure("NOTEBOOK_CLOUD_APP_SESSION_SECRET");
   try {
     allowedEmails(env);
   } catch {

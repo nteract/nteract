@@ -14,6 +14,7 @@ export const PROJECT_CONTENT_OPERATIONS = new Set([
   "read_page_presence",
   "report_page_progress",
   "import_page_image",
+  "create_page_asset_upload",
   "reply_page_comment",
 ]);
 
@@ -40,12 +41,6 @@ export async function resolveProjectContent(env, args, signal) {
       ),
       signal,
     );
-    if (!response.ok) {
-      // An owner Catalog not yet through its home-removal migration says so.
-      const refusal = response.status === 503 ? await response.json().catch(() => ({})) : {};
-      if (refusal?.code === "location_migration_required")
-        throw new HttpError(503, refusal.error ?? "Migration required", refusal.code);
-    }
     if (!response.ok)
       throw new HttpError(
         response.status >= 500 ? 503 : 404,

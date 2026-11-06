@@ -501,237 +501,6 @@ button.anchor-chip:hover {
   user-select: text;
 }
 
-/* Drill-in: the list groups threads by heading; one thread opens full height. */
-.comments-group {
-  margin: 0.9rem 0 0.35rem;
-  padding: 0 0.25rem;
-  font-size: 0.72rem;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  color: var(--muted-foreground);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.comments-body > .comments-group:first-child {
-  margin-top: 0;
-}
-.thread-open {
-  all: unset;
-  cursor: pointer;
-  border-radius: 0.25rem;
-}
-.thread-open:hover {
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-.thread-open:focus-visible {
-  outline: 2px solid var(--ring, var(--comment-anchor-line));
-  outline-offset: 2px;
-}
-.comments-thread-nav {
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
-  padding: 0.4rem 0.6rem;
-  border-bottom: 1px solid var(--line);
-  flex-shrink: 0;
-}
-.comments-back {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  margin-right: auto;
-}
-.comments-position {
-  font-size: 0.78rem;
-  font-variant-numeric: tabular-nums;
-  margin-right: 0.25rem;
-}
-.comments-drilled .comments-body > :not(.thread-current, .resolved-threads, [role="alert"]),
-.comments-drilled .resolved-threads > summary,
-.comments-drilled .resolved-threads > .thread:not(.thread-current) {
-  display: none;
-}
-.comments-drilled .resolved-threads {
-  margin: 0;
-  border: 0;
-  padding: 0;
-}
-.comments-drilled .resolved-threads:not(:has(.thread-current)) {
-  display: none;
-}
-.comments.comments-drilled .thread.thread-current {
-  border-color: transparent;
-  background: transparent;
-  padding-left: 0;
-  padding-right: 0;
-}
-.comments.comments-drilled .thread.thread-current::before {
-  display: none;
-}
-.comments-drilled .thread-current .thread-title {
-  font-size: 1rem;
-}
-/* Keep the reply composer docked under a long conversation. */
-.comments-drilled .thread-current form {
-  position: sticky;
-  bottom: -1rem;
-  padding-bottom: 1rem;
-  background: var(--surface);
-}
-
-/* Review: a full-width workspace with a navigator beside one thread. */
-.comments-review-start {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  margin-left: auto;
-}
-.comments.comments-review[open],
-.document.with-comments > .comments.comments-review[open] {
-  inset: 72px 24px 24px 24px;
-  left: 24px;
-  right: 24px;
-  width: auto;
-  height: calc(100dvh - 96px);
-  max-width: none;
-  max-height: none;
-  display: grid;
-  grid-template-columns: minmax(200px, 280px) minmax(0, 1fr);
-  grid-template-rows: auto auto minmax(0, 1fr);
-  grid-template-areas:
-    "heading heading"
-    "navigator bar"
-    "navigator body";
-  box-shadow: 0 12px 40px #00000033;
-  z-index: 20;
-}
-.comments-review .comments-heading {
-  grid-area: heading;
-}
-.comments-review .comments-thread-nav {
-  grid-area: bar;
-}
-.comments-review .comments-body {
-  grid-area: body;
-  padding: 1.5rem clamp(1rem, 6vw, 4rem);
-}
-.comments-review .comments-body:focus {
-  outline: none;
-}
-.comments-review .thread-current {
-  max-width: 44rem;
-}
-/* The passage reads in full, as a read-only excerpt. */
-.comments-review .thread-current .anchor-chip {
-  font-size: 0.95rem;
-  padding: 0.6rem 0.8rem;
-  margin-bottom: 0.9rem;
-}
-.comments-review .thread-current .anchor-chip-text {
-  display: block;
-  white-space: normal;
-  -webkit-line-clamp: unset;
-  overflow: visible;
-}
-.comments-review .thread-current .thread-title {
-  font-size: 1.15rem;
-}
-.review-navigator {
-  grid-area: navigator;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  border-right: 1px solid var(--line);
-}
-.review-progress {
-  display: grid;
-  gap: 0.35rem;
-  margin: 0;
-  padding: 0.75rem 0.9rem;
-  font-size: 0.78rem;
-  color: var(--muted-foreground);
-}
-.review-progress progress {
-  width: 100%;
-  height: 4px;
-  appearance: none;
-  border: 0;
-  border-radius: 2px;
-  background: var(--muted);
-  accent-color: var(--comment-anchor-line);
-}
-.review-progress progress::-webkit-progress-bar {
-  background: var(--muted);
-  border-radius: 2px;
-}
-.review-progress progress::-webkit-progress-value {
-  background: var(--comment-anchor-line);
-  border-radius: 2px;
-}
-.review-navigator ol {
-  list-style: none;
-  margin: 0;
-  padding: 0 0.4rem;
-  overflow-y: auto;
-  flex: 1;
-}
-.review-item {
-  all: unset;
-  box-sizing: border-box;
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  width: 100%;
-  padding: 0.45rem 0.6rem;
-  border-radius: 0.4rem;
-  cursor: pointer;
-  font-size: 0.82rem;
-  line-height: 1.35;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.review-item:hover {
-  background: color-mix(in oklab, var(--muted) 60%, transparent);
-}
-.review-item[aria-current="true"] {
-  background: color-mix(in oklab, var(--comment-anchor) 16%, transparent);
-  box-shadow: inset 2px 0 0 var(--comment-anchor-line);
-  font-weight: 600;
-}
-.review-item.resolved {
-  color: var(--muted-foreground);
-}
-.review-item:focus-visible {
-  outline: 2px solid var(--ring, var(--comment-anchor-line));
-  outline-offset: -2px;
-}
-.review-keys {
-  margin: 0;
-  padding: 0.6rem 0.9rem;
-  border-top: 1px solid var(--line);
-  font-size: 0.72rem;
-}
-.review-keys kbd {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 0.7rem;
-  padding: 0 0.25rem;
-  border: 1px solid var(--border);
-  border-radius: 0.2rem;
-}
-@media (max-width: 900px) {
-  .comments.comments-review[open] {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-areas: "heading" "bar" "body";
-  }
-  .comments-review .review-navigator {
-    display: none;
-  }
-}
-
 /* Margin threads (?margin=1): compact cards beside their passages. */
 .workspace.document:has(> .comment-margin) {
   position: relative;
@@ -799,4 +568,933 @@ button.anchor-chip:hover {
   .comment-margin {
     display: none;
   }
+}
+
+/* ---------- Concept A: list, then one thread ---------- */
+.comments[open] {
+  display: flex;
+  flex-direction: row;
+  padding: 0;
+  overflow: hidden;
+  font-size: 0.85rem;
+}
+.comments-list-pane,
+.comments-thread-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+}
+.comments-split .comments-list-pane {
+  flex: 0 0 300px;
+  border-right: 1px solid var(--line);
+}
+.comments.comments-expanded[open] {
+  width: min(760px, calc(100vw - 32px));
+}
+.comments .comments-heading {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 50px;
+  padding: 0 8px 0 15px;
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+.comments .comments-heading h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 auto 0 0;
+  font-size: 0.9rem;
+  font-weight: 650;
+}
+.comments-thread-nav .comments-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0 auto 0 -8px;
+  font-weight: 500;
+}
+.comments-split-title {
+  margin-right: auto;
+  font-weight: 600;
+}
+.comments-position {
+  margin-right: 4px;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+.comments-position b {
+  color: var(--foreground);
+  font-weight: 500;
+}
+.comments-filters {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 10px 8px 12px;
+  flex: none;
+}
+.comments-segmented {
+  flex: 1;
+  display: flex;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--muted) 45%, transparent);
+}
+.comments-filter {
+  all: unset;
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 26px;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+.comments-filter[aria-selected="true"] {
+  background: var(--surface);
+  color: var(--foreground);
+  box-shadow:
+    0 1px 2px #0000004d,
+    inset 0 1px 0 #ffffff0d;
+}
+.comments-filter:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+.comments-filter-count {
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+}
+.comments-filter-draft {
+  color: var(--comment-anchor-line);
+  font-weight: 800;
+}
+.comments .comments-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 6px 16px;
+}
+.comments-group-block {
+  margin: 0;
+}
+.comments .comments-group {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 -6px;
+  padding: 12px 16px 5px;
+  background: var(--surface);
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--muted-foreground);
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+.comments .comments-group span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.comments .comments-group::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+.comments-group-block:first-child .comments-group {
+  padding-top: 4px;
+}
+.thread-row {
+  all: unset;
+  box-sizing: border-box;
+  position: relative;
+  display: flex;
+  gap: 11px;
+  width: 100%;
+  padding: 9px 22px 10px 10px;
+  border-radius: 9px;
+  cursor: pointer;
+}
+.thread-row + .thread-row {
+  margin-top: 1px;
+}
+.thread-row:hover {
+  background: color-mix(in oklab, var(--foreground) 5%, transparent);
+}
+.thread-row-active {
+  background: color-mix(in oklab, var(--foreground) 6.5%, transparent);
+}
+.thread-row-active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 11px;
+  bottom: 11px;
+  width: 2.5px;
+  border-radius: 2px;
+  background: var(--comment-anchor-line);
+}
+.thread-row:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+.thread-row.resolved .thread-row-title {
+  color: var(--muted-foreground);
+}
+.thread-row-main {
+  flex: 1;
+  min-width: 0;
+  display: block;
+}
+.thread-row-line {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 20px;
+}
+.thread-row-title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.thread-row-two .thread-row-line {
+  align-items: flex-start;
+}
+.thread-row-two .thread-row-title {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  line-height: 19px;
+}
+.thread-row-time {
+  flex: none;
+  font-size: 0.72rem;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+.thread-row-draft {
+  flex: none;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--comment-anchor-line);
+}
+.thread-row-preview {
+  display: block;
+  margin-top: 1px;
+  font-size: 0.78rem;
+  line-height: 18px;
+  color: var(--muted-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.thread-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 7px;
+  min-height: 20px;
+}
+.thread-row-chip {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 20px;
+  padding: 0 7px 0 6px;
+  border-radius: 5px;
+  background: color-mix(in oklab, var(--foreground) 4.5%, transparent);
+  font-size: 0.72rem;
+  color: var(--muted-foreground);
+}
+.thread-row-chip-selection::before {
+  content: "";
+  flex: none;
+  width: 2px;
+  height: 11px;
+  border-radius: 1px;
+  background: var(--comment-anchor-line);
+}
+.thread-row-chip svg {
+  flex: none;
+  color: var(--comment-anchor-line);
+}
+.thread-row-chip-detached {
+  font-style: italic;
+}
+.thread-row-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.thread-row:hover .thread-row-chip,
+.thread-row-active .thread-row-chip {
+  background: color-mix(in oklab, var(--comment-anchor) 13%, transparent);
+  color: color-mix(in oklab, var(--comment-anchor) 55%, var(--foreground));
+}
+.thread-row-replies {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+.thread-row-avatars {
+  display: inline-flex;
+}
+.thread-row-avatars .comment-avatar + .comment-avatar {
+  margin-left: -5px;
+}
+.thread-row-avatars .comment-avatar {
+  box-shadow: 0 0 0 1.5px var(--surface);
+}
+.thread-row-avatars .comment-avatar-badge {
+  display: none;
+}
+.thread-row-chevron {
+  position: absolute;
+  right: 5px;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0;
+  color: var(--muted-foreground);
+}
+.thread-row:hover .thread-row-chevron,
+.thread-row:focus-visible .thread-row-chevron {
+  opacity: 1;
+}
+.comments-list-end {
+  all: unset;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: calc(100% - 8px);
+  margin: 14px 4px 0;
+  padding: 11px 10px 4px;
+  border-top: 1px solid var(--line);
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+.comments-list-end-action {
+  margin-left: auto;
+  font-weight: 500;
+  color: var(--foreground);
+}
+.comments-keys,
+.review-keys {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 0;
+  padding: 0 14px;
+  min-height: 36px;
+  flex: none;
+  border-top: 1px solid var(--line);
+  font-size: 0.72rem;
+  color: var(--muted-foreground);
+}
+.comments-keys span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.comments-keys-end {
+  margin-left: auto;
+}
+.comments kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: color-mix(in oklab, var(--muted) 60%, transparent);
+  font: 500 0.66rem/1 var(--font-sans, system-ui);
+  color: var(--muted-foreground);
+}
+.comments kbd + kbd {
+  margin-left: -2px;
+}
+
+/* One thread, opened. */
+.thread-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.thread-view:focus {
+  outline: none;
+}
+.thread-view-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 16px 12px;
+}
+.thread-view-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.thread-view-titles {
+  flex: 1;
+  min-width: 0;
+}
+.comments .thread-view .thread-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 650;
+  line-height: 1.35;
+  letter-spacing: -0.015em;
+}
+.thread-view-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 0;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+.thread-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.thread-state::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--comment-anchor-line);
+}
+.thread-state-resolved::before {
+  background: var(--success, #8bcba9);
+}
+.comments .thread-state-action {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--card);
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--foreground);
+}
+.thread-state-action-open svg {
+  color: var(--success, #8bcba9);
+}
+.thread-passage {
+  margin-top: 14px;
+  padding: 9px 12px 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--muted) 35%, transparent);
+}
+.thread-passage-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 22px;
+  margin-bottom: 4px;
+  font-size: 0.72rem;
+  color: var(--muted-foreground);
+}
+.thread-passage-section {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.thread-passage-section span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.comments .thread-passage-jump {
+  all: unset;
+  margin: 0 -6px 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 6px;
+  font-weight: 500;
+  color: var(--foreground);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.comments .thread-passage-jump:hover {
+  background: var(--muted);
+}
+.comments .thread-passage-jump:focus-visible {
+  outline: 2px solid var(--ring);
+}
+.thread-passage-text {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.6;
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+}
+.thread-passage-text mark {
+  padding: 0 1px;
+  border-bottom: 1.5px solid var(--comment-anchor-line);
+  border-radius: 2px 2px 0 0;
+  background: color-mix(in oklab, var(--comment-anchor) 24%, transparent);
+  color: var(--foreground);
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+.thread-passage-removed {
+  font-style: italic;
+}
+.thread-messages {
+  margin-top: 18px;
+}
+.comments .thread-view .message {
+  grid-template-columns: 28px minmax(0, 1fr);
+  column-gap: 10px;
+}
+.comments .thread-view .message .comment-avatar {
+  --avatar-size: 28px !important;
+}
+.comments .thread-view .message-run:not([data-last])::before {
+  left: 13px;
+  top: 32px;
+}
+.thread-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0 12px 38px;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--muted-foreground);
+}
+.thread-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+.comments .thread-view .message-run + .message-run {
+  margin-top: 14px;
+}
+.thread-composer {
+  flex: none;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--line);
+}
+.comments .thread-composer .comment-reply-form {
+  margin: 0;
+}
+.comments .thread-composer .thread-reply-button {
+  all: unset;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  height: 40px;
+  padding: 0 9px 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+  color: var(--muted-foreground);
+  cursor: text;
+}
+.thread-composer .thread-reply-button span {
+  flex: 1;
+}
+.comments .thread-composer .thread-reply-button:hover {
+  border-color: var(--ring);
+}
+.comments .thread-composer .thread-reply-button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+.comment-send kbd {
+  margin-left: 6px;
+  border: 0;
+  background: #00000017;
+  color: inherit;
+  opacity: 0.7;
+}
+.comments-thread-problem {
+  margin: 8px 16px 0;
+}
+.comments-thread-empty {
+  align-items: center;
+  justify-content: center;
+}
+
+@media (max-width: 900px) {
+  .comments-keys {
+    display: none;
+  }
+}
+/* The panel fills the height beside the Page so the list scrolls and the
+   reply composer stays docked at the bottom. */
+.comments:not(.comments-sheet)[open] {
+  height: calc(100dvh - 104px);
+}
+.comments .thread-view .thread-state-action {
+  width: auto;
+  min-width: 0;
+}
+
+/* ---------- Concept C: review workspace ---------- */
+.comments.comments-review[open],
+.document.with-comments > .comments.comments-review[open] {
+  position: fixed;
+  inset: 72px 16px 16px 16px;
+  left: 16px;
+  right: 16px;
+  width: auto;
+  max-width: none;
+  height: auto;
+  max-height: none;
+  flex-direction: column;
+  z-index: 20;
+  box-shadow: 0 16px 48px #00000040;
+}
+.review-heading {
+  gap: 10px !important;
+}
+.review-heading h2 {
+  margin-right: 8px !important;
+}
+.review-progress-label {
+  font-size: 0.78rem;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+.review-progress-label b {
+  color: var(--foreground);
+  font-weight: 600;
+}
+.review-progress-bar {
+  width: 120px;
+  height: 4px;
+  margin-right: auto;
+  border-radius: 2px;
+  background: var(--muted);
+  overflow: hidden;
+}
+.review-progress-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--success, #8bcba9);
+  transition: width 240ms ease;
+}
+.review-heading .comments-back {
+  margin: 0;
+}
+.review-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr) minmax(360px, 440px);
+}
+.review-navigator,
+.review-context,
+.review-conversation {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.review-navigator {
+  border-right: 1px solid var(--line);
+}
+.review-navigator .comments-list {
+  padding-top: 6px;
+}
+.review-conversation {
+  border-left: 1px solid var(--line);
+}
+.review-column-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 44px;
+  padding: 0 10px 0 16px;
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+.review-column-head .comments-position {
+  margin-right: auto;
+}
+.review-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  margin-right: auto;
+  font-size: 0.78rem;
+  color: var(--muted-foreground);
+  overflow: hidden;
+  white-space: nowrap;
+}
+.review-crumbs > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.review-crumbs .here {
+  color: var(--foreground);
+  font-weight: 500;
+}
+.review-open-page {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+}
+.page-excerpt {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 28px clamp(20px, 5vw, 64px) 40px;
+  font-size: 1rem;
+}
+.page-excerpt .page-block {
+  max-width: 46rem;
+  margin: 0 auto;
+}
+/* Other passages step back so this thread's passage reads. */
+.page-excerpt .copy-passage:not(.copy-passage-active) {
+  background: color-mix(in oklab, var(--comment-anchor) 8%, transparent);
+  border-bottom-color: color-mix(in oklab, var(--comment-anchor-line) 40%, transparent);
+}
+.page-excerpt-missing {
+  margin-top: 2rem;
+  text-align: center;
+}
+.review-conversation .thread-view {
+  flex: 1;
+}
+.review-dock {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+  flex: none;
+}
+.review-resolve-next {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 8px 0 11px;
+  border-radius: 8px;
+  background: var(--foreground);
+  color: var(--background);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  flex: none;
+}
+.review-resolve-next kbd {
+  border: 0;
+  background: color-mix(in oklab, var(--background) 14%, transparent);
+  color: inherit;
+}
+.review-resolve-next:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.review-resolve-next:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.review-up-next {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+.review-up-next-label {
+  flex: none;
+  color: var(--muted-foreground);
+}
+.review-up-next-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--foreground);
+}
+.comments .review-keys {
+  justify-content: center;
+  gap: 18px;
+}
+.review-keys span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+@media (max-width: 1200px) {
+  .review-grid {
+    grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
+  }
+  .review-context {
+    display: none;
+  }
+}
+@media (max-width: 900px) {
+  .comments.comments-review[open],
+  .document.with-comments > .comments.comments-review[open] {
+    inset: auto 0 0 0;
+  }
+  .review-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .review-navigator,
+  .comments .review-keys,
+  .review-progress-bar {
+    display: none;
+  }
+}
+/* The middle column already shows the passage in its Page. */
+@media (min-width: 1201px) {
+  .review-conversation .thread-passage {
+    display: none;
+  }
+}
+
+/* Thread header: one line at panel width. */
+.comments-thread-nav {
+  gap: 0;
+  white-space: nowrap;
+}
+.comments-thread-nav .comments-back {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-right: 8px;
+}
+.comments-thread-nav .comments-position {
+  margin: 0 2px 0 auto;
+  padding-left: 8px;
+}
+.comments-thread-nav .icon-button {
+  flex: none;
+  width: 30px;
+  height: 30px;
+}
+.comments-thread-nav .comments-expand {
+  margin-left: 6px;
+}
+/* The passage card: the excerpt, then a quiet link to it in the Page. */
+.comments .thread-passage-jump {
+  margin: 6px -6px -3px auto;
+  display: flex;
+  width: max-content;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+.comments .thread-passage-jump:hover {
+  color: var(--foreground);
+}
+/* Agents show their mark on a quiet tile; Codex and Kilo draw their own. */
+.comment-avatar-mark {
+  background: var(--card);
+  color: var(--foreground);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.comment-avatar-own-tile {
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+.comment-avatar-own-tile .agent-mark-kilo {
+  border-radius: 22%;
+  background: var(--card);
+}
+.comment-avatar-mark .agent-mark {
+  display: block;
+}
+/* The passage card's paragraph as the Page renders it, clipped. */
+.passage-snippet {
+  max-height: calc(1.6em * 4);
+  overflow: hidden;
+  font-size: 0.8rem;
+  line-height: 1.6;
+  color: var(--muted-foreground);
+  -webkit-mask-image: linear-gradient(to bottom, #000 72%, transparent);
+  mask-image: linear-gradient(to bottom, #000 72%, transparent);
+}
+.passage-snippet .passage-snippet-paragraph {
+  margin: 0;
+  padding: 0;
+  font-size: inherit;
+  line-height: inherit;
+  list-style: none;
+}
+.passage-snippet .copy-passage:not(.copy-passage-active) {
+  background: none;
+  border-bottom-color: transparent;
+}
+.passage-snippet .copy-passage-active {
+  color: var(--foreground);
+}
+/* A passage hovered in the Page marks its row. */
+.thread-row-hovered {
+  background: color-mix(in oklab, var(--foreground) 5%, transparent);
+}
+.thread-row-hovered .thread-row-chip {
+  background: color-mix(in oklab, var(--comment-anchor) 13%, transparent);
+  color: color-mix(in oklab, var(--comment-anchor) 55%, var(--foreground));
+}
+/* Passages in read-only copies look like the Page's. */
+.copy-passage {
+  background: color-mix(in oklab, var(--comment-anchor) var(--comment-anchor-fill), transparent);
+  border-bottom: 2px solid var(--comment-anchor-line);
+}
+.copy-passage-active {
+  background: color-mix(
+    in oklab,
+    var(--comment-anchor) calc(var(--comment-anchor-fill) * 2),
+    transparent
+  );
 }

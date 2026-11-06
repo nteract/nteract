@@ -8,13 +8,14 @@ export function newCommentsDoc(uuid = crypto.randomUUID()) {
 }
 
 /** Tests only. One comment action on `comments`, anchored in `page`.
+ * `nativeSpans` stands in for the browser composer's draft.
  * Returns `{ comments, result }`; `comments` is the next document. */
 export function comment(
   page,
   comments,
   input,
   identity = {},
-  { role = "editor", ...options } = {},
+  { role = "editor", nativeSpans, ...options } = {},
 ) {
   let result;
   const next = A.change(comments, (draft) => {
@@ -22,27 +23,9 @@ export function comment(
       draft,
       input,
       { principal: "user:test", displayName: "Test", driver: "Test", ...identity },
-      undefined,
+      nativeSpans,
       { page, role, ...options },
     );
   });
   return { comments: next, result };
-}
-
-/** Tests only. A comment written the way builds before the comments document
- * wrote it: into the Page document's own `comments` map. Returns `{ page,
- * result }`. */
-export function legacyComment(page, input, identity = {}) {
-  let result;
-  const next = A.change(page, (draft) => {
-    if (!draft.comments) draft.comments = {};
-    result = applyComment(
-      draft,
-      input,
-      { principal: "user:test", displayName: "Test", driver: "Test", ...identity },
-      undefined,
-      { page: draft, role: "editor", threadsKey: "comments" },
-    );
-  });
-  return { page: next, result };
 }

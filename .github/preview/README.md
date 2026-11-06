@@ -36,6 +36,34 @@ helper pins unchanged. Then review and authorize that workflow revision B in
 the controller before changing the PR caller pin. Neither the global installer
 nor any live deployment is changed by this helper.
 
+## Pages Status Polling
+
+After admission, `pages-client.mjs` polls `/pages-deployments/<id>` every five
+seconds with a fresh OIDC token. A poll whose OIDC or status request hits a
+network error, timeout, 408, 429 or 5xx is transient: the client logs
+`pages_deployment_status_retry` and waits 5, 10, 20, then 40 seconds (at most 60),
+or longer when `Retry-After` is canonical delta-seconds up to 3600. A running
+response resets the count. The fifth consecutive transient poll fails with the
+last failure's diagnostic, as does any wait that would cross the 48-minute
+deadline. Other 4xx responses, malformed bodies, identity or evidence mismatches
+and `failed` operations stay terminal on the first poll. Admission is a single
+POST and is never retried by the client.
+
+## Pages Release Artifact
+
+With `PAGES_SEND_ARTIFACT=true`, the client lists the gate run's
+`pages-release` artifacts before admission. It requires exactly one, unexpired,
+at most 64 MiB, whose `workflow_run.id` and `head_sha` equal `buildRunId` and
+the requested SHA, with a `sha256:<64 hex>` digest. The request then carries
+`artifactId` and `artifactDigest`; any other listing fails before the POST. A
+succeeded result may omit artifact evidence (a v1 source still builds on the
+host), but evidence that is present must name the sent artifact.
+
+The variable is unset by default, so requests carry no artifact fields. lab1
+refuses those fields while its `pages.releaseSource` policy is `build`. Opt in
+from the reusable workflow only after lab1 runs `artifact-optional` and trusts
+that reusable revision.
+
 ## Pages Journal Coverage
 
 Pages deployment counts schema 1 distinguishes no verified HTTP samples

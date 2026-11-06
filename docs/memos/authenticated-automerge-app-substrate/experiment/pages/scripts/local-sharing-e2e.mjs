@@ -44,8 +44,6 @@ const contentActivity = process.argv.includes("--content-activity");
 const cards = process.argv.includes("--cards");
 const cardImages = process.argv.includes("--card-images");
 const listingBench = process.argv.includes("--listing-bench");
-// Starts native, then restarts celld with plain sync and migration on.
-const migration = process.argv.includes("--migration");
 if (
   [
     domainView,
@@ -64,11 +62,10 @@ if (
     cards,
     cardImages,
     listingBench,
-    migration,
   ].filter(Boolean).length > 1
 )
   throw new Error(
-    "Choose one qualification: --domain-view, --images, --datasets, --mcp-images, --task-lists, --admission, --build-update, --trash, --projects, --revocation, --cold-open, --commenter, --content-activity, --cards, --card-images, --listing-bench or --migration",
+    "Choose one qualification: --domain-view, --images, --datasets, --mcp-images, --task-lists, --admission, --build-update, --trash, --projects, --revocation, --cold-open, --commenter, --content-activity, --cards, --card-images or --listing-bench",
   );
 const children = new Set();
 let canceled = false;
@@ -162,7 +159,7 @@ try {
   const runtime = path.join(scratch, "runtime");
   await mkdir(runtime);
   // Whitelist build outputs. Never copy .dev.vars, .celld, or a deployable receipt.
-  for (const name of ["public", "automerge.wasm", "subduction.wasm", "wrangler.json"])
+  for (const name of ["public", "automerge.wasm", "wrangler.json"])
     await cp(path.join(app, "dist", name), path.join(runtime, name), {
       recursive: true,
     });
@@ -214,10 +211,11 @@ try {
         name: "e2e-compiled-wasm",
         setup(b) {
           b.onResolve({ filter: /\.wasm$/ }, async (args) => {
-            const absolute = path.resolve(args.resolveDir, args.path);
-            const name = absolute.includes("subduction") ? "subduction.wasm" : "automerge.wasm";
-            await copyFile(absolute, path.join(runtime, name));
-            return { path: `./${name}`, external: true };
+            await copyFile(
+              path.resolve(args.resolveDir, args.path),
+              path.join(runtime, "automerge.wasm"),
+            );
+            return { path: "./automerge.wasm", external: true };
           });
         },
       },
@@ -234,9 +232,6 @@ try {
         PAGES_E2E_ONLY: "true",
         ...(domainView ? { PAGES_COMPANY_VIEW_DOMAINS: "anaconda.com" } : {}),
         PAGES_EDITOR: "wordgard",
-        PAGES_ASYNC_PERSISTENCE: "true",
-        PAGES_COMPACT_RECORDS: "true",
-        PAGES_RECORD_STORAGE: process.env.PAGES_RECORD_STORAGE ?? "",
         PAGES_CATALOG_INDEX: "1",
         NOTEBOOK_CLOUD_APP_SESSION_SECRET: sessionSecret,
         NOTEBOOK_CLOUD_LOCAL_OIDC: "true",
@@ -248,7 +243,6 @@ try {
         NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE: "pages-e2e",
         NOTEBOOK_CLOUD_ANACONDA_API_KEY_PRINCIPAL_NAMESPACE: "pages-e2e",
         NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL: fixtureWhoamiUrl,
-        ...(migration && { PAGES_RECORD_STORAGE: "" }),
         ...vars,
       })
         .map(([key, value]) => `${key}=${value}`)
@@ -421,9 +415,7 @@ try {
                                     ? "scripts/build-update-smoke.mjs"
                                     : listingBench
                                       ? "scripts/listing-benchmark.mjs"
-                                      : migration
-                                        ? "scripts/record-storage-migration-smoke.mjs"
-                                        : "scripts/sharing-smoke.mjs",
+                                      : "scripts/sharing-smoke.mjs",
     ],
     {
       env: {
@@ -437,11 +429,11 @@ try {
           PAGES_E2E_FIXTURE_ID: imageSource.identity,
         }),
       },
-      ...((admission || buildUpdate || listingBench || migration) && {
+      ...((admission || buildUpdate || listingBench) && {
         stdio: ["inherit", "inherit", "inherit", "ipc"],
       }),
     },
-    admission || buildUpdate || listingBench || migration ? restartOnRequest : undefined,
+    admission || buildUpdate || listingBench ? restartOnRequest : undefined,
   );
   const result = JSON.parse(await readFile(path.join(output, "report.json"), "utf8"));
   if (!result.cleaned || result.failure)

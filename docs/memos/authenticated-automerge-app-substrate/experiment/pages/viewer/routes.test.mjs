@@ -5,6 +5,9 @@ import {
   readPageRoute,
   writePageRoute,
   writeRoute,
+  rememberScroll,
+  savedScroll,
+  SCROLL_STATE_KEY,
   pagesPath,
   isIndexRoute,
   clampPagesQuery,
@@ -56,6 +59,39 @@ test("page and home navigation push history; canonicalization replaces without d
     { method: "pushState", path: `/p/${id}` },
     { method: "pushState", path: "/" },
     { method: "replaceState", path: `/p/${id}` },
+  ]);
+});
+test("heading fragments: an anchor is written encoded, a replace keeps the visit's fragment", () => {
+  const calls = [];
+  const location = { pathname: "/", search: "", hash: "" };
+  const history = Object.fromEntries(
+    ["pushState", "replaceState"].map((method) => [
+      method,
+      (state, _, path) => {
+        calls.push({ method, path });
+        const url = new URL(path, "https://pages.invalid");
+        Object.assign(location, { pathname: url.pathname, search: url.search, hash: url.hash });
+      },
+    ]),
+  );
+  writePageRoute(id, { history, location, anchor: "café-notes" });
+  // The same address again writes nothing.
+  writePageRoute(id, { history, location, anchor: "café-notes" });
+  // Canonicalizing the visit (a legacy link, a Project's document) keeps it.
+  Object.assign(location, { pathname: "/", search: `?page=${id}` });
+  writePageRoute(id, { history, location, replace: true });
+  const project = `prj_${id}`;
+  writePageRoute(project, { history, location, replace: true });
+  // A new visit and the library start without one.
+  writePageRoute(id, { history, location });
+  location.hash = "#kept";
+  writePageRoute(null, { history, location, replace: true });
+  assert.deepEqual(calls, [
+    { method: "pushState", path: `/p/${id}#caf%C3%A9-notes` },
+    { method: "replaceState", path: `/p/${id}#caf%C3%A9-notes` },
+    { method: "replaceState", path: `/project/${project}#caf%C3%A9-notes` },
+    { method: "pushState", path: `/p/${id}` },
+    { method: "replaceState", path: "/" },
   ]);
 });
 test("/projects and /pages are exact index routes with an optional trailing slash", () => {
@@ -160,6 +196,58 @@ test("index routes push once and search edits replace the entry", () => {
     { method: "replaceState", path: "/pages?q=road", state: null },
     { method: "pushState", path: "/projects", state: { index: "projects" } },
   ]);
+});
+test("a push records the scroll position in the entry it leaves; a replace keeps it", () => {
+  const location = { pathname: "/", search: "", hash: "" };
+  const entries = [{ state: null, path: "/" }];
+  let index = 0;
+  const history = {
+    get state() {
+      return entries[index].state;
+    },
+    pushState(state, _, path) {
+      entries.splice(index + 1, Infinity, { state, path });
+      index++;
+      const url = new URL(path, "https://pages.invalid");
+      Object.assign(location, { pathname: url.pathname, search: url.search, hash: url.hash });
+    },
+    replaceState(state, _, path) {
+      entries[index] = { state, path: path ?? entries[index].path };
+      if (path === undefined) return;
+      const url = new URL(path, "https://pages.invalid");
+      Object.assign(location, { pathname: url.pathname, search: url.search, hash: url.hash });
+    },
+  };
+  const at = (y) => ({ history, location, scrollY: y });
+  writePageRoute(id, at(120));
+  assert.deepEqual(entries[0].state, { [SCROLL_STATE_KEY]: { path: "/", y: 120 } });
+  assert.deepEqual(entries[1].state, { pageId: id });
+  rememberScroll(480, { history, location });
+  assert.equal(savedScroll({ history, location }), 480);
+  // A heading link on the same Page: a new entry, without the old position.
+  writeRoute(`/p/${id}#plan`, { ...at(500), state: history.state });
+  assert.deepEqual(entries[1].state, {
+    pageId: id,
+    [SCROLL_STATE_KEY]: { path: `/p/${id}`, y: 500 },
+  });
+  assert.deepEqual(entries[2].state, { pageId: id });
+  assert.equal(savedScroll({ history, location }), null);
+  // Canonicalizing the same address keeps the entry's position; moving it
+  // elsewhere drops it.
+  rememberScroll(64, { history, location });
+  writePageRoute(id, { ...at(64), replace: true, anchor: "notes" });
+  assert.deepEqual(entries[2].state, {
+    pageId: id,
+    [SCROLL_STATE_KEY]: { path: `/p/${id}`, y: 64 },
+  });
+  writePageRoute(`prj_${id}`, { ...at(64), replace: true });
+  assert.deepEqual(entries[2].state, { pageId: `prj_${id}` });
+  // A position measured at another address isn't this entry's.
+  entries[2].state = { [SCROLL_STATE_KEY]: { path: "/pages", y: 10 } };
+  assert.equal(savedScroll({ history, location }), null);
+  // No scroll position to read (outside a browser): nothing is recorded.
+  rememberScroll(undefined, { history, location });
+  assert.deepEqual(entries[2].state, { [SCROLL_STATE_KEY]: { path: "/pages", y: 10 } });
 });
 test("modified clicks preserve open-in-new-tab behavior", () => {
   assert.equal(isPlainNavigation({ button: 0 }), true);

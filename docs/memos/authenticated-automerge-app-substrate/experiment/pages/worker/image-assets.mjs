@@ -216,14 +216,36 @@ export async function requireStoredDatasetAsset(bucket, { pageId, assetId, media
   return dataset;
 }
 
+const uploadMismatch = (what) =>
+  new HttpError(
+    400,
+    `The file's ${what} doesn't match the upload URL's. Upload the file it was issued for, or request a new upload URL.`,
+    "upload_mismatch",
+  );
+
+/** The content type, size and SHA-256 an upload capability bound, checked
+ * before anything is stored. */
+function checkExpected(expect, { mime_type, size, hash }) {
+  if (expect === undefined) return;
+  if (!expect || typeof expect !== "object" || Array.isArray(expect))
+    throw new Error("Invalid upload expectation");
+  if (expect.content_type !== undefined && expect.content_type !== mime_type)
+    throw uploadMismatch("content type");
+  if (expect.size !== undefined && expect.size !== size) throw uploadMismatch("size");
+  if (hash !== undefined && expect.sha256 !== undefined && expect.sha256 !== hash)
+    throw uploadMismatch("SHA-256");
+}
+
 /**
  * Store only validated original bytes; authorization belongs to the caller.
  * `accept: "image"` admits rasters only (import_page_image, comment images);
  * `accept: "any"` also admits Parquet datasets (the Page asset route).
+ * `expect` is an upload capability's binding ({content_type, size, sha256},
+ * each optional); bytes that don't match it are refused before storage.
  */
 export async function persistPageAsset(
   bucket,
-  { pageId, bytes, contentTypes = [], accept = "image" },
+  { pageId, bytes, contentTypes = [], accept = "image", expect },
 ) {
   if (!validPageId(pageId)) throw new HttpError(400, "Invalid image reference");
   if (bytes.byteLength > (accept === "image" ? IMAGE_MAX_BYTES : ASSET_MAX_BYTES))
@@ -240,8 +262,10 @@ export async function persistPageAsset(
         dataset ? "File bytes do not match Content-Type" : "Image bytes do not match Content-Type",
       );
   }
+  checkExpected(expect, { mime_type: inspected.mime_type, size: bytes.byteLength });
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
   const hash = Array.from(digest, (value) => value.toString(16).padStart(2, "0")).join("");
+  checkExpected(expect, { mime_type: inspected.mime_type, size: bytes.byteLength, hash });
   const key = imageAssetKey(pageId, hash);
   let stored = await bucket.head(key),
     duplicate = stored !== null;
@@ -286,8 +310,67 @@ export const persistImageAsset = (bucket, options) =>
 const FILE_TOO_LARGE = "Files must be 5 MiB or smaller";
 const SERVED_MEDIA_TYPES = Object.freeze([...IMAGE_MEDIA_TYPES, PARQUET_MEDIA_TYPE]);
 
-/** The authorize callback is a short Page-DO request; byte transfer stays outside its queue. */
-export async function handleImageAssets(request, env, { pageId, assetId, authorize }) {
+/** An upload capability's binding from the Page host's authorization answer,
+ * or undefined for an ordinary credential. */
+async function grantedExpectation(access) {
+  const body = await access.json();
+  return body?.upload && typeof body.upload === "object" ? body.upload : undefined;
+}
+
+/** authenticate() for the asset route. An upload with no credential at all
+ * is most often an agent whose upload header was lost (curl drops an -H
+ * value without a colon), so its refusal names the upload tool first. A
+ * browser always sends Origin on a POST, so a person whose session cookie
+ * lapsed keeps the sign-in message. Other routes keep authenticate()'s own
+ * message. */
+async function authenticateAssets(request, env, upload) {
+  try {
+    return await authenticate(request, env);
+  } catch (error) {
+    if (
+      upload &&
+      error?.code === "auth_required" &&
+      !request.headers.has("authorization") &&
+      !request.headers.has("cookie") &&
+      !request.headers.has("origin")
+    )
+      throw new HttpError(
+        401,
+        `Agents: call create_page_asset_upload for an upload URL and send the headers it returns. ${error.message}`,
+        "auth_required",
+      );
+    throw error;
+  }
+}
+
+/** The request body of an upload. A capability bound to a size refuses a
+ * different Content-Length before reading anything and reads no more than
+ * that size; persistPageAsset checks the exact size after. */
+async function readUploadBody(request, expect) {
+  const bound = expect?.size;
+  if (bound === undefined)
+    return readImageBody(request, { maxBytes: ASSET_MAX_BYTES, tooLarge: FILE_TOO_LARGE });
+  const length = request.headers.get("content-length");
+  if (length !== null && length !== String(bound)) throw uploadMismatch("size");
+  try {
+    return await readImageBody(request, {
+      maxBytes: Math.min(bound, ASSET_MAX_BYTES),
+      tooLarge: FILE_TOO_LARGE,
+    });
+  } catch (error) {
+    if (error?.status === 413) throw uploadMismatch("size");
+    throw error;
+  }
+}
+
+/**
+ * The authorize callback is a short Page-DO request; byte transfer stays
+ * outside its queue. `identify` checks the caller's credential before any
+ * Page is asked; it defaults to authenticate(). An upload capability
+ * (asset-uploads.mjs) replaces it with the Origin check alone, and its
+ * authorize callback carries the capability to the Page host instead.
+ */
+export async function handleImageAssets(request, env, { pageId, assetId, authorize, identify }) {
   try {
     if (!validPageId(pageId) || (assetId !== undefined && !validAssetId(assetId)))
       throw new HttpError(400, "Invalid image reference");
@@ -295,21 +378,20 @@ export async function handleImageAssets(request, env, { pageId, assetId, authori
     if (!upload && !(assetId && ["GET", "HEAD"].includes(request.method)))
       throw new HttpError(405, assetId ? "Use GET or HEAD" : "Use POST");
     // In particular this does not widen the MCP-only OAuth token audience.
-    await authenticate(request, env);
+    await (identify ? identify() : authenticateAssets(request, env, upload));
     const access = await authorize(upload);
     if (!access.ok) return privateImageResponse(access);
+    const expect = upload ? await grantedExpectation(access) : undefined;
     const bucket = env.PAGES_ASSETS;
     if (!bucket) throw new HttpError(503, "Image storage is unavailable");
     if (upload) {
-      const bytes = await readImageBody(request, {
-        maxBytes: ASSET_MAX_BYTES,
-        tooLarge: FILE_TOO_LARGE,
-      });
+      const bytes = await readUploadBody(request, expect);
       const { asset, duplicate } = await persistPageAsset(bucket, {
         pageId,
         bytes,
         contentTypes: [request.headers.get("content-type")],
         accept: "any",
+        expect,
       });
       const current = await authorize(true);
       if (!current.ok) return privateImageResponse(current);

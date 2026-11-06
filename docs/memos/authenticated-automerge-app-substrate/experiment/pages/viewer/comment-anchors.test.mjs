@@ -7,13 +7,13 @@ import { Leaf } from "wordgard/doc";
 import { GardState } from "wordgard/state";
 import { history, undo } from "wordgard/history";
 import { captureSelectionTarget, selectionContext } from "../model/comments.mjs";
-import { enableRich } from "../model/richtext.mjs";
+import { richFromSource } from "../model/richtext-test-support.mjs";
 import { schema } from "./wordgard-model.mjs";
 import { createWordgardBinding } from "./wordgard-binding.mjs";
 
 function page(markdown) {
   let doc = A.change(A.from({ blocks: { one: { id: "one", kind: "markdown", markdown } } }), (d) =>
-    enableRich(d, "one"),
+    richFromSource(d, "one"),
   );
   const observers = new Set();
   const replica = {

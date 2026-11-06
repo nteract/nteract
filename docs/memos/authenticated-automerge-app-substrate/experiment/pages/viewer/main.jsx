@@ -15,6 +15,7 @@ import {
   Type,
   Trash2,
   UserRound,
+  Unplug,
 } from "lucide-react";
 import { observeSignedOut, request, tool } from "./request.mjs";
 import {
@@ -45,6 +46,7 @@ import { earlyConnectAnswer, requestSession } from "./early-session.mjs";
 import { PagePreview } from "./PagePreview.jsx";
 import { BlockBoundary } from "./BlockBoundary.jsx";
 import { BootPreview, visiblePreview } from "./boot-preview.mjs";
+import { HeadingScroll } from "./heading-scroll.mjs";
 import { openPageWithRetry } from "./page-open.mjs";
 // app.css carries the editor's styles too, ahead of style.css so the cascade
 // matches the editor modules' own import order.
@@ -56,6 +58,7 @@ import "./save-status.css";
 import { PagePicker } from "./PagePicker.jsx";
 import { ProjectCreator } from "./ProjectCreator.jsx";
 import { MoveDialog } from "./MoveDialog.jsx";
+import { ConnectedAgents } from "./ConnectedAgents.jsx";
 import { moveOrigin } from "./container-dialog-machine.mjs";
 import { TrashView } from "./TrashView.jsx";
 import { Breadcrumbs, ProjectChip, ProjectPages } from "./ProjectView.jsx";
@@ -83,7 +86,7 @@ import { reloadGate } from "./build-freshness.mjs";
 import { EditorLoader } from "./editor-loader.mjs";
 import { SessionHost } from "./session-host.mjs";
 import { useStore } from "./store.mjs";
-import { CommentComposer, hasDraftText } from "./comment-composer.mjs";
+import { CommentComposer, draftRecord, hasDraftText } from "./comment-composer.mjs";
 import { focusReturnTarget } from "./focus-return.mjs";
 import { timer } from "rxjs";
 import { MOBILE_EDITOR_QUERY, trackVisualViewport } from "./visual-viewport.mjs";
@@ -125,6 +128,12 @@ const bootPreview = new BootPreview();
   const route = readPageRoute(location.href);
   if (route.kind === "page") bootPreview.start(route.pageId, earlyConnectAnswer(route.pageId));
 }
+// The scroll to the address's heading, and Back and Forward's scroll
+// positions (heading-scroll.mjs). It starts at boot so that the reader
+// scrolling the loading preview calls the heading's scroll off.
+const headingScroll = new HeadingScroll();
+headingScroll.start();
+headingScroll.requestFromAddress();
 // A pointer going down on a Page row is a strong hint a Page opens next.
 const warmEditor = () => editor.start();
 // What the App does with an answer for another account than the tab's
@@ -232,12 +241,19 @@ function App() {
     [projectPages, setProjectPages] = useState(null),
     // The New Project or Move to… dialog: null, { kind: "create" } or
     // { kind: "move", pageId, title, projectId }. Each runs its own machine.
-    [containerDialog, setContainerDialog] = useState(null);
+    [containerDialog, setContainerDialog] = useState(null),
+    // The Connected agents dialog, opened from the account menu.
+    [agentsOpen, setAgentsOpen] = useState(false),
+    // The host advertised account controls but its list route answered 404,
+    // as an older ingress does: the menu stops offering them.
+    [agentsMissing, setAgentsMissing] = useState(false);
   const [toolbar, setToolbar] = useState(null),
     [toolbarOpen, setToolbarOpen] = useState(false),
     [active, setActive] = useState(null),
     [commentsOpen, setCommentsOpen] = useState(false),
     [target, setTarget] = useState(null),
+    // The passage under the pointer, so the comments list can mark its row.
+    [hoveredThread, setHoveredThread] = useState(null),
     [pickerError, setPickerError] = useState(""),
     [creating, setCreating] = useState(false),
     // One creation at a time, and placed creates to replay (page-create-machine.mjs).
@@ -262,8 +278,14 @@ function App() {
   const pickerFailed =
     pickerSnapshot.state.name === "failed" || pickerSnapshot.state.name === "checking";
   // Rendered only beside a session; handlers read editor.module when they run.
-  const { WordgardEditor, CommentsPanel, CommentPopover, SaveStatus, PageControls } =
-    editor.module ?? {};
+  const {
+    WordgardEditor,
+    CommentsPanel,
+    CommentPopover,
+    SaveStatus,
+    PageControls,
+    HeadingAnchors,
+  } = editor.module ?? {};
   const auth = useRef(null),
     authentication = useRef(null),
     // Where the installed Page is (projects.mjs watchPageLocation), asked
@@ -478,7 +500,7 @@ function App() {
       return [
         {
           kind: "comment",
-          body: body?.markdown ?? body,
+          ...draftRecord(body),
           quote: current.quote,
         },
       ];
@@ -503,6 +525,8 @@ function App() {
       }
     });
     listRecoveries();
+    // A short note the open left, such as a discarded local copy.
+    if (next.openNotice) setNotice(next.openNotice);
     if (next.accessReloadRequired && !next.recoveryPending) void reloadAccess(next);
     const first = next.doc ? (editor.module.orderedBlockIds(next.doc)[0] ?? null) : null;
     activateBlock(first);
@@ -547,10 +571,11 @@ function App() {
    * inside the same fenced navigation, without rewriting the address. */
   async function open(
     id,
-    { focus = false, historyMode = "push", nameIt = false, projectId = null } = {},
+    { focus = false, historyMode = "push", nameIt = false, projectId = null, anchor = null } = {},
   ) {
     if (historyMode !== "none")
-      writePageRoute(projectId ?? id, { replace: historyMode === "replace" });
+      writePageRoute(projectId ?? id, { replace: historyMode === "replace", anchor });
+    headingScroll.navigated(projectId ?? id);
     bootPreview.dispatch({ type: "navigated", pageId: id });
     picker.close();
     setNotice("");
@@ -613,6 +638,7 @@ function App() {
       event.preventDefault();
     }
     host.navigate();
+    headingScroll.navigated(null);
     bootPreview.dispatch({ type: "navigated", pageId: null });
     releaseCurrent();
     setAccount(authentication.current?.identity ?? null);
@@ -639,13 +665,25 @@ function App() {
       principal: authentication.current?.identity?.principal ?? null,
     };
   }
-  function openProject(projectId, { historyMode = "push" } = {}) {
+  function openProject(projectId, { historyMode = "push", anchor = null } = {}) {
     if (host.current && placement?.kind === "project" && placement.project_id === projectId) {
-      if (historyMode !== "none") writePageRoute(projectId, { replace: historyMode === "replace" });
+      if (historyMode !== "none")
+        writePageRoute(projectId, { replace: historyMode === "replace", anchor });
+      headingScroll.navigated(projectId);
       setProjectOpen(projectId);
       return;
     }
-    return open(null, { projectId, historyMode });
+    return open(null, { projectId, historyMode, anchor });
+  }
+  /** A link in Page content to another Page or Project (HeadingAnchors). */
+  function openRoute(route, anchor) {
+    if (route.kind === "page") {
+      headingScroll.request(route.pageId, anchor);
+      void open(route.pageId, { anchor });
+    } else if (route.kind === "project") {
+      headingScroll.request(route.projectId, anchor);
+      void openProject(route.projectId, { anchor });
+    }
   }
   /** Show an index route (readPageRoute's `projects` or `pages`). */
   function openIndex(route, { historyMode = "push" } = {}) {
@@ -1272,14 +1310,18 @@ function App() {
   async function signout() {
     try {
       await request("/api/auth/logout", { method: "POST" });
-      forgetAccountData();
-      let failed;
-      await host.close(host.current, { onError: (error) => (failed = error) });
-      if (failed) throw failed;
-      location.href = "/";
+      await leaveSignedOut();
     } catch (error) {
       showError(error);
     }
+  }
+  /** The host has ended this browser's session: forget the account here. */
+  async function leaveSignedOut() {
+    forgetAccountData();
+    let failed;
+    await host.close(host.current, { onError: (error) => (failed = error) });
+    if (failed) throw failed;
+    location.href = "/";
   }
   // Comment on a selection opens the inline composer beside it. Readers
   // without comment access get the thread list instead.
@@ -1313,6 +1355,20 @@ function App() {
     if (commentsOpen) closeComments();
     else setCommentsOpen(true);
   }
+  useEffect(() => {
+    const element = article.current;
+    if (!element || !commentsOpen) return;
+    const over = (event) =>
+      setHoveredThread(event.target.closest?.(".comment-passage")?.dataset.commentThread ?? null);
+    const leave = () => setHoveredThread(null);
+    element.addEventListener("pointerover", over);
+    element.addEventListener("pointerleave", leave);
+    return () => {
+      element.removeEventListener("pointerover", over);
+      element.removeEventListener("pointerleave", leave);
+      setHoveredThread(null);
+    };
+  }, [commentsOpen, session?.pageId]);
   function selectComment(id) {
     setTarget({ id, request: performance.now(), source: "passage" });
     setCommentsOpen(true);
@@ -1555,11 +1611,29 @@ function App() {
                   <Plug size={16} aria-hidden="true" /> Connect an agent
                   <span className="sr-only"> (opens in a new tab)</span>
                 </a>
+                {authentication.current?.accountControls === true && !agentsMissing && (
+                  <button
+                    onClick={() => {
+                      accountDisclosure.current.open = false;
+                      setAgentsOpen(true);
+                    }}
+                  >
+                    <Unplug size={16} aria-hidden="true" /> Connected agents
+                  </button>
+                )}
                 <button onClick={signout}>
                   <LogOut size={16} aria-hidden="true" /> Sign out
                 </button>
               </div>
             </details>
+          )}
+          {account && agentsOpen && (
+            <ConnectedAgents
+              returnFocus={() => accountDisclosure.current?.querySelector("summary")}
+              onClose={() => setAgentsOpen(false)}
+              onSignedOut={() => void leaveSignedOut().catch(showError)}
+              onUnavailable={() => setAgentsMissing(true)}
+            />
           )}
         </div>
       </header>
@@ -1657,6 +1731,17 @@ function App() {
             >
               <article ref={article}>
                 <h1 className="document-print-title sr-only">{page.title || "Untitled"}</h1>
+                {HeadingAnchors && (
+                  <HeadingAnchors
+                    article={article}
+                    session={session}
+                    projectId={projectOpen}
+                    scroll={headingScroll}
+                    onOpenRoute={openRoute}
+                    onNotice={setNotice}
+                    onError={setError}
+                  />
+                )}
                 {placement?.kind === "project" && placement.project_id ? (
                   <ProjectChip
                     projectId={placement.project_id}
@@ -1801,7 +1886,10 @@ function App() {
                         />
                       </BlockBoundary>
                     ) : (
-                      <pre>{block.markdown ?? "Unsupported block"}</pre>
+                      <section className="opaque" role="note" data-block-error="true">
+                        This block is stored in a form from an earlier version of Pages that this
+                        build doesn&apos;t read.
+                      </section>
                     )}
                   </section>
                 ))}
@@ -1844,6 +1932,8 @@ function App() {
                 threads={threads}
                 composer={composer}
                 target={target}
+                principal={account?.principal ?? null}
+                hovered={hoveredThread}
                 onClose={closeComments}
                 onReveal={revealComment}
                 onSelect={(id) => {

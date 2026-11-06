@@ -12,11 +12,14 @@
 // in the same change, or the new viewer would refuse itself. Integers only;
 // never lower either value.
 //
-// Protocol 2: Markdown import writes no preserved blocks, strikethrough and
-// horizontal rules are native, and the Page host converts stored preserved
-// blocks. A protocol 1 viewer can still write a preserved block.
-export const VIEWER_PROTOCOL = 2;
-export const MIN_VIEWER_PROTOCOL = 2;
+// Protocol 2: Markdown import writes no preserved blocks, and strikethrough
+// and horizontal rules are native. A protocol 1 viewer can still write a
+// preserved block.
+// Protocol 3: comments are stored in the editor's span form with no `body`.
+// A protocol 2 viewer writes a Markdown `body` beside adapter-form spans,
+// which the host refuses (model/comment-authority.mjs).
+export const VIEWER_PROTOCOL = 3;
+export const MIN_VIEWER_PROTOCOL = 3;
 
 /* global __PAGES_BUILD__ */
 export const PAGES_BUILD =

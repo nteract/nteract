@@ -2,7 +2,7 @@
 // socket but not finished. A frame counts from arrival until its admission
 // run settles (stored and acked, or refused), so the bound covers frames
 // waiting in a document's queue and the one being admitted. The limits match
-// the native byte transport's receive queue (shared/byte-transport.mjs).
+// the socket receive queue.
 //
 //   open        counting frames; an arrival over either limit overflows
 //   overflowed  the host refused the arrival that overflowed and closed the

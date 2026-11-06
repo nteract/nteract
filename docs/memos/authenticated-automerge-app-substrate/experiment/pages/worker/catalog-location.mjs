@@ -27,10 +27,7 @@
  * the Catalog's serial queue; these helpers read storage and never write.
  */
 import { deriveLocation, positionAmong, siblingsOf, validPositionKey } from "../model/location.mjs";
-import { HttpError } from "./auth.mjs";
 import { listAll } from "./catalog.mjs";
-import { HOME_REMOVAL_STATE_KEY, hasLegacyHomeShape } from "./home-removal-migration.mjs";
-import { LOCATION_SHAPE_KEY, MIGRATION_REQUIRED, shapeState } from "./location-shape.mjs";
 
 /** Location entries by Page ID, for model/location.mjs. Reservation slots
  * are placeholders for a pending Trash or restore and are skipped: the Page's
@@ -44,19 +41,8 @@ export async function locationEntries(storage) {
  * `contents` maps each content document ID to `{ space_id, state }`. A Page
  * listing uses the counts to check the Catalog's stored counts
  * (catalog-counts.mjs).
- *
- * A Catalog not recorded in the current shape is checked for the retired
- * one (home-removal-migration.mjs); while it holds that, every read refuses
- * with `503 location_migration_required` rather than misread it.
  */
 export async function locationScan(storage) {
-  // Fence the whole scan against migration progress: the stored migration
-  // state and shape record are read before and after the rows, and any
-  // change (an apply that started, advanced or finished meanwhile) refuses
-  // rather than mix rows from two shapes. /internal/location runs outside
-  // the Catalog's serial queue, so this is its only fence.
-  const before = await migrationFence(storage);
-  if (before.removal && before.removal.phase !== "done") throw migrationRequired();
   const raw = [];
   const counts = {};
   for (const [prefix, state] of [
@@ -70,13 +56,6 @@ export async function locationScan(storage) {
       raw.push({ entry, state: entry.pending ? "pending" : state });
     }
   }
-  const after = await migrationFence(storage);
-  if (after.key !== before.key) throw migrationRequired();
-  await requireCurrentShape(
-    storage,
-    raw.map(({ entry }) => entry),
-    before,
-  );
   const contents = new Map();
   const entries = new Map();
   for (const { entry, state } of raw) {
@@ -96,43 +75,6 @@ export async function locationScan(storage) {
   }
   return { entries, contents, counts };
 }
-
-/**
- * Refuse (503) unless this Catalog's stored location is in the current
- * shape: no home-removal apply unfinished or failed, and either a migrated
- * shape record or no retired marker. `entries` are the stored `page/` and
- * `trash/` values when the caller already listed them.
- */
-export async function requireCurrentShape(storage, entries, fence) {
-  const { removal, shape } = fence ?? (await migrationFence(storage));
-  if (removal && removal.phase !== "done") throw migrationRequired();
-  if (shapeState(shape).name === "migrated") return;
-  const stored = entries ?? [
-    ...(await listAll(storage, "page/")).values(),
-    ...(await listAll(storage, "trash/")).values(),
-  ];
-  if (hasLegacyHomeShape(stored, (await listAll(storage, "space/")).values()))
-    throw migrationRequired();
-}
-
-/** The stored migration state and shape record, and a key that changes
- * whenever either does. */
-async function migrationFence(storage) {
-  const removal = await storage.get(HOME_REMOVAL_STATE_KEY);
-  const shape = await storage.get(LOCATION_SHAPE_KEY);
-  return { removal, shape, key: JSON.stringify([removal ?? null, shape ?? null]) };
-}
-
-/** The refusal while a Catalog holds the retired shape. */
-export const migrationRequired = () =>
-  Object.assign(
-    new HttpError(
-      503,
-      "This account's Projects need a one-time migration before Pages can be read or changed. The account owner runs it.",
-      MIGRATION_REQUIRED,
-    ),
-    { details: { reason: "home_removal_required" } },
-  );
 
 /** The Project a Page is in, or null for Your items. A trashed Page whose
  * parent chain is broken uses the Project it recorded when it was trashed. */

@@ -17,7 +17,9 @@ import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 import { build } from "esbuild";
 import { celldCborPlugin } from "./celld-cbor.mjs";
-import { USAGE_CRON, USAGE_D1 } from "./deployment/profiles.mjs";
+import { releaseFilesOf } from "./stage-artifacts.mjs";
+import { USAGE_D1 } from "./deployment/profiles.mjs";
+import { AUTH_CRON, USAGE_CRON } from "../shared/schedule.mjs";
 import { browserMermaidPlugin, mermaidSource } from "./browser-mermaid.mjs";
 import {
   IMMUTABLE,
@@ -112,7 +114,7 @@ for (const fails of [true, false])
   test(
     fails
       ? "failed rebuild removes the previous receipt before replacing any artifacts"
-      : "build.mjs emits PAGES_USAGE and its UTC cron into the local release config",
+      : "build.mjs emits PAGES_USAGE and its UTC crons into the local release config",
     () => {
       const fixture = mkdtempSync(path.join(tmpdir(), "pages-build-failure-"));
       const write = (relative, contents) => {
@@ -133,17 +135,18 @@ for (const fails of [true, false])
           "browser-wasm.mjs",
           "browser-sift.mjs",
           "viewer-chunks.mjs",
+          "stage-artifacts.mjs",
           "deployment/profiles.mjs",
         ])
           write(`scripts/${name}`, readFileSync(new URL(`./${name}`, import.meta.url), "utf8"));
-        for (const name of ["favicon.mjs", "product.mjs"])
+        for (const name of ["favicon.mjs", "product.mjs", "schedule.mjs"])
           write(
             `shared/${name}`,
             readFileSync(new URL(`../shared/${name}`, import.meta.url), "utf8"),
           );
         write(
           "scripts/source-fingerprint.mjs",
-          `export const sourceFingerprint = () => ({sha256:'source-B'}); export const writeBuildReceipt = () => {${fails ? "throw new Error('failed build must not certify outputs');" : ""}};`,
+          `import {writeFileSync} from 'node:fs'; export const sourceFingerprint = () => ({sha256:'source-B'}); export const writeBuildReceipt = (app, options) => {${fails ? "throw new Error('failed build must not certify outputs');" : "writeFileSync(app + '/dist/receipt-options.json', JSON.stringify(options));"}};`,
         );
         write(
           "node_modules/esbuild/package.json",
@@ -173,7 +176,6 @@ for (const fails of [true, false])
         );
         for (const [name, exported, binary] of [
           ["automerge", "automerge.wasm", "automerge.wasm"],
-          ["subduction", "wasm", "subduction.wasm"],
         ]) {
           write(
             `node_modules/@automerge/${name}/package.json`,
@@ -215,8 +217,24 @@ for (const fails of [true, false])
             config.d1_databases.filter((db) => db.binding === "PAGES_USAGE"),
             [USAGE_D1],
           );
-          assert.deepEqual(config.triggers, { crons: [USAGE_CRON] });
+          assert.deepEqual(config.triggers, { crons: [USAGE_CRON, AUTH_CRON] });
           assert.equal(USAGE_CRON, "5 0 * * *");
+          assert.equal(AUTH_CRON, "35 * * * *");
+          // The receipt certifies every staged file but itself: the allowlist
+          // plus the viewer's hashed files. The stubbed bundler skips the
+          // Worker's WASM copy; every public file must exist.
+          const options = JSON.parse(
+            readFileSync(path.join(fixture, "dist/receipt-options.json"), "utf8"),
+          );
+          assert.deepEqual(
+            options.releaseFiles,
+            releaseFilesOf(options.viewerChunks, options.viewerAssets),
+          );
+          assert.ok(options.releaseFiles.includes("index.js"));
+          assert.ok(options.releaseFiles.includes("public/chunks/ABCDEFGH.js"));
+          assert.ok(!options.releaseFiles.includes("build-receipt.json"));
+          for (const file of options.releaseFiles.filter((name) => name.startsWith("public/")))
+            assert.ok(existsSync(path.join(fixture, "dist", file)), file);
           return;
         }
         assert.ok(failure);
@@ -414,12 +432,6 @@ test("app.js renders the shell without a static path to the WASM runtimes", asyn
     assert.equal(shell.includes(editorOnly), false, editorOnly);
   for (const shellInput of ["viewer/main.jsx", "viewer/local-catalog.mjs"])
     assert.ok(shell.includes(shellInput), shellInput);
-  // The shell lists local Pages through the byte store's own file, not the
-  // package index that also loads the Subduction glue.
-  assert.equal(
-    shell.some((input) => /automerge-repo-subduction[/]dist[/]index[.]js$/.test(input)),
-    false,
-  );
   const [editor] = chunks.filter(
     (file) => local(outputs[file].entryPoint ?? "") === "viewer/page-editor.mjs",
   );
@@ -539,7 +551,6 @@ test("index.html names every shell asset by its hashed file", () => {
     ["theme.js", "src"],
     ["app.css", "href"],
     ["automerge.wasm", "href"],
-    ["subduction.wasm", "href"],
     ["app.js", "src"],
   ]) {
     assert.equal(html.split(`${attribute}="${url(name)}"`).length, 2, name);

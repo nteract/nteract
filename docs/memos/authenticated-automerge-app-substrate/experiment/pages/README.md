@@ -16,8 +16,8 @@ Pages is developed in the nteract monorepo and shares libraries such as Sift
 and UI tokens with notebooks. It owns its editor, document model, host, and
 deployment. The source directory and `@nteract/pages-native-experiment` workspace
 name reflect its origins in the authenticated Automerge infrastructure research.
-Its Repo 3/Subduction foundation still has experimental dependencies and evolving
-contracts; the infrastructure research and deployment qualification remain
+Its Repo 3 and plain Automerge sync foundation still has experimental
+dependencies and evolving contracts; the infrastructure research and deployment qualification remain
 separate from Pages' product identity. See the deployment guide for current
 release targets and frozen historical services.
 
@@ -34,8 +34,7 @@ requires celld 0.6.3; use that runtime to qualify the current profile. From the 
 ```sh
 npm run setup
 npm run build --workspace @nteract/pages-native-experiment
-PAGES_ASYNC_PERSISTENCE=true PAGES_COMPACT_RECORDS=true \
-  npm run dev --workspace @nteract/pages-native-experiment
+npm run dev --workspace @nteract/pages-native-experiment
 ```
 
 Setup fetches and verifies the pinned upstream source, installs the locked
@@ -84,9 +83,7 @@ gate. The separate Pages browser E2E workflow runs on the same changes without
 holding that gate. It downloads the official celld 0.6.3 Linux x86_64
 release, checks the archive hash and the executable hash in `CELLD_RELEASE`,
 installs Playwright's Chromium with system dependencies, runs `npm run e2e` with
-one retry and a flaky budget of one, and always uploads `test-results/`. It
-runs twice: once with the default Subduction storage and once, as "Pages browser
-E2E (local celld, plain sync)", with `PAGES_RECORD_STORAGE=automerge`.
+one retry and a flaky budget of one, and always uploads `test-results/`.
 Production promotion is a manual operator step; the operator confirms both
 workflows are green for the exact source SHA before promoting it. On a
 fresh Linux runner, install browser system dependencies with
@@ -124,26 +121,24 @@ was a caret race in the smoke; the editor side is
 | Reload prompt after a deploy under an open tab | `node scripts/local-sharing-e2e.mjs --build-update` | Starts an isolated fixture and swaps its build |
 | Trash, restore, and permanent deletion | `node scripts/local-sharing-e2e.mjs --trash` | Starts an isolated fixture |
 | Removed access hides the local copy across a reload, with its download | `node scripts/local-sharing-e2e.mjs --revocation` | Starts an isolated fixture |
-| A commenter comments but can't edit; a forged native edit of another author's message is refused | `node scripts/local-sharing-e2e.mjs --commenter` | Starts an isolated fixture |
+| A commenter comments but can't edit; a forged sync edit of another author's message is refused | `node scripts/local-sharing-e2e.mjs --commenter` | Starts an isolated fixture |
 | Projects over MCP and in the browser, `/projects` and `/pages` on a phone-sized screen, the Pages library's tabs, Project filter, sort and groups as an account with shared Pages, breadcrumbs, Trash and restore in a Project | `node scripts/local-sharing-e2e.mjs --projects` | Starts an isolated fixture |
 | `list_pages` reports `content_updated_at` after an MCP edit and after typing in a tab, each well after the Page's creation | `node scripts/local-sharing-e2e.mjs --content-activity` | Starts an isolated fixture |
 | Grid cards show each edited Page's first content in light, dark and phone layouts; a shared card shows for its member and `page_cards` answers null on the call after removal | `node scripts/local-sharing-e2e.mjs --cards` | Starts an isolated fixture |
 | Cold first open of a 300-paragraph Page with images on Fast 3G and 4x CPU, phase by phase (records timings, gates on nothing) | `node scripts/local-sharing-e2e.mjs --cold-open` | Starts an isolated fixture behind a brotli proxy; writes `report.json` |
-| Rollback to a previous build and forward again on one data directory | `node scripts/rollback-qualification.mjs --target <target> --previous <previous pages dir>` | Starts an isolated fixture; build the previous commit first |
 | Rich comment tables and drafts | `PAGES_ORIGIN=http://localhost:9894 node scripts/rich-comments-smoke.mjs` | Uses the running Wordgard fixture |
 | Comments panel placement at 1920/1440/1100/800px | `PAGES_ORIGIN=http://localhost:9894 node scripts/comments-layout-smoke.mjs` | Uses the running Wordgard fixture |
 | Schema-feature gate: a Page stamped with an unknown feature opens read-only and refuses tool writes | `PAGES_ORIGIN=http://localhost:9894 node scripts/schema-features-smoke.mjs` | Uses the running Wordgard fixture |
 | Native table editing | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:tables` | Uses the running Wordgard fixture |
 | Passage edits and revision deltas | `PAGES_ORIGIN=http://localhost:9894 node scripts/passages-changes-smoke.mjs` | Uses the running Wordgard fixture |
 | Reload banner placement, browser presence labels, leaving a final code block, checkbox indent | `PAGES_ORIGIN=http://localhost:9894 node scripts/editor-chrome-smoke.mjs` | Uses the running Wordgard fixture |
+| Heading links: a fragment scrolls to its heading on a cold load, a warm reload and in a fresh context, and holds it while an image above draws late; `#notes-1` picks the second Notes; an unknown anchor stays at the top; table cell links go there read-only and through Go to section; the # copies the link `read_page` names; another Page's heading opens in place; Back and Forward restore each entry's position on the same Page and across Pages; scrolling during the settle, or scrolling the preview while sync is held, stops it | `PAGES_ORIGIN=http://localhost:9894 node scripts/heading-anchors-smoke.mjs` | Uses the running Wordgard fixture |
 | Local creation and navigation | `PAGES_ORIGIN=http://localhost:9894 node scripts/navigation-smoke.mjs` | Uses the running Wordgard fixture |
 | Editing, comments, links, diagrams, and recovery | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:editor` | Uses the running Wordgard fixture |
-| History growth and typing latency | `PAGES_ORIGIN=http://localhost:9894 node scripts/latency-smoke.mjs` | Uses the running Wordgard fixture with buffered persistence |
-| Client catch-up after reopening a Page far behind the host | `node scripts/catch-up-benchmark.mjs --runs 5 2000+2000` | No server; in-process Repo peers over the authenticated wire, Node with MemoryByteStore (no IndexedDB or editor cost) |
+| History growth and typing latency | `PAGES_ORIGIN=http://localhost:9894 node scripts/latency-smoke.mjs` | Uses the running Wordgard fixture |
 | `list_pages` for 50 shared Pages with cold and warm Page hosts, p50/p95 (records timings, gates on nothing) | `node scripts/local-sharing-e2e.mjs --listing-bench` | Starts an isolated fixture and restarts it between cold samples; writes `listing-benchmark.json` |
 
-Use `PAGES_ASYNC_PERSISTENCE=true` for the latency check. The editor checks
-exercise the same Wordgard path used by deployed Pages.
+The editor checks exercise the same Wordgard path used by deployed Pages.
 
 Choose one `local-sharing-e2e.mjs` feature flag per run. Its image importer fixture
 supplies a synthetic ChatGPT download response; actual client file handoff needs
@@ -162,21 +157,23 @@ is displayed above the body; agents should not repeat it as an opening heading.
 Authoring receipts warn about likely duplicates without removing or hiding text.
 
 Wordgard is the sole editor and applies native text splices, marks, and
-structural spans. The shared Markdown codec still uses ProseMirror schema and
-traversal libraries for import/export, validation, outlines and `node_index`,
-change reads, and passage-address mapping. It does not own an editor or mediate
-Wordgard keystrokes. Page-body Markdown writes and browser structural edits
+structural spans. The shared Markdown codec still uses the ProseMirror schema
+and span adapter for import, validation, and the node content outlines and
+change reads report. It does not own an editor or mediate Wordgard
+keystrokes. Markdown export serializes Wordgard's tree
+(`model/markdown-serializer.mjs`); a block's projection reads its spans with
+`decode`, except shapes `decode` reads differently from the adapter (a marker
+under an unknown container, a newline stored as prose text), which still read
+through the adapter. `model/markdown-serializer.test.mjs` pins the output
+against frozen Markdown from the ProseMirror serializer it replaced. Page-body Markdown writes and browser structural edits
 share one span encoder, Wordgard's `encode` (`model/wordgard-doc.mjs`):
 
 - Browser edits encode the editor's document.
 - Page-body Markdown writes parse with the ProseMirror codec, and `pageSpans`
   (`model/richtext-spans.mjs`) re-encodes the adapter's spans with `encode`.
-- Preserved-block conversion (`model/raw-migration.mjs`) writes `pageSpans`
-  output under the block's parents.
 
-Agent-written comments still store the ProseMirror adapter's spans: moving
-them to `pageSpans` shifts the comment length rule, which counts block
-markers, so it waits for a decision on that rule.
+Agent-written comments take the same path: `markdownCommentSpans`
+(`model/comment-content.mjs`) stores `pageSpans` of the parsed Markdown.
 
 The codec is split by job; `model/richtext.mjs` lists the modules and
 re-exports their public names. Only `model/pm-*.mjs` import ProseMirror
@@ -185,22 +182,27 @@ module does.
 
 Block types are declared once in `model/node-registry.mjs`: stored names,
 ProseMirror names, agent-facing names, settable attrs and insert operations.
-The ProseMirror schema and serializer, Wordgard's decode and encode, and
+The ProseMirror schema, Wordgard's decode and encode, and
 `features.json` still define types in their own terms;
 `node-registry.test.mjs` fails when one of them disagrees with the registry.
 A top-level node's id (`model/node-ids.mjs`) is an Automerge cursor at the
 block marker that opens it. Outlines and change reads report it as `node_id`,
 and `delete_node` takes it, so an agent can remove a node with no text. A
-paragraph that opens its block has no marker and no id. `set_node` still
-addresses nodes through `match_text`. Replacing the codec means, in order: one
-span encoder for every writer; node reads by id; then outlines, change reads
-and Markdown on that node tree instead of ProseMirror.
+paragraph that opens its block has no marker and no id. Ids, node ranges,
+`node_index` scoping and target-scoped passage addresses come from Wordgard's
+decoded tree and its position maps (`model/node-addresses.mjs`), checked
+against frozen expectations over the Markdown corpus, random editor trees and
+stored shapes (`model/node-addresses.test.mjs`). `set_node` still addresses
+nodes through `match_text`. Replacing the codec means, in order: one
+span encoder for every writer; node reads by id; Markdown export from that
+node tree; then outlines, change reads, validation and parsing on it instead
+of ProseMirror.
 Existing documents, comment anchors and MCP addresses must survive each step.
 
 Each Pages block has its own continuous editor. Moves update fractional positions without recreating the block or its
 text object, preserving comment and selection anchors. Concurrent positions use
 block IDs as deterministic ties. Cross-Pages-block selections remain unsupported.
-When a block ends in a code block, table, preserved block or an image, ArrowDown
+When a block ends in a code block, table, unknown block or an image, ArrowDown
 on its last line, Mod-Enter, or a click below it adds an empty paragraph and puts
 the caret there. Mod-Enter also leaves a code block anywhere else. The paragraph
 is an ordinary edit, written only when someone asks for it, so opening a Page
@@ -217,19 +219,27 @@ references; it does not publish the Page or change asset access.
   Highlighted passages and thread quotes navigate between text and discussion.
   Draft anchors capture native object identity and text cursors; deleted or
   replaced passages reject submission rather than moving a comment elsewhere.
-  New browser comments use Wordgard for formatting, links, lists, and native
-  table cells. Drafts retain their native spans until Send and survive responsive
-  rail/sheet changes; changing Pages clears local drafts. Expand the sidebar for
-  wider discussions. Agent comments opt in with `body_format: "markdown"` on
-  `manage_page_comment`; rich comment reads return Markdown and the same format
-  marker. Existing unmarked comments remain literal. Omitting the format when
-  editing retains the message's current kind; `plain` can preserve literal syntax.
-  Thread/message IDs and passage anchors stay unchanged. The original `body`
-  string is frozen import provenance, not a current-content mirror for old
-  clients; native `richText` is authoritative once marked rich. If native content
-  cannot be decoded, reads return that original text with
-  `content_error: "rich_text_unavailable"` rather than failing the entire Page. Source is limited to 16,000 characters and native structure
-  to 64 KiB. Formatting-only changes appear in `read_page_changes`.
+  Comments are the same rich text as a Page body: every message is stored as
+  the editor's spans, the form Wordgard's `encode` writes, through the same
+  path Page bodies use. The browser composer is a Wordgard editor that sends its
+  spans as they are, with no Markdown in between; drafts keep their spans until
+  Send and survive responsive rail/sheet changes; changing Pages clears local
+  drafts. Expand the sidebar for wider discussions. Agent comments opt in with
+  `body_format: "markdown"` on `manage_page_comment`; rich comment reads return
+  Markdown computed from the spans and the same format marker. Plain input
+  (`body_format: "plain"`, the default for a new message) is stored as spans
+  with no marks, each newline a hard break, and records `bodyFormat: "plain"`,
+  so reads return the text literally without a format marker, as plain reads
+  always have. Omitting the format when editing retains the message's current
+  kind. Thread/message IDs and passage anchors stay unchanged. No Markdown copy
+  (`body`) is stored. A message an earlier build stored with only a `body`, or
+  with a `body` copy beside its spans, answers `409 stored_form_unsupported`;
+  the comments migration rewrote every one (DEPLOYMENT.md). If native content
+  cannot be decoded, reads return its bare text with
+  `content_error: "rich_text_unavailable"` rather than failing the entire Page.
+  A message holds at most 16,000 text characters (block markers don't count,
+  so the span form never changes a message's length) and 64 KiB of stored
+  spans. Formatting-only changes appear in `read_page_changes`.
 - **Highlights:** the formatting toolbar's highlighter offers the four palette
   colors and Remove; Cmd/Ctrl+Shift+H toggles yellow. A highlight is a text mark
   (`highlight`), so it syncs, merges, and follows edit permission like bold.
@@ -252,7 +262,7 @@ references; it does not publish the Page or change asset access.
     `body_format: "markdown"`) refuse these with
     `400 unsupported_markdown` and `unsupported: { construct, line, column,
     excerpt }`, before anything is written. The column counts code points.
-  - Stored source, browser drafts and paste keep math and HTML as literal,
+  - Stored source and paste keep math and HTML as literal,
     editable text. Lossy source is literal text in full, so nothing is lost.
     Export escapes literal `$` and `<`, so a read is always writable.
   - Export writes lists tight with `-` bullets. The native model doesn't
@@ -271,9 +281,9 @@ references; it does not publish the Page or change asset access.
   - The scan masks code per table cell, as Markdown-it splits cells first,
     and recognizes a tag of any length, with `>` inside quoted values, in
     linear time.
-  - Nothing writes a preserved block (`raw`, `pages-opaque`). The schema keeps
-    it read-only so older Pages open; the Page host converts each stored one
-    on load (see Preserved blocks below).
+  - Nothing writes a preserved block (`pages-opaque`), and the schema has no
+    node for one. A stored marker an older build wrote reads as an unknown
+    block, as below (see Stored forms).
   - A node this build doesn't know, from a newer build, still opens. Its
     feature stamp makes the Page read-only here and refuses this build's
     writes. The editor draws a notice (`PagesUnknownBlock`,
@@ -307,71 +317,16 @@ references; it does not publish the Page or change asset access.
   `features.json` and [`shared/code-languages.mjs`](shared/code-languages.mjs).
   Importing it throws when a mark or feature block has no agent syntax, so a
   new one can't reach people without reaching agents.
-- **Preserved blocks:** older builds stored Markdown they couldn't import as one
-  read-only `pages-opaque` block holding its source. The Page host replaces
-  each with what its source imports as today, in
-  [`model/raw-migration.mjs`](model/raw-migration.mjs):
-  - Where: in place, under the block's own parents, in block bodies and
-    comment messages. Text around it keeps its identity, so anchors survive.
-  - Who: only the host, the Page's single serialized writer. Two peers that
-    each replaced the same marker would each insert a copy, and Automerge keeps
-    both. Browsers show the block read-only with a notice until the host's
-    change syncs.
-  - When: on load, before native connections open, after creating or
-    registering a Page, and when restoring one from Trash, before access
-    reopens.
-  - Fence: [`worker/preserved-conversion.mjs`](worker/preserved-conversion.mjs)
-    is the conversion's state machine (`unchecked`, `clear`, `held`,
-    `converting`, `failed`, `stuck`). In `held`, `converting` and `failed`,
-    on an active Page the host refuses every native put, relayed or
-    self-authored, and answers HTTP edits with
-    `503 preserved_markdown_converting` after one more attempt. Peers still
-    connect and sync down: discovery reports `converting`, and the viewer
-    shows the Page read-only without retiring its writer key. When the fence
-    drops, the host closes their sockets with `temporarily_unavailable`, so
-    they rediscover and edit. A tab that discovered `converting` says so on
-    its upgrade (`converting=1`); if the fence dropped in between, the host
-    refuses that upgrade the same way, so no tab misses the completion. Refusing puts is what keeps an old tab's
-    competing conversion out, so admitting the connection reopens nothing.
-    A trashed Page is `held`, so the fence is up before restore installs the
-    active record. A failed run keeps the fence and retries with backoff.
-    Connections (after their capacity check) and edits only nudge the
-    machine: a nudge can clear the fence, but never starts a retry before
-    its timer. If startup's journal recovery
-    can't finish a pending conversion (its records still can't be stored),
-    startup completes anyway and hands that entry to the retry loop, so the
-    Page stays readable. The conversion journals in its own
-    key space (`host/operation/internal:`), so full client receipt budgets
-    can't block it, and a run that applied but didn't finish replays under its
-    own key until the journal entry is terminal before the fence clears.
-  - Reserved runs: once a run's journal entry is reserved, it keeps the
-    fence and retries that exact intent with capped backoff, indefinitely,
-    whatever the failure. It is never reauthored, abandoned or unfenced; it
-    logs `page.preserved_markdown_stuck` every five failures.
-  - Permanent failure before anything was reserved: the run falls back to
-    converting each source as plain text. If that fails too, the Page is
-    `stuck`: logged (`page.preserved_markdown_stuck`), unfenced, and its
-    preserved blocks stay read-only until an edit replaces them
-    (DEPLOYMENT.md, "Preserved Markdown conversion"). Runs are serialized, and each is a journaled host
-    intent keyed by the heads it converted, so a restart replays the recorded
-    change instead of converting again. A Page with nothing to convert gets
-    no change.
-  - Stamp: the change stamps `preserved-markdown-converted`, so a build that
-    could still write or convert one opens the Page read-only and the host
-    refuses its writes. Viewer protocol 2 retires those builds everywhere.
-  - Reload: native admission sees signing keys, not records, and a reloaded
-    tab keeps its key. So before connecting, a reopened Page checks its
-    unconfirmed history for edits to a preserved block that aren't the
-    host's stamped conversion (an old build's Edit table, or a deletion).
-    If it finds any, the whole replica becomes a recovery record (Download
-    previous local draft), and the tab reopens on a fresh replica holding
-    only history the host has. The block syncs once.
-  - Limits: the reload check runs in the browser, so it guards honest older
-    tabs, not hostile clients. An authorized writer can already delete or
-    rewrite content; the host's fence and stamp bound what a client of an
-    older build writes, not what a malicious one does.
-  - Remove `nodes.raw`, `OpaqueBlock` and the conversion once no stored Page
-    can hold a preserved block.
+- **Stored forms:** every block is rich text (`format: "automerge-rich-text-v1"`)
+  and every Page carries the `comments-doc` stamp. Earlier builds also stored
+  Markdown-only blocks, read-only `pages-opaque` preserved blocks and threads
+  in the Page document; a one-shot content migration rewrote every stored Page
+  before this build stopped reading those forms. A reader that meets one now
+  refuses it: tool reads answer `409 stored_form_unsupported`
+  ([`model/stored-form.mjs`](model/stored-form.mjs)), the viewer shows a notice
+  in place of a Markdown-only block, and a stored `pages-opaque` marker reads
+  as an unknown block, kept as stored. The `preserved-markdown-converted` id
+  stays in `features.json`: ids are never dropped.
 - **Schema features:** every mark and block type that existed when Page10
   launched is baseline. A later one names a feature id: a mark in
   `marks.json`, a block type in [`model/features.json`](model/features.json).
@@ -385,18 +340,43 @@ references; it does not publish the Page or change asset access.
   | Writer (host tools, import, Wordgard binding, comments) | Adds a feature's id in the same Automerge change that first writes content needing it. Never removes an id. |
   | Viewer | `unsupported = stamp − BUILD_FEATURES`. Non-empty opens the Page read-only with a Reload notice; sync continues. The notice's Reload writes any edits the host refused to this browser's store, then reloads without the host's receipt; if that write fails, it blocks and keeps the edits in the tab. |
   | Host, tools | Refuses tool writes and draft registration with `409 unsupported_schema_feature` and `unsupported_features`. Replays of recorded receipts still answer. |
-  | Host, native sync | The viewer declares its build's features on `/api/sync` (`schema_features`; none means the baseline). The policy refuses a put authored by the requesting key while its build lacks a stamped id, and the matching `/api/saved` receipt answers `409 schema_unsupported`, which the viewer shows as the read-only notice. Relayed history signed by another key is not gated. |
+  | Host, sync | The viewer declares its build's features on `/api/sync` (`schema_features`; none means the baseline). SyncHost refuses a change from that connection while its build lacks a stamped id, and the matching `/api/saved` receipt answers `409 schema_unsupported`, which the viewer shows as the read-only notice. |
   | Agents | `read_page` returns `schema_features`, an empty array when unstamped. |
 
   Concurrent first stamps can conflict on `schema`; readers union every
   conflicting value and the next writer folds them into the visible list. The
   stamp is per document; the minimum viewer protocol in [Build updates](#build-updates)
-  is per build. A declaration is the client's own claim: the native gate stops
+  is per build. A declaration is the client's own claim: the gate stops
   stale clients from writing what they can't express, not hostile ones, whose
   edits write authority already bounds.
 - **Links:** click for Open, Edit, and Remove; Cmd/Ctrl-click opens directly and
   Cmd/Ctrl+K edits. Incoming edits update or dismiss the link control, and URL
   policy applies both to stored content and navigation.
+- **Heading links:** every heading has an anchor, a slug of its visible text
+  (lowercase, punctuation and symbols dropped, whitespace runs as one hyphen,
+  letters and digits of every script kept, at most 100 code points), numbered
+  `-1`, `-2`, … for repeats in document order; a heading with no letters or
+  digits is `section`. [`model/heading-anchors.mjs`](model/heading-anchors.mjs)
+  computes them from the stored spans each time the document is read. Nothing
+  stores them, so no schema feature or migration is involved, and renaming a
+  heading changes its anchor. The viewer and `read_page` (`anchor` on an
+  outline heading entry) read the same function. A link to `#anchor` or
+  `/p/<page_id>#anchor` is an ordinary link mark. The `#` beside a heading
+  under the pointer copies its link. A fragment in the address scrolls to its
+  heading once the Page has synced and drawn it, waiting up to 15 seconds, and
+  scrolls again while late layout above it settles; the reader scrolling,
+  typing or clicking first cancels it, from page load on, including while the
+  loading preview shows. Each history entry records its scroll position, and
+  Back and Forward return to it once the Page has drawn, or to the entry's
+  heading when it has none. A reload goes to the heading, and the browser's
+  own restoration stays on for other screens
+  ([`viewer/HeadingAnchors.jsx`](viewer/HeadingAnchors.jsx),
+  [`viewer/heading-scroll.mjs`](viewer/heading-scroll.mjs),
+  [`viewer/heading-links.mjs`](viewer/heading-links.mjs)). Links in a Page to
+  this app's Pages and Projects open in place, without a reload or new tab;
+  modified clicks still open a tab. The editor's DOM gets no ids: a heading is
+  found by its block and its ordinal among the block's headings. Touch screens
+  have no hover, so copying a heading's link there needs the address bar.
 - **Code and diagrams:** three backticks on an empty paragraph followed by Enter
   or Space creates code; a language can follow the backticks. Mermaid renders
   through nteract's Pele renderer and SVG sanitizer. Compact Edit diagram,
@@ -457,8 +437,9 @@ references; it does not publish the Page or change asset access.
 
 ## Opening, recovery, and ownership
 
-Canonical links are `/p/<page_id>`; browser Back/Forward restores the corresponding
-Page and legacy query links normalize. Direct links work independently of the
+Canonical links are `/p/<page_id>`, with `#anchor` for a heading (see Heading
+links); browser Back/Forward restores the corresponding Page and heading, and
+legacy query links normalize, keeping the fragment. Direct links work independently of the
 catalog but never bypass Page permissions.
 
 Browser creation allocates the Page and history locally, persists them to
@@ -545,14 +526,12 @@ notice whichever request sees it first.
 
 ```text
 Browser Repo + Wordgard                 Authorized HTTP / MCP operations
-            | authenticated binary sync             |
+            | plain Automerge sync (sync/wire.mjs)  |
             +--------------------+-------------------+
                                  |
                          Page Durable Object
-                         Repo + Subduction
+                         SyncHost + Repo (worker/plain-sync.mjs)
                          host-owned access/control state
-                                 |
-                    PageRecords Durable Object (buffered mode)
                                  |
                          ctx.storage / runtime
                                  |
@@ -562,7 +541,7 @@ Browser Repo + Wordgard                 Authorized HTTP / MCP operations
 
 Catalog objects index owned/shared Pages; D1 stores server sessions and MCP OAuth
 state, and (with `PAGES_CATALOG_INDEX`) a catalog projection for paginated, searchable
-listings. See [Catalog index](#catalog-index). Ownership, ACLs, signing-key bindings, credential leases, and deletion are
+listings. See [Catalog index](#catalog-index). Ownership, ACLs, actor claims, credential leases, and deletion are
 host state outside the document. Unknown document fields are preserved; projecting
 known content is not authority to rewrite the whole schema.
 
@@ -580,6 +559,13 @@ the `00:05 UTC` daily cron. Each deployment's fleet prefix isolates its store;
 accounts and hosts are never merged. celld 0.6.3 supports
 [cron triggers](https://github.com/denoland/celld/blob/v0.6.3/docs/services/cron-triggers.md).
 No host-side provisioning is required.
+
+A second cron, `35 * * * *`, runs the auth sweep in
+[auth-maintenance.mjs](worker/auth-maintenance.mjs): it deletes expired sign-in
+transactions, sessions, OAuth rows and invitation index rows, and grants revoked
+more than an hour ago with their tokens and codes. The sweep also runs on the
+daily trigger, so the 00:xx hour sweeps twice. Usage maintenance runs on the
+daily trigger only.
 
 The existing `pages.usage.v1` emission path also queues an allowlisted projection:
 UTC day and timestamp, principal id, driver, surface, action, Page id, outcome.
@@ -678,7 +664,7 @@ guarded by the revision the listing read. A listing looks ahead for one verified
 row past its page; only a scan that stops at its bound (`2 × limit + 16`
 candidates) returns a cursor without one, and that can only reflect stale rows
 carrying titles the caller was previously authorized to see. `next_cursor` is sealed (AES-GCM, keyed from
-`NOTEBOOK_CLOUD_APP_SESSION_SECRET`) to the caller, query, `in_trash` and filters,
+the active session key; see [Session key rotation](DEPLOYMENT.md#session-key-rotation)) to the caller, query, `in_trash` and filters,
 and expires after 24 hours. Pagination is best-effort: a Page whose title or sharing
 changes mid-traversal can move across the cursor, and so can a Page whose content
 changes under the activity sort.
@@ -711,9 +697,7 @@ Every listed Page carries `content_updated_at`: when its Page host last accepted
 a change to its title or blocks, or `null` when no host has reported one. It is
 the host's clock at acceptance, from any writer: a browser, an agent tool, a
 peer syncing old offline edits. Comments (their own document), presence, sharing,
-Trash and moves don't change it, and neither do the host's own migrations
-(preserved Markdown conversion, moving legacy comments out), which rewrite how
-content is stored, not what it says. `updated_at` keeps its meaning: the newest
+Trash and moves don't change it. `updated_at` keeps its meaning: the newest
 title, discovery or lifecycle observation. A shared Page's `content_updated_at`
 comes from its host's check, like its title.
 
@@ -1022,9 +1006,9 @@ finishes. Both boots run inside `blockConcurrencyWhile`: the constructor's
 own, or one the request that needs the document opens. That keeps the
 runtime's rules for a boot. Other requests wait until it ends, and a throw
 resets the object, so the next request reaches a new object that starts from
-storage again. A transient failure, such as a PageRecords read that times out
-with `record_persistence_timeout`, fails only the requests the boot held. A
-failed boot is never remembered past its object.
+storage again. A transient failure, such as a storage read that times out,
+fails only the requests the boot held. A failed boot is never remembered past
+its object.
 
 A reset doesn't stop the old object. A `blockConcurrencyWhile` past 30 s
 rejects and the runtime resets the object, but the boot inside it runs on,
@@ -1036,25 +1020,21 @@ the object `abandoned`, and every request still on it fails.
 
 An abandoned object can't write. The constructor wraps its context once
 ([storage-guard.mjs](worker/storage-guard.mjs)), and every storage user the
-host builds (the policy, the journal, the record store and repo storage
-adapter, actor persistence, content activity, plain sync) gets storage from
+host builds (the journal, content activity, plain sync) gets storage from
 that context. Once the object is abandoned, `put`, `delete`, `deleteAll`,
 `sync`, `transaction`, `transactionSync`, `setAlarm` and `deleteAlarm` reject
 with the reset's error. A transaction already open refuses its writes too,
 and rolls back if its closure lets the refusal propagate. Reads pass. The
 Page doesn't use the SQLite APIs, but they're gated as well: `kv.put` and
 `kv.delete` throw, and so does every `sql.exec`, since a statement's text
-doesn't reliably say whether it writes. PageRecords, the remote record store
-of a `buffered` Page, gets the same gate: every request but a GET is refused.
-The object also stops its own background work: the conversion retry timer,
-record maintenance, actor persistence and content activity stop at once.
-The policy, plain sync and the native backend close once the boot itself has
-returned or thrown. For a boot a request opened, that can be well after the
-request's `blockConcurrencyWhile` rejected, because the repo setup builds
-them, and actor persistence, only at its end; they're stopped and closed
-then. The
-boot still checks at four points (after the repo starts, before journal
-recovery of either document, and before preserved Markdown conversion) so it
+doesn't reliably say whether it writes.
+The object also stops its own background work: content activity stops at
+once. Plain sync closes once the boot itself has returned or thrown. For a
+boot a request opened, that can be well after the request's
+`blockConcurrencyWhile` rejected, because the repo setup builds it only at
+its end; it's closed then. The
+boot still checks at three points (after the repo starts, before journal
+recovery of either document) so it
 ends early instead of running into refused writes. A record read that ends
 after the reset starts no boot. The constructor's boot is covered the same
 way.
@@ -1101,7 +1081,7 @@ The check boots instead when the record can't answer it the same way:
 - a grant holder's check of a trashed Page, which loads the document;
 - an invitation the caller can claim, which the loaded host installs.
 
-A pending lifecycle commit or preserved Markdown conversion lives only in a
+A pending lifecycle commit lives only in a
 booted host's memory, which answers checks from its document. A journaled
 edit a restart left pending is recovered by the boot; until then it isn't
 part of the document, so the stored title can't include it.
@@ -1156,9 +1136,9 @@ body because it decides no access.
 
 Browser sessions reuse nteract's Anaconda OIDC flow; API keys reuse its provider
 verification and capability bounds. Configure OIDC and API-key principal
-namespaces explicitly when they represent the same account. The native handshake
-binds a proven peer signing key to that authenticated account. Storage and
-presence policies enforce access; disabled editor controls are not authorization.
+namespaces explicitly when they represent the same account. HTTP
+authentication admits a sync socket for that account, and the host checks its
+access on every frame. Disabled editor controls are not authorization.
 
 Pages also serves OAuth for `/mcp`. Its predefined ChatGPT and Kilo clients require
 exact callbacks, PKCE S256, resource validation, sign-in, and consent. Arbitrary
@@ -1167,6 +1147,41 @@ single-use; access tokens last ten minutes, with rotating refresh tokens bounded
 by an absolute thirty-day grant. Correctly bound code/refresh replay revokes its
 family. Provider tokens stay on the server. Refresh does not refresh verified
 email evidence, and MCP tokens cannot authorize raw HTTP assets, sharing, or sync.
+An OAuth client uploads a local image through `create_page_asset_upload`, whose
+Page-scoped capability names its grant and stops working when the grant is
+revoked (see [Upload capabilities](#upload-capabilities)).
+
+The account menu's Connected agents dialog lists the account's live OAuth
+connections (`GET /api/auth/grants`: client name, scope, issue and expiry
+times, and an opaque per-grant handle) and disconnects one
+(`POST /api/auth/grants/<handle>/revoke`). Sign out everywhere
+(`POST /api/auth/logout-all`) revokes every grant the account holds, deletes its
+pending consents and unexchanged codes, then deletes its browser sessions here,
+this one included. An approval writes its code only while the approving
+session row still exists, in the same statement, so an approval racing the
+sign-out gets `access_denied` and no code. Anaconda API keys aren't OAuth
+grants: they aren't listed and keep working; people revoke them in Anaconda.
+Only a browser session cookie reaches these routes; a bearer
+credential is refused, and writes need this origin. Grants record their
+principal in an indexed column, backfilled from the identity snapshot of older
+rows; sessions are found through an expression index on the session's principal
+([oidc-session-store.ts](../../../../../apps/notebook-cloud/src/oidc-session-store.ts)).
+Grants issued before the column existed show no connection date. Last use is
+not recorded. `GET /api/auth/session` answers `accountControls: true` for a
+browser session, and the viewer offers the dialog only then. If the list
+answers 404 anyway, as an ingress without these routes does, the dialog says
+they aren't available here, shows no error, and the menu stops offering them.
+
+An hourly cron (`35 * * * *` UTC, [shared/schedule.mjs](shared/schedule.mjs))
+sweeps the auth database (worker/auth-maintenance.mjs). It deletes expired
+sign-in transactions and server sessions, expired OAuth consents, codes, tokens
+and grants (keeping a consumed code while its grant lives), grants revoked more
+than an hour ago with their tokens and codes, and expired Project invitation
+index rows. Each run deletes at most 5,000 rows in batches of 500 within 15
+seconds; phases take turns and a persisted cursor resumes the next run where
+this one stopped. It logs counts and phase names only. Request paths keep their
+opportunistic cleanup. Deleted rows remain in celld's storage history and
+bucket versions until those expire.
 
 `/connect` and the public `/llms.txt` are the maintained client setup guides.
 They lead with API keys, the method for coding agents, scripts, and anything
@@ -1205,57 +1220,38 @@ verification. Explicit revocation overrides domain access; removing the audience
 revokes fallback access without creating permanent members.
 
 ACL updates use a revision and idempotency key. Increases wait for durable
-confirmation; reductions apply immediately. Downgrade/removal retires affected
-native writer keys and disconnects peers. A new grant cannot revive those keys.
+confirmation; reductions apply immediately. A downgrade or removal ends the
+affected sockets' write access at once and closes them with `access_changed`.
 Dirty browser replicas pause with a downloadable draft rather than silently
-re-signing rejected offline edits. Previously accepted history remains available;
-revocation cannot retract downloaded documents or images. Historical signer
-provenance does not authenticate arbitrary actor strings inside imported history.
+resending rejected offline edits. Previously accepted history remains available;
+revocation cannot retract downloaded documents or images. Actor claims attribute
+history to the principal that first sent it; they don't authenticate arbitrary
+actor strings inside imported history.
 
 Browser sessions renew while open and on return to the tab. A return to the tab
 or an explicit check that lands while a session request is in flight queues one
 fresh request after it, and only the fresh answer applies (the
-[session-refresh machine](viewer/session-refresh-machine.mjs)). Native sockets retain
+[session-refresh machine](viewer/session-refresh-machine.mjs)). Sync sockets retain
 the expiry observed on admission and reconnect with current credentials. API-key
 sockets renew bounded leases through provider verification; caching means provider
 revocation is not instantaneous. A pending or late check cannot revive an expired,
 disconnected, or changed grant. Page ACL enforcement is independent of sign-in renewal.
 
-Native admission separates an active socket from its pending durable signing-key
-binding. A handshake timeout or disconnect cancels that socket's waiter; a compatible
-reconnect joins the same write and rechecks current access before becoming active.
-An unchanged ACL refresh cannot demote a pending writer. Retirement writes are
-ordered after earlier binding writes, while access reductions apply immediately.
-Storage that never settles still prevents admission; a reconnect is not a durability
-shortcut. Failed writes retain their original identity, author ceiling, and quota
-reservation because failure does not prove that the write had no effect. A matching
-retry uses the same payload. These pending reservations are resident state; after
-restart, the host loads the binding records that storage actually retained.
-
-Every refusal on `/api/connect`, `/api/sync`, `/api/saved`, and native admission
-logs one `admission.denied` JSON line with a reason from the closed set in
+Every refusal on `/api/connect`, `/api/sync` and `/api/saved` logs one `admission.denied` JSON line with a reason from the closed set in
 [admission-reasons.mjs](worker/admission-reasons.mjs). celld exports it as the
 OTel log body. It names the refused boundary, not the cause of a storage delay,
-and omits principals, signing keys, Page IDs, tokens, messages, and content. A
-handshake deadline that expires while the key's binding write is still unsettled
-logs `native_binding_stalled` rather than `native_admission_timeout`.
+and omits principals, Page IDs, tokens, messages, and content.
 
 Clients receive only a code from [admission.mjs](shared/admission.mjs): HTTP
-errors carry it as `code`; native refusals after the upgrade close the socket with
-that code as the reason. Byte-transport refusals (text frames, oversized frames,
-full queues) report a bounded category, log it once, and close with
-`request_rejected` or `temporarily_unavailable`.
+errors carry it as `code`; sync refusals after the upgrade close the socket with
+that code as the reason. Transport refusals (oversized frames, full queues)
+report a bounded category, log it once, and close with `request_rejected` or
+`temporarily_unavailable`.
 
-A signing key holds one admitted connection per Page
-([native-session-machine.mjs](worker/native-session-machine.mjs)). A tab owns
-its key exclusively, so a new connection for a key already held by the same
-principal and driver is that tab reconnecting: after a reload, or after its old
-socket died without the close reaching the host, which behind the Cloudflare
-tunnel can take minutes. The new connection takes the key, and the host closes
-the old one with `access_changed` and logs `native_session_replaced`. Another
-principal or driver on the key is refused with `signing_key_rejected`. Cloudflare
-also closes a socket that carries no data for about two minutes (its 125 s
-proxy read timeout), so an idle background tab reconnects on that cadence.
+Cloudflare closes a socket that carries no data for about two minutes (its
+125 s proxy read timeout), so an idle background tab reconnects on that
+cadence. A tab reconnecting after its old socket died takes that socket's
+place ([Plain Automerge sync](#plain-automerge-sync)).
 
 A Page holds at most 24 sockets, 4 per account, and 20 across members other than
 the owner. A socket over a quota still completes the upgrade, then closes at once
@@ -1273,30 +1269,27 @@ routes never tell a missing Page from an existing one. Tool and MCP routes
 still distinguish them.
 
 The browser reconnects with backoff on transient codes, rechecks access through
-`/api/connect` on access and sign-in codes, and stops on `signing_key_rejected`
-until Retry. A first open waiting for the document ends with that diagnosis
+`/api/connect` on access and sign-in codes, and stops on a code whose retry is
+`stop` (`signing_key_rejected`, kept for older hosts) until Retry. A first open waiting for the document ends with that diagnosis
 instead of a lookup timeout, and the open retry loop does not reopen. A socket
 counts as admitted only after it stays open 15 seconds, so quick refusals keep
 growing the backoff instead of resetting it.
 
-Each socket's authenticated handshake has 10 seconds
-(`HANDSHAKE_TIMEOUT_MS`). A host or proxy that accepts the socket and then says
-nothing would otherwise leave `SubductionWebSocket.setup` pending forever, and
-with it the session's one in-flight connect, so neither the backoff nor a
+Each socket has 10 seconds to open (`HANDSHAKE_TIMEOUT_MS`). A proxy that
+accepts the connection and then says nothing would otherwise leave the open
+pending forever, and with it the session's one in-flight connect, so neither the backoff nor a
 later `online` event could start another attempt and unsent edits and comments
 stayed local. The reconnect machine's `handshaking` state arms the deadline
-when the socket opens and disarms it when the host admits the socket or the
-handshake fails on its own; the deadline closes the socket and the attempt
+when the attempt starts and disarms it when the socket opens or fails on its
+own; the deadline closes the socket and the attempt
 fails like one whose socket closed: Offline without a banner, the next backoff
 step, and an outage report from the seventh failure in a row. Retry during a
 stalled handshake abandons it and waits for that connect to settle before its
 own attempt, and a halt (sign-in, an access pause, a close) or the socket's
-own close under a pending `setup` abandons it too, since closing the socket
-alone may leave `setup` pending; either way the attempt settles and installs
-nothing, and a handshake that answers after it was abandoned is freed, never
-used. When the handshake and its deadline land in one tick, exactly one of
-them settles the attempt. A socket closed before its handshake
-rejects `setup` at once and takes the same backoff.
+own close before it opens abandons it too; either way the attempt settles and
+installs nothing, and a socket that opens after it was abandoned is never
+used. When the open and its deadline land in one tick, exactly one of them
+settles the attempt. A socket closed before it opens takes the same backoff.
 
 Backoff steps double from 0.5 s to a 60 s cap, with equal jitter: each retry
 waits between half the step and the full step, so tabs dropped by one host
@@ -1304,7 +1297,7 @@ restart spread out. Transient failures (no status, 5xx, a close without an
 admission code or with `temporarily_unavailable`) retry indefinitely at the
 capped step. Six other admission closes in a row on sockets that never proved
 stable pause automatic reconnects with "Sync paused" and the Retry control,
-since discovery keeps answering while native admission keeps refusing. Retry, the `online` event and signing in again clear both counters and
+since discovery keeps answering while the socket keeps being refused. Retry, the `online` event and signing in again clear both counters and
 reconnect at once; a stable connection clears them too.
 [reconnect-machine.mjs](viewer/reconnect-machine.mjs) holds these transitions.
 
@@ -1339,39 +1332,35 @@ flag, which only says a receipt was outstanding. The checkpoint's `localEdits`
 records every Automerge actor this browser authored with (each session records
 its fresh actor before it accepts an edit) and the heads the host last
 acknowledged. The replica has unconfirmed work exactly when it holds a change by
-one of those actors outside the acknowledged history. Native storage persists
-an edit before the debounced checkpoint, so a tab that dies in between still
+one of those actors outside the acknowledged history. The replica's storage
+persists an edit before the debounced checkpoint, so a tab that dies in between still
 reopens Saving, and its edit is not claimed as saved. Checkpoints from before
 `localEdits` keep their `pending` flag as unattributed local work until a receipt
-covers them. Each actor is recorded with the native replica it wrote into, and
+covers them. Each actor is recorded with the replica it wrote into, and
 only that replica's session drops it: earlier actors once a receipt covers the
 whole replica, its own when it closes with nothing unconfirmed. Another tab's
 actor is never dropped, by count or otherwise, because that tab may be live or
-may be restored later with its native database.
+may be restored later with its database.
 [local-edits.mjs](viewer/local-edits.mjs) holds these rules.
 [sync-status-machine.mjs](viewer/sync-status-machine.mjs) holds these
 transitions and the label each state renders; a phase pause (sign-in, access,
 deletion) or a failed local save outranks it.
 
-A binding write that never settles still blocks its own signing key until the
-host restarts; other keys are unaffected. A rejected write may have taken effect,
-so the host neither issues a competing write nor releases the reservation. If an
-ACL change retires that key, the access refresh waits behind the same write and
-holds the Page's serialized HTTP queue. The pending-admission tests pin both cases.
-
-Membership, invitation, connection, and lifetime signing-key counts are bounded;
-retired keys remain recorded to prevent regained authority. See [access.mjs](worker/access.mjs) and the Worker tests for membership admission
+Membership, invitation and connection counts are bounded. See
+[access.mjs](worker/access.mjs) and the Worker tests for membership admission
 and the associated resource limits. Sharing
 receipts retain the latest 256 results; older retries must still pass the revision
 guard, and receipt capacity never prevents revocation. Comment `displayName` and
 `driver` labels are editable data, not an audit log; `author.principal` is
-checked against the signer (see [Comments document](#comments-document)).
+checked against the sending account (see [Comments document](#comments-document)).
 
 ## Comments document
 
 A Page's comments live in their own Automerge document, owned by the same Page
 Durable Object. The Page record names it by a deployment-relative id,
-`comments_doc: "<uuid>"`, derived from the Page ID. There is no hostname and no
+`comments_doc: "<uuid>"`, derived from the Page ID when the Page is created.
+A live or trashed Page's record without it fails closed at boot; a deleted
+Page's record may lack it and serves no comments. There is no hostname and no
 origin: comments are platform data, not part of the Page. The browser syncs it
 on the same socket as the Page; `/api/connect` returns `commentsDocumentId`.
 Trash, restore, permanent deletion and the purge preview cover both documents.
@@ -1398,42 +1387,30 @@ author ([model/comment-rules.mjs](model/comment-rules.mjs)):
 | move an anchor | the thread's author |
 
 The rules hold at three layers: the viewer only offers what they allow, the
-tools check them in `applyComment`, and the host checks every native change
-from a peer. The native check runs in the record byte store
-([worker/comment-admission.mjs](worker/comment-admission.mjs)): each saved
-comments-document record carries its signer's key and its Automerge change, so
+tools check them in `applyComment`, and the host checks every sync change from
+a peer before it is stored ([sync/comments.mjs](sync/comments.mjs)):
 [model/comment-authority.mjs](model/comment-authority.mjs) decides the change
-for that signer's principal and role before the record is written. Content is
-checked by the same rule the tools and the browser apply
-(`validateCommentSpans` in [model/comment-content.mjs](model/comment-content.mjs)):
-non-whitespace text or a valid embed, so an image-only comment is content.
+for the sending principal and role. Content is checked by the same rule the
+tools and the browser apply (`validateCommentSpans` in
+[model/comment-content.mjs](model/comment-content.mjs)): non-whitespace text or
+a valid embed, so an image-only comment is content, at most 16,000 text
+characters and 64 KiB of spans. Every message a change creates or touches,
+a soft delete included, must be rich text with no `body`. A new message, or
+a write to a message's `richText`, `format` or `bodyFormat`, must also leave
+its spans in the editor's form; a soft delete doesn't check it, so a Wordgard
+release that encodes differently never blocks deleting older messages.
+Earlier builds stored a bare literal `body`, or adapter-form spans beside a
+`body` copy; the comments migration rewrote them, and a change that writes
+either form is refused as `outdated_form`. Viewers before protocol 3 wrote
+those forms and must reload.
 
-A refused record is never stored or delivered. The store throws a refusal
-(`recordRefused: true`), and the bridge answers that one save without treating
-it as a storage failure ([../patch-record-refusal.mjs](../patch-record-refusal.mjs)):
-the native engine keeps running and every other connection stays up. When the
-signer broke a rule, its key is blocked from authoring comments, durably, and
-only its connection closes. A missing dependency, an unreadable frame or a
-checker error refuses the record without blocking anyone. So a refusal is not a
-lever over other peers, whatever a principal does with fresh keys. An honest
-client never writes a refused change. A flush already waiting on a refused save
-filters the refusal out of its results, so a Page mutation's flush doesn't fail
-on it either.
-
-Refusals have a work budget. An identical refused record (same path and signed
-envelope) is refused again without decoding for 30 s, until something new is
-admitted. Each refusal of a peer's record charges its principal; 8 in a minute
-throttle that principal for a minute: its records are refused unread, and every
-submission while throttled closes the submitting connection with
-`temporarily_unavailable` (close 4503). That covers a reconnect and the
-principal's other keys, so each client backs off and reconnects. The key isn't blocked, so a record refused for
-a missing dependency is admitted once the dependency arrives.
-
-Admission costs one Automerge clone per checked batch, plus the per-op check.
-Measured on a laptop, one reply against a comments document of 200, 2,000 and
-6,000 messages: 1.5, 3.2 and 12.3 ms per record. The clone is most of it at
-the top end (12 ms at 6,000 messages, 762 KiB saved). Reproduce with
-`npx tsx scripts/comment-admission-bench.mjs`.
+A refused change is never stored or delivered, and every other connection
+stays up. When the sender broke a rule, its principal is blocked from
+authoring comments, durably (`host/comments-blocked/<principal>`), and only
+its connection closes. A missing dependency, an unreadable change, a checker
+error or a form only an earlier build writes (`outdated_form`: a stale tab
+that hasn't reloaded) refuses the frame without blocking anyone. An honest
+client never writes a refused change.
 
 Uploads need edit access. Asset storage has no per-Page aggregate byte or
 object quota yet, so comment access alone doesn't open it: commenters comment
@@ -1459,32 +1436,12 @@ replaced replica cancels its lookup. Offline, the local record's comments
 checkpoint restores the document before lookup; checkpoints, recovery
 archives and Download draft carry both documents with separate heads.
 
-### Moving existing comments
+### Pages without the comments stamp
 
-Pages created before the comments document kept threads at `page.comments`.
-The host moves them the first time the Page loads, under the same fence and
-journal as the preserved-block conversion
-([model/comments-migration.mjs](model/comments-migration.mjs)):
-
-1. Copy: every legacy thread into the comments document under its original
-   ID, as one journaled host change keyed by the Page heads it read. Threads
-   already there are skipped, so a rerun copies nothing twice.
-2. Detach: remove the Page's `comments` map and stamp the `comments-doc` schema
-   feature, in one journaled host change at those heads.
-
-Page text is never touched. Peer writes wait while it runs. A restart replays
-whichever step's journal entry is pending, then finishes the other. The stamp
-makes an older build open the Page read-only, and the host refuses its native
-writes with `schema_unsupported`, so it can't write comments back into the
-Page document. Until the move finishes, reads come from the Page's legacy map
-and comment writes wait for it.
-
-What the move drops: a thread or message whose ID isn't 1–128 letters, digits,
-`-` or `_` (Pages always wrote UUIDs); a thread whose content can't be read or
-written, such as unreadable rich text, which is skipped whole; every thread if
-the copy keeps failing for good and the host falls back to `drop` mode; and a
-comment an older tab wrote locally that the host hadn't accepted before the
-move. That last one lands in the detached map on sync, where nothing reads it.
+The `comments-doc` stamp on the Page says its comments live in the comments
+document. A Page without it holds threads in a form an earlier build wrote;
+comment reads and writes on it answer `409 stored_form_unsupported`, and the
+viewer shows no comments.
 
 ## Authorization
 
@@ -1499,9 +1456,9 @@ decide(principal, actor_chain, object, now)
 
 It is pure and synchronous, and the celld policy hooks call it on every frame.
 It reads what the Page host already holds: the Page record's ACL and lifecycle.
-`pageAccess`, the native lease bound and the Project read check are projections
-of its result. `pageGrant` reports grant identity (role and signing-key
-generation), which Trash keeps. `pageRelation` answers deletion disclosure and
+`pageAccess`, the socket lease bound and the Project read check are projections
+of its result. `pageGrant` reports grant identity (role and generation), which
+Trash keeps. `pageRelation` answers deletion disclosure and
 the lifecycle owner check. It reads the same relations without the lifecycle
 overlay.
 
@@ -1537,7 +1494,7 @@ decide() runs three steps, in this order:
 `revision` is nteract's own ACL revision, which only increases and which every
 `expected_revision` write compares. `valid_until` is the credential's expiry,
 or the first earlier lease whose loss would change the capabilities. The
-email-domain proof is such a lease. Native sockets use it as their lease
+email-domain proof is such a lease. Sync sockets use it as their lease
 bound. `basis` names the strongest relation that survived the lifecycle
 overlay and the path that supplied it. It feeds the `role` label and
 `source: "domain"`. `authority_token` is always null in this build.
@@ -1665,12 +1622,21 @@ Pages/deployments require a separate lifecycle implementation.
 
 For agents, importing bytes and inserting content are separate operations:
 
-1. API-key clients upload raw bytes to the asset endpoint. ChatGPT uses
-   `import_page_image({page_id, file})` with its client-provided file descriptor.
-   The importer requires read/write OAuth scope and Page edit access, accepts
-   bounded HTTPS downloads from `files.oaiusercontent.com` without redirects,
-   and returns `asset_id`, reference, MIME, dimensions, and size. A file ID alone
-   is not a download URL. Temporary source URLs are not stored in the document.
+1. Get the bytes into the Page's asset store, by one of three paths:
+   - Any client with a shell or HTTP client, on an API key or OAuth, calls
+     `create_page_asset_upload({page_id})` and POSTs the file to the returned
+     `upload_url` with the returned `Authorization: Pages-Upload <token>`
+     header (see [Upload capabilities](#upload-capabilities)).
+   - API-key clients may also POST raw bytes to the asset endpoint with their
+     own bearer header.
+   - ChatGPT uses `import_page_image({page_id, file})` with its client-provided
+     file descriptor. The importer requires read/write OAuth scope and Page edit
+     access, accepts bounded HTTPS downloads from `files.oaiusercontent.com`
+     without redirects, and returns `asset_id`, reference, MIME, dimensions, and
+     size. A file ID alone is not a download URL. Temporary source URLs are not
+     stored in the document.
+
+   A client with none of these asks the person to upload in the browser.
 2. Read the current Page, then call guarded `edit_page` with `insert_image`,
    `asset_id`, alt text, and optional `after_block_id` (omitted appends; `null`
    prepends). The host verifies the asset belongs to this Page and creates a
@@ -1684,12 +1650,76 @@ may be necessary; a generated ChatGPT image must actually be exposed as a
 transferable file. The importer does not provide image-reading capability or
 imply pixel access from a Markdown reference.
 
+The agent guide's Images section (`/llms.txt`, from
+[agent-guide.mjs](agent-guide.mjs)) is the agent-facing workflow: which path to
+use, sizing for the ~960 CSS px desktop column and ~350 px phone column (images
+render at natural width, capped at the column), light and dark uploads, the
+one-batch pattern that interleaves `insert_image` and `insert_markdown`, and
+verification through `summary.images`.
+
+### Upload capabilities
+
+`create_page_asset_upload` ([asset-uploads.mjs](worker/asset-uploads.mjs)) lets
+any agent that can run curl add a local file without handling its own bearer
+token. It is a Page content tool on MCP and `/api/tools`, takes `page_id` or
+`project_id`, and needs write scope plus current edit access, like
+`import_page_image`. API-key and OAuth clients can issue one; a browser
+session is refused, since the browser uploads to the same route with its
+cookie. The Page host answers with `upload_url` (the ordinary
+`POST /api/pages/:pageId/assets` route), `method`, `headers`, `expires_at`,
+`max_bytes`, `accepted_types` and `example`, a ready curl command built by
+`assetUploadCommand` ([agent-client-setup.mjs](agent-client-setup.mjs)), which
+also builds the `/llms.txt` line. Optional `content_type`, `size` and `sha256`
+arguments bind the capability to one file; the gateway checks the bytes against
+them before storing anything (`upload_mismatch`), and a bound size refuses a
+different `Content-Length` before reading the body. A credential-less upload
+to the asset route is told to call `create_page_asset_upload`.
+
+The capability is `pu1.<payload>.<mac>`, an HMAC-SHA-256 signed with the Page
+host's existing retry-token key ([operation-journal.mjs](worker/operation-journal.mjs)
+`signCapability`/`openCapability`). The MAC covers a purpose string,
+`pages-asset-upload-v1`, ahead of the payload, and the payload repeats it, so a
+retry token never verifies as a capability or the reverse. The payload names
+the Page, principal, credential kind, OAuth grant ID (for OAuth), issue and
+expiry times (10 minutes) and the optional binding. No server state is
+created.
+
+The upload sends it as `Authorization: Pages-Upload <token>`, a header rather
+than a query parameter so access logs and `Referer` don't carry it. The gateway
+recognizes that scheme only on `POST /api/pages/:pageId/assets`; it skips
+`authenticate()` (the capability never reaches the API-key verifier or the
+OAuth token store) and keeps the Origin check. Every other route refuses it,
+and `authenticate()` refuses a `pu1.` token sent as a bearer credential. The
+byte route's own code does the rest: the gateway forwards only the capability
+to the Page host's `/internal/assets/authorize` for both the pre-transfer and
+post-transfer checks. Every other gateway path runs `authenticate()` before it
+reaches a Page host, so the host screens a capability request before it may
+join its queue (`uploadScreen`): it reads only the host record and its own key,
+checks the MAC, payload and expiry, and refuses a forged, foreign or expired
+token without queuing it or loading the document. A missing Page has no key, so
+it refuses with the same body as a forged token. In the queue, the host checks
+all of that again, checks that an OAuth grant is still live
+(`oauthGrantActive`), and decides access for the named principal from its
+current record. A grant removed or downgraded after issue, a revoked OAuth
+connection, a recovery-blocked Page or a trashed Page is refused. Limits,
+validation, storage and the response are the byte route's.
+
+Revoking an API key doesn't end the upload URLs it already issued: the host
+never holds the key, so they stop at `expires_at`, at most 10 minutes later.
+Removing the principal's Page (or Project) access, or revoking an OAuth
+connection, ends them at once.
+
+Base64 bytes in a tool argument and a server-side fetch of an arbitrary URL
+were rejected: the first makes the model emit megabytes of tokens, and the
+second reopens outbound fetches the importer deliberately limits to
+`files.oaiusercontent.com`.
+
 ## Persistence and resource limits
 
 Local Repo completion means local history is recoverable. Remote edit visibility,
-native peer heads, and an online connection do not prove durable storage.
-`POST /api/saved?page=<id>` waits for the host's Repo/backend and captured record
-batches to cross the configured durability barrier before acknowledging heads.
+peer heads, and an online connection do not prove durable storage.
+`POST /api/saved?page=<id>` waits for the host's plain history to cross the
+configured durability barrier before acknowledging heads.
 The browser retains pending state through bounded receipt retries; sign-in failure
 pauses them until renewal. A client timeout does not cancel or reorder persistence.
 
@@ -1735,27 +1765,22 @@ with the binding name only.
 The same flags reach code inside an object. A listing that meets a shared Page
 (or its owner's Catalog) that throws or doesn't answer refuses with
 `503 shared_page_unavailable`, `retryable: true`, `retry_after_ms` and
-`Retry-After`; an overloaded Page asks for the jittered 2 to 5 s. A flagged
-throw from `PageRecords` while a write waits for its records is
-`503 record_persistence_unavailable`, and its records stay pending. Tool reads
-and tokened writes can retry; tokenless writes receive `retryable: false` and
-must read back and reconcile before retrying. MCP passes every
-one of these codes through, and the viewer treats any `503` as an outage and
+`Retry-After`; an overloaded Page asks for the jittered 2 to 5 s. MCP passes
+every one of these codes through, and the viewer treats any `503` as an outage and
 retries with backoff. The
 [Cloudflare portability audit](https://pages.runtimed.run/p/460c48f0-dc4b-4702-af82-59910e6bebd0)
 (sections 6 and 7) covers both cases.
 
-The host keeps its own holds short. Record persistence waits one second after a
-write before flushing, so a tool write stays counted for about a second. Agent
-presence sets no timer: its entries carry `idle_at` and `expires_at`, the host
+The host keeps its own holds short. A tool write flushes before it answers and
+sets no timer. Agent presence sets no timer: its entries carry `idle_at` and `expires_at`, the host
 prunes when it next reads or publishes the roster, and viewers apply the times
 on their own clocks (see Agent carets). Before this, every `patch_page` and
 `edit_page` stayed counted for 60 s, the caret's fade and expiry, so a Page that
 was already near the limit refused every request for a minute after one edit
 ([#4654](https://github.com/nteract/nteract/issues/4654)).
 [comments-scale.test.mjs](worker/comments-scale.test.mjs) builds a Page with
-200 threads and 1,000 messages over a buffered record store and checks that a
-`patch_page` holds only the one-second flush timer, leaves no timer behind
+200 threads and 1,000 messages and checks that a `patch_page` holds no timer,
+leaves no timer behind
 (tracking through the background work, so a timer a callback sets is seen),
 that the work settles within budget, and that reads during that window succeed.
 
@@ -1763,7 +1788,7 @@ that the work settles within budget, and that reads during that window succeed.
 
 Every editor transaction is one Automerge change, and the browser stores it in
 IndexedDB at once. Sending is grouped: the backend's `scheduleLocalSync` hook
-(see [UPSTREAM.md](../UPSTREAM.md)) hands each local store's native sync round
+hands each local store's sync round
 to [outbound-sync-machine.mjs](viewer/outbound-sync-machine.mjs). A round and
 the newest caret go out 30 ms after typing pauses, and every 100 ms while it
 doesn't. The window losing focus, `beforeunload`, a save receipt and leaving
@@ -1771,59 +1796,19 @@ the Page send at once. A hidden tab or `pagehide` sends what waits and stops
 batching until the tab shows again: a browser may throttle or freeze a hidden
 tab's timers while saves still finish. Delivery before an unload is best
 effort; the round starts and the browser decides whether it completes. A
-closing session sends anything waiting and then stops batching. Native framing still
-carries one commit per frame, so the grouping removes per-keystroke sync rounds
-and caret frames, not commit frames. `scripts/typing-batch-smoke.mjs` (the
+closing session sends anything waiting and then stops batching. The grouping
+removes per-keystroke sync rounds and caret frames. `scripts/typing-batch-smoke.mjs` (the
 `typing` E2E suite) types 200 characters at 60–100 ms and at 20 ms per key and
 reports changes, frames, bytes and the other writer's main-thread time. The
 20 ms run may take one round and one caret per four keys, plus one for each
 100 ms the writer spends past the typing schedule or catching up on saves
 after the last key; a slow runner's store latency sets that catch-up time.
 
-With `PAGES_ASYNC_PERSISTENCE=true`, the live Page keeps a bounded in-memory record
-replica and sends batches to a separate `PageRecords` object, normally after one
-second or on a receipt request. Its output gate does not block ordinary outgoing
-edits and presence. Control state and API intents remain durable on the live Page,
-so admission and API writes may still encounter storage latency. Failed batches
-remain retryable beneath newer values. After a crash, the host recovers persisted
-records and browser replicas resynchronize later history. A generation lease
-rejects stale pre-crash batches. Record writes follow causal order, decoded from record payloads, so a
-persisted prefix of a flush holds the parents of every record in it; records
-that depend on each other share one atomic PageRecords write. If stored history
-still references a change that never became durable (records written by earlier
-builds could be split that way), the Page starts on the history that
-materializes, logs `page.history_incomplete` with a count, and runs journal
-recovery. Readers that pass admission see `history_incomplete` in read results
-and `historyIncomplete` from `/api/connect` until a peer or a pending intent
-supplies the missing parents.
-
-Every `PageRecords` request settles within 20 seconds. An unanswered batch stays
-pending for the next flush, and a request waiting on it fails with a retryable
-`503 record_persistence_timeout`. The sink builds its `PageRecords` stubs from a
-factory. It reuses one stub while it answers, so consecutive batches keep that
-stub's delivery order, and drops it after a fetch throws or misses its
-deadline; the next request gets a fresh stub. On Cloudflare a stub that threw
-can stay broken and fail every later call at once
-([error handling](https://developers.cloudflare.com/durable-objects/best-practices/error-handling/));
-a sink that kept it would never flush again while its replica grew toward the
-48 MiB cap. An HTTP error answer keeps the stub. The storage gate that refuses
-an abandoned object's writes wraps every stub the factory makes
-(`guardStubs` in [storage-guard.mjs](worker/storage-guard.mjs)). Every other
-Durable Object call in the Worker gets its stub per request.
-
-A fresh stub gives up the old one's ordering, so a batch the sink stopped
-waiting for can still arrive after the batch that replaced it. Each batch
-carries a rising `x-pages-record-seq`. PageRecords stores the sequence in the
-same atomic put as the batch's values (`host/seq`, beside `host/generation`)
-and answers any batch at or below it with `204` and
-`x-pages-record-batch: superseded`, writing nothing. Skipping is safe: after a
-failed flush the store puts every record of it back in pending, so the batch
-that replaced a late one already wrote its keys with values at least as new.
-Without the fence a late batch could roll a mutable key, such as a document's
-manifest, back to a snapshot that compaction had deleted. The sequence is
-scoped to the lease: a new lease resets it, and a restarted Page host takes a
-new lease, so every batch of the old host fails the generation check. A batch without
-the header, from a build before the fence, is applied as before.
+If stored history references a change that never became durable, the Page
+starts on the history that materializes, logs `page.history_incomplete` with a
+count, and runs journal recovery. Readers that pass admission see
+`history_incomplete` in read results and `historyIncomplete` from
+`/api/connect` until a peer or a pending intent supplies the missing parents.
 
 Tool requests to a Catalog or Page answer
 within 60 seconds; a slower one returns `504 request_timeout` while the host
@@ -1866,35 +1851,16 @@ signing-key and UserInfo caches, the ChatGPT client metadata check and the
 loopback issuer's key still share pending promises across requests (#4567). Remove it when celld keeps request context across shared
 promises; [celld-context-probe.mjs](scripts/celld-context-probe.mjs) then exits 0.
 
-The storage backend keeps one representation per record key, but a fragment's
-bundle orders concurrent changes in each peer's application order. Stored
-history is never re-encoded. An API edit reserves and stores only the records
-it adds to the serving document, and a retry reuses that exact reservation
-until release. A browser checkpoint import decides coverage from the change
-hashes its stored records hold, keeps every stored record as is, and adds any
-uncovered change under a new key or as a loose commit.
+The current resource envelope is 16 MiB of aggregate history and 900 KiB per
+record ([model/limits.mjs](model/limits.mjs)). The host checks a tool edit
+against them before it journals the intent, and SyncHost refuses a sync write
+past the history bound with `history_capacity`. These guards do not bound all
+decoded WASM state, runtime-owned outgoing queues, or total isolate memory.
 
-Versioned binary records preserve signed native envelopes and Automerge changes;
-legacy hex records remain readable. `PAGES_COMPACT_RECORDS=true` enables
-conservative cleanup only after a retained fragment is durably proven to contain
-all changes in a redundant record. API intent reservations prevent removal of
-records needed for replay. This is lossless packing, **not history truncation**;
-offline peers retain their merge history. See [UPSTREAM.md](../UPSTREAM.md) for
-the pinned native fixes, storage-index ownership, codec, and cleanup contracts.
-
-The current resource envelope remains 16 MiB of aggregate native history and
-900 KiB per record, with a 1,900,000-byte stored-frame-plus-key guard. The transport
-allows individual frames up to 32 MiB and bounds its receive queue at 32 MiB/256
-messages. These guards do not bound all decoded WASM state, runtime-owned outgoing
-queues, or total isolate memory. Binary encoding alone does not qualify larger
-histories, Cloudflare memory use, or cheaper object-store operation.
-
-API admission reserves exact records through the same writer used by native
-ingress before journaling an intent. Recovery validates pending changes before
-modifying the serving document. An older over-capacity intent leaves accepted
-history readable but blocks writes with an explicit recovery error; it is never
-silently discarded or rebuilt from JSON. Rollbacks must retain both binary record
-readers and the `PageRecords` binding for buffered Pages.
+Recovery validates pending changes before modifying the serving document. An
+older over-capacity intent leaves accepted history readable but blocks writes
+with an explicit recovery error; it is never silently discarded or rebuilt from
+JSON.
 
 Resident WebSockets reconnect after restart. Hibernation, cross-host ownership
 transfer, power-loss/bucket failover, and larger resource envelopes need separate
@@ -1905,20 +1871,11 @@ request bodies, and document content.
 
 ### Plain Automerge sync
 
-A Page whose metadata says `recordStorage: "automerge"` syncs with plain
-Automerge sync messages instead of Subduction. `PAGES_RECORD_STORAGE=automerge`
-gives that storage to every Page created through the API, and the session
-endpoint tells the browser to give it to Pages it creates; a registered draft
-keeps the storage its browser replica already uses (`record_storage` in the
-registration). A host without the flag refuses a plain draft with
-`409 record_storage_unsupported` before recording anything, so an older build
-never boots a plain Page it can't open; the browser moves the draft to a native
-replica under the same document ID and registers again
-([viewer/storage-switch-machine.mjs](viewer/storage-switch-machine.mjs)). Edits
-pause for the move. The plain replica stays on disk until the local record
-names the native one, so a close or crash midway reopens the plain draft and
-repeats the move. Existing Pages keep the mode they were created with, and a
-Page never changes mode.
+Every Page syncs with plain Automerge sync messages; its host record says
+`recordStorage: "automerge"`. A record naming any other storage (a Subduction
+Page from an earlier build) is refused with "Unsupported Page record storage
+mode", unless the Page is deleted. A draft registers on plain sync whatever
+`record_storage` it names.
 
 Browsers keep Repo 3 and run `AutomergeSyncBackend`
 ([sync/backend.mjs](sync/backend.mjs)), a `SedimentreeBackend` that keeps a
@@ -1967,9 +1924,8 @@ stored:
 4. Actor claims. Each new change's actor is unclaimed or claimed by this
    principal. A claim is written in the same `saveMany` as the history it
    covers, and no other document can claim the actor meanwhile.
-5. The conversion fence, the schema-feature gate and the 16 MiB history
-   bound, then `admitCommentChanges` for the comments document, unchanged
-   from native admission. A comment rule refusal blocks the principal's
+5. The schema-feature gate and the 16 MiB history bound, then
+   `admitCommentChanges` for the comments document. A comment rule refusal blocks the principal's
    comment writes (`host/comments-blocked/<principal>`) and closes the socket.
 6. Persist, publish who wrote the changes (`actor-profiles`, ahead of the
    changes), reply, then fan out.
@@ -2001,16 +1957,20 @@ relayed change from an actor the host hasn't seen binds to the relayer. A
 relayed change from a claimed actor is refused.
 
 Discovery and the socket carry `sync=automerge`; a build without it gets
-`schema_unsupported` ("Reload to update") for an `automerge` Page. The browser
-opens a replica in the storage its local copy or discovery names, and a first
-visit switches its empty replica before the lookup. Presence ids are per tab
+`schema_unsupported` ("Reload to update"). Presence ids are per tab
 (`sender`), stamped by the host on every relay.
+
+A browser may still hold a local copy saved beside a Subduction replica, from
+before every Page was plain. Its checkpoint is plain Automerge, so the tab
+restores it into a plain replica, unconfirmed edits included, and sends the
+host what it lacks. A local copy with no checkpoint this build can read is
+discarded; the Page opens from the host with a short notice
+(`LOCAL_COPY_DISCARDED` in [viewer/session.mjs](viewer/session.mjs)).
 
 A tab keeps its `sender` across reconnects, so a socket asking for an id an
 open connection holds for the same principal and driver is that tab
 reconnecting, usually after its old socket died without the close reaching
-the host. As with a native signing key, the new socket takes the id and the
-connection slot, and the host closes the old one with `access_changed` and
+the host. The new socket takes the id and the connection slot, and the host closes the old one with `access_changed` and
 logs `plain_session_replaced` ([plainSender](worker/plain-sync.mjs)). An id
 held by anyone else, or a malformed one, is replaced by a fresh id. A reload
 starts a new id, so a reloaded tab's dead socket still holds its slot until
@@ -2018,8 +1978,7 @@ the close arrives.
 
 Each browser connection may have 256 sync frames or 32 MiB waiting in the
 host's queues, counting a frame until it is stored and acked or refused
-([sync/receive-queue.mjs](sync/receive-queue.mjs)), the native byte
-transport's bounds. Over either, the host refuses the frame with
+([sync/receive-queue.mjs](sync/receive-queue.mjs)). Over either, the host refuses the frame with
 `receive_queue_full` and closes with `temporarily_unavailable`. An ephemeral
 message over 64 KiB is refused with `ephemeral_too_large` and closes with
 `request_rejected`; presence is a few hundred bytes. The host's own
@@ -2027,82 +1986,11 @@ connection has no receive limit. Each preview is a clone of the live
 document; the host frees every preview it doesn't adopt and the live
 document an adopted one replaces.
 
-Not yet on this path: reservations for API edits (`DocumentAdmission`), the
-`PageRecords` buffered sink and record compaction. None of them have anything
-to do here; edits from the API go through
-the host's Repo and the same admission queue. `sync/*.test.mjs` covers the
-backend, host, store and gates; `worker/plain-sync.test.mjs` covers
-registration, restart and a browser through the Page host;
-`npm run test:contract` in the experiment runs Repo 3's backend contract.
-`PAGES_RECORD_STORAGE=automerge npm run e2e` runs the browser suites with new
-Pages on this path.
-
-#### Migrating existing Pages
-
-Migration is default-off. The reviewed deployment profile's
-`recordStorageMigration: { enabled: false, pageIds: [] }` selects an explicit
-canary. Enabling it requires `recordStorage: "automerge"` and a nonempty list
-of unique Page UUIDs. The installer validates this policy before host commands
-and emits `PAGES_MIGRATE_RECORD_STORAGE` and the JSON array
-`PAGES_MIGRATE_PAGE_IDS`; it does not inherit activation from its environment.
-All shipped profiles remain disabled with empty lists. There is no wildcard
-or target-wide activation mode. The disabled, empty default emits neither
-migration variable, preserving existing deployment configuration and avoiding
-a restart just to install disabled controls.
-
-`PAGES_MIGRATE_RECORD_STORAGE=true`, together with
-`PAGES_RECORD_STORAGE=automerge`, converts only Pages named in a valid
-`PAGES_MIGRATE_PAGE_IDS` array once nobody is using them. Missing, malformed,
-empty, or duplicate-bearing allowlists disable migration
-([worker/record-storage-migration.mjs](worker/record-storage-migration.mjs)).
-The boolean flag alone is insufficient, including in local fixtures.
-A host becomes eligible when a browser connects to it; when its last socket
-closes and no request runs for a quiet window (30 s, or
-`PAGES_MIGRATE_QUIET_MS`), it converts in place inside
-`blockConcurrencyWhile`, one Page at a time per isolate: the module's slot is
-shared by its Page objects, not by other isolates on the node. A slot wait
-longer than 5 s skips with `slot_timeout`. An occupant older than 60 s can be
-replaced; this relaxes only the memory limit because Pages have separate objects.
-A host booted only by
-a listing check or an API call never converts, and nothing converts at boot.
-
-The conversion flushes the native host (the `PageRecords` sink too), takes
-both documents from its live handles, writes each as one `A.save()` snapshot
-under `plain/` with the native `host/actor/*` entries as plain claims and
-comment-blocked signing keys as blocked principals, then flips
-`recordStorage` in one put of `host/document`, with
-`recordStorageMigratedFrom` and `recordStorageMigratedAt`. The object then
-retires: its storage refuses writes, its native host closes, and it resets,
-so the next request boots plain. A Page with a journal entry pending, a
-conversion in progress, a blocked recovery or incomplete history is skipped
-and tried again after a doubling backoff (at most 6 h). Backoff timers hold no
-`waitUntil` work, so an unused native host can be evicted. A browser connection
-leaves backoff even if its timer was dropped, keeping the attempt count.
-Three consecutive
-skips or failures pause migration until a new browser session on that object.
-The quiet window hands its hold to the conversion before releasing it; the
-conversion holds its slot wait and storage work until settlement. If more than
-20 s of the block deadline have elapsed before the selector put, it skips with
-`deadline_margin`. An abandoned conversion refuses writes at once but closes
-its native host only after a started conversion callback settles, or immediately
-if the callback never started. A crash before the
-flip leaves a Subduction Page, and the next attempt clears `plain/` first.
-Each attempt logs one `record_storage.migration` line.
-
-Migration is one-way. Edits after the flip exist only in plain history, so
-flipping the record back would drop them. `recordStorageMigratedFrom` names the
-Subduction storage the Page left, which still holds its native records,
-unread, until the Page is deleted: deletion then removes `repo/*`,
-`host/actor/*`, `host/binding/*` and `host/signer`, and for a buffered Page the `PageRecords`
-object's records.
-
-A tab that held the Page on its native replica, offline say, finds plain
-storage at its next discovery. The storage switch
-([viewer/storage-switch-machine.mjs](viewer/storage-switch-machine.mjs)) pauses
-edits, records its checkpoint under plain storage and asks for a reload; the
-reloaded tab opens a plain replica from that checkpoint and sends the host the
-changes it lacks. Edits in a browser that never reconnects stay in that
-browser. `node scripts/e2e.mjs migration` covers both tabs.
+Edits from the API go through the host's Repo and the same admission queue.
+`sync/*.test.mjs` covers the backend, host, store and gates;
+`worker/plain-sync.test.mjs` covers registration, restart and a browser
+through the Page host; `npm run test:contract` in the experiment runs Repo 3's
+backend contract.
 
 ### Page quotas
 
@@ -2189,8 +2077,8 @@ table chunk only when a dataframe shows; a failed import asks `/health` the
 same way.
 
 Every file `index.html` names carries a content hash too: `app-<hash>.js`,
-`app-<hash>.css`, `theme-<hash>.js`, `automerge-<hash>.wasm` and
-`subduction-<hash>.wasm`, plus `mermaid-<hash>.js` from the editor chunk and
+`app-<hash>.css`, `theme-<hash>.js` and `automerge-<hash>.wasm`, plus
+`mermaid-<hash>.js` from the editor chunk and
 `sift-<hash>.wasm` from the Sift table chunk. The
 hash is the first 40 bits of the file's sha256 in base32. `_headers` serves
 each hashed file `public, max-age=31536000, immutable` by its exact path, so
@@ -2515,7 +2403,9 @@ in Automerge history. `delete_page` and `purge_page` are destructive; Trash is
 reversible, but it revokes every collaborator's access until restored.
 `import_page_image` is open-world because it downloads the client's file, and
 `report_page_progress` is not idempotent because each call without a lease starts
-another session.
+another session. `create_page_asset_upload` is an ordinary write (it needs write
+scope) that changes nothing: it is closed-world, since the client sends the
+file, and idempotent, since a repeat issues another equivalent capability.
 
 ### Agent carets
 
@@ -2592,10 +2482,9 @@ missing-Page response, `403 page_access_denied`. The D1 index retires trashed ro
 and lists them only with `in_trash`. Index writes are fenced by the Page's
 lifecycle revision, and every lifecycle transition advances the Catalog entry's
 `updated_at`, so delayed retirements, reports and prunes cannot undo a restore. The owner keeps a
-read-only preview through reads and native sync; edits, comments, progress,
+read-only preview through reads and sync; edits, comments, progress,
 sharing changes, and image uploads return `409 page_trashed`. The browser
-previews on a reader replica; any key first admitted while trashed stays a
-reader key, so restore reloads onto the writer replica. An upload authorized
+previews on a reader replica, so restore reloads onto the writer replica. An upload authorized
 before trashing can still store its bytes before the final authorization check
 rejects it; those bytes are unreferenced and are not cleaned up. Reads of a trashed Page carry a `trash` object
 and no edit retry authority. The owner's catalog moves the entry from `page/` to
@@ -2666,7 +2555,7 @@ invitations, and an HMAC-signed `preview_token` valid for ten minutes. The token
 binds the owner, current heads, ACL, and lifecycle revision; any change
 invalidates it. Confirmation rechecks the live heads and record in the same
 synchronous step that tombstones the Page. While trashed, the policy refuses
-native writes from every key, so only a change accepted before Trash and applied
+sync writes from everyone, so only a change accepted before Trash and applied
 late could differ. `action:"confirm"` with the unchanged token then runs the
 permanent deletion path:
 it tombstones the record and waits for it to be durable, then closes admission,
@@ -2943,9 +2832,8 @@ Project stores the Project's `space_id` with `parent_id: null`; the content
 document's entry stores `project_content` and no location; a sub-page's Project
 is derived by walking parents to its root with
 [model/location.mjs](model/location.mjs). The Catalog stamps its location shape
-version (`LOCATION_SHAPE_VERSION`, now 2); a Catalog holding the earlier shape
-answers `503 location_migration_required` on location reads and writes until
-its owner runs the one-shot migration described in DEPLOYMENT.md. `create_page` writes the location
+version (`LOCATION_SHAPE_VERSION`, now 2); this build reads only that shape.
+`create_page` writes the location
 into the pending Catalog entry in the same put as its journal intent, so a
 retry finds its parent there, and the Page learns only its content. Results
 call `space_id` `project_id`. A parent implies its Project; a different
@@ -3051,7 +2939,7 @@ navigating away while its listing is in flight, or the calling object aborts
 its stub fetch. The object request's pending timers and I/O are dropped and its
 promise never settles. A request still waiting in a queue starts in that dead
 context when its turn comes. Either way it holds the queue: a Catalog or Space
-until the 120 s watchdog, a Page or `PageRecords` until the object is
+until the 120 s watchdog, a Page until the object is
 discarded. So each of those objects passes every request to `ctx.waitUntil`
 when it queues it, through [request-hold.mjs](worker/request-hold.mjs). A
 Page's `/api/saved` and `/api/sync` skip its queue but are held the same way: a

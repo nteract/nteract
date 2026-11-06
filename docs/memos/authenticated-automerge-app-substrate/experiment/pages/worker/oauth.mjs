@@ -13,6 +13,7 @@ import {
   revokeOAuthToken,
   OAuthStoreError,
 } from "./oauth-store.mjs";
+import { logAuthEvent, recordOidcEvent } from "./auth-events.mjs";
 
 const CHATGPT_CLIENT = "https://chatgpt.com/oauth/client.json";
 const CHATGPT_REDIRECT = "https://chatgpt.com/connector_platform_oauth_redirect";
@@ -21,6 +22,7 @@ const READ = "pages:read";
 const WRITE = "pages:write";
 const SHARE = "pages:share";
 const OFFLINE = "offline_access";
+const GRANT_TYPES = ["authorization_code", "refresh_token"];
 const MAX_INPUT_BYTES = 16_384;
 // This single fixed, public metadata document is shared by all requests in an
 // isolate. Never retain failed validation or use stale metadata after expiry.
@@ -145,6 +147,15 @@ export function mcpAuthChallenge(env, original) {
   });
 }
 
+/** The name a person knows a client by, for the consent screen and for a
+ * stored grant in the account's "Connected agents" list. */
+export function oauthClientName(clientId) {
+  if ([CHATGPT_CLIENT, "pages-chatgpt"].includes(clientId)) return "ChatGPT";
+  if (clientId === "pages-kilo") return "Kilo";
+  if (clientId === "pages-local-e2e") return "Local test client";
+  return "Unknown client";
+}
+
 // Only these explicit public clients and a loopback-only fixture are recognized.
 // Arbitrary client URLs, redirects, dynamic registration, and metadata redirects
 // are deliberately unsupported. Metadata never controls a network destination.
@@ -152,12 +163,17 @@ function knownClient(clientId, env) {
   if ([CHATGPT_CLIENT, "pages-chatgpt"].includes(clientId))
     return {
       id: clientId,
-      name: "ChatGPT",
+      name: oauthClientName(clientId),
       site: "https://chatgpt.com/",
       redirectUri: CHATGPT_REDIRECT,
     };
   if (clientId === "pages-kilo")
-    return { id: clientId, name: "Kilo", site: "https://kilo.ai/", redirectUri: KILO_REDIRECT };
+    return {
+      id: clientId,
+      name: oauthClientName(clientId),
+      site: "https://kilo.ai/",
+      redirectUri: KILO_REDIRECT,
+    };
   const origin = pagesPublicOrigin(env);
   if (
     clientId === "pages-local-e2e" &&
@@ -167,7 +183,7 @@ function knownClient(clientId, env) {
   )
     return {
       id: clientId,
-      name: "Local test client",
+      name: oauthClientName(clientId),
       site: origin,
       redirectUri: origin + "/oauth/test/callback",
     };
@@ -362,7 +378,9 @@ function publicClient(params, request, env) {
   return knownClient(single(params, "client_id"), env);
 }
 async function currentSession(request, env) {
-  const refreshed = await serverOidcSessionStatus(request, env, async () => {});
+  const refreshed = await serverOidcSessionStatus(request, env, async () => {}, {
+    onAuthEvent: recordOidcEvent,
+  });
   if (!refreshed.ok) return { response: refreshed };
   const now = Math.floor(Date.now() / 1000);
   const row = await loadServerSession(env, request, now);
@@ -469,21 +487,44 @@ async function authorize(request, env, context) {
       403,
     );
   context.authorization = saved;
-  if (decision === "cancel") return redirect(saved, origin, { error: "access_denied" });
-  const { code } = await issueAuthorizationCode(env, {
-    ...saved,
-    identity: consentIdentity(current.session),
-  });
+  const audit = {
+    principal: current.session.principal,
+    credential: "oauth",
+    clientId: saved.clientId,
+    scope: saved.scope,
+  };
+  if (decision === "cancel") {
+    await logAuthEvent({ action: "oauth.consent_denied", ...audit });
+    return redirect(saved, origin, { error: "access_denied" });
+  }
+  let code;
+  try {
+    // The approving session must still exist when the code is written: a
+    // sign-out everywhere after the session check above leaves no code.
+    ({ code } = await issueAuthorizationCode(
+      env,
+      { ...saved, identity: consentIdentity(current.session) },
+      { sessionId: current.row.id },
+    ));
+  } catch (error) {
+    if (error instanceof OAuthStoreError && error.error === "access_denied")
+      throw new OAuthError("access_denied", "Your sign-in ended. Sign in and start again.", 403);
+    throw error;
+  }
+  await logAuthEvent({ action: "oauth.consent_granted", ...audit });
+  await logAuthEvent({ action: "oauth.code_issued", ...audit });
   return redirect(saved, origin, { code });
 }
-async function token(request, env) {
+async function token(request, env, context) {
   if (request.method !== "POST") return methodResponse("POST");
   const params = await form(request);
   const client = publicClient(params, request, env);
+  context.clientId = client.id;
   const resource = single(params, "resource");
   if (resource !== pagesPublicOrigin(env) + "/mcp")
     throw new OAuthError("invalid_target", "Request this Pages MCP resource.");
   const grant = single(params, "grant_type");
+  if (GRANT_TYPES.includes(grant)) context.grantType = grant;
   if (grant === "authorization_code") {
     const redirectUri = single(params, "redirect_uri");
     if (redirectUri !== client.redirectUri)
@@ -542,7 +583,7 @@ export async function handleOAuth(request, env) {
     }
     if (url.pathname === "/oauth/authorize")
       return withSessionCookie(await authorize(request, env, context), context.cookie);
-    if (url.pathname === "/oauth/token") return await token(request, env);
+    if (url.pathname === "/oauth/token") return await token(request, env, context);
     return await revoke(request, env);
   } catch (error) {
     const known = error instanceof OAuthError || error instanceof OAuthStoreError;
@@ -554,6 +595,16 @@ export async function handleOAuth(request, env) {
           ? "The authorization grant is invalid or expired. Connect again."
           : "Pages authorization is temporarily unavailable.";
     const status = error instanceof OAuthError ? error.status : known ? 400 : 503;
+    // A refused token request is the only failure here without its own
+    // grant event. The code is a fixed OAuth error name, never a message.
+    if (url.pathname === "/oauth/token")
+      await logAuthEvent({
+        action: "oauth.token_refused",
+        credential: "oauth",
+        clientId: context.clientId,
+        grantType: context.grantType,
+        reason: code,
+      });
     if (url.pathname === "/oauth/authorize" && context.authorization)
       return withSessionCookie(
         redirect(context.authorization, pagesPublicOrigin(env), {

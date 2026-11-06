@@ -471,8 +471,10 @@ try {
     desktopPages
       .getByRole("listitem")
       .filter({ has: owner.getByRole("link", { name, exact: true }) });
-  for (const name of ["Roadmap", "Q4 plan", "Architecture", title])
+  for (const name of ["Roadmap", "Q4 plan", "Architecture"])
     await expect(desktopRow(name).getByRole("link", { name: `Project ${title}` })).toBeVisible();
+  // Project content is not a Page, so the library has no row for it.
+  await expect(desktopRow(title)).toHaveCount(0);
   const updated = desktopRow("Q4 plan").locator("time");
   await expect(updated.locator("[aria-hidden=true]")).toHaveText(/^(now|\d+m)$/);
   await expect(updated.locator(".sr-only")).toHaveText(/^Last active .+, .+/);
@@ -672,10 +674,11 @@ try {
   const pageRow = (name) =>
     allPages.getByRole("listitem").filter({ has: phone.getByRole("link", { name, exact: true }) });
   // A phone keeps Name and Last activity; the Source column is desktop-only.
-  for (const name of ["Roadmap", "Q4 plan", "Architecture", title]) {
+  for (const name of ["Roadmap", "Q4 plan", "Architecture"]) {
     await expect(pageRow(name).locator("time")).toBeVisible();
     await expect(pageRow(name).locator(".index-cell-source")).toBeHidden();
   }
+  await expect(pageRow(title)).toHaveCount(0);
   await fitsScreen("/pages");
   await minimumRowHeight(allPages);
   assert.deepEqual(editorChunks(), [], "loading /pages fetched the editor chunk");

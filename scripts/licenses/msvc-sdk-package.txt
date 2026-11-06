@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2011/08/nuspec.xsd">
+  <metadata>
+    <id>Microsoft.Windows.SDK.CPP</id>
+    <version>10.0.26100.7705</version>
+    <title>Windows SDK for C++</title>
+    <authors>Microsoft</authors>
+    <owners>Microsoft</owners>
+    <requireLicenseAcceptance>true</requireLicenseAcceptance>
+    <licenseUrl>https://aka.ms/WinSDKLicenseURL</licenseUrl>
+    <projectUrl>https://aka.ms/WinSDKProjectURL</projectUrl>
+    <iconUrl>https://aka.ms/WinSDKIconURL</iconUrl>
+    <description>The Windows SDK available as a NuGet package for more seamless acquisition and CI/CD integration. This package is designed for C++ applications. One or more architecture-specific packages are required (Microsoft.Windows.SDK.cpp.&lt;.arch&gt;).</description>
+    <summary>The Windows SDK available as a NuGet package for more seamless acquisition and CI/CD integration. This package is designed for C++ applications. One or more architecture-specific packages are required (Microsoft.Windows.SDK.cpp.&lt;.arch&gt;).</summary>
+    <copyright>© Microsoft Corporation. All rights reserved.</copyright>
+    <tags>WindowsSDK SDK native VC++</tags>
+  </metadata>
+</package>

@@ -86,7 +86,7 @@ test("a forged edit of another author's message is refused before it's stored, a
     hb.change((d) =>
       A.updateText(
         d,
-        ["threads", ids.thread_id, "messages", ids.message_id, "body"],
+        ["threads", ids.thread_id, "messages", ids.message_id, "richText"],
         "Alice agrees with Bob",
       ),
     );
@@ -102,7 +102,7 @@ test("a forged edit of another author's message is refused before it's stored, a
     assert.equal(h.store.manifest(id).seq, before, "nothing stored");
     assert.equal((await changesOf(h, id, bobActor)).length, 1, "only Bob's reply is stored");
     await idle();
-    assert.equal(ha.doc().threads[ids.thread_id].messages[ids.message_id].body, "Alice opens");
+    assert.equal(ha.doc().threads[ids.thread_id].messages[ids.message_id].richText, "Alice opens");
 
     // A fresh browser (new session, new actor) is still blocked.
     bob2 = await browser(h, { principal: BOB, role: "commenter" });
@@ -122,17 +122,57 @@ test("a forged edit of another author's message is refused before it's stored, a
     ha.change((d) =>
       A.updateText(
         d,
-        ["threads", ids.thread_id, "messages", ids.message_id, "body"],
+        ["threads", ids.thread_id, "messages", ids.message_id, "richText"],
         "Alice opens, edited",
       ),
     );
     await until(
       async () =>
-        (await h.document(id)).threads[ids.thread_id].messages[ids.message_id].body ===
+        (await h.document(id)).threads[ids.thread_id].messages[ids.message_id].richText ===
         "Alice opens, edited",
     );
   } finally {
     for (const c of [alice, bob, bob2].filter(Boolean)) await c.repo.shutdown();
+  }
+});
+
+test("a stale tab's old-form comment is refused over plain sync without blocking its principal", async () => {
+  const { h, blocked, log } = await commentsHost();
+  const id = newId();
+  await h.seed(id, "comments", commentsGenesis("1a2b3c4d-ab47-48e4-a0e2-facc277a3efe"));
+  const alice = await browser(h, { principal: ALICE, role: "editor" });
+  try {
+    const ha = await alice.repo.find(urlOf(id));
+    let ids;
+    ha.change((d) => {
+      ids = applyComment(d, { block_id: "b1", body: "Alice opens" }, who(ALICE), null, {
+        page,
+        role: "editor",
+      });
+    });
+    await until(async () => (await h.document(id)).threads[ids.thread_id], {
+      label: "Alice's thread",
+    });
+    const before = h.store.manifest(id).seq;
+    // An earlier build's reply: a Markdown body beside its spans.
+    ha.change((d) => {
+      const message = d.threads[ids.thread_id].messages[ids.message_id];
+      d.threads[ids.thread_id].messages.stale = {
+        body: "Old tab",
+        format: message.format,
+        richText: "Old tab",
+        author: { ...message.author },
+        createdAt: new Date().toISOString(),
+        deletedAt: null,
+      };
+    });
+    await until(() => log.some((e) => e.principal === ALICE), { label: "refusal" });
+    assert.deepEqual(log.at(-1), { principal: ALICE, code: "outdated_form" });
+    assert.equal(blocked.has(ALICE), false, "the principal isn't blocked");
+    assert.equal(h.store.manifest(id).seq, before, "nothing stored");
+    assert.equal((await h.document(id)).threads[ids.thread_id].messages.stale, undefined);
+  } finally {
+    await alice.repo.shutdown();
   }
 });
 

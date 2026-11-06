@@ -23,8 +23,9 @@ import {
   deleteServerOidcSession,
   serverOidcSessionStatus,
   ServerOidcIdentityRejected,
+  type ServerOidcAuthEvent,
 } from "../src/server-oidc.ts";
-import { SERVER_SESSION_COOKIE } from "../src/oidc-session-store.ts";
+import { revokeServerSessionsFor, SERVER_SESSION_COOKIE } from "../src/oidc-session-store.ts";
 import { AuthError } from "../src/identity.ts";
 
 // The repository's Node 20 type definitions predate node:sqlite, while the
@@ -759,6 +760,73 @@ describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
     assert.match(await deniedResponse.text(), /cannot access this application/);
   });
 
+  it("reports sign-in and session outcomes to an optional audit listener", async (t) => {
+    const f = await fixture(t);
+    t.mock.method(console, "warn", () => {});
+    const events: ServerOidcAuthEvent[] = [];
+    const onAuthEvent = (event: ServerOidcAuthEvent) => events.push(event);
+    const started = await f.start();
+    const callback = await f.authorize(started.authorizationUrl);
+    // A refused callback, then the same transaction completing.
+    const refused = await completeServerOidcLogin(new Request(callback), f.env, noopProfile, {
+      onAuthEvent,
+    });
+    assert.equal(refused.status, 400);
+    const completed = await completeServerOidcLogin(
+      new Request(callback, { headers: { Cookie: started.cookie } }),
+      f.env,
+      noopProfile,
+      {
+        onAuthEvent: (event) => {
+          onAuthEvent(event);
+          throw new Error("a listener failure never changes sign-in");
+        },
+      },
+    );
+    assert.equal(completed.status, 303);
+    assert.equal(hasSessionCookie(completed), true);
+    // The provider then refuses the session's refresh.
+    const request = f.request(undefined, cookieFrom(completed, SERVER_SESSION_COOKIE));
+    f.expireAccess();
+    f.setRefreshFailure("invalid_grant");
+    const status = await serverOidcSessionStatus(request, f.env, noopProfile, { onAuthEvent });
+    assert.equal((await status.json()).session, null);
+    assert.deepEqual(events, [
+      {
+        type: "sign_in_failed",
+        phase: "callback_transaction",
+        kind: "callback_rejected",
+        reason: "login_binding_missing",
+        outcome: "failure_page",
+      },
+      { type: "sign_in", principal: "user:test:alice" },
+      { type: "session_expired", principal: "user:test:alice", reason: "refresh_rejected" },
+    ]);
+    const text = JSON.stringify(events);
+    for (const secret of [...f.secrets, callback.searchParams.get("state")!, started.cookie])
+      assert.equal(text.includes(secret), false);
+  });
+
+  it("reports an abandoned refresh lease once as an expired session", async (t) => {
+    const f = await fixture(t);
+    const { sessionCookie } = await f.login();
+    const request = f.request(undefined, sessionCookie);
+    f.expireAccess();
+    const gate = f.gateRefresh();
+    const stalledOwner = serverOidcSessionStatus(request, f.env, noopProfile);
+    await gate.entered.promise;
+    f.db.sqlite.prepare("UPDATE oidc_server_sessions SET lease_until = ?").run(nowSeconds() - 1);
+    const events: ServerOidcAuthEvent[] = [];
+    const onAuthEvent = (event: ServerOidcAuthEvent) => events.push(event);
+    await serverOidcSessionStatus(request, f.env, noopProfile, { onAuthEvent });
+    await serverOidcSessionStatus(request, f.env, noopProfile, { onAuthEvent });
+    gate.release.resolve();
+    await stalledOwner;
+    assert.deepEqual(events, [
+      { type: "session_expired", principal: "user:test:alice", reason: "lease_abandoned" },
+    ]);
+  });
+
   it("sends an already signed-in browser home when a used callback arrives again", async (t) => {
     const f = await fixture(t);
     const login = await f.login();
@@ -937,9 +1005,14 @@ describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
       .run(String(sessions[1]!.sealed), String(sessions[0]!.id));
     f.expireAccess(-1);
     const request = f.request(undefined, login.sessionCookie);
-    assert.equal((await serverOidcSessionStatus(request, f.env, noopProfile)).status, 503);
+    // A seal bound to another row never opens here: the session ends cleanly.
+    const status = await serverOidcSessionStatus(request, f.env, noopProfile);
+    assert.equal(status.status, 200);
+    assert.equal((await status.json()).session, null);
+    assert.match(status.headers.get("Set-Cookie")!, /Max-Age=0/);
     assert.equal(await readCloudAppSession(f.env, request), null);
     assert.equal(f.calls.filter((call) => call.grant === "refresh_token").length, 0);
+    assert.equal(f.countRows(), 1, "only the tampered row is removed");
   });
 
   it("rejects encrypted login and refresh credentials with a different deployment key", async (t) => {
@@ -962,6 +1035,94 @@ describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
     assert.match(signedOut.headers.get("Set-Cookie")!, /Max-Age=0/);
     assert.equal(f.calls.filter((call) => call.grant === "refresh_token").length, 0);
     assert.equal(f.countRows(), 1, "key mismatch does not destroy the recoverable session record");
+  });
+
+  it("keeps sessions, refresh and logout working across a keyring rotation", async (t) => {
+    const f = await fixture(t);
+    const legacy = f.env.NOTEBOOK_CLOUD_APP_SESSION_SECRET!;
+    const next = "rotated-session-key-with-at-least-thirty-two-bytes";
+    // A session from the single-secret configuration: bare `iv.ct` seal, k1 id.
+    const old = await f.login();
+    const before = f.db.sqlite.prepare("SELECT id, sealed FROM oidc_server_sessions").get()!;
+    assert.equal(String(before.sealed).split(".").length, 2);
+
+    const rotated: Env = {
+      ...f.env,
+      NOTEBOOK_CLOUD_APP_SESSION_KEYS: JSON.stringify({
+        active: "k2",
+        keys: { k1: legacy, k2: next },
+      }),
+    };
+    const oldRequest = f.request(undefined, old.sessionCookie);
+    assert.ok(await readCloudAppSession(rotated, oldRequest), "a k1 session still reads");
+
+    // Refresh reseals the bundle under k2 and keeps the row's k1 id.
+    f.expireAccess();
+    const refreshed = await serverOidcSessionStatus(oldRequest, rotated, noopProfile);
+    assert.equal(refreshed.status, 200);
+    assert.ok((await refreshed.json()).session);
+    const after = f.db.sqlite.prepare("SELECT id, sealed FROM oidc_server_sessions").get()!;
+    assert.equal(after.id, before.id);
+    assert.match(String(after.sealed), /^k2\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+
+    // A new sign-in under the keyring uses k2 for the id and the seal.
+    const fresh = await (async () => {
+      const started = await f.start();
+      const callback = await f.authorize(started.authorizationUrl);
+      const response = await f.finish(callback, started.cookie, rotated);
+      assert.equal(response.status, 303);
+      return cookieFrom(response, SERVER_SESSION_COOKIE);
+    })();
+    const freshRequest = f.request(undefined, fresh);
+    assert.ok(await readCloudAppSession(rotated, freshRequest));
+    assert.equal(
+      await readCloudAppSession(f.env, freshRequest),
+      null,
+      "the single k1 secret can't find a k2 session id",
+    );
+
+    // Logout finds the old row by its k1 id.
+    assert.equal((await deleteServerOidcSession(oldRequest, rotated)).status, 200);
+    assert.equal(f.countRows(), 1);
+    assert.equal(await readCloudAppSession(rotated, oldRequest), null);
+
+    // After retiring k1 the k2 session survives.
+    const retired = {
+      ...f.env,
+      NOTEBOOK_CLOUD_APP_SESSION_KEYS: JSON.stringify({ active: "k2", keys: { k2: next } }),
+    };
+    assert.ok(await readCloudAppSession(retired, freshRequest));
+  });
+
+  it("refuses sealed credentials under an unknown kid and a malformed keyring", async (t) => {
+    const f = await fixture(t);
+    const legacy = f.env.NOTEBOOK_CLOUD_APP_SESSION_SECRET!;
+    const keyring = {
+      ...f.env,
+      NOTEBOOK_CLOUD_APP_SESSION_KEYS: JSON.stringify({ active: "k1", keys: { k1: legacy } }),
+    };
+    const { sessionCookie } = await f.login();
+    const request = f.request(undefined, sessionCookie);
+    f.db.sqlite.prepare("UPDATE oidc_server_sessions SET sealed = 'k9.' || sealed").run();
+    f.expireAccess(-1);
+    const events: ServerOidcAuthEvent[] = [];
+    const status = await serverOidcSessionStatus(request, keyring, noopProfile, {
+      onAuthEvent: (event) => events.push(event),
+    });
+    assert.equal(status.status, 200, "an unopenable refresh token is a sign-out, not an outage");
+    assert.equal((await status.json()).session, null);
+    assert.match(status.headers.get("Set-Cookie")!, /Max-Age=0/);
+    assert.equal(f.countRows(), 0);
+    assert.equal(events.length, 1);
+    assert.equal(events[0]!.type, "session_expired");
+    assert.equal(events[0]!.type === "session_expired" && events[0]!.reason, "seal_unreadable");
+    assert.equal(f.calls.filter((call) => call.grant === "refresh_token").length, 0);
+
+    const malformed = {
+      ...f.env,
+      NOTEBOOK_CLOUD_APP_SESSION_KEYS: JSON.stringify({ active: "k2", keys: { k1: legacy } }),
+    };
+    await assert.rejects(readCloudAppSession(malformed, request), /active must name a kid/);
   });
 
   it("supports public PKCE clients without transmitting a client secret", async (t) => {
@@ -1152,6 +1313,79 @@ describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
     assert.equal(await readCloudAppSession(f.env, request), null);
     assert.equal(f.countRows(), 0);
     assert.equal(f.calls.length, 1);
+  });
+
+  it("revokes every session one principal holds here and no other session", async (t) => {
+    const f = await fixture(t);
+    const first = await f.login();
+    const second = await f.login();
+    const { session_json: sessionJson } = f.db.sqlite
+      .prepare("SELECT session_json FROM oidc_server_sessions LIMIT 1")
+      .get()! as { session_json: string };
+    const principal = (JSON.parse(sessionJson) as { principal: string }).principal;
+    const copy = (id: string, set: string) =>
+      f.db.sqlite
+        .prepare(`INSERT INTO oidc_server_sessions
+          (id, context, session_json, sealed, access_expires_at, idle_expires_at, absolute_expires_at)
+          SELECT ?, ${set} FROM oidc_server_sessions LIMIT 1`)
+        .run(id);
+    // Another account here, and the same account at another deployment.
+    copy(
+      "other-account",
+      "context, json_set(session_json, '$.principal', 'user:other'), sealed, access_expires_at, idle_expires_at, absolute_expires_at",
+    );
+    copy(
+      "other-deployment",
+      "'elsewhere', session_json, sealed, access_expires_at, idle_expires_at, absolute_expires_at",
+    );
+    assert.equal(f.countRows(), 4);
+    assert.equal(await revokeServerSessionsFor(f.env, principal, ORIGIN), 2);
+    for (const login of [first, second])
+      assert.equal(
+        await readCloudAppSession(f.env, f.request(undefined, login.sessionCookie)),
+        null,
+      );
+    assert.deepEqual(
+      f.db.sqlite
+        .prepare("SELECT id FROM oidc_server_sessions ORDER BY id")
+        .all()
+        .map((row) => row.id),
+      ["other-account", "other-deployment"],
+    );
+    assert.equal(await revokeServerSessionsFor(f.env, principal, ORIGIN), 0);
+    const plan = f.db.sqlite
+      .prepare(
+        "EXPLAIN QUERY PLAN SELECT id FROM oidc_server_sessions WHERE json_extract(session_json, '$.principal') = ?",
+      )
+      .all("x")
+      .map((row) => String(row.detail))
+      .join(" ");
+    assert.match(plan, /oidc_session_principal/);
+  });
+
+  it("does not restore a session when revoke-by-principal races an idle extension", async (t) => {
+    const f = await fixture(t, { tokenTtlSeconds: 12 * 60 * 60 });
+    const { sessionCookie } = await f.login();
+    const request = f.request(undefined, sessionCookie);
+    const row = f.db.sqlite
+      .prepare("SELECT idle_expires_at, session_json FROM oidc_server_sessions")
+      .get()!;
+    const principal = (JSON.parse(String(row.session_json)) as { principal: string }).principal;
+    t.mock.method(Date, "now", () => (Number(row.idle_expires_at) - 30) * 1000);
+    const read = deferred();
+    const resume = deferred();
+    f.db.afterNextRead = async () => {
+      read.resolve();
+      await resume.promise;
+    };
+    const pending = serverOidcSessionStatus(request, f.env, noopProfile);
+    await read.promise;
+    assert.equal(await revokeServerSessionsFor(f.env, principal, ORIGIN), 1);
+    resume.resolve();
+    const response = await pending;
+    assert.equal((await response.json()).session, null);
+    assert.equal(await readCloudAppSession(f.env, request), null);
+    assert.equal(f.countRows(), 0);
   });
 
   it("treats Anaconda auth_required as rejected refresh authority rather than a temporary outage", async (t) => {

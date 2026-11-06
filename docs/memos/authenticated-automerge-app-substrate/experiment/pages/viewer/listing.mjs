@@ -309,10 +309,14 @@ export function pageRow(page, projectTitles = new Map(), { local = false } = {})
  * it (matchingPages, the Browse picker's rule). A copy the server rows
  * already hold shows once, as the server's row. Copies of shared Pages look
  * the same as owned ones locally, so the offline fallback shows on All only.
+ * A Project's content document (`contents`, its document IDs) is never a
+ * Page: the server never lists it, so its local copy would otherwise look
+ * like a draft forever. `contents` comes from list_projects, so a copy can
+ * still show until that answers, if it fails, or past its first 100 Projects.
  */
-export function deviceRows(local, items, view, { failed = false } = {}) {
+export function deviceRows(local, items, view, { failed = false, contents = new Set() } = {}) {
   if (view.projectId || view.access === "shared") return [];
-  const listed = new Set(items.map((page) => page.page_id));
+  const listed = new Set([...items.map((page) => page.page_id), ...contents]);
   const kept = (local ?? []).filter(
     (page) => !listed.has(page.page_id) && (page.pending || (failed && view.access === null)),
   );

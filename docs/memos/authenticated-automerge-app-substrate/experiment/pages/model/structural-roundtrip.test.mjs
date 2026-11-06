@@ -11,13 +11,16 @@ import { applyPageOperation, createPageData, orderedBlockIds } from "./page.mjs"
 import { projectReadContent } from "./read-content.mjs";
 import { textPath, RICH_FORMAT } from "./richtext.mjs";
 import { updateSpansConfig } from "./marks.mjs";
-import { stampSpans } from "./schema-features.mjs";
+import { stampFeatures, stampSpans } from "./schema-features.mjs";
 import { projectComments } from "./comments.mjs";
 import { comment, newCommentsDoc } from "./comments-test-support.mjs";
 import { decode, encode, Paragraph, schema } from "../viewer/wordgard-model.mjs";
 import { PAGE_ID, pageTreeArbitrary, toWordgardTree } from "../test/random-page-tree.mjs";
 import { fuzzDepth, fuzzParameters as parameters } from "../test/fuzz-parameters.mjs";
 import { freeing } from "../test/free-docs.mjs";
+import { commentSpansMeasure } from "./comment-text.mjs";
+import { adapterSpans } from "./richtext-spans.mjs";
+import { adapter, pmDocFromSpans } from "./pm-adapter.mjs";
 
 const maxDepth = fuzzDepth;
 const trees = pageTreeArbitrary({ maxDepth });
@@ -26,6 +29,20 @@ const trees = pageTreeArbitrary({ maxDepth });
 const markdownTrees = pageTreeArbitrary({ maxDepth, emptyParagraphs: false, separateQuotes: true });
 // JSON data carries semantic attributes, not a JavaScript object's prototype.
 const snapshot = (tree) => JSON.parse(JSON.stringify(tree.toJSON()));
+// Spans as stored: plain data, marks always set, and adjacent text runs with
+// the same marks joined, as Automerge reads them back.
+const plainSpans = (spans) =>
+  JSON.parse(JSON.stringify(spans)).reduce((out, span) => {
+    const last = out.at(-1);
+    if (span.type !== "text") out.push(span);
+    else if (
+      last?.type === "text" &&
+      JSON.stringify(last.marks) === JSON.stringify(span.marks ?? {})
+    )
+      last.value += span.value;
+    else out.push({ ...span, marks: span.marks ?? {} });
+    return out;
+  }, []);
 
 test("structural counterexamples shrink to plain data and replay by seed and path", () => {
   const property = fc.property(trees, () => false);
@@ -52,6 +69,8 @@ function pageWith(tree) {
     draft.blocks[id].richText = "";
     A.updateSpans(draft, textPath(id), spans, updateSpansConfig);
     stampSpans(draft, spans);
+    // A new Page's comments live in their own document (initializePage).
+    stampFeatures(draft, ["comments-doc"]);
   });
   return { doc, id };
 }
@@ -198,6 +217,51 @@ test("targeted edits preserve unrelated node ids and comment anchors across gene
         assert.deepEqual(snapshot(decode(A.spans(after, textPath(id))).doc), snapshot(expected));
       }),
     ),
+    parameters,
+  );
+});
+
+// Comments hold the same rich text as a Page body, without dataframes.
+const commentTrees = trees.filter(
+  (description) => !JSON.stringify(description).includes('"kind":"dataframe"'),
+);
+
+test("comments store the editor's spans for generated trees, from either span form", () => {
+  fc.assert(
+    fc.property(commentTrees, (description) => {
+      const tree = toWordgardTree(description);
+      const spans = encode(tree);
+      const { content, length } = commentSpansMeasure(spans);
+      fc.pre(content && length <= 16000);
+      return freeing((keep) => {
+        const page = pageWith(schema.doc([Paragraph.create([Leaf.text("Anchor", Mark.none)])]));
+        keep(page.doc);
+        for (const written of [spans, adapterSpans(pmDocFromSpans(adapter, spans))]) {
+          const { comments, result } = comment(
+            page.doc,
+            newCommentsDoc(),
+            {
+              action: "add",
+              block_id: page.id,
+            },
+            {},
+            { nativeSpans: written },
+          );
+          keep(comments);
+          const message = comments.threads[result.thread_id].messages[result.message_id];
+          const stored = A.spans(message, ["richText"]);
+          assert.equal(message.body, undefined);
+          // The adapter's form can differ in attrs it fills in (a link's empty
+          // title); whatever it reads as is stored in the editor's form.
+          const read = decode(written).doc;
+          assert.deepEqual(snapshot(decode(stored).doc), snapshot(read));
+          assert.deepEqual(plainSpans(stored), plainSpans(encode(read)), "the editor's form");
+          if (written === spans) assert.deepEqual(plainSpans(stored), plainSpans(spans));
+          // The limit counts text alone, so both forms measure the same.
+          assert.equal(commentSpansMeasure(written).length, length);
+        }
+      });
+    }),
     parameters,
   );
 });
