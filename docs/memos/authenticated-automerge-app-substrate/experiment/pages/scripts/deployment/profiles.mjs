@@ -312,6 +312,15 @@ const targets = Object.freeze({
     // /api/auth/logout-all and /api/auth/grants[/<handle>/revoke]: sign out
     // everywhere and connected agents (worker/account-auth.mjs).
     accountRoutes: true,
+    // /p/<id>/meta.json and /card.json, and the same under /project/<id>:
+    // what a link shows its reader (worker/link-previews.mjs).
+    linkPreviews: true,
+    // /api/pages/<id>/card-image[/<hash>-<theme>.<ext>]: grid card images
+    // (worker/card-images.mjs).
+    cardImages: true,
+    // /api/projects/<id>/assets[/<sha256>]: a Project's assets, which belong
+    // to its content document.
+    projectAssets: true,
     firewallTable: "nteract_page10",
     firewallMark: "0x00200000",
     firewallComment: "nteract/preview-infra standalone-page10",
@@ -377,6 +386,15 @@ const targets = Object.freeze({
     // /api/auth/logout-all and /api/auth/grants[/<handle>/revoke]: sign out
     // everywhere and connected agents (worker/account-auth.mjs).
     accountRoutes: true,
+    // /p/<id>/meta.json and /card.json, and the same under /project/<id>:
+    // what a link shows its reader (worker/link-previews.mjs).
+    linkPreviews: true,
+    // /api/pages/<id>/card-image[/<hash>-<theme>.<ext>]: grid card images
+    // (worker/card-images.mjs).
+    cardImages: true,
+    // /api/projects/<id>/assets[/<sha256>]: a Project's assets, which belong
+    // to its content document.
+    projectAssets: true,
     firewallTable: "nteract_pages_live",
     firewallMark: "0x00100000",
     firewallComment: "nteract/preview-infra standalone-pages-live",
@@ -432,6 +450,15 @@ const targets = Object.freeze({
     // /api/auth/logout-all and /api/auth/grants[/<handle>/revoke]: sign out
     // everywhere and connected agents (worker/account-auth.mjs).
     accountRoutes: true,
+    // /p/<id>/meta.json and /card.json, and the same under /project/<id>:
+    // what a link shows its reader (worker/link-previews.mjs).
+    linkPreviews: true,
+    // /api/pages/<id>/card-image[/<hash>-<theme>.<ext>]: grid card images
+    // (worker/card-images.mjs).
+    cardImages: true,
+    // /api/projects/<id>/assets[/<sha256>]: a Project's assets, which belong
+    // to its content document.
+    projectAssets: true,
     firewallTable: "nteract_pages2",
     firewallMark: "0x00080000",
     firewallComment: "nteract/preview-infra standalone-pages2",

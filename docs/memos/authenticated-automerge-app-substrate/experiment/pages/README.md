@@ -2466,6 +2466,13 @@ timeout (the shared-Page check's bound) all answer one
 `404 {"error":"Page unavailable","code":"page_unavailable"}`, so that answer
 can't say why.
 
+On a deployment behind a tunnel, these paths reach the Worker only when the
+target's ingress admits them, `/project/<id>` forms included
+(`linkPreviewPaths` in [routes.mjs](scripts/deployment/routes.mjs); see
+[Gateway routes and the allowlist](DEPLOYMENT.md#gateway-routes-and-the-allowlist)).
+Otherwise the edge answers an empty 404 without that code, and the hover card
+reads it as a failure: "Couldn't load a preview", retried with backoff.
+
 Every answer is `Cache-Control: private, no-store`, as Page assets are, so a
 title or first screen never stays in the browser's disk cache after sign-out.
 There is no `ETag`: each look runs the access check again, and a revoked
@@ -3131,6 +3138,14 @@ its referenced images, plus orphans found in at most four prefix-listing pages.
 That bounded cleanup may leave orphaned bytes beyond the listing limit.
 The server can't check that the pixels match the content. That is the trust of
 any image the owner inserts into the Page, and only the Page's readers see it.
+
+On a deployment behind a tunnel, `GET` and `PUT /api/pages/:id/card-image` and
+the image paths reach the Worker only when the target's ingress admits them
+(`cardImagePaths` in [routes.mjs](scripts/deployment/routes.mjs), file names
+exactly as `CARD_IMAGE_FILE` names them; see
+[Gateway routes and the allowlist](DEPLOYMENT.md#gateway-routes-and-the-allowlist)).
+Otherwise the edge answers an empty 404: the owner's tab stops at the stored
+hash read and uploads nothing, and the grid keeps showing JSON cards.
 
 ### Retry contract
 

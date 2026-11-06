@@ -14,6 +14,9 @@ import {
 import { deploymentProfile, stageTarget, verifyDeployment } from "./profiles.mjs";
 import {
   accountPaths,
+  cardImagePaths,
+  linkPreviewPaths,
+  projectAssetPaths,
   routesFor,
   imagePaths,
   indexPaths,
@@ -246,11 +249,25 @@ export function publishIsolated(
       ...extra,
     }) + "\n";
   const receipt = receiptFor(plan.config);
+  // The route set the last release sealed, before link previews, card images
+  // and Project assets (linkPreviewPaths, cardImagePaths, projectAssetPaths).
+  // A target without those flags keeps plan.config.
+  const linkPreviews = profile.linkPreviews === true;
+  const cardImages = profile.cardImages === true;
+  const projectAssets = profile.projectAssets === true;
+  const sealedRoutes = [
+    [linkPreviews, linkPreviewPaths],
+    [cardImages, cardImagePaths],
+    [projectAssets, projectAssetPaths],
+  ].reduce(
+    (config, [enabled, group]) => (enabled ? config.replace(group, "") : config),
+    plan.config,
+  );
   // The route set before the account routes (accountPaths). Every history
   // below is stated against it, so those predecessors keep their exact bytes,
   // and each one migrates straight to plan.config.
   const accountRoutes = profile.accountRoutes === true;
-  const base = accountRoutes ? plan.config.replace(accountPaths, "") : plan.config;
+  const base = accountRoutes ? sealedRoutes.replace(accountPaths, "") : sealedRoutes;
   // Only the exact known predecessor for this target may migrate. Other targets
   // and arbitrary local edits still require inspection instead of adoption.
   const previousConfig =
@@ -341,6 +358,14 @@ export function publishIsolated(
     // other route stay byte-identical.
     predecessor(base, false);
     if (slotted) predecessor(base, true);
+  }
+  if (sealedRoutes !== plan.config) {
+    // The installation the last release sealed: the account route set,
+    // without link previews, card images and Project assets, on slot units.
+    // A target still on its legacy unit at that route set migrates too.
+    // Units and every other route stay byte-identical.
+    predecessor(sealedRoutes, false);
+    if (slotted) predecessor(sealedRoutes, true);
   }
   const exactly = (file, contents) => filesystem.existsSync(file) && read(file) === contents;
   const slotUnitsInstalled = () => plan.slots.every((slot) => exactly(slot.unitPath, slot.unit));
@@ -451,6 +476,9 @@ export function publishIsolated(
     const sift = profile.siftTables === true;
     const uuid = "08c583e5-d29e-4f1e-b06b-333965254e94";
     const assets = "/api/pages/" + uuid + "/assets";
+    const cardImage = "/api/pages/" + uuid + "/card-image";
+    const projectAssetRoute = "/api/projects/prj_" + uuid + "/assets";
+    const imageHash = "a".repeat(64);
     run("/usr/bin/cloudflared", ["--config", file, "tunnel", "ingress", "validate"]);
     for (const [pathname, expected] of [
       ["/", plan.listen],
@@ -557,6 +585,32 @@ export function publishIsolated(
       ["/api/pages/arbitrary/assets", "http_status:404"],
       [assets + "/private", "http_status:404"],
       [assets + "/" + "a".repeat(64) + "/private", "http_status:404"],
+      ["/p/" + uuid + "/meta.json", linkPreviews ? plan.listen : "http_status:404"],
+      ["/p/" + uuid + "/card.json", linkPreviews ? plan.listen : "http_status:404"],
+      ["/project/prj_" + uuid + "/meta.json", linkPreviews ? plan.listen : "http_status:404"],
+      ["/project/sp_" + uuid + "/card.json", linkPreviews ? plan.listen : "http_status:404"],
+      ["/p/" + uuid + "/meta.json/", "http_status:404"],
+      ["/p/" + uuid + "/other.json", "http_status:404"],
+      ["/p/" + uuid.toUpperCase() + "/meta.json", "http_status:404"],
+      ["/project/" + uuid + "/meta.json", "http_status:404"],
+      ["/s/sp_" + uuid + "/meta.json", "http_status:404"],
+      [cardImage, cardImages ? plan.listen : "http_status:404"],
+      [
+        cardImage + "?hash=" + imageHash + "&theme=dark",
+        cardImages ? plan.listen : "http_status:404",
+      ],
+      [cardImage + "/" + imageHash + "-light.webp", cardImages ? plan.listen : "http_status:404"],
+      [cardImage + "/" + imageHash + "-dark.png", cardImages ? plan.listen : "http_status:404"],
+      [cardImage + "/" + imageHash + "-light.jpg", cardImages ? plan.listen : "http_status:404"],
+      [cardImage + "/", "http_status:404"],
+      [cardImage + "/" + "a".repeat(63) + "-light.webp", "http_status:404"],
+      [cardImage + "/" + imageHash + "-sepia.webp", "http_status:404"],
+      [cardImage + "/" + imageHash + "-light.gif", "http_status:404"],
+      [cardImage + "/" + imageHash + "-light.webp/private", "http_status:404"],
+      [projectAssetRoute, projectAssets ? plan.listen : "http_status:404"],
+      [projectAssetRoute + "/" + imageHash, projectAssets ? plan.listen : "http_status:404"],
+      ["/api/projects/" + uuid + "/assets", "http_status:404"],
+      [projectAssetRoute + "/private", "http_status:404"],
       ["/state", "http_status:404"],
       ["/internal/create", "http_status:404"],
     ]) {

@@ -54,7 +54,9 @@ const MEDIA_TYPES = Object.freeze(
   Object.fromEntries(Object.entries(EXTENSIONS).map(([type, ext]) => [ext, type])),
 );
 const HASH = /^[0-9a-f]{64}$/;
-const FILE = /^([0-9a-f]{64})-(light|dark)\.(webp|png|jpg)$/;
+/** One image's file name in its URL. The live tunnels admit exactly this
+ * shape (scripts/deployment/routes.mjs cardImagePaths). */
+export const CARD_IMAGE_FILE = /^([0-9a-f]{64})-(light|dark)\.(webp|png|jpg)$/;
 /** The Page host's storage key for its last card image revision. */
 export const CARD_IMAGE_REVISION_KEY = "host/card-image-revision";
 /** How many times a pointer swap re-reads after its put was refused. */
@@ -330,7 +332,7 @@ export async function handleCardImage(
     const image = file !== undefined && ["GET", "HEAD"].includes(request.method);
     if (!upload && !pointer && !image)
       throw new HttpError(405, file === undefined ? "Use GET or PUT" : "Use GET or HEAD");
-    const parsed = image ? FILE.exec(file) : null;
+    const parsed = image ? CARD_IMAGE_FILE.exec(file) : null;
     if (image && !parsed) throw new HttpError(404, "Card image not found");
     const url = new URL(request.url);
     const hash = url.searchParams.get("hash");
