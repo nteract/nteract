@@ -5123,6 +5123,7 @@ async fn query_channel_active_env_paths(channel: runt_workspace::BuildChannel) -
 /// hardlink files from the package cache and from each other, so summing
 /// lengths overcounts disk use. Other platforms count every file.
 #[derive(Default)]
+#[cfg_attr(not(unix), allow(dead_code))]
 struct SeenFiles(std::collections::HashSet<(u64, u64)>);
 
 impl SeenFiles {
