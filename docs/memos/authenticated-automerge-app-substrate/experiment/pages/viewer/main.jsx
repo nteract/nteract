@@ -83,7 +83,7 @@ import { reloadGate } from "./build-freshness.mjs";
 import { EditorLoader } from "./editor-loader.mjs";
 import { SessionHost } from "./session-host.mjs";
 import { useStore } from "./store.mjs";
-import { CommentComposer, hasDraftText } from "./comment-composer.mjs";
+import { CommentComposer, draftText, hasDraftText } from "./comment-composer.mjs";
 import { focusReturnTarget } from "./focus-return.mjs";
 import { timer } from "rxjs";
 import { MOBILE_EDITOR_QUERY, trackVisualViewport } from "./visual-viewport.mjs";
@@ -480,7 +480,7 @@ function App() {
       return [
         {
           kind: "comment",
-          body: body?.markdown ?? body,
+          body: draftText(body),
           quote: current.quote,
         },
       ];
@@ -1826,8 +1826,8 @@ function App() {
                       </BlockBoundary>
                     ) : (
                       <section className="opaque" role="note" data-block-error="true">
-                        This block is stored in a form from an earlier version of Pages that
-                        this build doesn&apos;t read.
+                        This block is stored in a form from an earlier version of Pages that this
+                        build doesn&apos;t read.
                       </section>
                     )}
                   </section>

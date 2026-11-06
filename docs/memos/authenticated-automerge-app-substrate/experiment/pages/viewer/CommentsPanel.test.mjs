@@ -59,7 +59,8 @@ const bundled = await build({
         build.onLoad({ filter: /.*/, namespace: "test-comment-editor" }, () => ({
           contents: `import React from "react";
             export function CommentRichText({value, onChange, disabled, label}) {
-              return React.createElement("textarea", {role: "textbox", "aria-label": label, value, disabled, onChange: e => onChange(e.target.value)});
+              // A draft body as the rich editor makes it: its text and spans.
+              return React.createElement("textarea", {role: "textbox", "aria-label": label, value: value?.text ?? value ?? "", disabled, onChange: e => onChange({ text: e.target.value, spans: [{ type: "text", value: e.target.value, marks: {} }] })});
             }
             export function CommentContent({message}) { return React.createElement("p", null, message.body); }`,
           loader: "js",
@@ -275,8 +276,10 @@ test("a passage clicked in the Page opens its thread, switching to Resolved when
 test("reply drafts survive leaving a thread, send with Mod+Enter, and finish after leaving", async (t) => {
   let finish;
   const f = await fixture(t);
-  f.props.session.comment = (action) => {
+  const spans = [];
+  f.props.session.comment = (action, draft) => {
     f.calls.push(action);
+    spans.push(draft);
     return new Promise((resolve) => {
       finish = resolve;
     });
@@ -293,12 +296,8 @@ test("reply drafts survive leaving a thread, send with Mod+Enter, and finish aft
   assert.equal(textarea.value, "Draft for next", "the composer reopens with the draft");
   const sent = await f.key("Enter", textarea, { metaKey: true });
   assert.ok(sent.defaultPrevented);
-  assert.deepEqual(f.calls.at(-1), {
-    action: "reply",
-    thread_id: "next",
-    body: "Draft for next",
-    body_format: "markdown",
-  });
+  assert.deepEqual(f.calls.at(-1), { action: "reply", thread_id: "next" });
+  assert.deepEqual(spans.at(-1), [{ type: "text", value: "Draft for next", marks: {} }]);
   assert.ok(f.view().querySelector(".thread-state-action").disabled, "no resolve while sending");
   await f.click(f.container.querySelector(".comments-back"));
   await act(async () => finish());
