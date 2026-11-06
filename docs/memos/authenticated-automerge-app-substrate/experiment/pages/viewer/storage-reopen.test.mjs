@@ -240,7 +240,10 @@ test("a native replica of a converted Page reopens in place on plain sync, and i
   await until(() => next.commentsDoc, "the restored comments document");
   const threads = Object.values(next.commentsDoc.threads);
   assert.equal(threads.length, 1);
-  assert.equal(String(Object.values(threads[0].messages)[0].body), "Commented before discovery");
+  assert.equal(
+    String(Object.values(threads[0].messages)[0].richText),
+    "Commented before discovery",
+  );
   // The plain socket opened, and the unacknowledged edits went out with a
   // receipt for both documents.
   await until(() => h.sockets.some((s) => s.url.includes("sender=")), "a plain sync socket");

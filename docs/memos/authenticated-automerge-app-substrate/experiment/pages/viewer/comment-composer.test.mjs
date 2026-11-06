@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { loadTable, runTable } from "../shared/machine-test.mjs";
 import { commentComposerMachine } from "./comment-composer-machine.mjs";
-import { CommentComposer, hasDraftText } from "./comment-composer.mjs";
+import { CommentComposer, draftText, hasDraftText } from "./comment-composer.mjs";
 
 const TABLE = new URL("../test/fixtures/machines/comment-composer.json", import.meta.url);
 
@@ -44,25 +44,55 @@ function harness(send = () => "thread-1") {
 const draft = (blockId = "block-a") => ({ blockId, target: { kind: "selection" } });
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
-test("hasDraftText ignores whitespace in Markdown and rich bodies", () => {
+test("hasDraftText reads a rich draft's spans: text or an image counts, whitespace doesn't", () => {
+  const image = {
+    type: "block",
+    value: {
+      type: "image",
+      parents: ["paragraph"],
+      attrs: { src: "/a.png", alt: "" },
+      isEmbed: true,
+    },
+  };
+  const hardBreak = {
+    type: "block",
+    value: { type: "hard-break", parents: ["paragraph"], attrs: {}, isEmbed: true },
+  };
   assert.equal(hasDraftText(""), false);
   assert.equal(hasDraftText("  \n"), false);
-  assert.equal(hasDraftText({ markdown: " ", spans: [] }), false);
+  assert.equal(
+    hasDraftText({ text: " ", spans: [{ type: "text", value: " ", marks: {} }] }),
+    false,
+  );
+  assert.equal(hasDraftText({ text: "\n", spans: [hardBreak] }), false);
   assert.equal(hasDraftText("Note"), true);
-  assert.equal(hasDraftText({ markdown: "Note", spans: [] }), true);
+  assert.equal(
+    hasDraftText({ text: "Note", spans: [{ type: "text", value: "Note", marks: {} }] }),
+    true,
+  );
+  assert.equal(hasDraftText({ text: "", spans: [image] }), true, "an image-only comment");
+  assert.equal(draftText({ text: "Note", spans: [] }), "Note");
+  assert.equal(draftText("Plain"), "Plain");
+  assert.equal(draftText(""), "");
 });
 
 test("closing with text keeps the draft; Continue reopens the same text and passage", () => {
   const { composer, calls, state } = harness();
   assert.equal(composer.start(draft(), "passage"), true);
-  composer.change({ markdown: "Keep me", spans: ["rich"] });
+  composer.change({ text: "Keep me", spans: [{ type: "text", value: "Keep me", marks: {} }] });
   assert.equal(composer.dismiss({ returnFocus: true }), true);
   assert.equal(state().state.name, "dismissed");
-  assert.deepEqual(state().body, { markdown: "Keep me", spans: ["rich"] });
+  assert.deepEqual(state().body, {
+    text: "Keep me",
+    spans: [{ type: "text", value: "Keep me", marks: {} }],
+  });
   assert.equal(composer.reopen(), true);
   assert.deepEqual(state().state, { name: "open", key: "key-1" });
   assert.equal(state().composer.quote, "passage");
-  assert.deepEqual(state().body, { markdown: "Keep me", spans: ["rich"] });
+  assert.deepEqual(state().body, {
+    text: "Keep me",
+    spans: [{ type: "text", value: "Keep me", marks: {} }],
+  });
   assert.deepEqual(calls, [["focusComposer"], ["returnFocus", "block-a"], ["focusComposer"]]);
 });
 
@@ -113,10 +143,14 @@ test("a send writes the body, then closes, flashes the thread and returns focus"
   const pending = deferred();
   const { composer, calls, state } = harness(() => pending.promise);
   composer.start(draft("block-a"));
-  composer.change({ markdown: "Ship it", spans: ["s"] });
+  composer.change({ text: "Ship it", spans: [{ type: "text", value: "Ship it", marks: {} }] });
   assert.equal(composer.submit(), true);
   assert.deepEqual(state().state, { name: "sending", key: "key-1" });
-  assert.deepEqual(calls.at(-1), ["send", "key-1", { markdown: "Ship it", spans: ["s"] }]);
+  assert.deepEqual(calls.at(-1), [
+    "send",
+    "key-1",
+    { text: "Ship it", spans: [{ type: "text", value: "Ship it", marks: {} }] },
+  ]);
   assert.equal(composer.dismiss({ returnFocus: true }), false, "Escape waits for the send");
   assert.equal(composer.start(draft("block-b")), false, "a new passage waits for the send");
   pending.resolve("thread-9");

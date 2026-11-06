@@ -195,7 +195,6 @@ function PopoverSurface({ composer, session, containerRef, state, current, body 
   }
   const disabled = sending || !session.canComment;
   const canSend = !disabled && !uploading && !draftProblem && !draftError && hasDraftText(body);
-  const markdown = body?.markdown ?? body;
   // A draft whose passage went away can't be sent: comment-draft.mjs asks the
   // writer to choose a passage again rather than reattach or detach it.
   const error = draftProblem
@@ -259,9 +258,8 @@ function PopoverSurface({ composer, session, containerRef, state, current, body 
       >
         <CommentRichText
           label={COMMENT_POPOVER_LABEL}
-          value={markdown || ""}
-          nativeSpans={body?.spans}
-          onChange={(text, spans) => composer.change(spans ? { markdown: text, spans } : text)}
+          value={body}
+          onChange={(draft) => composer.change(draft)}
           onError={setDraftError}
           disabled={disabled}
           images={{ pageId: session.pageId, canUpload: session.canComment && session.canWrite }}

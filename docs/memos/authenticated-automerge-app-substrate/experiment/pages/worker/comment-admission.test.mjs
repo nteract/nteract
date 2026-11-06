@@ -174,7 +174,7 @@ test("a commenter editing another author's message is refused before storage and
   const [messageId] = Object.keys(h.comments().threads[threadId].messages);
   // Bob's tab skips the rules and edits Alice's body directly.
   const forged = h.raw(bob.actor, (draft) =>
-    A.updateText(draft, ["threads", threadId, "messages", messageId, "body"], "Rewritten"),
+    A.updateText(draft, ["threads", threadId, "messages", messageId, "richText"], "Rewritten"),
   );
   await assert.rejects(h.store.save(...frame(forged, BOB_KEY)), {
     code: "comment_change_refused",
@@ -183,6 +183,31 @@ test("a commenter editing another author's message is refused before storage and
   });
   assert.equal(h.saved.length, 1, "the refused record was never written");
   assert.deepEqual(h.refused, [{ key: BOB_KEY, code: "not_message_author" }]);
+});
+
+test("a stale tab's old-form comment is refused without blocking its key", async () => {
+  const h = harness();
+  const add = h.write(alice, { block_id: "b1", body: "Alice's" });
+  await h.store.save(...frame(add, ALICE_KEY));
+  const [threadId] = Object.keys(h.comments().threads);
+  const [messageId] = Object.keys(h.comments().threads[threadId].messages);
+  // An earlier build's reply: a Markdown body beside its spans.
+  const stale = h.raw(alice.actor, (draft) => {
+    const message = draft.threads[threadId].messages[messageId];
+    draft.threads[threadId].messages.stale = {
+      body: "Old tab",
+      format: message.format,
+      richText: "Old tab",
+      author: { ...message.author },
+      createdAt: new Date().toISOString(),
+      deletedAt: null,
+    };
+  });
+  await assert.rejects(h.store.save(...frame(stale, ALICE_KEY)), (error) => {
+    assert.equal(error.reason?.code, "outdated_form");
+    return true;
+  });
+  assert.deepEqual(h.refused, [], "the key isn't blocked");
 });
 
 const IMAGE = "/api/assets/p1/" + "a".repeat(64);
@@ -462,7 +487,7 @@ test("an identical resend is refused without decoding while nothing new is admit
   const [threadId] = Object.keys(h.comments().threads);
   const [messageId] = Object.keys(h.comments().threads[threadId].messages);
   const forged = h.raw(bob.actor, (d) =>
-    A.updateText(d, ["threads", threadId, "messages", messageId, "body"], "Forged"),
+    A.updateText(d, ["threads", threadId, "messages", messageId, "richText"], "Forged"),
   );
   const record = frame(forged, BOB_KEY);
   const checked = h.admission.stats.checked;

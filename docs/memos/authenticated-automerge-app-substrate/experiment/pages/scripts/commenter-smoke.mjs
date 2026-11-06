@@ -319,7 +319,7 @@ try {
     })
     .toBe(true);
   await raw.change((doc) =>
-    A.updateText(doc, ["threads", ownerThreadId, "messages", ownerMessageId, "body"], "Forged"),
+    A.updateText(doc, ["threads", ownerThreadId, "messages", ownerMessageId, "richText"], "Forged"),
   );
   await commenter.waitForTimeout(3000);
   await raw.close();
