@@ -1,8 +1,8 @@
 // The Wordgard passage addresses against the ProseMirror traversal they
 // replaced, imported directly (test files are exempt from pm-boundary). The
 // traversal counted a leaf's open and close tags, so after a rule or a
-// dataframe, and at the end of a block whose last character is an inline
-// node, its positions were wrong. It also applied the readable tree's sizes
+// dataframe its positions were wrong, and a block holding nothing but an
+// image got an empty range. It also applied the readable tree's sizes
 // to the stored spans, which differ for a dataframe naming another Page's
 // asset (read as a notice paragraph). A block holding a node it couldn't
 // place made it throw. Everywhere else the two must agree exactly.
@@ -58,8 +58,8 @@ function knownShape(spans) {
     .map((span) => String(span.value.type));
   if (types.includes("horizontal-rule")) return "rule";
   if (types.includes("dataframe")) return "dataframe";
-  const last = spans.at(-1);
-  if (last?.type === "block" && last.value.isEmbed) return "ends with an inline node";
+  if (spans.length && spans.every((span) => span.type === "block" && span.value.isEmbed))
+    return "only inline nodes";
   return null;
 }
 
@@ -95,7 +95,7 @@ test("passage addresses match the ProseMirror traversal except where it miscount
   if (process.env.PAGES_PARITY_REPORT)
     console.log(compared, plain, JSON.stringify(counts), JSON.stringify(differing));
   assert.deepEqual(differing.unexplained ?? [], []);
-  // Enough inputs without a rule, a dataframe or a trailing inline node for
+  // Enough inputs without a rule, a dataframe or an image-only block for
   // the agreement to mean something.
   assert.ok(plain >= 200, `only ${plain} plain inputs`);
 });

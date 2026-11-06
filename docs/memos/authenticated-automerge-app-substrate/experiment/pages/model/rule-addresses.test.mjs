@@ -241,3 +241,31 @@ test("node_index refuses a block whose stored and readable node counts disagree"
   // Without node_index the passage still matches.
   assert.match(replace(doc, id, { match_text: "d", replacement: "e" }).blocks[id].richText, /e$/);
 });
+
+test("a block holding only an image has a range that covers the image", () => {
+  // The image is the implicit first paragraph's only character. It has no
+  // visible text, so no match can land in it; the range still has to hold it,
+  // as every other node's range holds a trailing image.
+  const page = (markdown) => {
+    let doc = A.from(createPageData({ pageId: PAGE_ID, title: "Images" }));
+    doc = A.change(doc, (draft) => initializePage(draft, markdown));
+    return { doc, id: orderedBlockIds(doc)[0] };
+  };
+  const only = page("![chart](https://example.org/a.png)");
+  assert.deepEqual(ranges(only.doc, only.id, 1), [[0, 1]]);
+  // Unchanged: text before a trailing image, and an image-only paragraph
+  // after another node.
+  const caption = page("Caption words ![chart](https://example.org/a.png)");
+  assert.deepEqual(ranges(caption.doc, caption.id, 1), [[0, 15]]);
+  const after = replace(caption.doc, caption.id, {
+    match_text: "words",
+    replacement: "text",
+    node_index: 0,
+  });
+  assert.equal(after.blocks[caption.id].richText, "Caption text \ufffc");
+  const titled = page("# Title\n\n![chart](https://example.org/a.png)");
+  assert.deepEqual(ranges(titled.doc, titled.id, 2), [
+    [0, 6],
+    [6, 8],
+  ]);
+});
