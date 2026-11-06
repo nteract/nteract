@@ -178,7 +178,9 @@ test("a message the rewrite can't keep whole is refused, and the plan is blocked
   ]);
   const { report, writes } = planCommentsNormalization(comments);
   assert.equal(commentsNormalizationBlocked(report), true);
-  assert.deepEqual(report.refused_reasons, { lossy: 1, invalid_content: 1 });
+  assert.deepEqual(report.refused_reasons, { lossy: 1, too_many_lines: 1 });
+  const lines = report.messages.find((message) => message.reason === "too_many_lines");
+  assert.equal(lines.lines, 2001, "the dry run names how many lines it holds");
   assert.equal(writes.length, 1, "the sound message is still planned and reported");
   assert.equal(commentsNormalizationProblems(report).length, 3);
 });

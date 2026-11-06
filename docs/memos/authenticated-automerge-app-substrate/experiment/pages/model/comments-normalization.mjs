@@ -22,7 +22,8 @@
  * writes; the plan still checks that no anchor changed. A message is refused,
  * never written, when its decode is lossy or throws, when the rewrite would
  * delete any character other than a prose newline or add text, or when the
- * result fails the comment content rule (64 KiB of spans, for one). Deleted
+ * result fails the comment content rule (64 KiB of spans, for one; a plain
+ * body with too many lines is reported as `too_many_lines`). Deleted
  * messages are rewritten too, so no old form remains for a reader.
  *
  * Pure: `planCommentsNormalization` measures on a clone and returns the
@@ -35,6 +36,7 @@ import { commentThreads } from "./comments-doc.mjs";
 import { plainCommentText } from "./comment-text.mjs";
 import {
   PLAIN_FORMAT,
+  commentLines,
   plainCommentSpans,
   validateCommentSpans,
   writeCommentSpans,
@@ -189,8 +191,8 @@ export function planCommentsNormalization(doc) {
         const message = messages[messageId];
         const path = ["threads", threadId, "messages", messageId];
         const entry = { thread_id: threadId, message_id: messageId };
-        const refuse = (reason) => {
-          report.messages.push({ ...entry, action: "refused", reason });
+        const refuse = (reason, detail = {}) => {
+          report.messages.push({ ...entry, action: "refused", reason, ...detail });
           report.refused++;
           count(report.refused_reasons, reason);
         };
@@ -239,8 +241,12 @@ export function planCommentsNormalization(doc) {
         }
         try {
           validateCommentSpans(spans);
-        } catch {
-          refuse("invalid_content");
+        } catch (error) {
+          // Too many lines is its own reason, so a dry run finds those
+          // messages: the author can split them before apply.
+          if (error?.code === "comment_too_many_lines")
+            refuse("too_many_lines", { lines: commentLines(spans) });
+          else refuse("invalid_content");
           continue;
         }
         let next;

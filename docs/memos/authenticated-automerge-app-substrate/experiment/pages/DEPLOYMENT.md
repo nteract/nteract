@@ -770,8 +770,10 @@ thread's anchor anyway (`anchors_changed`). A message is refused when its
 decode is lossy (`lossy`) or throws (`undecodable`), when the rewrite would
 delete a character other than a prose newline (`identity_lost`) or change the
 text (`text_changed`), or when the result fails the comment content rule
-(`invalid_content`: for example a plain body whose newlines would need more
-than 64 KiB of hard-break markers). A Page with any refused message is
+(`invalid_content`). A plain body with so many lines that its hard-break
+markers would take more than 64 KiB (roughly 700 short lines) is refused as
+`too_many_lines`, with its line count, so a dry run finds those messages
+before apply; the author can split one into replies, or delete it. A Page with any refused message is
 `partial`, and `apply` writes nothing to it: the gate holds in the Page host
 at apply time. With the text-only length rule, no message can cross the
 16,000-character limit by changing form.

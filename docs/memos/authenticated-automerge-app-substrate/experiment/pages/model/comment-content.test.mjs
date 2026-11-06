@@ -352,3 +352,15 @@ test("invalid native submission rolls back every comment field", () => {
   assert.deepEqual(A.getHeads(doc), heads);
   assert.deepEqual(projectComments(doc), []);
 });
+
+test("a plain comment with too many lines says so, and the source cap counts bytes", () => {
+  const lines = Array.from({ length: 1000 }, (_, i) => `line ${i}`).join("\n");
+  assert.throws(() => add(fixture(), lines, { body_format: "plain" }), (error) => {
+    assert.equal(error.code, "comment_too_many_lines");
+    assert.match(error.message, /too many lines for one comment/);
+    return true;
+  });
+  // 22,000 three-byte characters: under 64 Ki characters, over 64 KiB.
+  assert.throws(() => add(fixture(), "€".repeat(22000), { body_format: "plain" }), /64 KiB/);
+  assert.throws(() => add(fixture(), "€".repeat(22000), { body_format: "plain" }), /bytes/);
+});

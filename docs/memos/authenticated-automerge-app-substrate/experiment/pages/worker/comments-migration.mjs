@@ -204,7 +204,12 @@ export function storedResult(result, now, previous) {
       ...counts,
       refused_messages: (messages ?? [])
         .filter((message) => message.action === "refused")
-        .map(({ thread_id, message_id, reason }) => ({ thread_id, message_id, reason })),
+        .map(({ thread_id, message_id, reason, lines }) => ({
+          thread_id,
+          message_id,
+          reason,
+          ...(lines !== undefined && { lines }),
+        })),
     },
     at: now,
   };

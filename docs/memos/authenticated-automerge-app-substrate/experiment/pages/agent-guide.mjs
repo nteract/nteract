@@ -1429,8 +1429,9 @@ text and retains Markdown for edits to an existing rich message. Explicit
 body_format: "plain" inserts the supplied text literally, including its markers.
 Existing plain messages are not automatically reinterpreted. A message holds at
 most 16,000 text characters (formatting and structure don't count) and 64 KiB of
-rich text; split larger discussions into replies or put the detailed table in
-the document.
+rich text, where each line break takes stored space of its own (a comment of
+roughly 700 short lines is refused with comment_too_many_lines); split larger
+discussions into replies or put the detailed table in the document.
 
 ## Hosted MCP
 

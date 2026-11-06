@@ -16,8 +16,8 @@ import {
 } from "./comment-text.mjs";
 
 export { COMMENT_MAX_BYTES, COMMENT_MAX_LENGTH, PLAIN_FORMAT } from "./comment-text.mjs";
-/** The longest `body` source a tool write may send. The stored content rule
- * still applies to what it parses to. */
+/** The most UTF-8 bytes of `body` source a tool write may send. The stored
+ * content rule still applies to what it parses to. */
 export const COMMENT_MAX_SOURCE = COMMENT_MAX_BYTES;
 
 export function commentMarkdown(message) {
@@ -135,10 +135,27 @@ const LENGTH_MESSAGE = `Comment must contain 1–${COMMENT_MAX_LENGTH} character
  *
  * Throws an Error naming the problem.
  */
+const bytesOf = (value) => new TextEncoder().encode(JSON.stringify(value)).length;
+const isLineBreak = (span) =>
+  span?.type === "block" && span.value?.isEmbed === true && String(span.value.type) === "hard-break";
+
+/** How many lines `spans` hold: one more than their hard breaks. */
+export const commentLines = (spans) => spans.filter(isLineBreak).length + 1;
+
 export function validateCommentSpans(spans) {
   if (!Array.isArray(spans)) throw Error("Rich comment content is not rich text");
-  if (new TextEncoder().encode(JSON.stringify(spans)).length > COMMENT_MAX_BYTES)
+  if (bytesOf(spans) > COMMENT_MAX_BYTES) {
+    // Each line break is a block marker of its own (about 90 bytes stored),
+    // so many short lines can pass the length limit and still overflow.
+    if (bytesOf(spans.filter((span) => !isLineBreak(span))) <= COMMENT_MAX_BYTES)
+      throw Object.assign(
+        Error(
+          `This comment has too many lines for one comment: ${commentLines(spans)} lines take more than 64 KiB, because each line break is stored as its own marker. Split it into replies.`,
+        ),
+        { code: "comment_too_many_lines" },
+      );
     throw Error("Rich comment exceeds 64 KiB content limit");
+  }
   for (const span of spans)
     if (span?.type === "block") {
       if (String(span.value?.type) === DATAFRAME_BLOCK)
@@ -196,7 +213,8 @@ export function setCommentContent(doc, path, input, nativeSpans) {
   else {
     const body = input.body;
     if (typeof body !== "string" || !body.trim()) throw Error(LENGTH_MESSAGE);
-    if (body.length > COMMENT_MAX_SOURCE) throw Error("Comment source exceeds 64 KiB");
+    if (new TextEncoder().encode(body).length > COMMENT_MAX_SOURCE)
+      throw Error("Comment source exceeds 64 KiB (65,536 bytes of UTF-8)");
     spans = format === "markdown" ? markdownCommentSpans(body) : plainCommentSpans(body);
   }
   // Check before writing, so a refused comment leaves nothing behind.
