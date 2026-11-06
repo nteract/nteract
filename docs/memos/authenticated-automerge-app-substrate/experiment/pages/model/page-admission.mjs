@@ -1,70 +1,72 @@
 // Page-body admission: whether a batch of Automerge changes to a Page
 // document writes only content every Pages reader and writer accepts.
 //
-// `admitPageChanges(live, preview)` judges what the batch *changes*. `live`
-// is the admitted document; `preview` is `live` with the batch applied. The
-// batch is judged between `live` and `preview`. The batch's base is the
-// heads its changes depend on outside the batch: what its writer saw. When
-// that isn't `live`'s heads (concurrent edits) and the batch is refused for
-// its structure, size or title, which another writer's edits can cause, it
-// is judged again between views of `preview` at its base and at its own
-// tips, and that answer stands. So an honest frame is admitted whichever
-// concurrent frame the host admitted first. Merging two admitted frames can
-// still leave shapes the tree check refuses; readers repair those
-// (readableSpans in model/richtext-spans.mjs). Reads at older heads cost
-// about a whole-document read, so only those refusals pay for them.
+// `admitPageChanges(live, preview)` judges what the batch changes, between
+// `live` (the admitted document) and `preview` (`live` with the batch
+// applied). Every rule is judged on that merged result, whatever the batch's
+// writer had seen: a frame never gets a second judgment against a base it
+// chose.
 //
-// The patches between the two states (A.diff) name every path the batch
-// writes, and each write is checked against the rule for that path:
+// The patches between the two (A.diff) name every path the batch writes, and
+// each write is checked against the rule for that path:
 //
 //   root key        one of PAGE_ROOT_KEYS (model/page-shape.mjs). page_id
 //                   never changes; page_id, title and blocks are never
 //                   deleted; the schema stamp never loses an id and gains
 //                   only well-formed ones (FEATURE_ID). Deleting any other
 //                   key is cleanup and is admitted.
-//   title           text or a string, at most TITLE_MAX_LENGTH, or no longer
-//                   than it was.
+//   title           text or a string, at most TITLE_MAX_LENGTH once merged,
+//                   or no longer than it was.
 //   block entry     a new entry passes validBlockEntry and its rich text the
 //                   full validateRichSpans check; a written field passes its
 //                   BLOCK_FIELDS rule; no other key, though deleting one is
 //                   admitted.
 //   conflicts       a key the batch puts is checked on every value it holds
-//                   at the batch's tips (getAll), not only the winner the
-//                   patches show; two block entries or objects under one key
-//                   are refused.
+//                   once merged (getAll), not only the winner the patches
+//                   show; two block entries or objects under one key are
+//                   refused.
 //   mark            a mark patch carries name and value: a known mark with a
 //                   registry value (validateMarkValue), or null (removal).
 //                   Text inserted with a mark carries it in its splice patch;
 //                   an unknown or invalid one is admitted only when the text
 //                   beside the insertion point already held exactly that mark
 //                   and value.
-//   typed text      text inserted straight after a rule or dataframe marker,
-//                   which no reader places, is refused unless the base held
-//                   text at that spot already. One marker read per insertion.
 //   block marker    each inserted or changed marker, read on its own at its
 //                   final index (getBlock), passes validateMarkerValue.
 //   block size      a block whose native length grows ends at most
-//                   BLOCK_MAX_LENGTH (backend length, not spans).
+//                   BLOCK_MAX_LENGTH once merged (backend length, not spans).
+//   structure       the block still reads (spansRead): judged by reading the
+//                   block whole, only when the patches can't show it.
 //
-// A batch that inserts, changes or deletes a block marker can change where
-// the block's nodes sit, which no patch shows. That block, and only that
-// block, is read whole: spanTreeErrors on its spans after the batch, and on
-// the base when those fail. The batch is refused only for a tree error it
-// adds (addsTreeError). A delete finds the markers it removed by probing the
-// base at each deleted index, up to MARKER_PROBE_LIMIT characters; a longer
-// delete reads its block. A whole block is also read for a new block, a
-// replaced text object, a `richText` that isn't a text object, or a marker
-// the patch path couldn't place. Typing, short text deletes, formatting and
-// title edits never read a whole block.
+// Structure is held to what readers read, not to validateRichSpans: two
+// valid concurrent edits can merge into a shape only readers' repair reads,
+// such as text one peer typed into a paragraph another deleted after a rule
+// (readableSpans in model/richtext-spans.mjs). Holding merges to the strict
+// check refused whichever of two honest frames arrived second. A block that
+// read before the batch and doesn't after is refused.
+//
+// The whole block is read when the batch inserts, changes or deletes a block
+// marker (a marker can move nodes in ways no patch shows), when text lands
+// straight after a container marker that doesn't hold text, for a new block,
+// a replaced text object, a `richText` that isn't a text object, or a marker
+// the patch path couldn't place, and when the batch's marker probes run out.
+// A delete finds the markers it removed by probing `live` at each deleted
+// index; inserted text is probed at the marker before it. A batch gets
+// PROBE_BUDGET probes across all its blocks; past that, each block it touches
+// further is read whole once. Typing, short deletes, formatting and title
+// edits never read a whole block.
 //
 // Content stored before this check stays: a write is judged by what it
 // writes, so an edit to a block with legacy content is refused only when the
-// edit itself is invalid.
+// edit itself is invalid, and a block that didn't read before is never
+// refused for its structure.
 //
 // Known limits: a concurrent mark or marker attribute that loses to another
 // in the same batch isn't seen (patches show the winner, and losing marks
 // don't surface in reads). Marker attrs and block `metadata` have no
 // per-block size bound of their own; the 16 MiB history bound covers them.
+// Two concurrent frames whose merge readers can't read admit the first to
+// arrive and refuse the second.
 import * as A from "@automerge/automerge/slim";
 import { validateMarkValue, markSpec } from "./marks.mjs";
 import {
@@ -76,9 +78,9 @@ import {
   validBlockEntry,
   validBlockField,
 } from "./page-shape.mjs";
+import { TEXT_CONTAINERS, nodeType } from "./node-registry.mjs";
 import {
-  addsTreeError,
-  spanTreeErrors,
+  spansRead,
   textlessLeaf,
   validateMarkerValue,
   validateRichSpans,
@@ -125,48 +127,18 @@ const reject = (rule) => {
   throw new PageContentRejection(rule);
 };
 
-/** The longest text delete probed marker by marker; a longer one reads its
- * block whole. */
-export const MARKER_PROBE_LIMIT = 64;
+/** Marker probes a batch may make across all its blocks before the blocks
+ * it touches further are read whole instead. */
+export const PROBE_BUDGET = 64;
 
-/** The batch between `live` and `preview`, as `{ before, after }` readers. */
-const mergedFrame = (live, preview) => ({
-  before: reader(A.getBackend(live), { doc: live, heads: A.getHeads(live) }, true),
-  after: reader(A.getBackend(preview), { doc: preview, heads: A.getHeads(preview) }, true),
-});
-
-/** The batch as its writer made it: readers of `preview` at the batch's
- * base (the heads its changes depend on outside the batch) and at its tips.
- * Null when that base is `live`'s heads, so the merged frame is the same. */
-function writerFrame(live, preview) {
-  const liveHeads = A.getHeads(live);
-  const meta = A.getChangesMetaSince(preview, liveHeads);
-  const hashes = new Set(meta.map((change) => change.hash));
-  const deps = new Set(meta.flatMap((change) => change.deps));
-  const base = [...deps].filter((hash) => !hashes.has(hash)).sort();
-  const tips = [...hashes].filter((hash) => !deps.has(hash)).sort();
-  const sorted = [...liveHeads].sort();
-  if (!meta.length || (base.length === sorted.length && base.every((h, i) => h === sorted[i])))
-    return null;
-  const backend = A.getBackend(preview);
-  return {
-    before: reader(backend, { doc: A.view(preview, base), heads: base }, false),
-    after: reader(backend, { doc: A.view(preview, tips), heads: tips }, false),
-  };
-}
-
-/** A marker read that couldn't name the marker's value. */
-const UNKNOWN_MARKER = Object.freeze({ unknown: true });
-
-/** Backend reads at one state's heads. `current` says the backend's own
- * state is at those heads. getBlock reads only a backend's own state, so a
- * marker in an older state is found through a cursor: the character's
- * position now, and the value there if it is still the same character. */
-function reader(backend, state, current) {
+/** Backend reads of one document at its own heads. */
+function reader(doc) {
+  const backend = A.getBackend(doc);
+  const heads = A.getHeads(doc);
   const objectAt = (keys) => {
     let id = "_root";
     for (const key of keys) {
-      const entry = backend.getWithType(id, key, state.heads);
+      const entry = backend.getWithType(id, key, heads);
       if (!entry || !["map", "list", "text"].includes(entry[0])) return null;
       id = entry[1];
     }
@@ -174,21 +146,16 @@ function reader(backend, state, current) {
   };
   const entry = (keys) => {
     const parent = objectAt(keys.slice(0, -1));
-    return parent ? (backend.getWithType(parent, keys.at(-1), state.heads) ?? null) : null;
-  };
-  const texts = new Map();
-  const textAt = (obj, index) => {
-    if (!texts.has(obj)) texts.set(obj, backend.text(obj, state.heads));
-    return texts.get(obj)[index];
+    return parent ? (backend.getWithType(parent, keys.at(-1), heads) ?? null) : null;
   };
   return {
-    ...state,
-    objectAt,
+    doc,
+    heads,
     kind: (keys) => entry(keys)?.[0] ?? null,
     length(keys) {
       const found = entry(keys);
       if (!found) return null;
-      if (found[0] === "text") return backend.length(found[1], state.heads);
+      if (found[0] === "text") return backend.length(found[1], heads);
       if (found[0] === "str") return String(found[1]).length;
       return null;
     },
@@ -196,30 +163,30 @@ function reader(backend, state, current) {
       const found = entry(keys);
       return found?.[0] === "text" ? found[1] : null;
     },
-    /** The marker at `index` of text object `obj`: its value, null for a
-     * character, or UNKNOWN_MARKER for a marker whose value can't be read
-     * here (a concurrent change has since deleted it). */
-    marker(obj, index) {
-      if (current) return backend.getBlock(obj, index) ?? null;
-      let cursor;
-      try {
-        cursor = backend.getCursor(obj, index, state.heads);
-      } catch {
-        return UNKNOWN_MARKER;
-      }
-      const now = backend.getCursorPosition(obj, cursor);
-      if (backend.getCursor(obj, now) === cursor) return backend.getBlock(obj, now) ?? null;
-      return textAt(obj, index) === "\uFFFC" ? UNKNOWN_MARKER : null;
-    },
-    marksAt: (obj, index) => backend.marksAt(obj, index, state.heads) ?? {},
-    textLength: (obj) => backend.length(obj, state.heads),
+    /** The marker at `index` of text object `obj`, or null for a
+     * character. getBlock reads the backend's own state, which is this
+     * document's. */
+    marker: (obj, index) => backend.getBlock(obj, index) ?? null,
+    marksAt: (obj, index) => backend.marksAt(obj, index, heads) ?? {},
+    textLength: (obj) => backend.length(obj, heads),
     all: (keys) => {
       const parent = objectAt(keys.slice(0, -1));
-      return parent ? backend.getAll(parent, keys.at(-1), state.heads) : [];
+      return parent ? backend.getAll(parent, keys.at(-1), heads) : [];
     },
-    readText: (obj) => backend.text(obj, state.heads),
+    readText: (obj) => backend.text(obj, heads),
   };
 }
+
+/** Whether text may follow `marker` directly without moving any node: a
+ * node that holds text, an inline node inside one, or a rule or dataframe
+ * (readers read text after one as a paragraph). */
+const holdsText = (marker) => {
+  const type = String(marker.type);
+  if (TEXT_CONTAINERS.has(type)) return true;
+  const parents = (marker.parents ?? []).map(String);
+  if (marker.isEmbed && parents.some((parent) => TEXT_CONTAINERS.has(parent))) return true;
+  return nodeType(type) !== undefined && textlessLeaf({ ...marker, parents });
+};
 
 function checkMark(name, value) {
   if (value === null || value === undefined) return true;
@@ -238,18 +205,18 @@ function textTracker() {
   return {
     // Marker indexes the batch inserted or changed.
     touched: new Set(),
-    // Edits so far, newest last, to map a position back to the base text.
+    // Edits so far, newest last, to map a position back to `live`'s text.
     edits: [],
-    // Inserted text: where it starts now, and its base position.
+    // Where each run of inserted text starts now.
     inserts: [],
-    // Unknown or invalid marks inserted text carries, at a base position.
+    // Unknown or invalid marks inserted text carries, at a `live` position.
     inherited: [],
     markerChanged: false,
     grew: false,
   };
 }
 
-/** Map a position in the text after `edits` back to the base text.
+/** Map a position in the text after `edits` back to `live`'s text.
  * Positions inside text the batch inserted clamp to its start. */
 function toBase(edits, position) {
   let p = position;
@@ -283,8 +250,8 @@ function shiftInserts(inserts, at, by) {
 }
 
 /** One rich-text patch at `index` (or the text itself when undefined).
- * `probe(i)` says whether the base holds a marker at base index `i`, or
- * returns null when it can't tell. */
+ * `probe(i)` says whether `live` holds a marker at index `i` of this block,
+ * spending one of the batch's probes; it returns null once they run out. */
 function trackText(tracker, patch, index, nested, probe) {
   if (patch.action === "mark" && !nested) {
     for (const mark of patch.marks ?? []) if (!checkMark(mark.name, mark.value)) reject("mark");
@@ -305,7 +272,7 @@ function trackText(tracker, patch, index, nested, probe) {
     const base = toBase(tracker.edits, index);
     tracker.touched = shift(tracker.touched, index, length);
     shiftInserts(tracker.inserts, index, length);
-    tracker.inserts.push({ start: index, base });
+    tracker.inserts.push({ start: index });
     tracker.edits.push({ at: index, inserted: length });
     tracker.grew = true;
     for (const [name, value] of Object.entries(patch.marks ?? {}))
@@ -326,14 +293,11 @@ function trackText(tracker, patch, index, nested, probe) {
       // A deleted marker joins nodes; deleted text never moves one.
       const from = toBase(tracker.edits, index),
         to = toBase(tracker.edits, index + length);
-      if (to - from > MARKER_PROBE_LIMIT) tracker.markerChanged = true;
-      else
-        for (let i = from; i < to; i++) {
-          const found = probe(i);
-          if (found !== false) {
-            tracker.markerChanged = true;
-            break;
-          }
+      for (let i = from; i < to; i++)
+        if (probe(i) !== false) {
+          // A marker, or out of probes: the block is read whole.
+          tracker.markerChanged = true;
+          break;
         }
     }
     tracker.edits.push({ at: index, deleted: length });
@@ -342,16 +306,15 @@ function trackText(tracker, patch, index, nested, probe) {
   }
 }
 
-const treeErrors = (doc, path) => spanTreeErrors(A.spans(doc, path));
-
-function checkBlockText(frame, id, tracker, stats) {
+function checkBlockText(frame, id, tracker, stats, budget) {
   const keys = ["blocks", id, "richText"];
   const { before, after } = frame;
+  const pageId = before.doc.page_id;
   const baseText = before.kind(keys) === "text" ? before.text(keys) : null;
   const afterText = after.text(keys);
   if (tracker.inherited.length) {
     // Text inserted beside a run takes that run's marks. A mark the text
-    // beside the insertion point already held is the base's, not this
+    // beside the insertion point already held is `live`'s, not this
     // batch's.
     for (const { name, value, base } of tracker.inherited) {
       const beside = [];
@@ -367,28 +330,23 @@ function checkBlockText(frame, id, tracker, stats) {
   let unsure = false;
   if (afterText !== null && tracker.inserts.length) {
     const length = after.textLength(afterText);
-    for (const { start, base } of tracker.inserts) {
-      if (start === 0 || start >= length || after.marker(afterText, start)) continue;
-      const leaf = after.marker(afterText, start - 1);
-      if (!leaf) continue;
-      if (leaf === UNKNOWN_MARKER) {
+    for (const { start } of tracker.inserts) {
+      if (start === 0 || start >= length) continue;
+      if (!budget.spend(2)) {
         unsure = true;
-        continue;
+        break;
       }
-      if (!textlessLeaf(leaf)) continue;
-      // Text a merge already left after the leaf takes more typing.
-      if (baseText === null || base === 0 || base >= before.textLength(baseText))
-        reject("structure");
-      const here = before.marker(baseText, base),
-        prior = before.marker(baseText, base - 1);
-      if (here === UNKNOWN_MARKER || prior === UNKNOWN_MARKER) unsure = true;
-      else if (here !== null || !prior || !textlessLeaf(prior)) reject("structure");
+      // Inserted text that starts at a marker didn't survive the batch.
+      if (after.marker(afterText, start)) continue;
+      const prior = after.marker(afterText, start - 1);
+      // Text after text, or after a node that takes text, moves no node.
+      if (prior && !holdsText(prior)) unsure = true;
     }
   }
   let placed = true;
   for (const index of tracker.touched) {
     const value = afterText === null ? null : after.marker(afterText, index);
-    if (!value || value === UNKNOWN_MARKER) {
+    if (!value) {
       placed = false;
       continue;
     }
@@ -405,10 +363,9 @@ function checkBlockText(frame, id, tracker, stats) {
   }
   if (tracker.markerChanged || !placed || unsure) {
     stats.fullReads++;
-    const errors = treeErrors(after.doc, keys);
-    if (errors === null) return;
-    const baseErrors = baseText === null ? null : treeErrors(before.doc, keys);
-    if (addsTreeError(baseErrors, errors)) reject("structure");
+    if (spansRead(A.spans(after.doc, keys), pageId)) return;
+    // A block that didn't read before isn't this batch's doing.
+    if (baseText !== null && spansRead(A.spans(before.doc, keys), pageId)) reject("structure");
   }
 }
 
@@ -478,23 +435,23 @@ function checkConflicts(frame, path) {
   }
 }
 
-/** Rules a concurrent batch may break only by meeting another writer's
- * edits: re-judged at the writer's own base. */
-const MERGE_RULES = new Set(["structure", "block_size", "title"]);
-
 function check(live, preview, stats) {
-  try {
-    judge(mergedFrame(live, preview), preview, stats);
-  } catch (error) {
-    if (!(error instanceof PageContentRejection) || !MERGE_RULES.has(error.rule)) throw error;
-    const writer = writerFrame(live, preview);
-    if (!writer) throw error;
-    // Reads at older heads cost about as much as reading the document
-    // whole, so only these refusals come here.
-    stats.writerView = true;
-    judge(writer, preview, stats);
-  }
+  judge({ before: reader(live), after: reader(preview) }, preview, stats);
   return stats;
+}
+
+/** The batch's marker probes: `spend(n)` takes `n` of them, or answers false
+ * once they have run out. */
+function probeBudget(stats) {
+  let left = PROBE_BUDGET;
+  return {
+    spend(n = 1) {
+      if (left < n) return false;
+      left -= n;
+      stats.probes += n;
+      return true;
+    },
+  };
 }
 
 function judge(frame, preview, stats) {
@@ -508,9 +465,16 @@ function judge(frame, preview, stats) {
     fields = new Map(),
     texts = new Map(),
     puts = [];
+  const budget = probeBudget(stats);
+  const probes = new Map();
   const probe = (id) => {
-    const baseText = before.text(["blocks", id, "richText"]);
-    return (index) => (baseText === null ? null : before.marker(baseText, index) !== null);
+    if (!probes.has(id)) {
+      const baseText = before.text(["blocks", id, "richText"]);
+      probes.set(id, (index) =>
+        baseText === null || !budget.spend() ? null : before.marker(baseText, index) !== null,
+      );
+    }
+    return probes.get(id);
   };
   for (const patch of patches) {
     const path = patch.path;
@@ -587,7 +551,7 @@ function judge(frame, preview, stats) {
     }
     for (const [id, tracker] of texts) {
       if (newBlocks.has(id) || !Object.hasOwn(blocks ?? {}, id)) continue;
-      checkBlockText(frame, id, tracker, stats);
+      checkBlockText(frame, id, tracker, stats, budget);
     }
   }
   for (const path of puts) checkConflicts(frame, path);
@@ -602,7 +566,7 @@ function judge(frame, preview, stats) {
  * is modified.
  */
 export function admitPageChanges(live, preview) {
-  const stats = { patches: 0, fullReads: 0 };
+  const stats = { patches: 0, fullReads: 0, probes: 0 };
   try {
     return { ok: true, stats: check(live, preview, stats) };
   } catch (error) {

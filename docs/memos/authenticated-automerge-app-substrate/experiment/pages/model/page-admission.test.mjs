@@ -2,7 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import { applyPageOperation, createPageData, initializePage, orderedBlockIds } from "./page.mjs";
-import { INVALID_PAGE_CONTENT, admitPageChanges, requirePageContent } from "./page-admission.mjs";
+import {
+  INVALID_PAGE_CONTENT,
+  PROBE_BUDGET,
+  admitPageChanges,
+  requirePageContent,
+} from "./page-admission.mjs";
+import { spansRead } from "./richtext-spans.mjs";
 import { BLOCK_MAX_LENGTH, TITLE_MAX_LENGTH } from "./page-shape.mjs";
 import { RICH_FORMAT, textPath } from "./richtext.mjs";
 
@@ -423,10 +429,9 @@ test("concurrent honest edits are admitted in either arrival order and converge"
       for (const [name, answer] of Object.entries(run.answers))
         assert.equal(answer.ok, true, `${label}, ${name}: ${JSON.stringify(answer.reason)}`);
     assert.deepEqual(A.spans(one.live, path), A.spans(two.live, path));
-    // The delete arriving second met the typed text, and was judged as its
-    // writer made it.
-    assert.equal(one.answers.deleted.stats.writerView, true);
-    assert.equal(two.answers.typed.stats.writerView, true);
+    // Readers read the converged block: the typed text as a paragraph
+    // beside the leaf.
+    assert.ok(spansRead(A.spans(one.live, path), pageId));
   }
 });
 
@@ -455,7 +460,10 @@ const marker = (type, parents = [], attrs = {}) => ({
 });
 const run = (value, marks) => ({ type: "text", value, ...(marks && { marks }) });
 
-test("text typed straight after a rule or dataframe is refused without reading the block", () => {
+test("text typed straight after a rule or dataframe reads as a paragraph and is admitted", () => {
+  // Readers read text after a leaf as a paragraph beside it: the shape a
+  // merge leaves when one peer types into a node another deletes. A frame
+  // gets the same answer whether it or a merge made the shape.
   const src = `/api/pages/${pageId}/assets/${assetId}`;
   for (const leaf of [
     marker("horizontal-rule"),
@@ -470,13 +478,24 @@ test("text typed straight after a rule or dataframe is refused without reading t
     ]);
     const [, at] = markerIndexes(doc, path);
     const result = admit(doc, (d) => A.splice(d, path, at + 1, 0, "stray"));
-    refusedFor("structure", result);
-    assert.equal(result.stats.fullReads, 0, "refused from one marker read");
-    // Typing inside the paragraph after it is fine.
-    const inside = admit(doc, (d) => A.splice(d, path, at + 3, 0, "fine"));
-    assert.equal(inside.ok, true);
-    assert.equal(inside.stats.fullReads, 0);
+    assert.equal(result.ok, true, JSON.stringify(result.reason));
+    assert.equal(result.stats.fullReads, 0, "one marker read, no block read");
   }
+});
+
+test("text typed straight after a container marker that holds no text is refused", () => {
+  const { doc, path } = spansPage([
+    marker("table"),
+    marker("table-row", ["table"]),
+    marker("table-cell", ["table", "table-row"]),
+    run("cell"),
+    marker("paragraph"),
+    run("after"),
+  ]);
+  const [, row] = markerIndexes(doc, path);
+  const result = admit(doc, (d) => A.splice(d, path, row + 1, 0, "stray"));
+  refusedFor("structure", result);
+  assert.equal(result.stats.fullReads, 1, "the block was read to judge it");
 });
 
 test("text a merge left after a rule takes more typing, at its start too", () => {
@@ -537,23 +556,37 @@ test("deleting an unknown root key or block field is cleanup, and admitted", () 
 });
 
 test("a marker deleted by a plain text delete is judged by reading its block", () => {
-  // Deleting the paragraph marker after a rule leaves its text straight
-  // after the rule, which the tree check can't place here.
+  // Deleting a table cell's marker leaves its text straight in the row,
+  // which no reader places.
   const { doc, path } = spansPage([
+    marker("paragraph"),
     run("Intro"),
-    marker("horizontal-rule"),
+    marker("table"),
+    marker("table-row", ["table"]),
+    marker("table-cell", ["table", "table-row"]),
+    run("cell"),
     marker("paragraph"),
     run("after"),
   ]);
-  const at = markerIndexes(doc, path).at(-1);
-  refusedFor(
-    "structure",
-    admit(doc, (d) => A.splice(d, path, at, 1)),
-  );
+  const cell = markerIndexes(doc, path)[3];
+  const result = admit(doc, (d) => A.splice(d, path, cell, 1));
+  refusedFor("structure", result);
+  assert.equal(result.stats.fullReads, 1);
   // Deleting text beside it reads nothing.
-  const text = admit(doc, (d) => A.splice(d, path, at + 1, 2));
+  const text = admit(doc, (d) => A.splice(d, path, cell + 1, 2));
   assert.equal(text.ok, true);
   assert.equal(text.stats.fullReads, 0);
+});
+
+test("a frame's marker probes share one budget; past it, its block is read once", () => {
+  const { doc, path } = spansPage([marker("paragraph"), run("x".repeat(4000))]);
+  // 200 one-character deletes, far apart.
+  const result = admit(doc, (d) => {
+    for (let i = 3900; i > 0; i -= 19) A.splice(d, path, i, 1);
+  });
+  assert.equal(result.ok, true);
+  assert.ok(result.stats.probes <= PROBE_BUDGET, `${result.stats.probes} probes`);
+  assert.equal(result.stats.fullReads, 1);
 });
 
 test("a block with a conflict on a field this frame writes is checked on every value", () => {
@@ -569,4 +602,72 @@ test("a block with a conflict on a field this frame writes is checked on every v
   });
   const preview = A.merge(A.clone(one), two);
   refusedFor("block_entry", admitPageChanges(doc, preview));
+});
+
+test("a stale frame that breaks a merge rule is still judged on every other rule", () => {
+  const base = page("Body");
+  // Since the frame's base, the host stamped a feature and grew the title.
+  const live = A.change(A.clone(base, { actor: "0c".repeat(16) }), (d) => {
+    d.schema.features.push("hologram");
+    A.updateText(d, ["title"], "t".repeat(TITLE_MAX_LENGTH - 3));
+  });
+  // The frame replaces the stamp, dropping the host's feature, and grows the
+  // title past the bound once merged.
+  const frame = A.change(A.clone(base, { actor: "0d".repeat(16) }), (d) => {
+    d.schema = { features: [...d.schema.features] };
+    A.splice(d, ["title"], 0, 0, "longer ");
+  });
+  const preview = A.merge(A.clone(live), frame);
+  const result = admitPageChanges(live, preview);
+  assert.equal(result.ok, false, "the frame is refused");
+  A.free(preview);
+});
+
+test("concurrent frames can't grow a block or title past its bound together", () => {
+  const base = page("Body");
+  const id = blockOf(base);
+  const path = textPath(id);
+  const grow = (actor, fn) => A.change(A.clone(base, { actor }), fn);
+  const half = Math.ceil(BLOCK_MAX_LENGTH * 0.6);
+  const frames = {
+    one: grow("1a".repeat(16), (d) => A.splice(d, path, 1, 0, "a".repeat(half))),
+    two: grow("1b".repeat(16), (d) => A.splice(d, path, 1, 0, "b".repeat(half))),
+  };
+  const { answers } = arrive(base, frames, ["one", "two"]);
+  assert.equal(answers.one.ok, true);
+  refusedFor("block_size", answers.two);
+  const titles = {
+    one: grow("2a".repeat(16), (d) => A.splice(d, ["title"], 0, 0, "a".repeat(700))),
+    two: grow("2b".repeat(16), (d) => A.splice(d, ["title"], 0, 0, "b".repeat(700))),
+  };
+  const titled = arrive(base, titles, ["one", "two"]);
+  assert.equal(titled.answers.one.ok, true);
+  refusedFor("title", titled.answers.two);
+});
+
+test("a stale frame deleting the block's last character gets an answer, not an error", () => {
+  const { doc, path } = spansPage([
+    marker("paragraph"),
+    run("Intro"),
+    marker("paragraph"),
+    run("tail"),
+  ]);
+  const length = doc.blocks[path[1]].richText.length;
+  // The host deleted the block's last paragraph.
+  const live = A.change(A.clone(doc, { actor: "3a".repeat(16) }), (d) =>
+    A.splice(d, path, length - 5, 5),
+  );
+  // A stale frame deletes the last character and grows the title past the
+  // bound once merged with a long title the host also took.
+  const longLive = A.change(live, (d) =>
+    A.updateText(d, ["title"], "t".repeat(TITLE_MAX_LENGTH - 2)),
+  );
+  const frame = A.change(A.clone(doc, { actor: "3b".repeat(16) }), (d) => {
+    A.splice(d, path, length - 1, 1);
+    A.splice(d, ["title"], 0, 0, "abcdef");
+  });
+  const preview = A.merge(A.clone(longLive), frame);
+  const result = admitPageChanges(longLive, preview);
+  assert.equal(typeof result.ok, "boolean");
+  A.free(preview);
 });
