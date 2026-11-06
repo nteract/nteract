@@ -132,6 +132,7 @@ was a caret race in the smoke; the editor side is
 | Native table editing | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:tables` | Uses the running Wordgard fixture |
 | Passage edits and revision deltas | `PAGES_ORIGIN=http://localhost:9894 node scripts/passages-changes-smoke.mjs` | Uses the running Wordgard fixture |
 | Reload banner placement, browser presence labels, leaving a final code block, checkbox indent | `PAGES_ORIGIN=http://localhost:9894 node scripts/editor-chrome-smoke.mjs` | Uses the running Wordgard fixture |
+| Heading links: a fragment scrolls to its heading, Go to section from a table cell link, the # copies a heading's link, another Page's heading opens in place | `PAGES_ORIGIN=http://localhost:9894 node scripts/heading-anchors-smoke.mjs` | Uses the running Wordgard fixture |
 | Local creation and navigation | `PAGES_ORIGIN=http://localhost:9894 node scripts/navigation-smoke.mjs` | Uses the running Wordgard fixture |
 | Editing, comments, links, diagrams, and recovery | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:editor` | Uses the running Wordgard fixture |
 | History growth and typing latency | `PAGES_ORIGIN=http://localhost:9894 node scripts/latency-smoke.mjs` | Uses the running Wordgard fixture |
@@ -346,6 +347,26 @@ references; it does not publish the Page or change asset access.
 - **Links:** click for Open, Edit, and Remove; Cmd/Ctrl-click opens directly and
   Cmd/Ctrl+K edits. Incoming edits update or dismiss the link control, and URL
   policy applies both to stored content and navigation.
+- **Heading links:** every heading has an anchor, a slug of its visible text
+  (lowercase, punctuation and symbols dropped, whitespace runs as one hyphen,
+  letters and digits of every script kept, at most 100 code points), numbered
+  `-1`, `-2`, … for repeats in document order; a heading with no letters or
+  digits is `section`. [`model/heading-anchors.mjs`](model/heading-anchors.mjs)
+  computes them from the stored spans each time the document is read. Nothing
+  stores them, so no schema feature or migration is involved, and renaming a
+  heading changes its anchor. The viewer and `read_page` (`anchor` on an
+  outline heading entry) read the same function. A link to `#anchor` or
+  `/p/<page_id>#anchor` is an ordinary link mark. The `#` beside a heading
+  under the pointer copies its link. A fragment in the address scrolls to its
+  heading once the Page has synced and drawn it, waiting up to 15 seconds, and
+  scrolls again while late layout above it settles; the reader scrolling,
+  typing or clicking first cancels it
+  ([`viewer/HeadingAnchors.jsx`](viewer/HeadingAnchors.jsx),
+  [`viewer/heading-links.mjs`](viewer/heading-links.mjs)). Links in a Page to
+  this app's Pages and Projects open in place, without a reload or new tab;
+  modified clicks still open a tab. The editor's DOM gets no ids: a heading is
+  found by its block and its ordinal among the block's headings. Touch screens
+  have no hover, so copying a heading's link there needs the address bar.
 - **Code and diagrams:** three backticks on an empty paragraph followed by Enter
   or Space creates code; a language can follow the backticks. Mermaid renders
   through nteract's Pele renderer and SVG sanitizer. Compact Edit diagram,
@@ -406,8 +427,9 @@ references; it does not publish the Page or change asset access.
 
 ## Opening, recovery, and ownership
 
-Canonical links are `/p/<page_id>`; browser Back/Forward restores the corresponding
-Page and legacy query links normalize. Direct links work independently of the
+Canonical links are `/p/<page_id>`, with `#anchor` for a heading (see Heading
+links); browser Back/Forward restores the corresponding Page and heading, and
+legacy query links normalize, keeping the fragment. Direct links work independently of the
 catalog but never bypass Page permissions.
 
 Browser creation allocates the Page and history locally, persists them to

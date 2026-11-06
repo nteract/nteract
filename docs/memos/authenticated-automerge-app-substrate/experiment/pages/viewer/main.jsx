@@ -264,8 +264,14 @@ function App() {
   const pickerFailed =
     pickerSnapshot.state.name === "failed" || pickerSnapshot.state.name === "checking";
   // Rendered only beside a session; handlers read editor.module when they run.
-  const { WordgardEditor, CommentsPanel, CommentPopover, SaveStatus, PageControls } =
-    editor.module ?? {};
+  const {
+    WordgardEditor,
+    CommentsPanel,
+    CommentPopover,
+    SaveStatus,
+    PageControls,
+    HeadingAnchors,
+  } = editor.module ?? {};
   const auth = useRef(null),
     authentication = useRef(null),
     // Where the installed Page is (projects.mjs watchPageLocation), asked
@@ -551,10 +557,10 @@ function App() {
    * inside the same fenced navigation, without rewriting the address. */
   async function open(
     id,
-    { focus = false, historyMode = "push", nameIt = false, projectId = null } = {},
+    { focus = false, historyMode = "push", nameIt = false, projectId = null, anchor = null } = {},
   ) {
     if (historyMode !== "none")
-      writePageRoute(projectId ?? id, { replace: historyMode === "replace" });
+      writePageRoute(projectId ?? id, { replace: historyMode === "replace", anchor });
     bootPreview.dispatch({ type: "navigated", pageId: id });
     picker.close();
     setNotice("");
@@ -643,13 +649,19 @@ function App() {
       principal: authentication.current?.identity?.principal ?? null,
     };
   }
-  function openProject(projectId, { historyMode = "push" } = {}) {
+  function openProject(projectId, { historyMode = "push", anchor = null } = {}) {
     if (host.current && placement?.kind === "project" && placement.project_id === projectId) {
-      if (historyMode !== "none") writePageRoute(projectId, { replace: historyMode === "replace" });
+      if (historyMode !== "none")
+        writePageRoute(projectId, { replace: historyMode === "replace", anchor });
       setProjectOpen(projectId);
       return;
     }
-    return open(null, { projectId, historyMode });
+    return open(null, { projectId, historyMode, anchor });
+  }
+  /** A link in Page content to another Page or Project (HeadingAnchors). */
+  function openRoute(route, anchor) {
+    if (route.kind === "page") void open(route.pageId, { anchor });
+    else if (route.kind === "project") void openProject(route.projectId, { anchor });
   }
   /** Show an index route (readPageRoute's `projects` or `pages`). */
   function openIndex(route, { historyMode = "push" } = {}) {
@@ -1675,6 +1687,16 @@ function App() {
             >
               <article ref={article}>
                 <h1 className="document-print-title sr-only">{page.title || "Untitled"}</h1>
+                {HeadingAnchors && (
+                  <HeadingAnchors
+                    article={article}
+                    session={session}
+                    projectId={projectOpen}
+                    onOpenRoute={openRoute}
+                    onNotice={setNotice}
+                    onError={setError}
+                  />
+                )}
                 {placement?.kind === "project" && placement.project_id ? (
                   <ProjectChip
                     projectId={placement.project_id}

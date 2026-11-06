@@ -306,6 +306,31 @@ test("outline-only reads expose revision-bound node addresses and no content blo
   assert.deepEqual(read(doc, { include_content: false, search: ["More"] }).blocks, []);
 });
 
+test("outline headings carry the anchor that links to them", () => {
+  const doc = page([
+    { id: "one", markdown: "# Plan\n\n> ## Plan\n\nBody.\n\n## Getting lean: Automerge" },
+    { id: "two", markdown: "## Plan\n\n## ✨" },
+  ]);
+  const headings = read(doc, { include_content: false }).outline.filter(
+    (entry) => entry.type === "heading",
+  );
+  // The quoted heading is inside a top-level quote, so it has no entry of its
+  // own, but it still takes "plan-1" in document order.
+  assert.deepEqual(
+    headings.map(({ block_id, heading, anchor }) => ({ block_id, heading, anchor })),
+    [
+      { block_id: "one", heading: "Plan", anchor: "plan" },
+      { block_id: "one", heading: "Getting lean: Automerge", anchor: "getting-lean-automerge" },
+      { block_id: "two", heading: "Plan", anchor: "plan-2" },
+      { block_id: "two", heading: "✨", anchor: "section" },
+    ],
+  );
+  const paragraph = read(doc, { include_content: false }).outline.find(
+    (entry) => entry.type === "paragraph",
+  );
+  assert.equal("anchor" in paragraph, false);
+});
+
 test("invalid selectors are typed and never mutate the captured document", () => {
   const doc = page([{ id: "one", markdown: "# Heading\n\nBody" }]),
     heads = A.getHeads(doc);

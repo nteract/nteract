@@ -4,6 +4,7 @@ import { readableNodeIds } from "./node-ids.mjs";
 import { readableImageIds } from "./image-ids.mjs";
 import { DATAFRAME_TITLE_MAX, parseAssetPath, readDataframe } from "../shared/dataset-assets.mjs";
 import { requireRich } from "./richtext-format.mjs";
+import { headingAnchorsByBlock } from "./heading-anchors.mjs";
 import { quotableNodeType } from "./richtext-notices.mjs";
 import { schema } from "./pm-adapter.mjs";
 import { exportMarkdown } from "./pm-markdown-serializer.mjs";
@@ -100,18 +101,21 @@ const markdownFor = (nodes) => exportMarkdown(schema.node("doc", null, nodes));
 function indexNodes(doc) {
   const nodes = [],
     trees = new Map(),
-    headings = [];
+    headings = [],
+    anchorsByBlock = headingAnchorsByBlock(doc);
   for (const blockId of orderedBlockIds(doc)) {
     const block = requireRich(doc.blocks[blockId]),
       tree = richDoc(block, doc.page_id),
       ids = readableNodeIds(doc, blockId, tree),
-      imageIds = readableImageIds(doc, blockId, tree);
+      imageIds = readableImageIds(doc, blockId, tree),
+      anchors = blockAnchors(tree, anchorsByBlock.get(blockId) ?? []);
     trees.set(blockId, tree);
     tree.forEach((node, _offset, nodeIndex) => {
       const entry = { blockId, nodeIndex, node, nodeId: ids[nodeIndex]?.id ?? null, imageIds };
       if (node.type.name === "heading") {
         entry.heading = visibleText(node);
         entry.level = node.attrs.level;
+        entry.anchor = anchors.get(nodeIndex);
         while (headings.length && headings.at(-1).level >= entry.level) headings.pop();
         headings.push(entry);
       }
@@ -120,6 +124,24 @@ function indexNodes(doc) {
     });
   }
   return { nodes, trees };
+}
+
+/** Each top-level heading's anchor (model/heading-anchors.mjs), by node
+ * index. Anchors count every heading in the block's spans, nested ones too,
+ * so they're matched to the tree by ordinal. A block whose tree draws a
+ * different number of headings than its spans hold (a node this build reads
+ * as a notice) reports none rather than a wrong one. */
+function blockAnchors(tree, anchors) {
+  const byIndex = new Map();
+  let ordinal = 0;
+  tree.forEach((node, _offset, nodeIndex) => {
+    if (node.type.name === "heading") byIndex.set(nodeIndex, anchors[ordinal++]);
+    else
+      node.descendants((child) => {
+        if (child.type.name === "heading") ordinal++;
+      });
+  });
+  return ordinal === anchors.length ? byIndex : new Map();
 }
 
 /** The most per-item values (task states, column alignments) an outline
@@ -255,7 +277,14 @@ function outlineEntry(entry, pageId) {
     heading_path: entry.headingPath,
     // Bytes of this node's standalone Markdown projection, excluding inter-node separators.
     markdown_bytes: utf8.encode(markdownFor([entry.node])).byteLength,
-    ...(entry.heading !== undefined ? { heading: entry.heading, level: entry.level } : {}),
+    ...(entry.heading !== undefined
+      ? {
+          heading: entry.heading,
+          level: entry.level,
+          // Link to it as [text](#anchor) on this Page, /p/<page_id>#anchor elsewhere.
+          ...(entry.anchor !== undefined && { anchor: entry.anchor }),
+        }
+      : {}),
     ...nodeFields(entry.node, { pageId, maxItems: OUTLINE_MAX_ITEMS, imageIds: entry.imageIds }),
   };
 }

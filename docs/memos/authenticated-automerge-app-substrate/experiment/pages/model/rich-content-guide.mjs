@@ -62,9 +62,14 @@ const blockList = () => BLOCK_SYNTAX.map(([, syntax]) => syntax);
 const join = (items) => `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
 const diagram = `A \`\`\`${DIAGRAM_LANGUAGE} code block renders as a diagram for people (its language must be exactly ${DIAGRAM_LANGUAGE})`;
 
-/** The Markdown Pages accepts, in one sentence. */
+/** How to link to a heading (model/heading-anchors.mjs), in one sentence. */
+export function headingLinks() {
+  return "Link to a heading with [text](#anchor), using the anchor read_page's outline reports for it, or [text](/p/<page_id>#anchor) for a heading on another Page; people go straight to it.";
+}
+
+/** The Markdown Pages accepts, in a few sentences. */
 export function markdownSyntax() {
-  return `Pages stores Markdown as native rich text: ${join(inlineList())}; ${join(blockList())}. Highlight colors are ${HIGHLIGHT_COLORS.join(", ")} or #rrggbb. ${diagram}. Math ($…$) and raw HTML are refused with unsupported_markdown; escape a literal $ or < with a backslash.`;
+  return `Pages stores Markdown as native rich text: ${join(inlineList())}; ${join(blockList())}. Highlight colors are ${HIGHLIGHT_COLORS.join(", ")} or #rrggbb. ${diagram}. ${headingLinks()} Math ($…$) and raw HTML are refused with unsupported_markdown; escape a literal $ or < with a backslash.`;
 }
 
 /** The typed fields read_page's outline entries and read_page_changes'

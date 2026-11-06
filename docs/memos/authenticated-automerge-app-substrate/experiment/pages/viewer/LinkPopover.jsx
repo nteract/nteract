@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ExternalLink, Pencil, Unlink, X } from "lucide-react";
+import { ArrowDownRight, ExternalLink, Pencil, Unlink, X } from "lucide-react";
 import { linkDestination } from "./link-destination.mjs";
+import { inAppLink } from "./heading-links.mjs";
 import "./link-popover.css";
 
 export function LinkPopover({ view, target, editable, editing, onEdit, onChange, onClose }) {
@@ -10,6 +11,10 @@ export function LinkPopover({ view, target, editable, editing, onEdit, onChange,
   const [error, setError] = useState("");
   const [position, setPosition] = useState({ left: 12, top: 12, visibility: "hidden" });
   const destination = linkDestination(target.attrs.href, location.href);
+  // A link to this app opens in place (HeadingAnchors follows the click);
+  // one to a heading on this Page reads as going there.
+  const inApp = destination ? inAppLink(destination, location.href) : null;
+  const toSection = !!inApp?.samePage && !!inApp.anchor;
   const positioned = position.visibility !== "hidden";
   useEffect(() => {
     setHref(target.attrs.href);
@@ -125,8 +130,23 @@ export function LinkPopover({ view, target, editable, editing, onEdit, onChange,
       ) : (
         <div className="link-popover-actions">
           {destination && (
-            <a href={destination} target="_blank" rel="noopener noreferrer">
-              <ExternalLink size={16} aria-hidden="true" /> Open link
+            <a
+              href={destination}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={() => {
+                if (inApp) onClose(false);
+              }}
+            >
+              {toSection ? (
+                <>
+                  <ArrowDownRight size={16} aria-hidden="true" /> Go to section
+                </>
+              ) : (
+                <>
+                  <ExternalLink size={16} aria-hidden="true" /> Open link
+                </>
+              )}
             </a>
           )}
           {editable && (
