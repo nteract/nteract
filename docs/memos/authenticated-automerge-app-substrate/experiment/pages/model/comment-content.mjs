@@ -3,7 +3,7 @@ import { RICH_FORMAT, isRich } from "./richtext-format.mjs";
 import { storedFormUnsupported } from "./stored-form.mjs";
 import { parseAgentMarkdown } from "./markdown-import.mjs";
 import { updateSpansConfig } from "./marks.mjs";
-import { exportMarkdown } from "./pm-markdown-serializer.mjs";
+import { exportMarkdown } from "./markdown-serializer.mjs";
 import { pageSpans, richDoc, validateRichSpans } from "./richtext-spans.mjs";
 import { decode, encode } from "./wordgard-doc.mjs";
 import { stampSpans } from "./schema-features.mjs";

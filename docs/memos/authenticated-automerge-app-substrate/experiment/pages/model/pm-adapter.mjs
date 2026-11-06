@@ -1,8 +1,8 @@
-// ProseMirror boundary. model/pm-adapter.mjs, model/pm-markdown-parser.mjs
-// and model/pm-markdown-serializer.mjs are the only production Pages modules
-// that import ProseMirror packages (@automerge/prosemirror, prosemirror-*);
-// model/pm-boundary.test.mjs checks it. Other modules reach ProseMirror trees,
-// and the span adapter through these three.
+// ProseMirror boundary. model/pm-adapter.mjs and model/pm-markdown-parser.mjs
+// are the only production Pages modules that import ProseMirror packages
+// (@automerge/prosemirror, prosemirror-*); model/pm-boundary.test.mjs checks
+// it. Other modules reach ProseMirror trees and the span adapter through
+// these two.
 //
 // The ProseMirror schema and its Automerge span adapter. Markdown import and
 // export and validation still read Pages spans through it. Node addressing

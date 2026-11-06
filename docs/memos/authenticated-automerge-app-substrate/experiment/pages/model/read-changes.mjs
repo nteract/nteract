@@ -8,7 +8,7 @@ import { readableImageIds } from "./image-ids.mjs";
 import { commentMessageState, commentThreadState } from "./comment-content.mjs";
 import { requireRich } from "./richtext-format.mjs";
 import { schema } from "./pm-adapter.mjs";
-import { exportMarkdown } from "./pm-markdown-serializer.mjs";
+import { exportMarkdown } from "./markdown-serializer.mjs";
 import { richDoc } from "./richtext-spans.mjs";
 import { blockMarkdown } from "./richtext-page.mjs";
 

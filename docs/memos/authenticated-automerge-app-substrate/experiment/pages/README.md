@@ -158,9 +158,14 @@ Authoring receipts warn about likely duplicates without removing or hiding text.
 
 Wordgard is the sole editor and applies native text splices, marks, and
 structural spans. The shared Markdown codec still uses the ProseMirror schema
-and span adapter for import/export, validation, and the node content outlines
-and change reads report. It does not own an editor or mediate Wordgard
-keystrokes. Page-body Markdown writes and browser structural edits
+and span adapter for import, validation, and the node content outlines and
+change reads report. It does not own an editor or mediate Wordgard
+keystrokes. Markdown export serializes Wordgard's tree
+(`model/markdown-serializer.mjs`); a block's projection reads its spans with
+`decode`, except shapes `decode` reads differently from the adapter (a marker
+under an unknown container, a newline stored as prose text), which still read
+through the adapter. `model/markdown-serializer.test.mjs` pins the output
+against frozen Markdown from the ProseMirror serializer it replaced. Page-body Markdown writes and browser structural edits
 share one span encoder, Wordgard's `encode` (`model/wordgard-doc.mjs`):
 
 - Browser edits encode the editor's document.
@@ -177,7 +182,7 @@ module does.
 
 Block types are declared once in `model/node-registry.mjs`: stored names,
 ProseMirror names, agent-facing names, settable attrs and insert operations.
-The ProseMirror schema and serializer, Wordgard's decode and encode, and
+The ProseMirror schema, Wordgard's decode and encode, and
 `features.json` still define types in their own terms;
 `node-registry.test.mjs` fails when one of them disagrees with the registry.
 A top-level node's id (`model/node-ids.mjs`) is an Automerge cursor at the
@@ -189,8 +194,9 @@ decoded tree and its position maps (`model/node-addresses.mjs`), checked
 against frozen expectations over the Markdown corpus, random editor trees and
 stored shapes (`model/node-addresses.test.mjs`). `set_node` still addresses
 nodes through `match_text`. Replacing the codec means, in order: one
-span encoder for every writer; node reads by id; then outlines, change reads
-and Markdown on that node tree instead of ProseMirror.
+span encoder for every writer; node reads by id; Markdown export from that
+node tree; then outlines, change reads, validation and parsing on it instead
+of ProseMirror.
 Existing documents, comment anchors and MCP addresses must survive each step.
 
 Each Pages block has its own continuous editor. Moves update fractional positions without recreating the block or its

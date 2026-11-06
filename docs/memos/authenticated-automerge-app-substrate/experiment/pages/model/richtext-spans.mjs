@@ -12,7 +12,7 @@ import {
 import { DATAFRAME_BLOCK, parseAssetPath, readDataframe } from "../shared/dataset-assets.mjs";
 import { decode, encode } from "./wordgard-doc.mjs";
 import { adapter, pmDocFromSpans, pmNodeToSpans } from "./pm-adapter.mjs";
-import { exportMarkdown } from "./pm-markdown-serializer.mjs";
+import { exportMarkdown } from "./markdown-serializer.mjs";
 import { codeTextUnmarked, isRich } from "./richtext-format.mjs";
 import { unknownNodeNotice } from "./richtext-notices.mjs";
 

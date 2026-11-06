@@ -9,7 +9,8 @@
 //
 // Inputs: the stored shapes, the Markdown corpus as rich text and the seeded
 // random editor trees of test/address-inputs.mjs; the corpus in the
-// ProseMirror adapter's span form; deeper random trees; and the shapes below.
+// ProseMirror adapter's span form; deeper random trees; the shapes below; and
+// the corpus and seeded random sources through the parser.
 //
 // Regenerate only when an input or an intended projection changes:
 // PAGES_UPDATE_MARKDOWN=1 npm exec -- tsx --tsconfig tsconfig.json --test model/markdown-serializer.test.mjs
@@ -327,6 +328,63 @@ function parsedObservations() {
     agent: attempt(() => exportMarkdown(parseAgentMarkdown(markdown))),
   }));
 }
+// Markdown syntax fragments for random sources, as richtext-gate.test.mjs
+// uses: the parser's trees for them hold marks on hard breaks and images and
+// lists that start past 1, which stored content never does.
+const PIECES = [
+  ..." \t\r\n",
+  "\n\n",
+  "\u00a0",
+  ...'>-+*_[]:x</|$`\\#~!()"=3&',
+  "[ ]",
+  "[x]",
+  "<mark>",
+  "</mark>",
+  "<br>",
+  "<!--",
+  "---",
+  "~~",
+  "| --- |",
+  "| a | b |",
+  "$$",
+  "```",
+  "    ",
+  "1.",
+  "2. ",
+  "&amp;",
+  "http://x",
+  "<http://y>",
+  "](",
+  "![i](p)",
+  "[a](http://x)",
+  "[r]: u",
+  "**",
+  "__",
+  "  \n",
+  "- [ ] ",
+  "> ",
+  "# ",
+  "a",
+  "b c",
+];
+/** Seeded random Markdown sources, exported straight from the parser. */
+function randomParsedObservations(count = 300) {
+  let seed = 0x5eed;
+  const random = (n) => {
+    seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
+    return (seed >>> 8) % n;
+  };
+  return Array.from({ length: count }, (_, index) => {
+    let source = "";
+    for (let length = random(20); length >= 0; length--) source += PIECES[random(PIECES.length)];
+    return {
+      name: `parsed-random/${index}`,
+      hash: hash(source),
+      literal: attempt(() => exportMarkdown(parseMarkdown(source))),
+      agent: attempt(() => exportMarkdown(parseAgentMarkdown(source))),
+    };
+  });
+}
 const observeAll = () => [
   ...storedInputs().map(({ name, spans }) => ({
     name,
@@ -334,6 +392,7 @@ const observeAll = () => [
     ...observe(spans, name.startsWith("random/")),
   })),
   ...parsedObservations(),
+  ...randomParsedObservations(),
 ];
 
 // One input per line, so a change shows up as a readable diff.
@@ -358,4 +417,15 @@ test("every projection matches the frozen Markdown", () => {
     assert.deepEqual(entry, expected, entry.name);
   }
   assert.equal(mismatches.length, 0);
+});
+
+test("a hard break stored in a code block reads as a line of the code", () => {
+  // The ProseMirror read can't place it and refused the block.
+  const { doc, id } = pageWithSpans([
+    block("code-block", [], { params: "js" }),
+    text("a"),
+    block("hard-break", ["code-block"], {}, true),
+    text("b"),
+  ]);
+  assert.equal(blockMarkdown(doc.blocks[id], doc.page_id), "```js\na\nb\n```");
 });

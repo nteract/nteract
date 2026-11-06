@@ -45,7 +45,6 @@ import {
   TableRow,
   TaskChecked,
   TaskList,
-  schema,
 } from "./wordgard-doc.mjs";
 
 // --- Marks -----------------------------------------------------------------
@@ -663,16 +662,18 @@ const NODES = {
   },
 };
 
-/** Pages Markdown for a Wordgard document (`decode(spans).doc`, or a doc
- * holding a slice of one's top-level nodes). */
-export function treeMarkdown(doc) {
+/** Pages Markdown for top-level editor nodes. */
+function nodesMarkdown(nodes) {
   const state = new State(NODES, literalHighlightTag);
-  state.renderContent(doc);
+  nodes.forEach((node, index) => state.render(node, null, index));
   // Markdown has no empty paragraph. The serializer writes an empty leading
   // paragraph as a blank line, which parsers ignore, so drop it rather than
   // suggest the newline is content. The pattern is anchored at the start.
   return escapeLiteralSyntax(state.out.replace(/^\n+/, ""));
 }
+/** Pages Markdown for a Wordgard document (`decode(spans).doc`, or a doc
+ * holding a slice of one's top-level nodes). */
+export const treeMarkdown = (doc) => nodesMarkdown(doc.content);
 
 // --- ProseMirror trees --------------------------------------------------------
 
@@ -698,7 +699,9 @@ const pmChildren = (node) => {
 /** The editor nodes a ProseMirror node reads as. Shapes the editor model
  * doesn't produce but the parser does (an ordered list's start, marks on an
  * image or a hard break, text holding a newline) are kept, because the
- * serializer reads them. An unknown block's children follow its notice. */
+ * serializer reads them; so the nodes are built without schema validation,
+ * never into a Wordgard document. An unknown block's children follow its
+ * notice. */
 function fromProseMirror(node) {
   const attrs = node.attrs;
   switch (node.type.name) {
@@ -774,5 +777,5 @@ const isProseMirror = (doc) => typeof doc?.type?.schema === "object";
  * (the Markdown parser's output, richDoc), read into a Wordgard document
  * first. */
 export function exportMarkdown(doc) {
-  return treeMarkdown(isProseMirror(doc) ? schema.doc(pmChildren(doc)) : doc);
+  return nodesMarkdown(isProseMirror(doc) ? pmChildren(doc) : doc.content);
 }
