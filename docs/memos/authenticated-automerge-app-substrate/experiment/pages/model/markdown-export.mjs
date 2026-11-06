@@ -1,7 +1,7 @@
 import * as A from "@automerge/automerge/slim";
 import MarkdownIt from "markdown-it";
 import { adapter, pmDocFromSpans } from "./pm-adapter.mjs";
-import { exportMarkdown } from "./pm-markdown-serializer.mjs";
+import { exportMarkdown } from "./markdown-serializer.mjs";
 import { codeTextUnmarked } from "./richtext-format.mjs";
 
 const markdown = new MarkdownIt({ html: false });

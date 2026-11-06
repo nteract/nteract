@@ -8,11 +8,7 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 // Production code: these directories, recursively, and the root modules.
 // scripts/ is dev tooling and may use ProseMirror directly.
 const PRODUCTION_DIRS = ["authz", "model", "shared", "sync", "viewer", "worker"];
-const PM_MODULES = [
-  "model/pm-adapter.mjs",
-  "model/pm-markdown-parser.mjs",
-  "model/pm-markdown-serializer.mjs",
-];
+const PM_MODULES = ["model/pm-adapter.mjs", "model/pm-markdown-parser.mjs"];
 const PM_IMPORT =
   /(?:from\s*|import\s*\(\s*|import\s+|require\s*\(\s*)["'](?:@automerge\/prosemirror|prosemirror-[a-z-]+)(?:\/[^"']*)?["']/;
 const SOURCE = /\.(mjs|cjs|js|jsx|ts|tsx)$/;

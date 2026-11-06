@@ -8,8 +8,8 @@ import { readableImageIds } from "./image-ids.mjs";
 import { commentMessageState, commentThreadState } from "./comment-content.mjs";
 import { requireRich } from "./richtext-format.mjs";
 import { schema } from "./pm-adapter.mjs";
-import { exportMarkdown } from "./pm-markdown-serializer.mjs";
-import { richDoc } from "./richtext-spans.mjs";
+import { exportMarkdown } from "./markdown-serializer.mjs";
+import { projectionDoc } from "./richtext-spans.mjs";
 import { blockMarkdown } from "./richtext-page.mjs";
 
 export const CHANGE_READ_DEFAULT_BYTES = 128 * 1024;
@@ -73,7 +73,7 @@ function options(args) {
 // could report the wrong one.
 function nativeNodes(doc, blockId, headings) {
   const block = doc.blocks[blockId],
-    tree = richDoc(block, doc.page_id),
+    tree = projectionDoc(block, doc.page_id),
     objectId = A.getObjectId(block, "richText"),
     entries = [];
   let ids;
