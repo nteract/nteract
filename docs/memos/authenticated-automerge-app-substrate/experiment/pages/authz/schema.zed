@@ -82,8 +82,11 @@ definition project {
 	permission share = administer
 	permission manage_members = administer
 
-	/** create_items adds items to the project. */
-	permission create_items = administer
+	/**
+	 * create_items adds items to the project: owner and editor. An item an
+	 * editor adds is still owned by the project's owner.
+	 */
+	permission create_items = contribute
 
 	/** trash and restore move the project's items to and from Trash. */
 	permission trash = administer

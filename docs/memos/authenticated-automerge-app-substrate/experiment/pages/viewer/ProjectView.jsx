@@ -26,8 +26,8 @@ function PageRows({ rows, onOpen }) {
 }
 
 /** Under a Project's content: its Pages and an
- * inline "+ New Page" row that adds one at the top level. Owner only; the
- * caller decides. `pages` are the Project's listed Pages. */
+ * inline "+ New Page" row that adds one at the top level. For the Project's
+ * owner and editors; the caller decides. `pages` are the Project's listed Pages. */
 export function ProjectPages({ title, pages, onOpen, onCreate, creating = false }) {
   const rows = projectTree(pages);
   return (

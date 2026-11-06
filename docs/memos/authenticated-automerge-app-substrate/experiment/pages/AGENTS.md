@@ -20,8 +20,11 @@ use [DEPLOYMENT.md](DEPLOYMENT.md) for release targets and qualification.
   Browser replicas and UI state do not confer access or establish remote
   durability. Keep host checks aligned across plain Automerge sync and tool
   writes.
-- Projects organize Pages. Project membership is currently owner-only, and Page
-  sharing uses direct grants. Do not infer inherited access from a Page's location.
+- Projects organize Pages. Project members (viewer, commenter, editor) inherit
+  access to every Page in a Project. Every Page in a Project is owned by the
+  Project owner: a Page an editor adds lands in the owner's Catalog and quota.
+  Only the owner shares, moves or trashes Project Pages. Direct Page grants
+  never reach a Page's Project, siblings or descendants.
 
 ## Editing contracts
 

@@ -254,6 +254,18 @@ import {
 } from "./project-access.mjs";
 import { invitedProjects } from "./project-invitations.mjs";
 import {
+  FORWARD_REJECTED_HEADER,
+  PROJECT_CREATE_PATH,
+  fenceMoved,
+  forwardAnswer,
+  forwardKey,
+  forwardedCreationState,
+  forwardedCreationTransition,
+  projectOwnerQuotaError,
+  requireCreateItems,
+  validForwardId,
+} from "./project-create.mjs";
+import {
   MAX_DEPTH,
   deriveLocation,
   planMove,
@@ -280,7 +292,13 @@ import {
   resolveProjectContent,
 } from "./project-content.mjs";
 import { countedStorage } from "./catalog-counts.mjs";
-import { forwardedPageLimit, quotaError, quotaRefusal, resolvePageQuota } from "./page-quota.mjs";
+import {
+  forwardedPageLimit,
+  quotaError,
+  quotaRefusal,
+  resolvePageQuota,
+  validPageLimit,
+} from "./page-quota.mjs";
 import { serialQueue, serialQueueBounds } from "./serial-queue.mjs";
 import { opensIndex } from "./account-index-machine.mjs";
 import { holdUntilSettled } from "./request-hold.mjs";
@@ -375,6 +393,8 @@ async function requireProjectReader(request, env, spaceId) {
  * Storage keeps the Space name so a rollback build reads the same records;
  * project-api.mjs maps callers' Project names onto these. */
 const spaceOperations = ["create_space", "list_spaces", "get_space", "update_space"];
+/** The Page limit this Catalog's own gateway last resolved (rememberPageLimit). */
+const PAGE_LIMIT_KEY = "host/page-limit";
 /** Catalog-owned Page lifecycle operations and the Page route each one uses. */
 const lifecycleRoutes = {
   delete_page: "/internal/trash",
@@ -1471,6 +1491,22 @@ export class Catalog {
           throw new HttpError(403, "Account access denied");
       }
       const query = await readJson(request);
+      if (query?.creation_of !== undefined) {
+        // A Page host checking a forwarded creation (Page
+        // requireDelegatedCreation): the creator this Catalog reserved the
+        // Page for, while the creation is still pending. Host only.
+        if (request.headers.has("authorization") || request.headers.has("cookie"))
+          throw new HttpError(403, "Host only");
+        if (!validPageId(query.creation_of)) throw new HttpError(400, "Invalid creation_of");
+        const entry = await this.storage.get(`page/${query.creation_of}`);
+        if (!entry?.pending || typeof entry.creator !== "string")
+          throw new HttpError(404, "No pending creation");
+        return json({
+          page_id: entry.page_id,
+          creator: entry.creator,
+          owner_name: typeof entry.owner_name === "string" ? entry.owner_name : null,
+        });
+      }
       const { entries, contents } = await locationScan(this.storage);
       if (query?.project_content !== undefined) {
         if (request.headers.has("authorization") || request.headers.has("cookie"))
@@ -1736,6 +1772,9 @@ export class Catalog {
           await this.storage.put(key, { ...previous, content_updated_at: content });
         return json({ ok: true });
       }
+      // A Project member's create_page, forwarded by the member's Catalog.
+      // It runs as the member, so it comes before the own-account check.
+      if (pathname === PROJECT_CREATE_PATH) return await this.projectCreate(request);
       const identity = await authenticate(request, this.env);
       if (this.ctx.id.name && this.ctx.id.name !== identity.principal)
         throw new HttpError(403, "Account access denied");
@@ -1755,8 +1794,11 @@ export class Catalog {
       }
       const args = body.arguments ?? {};
       const limit = forwardedPageLimit(body.page_limit, this.env);
-      if (body.operation === "list_pages")
+      if (body.operation === "list_pages") {
+        // The owner's listing is where a forwarded creation learns its limit.
+        await this.rememberPageLimit(body.page_limit);
         return await this.listPages(request, identity, args, limit);
+      }
       if (body.operation === "page_cards") return await this.pageCards(request, identity, args);
       if (body.operation === "list_spaces") return await this.listSpaces(request, identity, args);
       if (body.operation === "get_space") return await this.getSpace(request, args);
@@ -1846,6 +1888,13 @@ export class Catalog {
           limit,
           principal: identity.principal,
         });
+      // A placement in a Project another account owns goes to that owner's
+      // Catalog; this Catalog keeps only the forwarding record.
+      if (
+        body.operation === "create_page" &&
+        (inspected.entry ? !!inspected.entry.forward : await this.placedElsewhere(args))
+      )
+        return await this.forwardCreate(request, identity, args, { key, digest, inspected });
       let intent = inspected.entry;
       if (intent && !intent.pending) {
         // A previous attempt may have stored its receipt before sync failed.
@@ -1889,49 +1938,419 @@ export class Catalog {
           },
         });
       }
-      const pageId = intent.pageId;
-      const pending = await this.storage.get(`page/${pageId}`);
-      if (!pending) throw new Error("A pending creation has no Catalog entry");
-      // A resumed creation checks its parent again: the parent may have
-      // moved to Trash since the intent was reserved. The intent stays
-      // pending; restoring the parent and retrying finishes it.
-      if (inspected.entry && pending.parent_id) await this.activeParent(pending.parent_id);
-      // The Page learns its content and owner, never its location.
-      const response = await this.env.PAGES.getByName(pageId).fetch(
-        forwarded(
-          request,
-          registering ? "/internal/register" : "/internal/create",
-          registering
-            ? { ...args, page_id: pageId }
-            : { title: args.title, markdown: args.markdown, page_id: pageId },
-        ),
-      );
-      if (!response.ok && response.headers.get("x-pages-create-rejected") === "before-intent") {
-        // Only this explicit pre-intent rejection proves there is no Page
-        // creation to recover. Ambiguous failures retain their reservation.
-        await this.storage.delete(`page/${pageId}`);
-        await this.storage.delete(key);
-        await this.storage.sync();
-      }
-      if (!response.ok) return response;
-      // The receipt reports the location this Catalog recorded.
-      intent.receipt = {
-        ...(await response.json()),
-        ...receiptLocation(await locationEntries(this.storage), pageId),
-      };
-      intent.pending = false;
-      const { pending: _pending, ...created } = pending;
-      const entry = { ...created, title: catalogTitle(intent.receipt.title) };
-      // The mark lands before the entry, so no listing reads D1 without the
-      // new Page; the owner's row is written after the response.
-      const marks = await markPagesForIndex(this.env, this.storage, [pageId]);
-      await this.storage.put({ [key]: intent, [`page/${pageId}`]: entry });
-      await this.storage.sync();
-      this.indexInBackground(identity.principal, [{ entry, state: "active" }], marks);
-      return json(intent.receipt);
+      return await this.completeCreation(request, {
+        key,
+        intent,
+        args,
+        registering,
+        resumed: !!inspected.entry,
+        owner: identity.principal,
+      });
     } catch (error) {
       return errorResponse(error, "catalog");
     }
+  }
+
+  /** Finish a reserved create_page or register_page: the Page host creates
+   * the document, then this Catalog commits the entry and the receipt. A
+   * pending entry with a `creator` is a forwarded creation (projectCreate):
+   * the Page host learns this Catalog's account as its owner and checks the
+   * creator with this Catalog before it accepts. */
+  async completeCreation(request, { key, intent, args, registering = false, resumed, owner }) {
+    const pageId = intent.pageId;
+    const pending = await this.storage.get(`page/${pageId}`);
+    if (!pending) throw new Error("A pending creation has no Catalog entry");
+    // A resumed creation checks its parent again: the parent may have
+    // moved to Trash since the intent was reserved. The intent stays
+    // pending; restoring the parent and retrying finishes it.
+    if (resumed && pending.parent_id) await this.activeParent(pending.parent_id);
+    const delegated = typeof pending.creator === "string";
+    // The Page learns its content and owner, never its location.
+    const response = await this.env.PAGES.getByName(pageId).fetch(
+      forwarded(
+        request,
+        registering ? "/internal/register" : "/internal/create",
+        registering
+          ? { ...args, page_id: pageId }
+          : {
+              title: args.title,
+              markdown: args.markdown,
+              page_id: pageId,
+              ...(delegated && { owner }),
+            },
+      ),
+    );
+    if (!response.ok && response.headers.get("x-pages-create-rejected") === "before-intent") {
+      // Only this explicit pre-intent rejection proves there is no Page
+      // creation to recover. Ambiguous failures retain their reservation.
+      await this.storage.delete(`page/${pageId}`);
+      await this.storage.delete(key);
+      await this.storage.sync();
+    }
+    if (!response.ok) return response;
+    // The receipt reports the location this Catalog recorded.
+    intent.receipt = {
+      ...(await response.json()),
+      ...receiptLocation(await locationEntries(this.storage), pageId),
+    };
+    intent.pending = false;
+    // The owner's display name only served the Page host's check.
+    const { pending: _pending, owner_name: _ownerName, ...created } = pending;
+    const entry = { ...created, title: catalogTitle(intent.receipt.title) };
+    // The mark lands before the entry, so no listing reads D1 without the
+    // new Page; the owner's row is written after the response.
+    const marks = await markPagesForIndex(this.env, this.storage, [pageId]);
+    await this.storage.put({ [key]: intent, [`page/${pageId}`]: entry });
+    await this.storage.sync();
+    this.indexInBackground(owner, [{ entry, state: "active" }], marks);
+    return json(intent.receipt);
+  }
+
+  /** Remember the Page limit this account's gateway resolved for its own
+   * listing, so a Project member's forwarded creation applies the owner's
+   * limit (projectCreate). The owner's verified email never reaches a
+   * member's request. Written only when it changes. */
+  async rememberPageLimit(limit) {
+    if (!validPageLimit(limit)) return;
+    if ((await this.storage.get(PAGE_LIMIT_KEY))?.limit === limit) return;
+    await this.storage.put(PAGE_LIMIT_KEY, { limit, at: Date.now() });
+  }
+
+  /** The limit a forwarded creation applies: the last one this account's
+   * gateway resolved for a listing, or the target default before then. */
+  async ownerPageLimit() {
+    return forwardedPageLimit((await this.storage.get(PAGE_LIMIT_KEY))?.limit, this.env);
+  }
+
+  /** Whether create_page's placement names a Project or parent this account
+   * doesn't hold: a parent with no entry of its own, or a Project with no
+   * `space/` record. Such a placement is a Project member's request. */
+  async placedElsewhere(args) {
+    if (args.parent_id !== undefined && args.parent_id !== null) {
+      const parentId = requirePageIdArgument(args.parent_id, "parent_id");
+      if (args.space_id !== undefined && args.space_id !== null)
+        requireSpaceIdArgument(args.space_id);
+      return (
+        !(await this.storage.get(`page/${parentId}`)) &&
+        !(await this.storage.get(`trash/${parentId}`))
+      );
+    }
+    if (args.space_id === undefined || args.space_id === null) return false;
+    return !(await this.storage.get(`space/${requireSpaceIdArgument(args.space_id)}`));
+  }
+
+  /** The policy snapshot of Project `spaceId` as its owner `owner` holds it:
+   * `{ space_id, owner, owner_name, acl }`. Host only, never the caller's
+   * credential. */
+  async projectPolicy(spaceId, owner) {
+    const response = await this.env.PROJECTS.getByName(spaceId).fetch(
+      new Request("https://pages.internal/internal/space/policy", {
+        method: "POST",
+        body: JSON.stringify({ space_id: spaceId, owner }),
+      }),
+    );
+    if (response.status === 404) throw spaceNotFound();
+    if (!response.ok) throw new HttpError(503, "Project is temporarily unavailable");
+    return response.json();
+  }
+
+  /** Where a member's create_page goes: `{ owner, space_id, parent_id,
+   * fence }`. A parent names its owner (the Page host answers to a reader)
+   * and its Project (the owner's Catalog derives it). The caller must hold
+   * create_items on that Project at ACL revision `fence`. A Project or
+   * parent the caller can't open looks missing, as it does today. */
+  async projectCreateTarget(request, identity, args) {
+    const spaceArg =
+      args.space_id === undefined || args.space_id === null
+        ? null
+        : requireSpaceIdArgument(args.space_id);
+    const parentId =
+      args.parent_id === undefined || args.parent_id === null
+        ? null
+        : requirePageIdArgument(args.parent_id, "parent_id");
+    const parentMissing = () =>
+      new HttpError(
+        404,
+        "Parent Page not found. Sub-pages go under Pages you own, or Pages in a Project where you're an editor.",
+        "parent_unavailable",
+      );
+    let owner;
+    let spaceId = spaceArg;
+    if (parentId) {
+      const page = await this.env.PAGES.getByName(parentId).fetch(
+        forwarded(request, "/internal/catalog", {}),
+      );
+      if (!page.ok) throw parentMissing();
+      owner = (await page.json()).owner;
+      if (typeof owner !== "string" || owner === identity.principal) throw parentMissing();
+      const located = await this.env.CATALOGS.getByName(owner).fetch(
+        new Request("https://pages.internal/internal/location", {
+          method: "POST",
+          body: JSON.stringify({ page_id: parentId }),
+        }),
+      );
+      if (!located.ok) throw parentMissing();
+      const location = await located.json();
+      if (location.state === "trashed")
+        throw new HttpError(
+          409,
+          "The parent Page is in Trash; restore it before adding Pages under it",
+          "parent_unavailable",
+        );
+      if (location.state !== "active" || location.content || !location.complete)
+        throw parentMissing();
+      if (!location.space_id) throw parentMissing();
+      if (spaceArg && location.space_id !== spaceArg)
+        throw new HttpError(
+          400,
+          "parent_id is not in that Project. Omit project_id: a parent implies its Project.",
+          "placement_mismatch",
+        );
+      spaceId = location.space_id;
+    } else {
+      const read = await this.env.PROJECTS.getByName(spaceArg).fetch(
+        forwarded(request, "/internal/space/read", { space_id: spaceArg }),
+      );
+      if (read.status === 404) throw spaceNotFound();
+      if (!read.ok) throw new HttpError(503, "Project is temporarily unavailable");
+      owner = (await read.json()).owner;
+      if (typeof owner !== "string" || owner === identity.principal) throw spaceNotFound();
+    }
+    const record = await this.projectPolicy(spaceId, owner);
+    requireCreateItems(record, identity, parentId ? parentMissing : spaceNotFound);
+    return { owner, space_id: spaceId, parent_id: parentId, fence: record.acl?.revision ?? 0 };
+  }
+
+  /**
+   * A Project member's create_page from this Catalog, driven by the
+   * forwarding-record machine (project-create.mjs). The record lives under
+   * the caller's idempotency key and names the owner-side forward_id, so a
+   * retry resumes the creation the owner's Catalog reserved. The caller's
+   * own Page limit is untouched; the owner's Catalog applies its owner's.
+   */
+  async forwardCreate(request, identity, args, { key, digest, inspected }) {
+    const storage = this.storage;
+    let record = inspected.entry;
+    let state = forwardedCreationState(record);
+    let event = { type: "request" };
+    let target;
+    let fence = null;
+    let fences = 0;
+    for (;;) {
+      const step = forwardedCreationTransition(state, event.type);
+      state = step.state;
+      switch (step.effect) {
+        case "replay": {
+          // A previous attempt may have stored its receipt before sync failed.
+          await storage.sync();
+          const replay = json(record.receipt);
+          replay.headers.set(REPLAYED_RECEIPT_HEADER, "1");
+          return replay;
+        }
+        case "resolve":
+          try {
+            target = await this.projectCreateTarget(request, identity, args);
+            event = { type: "authorized" };
+          } catch (error) {
+            event = { type: "denied", error };
+          }
+          break;
+        case "reserve":
+          record = await reserveOperation(storage, {
+            key,
+            retry: inspected.retry,
+            entry: {
+              fingerprint: digest,
+              pending: true,
+              forward: {
+                forward_id: crypto.randomUUID(),
+                owner: target.owner,
+                space_id: target.space_id,
+                ...(target.parent_id && { parent_id: target.parent_id }),
+              },
+            },
+          });
+          await storage.put(key, record);
+          fence = target.fence;
+          event = { type: "reserved" };
+          break;
+        case "fence": {
+          // The revision this attempt carries. A forward the owner already
+          // reserved ignores it; a new one is refused unless it is current.
+          const { owner, space_id } = record.forward;
+          fence = await this.projectPolicy(space_id, owner).then(
+            (policy) => policy.acl?.revision ?? 0,
+            (error) => {
+              if (error.code !== "project_not_found") throw error;
+              return null;
+            },
+          );
+          event = { type: "fenced" };
+          break;
+        }
+        case "forward": {
+          const { forward_id, owner, space_id, parent_id } = record.forward;
+          const response = await this.env.CATALOGS.getByName(owner).fetch(
+            forwarded(request, PROJECT_CREATE_PATH, {
+              forward_id,
+              fence,
+              space_id,
+              ...(parent_id && { parent_id }),
+              title: args.title,
+              markdown: args.markdown,
+            }),
+          );
+          const body = await response
+            .clone()
+            .json()
+            .catch(() => null);
+          event = { ...forwardAnswer(response, body, ++fences), response };
+          break;
+        }
+        case "complete":
+          record = { ...record, pending: false, receipt: event.receipt };
+          await storage.put(key, record);
+          await storage.sync();
+          return json(record.receipt);
+        case "release":
+          // The owner's Catalog reserved nothing: this key is free again.
+          await storage.delete(key);
+          await storage.sync();
+          return event.response;
+        case "reply":
+          if (event.error) throw event.error;
+          return event.response;
+        default:
+          throw new Error(`Unknown forwarded creation effect ${step.effect}`);
+      }
+    }
+  }
+
+  /**
+   * The owner's side of a Project member's create_page (forwardCreate). It
+   * runs in this Catalog's queue as the member, whose credential the Page
+   * host needs to issue the member's edit authority. The new Page is this
+   * account's: it takes a slot of this account's Page limit and its entry
+   * records the member as `creator`.
+   *
+   * A new forward is checked here before anything is reserved: the ACL
+   * revision fence the member decided at, create_items for the member,
+   * this account's limit, and the placement. Each refusal says it reserved
+   * nothing (FORWARD_REJECTED_HEADER). A reserved forward resumes or
+   * replays without deciding again: reservation was the authorized moment,
+   * so a creation completes once even if the member's role changes after.
+   */
+  async projectCreate(request) {
+    const storage = this.storage;
+    const owner = this.ctx.id.name;
+    let reserved = false;
+    try {
+      const identity = await authenticate(request, this.env);
+      requireWrite(identity);
+      if (!owner || identity.principal === owner)
+        throw new HttpError(400, "A forwarded creation comes from a Project member");
+      const body = await readJson(request);
+      if (!validForwardId(body?.forward_id)) throw new HttpError(400, "Invalid forward_id");
+      requireSpaceIdArgument(body.space_id);
+      const parentId =
+        body.parent_id === undefined ? null : requirePageIdArgument(body.parent_id, "parent_id");
+      if (body.fence !== null && !Number.isSafeInteger(body.fence))
+        throw new HttpError(400, "Invalid fence");
+      validateCreateInput(body);
+      await this.locationShape();
+      const key = forwardKey(body.forward_id);
+      const digest = await fingerprint(
+        "create_page_forwarded",
+        {
+          forward_id: body.forward_id,
+          space_id: body.space_id,
+          parent_id: parentId,
+          title: body.title,
+          markdown: body.markdown,
+        },
+        identity,
+      );
+      let intent = await storage.get(key);
+      if (intent && intent.fingerprint !== digest)
+        throw new HttpError(
+          409,
+          "idempotency_key was used for a different request",
+          "idempotency_conflict",
+        );
+      reserved = !!intent;
+      if (intent && !intent.pending) {
+        await storage.sync();
+        return json(intent.receipt);
+      }
+      if (!intent) {
+        const policy = await this.forwardedPolicy(identity, body, parentId);
+        const limit = await this.ownerPageLimit();
+        const { room } = await this.capacity("page/", limit);
+        if (!room) throw projectOwnerQuotaError(limit);
+        const { location, rekeyed } = await this.resolveLocation(
+          request,
+          parentId ? { parent_id: parentId } : { space_id: body.space_id },
+        );
+        intent = {
+          fingerprint: digest,
+          pending: true,
+          pageId: crypto.randomUUID(),
+          createdAt: new Date().toISOString(),
+        };
+        intent = await reserveOperation(storage, { key, entry: intent });
+        reserved = true;
+        await storage.put({
+          ...(await rekeyedEntries(storage, rekeyed)),
+          [key]: intent,
+          [`page/${intent.pageId}`]: {
+            page_id: intent.pageId,
+            title: catalogTitle(body.title),
+            created_at: intent.createdAt,
+            updated_at: intent.createdAt,
+            pending: true,
+            creator: identity.principal,
+            ...(typeof policy.owner_name === "string" && { owner_name: policy.owner_name }),
+            ...location,
+          },
+        });
+      }
+      return await this.completeCreation(request, {
+        key,
+        intent,
+        args: body,
+        resumed: reserved,
+        owner,
+      });
+    } catch (error) {
+      const response = errorResponse(error, "catalog");
+      if (!reserved && response.status < 500)
+        response.headers.set(FORWARD_REJECTED_HEADER, "before-intent");
+      return response;
+    }
+  }
+
+  /** The checks a new forward passes before it reserves anything: the
+   * Project is this account's and live, a parent is still in it, the ACL is
+   * still at the member's fence, and the member holds create_items. Returns
+   * the Project policy snapshot. */
+  async forwardedPolicy(identity, body, parentId) {
+    const storage = this.storage;
+    if (parentId) {
+      const entries = await locationEntries(storage);
+      const derived = entries.get(parentId) ? deriveLocation(entries, parentId) : null;
+      if (!derived?.ok || derived.space_id !== body.space_id)
+        throw new HttpError(
+          409,
+          "The parent Page is no longer in that Project",
+          "parent_unavailable",
+        );
+    }
+    const space = await storage.get(`space/${body.space_id}`);
+    if (!space || space.pending) throw spaceNotFound();
+    const policy = await this.projectPolicy(body.space_id, this.ctx.id.name);
+    if ((policy.acl?.revision ?? 0) !== body.fence) throw fenceMoved();
+    requireCreateItems(policy, identity, spaceNotFound);
+    return policy;
   }
 
   /**
@@ -4860,8 +5279,16 @@ export class Page {
       if (url.pathname === "/internal/register") return await this.register(request, identity);
       if (url.pathname === "/internal/create") {
         requireWrite(identity);
+        const args = await readJson(request);
+        // A Project member's creation names the Project owner. Only the
+        // owner's Catalog can vouch for it (requireDelegatedCreation).
+        const delegated = args?.owner !== undefined && args.owner !== identity.principal;
         if (this.metadata) {
-          this.policy.account(identity);
+          if (delegated) {
+            if (this.metadata.owner !== args.owner)
+              throw new HttpError(403, "Document access denied");
+            await this.requireDelegatedCreation(args.owner, this.metadata.pageId, identity);
+          } else this.policy.account(identity);
           // Metadata can be installed before creation persistence succeeds.
           // Replaying the recorded import preserves its exact history.
           const creation = await this.ctx.storage.get("host/creation");
@@ -4878,14 +5305,19 @@ export class Page {
             ),
           );
         }
-        const args = await readJson(request);
         if (!validPageId(args?.page_id) || (this.ctx.id.name && args.page_id !== this.ctx.id.name))
           throw new HttpError(400, "Invalid page_id");
         validateCreateInput(args);
+        const creation = delegated
+          ? await this.requireDelegatedCreation(args.owner, args.page_id, identity)
+          : null;
         let intent = await this.ctx.storage.get("host/creation");
         if (intent) {
           // Catalog handles argument replay; this DO independently pins ownership.
-          if (intent.metadata.owner !== identity.principal)
+          if (
+            intent.metadata.owner !== (delegated ? args.owner : identity.principal) ||
+            (delegated && intent.metadata.creator?.principal !== identity.principal)
+          )
             throw new HttpError(403, "Document access denied");
         } else {
           try {
@@ -4899,8 +5331,15 @@ export class Page {
             const metadata = {
               recordStorage: "automerge",
               pageId: args.page_id,
-              owner: identity.principal,
-              ownerName: identity.displayName,
+              owner: delegated ? args.owner : identity.principal,
+              ...(delegated
+                ? typeof creation.owner_name === "string" && { ownerName: creation.owner_name }
+                : { ownerName: identity.displayName }),
+              // Who asked for the Page when that isn't its owner: a Project
+              // member adding a Page the Project owner owns.
+              ...(delegated && {
+                creator: { principal: identity.principal, displayName: identity.displayName },
+              }),
               documentId,
               // The Page's comments document, by its deployment-relative id.
               comments_doc: await commentsDocUuid(args.page_id),
@@ -5272,6 +5711,29 @@ export class Page {
    * so the first edit needs no read. The stored receipt stays as recorded;
    * the token is minted per reply and journaled by the owner's Catalog with
    * the rest of the receipt, so an exact retry returns the same one. */
+  /**
+   * A creation that names an owner other than its caller: a Project member
+   * adding a Page to a Project another account owns (project-create.mjs).
+   * The owner's Catalog vouches for it only while it holds the Page's
+   * pending entry with this caller as creator, which it reserves after
+   * deciding create_items for the caller. A forged owner, a Page reserved
+   * for someone else, or a finished creation is refused.
+   */
+  async requireDelegatedCreation(owner, pageId, identity) {
+    if (typeof owner !== "string" || !owner) throw new HttpError(400, "Invalid owner");
+    const response = await this.env.CATALOGS.getByName(owner).fetch(
+      new Request("https://pages.internal/internal/location", {
+        method: "POST",
+        body: JSON.stringify({ creation_of: pageId }),
+      }),
+    );
+    if (!response.ok) throw new HttpError(403, "Document access denied");
+    const creation = await response.json();
+    if (creation?.page_id !== pageId || creation.creator !== identity.principal)
+      throw new HttpError(403, "Document access denied");
+    return creation;
+  }
+
   async createdReply(receipt, identity) {
     return {
       ...receipt,

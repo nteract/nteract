@@ -332,7 +332,7 @@
         {
           "subject": "user:bob",
           "credential": "write",
-          "capabilities": ["read", "comment", "edit"],
+          "capabilities": ["read", "comment", "edit", "create_items"],
           "basis": { "relation": "editor", "via": "project" }
         },
         {
@@ -364,14 +364,27 @@
       "relationships": [
         "project:team#owner@user:alice",
         "project:team#editor@user:bob",
+        "project:team#commenter@user:dana",
         "project:team#viewer@user:carol"
       ],
       "principals": [
         {
           "subject": "user:bob",
           "credential": "write",
+          "capabilities": ["read", "create_items"],
+          "basis": { "relation": "editor", "via": "direct" }
+        },
+        {
+          "subject": "user:bob",
+          "credential": "read",
           "capabilities": ["read"],
           "basis": { "relation": "editor", "via": "direct" }
+        },
+        {
+          "subject": "user:dana",
+          "credential": "write",
+          "capabilities": ["read"],
+          "basis": { "relation": "commenter", "via": "direct" }
         },
         {
           "subject": "user:carol",
@@ -399,7 +412,7 @@
         {
           "subject": "user:hana",
           "credential": "write",
-          "capabilities": ["read", "comment", "edit"],
+          "capabilities": ["read", "comment", "edit", "create_items"],
           "basis": { "relation": "editor", "via": "project" },
           "valid_until": 4600000
         },

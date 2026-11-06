@@ -5,7 +5,8 @@
  * a members ACL with a revision, and one content document created with it
  * (`document_id`, an ordinary Page document outside the Page tree). The Space
  * Durable Object is the authority for that record. Members inherit content
- * access to every Page; only the owner manages sharing and structure. Direct
+ * access to every Page; editors and the owner add Pages, and only the owner
+ * manages sharing and moves or trashes Pages. Direct
  * Page grants remain independent and never propagate to descendants.
  *
  * The owner's Catalog records where each Page is (catalog-location.mjs), with
@@ -207,7 +208,12 @@ export class Space {
         if (!record || record.space_id !== args.space_id || record.owner !== args.owner)
           throw spaceNotFound();
         await this.ctx.storage.sync();
-        return json({ space_id: record.space_id, owner: record.owner, acl: record.acl });
+        return json({
+          space_id: record.space_id,
+          owner: record.owner,
+          owner_name: record.owner_name,
+          acl: record.acl,
+        });
       }
       const identity = await authenticate(request, this.env);
       const args = await readJson(request);

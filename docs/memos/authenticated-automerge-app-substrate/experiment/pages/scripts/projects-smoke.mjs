@@ -4,8 +4,9 @@
 // /pages and /projects on a phone-sized screen, filter, sort and group the
 // Pages library as an account with its own and shared Pages, add Pages
 // from a Project at the 640px breakpoint and from the picker,
-// check a shared editor gets no create affordances, and trash
-// and restore Pages one at a time.
+// check a direct-grant editor gets no create affordances, a Project editor
+// adds Pages the owner owns while a Project viewer can't, and trash and
+// restore Pages one at a time.
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
@@ -1377,6 +1378,112 @@ try {
   assert.equal(underRoadmap.body.code, "parent_unavailable");
   complete(
     "A shared editor sees no create affordances in someone else's Project, and the API refuses her creates",
+  );
+
+  // Project members: alice is the Project's editor and bob its viewer. Alice
+  // adds Pages, which the owner owns; bob is refused and sees no New Page.
+  const teamTitle = "Team notes " + Date.now();
+  const team = await ok("owner", "create_project", {
+    title: teamTitle,
+    description: "Where the team writes.",
+    idempotency_key: crypto.randomUUID(),
+  });
+  let teamRevision = 0;
+  for (const [email, role] of [
+    ["alice@localhost", "editor"],
+    ["bob@localhost", "viewer"],
+  ]) {
+    const invited = await ok("owner", "manage_project_access", {
+      project_id: team.project_id,
+      action: "invite",
+      email,
+      role,
+      expected_revision: teamRevision,
+      idempotency_key: crypto.randomUUID(),
+    });
+    teamRevision = invited.revision;
+  }
+  assert.equal((await ok("editor", "get_project", { project_id: team.project_id })).role, "editor");
+  assert.equal((await ok("viewer", "get_project", { project_id: team.project_id })).role, "viewer");
+  const aliceTop = await ok("editor", "create_page", {
+    title: "Alice's agenda",
+    markdown: "Added by a Project editor.",
+    project_id: team.project_id,
+    idempotency_key: crypto.randomUUID(),
+  });
+  assert.equal(aliceTop.project_id, team.project_id);
+  const aliceChild = await ok("editor", "create_page", {
+    title: "Alice's follow-ups",
+    parent_id: aliceTop.page_id,
+    idempotency_key: crypto.randomUUID(),
+  });
+  assert.equal(aliceChild.parent_id, aliceTop.page_id);
+  const teamPages = await ok("owner", "list_pages", { project_id: team.project_id });
+  assert.ok(
+    [aliceTop.page_id, aliceChild.page_id].every((id) =>
+      teamPages.pages.some((page) => page.page_id === id),
+    ),
+    "the owner lists the Pages alice added",
+  );
+  const bobCreate = await mcp("viewer", "create_page", {
+    title: "Not his",
+    project_id: team.project_id,
+    idempotency_key: crypto.randomUUID(),
+  });
+  assert.equal(bobCreate.isError, true);
+  assert.equal(bobCreate.body.code, "project_create_forbidden");
+  const memberTab = async (email) => {
+    const memberContext = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const tab = await memberContext.newPage();
+    tab.on("pageerror", (error) => report.errors.push(error.message));
+    const login = await memberContext.request.get(`${origin}/api/auth/login`, {
+      maxRedirects: 0,
+    });
+    const authorizeMember = new URL(login.headers().location);
+    authorizeMember.searchParams.set("login_hint", email);
+    await tab.goto(authorizeMember.href, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await expect(tab.getByRole("button", { name: /, switch page$/ })).toBeVisible({
+      timeout: 60000,
+    });
+    await tab.goto(`${origin}/project/${team.project_id}`);
+    await expect(tab.locator("wg-content").first()).toContainText("Where the team writes.", {
+      timeout: 30000,
+    });
+    const teamList = tab.getByRole("region", { name: `Pages in ${teamTitle}` });
+    await expect(teamList.getByRole("link", { name: "Alice's agenda" })).toBeVisible({
+      timeout: 30000,
+    });
+    return { memberContext, tab, teamList };
+  };
+  {
+    const { memberContext, teamList } = await memberTab("bob@localhost");
+    await expect(teamList.getByRole("button", { name: "New Page" })).toHaveCount(0);
+    await memberContext.close();
+  }
+  {
+    const { memberContext, tab, teamList } = await memberTab("alice@localhost");
+    const newPage = teamList.getByRole("button", { name: "New Page" });
+    await expect(newPage).toBeVisible({ timeout: 30000 });
+    await tab.screenshot({ path: `${output}/project-editor-new-page.png` });
+    await newPage.click();
+    await expect(tab).toHaveURL(/\/p\/[0-9a-f-]{36}$/, { timeout: 30000 });
+    const created = new URL(tab.url()).pathname.split("/").pop();
+    await expect(tab.getByLabel("Page title")).toBeFocused({ timeout: 30000 });
+    // A Page alice added offers New sub-page to her too, and no Move or Trash.
+    await tab.locator('summary[aria-label="Document actions"]').click();
+    const actions = tab.locator(".document-actions .menu-popover").getByRole("button");
+    await expect(actions.filter({ hasText: "New sub-page" })).toBeVisible({ timeout: 30000 });
+    await expect(actions.filter({ hasText: "Move to Trash" })).toHaveCount(0);
+    await tab.locator('summary[aria-label="Document actions"]').click();
+    const listedTeam = await ok("owner", "list_pages", { project_id: team.project_id });
+    assert.ok(
+      listedTeam.pages.some((page) => page.page_id === created),
+      "the owner lists the Page alice added in the browser",
+    );
+    await memberContext.close();
+  }
+  complete(
+    "A Project editor adds Pages from the Project view and over MCP; the owner owns them, and a viewer sees no New Page",
   );
 
   const fresh = await phoneContext.newPage();

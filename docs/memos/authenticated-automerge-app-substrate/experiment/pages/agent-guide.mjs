@@ -189,6 +189,12 @@ Branch on code, not on the error message:
   project_capacity (the account's Project limit), project_revision_conflict
   (get_project again), project_id_as_page_id and page_id_as_project_id (the
   error names the right argument).
+- create_page in a Project you don't own: project_create_forbidden (403, your
+  Project role is viewer or commenter; only the owner and editors add Pages),
+  project_owner_quota_exceeded (409, the Project owner's Page limit is full;
+  it carries limit. Tell the person; the owner frees space),
+  project_access_changed (409, the Project's sharing changed mid-request;
+  retry the same request).
 - Placement and move_page: placement_mismatch (parent_id is in another
   Project), parent_unavailable (the parent is missing, pending or in Trash),
   nesting_depth_exceeded (past 9 levels, counting the deepest sub-page),
@@ -1091,9 +1097,14 @@ body. Use Page tools for those edits. The content document is not in the Page
 tree: move_page, delete_page and purge_page refuse it with
 project_content_protected.
 
-Project members can open the Project and its content according to their role;
-only its owner can add or move Pages in its hierarchy. Sharing an individual
-Page does not grant access to its Project or sibling and descendant Pages.
+Project members can open the Project and its content according to their role.
+Its owner and editors can add Pages with create_page, at the top level
+(project_id) or under any Page in it (parent_id). A Page an editor adds is
+owned by the Project owner, counts against the owner's Page limit, and records
+the editor as its creator; the editor edits it like any other Page in the
+Project. Only the owner can move, trash or share Pages in its hierarchy.
+Sharing an individual Page does not grant access to its Project or sibling and
+descendant Pages.
 
 - move_page: page_id, a destination, optional position ("first", "last",
   {"before": page_id} or {"after": page_id}), idempotency_key and the

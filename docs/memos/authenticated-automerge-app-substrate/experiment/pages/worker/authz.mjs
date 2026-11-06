@@ -90,14 +90,19 @@ const GRANTS = {
     commenter: ["read", "comment"],
     viewer: ["read"],
   },
-  project: { owner: PROJECT_CAPABILITIES, editor: ["read"], commenter: ["read"], viewer: ["read"] },
+  project: {
+    owner: PROJECT_CAPABILITIES,
+    editor: ["read", "create_items"],
+    commenter: ["read"],
+    viewer: ["read"],
+  },
 };
 
 /** What a project relation grants on an item the project holds: the
  * `project->` arrows in schema.zed's page definition. */
 const INHERITED = {
   owner: PAGE_CAPABILITIES,
-  editor: ["read", "comment", "edit"],
+  editor: ["read", "comment", "edit", "create_items"],
   commenter: ["read", "comment"],
   viewer: ["read"],
 };
