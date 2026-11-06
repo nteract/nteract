@@ -107,7 +107,7 @@ export function parseSessionKeyring(raw: string): SessionKeyring {
   if (!isRecord(value)) throw new SessionKeyringError("expected a JSON object");
   for (const field of Object.keys(value))
     if (!["active", "keys", "activated_at"].includes(field))
-      throw new SessionKeyringError(`unknown field ${JSON.stringify(field.slice(0, 40))}`);
+      throw new SessionKeyringError("only active, keys and activated_at are allowed");
   const { active, keys, activated_at: activatedAt } = value;
   if (!isRecord(keys)) throw new SessionKeyringError("keys must be an object of kid to secret");
   const kids = Object.keys(keys);

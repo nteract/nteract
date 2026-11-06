@@ -1005,9 +1005,14 @@ describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
       .run(String(sessions[1]!.sealed), String(sessions[0]!.id));
     f.expireAccess(-1);
     const request = f.request(undefined, login.sessionCookie);
-    assert.equal((await serverOidcSessionStatus(request, f.env, noopProfile)).status, 503);
+    // A seal bound to another row never opens here: the session ends cleanly.
+    const status = await serverOidcSessionStatus(request, f.env, noopProfile);
+    assert.equal(status.status, 200);
+    assert.equal((await status.json()).session, null);
+    assert.match(status.headers.get("Set-Cookie")!, /Max-Age=0/);
     assert.equal(await readCloudAppSession(f.env, request), null);
     assert.equal(f.calls.filter((call) => call.grant === "refresh_token").length, 0);
+    assert.equal(f.countRows(), 1, "only the tampered row is removed");
   });
 
   it("rejects encrypted login and refresh credentials with a different deployment key", async (t) => {
@@ -1100,7 +1105,17 @@ describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
     const request = f.request(undefined, sessionCookie);
     f.db.sqlite.prepare("UPDATE oidc_server_sessions SET sealed = 'k9.' || sealed").run();
     f.expireAccess(-1);
-    assert.equal((await serverOidcSessionStatus(request, keyring, noopProfile)).status, 503);
+    const events: ServerOidcAuthEvent[] = [];
+    const status = await serverOidcSessionStatus(request, keyring, noopProfile, {
+      onAuthEvent: (event) => events.push(event),
+    });
+    assert.equal(status.status, 200, "an unopenable refresh token is a sign-out, not an outage");
+    assert.equal((await status.json()).session, null);
+    assert.match(status.headers.get("Set-Cookie")!, /Max-Age=0/);
+    assert.equal(f.countRows(), 0);
+    assert.equal(events.length, 1);
+    assert.equal(events[0]!.type, "session_expired");
+    assert.equal(events[0]!.type === "session_expired" && events[0]!.reason, "seal_unreadable");
     assert.equal(f.calls.filter((call) => call.grant === "refresh_token").length, 0);
 
     const malformed = {

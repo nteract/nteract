@@ -212,11 +212,17 @@ test("rotate-key streams this checkout's keyring helper to the host under the de
     command,
     "sudo flock -n /run/nteract-pages-next-deploy.lock node --input-type=module - 'rotate' " +
       "'--file' '/etc/nteract-page10/session-keys.json' " +
-      "'--secret-file' '/etc/nteract-page10/session-secret' '--apply' '--from' 'k1'",
+      "'--secret-file' '/etc/nteract-page10/session-secret' '--move-secret' '--apply' '--from' 'k1'",
   );
   assert.equal(
     readFileSync(input, "utf8"),
     readFileSync(path.join(scripts, "deployment", "session-keys.mjs"), "utf8"),
+  );
+  // Page10 issues OAuth grants, so retiring waits their 30-day lifetime.
+  assert.equal(deploy("retire-key").status, 0);
+  assert.match(
+    readFileSync(log, "utf8"),
+    /'--installed'\n?.*'\/etc\/nteract-page10\/session-keys-active.json' '--state-url' 'http:\/\/127[.]0[.]0[.]1:19480\/state' '--overlap-days' '30'/,
   );
   rmSync(log);
   const refused = deploy("rotate-key", "--force");

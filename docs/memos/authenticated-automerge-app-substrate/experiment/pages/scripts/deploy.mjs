@@ -26,7 +26,8 @@ import {
   parseRuntimeVersion,
 } from "./deployment/profiles.mjs";
 import { provisionTarget } from "./deployment/provision.mjs";
-import { hostKeyCommand } from "./deployment/session-keys.mjs";
+import { SESSION_OVERLAP_DAYS, hostKeyCommand } from "./deployment/session-keys.mjs";
+import { OAUTH_REFRESH_SECONDS } from "../shared/oauth-grant.mjs";
 
 const scripts = path.dirname(fileURLToPath(import.meta.url));
 const pages = path.dirname(scripts);
@@ -144,8 +145,12 @@ else if (keyMode) {
   // this checkout over SSH stdin and runs as root under the deployment lock;
   // a new secret is generated there and never leaves the host. Without
   // --apply it prints the plan. The Worker sees the change on the next
-  // `install REMOTE_STAGE --apply`.
-  const command = hostKeyCommand(mode, args.slice(1), deployment.service);
+  // `install REMOTE_STAGE --apply`. With OAuth, grants keep email proofs for
+  // their whole lifetime, so retiring waits that long instead of a session's.
+  const overlapDays = deploymentProfile(target).oauth
+    ? OAUTH_REFRESH_SECONDS / (24 * 60 * 60)
+    : SESSION_OVERLAP_DAYS;
+  const command = hostKeyCommand(mode, args.slice(1), deployment, { overlapDays });
   console.log(
     run(
       "ssh",

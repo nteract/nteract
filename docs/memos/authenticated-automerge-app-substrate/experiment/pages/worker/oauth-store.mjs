@@ -2,11 +2,12 @@ import { randomSecret, secretHash } from "@cloud/oidc-session-store.ts";
 import { pagesPublicOrigin } from "../agent-guide.mjs";
 import { isolateSetup } from "./isolate-setup.mjs";
 import { logAuthEvent } from "./auth-events.mjs";
+import { OAUTH_REFRESH_SECONDS } from "../shared/oauth-grant.mjs";
 
 const CODE_SECONDS = 300;
 const CONSENT_SECONDS = 600;
 const ACCESS_SECONDS = 600;
-const REFRESH_SECONDS = 30 * 24 * 60 * 60;
+const REFRESH_SECONDS = OAUTH_REFRESH_SECONDS;
 const tokenPattern = /^pages_(?:at|rt)_[A-Za-z0-9_-]{43}$/;
 const secretPattern = /^[A-Za-z0-9_-]{43}$/;
 const SCHEMA = [

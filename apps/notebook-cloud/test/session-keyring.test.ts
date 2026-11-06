@@ -53,7 +53,11 @@ describe("session keyring configuration", () => {
   for (const [label, raw, reason] of [
     ["not JSON", "{", /not JSON/],
     ["an array", "[]", /expected a JSON object/],
-    ["unknown fields", JSON.stringify({ active: "k1", keys: { k1: A }, x: 1 }), /unknown field/],
+    [
+      "unknown fields",
+      JSON.stringify({ active: "k1", keys: { k1: A }, x: 1 }),
+      /only active, keys and activated_at/,
+    ],
     ["no keys", keys("k1", {}), /1 to 4 keys/],
     ["five keys", keys("k1", { k1: A, k2: B, k3: C, k4: A + "d", k5: A + "e" }), /1 to 4 keys/],
     ["a dotted kid", keys("k.1", { "k.1": A }), /a kid must be/],
