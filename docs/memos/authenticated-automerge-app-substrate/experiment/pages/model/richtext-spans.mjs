@@ -75,6 +75,43 @@ export const richDoc = (block, pageId) => {
     return pmDocFromSpans(adapter, readableSpans(spans, true, pageId));
   }
 };
+/** A block's Wordgard tree, read through the same rules as richDoc: a
+ * dataframe naming another Page's asset, or one inside a text container,
+ * reads as a notice, and so does an unknown node in a code block. A block the
+ * first reading can't place falls back to notices for every unknown node. */
+export const readTree = (block, pageId) => {
+  const spans = codeTextUnmarked(A.spans(block, ["richText"]));
+  try {
+    return decode(readableSpans(spans, false, pageId)).doc;
+  } catch (error) {
+    if (!markdownlessNode(block, pageId)) throw error;
+    return decode(readableSpans(spans, true, pageId)).doc;
+  }
+};
+/** Whether a block's projection must read it through the ProseMirror
+ * adapter (richDoc) instead of readTree, because the Wordgard tree reads it
+ * differently:
+ *
+ * - a marker under a container this build doesn't know: richDoc reads the
+ *   container as a notice before its content; decode leaves it out;
+ * - a newline stored as text in prose (the adapter's form): richDoc keeps it
+ *   as text, which projects as a line break inside the paragraph; decode
+ *   reads it as a hard break.
+ *
+ * Neither is written by a current Pages writer. */
+export function adapterRead(block) {
+  let code = false;
+  for (const span of A.spans(block, ["richText"])) {
+    if (span.type === "text") {
+      if (!code && span.value.includes("\n")) return true;
+      continue;
+    }
+    if (span.type !== "block") continue;
+    if ((span.value?.parents ?? []).some((parent) => !knownBlock(String(parent)))) return true;
+    if (!span.value?.isEmbed) code = String(span.value?.type) === "code-block";
+  }
+  return false;
+}
 /** The spans the ProseMirror adapter writes for `tree`. pageSpans re-encodes
  * them with the editor's encoder. Fixtures for stored content in the
  * adapter's form, and fixtures whose history must not move with Pages'
