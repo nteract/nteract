@@ -216,7 +216,8 @@ test("native Windows x64 and ARM64 smoke builds execute the producer linker pin 
   assert.ok(body.indexOf(build) < body.indexOf(verifyLinker));
   assert.match(build, /shell: bash/);
   assert.match(build, /cargo build --verbose --manifest-path .* --target "\$TARGET"/);
-  assert.match(build, /tee "\$RUNNER_TEMP\/msvc-linker-smoke\.log"/);
+  assert.match(build, /cygpath -u "\$RUNNER_TEMP"/);
+  assert.match(build, /tee "\$runner_temp\/msvc-linker-smoke\.log"/);
   assert.match(verifyLinker, /\$env:LINKER_ENV_NAME/);
   assert.match(verifyLinker, /\$log\.Contains\(\$linker/);
   assert.match(verifyLinker, /Test-Path \$linker/);

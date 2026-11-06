@@ -123,7 +123,8 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: |
-          project="$RUNNER_TEMP/msvc-linker-smoke"
+          runner_temp="$(cygpath -u "$RUNNER_TEMP")"
+          project="$runner_temp/msvc-linker-smoke"
           mkdir -p "$project/src"
           cat > "$project/Cargo.toml" <<'TOML'
           [package]
@@ -134,7 +135,7 @@ jobs:
           cat > "$project/src/main.rs" <<'RS'
           fn main() { println!("MSVC linker smoke"); }
           RS
-          cargo build --verbose --manifest-path "$project/Cargo.toml" --target "$TARGET" 2>&1 | tee "$RUNNER_TEMP/msvc-linker-smoke.log"
+          cargo build --verbose --manifest-path "$project/Cargo.toml" --target "$TARGET" 2>&1 | tee "$runner_temp/msvc-linker-smoke.log"
       - name: Confirm Cargo used the selected producer linker
         shell: pwsh
         env:
