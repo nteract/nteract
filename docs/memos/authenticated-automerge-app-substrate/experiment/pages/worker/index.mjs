@@ -82,8 +82,6 @@ import {
 import { issueRetryToken, inspectOperation, reserveOperation } from "./operation-journal.mjs";
 import { STORAGE_KEYS_PER_CALL, guardContext } from "./storage-guard.mjs";
 import { pageRecordsCall } from "./page-records.mjs";
-import { operatorPageRecordsSweep } from "./page-records-sweep.mjs";
-import { operatorAuthorized } from "./operator-gate.mjs";
 export { PageRecords } from "./page-records.mjs";
 import { HOST_SENDER_ID, PlainSync, clearPrefixes, plainSessionReplaced } from "./plain-sync.mjs";
 import { logSyncRefused, logSyncRounds } from "./plain-sync-log.mjs";
@@ -1288,14 +1286,6 @@ const gateway = {
           recheckUpload: () => authorizeImage(request, env, pageId, false),
         });
       }
-      // ONE-SHOT MIGRATION route (page-records-sweep.mjs; delete with it).
-      // Behind the lab operator gate (operator-gate.mjs).
-      if (
-        url.pathname === "/api/operator/page-records" &&
-        request.method === "POST" &&
-        (await operatorAuthorized(request, env))
-      )
-        return await operatorPageRecordsSweep(request, env);
       if (url.pathname === "/api/access") {
         await authenticate(request, env);
         const pageId = url.searchParams.get("page");
@@ -4533,40 +4523,6 @@ export class Page {
     return pageRecordsCall(this.env.PAGE_RECORDS.getByName(this.metadata.pageId), action);
   }
 
-  /**
-   * ONE-SHOT MIGRATION (worker/page-records-sweep.mjs; delete with it). The
-   * operator sweep asks this host to report (`dry_run`) or clear (`apply`)
-   * its PageRecords object. Host only: a request that carries a credential
-   * is refused. Only a Page whose history no longer lives there is cleared:
-   * one converted from `buffered` storage, or a deleted `buffered` Page.
-   */
-  async operatorPageRecords(request) {
-    if (request.headers.has("authorization") || request.headers.has("cookie"))
-      throw spaceNotFound();
-    const { mode } = (await readJson(request)) ?? {};
-    if (!["dry_run", "apply"].includes(mode))
-      throw new HttpError(400, 'mode must be "dry_run" or "apply"', "invalid_arguments");
-    const metadata = this.metadata;
-    if (!metadata) return json({ status: "missing" });
-    const base = {
-      page_id: metadata.pageId,
-      state: pageState(metadata),
-      record_storage: metadata.recordStorage ?? null,
-      ...(metadata.recordStorageMigratedFrom && {
-        migrated_from: metadata.recordStorageMigratedFrom,
-      }),
-    };
-    const holder = pageRecordsHolder(metadata);
-    if (holder === undefined) return json({ ...base, status: "none" });
-    if (holder === "held") return json({ ...base, status: "held" });
-    if (mode === "dry_run") {
-      const records = await this.pageRecords("inspect");
-      return json({ ...base, status: records.keys ? "would_clear" : "empty", records });
-    }
-    const { cleared, after } = await this.pageRecords("clear");
-    return json({ ...base, status: "cleared", cleared, after });
-  }
-
   async run(request) {
     const url = new URL(request.url);
     const admissionRoute = ADMISSION_ROUTES.includes(url.pathname);
@@ -4600,9 +4556,6 @@ export class Page {
         }
         return json(this.metadata ? this.lifecycleCurrent() : { state: "missing" });
       }
-      // ONE-SHOT MIGRATION route (page-records-sweep.mjs; delete with it).
-      if (url.pathname === "/internal/operator-page-records")
-        return await this.operatorPageRecords(request);
       if (url.pathname === "/internal/tombstone") {
         // A pending trash or restore would otherwise rewrite its record over
         // the tombstone when it settles.

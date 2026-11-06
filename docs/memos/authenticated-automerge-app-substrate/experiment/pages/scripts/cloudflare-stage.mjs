@@ -29,7 +29,7 @@ export function cloudflareConfig(databaseId) {
       bindings: [
         { name: "PAGES", class_name: "Page" },
         { name: "CATALOGS", class_name: "Catalog" },
-        // Delete-only: purge and the one-shot sweep clear old buffered records
+        // Delete-only: purge clears old buffered records
         // (worker/page-records.mjs).
         { name: "PAGE_RECORDS", class_name: "PageRecords" },
         // Projects keep the Space class: the class name is the storage identity for
