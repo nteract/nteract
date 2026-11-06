@@ -17,6 +17,12 @@ import {
   OrderedList,
 } from "./wordgard-model.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
+import {
+  projectionAt,
+  projectionStep,
+  publishedProjection,
+  synced,
+} from "./wordgard-projection-state.mjs";
 import { MARK_NAMES, markExpand } from "../model/marks.mjs";
 import { stampMarks, stampSpans } from "../model/schema-features.mjs";
 
@@ -155,7 +161,6 @@ export function commitEditorTransactions(
   }
 }
 
-const sameHeads = (a, b) => a.length === b.length && a.every((hash) => b.includes(hash));
 const textOnly = (tokens) =>
   [...tokens].every((token) => token.tokenType === Token.Type.Node && token.isText);
 // Characters decode draws as something other than text: a newline becomes a
@@ -261,65 +266,91 @@ export function applyTextPatches(projection, patches, path) {
 // `encodeSpans` exists for mixed-version tests that stand in for an older
 // build's encoder. The editor always uses the current `encode`.
 //
-// The binding keeps the decoded block (`current`) with the heads it describes.
-// A whole-block read (A.spans + decode) happens when that projection can't be
-// carried forward: on creation, when heads moved without this binding seeing
-// the change, for structural or formatting writes (once, as their check), and
-// for remote patches applyTextPatches can't map. Plain local typing and
-// remote plain-text patches update the tree and position maps in place, and
-// check the native text length. `verify` reads and compares after every local
-// write instead.
-export function createWordgardBinding(replica, id, { encodeSpans = encode, verify = false } = {}) {
+// The binding carries the decoded block forward through the projection
+// lifecycle in wordgard-projection-state.mjs. A whole-block read (A.spans +
+// decode) happens when the projection can't be carried: on creation, when the
+// heads moved without this binding seeing the change, for structural or
+// formatting writes (once, as their check), and for remote patches
+// applyTextPatches can't map. Plain local typing and remote plain-text patches
+// update the tree and position maps in place; a local write then checks the
+// native length and the inserted text.
+//
+// `verify` makes every local write read the block: mark and format positions
+// come from that read instead of offset arithmetic, and the result must equal
+// the editor's tree. `trace` receives "local" and "remote" when a projection
+// is carried without a read, and "read" for each whole-block read.
+export function createWordgardBinding(
+  replica,
+  id,
+  { encodeSpans = encode, verify = false, trace = () => {} } = {},
+) {
   const path = ["blocks", id, "richText"],
     listeners = new Set();
-  const read = (doc) => decode(A.spans(doc, path));
+  const read = (doc) => {
+    trace("read");
+    return decode(A.spans(doc, path));
+  };
   const touches = (at) =>
     Array.isArray(at) &&
     path.slice(0, Math.min(path.length, at.length)).every((part, index) => part === at[index]);
-  let current = read(replica.doc),
-    currentHeads = A.getHeads(replica.doc),
-    // The projection a local write produced, until its change event arrives.
-    pending = null;
+  let state = synced(A.getHeads(replica.doc), read(replica.doc));
+  const step = (event) => (state = projectionStep(state, event));
+  // A plain write's projection matches the Page when the native text has the
+  // projected length and holds each inserted string where it was written.
+  // (Reading the text after the change costs nothing: the document keeps it
+  // materialized.)
+  const holdsWrite = (doc, projection, inserted) => {
+    if (!inserted) return true;
+    const text = String(doc.blocks?.[id]?.richText ?? "");
+    return (
+      text.length === projection.map.wgToAm.at(-1) &&
+      inserted.every(({ at, text: value }) => text.startsWith(value, at))
+    );
+  };
   const stop = replica.observeChange((event) => {
     const nativeBefore = event.patchInfo?.before ?? event.before;
     const nativeAfter = event.patchInfo?.after ?? event.after;
     const patches = Array.isArray(event.patches) ? event.patches : null;
+    const beforeHeads = nativeBefore ? A.getHeads(nativeBefore) : null,
+      afterHeads = A.getHeads(nativeAfter);
     // A Pages session publishes the whole document stream. Only this canonical
     // text path (or an ancestor replacement) can change this editor projection;
     // the projection still describes the text after any other change.
     if (patches && !patches.some((patch) => touches(patch.path))) {
-      if (nativeBefore && currentHeads && sameHeads(currentHeads, A.getHeads(nativeBefore)))
-        currentHeads = A.getHeads(nativeAfter);
+      step(
+        beforeHeads
+          ? { type: "advance", before: beforeHeads, after: afterHeads }
+          : { type: "invalidate" },
+      );
       return;
     }
     if (!nativeAfter.blocks?.[id]) {
-      currentHeads = null;
+      step({ type: "invalidate" });
       return;
     }
-    const before = current,
-      beforeHeads = nativeBefore ? A.getHeads(nativeBefore) : null;
-    let after = null,
-      changes = null;
-    if (!event.remote && pending && beforeHeads && sameHeads(pending.heads, beforeHeads)) {
-      // Plain typing skipped the read; its native length is the cheap check.
-      // (Reading the text after the change costs nothing: the document keeps
-      // it materialized.)
-      if (pending.projection.map.wgToAm.at(-1) === nativeLength(nativeAfter, id))
-        after = pending.projection;
-    } else if (
-      patches &&
-      beforeHeads &&
-      currentHeads &&
-      !before.lossy &&
-      sameHeads(currentHeads, beforeHeads)
-    ) {
-      const next = applyTextPatches(before, patches, path);
-      if (next && next.projection.map.wgToAm.at(-1) === nativeLength(nativeAfter, id))
-        ({ projection: after, changes } = next);
+    const before = publishedProjection(state);
+    let changes = null;
+    if (!event.remote && state.type === "writing") {
+      const checked = holdsWrite(nativeAfter, state.pending, state.check);
+      if (checked && state.check) trace("local");
+      step({ type: "commit", before: beforeHeads, after: afterHeads, checked });
+    } else {
+      const base = projectionAt(state, beforeHeads);
+      const next = base && patches && !base.lossy ? applyTextPatches(base, patches, path) : null;
+      if (next && next.projection.map.wgToAm.at(-1) === nativeLength(nativeAfter, id)) {
+        trace("remote");
+        changes = next.changes;
+        step({
+          type: "advance",
+          before: beforeHeads,
+          after: afterHeads,
+          projection: next.projection,
+        });
+      } else step({ type: "invalidate" });
     }
-    after ??= read(nativeAfter);
-    current = after;
-    currentHeads = A.getHeads(nativeAfter);
+    if (!projectionAt(state, afterHeads))
+      step({ type: "read", heads: afterHeads, projection: read(nativeAfter) });
+    const after = publishedProjection(state);
     const remoteChanges = event.remote
       ? A.getChangesMetaSince(nativeAfter, A.getHeads(nativeBefore))
       : [];
@@ -353,7 +384,7 @@ export function createWordgardBinding(replica, id, { encodeSpans = encode, verif
   });
   return {
     get current() {
-      return current;
+      return publishedProjection(state);
     },
     observe(listener) {
       listeners.add(listener);
@@ -362,7 +393,13 @@ export function createWordgardBinding(replica, id, { encodeSpans = encode, verif
     applyEditorTransaction(tr) {
       if (!tr.docChanged || tr.annotation(Transaction.remote)) return;
       const heads = A.getHeads(replica.doc);
-      const original = currentHeads && sameHeads(currentHeads, heads) ? current : read(replica.doc);
+      let original = projectionAt(state, heads);
+      if (!original) {
+        original = read(replica.doc);
+        // Publish the read, so a rejected transaction restores the editor to
+        // the Page as it is.
+        step({ type: "read", heads, projection: original });
+      }
       // The editor couldn't draw this block as stored (a node or container
       // from a newer build); any write would reshape what it left out.
       if (original.lossy)
@@ -395,8 +432,9 @@ export function createWordgardBinding(replica, id, { encodeSpans = encode, verif
       );
       // Plain typing: the native text decodes to exactly the editor's tree, so
       // the new projection is `tr.newDoc` with shifted position maps. Inserted
-      // text must decode as text with the same marks: no newline or U+FFFC,
-      // marks that survive the native codec, and none inside code.
+      // text must decode as the same text with the same marks: well-formed
+      // UTF-16 (Automerge stores a lone surrogate as U+FFFD), no newline or
+      // U+FFFC, marks that survive the native codec, and none inside code.
       const plain =
         !verify &&
         !structural &&
@@ -409,7 +447,8 @@ export function createWordgardBinding(replica, id, { encodeSpans = encode, verif
             // decode draws no paragraph for it.
             tr.newDoc.resolve(range.fromB).parent.node.content.length > 0 &&
             range.inserted.every((token) => {
-              if (SPECIAL_TEXT.test(String(token.param))) return false;
+              const text = String(token.param);
+              if (!text.isWellFormed() || SPECIAL_TEXT.test(text)) return false;
               if (!token.marks.length) return true;
               try {
                 return (
@@ -424,7 +463,7 @@ export function createWordgardBinding(replica, id, { encodeSpans = encode, verif
       // Replacements are text for text, so native offsets move one for one
       // with editor positions: this maps a position in `tr.newDoc` to the
       // native index after the splices.
-      const nativeAt = (posB) => {
+      const shiftedAt = (posB) => {
         let shift = 0;
         for (const range of replacements) {
           if (posB < range.fromB) break;
@@ -455,6 +494,8 @@ export function createWordgardBinding(replica, id, { encodeSpans = encode, verif
                 range.inserted.map((token) => String(token.param)).join(""),
               );
             }
+            const spliced = verify ? read(d).map : null;
+            const nativeAt = spliced ? (posB) => spliced.wgToAm[posB] : shiftedAt;
             for (const range of replacements) {
               let pos = nativeAt(range.fromB);
               for (const token of range.inserted) {
@@ -487,24 +528,31 @@ export function createWordgardBinding(replica, id, { encodeSpans = encode, verif
             }
             stampMarks(d, written);
           }
-          let projection = null;
+          let pending, inserted;
           if (plain) {
             const map = replacements.reduceRight(
               (result, range) =>
                 spliceProjectionMap(result, range.from, range.to, range.toB - range.fromB),
               original.map,
             );
-            projection = { doc: tr.newDoc, map, lossy: false };
-          }
-          if (!projection) {
-            projection = read(d);
-            if (!projection.doc.eq(tr.newDoc))
+            pending = { doc: tr.newDoc, map, lossy: false };
+            inserted = replacements.map((range) => ({
+              at: shiftedAt(range.fromB),
+              text: range.inserted.map((token) => String(token.param)).join(""),
+            }));
+          } else {
+            const checked = read(d);
+            if (!checked.doc.eq(tr.newDoc)) {
+              step({ type: "invalidate" });
               throw Error("Wordgard operation did not reproduce its native Pages projection");
+            }
+            // The editor's own tree, so the next event's identity check holds.
+            pending = { ...checked, doc: tr.newDoc };
           }
-          pending = { heads, projection };
+          step({ type: "begin", heads, pending, check: inserted });
         });
       } finally {
-        pending = null;
+        step({ type: "end" });
       }
     },
     destroy() {

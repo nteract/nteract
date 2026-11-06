@@ -791,6 +791,64 @@ test("a rejected local transaction restores the editor and drops its undo histor
   editor.binding.destroy();
 });
 
+// Automerge stores a lone surrogate as U+FFFD, the same length, so a write
+// that trusted its own tree would keep a projection the Page doesn't hold and
+// refuse every later structural or formatting write.
+test("pasting a lone surrogate leaves later Enter and formatting writable", () => {
+  for (const next of ["Enter", "Strong"]) {
+    const replica = fixture("Hope"),
+      editor = editorFor(replica, "one");
+    editor.dispatch({ changes: { from: 3, insert: [Leaf.text("\uD83D")] } });
+    editor.errors.length = 0;
+    assert.ok(decode(nativeSpans(replica, "one")).doc.eq(editor.state.doc), `${next}: after paste`);
+    if (next === "Enter") {
+      editor.dispatch({ selection: { anchor: 2 } });
+      assert.equal(editor.run(enter), true);
+      assertInSync(editor, replica, "one", "Enter after the paste");
+      assert.equal(editor.state.doc.content.length, 2);
+    } else {
+      editor.dispatch({ changes: { from: 1, to: 3, add: Strong } });
+      assertInSync(editor, replica, "one", "bold after the paste");
+      assert.equal(A.marksAt(replica.doc, textPath("one"), 0).strong, true);
+    }
+    editor.binding.destroy();
+  }
+});
+
+test("a failed write check makes the next write read the block again", () => {
+  let broken = true;
+  const replica = fixture("Hope"),
+    paths = [];
+  const binding = createWordgardBinding(replica, "one", {
+    // One structural write encodes the wrong text, so its check fails.
+    encodeSpans: (doc) => (broken ? encode(schema.doc([Paragraph.create([])])) : encode(doc)),
+    trace: (kind) => paths.push(kind),
+  });
+  const heading = (doc) => schema.doc([Heading.of(2).create([Leaf.text("Hope")])]).eq(doc);
+  const start = state(binding);
+  assert.throws(
+    () =>
+      binding.applyEditorTransaction(
+        start.update({
+          changes: projectChanges(
+            start.doc,
+            schema.doc([Heading.of(2).create([Leaf.text("Hope")])]),
+          ),
+        }),
+      ),
+    /did not reproduce/,
+  );
+  broken = false;
+  paths.length = 0;
+  binding.applyEditorTransaction(
+    state(binding).update({ changes: { from: 1, insert: [Leaf.text("x")] } }),
+  );
+  assert.equal(paths[0], "read", "the projection is read again after the failed check");
+  assert.ok(!heading(binding.current.doc));
+  assert.ok(decode(A.spans(replica.doc, textPath("one"))).doc.eq(binding.current.doc));
+  binding.destroy();
+});
+
 test("a tab from the previous build rejects structural edits to the new shape without corruption", () => {
   // The current build writes an explicit marker for an empty first paragraph:
   // Paragraph(), Paragraph(image), Paragraph("Hope").
