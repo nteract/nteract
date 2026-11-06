@@ -181,6 +181,21 @@ test("Windows release producers activate a pinned native MSVC environment before
     verificationPrograms.push(verify.split("        run: |\n")[1].trim());
   }
   assert.deepEqual(verificationPrograms, Array(3).fill(verificationPrograms[0]), "all producers enforce the same compiler/environment checks");
+  for (const [id, target] of [
+    ["build-notebook-windows-x64", "x86_64-pc-windows-msvc"],
+    ["build-notebook-windows-arm64", "aarch64-pc-windows-msvc"],
+  ]) {
+    const body = jobs.get(id);
+    const pin = workflowStep(body, "Pin MSVC linker path for Rust");
+    assert.ok(body.indexOf(workflowStep(body, "Verify producer MSVC environment")) < body.indexOf(pin));
+    assert.ok(body.indexOf(pin) < body.indexOf("uses: dsherret/rust-toolchain-file@"));
+    assert.match(pin, new RegExp(`EXPECTED_RUST_TARGET: ${target}`));
+    assert.match(pin, /Get-Command cl\.exe -ErrorAction Stop/);
+    assert.match(pin, /Join-Path \(Split-Path -Parent \$compiler\) 'link\.exe'/);
+    assert.match(pin, /Test-Path \$linker/);
+    assert.match(pin, /\$linker\.StartsWith\(\$tools, \[StringComparison\]::OrdinalIgnoreCase\)/);
+    assert.match(pin, /CARGO_TARGET_\$\{target\}_LINKER/);
+  }
   for (const name of ["Activate producer MSVC environment", "Verify producer MSVC environment"]) {
     assert.match(workflowStep(npm, name), /if: startsWith\(matrix\.target, 'win32-'\)/);
   }
