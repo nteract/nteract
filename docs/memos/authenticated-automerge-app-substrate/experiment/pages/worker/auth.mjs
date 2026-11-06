@@ -395,6 +395,9 @@ export const CLIENT_ERROR_CODES = Object.freeze([
   "project_pending",
   "project_capacity",
   "project_revision_conflict",
+  "project_create_forbidden",
+  "project_owner_quota_exceeded",
+  "project_access_changed",
   "tool_renamed",
   "argument_renamed",
   "placement_mismatch",
@@ -519,6 +522,9 @@ export function errorResponse(error, stage = "request") {
           limit: error.details.limit,
           count: error.details.count,
         }),
+      // The Project owner's limit, never the owner's Page count.
+      ...(error?.code === "project_owner_quota_exceeded" &&
+        Number.isSafeInteger(error.details?.limit) && { limit: error.details.limit }),
       ...(error?.code === "unsupported_schema_feature" &&
         Array.isArray(error.details?.features) && {
           unsupported_features: error.details.features

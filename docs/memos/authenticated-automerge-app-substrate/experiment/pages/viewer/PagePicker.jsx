@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Boxes, Check, FileText, Files, Plus, Search, Trash2, X } from "lucide-react";
 
 /** `createProject` (`{ project_id, title }`), when the current Page is in a
- * Project this account owns, splits New Page into "In <Project>", which
+ * Project this account owns or edits, splits New Page into "In <Project>", which
  * calls `onCreateInProject(project_id)`, and "In Your items" (`onCreate`).
  * `loading` says the Pages are still on their way: rather than none, or,
  * while rows this tab remembered show, rather than all of them. */

@@ -1428,14 +1428,22 @@ function App() {
   const listedPages = mergePageListings(pickerFailed ? null : pickerSnapshot.items, localPages).map(
     ownTitle,
   );
-  // Structure remains owner-only; Project members can read the tree without
-  // gaining create/move affordances from their content-editing role.
-  const ownsProject =
+  // The open Page's Project role, from get_project or list_projects.
+  const placementRole = placement?.project_id
+    ? (projectDetails.value?.project_id === placement.project_id && projectDetails.value.role) ||
+      projects.find((project) => project.project_id === placement.project_id)?.role ||
+      null
+    : null;
+  // The Project's owner and editors add Pages to it; a Page an editor adds
+  // belongs to the Project owner. Viewers and commenters read the tree.
+  // Moving and trashing stay with the owner (session.canDelete).
+  const addsToProject =
     !!placement?.project_id &&
-    !!session?.canDelete &&
+    !!session &&
     !session.authRequired &&
     session.pageId === host.current?.pageId &&
-    session.identity?.principal === authentication.current?.identity?.principal;
+    session.identity?.principal === authentication.current?.identity?.principal &&
+    (!!session.canDelete || (!!session.canWrite && ["owner", "editor"].includes(placementRole)));
   const placementProject = placement?.project_id
     ? (projects.find((project) => project.project_id === placement.project_id) ??
       placement.breadcrumbs.find((crumb) => crumb.kind === "project"))
@@ -1492,7 +1500,7 @@ function App() {
             icon: FolderInput,
             run: startMove,
           },
-        ownsProject &&
+        addsToProject &&
           placement.kind !== "project" && {
             key: "new-sub-page",
             label: "New sub-page",
@@ -1701,7 +1709,7 @@ function App() {
             onOpen={open}
             onCreate={create}
             createProject={
-              ownsProject
+              addsToProject
                 ? { project_id: placement.project_id, title: placementProject?.title }
                 : null
             }
@@ -1921,7 +1929,7 @@ function App() {
                     pages={projectPagesList}
                     onOpen={open}
                     onCreate={
-                      ownsProject ? () => createIn({ project_id: placement.project_id }) : null
+                      addsToProject ? () => createIn({ project_id: placement.project_id }) : null
                     }
                     creating={creating}
                   />

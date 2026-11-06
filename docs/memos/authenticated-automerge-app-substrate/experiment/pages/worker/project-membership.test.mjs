@@ -91,7 +91,7 @@ test("a lower revision in a newly resolved Project replaces the old placement", 
   assert.equal(page.projectAccess.revision, 0);
 });
 
-test("membership discovery, inherited Pages, revocation, and owner-only structure", async (t) => {
+test("membership discovery, inherited Pages, revocation, and owner-only sharing and moves", async (t) => {
   const w = await world(t);
   const project = await w.createProject("Shared");
   const child = (await w.createPage({ title: "Child", project_id: project.project_id })).body;
@@ -117,11 +117,10 @@ test("membership discovery, inherited Pages, revocation, and owner-only structur
   assert.equal((await w.call("member", "read_page", { page_id: child.page_id })).status, 200);
   const nested = (await w.createPage({ title: "Nested", parent_id: child.page_id })).body;
   assert.equal((await w.call("member", "read_page", { page_id: nested.page_id })).status, 200);
-  const memberStructure = await w.createPage(
-    { title: "Denied", project_id: project.project_id },
-    "member",
-  );
-  assert.equal(memberStructure.status, 404);
+  // An editor adds Pages (project-editor-create.test.mjs); the owner owns them.
+  const added = await w.createPage({ title: "Added", project_id: project.project_id }, "member");
+  assert.equal(added.status, 200, JSON.stringify(added.body));
+  assert.equal(w.page(added.body.page_id).metadata.owner, w.owner);
   assert.equal(
     (
       await w.call("member", "manage_project_access", {

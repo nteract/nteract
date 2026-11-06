@@ -1556,9 +1556,10 @@ overlay and the path that supplied it. It feeds the `role` label and
 `source: "domain"`. `authority_token` is always null in this build.
 
 Built-in project ownership is synthesized from the Page owner. External leases
-and token round-tripping are not wired. Projects are owner-only, and only a
-Project's owner places Pages in it, so a Page's project copy names the Page
-record's owner. `decide()` already drops inherited paths when a project copy
+and token round-tripping are not wired. Every Page in a Project is owned by the
+Project's owner, including a Page an editor adds, so a Page's project copy names
+the Page record's owner. A Project editor holds `read` and `create_items` on the
+Project itself. `decide()` already drops inherited paths when a project copy
 carries a `valid_until` in the past, but no built-in copy carries one.
 
 Built-in callers always pass `NO_ACTOR_CHAIN`. This build has no verified
@@ -2091,6 +2092,13 @@ to Trash returns `409 trash_capacity`, each with `limit` and `count`.
 `list_pages` returns `quota: {limit, count, trash_count}` for the caller's own
 account, whatever the listing's filters, and `principal`, the account that
 answered. `list_projects` returns `principal` too. The Pages library shows usage from 90% of the limit.
+
+A Page a Project editor adds counts against the Project owner's limit, never the
+editor's. The owner's verified email never reaches an editor's request, so the
+owner's Catalog applies the limit its own gateway last forwarded with the
+owner's `list_pages` (`host/page-limit`), or the target default before the
+owner has listed. A full owner limit refuses the editor with
+`409 project_owner_quota_exceeded`, carrying `limit` but not the owner's count.
 
 ## Build updates
 
@@ -2699,12 +2707,36 @@ storage's: it maps `project_id` and the Project tools in, and `space_id` out.
 `tool_renamed`, and a `space_id` argument answers `argument_renamed`, before
 anything runs. Projects created before the rename keep their `sp_<uuid>` IDs,
 and `/s/<id>` links open `/project/<id>`. See
-[DEPLOYMENT.md](DEPLOYMENT.md#projects-and-their-storage-identity). In this build membership is owner-only: only the owner can open a Project,
-list its Pages or add to it, and nothing inherits access from a Project. A Page in
-a Project is readable by the owner and by anyone with a direct grant on that Page;
-sharing works as before and never reveals the Project. `move_page` moves Pages
-into, out of and between the owner's Projects. Inherited access and a Project
-change feed come later.
+[DEPLOYMENT.md](DEPLOYMENT.md#projects-and-their-storage-identity).
+
+The owner shares a Project with `manage_project_access`. Members inherit access
+to every Page in it by role:
+
+| Role | Pages in the Project | Add Pages | Share, move, Trash |
+| --- | --- | --- | --- |
+| owner | read, comment, edit | yes | yes |
+| editor | read, comment, edit | yes | no |
+| commenter | read, comment | no | no |
+| viewer | read | no | no |
+
+Every Page in a Project is owned by the Project owner and sits in the owner's
+Catalog; inherited access ([project-access.mjs](worker/project-access.mjs))
+depends on it. A Page an editor adds with `create_page` is no exception. It
+counts against the owner's Page limit, and its Page record and Catalog entry
+name the editor as `creator`. The editor's Catalog resolves the Project and its
+owner, decides `create_items` against the Project's ACL, and forwards the
+creation to the owner's Catalog with that ACL revision as a fence. The owner's
+Catalog checks the fence and decides again before it reserves anything, so a
+revoked or downgraded editor can't land a Page with a stale grant. A forwarding
+record under the editor's own idempotency key names the owner-side creation, so
+a retry resumes it rather than creating a second Page
+([project-create.mjs](worker/project-create.mjs)). The Page host accepts an owner
+other than its caller only while the owner's Catalog holds that Page's pending
+entry with the caller as creator. Viewers and commenters are refused with
+`403 project_create_forbidden`; a Project or parent the caller can't open still
+looks missing. A Page with only a direct grant is shared as before and never
+reveals its Project. `move_page` moves Pages into, out of and between the
+owner's Projects; a Project change feed comes later.
 
 The viewer lists them on two screens. `/projects` shows every Project
 `list_projects` returns, with its description. The Pages library, at `/` and
