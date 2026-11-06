@@ -300,10 +300,16 @@ test("a new message is rich text; a bare literal body is refused", () => {
       deletedAt: null,
     };
   });
-  assert.equal(bare.reason.code, REJECTION.INVALID_VALUE);
-  assert.match(bare.reason.message, /rich text/);
-  // An earlier build's tab still writes a Markdown copy: refused, so no new
-  // old-form message lands after the migration.
+  assert.equal(bare.reason.code, REJECTION.OUTDATED_FORM);
+  assert.match(bare.reason.message, /body/);
+  // A message map without the rich format is an earlier build's too.
+  const formless = admit(doc, BOB, "commenter", (d) => {
+    const { format: _format, ...rest } = richMessage("hello", BOB);
+    d.threads[ids.aliceThread].messages.formless = rest;
+  });
+  assert.equal(formless.reason.code, REJECTION.OUTDATED_FORM);
+  assert.match(formless.reason.message, /rich text/);
+  // An earlier build's tab still writes a Markdown copy: refused.
   const copy = admit(doc, BOB, "commenter", (d) => {
     d.threads[ids.aliceThread].messages.copy = { ...richMessage("hello", BOB), body: "hello" };
   });
@@ -324,9 +330,10 @@ test("a new message is rich text; a bare literal body is refused", () => {
   assert.equal(plain.ok, true, JSON.stringify(plain.reason));
 });
 
-test("an existing literal-body message stays admissible until it is rewritten", () => {
+test("an existing literal-body message is refused, even for a soft delete", () => {
   const { doc: seeded, ids } = seed();
-  // The host rewrites Bob's message to the shape earlier builds stored.
+  // A message in the shape earlier builds stored, which the comments
+  // migration rewrote everywhere.
   const doc = A.change(seeded, (d) => {
     d.threads[ids.bobThread].messages[ids.bobMessage] = {
       body: "Bob opens",
@@ -339,24 +346,25 @@ test("an existing literal-body message stays admissible until it is rewritten", 
   const deleted = admit(doc, BOB, "commenter", (d) => {
     d.threads[ids.bobThread].messages[ids.bobMessage].deletedAt = now();
   });
-  assert.equal(deleted.ok, true, JSON.stringify(deleted.reason));
+  assert.equal(deleted.reason?.code, REJECTION.OUTDATED_FORM);
   const emptied = admit(doc, BOB, "commenter", (d) => {
     A.updateText(d, [...path, "body"], " ");
   });
-  assert.equal(emptied.reason.code, REJECTION.INVALID_VALUE);
-  // The tools convert it on its next edit, which passes admission.
-  const changes = changesOf(doc, (d) =>
-    applyComment(
-      d,
-      { action: "edit", thread_id: ids.bobThread, message_id: ids.bobMessage, body: "Now rich" },
-      who(BOB),
-      null,
-      { page, role: "commenter" },
-    ),
+  assert.equal(emptied.reason?.code, REJECTION.OUTDATED_FORM);
+  // The tools refuse to rewrite it rather than guess at its form.
+  assert.throws(
+    () =>
+      changesOf(doc, (d) =>
+        applyComment(
+          d,
+          { action: "edit", thread_id: ids.bobThread, message_id: ids.bobMessage, body: "Now" },
+          who(BOB),
+          null,
+          { page, role: "commenter" },
+        ),
+      ),
+    { code: "stored_form_unsupported" },
   );
-  const converted = admitCommentChanges(doc, changes, BOB, { role: "commenter" });
-  assert.equal(converted.ok, true, JSON.stringify(converted.reason));
-  A.free(converted.next);
 });
 
 test("a rich reply written by the tools passes native admission", () => {
@@ -524,7 +532,7 @@ test("entity sets keep (thread, id) pairs distinct", () => {
   assert.equal(set.has("a", "c"), false);
 });
 
-test("new writes must be in the editor's span form; old-form messages stay deletable", () => {
+test("every write leaves a message in the editor's span form", () => {
   const { doc: seeded, ids } = seed();
   // Two paragraphs: the adapter's form opens with a paragraph marker the
   // editor never writes.
@@ -542,25 +550,27 @@ test("new writes must be in the editor's span form; old-form messages stay delet
     A.updateSpans(d, bobText, markdownCommentSpans("One\n\nTwo")),
   );
   assert.equal(editor.ok, true, JSON.stringify(editor.reason));
-  // A message an earlier build stored in the adapter's form, with its copy.
-  const doc = A.change(seeded, (d) => {
+  // A message an earlier build stored in the adapter's form, with or
+  // without its copy: every write to it is refused, a soft delete included.
+  const adapterOnly = A.change(seeded, (d) => A.updateSpans(d, bobText, adapter));
+  const withCopy = A.change(adapterOnly, (d) => {
     d.threads[ids.bobThread].messages[ids.bobMessage].body = "One\n\nTwo";
-    A.updateSpans(d, bobText, adapter);
   });
-  const deleted = admit(doc, BOB, "commenter", (d) => {
-    d.threads[ids.bobThread].messages[ids.bobMessage].deletedAt = now();
-  });
-  assert.equal(deleted.ok, true, JSON.stringify(deleted.reason));
-  // Writing to its copy is refused; removing it with a rewrite is not.
-  const copy = admit(doc, BOB, "commenter", (d) =>
-    A.updateText(d, ["threads", ids.bobThread, "messages", ids.bobMessage, "body"], "new copy"),
-  );
-  assert.equal(copy.reason?.code, REJECTION.OUTDATED_FORM);
-  const rewritten = admit(doc, BOB, "commenter", (d) => {
-    delete d.threads[ids.bobThread].messages[ids.bobMessage].body;
-    A.updateSpans(d, bobText, markdownCommentSpans("One\n\nTwo"));
-  });
-  assert.equal(rewritten.ok, true, JSON.stringify(rewritten.reason));
+  for (const doc of [adapterOnly, withCopy]) {
+    const deleted = admit(doc, BOB, "commenter", (d) => {
+      d.threads[ids.bobThread].messages[ids.bobMessage].deletedAt = now();
+    });
+    assert.equal(deleted.reason?.code, REJECTION.OUTDATED_FORM);
+  }
+  for (const write of [
+    (d) =>
+      A.updateText(d, ["threads", ids.bobThread, "messages", ids.bobMessage, "body"], "new copy"),
+    (d) => {
+      delete d.threads[ids.bobThread].messages[ids.bobMessage].body;
+      A.updateSpans(d, bobText, markdownCommentSpans("One\n\nTwo"));
+    },
+  ])
+    assert.equal(admit(withCopy, BOB, "commenter", write).reason?.code, REJECTION.OUTDATED_FORM);
 });
 
 test("an old form is refused without blocking the key: a stale tab isn't an attack", () => {

@@ -270,12 +270,12 @@ test("message order is chronological and full quotes/bodies are never silently s
     const result = applyComment(draft, { block_id: "block", selected_text: quote, body }, author);
     id = result.thread_id;
     draft.threads[id].messages[result.message_id].createdAt = "2026-01-02T00:00:00Z";
-    draft.threads[id].messages.earlier = {
-      body: "Earlier",
+    const earlier = applyComment(
+      draft,
+      { action: "reply", thread_id: id, body: "Earlier" },
       author,
-      createdAt: "2026-01-01T00:00:00Z",
-      deletedAt: null,
-    };
+    ).message_id;
+    draft.threads[id].messages[earlier].createdAt = "2026-01-01T00:00:00Z";
   });
   const before = A.getHeads(doc),
     [thread] = projectReadComments(doc);

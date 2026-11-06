@@ -61,7 +61,6 @@ import {
   commentDraftText,
   commentSpansMeasure,
 } from "../model/comment-text.mjs";
-import { isRich } from "../model/richtext-format.mjs";
 import "./wordgard.css";
 
 const permissions = (editable) => [
@@ -484,12 +483,11 @@ export function CommentRichText({
 
 export function CommentContent({ message, source }) {
   const mount = useRef(null);
-  const rich = isRich(source);
   const unavailable = message.content_error === "rich_text_unavailable";
   const [problem, setProblem] = useState(false);
   useEffect(() => {
     setProblem(false);
-    if (!rich || unavailable) return;
+    if (unavailable) return;
     let editor;
     try {
       editor = Wordgard.create({
@@ -506,8 +504,7 @@ export function CommentContent({ message, source }) {
       setProblem(true);
     }
     return () => editor?.dom.remove();
-  }, [source, rich, unavailable]);
-  if (!rich && !unavailable) return <p>{message.body}</p>;
+  }, [source, unavailable]);
   return (
     <div className="comment-rich-content wordgard-editor">
       <div ref={mount} hidden={problem || unavailable} />
@@ -515,7 +512,7 @@ export function CommentContent({ message, source }) {
         <>
           <p className="muted">
             {unavailable
-              ? "Rich text is unavailable. The original comment text is shown below and may not include later edits."
+              ? "Rich text is unavailable. Its text is shown below without formatting."
               : "This comment could not be formatted. Its current Markdown is shown below."}
           </p>
           <pre>{message.body}</pre>

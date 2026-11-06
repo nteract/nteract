@@ -607,17 +607,21 @@ gone. A Page that wrote a migration change keeps its revert records in
 `host/comments-migration/revert`, and each owner's Catalog keeps
 `host/comments-migration/state` and `result/*`; nothing reads them.
 
-This build still reads and admits both old forms on existing messages, and
-refuses them on anything new: a new message with a `body` or adapter-form
-spans, a write that leaves a message's spans in the adapter's form, and any
-write to `body` but its removal. Earlier viewers write those forms, so
+This build reads and admits neither old form. A read that meets a message
+with no rich text or with a `body` answers `409 stored_form_unsupported`, and
+the tools refuse to edit one the same way. Admission refuses a change that
+creates or touches a message with a `body`, without the rich format, or with
+spans out of the editor's form, a soft delete included, as `outdated_form`.
+That refusal never blocks the sender: earlier viewers write those forms, so
 `MIN_VIEWER_PROTOCOL` is 3 and their tabs must reload.
 
 **Rollback rule.** Every message this build writes has no `body`. A build
 before the comments change (#4884) reads such a message (it ignores
 `bodyFormat`, so a plain message reads as escaped Markdown), but its
 admission requires `body` on every message: its host would refuse a later
-edit or deletion of one. Roll back only to a build that has #4884.
+edit or deletion of one. Roll back only to a build that has #4884. A build
+between #4884 and this one still reads the old forms, so rolling back to it
+is safe.
 
 Reverting #4884 on `main` is a forbidden rollback, not a fix. page10 deploys
 `main` automatically, so a revert would ship the earlier admission to a target
