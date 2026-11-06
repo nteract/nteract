@@ -414,6 +414,7 @@ export const CLIENT_ERROR_CODES = Object.freeze([
   "unsupported_schema_feature",
   "unsupported_markdown",
   "markdownless_node",
+  "invalid_page_content",
   "node_not_found",
   "nodes_would_join",
   "stored_form_unsupported",

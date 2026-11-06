@@ -139,9 +139,12 @@ export function handleContract(name, makeFixture) {
           const event = nextEvent(t, f.handle, "change", ({ patches }) =>
             patches.some((patch) => patch.path[0] === field),
           );
-          await writer.update((doc) =>
+          // Page-body admission refuses a browser's write under a root key
+          // Pages doesn't have, so unknown data comes from the host's writer.
+          await (field === "future" ? f.handle : writer).update((doc) =>
             A.change(doc, (d) => {
-              if (field === "blocks") d.blocks.b.richText += " more";
+              if (field === "blocks")
+                A.splice(d, ["blocks", "b", "richText"], d.blocks.b.richText.length, 0, " more");
               else if (field === "future") d.future.keep.push(3);
               else d.title = `${origin} title`;
             }),
@@ -332,7 +335,7 @@ export function handleContract(name, makeFixture) {
         rejection.release();
         const peerBase = peer.handle.doc();
         const peerEdit = A.change(A.clone(peerBase), (d) => {
-          d.blocks.b.richText = "Peer survived";
+          A.updateText(d, ["blocks", "b", "richText"], "Peer survived");
         });
         const peerHeads = A.getHeads(peerEdit);
         const peerChanges = A.getChanges(peerBase, peerEdit);

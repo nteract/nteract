@@ -3,7 +3,7 @@ import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { Repo, cbor, generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
-import { createPageData, initializePage } from "../model/page.mjs";
+import { createPageData, initializePage, orderedBlockIds } from "../model/page.mjs";
 import { BUILD_FEATURES } from "../model/schema-features.mjs";
 import { AutomergeSyncBackend } from "../sync/backend.mjs";
 import { DocStore, MemoryByteStore } from "../sync/doc-store.mjs";
@@ -12,6 +12,12 @@ import { Page } from "./index.mjs";
 import { HOST_SENDER_ID, PlainByteStore } from "./plain-sync.mjs";
 import { documentMutation } from "./mutations.mjs";
 import { applyComment } from "../model/comments.mjs";
+
+// Browser writes pass Page-body admission (model/page-admission.mjs), so
+// they type into the Page's first block.
+const firstBlock = (doc) => orderedBlockIds(doc)[0];
+const typed = (doc, text) => A.splice(doc, ["blocks", firstBlock(doc), "richText"], 0, 0, text);
+const holds = (doc, text) => String(doc?.blocks?.[firstBlock(doc)]?.richText ?? "").includes(text);
 
 class Storage {
   values = new Map();
@@ -386,9 +392,7 @@ test("plain capacity refusal on restart preserves committed reads and the pendin
     { senderId: "b-capacity" },
   );
   t.after(() => browser.client.close());
-  const candidate = A.change(A.clone(host.handle.doc()), (d) => {
-    d.browser = true;
-  });
+  const candidate = A.change(A.clone(host.handle.doc()), (d) => typed(d, "From browser "));
   const changes = A.getChanges(host.handle.doc(), candidate);
   A.free(candidate);
   // Scale byte accounting near the limit without allocating 16 MiB of history.
@@ -414,7 +418,7 @@ test("plain capacity refusal on restart preserves committed reads and the pendin
       (stored.snapshot?.bytes ?? 0) -
       stored.chunks.reduce((n, chunk) => n + chunk.bytes, 0);
     browser.client.send({ t: "sync", doc: tree, m: helloWith(changes), r: 1 });
-    await until(() => host.handle.doc().browser === true);
+    await until(() => holds(host.handle.doc(), "From browser "));
   });
   const refusals = [];
   const admit = host.plain.host.policy.admitTrusted;
@@ -445,7 +449,7 @@ test("plain capacity refusal on restart preserves committed reads and the pendin
   assert.deepEqual(content.heads, committed);
   assert.equal(content.recovery.code, "page_recovery_blocked");
   assert.equal(content.recovery.pending, true);
-  assert.equal(restarted.handle.doc().browser, true);
+  assert.ok(holds(restarted.handle.doc(), "From browser "));
   assert.deepEqual(await f.storage.get(key), pending);
   const edit = await tool(f, restarted, "edit_page", { ...args, base_heads: committed });
   assert.equal(edit.status, 409);
@@ -780,15 +784,15 @@ test("a browser syncs an automerge Page through connect, and its actor is attrib
     assert.equal(staleFrames.find((frame) => frame.t === "refused").code, "schema_unsupported");
     assert.equal(stale.client.closeCode, 4426);
     assert.equal(handle.doc().title, "Plain Page");
-    handle.change((d) => (d.fromBrowser = true));
-    await until(() => host.handle.doc().fromBrowser === true);
+    handle.change((d) => typed(d, "From browser "));
+    await until(() => holds(host.handle.doc(), "From browser "));
     const actor = A.getActorId(handle.doc());
     assert.equal(host.plain.actorSnapshot().actorProfiles[actor]?.principal, identity.principal);
     // The host's actor-profiles message reaches the browser from the host's
     // sender id, naming the actor and the hash of the change just made.
     const hostMessages = [];
     handle.on("ephemeral-message", (e) => hostMessages.push(e));
-    handle.change((d) => (d.second = true));
+    handle.change((d) => typed(d, "Second "));
     const hash = A.decodeChange(A.getLastLocalChange(handle.doc())).hash;
     await until(() =>
       hostMessages.some(
@@ -1039,9 +1043,9 @@ test("a second browser learns who wrote the first browser's change", async (t) =
     const hb = await b.repo.find(f.args.document_id);
     const seen = [];
     hb.on("ephemeral-message", (e) => seen.push(e));
-    ha.change((d) => (d.fromA = true));
+    ha.change((d) => typed(d, "From A "));
     const hash = A.decodeChange(A.getLastLocalChange(ha.doc())).hash;
-    await until(() => hb.doc().fromA === true);
+    await until(() => holds(hb.doc(), "From A "));
     await until(() => seen.some((e) => e.message?.attestedChanges?.[hash]));
     const delta = seen.find((e) => e.message?.attestedChanges?.[hash]);
     assert.equal(delta.senderId, HOST_SENDER_ID);
@@ -1290,7 +1294,8 @@ test("every plain refusal logs page.sync_refused once, and its repeats once at c
     expiresAt: Date.now() + 3_600_000,
   };
   const doc = treeHex(f.args.document_id);
-  const edit = (n) => A.getLastLocalChange(A.change(A.clone(host.handle.doc()), (d) => (d.n = n)));
+  const edit = (n) =>
+    A.getLastLocalChange(A.change(A.clone(host.handle.doc()), (d) => typed(d, `${n} `)));
 
   // A build without the Page's schema features: fatal, closes the socket.
   const stale = rawSocket(host, identity, { features: [], senderId: "b-stale" });
@@ -1356,8 +1361,8 @@ test("a browser connection logs its sync-round latency when it closes", async (t
   try {
     const handle = await browser.repo.find(f.args.document_id);
     for (let n = 1; n <= 3; n++) {
-      handle.change((d) => (d.n = n));
-      await until(() => host.handle.doc().n === n);
+      handle.change((d) => typed(d, `Edit ${n} `));
+      await until(() => holds(host.handle.doc(), `Edit ${n} `));
     }
     assert.equal(lines.filter((line) => line.event === "page.sync_rounds").length, 0);
   } finally {

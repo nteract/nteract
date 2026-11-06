@@ -2007,9 +2007,12 @@ stored:
 4. Actor claims. Each new change's actor is unclaimed or claimed by this
    principal. A claim is written in the same `saveMany` as the history it
    covers, and no other document can claim the actor meanwhile.
-5. The schema-feature gate and the 16 MiB history bound, then
-   `admitCommentChanges` for the comments document. A comment rule refusal blocks the principal's
+5. The schema-feature gate and the 16 MiB history bound, then the content
+   rules: `admitPageChanges` for the Page document (see
+   [Page-body admission](#page-body-admission)) and `admitCommentChanges` for
+   the comments document. A comment rule refusal blocks the principal's
    comment writes (`host/comments-blocked/<principal>`) and closes the socket.
+   A Page-body refusal does neither.
 6. Persist, publish who wrote the changes (`actor-profiles`, ahead of the
    changes), reply, then fan out.
 
@@ -2023,6 +2026,47 @@ the closed connection has no frame left running, so a frame refused after the
 close counts too. Each connection also logs `page.sync_rounds`, its sync-round
 latency from frame arrival to ack, summarised every 256 rounds and at close rather
 than per keystroke ([worker/plain-sync-log.mjs](worker/plain-sync-log.mjs)).
+
+#### Page-body admission
+
+[model/page-admission.mjs](model/page-admission.mjs) decides whether a batch
+of changes to the Page document writes only content every Pages reader and
+writer accepts. It judges what the batch changes, from the patches between
+the live document and the preview (`A.diff`), not the whole document:
+
+| Path written | Rule |
+| --- | --- |
+| Root key | One of `page_id`, `title`, `blocks`, `schema`. `page_id` never changes; `page_id`, `title` and `blocks` are never deleted. |
+| `title` | Text or a string, at most 1,024 UTF-16 units, or no longer than before. |
+| `schema` | The stamp keeps every id and gains only well-formed ones. A newer build may stamp an id this build doesn't know; the schema gate then holds the Page for builds without it. |
+| Block entry | A new entry has a UUID key and exactly the fields `id`, `position`, `kind`, `format`, `markdown`, `richText`, `metadata`, each valid ([model/page-shape.mjs](model/page-shape.mjs), shared with registration). A written field passes its rule; no other key. |
+| Mark | A mark patch's name and value: a known mark with a registry value (`validateMarkValue`), or null. Text typed under a mark carries it in its splice patch; a mark the block already held isn't new. |
+| Block marker | Each inserted or changed marker, read alone at its final index (`A.block`), passes `validateMarkerValue`: known type and parents, and the attrs the adapter reads. |
+| Block size | A block whose native length grows ends at most 262,144 UTF-16 units (markers count one), read from the backend length. |
+
+A batch that inserts, changes or deletes a block marker can move nodes in ways
+no patch shows, so that block alone is read whole: `validateRichSpans` on its
+spans after the batch. If it fails there, the block as admitted is checked
+too, and the batch is refused only when it made a readable block unreadable. A
+new block, a replaced text object, and a marker the patch path can't place are
+also read whole. Typing, deleting text, formatting and title edits never read a
+block.
+
+Content stored before these rules stays readable and editable: a write is
+judged by what it writes, so a Page with an unknown mark, an extra field or an
+over-long title takes every edit that doesn't add to it.
+
+A refusal is `invalid_page_content`, non-fatal: the socket stays open and the
+principal isn't blocked, since a stale build or a client bug sends it as easily
+as anyone. Its `page.sync_refused` line names the broken rule (`mark`,
+`marker`, `block_size`, …) and carries no Page id. Host writers run the same
+check before an intent is journaled (`validate` in
+[worker/mutations.mjs](worker/mutations.mjs)), so a tool edit it refuses
+answers `400 invalid_page_content` and nothing is recorded. `admitTrusted`
+doesn't run it: journal recovery replays bytes that already passed, and a
+refusal there would strand the intent. Registration validates a draft whole
+(`readRegistration`). The browser editor stops a write that would lengthen a
+block past the size bound, so it never sends one the host refuses.
 
 Journaled host edits use a fresh actor per mutation: the Page host's persisted
 random eight-byte prefix followed by eight random bytes. Concurrent producers

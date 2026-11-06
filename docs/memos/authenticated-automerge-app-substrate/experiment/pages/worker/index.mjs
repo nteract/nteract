@@ -30,6 +30,7 @@ import {
 import { unsupportedMarkdown, unsupportedMarkdownError } from "../model/markdown-scan.mjs";
 import { commentsGenesis } from "../model/comments-doc.mjs";
 import { applyComment, commentsMigrated } from "../model/comments.mjs";
+import { requirePageContent } from "../model/page-admission.mjs";
 import { guardCommentIntent } from "../model/comment-guard.mjs";
 import { commentsDocUuid, commentsDocumentId } from "./comments-store.mjs";
 import { storedFormUnsupported } from "../model/stored-form.mjs";
@@ -5626,6 +5627,7 @@ export class Page {
           operation: body.operation,
           args: body.arguments,
           identity,
+          validate: requirePageContent,
           prepare: inserts.length
             ? async () => {
                 if (inserts.length > 100)

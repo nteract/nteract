@@ -192,14 +192,15 @@ try {
     };
     const one = await join();
     const two = await join();
+    // Each tab renames the Page: Page-body admission takes title edits.
     await one.change((doc) => {
-      doc.fromOne = "from the first tab";
+      doc.title = "from the first tab";
     });
-    await eventually(() => assert.equal(two.handle.doc().fromOne, "from the first tab"), 20_000);
+    await eventually(() => assert.equal(two.handle.doc().title, "from the first tab"), 20_000);
     await two.change((doc) => {
-      doc.fromTwo = "from the second tab";
+      doc.title = "from the second tab";
     });
-    await eventually(() => assert.equal(one.handle.doc().fromTwo, "from the second tab"), 20_000);
+    await eventually(() => assert.equal(one.handle.doc().title, "from the second tab"), 20_000);
     await one.close();
     await two.close();
     // A build without plain sync is refused the socket as a schema update.

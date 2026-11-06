@@ -212,6 +212,60 @@ export function validateRich(block) {
   validateRichSpans(A.spans(block, ["richText"]));
 }
 
+const attrsMap = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+const text = (value) => (value == null ? value : String(value));
+/** Schema check for one stored block marker, on its own: its keys, a known
+ * type and parents, and the attrs the ProseMirror adapter reads for that type
+ * (model/pm-adapter.mjs), read the way the adapter reads them. Attrs a type
+ * doesn't read are kept, unchecked, as the adapter keeps them. Placement in
+ * the tree is validateRichSpans' tree check. */
+export function validateMarkerValue(value) {
+  if (
+    !attrsMap(value) ||
+    Object.keys(value).some((k) => !["type", "parents", "attrs", "isEmbed"].includes(k)) ||
+    !Array.isArray(value.parents) ||
+    value.parents.length > 32 ||
+    !isKnownBlock(value.type) ||
+    !attrsMap(value.attrs)
+  )
+    throw Error("Unsupported rich block marker");
+  for (const parent of value.parents)
+    if (!isKnownBlock(parent)) throw Error("Unsupported rich parent");
+  const { attrs } = value;
+  switch (String(value.type)) {
+    case "task-list-item":
+      if (typeof attrs.checked !== "boolean") throw Error("Invalid task checked state");
+      break;
+    case "heading":
+      // The adapter's default level is 1.
+      if (attrs.level !== undefined && !validHeadingLevel(attrs.level))
+        throw Error("Invalid heading level");
+      break;
+    case "table-cell":
+    case "table-header":
+      if (attrs.align != null && !validAlignment(String(attrs.align)))
+        throw Error("Invalid table alignment");
+      break;
+    case "image":
+      if (
+        !safeUrl(attrs.src?.toString() || null) ||
+        (attrs.dark_src != null && !safeUrl(text(attrs.dark_src)))
+      )
+        throw Error("Invalid rich image URL");
+      break;
+    case DATAFRAME_BLOCK:
+      if (
+        !readDataframe({
+          src: String(attrs.src ?? ""),
+          media_type: String(attrs.media_type ?? ""),
+          title: text(attrs.title) ?? null,
+        })
+      )
+        throw Error("Invalid dataframe: src must be a Page asset path");
+      break;
+  }
+}
+
 /** Schema check for native rich-text spans read from any Automerge text
  * object: a Page block's `richText` or a comments-doc message `body`. */
 export function validateRichSpans(spans, maxBytes = 262144) {
@@ -227,21 +281,8 @@ export function validateRichSpans(spans, maxBytes = 262144) {
           throw Error(name === "link" ? "Invalid rich link" : "Invalid rich mark value");
         }
       }
-    } else if (span.type === "block") {
-      const value = span.value;
-      if (
-        !value ||
-        Object.keys(value).some((k) => !["type", "parents", "attrs", "isEmbed"].includes(k)) ||
-        !Array.isArray(value.parents) ||
-        value.parents.length > 32 ||
-        !isKnownBlock(value.type)
-      )
-        throw Error("Unsupported rich block marker");
-      for (const parent of value.parents)
-        if (!isKnownBlock(parent)) throw Error("Unsupported rich parent");
-      if (String(value.type) === "task-list-item" && typeof value.attrs.checked !== "boolean")
-        throw Error("Invalid task checked state");
-    } else throw Error("Unsupported rich span");
+    } else if (span.type === "block") validateMarkerValue(span.value);
+    else throw Error("Unsupported rich span");
   }
   const tree = pmDocFromSpans(adapter, codeTextUnmarked(spans));
   tree.check();

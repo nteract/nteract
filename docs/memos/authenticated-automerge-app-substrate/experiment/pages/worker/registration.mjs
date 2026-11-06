@@ -1,17 +1,14 @@
 import * as A from "@automerge/automerge";
 import { documentIdToBinary } from "@automerge/automerge-repo";
-import { generateKeyBetween } from "fractional-indexing";
 import { assertDocumentLimits } from "../model/limits.mjs";
-import { RICH_FORMAT } from "../model/richtext-format.mjs";
+import { validBlockEntry, validPageId } from "../model/page-shape.mjs";
 import { validateRich } from "../model/richtext-spans.mjs";
 import { requireSupportedSchema } from "../model/schema-features.mjs";
 import { commentsMigrated } from "../model/comments.mjs";
 import { STORED_FORM_UNSUPPORTED, storedFormUnsupported } from "../model/stored-form.mjs";
 import { HttpError } from "./auth.mjs";
 
-export const validPageId = (id) =>
-  typeof id === "string" &&
-  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id);
+export { validPageId };
 const map = (value) => value && typeof value === "object" && !Array.isArray(value);
 
 /** Validate the immutable bootstrap, never a replacement for an existing Page.
@@ -68,20 +65,8 @@ export function readRegistration(args) {
     // A draft from a build before that is in a form this build doesn't read.
     if (!commentsMigrated(doc)) throw storedFormUnsupported("this draft Page");
     for (const [id, block] of Object.entries(doc.blocks)) {
-      if (
-        !validPageId(id) ||
-        !map(block) ||
-        block.id !== id ||
-        block.kind !== "markdown" ||
-        block.format !== RICH_FORMAT ||
-        typeof block.markdown !== "string" ||
-        typeof block.richText !== "string" ||
-        !map(block.metadata) ||
-        !A.isRawString(block.position) ||
-        String(block.position).length > 512
-      )
-        throw Error("Invalid Page block");
-      generateKeyBetween(String(block.position), null);
+      // The same block shape admission checks on every later write.
+      if (!validBlockEntry(id, block)) throw Error("Invalid Page block");
       validateRich(block);
     }
     if (!Object.keys(doc.blocks).length) throw Error("Page bootstrap needs a block");
