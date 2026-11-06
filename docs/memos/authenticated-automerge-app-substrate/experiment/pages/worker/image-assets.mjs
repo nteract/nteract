@@ -317,6 +317,49 @@ async function grantedExpectation(access) {
   return body?.upload && typeof body.upload === "object" ? body.upload : undefined;
 }
 
+/** authenticate() for the asset route. An upload with no credential at all
+ * is most often an agent whose upload header was lost (curl drops an -H
+ * value without a colon), so its refusal names the upload tool first. Other
+ * routes keep authenticate()'s own message. */
+async function authenticateAssets(request, env, upload) {
+  try {
+    return await authenticate(request, env);
+  } catch (error) {
+    if (
+      upload &&
+      error?.code === "auth_required" &&
+      !request.headers.has("authorization") &&
+      !request.headers.has("cookie")
+    )
+      throw new HttpError(
+        401,
+        `Agents: call create_page_asset_upload for an upload URL and send the headers it returns. ${error.message}`,
+        "auth_required",
+      );
+    throw error;
+  }
+}
+
+/** The request body of an upload. A capability bound to a size refuses a
+ * different Content-Length before reading anything and reads no more than
+ * that size; persistPageAsset checks the exact size after. */
+async function readUploadBody(request, expect) {
+  const bound = expect?.size;
+  if (bound === undefined)
+    return readImageBody(request, { maxBytes: ASSET_MAX_BYTES, tooLarge: FILE_TOO_LARGE });
+  const length = request.headers.get("content-length");
+  if (length !== null && length !== String(bound)) throw uploadMismatch("size");
+  try {
+    return await readImageBody(request, {
+      maxBytes: Math.min(bound, ASSET_MAX_BYTES),
+      tooLarge: FILE_TOO_LARGE,
+    });
+  } catch (error) {
+    if (error?.status === 413) throw uploadMismatch("size");
+    throw error;
+  }
+}
+
 /**
  * The authorize callback is a short Page-DO request; byte transfer stays
  * outside its queue. `identify` checks the caller's credential before any
@@ -324,11 +367,7 @@ async function grantedExpectation(access) {
  * (asset-uploads.mjs) replaces it with the Origin check alone, and its
  * authorize callback carries the capability to the Page host instead.
  */
-export async function handleImageAssets(
-  request,
-  env,
-  { pageId, assetId, authorize, identify = () => authenticate(request, env) },
-) {
+export async function handleImageAssets(request, env, { pageId, assetId, authorize, identify }) {
   try {
     if (!validPageId(pageId) || (assetId !== undefined && !validAssetId(assetId)))
       throw new HttpError(400, "Invalid image reference");
@@ -336,17 +375,14 @@ export async function handleImageAssets(
     if (!upload && !(assetId && ["GET", "HEAD"].includes(request.method)))
       throw new HttpError(405, assetId ? "Use GET or HEAD" : "Use POST");
     // In particular this does not widen the MCP-only OAuth token audience.
-    await identify();
+    await (identify ? identify() : authenticateAssets(request, env, upload));
     const access = await authorize(upload);
     if (!access.ok) return privateImageResponse(access);
     const expect = upload ? await grantedExpectation(access) : undefined;
     const bucket = env.PAGES_ASSETS;
     if (!bucket) throw new HttpError(503, "Image storage is unavailable");
     if (upload) {
-      const bytes = await readImageBody(request, {
-        maxBytes: ASSET_MAX_BYTES,
-        tooLarge: FILE_TOO_LARGE,
-      });
+      const bytes = await readUploadBody(request, expect);
       const { asset, duplicate } = await persistPageAsset(bucket, {
         pageId,
         bytes,

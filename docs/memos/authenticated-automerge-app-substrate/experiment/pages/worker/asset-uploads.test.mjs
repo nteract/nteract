@@ -142,6 +142,69 @@ async function upload(w, grant, options) {
   return { status: response.status, body, headers: response.headers };
 }
 
+/** Split a command line as a POSIX shell does: whitespace separates words,
+ * single quotes keep everything literally, double quotes keep all but
+ * backslash escapes of \ " $ and `, and a backslash outside quotes escapes
+ * the next character. Enough for the commands Pages prints. */
+function shellWords(line) {
+  const words = [];
+  let word = null;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === "'") {
+      const end = line.indexOf("'", i + 1);
+      assert.notEqual(end, -1, "unterminated single quote");
+      word = (word ?? "") + line.slice(i + 1, end);
+      i = end;
+    } else if (c === '"') {
+      word ??= "";
+      for (i++; line[i] !== '"'; i++) {
+        assert.ok(i < line.length, "unterminated double quote");
+        if (line[i] === "\\" && '\\"$`'.includes(line[i + 1])) i++;
+        word += line[i];
+      }
+    } else if (c === "\\") word = (word ?? "") + line[++i];
+    else if (/\s/.test(c)) {
+      if (word !== null) words.push(word);
+      word = null;
+    } else word = (word ?? "") + c;
+  }
+  if (word !== null) words.push(word);
+  return words;
+}
+
+/** The request curl sends for `command`, reading --data-binary @file from
+ * `files`. Like curl, an -H value without a colon is dropped silently, and
+ * --data-binary without a Content-Type header sends a form type. */
+function curlRequest(command, files) {
+  const [program, ...args] = shellWords(command);
+  assert.equal(program, "curl");
+  const headers = new Headers();
+  let body, url;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (["-s", "-S", "-sS"].includes(arg)) continue;
+    if (arg === "-H" || arg === "--header") {
+      const value = args[++i];
+      const colon = value.indexOf(":");
+      if (colon === -1) continue;
+      headers.set(value.slice(0, colon).trim(), value.slice(colon + 1).trim());
+    } else if (arg === "--data-binary") {
+      const value = args[++i];
+      assert.ok(value.startsWith("@"), "the example reads a file");
+      body = files[value.slice(1)];
+      assert.ok(body, `no fixture file for ${value}`);
+    } else if (arg.startsWith("-")) assert.fail(`unexpected curl option ${arg}`);
+    else {
+      assert.equal(url, undefined, "one URL");
+      url = arg;
+    }
+  }
+  if (body !== undefined && !headers.has("content-type"))
+    headers.set("content-type", "application/x-www-form-urlencoded");
+  return new Request(url, { method: body === undefined ? "GET" : "POST", headers, body });
+}
+
 const withToken = (grant, token) => ({
   ...grant,
   headers: { ...grant.headers, Authorization: `Pages-Upload ${token}` },
@@ -168,7 +231,8 @@ test("uploadVerdict accepts a well-formed payload for this Page until its expiry
     [valid, now + ASSET_UPLOAD_TTL_MS, "expired"],
     [valid, now + ASSET_UPLOAD_TTL_MS * 10, "expired"],
     [{ ...valid, kind: "oauth", grant: "g".repeat(43) }, now, "valid"],
-    [{ ...valid, kind: "oidc" }, now, "valid"],
+    // A browser session never issues one, so its payload is not a capability.
+    [{ ...valid, kind: "oidc" }, now, "invalid"],
     [{ ...valid, content_type: "image/png", size: 10, sha256: "a".repeat(64) }, now, "valid"],
     [{ ...valid, page: crypto.randomUUID() }, now, "invalid"],
     [{ ...valid, page: undefined }, now, "invalid"],
@@ -312,7 +376,7 @@ test("capabilities and retry tokens share a key but never verify as each other",
     await assert.rejects(verify(token), { code: "upload_capability_invalid" });
 });
 
-test("an OAuth capability names its grant; a browser session's never outlives the session", async () => {
+test("an OAuth capability names its grant; a browser session is told to upload directly", async () => {
   const storage = new Storage();
   const pageId = crypto.randomUUID();
   const now = 1_800_000_000_000;
@@ -336,14 +400,16 @@ test("an OAuth capability names its grant; a browser session's never outlives th
     }),
     { status: 403 },
   );
-  const session = await issueAssetUpload(storage, {
-    pageId,
-    identity: { principal: "p", credentialKind: "oidc", expiresAt: now + 60_000 },
-    args: { page_id: pageId },
-    origin,
-    now,
-  });
-  assert.equal(session.expires_at, new Date(now + 60_000).toISOString());
+  await assert.rejects(
+    issueAssetUpload(storage, {
+      pageId,
+      identity: { principal: "p", credentialKind: "oidc", expiresAt: now + 60_000 },
+      args: { page_id: pageId },
+      origin,
+      now,
+    }),
+    { status: 403, code: "access_denied", message: /^Browser sessions upload directly/ },
+  );
   const oauth = await issueAssetUpload(storage, {
     pageId,
     identity: { principal: "p", credentialKind: "oauth", grantId: "g".repeat(43) },
@@ -393,7 +459,7 @@ test("an API-key agent gets an upload URL and uploads with curl, never sending i
   assert.equal(grant.bound, undefined);
   assert.equal(
     grant.example,
-    `curl -sS --data-binary @path/to/file -H 'Content-Type: application/octet-stream' -H '${grant.headers.Authorization}' '${grant.upload_url}'`,
+    `curl -sS --data-binary @path/to/file -H 'Content-Type: application/octet-stream' -H 'Authorization: ${grant.headers.Authorization}' '${grant.upload_url}'`,
   );
   const fetches = globalThis.fetch.mock.callCount();
 
@@ -911,4 +977,232 @@ test("an OAuth MCP client uploads with a capability; revoking the grant ends it"
   assert.equal(revoked.status, 401, JSON.stringify(revoked.body));
   assert.equal(revoked.body.code, "upload_capability_invalid");
   assert.equal(puts(bucket), 1);
+});
+
+test("the returned curl example uploads exactly as curl sends it, unbound and bound", async (t) => {
+  const { w, pageId, bucket } = await setup(t);
+  const files = { "path/to/file": png, "path/to/file.webp": webp };
+  const unbound = await issued(w, { page_id: pageId });
+  const first = await worker.fetch(curlRequest(unbound.example, files), w.env);
+  const firstBody = await first.json();
+  assert.equal(first.status, 201, JSON.stringify(firstBody));
+  assert.equal(firstBody.asset_id, await sha256(png));
+  assert.equal(firstBody.mime_type, "image/png");
+  const bound = await issued(w, { page_id: pageId, content_type: "image/webp" });
+  const request = curlRequest(bound.example, files);
+  assert.equal(request.headers.get("content-type"), "image/webp");
+  const second = await worker.fetch(request, w.env);
+  const secondBody = await second.json();
+  assert.equal(second.status, 201, JSON.stringify(secondBody));
+  assert.equal(secondBody.asset_id, await sha256(webp));
+  // The parser drops a colonless header as curl does, so the first release's
+  // example sent no credential at all. The asset route now says what to do.
+  const lost = curlRequest(bound.example.replace("-H 'Authorization: ", "-H '"), files);
+  assert.equal(lost.headers.get("authorization"), null);
+  const refused = await worker.fetch(lost, w.env);
+  const refusal = await refused.json();
+  assert.equal(refused.status, 401);
+  assert.equal(refusal.code, "auth_required");
+  assert.match(refusal.error, /^Agents: call create_page_asset_upload for an upload URL/);
+  assert.equal(puts(bucket), 2);
+});
+
+test("only a credential-less upload is pointed at create_page_asset_upload", async (t) => {
+  const { w, pageId } = await setup(t);
+  const send = async (method, path, init = {}) => {
+    const response = await worker.fetch(
+      new Request(`${origin}${path}`, { method, ...init }),
+      w.env,
+    );
+    return { status: response.status, body: await response.json() };
+  };
+  const upload = await send("POST", `/api/pages/${pageId}/assets`, {
+    headers: { "content-type": "image/png" },
+    body: png,
+  });
+  assert.equal(upload.status, 401);
+  assert.equal(upload.body.code, "auth_required");
+  assert.match(upload.body.error, /^Agents: call create_page_asset_upload for an upload URL/);
+  assert.match(upload.body.error, /Authorization: Bearer <Anaconda API key>/);
+  for (const [method, path, init] of [
+    ["POST", "/api/tools", { body: JSON.stringify({ operation: "list_pages", arguments: {} }) }],
+    ["GET", `/api/pages/${pageId}/assets/${await sha256(png)}`, {}],
+    [
+      "POST",
+      `/api/pages/${pageId}/assets`,
+      { headers: { authorization: "Basic eA==" }, body: png },
+    ],
+  ]) {
+    const refused = await send(method, path, init);
+    assert.equal(refused.status, 401, path);
+    assert.doesNotMatch(refused.body.error, /create_page_asset_upload/, path);
+  }
+});
+
+test("a forged, foreign or expired capability never reaches the Page queue or document", async (t) => {
+  const { w, pageId, bucket } = await setup(t);
+  const other = (await w.createPage({ title: "Other" })).body.page_id;
+  const grant = await issued(w, { page_id: pageId });
+  const foreign = await issued(w, { page_id: other });
+  const page = w.page(pageId);
+  const run = t.mock.method(page, "run");
+  const documentReady = t.mock.method(page, "documentReady");
+  const [prefix, payload] = tokenOf(grant).split(".");
+  const now = Date.now();
+  const refusals = [];
+  for (const [label, target, at] of [
+    ["forged", withToken(grant, `${prefix}.${payload}.${"A".repeat(43)}`)],
+    ["another Page's", withToken(grant, tokenOf(foreign))],
+    ["expired", grant, now + ASSET_UPLOAD_TTL_MS + 1],
+  ]) {
+    const clock = at && t.mock.method(Date, "now", () => at);
+    const result = await upload(w, target);
+    clock?.mock.restore();
+    assert.equal(result.status, 401, label);
+    assert.equal(run.mock.callCount(), 0, label);
+    assert.equal(documentReady.mock.callCount(), 0, label);
+    if (label === "expired") assert.equal(result.body.code, "upload_capability_expired");
+    else refusals.push(JSON.stringify(result.body));
+  }
+  // A Page that doesn't exist answers with the same body, also unqueued.
+  const missing = crypto.randomUUID();
+  const absentUrl = `${origin}/api/pages/${missing}/assets`;
+  refusals.push(JSON.stringify((await upload(w, { ...grant, upload_url: absentUrl })).body));
+  const absentRun = t.mock.method(w.page(missing), "run");
+  const again = await upload(w, { ...grant, upload_url: absentUrl });
+  assert.equal(again.status, 401);
+  refusals.push(JSON.stringify(again.body));
+  assert.equal(absentRun.mock.callCount(), 0);
+  assert.equal(new Set(refusals).size, 1, refusals.join("\n"));
+  assert.equal(bucket.calls.length, 0);
+  // A valid capability queues: both of the upload's checks run in the host.
+  const stored = await upload(w, grant);
+  assert.equal(stored.status, 201, JSON.stringify(stored.body));
+  assert.equal(run.mock.callCount(), 2);
+  assert.equal(documentReady.mock.callCount(), 2);
+});
+
+test("revoking an API key doesn't end its upload URLs early; expires_at does", async (t) => {
+  const { w, pageId } = await setup(t);
+  const grant = await issued(w, { page_id: pageId });
+  // From here the provider refuses every key, as after a revocation. The
+  // capability never asks it: the Page host doesn't hold the key.
+  const provider = t.mock.method(globalThis, "fetch", async () =>
+    Response.json({ error: "API key revoked" }, { status: 401 }),
+  );
+  const stored = await upload(w, grant);
+  assert.equal(stored.status, 201, JSON.stringify(stored.body));
+  assert.equal(provider.mock.callCount(), 0);
+  const now = Date.now();
+  t.mock.method(Date, "now", () => now + ASSET_UPLOAD_TTL_MS + 1);
+  const expired = await upload(w, grant, { body: webp });
+  assert.equal(expired.status, 401);
+  assert.equal(expired.body.code, "upload_capability_expired");
+});
+
+test("an upload capability is refused on sync, connect, card images and registration", async (t) => {
+  const { w, pageId, bucket } = await setup(t);
+  const grant = await issued(w, { page_id: pageId });
+  const run = t.mock.method(w.page(pageId), "run");
+  const fetches = globalThis.fetch.mock.callCount();
+  for (const [method, path, init] of [
+    ["GET", `/api/sync?page=${pageId}`, { headers: { upgrade: "websocket" } }],
+    ["GET", `/api/connect?page=${pageId}`, {}],
+    ["PUT", `/api/pages/${pageId}/card-image?hash=${"a".repeat(64)}&theme=light`, { body: webp }],
+    ["POST", "/api/pages/register", { body: JSON.stringify({ page_id: crypto.randomUUID() }) }],
+  ]) {
+    const response = await worker.fetch(
+      new Request(`${origin}${path}`, {
+        method,
+        ...init,
+        headers: { ...init.headers, authorization: grant.headers.Authorization },
+      }),
+      w.env,
+    );
+    assert.equal(response.status, 401, path);
+  }
+  assert.equal(run.mock.callCount(), 0);
+  assert.equal(globalThis.fetch.mock.callCount(), fetches, "no provider lookup");
+  assert.equal(bucket.calls.length, 0);
+});
+
+test("an editor through Project membership issues and uploads with a capability", async (t) => {
+  const { w, bucket } = await setup(t);
+  const project = await w.createProject("Mockups");
+  const child = (await w.createPage({ title: "Screens", project_id: project.project_id })).body;
+  assert.equal((await issue(w, "member", { page_id: child.page_id })).status, 403);
+  const granted = await w.call("owner", "manage_project_access", {
+    project_id: project.project_id,
+    action: "set_role",
+    principal: w.member,
+    role: "editor",
+    expected_revision: 0,
+    idempotency_key: w.key(),
+  });
+  assert.equal(granted.status, 200, JSON.stringify(granted.body));
+  const grant = await issued(w, { page_id: child.page_id }, "member");
+  const stored = await upload(w, grant);
+  assert.equal(stored.status, 201, JSON.stringify(stored.body));
+  assert.ok(bucket.objects.has(imageAssetKey(child.page_id, stored.body.asset_id)));
+  // Removing the membership ends the capability.
+  const revoked = await w.call("owner", "manage_project_access", {
+    project_id: project.project_id,
+    action: "set_role",
+    principal: w.member,
+    role: null,
+    expected_revision: 1,
+    idempotency_key: w.key(),
+  });
+  assert.equal(revoked.status, 200, JSON.stringify(revoked.body));
+  const refused = await upload(w, grant, { body: webp });
+  assert.equal(refused.status, 403, JSON.stringify(refused.body));
+});
+
+test("a Page whose recovery is blocked refuses issue and upload", async (t) => {
+  const { w, pageId, bucket } = await setup(t);
+  const grant = await issued(w, { page_id: pageId });
+  // As operation-journal-integration.test.mjs does: the accepted content
+  // stays readable, and no write is admitted.
+  w.page(pageId).metadata.recoveryBlocked = { code: "history_capacity" };
+  const issue409 = await issue(w, "owner", { page_id: pageId });
+  assert.equal(issue409.status, 409, JSON.stringify(issue409.body));
+  assert.equal(issue409.body.code, "page_recovery_blocked");
+  const refused = await upload(w, grant);
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.equal(refused.body.code, "page_recovery_blocked");
+  assert.equal(bucket.calls.length, 0);
+});
+
+test("a size-bound URL refuses another Content-Length before reading, and reads no further", async (t) => {
+  const { w, pageId, bucket } = await setup(t);
+  const grant = await issued(w, { page_id: pageId, size: png.length });
+  let pulled = 0;
+  // highWaterMark 0: a chunk is pulled only when the route reads.
+  const stream = () =>
+    new ReadableStream(
+      {
+        pull(controller) {
+          pulled++;
+          controller.enqueue(png);
+          if (pulled > 4) controller.close();
+        },
+      },
+      { highWaterMark: 0 },
+    );
+  const declared = await upload(w, grant, {
+    body: stream(),
+    headers: { "content-length": String(png.length + 1) },
+  });
+  assert.equal(declared.status, 400, JSON.stringify(declared.body));
+  assert.equal(declared.body.code, "upload_mismatch");
+  assert.equal(pulled, 0, "nothing read");
+  // Without Content-Length, the read stops at the bound.
+  pulled = 0;
+  const streamed = await upload(w, grant, { body: stream() });
+  assert.equal(streamed.status, 400, JSON.stringify(streamed.body));
+  assert.equal(streamed.body.code, "upload_mismatch");
+  assert.ok(pulled <= 2, `read ${pulled} chunks of a ${png.length}-byte bound`);
+  assert.equal(puts(bucket), 0);
+  const stored = await upload(w, grant, { headers: { "content-length": String(png.length) } });
+  assert.equal(stored.status, 201, JSON.stringify(stored.body));
 });

@@ -1017,7 +1017,10 @@ test("MCP lists create_page_asset_upload for any client with write scope, and po
     async () => assert.fail("initialize invoked a tool"),
   );
   const { instructions } = (await initialization.json()).result;
-  assert.match(instructions, /create_page_asset_upload and POST the file to its upload_url/);
+  assert.match(
+    instructions,
+    /create_page_asset_upload and POST the file to its upload_url with the returned headers \(its example field is a ready curl command\)/,
+  );
   // The result passes through with the browser link, and nothing is added.
   const issued = {
     page_id: pageId,

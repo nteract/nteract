@@ -1,4 +1,5 @@
 import {
+  assetUploadCommand,
   checkAccountCommand,
   codexConfig,
   codexHeaderHelper,
@@ -25,8 +26,19 @@ export function pagesPublicOrigin(env) {
   return url.origin;
 }
 
+/** The guide's upload line, built as create_page_asset_upload builds its
+ * example field. */
+export const guideUploadCommand = (origin) =>
+  assetUploadCommand({
+    file: "mockup.png",
+    contentType: "image/png",
+    token: "<token>",
+    uploadUrl: `${origin}/api/pages/<page_id>/assets`,
+  });
+
 export function agentGuide(env) {
   const origin = pagesPublicOrigin(env);
+  const uploadCommand = guideUploadCommand(origin);
   return `# ${PRODUCT_NAME}
 
 Shared documents that people and agents edit together. Agents connect over MCP
@@ -217,12 +229,14 @@ Branch on code, not on the error message:
   finished, usually because the client disconnected. Import the same file
   again; identical bytes reuse one asset.
 - Upload URLs (create_page_asset_upload): upload_capability_expired (401;
-  request a new upload URL), upload_capability_invalid (401; the token is not
-  a valid upload capability for this Page, was sent somewhere other than a POST
-  to its upload_url, or its OAuth connection was revoked; request a new one),
-  upload_mismatch (400; the file's type, size or SHA-256 differs from what the
-  URL was issued for). Losing edit access after issue gives access_denied
-  (403); a Page in Trash gives page_trashed (409).
+  request a new upload URL), upload_capability_invalid (401; the token isn't a
+  valid upload capability for this Page, it was used on an asset route for
+  anything but a POST to its upload_url or sent as a Bearer token, or its OAuth
+  connection was revoked; request a new one), upload_mismatch (400; the file's
+  type, size or SHA-256 differs from what the URL was issued for). On other
+  routes a Pages-Upload header gets the ordinary credential refusal. Losing
+  edit access after issue gives access_denied (403); a Page in Trash gives
+  page_trashed (409).
 - Reads: invalid_read_selector, invalid_change_selector, read_target_not_found,
   ambiguous_section, comment_not_found (fix the selector),
   read_revision_changed (choose again from the fresh outline it returns),
@@ -757,39 +771,47 @@ replace these URLs with public hosting or put base64 image data in Markdown.
    exported at 2x of a 380-pixel design (about 760 pixels) stays legible on a
    phone but looks large on a desktop; export it at 1x if desktop matters more.
 2. Upload it. Call create_page_asset_upload with page_id (or project_id). It
-   needs pages:write and edit access to the Page, and returns upload_url,
-   method, headers, expires_at (10 minutes), max_bytes, accepted_types and a
-   ready-to-run curl example:
+   needs write access (pages:write for OAuth, cloud:write for an API key) and
+   edit access to the Page. Its example field is a ready curl command; put in
+   your file's path and run it:
 
-   curl -sS --data-binary @mockup.png -H 'Content-Type: image/png' -H 'Authorization: Pages-Upload <token from headers>' '${origin}/api/pages/<page_id>/assets'
+   ${uploadCommand}
 
-   Send the raw bytes, not multipart or base64. The answer contains asset_id,
-   asset_url (also url for existing clients), mime_type, size, width and
-   height. The same bytes always return the same asset_id, so repeating an
-   upload is safe. One URL takes several files until it expires; then request
-   another. Optional content_type, size and sha256 arguments bind the URL to
-   one file. The Pages-Upload header stands in for your credential on that one
-   route: it can't read anything, call tools or upload to another Page. Never
-   send your own API key there, and keep the token out of Pages content and
-   comments. Access is checked again at upload, so a grant removed in the
-   meantime refuses it. For a dark-theme variant, upload the dark file to the
-   same Page too.
-3. Insert it. Call read_page, then edit_page with insert_image, the asset_id,
-   descriptive alt text and, for a variant, dark_asset_id. after_block_id is
-   optional (omitted appends; null prepends). Inserting a dark variant marks
-   the Page with the image-theme-variants schema feature.
-4. Interleave images with text. insert_image always makes its own block, so to
-   put images between paragraphs, split the text into blocks in one edit_page
-   batch: replace_block_markdown on the existing block with the first section,
-   then alternate insert_image and insert_markdown with after_block_id omitted.
-   Operations apply in order and each append lands after the previous one, at
-   the end of the Page. A batch takes up to 100 operations and applies all or
-   none. To insert in the middle of a Page, give every operation the same
-   after_block_id and list them in reverse order.
+   Send the raw bytes, not multipart or base64. The answer has asset_id,
+   asset_url (also url for existing clients), mime_type and size, plus width
+   and height for an image.
+
+   - Repeating an upload is safe: the same bytes always return the same
+     asset_id.
+   - One URL takes several files until its expires_at, 10 minutes after you
+     asked; then request another.
+   - Optional content_type, size and sha256 arguments bind the URL to one file.
+   - The Pages-Upload header works only on that upload route. Never send your
+     own API key there, and keep the token out of Page content and comments.
+   - Access is checked again at upload: if your access is removed before you
+     upload, the upload is refused. Revoking an API key doesn't end the URLs
+     it already issued; they stop at expires_at.
+3. Insert it. Call read_page, then edit_page with insert_image, the asset_id
+   and descriptive alt text. after_block_id is optional (omitted appends; null
+   prepends). For a dark-theme variant, upload the dark file to the same Page
+   and pass its asset_id as dark_asset_id; that marks the Page with the
+   image-theme-variants schema feature.
+4. Interleave images with text. insert_image always makes its own block, so
+   split the text into blocks in one edit_page batch: run
+   replace_block_markdown on the Page's only block (a new Page from
+   create_page has one), or its last block, with the first section, then
+   alternate insert_image and insert_markdown with after_block_id omitted.
+   Operations apply in order, and each append lands after the previous one at
+   the end of the Page. To insert after any other block, give every operation
+   that block's ID as after_block_id and list them in reverse order: each
+   lands directly after it, ahead of the ones listed before. A batch takes up
+   to 100 operations and applies all or none.
 5. Verify. read_page lists each image in its outline entry's summary.images
-   with asset_id, dark_asset_id, alt and image_id, in block order. An API-key
-   client can also GET ${origin}<asset_url> with its bearer header to confirm
-   the image serves.
+   with asset_id, dark_asset_id, alt and image_id, in block order. An outline
+   returns at most 100 entries per read: on a long Page, pass outline.next_offset
+   as outline_offset, with that read's heads as expected_heads, until it is
+   null. An API-key client can also GET ${origin}<asset_url> with its bearer
+   header to confirm the image serves.
 
 Step 4 as one batch, with a dark variant on the first image:
 
@@ -802,7 +824,7 @@ Step 4 as one batch, with a dark variant on the first image:
     "retry_token": "<retry_token from read_page>",
     "idempotency_key": "<retry_key_prefix><new UUID>",
     "operations": [
-      {"op": "replace_block_markdown", "block_id": "<first block's id>", "markdown": "## Sign in\\n\\nThe first section."},
+      {"op": "replace_block_markdown", "block_id": "<last block's id>", "markdown": "## Sign in\\n\\nThe first section."},
       {"op": "insert_image", "asset_id": "<light asset_id>", "dark_asset_id": "<dark asset_id>", "alt": "Sign-in screen with an email field"},
       {"op": "insert_markdown", "markdown": "## Settings\\n\\nThe next section."},
       {"op": "insert_image", "asset_id": "<asset_id>", "alt": "Settings screen"}
@@ -890,7 +912,9 @@ the authenticated Page; an upload receipt alone does not mean it was inserted.
 An OAuth token itself works only on /mcp and never authorizes the asset route.
 OAuth clients upload with create_page_asset_upload instead: its Pages-Upload
 capability is a separate, Page-scoped credential, not the OAuth token, and
-revoking the connection also ends the upload URLs it issued. MCP can import
+revoking the connection also ends the upload URLs it issued. Revoking an API
+key doesn't end upload URLs it already issued; they stop at expires_at, at
+most 10 minutes. Removing the principal's Page access ends them at once. MCP can import
 files and preserve image references, but it does not return image pixels. Pages
 has no tool that fetches an arbitrary remote URL, and image bytes don't go in
 tool arguments. A reference from read_page is not evidence that an

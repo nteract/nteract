@@ -13,18 +13,31 @@
  * issue and expiry times, and optionally the file's content type, size and
  * SHA-256. The upload request carries it as `Authorization: Pages-Upload
  * <token>`. The gateway never passes that header to authenticate(), so it is
- * not sent to the API-key verifier or read as an OAuth token anywhere. The
- * Page host verifies it on each of the upload's two authorization checks,
- * then decides access for the named principal from its current record, so a
- * grant removed after issue refuses the upload. Everything else about the
- * upload (limits, validation, storage, response) is the byte route's own
- * code in image-assets.mjs.
+ * not sent to the API-key verifier or read as an OAuth token anywhere.
+ *
+ * The upload asks the Page host twice, before and after the transfer, and
+ * the host checks the capability in two stages each time. Before the request
+ * may join the host's queue, `uploadScreen`
+ * checks the signature, payload and expiry, so a forged, foreign or expired
+ * token never waits behind real work or boots the document. In the queue,
+ * `verifyAssetUpload` repeats that and checks an OAuth grant is still live,
+ * and the host decides access for the named principal from its current
+ * record, so a grant removed after issue refuses the upload. Everything else
+ * about the upload (limits, validation, storage, response) is the byte
+ * route's own code in image-assets.mjs.
+ *
+ * Browser sessions don't issue capabilities: the browser uploads to the same
+ * route with its own cookie. An API key's revocation isn't seen here (the
+ * host never holds the key), so its capabilities end at their expiry, at most
+ * ten minutes; removing the principal's Page access or revoking an OAuth
+ * connection ends them at once.
  *
  * A capability holds no server state, so it has no lifecycle beyond its
  * expiry. uploadVerdict is the pure decision on a verified payload.
  */
 import { HttpError } from "./auth.mjs";
 import { openCapability, signCapability } from "./operation-journal.mjs";
+import { ASSET_UPLOAD_SCHEME, assetUploadCommand } from "../agent-client-setup.mjs";
 import { IMAGE_MAX_BYTES, IMAGE_MEDIA_TYPES } from "../shared/image-assets.mjs";
 import { DATASET_MAX_BYTES, PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
 
@@ -32,7 +45,10 @@ export const ASSET_UPLOAD_OPERATION = "create_page_asset_upload";
 /** How long an upload URL works. Ten minutes, like a purge preview and an
  * OAuth access token. */
 export const ASSET_UPLOAD_TTL_MS = 10 * 60 * 1000;
-export const ASSET_UPLOAD_SCHEME = "Pages-Upload";
+export { ASSET_UPLOAD_SCHEME };
+/** The Page host route that authorizes asset access, and the only one that
+ * reads an upload capability. */
+export const ASSET_AUTHORIZE_PATH = "/internal/assets/authorize";
 export const ASSET_UPLOAD_TYPES = Object.freeze([...IMAGE_MEDIA_TYPES, PARQUET_MEDIA_TYPE]);
 export const ASSET_UPLOAD_MAX_BYTES = Math.max(IMAGE_MAX_BYTES, DATASET_MAX_BYTES);
 /** The credential kind of an identity a capability stands for. */
@@ -40,8 +56,9 @@ export const UPLOAD_CREDENTIAL = "upload-capability";
 // The MAC purpose and token prefix. A retry token can't verify under them.
 const PURPOSE = "pages-asset-upload-v1";
 const PREFIX = "pu1";
-/** Credentials that can issue a capability. A capability can't issue another. */
-const ISSUING_KINDS = new Set(["api-key", "oauth", "oidc"]);
+/** Credentials that can issue a capability. A browser session uploads with
+ * its own cookie, and a capability can't issue another. */
+const ISSUING_KINDS = new Set(["api-key", "oauth"]);
 const ARGUMENTS = new Set(["page_id", "content_type", "size", "sha256"]);
 const EXTENSIONS = {
   "image/png": "png",
@@ -143,7 +160,7 @@ export function uploadRefusal(verdict) {
   if (verdict === "misused")
     return new HttpError(
       401,
-      "An upload capability only authorizes a POST of file bytes to its upload_url. Use your Pages credential for anything else.",
+      "An upload capability only authorizes a POST of file bytes to its upload_url. Use your Pages credential to read assets.",
       "upload_capability_invalid",
     );
   return new HttpError(
@@ -163,11 +180,36 @@ export function uploadCapabilityToken(request) {
   return /^\S+$/.test(token) ? token : "";
 }
 
+/** The upload capability a request to a Page host carries, or undefined.
+ * Only the asset authorization route reads one. */
+export function hostUploadCapability(request) {
+  return new URL(request.url).pathname === ASSET_AUTHORIZE_PATH
+    ? uploadCapabilityToken(request)
+    : undefined;
+}
+
+/** The payload of `token` if this Page's key signed it as an upload
+ * capability, else null (operation-journal.mjs openCapability). */
+export const openUploadCapability = (storage, token) =>
+  openCapability(storage, token, { purpose: PURPOSE, prefix: PREFIX });
+
+/**
+ * The Page host's screen before a capability request may join its queue:
+ * null to queue it, or the refusal to send at once. Pure; the caller opens
+ * the token with this Page's key first. It needs no document, so a forged,
+ * foreign or expired token never waits behind real work or boots one. A
+ * missing Page has no key and no page ID, so it refuses exactly as a forged
+ * token does. The OAuth grant and Page access are decided in the queue.
+ */
+export function uploadScreen(claims, { pageId, now }) {
+  const verdict = uploadVerdict(claims, { pageId, now });
+  return verdict === "valid" ? null : uploadRefusal(verdict);
+}
+
 /**
  * Sign an upload capability for `identity` on `pageId`. The caller has
  * checked write scope and current edit access. An OAuth capability names its
- * grant, checked again at upload; a browser session's never outlives the
- * session. Returns the tool result.
+ * grant, checked again at upload. Returns the tool result.
  */
 export async function issueAssetUpload(
   storage,
@@ -175,16 +217,17 @@ export async function issueAssetUpload(
 ) {
   const binding = uploadBinding(args, pageId);
   const kind = identity?.credentialKind;
+  if (kind === "oidc")
+    throw new HttpError(
+      403,
+      "Browser sessions upload directly: use Insert image, or POST the file to the Page's asset route with your session. Upload URLs are for API-key and OAuth clients.",
+      "access_denied",
+    );
   if (!ISSUING_KINDS.has(kind))
     throw new HttpError(403, "This credential can't issue upload URLs", "access_denied");
   if (kind === "oauth" && (typeof identity.grantId !== "string" || !identity.grantId))
     throw Error("An OAuth identity is missing its grant");
-  const expiresAt =
-    kind === "oidc"
-      ? Math.min(now + ASSET_UPLOAD_TTL_MS, identity.expiresAt)
-      : now + ASSET_UPLOAD_TTL_MS;
-  if (!(Number.isSafeInteger(expiresAt) && expiresAt > now))
-    throw new HttpError(401, "Sign in again to upload", "auth_required");
+  const expiresAt = now + ASSET_UPLOAD_TTL_MS;
   const token = await signCapability(storage, {
     purpose: PURPOSE,
     prefix: PREFIX,
@@ -200,18 +243,17 @@ export async function issueAssetUpload(
   });
   const uploadUrl = `${origin}/api/pages/${pageId}/assets`;
   const contentType = binding.content_type ?? "application/octet-stream";
-  const authorization = `${ASSET_UPLOAD_SCHEME} ${token}`;
   const file = `path/to/file${binding.content_type ? `.${EXTENSIONS[binding.content_type]}` : ""}`;
   return {
     page_id: pageId,
     upload_url: uploadUrl,
     method: "POST",
-    headers: { Authorization: authorization, "Content-Type": contentType },
+    headers: { Authorization: `${ASSET_UPLOAD_SCHEME} ${token}`, "Content-Type": contentType },
     expires_at: new Date(expiresAt).toISOString(),
     max_bytes: binding.size ?? ASSET_UPLOAD_MAX_BYTES,
     accepted_types: ASSET_UPLOAD_TYPES,
     ...(Object.keys(binding).length && { bound: binding }),
-    example: `curl -sS --data-binary @${file} -H 'Content-Type: ${contentType}' -H '${authorization}' '${uploadUrl}'`,
+    example: assetUploadCommand({ file, contentType, token, uploadUrl }),
     next: "Send the raw file bytes as the body, not multipart or base64. The answer is JSON with asset_id, asset_url, mime_type and size, plus width and height for an image; the same bytes always return the same asset_id. Place an image with edit_page insert_image and a dataset with insert_node. The URL works for several files until expires_at; keep it out of Pages content and comments.",
   };
 }
@@ -224,9 +266,9 @@ export async function issueAssetUpload(
  * this, from the host's current record.
  */
 export async function verifyAssetUpload(storage, token, { pageId, now = Date.now(), grantActive }) {
-  const claims = await openCapability(storage, token, { purpose: PURPOSE, prefix: PREFIX });
-  const verdict = uploadVerdict(claims, { pageId, now });
-  if (verdict !== "valid") throw uploadRefusal(verdict);
+  const claims = await openUploadCapability(storage, token);
+  const refusal = uploadScreen(claims, { pageId, now });
+  if (refusal) throw refusal;
   if (claims.kind === "oauth" && !(await grantActive(claims.grant))) throw uploadRefusal("invalid");
   return claims;
 }

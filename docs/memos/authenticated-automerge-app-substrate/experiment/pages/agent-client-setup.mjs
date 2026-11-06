@@ -115,6 +115,18 @@ if not key or any(c.isspace() for c in key):
     sys.exit("Pages needs an API key. Complete /connect first.")
 print(json.dumps({"Authorization": "Bearer " + key}))`;
 
+/** The Authorization scheme of an upload capability (create_page_asset_upload). */
+export const ASSET_UPLOAD_SCHEME = "Pages-Upload";
+
+/** The curl command for an upload URL: the guide's line and the tool's
+ * `example` field both come from here, so they can't drift apart. Each -H
+ * value is a whole `Name: value` header, because curl silently drops an -H
+ * argument that has no colon. Every argument is a placeholder, an enum
+ * value, base64url or a configured URL, so single quotes are enough. */
+export function assetUploadCommand({ file, contentType, token, uploadUrl }) {
+  return `curl -sS --data-binary @${file} -H 'Content-Type: ${contentType}' -H 'Authorization: ${ASSET_UPLOAD_SCHEME} ${token}' '${uploadUrl}'`;
+}
+
 export function codexConfig(origin) {
   return `[mcp_servers.pages]
 url = ${JSON.stringify(origin + "/mcp")}

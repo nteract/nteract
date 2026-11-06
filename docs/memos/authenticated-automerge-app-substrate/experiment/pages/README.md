@@ -1589,11 +1589,17 @@ verification through `summary.images`.
 any agent that can run curl add a local file without handling its own bearer
 token. It is a Page content tool on MCP and `/api/tools`, takes `page_id` or
 `project_id`, and needs write scope plus current edit access, like
-`import_page_image`. The Page host answers with `upload_url` (the ordinary
+`import_page_image`. API-key and OAuth clients can issue one; a browser
+session is refused, since the browser uploads to the same route with its
+cookie. The Page host answers with `upload_url` (the ordinary
 `POST /api/pages/:pageId/assets` route), `method`, `headers`, `expires_at`,
-`max_bytes`, `accepted_types` and a curl example. Optional `content_type`,
-`size` and `sha256` arguments bind the capability to one file; the gateway
-checks the bytes against them before storing anything (`upload_mismatch`).
+`max_bytes`, `accepted_types` and `example`, a ready curl command built by
+`assetUploadCommand` ([agent-client-setup.mjs](agent-client-setup.mjs)), which
+also builds the `/llms.txt` line. Optional `content_type`, `size` and `sha256`
+arguments bind the capability to one file; the gateway checks the bytes against
+them before storing anything (`upload_mismatch`), and a bound size refuses a
+different `Content-Length` before reading the body. A credential-less upload
+to the asset route is told to call `create_page_asset_upload`.
 
 The capability is `pu1.<payload>.<mac>`, an HMAC-SHA-256 signed with the Page
 host's existing retry-token key ([operation-journal.mjs](worker/operation-journal.mjs)
@@ -1601,8 +1607,8 @@ host's existing retry-token key ([operation-journal.mjs](worker/operation-journa
 `pages-asset-upload-v1`, ahead of the payload, and the payload repeats it, so a
 retry token never verifies as a capability or the reverse. The payload names
 the Page, principal, credential kind, OAuth grant ID (for OAuth), issue and
-expiry times (10 minutes; a browser session's never outlives the session) and
-the optional binding. No server state is created.
+expiry times (10 minutes) and the optional binding. No server state is
+created.
 
 The upload sends it as `Authorization: Pages-Upload <token>`, a header rather
 than a query parameter so access logs and `Referer` don't carry it. The gateway
@@ -1612,13 +1618,22 @@ OAuth token store) and keeps the Origin check. Every other route refuses it,
 and `authenticate()` refuses a `pu1.` token sent as a bearer credential. The
 byte route's own code does the rest: the gateway forwards only the capability
 to the Page host's `/internal/assets/authorize` for both the pre-transfer and
-post-transfer checks, and the host verifies the MAC with its own key, checks
-the payload and expiry, checks that an OAuth grant is still live
-(`oauthGrantActive`), and then decides access for the named principal from its
+post-transfer checks. Every other gateway path runs `authenticate()` before it
+reaches a Page host, so the host screens a capability request before it may
+join its queue (`uploadScreen`): it reads only the host record and its own key,
+checks the MAC, payload and expiry, and refuses a forged, foreign or expired
+token without queuing it or loading the document. A missing Page has no key, so
+it refuses with the same body as a forged token. In the queue, the host checks
+all of that again, checks that an OAuth grant is still live
+(`oauthGrantActive`), and decides access for the named principal from its
 current record. A grant removed or downgraded after issue, a revoked OAuth
-connection or a trashed Page is refused. Limits, validation, storage and the
-response are the byte route's. Without the Page's key a forged token, another
-Page's token and a missing Page give the same `upload_capability_invalid`.
+connection, a recovery-blocked Page or a trashed Page is refused. Limits,
+validation, storage and the response are the byte route's.
+
+Revoking an API key doesn't end the upload URLs it already issued: the host
+never holds the key, so they stop at `expires_at`, at most 10 minutes later.
+Removing the principal's Page (or Project) access, or revoking an OAuth
+connection, ends them at once.
 
 Base64 bytes in a tool argument and a server-side fetch of an arbitrary URL
 were rejected: the first makes the model emit megabytes of tokens, and the

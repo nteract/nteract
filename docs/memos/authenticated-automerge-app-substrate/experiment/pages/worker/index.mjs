@@ -56,13 +56,17 @@ import { connectAgentResponse } from "../connect-agent.mjs";
 import { handleOAuth, mcpAuthChallenge } from "./oauth.mjs";
 import { oauthGrantActive } from "./oauth-store.mjs";
 import {
+  ASSET_AUTHORIZE_PATH,
   ASSET_UPLOAD_OPERATION,
   ASSET_UPLOAD_SCHEME,
   UPLOAD_CREDENTIAL,
+  hostUploadCapability,
   issueAssetUpload,
+  openUploadCapability,
   uploadCapabilityToken,
   uploadIdentity,
   uploadRefusal,
+  uploadScreen,
   verifyAssetUpload,
 } from "./asset-uploads.mjs";
 import { sessionStoreReady } from "./isolate-setup.mjs";
@@ -718,7 +722,7 @@ function authorizeImage(request, env, pageId, write) {
  * access for the principal it names, on each call. */
 function authorizeUpload(request, env, pageId, capability) {
   const url = new URL(request.url);
-  url.pathname = "/internal/assets/authorize";
+  url.pathname = ASSET_AUTHORIZE_PATH;
   url.search = "";
   return env.PAGES.getByName(pageId).fetch(
     new Request(url, {
@@ -3971,10 +3975,7 @@ export class Page {
    * Page verifies with its own key (asset-uploads.mjs); the identity it
    * stands for then meets the same checks as any other. */
   async identify(request) {
-    const capability =
-      new URL(request.url).pathname === "/internal/assets/authorize"
-        ? uploadCapabilityToken(request)
-        : undefined;
+    const capability = hostUploadCapability(request);
     const identity =
       capability === undefined
         ? await authenticate(request, this.env)
@@ -4856,9 +4857,36 @@ export class Page {
       const running = this.run(request);
       return settle(running);
     }
+    // An upload capability is the one credential the gateway doesn't check
+    // first (asset-uploads.mjs), so it is screened before it may queue.
+    const capability = hostUploadCapability(request);
+    if (capability !== undefined) return settle(this.screenUpload(request, capability));
+    return settle(this.enqueue(request));
+  }
+
+  /** Run `request` in admission order. */
+  enqueue(request) {
     const next = this.tail.then(() => this.run(request));
     this.tail = next.catch(() => {});
-    return settle(next);
+    return next;
+  }
+
+  /** An upload capability's screen (asset-uploads.mjs uploadScreen): only the
+   * host record and this Page's key, never the queue or the document. A
+   * forged, foreign or expired token is refused here; a valid one queues,
+   * and run() decides it against current state (identify). */
+  async screenUpload(request, token) {
+    let refusal;
+    try {
+      await this.ready;
+      refusal = uploadScreen(await openUploadCapability(this.ctx.storage, token), {
+        pageId: this.metadata?.pageId,
+        now: Date.now(),
+      });
+    } catch (error) {
+      return errorResponse(error, "page");
+    }
+    return refusal ? errorResponse(refusal, "page") : this.enqueue(request);
   }
 
   /** What a Page converted from Subduction still holds of it, which the
@@ -5091,7 +5119,7 @@ export class Page {
         if (claimed) await this.installAccess(claimed);
       }
       this.policy.account(identity);
-      if (url.pathname === "/internal/assets/authorize") {
+      if (url.pathname === ASSET_AUTHORIZE_PATH) {
         const args = await readJson(request);
         if (args.page_id !== this.metadata.pageId || typeof args.write !== "boolean")
           throw new HttpError(400, "Invalid image access request");
