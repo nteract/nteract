@@ -18,6 +18,24 @@ export interface CreateRelayOptions {
   dependencies?: string[];
   packageManager?: PackageManager;
   environmentMode?: CreateNotebookEnvironmentMode;
+  /**
+   * Existing Conda prefix (absolute, with Python and ipykernel) to use instead
+   * of the prewarmed fallback. Inline deps, PEP 723, a captured env, and a
+   * trusted project file still win. The daemon never deletes the prefix.
+   */
+  localEnvironment?: LocalEnvironmentOptions;
+}
+
+export interface LocalEnvironmentOptions {
+  prefix: string;
+}
+
+/** Daemon verdict on `localEnvironment`; a rejected prefix falls back to normal selection. */
+export interface LocalEnvironmentStatus {
+  status: "bound" | "rejected";
+  /** Canonical prefix when bound; the requested prefix when rejected. */
+  prefix: string;
+  error?: string;
 }
 
 export interface OpenRelayOptions {
@@ -57,6 +75,8 @@ export interface RelayInfo {
   connectionScope?: string;
   /** Optional daemon feature support; absent older bindings must fail closed. */
   localEnvironmentSelection?: boolean;
+  /** Absent when no `localEnvironment` was requested or the daemon predates it. */
+  localEnvironment?: LocalEnvironmentStatus;
   commentsDocId?: string;
   /** Keyed document kinds the daemon routes; pass as `keyed_doc_kinds` in the host ready payload. */
   keyedDocKinds: string[];

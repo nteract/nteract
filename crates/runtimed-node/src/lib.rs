@@ -45,11 +45,13 @@ pub use session::{
     open_notebook_path, resolve_blob_path, show_notebook, shutdown_notebook, ActiveNotebook,
     CellResult, CondaDependencyStatus, CreateCellOptions, CreateNotebookEnvironmentMode,
     CreateNotebookOptions, DependencyEditOptions, DependencyStatus, DependencyTrustStatus,
+    EnvironmentSelection, EnvironmentSelectionTarget, EnvironmentSelectionTargetKind,
     EventSubscription, ExecuteCellOptions, GetExecutionResultOptions, JsCellSnapshot, JsOutput,
-    ListActiveNotebooksOptions, MoveCellOptions, OpenNotebookOptions, PackageManager,
-    PixiDependencyStatus, QueueCellOptions, QueuedExecution, RunCellOptions, RuntimeStatus,
-    Session, SetCellOptions, ShowNotebookOptions, ShowNotebookResult, ShutdownNotebookOptions,
-    SnapshotPair, UvDependencyStatus, WaitExecutionOptions,
+    ListActiveNotebooksOptions, LocalCondaEnvironmentInfo, LocalEnvironmentBindingState,
+    LocalEnvironmentOptions, LocalEnvironmentStatus, MoveCellOptions, OpenNotebookOptions,
+    PackageManager, PixiDependencyStatus, QueueCellOptions, QueuedExecution, RunCellOptions,
+    RuntimeStatus, Session, SetCellOptions, ShowNotebookOptions, ShowNotebookResult,
+    ShutdownNotebookOptions, SnapshotPair, UvDependencyStatus, WaitExecutionOptions,
 };
 
 pub use telemetry::{

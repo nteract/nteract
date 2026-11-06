@@ -129,7 +129,11 @@ impl ScanGate {
 pub(crate) struct LocalCondaEnvironments {
     sources: DiscoverySources,
     state: Arc<Mutex<InventoryState>>,
+    /// Serializes inventory scans.
     filesystem: Arc<Semaphore>,
+    /// Bounds single-prefix validation separately, so a launch or a
+    /// `CreateNotebook` binding never waits behind a full inventory scan.
+    validation: Arc<Semaphore>,
 }
 
 type InventoryResult = Result<CondaEnvironmentInventory, String>;
@@ -152,6 +156,7 @@ impl LocalCondaEnvironments {
             sources,
             state: Arc::new(Mutex::new(InventoryState::default())),
             filesystem: Arc::new(Semaphore::new(1)),
+            validation: Arc::new(Semaphore::new(4)),
         }
     }
 
@@ -214,11 +219,11 @@ impl LocalCondaEnvironments {
             return Err("Enter an absolute Conda environment directory".to_string());
         }
         let permit = self
-            .filesystem
+            .validation
             .clone()
             .acquire_owned()
             .await
-            .map_err(|_| "Conda discovery worker stopped")?;
+            .map_err(|_| "Conda prefix validation stopped")?;
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
             validate_prefix(&prefix, &mut ScanEvidence::default())
@@ -1127,6 +1132,22 @@ mod tests {
             std::fs::read(selected.python_path).unwrap(),
             b"not an executable"
         );
+    }
+
+    #[tokio::test]
+    async fn prefix_validation_does_not_wait_for_an_inventory_scan() {
+        let temp = TempDir::new().unwrap();
+        let prefix = conda_prefix(&temp.path().join("bound"), Some("3.11.9"), true);
+        let service = service(DiscoverySources::default());
+        // Hold the scan permit as a running inventory would.
+        let _scan = service.filesystem.clone().acquire_owned().await.unwrap();
+        let resolved = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            service.resolve_prefix(prefix),
+        )
+        .await
+        .expect("validation must not queue behind the scan");
+        assert!(resolved.is_ok());
     }
 
     #[tokio::test]

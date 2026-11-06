@@ -20,6 +20,13 @@ const { Session } = require("../src/session.cjs") as {
     exportSnapshotPair: () => Promise<unknown>;
     approveProjectTrust: (directory: string) => Promise<void>;
     declineProjectTrust: (directory: string, remember?: boolean) => Promise<void>;
+    localEnvironment: unknown;
+    getEnvironmentSelection: () => Promise<unknown>;
+    setEnvironmentSelection: (target: unknown, expectedRevision: number) => Promise<unknown>;
+    applyEnvironmentSelection: (
+      expectedRevision: number,
+      observedHeads?: string[],
+    ) => Promise<unknown>;
     close: () => Promise<void>;
   };
 };
@@ -341,6 +348,34 @@ describe("@runtimed/node Session wrapper", () => {
     expect(native.approveProjectTrust).toHaveBeenCalledWith("/work/proj");
     expect(native.declineProjectTrust).toHaveBeenNthCalledWith(1, "/work", true);
     expect(native.declineProjectTrust).toHaveBeenNthCalledWith(2, "/work/proj", undefined);
+  });
+
+  it("exposes the create-time local environment verdict, null when absent", () => {
+    const status = { status: "bound", prefix: "/envs/kilo" };
+    expect(new Session({ notebookId: "nb-1", localEnvironment: status }).localEnvironment).toBe(
+      status,
+    );
+    expect(new Session({ notebookId: "nb-1" }).localEnvironment).toBeNull();
+  });
+
+  it("passes environment selection requests through to the native session", async () => {
+    const selection = { revision: 2, applying: false };
+    const native = {
+      notebookId: "nb-1",
+      getEnvironmentSelection: vi.fn(async () => selection),
+      setEnvironmentSelection: vi.fn(async () => selection),
+      applyEnvironmentSelection: vi.fn(async () => selection),
+      close: vi.fn(async () => {}),
+    };
+    const session = new Session(native);
+    const target = { kind: "conda", prefix: "/envs/kilo" };
+
+    await expect(session.getEnvironmentSelection()).resolves.toBe(selection);
+    await expect(session.setEnvironmentSelection(target, 1)).resolves.toBe(selection);
+    await expect(session.applyEnvironmentSelection(2)).resolves.toBe(selection);
+
+    expect(native.setEnvironmentSelection).toHaveBeenCalledWith(target, 1);
+    expect(native.applyEnvironmentSelection).toHaveBeenCalledWith(2, undefined);
   });
 });
 

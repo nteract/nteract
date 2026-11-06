@@ -9,7 +9,10 @@ mod handshake;
 mod pipe;
 mod transport;
 
-pub use env::{CreateNotebookEnvironmentMode, EnvSource, LaunchSpec, PackageManager};
+pub use env::{
+    CreateNotebookEnvironmentMode, EnvSource, LaunchSpec, LocalEnvironmentBinding,
+    LocalEnvironmentBindingStatus, PackageManager,
+};
 
 pub use framing::{
     frame_types, is_daemon_originated_frame, is_optional_frame, recv_control_frame, recv_frame,
@@ -291,6 +294,7 @@ mod tests {
                 assert!(req.dependencies.is_empty());
                 assert!(req.typed_bootstrap.is_none());
                 assert!(req.operator.is_none());
+                assert!(req.local_environment.is_none());
             }
             other => panic!("expected CreateNotebook, got {other:?}"),
         }
@@ -325,6 +329,7 @@ mod tests {
                 comments_doc_id: None,
                 comments_notebook_ref: None,
                 keyed_doc_kinds: Vec::new(),
+                local_environment: None,
             }
         }
 
@@ -441,6 +446,53 @@ mod tests {
         assert!(info.capabilities.actor_label.is_none());
         assert!(info.capabilities.connection_scope.is_none());
         assert!(!info.capabilities.notebook_sync_receipt);
+    }
+
+    #[test]
+    fn create_notebook_local_environment_round_trips_and_stays_optional() {
+        let json = serde_json::to_string(&Handshake::CreateNotebook(CreateNotebookRequest {
+            local_environment: Some(LocalEnvironmentBinding {
+                prefix: "/envs/kilo".into(),
+            }),
+            ..CreateNotebookRequest::new("python")
+        }))
+        .unwrap();
+        assert_eq!(
+            json,
+            r#"{"channel":"create_notebook","runtime":"python","local_environment":{"prefix":"/envs/kilo"}}"#
+        );
+        match serde_json::from_str::<Handshake>(&json).unwrap() {
+            Handshake::CreateNotebook(req) => assert_eq!(
+                req.local_environment,
+                Some(LocalEnvironmentBinding {
+                    prefix: "/envs/kilo".into()
+                })
+            ),
+            other => panic!("expected CreateNotebook, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn local_environment_binding_status_is_optional_and_tagged() {
+        let old: ProtocolCapabilities = serde_json::from_value(serde_json::json!({
+            "protocol": "v4"
+        }))
+        .unwrap();
+        assert!(old.local_environment.is_none());
+
+        let rejected = ProtocolCapabilities::v4(None).with_local_environment(Some(
+            LocalEnvironmentBindingStatus::Rejected {
+                prefix: "/envs/missing".into(),
+                error: "missing".into(),
+            },
+        ));
+        let value = serde_json::to_value(&rejected).unwrap();
+        assert_eq!(
+            value["local_environment"],
+            serde_json::json!({"status": "rejected", "prefix": "/envs/missing", "error": "missing"})
+        );
+        let parsed: ProtocolCapabilities = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed.local_environment, rejected.local_environment);
     }
 
     #[test]

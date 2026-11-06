@@ -97,6 +97,28 @@ export const CreateNotebookEnvironmentMode: {
 export type CreateNotebookEnvironmentMode =
   (typeof CreateNotebookEnvironmentMode)[keyof typeof CreateNotebookEnvironmentMode];
 
+/**
+ * Existing Python environment bound to a new notebook room. `prefix` must be
+ * an absolute Conda environment directory with Python and ipykernel. It
+ * replaces only the prewarmed fallback: inline dependencies, PEP 723 blocks,
+ * a captured environment, and a trusted project file still win. The daemon
+ * borrows the prefix and never deletes it.
+ */
+export interface LocalEnvironmentOptions {
+  prefix: string;
+}
+
+/**
+ * Daemon verdict on `localEnvironment`. Absent when none was requested or the
+ * daemon predates the option. A rejected prefix falls back to normal selection.
+ */
+export interface LocalEnvironmentStatus {
+  status: "bound" | "rejected";
+  /** Canonical prefix when bound; the requested prefix when rejected. */
+  prefix: string;
+  error?: string;
+}
+
 export interface CreateNotebookOptions {
   runtime?: RuntimeKind;
   workingDir?: string;
@@ -106,6 +128,30 @@ export interface CreateNotebookOptions {
   dependencies?: string[];
   packageManager?: PackageManager;
   environmentMode?: CreateNotebookEnvironmentMode;
+  localEnvironment?: LocalEnvironmentOptions;
+}
+
+export type EnvironmentSelectionTarget =
+  | { kind: "automatic"; prefix?: undefined }
+  | { kind: "conda"; prefix: string };
+
+export interface LocalCondaEnvironmentInfo {
+  id: string;
+  name: string;
+  prefix: string;
+  pythonPath: string;
+  pythonVersion?: string;
+}
+
+/** Daemon-session environment intent, separate from the running kernel. */
+export interface EnvironmentSelection {
+  /** Pass back as `expectedRevision` to set or apply. */
+  revision: number;
+  /** Staged target. Absent means Automatic. */
+  selected?: LocalCondaEnvironmentInfo;
+  /** Target the running kernel was applied with. Absent means Automatic. */
+  applied?: LocalCondaEnvironmentInfo;
+  applying: boolean;
 }
 
 export interface OpenNotebookOptions {
@@ -277,6 +323,8 @@ export interface DependencyStatus {
 
 export class Session {
   readonly notebookId: string;
+  /** Daemon verdict on `createNotebook({ localEnvironment })`; null otherwise. */
+  readonly localEnvironment: LocalEnvironmentStatus | null;
   readonly runtimeState$: Observable<RuntimeState>;
   readonly executionTransitions$: Observable<ExecutionTransition>;
   readonly executionViewChanges$: Observable<ExecutionViewChangeset>;
@@ -334,6 +382,17 @@ export class Session {
    */
   declineProjectTrust(directory: string, remember?: boolean): Promise<void>;
   syncEnvironment(): Promise<void>;
+  getEnvironmentSelection(): Promise<EnvironmentSelection>;
+  /** Stage a target without touching the running kernel. */
+  setEnvironmentSelection(
+    target: EnvironmentSelectionTarget,
+    expectedRevision: number,
+  ): Promise<EnvironmentSelection>;
+  /** Launch with the staged target. `observedHeads` defaults to current heads. */
+  applyEnvironmentSelection(
+    expectedRevision: number,
+    observedHeads?: string[],
+  ): Promise<EnvironmentSelection>;
   close(): Promise<void>;
 }
 

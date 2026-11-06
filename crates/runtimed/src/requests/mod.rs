@@ -63,6 +63,7 @@ pub(crate) fn publish_startup_queue_from_queued_executions(room: &NotebookRoom) 
 pub(crate) mod apply_bokeh_session_patch;
 pub(crate) mod approve_project_environment;
 pub(crate) mod approve_trust;
+pub(crate) mod bound_environment;
 pub(crate) mod clone_notebook;
 pub(crate) mod complete;
 pub(crate) mod execute_cell;

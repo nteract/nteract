@@ -1811,6 +1811,63 @@ async fn wait_for_runtime_state(
 }
 
 #[tokio::test]
+async fn test_create_notebook_reports_local_environment_binding_verdict() {
+    use notebook_protocol::connection::{LocalEnvironmentBinding, LocalEnvironmentBindingStatus};
+
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+    let daemon = Daemon::new_for_test(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let create = |prefix: std::path::PathBuf, label: &'static str| {
+        let socket_path = socket_path.clone();
+        async move {
+            connect::connect_create(
+                socket_path,
+                connect::CreateNotebookSpec {
+                    ephemeral: true,
+                    local_environment: Some(LocalEnvironmentBinding { prefix }),
+                    ..create_spec(label)
+                },
+            )
+            .await
+            .unwrap()
+        }
+    };
+
+    // Not a Conda prefix: creation still succeeds, and the reply says why the
+    // room fell back to normal selection.
+    let missing = temp_dir.path().join("missing-env");
+    let rejected = create(missing.clone(), "rejected").await;
+    assert!(rejected.info.error.is_none());
+    assert!(matches!(
+        rejected.info.capabilities.local_environment,
+        Some(LocalEnvironmentBindingStatus::Rejected { ref prefix, ref error })
+            if prefix == &missing && !error.is_empty()
+    ));
+
+    // No binding requested: the field stays absent, as with older daemons.
+    let plain = connect::connect_create(
+        socket_path.clone(),
+        connect::CreateNotebookSpec {
+            ephemeral: true,
+            ..create_spec("plain")
+        },
+    )
+    .await
+    .unwrap();
+    assert!(plain.info.capabilities.local_environment.is_none());
+
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(5), daemon_handle).await;
+}
+
+#[tokio::test]
 async fn test_launch_kernel_environment_mode_controls_project_priority() {
     use notebook_protocol::connection::CreateNotebookEnvironmentMode;
 

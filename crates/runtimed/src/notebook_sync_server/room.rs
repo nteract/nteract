@@ -1749,6 +1749,9 @@ pub struct NotebookRoom {
     pub(crate) hosted: AtomicBool,
     pub(crate) local_environment_selection:
         crate::requests::local_environment_selection::LocalEnvironmentSelection,
+    /// Host-bound environment prefix from `CreateNotebook`. Room memory
+    /// only; restarts and reconnects reuse it, a daemon restart drops it.
+    pub(crate) bound_environment: crate::requests::bound_environment::BoundEnvironment,
     pub(crate) preparing_kernel_env_path: std::sync::Mutex<Option<PathBuf>>,
     /// Latched by eviction (reaper or ShutdownNotebook) after the final
     /// autosave flush, right before legacy sidecar cleanup and file-claim
@@ -2507,6 +2510,7 @@ impl NotebookRoom {
             connections: RoomConnections::default(),
             hosted: AtomicBool::new(false),
             local_environment_selection: Default::default(),
+            bound_environment: Default::default(),
             preparing_kernel_env_path: std::sync::Mutex::new(None),
             evicted: AtomicBool::new(false),
             blob_store,
