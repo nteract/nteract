@@ -7,7 +7,7 @@
     "dev": "node scripts/dev.mjs",
     "e2e": "node scripts/e2e.mjs",
     "test": "tsx --tsconfig tsconfig.json --test worker/*.test.mjs model/*.test.mjs viewer/*.test.mjs sync/*.test.mjs test/*.test.mjs scripts/*.test.mjs",
-    "test:properties": "tsx --tsconfig tsconfig.json --test model/structural-roundtrip.test.mjs model/concurrent-edits.test.mjs",
+    "test:properties": "tsx --tsconfig tsconfig.json --test model/structural-roundtrip.test.mjs model/concurrent-edits.test.mjs viewer/wordgard-binding-parity.test.mjs",
     "smoke": "node scripts/smoke.mjs",
     "smoke:editor": "node scripts/wordgard-smoke.mjs",
     "smoke:tables": "node scripts/editable-table-smoke.mjs",

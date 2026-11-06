@@ -137,6 +137,7 @@ was a caret race in the smoke; the editor side is
 | Local creation and navigation | `PAGES_ORIGIN=http://localhost:9894 node scripts/navigation-smoke.mjs` | Uses the running Wordgard fixture |
 | Editing, comments, links, diagrams, and recovery | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:editor` | Uses the running Wordgard fixture |
 | History growth and typing latency | `PAGES_ORIGIN=http://localhost:9894 node scripts/latency-smoke.mjs` | Uses the running Wordgard fixture |
+| One keystroke, a hard line break, and one remote character through the Wordgard binding on 115 KB marked, 16 KB marked and 118 KB plain blocks, base revision against this checkout (records timings, gates on nothing) | `node scripts/binding-benchmark.mjs` | Node only, no server or DOM; `PAGES_BINDING_BASE` picks the base (default `origin/main`); writes `test-results/binding-benchmark.json` |
 | `list_pages` for 50 shared Pages with cold and warm Page hosts, p50/p95 (records timings, gates on nothing) | `node scripts/local-sharing-e2e.mjs --listing-bench` | Starts an isolated fixture and restarts it between cold samples; writes `listing-benchmark.json` |
 
 The editor checks exercise the same Wordgard path used by deployed Pages.
@@ -208,6 +209,17 @@ on its last line, Mod-Enter, or a click below it adds an empty paragraph and put
 the caret there. Mod-Enter also leaves a code block anywhere else. The paragraph
 is an ordinary edit, written only when someone asks for it, so opening a Page
 writes nothing.
+The Wordgard binding keeps each block's decoded tree and position maps with
+the Automerge heads they describe (`viewer/wordgard-projection-state.mjs`).
+Plain typing commits the editor's own tree and shifts the maps, then checks the
+native length and the inserted text; remote plain-text insertions and
+deletions apply their patches to the tree. Structural and formatting writes
+read the block once, as their check, and anything else falls back to a
+whole-block read. A failed check discards the projection, so the next write
+reads the block. `viewer/wordgard-binding-parity.test.mjs` compares the carried
+projection with a fresh decode after every generated step, and runs each local
+transaction through a `verify` binding on a twin replica, which must accept or
+reject it the same way.
 The binding's upstream attribution is in [WORDGARD-NOTICE](viewer/WORDGARD-NOTICE).
 
 The interface keeps navigation and account actions outside the document, with
