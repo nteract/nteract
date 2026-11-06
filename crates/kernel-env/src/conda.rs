@@ -1287,14 +1287,29 @@ mod tests {
         let mut pool_packages = conda_base_packages();
         pool_packages.reverse();
         let lock_specs = crate::python::solve_spec_strings(&pool_packages).unwrap();
-        let lock = crate::lock::LockFile::new(lock_specs, vec![], vec![]);
+        // Channel names as the pool warmer records them: parsed from its
+        // `conda-forge` channel list.
+        let config = ChannelConfig::default_with_root_dir(PathBuf::from("/tmp"));
+        let channel_names = |channels: &[String]| -> Vec<String> {
+            parse_channels(channels, &config, crate::conda_solve_platform())
+                .unwrap()
+                .iter()
+                .map(|channel| channel.name().to_string())
+                .collect()
+        };
+        let pool_channels = channel_names(&["conda-forge".to_string()]);
+        let lock = crate::lock::LockFile::new(lock_specs, pool_channels, vec![]);
         let captured = CondaDependencies {
             dependencies: vec![],
             channels: vec!["conda-forge".to_string()],
             python: None,
             env_id: Some("env-id".to_string()),
         };
-        assert!(lock.matches(&build_spec_strings(&captured), &[]));
+        // Expected values computed the way `prepare_environment_in` does.
+        assert!(lock.matches(
+            &build_spec_strings(&captured),
+            &channel_names(&captured.channels)
+        ));
     }
 
     #[test]

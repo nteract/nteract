@@ -1282,8 +1282,12 @@ impl WarmingGuard {
     /// finishes, so the orphan sweep never races it. Caller must be in an
     /// async context (this is not used from Drop).
     async fn fail_with(&mut self, error: Option<PackageInstallError>) {
-        if let Some(inner) = self.inner.take() {
+        // Stay armed through the delete: if this future is dropped
+        // mid-delete, Drop still rolls back the warming count.
+        if let Some(inner) = self.inner.as_ref() {
             remove_partial_env_dir(&inner.path).await;
+        }
+        if let Some(inner) = self.inner.take() {
             inner.rollback(error).await;
         }
     }
