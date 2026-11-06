@@ -5,7 +5,7 @@ import { EntitySet, REJECTION, admitCommentChanges } from "./comment-authority.m
 import { applyComment } from "./comments.mjs";
 import { commentDecision } from "./comment-rules.mjs";
 import { commentsGenesis } from "./comments-doc.mjs";
-import { markdownCommentSpans } from "./comment-content.mjs";
+import { editorCommentSpans, markdownCommentSpans } from "./comment-content.mjs";
 import { adapterSpans } from "./richtext-spans.mjs";
 import { BLOCKING } from "../sync/comments.mjs";
 import { parseMarkdown } from "./markdown-import.mjs";
@@ -601,4 +601,59 @@ test("a soft delete never checks the span form; a content write still does", () 
     },
   ])
     assert.equal(admit(doc, BOB, "commenter", write).reason?.code, REJECTION.OUTDATED_FORM);
+});
+
+/** An empty paragraph between two others, in the editor's form. */
+function emptyParagraphSpans() {
+  const spans = markdownCommentSpans("One\n\nTwo");
+  const marker = spans.findIndex((span, index) => index > 0 && span.type === "block");
+  const out = editorCommentSpans([
+    ...spans.slice(0, marker),
+    { type: "block", value: { type: "paragraph", parents: [], attrs: {}, isEmbed: false } },
+    ...spans.slice(marker),
+  ]);
+  const blocks = out.map((span) => span.type);
+  assert.ok(
+    blocks.some((type, index) => type === "block" && blocks[index + 1] === "block"),
+    JSON.stringify(out),
+  );
+  return out;
+}
+
+test("rich content passes admission through create, edit and soft delete", () => {
+  const image = "![A chart](https://example.org/chart.png)";
+  const cases = {
+    image: { body: `See ${image}`, body_format: "markdown" },
+    "hard break": { body: "line one\nline two", body_format: "plain" },
+    highlight: { body: 'A <mark data-color="yellow">marked</mark> word', body_format: "markdown" },
+    "empty paragraph": { spans: emptyParagraphSpans() },
+  };
+  for (const [name, content] of Object.entries(cases)) {
+    let { doc, ids } = seed();
+    const step = (input) => {
+      let result;
+      const changes = changesOf(doc, (d) => {
+        result = applyComment(
+          d,
+          { ...input, ...(content.spans ? {} : content) },
+          who(BOB),
+          content.spans && input.action !== "delete_message" ? content.spans : null,
+          { page, role: "commenter" },
+        );
+      });
+      const admitted = admitCommentChanges(doc, changes, BOB, { role: "commenter" });
+      assert.equal(
+        admitted.ok,
+        true,
+        `${name} ${input.action}: ${JSON.stringify(admitted.reason)}`,
+      );
+      doc = admitted.next;
+      return result;
+    };
+    const { message_id } = step({ action: "reply", thread_id: ids.aliceThread });
+    const target = { thread_id: ids.aliceThread, message_id };
+    step({ action: "edit", ...target });
+    step({ action: "delete_message", ...target });
+    assert.ok(doc.threads[ids.aliceThread].messages[message_id].deletedAt, name);
+  }
 });
