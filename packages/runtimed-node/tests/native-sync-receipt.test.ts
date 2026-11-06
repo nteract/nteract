@@ -32,6 +32,13 @@ describe.skipIf(!nativeEnabled)("native NotebookDoc sync receipts", () => {
       "debug",
       process.platform === "win32" ? "runtimed.exe" : "runtimed",
     );
+    // Pools are 0, so a notebook without dependencies builds a uv env on
+    // demand. Keep that build to the kernel packages; these tests never
+    // import the default data stack.
+    fs.writeFileSync(
+      path.join(directory, "settings.json"),
+      JSON.stringify({ install_default_data_packages: false }),
+    );
     daemon = spawn(
       binary,
       [

@@ -131,6 +131,13 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon-backed events", () => {
     );
     if (!fs.existsSync(binary))
       throw new Error("Run cargo build -p runtimed before native session tests.");
+    // Pools are 0, so a notebook without dependencies builds a uv env on
+    // demand. Keep that build to the kernel packages; these tests never
+    // import the default data stack.
+    fs.writeFileSync(
+      path.join(directory, "settings.json"),
+      JSON.stringify({ install_default_data_packages: false }),
+    );
     daemon = spawn(
       binary,
       [

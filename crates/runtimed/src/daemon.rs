@@ -5146,8 +5146,9 @@ impl Daemon {
     /// GC cannot remove it mid-build, and the returned guard has the usual
     /// release / release_and_delete semantics. Failure and shutdown kill and
     /// reap the warm-env process tree, then delete the partial directory.
-    /// Dropping the future kills the process tree (the Unix process group,
-    /// or the Windows kill-on-close job) and leaves the directory to orphan
+    /// Dropping the future stops the process tree (SIGTERM to the Unix
+    /// process group, so the subprocess kills its installer groups, then
+    /// SIGKILL; or the Windows kill-on-close job) and leaves the directory to orphan
     /// GC once the lease is released. On Windows a delete can still fail
     /// while the job tears down; the startup sweep removes what is left.
     async fn build_on_demand_env(
@@ -7918,27 +7919,24 @@ impl Daemon {
             .arg("warm-env")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+            .stderr(Stdio::piped());
+        // No kill_on_drop: a direct SIGKILL would orphan the installer
+        // groups the subprocess owns. Dropping `leader` sends SIGTERM first
+        // so the subprocess can kill them.
         crate::warm_env::configure_process_tree(&mut command);
 
-        let mut child = command
+        let child = command
             .spawn()
             .map_err(|e| format!("Failed to spawn warm-env: {e}"))?;
-        let mut process_tree = match crate::warm_env::own_process_tree(&child) {
-            Ok(process_tree) => process_tree,
-            Err(error) => {
-                let _ = child.kill().await;
-                return Err(format!("Failed to own warm-env process tree: {error}"));
-            }
-        };
+        let mut leader = crate::warm_env::LeaderChild::new(child)
+            .map_err(|error| format!("Failed to own warm-env process tree: {error}"))?;
 
         // Drain the child's stderr into the daemon log. Retain the tail so a
         // failure result with no `error` field (e.g. the child was killed by a
         // native loader error before it could emit one) can still surface a
         // real message instead of a generic placeholder.
         let stderr_tail = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-        let mut stderr_task = child.stderr.take().map(|stderr| {
+        let mut stderr_task = leader.child_mut().stderr.take().map(|stderr| {
             let type_str = type_str.to_string();
             let stderr_tail = stderr_tail.clone();
             tokio::spawn(async move {
@@ -7968,7 +7966,8 @@ impl Daemon {
 
         // Write config to stdin and close it so the child can proceed.
         {
-            let mut stdin = child
+            let mut stdin = leader
+                .child_mut()
                 .stdin
                 .take()
                 .ok_or_else(|| "Failed to open subprocess stdin".to_string())?;
@@ -7979,7 +7978,8 @@ impl Daemon {
             // stdin is dropped here, closing the pipe
         }
 
-        let stdout = child
+        let stdout = leader
+            .child_mut()
             .stdout
             .take()
             .ok_or_else(|| "Failed to capture subprocess stdout".to_string())?;
@@ -8010,7 +8010,7 @@ impl Daemon {
                 }
             }
 
-            let status = child.wait().await;
+            let status = leader.child_mut().wait().await;
             // Include stderr EOF in the same overall timeout. Descendants can
             // inherit this pipe even after the direct child exits.
             if let Some(task) = stderr_task.as_mut() {
@@ -8019,7 +8019,7 @@ impl Daemon {
             status
         });
         // `None` means `cancel` won. The losing future is dropped before the
-        // match, releasing its borrows of `child` for the reap below.
+        // match, releasing its borrows of `leader` for the reap below.
         let operation = tokio::select! {
             outcome = operation => Some(outcome),
             () = cancel => None,
@@ -8027,7 +8027,13 @@ impl Daemon {
 
         let status = match operation {
             Some(Ok(status)) => {
-                process_tree.disarm();
+                // Only a reaped leader frees its group. A failed wait leaves
+                // it unreaped, so stop it like any other abandoned leader.
+                if status.is_ok() {
+                    leader.disarm();
+                } else {
+                    leader.stop().await;
+                }
                 status
             }
             None => {
@@ -8035,7 +8041,7 @@ impl Daemon {
                     task.abort();
                     let _ = task.await;
                 }
-                crate::warm_env::reap_timed_out_child(&mut child, &mut process_tree).await;
+                leader.stop().await;
                 return Err(WARM_ENV_CANCELLED.to_string());
             }
             Some(Err(_)) => {
@@ -8045,7 +8051,7 @@ impl Daemon {
                     task.abort();
                     let _ = task.await;
                 }
-                crate::warm_env::reap_timed_out_child(&mut child, &mut process_tree).await;
+                leader.stop().await;
                 let tail = drain_stderr_tail(&stderr_tail);
                 return Err(format!(
                     "warm-env subprocess timed out after {}s{}",

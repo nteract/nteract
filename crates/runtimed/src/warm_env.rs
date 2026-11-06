@@ -236,9 +236,11 @@ where
 /// Owns a spawned subprocess and every process it starts.
 ///
 /// On Unix the child leads its own process group. Until the child has been
-/// waited on (`disarm`) or the group killed, dropping this kills the whole
+/// waited on (`disarm`) or the group killed, dropping this SIGKILLs the whole
 /// group, so a cancelled caller does not leave installer grandchildren
 /// running. On Windows the kill-on-close job does the same when dropped.
+/// A leader that starts process groups of its own needs SIGTERM first; wrap
+/// it in [`LeaderChild`] instead.
 #[cfg(unix)]
 pub(crate) struct ChildProcessTree {
     pgid: i32,
@@ -253,6 +255,23 @@ impl Drop for ChildProcessTree {
     fn drop(&mut self) {
         if self.armed {
             terminate_process_tree(self);
+        }
+    }
+}
+
+/// How long a leader that owns child process groups gets to stop them after
+/// SIGTERM before its group is killed.
+#[cfg(unix)]
+const LEADER_STOP_GRACE: Duration = Duration::from_secs(3);
+
+#[cfg(unix)]
+fn signal_process_group(pgid: i32, signal: nix::sys::signal::Signal) {
+    use nix::sys::signal::killpg;
+    use nix::unistd::Pid;
+
+    if let Err(error) = killpg(Pid::from_raw(pgid), signal) {
+        if error != nix::errno::Errno::ESRCH {
+            warn!("[warm-env] Failed to send {signal} to subprocess group {pgid}: {error}");
         }
     }
 }
@@ -318,20 +337,136 @@ pub(crate) fn own_process_tree(child: &tokio::process::Child) -> io::Result<Chil
     }
 }
 
+/// Owns a `warm-env` subprocess and its process tree.
+///
+/// The subprocess starts each installer command in a process group of its
+/// own, so killing its group leaves those installers running. It is stopped
+/// with SIGTERM first, which makes it kill its installer groups, and gets
+/// [`LEADER_STOP_GRACE`] before its group is killed. [`LeaderChild::stop`]
+/// does that inline, and dropping this does it in the background.
+///
+/// This owns the `Child` so the leader is never reaped before a group
+/// signal: an unreaped leader keeps its pid, and so its group id, reserved.
+pub(crate) struct LeaderChild {
+    /// `None` only after Drop has moved it into the background stop.
+    child: Option<tokio::process::Child>,
+    tree: ChildProcessTree,
+}
+
+impl LeaderChild {
+    /// Take ownership of a child spawned with [`configure_process_tree`].
+    /// If its tree cannot be owned, the child is killed.
+    pub(crate) fn new(mut child: tokio::process::Child) -> io::Result<Self> {
+        match own_process_tree(&child) {
+            Ok(tree) => Ok(Self {
+                child: Some(child),
+                tree,
+            }),
+            Err(error) => {
+                let _ = child.start_kill();
+                Err(error)
+            }
+        }
+    }
+
+    #[allow(clippy::expect_used)] // `child` is only taken in Drop.
+    pub(crate) fn child_mut(&mut self) -> &mut tokio::process::Child {
+        self.child
+            .as_mut()
+            .expect("leader child is present until drop")
+    }
+
+    /// The leader exited and was reaped; nothing is left to signal.
+    pub(crate) fn disarm(&mut self) {
+        self.tree.disarm();
+    }
+
+    /// Stop the leader and reap it.
+    ///
+    /// On Unix the group gets SIGTERM and [`LEADER_STOP_GRACE`] to exit. A
+    /// leader that is still running after that is killed with its group.
+    /// On Windows the kill-on-close job already covers every descendant.
+    pub(crate) async fn stop(&mut self) {
+        let Some(child) = self.child.as_mut() else {
+            return;
+        };
+        #[cfg(unix)]
+        if self.tree.armed {
+            signal_process_group(self.tree.pgid, nix::sys::signal::Signal::SIGTERM);
+            if let Ok(Ok(_)) = tokio::time::timeout(LEADER_STOP_GRACE, child.wait()).await {
+                self.tree.disarm();
+                return;
+            }
+            warn!(
+                "[warm-env] Subprocess group {} did not exit within {} seconds of SIGTERM",
+                self.tree.pgid,
+                LEADER_STOP_GRACE.as_secs()
+            );
+        }
+        reap_timed_out_child(child, &mut self.tree).await;
+    }
+}
+
+#[cfg(unix)]
+impl Drop for LeaderChild {
+    fn drop(&mut self) {
+        if !self.tree.armed {
+            return;
+        }
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        let pgid = self.tree.pgid;
+        // The background stop below owns the group from here on.
+        self.tree.armed = false;
+        signal_process_group(pgid, nix::sys::signal::Signal::SIGTERM);
+
+        // SIGKILL only if the leader is still unreaped after the grace
+        // period. If the runtime is shutting down the task is dropped, and
+        // the leader's SIGTERM handler is what stops the installers.
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                if tokio::time::timeout(LEADER_STOP_GRACE, child.wait())
+                    .await
+                    .is_err()
+                {
+                    signal_process_group(pgid, nix::sys::signal::Signal::SIGKILL);
+                    let _ = child.wait().await;
+                }
+            });
+            return;
+        }
+
+        // No runtime to wait on. Poll the leader with WNOHANG, which reaps
+        // it if it has exited, and kill the group only while it is unreaped.
+        let Some(pid) = child.id() else {
+            return;
+        };
+        let _ = std::thread::Builder::new()
+            .name("warm-env-stop".into())
+            .spawn(move || {
+                use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
+                use nix::unistd::Pid;
+
+                let pid = Pid::from_raw(pid as i32);
+                let deadline = std::time::Instant::now() + LEADER_STOP_GRACE;
+                while std::time::Instant::now() < deadline {
+                    match waitpid(pid, Some(WaitPidFlag::WNOHANG)) {
+                        Ok(WaitStatus::StillAlive) => std::thread::sleep(Duration::from_millis(50)),
+                        _ => return,
+                    }
+                }
+                signal_process_group(pgid, nix::sys::signal::Signal::SIGKILL);
+                let _ = waitpid(pid, None);
+                drop(child);
+            });
+    }
+}
+
 fn terminate_process_tree(process_tree: &mut ChildProcessTree) {
     #[cfg(unix)]
     {
-        use nix::sys::signal::{killpg, Signal};
-        use nix::unistd::Pid;
-
-        if let Err(error) = killpg(Pid::from_raw(process_tree.pgid), Signal::SIGKILL) {
-            if error != nix::errno::Errno::ESRCH {
-                warn!(
-                    "[warm-env] Failed to terminate subprocess group {}: {error}",
-                    process_tree.pgid
-                );
-            }
-        }
+        signal_process_group(process_tree.pgid, nix::sys::signal::Signal::SIGKILL);
         process_tree.armed = false;
     }
 
@@ -989,6 +1124,35 @@ async fn cleanup_and_fail(
 // -- entry point ----------------------------------------------------------
 
 pub async fn run() {
+    run_until_terminated(run_config_from_stdin()).await;
+}
+
+/// Run `work` until it finishes or the daemon sends SIGTERM.
+///
+/// Installer commands run in process groups of their own, so a group kill
+/// from the daemon cannot reach them. On SIGTERM this drops `work`, and the
+/// in-flight command's `ChildProcessTree` kills its group before exit.
+async fn run_until_terminated(work: impl std::future::Future<Output = ()>) {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut sigterm) => {
+                tokio::select! {
+                    () = work => {}
+                    _ = sigterm.recv() => {
+                        warn!("[warm-env] Received SIGTERM; stopping installer subprocesses");
+                    }
+                }
+                return;
+            }
+            Err(error) => warn!("[warm-env] Failed to install SIGTERM handler: {error}"),
+        }
+    }
+    work.await;
+}
+
+async fn run_config_from_stdin() {
     use tokio::io::AsyncReadExt;
 
     let mut input = String::new();
@@ -1361,6 +1525,131 @@ mod tests {
             wait_until_gone(grandchild).await,
             "grandchild {grandchild} outlived its dropped process tree"
         );
+    }
+
+    #[cfg(unix)]
+    const LEADER_HELPER_PID_FILE: &str = "NTERACT_WARM_ENV_LEADER_HELPER_PID_FILE";
+    #[cfg(unix)]
+    const LEADER_HELPER_TEST: &str = "warm_env::tests::leader_with_installer_group_helper";
+
+    /// Stand-in for the `warm-env` subcommand: runs a long "installer" in a
+    /// process group of its own, the way `run_output_with_timeout` does.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "subprocess helper invoked by the leader process-tree tests"]
+    fn leader_with_installer_group_helper() {
+        let pid_file = std::env::var(LEADER_HELPER_PID_FILE).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(run_until_terminated(async move {
+            let mut command = tokio::process::Command::new("sh");
+            command.args(["-c", &format!("echo $$ > '{pid_file}'; exec sleep 30")]);
+            let _ = run_output_with_timeout(command, Duration::from_secs(60)).await;
+        }));
+    }
+
+    /// Spawn the leader helper the way the daemon spawns `warm-env` and
+    /// return it, its tree, and the pid of the installer it started.
+    #[cfg(unix)]
+    async fn spawn_leader_with_installer(pid_file: &Path) -> (LeaderChild, i32) {
+        let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([LEADER_HELPER_TEST, "--exact", "--ignored", "--nocapture"])
+            .env(LEADER_HELPER_PID_FILE, pid_file)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        configure_process_tree(&mut command);
+        let mut leader = LeaderChild::new(command.spawn().unwrap()).unwrap();
+
+        let mut installer = None;
+        for _ in 0..200 {
+            if let Some(pid) = std::fs::read_to_string(pid_file)
+                .ok()
+                .and_then(|text| text.trim().parse::<i32>().ok())
+            {
+                installer = Some(pid);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let installer = installer.expect("leader helper must start its installer");
+        let installer_pgid = nix::unistd::getpgid(Some(nix::unistd::Pid::from_raw(installer)))
+            .unwrap()
+            .as_raw();
+        assert_ne!(
+            installer_pgid,
+            leader.child_mut().id().unwrap() as i32,
+            "the installer must run outside the leader's process group"
+        );
+        (leader, installer)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stopping_leader_kills_installer_in_its_own_group() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let (mut leader, installer) =
+            spawn_leader_with_installer(&temp_dir.path().join("installer.pid")).await;
+
+        let started = std::time::Instant::now();
+        leader.stop().await;
+
+        assert!(
+            started.elapsed() < LEADER_STOP_GRACE,
+            "the leader should exit on SIGTERM, not wait out the grace period"
+        );
+        assert!(
+            wait_until_gone(installer).await,
+            "installer {installer} outlived its stopped leader"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_leader_kills_installer_in_its_own_group() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let (leader, installer) =
+            spawn_leader_with_installer(&temp_dir.path().join("installer.pid")).await;
+
+        drop(leader);
+
+        assert!(
+            wait_until_gone(installer).await,
+            "installer {installer} outlived its dropped leader"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_leader_that_ignores_sigterm_kills_it_after_grace() {
+        let mut command = tokio::process::Command::new("sh");
+        command
+            .args(["-c", "trap '' TERM; while :; do sleep 1; done"])
+            .stdout(Stdio::null());
+        configure_process_tree(&mut command);
+        let mut leader = LeaderChild::new(command.spawn().unwrap()).unwrap();
+        let pid = leader.child_mut().id().unwrap() as i32;
+        // Let the shell install its trap before the SIGTERM.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        drop(leader);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(
+            process_alive(pid),
+            "SIGTERM alone must not stop this leader"
+        );
+
+        let mut gone = false;
+        for _ in 0..200 {
+            if !process_alive(pid) {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(gone, "leader {pid} survived the post-grace SIGKILL");
     }
 
     #[cfg(unix)]
