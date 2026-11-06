@@ -2192,17 +2192,23 @@ pub(crate) fn resolve_captured_env_override_in(
 /// Acquire a prewarmed env for a notebook, handling both the reopen
 /// (captured-deps) path and the first-launch (pool-take + capture) path.
 ///
-/// Returns `Some(Some(env))` with a PooledEnv wrapping either the claimed
-/// reopen env or the newly-claimed pool env. Returns `Some(None)` when the
-/// pool is empty but the caller should continue (unused by the prewarmed
-/// paths today). Returns `None` when a fatal error was broadcast and the
-/// caller should unwind.
+/// Returns `Ok(Some(env))` with a PooledEnv wrapping either the claimed
+/// reopen env or the newly-claimed pool (or on-demand) env. Returns
+/// `Ok(None)` when the source needs no pooled env (Pixi pool miss →
+/// `pixi exec`). Returns `Err` with the reason when no env could be
+/// provided; the caller reports it and unwinds.
 pub(crate) async fn acquire_prewarmed_env_with_capture(
     env_source: &str,
     daemon: &std::sync::Arc<crate::daemon::Daemon>,
     room: &NotebookRoom,
     metadata_snapshot: Option<&NotebookMetadataSnapshot>,
-) -> Result<Option<crate::PooledEnv>, ()> {
+) -> Result<Option<crate::PooledEnv>, crate::daemon::EnvAcquireError> {
+    let progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler> = std::sync::Arc::new(
+        crate::inline_env::RuntimeDocProgressHandler::new_for_launch(
+            room.state.clone(),
+            room.current_launch_cancellation_receiver(),
+        ),
+    );
     let runtime = match env_source {
         "uv:prewarmed" => CapturedEnvRuntime::Uv,
         "conda:prewarmed" => CapturedEnvRuntime::Conda,
@@ -2210,7 +2216,7 @@ pub(crate) async fn acquire_prewarmed_env_with_capture(
             // Non-uv/conda prewarmed sources (e.g. pixi:prewarmed) skip
             // the capture/claim step. Take the env, set the runtime
             // owner before releasing the lease, and return the bare env.
-            return match acquire_pool_env_for_source(env_source, daemon, room).await? {
+            return match acquire_pool_env_for_source(env_source, daemon, progress_handler).await? {
                 Some((env, guard)) => {
                     {
                         let mut ep = room.runtime_agent_env_path.write().await;
@@ -2223,12 +2229,6 @@ pub(crate) async fn acquire_prewarmed_env_with_capture(
             };
         }
     };
-    let progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler> = std::sync::Arc::new(
-        crate::inline_env::RuntimeDocProgressHandler::new_for_launch(
-            room.state.clone(),
-            room.current_launch_cancellation_receiver(),
-        ),
-    );
 
     // Reopen/repair path: if the notebook has an env_id and the unified-hash
     // env directory is present on disk, route through prepare_environment_unified.
@@ -2315,7 +2315,8 @@ pub(crate) async fn acquire_prewarmed_env_with_capture(
 
     // First-launch path: take from pool, strip base to derive user_defaults,
     // claim to the unified-hash location, and capture into metadata.
-    let Some((mut env, guard)) = acquire_pool_env_for_source(env_source, daemon, room).await?
+    let Some((mut env, guard)) =
+        acquire_pool_env_for_source(env_source, daemon, progress_handler.clone()).await?
     else {
         // Pool returned `Ok(None)` (e.g. pixi → launch on demand). Pass
         // that through to the caller.
@@ -2441,16 +2442,19 @@ pub(crate) async fn acquire_prewarmed_env_with_capture(
 /// (failure) on the guard; if dropped without either, the lease is
 /// released best-effort and the directory is left for orphan GC.
 ///
-/// - `Ok(Some((env, guard)))`: env is leased.
+/// - `Ok(Some((env, guard)))`: env is leased. With a UV/Conda pool target
+///   of 0 the env was built on demand for this launch; `progress` receives
+///   that build's phases.
 /// - `Ok(None)`: env source doesn't need a pool entry (e.g. pixi pool
 ///   empty → launch on demand via `pixi exec`).
-/// - `Err(())`: pool empty for a source that requires one; caller should
-///   bail with an error.
+/// - `Err(reason)`: no env could be provided for a source that requires
+///   one; caller should bail and report `reason`.
 async fn acquire_pool_env_for_source(
     env_source: &str,
     daemon: &std::sync::Arc<crate::daemon::Daemon>,
-    _room: &NotebookRoom,
-) -> Result<Option<(crate::PooledEnv, crate::daemon::PoolLeaseGuard)>, ()> {
+    progress: std::sync::Arc<dyn kernel_env::ProgressHandler>,
+) -> Result<Option<(crate::PooledEnv, crate::daemon::PoolLeaseGuard)>, crate::daemon::EnvAcquireError>
+{
     use notebook_protocol::connection::{EnvSource, PackageManager};
     let parsed = EnvSource::parse(env_source);
     // Route to appropriate pool based on the resolved manager family.
@@ -2470,34 +2474,23 @@ async fn acquire_pool_env_for_source(
             }
         };
     }
-    if parsed.package_manager() == Some(PackageManager::Conda) {
-        match daemon.take_conda_env().await {
-            Some((env, guard)) => {
-                info!(
-                    "[notebook-sync] Acquired Conda env from pool: {:?}",
-                    env.python_path
-                );
-                Ok(Some((env, guard)))
-            }
-            None => {
-                error!("[notebook-sync] Conda pool empty, cannot launch");
-                Err(())
-            }
-        }
+    let (label, taken) = if parsed.package_manager() == Some(PackageManager::Conda) {
+        ("Conda", daemon.take_conda_env_with_progress(progress).await)
     } else {
         // UV pool for uv:* sources and as default
-        match daemon.take_uv_env().await {
-            Some((env, guard)) => {
-                info!(
-                    "[notebook-sync] Acquired UV env from pool: {:?}",
-                    env.python_path
-                );
-                Ok(Some((env, guard)))
-            }
-            None => {
-                error!("[notebook-sync] UV pool empty, cannot launch");
-                Err(())
-            }
+        ("UV", daemon.take_uv_env_with_progress(progress).await)
+    };
+    match taken {
+        Ok((env, guard)) => {
+            info!(
+                "[notebook-sync] Acquired {} env: {:?}",
+                label, env.python_path
+            );
+            Ok(Some((env, guard)))
+        }
+        Err(error) => {
+            error!("[notebook-sync] Cannot launch {}: {}", env_source, error);
+            Err(error)
         }
     }
 }
@@ -2759,10 +2752,12 @@ async fn reset_auto_launch_error_with_trust_check(
     }
 }
 
-async fn reset_and_publish_prewarmed_acquire_error(room: &NotebookRoom, env_source: &str) {
-    let details = format!(
-        "Failed to acquire prewarmed environment for {env_source}. Retry once the environment pool finishes warming."
-    );
+async fn reset_and_publish_prewarmed_acquire_error(
+    room: &NotebookRoom,
+    env_source: &str,
+    error: &crate::daemon::EnvAcquireError,
+) {
+    let details = prewarmed_acquire_error_details(env_source, error);
     error!("[notebook-sync] {}", details);
     reset_and_publish_environment_launch_error(
         room,
@@ -2771,6 +2766,25 @@ async fn reset_and_publish_prewarmed_acquire_error(room: &NotebookRoom, env_sour
         &details,
     )
     .await;
+}
+
+/// User-facing text for a failed prewarmed-env acquisition.
+pub(crate) fn prewarmed_acquire_error_details(
+    env_source: &str,
+    error: &crate::daemon::EnvAcquireError,
+) -> String {
+    use crate::daemon::EnvAcquireError;
+    match error {
+        EnvAcquireError::BuildFailed { .. } => {
+            format!("Failed to prepare an environment for {env_source}: {error}")
+        }
+        EnvAcquireError::PoolWaitTimedOut { .. } => format!(
+            "Failed to acquire prewarmed environment for {env_source}: {error}. Retry once the environment pool finishes warming."
+        ),
+        EnvAcquireError::ShuttingDown | EnvAcquireError::PoolEmpty { .. } => {
+            format!("Failed to acquire prewarmed environment for {env_source}: {error}")
+        }
+    }
 }
 
 pub(crate) fn sync_environment_agent_error_response(error: String) -> NotebookResponse {
@@ -2826,10 +2840,12 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
     // The guard holds the lease until we either release (success path:
     // env promoted into the inline cache) or release_and_delete (failure
     // path: env directory removed). Drop catches any forgotten branch.
-    let (mut env, guard) = match daemon.take_uv_env().await {
-        Some(taken) => taken,
-        None => {
-            info!("[notebook-sync] UV pool empty, falling back to full build");
+    // Pool-only: with a target of 0 the full inline build is cheaper than
+    // an on-demand base build plus a delta install.
+    let (mut env, guard) = match daemon.take_pooled_uv_env().await {
+        Ok(taken) => taken,
+        Err(error) => {
+            info!("[notebook-sync] UV pool unavailable ({error}), falling back to full build");
             return Err(());
         }
     };
@@ -2972,10 +2988,12 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
     // Guard holds the lease; consumed via release() (success) or
     // release_and_delete() (failure). See try_uv_pool_for_inline_deps for
     // the same pattern.
-    let (mut env, guard) = match daemon.take_conda_env().await {
-        Some(taken) => taken,
-        None => {
-            info!("[notebook-sync] Conda pool empty, falling back to full build");
+    // Pool-only: with a target of 0 the full inline build is cheaper than
+    // an on-demand base build plus a delta install.
+    let (mut env, guard) = match daemon.take_pooled_conda_env().await {
+        Ok(taken) => taken,
+        Err(error) => {
+            info!("[notebook-sync] Conda pool unavailable ({error}), falling back to full build");
             return Err(());
         }
     };
@@ -3514,9 +3532,13 @@ async fn auto_launch_kernel_attempt(
                             Some(env)
                         }
                         Ok(None) => None,
-                        Err(()) => {
-                            reset_and_publish_prewarmed_acquire_error(room, env_source.as_str())
-                                .await;
+                        Err(error) => {
+                            reset_and_publish_prewarmed_acquire_error(
+                                room,
+                                env_source.as_str(),
+                                &error,
+                            )
+                            .await;
                             return None;
                         }
                     }
@@ -3571,10 +3593,11 @@ async fn auto_launch_kernel_attempt(
                                 Some(env)
                             }
                             Ok(None) => None,
-                            Err(()) => {
+                            Err(error) => {
                                 reset_and_publish_prewarmed_acquire_error(
                                     room,
                                     env_source.as_str(),
+                                    &error,
                                 )
                                 .await;
                                 return None;
@@ -3607,8 +3630,9 @@ async fn auto_launch_kernel_attempt(
                         Some(env)
                     }
                     Ok(None) => None,
-                    Err(()) => {
-                        reset_and_publish_prewarmed_acquire_error(room, prewarmed.as_str()).await;
+                    Err(error) => {
+                        reset_and_publish_prewarmed_acquire_error(room, prewarmed.as_str(), &error)
+                            .await;
                         return None;
                     }
                 };
