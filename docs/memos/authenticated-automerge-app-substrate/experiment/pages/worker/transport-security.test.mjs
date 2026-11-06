@@ -100,6 +100,42 @@ test("HSTS reaches immutable asset responses on HTTPS edge requests", async () =
   assert.equal(response.headers.get("strict-transport-security"), "max-age=31536000");
 });
 
+/** A null-body-status response as an ASSETS binding can return it: a non-null
+ * empty stream body, and headers that refuse writes. Node's constructor won't
+ * build that, so a real response is given both. */
+function assetStyle(status) {
+  const response = new Response(null, { status, headers: { etag: '"abc"' } });
+  Object.defineProperty(response, "body", {
+    value: new ReadableStream({ start: (c) => c.close() }),
+  });
+  response.headers.set = () => {
+    throw new TypeError("Can't modify immutable headers.");
+  };
+  return response;
+}
+
+for (const status of [304, 204]) {
+  test(`HSTS reaches an immutable ${status} asset response with an empty stream body`, async () => {
+    const response = await worker.fetch(
+      new Request(`${publicUrl}/p/some-page`, { headers: viaEdge("https") }),
+      { ASSETS: { fetch: async () => assetStyle(status) } },
+    );
+    assert.equal(response.status, status);
+    assert.equal(response.headers.get("etag"), '"abc"');
+    assert.equal(response.headers.get("strict-transport-security"), "max-age=31536000");
+  });
+}
+
+test("HSTS is set in place on a mutable response", async () => {
+  const mutable = new Response("ok");
+  const response = await worker.fetch(
+    new Request(`${publicUrl}/p/some-page`, { headers: viaEdge("https") }),
+    { ASSETS: { fetch: async () => mutable } },
+  );
+  assert.equal(response, mutable);
+  assert.equal(response.headers.get("strict-transport-security"), "max-age=31536000");
+});
+
 test("a request without Cloudflare headers is served as before", async () => {
   // The operator's on-host call: Host is the public name, no CF-Visitor.
   const health = await worker.fetch(new Request("http://pages.runtimed.run/health"), {});
