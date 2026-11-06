@@ -24,6 +24,7 @@ import { NO_ACTOR_CHAIN, decide, heldRelation, principalOf, projectObject } from
 import { serialQueue } from "./serial-queue.mjs";
 import { claimInvitation, proposeSharingMutation } from "./sharing.mjs";
 import { indexProjectInvitations } from "./project-invitations.mjs";
+import { logAuthEvent } from "./auth-events.mjs";
 
 export const SPACE_LIMIT = 50;
 export const SPACE_TITLE_LIMIT = 200;
@@ -31,6 +32,9 @@ export const SPACE_DESCRIPTION_LIMIT = 2000;
 const RECEIPT_LIMIT = 64;
 const RECORD = "space/record";
 const receiptKey = (operationKey) => `host/receipt/${operationKey.slice("host/operation/".length)}`;
+/** Invitations in `after` that `before` lacks, as [id, invite] pairs. */
+const addedInvites = (before, after) =>
+  Object.entries(after?.acl?.invites ?? {}).filter(([id]) => !before?.acl?.invites?.[id]);
 
 /** New Projects get `prj_` IDs. `sp_` IDs were minted before Projects had
  * their name and stay valid. IDs are not storage keys' names, so either shape
@@ -227,9 +231,18 @@ export class Space {
             }),
           );
           if (!discovered.ok) throw new HttpError(503, "Project discovery unavailable; retry");
+          const accepted = addedInvites(claimed, record);
           record = { ...record, acl: claimed.acl };
           await this.ctx.storage.put(RECORD, record);
           await this.ctx.storage.sync();
+          for (const [inviteId] of accepted)
+            await logAuthEvent({
+              action: "invitation.accepted",
+              principal: identity.principal,
+              projectId: record.space_id,
+              inviteId,
+              role: record.acl.members?.[identity.principal]?.role,
+            });
         }
       }
       // A Space the caller cannot read looks exactly like a missing one.
@@ -314,6 +327,23 @@ export class Space {
             [receiptKey(key)]: { fingerprint: digest, receipt, at: Date.now() },
           });
           await this.ctx.storage.sync();
+          if (!proposed.replay) {
+            const audit = { principal: identity.principal, projectId: record.space_id };
+            if (args.action === "invite")
+              for (const [inviteId, invite] of addedInvites(record, next))
+                await logAuthEvent({
+                  action: "invitation.created",
+                  ...audit,
+                  inviteId,
+                  role: invite.role,
+                });
+            if (args.action === "revoke_invite" && record.acl?.invites?.[args.invite_id])
+              await logAuthEvent({
+                action: "invitation.revoked",
+                ...audit,
+                inviteId: args.invite_id,
+              });
+          }
           if (args.action === "set_role" && args.role === null)
             await this.env.CATALOGS.getByName(args.principal).fetch(
               new Request("https://pages.internal/internal/project-discovery", {

@@ -23,6 +23,7 @@ import {
   deleteServerOidcSession,
   serverOidcSessionStatus,
   ServerOidcIdentityRejected,
+  type ServerOidcAuthEvent,
 } from "../src/server-oidc.ts";
 import { SERVER_SESSION_COOKIE } from "../src/oidc-session-store.ts";
 import { AuthError } from "../src/identity.ts";
@@ -757,6 +758,73 @@ describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
     assert.equal(deniedResponse.status, 403);
     assert.equal(deniedResponse.headers.get("Content-Type"), "text/html; charset=utf-8");
     assert.match(await deniedResponse.text(), /cannot access this application/);
+  });
+
+  it("reports sign-in and session outcomes to an optional audit listener", async (t) => {
+    const f = await fixture(t);
+    t.mock.method(console, "warn", () => {});
+    const events: ServerOidcAuthEvent[] = [];
+    const onAuthEvent = (event: ServerOidcAuthEvent) => events.push(event);
+    const started = await f.start();
+    const callback = await f.authorize(started.authorizationUrl);
+    // A refused callback, then the same transaction completing.
+    const refused = await completeServerOidcLogin(new Request(callback), f.env, noopProfile, {
+      onAuthEvent,
+    });
+    assert.equal(refused.status, 400);
+    const completed = await completeServerOidcLogin(
+      new Request(callback, { headers: { Cookie: started.cookie } }),
+      f.env,
+      noopProfile,
+      {
+        onAuthEvent: (event) => {
+          onAuthEvent(event);
+          throw new Error("a listener failure never changes sign-in");
+        },
+      },
+    );
+    assert.equal(completed.status, 303);
+    assert.equal(hasSessionCookie(completed), true);
+    // The provider then refuses the session's refresh.
+    const request = f.request(undefined, cookieFrom(completed, SERVER_SESSION_COOKIE));
+    f.expireAccess();
+    f.setRefreshFailure("invalid_grant");
+    const status = await serverOidcSessionStatus(request, f.env, noopProfile, { onAuthEvent });
+    assert.equal((await status.json()).session, null);
+    assert.deepEqual(events, [
+      {
+        type: "sign_in_failed",
+        phase: "callback_transaction",
+        kind: "callback_rejected",
+        reason: "login_binding_missing",
+        outcome: "failure_page",
+      },
+      { type: "sign_in", principal: "user:test:alice" },
+      { type: "session_expired", principal: "user:test:alice", reason: "refresh_rejected" },
+    ]);
+    const text = JSON.stringify(events);
+    for (const secret of [...f.secrets, callback.searchParams.get("state")!, started.cookie])
+      assert.equal(text.includes(secret), false);
+  });
+
+  it("reports an abandoned refresh lease once as an expired session", async (t) => {
+    const f = await fixture(t);
+    const { sessionCookie } = await f.login();
+    const request = f.request(undefined, sessionCookie);
+    f.expireAccess();
+    const gate = f.gateRefresh();
+    const stalledOwner = serverOidcSessionStatus(request, f.env, noopProfile);
+    await gate.entered.promise;
+    f.db.sqlite.prepare("UPDATE oidc_server_sessions SET lease_until = ?").run(nowSeconds() - 1);
+    const events: ServerOidcAuthEvent[] = [];
+    const onAuthEvent = (event: ServerOidcAuthEvent) => events.push(event);
+    await serverOidcSessionStatus(request, f.env, noopProfile, { onAuthEvent });
+    await serverOidcSessionStatus(request, f.env, noopProfile, { onAuthEvent });
+    gate.release.resolve();
+    await stalledOwner;
+    assert.deepEqual(events, [
+      { type: "session_expired", principal: "user:test:alice", reason: "lease_abandoned" },
+    ]);
   });
 
   it("sends an already signed-in browser home when a used callback arrives again", async (t) => {

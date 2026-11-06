@@ -1263,6 +1263,55 @@ counted, and the next line carries the count as `dropped`.
 [scripts/usage-report.sql](scripts/usage-report.sql) summarizes them with
 duckdb straight from the log Parquet.
 
+Auth events are `pages.auth.v1` JSON log lines from
+[worker/auth-events.mjs](worker/auth-events.mjs), on the same channel and with
+the same 30-day retention. They are the record of who signed in or connected
+an agent: the auth tables hold only live state, and expired or revoked rows
+are deleted. Each line has `action`, `timestamp`, and, where known,
+`principal`, `credential` (`oidc`, `oauth` or `api-key`), `client_id`,
+`grant`, `scope` and a coded `reason`:
+
+| `action` | When | Extra fields |
+|---|---|---|
+| `sign_in.succeeded` | An OIDC callback created a browser session. | |
+| `sign_in.failed` | An OIDC callback was refused. No principal. | `reason`, `phase`, `kind`, `outcome` (`failure_page` or `already_signed_in`) |
+| `sign_out` | `POST /api/auth/logout` deleted a live session. | |
+| `session.expired` | A session in use ended at refresh. | `reason`: `refresh_rejected`, `identity_rejected`, `lease_abandoned` |
+| `oauth.consent_granted`, `oauth.consent_denied` | A person chose Allow access or Cancel. | `client_id`, `scope` |
+| `oauth.code_issued` | An authorization code followed consent. | `client_id`, `scope` |
+| `oauth.token_issued` | `/oauth/token` issued tokens. | `grant`, `grant_type` (`authorization_code` or `refresh_token`), `scope`, `refresh` |
+| `oauth.token_refused` | `/oauth/token` refused a request, including a 503. | `grant_type`, `reason` (OAuth error code) |
+| `oauth.grant_revoked` | A grant stopped working. | `grant`, `revoked_by` (`rfc7009` for a client's revocation, `system` for replay or reuse; `user` is reserved), `reason` |
+| `oauth.code_replayed` | An authorization code was presented twice. Its grant is revoked. | `grant` |
+| `oauth.refresh_reused` | A spent refresh token was presented again. Its grant is revoked. | `grant` |
+| `api_key.accepted` | An Anaconda API key authenticated. One line per key per isolate per 60 s cache window, not per request. | `scope` (`editor` or `viewer`) |
+| `invitation.created`, `invitation.revoked` | A Project owner invited an email or revoked an invitation. `principal` is the owner. | `project_id`, `invite`, `role` |
+| `invitation.accepted` | A verified recipient claimed a Project invitation. `principal` is the recipient. | `project_id`, `invite`, `role` |
+
+`grant` and `invite` are the first 12 hex digits of SHA-256 over the stored
+grant or invitation id. They join the lines of one grant or invitation and
+name nothing else. Lines never carry tokens, authorization codes, consent or
+CSRF values, OAuth state, cookies, session ids, sealed values, emails, IP
+addresses or display names, and a principal containing `@` is dropped.
+[worker/auth-events.test.mjs](worker/auth-events.test.mjs) runs the auth test
+suites and fails if their console output contains `pages_at_`, `pages_rt_`,
+`Bearer`, `code=`, `state=`, `@` or a sealed `iv.ct` value.
+
+Who signed in or connected an agent, by day:
+
+```sh
+duckdb -c "
+INSTALL httpfs; LOAD httpfs; INSTALL json; LOAD json;
+CREATE OR REPLACE SECRET (TYPE s3, PROVIDER credential_chain);
+SELECT CAST(CAST(body->>'timestamp' AS TIMESTAMP) AS DATE) AS day,
+       body->>'principal' AS principal, body->>'action' AS action,
+       coalesce(body->>'client_id', body->>'credential') AS via, count(*) AS n
+FROM read_parquet('s3://<fleet-bucket>/<fleet-prefix>/telemetry/logs/**/*.parquet', union_by_name = true)
+WHERE json_valid(body) AND body->>'event' = 'pages.auth.v1'
+  AND body->>'action' IN ('sign_in.succeeded', 'oauth.token_issued', 'api_key.accepted')
+GROUP BY ALL ORDER BY day DESC, principal;"
+```
+
 Pages on plain Automerge sync add two lines from
 [worker/plain-sync-log.mjs](worker/plain-sync-log.mjs), with the Page id but
 no principal: `page.sync_refused` for a browser frame the host refused

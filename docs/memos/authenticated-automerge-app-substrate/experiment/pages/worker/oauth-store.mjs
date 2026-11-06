@@ -1,6 +1,7 @@
 import { randomSecret, secretHash } from "@cloud/oidc-session-store.ts";
 import { pagesPublicOrigin } from "../agent-guide.mjs";
 import { isolateSetup } from "./isolate-setup.mjs";
+import { logAuthEvent } from "./auth-events.mjs";
 
 const CODE_SECONDS = 300;
 const CONSENT_SECONDS = 600;
@@ -160,6 +161,14 @@ async function database(env) {
   return db;
 }
 const statement = (db, sql, ...values) => db.prepare(sql).bind(...values);
+/** The principal in a stored identity snapshot, for audit lines only. */
+function snapshotPrincipal(identityJson) {
+  try {
+    return JSON.parse(identityJson)?.principal;
+  } catch {
+    return undefined;
+  }
+}
 
 /** Expiry cleanup is bounded and never discards a still-valid replay tombstone. */
 export async function cleanupOAuthStore(env, { now, limit = 100 } = {}) {
@@ -381,7 +390,30 @@ export async function exchangeAuthorizationCode(env, input, { now } = {}) {
       ),
     );
   const result = await db.batch(batch);
+  const audit = {
+    principal: snapshotPrincipal(row.identity_json),
+    credential: "oauth",
+    clientId: row.client_id,
+  };
+  if ((result[0].meta?.changes ?? 0) > 0) {
+    await logAuthEvent({ action: "oauth.code_replayed", ...audit, grantId: row.consumed_by });
+    await logAuthEvent({
+      action: "oauth.grant_revoked",
+      ...audit,
+      grantId: row.consumed_by,
+      revokedBy: "system",
+      reason: "code_replayed",
+    });
+  }
   if (result[1].meta?.changes !== 1) invalid();
+  await logAuthEvent({
+    action: "oauth.token_issued",
+    ...audit,
+    grantId,
+    grantType: "authorization_code",
+    scope: row.scope,
+    refresh: Boolean(tokens.refreshToken),
+  });
   return tokenResponse(tokens, row.scope, now);
 }
 
@@ -461,7 +493,29 @@ export async function rotateRefreshToken(env, input, { now } = {}) {
       ),
     );
   const result = await db.batch(batch);
+  const audit = {
+    principal: snapshotPrincipal(row.identity_json),
+    credential: "oauth",
+    clientId: row.client_id,
+    grantId: row.id,
+  };
+  if (result[0].meta?.changes === 1) {
+    await logAuthEvent({ action: "oauth.refresh_reused", ...audit });
+    await logAuthEvent({
+      action: "oauth.grant_revoked",
+      ...audit,
+      revokedBy: "system",
+      reason: "refresh_reused",
+    });
+  }
   if (result[1].meta?.changes !== 1) invalid();
+  await logAuthEvent({
+    action: "oauth.token_issued",
+    ...audit,
+    grantType: "refresh_token",
+    scope,
+    refresh: true,
+  });
   return tokenResponse(tokens, scope, now);
 }
 
@@ -498,16 +552,26 @@ export async function revokeOAuthToken(env, { token, clientId }, { now } = {}) {
   if (!tokenPattern.test(token) || typeof clientId !== "string") return;
   const db = await database(env),
     hash = await secretHash(token);
-  await statement(
+  const revoked = await statement(
     db,
     `UPDATE pages_oauth_grants SET revoked_at = ?
     WHERE client_id = ? AND context = ? AND revoked_at IS NULL AND id IN
     (SELECT grant_id FROM pages_oauth_access_tokens WHERE token_hash = ?
-     UNION SELECT grant_id FROM pages_oauth_refresh_tokens WHERE token_hash = ?)`,
+     UNION SELECT grant_id FROM pages_oauth_refresh_tokens WHERE token_hash = ?)
+    RETURNING id, client_id, identity_json`,
     now,
     clientId,
     contextFor(env),
     hash,
     hash,
-  ).run();
+  ).all();
+  for (const grant of revoked.results ?? [])
+    await logAuthEvent({
+      action: "oauth.grant_revoked",
+      principal: snapshotPrincipal(grant.identity_json),
+      credential: "oauth",
+      clientId: grant.client_id,
+      grantId: grant.id,
+      revokedBy: "rfc7009",
+    });
 }

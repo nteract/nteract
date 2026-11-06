@@ -5,6 +5,7 @@ import { readAccessToken } from "./oauth-store.mjs";
 import { domainAccessForIdentity } from "./domain-access.mjs";
 import { withAdmissionReason } from "./admission-reasons.mjs";
 import { isolateSingleFlight } from "./isolate-setup.mjs";
+import { firstApiKeyUse, logAuthEvent } from "./auth-events.mjs";
 
 // The API-key verifier caches one pending provider lookup per token for 60 s
 // (ANACONDA_API_KEY_CACHE_TTL_MS in @cloud/identity.ts); see isolate-setup.mjs.
@@ -248,6 +249,13 @@ export async function authenticate(request, env) {
         );
       throw error;
     }
+    if (firstApiKeyUse(token))
+      await logAuthEvent({
+        action: "api_key.accepted",
+        principal: identity.principal,
+        credential: "api-key",
+        scope: identity.scope,
+      });
     return withDomainAccess(
       {
         principal: identity.principal,
