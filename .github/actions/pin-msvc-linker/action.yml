@@ -1,0 +1,24 @@
+name: Pin producer MSVC linker for Rust
+description: Select the linker paired with the active producer MSVC compiler.
+inputs:
+  target:
+    description: Rust MSVC target triple
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Pin MSVC linker path for Rust
+      shell: pwsh
+      env:
+        EXPECTED_RUST_TARGET: ${{ inputs.target }}
+      run: |
+        $compiler = (Get-Command cl.exe -ErrorAction Stop).Source
+        $linker = Join-Path (Split-Path -Parent $compiler) 'link.exe'
+        if (-not (Test-Path $linker)) { throw "MSVC linker is missing beside the producer compiler: $linker" }
+        $linker = [IO.Path]::GetFullPath($linker)
+        $tools = [IO.Path]::GetFullPath($env:VCToolsInstallDir).TrimEnd('\') + '\'
+        if (-not $linker.StartsWith($tools, [StringComparison]::OrdinalIgnoreCase)) { throw 'link.exe is outside the selected producer toolset' }
+        $target = $env:EXPECTED_RUST_TARGET.Replace('-', '_').ToUpperInvariant()
+        $targetEnv = "CARGO_TARGET_${target}_LINKER"
+        "$targetEnv=$linker" >> $env:GITHUB_ENV
+        Write-Host "Producer linker: $linker"

@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - .github/actions/install-cargo-about/**
+      - .github/actions/pin-msvc-linker/**
       - .github/workflows/release-common.yml
       - .github/workflows/release-nightly.yml
       - .github/workflows/release-stable.yml
@@ -79,6 +80,73 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  windows-msvc-linker-smoke:
+    name: Windows MSVC linker smoke (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            arch: x64
+            target: x86_64-pc-windows-msvc
+            linker-env: CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER
+          - runner: windows-11-vs2026-arm
+            arch: arm64
+            target: aarch64-pc-windows-msvc
+            linker-env: CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER
+    steps:
+      - uses: actions/checkout@v6
+      - name: Activate producer MSVC environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: ${{ matrix.arch }}
+      - name: Verify producer MSVC environment
+        shell: pwsh
+        env:
+          EXPECTED_MSVC_ARCH: ${{ matrix.arch }}
+        run: |
+          foreach ($name in @('VCToolsInstallDir', 'VCToolsVersion', 'VSINSTALLDIR', 'WindowsSdkDir', 'UCRTVersion', 'LIB')) {
+            if (-not [Environment]::GetEnvironmentVariable($name)) { throw "Missing producer environment: $name" }
+          }
+          if ($env:VSCMD_ARG_TGT_ARCH -ne $env:EXPECTED_MSVC_ARCH) { throw 'MSVC target does not match the native smoke target' }
+          $compiler = (Get-Command cl.exe -ErrorAction Stop).Source
+          $tools = [IO.Path]::GetFullPath($env:VCToolsInstallDir).TrimEnd('\') + '\'
+          if (-not $compiler.StartsWith($tools, [StringComparison]::OrdinalIgnoreCase)) { throw 'cl.exe is outside the selected producer toolset' }
+      - uses: ./.github/actions/pin-msvc-linker
+        with:
+          target: ${{ matrix.target }}
+      - uses: dsherret/rust-toolchain-file@v1
+      - name: Build native Cargo executable from Git Bash
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          project="$RUNNER_TEMP/msvc-linker-smoke"
+          mkdir -p "$project/src"
+          cat > "$project/Cargo.toml" <<'TOML'
+          [package]
+          name = "msvc-linker-smoke"
+          version = "0.1.0"
+          edition = "2021"
+          TOML
+          cat > "$project/src/main.rs" <<'RS'
+          fn main() { println!("MSVC linker smoke"); }
+          RS
+          cargo build --verbose --manifest-path "$project/Cargo.toml" --target "$TARGET" 2>&1 | tee "$RUNNER_TEMP/msvc-linker-smoke.log"
+      - name: Confirm Cargo used the selected producer linker
+        shell: pwsh
+        env:
+          LINKER_ENV_NAME: ${{ matrix.linker-env }}
+        run: |
+          $linker = [Environment]::GetEnvironmentVariable($env:LINKER_ENV_NAME)
+          if (-not $linker) { throw "Missing $env:LINKER_ENV_NAME from the linker pin action" }
+          if (-not (Test-Path $linker)) { throw "Selected linker does not exist: $linker" }
+          $log = Get-Content "$env:RUNNER_TEMP\msvc-linker-smoke.log" -Raw
+          if (-not $log.Contains($linker, [StringComparison]::OrdinalIgnoreCase)) { throw "Cargo verbose output did not use selected linker $linker" }
+          Write-Host "Cargo used producer linker: $linker"
+
   release-tag:
     name: Release publication safety
     runs-on: ubuntu-24.04

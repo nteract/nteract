@@ -770,21 +770,9 @@ jobs:
           Write-Host "Producer compiler: $compiler"
           Write-Host "Producer SDK: $env:WindowsSdkDir $env:UCRTVersion"
 
-      - name: Pin MSVC linker path for Rust
-        shell: pwsh
-        env:
-          EXPECTED_RUST_TARGET: x86_64-pc-windows-msvc
-        run: |
-          $compiler = (Get-Command cl.exe -ErrorAction Stop).Source
-          $linker = Join-Path (Split-Path -Parent $compiler) 'link.exe'
-          if (-not (Test-Path $linker)) { throw "MSVC linker is missing beside the producer compiler: $linker" }
-          $linker = [IO.Path]::GetFullPath($linker)
-          $tools = [IO.Path]::GetFullPath($env:VCToolsInstallDir).TrimEnd('\') + '\'
-          if (-not $linker.StartsWith($tools, [StringComparison]::OrdinalIgnoreCase)) { throw 'link.exe is outside the selected producer toolset' }
-          $target = $env:EXPECTED_RUST_TARGET.Replace('-', '_').ToUpperInvariant()
-          $targetEnv = "CARGO_TARGET_${target}_LINKER"
-          "$targetEnv=$linker" >> $env:GITHUB_ENV
-          Write-Host "Producer linker: $linker"
+      - uses: ./.github/actions/pin-msvc-linker
+        with:
+          target: x86_64-pc-windows-msvc
 
       - name: Set up Rust
         uses: dsherret/rust-toolchain-file@v1
@@ -1010,21 +998,9 @@ jobs:
           Write-Host "Producer compiler: $compiler"
           Write-Host "Producer SDK: $env:WindowsSdkDir $env:UCRTVersion"
 
-      - name: Pin MSVC linker path for Rust
-        shell: pwsh
-        env:
-          EXPECTED_RUST_TARGET: aarch64-pc-windows-msvc
-        run: |
-          $compiler = (Get-Command cl.exe -ErrorAction Stop).Source
-          $linker = Join-Path (Split-Path -Parent $compiler) 'link.exe'
-          if (-not (Test-Path $linker)) { throw "MSVC linker is missing beside the producer compiler: $linker" }
-          $linker = [IO.Path]::GetFullPath($linker)
-          $tools = [IO.Path]::GetFullPath($env:VCToolsInstallDir).TrimEnd('\') + '\'
-          if (-not $linker.StartsWith($tools, [StringComparison]::OrdinalIgnoreCase)) { throw 'link.exe is outside the selected producer toolset' }
-          $target = $env:EXPECTED_RUST_TARGET.Replace('-', '_').ToUpperInvariant()
-          $targetEnv = "CARGO_TARGET_${target}_LINKER"
-          "$targetEnv=$linker" >> $env:GITHUB_ENV
-          Write-Host "Producer linker: $linker"
+      - uses: ./.github/actions/pin-msvc-linker
+        with:
+          target: aarch64-pc-windows-msvc
 
       - name: Set up Rust
         uses: dsherret/rust-toolchain-file@v1
