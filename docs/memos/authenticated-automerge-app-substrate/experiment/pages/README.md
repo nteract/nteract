@@ -1141,6 +1141,9 @@ single-use; access tokens last ten minutes, with rotating refresh tokens bounded
 by an absolute thirty-day grant. Correctly bound code/refresh replay revokes its
 family. Provider tokens stay on the server. Refresh does not refresh verified
 email evidence, and MCP tokens cannot authorize raw HTTP assets, sharing, or sync.
+An OAuth client uploads a local image through `create_page_asset_upload`, whose
+Page-scoped capability names its grant and stops working when the grant is
+revoked (see [Upload capabilities](#upload-capabilities)).
 
 An hourly cron (`35 * * * *` UTC, [shared/schedule.mjs](shared/schedule.mjs))
 sweeps the auth database (worker/auth-maintenance.mjs). It deletes expired
@@ -1592,12 +1595,21 @@ Pages/deployments require a separate lifecycle implementation.
 
 For agents, importing bytes and inserting content are separate operations:
 
-1. API-key clients upload raw bytes to the asset endpoint. ChatGPT uses
-   `import_page_image({page_id, file})` with its client-provided file descriptor.
-   The importer requires read/write OAuth scope and Page edit access, accepts
-   bounded HTTPS downloads from `files.oaiusercontent.com` without redirects,
-   and returns `asset_id`, reference, MIME, dimensions, and size. A file ID alone
-   is not a download URL. Temporary source URLs are not stored in the document.
+1. Get the bytes into the Page's asset store, by one of three paths:
+   - Any client with a shell or HTTP client, on an API key or OAuth, calls
+     `create_page_asset_upload({page_id})` and POSTs the file to the returned
+     `upload_url` with the returned `Authorization: Pages-Upload <token>`
+     header (see [Upload capabilities](#upload-capabilities)).
+   - API-key clients may also POST raw bytes to the asset endpoint with their
+     own bearer header.
+   - ChatGPT uses `import_page_image({page_id, file})` with its client-provided
+     file descriptor. The importer requires read/write OAuth scope and Page edit
+     access, accepts bounded HTTPS downloads from `files.oaiusercontent.com`
+     without redirects, and returns `asset_id`, reference, MIME, dimensions, and
+     size. A file ID alone is not a download URL. Temporary source URLs are not
+     stored in the document.
+
+   A client with none of these asks the person to upload in the browser.
 2. Read the current Page, then call guarded `edit_page` with `insert_image`,
    `asset_id`, alt text, and optional `after_block_id` (omitted appends; `null`
    prepends). The host verifies the asset belongs to this Page and creates a
@@ -1610,6 +1622,70 @@ base64 argument or extra API key is needed for that route. Client catalog refres
 may be necessary; a generated ChatGPT image must actually be exposed as a
 transferable file. The importer does not provide image-reading capability or
 imply pixel access from a Markdown reference.
+
+The agent guide's Images section (`/llms.txt`, from
+[agent-guide.mjs](agent-guide.mjs)) is the agent-facing workflow: which path to
+use, sizing for the ~960 CSS px desktop column and ~350 px phone column (images
+render at natural width, capped at the column), light and dark uploads, the
+one-batch pattern that interleaves `insert_image` and `insert_markdown`, and
+verification through `summary.images`.
+
+### Upload capabilities
+
+`create_page_asset_upload` ([asset-uploads.mjs](worker/asset-uploads.mjs)) lets
+any agent that can run curl add a local file without handling its own bearer
+token. It is a Page content tool on MCP and `/api/tools`, takes `page_id` or
+`project_id`, and needs write scope plus current edit access, like
+`import_page_image`. API-key and OAuth clients can issue one; a browser
+session is refused, since the browser uploads to the same route with its
+cookie. The Page host answers with `upload_url` (the ordinary
+`POST /api/pages/:pageId/assets` route), `method`, `headers`, `expires_at`,
+`max_bytes`, `accepted_types` and `example`, a ready curl command built by
+`assetUploadCommand` ([agent-client-setup.mjs](agent-client-setup.mjs)), which
+also builds the `/llms.txt` line. Optional `content_type`, `size` and `sha256`
+arguments bind the capability to one file; the gateway checks the bytes against
+them before storing anything (`upload_mismatch`), and a bound size refuses a
+different `Content-Length` before reading the body. A credential-less upload
+to the asset route is told to call `create_page_asset_upload`.
+
+The capability is `pu1.<payload>.<mac>`, an HMAC-SHA-256 signed with the Page
+host's existing retry-token key ([operation-journal.mjs](worker/operation-journal.mjs)
+`signCapability`/`openCapability`). The MAC covers a purpose string,
+`pages-asset-upload-v1`, ahead of the payload, and the payload repeats it, so a
+retry token never verifies as a capability or the reverse. The payload names
+the Page, principal, credential kind, OAuth grant ID (for OAuth), issue and
+expiry times (10 minutes) and the optional binding. No server state is
+created.
+
+The upload sends it as `Authorization: Pages-Upload <token>`, a header rather
+than a query parameter so access logs and `Referer` don't carry it. The gateway
+recognizes that scheme only on `POST /api/pages/:pageId/assets`; it skips
+`authenticate()` (the capability never reaches the API-key verifier or the
+OAuth token store) and keeps the Origin check. Every other route refuses it,
+and `authenticate()` refuses a `pu1.` token sent as a bearer credential. The
+byte route's own code does the rest: the gateway forwards only the capability
+to the Page host's `/internal/assets/authorize` for both the pre-transfer and
+post-transfer checks. Every other gateway path runs `authenticate()` before it
+reaches a Page host, so the host screens a capability request before it may
+join its queue (`uploadScreen`): it reads only the host record and its own key,
+checks the MAC, payload and expiry, and refuses a forged, foreign or expired
+token without queuing it or loading the document. A missing Page has no key, so
+it refuses with the same body as a forged token. In the queue, the host checks
+all of that again, checks that an OAuth grant is still live
+(`oauthGrantActive`), and decides access for the named principal from its
+current record. A grant removed or downgraded after issue, a revoked OAuth
+connection, a recovery-blocked Page or a trashed Page is refused. Limits,
+validation, storage and the response are the byte route's.
+
+Revoking an API key doesn't end the upload URLs it already issued: the host
+never holds the key, so they stop at `expires_at`, at most 10 minutes later.
+Removing the principal's Page (or Project) access, or revoking an OAuth
+connection, ends them at once.
+
+Base64 bytes in a tool argument and a server-side fetch of an arbitrary URL
+were rejected: the first makes the model emit megabytes of tokens, and the
+second reopens outbound fetches the importer deliberately limits to
+`files.oaiusercontent.com`.
 
 ## Persistence and resource limits
 
@@ -2300,7 +2376,9 @@ in Automerge history. `delete_page` and `purge_page` are destructive; Trash is
 reversible, but it revokes every collaborator's access until restored.
 `import_page_image` is open-world because it downloads the client's file, and
 `report_page_progress` is not idempotent because each call without a lease starts
-another session.
+another session. `create_page_asset_upload` is an ordinary write (it needs write
+scope) that changes nothing: it is closed-world, since the client sends the
+file, and idempotent, since a repeat issues another equivalent capability.
 
 ### Agent carets
 

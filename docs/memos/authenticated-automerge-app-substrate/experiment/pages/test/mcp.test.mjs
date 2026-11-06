@@ -146,6 +146,7 @@ test("MCP gives every refusal a stable code in text and structured content", asy
       { retry_token: "token", idempotency_key: "plain-key-3" },
     ],
     ["import_page_image", "outcome_unknown", true],
+    ["create_page_asset_upload", "outcome_unknown", true],
     ["report_page_progress", "outcome_unknown", undefined],
   ]) {
     const body = await call(name, thrown, args);
@@ -198,6 +199,7 @@ test("MCP tools declare every annotation hint, and each tool's hints are intende
     move_page: write,
     report_page_progress: { ...write, idempotentHint: false },
     import_page_image: { ...write, openWorldHint: true },
+    create_page_asset_upload: write,
     delete_page: destructive,
     purge_page: destructive,
   };
@@ -234,6 +236,7 @@ test("every Page tool takes project_id in place of page_id for Project content",
     "read_page_presence",
     "report_page_progress",
     "import_page_image",
+    "create_page_asset_upload",
     "edit_page",
     "patch_page",
     "manage_page_comment",
@@ -955,6 +958,89 @@ test("MCP image import advertises ChatGPT's complete file descriptor and keeps t
   assert.equal(asset.asset_url, assetUrl);
   assert.equal(asset.url, `https://pages.example/p/${pageId}`);
   assert.equal(JSON.stringify(result).includes("temporary=secret"), false);
+});
+
+test("MCP lists create_page_asset_upload for any client with write scope, and points other image paths at it", async () => {
+  const listed = await handleMcp(request("tools/list"), async () => assert.fail("unexpected call"));
+  const all = (await listed.json()).result.tools;
+  const descriptor = all.find((tool) => tool.name === "create_page_asset_upload");
+  assert.deepEqual(descriptor.securitySchemes, [
+    { type: "oauth2", scopes: ["pages:read", "pages:write"] },
+  ]);
+  assert.equal(descriptor._meta, undefined, "no ChatGPT file handoff: the client uploads itself");
+  assert.deepEqual(Object.keys(descriptor.inputSchema.properties).sort(), [
+    "content_type",
+    "page_id",
+    "project_id",
+    "sha256",
+    "size",
+  ]);
+  assert.deepEqual(descriptor.inputSchema.properties.content_type.enum, [
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "application/vnd.apache.parquet",
+  ]);
+  assert.equal(descriptor.inputSchema.properties.size.maximum, 5 * 1024 * 1024);
+  for (const fact of [
+    /API key or OAuth/,
+    /Pages-Upload/,
+    /never send your own key/,
+    /expires_at \(10 minutes\)/,
+    /curl/,
+    /not multipart or base64/,
+    /same bytes always return the same asset_id/,
+    /access is checked again at upload/,
+    /insert_image/,
+    /insert_node/,
+    /Insert image in the browser/,
+    /import_page_image/,
+  ])
+    assert.match(descriptor.description, fact);
+  const importer = all.find((tool) => tool.name === "import_page_image");
+  assert.match(
+    importer.description,
+    /other clients with a local file use create_page_asset_upload/,
+  );
+  const insertImage = all
+    .find((tool) => tool.name === "edit_page")
+    .inputSchema.properties.operations.items.oneOf.find(
+      (item) => item.properties.op.const === "insert_image",
+    );
+  assert.match(insertImage.properties.asset_id.description, /create_page_asset_upload/);
+  const initialization = await handleMcp(
+    request("initialize", {
+      protocolVersion: "2025-06-18",
+      capabilities: {},
+      clientInfo: { name: "upload-test", version: "1" },
+    }),
+    async () => assert.fail("initialize invoked a tool"),
+  );
+  const { instructions } = (await initialization.json()).result;
+  assert.match(
+    instructions,
+    /create_page_asset_upload and POST the file to its upload_url with the returned headers \(its example field is a ready curl command\)/,
+  );
+  // The result passes through with the browser link, and nothing is added.
+  const issued = {
+    page_id: pageId,
+    upload_url: `https://pages.example/api/pages/${pageId}/assets`,
+    method: "POST",
+    headers: { Authorization: "Pages-Upload pu1.payload.signature" },
+  };
+  const response = await handleMcp(
+    request("tools/call", { name: "create_page_asset_upload", arguments: { page_id: pageId } }),
+    async (operation, args) => {
+      assert.equal(operation, "create_page_asset_upload");
+      assert.deepEqual(args, { page_id: pageId });
+      return Response.json(issued);
+    },
+  );
+  const result = (await response.json()).result;
+  assert.deepEqual(result.structuredContent, {
+    ...issued,
+    url: `https://pages.example/p/${pageId}`,
+  });
 });
 
 test("image import failures distinguish storage retries from document edits without leaking file URLs", async () => {

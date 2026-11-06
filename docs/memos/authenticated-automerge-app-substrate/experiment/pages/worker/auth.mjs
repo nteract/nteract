@@ -139,6 +139,15 @@ export async function authenticate(request, env) {
   if (authorization) {
     if (!/^Bearer \S+$/i.test(authorization)) throw new HttpError(401, "Use a bearer credential");
     const token = authorization.slice(7);
+    // An upload capability (asset-uploads.mjs) sent as a bearer credential is
+    // refused here, so it never reaches the API-key provider. API keys are
+    // JWT-shaped and can't start with this prefix.
+    if (token.startsWith("pu1."))
+      throw new HttpError(
+        401,
+        "Send an upload capability only to its upload_url, as Authorization: Pages-Upload <token>",
+        "upload_capability_invalid",
+      );
     if (token.startsWith("pages_")) {
       // Internal routes are only reachable through host namespace forwarding.
       // An MCP grant cannot be used to change ACLs or open a native sync socket.
@@ -202,6 +211,9 @@ export async function authenticate(request, env) {
           canWrite: scopes.has("pages:write"),
           canShare: scopes.has("pages:share"),
           credentialKind: "oauth",
+          // Host-internal, like emailProof: an upload capability names its
+          // grant so revoking the connection ends it (asset-uploads.mjs).
+          grantId: grant.grantId,
           namespace: grant.identity.namespace,
           emailProof: grant.identity.emailProof,
           expiresAt: grant.expiresAt * 1000,
@@ -365,6 +377,9 @@ export const CLIENT_ERROR_CODES = Object.freeze([
   "resync_required",
   "image_not_found",
   "dataset_not_found",
+  "upload_capability_invalid",
+  "upload_capability_expired",
+  "upload_mismatch",
   "invalid_presence_target",
   "presence_revision_changed",
   "presence_target_not_found",

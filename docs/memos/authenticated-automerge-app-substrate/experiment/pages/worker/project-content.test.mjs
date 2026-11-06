@@ -99,6 +99,7 @@ test("authentication and write scopes precede Project lookup", async (t) => {
     "manage_page_comment",
     "report_page_progress",
     "import_page_image",
+    "create_page_asset_upload",
   ])
     assert.equal((await w.call("reader", operation, args)).status, 403, operation);
 });

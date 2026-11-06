@@ -223,6 +223,66 @@ export async function issueRetryToken(storage, { scope, principal, now = Date.no
   };
 }
 
+/**
+ * A short-lived host capability, signed with the same per-resource key as
+ * retry tokens: `<prefix>.<payload>.<signature>`, base64url like a retry
+ * token. Its MAC covers `<purpose>\n<payload JSON>` and the payload repeats
+ * `purpose`, so the two never stand in for each other. A retry token has two
+ * parts and its MAC covers the bare payload, which starts with `{`; a
+ * capability has three parts and its MAC input starts with the purpose.
+ * Expiry and binding belong to the caller's own check.
+ */
+export async function signCapability(storage, { purpose, prefix, payload }) {
+  if (!validPurpose(purpose) || !/^[a-z0-9]{1,16}$/.test(prefix))
+    throw new TypeError("A capability needs a purpose and a token prefix");
+  const key = await signingKey(storage, true);
+  const bytes = encoder.encode(JSON.stringify({ ...payload, purpose }));
+  const signature = new Uint8Array(
+    await crypto.subtle.sign("HMAC", key, capabilityInput(purpose, bytes)),
+  );
+  return `${prefix}.${encode(bytes)}.${encode(signature)}`;
+}
+
+/** The payload of a capability this resource signed for `purpose`, or null
+ * for anything else: another purpose or prefix, a retry token, a forged or
+ * truncated token, or a resource that has never signed one. A storage
+ * failure throws: it is a service failure, not a verdict on the token. */
+export async function openCapability(storage, token, { purpose, prefix }) {
+  if (!validPurpose(purpose)) throw new TypeError("A capability needs a purpose");
+  let bytes, signature, payload;
+  try {
+    if (typeof token !== "string" || token.length > 4096) return null;
+    const parts = token.split(".");
+    if (parts.length !== 3 || parts[0] !== prefix) return null;
+    bytes = decode(parts[1]);
+    signature = decode(parts[2]);
+  } catch {
+    return null;
+  }
+  const key = await signingKey(storage, false);
+  if (
+    !key ||
+    !(await crypto.subtle.verify("HMAC", key, signature, capabilityInput(purpose, bytes)))
+  )
+    return null;
+  try {
+    payload = JSON.parse(decoder.decode(bytes));
+  } catch {
+    return null;
+  }
+  return payload && typeof payload === "object" && payload.purpose === purpose ? payload : null;
+}
+
+const validPurpose = (purpose) =>
+  typeof purpose === "string" && /^[a-z][a-z0-9-]{2,63}$/.test(purpose);
+function capabilityInput(purpose, bytes) {
+  const label = encoder.encode(`${purpose}\n`);
+  const input = new Uint8Array(label.byteLength + bytes.byteLength);
+  input.set(label);
+  input.set(bytes, label.byteLength);
+  return input;
+}
+
 /** An expired, matching pending entry may still be resumed. Completed requests
  * past the durable deadline are always expired, even before their row is GC'd.
  */

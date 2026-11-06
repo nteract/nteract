@@ -613,6 +613,25 @@ export async function readAccessToken(env, token, { resource, now } = {}) {
     : null;
 }
 
+/** Whether an OAuth grant is still live: this deployment's, not revoked and
+ * not expired. An upload capability issued under a grant checks this when it
+ * is used (asset-uploads.mjs), so revoking a connection ends its uploads too.
+ * The grant ID authorizes nothing by itself. */
+export async function oauthGrantActive(env, grantId, { now } = {}) {
+  now = seconds(now);
+  if (typeof grantId !== "string" || !secretPattern.test(grantId)) return false;
+  const db = await database(env);
+  const row = await statement(
+    db,
+    `SELECT 1 AS live FROM pages_oauth_grants
+    WHERE id = ? AND revoked_at IS NULL AND expires_at > ? AND context = ?`,
+    grantId,
+    now,
+    contextFor(env),
+  ).first();
+  return row !== null;
+}
+
 /** RFC 7009: unknown tokens/wrong clients succeed without revealing membership. */
 export async function revokeOAuthToken(env, { token, clientId }, { now } = {}) {
   now = seconds(now);
