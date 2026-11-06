@@ -1,12 +1,14 @@
-// Links between Pages in a real browser, against a running local Wordgard
-// fixture: the Page glyph (once per link, however its text is formatted),
-// the hover card's faces, crossing a formatted link, Escape, keyboard access
-// from a comment link, Open in place, and the caret around a glyph link in
-// an editable block.
+// Links between Pages and to Projects in a real browser, against a running
+// local Wordgard fixture: the Page and Project glyphs (once per link,
+// however its text is formatted), the hover card's faces for both kinds,
+// crossing a formatted link, Escape, keyboard access from a comment link,
+// Open in place for a Page and a Project, the open Project's own links left
+// plain, and the caret around a glyph link in an editable block.
 //
-// dev@localhost owns a target Page and a Page that links to it, to a Page
-// alice@localhost keeps private, to a heading on the same Page and to an
-// external site. alice's Page must read as unavailable to dev.
+// dev@localhost owns a target Page, a Project, and a Page that links to
+// them, to a Page and a Project alice@localhost keeps private, to a heading
+// on the same Page and to an external site. alice's Page and Project must
+// read as unavailable to dev.
 //
 //   PAGES_ORIGIN=http://localhost:9894 node scripts/page-links-smoke.mjs
 //
@@ -60,6 +62,10 @@ async function tool(page, operation, args = {}) {
 const key = () => "page-links-" + crypto.randomUUID();
 const card = (page) => page.locator(".page-link-card");
 const link = (page, pageId) => page.locator(`wg-content a.page-link[data-page-id="${pageId}"]`);
+const projectLink = (page, projectId) =>
+  page.locator(`wg-content a.project-link[data-project-id="${projectId}"]`);
+const PROJECT_TITLE = "Launch week";
+const PROJECT_DESCRIPTION = "Everything for shipping link previews: plans, owners and dates.";
 
 /** Rest the pointer on `locator` until its card shows `face`. */
 async function hover(page, locator, face) {
@@ -107,6 +113,36 @@ try {
     idempotency_key: key(),
     markdown: "Not for dev.",
   });
+  // dev's Project, whose content links to itself and to the target, and
+  // alice's, which dev can't read.
+  const project = await tool(owner.page, "create_project", {
+    title: PROJECT_TITLE,
+    description: PROJECT_DESCRIPTION,
+    idempotency_key: key(),
+  });
+  const projectRead = await tool(owner.page, "read_page", {
+    project_id: project.project_id,
+    include_content: false,
+  });
+  await tool(owner.page, "edit_page", {
+    project_id: project.project_id,
+    base_heads: projectRead.heads,
+    idempotency_key: key(),
+    operations: [
+      {
+        op: "insert_markdown",
+        after_block_id: null,
+        markdown:
+          "## This week\n\nShip the hover card, then chits. " +
+          `See [this Project](/project/${project.project_id}) and ` +
+          `[the evening focus](/p/${target.page_id}).`,
+      },
+    ],
+  });
+  const secretProject = await tool(alice.page, "create_project", {
+    title: "Alice's private Project",
+    idempotency_key: key(),
+  });
   const source = await tool(owner.page, "create_page", {
     title: "Links elsewhere",
     idempotency_key: key(),
@@ -115,6 +151,8 @@ try {
         `[Alice's notes](/p/${secret.page_id}) have the rest. ` +
         `[Another](/p/${slow.page_id}) is slow.`,
       `Jump to [the plan](#plan) or read [the nteract docs](https://nteract.io).`,
+      `Plans live in [the launch Project](/project/${project.project_id}); ` +
+        `[Alice's Project](/project/${secretProject.project_id}) is hers.`,
       `Formatted: [the **evening** focus](/p/${target.page_id}), ` +
         `[a <mark data-color="yellow">highlighted</mark> one](/p/${target.page_id}) and ` +
         `[some \`inline code\` too](/p/${target.page_id}).`,
@@ -143,6 +181,44 @@ try {
   assert.equal(refused.status(), 404);
   assert.equal(await refused.text(), await missing.text());
   checkpoint("meta.json answers the owner and refuses alice's Page like a missing one");
+  const projectMeta = await owner.page.request.get(
+    `${origin}/project/${project.project_id}/meta.json`,
+  );
+  assert.equal(projectMeta.status(), 200);
+  assert.deepEqual(await projectMeta.json(), {
+    v: 1,
+    kind: "project",
+    project_id: project.project_id,
+    title: PROJECT_TITLE,
+    description: PROJECT_DESCRIPTION,
+    role: "owner",
+  });
+  const projectRefused = await owner.page.request.get(
+    `${origin}/project/${secretProject.project_id}/meta.json`,
+  );
+  const projectMissing = await owner.page.request.get(
+    `${origin}/project/prj_${crypto.randomUUID()}/meta.json`,
+  );
+  assert.equal(projectRefused.status(), 404);
+  assert.equal(await projectRefused.text(), await projectMissing.text());
+  assert.equal(
+    await projectRefused.text(),
+    '{"error":"Project unavailable","code":"project_unavailable"}',
+  );
+  // The content document's card: its host writes one beside the content
+  // flush that followed the edit above.
+  let projectCard = null;
+  for (let attempt = 0; attempt < 40 && !projectCard; attempt++) {
+    const answer = await owner.page.request.get(
+      `${origin}/project/${project.project_id}/card.json`,
+    );
+    assert.equal(answer.status(), 200);
+    projectCard = (await answer.json()).card;
+    if (!projectCard) await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  assert.ok(projectCard, "the Project's content document has a stored card");
+  assert.match(JSON.stringify(projectCard.blocks), /This week/);
+  checkpoint("Project meta.json and card.json answer dev; alice's Project is a missing one's 404");
 
   stage = "glyph";
   const { page } = owner;
@@ -181,6 +257,17 @@ try {
   );
   assert.equal(glyphs, 3, "three links, three glyphs");
   checkpoint("only links to other Pages draw the glyph, once per link; the link text is unchanged");
+  // Project links draw the Project glyph, a different mask from the Page's.
+  await expect(projectLink(page, project.project_id)).toHaveText("the launch Project");
+  await expect(projectLink(page, secretProject.project_id)).toHaveText("Alice's Project");
+  const projectGlyph = await projectLink(page, project.project_id).evaluate((a) => {
+    const after = getComputedStyle(a, "::after");
+    return { content: after.content, mask: after.maskImage || after.webkitMaskImage };
+  });
+  assert.match(projectGlyph.content, /^"\u2060"( \/ "")?$/);
+  assert.match(projectGlyph.mask, /^url\("data:image\/svg\+xml/);
+  assert.notEqual(projectGlyph.mask, glyph.mask, "the Project glyph isn't the Page glyph");
+  checkpoint("Project links draw the Project glyph");
 
   stage = "caret and copy";
   {
@@ -269,6 +356,24 @@ try {
   await expect(card(page)).toHaveText("Page unavailable");
   await expect(card(page).locator("a, button")).toHaveCount(0);
   checkpoint("a Page the reader can't open says only that");
+
+  stage = "Project cards";
+  await hover(page, projectLink(page, project.project_id), "readable");
+  await expect(card(page)).toHaveAttribute("data-kind", "project");
+  await expect(card(page).locator(".page-link-card-kind")).toHaveText("Project");
+  await expect(card(page).locator(".page-link-card-title")).toHaveText(PROJECT_TITLE);
+  await expect(card(page).locator(".page-link-card-description")).toHaveText(PROJECT_DESCRIPTION);
+  await expect(card(page).locator(".index-card-preview")).toContainText("This week");
+  await expect(card(page).getByRole("link", { name: "Open", exact: true })).toHaveAttribute(
+    "href",
+    `${origin}/project/${project.project_id}`,
+  );
+  await hover(page, projectLink(page, secretProject.project_id), "unavailable");
+  await expect(card(page)).toHaveText("Project unavailable");
+  await expect(card(page).locator("a, button")).toHaveCount(0);
+  checkpoint(
+    "a Project link's card shows its title, description and content; alice's says only that",
+  );
 
   stage = "keyboard from a comment link";
   {
@@ -364,6 +469,24 @@ try {
       assert.ok(placed.y >= 0 && placed.y + placed.height <= viewport.height, `${label} y`);
       await hover(shot, link(shot, secret.page_id), "unavailable");
       await shoot(shot, `${label}-${scheme}-unavailable`);
+      await projectLink(shot, project.project_id).scrollIntoViewIfNeeded();
+      await hover(shot, projectLink(shot, project.project_id), "readable");
+      await expect(card(shot).locator(".page-link-card-description")).toHaveText(
+        PROJECT_DESCRIPTION,
+      );
+      await expect(card(shot).locator(".index-card-preview")).toContainText("This week");
+      await shoot(shot, `${label}-${scheme}-project-readable`);
+      const projectPlaced = await card(shot).boundingBox();
+      assert.ok(
+        projectPlaced.x >= 0 && projectPlaced.x + projectPlaced.width <= viewport.width,
+        `${label} project x`,
+      );
+      assert.ok(
+        projectPlaced.y >= 0 && projectPlaced.y + projectPlaced.height <= viewport.height,
+        `${label} project y`,
+      );
+      await hover(shot, projectLink(shot, secretProject.project_id), "unavailable");
+      await shoot(shot, `${label}-${scheme}-project-unavailable`);
       await context.close();
     }
   checkpoint(`screenshots: ${shots.length} in ${output}`);
@@ -377,6 +500,22 @@ try {
   });
   await expect(card(page)).toHaveCount(0);
   checkpoint("Open goes to the Page in place");
+
+  stage = "open a Project in place";
+  await page.goto(sourceUrl);
+  await expect(projectLink(page, project.project_id)).toBeVisible({ timeout: 30000 });
+  await hover(page, projectLink(page, project.project_id), "readable");
+  await card(page).getByRole("link", { name: "Open", exact: true }).click();
+  await expect(page).toHaveURL(`${origin}/project/${project.project_id}`, { timeout: 15000 });
+  await expect(page.locator("wg-content").first()).toContainText("Ship the hover card", {
+    timeout: 30000,
+  });
+  // In the Project's content its own link is plain; its Page link isn't.
+  const self = page.locator(`wg-content a[href$="/project/${project.project_id}"]`);
+  await expect(self).toHaveText("this Project");
+  await expect(self).not.toHaveClass(/project-link/);
+  await expect(link(page, target.page_id)).toHaveText("the evening focus");
+  checkpoint("Open goes to the Project in place, whose content leaves its own link plain");
 
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ page_id: source.page_id, checks: completed }));

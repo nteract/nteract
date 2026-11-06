@@ -10,6 +10,11 @@ import {
   PAGE_REF_UNAVAILABLE_TTL_MS,
   PageRefs,
   backoffMs,
+  pageTarget as page,
+  projectTarget,
+  readProjectMeta,
+  refKey,
+  refPath,
   pageRefMachine,
   pageRefPoolMachine,
   readCard,
@@ -246,31 +251,31 @@ function loader({ concurrency } = {}) {
 test("concurrent asks share a request; an answer stays fresh for the TTL", async () => {
   const l = loader();
   l.refs.account("user:a");
-  l.refs.want(A, ["meta"]);
-  l.refs.want(A, ["meta"]);
+  l.refs.want(page(A), ["meta"]);
+  l.refs.want(page(A), ["meta"]);
   assert.deepEqual(
     l.calls.map((call) => call.path),
     [`/p/${A}/meta.json`],
   );
   l.calls[0].resolve(meta(A));
   await l.settle();
-  assert.deepEqual(l.refs.ref(A, "meta"), {
+  assert.deepEqual(l.refs.ref(page(A), "meta"), {
     name: "readable",
     value: { title: "Plan", state: "active", role: "viewer", content_updated_at: null },
     stale: false,
   });
   l.advance(PAGE_REF_TTL_MS - 1);
-  l.refs.want(A, ["meta"]);
+  l.refs.want(page(A), ["meta"]);
   assert.equal(l.calls.length, 1, "fresh: nothing asked");
   l.advance(1);
-  assert.equal(l.refs.ref(A, "meta").stale, true);
-  l.refs.want(A, ["meta"]);
+  assert.equal(l.refs.ref(page(A), "meta").stale, true);
+  l.refs.want(page(A), ["meta"]);
   assert.equal(l.calls.length, 2, "stale: asked again");
   // The old title shows while the new one loads.
-  assert.equal(settledOf(l.refs.ref(A, "meta")).value.title, "Plan");
+  assert.equal(settledOf(l.refs.ref(page(A), "meta")).value.title, "Plan");
   l.calls[1].resolve(meta(A, "Renamed"));
   await l.settle();
-  assert.equal(l.refs.ref(A, "meta").value.title, "Renamed");
+  assert.equal(l.refs.ref(page(A), "meta").value.title, "Renamed");
 });
 
 test("an unavailable answer goes stale sooner than a readable one", async () => {
@@ -278,26 +283,26 @@ test("an unavailable answer goes stale sooner than a readable one", async () => 
   assert.equal(PAGE_REF_UNAVAILABLE_TTL_MS, 15_000);
   const l = loader();
   l.refs.account("user:a");
-  l.refs.want(A, ["meta"]);
-  l.refs.want(B, ["meta"]);
+  l.refs.want(page(A), ["meta"]);
+  l.refs.want(page(B), ["meta"]);
   l.calls[0].resolve(meta(A));
   l.calls[1].reject(l.error(404, "page_unavailable"));
   await l.settle();
   l.advance(PAGE_REF_UNAVAILABLE_TTL_MS - 1);
-  assert.equal(l.refs.ref(B, "meta").stale, false);
+  assert.equal(l.refs.ref(page(B), "meta").stale, false);
   l.advance(1);
-  assert.equal(l.refs.ref(B, "meta").stale, true, "unavailable: stale at 15 s");
-  assert.equal(l.refs.ref(A, "meta").stale, false, "readable: still fresh");
-  l.refs.want(B, ["meta"]);
+  assert.equal(l.refs.ref(page(B), "meta").stale, true, "unavailable: stale at 15 s");
+  assert.equal(l.refs.ref(page(A), "meta").stale, false, "readable: still fresh");
+  l.refs.want(page(B), ["meta"]);
   assert.equal(l.calls.length, 3, "asked again: access may have been granted, or the host is back");
   l.advance(PAGE_REF_TTL_MS - PAGE_REF_UNAVAILABLE_TTL_MS);
-  assert.equal(l.refs.ref(A, "meta").stale, true, "readable: stale at 60 s");
+  assert.equal(l.refs.ref(page(A), "meta").stale, true, "readable: stale at 60 s");
 });
 
 test("meta and card load in parallel; a 404 is unavailable; a failure backs off", async () => {
   const l = loader();
   l.refs.account("user:a");
-  l.refs.want(A, ["meta", "card"]);
+  l.refs.want(page(A), ["meta", "card"]);
   assert.deepEqual(
     l.calls.map((call) => call.path),
     [`/p/${A}/meta.json`, `/p/${A}/card.json`],
@@ -305,37 +310,37 @@ test("meta and card load in parallel; a 404 is unavailable; a failure backs off"
   l.calls[0].reject(l.error(404, "page_unavailable"));
   l.calls[1].reject(l.error(404, "page_unavailable"));
   await l.settle();
-  assert.equal(l.refs.ref(A, "meta").name, "unavailable");
-  assert.equal(l.refs.ref(A, "card").name, "unavailable");
+  assert.equal(l.refs.ref(page(A), "meta").name, "unavailable");
+  assert.equal(l.refs.ref(page(A), "card").name, "unavailable");
 
-  l.refs.want(B, ["meta"]);
+  l.refs.want(page(B), ["meta"]);
   l.calls[2].reject(l.error(500, "internal"));
   await l.settle();
-  assert.deepEqual(l.refs.ref(B, "meta"), {
+  assert.deepEqual(l.refs.ref(page(B), "meta"), {
     name: "failed",
     last: null,
     attempts: 1,
     ready: false,
   });
-  l.refs.want(B, ["meta"]);
+  l.refs.want(page(B), ["meta"]);
   assert.equal(l.calls.length, 3, "backing off: nothing asked");
   l.advance(PAGE_REF_BACKOFF_MS);
-  assert.equal(l.refs.ref(B, "meta").ready, true);
-  l.refs.want(B, ["meta"]);
+  assert.equal(l.refs.ref(page(B), "meta").ready, true);
+  l.refs.want(page(B), ["meta"]);
   assert.equal(l.calls.length, 4);
   // A body for another Page is a failure, not an answer.
   l.calls[3].resolve(meta(A));
   await l.settle();
-  assert.equal(l.refs.ref(B, "meta").attempts, 2);
+  assert.equal(l.refs.ref(page(B), "meta").attempts, 2);
   l.advance(PAGE_REF_BACKOFF_MS * 2 - 1);
-  assert.equal(l.refs.ref(B, "meta").ready, false, "the second wait is twice as long");
+  assert.equal(l.refs.ref(page(B), "meta").ready, false, "the second wait is twice as long");
   l.advance(1);
-  assert.equal(l.refs.ref(B, "meta").ready, true);
+  assert.equal(l.refs.ref(page(B), "meta").ready, true);
   // Some other 404 (a proxy's, a missing route) is a failure too.
-  l.refs.want(B, ["meta"]);
+  l.refs.want(page(B), ["meta"]);
   l.calls[4].reject(l.error(404, "not_found"));
   await l.settle();
-  assert.equal(l.refs.ref(B, "meta").name, "failed");
+  assert.equal(l.refs.ref(page(B), "meta").name, "failed");
 });
 
 test("at most six requests run; an urgent ask goes before the queue", async () => {
@@ -345,9 +350,9 @@ test("at most six requests run; an urgent ask goes before the queue", async () =
     { length: 8 },
     (_, index) => `${index}b160b47-6df1-4983-81eb-489ca5a26812`,
   );
-  for (const id of ids.slice(0, 7)) l.refs.want(id, ["meta"]);
+  for (const id of ids.slice(0, 7)) l.refs.want(page(id), ["meta"]);
   assert.equal(l.calls.length, PAGE_REF_CONCURRENCY);
-  l.refs.want(ids[7], ["meta"], { urgent: true });
+  l.refs.want(page(ids[7]), ["meta"], { urgent: true });
   assert.equal(l.calls.length, PAGE_REF_CONCURRENCY);
   l.calls[0].resolve(meta(ids[0]));
   await l.settle();
@@ -360,13 +365,13 @@ test("at most six requests run; an urgent ask goes before the queue", async () =
 
 test("another account, sign-out or a 401 drops every ref and aborts what runs", async () => {
   const l = loader();
-  l.refs.want(A, ["meta"]);
+  l.refs.want(page(A), ["meta"]);
   assert.equal(l.calls.length, 0, "no account: nothing asked");
   l.refs.account("user:a");
-  l.refs.want(A, ["meta"]);
+  l.refs.want(page(A), ["meta"]);
   l.calls[0].resolve(meta(A));
   await l.settle();
-  l.refs.want(B, ["meta"]);
+  l.refs.want(page(B), ["meta"]);
   const running = l.calls[1];
   // Another account: nothing resolved for the first is kept, and its
   // request's answer is never read.
@@ -376,37 +381,129 @@ test("another account, sign-out or a 401 drops every ref and aborts what runs", 
   assert.equal(l.refs.principal, "user:b");
   running.resolve(meta(B));
   await l.settle();
-  assert.equal(l.refs.ref(B, "meta").name, "idle");
+  assert.equal(l.refs.ref(page(B), "meta").name, "idle");
   // The TTL timers of the first account's refs are gone.
   assert.equal(l.scheduler.actions.length, 0);
   // The same account again changes nothing.
-  l.refs.want(A, ["meta"]);
+  l.refs.want(page(A), ["meta"]);
   l.refs.account("user:b");
-  assert.equal(l.refs.ref(A, "meta").name, "requested");
+  assert.equal(l.refs.ref(page(A), "meta").name, "requested");
   // A 401 clears everything, keeping the account until the session check.
-  l.refs.want(B, ["meta"]);
+  l.refs.want(page(B), ["meta"]);
   l.calls[2].reject(l.error(401, "auth_required"));
   await l.settle();
   assert.equal(l.calls[3].signal.aborted, true);
   assert.equal(l.refs.store.snapshot().refs.size, 0);
   // Sign-out.
-  l.refs.want(A, ["meta"]);
+  l.refs.want(page(A), ["meta"]);
   l.refs.account(null);
   assert.equal(l.refs.store.snapshot().refs.size, 0);
-  l.refs.want(A, ["meta"]);
-  assert.equal(l.refs.ref(A, "meta").name, "idle");
+  l.refs.want(page(A), ["meta"]);
+  assert.equal(l.refs.ref(page(A), "meta").name, "idle");
 });
 
 test("pool slots come back after a clear", async () => {
   const l = loader({ concurrency: 1 });
   l.refs.account("user:a");
-  l.refs.want(A, ["meta"]);
-  l.refs.want(B, ["meta"]);
+  l.refs.want(page(A), ["meta"]);
+  l.refs.want(page(B), ["meta"]);
   assert.equal(l.calls.length, 1);
   l.refs.clear();
-  l.refs.want(B, ["meta"]);
+  l.refs.want(page(B), ["meta"]);
   assert.equal(l.calls.length, 2, "the aborted request's slot is free");
   l.calls[1].resolve(meta(B));
   await l.settle();
-  assert.equal(l.refs.ref(B, "meta").name, "readable");
+  assert.equal(l.refs.ref(page(B), "meta").name, "readable");
+});
+
+// ---------------------------------------------------------------------------
+// Projects: the same refs, keyed apart from Pages.
+
+const P = "prj_2b160b47-6df1-4983-81eb-489ca5a26812";
+const projectMeta = (id, title = "Launch") => ({
+  v: 1,
+  kind: "project",
+  project_id: id,
+  title,
+  description: "Ship it.",
+  role: "viewer",
+});
+
+test("a Project's refs read its own routes and answers", () => {
+  const project = projectTarget(P);
+  assert.equal(refPath(project, "meta"), `/project/${P}/meta.json`);
+  assert.equal(refPath(project, "card"), `/project/${P}/card.json`);
+  assert.equal(refPath(page(A), "card"), `/p/${A}/card.json`);
+  assert.equal(refPath(projectTarget("../x"), "meta"), "/project/..%2Fx/meta.json");
+  assert.notEqual(refKey(project, "meta"), refKey(page(P), "meta"));
+  assert.deepEqual(readProjectMeta(projectMeta(P), P), {
+    title: "Launch",
+    description: "Ship it.",
+    role: "viewer",
+  });
+  assert.equal(readProjectMeta(projectMeta(P), `prj_${B}`), null);
+  assert.equal(readProjectMeta({ ...projectMeta(P), kind: "page" }, P), null);
+  assert.equal(readProjectMeta({ ...projectMeta(P), title: 1 }, P), null);
+  assert.equal(readProjectMeta({ ...projectMeta(P), description: 3 }, P).description, "");
+  // A Page's meta is never a Project's, and the reverse.
+  assert.equal(readMeta(projectMeta(P), P), null);
+  assert.equal(readProjectMeta(meta(A), A), null);
+  assert.equal(readCard({ v: 1, project_id: P, card: null }, project), null);
+  assert.equal(readCard({ v: 1, page_id: P, card: null }, project), undefined);
+  assert.equal(readCard({ v: 1, project_id: P, card: null }, page(P)), undefined);
+  assert.deepEqual(readCard({ v: 1, project_id: P, card: { blocks: [] } }, project), {
+    blocks: [],
+  });
+});
+
+test("a Page and a Project never share a ref, and share one pool", async () => {
+  const l = loader({ concurrency: 2 });
+  l.refs.account("user:a");
+  const project = projectTarget(P);
+  // The same id string for both kinds still makes two refs.
+  l.refs.want(page(P), ["meta"]);
+  l.refs.want(project, ["meta", "card"]);
+  assert.deepEqual(
+    l.calls.map((call) => call.path),
+    [`/p/${P}/meta.json`, `/project/${P}/meta.json`],
+    "two slots: the Project's card waits",
+  );
+  l.calls[0].reject(l.error(404, "page_unavailable"));
+  await l.settle();
+  assert.equal(l.calls[2].path, `/project/${P}/card.json`);
+  l.calls[1].resolve(projectMeta(P));
+  l.calls[2].resolve({ v: 1, project_id: P, card: null });
+  await l.settle();
+  assert.equal(l.refs.ref(page(P), "meta").name, "unavailable");
+  assert.deepEqual(l.refs.ref(project, "meta"), {
+    name: "readable",
+    value: { title: "Launch", description: "Ship it.", role: "viewer" },
+    stale: false,
+  });
+  assert.deepEqual(l.refs.ref(project, "card").value, { card: null });
+  // A Project's refusal is its own code; the Page code is a failure there.
+  const other = projectTarget("prj_4d160b47-6df1-4983-81eb-489ca5a26812");
+  l.refs.want(other, ["meta"]);
+  l.calls[3].reject(l.error(404, "page_unavailable"));
+  await l.settle();
+  assert.equal(l.refs.ref(other, "meta").name, "failed");
+  const third = projectTarget("sp_5e160b47-6df1-4983-81eb-489ca5a26812");
+  l.refs.want(third, ["meta"]);
+  l.calls[4].reject(l.error(404, "project_unavailable"));
+  await l.settle();
+  assert.equal(l.refs.ref(third, "meta").name, "unavailable");
+  // Same freshness rules: unavailable at 15 s, readable at 60 s.
+  l.advance(PAGE_REF_UNAVAILABLE_TTL_MS);
+  assert.equal(l.refs.ref(third, "meta").stale, true);
+  assert.equal(l.refs.ref(project, "meta").stale, false);
+  l.advance(PAGE_REF_TTL_MS - PAGE_REF_UNAVAILABLE_TTL_MS);
+  assert.equal(l.refs.ref(project, "meta").stale, true);
+  // Another account drops Project refs too.
+  l.refs.account("user:b");
+  assert.equal(l.refs.ref(project, "meta").name, "idle");
+  // Unknown kinds ask nothing.
+  const before = l.calls.length;
+  l.refs.want({ kind: "space", id: P }, ["meta"]);
+  l.refs.want({ kind: "project", id: "" }, ["meta"]);
+  assert.equal(l.calls.length, before);
 });

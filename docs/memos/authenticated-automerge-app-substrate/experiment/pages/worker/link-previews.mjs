@@ -1,18 +1,27 @@
-// What a link to a Page shows its reader: `GET /p/<id>/meta.json` (title,
-// state, role and content time) and `GET /p/<id>/card.json` (the Page's
-// first-screen card). The viewer's Page glyph and hover card read them
-// (viewer/page-refs.mjs). Nothing about the target is stored with the link:
-// each reader's own credentials resolve it, at the time they look.
+// What a link to a Page or a Project shows its reader. Four browser routes:
 //
-// Two steps:
+// - `GET /p/<id>/meta.json` (title, state, role and content time) and
+//   `GET /p/<id>/card.json` (the Page's first-screen card);
+// - `GET /project/<id>/meta.json` (title, description and role) and
+//   `GET /project/<id>/card.json` (the first screen of the Project's
+//   content document).
 //
-// 1. The gateway (handleLinkPreview) takes exactly these two paths, GET and
-//    HEAD only, authenticates the caller as every gateway route does, and
-//    asks the target's Page host, with the caller's own credentials, through
-//    LINK_PREVIEW_PATH. That route is host-internal: the gateway never
-//    forwards a client's path to it (`/internal/*` stays 404 there).
-// 2. The Page host (Page#linkPreview in index.mjs) decides from its stored
-//    record, as a shared-Page check from the record does, but:
+// The viewer's glyphs and hover card read them (viewer/page-refs.mjs).
+// Nothing about the target is stored with the link: each reader's own
+// credentials resolve it, at the time they look.
+//
+// Every route runs the same steps (handleLinkPreview): exactly these paths, GET
+// and HEAD only (405 otherwise); a foreign `Sec-Fetch-Site` refused before
+// authentication; `authenticate` as every gateway route does; then one
+// check with the caller's own credentials, bounded by linkPreviewBounds,
+// whose every failure is the kind's one uniform 404; then the answer, with
+// the same headers.
+//
+// Pages. The gateway asks the target's Page host through LINK_PREVIEW_PATH.
+// That route is host-internal: the gateway never forwards a client's path to
+// it (`/internal/*` stays 404 there). The Page host (Page#linkPreview in
+// index.mjs) decides from its stored record, as a shared-Page check from the
+// record does, but:
 //    - it decides every refusal without starting a boot itself, and starts
 //      or waits for one only for a reader it admitted whose title the record
 //      can't supply;
@@ -21,56 +30,89 @@
 //    Like every request, the first one to a cold host whose record starts
 //    eagerly boots it in the constructor, and the shared `run()` cleanup
 //    may flush content activity that earlier requests deferred.
-//
 // Access is the Page host's: owner, direct grants, Project membership and a
 // company domain all count, which the reader's own Catalog doesn't know
 // about. A pending invitation grants nothing until the invitee opens the
 // Page. A Page whose recovery is blocked still answers, as opening it read
 // only does.
 //
-// A caller who can't open the Page learns nothing, not even whether it
-// exists: a missing Page, a malformed ID, a refusal, a deleted or purged
-// Page, a Page in Trash (for anyone who can't restore it), a pending
-// invitation, and a host error, busy answer or timeout all answer the same
-// 404 PAGE_UNAVAILABLE body. That body therefore can't say why; the viewer
-// shows only "Page unavailable" and asks again sooner than for an answer.
+// Projects. The Project's host (the `Space` object behind PROJECTS,
+// spaces.mjs) is the authority for its title, description, owner and
+// members. The gateway asks it `/internal/space/read` with `claim: false`,
+// the read-only check read_page's breadcrumbs and project_id content
+// addresses already use: it authenticates the caller, reads the record, and
+// answers only a caller who may read the Project. With `claim: false` it
+// claims no invitation, writes no storage, publishes no discovery hint and
+// logs no audit line; a missing record costs only the object's
+// instantiation. The owner and members (viewer, commenter, editor) read
+// it; a pending invitee doesn't until they open the Project. The answer
+// keeps only `title`, `description` and `role`, never the owner or
+// revision. Project readers read its content document, so card.json reads
+// that document's stored card, only after the Project admitted the reader.
+//
+// A caller who can't open the target learns nothing, not even whether it
+// exists: a missing target, a malformed ID (a Page ID on a Project route or
+// the reverse included), a refusal, a deleted, purged or trashed Page (for
+// anyone who can't restore it), a pending invitation, a revoked member, and
+// a host error, busy answer or timeout all answer the kind's one 404 body,
+// PAGE_UNAVAILABLE or PROJECT_UNAVAILABLE. That body therefore can't say
+// why; the viewer shows only "Page unavailable" or "Project unavailable" and
+// asks again sooner than for an answer.
 //
 // Answers are `private, no-store`, as Page assets are: a title or a first
 // screen never stays in the browser's disk cache after sign-out.
 //
-// Follow-up, before P2's viewport loading raises the request volume: the
-// host check runs in the Page's serial request queue (run()), so a burst of
-// previews waits behind edits to that Page and vice versa. It needs only
-// the record, so it can move out of the queue.
+// Follow-up, before P2's viewport loading raises the request volume: both
+// checks run in their host's serial request queue (the Page's run(), the
+// Space's queue), so a burst of previews waits behind edits to that Page or
+// membership changes to that Project, and the reverse. Each needs only its
+// record, so it can move out of the queue.
 import { HttpError, authenticate, errorResponse } from "./auth.mjs";
 import { catalogIndexTimeouts, withTimeout } from "./catalog-index.mjs";
 import { validPageId } from "./registration.mjs";
+import { validSpaceId } from "./spaces.mjs";
 import { readPageCards } from "./page-cards.mjs";
 import { cardImageView, readCardImagePointer } from "./card-images.mjs";
 
 /** The Page host's route for this check. Host-internal; never forwarded. */
 export const LINK_PREVIEW_PATH = "/internal/link-preview";
-/** The one refusal body. */
+/** The Project host's read-only check (spaces.mjs), asked with `claim: false`. */
+export const PROJECT_READ_PATH = "/internal/space/read";
+/** The one refusal body of the Page routes. */
 export const PAGE_UNAVAILABLE = Object.freeze({
   error: "Page unavailable",
   code: "page_unavailable",
 });
-/** The host's refusal, raised wherever the host decides not to answer. */
+/** The one refusal body of the Project routes. */
+export const PROJECT_UNAVAILABLE = Object.freeze({
+  error: "Project unavailable",
+  code: "project_unavailable",
+});
+/** The Page host's refusal, raised wherever the host decides not to answer. */
 export const linkUnavailable = () =>
   new HttpError(404, PAGE_UNAVAILABLE.error, PAGE_UNAVAILABLE.code);
-/** The response body version both routes carry. */
+/** The response body version every route carries. */
 export const LINK_PREVIEW_VERSION = 1;
 
-const ROUTE = /^\/p\/([^/]*)\/(meta|card)\.json$/;
-/** `{ pageId, file }` for one of the two routes, or null. `pageId` is the
- * path segment as sent, unchecked: a malformed one answers the same 404 as
- * any Page the caller can't open, after authentication. */
+const ROUTE = /^\/(p|project)\/([^/]*)\/(meta|card)\.json$/;
+/**
+ * The route a path names, or null: `{ kind: "page", pageId, file }` for
+ * `/p/<id>/<file>.json` or `{ kind: "project", projectId, file }` for
+ * `/project/<id>/<file>.json`, where `file` is "meta" or "card". The ID is
+ * the path segment as sent, unchecked: a malformed one answers the kind's
+ * one 404, after authentication. The older `/s/<id>` Project route has no
+ * JSON routes; those paths stay the app's.
+ */
 export function readLinkRoute(pathname) {
   const match = ROUTE.exec(pathname);
-  return match ? { pageId: match[1], file: match[2] } : null;
+  if (!match) return null;
+  const [, prefix, id, file] = match;
+  return prefix === "p"
+    ? { kind: "page", pageId: id, file }
+    : { kind: "project", projectId: id, file };
 }
 
-/** Headers on every answer of both routes. No CORS headers: only this
+/** Headers on every answer of every route. No CORS headers: only this
  * origin reads them. `Vary` keeps a shared cache from mixing accounts. */
 const BASE_HEADERS = Object.freeze({
   "content-type": "application/json",
@@ -90,7 +132,8 @@ function uncached(response) {
   return withHeaders(response, { ...BASE_HEADERS, "cache-control": "private, no-store" });
 }
 
-const unavailable = () => uncached(Response.json(PAGE_UNAVAILABLE, { status: 404 }));
+/** The kind's one refusal. */
+const unavailable = (body) => uncached(Response.json(body, { status: 404 }));
 
 /** A 200 answer. The access check ran for this request; nothing is stored,
  * so the next look checks again. */
@@ -114,12 +157,12 @@ export function foreignFetch(request) {
   return site !== null && site !== "same-origin" && site !== "none";
 }
 
-/** The internal POST to the Page host, carrying the caller's credentials.
- * A browser's same-origin GET may send no Origin; this request is the
- * gateway's own, so it names the public origin, as page_cards' does. */
-function hostRequest(request, env) {
+/** The internal POST to a host's `path` with `body`, carrying the caller's
+ * credentials. A browser's same-origin GET may send no Origin; this request
+ * is the gateway's own, so it names the public origin, as page_cards' does. */
+function hostRequest(request, env, path = LINK_PREVIEW_PATH, body = {}) {
   const url = new URL(request.url);
-  url.pathname = LINK_PREVIEW_PATH;
+  url.pathname = path;
   url.search = "";
   const headers = new Headers({ "content-type": "application/json" });
   for (const name of ["authorization", "cookie", "sec-fetch-site"]) {
@@ -127,10 +170,10 @@ function hostRequest(request, env) {
     if (value) headers.set(name, value);
   }
   headers.set("origin", new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin);
-  return new Request(url, { method: "POST", headers, body: "{}" });
+  return new Request(url, { method: "POST", headers, body: JSON.stringify(body) });
 }
 
-/** Bounds: the host check waits as long as other shared-Page checks. */
+/** Bounds: a host check waits as long as other shared-Page checks. */
 export const linkPreviewBounds = {
   get hostMs() {
     return catalogIndexTimeouts.verify;
@@ -150,6 +193,41 @@ export function metaBody(page) {
   };
 }
 
+/** The project meta.json body: what a Project reader may see of it, never
+ * its owner, revision, members or content document ID. */
+export function projectMetaBody(project) {
+  return {
+    v: LINK_PREVIEW_VERSION,
+    kind: "project",
+    project_id: project.space_id,
+    title: project.title,
+    description: typeof project.description === "string" ? project.description : "",
+    role: project.role,
+  };
+}
+
+/**
+ * POST `hostRequest` to `stub` and return its 200 JSON answer, or null for
+ * any other status, an error or a timeout (logged through `logFailure`).
+ */
+async function askHost(stub, hostCall, stage, logFailure) {
+  try {
+    const response = await withTimeout(
+      stub.fetch(hostCall),
+      linkPreviewBounds.hostMs,
+      "Link preview check timed out",
+    );
+    if (response.status !== 200) {
+      void response.body?.cancel().catch(() => {});
+      return null;
+    }
+    return await response.json();
+  } catch (error) {
+    logFailure(error, stage);
+    return null;
+  }
+}
+
 /**
  * Ask `pageId`'s Page host whether the caller of `request` may open it, with
  * the caller's own credentials: the host's answer (`{ page_id, title, state,
@@ -158,32 +236,95 @@ export function metaBody(page) {
  */
 export async function checkLinkPreview(request, env, pageId, { logFailure = () => {} } = {}) {
   if (!validPageId(pageId)) return null;
-  try {
-    const response = await withTimeout(
-      env.PAGES.getByName(pageId).fetch(hostRequest(request, env)),
-      linkPreviewBounds.hostMs,
-      "Link preview check timed out",
-    );
-    if (response.status !== 200) {
-      void response.body?.cancel().catch(() => {});
-      return null;
-    }
-    const page = await response.json();
-    return page?.page_id === pageId ? page : null;
-  } catch (error) {
-    logFailure(error, "link-preview");
-    return null;
-  }
+  const page = await askHost(
+    env.PAGES.getByName(pageId),
+    hostRequest(request, env),
+    "link-preview",
+    logFailure,
+  );
+  return page?.page_id === pageId ? page : null;
 }
 
 /**
- * Answer `GET`/`HEAD /p/<id>/meta.json` or `/p/<id>/card.json`.
+ * Ask Project `projectId`'s host whether the caller of `request` may read
+ * it, with the caller's own credentials and `claim: false`: its public
+ * record (spaces.mjs publicSpace), or null for every refusal, error and
+ * timeout alike. An answer for another Project, or without a title or a
+ * content document, is null too. The caller has already authenticated
+ * `request`.
+ */
+export async function checkProjectPreview(request, env, projectId, { logFailure = () => {} } = {}) {
+  if (!validSpaceId(projectId)) return null;
+  const project = await askHost(
+    env.PROJECTS.getByName(projectId),
+    hostRequest(request, env, PROJECT_READ_PATH, { space_id: projectId, claim: false }),
+    "project-link-preview",
+    logFailure,
+  );
+  if (
+    project?.space_id !== projectId ||
+    typeof project.title !== "string" ||
+    typeof project.role !== "string" ||
+    !validPageId(project.document_id)
+  )
+    return null;
+  return project;
+}
+
+/** The stored card of Page document `pageId`, with its card image view, or
+ * null: page_cards' reads (page-cards.mjs, card-images.mjs) for one ID. Only
+ * call it for a reader admitted to the document. */
+async function storedCard(env, pageId, logFailure) {
+  const bucket = env.PAGES_ASSETS;
+  if (!bucket) return null;
+  const cards = await readPageCards([pageId], [pageId], {
+    readObject: async (key) => {
+      const object = await bucket.get(key);
+      return object ? await object.text() : null;
+    },
+    readImage: async (id) => cardImageView(id, await readCardImagePointer(bucket, id)),
+    onError: (error) => logFailure(error, "link-preview-card"),
+  });
+  return cards[pageId] ?? null;
+}
+
+/** How each kind's routes check and answer. */
+const KINDS = {
+  page: {
+    refusal: PAGE_UNAVAILABLE,
+    id: (route) => route.pageId,
+    check: checkLinkPreview,
+    meta: (page) => metaBody(page),
+    card: async (env, page, logFailure) => ({
+      v: LINK_PREVIEW_VERSION,
+      page_id: page.page_id,
+      card: await storedCard(env, page.page_id, logFailure),
+    }),
+  },
+  project: {
+    refusal: PROJECT_UNAVAILABLE,
+    id: (route) => route.projectId,
+    check: checkProjectPreview,
+    meta: (project) => projectMetaBody(project),
+    // The content document's card, read only now that the Project admitted
+    // this reader: its readers read the content.
+    card: async (env, project, logFailure) => ({
+      v: LINK_PREVIEW_VERSION,
+      project_id: project.space_id,
+      card: await storedCard(env, project.document_id, logFailure),
+    }),
+  },
+};
+
+/**
+ * Answer `GET`/`HEAD` on one of the four routes.
  *
  * - `route` is readLinkRoute's answer.
  * - `logFailure(error, stage)` records a host or bucket failure; the caller
- *   still gets the uniform 404 (or `card: null` for a card read).
+ *   still gets the kind's uniform 404 (or `card: null` for a card read).
  */
 export async function handleLinkPreview(request, env, route, { logFailure = () => {} } = {}) {
+  const kind = KINDS[route.kind];
   if (!["GET", "HEAD"].includes(request.method)) {
     const response = uncached(Response.json({ error: "Use GET or HEAD" }, { status: 405 }));
     response.headers.set("allow", "GET, HEAD");
@@ -194,26 +335,14 @@ export async function handleLinkPreview(request, env, route, { logFailure = () =
   if (foreignFetch(request))
     return uncached(Response.json({ error: "Use this Pages origin" }, { status: 403 }));
   try {
-    // A missing credential is a 401 whatever the ID; an MCP OAuth token is
-    // refused here as on every route but /mcp.
+    // A missing credential is a 401 whatever the ID; an MCP OAuth token and
+    // an upload capability are refused here as on every route but their own.
     await authenticate(request, env);
   } catch (error) {
     return uncached(errorResponse(error, "link-preview"));
   }
-  const { pageId, file } = route;
-  const page = await checkLinkPreview(request, env, pageId, { logFailure });
-  if (!page) return unavailable();
-  if (file === "meta") return answer(request, metaBody(page));
-  const bucket = env.PAGES_ASSETS;
-  const cards = bucket
-    ? await readPageCards([pageId], [pageId], {
-        readObject: async (key) => {
-          const object = await bucket.get(key);
-          return object ? await object.text() : null;
-        },
-        readImage: async (id) => cardImageView(id, await readCardImagePointer(bucket, id)),
-        onError: (error) => logFailure(error, "link-preview-card"),
-      })
-    : { [pageId]: null };
-  return answer(request, { v: LINK_PREVIEW_VERSION, page_id: pageId, card: cards[pageId] ?? null });
+  const target = await kind.check(request, env, kind.id(route), { logFailure });
+  if (!target) return unavailable(kind.refusal);
+  if (route.file === "meta") return answer(request, kind.meta(target));
+  return answer(request, await kind.card(env, target, logFailure));
 }

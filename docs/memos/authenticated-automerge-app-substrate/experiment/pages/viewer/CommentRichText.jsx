@@ -55,7 +55,7 @@ import {
 import { projectChanges } from "./wordgard-projection.mjs";
 import { linkDestination } from "./link-destination.mjs";
 import { pagesLinkShape } from "./page-link-shape.mjs";
-import { CurrentPage } from "./current-page.mjs";
+import { CurrentPage, CurrentProject } from "./current-page.mjs";
 import { registerEditor } from "./editor-focus.mjs";
 import { PROSE_ENTRY_ATTRIBUTES } from "./prose-entry.mjs";
 import {
@@ -84,8 +84,9 @@ const controls = [
 // writes render here too. Drafts stay local until Send; posted messages are
 // never edited by a viewer selection.
 /** `currentPageId()` names the Page open in this tab, whose own links get
- * no Page glyph. */
-function nativeConfig({ currentPageId = () => null } = {}) {
+ * no Page glyph, and `currentProjectId()` the Project whose content is open,
+ * whose own links get no Project glyph. */
+function nativeConfig({ currentPageId = () => null, currentProjectId = () => null } = {}) {
   return [
     blockDoc(),
     paragraph(),
@@ -112,7 +113,7 @@ function nativeConfig({ currentPageId = () => null } = {}) {
     KeyBinding.of({ key: "Shift-Enter", run: insertPlainLineBreak }),
     // The same shape as Page blocks: a link to another Page gets its glyph
     // and the hover card's hooks; the open Page's own links don't.
-    pagesLinkShape({ currentPageId }),
+    pagesLinkShape({ currentPageId, currentProjectId }),
   ];
 }
 
@@ -144,6 +145,7 @@ export function CommentRichText({
     view = useRef(null),
     compartment = useRef(new GardState.Compartment());
   const currentPageId = useContext(CurrentPage);
+  const currentProjectId = useContext(CurrentProject);
   const latest = useRef({ value, onChange, onError, disabled, images });
   latest.current = {
     value,
@@ -153,6 +155,7 @@ export function CommentRichText({
     images,
     onUploadingChange,
     currentPageId,
+    currentProjectId,
   };
   const lastValue = useRef(value);
   const uploader = useRef(null);
@@ -260,7 +263,10 @@ export function CommentRichText({
       parent: mount.current,
       doc: draftDoc(latest.current.value),
       config: [
-        ...nativeConfig({ currentPageId: () => latest.current.currentPageId }),
+        ...nativeConfig({
+          currentPageId: () => latest.current.currentPageId,
+          currentProjectId: () => latest.current.currentProjectId,
+        }),
         uploadPreviews,
         Wordgard.domEventHandler("paste", (event) => acceptImages(imageFiles(event.clipboardData))),
         Wordgard.domEventHandler("drop", (event) => {
@@ -494,8 +500,9 @@ export function CommentRichText({
 export function CommentContent({ message, source }) {
   const mount = useRef(null);
   const currentPageId = useContext(CurrentPage);
-  const currentPage = useRef(currentPageId);
-  currentPage.current = currentPageId;
+  const currentProjectId = useContext(CurrentProject);
+  const current = useRef(null);
+  current.current = { pageId: currentPageId, projectId: currentProjectId };
   const unavailable = message.content_error === "rich_text_unavailable";
   const [problem, setProblem] = useState(false);
   useEffect(() => {
@@ -507,7 +514,10 @@ export function CommentContent({ message, source }) {
         parent: mount.current,
         doc: decode(A.spans(source, ["richText"])).doc,
         config: [
-          ...nativeConfig({ currentPageId: () => currentPage.current }),
+          ...nativeConfig({
+            currentPageId: () => current.current.pageId,
+            currentProjectId: () => current.current.projectId,
+          }),
           ...permissions(false),
           Wordgard.exceptionSink.of(() => setProblem(true)),
         ],

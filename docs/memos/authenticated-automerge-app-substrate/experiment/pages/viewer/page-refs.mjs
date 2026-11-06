@@ -1,24 +1,33 @@
-// What a link to another Page shows this tab's reader: the Page's title,
-// state and edit time (`/p/<id>/meta.json`) and its first-screen card
-// (`/p/<id>/card.json`), read with this tab's own session
-// (worker/link-previews.mjs). Nothing about the target is stored with the
-// link; every reader resolves it for themselves, when they look.
+// What a link to another Page or to a Project shows this tab's reader, read
+// with this tab's own session (worker/link-previews.mjs):
 //
-// One PageRefs per tab, in memory only (never IndexedDB). Each linked Page
-// has a ref per kind ("meta", "card") for the signed-in account; each ref
-// follows the page-ref machine below: idle → requested → readable,
-// unavailable or failed; a readable answer goes stale after PAGE_REF_TTL_MS
-// and an unavailable one sooner, after PAGE_REF_UNAVAILABLE_TTL_MS, and a
-// failure may be asked again after a backoff. Concurrent asks share
-// one request, and at most PAGE_REF_CONCURRENCY requests run at once (the
+// - a Page: its title, state and edit time (`/p/<id>/meta.json`) and its
+//   first-screen card (`/p/<id>/card.json`);
+// - a Project: its title, description and role
+//   (`/project/<id>/meta.json`) and its content document's first-screen
+//   card (`/project/<id>/card.json`).
+//
+// Nothing about the target is stored with the link; every reader resolves
+// it for themselves, when they look.
+//
+// One PageRefs per tab, in memory only (never IndexedDB). A target is `{
+// kind, id }`, kind "page" or "project" (pageTarget, projectTarget); each
+// target has a ref per file ("meta", "card") for the signed-in account,
+// keyed by kind, id and file (refKey), so a Page and a Project never share
+// a ref. Each ref follows the page-ref machine below: idle → requested →
+// readable, unavailable or failed; a readable answer goes stale after
+// PAGE_REF_TTL_MS and an unavailable one sooner, after
+// PAGE_REF_UNAVAILABLE_TTL_MS, and a failure may be asked again after a
+// backoff. Concurrent asks share one request, and at most
+// PAGE_REF_CONCURRENCY requests run at once, of both kinds (the
 // page-ref-pool machine). Another account, sign-out or any 401 drops every
 // ref, aborts the requests in flight and cancels the timers, as the
 // library's listing cache forgets an account (main.jsx forgetAccountData).
 //
-// Refs load on intent: `want(pageId, kinds)`. Today the hover card asks
-// (PageLinkCard.jsx) when a reader points at or focuses a Page link; a
-// viewport observer can ask the same way later, with `urgent: false`, so an
-// intent the reader has now goes out before ones a scroll made.
+// Refs load on intent: `want(target, files)`. Today the hover card asks
+// (PageLinkCard.jsx) when a reader points at or focuses a link; a viewport
+// observer can ask the same way later, with `urgent: false`, so an intent
+// the reader has now goes out before ones a scroll made.
 import { timer } from "rxjs";
 import { defineMachine, reject } from "../shared/machine.mjs";
 import { getJson } from "./request.mjs";
@@ -37,7 +46,14 @@ export const PAGE_REF_BACKOFF_MAX_MS = 60_000;
 /** Requests this tab runs at once. */
 export const PAGE_REF_CONCURRENCY = 6;
 /** What a ref reads: meta.json or card.json. */
-export const PAGE_REF_KINDS = Object.freeze(["meta", "card"]);
+export const PAGE_REF_FILES = Object.freeze(["meta", "card"]);
+/** What a ref is for: a Page or a Project. */
+export const PAGE_REF_TARGETS = Object.freeze(["page", "project"]);
+
+/** A Page target. */
+export const pageTarget = (id) => ({ kind: "page", id });
+/** A Project target. */
+export const projectTarget = (id) => ({ kind: "project", id });
 
 /** The wait before a ref that has failed `attempts` times asks again. */
 export const backoffMs = (attempts) =>
@@ -55,7 +71,7 @@ const attemptsOf = (state) => {
 };
 
 /**
- * One linked Page's answer of one kind, for this tab's account.
+ * One linked Page's or Project's answer of one file, for this tab's account.
  *
  * States:
  * - idle: never asked.
@@ -277,10 +293,16 @@ export const pageRefPoolMachine = defineMachine({
   },
 });
 
-/** A ref's key in the store. */
-export const refKey = (pageId, kind) => `${pageId}:${kind}`;
+/** A ref's key in the store: the target's kind and id, and the file. */
+export const refKey = (target, file) => `${target.kind}:${target.id}:${file}`;
 
-/** A meta.json answer's fields, or null when it isn't one for `pageId`. */
+/** The path of `target`'s `file` route. */
+export function refPath(target, file) {
+  const prefix = target.kind === "project" ? "project" : "p";
+  return `/${prefix}/${encodeURIComponent(target.id)}/${file}.json`;
+}
+
+/** A Page meta.json answer's fields, or null when it isn't one for `pageId`. */
 export function readMeta(body, pageId) {
   if (body?.v !== 1 || body.page_id !== pageId || typeof body.title !== "string") return null;
   if (!["active", "trashed"].includes(body.state)) return null;
@@ -293,13 +315,31 @@ export function readMeta(body, pageId) {
   };
 }
 
-/** A card.json answer's card (null when the Page has none yet), or
- * undefined when it isn't one for `pageId`. */
-export function readCard(body, pageId) {
-  if (body?.v !== 1 || body.page_id !== pageId || !("card" in body)) return undefined;
+/** A Project meta.json answer's fields, or null when it isn't one for
+ * `projectId`. */
+export function readProjectMeta(body, projectId) {
+  if (body?.v !== 1 || body.kind !== "project" || body.project_id !== projectId) return null;
+  if (typeof body.title !== "string") return null;
+  return {
+    title: body.title,
+    description: typeof body.description === "string" ? body.description : "",
+    role: typeof body.role === "string" ? body.role : null,
+  };
+}
+
+/** A card.json answer's card (null when there's none yet), or undefined
+ * when it isn't one for `target`. A Page's answer names `page_id`, a
+ * Project's `project_id`. A bare ID is a Page. */
+export function readCard(body, target) {
+  const { kind, id } = typeof target === "string" ? pageTarget(target) : target;
+  const named = kind === "project" ? body?.project_id : body?.page_id;
+  if (body?.v !== 1 || named !== id || !("card" in body)) return undefined;
   const card = body.card;
   return card && typeof card === "object" && Array.isArray(card.blocks) ? card : null;
 }
+
+/** The refusal code of `kind`'s routes. */
+const REFUSED = { page: "page_unavailable", project: "project_unavailable" };
 
 /** What a ref shows now: its settled answer, or the one it refreshes. */
 export function settledOf(ref) {
@@ -357,18 +397,19 @@ export class PageRefs {
     this.store.update(() => ({ principal, refs: new Map() }));
   }
 
-  /** The ref for `pageId`'s `kind`. */
-  ref(pageId, kind) {
-    return this.store.snapshot().refs.get(refKey(pageId, kind)) ?? IDLE_REF;
+  /** The ref for `target`'s `file`. */
+  ref(target, file) {
+    return this.store.snapshot().refs.get(refKey(target, file)) ?? IDLE_REF;
   }
 
-  /** Ask for `pageId`'s `kinds`. An ask already running, or a fresh answer,
+  /** Ask for `target`'s `files`. An ask already running, or a fresh answer,
    * asks nothing; an `urgent` ask goes before the ones already waiting. */
-  want(pageId, kinds = ["meta"], { urgent = false } = {}) {
-    if (!this.principal) return;
-    const results = this.#steps(kinds.map((kind) => [refKey(pageId, kind), { type: "wanted" }]));
-    const fetches = kinds.filter((_, index) => results[index].effects.length > 0);
-    const keys = fetches.map((kind) => ({ key: refKey(pageId, kind), pageId, kind }));
+  want(target, files = ["meta"], { urgent = false } = {}) {
+    if (!this.principal || !PAGE_REF_TARGETS.includes(target?.kind)) return;
+    if (typeof target.id !== "string" || !target.id) return;
+    const results = this.#steps(files.map((file) => [refKey(target, file), { type: "wanted" }]));
+    const fetches = files.filter((_, index) => results[index].effects.length > 0);
+    const keys = fetches.map((file) => ({ key: refKey(target, file), target, file }));
     if (urgent) this.#queue.unshift(...keys);
     else this.#queue.push(...keys);
     for (let index = 0; index < keys.length; index++) this.#dispatch({ type: "queued" });
@@ -395,21 +436,24 @@ export class PageRefs {
     });
   }
 
-  async #fetch({ key, pageId, kind }, signal) {
+  async #fetch({ key, target, file }, signal) {
     let event;
     try {
-      const body = await this.get(`/p/${pageId}/${kind}.json`, { signal });
+      const body = await this.get(refPath(target, file), { signal });
       if (signal.aborted) return;
-      const value = kind === "meta" ? readMeta(body, pageId) : readCard(body, pageId);
-      if (kind === "meta" ? value === null : value === undefined) event = { type: "failed" };
-      else event = { type: "answered", value: kind === "meta" ? value : { card: value } };
+      const meta = target.kind === "project" ? readProjectMeta : readMeta;
+      const value = file === "meta" ? meta(body, target.id) : readCard(body, target);
+      if (file === "meta" ? value === null : value === undefined) event = { type: "failed" };
+      else event = { type: "answered", value: file === "meta" ? value : { card: value } };
     } catch (error) {
       if (signal.aborted) return;
       // The shell hears about a 401 from getJson and asks who is signed in.
       // Whatever it finds, nothing resolved under this session is kept.
       if (error?.status === 401) return this.clear();
+      // Only the kind's own refusal is unavailable; another 404 (a proxy, a
+      // missing route, the other kind's refusal) is a failure.
       event =
-        error?.status === 404 && error?.code === "page_unavailable"
+        error?.status === 404 && error?.code === REFUSED[target.kind]
           ? { type: "refused" }
           : { type: "failed" };
     }

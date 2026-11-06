@@ -1412,8 +1412,10 @@ const gateway = {
           return admissionErrorResponse(error, { stage: "gateway", identity });
         }
       }
-      // What a link to a Page shows its reader (link-previews.mjs). Only
-      // these two paths; everything else under /p/ is the app's.
+      // What a link to a Page or a Project shows its reader
+      // (link-previews.mjs). Only /p/<id>/{meta,card}.json and
+      // /project/<id>/{meta,card}.json; everything else under /p/, /project/
+      // and /s/ is the app's.
       const linkRoute = readLinkRoute(url.pathname);
       if (linkRoute) return await handleLinkPreview(request, env, linkRoute, { logFailure });
       if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/internal/"))
