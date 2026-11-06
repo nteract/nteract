@@ -138,6 +138,7 @@ was a caret race in the smoke; the editor side is
 | Editing, comments, links, diagrams, and recovery | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:editor` | Uses the running Wordgard fixture |
 | History growth and typing latency | `PAGES_ORIGIN=http://localhost:9894 node scripts/latency-smoke.mjs` | Uses the running Wordgard fixture |
 | One keystroke, a hard line break, and one remote character through the Wordgard binding on 115 KB marked, 16 KB marked and 118 KB plain blocks, base revision against this checkout (records timings, gates on nothing) | `node scripts/binding-benchmark.mjs` | Node only, no server or DOM; `PAGES_BINDING_BASE` picks the base (default `origin/main`); writes `test-results/binding-benchmark.json` |
+| Page-body admission for one typed character, four bolded characters and a block split on 115 KB marked and 118 KB plain blocks, patch path against whole-block validation (records timings, gates on nothing) | `node scripts/admission-benchmark.mjs` | Node only; writes `test-results/admission-benchmark.json` |
 | `list_pages` for 50 shared Pages with cold and warm Page hosts, p50/p95 (records timings, gates on nothing) | `node scripts/local-sharing-e2e.mjs --listing-bench` | Starts an isolated fixture and restarts it between cold samples; writes `listing-benchmark.json` |
 
 The editor checks exercise the same Wordgard path used by deployed Pages.
@@ -2050,7 +2051,9 @@ spans after the batch. If it fails there, the block as admitted is checked
 too, and the batch is refused only when it made a readable block unreadable. A
 new block, a replaced text object, and a marker the patch path can't place are
 also read whole. Typing, deleting text, formatting and title edits never read a
-block.
+block. `node scripts/admission-benchmark.mjs` times one keystroke on a 115 KB
+block: about 0.04 ms on the patch path, against 22 ms to validate the block
+whole.
 
 Content stored before these rules stays readable and editable: a write is
 judged by what it writes, so a Page with an unknown mark, an extra field or an

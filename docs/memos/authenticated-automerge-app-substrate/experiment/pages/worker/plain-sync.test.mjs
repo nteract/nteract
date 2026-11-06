@@ -1337,6 +1337,132 @@ test("every plain refusal logs page.sync_refused once, and its repeats once at c
   for (const line of refusedLines()) assert.ok(!JSON.stringify(line).includes(identity.principal));
 });
 
+test("invalid Page content is refused without closing the socket or blocking the principal", async (t) => {
+  const f = await fixture(t);
+  const host = f.page();
+  assert.ok((await f.register(host)).ok);
+  const lines = [];
+  t.mock.method(console, "warn", (line) => lines.push(JSON.parse(line)));
+  const identity = {
+    principal: "user:anaconda-fixture:fixture-user",
+    displayName: "Fixture",
+    driver: "Browser",
+    credentialKind: "oidc",
+    canWrite: true,
+    expiresAt: Date.now() + 3_600_000,
+  };
+  const doc = treeHex(f.args.document_id);
+  const path = (d) => ["blocks", firstBlock(d), "richText"];
+  const change = (fn) => A.getLastLocalChange(A.change(A.clone(host.handle.doc()), fn));
+  const browser = rawSocket(host, identity, { senderId: "b-content" });
+  const refused = () => browser.frames.filter((frame) => frame.t === "refused");
+  const stored = host.plain.host.store.manifest(doc).seq;
+  const invalid = [
+    (d) => A.mark(d, path(d), { start: 0, end: 4, expand: "none" }, "blink", true),
+    (d) =>
+      A.mark(
+        d,
+        path(d),
+        { start: 0, end: 4, expand: "none" },
+        "link",
+        JSON.stringify({ href: "javascript:alert(1)", title: null }),
+      ),
+    (d) => A.splitBlock(d, path(d), 2, { type: "marquee", parents: [], attrs: {} }),
+    (d) => (d.blocks[firstBlock(d)].extra = true),
+    (d) => (d.title = 3),
+    (d) => (d.unknown = true),
+  ];
+  invalid.forEach((fn, r) =>
+    browser.client.send({ t: "sync", doc, m: helloWith([change(fn)]), r: r + 1 }),
+  );
+  await until(() => refused().length === invalid.length);
+  for (const frame of refused()) {
+    assert.equal(frame.code, "invalid_page_content");
+    assert.equal(frame.fatal, false);
+  }
+  assert.equal(browser.client.closed, false, "the socket stays open");
+  assert.equal(host.plain.host.store.manifest(doc).seq, stored, "nothing stored");
+  assert.equal(host.plain.blocked.size, 0, "the principal isn't blocked");
+  // A valid edit on the same socket is admitted.
+  browser.client.send({
+    t: "sync",
+    doc,
+    m: helloWith([change((d) => A.splice(d, path(d), 0, 0, "Valid "))]),
+    r: 99,
+  });
+  await until(() => holds(host.handle.doc(), "Valid "));
+  // One line for the first refusal: the rule as a code, no Page id, no
+  // principal and no content.
+  const [line] = lines.filter((entry) => entry.event === "page.sync_refused");
+  assert.deepEqual(
+    (({ reason, rule, fatal, page_id }) => ({ reason, rule, fatal, page_id }))(line),
+    { reason: "invalid_page_content", rule: "mark", fatal: false, page_id: undefined },
+  );
+  browser.client.close();
+  await until(() => lines.filter((entry) => entry.event === "page.sync_refused").length === 2);
+  const repeats = lines.filter((entry) => entry.event === "page.sync_refused")[1];
+  assert.equal(repeats.repeats, invalid.length - 1);
+  assert.equal(repeats.page_id, undefined);
+  for (const entry of lines)
+    for (const secret of [identity.principal, pageId, "blink", "javascript"])
+      assert.ok(!JSON.stringify(entry).includes(secret), secret);
+});
+
+test("a host tool edit with content admission refuses answers 400 and journals nothing", async (t) => {
+  const f = await fixture(t);
+  const host = f.page();
+  assert.ok((await f.register(host)).ok);
+  const heads = A.getHeads(host.handle.doc());
+  const refused = await tool(f, host, "edit_page", {
+    base_heads: heads,
+    idempotency_key: "oversize-block",
+    operations: [{ op: "insert_markdown", markdown: "word ".repeat(53_000) }],
+  });
+  assert.equal(refused.status, 400);
+  assert.equal((await refused.json()).code, "invalid_page_content");
+  assert.equal(await f.storage.get("host/operation/oversize-block"), undefined);
+  assert.deepEqual(A.getHeads(host.handle.doc()), heads);
+});
+
+test("a Page holding content from before admission still takes valid browser edits", async (t) => {
+  const f = await fixture(t);
+  const host = f.page();
+  assert.ok((await f.register(host)).ok);
+  // Content no current writer stores, written past admission by the host.
+  await host.handle.change((d) => {
+    const path = ["blocks", firstBlock(d), "richText"];
+    A.mark(d, path, { start: 0, end: 8, expand: "both" }, "blink", true);
+    A.splitBlock(d, path, 9, { type: "paragraph", parents: ["slide"], attrs: {} });
+    d.blocks[firstBlock(d)].legacy = true;
+    d.legacyRoot = { kept: true };
+  });
+  await host.flush();
+  const identity = {
+    principal: "user:anaconda-fixture:fixture-user",
+    displayName: "Fixture",
+    driver: "Browser",
+    credentialKind: "oidc",
+    canWrite: true,
+    expiresAt: Date.now() + 3_600_000,
+  };
+  const browser = await connectBrowser(host, identity, "b-legacy");
+  try {
+    const handle = await browser.repo.find(f.args.document_id);
+    await until(() => handle.doc()?.legacyRoot?.kept === true);
+    const path = ["blocks", firstBlock(handle.doc()), "richText"];
+    // Typing inside the legacy mark, formatting, and a split.
+    handle.change((d) => A.splice(d, path, 2, 0, "typed"));
+    await until(() => holds(host.handle.doc(), "typed"));
+    handle.change((d) => A.mark(d, path, { start: 12, end: 16, expand: "after" }, "em", true));
+    handle.change((d) => A.splitBlock(d, path, 14, { type: "paragraph", parents: [], attrs: {} }));
+    handle.change((d) => A.splice(d, path, 0, 0, "Last "));
+    await until(() => holds(host.handle.doc(), "Last "));
+    assert.equal(host.handle.doc().legacyRoot.kept, true);
+  } finally {
+    await browser.repo.shutdown();
+  }
+});
+
 test("a browser connection logs its sync-round latency when it closes", async (t) => {
   const f = await fixture(t);
   const host = f.page();
