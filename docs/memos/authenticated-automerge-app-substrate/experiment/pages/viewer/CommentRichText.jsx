@@ -55,6 +55,8 @@ import {
 import { projectChanges } from "./wordgard-projection.mjs";
 import { linkDestination } from "./link-destination.mjs";
 import { pagesLinkShape } from "./page-link-shape.mjs";
+import { pageChits } from "./page-chits.mjs";
+import { bareLinkPaste } from "./bare-links.mjs";
 import { CurrentPage, CurrentProject } from "./current-page.mjs";
 import { registerEditor } from "./editor-focus.mjs";
 import { PROSE_ENTRY_ATTRIBUTES } from "./prose-entry.mjs";
@@ -109,6 +111,8 @@ function nativeConfig({ currentPageId = () => null, currentProjectId = () => nul
     GardState.schemaElement.of(elements),
     // Comments can't hold a dataframe: a pasted one becomes its title.
     Wordgard.clipboardInputHTMLFilter.of((html) => filterPastedDataframes(html, null)),
+    // A pasted URL becomes a bare link, as in Page blocks.
+    bareLinkPaste(),
     wordgardCodeNewlines,
     wordgardListStarts,
     codeHighlighting,
@@ -116,6 +120,7 @@ function nativeConfig({ currentPageId = () => null, currentProjectId = () => nul
     // The same shape as Page blocks: a link to another Page gets its glyph
     // and the hover card's hooks; the open Page's own links don't.
     pagesLinkShape({ currentPageId, currentProjectId }),
+    pageChits({ currentPageId, currentProjectId }),
   ];
 }
 

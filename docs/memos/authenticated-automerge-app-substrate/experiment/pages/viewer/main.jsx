@@ -70,6 +70,7 @@ import { closeTrashedSessions, moveToTrashError, restorePage } from "./trash.mjs
 import { listAllPages } from "./page-list.mjs";
 import { listingCache } from "./listing-cache.mjs";
 import { PageRefs } from "./page-refs.mjs";
+import { provideChitRefs } from "./chit-refs.mjs";
 import { PageLinkCard } from "./PageLinkCard.jsx";
 import { CurrentPage, CurrentProject } from "./current-page.mjs";
 import { PickerWalk } from "./picker-walk.mjs";
@@ -171,6 +172,7 @@ const picker = new PickerWalk({
 // and cards read with this tab's session, in memory only. Forgotten with the
 // account, like the listing cache.
 const pageRefs = new PageRefs();
+provideChitRefs(pageRefs);
 /** Forget the rows and Projects remembered for the account: it signed out or
  * another one signed in. The Browse picker closes and drops its walk; nothing
  * here starts a request. */

@@ -67,9 +67,17 @@ export function headingLinks() {
   return "Link to a heading with [text](#anchor), using the anchor read_page's outline reports for it, or [text](/p/<page_id>#anchor) for a heading on another Page; people go straight to it.";
 }
 
+/** How to link another Page or a Project (viewer/page-chits.mjs), in a few
+ * sentences. A bare link, whose text is its URL, draws for each person as a
+ * chit with the target's current title; a label freezes one title for
+ * everyone. */
+export function pageLinks() {
+  return "To link another Page or a Project, write its full URL as an autolink, <https://…/p/<page_id>> or <https://…/project/<project_id>>: each person sees it as a chip with the title they can see now, or Page unavailable, so a rename never leaves it stale. Write [label](url) only when the sentence needs other words, and don't turn an autolink into [Title](url). Its stored text is the URL, so match_text and selected_text use the URL, not the title people see.";
+}
+
 /** The Markdown Pages accepts, in a few sentences. */
 export function markdownSyntax() {
-  return `Pages stores Markdown as native rich text: ${join(inlineList())}; ${join(blockList())}. Highlight colors are ${HIGHLIGHT_COLORS.join(", ")} or #rrggbb. ${diagram}. ${headingLinks()} Math ($…$) and raw HTML are refused with unsupported_markdown; escape a literal $ or < with a backslash.`;
+  return `Pages stores Markdown as native rich text: ${join(inlineList())}; ${join(blockList())}. Highlight colors are ${HIGHLIGHT_COLORS.join(", ")} or #rrggbb. ${diagram}. ${headingLinks()} ${pageLinks()} Math ($…$) and raw HTML are refused with unsupported_markdown; escape a literal $ or < with a backslash.`;
 }
 
 /** The typed fields read_page's outline entries and read_page_changes'

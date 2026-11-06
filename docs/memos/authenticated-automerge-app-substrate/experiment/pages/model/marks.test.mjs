@@ -193,6 +193,44 @@ test("strikethrough round trips through Markdown and native spans", () => {
   assert.equal(blockMarkdown(after.blocks[id]), "plain ~~words~~");
 });
 
+test("a bare link round trips as an autolink", () => {
+  // A bare link is a link whose href is its text, with no title: what a
+  // pasted URL becomes (viewer/bare-links.mjs) and what draws as a chit.
+  // Agents read it as `<url>` and may write it back unchanged.
+  const page = "https://pages.example/p/0b6f6a8e-5d2c-4c7b-9a7e-2f1d3c4b5a69";
+  for (const url of [page, `${page}#a-heading`, "https://example.com/a?b=c"]) {
+    for (const source of [
+      `<${url}>`,
+      `See <${url}>.`,
+      `- <${url}>`,
+      `| A |\n| --- |\n| <${url}> |`,
+    ]) {
+      const { doc, id } = fixture(source);
+      const linked = textMarks(doc, id).filter(([, marks]) => marks.link);
+      assert.equal(linked.length, 1, source);
+      const [text, marks] = linked[0];
+      assert.equal(text, url, source);
+      assert.deepEqual(JSON.parse(marks.link), { href: url, title: null }, source);
+      assert.equal(blockMarkdown(doc.blocks[id]), source);
+    }
+  }
+  // Bold draws inside the link (PagesLink's rank), so a bold bare link
+  // projects as a Markdown link whose label is the URL. It is still a bare
+  // link: its text is its href.
+  {
+    const source = `[**${page}**](${page})`;
+    const { doc, id } = fixture(`**<${page}>**`);
+    assert.equal(blockMarkdown(doc.blocks[id]), source);
+    const again = fixture(source);
+    assert.equal(blockMarkdown(again.doc.blocks[again.id]), source);
+  }
+  // A labeled link, or a titled one, stays a Markdown link.
+  for (const source of [`[Title](${page})`, `[${page}](${page} "t")`]) {
+    const { doc, id } = fixture(source);
+    assert.equal(blockMarkdown(doc.blocks[id]), source);
+  }
+});
+
 test("highlights inside table cells round trip", () => {
   const source = '| A | B |\n| --- | --- |\n| <mark data-color="pink">p</mark> | q |';
   const { doc, id } = fixture(source);
