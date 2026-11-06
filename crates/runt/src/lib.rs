@@ -4633,6 +4633,8 @@ async fn env_command(command: EnvCommands, command_name: &str) -> anyhow::Result
 struct EnvCacheDir {
     label: String,
     path: PathBuf,
+    /// Channel whose daemon may run kernels from this dir.
+    channel: runt_workspace::BuildChannel,
 }
 
 /// Enumerate every env cache directory across both channels so CLI
@@ -4692,6 +4694,7 @@ fn get_env_cache_dirs() -> Vec<EnvCacheDir> {
                 dirs.push(EnvCacheDir {
                     label: format!("{label}{suffix}"),
                     path: base.join(sub),
+                    channel,
                 });
             }
         }
@@ -4704,6 +4707,7 @@ fn get_env_cache_dirs() -> Vec<EnvCacheDir> {
             path: cache_root
                 .join(cache_namespace_for(channel))
                 .join("worktrees"),
+            channel,
         });
     }
 
@@ -4718,6 +4722,7 @@ fn get_env_cache_dirs() -> Vec<EnvCacheDir> {
             dirs.push(EnvCacheDir {
                 label: format!("{label} (dev worktree)"),
                 path: worktree_base.join(sub),
+                channel: runt_workspace::build_channel(),
             });
         }
     }
@@ -4862,14 +4867,16 @@ async fn env_clean(
             println!("(dry run — nothing will be deleted)\n");
         }
 
-        // Query daemon for in-use env paths to protect running kernels
-        let in_use = query_active_env_paths().await;
+        // Ask each channel's daemon for in-use env paths to protect
+        // running kernels.
+        let ActiveEnvPlan { in_use, skipped } = query_active_env_paths().await;
 
         // Cross-channel: nuke env caches for both stable and nightly.
         // Worktrees are session state, not env cache — skip them here.
         let dirs_to_clean: Vec<PathBuf> = get_env_cache_dirs()
             .into_iter()
             .filter(|d| !d.label.starts_with("Worktrees"))
+            .filter(|d| !skipped.contains(&d.channel))
             .map(|d| d.path)
             .collect();
         // A cache dir nested in another (`envs/conda-envs`) is cleaned as
@@ -4909,9 +4916,9 @@ async fn env_clean(
         return Ok(());
     }
 
-    // Query the daemon for env paths backing running kernels so we
-    // don't evict them. Falls back to empty if daemon isn't reachable.
-    let in_use = query_active_env_paths().await;
+    // Ask each channel's daemon for env paths backing running kernels so
+    // we don't evict them.
+    let ActiveEnvPlan { in_use, skipped } = query_active_env_paths().await;
 
     // Selective eviction: sweep env dirs for both channels so a nightly
     // binary evicts nightly envs and vice versa, without missing the
@@ -4919,6 +4926,7 @@ async fn env_clean(
     let eviction_dirs: Vec<PathBuf> = get_env_cache_dirs()
         .into_iter()
         .filter(|d| !d.label.starts_with("Worktrees"))
+        .filter(|d| !skipped.contains(&d.channel))
         .map(|d| d.path)
         .collect();
 
@@ -5031,21 +5039,83 @@ async fn env_clean(
     Ok(())
 }
 
-/// Query the daemon for env paths backing running kernels.
-/// Returns an empty set if the daemon isn't running or unreachable.
-async fn query_active_env_paths() -> std::collections::HashSet<PathBuf> {
+/// What one channel's daemon said about its in-use envs.
+#[derive(Debug)]
+enum ActiveEnvQuery {
+    /// No endpoint: no daemon is running for this channel.
+    NoDaemon,
+    Active(std::collections::HashSet<PathBuf>),
+    /// The endpoint exists but the query failed. The daemon may be running
+    /// kernels from envs we cannot see.
+    Unreachable,
+}
+
+/// Envs to protect, and channels whose cache dirs must not be touched
+/// because their daemon could not be asked.
+#[derive(Debug, Default)]
+struct ActiveEnvPlan {
+    in_use: std::collections::HashSet<PathBuf>,
+    skipped: Vec<runt_workspace::BuildChannel>,
+}
+
+fn plan_active_envs(
+    answers: impl IntoIterator<Item = (runt_workspace::BuildChannel, ActiveEnvQuery)>,
+) -> ActiveEnvPlan {
+    let mut plan = ActiveEnvPlan::default();
+    for (channel, answer) in answers {
+        match answer {
+            ActiveEnvQuery::NoDaemon => {}
+            ActiveEnvQuery::Active(paths) => plan.in_use.extend(paths),
+            ActiveEnvQuery::Unreachable => plan.skipped.push(channel),
+        }
+    }
+    plan
+}
+
+/// Ask every channel's daemon which env paths back running kernels. A
+/// stable `env clean` must not delete an env a nightly kernel is using.
+async fn query_active_env_paths() -> ActiveEnvPlan {
+    use runt_workspace::BuildChannel;
+    let mut answers = Vec::new();
+    for channel in [BuildChannel::Stable, BuildChannel::Nightly] {
+        answers.push((channel, query_channel_active_env_paths(channel).await));
+    }
+    let plan = plan_active_envs(answers);
+    for channel in &plan.skipped {
+        eprintln!(
+            "Warning: the {} daemon has an endpoint but did not answer; skipping its env caches.",
+            runt_workspace::desktop_display_name_for(*channel)
+        );
+    }
+    plan
+}
+
+/// Only a definite "not found" means no daemon. Any other error (a busy
+/// Windows pipe, a permission error) counts as present, so a failed query
+/// skips that channel instead of deleting envs it may be using.
+fn endpoint_present(endpoint: &Path) -> bool {
+    match std::fs::metadata(endpoint) {
+        Ok(_) => true,
+        Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+    }
+}
+
+async fn query_channel_active_env_paths(channel: runt_workspace::BuildChannel) -> ActiveEnvQuery {
     use runtimed::client::PoolClient;
-    use runtimed_client::singleton::query_daemon_info;
 
-    let info = match query_daemon_info(runt_workspace::default_socket_path()).await {
-        Some(info) => info,
-        None => return std::collections::HashSet::new(),
+    // This binary's own channel honours RUNTIMED_SOCKET_PATH.
+    let endpoint = if channel == runt_workspace::build_channel() {
+        runt_workspace::default_socket_path()
+    } else {
+        runt_workspace::socket_path_for_channel(channel)
     };
-
-    let client = PoolClient::new(PathBuf::from(&info.endpoint));
+    if !endpoint_present(&endpoint) {
+        return ActiveEnvQuery::NoDaemon;
+    }
+    let client = PoolClient::new(endpoint);
     match tokio::time::timeout(std::time::Duration::from_secs(3), client.active_env_paths()).await {
-        Ok(Ok(paths)) => paths.into_iter().collect(),
-        _ => std::collections::HashSet::new(),
+        Ok(Ok(paths)) => ActiveEnvQuery::Active(paths.into_iter().collect()),
+        _ => ActiveEnvQuery::Unreachable,
     }
 }
 
@@ -5479,6 +5549,67 @@ mod tests {
                 let expected = cache_root.join(namespace).join(sub);
                 assert!(paths.contains(&expected), "missing {expected:?}");
             }
+        }
+    }
+
+    #[test]
+    fn active_env_plan_skips_only_unanswered_channels() {
+        use runt_workspace::BuildChannel::{Nightly, Stable};
+        let stable_env = PathBuf::from("/cache/nteract/envs/0123456789abcdef");
+        let nightly_env = PathBuf::from("/cache/nteract-nightly/envs/fedcba9876543210");
+
+        let plan = plan_active_envs([
+            (Stable, ActiveEnvQuery::Active([stable_env.clone()].into())),
+            (Nightly, ActiveEnvQuery::Active([nightly_env.clone()].into())),
+        ]);
+        assert!(plan.in_use.contains(&stable_env) && plan.in_use.contains(&nightly_env));
+        assert!(plan.skipped.is_empty());
+
+        // No endpoint means no daemon, so nothing to protect.
+        let plan = plan_active_envs([
+            (Stable, ActiveEnvQuery::Active([stable_env.clone()].into())),
+            (Nightly, ActiveEnvQuery::NoDaemon),
+        ]);
+        assert_eq!(plan.in_use.len(), 1);
+        assert!(plan.skipped.is_empty());
+
+        // An endpoint that does not answer skips that channel's caches.
+        let plan = plan_active_envs([
+            (Stable, ActiveEnvQuery::NoDaemon),
+            (Nightly, ActiveEnvQuery::Unreachable),
+        ]);
+        assert!(plan.in_use.is_empty());
+        assert_eq!(plan.skipped, vec![Nightly]);
+    }
+
+    #[test]
+    fn missing_endpoint_means_no_daemon() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(!endpoint_present(&temp.path().join("runtimed.sock")));
+        let present = temp.path().join("stale.sock");
+        std::fs::write(&present, "").unwrap();
+        assert!(endpoint_present(&present), "a stale endpoint still counts");
+    }
+
+    #[test]
+    fn env_cache_dirs_are_tagged_with_their_channel() {
+        use runt_workspace::BuildChannel;
+        for dir in get_env_cache_dirs() {
+            if dir.label.ends_with("(dev worktree)") {
+                continue;
+            }
+            let nightly = dir.path.components().any(|c| {
+                matches!(
+                    c.as_os_str().to_str(),
+                    Some("nteract-nightly" | "runt-nightly")
+                )
+            });
+            let expected = if nightly {
+                BuildChannel::Nightly
+            } else {
+                BuildChannel::Stable
+            };
+            assert_eq!(dir.channel, expected, "{:?}", dir.path);
         }
     }
 
