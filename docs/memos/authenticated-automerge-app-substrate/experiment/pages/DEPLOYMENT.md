@@ -609,9 +609,10 @@ gone. A Page that wrote a migration change keeps its revert records in
 
 This build reads and admits neither old form. A read that meets a message
 with no rich text or with a `body` answers `409 stored_form_unsupported`, and
-the tools refuse to edit one the same way. Admission refuses a change that
-creates or touches a message with a `body`, without the rich format, or with
-spans out of the editor's form, a soft delete included, as `outdated_form`.
+the tools refuse to edit one the same way. Admission refuses, as
+`outdated_form`, a change that creates or touches a message with a `body` or
+without the rich format, a soft delete included, and a new message or content
+write whose spans are out of the editor's form.
 That refusal never blocks the sender: earlier viewers write those forms, so
 `MIN_VIEWER_PROTOCOL` is 3 and their tabs must reload.
 

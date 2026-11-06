@@ -75,6 +75,9 @@ export const REJECTION = Object.freeze({
 });
 
 const MAX_ID_LENGTH = 128;
+/** Message fields whose write changes its content, so admission checks the
+ * span form again. */
+const CONTENT_FIELDS = Object.freeze(["richText", "format", "bodyFormat"]);
 const MAX_FIELD_LENGTH = 512;
 
 class Rejection extends Error {
@@ -170,12 +173,18 @@ function validateStatus(status) {
 }
 
 /** A message's current content, on every message a batch creates or
- * touches: rich text in the editor's span form, with no `body`, and
- * `bodyFormat: "plain"` when its author wrote literal text. Earlier builds
- * stored a bare `body` or adapter-form spans beside a `body` copy; the
- * comments migration rewrote them, and a message still in either form is
- * refused as `outdated_form`, even for a soft delete. */
-function validateBody(message, where) {
+ * touches: rich text with no `body`, and `bodyFormat: "plain"` when its
+ * author wrote literal text. Earlier builds stored a bare `body` or
+ * adapter-form spans beside a `body` copy; the comments migration rewrote
+ * them, and a `body` or a missing rich format is refused as `outdated_form`
+ * on any write, a soft delete included.
+ *
+ * The span form is checked only when `contentWritten`: on a new message or
+ * a write to its `richText`, `format` or `bodyFormat`. It compares the spans
+ * with what the editor's `encode` writes today, so a Wordgard release that
+ * encodes differently must not stop people from deleting messages stored
+ * before it. */
+function validateBody(message, where, { contentWritten = true } = {}) {
   if (own(message, "body"))
     reject(REJECTION.OUTDATED_FORM, "A message stores no body: its spans are the message", where);
   if (scalar(message.format) !== RICH_FORMAT)
@@ -199,14 +208,14 @@ function validateBody(message, where) {
   } catch (error) {
     reject(REJECTION.INVALID_VALUE, error.message, where);
   }
-  if (!isEditorForm(spans))
+  if (contentWritten && !isEditorForm(spans))
     reject(REJECTION.OUTDATED_FORM, "Comment spans must be in the Pages editor's form", where);
 }
 
 /** Mutable message fields; author-only once the message exists. */
-function validateMessageEdits(message, where) {
+function validateMessageEdits(message, where, options) {
   if (!isMap(message)) reject(REJECTION.INVALID_VALUE, "Message must be a map", where);
-  validateBody(message, where);
+  validateBody(message, where, options);
   const deleted = message.deletedAt;
   if (deleted !== null && deleted !== undefined && !timestamp(deleted))
     reject(REJECTION.INVALID_VALUE, "deletedAt must be null or a timestamp", where);
@@ -376,6 +385,7 @@ function checkMessageOperation(op, full, ctx, threadId, thread, isCreate, where)
   if (!MESSAGE_EDITABLE.includes(field))
     reject(REJECTION.UNKNOWN_PATH, "Unknown message field", where);
   allowed(ctx, "edit", thread, before, REJECTION.NOT_MESSAGE_AUTHOR, where);
+  if (CONTENT_FIELDS.includes(field)) ctx.plan.contentWrites.add(threadId, messageId);
   ctx.plan.editedMessages.add(threadId, messageId);
 }
 
@@ -396,7 +406,11 @@ function finalize(after, plan, ctx) {
   for (const [threadId, messageId] of plan.editedMessages) {
     const thread = own(threads, threadId) ? threads[threadId] : undefined;
     if (!thread || !own(thread.messages, messageId)) continue;
-    validateMessageEdits(thread.messages[messageId], { thread: threadId, message: messageId });
+    validateMessageEdits(
+      thread.messages[messageId],
+      { thread: threadId, message: messageId },
+      { contentWritten: plan.contentWrites.has(threadId, messageId) },
+    );
   }
   for (const threadId of plan.status) {
     if (!own(threads, threadId)) continue;
@@ -521,6 +535,7 @@ export function admitCommentChanges(admitted, changes, principal, options = {}) 
         deletedThreads: new Set(),
         newMessages: new EntitySet(),
         editedMessages: new EntitySet(),
+        contentWrites: new EntitySet(),
         status: new Set(),
         anchors: new Set(),
         schema: false,

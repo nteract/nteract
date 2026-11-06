@@ -550,18 +550,17 @@ test("every write leaves a message in the editor's span form", () => {
     A.updateSpans(d, bobText, markdownCommentSpans("One\n\nTwo")),
   );
   assert.equal(editor.ok, true, JSON.stringify(editor.reason));
-  // A message an earlier build stored in the adapter's form, with or
-  // without its copy: every write to it is refused, a soft delete included.
+  // A message an earlier build stored in the adapter's form with its copy:
+  // every write to it is refused, a soft delete included, because `body`
+  // doesn't depend on what the editor's encoder writes.
   const adapterOnly = A.change(seeded, (d) => A.updateSpans(d, bobText, adapter));
   const withCopy = A.change(adapterOnly, (d) => {
     d.threads[ids.bobThread].messages[ids.bobMessage].body = "One\n\nTwo";
   });
-  for (const doc of [adapterOnly, withCopy]) {
-    const deleted = admit(doc, BOB, "commenter", (d) => {
-      d.threads[ids.bobThread].messages[ids.bobMessage].deletedAt = now();
-    });
-    assert.equal(deleted.reason?.code, REJECTION.OUTDATED_FORM);
-  }
+  const deleted = admit(withCopy, BOB, "commenter", (d) => {
+    d.threads[ids.bobThread].messages[ids.bobMessage].deletedAt = now();
+  });
+  assert.equal(deleted.reason?.code, REJECTION.OUTDATED_FORM);
   for (const write of [
     (d) =>
       A.updateText(d, ["threads", ids.bobThread, "messages", ids.bobMessage, "body"], "new copy"),
@@ -577,4 +576,29 @@ test("an old form is refused without blocking the key: a stale tab isn't an atta
   assert.equal(REJECTION.OUTDATED_FORM, "outdated_form");
   assert.equal(BLOCKING.has(REJECTION.OUTDATED_FORM), false);
   assert.equal(BLOCKING.has(REJECTION.INVALID_VALUE), true);
+});
+
+test("a soft delete never checks the span form; a content write still does", () => {
+  // Spans out of the editor's current form, as an earlier encoder (or the
+  // ProseMirror adapter) wrote them. A later Wordgard release that encodes
+  // differently leaves every stored message like this.
+  const { doc: seeded, ids } = seed();
+  const bobText = ["threads", ids.bobThread, "messages", ids.bobMessage, "richText"];
+  const adapter = adapterSpans(parseMarkdown("One\n\nTwo"));
+  const doc = A.change(seeded, (d) => A.updateSpans(d, bobText, adapter));
+  const deleted = admit(doc, BOB, "commenter", (d) => {
+    d.threads[ids.bobThread].messages[ids.bobMessage].deletedAt = now();
+  });
+  assert.equal(deleted.ok, true, JSON.stringify(deleted.reason));
+  const edited = admit(doc, BOB, "commenter", (d) => A.splice(d, bobText, 1, 0, "x"));
+  assert.equal(edited.reason?.code, REJECTION.OUTDATED_FORM);
+  for (const write of [
+    (d) => {
+      d.threads[ids.bobThread].messages[ids.bobMessage].bodyFormat = "plain";
+    },
+    (d) => {
+      d.threads[ids.bobThread].messages[ids.bobMessage].format = "automerge-rich-text-v1";
+    },
+  ])
+    assert.equal(admit(doc, BOB, "commenter", write).reason?.code, REJECTION.OUTDATED_FORM);
 });

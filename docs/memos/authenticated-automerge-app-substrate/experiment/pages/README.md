@@ -1320,11 +1320,14 @@ tools and the browser apply (`validateCommentSpans` in
 [model/comment-content.mjs](model/comment-content.mjs)): non-whitespace text or
 a valid embed, so an image-only comment is content, at most 16,000 text
 characters and 64 KiB of spans. Every message a change creates or touches,
-a soft delete included, must be rich text in the editor's span form with no
-`body`. Earlier builds stored a bare literal `body`, or adapter-form spans
-beside a `body` copy; the comments migration rewrote them, and a change that
-writes or meets either form is refused as `outdated_form`. Viewers before
-protocol 3 wrote those forms and must reload.
+a soft delete included, must be rich text with no `body`. A new message, or
+a write to a message's `richText`, `format` or `bodyFormat`, must also leave
+its spans in the editor's form; a soft delete doesn't check it, so a Wordgard
+release that encodes differently never blocks deleting older messages.
+Earlier builds stored a bare literal `body`, or adapter-form spans beside a
+`body` copy; the comments migration rewrote them, and a change that writes
+either form is refused as `outdated_form`. Viewers before protocol 3 wrote
+those forms and must reload.
 
 A refused change is never stored or delivered, and every other connection
 stays up. When the sender broke a rule, its principal is blocked from
