@@ -855,6 +855,11 @@ Markdown), but its admission requires `body` on every message: its host
 would refuse a later edit or deletion of one. Roll back only to a build that
 has this change.
 
+Reverting this change on `main` is a forbidden rollback, not a fix. page10
+deploys `main` automatically, so a revert would ship the earlier admission to
+a target whose comments documents already hold messages without `body`. Fix
+forward on `main` instead.
+
 ### Plain sync on pages.runtimed.run
 
 Every Page on pages.runtimed.run is on plain Automerge sync: an operator
