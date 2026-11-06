@@ -39,24 +39,11 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # One leg per record storage a new Page can get. The default leg (Subduction)
-  # keeps its existing check and artifact names. The plain leg sets
-  # PAGES_RECORD_STORAGE=automerge, which e2e.mjs and both harnesses write into
-  # the local host's .dev.vars; each leg has its own flaky budget.
+  # Every Page syncs with plain Automerge sync, so one leg covers it.
   browser-e2e:
-    name: ${{ matrix.name }}
+    name: Pages browser E2E (local celld)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Pages browser E2E (local celld)
-            record-storage: ""
-            artifact: pages-browser-e2e
-          - name: Pages browser E2E (local celld, plain sync)
-            record-storage: automerge
-            artifact: pages-browser-e2e-plain-sync
     defaults:
       run:
         working-directory: docs/memos/authenticated-automerge-app-substrate/experiment
@@ -118,13 +105,12 @@ jobs:
         env:
           PAGES_E2E_RETRIES: "1"
           PAGES_E2E_MAX_FLAKY: "1"
-          PAGES_RECORD_STORAGE: ${{ matrix.record-storage }}
         run: npm run e2e --workspace @nteract/pages-native-experiment
       - name: Upload E2E artifacts
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ matrix.artifact }}
+          name: pages-browser-e2e
           path: docs/memos/authenticated-automerge-app-substrate/experiment/pages/test-results/
           retention-days: 7
           if-no-files-found: ignore
