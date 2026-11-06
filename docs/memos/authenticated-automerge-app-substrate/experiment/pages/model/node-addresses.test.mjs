@@ -197,22 +197,22 @@ test("text stored after an unknown block is that node's content", () => {
   const inside = text.indexOf("callout");
   assert.equal(nodeIndexAt(addresses, inside), 1);
   assert.equal(ancestryAt(addresses, inside)[0].type, "PagesUnknownBlock");
-  assert.deepEqual(ancestryAt(addresses, 0), [{ type: "Paragraph", marker: null }]);
+  assert.deepEqual(ancestryAt(addresses, 0), [{ type: "Paragraph", attrs: {} }]);
 });
 
-test("ancestry names each container and the stored marker that opens it", () => {
+test("ancestry names each container and its stored attrs", () => {
   const { spans } = inputs.find((input) => input.name === "shape/nested-lists");
   const { doc, id } = pageWithSpans(spans);
   const addresses = blockAddresses(A.spans(doc, textPath(id)));
   const text = doc.blocks[id].richText;
   assert.deepEqual(ancestryAt(addresses, text.indexOf("task")), [
-    { type: "OrderedList", marker: null },
-    { type: "ListItem", marker: {} },
-    { type: "BulletList", marker: null },
-    { type: "ListItem", marker: {} },
-    { type: "PagesTaskList", marker: null },
-    { type: "ListItem", marker: { checked: true } },
-    { type: "Paragraph", marker: null },
+    { type: "OrderedList", attrs: {} },
+    { type: "ListItem", attrs: {} },
+    { type: "BulletList", attrs: {} },
+    { type: "ListItem", attrs: {} },
+    { type: "PagesTaskList", attrs: {} },
+    { type: "ListItem", attrs: { checked: true } },
+    { type: "Paragraph", attrs: {} },
   ]);
   // The first and a later character of a text run share one ancestry.
   const at = text.indexOf("inner");

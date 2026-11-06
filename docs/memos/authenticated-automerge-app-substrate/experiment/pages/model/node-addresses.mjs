@@ -112,11 +112,13 @@ export function nodeIndexAt({ nodes, map }, am) {
 }
 
 /** The containers holding text index `am`, outermost first, as plain data
- * per level: its type, and the attrs of the stored marker that opens it, or
- * null for a container drawn without one (a list, the implicit first
- * paragraph, a quote stored without its own marker). Two ancestries compare
- * equal when the character sits in the same structure with the same stored
- * attributes, including attributes this build doesn't know. */
+ * per level: its type and the attrs of the stored marker that opens it, `{}`
+ * for a container drawn without one (a list, the implicit first paragraph, a
+ * quote stored without its own marker). Two ancestries compare equal when the
+ * character sits in the same structure with the same stored attributes,
+ * including attributes this build doesn't know. Whether a container has its
+ * own marker isn't part of it: a writer adds one to an implicit paragraph
+ * when it inserts a node above, and the passage hasn't moved. */
 export function ancestryAt(addresses, am) {
   const { tree, map, opening, nodes } = addresses;
   const chain = [];
@@ -125,7 +127,7 @@ export function ancestryAt(addresses, am) {
   const ancestry = chain.map(({ node, before }) => {
     const at = map.wgToAm[before];
     const marker = map.wgToAm[before + 1] > at ? opening.get(at) : undefined;
-    return { type: node.name, marker: marker ? storedAttrs(marker.attrs) : null };
+    return { type: node.name, attrs: storedAttrs(marker?.attrs) };
   });
   // Text an unknown node holds (`text`: where decode's paragraph for it
   // starts) sits inside that node.
@@ -133,7 +135,7 @@ export function ancestryAt(addresses, am) {
   if (node.text !== undefined && map.amToWg[am] >= node.text)
     ancestry.unshift({
       type: PagesUnknownBlock.name,
-      marker: storedAttrs(opening.get(node.at).attrs),
+      attrs: storedAttrs(opening.get(node.at).attrs),
     });
   return ancestry;
 }

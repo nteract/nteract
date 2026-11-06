@@ -151,3 +151,73 @@ test("a nested dataframe and rule don't throw off a later target-scoped edit", (
   assert.equal(plan.operations[0].node_index, 1);
   assert.match(after.blocks[id].richText, /end$/);
 });
+
+const marker = (type, parents = [], attrs = {}) => ({ type, parents, attrs });
+/** `doc` with a heading inserted before index `at` of block `id`. With
+ * `opening`, the text from `at` onward was the implicit first paragraph and
+ * now opens with its own paragraph marker, as the editor writes it. */
+function headingAbove(doc, id, at, opening = false) {
+  return A.change(A.clone(doc), (draft) => {
+    const path = ["blocks", id, "richText"];
+    if (opening) A.splitBlock(draft, path, at, marker("paragraph"));
+    A.splitBlock(draft, path, at, marker("heading", [], { level: 2 }));
+    A.splice(draft, path, at + 1, 0, "Title");
+  });
+}
+function targetScoped(base, current, id, extra = {}) {
+  const plan = guardPassageEdits(current, A.getHeads(base), [
+    { op: "replace_match", block_id: id, match_text: "target", replacement: "result", ...extra },
+  ]);
+  return { plan, after: replace(current, id, plan.operations[0]) };
+}
+
+test("a heading inserted before the opening paragraph leaves a target-scoped edit valid", () => {
+  const { doc: base, id } = pageWithSpans([text("the target here"), block("paragraph"), text("x")]);
+  const current = headingAbove(base, id, 0, true);
+  const { plan, after } = targetScoped(base, current, id, { node_index: 0 });
+  assert.equal(plan.operations[0].node_index, 1);
+  assert.match(after.blocks[id].richText, /the result here/);
+});
+
+test("a heading inserted above a list or a quote leaves a target-scoped edit valid", () => {
+  for (const container of ["unordered-list-item", "blockquote"]) {
+    const { doc: base, id } = pageWithSpans([
+      text("intro"),
+      block(container),
+      ...(container === "blockquote" ? [block("paragraph", ["blockquote"])] : []),
+      text("the target here"),
+      block("paragraph"),
+      text("x"),
+    ]);
+    const current = headingAbove(base, id, 5);
+    const { plan, after } = targetScoped(base, current, id, { node_index: 1 });
+    assert.equal(plan.operations[0].node_index, 2, container);
+    assert.match(after.blocks[id].richText, /the result here/, container);
+  }
+});
+
+test("a paragraph gaining its own marker inside a list item or quote keeps its ancestry", () => {
+  // The item's or quote's first paragraph has no marker; one written later
+  // (a paragraph split off above it) names the same structure.
+  for (const container of ["unordered-list-item", "blockquote"]) {
+    const spans = (own) => [
+      block(container),
+      ...(own ? [block("paragraph", [container])] : []),
+      text("the target here"),
+    ];
+    const plain = pageWithSpans(spans(false));
+    const marked = pageWithSpans(spans(true));
+    const at = (doc, id) => doc.blocks[id].richText.indexOf("target");
+    assert.deepEqual(
+      visibleRangeAddress(plain.doc, plain.id, at(plain.doc, plain.id), at(plain.doc, plain.id) + 6)
+        .ancestry,
+      visibleRangeAddress(
+        marked.doc,
+        marked.id,
+        at(marked.doc, marked.id),
+        at(marked.doc, marked.id) + 6,
+      ).ancestry,
+      container,
+    );
+  }
+});
