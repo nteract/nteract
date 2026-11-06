@@ -51,9 +51,20 @@ import {
   unknownOperation,
   withRefusalCode,
 } from "./project-api.mjs";
-import { agentGuideResponse } from "../agent-guide.mjs";
+import { agentGuideResponse, pagesPublicOrigin } from "../agent-guide.mjs";
 import { connectAgentResponse } from "../connect-agent.mjs";
 import { handleOAuth, mcpAuthChallenge } from "./oauth.mjs";
+import { oauthGrantActive } from "./oauth-store.mjs";
+import {
+  ASSET_UPLOAD_OPERATION,
+  ASSET_UPLOAD_SCHEME,
+  UPLOAD_CREDENTIAL,
+  issueAssetUpload,
+  uploadCapabilityToken,
+  uploadIdentity,
+  uploadRefusal,
+  verifyAssetUpload,
+} from "./asset-uploads.mjs";
 import { sessionStoreReady } from "./isolate-setup.mjs";
 import { signInCallbackOptions } from "./sign-in-failure.mjs";
 import { localOidcStore } from "./local-oidc-store.mjs";
@@ -205,6 +216,7 @@ import {
 import { readRegistration, requireRegistrationAccount, validPageId } from "./registration.mjs";
 import {
   handleImageAssets,
+  privateImageResponse,
   requireStoredDatasetAsset,
   requireStoredImageAsset,
 } from "./image-assets.mjs";
@@ -322,6 +334,7 @@ const operations = new Set([
   "read_page_presence",
   "report_page_progress",
   "import_page_image",
+  ASSET_UPLOAD_OPERATION,
   "edit_page",
   "patch_page",
   "manage_page_comment",
@@ -699,6 +712,27 @@ function authorizeImage(request, env, pageId, write) {
   return env.PAGES.getByName(pageId).fetch(internal);
 }
 
+/** authorizeImage for an upload capability (asset-uploads.mjs). The host
+ * request carries only the capability: no cookie, bearer credential or label
+ * of the caller's. The Page host verifies it with its own key and decides
+ * access for the principal it names, on each call. */
+function authorizeUpload(request, env, pageId, capability) {
+  const url = new URL(request.url);
+  url.pathname = "/internal/assets/authorize";
+  url.search = "";
+  return env.PAGES.getByName(pageId).fetch(
+    new Request(url, {
+      method: "POST",
+      headers: {
+        authorization: `${ASSET_UPLOAD_SCHEME} ${capability}`,
+        origin: new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ page_id: pageId, write: true }),
+    }),
+  );
+}
+
 /** The Page host's card image upload check (card-images.mjs). Like
  * authorizeImage, a short host-created request; the bytes stay here. */
 function authorizeCardImage(request, env, pageId, { hash, theme }) {
@@ -747,6 +781,8 @@ const READ_OPERATIONS = [
  * retry_token holds its receipt. A progress creation is not: a repeat mints a
  * second session and the first one's lease is lost, so it gets lease advice. */
 const safeToRepeat = (operation, args) => {
+  // Issuing an upload URL changes nothing; a repeat issues another one.
+  if (operation === ASSET_UPLOAD_OPERATION) return true;
   if (operation === "report_page_progress")
     return typeof args?.progress_id === "string" && typeof args?.lease_token === "string"
       ? true
@@ -1277,6 +1313,24 @@ const gateway = {
       );
       if (imageRoute) {
         const [, container, id, assetId] = imageRoute;
+        // An upload capability from create_page_asset_upload authorizes one
+        // thing: a POST of file bytes to its own Page's asset route. It never
+        // reaches authenticate(), so it is never sent to the API-key verifier
+        // or read as an OAuth token, and no other route accepts its scheme.
+        const capability = uploadCapabilityToken(request);
+        if (capability !== undefined) {
+          if (container !== "pages" || assetId !== undefined || request.method !== "POST")
+            return await withRefusalCode(
+              privateImageResponse(errorResponse(uploadRefusal("misused"), "image-assets")),
+            );
+          return await withRefusalCode(
+            await handleImageAssets(request, env, {
+              pageId: id,
+              identify: () => requireSameOrigin(request, env),
+              authorize: () => authorizeUpload(request, env, id, capability),
+            }),
+          );
+        }
         // A Project's assets belong to its content document.
         let pageId = id;
         if (container === "projects") {
@@ -3912,9 +3966,24 @@ export class Page {
     );
   }
 
-  /** Authenticate a request's caller with its own credentials. */
+  /** Authenticate a request's caller with its own credentials. The asset
+   * authorization route alone also takes an upload capability, which this
+   * Page verifies with its own key (asset-uploads.mjs); the identity it
+   * stands for then meets the same checks as any other. */
   async identify(request) {
-    const identity = await authenticate(request, this.env);
+    const capability =
+      new URL(request.url).pathname === "/internal/assets/authorize"
+        ? uploadCapabilityToken(request)
+        : undefined;
+    const identity =
+      capability === undefined
+        ? await authenticate(request, this.env)
+        : uploadIdentity(
+            await verifyAssetUpload(this.ctx.storage, capability, {
+              pageId: this.metadata?.pageId,
+              grantActive: (grantId) => oauthGrantActive(this.env, grantId),
+            }),
+          );
     if (identity.principal !== this.metadata?.owner) {
       const metadata = this.metadata;
       const observed = this.projectAccessState ?? PROJECT_ACCESS_EMPTY;
@@ -5026,11 +5095,19 @@ export class Page {
         const args = await readJson(request);
         if (args.page_id !== this.metadata.pageId || typeof args.write !== "boolean")
           throw new HttpError(400, "Invalid image access request");
+        const capability = identity.credentialKind === UPLOAD_CREDENTIAL;
+        // An upload capability authorizes uploads, never reads.
+        if (capability && !args.write) throw uploadRefusal("misused");
         // Uploads need edit access. Asset storage has no per-Page aggregate
         // quota, so comment access alone doesn't open it: commenters comment
         // in text, and can't attach images until that quota exists.
         this.policy.account(identity, args.write);
-        return json({ page_id: this.metadata.pageId });
+        // A capability's binding goes back to the gateway, which checks the
+        // bytes against it before storing them.
+        return json({
+          page_id: this.metadata.pageId,
+          ...(capability && { upload: identity.upload }),
+        });
       }
       if (url.pathname === "/internal/card-image/authorize") {
         // The owner's grid card image (card-images.mjs): this host's policy
@@ -5206,6 +5283,17 @@ export class Page {
         this.policy.account(identity, true);
         if (body.operation === "report_page_progress")
           return json(this.activityState().report(this.handle.doc(), identity, body.arguments));
+        // An upload URL needs what an upload needs: write scope (checked by
+        // the gateway) and current edit access (just above).
+        if (body.operation === ASSET_UPLOAD_OPERATION)
+          return json(
+            await issueAssetUpload(this.ctx.storage, {
+              pageId: this.metadata.pageId,
+              identity,
+              args: body.arguments,
+              origin: pagesPublicOrigin(this.env),
+            }),
+          );
         if (!["edit_page", "patch_page"].includes(body.operation))
           throw new HttpError(400, "Unknown document operation");
         const ops = Array.isArray(body.arguments?.operations) ? body.arguments.operations : [];
