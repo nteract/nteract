@@ -21,6 +21,8 @@ export interface PoolErrorWithTimestamp {
   error_kind?: string;
   consecutive_failures: number;
   retry_in_secs: number;
+  /** The pool stopped regular retries (see `RuntimePoolState.parked`). */
+  parked?: boolean;
   /** When this state was received (epoch ms). */
   receivedAt: number;
 }

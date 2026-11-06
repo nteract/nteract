@@ -12,6 +12,8 @@ export interface PoolErrorDetails {
   error_kind?: string;
   consecutive_failures: number;
   retry_in_secs: number;
+  /** The pool stopped regular retries after repeated failures. */
+  parked?: boolean;
   receivedAt: number;
 }
 
@@ -23,6 +25,10 @@ interface PoolErrorItemProps {
 }
 
 function errorSubtitle(error: PoolErrorDetails, envType: "UV" | "Conda" | "Pixi"): string {
+  if (error.parked) {
+    // The pool doc is a snapshot, so retry_in_secs would go stale here.
+    return `Paused after repeated failures. Retries when you start a ${envType} kernel, when ${envType.toLowerCase()} settings change, or every 30 minutes`;
+  }
   switch (error.error_kind) {
     case "timeout":
       return "Retrying automatically";
@@ -36,6 +42,7 @@ function errorSubtitle(error: PoolErrorDetails, envType: "UV" | "Conda" | "Pixi"
 }
 
 function showSettingsButton(error: PoolErrorDetails): boolean {
+  if (error.parked) return true;
   return (
     error.error_kind === "invalid_package" ||
     error.error_kind === "import_error" ||

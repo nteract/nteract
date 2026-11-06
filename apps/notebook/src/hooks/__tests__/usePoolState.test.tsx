@@ -85,4 +85,25 @@ describe("usePoolState", () => {
     expect(result.current.pixiError?.failed_package).toBe("not-a-package");
     expect(result.current.hasErrors).toBe(true);
   });
+  it("surfaces a parked pool even for an inactive manager", () => {
+    act(() => {
+      setPoolState(
+        stateWithErrors({
+          pixi: {
+            ...DEFAULT_POOL_STATE.pixi,
+            error: "Pixi environment creation failed",
+            error_kind: "setup_failed",
+            consecutive_failures: 5,
+            retry_in_secs: 1800,
+            parked: true,
+          },
+        }),
+      );
+    });
+
+    const { result } = renderHook(() => usePoolState("uv"));
+
+    expect(result.current.pixiError?.parked).toBe(true);
+    expect(result.current.hasErrors).toBe(true);
+  });
 });

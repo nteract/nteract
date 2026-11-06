@@ -11,7 +11,7 @@
 //! use kernel_env::warmup;
 //!
 //! // Build a warmup script for a conda environment
-//! let script = warmup::build_warmup_script(&["matplotlib"], true, Some(site_packages));
+//! let script = warmup::build_warmup_command(&["matplotlib".to_string()], true);
 //!
 //! // Run: python -c <script>
 //! ```
@@ -32,29 +32,23 @@ pub const PREWARM_SOURCE: &str = include_str!("../../../python/prewarm/src/prewa
 ///
 /// This avoids the package needing to be installed — the entire prewarm
 /// module is inlined into the script.
-pub fn build_warmup_command(
-    extra_modules: &[String],
-    include_conda: bool,
-    site_packages: Option<&str>,
-) -> String {
+///
+/// The script only imports modules. It never runs `compileall` over
+/// site-packages: that wrote hundreds of MB of `.pyc` per env and often hit
+/// the warmup timeout. Python compiles what a kernel actually imports.
+pub fn build_warmup_command(extra_modules: &[String], include_conda: bool) -> String {
     let modules_py: Vec<String> = extra_modules.iter().map(|m| format!("{m:?}")).collect();
     let modules_list = format!("[{}]", modules_py.join(", "));
-
-    let site_packages_py = match site_packages {
-        Some(path) => format!("{path:?}"),
-        None => "None".to_string(),
-    };
 
     // We exec the embedded source to define all functions, then call
     // build_warmup_script() and exec the result.
     format!(
         r#"exec({prewarm_source:?})
-_script = build_warmup_script({modules}, include_conda={include_conda}, site_packages={site_packages})
+_script = build_warmup_script({modules}, include_conda={include_conda}, site_packages=None)
 exec(_script)"#,
         prewarm_source = PREWARM_SOURCE,
         modules = modules_list,
         include_conda = if include_conda { "True" } else { "False" },
-        site_packages = site_packages_py,
     )
 }
 
@@ -72,7 +66,7 @@ mod tests {
 
     #[test]
     fn test_build_warmup_command_basic() {
-        let cmd = build_warmup_command(&[], false, None);
+        let cmd = build_warmup_command(&[], false);
         assert!(cmd.contains("exec("));
         assert!(cmd.contains("build_warmup_script("));
         assert!(cmd.contains("include_conda=False"));
@@ -80,21 +74,25 @@ mod tests {
 
     #[test]
     fn test_build_warmup_command_with_conda() {
-        let cmd = build_warmup_command(&[], true, None);
+        let cmd = build_warmup_command(&[], true);
         assert!(cmd.contains("include_conda=True"));
     }
 
     #[test]
     fn test_build_warmup_command_with_modules() {
         let modules = vec!["numpy".to_string(), "pandas".to_string()];
-        let cmd = build_warmup_command(&modules, false, None);
+        let cmd = build_warmup_command(&modules, false);
         assert!(cmd.contains("numpy"));
         assert!(cmd.contains("pandas"));
     }
 
     #[test]
-    fn test_build_warmup_command_with_site_packages() {
-        let cmd = build_warmup_command(&[], false, Some("/fake/site-packages"));
-        assert!(cmd.contains("/fake/site-packages"));
+    fn test_build_warmup_command_never_compiles_site_packages() {
+        let cmd = build_warmup_command(&["numpy".to_string()], true);
+        // The embedded source still defines the compileall helper for the
+        // CLI; the generated call must never ask for it.
+        assert!(cmd.contains(
+            r#"_script = build_warmup_script(["numpy"], include_conda=True, site_packages=None)"#
+        ));
     }
 }

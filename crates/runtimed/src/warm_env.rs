@@ -156,24 +156,6 @@ async fn write_pool_ready_marker(env_root: &Path) -> std::io::Result<()> {
     tokio::fs::write(env_root.join(POOL_READY_MARKER_FILE), "").await
 }
 
-// -- site-packages discovery ----------------------------------------------
-
-fn find_site_packages(env_path: &Path) -> Option<String> {
-    let lib_dir = env_path.join("lib");
-    std::fs::read_dir(&lib_dir).ok().and_then(|entries| {
-        entries.flatten().find_map(|entry| {
-            let path = entry.path();
-            let name = path.file_name()?.to_str()?;
-            if name.starts_with("python") {
-                let sp = path.join("site-packages");
-                sp.is_dir().then(|| sp.to_string_lossy().into_owned())
-            } else {
-                None
-            }
-        })
-    })
-}
-
 // -- UV env creation ------------------------------------------------------
 
 const UV_OFFLINE_INSTALL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -181,8 +163,8 @@ const UV_ONLINE_INSTALL_TIMEOUT: Duration = Duration::from_secs(180);
 const UV_VENV_TIMEOUT: Duration = Duration::from_secs(60);
 const PYTHON_RUNTIME_VALIDATION_TIMEOUT: Duration = Duration::from_secs(60);
 const PROCESS_TREE_REAP_TIMEOUT: Duration = Duration::from_secs(5);
-// Keep optional warming below the daemon's 120s pool-take wait. Long compileall
-// runs should not keep a validated environment out of the pool.
+// Keep optional warming below the daemon's 120s pool-take wait. Slow imports
+// should not keep a validated environment out of the pool.
 const PYTHON_WARMUP_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn uv_pip_install_args(python_path: &Path, packages: &[String], offline: bool) -> Vec<String> {
@@ -586,7 +568,7 @@ async fn validate_python_runtime(
     python_path: &Path,
     env_label: &str,
 ) -> Result<(), (String, &'static str)> {
-    let validation_script = kernel_env::warmup::build_warmup_command(&[], false, None);
+    let validation_script = kernel_env::warmup::build_warmup_command(&[], false);
 
     match run_python_script(
         python_path,
@@ -624,9 +606,7 @@ async fn run_best_effort_python_warmup(
     include_conda: bool,
     env_label: &str,
 ) {
-    let site_packages = find_site_packages(env_dir);
-    let warmup_script =
-        kernel_env::warmup::build_warmup_command(packages, include_conda, site_packages.as_deref());
+    let warmup_script = kernel_env::warmup::build_warmup_command(packages, include_conda);
 
     match run_python_script(python_path, &warmup_script, PYTHON_WARMUP_TIMEOUT).await {
         TimedResult::Completed(output) if output.status.success() => {
@@ -645,7 +625,7 @@ async fn run_best_effort_python_warmup(
         }
         TimedResult::TimedOut => {
             // The pool warmer is already a background optimization. Detaching
-            // compileall/import work after this point would race with env
+            // import work after this point would race with env
             // claims, eviction, and cleanup, so keep it bounded and admit the
             // validated env without the warmed marker when it runs long.
             warn!(
@@ -808,7 +788,7 @@ async fn create_uv(env_dir: &Path, packages: &[String]) {
 
     // Required runtime validation comes before the expensive best-effort
     // warmup. The env should not enter the pool if core kernel imports hang or
-    // fail, but compileall/import warming is only a performance optimization.
+    // fail, but import warming is only a performance optimization.
     progress("validating", "checking kernel imports");
     if let Err((error, kind)) = validate_python_runtime(&python_path, "UV").await {
         cleanup_and_fail(env_dir, error, kind, None).await;
@@ -825,8 +805,7 @@ async fn create_uv(env_dir: &Path, packages: &[String]) {
         return;
     }
 
-    // Warmup (.pyc compilation)
-    progress("warming", "compiling .pyc files");
+    progress("warming", "importing kernel modules");
     run_best_effort_python_warmup(env_dir, &python_path, packages, false, "UV").await;
 
     // Write package hash marker
@@ -890,6 +869,11 @@ async fn create_conda(env_dir: &Path, packages: &[String], channels: &[String]) 
             return;
         }
     };
+    // Lock inputs, recorded the way kernel-env's conda installs record them
+    // so a later rebuild of this env (after capture) can skip the solve.
+    let lock_channels: Vec<String> = channels.iter().map(|c| c.name().to_string()).collect();
+    let lock_constraints: Vec<String> = constraints.iter().map(ToString::to_string).collect();
+    let lock_specs = kernel_env::python::solve_spec_strings(packages).ok();
 
     // Rattler cache
     let rattler_cache_dir = match rattler::default_cache_dir() {
@@ -993,6 +977,7 @@ async fn create_conda(env_dir: &Path, packages: &[String], channels: &[String]) 
         "installing",
         &format!("{} packages", required_packages.len()),
     );
+    let lock_packages = required_packages.clone();
     if let Err(e) = kernel_env::rattler_installer()
         .with_download_client(download_client)
         .with_target_platform(install_platform)
@@ -1019,6 +1004,12 @@ async fn create_conda(env_dir: &Path, packages: &[String], channels: &[String]) 
         )
         .await;
         return;
+    }
+
+    if let Some(lock_specs) = lock_specs {
+        let lock = kernel_env::lock::LockFile::new(lock_specs, lock_channels, lock_packages)
+            .with_constraints(lock_constraints);
+        kernel_env::lock::try_write_lock(env_dir, &lock).await;
     }
 
     // Vendor kernel launcher
@@ -1050,8 +1041,7 @@ async fn create_conda(env_dir: &Path, packages: &[String], channels: &[String]) 
         return;
     }
 
-    // Warmup
-    progress("warming", "compiling .pyc files");
+    progress("warming", "importing kernel modules");
     run_best_effort_python_warmup(env_dir, &python_path, packages, true, "Conda").await;
 
     if let Err(e) = write_pool_package_hash(env_dir, EnvType::Conda, packages).await {
@@ -1086,10 +1076,29 @@ async fn create_pixi(project_dir: &Path, packages: &[String], channels: &[String
         .await
     {
         Ok(env) => {
-            progress("warming", "compiling .pyc files");
-            if let Err(e) = kernel_env::pixi::warmup_environment(&env, packages).await {
-                warn!("[warm-env] Pixi warmup failed (non-fatal): {e}");
+            // Same contract as UV and Conda: the pool only admits envs that
+            // pass kernel-import validation and carry the readiness marker.
+            // Without the marker, take and startup reject the env and the
+            // pool rebuilds it.
+            progress("validating", "checking kernel imports");
+            if let Err((error, kind)) = validate_python_runtime(&env.python_path, "Pixi").await {
+                cleanup_and_fail(project_dir, error, kind, None).await;
+                return;
             }
+            if let Err(e) = write_pool_ready_marker(&env.venv_path).await {
+                cleanup_and_fail(
+                    project_dir,
+                    format!("Failed to write pool readiness marker: {e}"),
+                    "setup_failed",
+                    None,
+                )
+                .await;
+                return;
+            }
+
+            progress("warming", "importing kernel modules");
+            run_best_effort_python_warmup(&env.venv_path, &env.python_path, packages, true, "Pixi")
+                .await;
 
             if let Err(e) = write_pool_package_hash(project_dir, EnvType::Pixi, packages).await {
                 warn!("[warm-env] Failed to write Pixi pool package marker: {e}");

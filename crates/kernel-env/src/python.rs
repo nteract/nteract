@@ -59,17 +59,35 @@ pub(crate) fn parse_specs(packages: &[String]) -> Result<Vec<MatchSpec>> {
     Ok(specs)
 }
 
+/// Python spec added when the requested packages name no Python.
+const DEFAULT_PYTHON_SPEC: &str = "python>=3.13";
+
+fn names_python(specs: &[MatchSpec]) -> bool {
+    specs.iter().any(|spec| {
+        spec.name
+            .as_exact()
+            .is_some_and(|name| name.as_normalized() == "python")
+    })
+}
+
+/// The requested package strings plus the default Python spec that
+/// [`solve_specs`] adds. A lock file records these, so a later rebuild of
+/// the same request matches it.
+pub fn solve_spec_strings(packages: &[String]) -> Result<Vec<String>> {
+    let mut strings = packages.to_vec();
+    if !names_python(&parse_specs(packages)?) {
+        strings.push(DEFAULT_PYTHON_SPEC.to_string());
+    }
+    Ok(strings)
+}
+
 /// Parse requested packages, adding a Python default only when none was given.
 /// Return required specs separately from optional ABI constraints.
 pub fn solve_specs(packages: &[String]) -> Result<(Vec<MatchSpec>, Vec<MatchSpec>)> {
     let mut specs = parse_specs(packages)?;
-    if !specs.iter().any(|spec| {
-        spec.name
-            .as_exact()
-            .is_some_and(|name| name.as_normalized() == "python")
-    }) {
+    if !names_python(&specs) {
         specs.push(MatchSpec::from_str(
-            "python>=3.13",
+            DEFAULT_PYTHON_SPEC,
             ParseMatchSpecOptions::strict(),
         )?);
     }
@@ -101,6 +119,16 @@ mod tests {
     use super::*;
     use rattler_conda_types::{PackageRecord, RepoDataRecord};
     use rattler_solve::{resolvo, SolverImpl, SolverTask};
+
+    #[test]
+    fn solve_spec_strings_adds_default_python_only_when_missing() {
+        assert_eq!(
+            solve_spec_strings(&["numpy".to_string()]).unwrap(),
+            vec!["numpy".to_string(), DEFAULT_PYTHON_SPEC.to_string()]
+        );
+        let pinned = vec!["numpy".to_string(), "python=3.12".to_string()];
+        assert_eq!(solve_spec_strings(&pinned).unwrap(), pinned);
+    }
 
     #[test]
     fn operator_free_threading_expressions_fail_instead_of_selecting_gil() {

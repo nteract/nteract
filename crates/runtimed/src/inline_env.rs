@@ -687,10 +687,8 @@ pub fn check_conda_inline_cache(
     let cache_dir = inline_cache_dir();
     let env_path = cache_dir.join(&hash);
 
-    #[cfg(unix)]
-    let python_path = env_path.join("bin").join("python");
-    #[cfg(windows)]
-    let python_path = env_path.join("Scripts").join("python.exe");
+    // Conda puts python.exe at the prefix root on Windows, not in Scripts/.
+    let python_path = crate::project_file::conda_python_path(&env_path);
 
     if !python_path.exists() {
         return None;

@@ -21,7 +21,8 @@ function errorsEqual(
     a.failed_package === b.failed_package &&
     a.error_kind === b.error_kind &&
     a.consecutive_failures === b.consecutive_failures &&
-    a.retry_in_secs === b.retry_in_secs
+    a.retry_in_secs === b.retry_in_secs &&
+    Boolean(a.parked) === Boolean(b.parked)
   );
 }
 
@@ -34,11 +35,14 @@ function extractError(pool: PoolState[keyof PoolState]): PoolErrorWithTimestamp 
     error_kind: pool.error_kind,
     consecutive_failures: pool.consecutive_failures,
     retry_in_secs: pool.retry_in_secs,
+    parked: pool.parked ?? false,
     receivedAt: Date.now(),
   };
 }
 
 function isTransientPoolError(error: PoolErrorWithTimestamp): boolean {
+  // A parked pool has stopped retrying on its own; that needs attention.
+  if (error.parked) return false;
   return error.error_kind === "timeout" || error.error_kind === "setup_failed";
 }
 

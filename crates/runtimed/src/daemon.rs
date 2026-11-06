@@ -359,11 +359,104 @@ struct PoolEntry {
     created_at: Instant,
 }
 
+/// Consecutive non-network warm failures after which a pool parks.
+const MAX_CONSECUTIVE_WARM_FAILURES: u32 = 5;
+
+/// How often a parked pool still tries one warm on its own.
+const PARKED_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// Retry lifecycle of a pool's warming loop.
+///
+/// A pool that keeps failing would otherwise rebuild every 5 minutes at
+/// most, writing and deleting a whole environment each time. After
+/// [`MAX_CONSECUTIVE_WARM_FAILURES`] non-network failures (strikes) it
+/// parks: it retries when a launch asks it for an env, when its settings
+/// change, or every [`PARKED_RETRY_INTERVAL`]. Network failures keep their
+/// short backoff and never park a pool; being offline is not a broken
+/// configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum WarmRetry {
+    /// No recent failures; warm whenever there is a deficit.
+    #[default]
+    Healthy,
+    /// Retry after the exponential backoff delay. `strikes` counts only
+    /// non-network failures.
+    BackingOff { failures: u32, strikes: u32 },
+    /// Retry after a take, a settings change, or the slow parked interval.
+    Parked { failures: u32 },
+    /// A take asked a parked pool for another attempt; retry now.
+    /// Another failure parks the pool again.
+    TakeRequested { failures: u32 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WarmRetryEvent {
+    WarmSucceeded,
+    WarmFailed { network: bool },
+    SettingsChanged,
+    TakeWaiting,
+}
+
+impl WarmRetry {
+    /// Pure transition for the warm retry lifecycle.
+    fn next(self, event: WarmRetryEvent) -> Self {
+        match event {
+            WarmRetryEvent::WarmSucceeded | WarmRetryEvent::SettingsChanged => Self::Healthy,
+            WarmRetryEvent::WarmFailed { network } => {
+                let failures = self.failures().saturating_add(1);
+                let strikes = match self {
+                    Self::Healthy => 0,
+                    Self::BackingOff { strikes, .. } => strikes,
+                    // Already parked: any failure keeps it parked.
+                    Self::Parked { .. } | Self::TakeRequested { .. } => {
+                        return Self::Parked { failures };
+                    }
+                } + u32::from(!network);
+                if strikes >= MAX_CONSECUTIVE_WARM_FAILURES {
+                    Self::Parked { failures }
+                } else {
+                    Self::BackingOff { failures, strikes }
+                }
+            }
+            WarmRetryEvent::TakeWaiting => match self {
+                Self::Parked { failures } => Self::TakeRequested { failures },
+                other => other,
+            },
+        }
+    }
+
+    fn failures(self) -> u32 {
+        match self {
+            Self::Healthy => 0,
+            Self::BackingOff { failures, .. }
+            | Self::Parked { failures }
+            | Self::TakeRequested { failures } => failures,
+        }
+    }
+
+    /// Time left before a warm may start, given the time since the last
+    /// failure (`None` if there was none) and the current backoff delay.
+    fn retry_wait(
+        self,
+        since_last_failure: Option<std::time::Duration>,
+        backoff: std::time::Duration,
+    ) -> std::time::Duration {
+        let wait = match self {
+            Self::Healthy | Self::TakeRequested { .. } => return std::time::Duration::ZERO,
+            Self::BackingOff { .. } => backoff,
+            Self::Parked { .. } => PARKED_RETRY_INTERVAL,
+        };
+        since_last_failure.map_or(std::time::Duration::ZERO, |elapsed| {
+            wait.saturating_sub(elapsed)
+        })
+    }
+}
+
 /// Failure tracking for exponential backoff.
 #[derive(Debug, Clone, Default)]
 struct FailureState {
-    /// Number of consecutive failures.
-    consecutive_failures: u32,
+    /// Retry lifecycle; owns the consecutive failure count.
+    retry: WarmRetry,
     /// Time of last failure.
     last_failure: Option<Instant>,
     /// Last error message (for logging/status).
@@ -374,6 +467,12 @@ struct FailureState {
     error_kind: Option<String>,
     /// Whether the last failure was a network error (for shorter backoff).
     is_network_failure: bool,
+}
+
+impl FailureState {
+    fn consecutive_failures(&self) -> u32 {
+        self.retry.failures()
+    }
 }
 
 /// Classify whether an error message indicates a network failure.
@@ -481,6 +580,20 @@ fn spawn_env_deletions(paths: Vec<PathBuf>) {
             paths.len()
         );
     });
+}
+
+/// Remove a warm attempt's directory. A missing directory is fine: the
+/// warm-env subprocess deletes most partial builds itself, and some failures
+/// happen before anything is created.
+async fn remove_partial_env_dir(path: &Path) {
+    match tokio::fs::remove_dir_all(path).await {
+        Ok(()) => info!("[runtimed] Removed partial pool env {:?}", path),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => warn!(
+            "[runtimed] Failed to remove partial pool env {:?}: {} (orphan sweep will retry)",
+            path, e
+        ),
+    }
 }
 
 /// Internal pool state.
@@ -910,7 +1023,10 @@ impl Pool {
         });
         self.warming = self.warming.saturating_sub(1);
         // Reset failure state on success
-        self.failure_state = FailureState::default();
+        self.failure_state = FailureState {
+            retry: self.failure_state.retry.next(WarmRetryEvent::WarmSucceeded),
+            ..FailureState::default()
+        };
     }
 
     fn retired_paths_after_replacement(&mut self) -> Vec<PathBuf> {
@@ -969,7 +1085,6 @@ impl Pool {
     /// Mark that warming failed with error details.
     fn warming_failed_with_error(&mut self, error: Option<PackageInstallError>) {
         self.warming = self.warming.saturating_sub(1);
-        self.failure_state.consecutive_failures += 1;
         self.failure_state.last_failure = Some(Instant::now());
 
         if let Some(err) = error {
@@ -980,6 +1095,9 @@ impl Pool {
         } else {
             self.failure_state.is_network_failure = false;
         }
+        self.failure_state.retry = self.failure_state.retry.next(WarmRetryEvent::WarmFailed {
+            network: self.failure_state.is_network_failure,
+        });
     }
 
     /// Mark that warming failed for a specific path (unregisters the path and records the error).
@@ -990,7 +1108,31 @@ impl Pool {
 
     /// Reset failure state (called on settings change).
     fn reset_failure_state(&mut self) {
-        self.failure_state = FailureState::default();
+        self.failure_state = FailureState {
+            retry: self
+                .failure_state
+                .retry
+                .next(WarmRetryEvent::SettingsChanged),
+            ..FailureState::default()
+        };
+    }
+
+    /// A take is waiting on an empty pool. A parked pool gets one more
+    /// attempt; backoff and healthy states are unchanged.
+    fn request_retry_for_take(&mut self) {
+        self.failure_state.retry = self.failure_state.retry.next(WarmRetryEvent::TakeWaiting);
+    }
+
+    fn is_parked(&self) -> bool {
+        matches!(self.failure_state.retry, WarmRetry::Parked { .. })
+    }
+
+    /// Parked for status reporting, including a take's retry in flight.
+    fn reports_parked(&self) -> bool {
+        matches!(
+            self.failure_state.retry,
+            WarmRetry::Parked { .. } | WarmRetry::TakeRequested { .. }
+        )
     }
 
     /// Calculate backoff delay based on consecutive failures.
@@ -999,7 +1141,7 @@ impl Pool {
     /// - Network failures: 10s, 20s, 40s, max 60s (shorter — offline-first may succeed)
     /// - Other failures: 30s, 60s, 120s, 240s, max 300s (5 min)
     fn backoff_delay(&self) -> std::time::Duration {
-        if self.failure_state.consecutive_failures == 0 {
+        if self.failure_state.consecutive_failures() == 0 {
             return std::time::Duration::ZERO;
         }
 
@@ -1011,7 +1153,7 @@ impl Pool {
             let delay = base
                 * 2u32.saturating_pow(
                     self.failure_state
-                        .consecutive_failures
+                        .consecutive_failures()
                         .saturating_sub(1)
                         .min(4),
                 );
@@ -1021,7 +1163,7 @@ impl Pool {
             let base_secs = 30u64;
             let exponent = self
                 .failure_state
-                .consecutive_failures
+                .consecutive_failures()
                 .saturating_sub(1)
                 .min(4);
             let multiplier = 2u64.pow(exponent);
@@ -1031,12 +1173,17 @@ impl Pool {
         }
     }
 
-    /// Check if enough time has passed since last failure to retry.
+    /// Whether a warm may start now: healthy, a take asked for one, or the
+    /// backoff (or slow parked) interval has passed.
     fn should_retry(&self) -> bool {
-        match self.failure_state.last_failure {
-            Some(last) => last.elapsed() >= self.backoff_delay(),
-            None => true,
-        }
+        self.retry_wait().is_zero()
+    }
+
+    fn retry_wait(&self) -> std::time::Duration {
+        self.failure_state.retry.retry_wait(
+            self.failure_state.last_failure.map(|last| last.elapsed()),
+            self.backoff_delay(),
+        )
     }
 
     /// Calculate deficit (how many more we need).
@@ -1106,16 +1253,9 @@ impl Pool {
         (self.available.len(), self.warming)
     }
 
-    /// Seconds until the next retry (0 if healthy or retry is imminent).
+    /// Seconds until the next automatic retry (0 if healthy or imminent).
     fn retry_in_secs(&self) -> u64 {
-        self.failure_state
-            .last_failure
-            .map(|last| {
-                self.backoff_delay()
-                    .saturating_sub(last.elapsed())
-                    .as_secs()
-            })
-            .unwrap_or(0)
+        self.retry_wait().as_secs()
     }
 }
 
@@ -1127,10 +1267,25 @@ enum PoolKind {
     Pixi,
 }
 
+impl PoolKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Uv => "UV",
+            Self::Conda => "Conda",
+            Self::Pixi => "Pixi",
+        }
+    }
+}
+
 /// RAII guard for pool warming paths. On drop (including panic unwind), rolls
 /// back the warming counter and unregisters the path. Call `commit()` on
 /// success to suppress the rollback, or `fail_with()` to record a specific
 /// error before consuming the guard.
+///
+/// `fail_with()` also deletes the half-built directory. Callers reach it only
+/// after [`Daemon::spawn_warm_env`] returned, so the warm-env process tree
+/// has exited or been reaped. Drop does not delete: the subprocess may still
+/// be tearing down, and the orphan sweep collects that directory later.
 struct WarmingGuard {
     inner: Option<WarmingGuardInner>,
 }
@@ -1153,9 +1308,16 @@ impl WarmingGuard {
         self.inner.take();
     }
 
-    /// Record a specific error and consume the guard. Caller must be in an
+    /// Delete the partial directory, record a specific error, and consume
+    /// the guard. The path stays registered as warming until the delete
+    /// finishes, so the orphan sweep never races it. Caller must be in an
     /// async context (this is not used from Drop).
     async fn fail_with(&mut self, error: Option<PackageInstallError>) {
+        // Stay armed through the delete: if this future is dropped
+        // mid-delete, Drop still rolls back the warming count.
+        if let Some(inner) = self.inner.as_ref() {
+            remove_partial_env_dir(&inner.path).await;
+        }
         if let Some(inner) = self.inner.take() {
             inner.rollback(error).await;
         }
@@ -1169,7 +1331,19 @@ impl WarmingGuardInner {
             PoolKind::Conda => &self.daemon.conda_pool,
             PoolKind::Pixi => &self.daemon.pixi_pool,
         };
-        pool.lock().await.warming_failed_for_path(&self.path, error);
+        let parked_failures = {
+            let mut pool = pool.lock().await;
+            pool.warming_failed_for_path(&self.path, error);
+            pool.is_parked()
+                .then(|| pool.failure_state.consecutive_failures())
+        };
+        if let Some(failures) = parked_failures {
+            warn!(
+                "[runtimed] {} pool parked after {failures} consecutive warm failures; \
+                 it retries when a launch needs it, settings change, or every 30 minutes",
+                self.kind.label()
+            );
+        }
         match self.kind {
             PoolKind::Uv => self.daemon.pool_ready_uv.notify_waiters(),
             PoolKind::Conda => self.daemon.pool_ready_conda.notify_waiters(),
@@ -1389,6 +1563,9 @@ struct TakeSnapshot {
     build_at_target_zero: bool,
     shutting_down: bool,
     wait_expired: bool,
+    /// Set when this take already spent its retry on a parked pool and the
+    /// pool parked again: the last warm error.
+    parked_error: Option<String>,
 }
 
 /// Next step of a `take_*_env` call.
@@ -1429,6 +1606,9 @@ fn decide_take(snapshot: TakeSnapshot, env_type: EnvType, wait_secs: u64) -> Tak
         } else {
             TakeDecision::Unavailable(EnvAcquireError::PoolEmpty { env_type })
         };
+    }
+    if let Some(reason) = snapshot.parked_error {
+        return TakeDecision::Unavailable(EnvAcquireError::BuildFailed { env_type, reason });
     }
     if snapshot.wait_expired {
         return TakeDecision::Unavailable(EnvAcquireError::PoolWaitTimedOut {
@@ -2848,10 +3028,10 @@ impl Daemon {
                                 let mut had_errors = false;
                                 {
                                     let mut uv_pool = self.uv_pool.lock().await;
-                                    if uv_pool.failure_state.consecutive_failures > 0 {
+                                    if uv_pool.failure_state.consecutive_failures() > 0 {
                                         info!(
                                             "[settings-watch] Resetting UV pool backoff (was {} failures)",
-                                            uv_pool.failure_state.consecutive_failures
+                                            uv_pool.failure_state.consecutive_failures()
                                         );
                                         uv_pool.reset_failure_state();
                                         had_errors = true;
@@ -2859,12 +3039,23 @@ impl Daemon {
                                 }
                                 {
                                     let mut conda_pool = self.conda_pool.lock().await;
-                                    if conda_pool.failure_state.consecutive_failures > 0 {
+                                    if conda_pool.failure_state.consecutive_failures() > 0 {
                                         info!(
                                             "[settings-watch] Resetting Conda pool backoff (was {} failures)",
-                                            conda_pool.failure_state.consecutive_failures
+                                            conda_pool.failure_state.consecutive_failures()
                                         );
                                         conda_pool.reset_failure_state();
+                                        had_errors = true;
+                                    }
+                                }
+                                {
+                                    let mut pixi_pool = self.pixi_pool.lock().await;
+                                    if pixi_pool.failure_state.consecutive_failures() > 0 {
+                                        info!(
+                                            "[settings-watch] Resetting Pixi pool backoff (was {} failures)",
+                                            pixi_pool.failure_state.consecutive_failures()
+                                        );
+                                        pixi_pool.reset_failure_state();
                                         had_errors = true;
                                     }
                                 }
@@ -5014,6 +5205,8 @@ impl Daemon {
             }
         };
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(POOL_WAIT_SECS);
+        // One take unparks a parked pool for one attempt, not one per wake-up.
+        let mut retry_requested = false;
 
         loop {
             // Register both wake-ups before observing the pool and the
@@ -5027,10 +5220,17 @@ impl Daemon {
             tokio::pin!(shutdown);
             shutdown.as_mut().enable();
 
-            let (taken, stale_paths, target) = {
+            let (taken, stale_paths, target, parked_error) = {
                 let mut pool = self.pool_for(env_type).lock().await;
                 let (taken, stale_paths) = pool.take();
-                (taken, stale_paths, pool.target())
+                // Our one retry already ran and failed: stop waiting.
+                let parked_error = (retry_requested && pool.is_parked()).then(|| {
+                    pool.failure_state
+                        .last_error
+                        .clone()
+                        .unwrap_or_else(|| "pool warming keeps failing".to_string())
+                });
+                (taken, stale_paths, pool.target(), parked_error)
             };
             spawn_env_deletions(stale_paths);
             let shutting_down = {
@@ -5043,6 +5243,7 @@ impl Daemon {
                 build_at_target_zero: matches!(at_target_zero, AtTargetZero::Build(_)),
                 shutting_down,
                 wait_expired: tokio::time::Instant::now() >= deadline,
+                parked_error,
             };
 
             match decide_take(snapshot, env_type, POOL_WAIT_SECS) {
@@ -5092,6 +5293,10 @@ impl Daemon {
 
             let (warming, can_retry, retry_in_secs, should_spawn) = {
                 let mut pool = self.pool_for(env_type).lock().await;
+                if !retry_requested {
+                    pool.request_retry_for_take();
+                    retry_requested = true;
+                }
                 let (_, warming) = pool.stats();
                 let can_retry = pool.should_retry();
                 let retry_in_secs = pool.retry_in_secs();
@@ -5259,9 +5464,24 @@ impl Daemon {
     /// Returns `Some((env, guard))` if an environment is available, `None`
     /// otherwise. See [`Daemon::take_uv_env`] for lease semantics.
     pub async fn take_pixi_env(self: &Arc<Self>) -> Option<(PooledEnv, PoolLeaseGuard)> {
-        let (env, stale_paths) = self.pixi_pool.lock().await.take();
+        let (env, stale_paths) = {
+            let mut pool = self.pixi_pool.lock().await;
+            let (env, stale_paths) = pool.take();
+            if env.is_none() {
+                // Pixi takes do not wait, so a miss is the request: a parked
+                // pool gets one more attempt for the next launch.
+                pool.request_retry_for_take();
+            }
+            (env, stale_paths)
+        };
         spawn_env_deletions(stale_paths);
-        let e = env?;
+        let Some(e) = env else {
+            let daemon = self.clone();
+            spawn_best_effort("pixi-replenish", async move {
+                daemon.replenish_env(PoolKind::Pixi).await;
+            });
+            return None;
+        };
         debug!(
             "[runtimed] Took Pixi env for kernel launch: {:?}",
             e.venv_path
@@ -5818,12 +6038,14 @@ impl Daemon {
         let max_count = self.config.env_cache_max_count;
 
         // Directories to GC. These are the global content-addressed caches
-        // used by kernel-env. All three share the daemon's channel-namespaced
-        // base so nightly GCs nightly envs and stable GCs stable envs.
+        // used by kernel-env and env.yml launches. All share the daemon's
+        // channel-namespaced base so nightly GCs nightly envs and stable GCs
+        // stable envs.
         let cache_dirs = [
             kernel_env::uv::default_cache_dir_uv(),
             kernel_env::conda::default_cache_dir_conda(),
             crate::inline_env::inline_cache_dir(),
+            crate::paths::env_yml_conda_cache_dir(),
         ];
 
         loop {
@@ -7199,6 +7421,9 @@ impl Daemon {
         info!("[runtimed] Starting UV warming loop");
         let _ = uv_path;
         let mut settings_rx = self.settings_changed.subscribe();
+        // Pool inputs from the previous pass. A change is a settings change
+        // for this pool and clears its backoff or parked state.
+        let mut last_inputs: Option<(usize, Vec<String>)> = None;
 
         loop {
             if *self.shutdown.lock().await {
@@ -7218,19 +7443,32 @@ impl Daemon {
                 );
                 (target, pkgs)
             };
+            let inputs = (target, expected_packages.clone());
+            let inputs_changed = last_inputs.as_ref().is_some_and(|prev| *prev != inputs);
+            last_inputs = Some(inputs);
 
-            let (retired_count, retired_to_delete, deficit, should_retry, backoff_info) = {
+            let (retired_count, retired_to_delete, deficit, should_retry, parked, backoff_info) = {
                 let mut pool = self.uv_pool.lock().await;
                 if pool.set_target(target) {
                     self.pool_ready_uv.notify_waiters();
+                }
+                if inputs_changed && pool.failure_state.consecutive_failures() > 0 {
+                    info!(
+                        "[runtimed] UV pool settings changed; clearing {} warm failure(s)",
+                        pool.failure_state.consecutive_failures()
+                    );
+                    pool.reset_failure_state();
                 }
                 let retired = pool.retire_mismatched_packages(&expected_packages);
                 let retired_to_delete = pool.retired_paths_if_available_at_target();
                 let d = pool.deficit();
                 let retry = pool.should_retry();
-                let info = if pool.failure_state.consecutive_failures > 0 {
+                let parked = pool.is_parked();
+                // A parked pool's slow retry is one warm, not a full refill.
+                let d = if parked { d.min(1) } else { d };
+                let info = if pool.failure_state.consecutive_failures() > 0 {
                     Some((
-                        pool.failure_state.consecutive_failures,
+                        pool.failure_state.consecutive_failures(),
                         pool.backoff_delay().as_secs(),
                         pool.failure_state.failed_package.clone(),
                         pool.failure_state.is_network_failure,
@@ -7242,7 +7480,7 @@ impl Daemon {
                 if d > 0 && retry {
                     pool.mark_warming(d);
                 }
-                (retired, retired_to_delete, d, retry, info)
+                (retired, retired_to_delete, d, retry, parked, info)
             };
 
             if retired_count > 0 {
@@ -7266,6 +7504,11 @@ impl Daemon {
                     for _ in 0..deficit {
                         self.create_uv_env().await;
                     }
+                } else if parked {
+                    debug!(
+                        "[runtimed] UV pool parked after repeated warm failures; \
+                         waiting for a launch, a settings change, or the 30-minute retry"
+                    );
                 } else if let Some((failures, backoff_secs, failed_pkg, is_network)) = backoff_info
                 {
                     // In backoff period - log why we're waiting
@@ -7306,6 +7549,9 @@ impl Daemon {
     async fn conda_warming_loop(self: &Arc<Self>) {
         info!("[runtimed] Starting conda warming loop");
         let mut settings_rx = self.settings_changed.subscribe();
+        // Pool inputs from the previous pass. A change is a settings change
+        // for this pool and clears its backoff or parked state.
+        let mut last_inputs: Option<(usize, Vec<String>)> = None;
 
         loop {
             if *self.shutdown.lock().await {
@@ -7324,19 +7570,32 @@ impl Daemon {
                 );
                 (target, pkgs)
             };
+            let inputs = (target, expected_packages.clone());
+            let inputs_changed = last_inputs.as_ref().is_some_and(|prev| *prev != inputs);
+            last_inputs = Some(inputs);
 
-            let (retired_count, retired_to_delete, deficit, should_retry, backoff_info) = {
+            let (retired_count, retired_to_delete, deficit, should_retry, parked, backoff_info) = {
                 let mut pool = self.conda_pool.lock().await;
                 if pool.set_target(target) {
                     self.pool_ready_conda.notify_waiters();
+                }
+                if inputs_changed && pool.failure_state.consecutive_failures() > 0 {
+                    info!(
+                        "[runtimed] Conda pool settings changed; clearing {} warm failure(s)",
+                        pool.failure_state.consecutive_failures()
+                    );
+                    pool.reset_failure_state();
                 }
                 let retired = pool.retire_mismatched_packages(&expected_packages);
                 let retired_to_delete = pool.retired_paths_if_available_at_target();
                 let d = pool.deficit();
                 let retry = pool.should_retry();
-                let info = if pool.failure_state.consecutive_failures > 0 {
+                let parked = pool.is_parked();
+                // A parked pool's slow retry is one warm, not a full refill.
+                let d = if parked { d.min(1) } else { d };
+                let info = if pool.failure_state.consecutive_failures() > 0 {
                     Some((
-                        pool.failure_state.consecutive_failures,
+                        pool.failure_state.consecutive_failures(),
                         pool.backoff_delay().as_secs(),
                         pool.failure_state.last_error.clone(),
                         pool.failure_state.is_network_failure,
@@ -7348,7 +7607,7 @@ impl Daemon {
                 if d > 0 && retry {
                     pool.mark_warming(d);
                 }
-                (retired, retired_to_delete, d, retry, info)
+                (retired, retired_to_delete, d, retry, parked, info)
             };
 
             if retired_count > 0 {
@@ -7377,6 +7636,11 @@ impl Daemon {
                         }
                         self.create_conda_env().await;
                     }
+                } else if parked {
+                    debug!(
+                        "[runtimed] Conda pool parked after repeated warm failures; \
+                         waiting for a launch, a settings change, or the 30-minute retry"
+                    );
                 } else if let Some((failures, backoff_secs, last_error, is_network)) = backoff_info
                 {
                     // In backoff period - log why we're waiting
@@ -7419,6 +7683,9 @@ impl Daemon {
     async fn pixi_warming_loop(self: &Arc<Self>) {
         info!("[runtimed] Starting pixi warming loop");
         let mut settings_rx = self.settings_changed.subscribe();
+        // Pool inputs from the previous pass. A change is a settings change
+        // for this pool and clears its backoff or parked state.
+        let mut last_inputs: Option<(usize, Vec<String>)> = None;
 
         loop {
             if *self.shutdown.lock().await {
@@ -7437,19 +7704,32 @@ impl Daemon {
                 );
                 (target, pkgs)
             };
+            let inputs = (target, expected_packages.clone());
+            let inputs_changed = last_inputs.as_ref().is_some_and(|prev| *prev != inputs);
+            last_inputs = Some(inputs);
 
-            let (retired_count, retired_to_delete, deficit, should_retry, backoff_info) = {
+            let (retired_count, retired_to_delete, deficit, should_retry, parked, backoff_info) = {
                 let mut pool = self.pixi_pool.lock().await;
                 if pool.set_target(target) {
                     self.pool_ready_pixi.notify_waiters();
+                }
+                if inputs_changed && pool.failure_state.consecutive_failures() > 0 {
+                    info!(
+                        "[runtimed] Pixi pool settings changed; clearing {} warm failure(s)",
+                        pool.failure_state.consecutive_failures()
+                    );
+                    pool.reset_failure_state();
                 }
                 let retired = pool.retire_mismatched_packages(&expected_packages);
                 let retired_to_delete = pool.retired_paths_if_available_at_target();
                 let d = pool.deficit();
                 let retry = pool.should_retry();
-                let info = if pool.failure_state.consecutive_failures > 0 {
+                let parked = pool.is_parked();
+                // A parked pool's slow retry is one warm, not a full refill.
+                let d = if parked { d.min(1) } else { d };
+                let info = if pool.failure_state.consecutive_failures() > 0 {
                     Some((
-                        pool.failure_state.consecutive_failures,
+                        pool.failure_state.consecutive_failures(),
                         pool.backoff_delay().as_secs(),
                         pool.failure_state.last_error.clone(),
                         pool.failure_state.is_network_failure,
@@ -7461,7 +7741,7 @@ impl Daemon {
                 if d > 0 && retry {
                     pool.mark_warming(d);
                 }
-                (retired, retired_to_delete, d, retry, info)
+                (retired, retired_to_delete, d, retry, parked, info)
             };
 
             if retired_count > 0 {
@@ -7488,6 +7768,11 @@ impl Daemon {
                         }
                         self.create_pixi_env().await;
                     }
+                } else if parked {
+                    debug!(
+                        "[runtimed] Pixi pool parked after repeated warm failures; \
+                         waiting for a launch, a settings change, or the 30-minute retry"
+                    );
                 } else if let Some((failures, backoff_secs, last_error, is_network)) = backoff_info
                 {
                     if is_network {
@@ -7778,8 +8063,9 @@ impl Daemon {
                 error: pool.failure_state.last_error.clone(),
                 failed_package: pool.failure_state.failed_package.clone(),
                 error_kind: pool.failure_state.error_kind.clone(),
-                consecutive_failures: pool.failure_state.consecutive_failures,
+                consecutive_failures: pool.failure_state.consecutive_failures(),
                 retry_in_secs: pool.retry_in_secs(),
+                parked: pool.reports_parked(),
             }
         };
         let conda = {
@@ -7792,8 +8078,9 @@ impl Daemon {
                 error: pool.failure_state.last_error.clone(),
                 failed_package: pool.failure_state.failed_package.clone(),
                 error_kind: pool.failure_state.error_kind.clone(),
-                consecutive_failures: pool.failure_state.consecutive_failures,
+                consecutive_failures: pool.failure_state.consecutive_failures(),
                 retry_in_secs: pool.retry_in_secs(),
+                parked: pool.reports_parked(),
             }
         };
 
@@ -7807,8 +8094,9 @@ impl Daemon {
                 error: pool.failure_state.last_error.clone(),
                 failed_package: pool.failure_state.failed_package.clone(),
                 error_kind: pool.failure_state.error_kind.clone(),
-                consecutive_failures: pool.failure_state.consecutive_failures,
+                consecutive_failures: pool.failure_state.consecutive_failures(),
                 retry_in_secs: pool.retry_in_secs(),
+                parked: pool.reports_parked(),
             }
         };
 
@@ -10288,12 +10576,12 @@ mod tests {
         // First failure = 30s backoff
         pool.warming_failed_with_error(None);
         assert_eq!(pool.backoff_delay(), std::time::Duration::from_secs(30));
-        assert_eq!(pool.failure_state.consecutive_failures, 1);
+        assert_eq!(pool.failure_state.consecutive_failures(), 1);
 
         // Second failure = 60s
         pool.warming_failed_with_error(None);
         assert_eq!(pool.backoff_delay(), std::time::Duration::from_secs(60));
-        assert_eq!(pool.failure_state.consecutive_failures, 2);
+        assert_eq!(pool.failure_state.consecutive_failures(), 2);
 
         // Third = 120s
         pool.warming_failed_with_error(None);
@@ -10326,13 +10614,13 @@ mod tests {
             error_kind: "invalid_package".to_string(),
         }));
         pool.warming_failed_with_error(None);
-        assert_eq!(pool.failure_state.consecutive_failures, 2);
+        assert_eq!(pool.failure_state.consecutive_failures(), 2);
         assert!(pool.failure_state.last_error.is_some());
 
         // Adding an env should reset failure state
         let env = create_test_env(&temp_dir, "env1");
         pool.add(env);
-        assert_eq!(pool.failure_state.consecutive_failures, 0);
+        assert_eq!(pool.failure_state.consecutive_failures(), 0);
         assert!(pool.failure_state.last_error.is_none());
         assert!(pool.failure_state.failed_package.is_none());
     }
@@ -10346,13 +10634,234 @@ mod tests {
             error_message: "Package not found".to_string(),
             error_kind: "invalid_package".to_string(),
         }));
-        assert_eq!(pool.failure_state.consecutive_failures, 1);
+        assert_eq!(pool.failure_state.consecutive_failures(), 1);
 
         pool.reset_failure_state();
-        assert_eq!(pool.failure_state.consecutive_failures, 0);
+        assert_eq!(pool.failure_state.consecutive_failures(), 0);
         assert!(pool.failure_state.last_error.is_none());
         assert!(pool.failure_state.failed_package.is_none());
         assert!(pool.failure_state.last_failure.is_none());
+    }
+
+    #[test]
+    fn warm_retry_transition_covers_every_state_and_event() {
+        use WarmRetry::*;
+        use WarmRetryEvent::*;
+        let max = MAX_CONSECUTIVE_WARM_FAILURES;
+        let fail = WarmFailed { network: false };
+        let offline = WarmFailed { network: true };
+        let states = [
+            Healthy,
+            BackingOff {
+                failures: 1,
+                strikes: 1,
+            },
+            BackingOff {
+                failures: 9,
+                strikes: max - 1,
+            },
+            Parked { failures: max },
+            TakeRequested { failures: max },
+        ];
+        for state in states {
+            assert_eq!(state.next(WarmSucceeded), Healthy, "{state:?}");
+            assert_eq!(state.next(SettingsChanged), Healthy, "{state:?}");
+        }
+
+        // Ordinary failures strike; the fifth parks.
+        assert_eq!(
+            Healthy.next(fail),
+            BackingOff {
+                failures: 1,
+                strikes: 1
+            }
+        );
+        assert_eq!(
+            BackingOff {
+                failures: 1,
+                strikes: 1
+            }
+            .next(fail),
+            BackingOff {
+                failures: 2,
+                strikes: 2
+            }
+        );
+        assert_eq!(
+            BackingOff {
+                failures: max - 1,
+                strikes: max - 1
+            }
+            .next(fail),
+            Parked { failures: max }
+        );
+
+        // Network failures count as failures (backoff, status) but never
+        // strike, so being offline cannot park a pool.
+        assert_eq!(
+            Healthy.next(offline),
+            BackingOff {
+                failures: 1,
+                strikes: 0
+            }
+        );
+        let mut state = Healthy;
+        for _ in 0..100 {
+            state = state.next(offline);
+        }
+        assert_eq!(
+            state,
+            BackingOff {
+                failures: 100,
+                strikes: 0
+            }
+        );
+        assert_eq!(
+            BackingOff {
+                failures: 9,
+                strikes: max - 1
+            }
+            .next(offline),
+            BackingOff {
+                failures: 10,
+                strikes: max - 1
+            }
+        );
+        assert_eq!(
+            BackingOff {
+                failures: 10,
+                strikes: max - 1
+            }
+            .next(fail),
+            Parked { failures: 11 }
+        );
+
+        // Any failure while parked, or during a take's retry, stays parked.
+        for event in [fail, offline] {
+            assert_eq!(
+                Parked { failures: max }.next(event),
+                Parked { failures: max + 1 }
+            );
+            assert_eq!(
+                TakeRequested { failures: max }.next(event),
+                Parked { failures: max + 1 },
+                "a take-requested attempt that fails parks again"
+            );
+        }
+
+        assert_eq!(Healthy.next(TakeWaiting), Healthy);
+        let backing_off = BackingOff {
+            failures: 2,
+            strikes: 2,
+        };
+        assert_eq!(
+            backing_off.next(TakeWaiting),
+            backing_off,
+            "takes do not skip an active backoff"
+        );
+        assert_eq!(
+            Parked { failures: max }.next(TakeWaiting),
+            TakeRequested { failures: max }
+        );
+        assert_eq!(
+            TakeRequested { failures: max }.next(TakeWaiting),
+            TakeRequested { failures: max }
+        );
+    }
+
+    /// Retry timing is a pure function of elapsed time, so it is tested on a
+    /// virtual clock rather than by sleeping.
+    #[test]
+    fn warm_retry_wait_on_a_virtual_clock() {
+        use std::time::Duration;
+        let backoff = Duration::from_secs(120);
+        let minute = Duration::from_secs(60);
+        let backing_off = WarmRetry::BackingOff {
+            failures: 3,
+            strikes: 3,
+        };
+        let parked = WarmRetry::Parked { failures: 5 };
+
+        for state in [WarmRetry::Healthy, WarmRetry::TakeRequested { failures: 5 }] {
+            assert!(state.retry_wait(Some(Duration::ZERO), backoff).is_zero());
+        }
+        assert!(backing_off.retry_wait(None, backoff).is_zero());
+        assert!(parked.retry_wait(None, backoff).is_zero());
+
+        assert_eq!(backing_off.retry_wait(Some(minute), backoff), minute);
+        assert!(backing_off.retry_wait(Some(backoff), backoff).is_zero());
+
+        // Parked ignores the backoff and waits for the slow interval.
+        assert_eq!(
+            parked.retry_wait(Some(backoff), backoff),
+            PARKED_RETRY_INTERVAL - backoff
+        );
+        assert_eq!(
+            parked.retry_wait(Some(PARKED_RETRY_INTERVAL - minute), backoff),
+            minute
+        );
+        assert!(parked
+            .retry_wait(Some(PARKED_RETRY_INTERVAL), backoff)
+            .is_zero());
+    }
+
+    #[test]
+    fn pool_parks_after_max_failures_until_take_settings_or_slow_retry() {
+        let mut pool = Pool::new(1, 3600);
+        for _ in 0..MAX_CONSECUTIVE_WARM_FAILURES - 1 {
+            pool.mark_warming(1);
+            pool.warming_failed_with_error(None);
+            assert!(!pool.is_parked());
+        }
+        pool.mark_warming(1);
+        pool.warming_failed_with_error(None);
+        assert!(pool.is_parked());
+        assert!(pool.reports_parked());
+        assert!(
+            !pool.should_retry(),
+            "parked pools skip the regular backoff"
+        );
+        assert!(!pool.reserve_replenishment());
+        let retry_in = pool.retry_in_secs();
+        assert!(
+            retry_in > PARKED_RETRY_INTERVAL.as_secs() - 5
+                && retry_in <= PARKED_RETRY_INTERVAL.as_secs(),
+            "status reports the slow retry: {retry_in}"
+        );
+        // Once the slow interval passes, one automatic retry is due.
+        pool.failure_state.last_failure =
+            Some(Instant::now() - PARKED_RETRY_INTERVAL - std::time::Duration::from_secs(1));
+        assert!(pool.should_retry());
+        assert!(pool.is_parked());
+        pool.failure_state.last_failure = Some(Instant::now());
+
+        pool.request_retry_for_take();
+        assert!(pool.should_retry(), "a waiting take gets one attempt");
+        assert!(pool.reports_parked());
+        assert!(pool.reserve_replenishment());
+        pool.warming_failed_with_error(None);
+        assert!(pool.is_parked(), "that attempt failing parks again");
+
+        pool.reset_failure_state();
+        assert!(!pool.reports_parked());
+        assert!(pool.should_retry());
+        assert_eq!(pool.failure_state.consecutive_failures(), 0);
+    }
+
+    #[test]
+    fn pool_offline_failures_never_park() {
+        let mut pool = Pool::new(1, 3600);
+        for _ in 0..20 {
+            pool.mark_warming(1);
+            pool.warming_failed_with_error(Some(PackageInstallError {
+                failed_package: None,
+                error_message: "Failed to fetch repodata: dns error".to_string(),
+                error_kind: "setup_failed".to_string(),
+            }));
+        }
+        assert!(!pool.reports_parked());
+        assert_eq!(pool.failure_state.consecutive_failures(), 20);
+        assert_eq!(pool.backoff_delay(), std::time::Duration::from_secs(60));
     }
 
     #[test]
@@ -10883,7 +11392,10 @@ mod tests {
     #[test]
     fn test_pool_network_backoff_shorter() {
         let mut pool = Pool::new(3, 3600);
-        pool.failure_state.consecutive_failures = 1;
+        pool.failure_state.retry = WarmRetry::BackingOff {
+            failures: 1,
+            strikes: 1,
+        };
         pool.failure_state.is_network_failure = true;
         let network_delay = pool.backoff_delay();
 
@@ -10901,7 +11413,10 @@ mod tests {
     #[test]
     fn test_pool_non_network_backoff_unchanged() {
         let mut pool = Pool::new(3, 3600);
-        pool.failure_state.consecutive_failures = 3;
+        pool.failure_state.retry = WarmRetry::BackingOff {
+            failures: 3,
+            strikes: 3,
+        };
         pool.failure_state.is_network_failure = false;
         let delay = pool.backoff_delay();
         // 30s * 2^2 = 120s
@@ -10916,7 +11431,10 @@ mod tests {
         // 10s base, doubling, capped at 60s
         let expected = [10, 20, 40, 60, 60];
         for (i, &expected_secs) in expected.iter().enumerate() {
-            pool.failure_state.consecutive_failures = (i + 1) as u32;
+            pool.failure_state.retry = WarmRetry::BackingOff {
+                failures: (i + 1) as u32,
+                strikes: 0,
+            };
             assert_eq!(
                 pool.backoff_delay().as_secs(),
                 expected_secs,
@@ -11035,6 +11553,10 @@ mod tests {
             };
             let first = temp_dir.path().join("first");
             let second = temp_dir.path().join("second");
+            for dir in [&first, &second] {
+                std::fs::create_dir_all(dir.join("lib")).unwrap();
+                std::fs::write(dir.join("lib/partial.py"), "").unwrap();
+            }
             {
                 let mut pool = pool.lock().await;
                 pool.set_target(2);
@@ -11043,10 +11565,11 @@ mod tests {
                 assert!(pool.reserve_replenishment());
                 pool.register_warming_path(second.clone());
             }
-            let mut failed = WarmingGuard::new(daemon.clone(), first, kind);
+            let mut failed = WarmingGuard::new(daemon.clone(), first.clone(), kind);
             failed.fail_with(None).await;
             assert_eq!(pool.lock().await.stats(), (0, 1));
-            let cancelled = WarmingGuard::new(daemon.clone(), second, kind);
+            assert!(!first.exists(), "a failed warm deletes its partial dir");
+            let cancelled = WarmingGuard::new(daemon.clone(), second.clone(), kind);
             let (started_tx, started_rx) = tokio::sync::oneshot::channel();
             let task = tokio::spawn(async move {
                 let _guard = cancelled;
@@ -11067,6 +11590,10 @@ mod tests {
             .await
             .unwrap();
             assert!(pool.lock().await.warming_paths.is_empty());
+            assert!(
+                second.exists(),
+                "a dropped guard leaves the dir to the orphan sweep"
+            );
         }
     }
 
@@ -11084,7 +11611,7 @@ mod tests {
 
         assert!(pool.warming_paths.is_empty());
         assert_eq!(pool.warming, 0);
-        assert_eq!(pool.failure_state.consecutive_failures, 1);
+        assert_eq!(pool.failure_state.consecutive_failures(), 1);
     }
 
     #[test]
@@ -12165,6 +12692,7 @@ mod tests {
             build_at_target_zero: true,
             shutting_down,
             wait_expired,
+            parked_error: None,
         }
     }
 
@@ -12254,6 +12782,25 @@ mod tests {
                 env_type: EnvType::Conda,
                 waited_secs: 120,
             })
+        ));
+
+        // A pool that parked again after this take's retry fails the take
+        // now instead of waiting out the deadline...
+        let parked = |taken| TakeSnapshot {
+            parked_error: Some("solve failed".to_string()),
+            ..take_snapshot(taken, 2, false, false)
+        };
+        assert!(matches!(
+            decide_take(parked(None), EnvType::Uv, 120),
+            TakeDecision::Unavailable(EnvAcquireError::BuildFailed {
+                env_type: EnvType::Uv,
+                ref reason,
+            }) if reason == "solve failed"
+        ));
+        // ...but a ready env still wins.
+        assert!(matches!(
+            decide_take(parked(Some(env.clone())), EnvType::Uv, 120),
+            TakeDecision::Pooled(_)
         ));
     }
 
