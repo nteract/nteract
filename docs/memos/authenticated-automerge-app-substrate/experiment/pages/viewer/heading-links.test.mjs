@@ -4,6 +4,7 @@ import {
   HEADING_SCROLL_STATES,
   anchorFromHash,
   headingForAnchor,
+  headingScrollActive,
   headingScrollTransition,
   inAppLink,
   initialHeadingScroll,
@@ -67,66 +68,103 @@ test("an anchor finds its heading exactly, or by case for a hand-typed fragment"
   assert.equal(headingForAnchor(undefined, "plan"), null);
 });
 
+const anchor = { kind: "anchor", anchor: "plan" };
+const position = { kind: "position", y: 640 };
 const EVENTS = {
-  requested: { type: "requested", pageId: "p", anchor: "plan" },
-  requestedOther: { type: "requested", pageId: "q", anchor: "intro" },
-  requestedEmpty: { type: "requested", pageId: "p", anchor: null },
-  located: { type: "located", pageId: "p" },
-  locatedOther: { type: "located", pageId: "q" },
+  requested: { type: "requested", routeId: "p", target: anchor },
+  requestedPosition: { type: "requested", routeId: "p", target: position },
+  requestedOther: { type: "requested", routeId: "q", target: { kind: "anchor", anchor: "intro" } },
+  requestedEmpty: { type: "requested", routeId: "p", target: null },
+  requestedNoRoute: { type: "requested", routeId: null, target: anchor },
+  requestedBadPosition: { type: "requested", routeId: "p", target: { kind: "position", y: NaN } },
+  navigated: { type: "navigated", routeId: "p" },
+  navigatedOther: { type: "navigated", routeId: "q" },
+  navigatedNone: { type: "navigated", routeId: null },
+  located: { type: "located", pageId: "p", projectId: null },
+  locatedProject: { type: "located", pageId: "doc", projectId: "p" },
+  locatedOther: { type: "located", pageId: "q", projectId: null },
   resized: { type: "resized" },
   expired: { type: "expired" },
   settled: { type: "settled" },
-  userScrolled: { type: "userScrolled" },
-  left: { type: "left" },
+  userIntent: { type: "userIntent" },
   unknown: { type: "unknown" },
 };
 const STATES = {
   idle: initialHeadingScroll,
-  seeking: { name: "seeking", pageId: "p", anchor: "plan" },
-  settling: { name: "settling", pageId: "p", anchor: "plan" },
+  pending: { name: "pending", routeId: "p", target: anchor },
+  settling: { name: "settling", routeId: "p", target: anchor },
+  done: { name: "done" },
+  cancelled: { name: "cancelled" },
 };
-const seekingOther = { name: "seeking", pageId: "q", anchor: "intro" };
+const pending = STATES.pending;
+const pendingPosition = { name: "pending", routeId: "p", target: position };
+const pendingOther = { name: "pending", routeId: "q", target: { kind: "anchor", anchor: "intro" } };
+const settling = STATES.settling;
+const { idle, done, cancelled } = STATES;
+// A resting state (idle, done, cancelled) takes a new request and otherwise
+// stays put.
+const resting = (state) => ({
+  requested: [pending, []],
+  requestedPosition: [pendingPosition, []],
+  requestedOther: [pendingOther, []],
+  requestedEmpty: [idle, []],
+  requestedNoRoute: [idle, []],
+  requestedBadPosition: [idle, []],
+  navigated: [state, []],
+  navigatedOther: [state, []],
+  navigatedNone: [state, []],
+  located: [state, []],
+  locatedProject: [state, []],
+  locatedOther: [state, []],
+  resized: [state, []],
+  expired: [state, []],
+  settled: [state, []],
+  userIntent: [state, []],
+  unknown: [state, []],
+});
 // [next state, effects] for every state and event.
 const TABLE = {
-  idle: {
-    requested: [STATES.seeking, []],
-    requestedOther: [seekingOther, []],
-    requestedEmpty: [STATES.idle, []],
-    located: [STATES.idle, []],
-    locatedOther: [STATES.idle, []],
-    resized: [STATES.idle, []],
-    expired: [STATES.idle, []],
-    settled: [STATES.idle, []],
-    userScrolled: [STATES.idle, []],
-    left: [STATES.idle, []],
-    unknown: [STATES.idle, []],
-  },
-  seeking: {
-    requested: [STATES.seeking, []],
-    requestedOther: [seekingOther, []],
-    requestedEmpty: [STATES.idle, []],
-    located: [STATES.settling, ["scroll"]],
-    locatedOther: [STATES.seeking, []],
-    resized: [STATES.seeking, []],
-    expired: [STATES.idle, []],
-    settled: [STATES.seeking, []],
-    userScrolled: [STATES.idle, []],
-    left: [STATES.idle, []],
-    unknown: [STATES.seeking, []],
+  idle: resting(idle),
+  pending: {
+    requested: [pending, []],
+    requestedPosition: [pendingPosition, []],
+    requestedOther: [pendingOther, []],
+    requestedEmpty: [idle, []],
+    requestedNoRoute: [idle, []],
+    requestedBadPosition: [idle, []],
+    navigated: [pending, []],
+    navigatedOther: [cancelled, []],
+    navigatedNone: [cancelled, []],
+    located: [settling, ["scroll"]],
+    locatedProject: [settling, ["scroll"]],
+    locatedOther: [pending, []],
+    resized: [pending, []],
+    expired: [cancelled, []],
+    settled: [pending, []],
+    userIntent: [cancelled, []],
+    unknown: [pending, []],
   },
   settling: {
-    requested: [STATES.seeking, []],
-    requestedOther: [seekingOther, []],
-    requestedEmpty: [STATES.idle, []],
-    located: [STATES.settling, []],
-    locatedOther: [STATES.settling, []],
-    resized: [STATES.settling, ["scroll"]],
-    expired: [STATES.settling, []],
-    settled: [STATES.idle, []],
-    userScrolled: [STATES.idle, []],
-    left: [STATES.idle, []],
-    unknown: [STATES.settling, []],
+    requested: [pending, []],
+    requestedPosition: [pendingPosition, []],
+    requestedOther: [pendingOther, []],
+    requestedEmpty: [idle, []],
+    requestedNoRoute: [idle, []],
+    requestedBadPosition: [idle, []],
+    navigated: [settling, []],
+    navigatedOther: [cancelled, []],
+    navigatedNone: [cancelled, []],
+    located: [settling, []],
+    locatedProject: [settling, []],
+    locatedOther: [settling, []],
+    resized: [settling, ["scroll"]],
+    expired: [settling, []],
+    settled: [done, []],
+    userIntent: [cancelled, []],
+    unknown: [settling, []],
   },
+  done: resting(done),
+  cancelled: resting(cancelled),
 };
 
 test("the heading scroll transition covers every state and event", () => {
@@ -151,4 +189,13 @@ test("an event that changes nothing returns the same state object", () => {
           `${name} × ${event.type}`,
         );
     }
+});
+
+test("only pending and settling are active", () => {
+  assert.deepEqual(
+    Object.entries(STATES)
+      .filter(([, state]) => headingScrollActive(state))
+      .map(([name]) => name),
+    ["pending", "settling"],
+  );
 });

@@ -45,6 +45,7 @@ import { earlyConnectAnswer, requestSession } from "./early-session.mjs";
 import { PagePreview } from "./PagePreview.jsx";
 import { BlockBoundary } from "./BlockBoundary.jsx";
 import { BootPreview, visiblePreview } from "./boot-preview.mjs";
+import { HeadingScroll } from "./heading-scroll.mjs";
 import { openPageWithRetry } from "./page-open.mjs";
 // app.css carries the editor's styles too, ahead of style.css so the cascade
 // matches the editor modules' own import order.
@@ -125,6 +126,12 @@ const bootPreview = new BootPreview();
   const route = readPageRoute(location.href);
   if (route.kind === "page") bootPreview.start(route.pageId, earlyConnectAnswer(route.pageId));
 }
+// The scroll to the address's heading, and Back and Forward's scroll
+// positions (heading-scroll.mjs). It starts at boot so that the reader
+// scrolling the loading preview calls the heading's scroll off.
+const headingScroll = new HeadingScroll();
+headingScroll.start();
+headingScroll.requestFromAddress();
 // A pointer going down on a Page row is a strong hint a Page opens next.
 const warmEditor = () => editor.start();
 // What the App does with an answer for another account than the tab's
@@ -561,6 +568,7 @@ function App() {
   ) {
     if (historyMode !== "none")
       writePageRoute(projectId ?? id, { replace: historyMode === "replace", anchor });
+    headingScroll.navigated(projectId ?? id);
     bootPreview.dispatch({ type: "navigated", pageId: id });
     picker.close();
     setNotice("");
@@ -623,6 +631,7 @@ function App() {
       event.preventDefault();
     }
     host.navigate();
+    headingScroll.navigated(null);
     bootPreview.dispatch({ type: "navigated", pageId: null });
     releaseCurrent();
     setAccount(authentication.current?.identity ?? null);
@@ -653,6 +662,7 @@ function App() {
     if (host.current && placement?.kind === "project" && placement.project_id === projectId) {
       if (historyMode !== "none")
         writePageRoute(projectId, { replace: historyMode === "replace", anchor });
+      headingScroll.navigated(projectId);
       setProjectOpen(projectId);
       return;
     }
@@ -660,8 +670,13 @@ function App() {
   }
   /** A link in Page content to another Page or Project (HeadingAnchors). */
   function openRoute(route, anchor) {
-    if (route.kind === "page") void open(route.pageId, { anchor });
-    else if (route.kind === "project") void openProject(route.projectId, { anchor });
+    if (route.kind === "page") {
+      headingScroll.request(route.pageId, anchor);
+      void open(route.pageId, { anchor });
+    } else if (route.kind === "project") {
+      headingScroll.request(route.projectId, anchor);
+      void openProject(route.projectId, { anchor });
+    }
   }
   /** Show an index route (readPageRoute's `projects` or `pages`). */
   function openIndex(route, { historyMode = "push" } = {}) {
@@ -1692,6 +1707,7 @@ function App() {
                     article={article}
                     session={session}
                     projectId={projectOpen}
+                    scroll={headingScroll}
                     onOpenRoute={openRoute}
                     onNotice={setNotice}
                     onError={setError}

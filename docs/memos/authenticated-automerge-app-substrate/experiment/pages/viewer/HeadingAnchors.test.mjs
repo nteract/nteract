@@ -6,6 +6,8 @@ import { build } from "esbuild";
 import { JSDOM } from "jsdom";
 import * as A from "@automerge/automerge";
 import { richFromSource } from "../model/richtext-test-support.mjs";
+import { SCROLL_STATE_KEY } from "../shared/routes.mjs";
+import { HeadingScroll } from "./heading-scroll.mjs";
 
 const pageId = "1a160b47-6df1-4983-81eb-489ca5a26812";
 const otherId = "2b160b47-6df1-4983-81eb-489ca5a26812";
@@ -17,6 +19,12 @@ const scrolled = [];
 dom.window.Element.prototype.scrollIntoView = function () {
   scrolled.push(this.textContent);
 };
+dom.window.scrollTo = (options) => scrolled.push(options.top);
+// jsdom lays nothing out: a tall document, so any position fits.
+Object.defineProperty(dom.window.document.documentElement, "scrollHeight", {
+  configurable: true,
+  get: () => 5000,
+});
 class NoResizeObserver {
   observe() {}
   disconnect() {}
@@ -95,7 +103,19 @@ function drawBlock(article, id, html) {
 const frames = () =>
   act(() => new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0))));
 
+/** The shell's scroll controller, started as at page load. */
+const controllers = [];
+after(() => controllers.forEach((scroll) => scroll.stop()));
+function controller({ fromAddress = false } = {}) {
+  const scroll = new HeadingScroll();
+  controllers.push(scroll);
+  scroll.start();
+  if (fromAddress) scroll.requestFromAddress();
+  return scroll;
+}
+
 async function mount(props = {}) {
+  const scroll = props.scroll ?? controller();
   const article = document.createElement("article");
   document.body.replaceChildren(article);
   const host = document.createElement("div");
@@ -113,16 +133,17 @@ async function mount(props = {}) {
         onNotice: (message) => notices.push(message),
         onError: (message) => notices.push(message),
         ...props,
+        scroll,
       }),
     ),
   );
-  return { article, root, opened, notices };
+  return { article, root, opened, notices, scroll };
 }
 
 test("a fragment in the address scrolls to its heading once the editor draws it", async () => {
   history.replaceState(null, "", `/p/${pageId}#getting-lean-automerge`);
   scrolled.length = 0;
-  const { article, root } = await mount();
+  const { article, root, scroll } = await mount({ scroll: controller({ fromAddress: true }) });
   drawBlock(article, "one", "<h1>Overview</h1>");
   await frames();
   assert.deepEqual(scrolled, [], "nothing to scroll to before the heading draws");
@@ -131,17 +152,70 @@ test("a fragment in the address scrolls to its heading once the editor draws it"
   await frames();
   assert.deepEqual(scrolled, ["Getting lean: Automerge"]);
   await act(async () => root.unmount());
+  scroll.stop();
 });
 
-test("the reader scrolling first cancels a pending scroll", async () => {
+test("the reader scrolling before the Page opens cancels its scroll", async () => {
   history.replaceState(null, "", `/p/${pageId}#plan`);
   scrolled.length = 0;
-  const { article, root } = await mount();
+  // Page load: the loading preview shows, and the reader wheels it.
+  const scroll = controller({ fromAddress: true });
+  window.dispatchEvent(new window.Event("wheel"));
+  const { article, root } = await mount({ scroll });
+  drawBlock(article, "two", "<h2>Plan</h2><h2>Getting lean: Automerge</h2>");
+  await frames();
+  assert.deepEqual(scrolled, []);
+  assert.equal(scroll.store.snapshot().name, "cancelled");
+  await act(async () => root.unmount());
+  scroll.stop();
+});
+
+test("the reader scrolling while the Page is open cancels a pending scroll", async () => {
+  history.replaceState(null, "", `/p/${pageId}#plan`);
+  scrolled.length = 0;
+  const scroll = controller({ fromAddress: true });
+  const { article, root } = await mount({ scroll });
   await act(async () => window.dispatchEvent(new window.Event("wheel")));
   drawBlock(article, "two", "<h2>Plan</h2><h2>Getting lean: Automerge</h2>");
   await frames();
   assert.deepEqual(scrolled, []);
   await act(async () => root.unmount());
+  scroll.stop();
+});
+
+test("Back returns to the entry's recorded position once the Page draws", async () => {
+  history.replaceState(null, "", `/p/${pageId}`);
+  scrolled.length = 0;
+  const scroll = controller();
+  const { article, root } = await mount({ scroll });
+  history.replaceState({ pageId, [SCROLL_STATE_KEY]: { path: `/p/${pageId}`, y: 900 } }, "");
+  await act(async () => window.dispatchEvent(new window.PopStateEvent("popstate")));
+  await frames();
+  assert.deepEqual(scrolled, [], "nothing drawn yet");
+  drawBlock(article, "one", "<h1>Overview</h1>");
+  await frames();
+  assert.deepEqual(scrolled, [900]);
+  assert.equal(scroll.store.snapshot().name, "settling");
+  await act(async () => root.unmount());
+  scroll.stop();
+});
+
+test("scrolling records the position in the history entry showing the Page", async () => {
+  history.replaceState({ pageId }, "", `/p/${pageId}`);
+  const scroll = controller();
+  const { root } = await mount({ scroll });
+  Object.defineProperty(window, "scrollY", { configurable: true, value: 333 });
+  await act(async () => window.dispatchEvent(new window.Event("scroll")));
+  await act(() => new Promise((resolve) => setTimeout(resolve, 250)));
+  assert.deepEqual(history.state, { pageId, [SCROLL_STATE_KEY]: { path: `/p/${pageId}`, y: 333 } });
+  // Not while the address shows another Page (mid-swap after a link or Back).
+  history.replaceState({ pageId: otherId }, "", `/p/${otherId}`);
+  Object.defineProperty(window, "scrollY", { configurable: true, value: 0 });
+  await act(async () => window.dispatchEvent(new window.Event("scroll")));
+  await act(() => new Promise((resolve) => setTimeout(resolve, 250)));
+  assert.deepEqual(history.state, { pageId: otherId });
+  await act(async () => root.unmount());
+  scroll.stop();
 });
 
 test("a read-only link to a heading scrolls in place and puts it in the address", async () => {
