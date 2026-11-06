@@ -90,7 +90,7 @@ const SUITES = Object.freeze([
     script: "scripts/title-warning-smoke.mjs",
     timeout: 2 * minute,
   },
-  { name: "native", script: "scripts/smoke.mjs", timeout: 2 * minute },
+  { name: "smoke", script: "scripts/smoke.mjs", timeout: 2 * minute },
   {
     name: "schema-features",
     script: "scripts/schema-features-smoke.mjs",
@@ -252,13 +252,12 @@ async function closeLog(log) {
   await new Promise((resolve) => log.end(resolve));
 }
 
-// A local Wordgard fixture equivalent to `npm run dev` with Page8's persistence
-// flags, staged from dist/ into a temporary directory so no dev state is reused.
+// A local Wordgard fixture equivalent to `npm run dev`, staged from dist/ into a temporary directory so no dev state is reused.
 async function startServer(output, deadline) {
   const scratch = await mkdtemp(path.join(tmpdir(), "pages-e2e-"));
   const runtime = path.join(scratch, "runtime");
   await mkdir(runtime);
-  for (const name of ["index.js", "public", "automerge.wasm", "subduction.wasm", "wrangler.json"])
+  for (const name of ["index.js", "public", "automerge.wasm", "wrangler.json"])
     await cp(path.join(app, "dist", name), path.join(runtime, name), {
       recursive: true,
     });
@@ -269,11 +268,6 @@ async function startServer(output, deadline) {
     [
       `NOTEBOOK_CLOUD_APP_SESSION_SECRET=${randomBytes(32).toString("hex")}`,
       "NOTEBOOK_CLOUD_LOCAL_OIDC=true",
-      "PAGES_ASYNC_PERSISTENCE=true",
-      "PAGES_COMPACT_RECORDS=true",
-      // `PAGES_RECORD_STORAGE=automerge npm run e2e` runs every suite on plain
-      // Automerge sync for new Pages.
-      `PAGES_RECORD_STORAGE=${process.env.PAGES_RECORD_STORAGE ?? ""}`,
       "PAGES_CATALOG_INDEX=1",
       "NOTEBOOK_CLOUD_OIDC_FLOW=server",
       `NOTEBOOK_CLOUD_PUBLIC_ORIGIN=${origin}`,
@@ -396,10 +390,7 @@ const maxFlaky = envInteger("PAGES_E2E_MAX_FLAKY", 1, SUITES.length);
 // whole list in summary.json, and a row in the GitHub step summary.
 const stepSummary = process.env.GITHUB_STEP_SUMMARY;
 const summarize = (text) => (stepSummary ? appendFile(stepSummary, text) : undefined);
-const syncMode = process.env.PAGES_RECORD_STORAGE === "automerge" ? " (plain Automerge sync)" : "";
-await summarize(
-  `### Pages browser E2E${syncMode}\n\n| Suite | Result | Seconds |\n| --- | --- | --- |\n`,
-);
+await summarize("### Pages browser E2E\n\n| Suite | Result | Seconds |\n| --- | --- | --- |\n");
 const results = [];
 for (const suite of selected) {
   if (interrupted) break;
@@ -428,7 +419,7 @@ for (const suite of selected) {
   await summarize(`| ${result.name} | ${label} | ${result.seconds.toFixed(1)} |\n`);
 }
 
-console.log(`\nPages E2E summary${syncMode}`);
+console.log("\nPages E2E summary");
 for (const { name, result, seconds } of results)
   console.log(`  ${result.toUpperCase().padEnd(5)} ${name.padEnd(16)} ${seconds.toFixed(1)}s`);
 const failed = results.filter((result) => result.result === "fail");

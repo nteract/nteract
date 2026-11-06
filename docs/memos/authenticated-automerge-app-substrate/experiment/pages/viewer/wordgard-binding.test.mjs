@@ -5,7 +5,21 @@ import { GardState, GardSelection, Transaction } from "wordgard/state";
 import { history, undo, redo } from "wordgard/history";
 import { Command, deleteUnit, enter, toggleMark } from "wordgard/command";
 import { codeBlock, codeBlockLanguage, orderedList } from "wordgard/schema";
-import { createPeer, connectPeers, closePeers, eventually } from "../../backend.mjs";
+import { documentIdToBinary } from "@automerge/automerge-repo";
+import { browser, host } from "../sync/test-helpers.mjs";
+
+/** Resolve once `check` stops throwing; rethrow its last error after 4 s. */
+async function eventually(check, timeout = 4000) {
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    try {
+      return await check();
+    } catch (error) {
+      if (Date.now() > deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+}
 import { applyPageOperation, createPageData, initializePage, projectPage } from "../model/page.mjs";
 import { orderedBlockIds } from "../model/order.mjs";
 import { Leaf, Slice } from "wordgard/doc";
@@ -202,19 +216,24 @@ test("stale editor transactions reject without changing shared state", () => {
 });
 
 test("real Repo handles drive Wordgard changes while undo preserves a remote insertion", async (t) => {
-  const peers = [createPeer(), createPeer()],
-    wires = [];
+  // Two browsers on plain Automerge sync through one host.
+  const syncHost = await host();
+  const peers = [
+    await browser(syncHost, { principal: "account:first" }),
+    await browser(syncHost, { principal: "account:second" }),
+  ];
   let binding;
   t.after(async () => {
     binding?.destroy();
-    await closePeers(peers, wires);
+    for (const peer of peers) await peer.repo.shutdown();
   });
   const first = await peers[0].repo.create(
     createPageData({ pageId: "wordgard-history", title: "Fixture" }),
   );
+  syncHost.register(Buffer.from(documentIdToBinary(first.documentId)).toString("hex"));
   await first.change((d) => initializePage(d, "Original"));
-  wires.push(await connectPeers(peers[0], peers[1]));
-  const second = await peers[1].repo.find(first.documentId),
+  await peers[0].repo.flush();
+  const second = await peers[1].repo.find(first.url),
     id = orderedBlockIds(first.doc())[0];
   let local = 0;
   const replica = {
@@ -272,7 +291,10 @@ test("real Repo handles drive Wordgard changes while undo preserves a remote ins
   localChange(redoSpec);
   assert.equal(replica.doc.blocks[id].richText, "Local Original Remote");
   await peers[1].repo.flush();
-  await eventually(() => assert.equal(first.doc().blocks[id].richText, "Local Original Remote"));
+  // The text alone matches before the undo arrives; wait for the redo itself.
+  await eventually(() =>
+    assert.deepEqual(A.getHeads(first.doc()).sort(), A.getHeads(replica.doc).sort()),
+  );
   await first.change((d) =>
     A.updateSpans(
       d,

@@ -1,6 +1,5 @@
 import * as A from "@automerge/automerge";
 import { parseGrantGeneration } from "../shared/grant-generation.mjs";
-import * as N from "@automerge/subduction";
 import {
   asapScheduler,
   asyncScheduler,
@@ -14,7 +13,6 @@ import {
   timer,
 } from "rxjs";
 import { Repo, documentIdToBinary } from "@automerge/automerge-repo";
-import { SubductionBackend, IndexedDBByteStore } from "@automerge/automerge-repo-subduction";
 import { AutomergeSyncBackend } from "../sync/backend.mjs";
 import { DocStore } from "../sync/doc-store.mjs";
 import { IdbByteStore } from "../sync/idb-byte-store.mjs";
@@ -51,7 +49,6 @@ import { connectUrl, requestConnect } from "./early-session.mjs";
 import { SERVER_UNREACHABLE } from "./alerts.mjs";
 import { monotonicNow } from "./monotonic.mjs";
 import { activitySnapshot, presenceLabel } from "./activity.mjs";
-import { checkpointRecords } from "./checkpoint-records.mjs";
 import { guardSocketSend } from "./socket-send.mjs";
 import { Store } from "./store.mjs";
 import { OutboundSync } from "./outbound-sync.mjs";
@@ -64,7 +61,6 @@ import {
   viewerReconnectMachine,
 } from "./reconnect-machine.mjs";
 import { commentsOpenMachine } from "./comments-open-machine.mjs";
-import { storageSwitchMachine } from "./storage-switch-machine.mjs";
 import { fullStatus, overlayStatus, viewerSyncStatusMachine } from "./sync-status-machine.mjs";
 import {
   acknowledgedHeads,
@@ -87,9 +83,8 @@ const ownerAccess = () => ({
   canManageAccess: true,
   canDelete: true,
 });
-/** The native replica for an access fact. A key's authority is fixed when the
- * host first admits it: writer (edits the Page and comments), commenter
- * (comments only) or reader. */
+/** The replica for an access fact: writer (edits the Page and comments),
+ * commenter (comments only) or reader. */
 const replicaKey = (access, credentialCanWrite) =>
   `${access?.generation ?? 0}:${
     credentialCanWrite && access?.canWrite
@@ -98,16 +93,14 @@ const replicaKey = (access, credentialCanWrite) =>
         ? "commenter"
         : "reader"
   }`;
-// A trashed Page previews on a reader replica. The host binds any key first
-// admitted there as a reader, so restore reloads onto the writer replica and
-// never promotes preview history.
+// A trashed Page previews on a reader replica. Restore reloads onto the
+// writer replica and never promotes preview history.
 const READER_REPLICA = ":reader";
 const accessFailure = () =>
   Object.assign(Error("Page access changed; reload its current version"), {
     code: "PAGE_ACCESS_CHANGED",
     status: 409,
   });
-const bytes = (value) => Uint8Array.from(value.match(/../g), (v) => parseInt(v, 16));
 /** Which host refusal retires this account's local copy: `access` for
  * `page_access_denied` (access removed, or a Page missing to this account,
  * purged included), `deleted` for `page_deleted`. Anything else, a transient
@@ -123,7 +116,7 @@ export function refusalOf(error) {
  *   account, purged included). revoke retires and hides the copy.
  * - `trash`: page_trashed. The Trash notice; the copy stays for restore.
  * - `denied`: any other 403. Paused; the copy stays, since the host didn't
- *   say why. A refused signing key is a native refusal, handled apart.
+ *   say why. A `signing_key_rejected` 403 is an admission stop, handled apart.
  * Anything else, a 404 without page_deleted included, is not a refusal. */
 export function classifyRefusal(error) {
   if (error?.status === 404) return error.code === "page_deleted" ? "deleted" : undefined;
@@ -133,15 +126,9 @@ export function classifyRefusal(error) {
   if (error.code === "signing_key_rejected") return undefined;
   return "denied";
 }
-// 409s that retrying can't fix: the replica's storage changed under it, a
-// draft's storage move failed, this build lacks a feature the Page uses, or
+// 409s that retrying can't fix: this build lacks a feature the Page uses, or
 // the host can't read a draft an earlier build saved.
-const RELOAD_REQUIRED_CODES = new Set([
-  "RECORD_STORAGE_CHANGED",
-  "STORAGE_SWITCH_FAILED",
-  "unsupported_schema_feature",
-  "stored_form_unsupported",
-]);
+const RELOAD_REQUIRED_CODES = new Set(["unsupported_schema_feature", "stored_form_unsupported"]);
 /** Shown when the host refuses to register a draft an earlier version of
  * Pages saved in a form this build doesn't read. */
 export const DRAFT_FORM_UNSUPPORTED =
@@ -159,10 +146,10 @@ function draftUnreadable(error) {
 }
 /** Whether a failed connection attempt retries on the reconnect backoff. It
  * runs after attemptConnection has handled classifyRefusal, a 401, and the
- * native admission's own stop, so it decides what remains.
+ * admission's own stop, so it decides what remains.
  * Stops, until Retry, an `online` event, sign-in or a reload:
  * - a 401 or 403 (sign-in, or a refused signing key over HTTP),
- * - a refused signing key from the native handshake,
+ * - an admission close that says stop,
  * - a 409 in RELOAD_REQUIRED_CODES.
  * Everything else retries: no status, a 5xx, and any other 4xx. A 404
  * without page_deleted, 408, 409, 425 or 429 is a host that may answer
@@ -179,45 +166,20 @@ export const TRASHED_COPY =
 export const DENIED_COPY =
   "You no longer have access to this Page. Your local copy is kept on this device.";
 export const PAGE_DELETED = "This Page was deleted.";
-/** The edit pause while a refused plain draft moves to native storage, or a
- * replica in the wrong storage records the host's. */
-const STORAGE_SWITCH = "storage-switch";
-export const STORAGE_SWITCHING = "This draft is moving to new storage. Try again in a moment.";
-export const STORAGE_SWITCH_FAILED =
-  "This draft couldn't move to new storage. Reload to keep editing; it's saved on this device.";
-export const STORAGE_ADOPTED =
-  "This Page's storage changed. Reload to keep editing; your edits are saved on this device.";
-/** The edit pause while a tab that reopens in place (`reopenInPlace`) closes
- * the adopted replica and opens the host's storage. */
-export const STORAGE_REOPENING = "This Page is reopening on new storage. Try again in a moment.";
-export const STORAGE_REFUSED_AGAIN =
-  "The server refused this draft's storage again. Try again to register it.";
-/** Why a storage switch in `state` holds edits. `reopening` says the tab
- * reopens the Page in place once the host's storage is adopted. */
-const storageSwitchNotice = (state, reopening = false) =>
-  state.name === "failed"
-    ? STORAGE_SWITCH_FAILED
-    : state.name === "adopting" || state.name === "adopted"
-      ? reopening
-        ? STORAGE_REOPENING
-        : STORAGE_ADOPTED
-      : STORAGE_SWITCHING;
-/** A checkpoint write's answer that the local copy is no longer this tab's
- * (local-pages.mjs). */
-const LOCAL_COPY_RETIRED = Object.freeze([
-  "LOCAL_PAGE_DELETED",
-  "LOCAL_PAGE_REVOKED",
-  "LOCAL_PAGE_ACCESS_CHANGED",
-]);
-const storageRefused = (error) =>
-  error?.status === 409 && error.code === "record_storage_unsupported";
-/** A failed move's error. It stops automatic reconnects (connectionFailureRetries):
- * only a reload moves the draft again. */
-const storageSwitchFailed = (cause) =>
-  Object.assign(Error(STORAGE_SWITCH_FAILED, { cause }), {
-    code: "STORAGE_SWITCH_FAILED",
-    status: 409,
-  });
+/** Shown once when a local copy saved by an earlier build had no checkpoint
+ * this build can read: it was discarded and the Page opened from the host. */
+export const LOCAL_COPY_DISCARDED =
+  "This Page's local copy couldn't be read, so it was reopened from the server.";
+/** A local record's checkpoint, loaded, or undefined when it has none this
+ * build can read. The caller frees it. */
+function readable(record) {
+  if (typeof record.snapshot !== "string" || typeof record.document_id !== "string") return;
+  try {
+    return A.load(decodeSnapshot(record.snapshot));
+  } catch {
+    return undefined;
+  }
+}
 /** Stands in for the Markdown of a copy that couldn't be projected. */
 export const MARKDOWN_UNAVAILABLE =
   "This copy couldn't be shown as Markdown. Its Automerge snapshots are in this download.";
@@ -242,9 +204,8 @@ const recordBytes = (record) => ({
     }),
   }),
 });
-// Longer than the host's 10-second native admission deadline. A socket that
-// closes sooner never proved admission, so it must not reset reconnect backoff,
-// and an admission close code on it counts as a refusal.
+// A socket that closes sooner never proved admission, so it must not reset
+// reconnect backoff, and an admission close code on it counts as a refusal.
 export const STABLE_CONNECTION_MS = 15_000;
 // A Page being left keeps syncing this long for its receipt before closing.
 export const CLOSE_DRAIN_MS = 10_000;
@@ -268,7 +229,7 @@ const SIGNING_KEY_REFUSED =
   "This Page refused this tab's signing key. Your edits stay on this device. Retry, or open the Page in a new tab.";
 const SYNC_PAUSED =
   "Sync paused: the host kept refusing this connection. Your edits stay on this device. Retry to reconnect.";
-/** Whether a native admission close counts toward pausing sync. A
+/** Whether an admission close counts toward pausing sync. A
  * `temporarily_unavailable` close says the host is briefly busy (a handshake
  * deadline, a full socket quota, a storage stall), so it takes the backoff
  * like a dropped socket and retries at the capped step for as long as it
@@ -314,19 +275,21 @@ function socketOpened(socket) {
     socket.addEventListener("error", fail, { once: true });
   });
 }
-/** `features` is this build's schema features. The host refuses native edits
- * from a tab whose build lacks an id the Page is stamped with; no parameter
- * means the baseline, as for builds from before the stamp. */
+/** `features` is this build's schema features. The host refuses edits from a
+ * tab whose build lacks an id the Page is stamped with; no parameter means the
+ * baseline, as for builds from before the stamp. */
 export function pageSyncAddress(pageId, href, activityEpoch, features = []) {
   const address = new URL(`/api/sync?page=${encodeURIComponent(pageId)}`, href);
   address.protocol = address.protocol === "https:" ? "wss:" : "ws:";
-  // This build speaks plain Automerge sync too; an `automerge` Page needs it.
+  // Plain Automerge sync (sync/wire.mjs), the only sync the host speaks.
   address.searchParams.set("sync", "automerge");
   if (activityEpoch) address.searchParams.set("activity_epoch", activityEpoch);
   if (features.length) address.searchParams.set("schema_features", [...features].sort().join(","));
   return address;
 }
-/** `fresh` starts a new native replica instead of reopening this tab's. */
+/** `fresh` starts a new replica instead of reopening this tab's. The
+ * `pages-native:` names predate plain sync; they stay so open tabs keep their
+ * replica. */
 async function exclusiveIdentity(scope, { fresh = false } = {}) {
   const key = `pages-native:${scope}`;
   let seed =
@@ -342,7 +305,7 @@ async function exclusiveIdentity(scope, { fresh = false } = {}) {
       });
       if (await acquired) break;
       // Duplicated tabs inherit sessionStorage; give each backend exclusive
-      // ownership rather than concurrently opening one database/signing key.
+      // ownership rather than concurrently opening one database.
       seed = hex(crypto.getRandomValues(new Uint8Array(32)));
     }
   } else seed = hex(crypto.getRandomValues(new Uint8Array(32)));
@@ -426,8 +389,7 @@ export class PageSession {
   socketOutcomes = new WeakMap();
   socketAdmittedAt = new WeakMap();
   // Reasons edits are held while the session keeps syncing: the reload gate's
-  // "reload", the build floor's "protocol" and a draft's "storage-switch".
-  // They are not lifecycle phases.
+  // "reload" and the build floor's "protocol". They are not lifecycle phases.
   editPauses = new Set();
   /** The schema gate (schemaGateStep in model/schema-features.mjs):
    * `editable: false` when the Page is stamped with a feature this build
@@ -439,7 +401,7 @@ export class PageSession {
    * below derives from it, and effects run from its transitions. */
   phase$ = new Store(viewerSessionMachine.initial);
   /** Automatic reconnects (see reconnect-machine.mjs): a deadline on each
-   * socket's handshake, backoff, a refused signing key, or a pause after
+   * socket's open, backoff, a refusal that stops sync, or a pause after
    * repeated admission refusals. `retryTimer` is pending exactly while it is
    * `waiting`; `handshakeTimer` and `handshake` (the socket whose handshake
    * is pending, with the function that abandons it) exactly while it is
@@ -447,8 +409,6 @@ export class PageSession {
   reconnect$ = new Store(viewerReconnectMachine.initial);
   // Opening the comments document (comments-open-machine.mjs).
   commentsOpen$ = new Store(commentsOpenMachine.initial);
-  // Moving a refused plain draft to native storage (storage-switch-machine.mjs).
-  storageSwitch$ = new Store(storageSwitchMachine.initial);
   /** What the status line says about receipts and the connection (see
    * sync-status-machine.mjs). `status` renders it with the phase's pauses. */
   sync$ = new Store(viewerSyncStatusMachine.initial);
@@ -459,8 +419,6 @@ export class PageSession {
   /** Advances when this session's local copy stops being its own: a
    * retirement starts, or the replica is released or replaced. */
   #localEpoch = 0;
-  /** A storage move's teardown of the plain replica it detached. */
-  #plainTeardown;
   /** A fence for one local write that spans awaits. The returned check
    * passes while the replica, its backend and its copy are still this
    * session's: no retirement, release or replacement since. */
@@ -484,11 +442,11 @@ export class PageSession {
       await session.start();
       return session;
     } catch (cause) {
-      // close() invalidates the session immediately, but draining native I/O can
-      // outlast a failed lookup. Surface the opening error while cleanup keeps
-      // ownership of the replica and its identity lock until it has finished.
-      // Automatic retries must await this drain rather than treating its held
-      // lock as another tab and rotating the native signing/storage identity.
+      // close() invalidates the session immediately, but draining replica I/O
+      // can outlast a failed lookup. Surface the opening error while cleanup
+      // keeps ownership of the replica and its identity lock until it has
+      // finished. Automatic retries must await this drain rather than treating
+      // its held lock as another tab and rotating the replica's storage.
       const error = cause instanceof Error ? cause : Error(String(cause));
       error.cleanupPromise = session.close();
       void error.cleanupPromise.catch(() => {});
@@ -514,14 +472,9 @@ export class PageSession {
       random = Math.random,
       now = monotonicNow,
       buildFeatures = BUILD_FEATURES,
-      reopenInPlace = false,
     } = {},
   ) {
     this.pageId = pageId;
-    // Once this replica adopts the host's storage, the tab's SessionHost
-    // reopens the Page from the recorded checkpoint (storage-reopen-machine.mjs)
-    // instead of asking the person to reload.
-    this.reopenInPlace = reopenInPlace;
     // The schema features this viewer can edit. Tests inject their own.
     this.buildFeatures = buildFeatures;
     this.refreshSession = refreshSession;
@@ -533,7 +486,7 @@ export class PageSession {
     // lifetimes. Readers of `peers` and `agentProgress` use it too.
     this.now = now;
     // When local edits and the caret go out (outbound-sync-machine.mjs): a
-    // run of keystrokes shares one native sync round instead of one each.
+    // run of keystrokes shares one sync round instead of one each.
     // Every backend this session opens schedules its local rounds here.
     this.outbound = new OutboundSync({
       scheduler,
@@ -633,8 +586,8 @@ export class PageSession {
   get saveState() {
     return saveStateOf(this.statusId);
   }
-  /** The host refused this tab's signing key; only an explicit attempt
-   * retries. */
+  /** The host refused this connection for good (an admission `stop`); only
+   * an explicit attempt retries. */
   get nativeRefused() {
     return this.reconnect$.snapshot().name === "refused";
   }
@@ -727,17 +680,7 @@ export class PageSession {
       random: this.random,
       now: this.now,
       buildFeatures: this.buildFeatures,
-      reopenInPlace: this.reopenInPlace,
     });
-  }
-  /** Open this Page again after this session adopted the host's storage and
-   * closed (SessionHost.reopenStorage). The replacement restores the recorded
-   * checkpoint into a replica of the host's storage. Resolves with it. */
-  async openAfterStorageChange() {
-    if (this.alive) throw Error("The adopted session is still open");
-    if (this.hidden) throw Error("This Page's local copy was retired");
-    await Promise.allSettled([this.#released]);
-    return this.#openReplacement();
   }
   #saved() {
     if (this.hidden) return true;
@@ -1203,8 +1146,6 @@ export class PageSession {
     this.authProblem = "";
     this.identity = result.identity;
     this.credentialCanWrite = !!result.canWrite;
-    if (result.recordStorage !== undefined || "editor" in result)
-      this.newPageStorage = result.recordStorage === "automerge" ? "automerge" : "native";
     if (
       this.handle &&
       this.access &&
@@ -1361,8 +1302,9 @@ export class PageSession {
       this.emit();
     }
   }
-  /** The host refused this tab's signing key. Reconnecting with the same key
-   * cannot succeed, so wait for an explicit Retry or a new tab. */
+  /** The host refused this connection with an admission `stop`.
+   * Reconnecting as is cannot succeed, so wait for an explicit Retry or a
+   * new tab. */
   refuseNative(admission) {
     this.reconnect({ type: "keyRefused" });
     this.refusal = admission;
@@ -1633,35 +1575,29 @@ export class PageSession {
       if (loadedComments) A.free(loadedComments);
     }
   }
-  /** Store a record's comments checkpoint in this replica's native storage,
+  /** Store a record's comments checkpoint in this replica's storage,
    * before the comments document is looked up, so an offline reopen still
    * holds comments the host never acknowledged.
    *
    * A retired copy's comments stay in the recovery archive. Two fences guard
-   * the native write, checked at the start and again after the last await,
-   * right before the write: this session's local fence (no retirement,
-   * release or replacement here), and the stored entry, read again, still
-   * holding `record`'s grant (no marker, no other replica key, no greater
-   * grant revision). Either failing stores nothing. */
+   * the write, checked right before it: this session's local fence (no
+   * retirement, release or replacement here), and the stored entry, read
+   * again, still holding `record`'s grant (no marker, no other replica key,
+   * no greater grant revision). Either failing stores nothing. */
   async restoreCommentsCheckpoint(record) {
     if (!record?.comments_snapshot || !record.comments_document_id || !this.backend) return;
     const current = this.#localFence();
     const grant = { grant: record.replicaKey, revision: record.grant_revision };
     const holds = async () =>
       current() && (await this.#storedStanding(grant)) === "current" && current();
-    if (!(await holds())) return;
     const backend = this.backend;
+    // Nothing awaits between the check and the write.
+    if (!(await holds())) return;
     const checkpoint = A.load(decodeSnapshot(record.comments_snapshot));
     try {
-      const id = documentIdToBinary(record.comments_document_id);
-      if (backend instanceof AutomergeSyncBackend) {
-        if (!(await holds())) return;
-        await backend.store(id, [documentRecord(checkpoint)]);
-        return;
-      }
-      const records = await checkpointRecords(backend, id, checkpoint);
-      if (!(await holds())) return;
-      await backend.storeSnapshot(id, records);
+      await backend.store(documentIdToBinary(record.comments_document_id), [
+        documentRecord(checkpoint),
+      ]);
     } finally {
       A.free(checkpoint);
     }
@@ -1703,15 +1639,30 @@ export class PageSession {
     // open replaces an access marker.
     const retired = !!stored && (!!stored.deleted || !!stored.revoked);
     this.localPage = retired ? null : stored;
+    // A copy an earlier build saved beside a Subduction replica keeps a plain
+    // Automerge checkpoint, which this replica restores, unconfirmed edits
+    // included. One without a checkpoint this build can read is discarded,
+    // and the Page opens from the host.
+    let checkpoint;
+    if (this.localPage && !this.localPage.resetReplica) {
+      checkpoint = readable(this.localPage);
+      if (!checkpoint) {
+        this.localPage = null;
+        this.localCopyDiscarded = true;
+        this.openNotice = LOCAL_COPY_DISCARDED;
+      }
+    }
+    try {
+      await this.#startReplica(creation, stored, retired, checkpoint);
+    } finally {
+      if (checkpoint) A.free(checkpoint);
+    }
+  }
+  async #startReplica(creation, stored, retired, checkpoint) {
     if (creation && !this.credentialCanWrite) throw Error("This account cannot create Pages");
     this.access =
       this.localPage?.access ?? (creation || this.localPage ? ownerAccess() : undefined);
     this.updateCapabilities();
-    // A local copy keeps its storage; a new Page takes the deployment's; a
-    // first visit opens native and switches once discovery names the Page's.
-    this.recordStorage = creation
-      ? (this.newPageStorage ?? "native")
-      : (this.localPage?.recordStorage ?? "native");
     await this.initializeLocal(
       this.localPage?.replicaKey ?? replicaKey(this.access, this.credentialCanWrite),
     );
@@ -1735,9 +1686,7 @@ export class PageSession {
         title: this.doc.title,
         created_at: now,
         updated_at: now,
-        ...(this.recordStorage === "automerge" && {
-          recordStorage: "automerge",
-        }),
+        recordStorage: "automerge",
         canWrite: true,
         access: this.access,
         replicaKey: this.replicaKey,
@@ -1757,9 +1706,7 @@ export class PageSession {
           document_id: this.handle.documentId,
           initial_snapshot_base64: snapshot,
           title: this.doc.title,
-          ...(this.recordStorage === "automerge" && {
-            record_storage: "automerge",
-          }),
+          record_storage: "automerge",
           idempotency_key: `v1_${crypto.randomUUID()}`,
         },
       };
@@ -1768,21 +1715,21 @@ export class PageSession {
       });
       unconfirmed = true;
     } else if (this.localPage && !this.localPage.resetReplica) {
-      // A checkpoint can contain more history than an ordinary edit batch.
-      // Merge its bounded complete record set before exposing a handle; this
-      // also retries any prefix left by an interrupted local import.
-      const checkpoint = A.load(decodeSnapshot(this.localPage.snapshot));
-      try {
-        await this.storeCheckpoint(documentIdToBinary(this.localPage.document_id), checkpoint);
-      } finally {
-        A.free(checkpoint);
-      }
+      // Merge the checkpoint before exposing a handle; this also retries any
+      // prefix left by an interrupted local import.
+      await this.storeCheckpoint(documentIdToBinary(this.localPage.document_id), checkpoint);
       await this.restoreCommentsCheckpoint(this.localPage);
       this.handle = await this.repo.find(this.localPage.document_id);
+      // The checkpoint lives in plain storage now, whichever storage saved it.
+      if (this.localPage.recordStorage !== "automerge")
+        this.localPage = await writeLocalPage(
+          this.identity,
+          { ...this.localPage, recordStorage: "automerge" },
+          { replica: this.replicaId },
+        );
       this.canWrite = !!this.canWrite && !!this.localPage.canWrite;
-      // Native storage can hold an edit the checkpoint never saw, so decide
-      // from the restored document. A record without localEdits predates
-      // them; its receipt flag is all there is.
+      // Decide from the restored document. A record without localEdits
+      // predates them; its receipt flag is all there is.
       const edits = readLocalEdits(this.localPage.localEdits);
       unconfirmed = edits ? hasUnconfirmedLocalEdits(this.doc, edits) : !!this.localPage.pending;
       // Without unconfirmed local edits, every change here is acknowledged or
@@ -1801,8 +1748,8 @@ export class PageSession {
       }
       if (this.nativeRefused) throw signingKeyRefused(this.refusal);
       const lookupDeadline = AbortSignal.timeout(15000);
-      // The document arrives over the native socket. If the host refuses this
-      // tab's key, end the lookup with that diagnosis instead of a timeout.
+      // The document arrives over the sync socket. If the host stops this
+      // connection, end the lookup with that diagnosis instead of a timeout.
       const refused = new Promise((_, reject) => {
         this.rejectLookup = reject;
       });
@@ -1823,7 +1770,7 @@ export class PageSession {
           });
         // /api/connect already admitted this reader, so the host has the
         // document. Repo reports it unavailable when the only peer's socket
-        // closes first, e.g. a native refusal while an ACL change commits
+        // closes first, e.g. a refusal while an ACL change commits
         // (access_changed, retry "recheck"). Reopening is safe; let the open
         // loop retry instead of showing a permanent error.
         if (/^Document \S+ is unavailable$/.test(cause?.message ?? ""))
@@ -1845,9 +1792,7 @@ export class PageSession {
         title: this.doc.title,
         created_at: now,
         updated_at: now,
-        ...(this.recordStorage === "automerge" && {
-          recordStorage: "automerge",
-        }),
+        recordStorage: "automerge",
         canWrite: this.canWrite,
         access: this.access,
         replicaKey: this.replicaKey,
@@ -1856,11 +1801,11 @@ export class PageSession {
         snapshot: encodeSnapshot(A.save(this.doc)),
         localEdits: withActor(emptyLocalEdits(), this.actor(), this.replicaId),
       };
-      // Discovery just named this Page's storage.
       await writeLocalPage(this.identity, this.localPage, {
         replica: this.replicaId,
         regrant: retired,
-        storageFromHost: true,
+        // A discarded copy's record gives way to the host's.
+        replace: !!this.localCopyDiscarded,
       });
       unconfirmed = false;
     }
@@ -1943,7 +1888,8 @@ export class PageSession {
       ),
     );
     this.local = await exclusiveIdentity(scope, { fresh });
-    // Names this native replica in localEdits without exposing its seed.
+    // Names this replica in localEdits without exposing its seed. The
+    // derivation predates plain sync and stays: recorded edits name it.
     this.replicaId = hex(
       new Uint8Array(
         await crypto.subtle.digest(
@@ -1955,250 +1901,24 @@ export class PageSession {
     this.localScope = scope;
     await this.openBackend();
   }
-  /** The Repo and backend for this replica, by `recordStorage`: Subduction
-   * over IndexedDB records, or plain Automerge sync over snapshot + chunks. */
+  /** The Repo and plain Automerge sync backend for this replica, over a
+   * snapshot and chunks in this tab's IndexedDB database. */
   async openBackend() {
-    const scope = this.localScope;
-    if (this.recordStorage === "automerge") {
-      // The host names connections; presence from this tab arrives at peers
-      // under the sender id it sends with the socket.
-      this.senderId = `b-${crypto.randomUUID()}`;
-      this.databaseName = `pages-plain-${scope}-${this.local.seed.slice(0, 16)}`;
-      this.storage = new IdbByteStore(this.databaseName);
-      this.backend = await AutomergeSyncBackend.load({
-        store: new DocStore(this.storage),
-        ...BACKEND_LIMITS,
-        scheduleLocalSync: this.outbound.scheduleLocalSync,
-      });
-      this.repo = new Repo({ backend: this.backend });
-      return;
-    }
-    this.signer = N.MemorySigner.fromBytes(bytes(this.local.seed));
-    const peer = this.signer.peerId();
-    this.senderId = peer.toString();
-    peer.free();
-    this.databaseName = `pages-native-${scope}-${this.local.seed.slice(0, 16)}`;
-    this.storage = new IndexedDBByteStore({ database: this.databaseName });
-    this.backend = new SubductionBackend({
-      signer: this.signer,
-      storage: this.storage,
-      syncTimeoutMilliseconds: 1000,
+    // The host names connections; presence from this tab arrives at peers
+    // under the sender id it sends with the socket.
+    this.senderId = `b-${crypto.randomUUID()}`;
+    this.databaseName = `pages-plain-${this.localScope}-${this.local.seed.slice(0, 16)}`;
+    this.storage = new IdbByteStore(this.databaseName);
+    this.backend = await AutomergeSyncBackend.load({
+      store: new DocStore(this.storage),
       ...BACKEND_LIMITS,
       scheduleLocalSync: this.outbound.scheduleLocalSync,
     });
     this.repo = new Repo({ backend: this.backend });
   }
-  /** Switch an empty replica to the storage discovery named (first visit).
-   * A replica holding a document can't switch: its history lives in the
-   * other format. */
-  async switchRecordStorage(mode) {
-    if (this.handle || this.commentsHandle)
-      throw Object.assign(Error("This Page's storage changed. Reload to open it."), {
-        code: "RECORD_STORAGE_CHANGED",
-      });
-    await this.disconnectSockets();
-    try {
-      await this.repo?.shutdown();
-    } catch {}
-    try {
-      await this.backend?.close();
-    } catch {}
-    const database = this.databaseName;
-    try {
-      await this.storage?.close();
-    } finally {
-      this.signer?.free();
-      this.repo = this.backend = this.storage = this.signer = undefined;
-    }
-    try {
-      globalThis.indexedDB?.deleteDatabase(database);
-    } catch {}
-    this.recordStorage = mode;
-    await this.openBackend();
-  }
-  /** The host refused this draft's plain Automerge storage
-   * (`record_storage_unsupported`): its flag is off, or went off after this
-   * tab read the session. The refusal recorded nothing, so the draft moves to
-   * a native replica under the same Page and document IDs, with every local
-   * edit, and registers without `record_storage` under fresh retry authority
-   * (storage-switch-machine.mjs). Resolves to the settled switch state and
-   * the error that ended it, if any. */
-  moveDraftToNative() {
-    return this.#switchStorage({ type: "refused", storage: this.recordStorage ?? "native" });
-  }
-  /** Step the storage switch from `event` until it settles, running each
-   * effect at the edge. A working state has one step; its result is the next
-   * event. A session that closed meanwhile sends `close` instead. */
-  async #switchStorage(event) {
-    let error;
-    for (let next = event; next; ) {
-      const result = storageSwitchMachine.step(this.storageSwitch$.snapshot(), next);
-      if (result.rejected) break;
-      this.storageSwitch$.update(() => result.state);
-      next = undefined;
-      for (const effect of result.effects) {
-        const work = this.#storageSwitchEffect(effect);
-        if (!work) continue;
-        next = await work.then(
-          (done) => done,
-          (cause) => {
-            error = cause;
-            return { type: LOCAL_COPY_RETIRED.includes(cause?.code) ? "retired" : "failed" };
-          },
-        );
-        if (!this.alive) next = { type: "close" };
-      }
-    }
-    return { state: this.storageSwitch$.snapshot(), error };
-  }
-  #storageSwitchEffect(effect) {
-    switch (effect.type) {
-      case "pause":
-        this.pauseEdits(STORAGE_SWITCH);
-        return;
-      case "resume":
-        this.pauseEdits(STORAGE_SWITCH, false);
-        return;
-      case "deletePlain":
-        try {
-          globalThis.indexedDB?.deleteDatabase(effect.database);
-        } catch {}
-        return;
-      case "reloadRequired":
-        this.problem = STORAGE_SWITCH_FAILED;
-        this.emit();
-        return;
-      case "strip":
-        return this.#recordNativeRegistration().then(() => ({ type: "stripped" }));
-      case "checkpoint":
-        return this.persistLocal().then(() => ({ type: "checkpointed" }));
-      case "move":
-        return this.#openNativeReplica().then((database) => ({ type: "moved", database }));
-      case "record":
-        return this.#recordNativeRegistration().then(() => ({ type: "recorded" }));
-      case "adopt":
-        return this.persistLocal(
-          { recordStorage: effect.storage === "automerge" ? "automerge" : undefined },
-          { storageFromHost: true },
-        ).then(() => ({ type: "adopted" }));
-    }
-  }
-  /** Close the plain replica, keeping its database, and import the draft into
-   * a native one under the same document ID. Edits are paused, so the
-   * history read here is final. The handle is replaced only once the native
-   * one holds it, so the Page keeps rendering. Returns the plain database. */
-  async #openNativeReplica() {
-    if (!this.handle || this.recordStorage !== "automerge")
-      throw Error("This draft has no plain replica to move");
-    const epoch = this.#localEpoch;
-    const documentId = this.handle.documentId;
-    const history = A.save(this.doc);
-    const plain = { repo: this.repo, backend: this.backend, storage: this.storage };
-    const database = this.databaseName;
-    // From here this move owns the plain replica: a release meanwhile finds
-    // nothing to close, and waits for this teardown before it gives up the
-    // replica's identity, so another tab can't open the database mid-write.
-    this.repo = this.backend = this.storage = undefined;
-    const teardown = (async () => {
-      await this.disconnectSockets();
-      // The plain replica stays complete on disk: a reload before the
-      // record lands reopens it.
-      try {
-        await plain.repo?.flush();
-      } catch {}
-      try {
-        await plain.repo?.shutdown();
-      } catch {}
-      try {
-        await plain.backend?.close();
-      } catch {}
-      await plain.storage?.close();
-    })();
-    const settled = teardown.catch(() => {});
-    this.#plainTeardown = settled;
-    try {
-      await teardown;
-    } finally {
-      if (this.#plainTeardown === settled) this.#plainTeardown = undefined;
-    }
-    if (!this.alive || epoch !== this.#localEpoch) throw Error("Page closed");
-    this.recordStorage = "native";
-    await this.openBackend();
-    // A release that started meanwhile closes this replica.
-    if (!this.alive || epoch !== this.#localEpoch) throw Error("Page closed");
-    const handle = await this.repo.import(history, { docId: documentId });
-    await this.repo.flush([handle.documentId]);
-    if (!this.alive || epoch !== this.#localEpoch) throw Error("Page closed");
-    this.handle = handle;
-    handle.on("change", (event) => this.receiveChange(event));
-    handle.on("ephemeral-message", (event) => this.ephemeral(event));
-    this.emit();
-    return database;
-  }
-  /** Point the local record at native storage, with a registration that
-   * drops `record_storage` and its retry authority; the next registration
-   * prepares fresh authority. `registrationSupersedes` lets this replace a
-   * stored registration that has a retry token. The import's new actor is
-   * recorded, so this session's next edits count as local. If another tab
-   * wrote its registration in between, that one stays; its refusal strips
-   * it on the next attempt. */
-  async #recordNativeRegistration() {
-    const registration = this.localPage?.registration;
-    if (!registration || this.localPage.registered) throw Error("This Page has no draft to move");
-    const { record_storage: _storage, retry_token: _token, ...native } = registration;
-    await this.persistLocal({
-      recordStorage: undefined,
-      registrationSupersedes: registration.idempotency_key,
-      registration: { ...native, idempotency_key: `v1_${crypto.randomUUID()}` },
-      localEdits: this.localEditsWithActor(),
-    });
-  }
-  /** Discovery names other storage than this open replica's: a stale tab
-   * wrote the wrong mode into the local record, or a host's answer changed.
-   * The replica's history is in the other format and can't switch live, but
-   * its checkpoint is plain Automerge. The storage switch pauses edits, then
-   * records that checkpoint, final, under the host's storage
-   * (storage-switch-machine.mjs). The next open restores it into a replica of
-   * that storage: SessionHost.reopenStorage in this tab when `reopenInPlace`
-   * is set, otherwise a reload. */
-  async adoptHostStorage(storage) {
-    const { state, error } = await this.#switchStorage({ type: "mismatched", storage });
-    await this.#retireAfterStorageSwitch(error);
-    // Only a recorded checkpoint makes a reload the answer: a 409 then stops
-    // reconnects. Anything else leaves this replica's record as it was, and
-    // the next attempt adopts again.
-    if (state.name === "adopted")
-      throw Object.assign(Error(STORAGE_ADOPTED), { code: "RECORD_STORAGE_CHANGED", status: 409 });
-    if (error) throw error;
-    if (!this.alive || state.name === "closed") throw Error("Page closed");
-    throw Error("This Page's storage is still changing. Trying again.");
-  }
-  /** This session recorded the host's storage and edits stay held: the tab
-   * reopens the Page from that checkpoint (`reopenInPlace`), or a reload
-   * does. */
-  get storageAdopted() {
-    return this.alive && this.storageSwitch$.snapshot().name === "adopted";
-  }
-  /** Reopening in place can't continue: ask the person to reload, as a tab
-   * without `reopenInPlace` does. */
-  showStorageReloadRequired() {
-    this.reopenInPlace = false;
-    this.showConnectionProblem(STORAGE_ADOPTED);
-  }
-  /** A storage switch step found the local copy deleted, revoked or replaced
-   * by another grant: retire this tab the way a checkpoint write does. */
-  async #retireAfterStorageSwitch(error) {
-    if (error?.code === "LOCAL_PAGE_DELETED") await this.markDeleted();
-    else if (error?.code === "LOCAL_PAGE_REVOKED") await this.revoke();
-    else if (error?.code === "LOCAL_PAGE_ACCESS_CHANGED") await this.localAccessChanged();
-  }
   /** Merge a stored checkpoint into this replica before a lookup. */
   async storeCheckpoint(id, doc) {
-    if (this.backend instanceof AutomergeSyncBackend) {
-      await this.backend.store(id, [documentRecord(doc)]);
-      return;
-    }
-    await this.backend.storeSnapshot(id, await checkpointRecords(this.backend, id, doc));
+    await this.backend.store(id, [documentRecord(doc)]);
   }
   /** This session's Automerge actor: every local edit it makes carries it. */
   actor() {
@@ -2228,7 +1948,7 @@ export class PageSession {
       { replica: this.replicaId },
     );
   }
-  persistLocal(patch = {}, { allowClosed = false, storageFromHost = false } = {}) {
+  persistLocal(patch = {}, { allowClosed = false } = {}) {
     if (this.hidden || (!this.alive && !allowClosed) || !this.localPage || !this.handle)
       return Promise.resolve();
     const heads = A.getHeads(this.doc).join(",");
@@ -2259,26 +1979,19 @@ export class PageSession {
     const work = (this.cacheTail ?? Promise.resolve())
       .catch(() => {})
       .then(async () => {
-        // Memory takes the patch only once it's stored: a failed write must
-        // not leave a field (the host's recordStorage, say) for the next
-        // routine save to write without its guard.
+        // Memory takes the patch only once it's stored.
         this.localPage = await writeLocalPage(
           this.identity,
           { ...this.localPage, ...value },
-          { replica: this.replicaId, storageFromHost },
+          { replica: this.replicaId },
         );
       });
     this.cacheTail = work;
     return work;
   }
-  /** Register this browser's draft. `storageMoved` says this attempt already
-   * moved it off plain storage once; a second storage refusal then ends the
-   * attempt rather than looping. */
-  async registerDraft({ storageMoved = false } = {}) {
+  /** Register this browser's draft. */
+  async registerDraft() {
     if (!this.localPage?.registration || this.localPage.registered) return;
-    // A failed move holds edits until a reload; re-sending the plain
-    // registration would only be refused again.
-    if (this.storageSwitch$.snapshot().name === "failed") throw storageSwitchFailed();
     let result;
     try {
       // New drafts prepare once in the background. Persist the token before
@@ -2314,14 +2027,11 @@ export class PageSession {
         try {
           result = await this.reconcileExpiredRegistration();
         } catch (renewed) {
-          if (storageRefused(renewed)) return this.retryAfterStorageRefusal(renewed, storageMoved);
           if (draftUnreadable(renewed)) throw draftUnreadable(renewed);
           if (renewed.status === 409 && renewed.message === "Page was deleted")
             await this.markDeleted();
           throw renewed;
         }
-      } else if (storageRefused(error)) {
-        return this.retryAfterStorageRefusal(error, storageMoved);
       } else if (draftUnreadable(error)) {
         throw draftUnreadable(error);
       } else {
@@ -2333,19 +2043,6 @@ export class PageSession {
     if (result.page_id !== this.pageId || result.document_id !== this.localPage.document_id)
       throw Error("Registered Page identity does not match its local document");
     await this.persistLocal({ registered: true });
-  }
-  /** The host refused the registration's storage: move the draft to native
-   * storage (or strip a native replica's plain registration), then register
-   * once more. A second refusal in the same attempt ends it. */
-  async retryAfterStorageRefusal(error, storageMoved) {
-    if (storageMoved) throw Object.assign(Error(STORAGE_REFUSED_AGAIN), { cause: error });
-    const moved = await this.moveDraftToNative();
-    await this.#retireAfterStorageSwitch(moved.error);
-    if (!this.alive || moved.state.name === "closed") return;
-    if (moved.state.name === "failed") throw storageSwitchFailed(moved.error);
-    if (moved.error) throw moved.error;
-    if (moved.state.name !== "idle") throw Error(STORAGE_SWITCHING);
-    return this.registerDraft({ storageMoved: true });
   }
   async reconcileExpiredRegistration() {
     const registration = this.localPage.registration;
@@ -2495,11 +2192,6 @@ export class PageSession {
         throw Object.assign(Error(this.authProblem), { status: 401 });
       if (this.localPage && connection.documentId !== this.localPage.document_id)
         throw Error("Connected Page identity does not match its local document");
-      const storage = connection.recordStorage === "automerge" ? "automerge" : "native";
-      if (storage !== (this.recordStorage ?? "native"))
-        if (this.handle || this.commentsHandle) await this.adoptHostStorage(storage);
-        else await this.switchRecordStorage(storage);
-      if (!this.alive) return;
       await this.acceptPageAccess(connection.access);
       if (!this.alive) return;
       this.connection = connection;
@@ -2523,30 +2215,28 @@ export class PageSession {
     this.receiveActorProfiles(this.connection, { replace: true });
     this.presencePaused = false;
     this.receiveActivity(this.connection.activity, { initial: true });
-    if (this.recordStorage === "automerge") return this.openPlainConnection();
-    const expected = new N.PeerId(bytes(this.connection.serverPeerId));
-    // Pin admission to the host snapshot we just discovered. If that host
-    // restarts before the upgrade, reconnect must discover its new epoch.
+    return this.openPlainConnection();
+  }
+  /** openConnection's socket: plain Automerge sync frames (sync/wire.mjs)
+   * after the WebSocket opens. HTTP authentication admits it; the host checks
+   * access on every frame. */
+  async openPlainConnection() {
     const address = pageSyncAddress(
       this.pageId,
       location.href,
       this.activityEpoch,
       this.buildFeatures,
     );
-    // Keep the browser socket itself: toTransport consumes the native wrapper,
-    // whereas the raw socket remains cancellable when account/page access changes.
-    // Subduction sends on this socket itself; no send leaves unless it is OPEN.
+    address.searchParams.set("sender", this.senderId);
     const socket = guardSocketSend(new WebSocket(address));
     socket.binaryType = "arraybuffer";
-    // Registered before the native wrapper's own listener, so the host's
-    // admission outcome is known when the disconnect callback runs.
     socket.addEventListener("close", (event) => {
       const outcome = admissionCloseOutcome(event);
       if (outcome) this.socketOutcomes.set(socket, outcome);
     });
     this.sockets.add(socket);
     try {
-      const authenticated = await this.handshakeWithDeadline(socket, expected);
+      await this.handshakeWithDeadline(socket, () => socketOpened(socket));
       if (
         !this.alive ||
         this.authRequired ||
@@ -2554,29 +2244,17 @@ export class PageSession {
         this.accessReloadRequired ||
         !this.sockets.has(socket)
       ) {
-        authenticated.free();
         socket.close();
         this.sockets.delete(socket);
         this.reconnect({ type: "handshakeEnded" });
         return;
       }
-      // The host admitted this socket in time. Joining the backend can still
-      // fail; that is a failed attempt on the ready path.
       this.reconnect({ type: "admitted" });
-      const transport = authenticated.toTransport();
-      try {
-        await this.backend.addConnection(transport);
-      } finally {
-        transport.free();
-      }
-      if (
-        !this.alive ||
-        this.authRequired ||
-        this.accessDenied ||
-        this.accessReloadRequired ||
-        !this.sockets.has(socket)
-      )
-        return;
+      const transport = socketTransport(socket);
+      transport.onClose(() => this.socketDisconnected(socket));
+      this.backend.addConnection(transport, {
+        hostId: this.connection.serverSenderId,
+      });
       this.socketAdmittedAt.set(socket, this.now());
       if (this.handle) {
         this.openComments();
@@ -2604,88 +2282,16 @@ export class PageSession {
           admission,
         });
       throw error;
-    } finally {
-      expected.free();
     }
   }
-  /** openConnection's socket for an `automerge` Page: plain Automerge sync
-   * frames (sync/wire.mjs) after the WebSocket opens. HTTP authentication
-   * admits it; the host checks access on every frame. */
-  async openPlainConnection() {
-    const address = pageSyncAddress(
-      this.pageId,
-      location.href,
-      this.activityEpoch,
-      this.buildFeatures,
-    );
-    address.searchParams.set("sender", this.senderId);
-    const socket = guardSocketSend(new WebSocket(address));
-    socket.binaryType = "arraybuffer";
-    socket.addEventListener("close", (event) => {
-      const outcome = admissionCloseOutcome(event);
-      if (outcome) this.socketOutcomes.set(socket, outcome);
-    });
-    this.sockets.add(socket);
-    try {
-      await this.handshakeWithDeadline(socket, null, () => socketOpened(socket));
-      if (
-        !this.alive ||
-        this.authRequired ||
-        this.accessDenied ||
-        this.accessReloadRequired ||
-        !this.sockets.has(socket)
-      ) {
-        socket.close();
-        this.sockets.delete(socket);
-        this.reconnect({ type: "handshakeEnded" });
-        return;
-      }
-      this.reconnect({ type: "admitted" });
-      const transport = socketTransport(socket);
-      transport.onClose(() => this.socketDisconnected(socket));
-      this.backend.addConnection(transport, {
-        hostId: this.connection.serverSenderId,
-      });
-      this.socketAdmittedAt.set(socket, this.now());
-      if (this.handle) {
-        this.openComments();
-        this.commentsOpen({ type: "reconnected" });
-      }
-      this.clearConnectionProblem();
-      this.syncStatus({ type: "admitted" });
-      if (this.handle) this.startCatchUp();
-      if (this.handle) this.queueSaved({ restart: !!this.receiptState?.outage });
-      else {
-        this.renderStatus();
-        this.emit();
-      }
-    } catch (error) {
-      const current = this.sockets.delete(socket);
-      socket.close();
-      if (!current) return;
-      this.clearPresence();
-      const admission = this.socketOutcomes.get(socket);
-      if (admission?.retry === "stop") throw signingKeyRefused(admission, error);
-      if (admission)
-        throw Object.assign(Error(error?.message ?? String(error), { cause: error }), {
-          admission,
-        });
-      throw error;
-    }
-  }
-  /** The authenticated handshake on `socket`, under the reconnect machine's
-   * deadline. The machine's `abandonHandshake` effect (a timeout, or Retry
-   * during the handshake) rejects this with a transient failure and closes
-   * the socket, so the attempt ends like one whose socket closed. A
-   * handshake that finishes after that is freed and never used. Any other
-   * failure ends the handshake state here; the caller classifies it. */
-  handshakeWithDeadline(socket, expected, open) {
+  /** `open` (the socket opening) under the reconnect machine's deadline. The
+   * machine's `abandonHandshake` effect (a timeout, or Retry while opening)
+   * rejects this with a transient failure and closes the socket, so the
+   * attempt ends like one whose socket closed. Any other failure ends the
+   * handshake state here; the caller classifies it. */
+  handshakeWithDeadline(socket, open) {
     let abandoned = false;
-    const setup = open
-      ? open()
-      : N.SubductionWebSocket.setup(socket, this.signer, expected, () => {
-          this.socketDisconnected(socket);
-        });
+    const setup = open();
     const deadline = new Promise((_, reject) => {
       this.handshake = {
         socket,
@@ -2710,16 +2316,10 @@ export class PageSession {
       };
     });
     this.reconnect({ type: "handshake" });
-    return Promise.race([
-      setup.then((authenticated) => {
-        if (abandoned) authenticated?.free?.();
-        return authenticated;
-      }),
-      deadline,
-    ]).then(
-      (authenticated) => {
+    return Promise.race([setup, deadline]).then(
+      (opened) => {
         if (this.handshake?.socket === socket) this.handshake = undefined;
-        return authenticated;
+        return opened;
       },
       (error) => {
         if (this.handshake?.socket === socket) this.handshake = undefined;
@@ -2767,12 +2367,6 @@ export class PageSession {
         this.refuseNative(error.admission);
         return;
       }
-      // The host's storage is recorded and the tab reopens the Page in place:
-      // no banner and no reconnect. Listeners hear `storageAdopted`.
-      if (error.code === "RECORD_STORAGE_CHANGED" && this.reopenInPlace && this.storageAdopted) {
-        this.emit();
-        return;
-      }
       // Discovery classified its own answer. Only page_deleted marks a
       // deletion, so a 404 from another request (registration, tools) doesn't.
       const refusal = classifyRefusal(error);
@@ -2800,7 +2394,7 @@ export class PageSession {
           });
       }
     } finally {
-      // HTTP receipts can recover even if native sync still cannot reconnect.
+      // HTTP receipts can recover even if sync still cannot reconnect.
       if (
         retryReceipt &&
         this.alive &&
@@ -2850,8 +2444,6 @@ export class PageSession {
   }
   change(fn) {
     if (!this.alive) throw Error("Page closed");
-    if (this.editPauses.has(STORAGE_SWITCH))
-      throw Error(storageSwitchNotice(this.storageSwitch$.snapshot(), this.reopenInPlace));
     if (!this.canWrite) throw Error("This Page is read only");
     return this.#write(this.handle, fn);
   }
@@ -3227,14 +2819,9 @@ export class PageSession {
       typeof message !== "object"
     )
       return;
-    // The sender id is the peer id the native backend reports for the
-    // message. The host's id names the signing key this session's transport
-    // handshake verified against the connect response's serverPeerId, and a
-    // message sent directly over that transport carries it. Relayed messages
-    // keep the publishing peer's id, but whether native authenticates the
-    // origin of each relayed message is not shown here; it rests on the
-    // native ephemeral guarantee, which the memo still lists as untested for
-    // multi-hop presence.
+    // The sender id is the id the backend reports for the message. The host
+    // names every connection (sync/host.mjs), and its own messages carry the
+    // connect response's serverSenderId.
     if (senderId === this.connection?.serverSenderId) {
       if (message.kind === "page-activity") {
         this.receiveActivity(message);
@@ -3326,7 +2913,7 @@ export class PageSession {
     const heads = this.handle ? A.getHeads(this.doc) : [];
     const commentHeads = this.commentsHandle ? A.getHeads(this.commentsDoc) : [];
     const blocked = !!(this.authRequired || this.accessDenied || this.accessReloadRequired);
-    // Native reconnects and duplicate change events don't create new edits.
+    // Reconnects and duplicate change events don't create new edits.
     // Keep their in-flight HTTP receipt and bounded retry budget intact.
     if (
       !restart &&
@@ -3622,21 +3209,21 @@ export class PageSession {
         return;
       }
       if (synchronize) {
-        // A native request can time out while its WebSocket stays open. Re-arm
-        // catch-up on that authenticated connection without replacing the live
-        // document or resetting this receipt's bounded retry budget.
+        // A sync request can time out while its WebSocket stays open. Re-arm
+        // catch-up on that connection without replacing the live document or
+        // resetting this receipt's bounded retry budget.
         for (const handle of [this.handle, this.commentsHandle].filter(Boolean)) {
-          const native = this.backend.open(documentIdToBinary(handle.documentId));
+          const tree = this.backend.open(documentIdToBinary(handle.documentId));
           try {
-            await native.synchronize();
+            await tree.synchronize();
             if (!isCurrent()) return;
           } finally {
-            await native.close();
+            await tree.close();
           }
         }
         if (!isCurrent()) return;
       }
-      // Native catch-up is not a durability receipt; the host must still
+      // Catch-up is not a durability receipt; the host must still
       // acknowledge these exact heads after its storage barrier.
       const heads = state.heads;
       const commentHeads = state.commentHeads ?? [];
@@ -3820,8 +3407,6 @@ export class PageSession {
   async releaseLocal() {
     this.#localEpoch++;
     await this.disconnectSockets();
-    // A storage move may still be writing the plain replica it detached.
-    await this.#plainTeardown;
     try {
       await this.repo?.shutdown();
     } catch {}
@@ -3831,15 +3416,11 @@ export class PageSession {
     try {
       await this.storage?.close();
     } finally {
-      try {
-        this.signer?.free();
-      } finally {
-        this.local?.release();
-        // The replica goes, and with it any comments lookup.
-        this.commentsOpen({ type: "close" });
-        this.repo = this.backend = this.storage = this.signer = this.local = undefined;
-        this.commentsHandle = this.pendingComments = undefined;
-      }
+      this.local?.release();
+      // The replica goes, and with it any comments lookup.
+      this.commentsOpen({ type: "close" });
+      this.repo = this.backend = this.storage = this.local = undefined;
+      this.commentsHandle = this.pendingComments = undefined;
     }
   }
 }

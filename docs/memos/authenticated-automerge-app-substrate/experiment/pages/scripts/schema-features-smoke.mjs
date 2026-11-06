@@ -1,7 +1,7 @@
 // The schema-feature gate against a running local Wordgard fixture.
 //
-// A Node native peer stamps one Page with a feature id no build knows, the way
-// a newer build would. The host then refuses that peer's next native edit
+// A Node sync peer stamps one Page with a feature id no build knows, the way
+// a newer build would. The host then refuses that peer's next edit
 // (its build declared no features) and accepts one from a peer that declares
 // the feature. Tool writes get unsupported_schema_feature, read_page reports
 // the stamp, and the browser opens it read-only with the reload notice. A
@@ -9,7 +9,7 @@
 // from before the comments document is refused on it.
 //
 // Then the Markdown cutover: a strikethrough or horizontal rule write stamps
-// its feature, so a baseline build's native edits are refused; agent writes
+// its feature, so a baseline build's edits are refused; agent writes
 // with math get unsupported_markdown; and a draft that holds a preserved block
 // from an older build is refused at registration and registers nothing.
 //
@@ -17,14 +17,12 @@
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import * as A from "@automerge/automerge";
-import * as N from "@automerge/subduction";
 import { generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
 import { createPageData, initializePage, orderedBlockIds } from "../model/page.mjs";
 import { textPath } from "../model/richtext.mjs";
 import { retryKey } from "../model/retry-key.mjs";
 import { chromium, expect } from "@playwright/test";
-import { closePeers, createPeer, eventually } from "../../backend.mjs";
-import { plainPeer } from "./plain-peer.mjs";
+import { eventually, plainPeer } from "./plain-peer.mjs";
 
 const origin = process.env.PAGES_ORIGIN ?? "http://localhost:9894";
 assert.equal(new URL(origin).hostname, "localhost", "Generated fixture requires local OIDC");
@@ -37,7 +35,6 @@ const CURRENT = ["comments-doc"];
 const SCHEMA_UNSUPPORTED =
   "This Page uses features this version doesn't support. Reload to update.";
 const report = { origin, completed: [], errors: [] };
-const bytes = (value) => Uint8Array.from(value.match(/../g), (v) => parseInt(v, 16));
 const browser = await chromium.launch({ headless: true });
 let page,
   stage = "sign in";
@@ -71,71 +68,14 @@ async function create(title, markdown) {
   return result.body.page_id;
 }
 
-/** A raw native peer on a Page, admitted with `declared` as its build's
- * schema features (none: the baseline, like a build from before the stamp). */
-async function nativePeer(cookie, pageId, declared) {
+/** A raw sync peer on a Page, admitted with `declared` as its build's schema
+ * features (none: the baseline, like a build from before the stamp). */
+async function syncPeer(cookie, pageId, declared) {
   const headers = { cookie, origin };
   const discovery = await fetch(`${origin}/api/connect?page=${pageId}`, {
     headers,
   }).then((response) => response.json());
   assert.ok(discovery.documentId, JSON.stringify(discovery));
-  if (discovery.recordStorage === "automerge")
-    return plainNativePeer(cookie, pageId, declared, discovery);
-  const peer = createPeer({ seed: crypto.getRandomValues(new Uint8Array(32)) });
-  const address = new URL(`/api/sync?page=${pageId}`, origin);
-  address.protocol = "ws:";
-  if (discovery.activity?.epoch)
-    address.searchParams.set("activity_epoch", discovery.activity.epoch);
-  if (declared.length) address.searchParams.set("schema_features", declared.join(","));
-  const socket = new WebSocket(address, { headers: { cookie, origin } });
-  socket.binaryType = "arraybuffer";
-  const expected = new N.PeerId(bytes(discovery.serverPeerId));
-  try {
-    const authenticated = await N.SubductionWebSocket.setup(
-      socket,
-      peer.signer,
-      expected,
-      () => {},
-    );
-    const transport = authenticated.toTransport();
-    try {
-      await peer.backend.addConnection(transport);
-    } finally {
-      transport.free();
-    }
-  } finally {
-    expected.free();
-  }
-  const handle = await peer.repo.find(discovery.documentId);
-  return {
-    handle,
-    /** Change the document, then ask the host for a receipt as the viewer does. */
-    async change(fn) {
-      handle.change(fn);
-      await peer.repo.flush();
-      const heads = A.getHeads(handle.doc());
-      let last;
-      await eventually(async () => {
-        const response = await fetch(`${origin}/api/saved?page=${pageId}`, {
-          method: "POST",
-          headers: { ...headers, "Content-Type": "application/json" },
-          body: JSON.stringify({ heads, schema_features: declared }),
-        });
-        last = { status: response.status, body: await response.json() };
-        return response.ok || last.body.code === "schema_unsupported";
-      }, 20_000);
-      return last;
-    },
-    async close() {
-      socket.close();
-      await closePeers([peer]);
-    },
-  };
-}
-
-/** nativePeer for an `automerge` Page: plain Automerge sync on the socket. */
-async function plainNativePeer(cookie, pageId, declared, discovery) {
-  const headers = { cookie, origin };
   const peer = await plainPeer({
     origin,
     pageId,
@@ -197,7 +137,7 @@ try {
   checkpoint("a current Page opens editable with no notice");
 
   stage = "a build from before the comments document is refused";
-  const older = await nativePeer(cookie, baseline, []);
+  const older = await syncPeer(cookie, baseline, []);
   const olderEdit = await older.change((doc) => {
     doc.comments = { stray: { messages: {} } };
   });
@@ -206,10 +146,10 @@ try {
   await older.close();
   checkpoint("an old tab can't write comments into the Page document");
 
-  stage = "a native peer stamps an unknown feature";
+  stage = "a sync peer stamps an unknown feature";
   const future = await create("Future " + Date.now(), "Words from a newer build.");
   // A peer with this build's baseline may stamp a Page it can write.
-  const stale = await nativePeer(cookie, future, CURRENT);
+  const stale = await syncPeer(cookie, future, CURRENT);
   const stamping = await stale.change((doc) => {
     doc.schema = { features: [...CURRENT, FUTURE] };
   });
@@ -222,14 +162,14 @@ try {
   assert.deepEqual(stampedRead.body.schema_features, [...CURRENT, FUTURE]);
   checkpoint("read_page reports the stamp");
 
-  stage = "the host refuses native edits from a build without the feature";
+  stage = "the host refuses edits from a build without the feature";
   const staleEdit = await stale.change((doc) => {
     doc.staleEdit = "should not land";
   });
   assert.equal(staleEdit.status, 409, JSON.stringify(staleEdit.body));
   assert.equal(staleEdit.body.code, "schema_unsupported");
   // The receipt answers as soon as the heads are missing; give the refused
-  // native put time to reach the host before checking nothing landed.
+  // edit time to reach the host before checking nothing landed.
   await new Promise((resolve) => setTimeout(resolve, 1500));
   await stale.close();
   const afterStale = await tool("read_page", {
@@ -237,10 +177,10 @@ try {
     comments: "none",
   });
   assert.deepEqual([...afterStale.body.heads].sort(), [...stampedRead.body.heads].sort());
-  checkpoint("a stale build's native edit is refused and the Page is unchanged");
+  checkpoint("a stale build's edit is refused and the Page is unchanged");
 
-  stage = "the host accepts native edits from a build with the feature";
-  const fresh = await nativePeer(cookie, future, [...CURRENT, FUTURE]);
+  stage = "the host accepts edits from a build with the feature";
+  const fresh = await syncPeer(cookie, future, [...CURRENT, FUTURE]);
   const freshEdit = await fresh.change((doc) => {
     doc.freshEdit = "lands";
   });
@@ -251,7 +191,7 @@ try {
     comments: "none",
   });
   assert.notDeepEqual([...futureRead.body.heads].sort(), [...stampedRead.body.heads].sort());
-  checkpoint("a current build's native edit is accepted");
+  checkpoint("a current build's edit is accepted");
 
   stage = "the host refuses writes it can't express";
   const refused = await tool("patch_page", {
@@ -312,7 +252,7 @@ try {
   });
   assert.deepEqual(struckRead.body.schema_features, [...CURRENT, "horizontal-rule", "strike"]);
   assert.equal(struckRead.body.blocks[0].markdown, "Old ~~plan~~.\n\n---\n\nNew plan.");
-  const baselinePeer = await nativePeer(cookie, struck, CURRENT);
+  const baselinePeer = await syncPeer(cookie, struck, CURRENT);
   const baselineEdit = await baselinePeer.change((doc) => {
     doc.staleEdit = "should not land";
   });
@@ -324,7 +264,7 @@ try {
   await expect(content().first().locator("hr")).toHaveCount(1);
   await expect(notice()).toHaveCount(0);
   await expect(content().first()).toHaveAttribute("contenteditable", "true");
-  checkpoint("strike and horizontal-rule stamp; a baseline build's native edit is refused");
+  checkpoint("strike and horizontal-rule stamp; a baseline build's edit is refused");
 
   stage = "agent Markdown with math is refused with its position";
   const math = await tool("create_page", {

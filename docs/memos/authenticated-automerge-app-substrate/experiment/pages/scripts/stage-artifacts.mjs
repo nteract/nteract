@@ -17,7 +17,6 @@ import { VIEWER_ASSETS, VIEWER_CHUNK, digestHash, viewerAsset } from "./viewer-c
 export const releaseArtifacts = Object.freeze([
   "index.js",
   "automerge.wasm",
-  "subduction.wasm",
   "wrangler.json",
   "build-receipt.json",
   "public/index.html",

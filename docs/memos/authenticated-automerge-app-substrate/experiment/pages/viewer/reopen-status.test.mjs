@@ -1,13 +1,12 @@
 // What a reopened Page's status says, through real PageSession close and
-// reopen: the IndexedDB checkpoint, the native replica in fake IndexedDB, and
-// the receipt path. Only the host is faked: discovery, the native socket and
+// reopen: the IndexedDB checkpoint, the replica in fake IndexedDB, and the
+// receipt path. Only the host is faked: discovery, the sync socket and
 // /api/saved.
 import test from "node:test";
 import assert from "node:assert/strict";
 import "fake-indexeddb/auto";
 import * as A from "@automerge/automerge";
-import * as N from "@automerge/subduction";
-import { SubductionBackend } from "@automerge/automerge-repo-subduction";
+import { AutomergeSyncBackend } from "../sync/backend.mjs";
 import { generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
 import { PageSession } from "./session.mjs";
 import { encodeSnapshot, readLocalPage, writeLocalPage } from "./local-pages.mjs";
@@ -16,9 +15,9 @@ import { createPageData, initializePage } from "../model/page.mjs";
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 const AGENT = "bb".repeat(16);
 
-/** A browser tab: one sessionStorage, so a reopen uses the same native
- * replica, and Web Locks. The host answers discovery and the native
- * handshake; receipts wait in `receipts` until a test answers them. */
+/** A browser tab: one sessionStorage, so a reopen uses the same replica, and
+ * Web Locks. The host answers discovery and opens the sync socket; receipts
+ * wait in `receipts` until a test answers them. */
 function host(t) {
   const values = new Map();
   const locks = new Set();
@@ -58,14 +57,14 @@ function host(t) {
   t.mock.method(globalThis, "WebSocket", function () {
     const events = new EventTarget();
     Object.defineProperty(this, "binaryType", { value: "blob", writable: true });
+    // Open at once: the host admits the socket.
+    Object.defineProperty(this, "readyState", { value: 1, writable: true });
     this.addEventListener = events.addEventListener.bind(events);
+    this.removeEventListener = events.removeEventListener.bind(events);
+    this.send = () => {};
     this.close = () => {};
   });
-  t.mock.method(N.SubductionWebSocket, "setup", async () => ({
-    free() {},
-    toTransport: () => ({ free() {} }),
-  }));
-  t.mock.method(SubductionBackend.prototype, "addConnection", async () => {});
+  t.mock.method(AutomergeSyncBackend.prototype, "addConnection", () => {});
   const auth = {
     identity: { principal: crypto.randomUUID(), displayName: "Kyle", driver: "Browser" },
     canWrite: true,
@@ -91,7 +90,6 @@ function host(t) {
           canWrite: true,
           canComment: true,
         },
-        serverPeerId: "00".repeat(32),
         serverSenderId: "fixture-host",
         peerProfiles: {},
       });

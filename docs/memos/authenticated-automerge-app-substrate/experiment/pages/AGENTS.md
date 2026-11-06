@@ -10,7 +10,7 @@ use [DEPLOYMENT.md](DEPLOYMENT.md) for release targets and qualification.
 - Pages combines writing, images, diagrams, tables, task lists, interactive
   dataframes, and passage comments. Keep the experience expressive and enjoyable
   for people, with equivalent content operations available to agents.
-- The Wordgard browser editor and HTTP/MCP tools edit the same native Automerge
+- The Wordgard browser editor and HTTP/MCP tools edit the same Automerge
   content. Markdown is an import/export and agent projection. Preserve content
   that projection cannot represent, including dataframe nodes.
 - Pages has its own content document and a separate comments document. Its
@@ -18,7 +18,8 @@ use [DEPLOYMENT.md](DEPLOYMENT.md) for release targets and qualification.
   documents. Code blocks display source; there is no notebook kernel in Pages.
 - The Page host owns admission, authorization, persistence, and durable receipts.
   Browser replicas and UI state do not confer access or establish remote
-  durability. Keep host checks aligned across native sync and tool writes.
+  durability. Keep host checks aligned across plain Automerge sync and tool
+  writes.
 - Projects organize Pages. Project membership is currently owner-only, and Page
   sharing uses direct grants. Do not infer inherited access from a Page's location.
 

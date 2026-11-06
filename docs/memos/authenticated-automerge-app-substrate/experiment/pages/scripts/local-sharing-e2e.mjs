@@ -159,7 +159,7 @@ try {
   const runtime = path.join(scratch, "runtime");
   await mkdir(runtime);
   // Whitelist build outputs. Never copy .dev.vars, .celld, or a deployable receipt.
-  for (const name of ["public", "automerge.wasm", "subduction.wasm", "wrangler.json"])
+  for (const name of ["public", "automerge.wasm", "wrangler.json"])
     await cp(path.join(app, "dist", name), path.join(runtime, name), {
       recursive: true,
     });
@@ -211,10 +211,11 @@ try {
         name: "e2e-compiled-wasm",
         setup(b) {
           b.onResolve({ filter: /\.wasm$/ }, async (args) => {
-            const absolute = path.resolve(args.resolveDir, args.path);
-            const name = absolute.includes("subduction") ? "subduction.wasm" : "automerge.wasm";
-            await copyFile(absolute, path.join(runtime, name));
-            return { path: `./${name}`, external: true };
+            await copyFile(
+              path.resolve(args.resolveDir, args.path),
+              path.join(runtime, "automerge.wasm"),
+            );
+            return { path: "./automerge.wasm", external: true };
           });
         },
       },
@@ -231,9 +232,6 @@ try {
         PAGES_E2E_ONLY: "true",
         ...(domainView ? { PAGES_COMPANY_VIEW_DOMAINS: "anaconda.com" } : {}),
         PAGES_EDITOR: "wordgard",
-        PAGES_ASYNC_PERSISTENCE: "true",
-        PAGES_COMPACT_RECORDS: "true",
-        PAGES_RECORD_STORAGE: process.env.PAGES_RECORD_STORAGE ?? "",
         PAGES_CATALOG_INDEX: "1",
         NOTEBOOK_CLOUD_APP_SESSION_SECRET: sessionSecret,
         NOTEBOOK_CLOUD_LOCAL_OIDC: "true",

@@ -494,7 +494,6 @@ function App() {
         paint((n) => n + 1);
         watch.changed();
         if (next.accessReloadRequired && !next.recoveryPending) void reloadAccess(next);
-        if (next.storageAdopted && next.reopenInPlace) void reopenStorage(next);
         if (next.hidden && !hiding) {
           hiding = true;
           resetDocumentUI();
@@ -506,6 +505,8 @@ function App() {
       }
     });
     listRecoveries();
+    // A short note the open left, such as a discarded local copy.
+    if (next.openNotice) setNotice(next.openNotice);
     if (next.accessReloadRequired && !next.recoveryPending) void reloadAccess(next);
     const first = next.doc ? (editor.module.orderedBlockIds(next.doc)[0] ?? null) : null;
     activateBlock(first);
@@ -524,11 +525,6 @@ function App() {
     // Reload waits while the old replica archives and closes, e.g. when a
     // restored Page moves from its reader replica to the writer replica.
     return host.reloadAccess(previous, { install, onError: showError });
-  }
-  /** The Page's replica recorded the host's storage: reopen it from that
-   * checkpoint in this tab (SessionHost.reopenStorage). */
-  function reopenStorage(previous) {
-    return host.reopenStorage(previous, { install, onError: showError });
   }
   function downloadDraft(record, { bundle = false } = {}) {
     let draft;
@@ -597,7 +593,6 @@ function App() {
           PageSession.open(id, {
             authentication: authentication.current,
             refreshSession: () => auth.current.refresh(),
-            reopenInPlace: true,
           }),
         { signal: controller.signal },
       );
@@ -1054,7 +1049,6 @@ function App() {
         {
           authentication: authentication.current,
           refreshSession: () => auth.current.refresh(),
-          reopenInPlace: true,
         },
       );
       if (!host.isCurrent(revision)) {
@@ -1826,8 +1820,8 @@ function App() {
                       </BlockBoundary>
                     ) : (
                       <section className="opaque" role="note" data-block-error="true">
-                        This block is stored in a form from an earlier version of Pages that
-                        this build doesn&apos;t read.
+                        This block is stored in a form from an earlier version of Pages that this
+                        build doesn&apos;t read.
                       </section>
                     )}
                   </section>

@@ -3,11 +3,8 @@
 // celld process and restarts it on request over IPC.
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import * as A from "@automerge/automerge";
-import * as N from "@automerge/subduction";
 import { chromium, expect } from "@playwright/test";
-import { closePeers, createPeer, eventually } from "../../backend.mjs";
-import { plainPeer } from "./plain-peer.mjs";
+import { eventually, plainPeer } from "./plain-peer.mjs";
 
 const origin = process.env.PAGES_ORIGIN || "http://localhost:9894";
 assert.equal(new URL(origin).hostname, "localhost");
@@ -19,7 +16,6 @@ assert.equal(typeof process.send, "function", "run through local-sharing-e2e.mjs
 
 const report = { completed: [], errors: [], closes: {} };
 const browser = await chromium.launch({ headless: true });
-const bytes = (value) => Uint8Array.from(value.match(/../g), (v) => parseInt(v, 16));
 let pageId, owner, member, stranger;
 
 function restartCelld() {
@@ -70,7 +66,7 @@ async function setRole(principal, role) {
 const cookieFor = async (page) =>
   (await page.context().cookies(origin)).map(({ name, value }) => `${name}=${value}`).join("; ");
 
-// Record every native socket close the browser sees, including its code.
+// Record every sync socket close the browser sees, including its code.
 const recordCloses = () => {
   const Native = window.WebSocket;
   window.__pagesCloses = [];
@@ -127,103 +123,6 @@ async function signIn(email) {
   return page;
 }
 
-/** A raw Node native client: proves the signing key, then reports the close. */
-async function nativeConnect(cookie, seed) {
-  const discovery = await fetch(`${origin}/api/connect?page=${pageId}`, {
-    headers: { cookie },
-  }).then((response) => response.json());
-  const address = new URL(`/api/sync?page=${pageId}`, origin);
-  address.protocol = "ws:";
-  const socket = new WebSocket(address, { headers: { cookie, origin } });
-  socket.binaryType = "arraybuffer";
-  const closed = new Promise((resolve) =>
-    socket.addEventListener("close", ({ code, reason }) => resolve({ code, reason })),
-  );
-  const signer = N.MemorySigner.fromBytes(seed);
-  const peer = signer.peerId();
-  const senderId = peer.toString();
-  peer.free();
-  const expected = new N.PeerId(bytes(discovery.serverPeerId));
-  let authenticated;
-  try {
-    authenticated = await N.SubductionWebSocket.setup(socket, signer, expected, () => {});
-  } catch {
-    /* A refusal can close the socket before the handshake settles. */
-  } finally {
-    expected.free();
-  }
-  return {
-    senderId,
-    closed,
-    close() {
-      authenticated?.free();
-      socket.close();
-    },
-  };
-}
-
-/** A full native peer with signing key `seed`: syncs the Page document over
- * its own socket, as a tab does. `features` is its build's schema features. */
-async function nativePeer(cookie, seed, features = ["comments-doc"]) {
-  const headers = { cookie, origin };
-  const discovery = await fetch(`${origin}/api/connect?page=${pageId}`, {
-    headers,
-  }).then((response) => response.json());
-  assert.ok(discovery.documentId, JSON.stringify(discovery));
-  const peer = createPeer({ seed });
-  const address = new URL(`/api/sync?page=${pageId}`, origin);
-  address.protocol = "ws:";
-  if (discovery.activity?.epoch)
-    address.searchParams.set("activity_epoch", discovery.activity.epoch);
-  address.searchParams.set("schema_features", features.join(","));
-  const socket = new WebSocket(address, { headers: { cookie, origin } });
-  socket.binaryType = "arraybuffer";
-  const closed = new Promise((resolve) =>
-    socket.addEventListener("close", ({ code, reason }) => resolve({ code, reason })),
-  );
-  const expected = new N.PeerId(bytes(discovery.serverPeerId));
-  try {
-    const authenticated = await N.SubductionWebSocket.setup(
-      socket,
-      peer.signer,
-      expected,
-      () => {},
-    );
-    const transport = authenticated.toTransport();
-    try {
-      await peer.backend.addConnection(transport);
-    } finally {
-      transport.free();
-    }
-  } finally {
-    expected.free();
-  }
-  const handle = await peer.repo.find(discovery.documentId);
-  return {
-    senderId: peer.senderId,
-    handle,
-    closed,
-    /** Change the Page document and wait for the host's receipt. */
-    async change(fn) {
-      handle.change(fn);
-      await peer.repo.flush();
-      const heads = A.getHeads(handle.doc());
-      await eventually(async () => {
-        const response = await fetch(`${origin}/api/saved?page=${pageId}`, {
-          method: "POST",
-          headers: { ...headers, "Content-Type": "application/json" },
-          body: JSON.stringify({ heads, schema_features: features }),
-        });
-        return response.ok;
-      }, 20_000);
-    },
-    async close() {
-      socket.close();
-      await closePeers([peer]);
-    },
-  };
-}
-
 async function admissionLogs() {
   const text = celldLog ? await readFile(celldLog, "utf8") : "";
   return [
@@ -269,13 +168,13 @@ try {
     "HTTP admission: sign_in_required, request_rejected, identical missing/unreadable 403",
   );
 
-  // Native refusals close with an application code after the upgrade.
+  // Sync refusals close with an application code after the upgrade.
   await setRole(memberPrincipal, "viewer");
   const ownerCookie = await cookieFor(owner);
   const discovered = await api(owner, `/api/connect?page=${pageId}`);
-  if (discovered.body.recordStorage === "automerge") {
-    // An `automerge` Page has no signing keys: two tabs of one account are two
-    // connections, each named by its own presence id, and they sync both ways.
+  {
+    // Two tabs of one account are two connections, each named by its own
+    // presence id, and they sync both ways.
     const join = async () => {
       const peer = await plainPeer({
         origin,
@@ -334,103 +233,14 @@ try {
     report.completed.push(
       "Plain admission: two tabs sync both ways; a build without plain sync 4426 schema_unsupported; text frame 4400 request_rejected",
     );
-  } else {
-    const seed = crypto.getRandomValues(new Uint8Array(32));
-    const first = await nativePeer(ownerCookie, seed);
-    await expect
-      .poll(
-        async () =>
-          Object.hasOwn(
-            (await api(owner, `/api/connect?page=${pageId}`)).body.peerProfiles,
-            first.senderId,
-          ),
-        { timeout: 15000 },
-      )
-      .toBe(true);
-    // The same key connecting again is the same tab after its old socket died
-    // unseen: the new connection takes the key and the host closes the old one.
-    const replacement = await nativePeer(ownerCookie, seed);
-    report.closes.replaced = await Promise.race([
-      first.closed,
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("the replaced socket stayed open")), 15000),
-      ),
-    ]);
-    assert.deepEqual(report.closes.replaced, {
-      code: 4409,
-      reason: "access_changed",
-    });
-    await expect
-      .poll(
-        async () =>
-          Object.hasOwn(
-            (await api(owner, `/api/connect?page=${pageId}`)).body.peerProfiles,
-            replacement.senderId,
-          ),
-        { timeout: 15000 },
-      )
-      .toBe(true);
-    // The native engine keeps syncing the replacement after the old connection
-    // for the same peer closed: another peer's edit reaches it, and its own
-    // edit reaches the other peer.
-    const other = await nativePeer(ownerCookie, crypto.getRandomValues(new Uint8Array(32)));
-    await other.change((doc) => {
-      doc.afterReplace = "from another peer";
-    });
-    await eventually(
-      () => assert.equal(replacement.handle.doc().afterReplace, "from another peer"),
-      20_000,
-    );
-    await replacement.change((doc) => {
-      doc.fromReplacement = "from the replacement";
-    });
-    await eventually(
-      () => assert.equal(other.handle.doc().fromReplacement, "from the replacement"),
-      20_000,
-    );
-    report.completed.push("Replacement syncs both ways after the old same-key connection closed");
-    const reassigned = await nativeConnect(await cookieFor(member), seed);
-    report.closes.reassigned = await reassigned.closed;
-    assert.deepEqual(report.closes.reassigned, {
-      code: 4422,
-      reason: "signing_key_rejected",
-    });
-    // The replacement survived both: it still holds the key.
-    assert.equal(
-      await Promise.race([replacement.closed, new Promise((resolve) => setTimeout(resolve, 1000))]),
-      undefined,
-      "the replacement stays connected",
-    );
-    await replacement.close();
-    await other.close();
-    await first.close();
-    // A real text frame on the native socket is refused with its own code.
-    const textAddress = new URL(`/api/sync?page=${pageId}`, origin);
-    textAddress.protocol = "ws:";
-    const text = new WebSocket(textAddress, {
-      headers: { cookie: ownerCookie, origin },
-    });
-    report.closes.textFrame = await new Promise((resolve, reject) => {
-      text.addEventListener("open", () => text.send("not a native frame"));
-      text.addEventListener("close", ({ code, reason }) => resolve({ code, reason }));
-      setTimeout(() => reject(new Error("text frame was not refused")), 15000);
-    });
-    assert.deepEqual(report.closes.textFrame, {
-      code: 4400,
-      reason: "request_rejected",
-    });
-    report.completed.push(
-      "Native admission: same key replaces its old socket (4409 access_changed); reassigned key 4422 signing_key_rejected; text frame 4400 request_rejected",
-    );
   }
 
   // Over the account's four-socket quota the upgrade still completes and
   // closes with the transient code, so a browser can count the refusal.
-  // Each held socket stays reserved until its 10 s native deadline.
+  // Each held socket stays reserved until its 10 s admission deadline.
   const memberCookie = await cookieFor(member);
   const rawSocket = () => {
-    // `sync=automerge` lets the socket reach the quota on an `automerge` Page;
-    // a native Page ignores it.
+    // Without `sync=automerge` the host refuses the socket before the quota.
     const address = new URL(`/api/sync?page=${pageId}&sync=automerge`, origin);
     address.protocol = "ws:";
     const socket = new WebSocket(address, {
@@ -490,7 +300,7 @@ try {
   const recovered = await tool(owner, "read_page", { page_id: pageId });
   assert.match(JSON.stringify(recovered.body), /Before restart\. During restart\./);
   report.closes.restart = await closes(owner);
-  assert.ok(report.closes.restart.length >= 1, "restart closed the native socket");
+  assert.ok(report.closes.restart.length >= 1, "restart closed the sync socket");
   assert.ok(
     report.closes.restart.every(({ code }) => code < 4400 || code >= 4500),
     "restart produced no permanent admission refusal",
@@ -501,7 +311,7 @@ try {
 
   // Behind Cloudflare, a restarting origin answers HTTP with the gateway's
   // own HTML error page. Receipts and the session check get it while the
-  // native socket stays up. The Page saves locally, retries, and recovers.
+  // sync socket stays up. The Page saves locally, retries, and recovers.
   const gatewayDown = (route) =>
     route.fulfill({
       status: 503,
@@ -586,11 +396,8 @@ try {
     "page_no_grant",
     "page_not_found",
     "origin_rejected",
-    // An `automerge` Page has no signing keys to replace or mismatch; it
-    // refuses an old build's socket instead.
-    ...(report.closes.oldBuild
-      ? ["schema_unsupported"]
-      : ["native_session_replaced", "native_binding_mismatch"]),
+    // A build without plain sync is refused as a schema update.
+    "schema_unsupported",
     "native_frame_unsupported",
     "connection_capacity",
   ];
