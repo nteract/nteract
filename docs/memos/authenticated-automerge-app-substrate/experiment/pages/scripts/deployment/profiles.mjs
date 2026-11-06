@@ -432,7 +432,7 @@ const targets = Object.freeze({
     // Page10 stays deployable, so it is not frozen here.
     frozenTargets: Object.freeze(["page7", "page8", "page9"]),
   }),
-  // pages2.runt.run: a fresh, empty target on its own host, lab2 (m7i.large,
+  // page2.runtimed.run (target pages2): a fresh, empty target on its own host, lab2 (m7i.large,
   // 8 GB). Pages' flags with plain Automerge sync from its first Page, so it
   // never holds a Subduction Page and has nothing to migrate. Its listeners,
   // firewall table and mark, tunnel and prefix are distinct from every lab1
@@ -441,7 +441,7 @@ const targets = Object.freeze({
     recordStorageMigration: DISABLED_MIGRATION,
     deployment: Object.freeze({
       host: "lab2",
-      hostname: "pages2.runt.run",
+      hostname: "page2.runtimed.run",
       service: "nteract-pages2",
       bucket: shared.bucket,
       prefix: "standalone/pages2",

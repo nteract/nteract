@@ -1,7 +1,7 @@
 # Pages deployment
 
 The current release is qualified for three isolated celld targets: **Pages**
-(`pages.runtimed.run`), **Page10**, and **Pages2** (`pages2.runt.run`, on its
+(`pages.runtimed.run`), **Page10**, and **Pages2** (`page2.runtimed.run`, on its
 own host, lab2). Page9 and earlier services are frozen.
 Deployment helpers reject mutations to those targets and check their
 fingerprints when publishing Pages or Page10. Historical profiles remain in
@@ -74,7 +74,7 @@ The `pages2` profile is a fresh, empty target on its own host:
 | Field | Value |
 | --- | --- |
 | Host | `lab2` (m7i.large, 8 GB) |
-| Hostname | `pages2.runt.run` |
+| Hostname | `page2.runtimed.run` |
 | Service and user | `nteract-pages2` |
 | Prefix | `standalone/pages2` in the lab fleet bucket |
 | Listeners | `127.0.0.1:9482`, internal `127.0.0.1:19482` |
@@ -108,13 +108,11 @@ it like lab1's: a different tunnel ID, unchanged during the run.
    [profiles.mjs](scripts/deployment/profiles.mjs)), `node`,
    `/usr/local/bin/aws`, `nft`, `curl` and `/usr/bin/cloudflared` on lab2.
 3. Have a Cloudflare account token for `1cfb529b94b3d6cde3aaf49d1d6ed5e6` with
-   Tunnel edit and DNS edit on `runt.run`. The DNS step finds `runt.run` by name
-   and refuses unless it is the only active full zone with that name in that
-   account. Pin its zone ID in `DNS_ZONES` in
-   [dns.mjs](scripts/deployment/dns.mjs) once confirmed.
-4. Add `https://pages2.runt.run/oidc` as a redirect URI on OIDC client
-   `1a90d36b-5b97-4ebb-a1bc-f3de7ddb70e0`. Sign-in fails until the identity
-   provider allows it.
+   Tunnel edit and DNS edit on `runtimed.run`, the same token as the lab1
+   targets.
+4. Nothing on the identity provider: OIDC client
+   `1a90d36b-5b97-4ebb-a1bc-f3de7ddb70e0` accepts redirect URIs under
+   `*.runtimed.run`, which covers `https://page2.runtimed.run/oidc`.
 
 ### Deploy
 
@@ -136,11 +134,11 @@ listener, table or mark, and any existing `nteract-pages2` path or user.
 ### Smoke checks
 
 ```sh
-curl -fsS https://pages2.runt.run/health                        # {"ok":true,"prototype":"pages-celld-native",...}
-curl -s -o /dev/null -w '%{http_code}\n' https://pages2.runt.run/whoami   # 401 without a session
+curl -fsS https://page2.runtimed.run/health                        # {"ok":true,"prototype":"pages-celld-native",...}
+curl -s -o /dev/null -w '%{http_code}\n' https://page2.runtimed.run/whoami   # 401 without a session
 ```
 
-Then sign in at `https://pages2.runt.run/` in a browser, create a Page, and
+Then sign in at `https://page2.runtimed.run/` in a browser, create a Page, and
 check `/whoami` from that session returns the account.
 
 ## Page10 release
@@ -944,8 +942,7 @@ node scripts/deployment/dns.mjs --target pages TUNNEL_UUID [--apply]
 
 `provision` reads `CLOUDFLARE_API_TOKEN` from the environment only and never
 writes it. It is an account token for `1cfb529b94b3d6cde3aaf49d1d6ed5e6` with
-Cloudflare Tunnel edit and DNS edit on `runtimed.run` (on `runt.run` for
-pages2; see [pages2 on lab2](#pages2-on-lab2)). Set it for the one command;
+Cloudflare Tunnel edit and DNS edit on `runtimed.run`. Set it for the one command;
 never write it to a file. An operator can read it from a password manager. A
 1Password service account lets provisioning run without a person at the
 keyboard: with `OP_SERVICE_ACCOUNT_TOKEN` set in the runner's environment,
