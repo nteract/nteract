@@ -1,0 +1,153 @@
+// Passage addresses after rules and dataframes. A rule or dataframe is a leaf
+// with no text; node_index scoping and target-scoped edits must still find
+// the nodes and characters after it.
+import test from "node:test";
+import assert from "node:assert/strict";
+import * as A from "@automerge/automerge";
+import { applyPageOperation, createPageData, initializePage, orderedBlockIds } from "./page.mjs";
+import { guardPassageEdits } from "./passage-edits.mjs";
+import { visibleNodeRange, visibleRangeAddress } from "./replace-match.mjs";
+import { encode } from "./wordgard-doc.mjs";
+import { PAGE_ID, pageWithSpans } from "../test/address-inputs.mjs";
+import { toWordgardTree } from "../test/random-page-tree.mjs";
+
+const S = (value) => new A.ImmutableString(value);
+const block = (type, parents = [], attrs = {}) => ({
+  type: "block",
+  value: { type: S(type), parents: parents.map(S), attrs, isEmbed: false },
+});
+const text = (value) => ({ type: "text", value, marks: {} });
+const ASSET = `/api/pages/${PAGE_ID}/assets/${"a".repeat(64)}`;
+const dataframe = () =>
+  block("dataframe", [], { src: S(ASSET), media_type: S("application/vnd.apache.parquet") });
+
+const ranges = (doc, id, count) =>
+  Array.from({ length: count }, (_, index) => {
+    const { start, end } = visibleNodeRange(doc, id, index);
+    return [start, end];
+  });
+function replace(doc, id, input) {
+  return A.change(A.clone(doc), (draft) =>
+    applyPageOperation(draft, {
+      operation: "patch_page",
+      arguments: { operations: [{ op: "replace_match", block_id: id, ...input }] },
+    }),
+  );
+}
+/** A target-scoped replace_match at the current heads, applied. */
+function guarded(doc, id, input) {
+  const plan = guardPassageEdits(doc, A.getHeads(doc), [
+    { op: "replace_match", block_id: id, ...input },
+  ]);
+  return { plan, after: replace(doc, id, plan.operations[0]) };
+}
+
+test("a second adjacent rule has its own range, and text after it is addressable", () => {
+  const { doc, id } = pageWithSpans([
+    block("horizontal-rule"),
+    block("horizontal-rule"),
+    block("paragraph"),
+    text("after"),
+  ]);
+  assert.deepEqual(ranges(doc, id, 3), [
+    [0, 1],
+    [1, 2],
+    [2, 8],
+  ]);
+  const at = doc.blocks[id].richText.indexOf("after");
+  assert.equal(visibleRangeAddress(doc, id, at, at + 5).node_index, 2);
+  const scoped = replace(doc, id, { match_text: "after", replacement: "later", node_index: 2 });
+  assert.match(scoped.blocks[id].richText, /later$/);
+  const { plan, after } = guarded(doc, id, {
+    match_text: "after",
+    replacement: "later",
+    node_index: 2,
+  });
+  assert.equal(plan.operations[0].node_index, 2);
+  assert.match(after.blocks[id].richText, /later$/);
+});
+
+test("the corpus rule variants address every node, the quote's rule included", () => {
+  let doc = A.from(createPageData({ pageId: PAGE_ID, title: "Rules" }));
+  doc = A.change(doc, (draft) =>
+    initializePage(draft, "***\n\n___\n\n- item\n\n  ---\n\n> ---\n\nclosing words"),
+  );
+  const id = orderedBlockIds(doc)[0];
+  assert.deepEqual(ranges(doc, id, 5), [
+    [0, 1],
+    [1, 2],
+    [2, 8],
+    [8, 10],
+    [10, 24],
+  ]);
+  const { plan, after } = guarded(doc, id, {
+    match_text: "closing",
+    replacement: "final",
+    node_index: 4,
+  });
+  assert.equal(plan.operations[0].node_index, 4);
+  assert.match(after.blocks[id].richText, /final words$/);
+});
+
+test("text after adjacent dataframes is addressable", () => {
+  const { doc, id } = pageWithSpans([dataframe(), dataframe(), block("paragraph"), text("after")]);
+  assert.deepEqual(ranges(doc, id, 3), [
+    [0, 1],
+    [1, 2],
+    [2, 8],
+  ]);
+  const scoped = replace(doc, id, { match_text: "after", replacement: "later", node_index: 2 });
+  assert.match(scoped.blocks[id].richText, /later$/);
+  const { after } = guarded(doc, id, { match_text: "after", replacement: "later" });
+  assert.match(after.blocks[id].richText, /later$/);
+});
+
+test("a nested dataframe and rule don't throw off a later target-scoped edit", () => {
+  // fast-check's shrunk counterexample: the edit used to fail with
+  // "Position N out of range".
+  const tree = toWordgardTree({
+    kind: "doc",
+    children: [
+      {
+        kind: "task",
+        children: [
+          {
+            kind: "item",
+            checked: false,
+            children: [
+              {
+                kind: "ordered",
+                start: 1,
+                children: [
+                  {
+                    kind: "item",
+                    children: [
+                      {
+                        kind: "dataframe",
+                        attrs: { src: ASSET, media_type: "application/vnd.apache.parquet" },
+                      },
+                      { kind: "rule" },
+                      { kind: "paragraph", children: [] },
+                    ],
+                  },
+                  { kind: "item", children: [{ kind: "paragraph", children: [] }] },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+      { kind: "paragraph", children: [{ kind: "text", value: "tail", marks: {} }] },
+    ],
+  });
+  const { doc, id } = pageWithSpans(encode(tree));
+  const at = doc.blocks[id].richText.indexOf("tail");
+  assert.equal(visibleRangeAddress(doc, id, at, at + 4).node_index, 1);
+  const { plan, after } = guarded(doc, id, {
+    match_text: "tail",
+    replacement: "end",
+    node_index: 1,
+  });
+  assert.equal(plan.operations[0].node_index, 1);
+  assert.match(after.blocks[id].richText, /end$/);
+});

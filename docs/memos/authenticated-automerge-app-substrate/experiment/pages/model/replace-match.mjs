@@ -2,8 +2,7 @@ import * as A from "@automerge/automerge/slim";
 import { diffArrays } from "diff";
 import { isRich, textPath } from "./richtext-format.mjs";
 import { parseInlineMarkdown } from "./markdown-import.mjs";
-import { adapter, amSpliceIdxToPmIdx, pmRangeToAmRange } from "./pm-adapter.mjs";
-import { richDoc } from "./richtext-spans.mjs";
+import { ancestryAt, blockAddresses, nodeIndexAt } from "./node-addresses.mjs";
 import {
   encodeMarkValue,
   isKnownMark,
@@ -31,41 +30,35 @@ export function replacementLiteral(value, name, optional = false) {
 }
 
 /** The optional node index uses the same revision-bound, top-level address as
- * read_page outlines. Containers remain intact; a match still cannot cross a
- * native paragraph/embed marker inside a list or table.
+ * read_page outlines (model/node-addresses.mjs). Containers remain intact; a
+ * match still cannot cross a native paragraph/embed marker inside a list or
+ * table. Returns the node's text range `{ start, end }`.
  */
 export function visibleNodeRange(doc, id, nodeIndex) {
   if (!Number.isSafeInteger(nodeIndex) || nodeIndex < 0)
     throw Error("node_index must be a nonnegative integer from the read outline");
   const block = doc.blocks[id];
   if (!isRich(block)) throw Error("replace_match requires a rich-text block");
-  const tree = richDoc(block);
-  if (nodeIndex >= tree.childCount) throw Error("node_index is outside this block");
-  let from = 0;
-  for (let i = 0; i < nodeIndex; i++) from += tree.child(i).nodeSize;
-  return pmRangeToAmRange(adapter, A.spans(doc, textPath(id)), {
-    from,
-    to: from + tree.child(nodeIndex).nodeSize,
-  });
+  const { nodes } = blockAddresses(A.spans(doc, textPath(id)));
+  if (nodeIndex >= nodes.length) throw Error("node_index is outside this block");
+  const { start, end } = nodes[nodeIndex];
+  return { start, end };
 }
 
+/** The top-level node holding the visible range `[start, end)`, its text
+ * range, and the containers around its first and last characters, which a
+ * target-scoped edit compares across revisions. */
 export function visibleRangeAddress(doc, id, start, end) {
-  const spans = A.spans(doc, textPath(id));
-  const tree = richDoc(doc.blocks[id]);
-  const from = tree.resolve(amSpliceIdxToPmIdx(adapter, spans, start));
+  const addresses = blockAddresses(A.spans(doc, textPath(id)));
   const last = end - (/^[\udc00-\udfff]$/.test(doc.blocks[id].richText[end - 1]) ? 2 : 1);
-  const to = tree.resolve(amSpliceIdxToPmIdx(adapter, spans, last));
-  const nodeIndex = from.index(0);
-  if (nodeIndex !== to.index(0)) throw Error("Match crosses top-level nodes");
-  const ancestry = (position) =>
-    Array.from({ length: position.depth }, (_, index) => {
-      const node = position.node(index + 1);
-      return { type: node.type.name, attrs: node.attrs };
-    });
+  const nodeIndex = nodeIndexAt(addresses, start);
+  if (nodeIndex !== nodeIndexAt(addresses, last)) throw Error("Match crosses top-level nodes");
+  const { start: nodeStart, end: nodeEnd } = addresses.nodes[nodeIndex];
   return {
     node_index: nodeIndex,
-    ...visibleNodeRange(doc, id, nodeIndex),
-    ancestry: [ancestry(from), ancestry(to)],
+    start: nodeStart,
+    end: nodeEnd,
+    ancestry: [ancestryAt(addresses, start), ancestryAt(addresses, last)],
   };
 }
 
