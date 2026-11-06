@@ -2,13 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import "fake-indexeddb/auto";
 import * as A from "@automerge/automerge";
-import * as N from "@automerge/subduction";
 import { PageSession } from "./session.mjs";
 import { openPageWithRetry } from "./page-open.mjs";
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
-test("an opening timeout is visible while native cleanup drains and retains its identity lock", async (t) => {
+test("an opening timeout is visible while replica cleanup drains and retains its identity lock", async (t) => {
   const failure = new DOMException("Opening timed out", "TimeoutError");
   const calls = [];
   let session, finishFlush;
@@ -27,7 +26,6 @@ test("an opening timeout is visible while native cleanup drains and retains its 
     };
     this.backend = { close: async () => calls.push("backend-close") };
     this.storage = { close: async () => calls.push("storage-close") };
-    this.signer = { free: () => calls.push("signer-free") };
     this.local = { release: () => calls.push("identity-release") };
     throw failure;
   });
@@ -58,7 +56,6 @@ test("an opening timeout is visible while native cleanup drains and retains its 
     "shutdown",
     "backend-close",
     "storage-close",
-    "signer-free",
     "identity-release",
   ]);
 });
@@ -73,7 +70,6 @@ test("failed opening handles background cleanup rejection and still releases loc
         throw Error("IndexedDB close failed");
       },
     };
-    this.signer = { free: () => calls.push("signer-free") };
     this.local = { release: () => calls.push("identity-release") };
     throw failure;
   });
@@ -82,11 +78,11 @@ test("failed opening handles background cleanup rejection and still releases loc
   // independently running cleanup reject without attaching a test-side catch.
   await tick();
   await tick();
-  assert.deepEqual(calls, ["storage-close", "signer-free", "identity-release"]);
+  assert.deepEqual(calls, ["storage-close", "identity-release"]);
   await assert.rejects(failure.cleanupPromise, /IndexedDB close failed/);
 });
 
-test("a cold lookup's DOMException timeout retries only after its native identity is released", async (t) => {
+test("a cold lookup's DOMException timeout retries only after its replica identity is released", async (t) => {
   const timeout = new DOMException("The operation timed out", "TimeoutError");
   assert.equal(timeout.code, 23);
   const authentication = { identity: { principal: crypto.randomUUID() }, canWrite: true };
@@ -249,7 +245,6 @@ function coldOpenFixture(t, { refuseDuringHandshake = false, discovery = {} } = 
     state.session = this;
     this.replicaKey = key;
     this.local = { release() {} };
-    this.signer = { free() {} };
     this.storage = { async close() {} };
     this.backend = { async addConnection() {}, async close() {} };
     this.repo = {
@@ -269,34 +264,34 @@ function coldOpenFixture(t, { refuseDuringHandshake = false, discovery = {} } = 
       identity: authentication.identity,
       documentId: "remote-document",
       access: { role: "viewer", generation: 0, revision: 0, canRead: true, canWrite: false },
-      serverPeerId: "00".repeat(32),
       serverSenderId: "host",
       peerProfiles: {},
       ...discovery,
     });
   });
-  t.mock.method(globalThis, "WebSocket", function () {
-    const events = new EventTarget();
-    Object.defineProperty(this, "binaryType", { value: "blob", writable: true });
-    this.addEventListener = events.addEventListener.bind(events);
-    this.dispatchEvent = events.dispatchEvent.bind(events);
-    this.close = () => {};
-    state.sockets.push(this);
-  });
   const refuse = (socket) =>
     socket.dispatchEvent(
       Object.assign(new Event("close"), { code: 4422, reason: "signing_key_rejected" }),
     );
-  t.mock.method(N.SubductionWebSocket, "setup", async (socket, _signer, _peer, onDisconnect) => {
-    state.disconnect = () => {
-      refuse(socket);
-      onDisconnect();
-    };
-    if (refuseDuringHandshake) {
-      refuse(socket);
-      throw Error("Native handshake failed");
-    }
-    return { free() {}, toTransport: () => ({ free() {} }) };
+  t.mock.method(globalThis, "WebSocket", function () {
+    const events = new EventTarget();
+    Object.defineProperty(this, "binaryType", { value: "blob", writable: true });
+    Object.defineProperty(this, "readyState", { value: 0, writable: true });
+    this.addEventListener = events.addEventListener.bind(events);
+    this.removeEventListener = events.removeEventListener.bind(events);
+    this.dispatchEvent = events.dispatchEvent.bind(events);
+    this.send = () => {};
+    this.close = () => {};
+    state.sockets.push(this);
+    state.disconnect = () => refuse(this);
+    // The host refuses the socket before it opens, or admits it.
+    void Promise.resolve().then(() => {
+      if (refuseDuringHandshake) refuse(this);
+      else {
+        this.readyState = 1;
+        events.dispatchEvent(new Event("open"));
+      }
+    });
   });
   state.open = () =>
     openPageWithRetry(() => PageSession.open(crypto.randomUUID(), { authentication }), {
@@ -336,9 +331,8 @@ test("a signing key refused during the handshake reports the diagnosis without r
     (error) => error,
   );
   assert.equal(error.code, "SIGNING_KEY_REFUSED");
-  assert.equal(error.cause.message, "Native handshake failed");
+  assert.equal(error.cause.message, "The sync connection closed.");
   assert.equal(f.attempts, 1);
   assert.deepEqual(f.backoff, []);
   await error.cleanupPromise;
 });
-

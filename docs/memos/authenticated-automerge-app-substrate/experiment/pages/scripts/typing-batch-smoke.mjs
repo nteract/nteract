@@ -40,28 +40,16 @@ const browser = await chromium.launch({
 });
 const report = { origin, measureOnly, cpuThrottle, phases: [], errors: [] };
 const frames = [];
-// Subduction 0.26 frames, as observed on the wire: "SUM", a zero byte, a u32
-// length, then a message type byte for sync messages, "SUE" for ephemeral (presence)
-// messages. Sync type 4 opens a sync round; type 0 carries one commit.
-// An unrecognized frame fails the run, so a framing change can't skew the
-// counts.
-//
-// On an `automerge` Page (PAGES_RECORD_STORAGE=automerge) frames are CBOR
-// (sync/wire.mjs): a browser's sync frame carrying a message opens or
-// continues a round and carries its changes, so it counts as a round; "eph"
-// is presence.
+// Frames are CBOR (sync/wire.mjs): a browser's sync frame carrying a message
+// opens or continues a round and carries its changes, so it counts as a
+// round; "eph" is presence. An unrecognized frame fails the run, so a framing
+// change can't skew the counts.
 function frameKind(payload) {
-  const bytes = Buffer.from(payload);
-  const plain = decodeFrame(bytes);
-  if (plain) {
-    if (plain.t === "eph") return "presence";
-    if (plain.t === "sync") return plain.m ? "round" : "other";
-    return "other";
-  }
-  const magic = bytes.subarray(0, 3).toString("latin1");
-  if (magic === "SUE") return "presence";
-  if (magic !== "SUM" || bytes.length < 9) return "unrecognized";
-  return { 4: "round", 0: "commit" }[bytes[8]] ?? "other";
+  const plain = decodeFrame(Buffer.from(payload));
+  if (!plain) return "unrecognized";
+  if (plain.t === "eph") return "presence";
+  if (plain.t === "sync") return plain.m ? "round" : "other";
+  return "other";
 }
 const content = (page) => page.locator(".page-block wg-content").first();
 const cleanText = (page) =>
@@ -140,12 +128,9 @@ async function commitRecords(page, pageId) {
       (b) => b.toString(16).padStart(2, "0"),
     ).join("");
     const all = (await indexedDB.databases()).map((d) => d.name);
-    // A plain replica stores chunks, one per local store or received
-    // increment, not one record per change; count those instead.
-    const plain = all.filter((name) => name?.startsWith("pages-plain-" + scope + "-"));
-    const names = plain.length
-      ? plain
-      : all.filter((name) => name?.startsWith("pages-native-" + scope + "-"));
+    // A replica stores chunks, one per local store or received increment,
+    // not one record per change; count those.
+    const names = all.filter((name) => name?.startsWith("pages-plain-" + scope + "-"));
     let total = 0;
     for (const name of names) {
       const db = await new Promise((resolve, reject) => {
@@ -159,9 +144,7 @@ async function commitRecords(page, pageId) {
           request.onsuccess = () => resolve(request.result);
           request.onerror = () => reject(request.error);
         });
-        total += keys.filter((k) =>
-          plain.length ? /^sync\/[^/]+\/o\//.test(String(k)) : String(k).includes("/commits/"),
-        ).length;
+        total += keys.filter((k) => /^sync\/[^/]+\/o\//.test(String(k))).length;
       } finally {
         db.close();
       }
@@ -270,10 +253,10 @@ async function phase(name, kind, writer, reader, pageId) {
   const received = window.filter((f) => f.label === reader.label && f.event === "framereceived");
   const rounds = sent.filter((f) => f.kind === "round");
   // Sends that leave later than one debounce after the last key are catch-up:
-  // edits still reaching native storage when typing stopped. How long that
+  // edits still reaching the replica's storage when typing stopped. How long that
   // takes depends on the runner's store latency, not on batching.
   const typingEnd = typed + OUTBOUND_DEBOUNCE_MS;
-  const late = sent.filter((f) => f.at > typingEnd && f.kind !== "commit");
+  const late = sent.filter((f) => f.at > typingEnd);
   const result = {
     name,
     kind,
@@ -291,7 +274,6 @@ async function phase(name, kind, writer, reader, pageId) {
     writer_frames_sent: sent.length,
     writer_bytes_sent: sum(sent),
     writer_sync_rounds: rounds.length,
-    writer_commit_frames: sent.filter((f) => f.kind === "commit").length,
     writer_presence_frames: sent.filter((f) => f.kind === "presence").length,
     reader_frames_received: received.length,
     reader_bytes_received: sum(received),
@@ -306,7 +288,7 @@ async function phase(name, kind, writer, reader, pageId) {
   });
   assert.ok(
     window.every((f) => f.kind !== "unrecognized"),
-    "an unrecognized native frame; requalify frameKind",
+    "an unrecognized sync frame; requalify frameKind",
   );
   console.log("PHASE " + JSON.stringify(result));
   assert.equal(await cleanText(writer.page), expected);

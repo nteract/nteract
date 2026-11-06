@@ -137,7 +137,9 @@ const LENGTH_MESSAGE = `Comment must contain 1–${COMMENT_MAX_LENGTH} character
  */
 const bytesOf = (value) => new TextEncoder().encode(JSON.stringify(value)).length;
 const isLineBreak = (span) =>
-  span?.type === "block" && span.value?.isEmbed === true && String(span.value.type) === "hard-break";
+  span?.type === "block" &&
+  span.value?.isEmbed === true &&
+  String(span.value.type) === "hard-break";
 
 /** How many lines `spans` hold: one more than their hard breaks. */
 export const commentLines = (spans) => spans.filter(isLineBreak).length + 1;

@@ -15,9 +15,9 @@ export const BLOCKING = new Set(
 );
 
 /**
- * SyncHost `admit` hook for the comments document: the same rules as
- * admission over native records (model/comment-authority.mjs), run on the
- * changes a sync message would add, before anything is stored. A blocking
+ * SyncHost `admit` hook for the comments document: the comment rules
+ * (model/comment-authority.mjs), run on the changes a sync message would
+ * add, before anything is stored. A blocking
  * refusal is fatal; the host's `refused` hook records the block. `isBlocked`
  * says whether a principal's comment writes are already blocked.
  */

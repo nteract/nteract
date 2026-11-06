@@ -1,12 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  STORAGE_WRITES,
-  guardContext,
-  guardStorage,
-  guardStub,
-  guardStubs,
-} from "./storage-guard.mjs";
+import { STORAGE_WRITES, guardContext, guardStorage } from "./storage-guard.mjs";
 
 /** Durable Object storage in memory, with every write method the guard
  * knows and a transaction that commits only if its closure succeeds. */
@@ -94,50 +88,6 @@ test("a guarded context guards the storage it holds now, and passes everything e
   await assert.rejects(guarded.storage.put("a", 1), /reset/);
   ctx.storage = new Storage();
   await assert.rejects(guarded.storage.delete("a"), /reset/, "a replaced storage is guarded too");
-});
-
-test("a guarded stub refuses every request but a GET", async () => {
-  const sent = [];
-  const stub = guardStub(
-    { fetch: async (request) => (sent.push(request.method), new Response("ok")) },
-    () => Error("reset"),
-  );
-  assert.equal(
-    await (await stub.fetch(new Request("https://records.internal/records"))).text(),
-    "ok",
-  );
-  await assert.rejects(
-    stub.fetch(new Request("https://records.internal/lease", { method: "POST" })),
-    /reset/,
-  );
-  assert.deepEqual(sent, ["GET"]);
-});
-
-test("guardStubs gates every stub its factory makes", async () => {
-  const sent = [];
-  let made = 0;
-  let error;
-  const stubs = guardStubs(
-    () => {
-      const n = ++made;
-      return {
-        fetch: async (request) => (sent.push(`${n} ${request.method}`), new Response("ok")),
-      };
-    },
-    () => error,
-  );
-  const post = () => new Request("https://records.internal/records", { method: "POST" });
-  await stubs().fetch(post());
-  error = Error("reset");
-  for (const stub of [stubs(), stubs()]) {
-    await assert.rejects(stub.fetch(post()), /reset/);
-    assert.equal(
-      await (await stub.fetch(new Request("https://records.internal/records"))).text(),
-      "ok",
-    );
-  }
-  assert.equal(made, 3, "each call makes a new stub");
-  assert.deepEqual(sent, ["1 POST", "2 GET", "3 GET"]);
 });
 
 test("the SQLite APIs are gated too: every sql.exec and each kv write", () => {

@@ -10,11 +10,7 @@
  */
 import { filter, take } from "rxjs";
 import { Store } from "./store.mjs";
-import { storageReopenMachine } from "./storage-reopen-machine.mjs";
 
-// What a failed in-place reopen tells the person (session.mjs STORAGE_ADOPTED).
-const STORAGE_RELOAD =
-  "This Page's storage changed. Reload to keep editing; your edits are saved on this device.";
 const keyOf = (session) => `${session.identity?.principal}:${session.pageId}`;
 
 /** Settles once a session's whole close has, whatever its outcome. */
@@ -33,10 +29,6 @@ export class SessionHost {
   #closing = new Map();
   #reloading = null;
   #watched = new WeakSet();
-  /** Each Page's storage reopen in this tab (storage-reopen-machine.mjs),
-   * by account and Page. It outlives the sessions it replaces, so a second
-   * adoption for the same Page asks for a reload instead of looping. */
-  #storageReopens = new Map();
 
   get current() {
     return this.store.snapshot().current;
@@ -151,71 +143,6 @@ export class SessionHost {
       await install(next, generation);
     } catch (error) {
       if (this.current === previous) onError?.(error);
-    } finally {
-      if (this.#reloading === previous) this.#reloading = null;
-      if (previous.alive) this.#own(previous, true);
-      else this.#drop(previous);
-    }
-  }
-
-  /** The installed session adopted the host's storage (`storageAdopted`):
-   * its checkpoint is recorded, final, under that storage. Close it, open
-   * the replacement from that checkpoint, and install that, all in this tab.
-   * The person keeps editing without a reload. When the close or the open
-   * fails, or the Page adopts again after a reopen, the session that is
-   * still installed asks for a reload (`showStorageReloadRequired`), and
-   * `onError` hears it when that session has already closed. */
-  async reopenStorage(previous, { install, onError }) {
-    if (!previous?.storageAdopted || this.current !== previous || this.#reloading) return;
-    const key = keyOf(previous);
-    let generation, next, cause;
-    const effect = async ({ type }) => {
-      switch (type) {
-        case "close":
-          this.#reloading = previous;
-          generation = this.navigate();
-          this.#own(previous, false);
-          try {
-            await previous.close();
-            return { type: "closed" };
-          } catch (error) {
-            cause = error;
-            return { type: "failed" };
-          }
-        case "open":
-          try {
-            next = await previous.openAfterStorageChange();
-            return { type: "opened" };
-          } catch (error) {
-            cause = error;
-            return { type: "failed" };
-          }
-        case "install":
-          await install(next, generation);
-          return undefined;
-        case "reloadRequired":
-          if (previous.alive) previous.showStorageReloadRequired();
-          else if (this.current === previous)
-            onError?.(
-              Object.assign(Error(STORAGE_RELOAD, cause ? { cause } : undefined), {
-                code: "RECORD_STORAGE_CHANGED",
-                status: 409,
-              }),
-            );
-          return undefined;
-      }
-    };
-    try {
-      for (let event = { type: "adopted" }; event; ) {
-        const result = storageReopenMachine.step(
-          this.#storageReopens.get(key) ?? storageReopenMachine.initial,
-          event,
-        );
-        if (result.rejected) return;
-        this.#storageReopens.set(key, result.state);
-        event = undefined;
-        for (const step of result.effects) event = (await effect(step)) ?? event;
-      }
     } finally {
       if (this.#reloading === previous) this.#reloading = null;
       if (previous.alive) this.#own(previous, true);

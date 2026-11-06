@@ -1,7 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
-import { parseMarkdown, exportMarkdown, setRichMarkdown, textPath, validateRich, blockMarkdown } from "./richtext.mjs";
+import {
+  parseMarkdown,
+  exportMarkdown,
+  setRichMarkdown,
+  textPath,
+  validateRich,
+  blockMarkdown,
+} from "./richtext.mjs";
 import { richFromSource } from "./richtext-test-support.mjs";
 import { decode, encode, TaskList, TaskChecked } from "./wordgard-doc.mjs";
 

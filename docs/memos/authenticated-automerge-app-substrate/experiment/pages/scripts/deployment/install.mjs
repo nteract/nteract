@@ -4,15 +4,11 @@ import { createHash, randomBytes } from "node:crypto";
 import {
   chmodSync,
   chownSync,
-  closeSync,
-  constants as fsConstants,
   cpSync,
   existsSync,
-  fstatSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
-  openSync,
   readFileSync,
   readdirSync,
   renameSync,
@@ -23,9 +19,6 @@ import {
 import path from "node:path";
 import {
   deploymentProfile,
-  migrationVars,
-  migrationPolicyPath,
-  MAX_MIGRATION_POLICY_BYTES,
   assertQualifiedDeploymentTarget,
   assertReleaseOpensTargetPages,
   stageTarget,
@@ -54,60 +47,6 @@ const requested = flags.length === 1 && flags[0] === "--restart";
 if (process.getuid() !== 0 || apply !== "--apply" || (flags.length && !requested))
   throw new Error("Explicit root installation with a prepared stage is required");
 const profile = deploymentProfile(target);
-// The operator's canary list, if any, from a root-only file in the service's
-// own config directory. Only a missing file is absent. A symlink (dangling or
-// not), a file owned by anyone but the installing user (root, checked above),
-// or a group- or world-writable one is refused.
-// The checks run on the opened descriptor, so the bytes read are the bytes checked.
-const operatorPolicyPath = migrationPolicyPath(profile);
-const readOperatorPolicy = (file) => {
-  const configDirStat = (() => {
-    try {
-      return lstatSync(path.dirname(file));
-    } catch (error) {
-      if (error.code === "ENOENT") return null;
-      throw error;
-    }
-  })();
-  if (!configDirStat) return undefined;
-  if (
-    !configDirStat.isDirectory() ||
-    configDirStat.uid !== process.getuid() ||
-    configDirStat.mode & 0o077
-  )
-    throw new Error(
-      "Refusing canary file: " + path.dirname(file) + " must be a root-owned 0700 directory",
-    );
-  let fd;
-  try {
-    fd = openSync(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
-  } catch (error) {
-    if (error.code === "ENOENT") return undefined;
-    if (error.code === "ELOOP") throw new Error("Refusing canary file: " + file + " is a symlink");
-    throw error;
-  }
-  try {
-    const stat = fstatSync(fd);
-    if (
-      !stat.isFile() ||
-      stat.uid !== process.getuid() ||
-      stat.mode & 0o022 ||
-      stat.size > MAX_MIGRATION_POLICY_BYTES
-    )
-      throw new Error(
-        "Invalid record storage migration canary file: " +
-          file +
-          " must be a regular root-owned file, not group- or world-writable, at most " +
-          MAX_MIGRATION_POLICY_BYTES +
-          " bytes",
-      );
-    return readFileSync(fd, "utf8");
-  } finally {
-    closeSync(fd);
-  }
-};
-const operatorPolicy = readOperatorPolicy(operatorPolicyPath);
-const migration = migrationVars(profile, operatorPolicy);
 const run = (command, args) => {
   try {
     return execFileSync(command, args, {
@@ -183,8 +122,8 @@ if (owned) {
     throw new Error("Existing service has different ownership");
 }
 // The record storage every release installed here was configured to create
-// Pages with. With the profile and its history, it names the Pages this
-// target may hold; a release that can't open them is refused before any write.
+// Pages with. With the target's history, it names the Pages this target may
+// hold; a release that can't open them is refused before any write.
 const releaseStorage = (sha) => {
   const file = base + "/releases/" + sha + "/wrangler.json";
   if (!existsSync(file)) return undefined;
@@ -378,16 +317,12 @@ if (profile.operatorMigration && !existsSync(operatorSecretPath))
     flag: "wx",
   });
 config.vars = {
-  ...migration,
   ...(profile.operatorMigration
     ? { PAGES_OPERATOR_SECRET: readFileSync(operatorSecretPath, "utf8").trim() }
     : {}),
-  ...(profile.asyncPersistence ? { PAGES_ASYNC_PERSISTENCE: "true" } : {}),
-  ...(profile.compactRecords ? { PAGES_COMPACT_RECORDS: "true" } : {}),
   ...(profile.editor ? { PAGES_EDITOR: profile.editor } : {}),
   ...(profile.companyViewDomains ? { PAGES_COMPANY_VIEW_DOMAINS: profile.companyViewDomains } : {}),
   ...(profile.catalogIndex ? { PAGES_CATALOG_INDEX: profile.catalogIndex } : {}),
-  ...(profile.recordStorage ? { PAGES_RECORD_STORAGE: profile.recordStorage } : {}),
   ...(profile.pageQuota ? { PAGES_DEFAULT_PAGE_QUOTA: profile.pageQuota } : {}),
   NOTEBOOK_CLOUD_OIDC_FLOW: "server",
   NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://" + expected.hostname,
@@ -414,8 +349,8 @@ mkdirSync(release, { recursive: true, mode: 0o750 });
 // Retry only the same verified bytes. A partial copy may have missing files,
 // but never replace an unexpected file or a modified existing artifact.
 // The installer writes the configured wrangler.json's vars itself, so an
-// earlier install of this release with other vars (a changed migration
-// canary) is accepted when everything but `vars` matches this configuration.
+// earlier install of this release with other vars (a changed profile) is
+// accepted when everything but `vars` matches this configuration.
 const sameButVars = (bytes) => {
   try {
     const existing = JSON.parse(bytes);
@@ -454,7 +389,7 @@ if (existsSync(audit + "/manifest.json")) {
     JSON.stringify(JSON.parse(readFileSync(audit + "/manifest.json"))) !== JSON.stringify(manifest)
   )
     throw new Error("Existing rollout manifest differs from prepared deployment");
-  // A reinstall of the same stage (a canary change) keeps the first snapshot
+  // A reinstall of the same stage keeps the first snapshot
   // as previous-deployment.json; the deployment it replaces is kept by version.
   if (existsSync(configDir + "/deployment.json")) {
     const current = readFileSync(configDir + "/deployment.json");

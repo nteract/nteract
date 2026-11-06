@@ -4,12 +4,12 @@ import * as A from "@automerge/automerge";
 import { proposeAccessUpdate } from "./access.mjs";
 import { CONTENT_ACTIVITY_KEY } from "./content-activity.mjs";
 import { errorResponse } from "./auth.mjs";
+import { plainStub } from "./plain-stub.mjs";
 import { Page } from "./index.mjs";
-import { ActorPersistence } from "./actor-authorship.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { proposeSharingMutation } from "./sharing.mjs";
 import { trashRecord } from "./trash.mjs";
-import { commentsUuid, fixture, pageId, serverKey } from "./trash-fixture.mjs";
+import { commentsUuid, fixture, pageId } from "./trash-fixture.mjs";
 
 // A shared-Page check (`/internal/catalog`) on a Page host that hasn't booted
 // answers from the host record (page-startup.mjs). These hosts are built by
@@ -44,14 +44,9 @@ async function hosts(t, options = {}) {
   t.mock.method(Page.prototype, "initializeRepo", async function () {
     boots++;
     this.policy = new DocumentPolicy({
-      storage: this.ctx.storage,
       metadata: () => this.metadata,
-      serverKey,
     });
-    await this.policy.load();
-    this.serverKey = serverKey;
     this.serverSenderId = "server-sender";
-    this.backend = { async flush() {} };
     const page = this;
     this.repo = {
       find: async () => handleOf(page, f.doc),
@@ -62,6 +57,7 @@ async function hosts(t, options = {}) {
       async delete() {},
       async flush() {},
     };
+    this.plain = plainStub(this.repo);
     this.commentsUuid = commentsUuid;
     await host.onBoot?.(this);
   });
@@ -753,33 +749,20 @@ for (const within of ["request", "constructor"])
       await h.record(unnamed);
     }
     const retired = [];
-    let actorFailures = 0;
     let reached = false;
     let release;
     const held = new Promise((resolve) => (release = resolve));
-    let actorPersistence;
-    t.after(() => actorPersistence?.stop());
     t.mock.method(Page.prototype, "initializeRepo", async function () {
       reached = true;
       await held;
-      // As the real setup does, it assigns the policy, backend, signer and
-      // actor persistence together at its end, and replays actor effects.
-      // Its retries wait one turn and aren't held, so a drain ends even
-      // while it would retry forever.
-      actorPersistence = new ActorPersistence(this.ctx.storage, {
-        sleep: () => new Promise((resolve) => setImmediate(resolve)),
-        onError: () => actorFailures++,
-      });
+      // As the real setup does, it assigns the policy and plain sync
+      // together at its end.
       Object.assign(this, {
         policy: { close: async () => retired.push("policy") },
-        backend: { async flush() {}, close: async () => retired.push("backend") },
-        signer: { free: () => retired.push("signer") },
-        actorPersistence,
-        serverKey,
+        plain: { close: async () => retired.push("plain") },
         serverSenderId: "server-sender",
         commentsUuid,
       });
-      actorPersistence.enqueue({ put: [["a".repeat(32), { key: "x" }]] });
     });
     let giveUp;
     const ends = within === "request" ? 1 : 0;
@@ -799,11 +782,7 @@ for (const within of ["request", "constructor"])
     const before = structuredClone(h.f.storage.values);
     release();
     await drain(h);
-    assert.deepEqual(retired, ["policy", "backend", "signer"]);
-    assert.equal(actorPersistence.state.phase, "stopped");
-    const failures = actorFailures;
-    await drain(h);
-    assert.equal(actorFailures, failures, "actor persistence retries nothing more");
+    assert.deepEqual(retired, ["plain"]);
     assert.deepEqual(h.f.storage.values, before, "nothing written after the reset");
   });
 

@@ -139,7 +139,7 @@ async function fixture({ opening = false, startable = false, role = "editor" } =
         })(),
         close: async () => {},
       }),
-      storeSnapshot: async () => {},
+      store: async () => {},
     };
   };
   session.retryConnection = async () => {};

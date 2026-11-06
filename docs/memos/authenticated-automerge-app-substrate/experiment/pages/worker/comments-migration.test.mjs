@@ -281,7 +281,8 @@ test("end to end: only the owner runs it, and apply needs write", async (t) => {
 
 test("end to end: a Page with a live socket is skipped as busy unless include_connected", async (t) => {
   const { f, run } = await legacyFixture(t);
-  f.page.wires.add({ disconnect: async () => {} });
+  const disconnected = [];
+  f.page.wires.add({ disconnect: async () => disconnected.push("wire") });
   const first = await run({ mode: "apply" });
   assert.equal(first.body.pages[0].status, "busy");
   assert.deepEqual(first.body.progress, { phase: "incomplete", pending: [pageId], pass: 1 });
@@ -289,7 +290,7 @@ test("end to end: a Page with a live socket is skipped as busy unless include_co
   const second = await run({ mode: "apply", include_connected: true });
   assert.equal(second.body.pages[0].status, "normalized");
   assert.equal(second.body.pages[0].connected, 1);
-  assert.deepEqual(f.disconnected, [], "no peer is disconnected");
+  assert.deepEqual(disconnected, [], "no peer is disconnected");
 });
 
 test("end to end: a peer's change between plan and write gets stale heads and writes nothing", async (t) => {

@@ -15,7 +15,6 @@ import {
   rowLabel,
   lostSuccess,
   reach,
-  STALE_KEY,
   scenario,
   settle,
   suite,
@@ -140,17 +139,12 @@ const POST_COMMIT = {
       key.startsWith("member shared/") ||
       key === "page host/title-projection",
   },
-  refreshAccess: {
-    name: "bindingRetirement",
-    writes: (key) => key === `page host/binding/${STALE_KEY}`,
-  },
 };
 
 /** Where a replayed run may differ from its uncut reference, and why:
- * - indexRetirement, titleProjection, bindingRetirement: the process died
- *   after the record committed and before that post-commit effect ran. Only
- *   the keys that effect writes may differ. Grant generations keep a revoked
- *   key from writing while its retirement is missing.
+ * - indexRetirement, titleProjection: the process died after the record
+ *   committed and before that post-commit effect ran. Only the keys that
+ *   effect writes may differ.
  * - index: a D1 write rejected. Index writes are best-effort; a failed report
  *   stores the repair marker, and listings verify rows with the Page.
  * - prune: a receipt landed but its prune did not. The store holds one
@@ -263,12 +257,11 @@ test("every mutation the lifecycle makes can reject before or after it applies, 
       // rejected mark write leaves the title unstored (titleRecord), and one
       // that landed before it rejected stays, since the projection failed
       // (projectionMark).
-      cuts: 212,
-      runs: 808,
-      indexRetirement: 21,
-      titleProjection: 14,
+      cuts: 202,
+      runs: 768,
+      indexRetirement: 15,
+      titleProjection: 10,
       titleRecord: 12,
-      bindingRetirement: 30,
       prune: 22,
       index: 14,
       projectionMark: 16,

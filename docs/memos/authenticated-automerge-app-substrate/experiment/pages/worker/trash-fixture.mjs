@@ -6,9 +6,9 @@ import { createAuthFixture } from "../../auth-fixtures.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import { applyComment } from "../model/comments.mjs";
 import { commentsGenesis } from "../model/comments-doc.mjs";
-import { BUILD_FEATURES, documentFeatures } from "../model/schema-features.mjs";
 import { Catalog, Page } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";
+import { plainStub } from "./plain-stub.mjs";
 import { proposeAccessUpdate } from "./access.mjs";
 import { LOCATION_SHAPE_KEY, shapeRecord } from "./location-shape.mjs";
 
@@ -49,10 +49,6 @@ export class Storage {
 }
 
 export const pageId = "33333333-3333-4333-8333-333333333333";
-export const serverKey = "f".repeat(64);
-export const ownerKey = "1".repeat(64);
-export const memberKey = "2".repeat(64);
-export const readerKey = "3".repeat(64);
 export const commentsUuid = "c0000000-0000-4000-8000-000000000001";
 
 /** An owner's Page with one member (an editor, or `memberRole`) and one
@@ -99,6 +95,7 @@ export async function fixture(
     documentId: "fixture-document",
     tree: "a".repeat(32),
     comments_doc: commentsUuid,
+    recordStorage: "automerge",
   };
   const ownerIdentity = { principal: owner, canWrite: true, expiresAt: Date.now() + 60_000 };
   const acl = proposeAccessUpdate(base, ownerIdentity, {
@@ -175,7 +172,6 @@ export async function fixture(
       handle,
       wires: new Set(),
       wirePrincipals: new Map(),
-      serverKey,
       serverSenderId: "server-sender",
       commentsUuid,
       commentsHandle,
@@ -196,17 +192,9 @@ export async function fixture(
           persistedComments = A.save(commentsDoc);
         },
       },
-      backend: { async flush() {} },
     });
-    instance.policy = new DocumentPolicy({
-      storage,
-      metadata: () => instance.metadata,
-      serverKey,
-      commentsTree: () => "c".repeat(32),
-      // As the Page host wires it: each document's own stamp.
-      schemaFeatures: (scope) =>
-        documentFeatures((scope === "comments" ? instance.commentsHandle : instance.handle).doc()),
-    });
+    instance.plain = plainStub(instance.repo);
+    instance.policy = new DocumentPolicy({ metadata: () => instance.metadata });
     return instance;
   };
   const initial = { ...base, ownerName: "Owner", deleted: false, acl };
@@ -257,19 +245,6 @@ export async function fixture(
     canWrite,
     expiresAt: Date.now() + 60_000,
   });
-  const disconnected = [];
-  const disconnectErrors = [];
-  /** Admit native key `key` for `principal`. `features` are the schema
-   * features its build declares; this build's by default. */
-  const bind = (key, principal, features = BUILD_FEATURES) =>
-    page.policy.bind(key, key, identity(principal), {
-      reauthenticate: async () => identity(principal),
-      disconnect: async (error) => {
-        disconnected.push(key);
-        disconnectErrors.push(error);
-      },
-      features,
-    });
   return {
     auth,
     owner,
@@ -291,7 +266,6 @@ export async function fixture(
     /** A new Page object over the same durable storage, as after eviction. */
     async restart() {
       page = build((await storage.get("host/document")) ?? structuredClone(page.metadata));
-      await page.policy.load();
       return page;
     },
     /** A new Page object loaded from durable storage alone, as after a crash:
@@ -302,7 +276,6 @@ export async function fixture(
       commentsDoc = A.load(persistedComments);
       // The fixture installs its first record in memory only.
       page = build((await storage.get("host/document")) ?? structuredClone(page.metadata));
-      await page.policy.load();
       // The load path opens the comments document itself.
       page.commentsHandle = undefined;
       await page.loadDocument();
@@ -315,9 +288,6 @@ export async function fixture(
     catalogCall,
     pageCall,
     tool,
-    bind,
-    disconnected,
-    disconnectErrors,
     removed: () => removed,
     doc: () => doc,
     commentsDoc: () => commentsDoc,
@@ -340,15 +310,8 @@ export const trashArgs = (f, key = "trash-request") => ({
 /** A Page built by the real constructor over storage, as on a cold start. */
 export function coldPage(f, t) {
   t.mock.method(Page.prototype, "initializeRepo", async function () {
-    this.policy = new DocumentPolicy({
-      storage: this.ctx.storage,
-      metadata: () => this.metadata,
-      serverKey,
-    });
-    await this.policy.load();
-    this.serverKey = serverKey;
+    this.policy = new DocumentPolicy({ metadata: () => this.metadata });
     this.serverSenderId = "server-sender";
-    this.backend = { async flush() {} };
     this.repo = {
       find: async () => ({ doc: () => f.doc(), broadcast() {}, on() {}, off() {} }),
       import: async () => ({
@@ -360,6 +323,7 @@ export function coldPage(f, t) {
       async delete() {},
       async flush() {},
     };
+    this.plain = plainStub(this.repo);
     this.commentsUuid = commentsUuid;
   });
   return new Page(

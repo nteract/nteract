@@ -195,7 +195,11 @@ function validateBody(message, where, { created = false, contentWritten = false 
       reject(REJECTION.INVALID_VALUE, "richText needs the rich format", where);
     if (body === undefined) reject(REJECTION.INVALID_VALUE, "Message body must be text", where);
   } else if (created && own(message, "body"))
-    reject(REJECTION.OUTDATED_FORM, "A new message stores no body: its spans are the message", where);
+    reject(
+      REJECTION.OUTDATED_FORM,
+      "A new message stores no body: its spans are the message",
+      where,
+    );
   // The shared content rule (comment-content.mjs): the same one the tools and
   // the browser apply before writing, so an honest write always passes here.
   let spans;
@@ -387,8 +391,7 @@ function checkMessageOperation(op, full, ctx, threadId, thread, isCreate, where)
   // part of rewriting a message.
   if (field === "body" && !(op.action === "del" && full.length === 5))
     reject(REJECTION.OUTDATED_FORM, "A message's body is no longer written", where);
-  if (field === "richText" || field === "format")
-    ctx.plan.contentWrites.add(threadId, messageId);
+  if (field === "richText" || field === "format") ctx.plan.contentWrites.add(threadId, messageId);
   ctx.plan.editedMessages.add(threadId, messageId);
 }
 

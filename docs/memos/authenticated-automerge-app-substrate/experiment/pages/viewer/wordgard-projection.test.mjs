@@ -2,13 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Leaf } from "wordgard/doc";
 import { GardState, GardSelection, Transaction } from "wordgard/state";
-import {
-  schema,
-  Paragraph,
-  Strong,
-  PagesLink,
-  PagesImage,
-} from "./wordgard-model.mjs";
+import { schema, Paragraph, Strong, PagesLink, PagesImage } from "./wordgard-model.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
 const doc = (...nodes) => schema.doc([Paragraph.create(nodes)]);
 test("reordered image attrs beside remote text preserve the image and its node selection", () => {

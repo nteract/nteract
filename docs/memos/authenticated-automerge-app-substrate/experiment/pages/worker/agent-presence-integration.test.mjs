@@ -8,6 +8,7 @@ import { resolvePeerSelection } from "../model/presence.mjs";
 import worker, { Page } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { authenticate } from "./auth.mjs";
+import { plainStub } from "./plain-stub.mjs";
 
 const pageId = "33333333-3333-4333-8333-333333333333";
 class Storage {
@@ -56,6 +57,7 @@ async function fixture(t, driver = "Kilo", agent) {
     broadcast: (value) => broadcasts.push(value),
   });
   const page = Object.assign(Object.create(Page.prototype), {
+    plain: plainStub(),
     env: auth.env,
     ready: Promise.resolve(),
     tail: Promise.resolve(),
@@ -70,7 +72,7 @@ async function fixture(t, driver = "Kilo", agent) {
     cacheTitle() {},
     flush: async () => {},
   });
-  page.policy = new DocumentPolicy({ storage, metadata: () => page.metadata });
+  page.policy = new DocumentPolicy({ metadata: () => page.metadata });
   // The MCP endpoint builds absolute URLs from the configured public origin.
   auth.env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN ??= "https://pages.invalid";
   const call = async (operation, args = {}, session) => {

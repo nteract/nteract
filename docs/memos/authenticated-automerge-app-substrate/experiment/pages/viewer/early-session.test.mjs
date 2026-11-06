@@ -353,7 +353,7 @@ test("an early 401 is the first refresh's answer, through normal error handling"
 
 const PAGE = "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70";
 const OTHER = "6a1d5b6f-7d2f-4c1f-8b9a-1e1e5d6f7a81";
-const connection = { documentId: "doc", serverPeerId: "00".repeat(32) };
+const connection = { documentId: "doc", serverSenderId: "host" };
 
 test("the head script starts a Page's connection discovery on its route only", () => {
   for (const [pathname, pageId] of [

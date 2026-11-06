@@ -21,7 +21,7 @@ const record = {
   owner: "user:anaconda:owner",
   documentId: "document",
   comments_doc: "c0000000-0000-4000-8000-000000000001",
-  recordStorage: "buffered",
+  recordStorage: "automerge",
   deleted: false,
 };
 const projection = { title: "Launch plan", observed_at: "2026-10-20T10:00:00.000Z", keep: true };
@@ -31,11 +31,14 @@ test("only a current record without a creation intent starts lazily", () => {
   assert.equal(startupOf(undefined, { metadata: record }), "eager");
   assert.equal(startupOf(record, { metadata: record }), "eager");
   assert.equal(startupOf(record, undefined), "lazy");
-  assert.equal(startupOf({ ...record, recordStorage: undefined }, undefined), "lazy");
-  assert.equal(startupOf({ ...record, recordStorage: "local" }, undefined), "lazy");
-  assert.equal(startupOf({ ...record, recordStorage: "automerge" }, undefined), "lazy");
-  // The boot refuses this mode; it fails in the constructor, as before.
-  assert.equal(startupOf({ ...record, recordStorage: "remote" }, undefined), "eager");
+  // The boot refuses a Subduction Page's modes; it fails in the constructor.
+  for (const recordStorage of [undefined, "local", "buffered", "remote"])
+    assert.equal(startupOf({ ...record, recordStorage }, undefined), "eager", recordStorage);
+  // A deleted one answers as deleted whatever its mode.
+  assert.equal(
+    startupOf({ ...record, recordStorage: "buffered", deleted: true }, undefined),
+    "lazy",
+  );
   // The boot writes the comments document's name into an older record.
   const { comments_doc: _comments, ...unnamed } = record;
   assert.equal(recordAnswerable(unnamed), false);

@@ -12,7 +12,6 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { patchUpstream } from "./patch-upstream.mjs";
 import { patchWordgard } from "./patch-wordgard.mjs";
-import { subductionRelease, pinSubductionDependency } from "./native-version.mjs";
 
 export const revision = "afec0444191a5a662e065f24193bef58ab07122a";
 export function setup(
@@ -78,7 +77,7 @@ export function setup(
       throw new Error("Upstream source cache has local changes; refusing to overwrite them");
   }
   mkdirSync("upstream/packages", { recursive: true });
-  for (const name of ["automerge-repo", "automerge-repo-subduction"]) {
+  for (const name of ["automerge-repo"]) {
     cpSync(`${source}/packages/${name}`, `upstream/packages/${name}`, {
       recursive: true,
     });
@@ -96,7 +95,6 @@ export function setup(
       if (value === "catalog:") pkg.dependencies[key] = catalog[key];
       if (value === "workspace:*") pkg.dependencies[key] = "3.0.0-experimental.1";
     }
-    pinSubductionDependency(pkg);
     writeFileSync(path, `${JSON.stringify(pkg, null, 2)}\n`);
   }
   for (const name of ["tsconfig.base.json", "tsconfig.lib.json", "LICENSE"])
@@ -104,7 +102,7 @@ export function setup(
   const upstreamPatch = patchUpstream("upstream");
   writeFileSync(
     "upstream-provenance.json",
-    `${JSON.stringify({ repository: "https://github.com/automerge/automerge-repo", revision, subduction: subductionRelease.version, nativeRelease: subductionRelease, automerge: "3.5.0", patch: upstreamPatch }, null, 2)}\n`,
+    `${JSON.stringify({ repository: "https://github.com/automerge/automerge-repo", revision, automerge: "3.5.0", patch: upstreamPatch }, null, 2)}\n`,
   );
   execFileSync(
     "npm",

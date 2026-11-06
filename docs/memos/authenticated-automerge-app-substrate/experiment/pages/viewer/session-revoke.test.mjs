@@ -11,7 +11,7 @@ import {
   generateAutomergeUrl,
   interpretAsDocumentId,
 } from "@automerge/automerge-repo";
-import { SubductionBackend } from "@automerge/automerge-repo-subduction";
+import { AutomergeSyncBackend } from "../sync/backend.mjs";
 import {
   DENIED_COPY,
   PageSession,
@@ -1125,9 +1125,9 @@ test("a revoked Page doesn't restore or open its comments document on reopen", a
   await first.session.retryConnection();
   await first.session.closeSettled();
   const stored = [];
-  t.mock.method(SubductionBackend.prototype, "storeSnapshot", async function (id, ...rest) {
+  t.mock.method(AutomergeSyncBackend.prototype, "store", async function (id, ...rest) {
     stored.push(hexOf(id));
-    return SubductionBackend.prototype.storeSnapshot.mock.original.call(this, id, ...rest);
+    return AutomergeSyncBackend.prototype.store.mock.original.call(this, id, ...rest);
   });
   const opened = [];
   t.mock.method(PageSession.prototype, "openComments", function (...args) {
@@ -1142,7 +1142,7 @@ test("a revoked Page doesn't restore or open its comments document on reopen", a
   assert.equal(session.revoked, true);
   assert.ok(
     !stored.includes(hexOf(documentIdToBinary(first.commentsDocumentId))),
-    "the comments checkpoint never reaches native storage",
+    "the comments checkpoint never reaches the replica's storage",
   );
   assert.deepEqual(opened, []);
   assert.equal(session.commentsOpen$.snapshot().name, "closed");
@@ -1195,7 +1195,7 @@ test("a comments restore that starts after another tab retired the copy writes n
   t.after(() => session.close());
   const record = session.localPage;
   const stores = [];
-  session.backend = { storeSnapshot: async (...args) => stores.push(args) };
+  session.backend = { store: async (...args) => stores.push(args) };
   // Another tab sees the refusal first.
   await retireLocalPage(auth.identity, pageId, {
     reason: "access",
@@ -1451,33 +1451,7 @@ test("a same-tab retirement during a comments install archives the found documen
   assert.match(commentsText(live), new RegExp(UNSENT), "the found document's comment is archived");
 });
 
-/** A native backend whose history read waits on `gate` before it reports
- * the replica's records, so a test can act between a restore's check and its
- * write. */
-function pausedBackend() {
-  let open;
-  const gate = new Promise((resolve) => (open = resolve));
-  const reading = { started: false };
-  const stores = [];
-  return {
-    open: () => open(),
-    reading,
-    stores,
-    backend: {
-      open: () => ({
-        events: (async function* () {
-          reading.started = true;
-          await gate;
-          yield { type: "local-load-complete" };
-        })(),
-        close: async () => {},
-      }),
-      storeSnapshot: async (...args) => stores.push(args),
-    },
-  };
-}
-
-test("a restore paused before its native write stores nothing once the copy is retired or replaced", async (t) => {
+test("a restore stores nothing once the copy is retired or replaced", async (t) => {
   const interleavings = {
     "no interference": async () => {},
     "another tab retires the copy": ({ auth, pageId }) =>
@@ -1498,14 +1472,11 @@ test("a restore paused before its native write stores nothing once the copy is r
       const copy = await openCopy();
       const { session } = copy;
       const record = await readLocalPage(copy.auth.identity, copy.pageId);
-      const paused = pausedBackend();
-      session.backend = paused.backend;
-      const restoring = session.restoreCommentsCheckpoint(record);
-      await turnsUntil(() => paused.reading.started);
+      const stores = [];
+      session.backend = { store: async (...args) => stores.push(args) };
       await interfere(copy);
-      paused.open();
-      await restoring;
-      assert.equal(paused.stores.length, name === "no interference" ? 1 : 0);
+      await session.restoreCommentsCheckpoint(record);
+      assert.equal(stores.length, name === "no interference" ? 1 : 0);
       await session.close();
     });
 });

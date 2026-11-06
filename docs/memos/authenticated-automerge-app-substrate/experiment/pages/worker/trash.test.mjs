@@ -8,17 +8,7 @@ import { fingerprint } from "./mutations.mjs";
 import { inspectOperation } from "./operation-journal.mjs";
 import { countCapacity, lifecycleSlot } from "./catalog.mjs";
 import { PURGE_PREVIEW_TTL_MS } from "./trash.mjs";
-import {
-  Storage,
-  coldPage,
-  fixture,
-  memberKey,
-  ownerKey,
-  pageId,
-  readerKey,
-  serverKey,
-  trashArgs,
-} from "./trash-fixture.mjs";
+import { Storage, coldPage, fixture, pageId, trashArgs } from "./trash-fixture.mjs";
 
 /** The Page limit these tests set for the account. */
 const LIMIT = 100;
@@ -279,36 +269,22 @@ test("members and strangers lose access and listings while trashed", async (t) =
 
 test("sync stops for members and is read-only for the owner while trashed", async (t) => {
   const f = await fixture(t);
-  const tree = f.page.metadata.tree;
-  await f.bind(ownerKey, f.owner);
-  await f.bind(memberKey, f.member);
-  await f.page.policy.put(memberKey, memberKey, tree);
+  f.page.policy.account(f.identity(f.member), true);
   await f.catalogCall("owner", "delete_page", trashArgs(f));
-  // Members lose read access; the owner's writer session loses write access.
-  assert.deepEqual(f.disconnected.sort(), [ownerKey, memberKey].sort());
-  await assert.rejects(f.page.policy.access(memberKey, tree), /Unknown peer/);
-  await assert.rejects(f.bind(memberKey, f.member), /owner's Trash/);
-  // Grants and binding generations survive Trash, so no key is retired.
-  assert.equal(f.page.policy.bindings.get(memberKey).retired, false);
+  // Members lose read access; the owner keeps read access without writes.
+  assert.throws(() => f.page.policy.account(f.identity(f.member)), /owner's Trash/);
+  f.page.policy.account(f.identity(f.owner));
+  assert.throws(() => f.page.policy.account(f.identity(f.owner), true), /Trash/);
+  // Grants survive Trash.
   assert.equal(pageGrant(f.page.metadata, f.member).role, "editor");
-  // A fresh owner key reads, but cannot publish changes.
-  await f.bind(readerKey, f.owner);
-  await f.page.policy.access(readerKey, tree);
-  await assert.rejects(f.page.policy.put(readerKey, readerKey, tree), /Trash/);
-  await f.bind(ownerKey, f.owner);
-  await assert.rejects(f.page.policy.put(ownerKey, ownerKey, tree), /Trash/);
 
   const restored = await f.catalogCall("owner", "restore_page", {
     page_id: pageId,
     idempotency_key: "restore-request",
   });
   assert.equal(restored.status, 200);
-  await f.bind(memberKey, f.member);
-  await f.page.policy.put(memberKey, memberKey, tree);
-  await f.bind(ownerKey, f.owner);
-  await f.page.policy.put(ownerKey, ownerKey, tree);
-  // The key first admitted while trashed stays a reader key.
-  assert.equal(f.page.policy.bindings.get(readerKey).writer, false);
+  f.page.policy.account(f.identity(f.member), true);
+  f.page.policy.account(f.identity(f.owner), true);
 });
 
 test("restore brings back the same Page, comments, ACL and member listings", async (t) => {
@@ -714,10 +690,8 @@ test("purge rechecks the live document after verifying its preview", async (t) =
   assert.equal(confirm.body.code, "purge_preview_invalid");
   assert.equal(pageState(f.page.metadata), "trashed");
   assert.equal(f.removed(), 0);
-  // While trashed the policy refuses native writes from every key.
-  const tree = f.page.metadata.tree;
-  await f.bind(ownerKey, f.owner);
-  await assert.rejects(f.page.policy.put(ownerKey, ownerKey, tree), /Trash/);
+  // While trashed the policy refuses writes, the owner's too.
+  assert.throws(() => f.page.policy.account(f.identity(f.owner), true), /Trash/);
 });
 
 test("pending trash and restore requests hold their destination slot", async (t) => {
@@ -993,14 +967,8 @@ test("a trashed document that fails to load is retried, not treated as gone", as
   await f.catalogCall("owner", "delete_page", trashArgs(f));
   let failures = 1;
   t.mock.method(Page.prototype, "initializeRepo", async function () {
-    this.policy = new DocumentPolicy({
-      storage: this.ctx.storage,
-      metadata: () => this.metadata,
-      serverKey,
-    });
-    this.serverKey = serverKey;
+    this.policy = new DocumentPolicy({ metadata: () => this.metadata });
     this.serverSenderId = "server-sender";
-    this.backend = { async flush() {} };
     this.repo = {
       find: async () => {
         if (failures-- > 0) throw Error("storage briefly unavailable");

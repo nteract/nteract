@@ -12,6 +12,7 @@ import {
 import { createAuthFixture } from "../../auth-fixtures.mjs";
 import worker, { Page } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";
+import { plainStub } from "./plain-stub.mjs";
 
 const pageId = "33333333-3333-4333-8333-333333333333";
 const publicOrigin = "https://page5.runtimed.run";
@@ -78,6 +79,7 @@ async function gatewayFixture(t) {
       now + 300,
     );
   const page = Object.assign(Object.create(Page.prototype), {
+    plain: plainStub(),
     env,
     ready: Promise.resolve(),
     tail: Promise.resolve(),

@@ -155,5 +155,8 @@ test("a comment draft archived with its spans exports their formatting and image
   assert.match(exported, /!\[chart\]\(https:\/\/example\.org\/chart\.png\)/);
   assert.match(exported, /Plain only/);
   // An image-only draft has no text, and is still exported.
-  assert.match(commentDraftsMarkdown([{ kind: "comment", body: "", spans: [spans[2]] }]), /!\[chart\]/);
+  assert.match(
+    commentDraftsMarkdown([{ kind: "comment", body: "", spans: [spans[2]] }]),
+    /!\[chart\]/,
+  );
 });

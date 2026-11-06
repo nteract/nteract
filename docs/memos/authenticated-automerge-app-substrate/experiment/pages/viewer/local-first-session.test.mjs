@@ -4,17 +4,13 @@ import "fake-indexeddb/auto";
 import * as A from "@automerge/automerge";
 import {
   DRAFT_FORM_UNSUPPORTED,
+  LOCAL_COPY_DISCARDED,
   PageSession,
-  STORAGE_ADOPTED,
-  STORAGE_REFUSED_AGAIN,
-  STORAGE_SWITCHING,
-  STORAGE_SWITCH_FAILED,
   connectionFailureRetries,
   listLocalPages,
   retireLocalPage,
 } from "./session.mjs";
 import { readLocalPage, decodeSnapshot, writeLocalPage, encodeSnapshot } from "./local-pages.mjs";
-import { store as localCatalog } from "./local-catalog.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import { extractRecords } from "@automerge/automerge-repo/sedimentree/automerge";
 import {
@@ -23,6 +19,8 @@ import {
   interpretAsDocumentId,
 } from "@automerge/automerge-repo";
 import { readRegistration } from "../worker/registration.mjs";
+import { host as syncHost, until } from "../sync/test-helpers.mjs";
+import { framePipe } from "../sync/wire.mjs";
 import { retryKey, retryKeyPrefix } from "../model/retry-key.mjs";
 
 function browser(t) {
@@ -344,555 +342,6 @@ test("a draft the host can't read stops with a message, keeps its local copy and
   assert.equal(connectionFailureRetries(error), false);
 });
 
-/** A draft created where the session endpoint advertised plain storage, or
- * native storage with `recordStorage: "native"`. */
-async function plainDraft(t, { recordStorage = "automerge" } = {}) {
-  browser(t);
-  t.mock.method(PageSession.prototype, "retryConnection", async () => {});
-  const auth = authentication();
-  const session = await PageSession.create(
-    { title: "Plain draft" },
-    {
-      authentication: recordStorage === "automerge" ? { ...auth, recordStorage } : auth,
-      refreshSession: async () => auth,
-    },
-  );
-  t.after(() => session.close());
-  return { auth, session };
-}
-const storageRefusal = () =>
-  Response.json(
-    { error: "This host doesn't accept plain Automerge Pages", code: "record_storage_unsupported" },
-    { status: 409 },
-  );
-const databaseNames = async () => (await indexedDB.databases()).map(({ name }) => name);
-/** A promise and the function that settles it. */
-function gate() {
-  let open;
-  const opened = new Promise((resolve) => {
-    open = resolve;
-  });
-  return { open, opened };
-}
-
-test("a plain draft the host refuses moves to native storage and registers again", async (t) => {
-  // The session endpoint advertised plain storage; the host's flag went off
-  // before registration.
-  const { auth, session } = await plainDraft(t);
-  assert.equal(session.recordStorage, "automerge");
-  assert.equal(session.localPage.registration.record_storage, "automerge");
-  await session.change((doc) => A.updateText(doc, ["title"], "Typed before the refusal"));
-  clearTimeout(session.savedTimer);
-  const documentId = session.handle.documentId;
-  const heads = A.getHeads(session.doc);
-  const original = structuredClone(session.localPage.registration);
-  const registrations = [];
-  let tokens = 0;
-  t.mock.method(globalThis, "fetch", async (url, options) => {
-    if (url === "/api/tools") return Response.json({ retry_token: `token-${++tokens}` });
-    assert.equal(url, "/api/pages/register");
-    const input = JSON.parse(options.body);
-    registrations.push(input);
-    if (input.record_storage === "automerge") return storageRefusal();
-    return Response.json({ page_id: input.page_id, document_id: input.document_id });
-  });
-  const plainDatabase = session.databaseName;
-  await session.registerDraft();
-  assert.equal(registrations.length, 2);
-  const [refused, accepted] = registrations;
-  assert.equal(refused.record_storage, "automerge");
-  assert.equal(refused.retry_token, "token-1");
-  assert.equal("record_storage" in accepted, false);
-  assert.equal(accepted.retry_token, "token-2");
-  assert.ok(accepted.idempotency_key.startsWith(await retryKeyPrefix("token-2")));
-  assert.notEqual(accepted.idempotency_key, refused.idempotency_key);
-  // Same Page, document and immutable bootstrap.
-  for (const field of ["page_id", "document_id", "expected_principal", "title"])
-    assert.equal(accepted[field], original[field], field);
-  assert.equal(accepted.initial_snapshot_base64, original.initial_snapshot_base64);
-  // The live replica is native now, under the same document ID, with the edit.
-  assert.equal(session.recordStorage, "native");
-  assert.equal(session.handle.documentId, documentId);
-  assert.deepEqual(A.getHeads(session.doc), heads);
-  assert.equal(session.doc.title, "Typed before the refusal");
-  assert.equal(session.localPage.registered, true);
-  assert.equal(session.localPage.recordStorage, undefined);
-  assert.equal(session.storageSwitch$.snapshot().name, "idle");
-  assert.equal(session.canWrite, true, "edits resume after the move");
-  await tick();
-  assert.equal((await databaseNames()).includes(plainDatabase), false, "the plain replica is gone");
-  const stored = await readLocalPage(auth.identity, session.pageId);
-  assert.equal(stored.recordStorage, undefined);
-  assert.equal(stored.registered, true);
-  assert.equal(stored.pending, true, "registration is not a receipt for the edit");
-  assert.deepEqual(stored.registration, accepted);
-  // This session's edits after the move still count as its own.
-  assert.ok(stored.localEdits.actors.some(({ actor }) => actor === session.actor()));
-  await session.change((doc) => A.updateText(doc, ["title"], "Typed after the move"));
-  clearTimeout(session.savedTimer);
-  await session.persistLocal();
-  await session.close();
-  const reopened = await PageSession.open(session.pageId, {
-    authentication: auth,
-    refreshSession: async () => auth,
-  });
-  t.after(() => reopened.close());
-  assert.equal(reopened.recordStorage, "native");
-  assert.equal(reopened.handle.documentId, documentId);
-  assert.equal(reopened.doc.title, "Typed after the move");
-});
-
-test("edits during the move are refused cleanly, and an edit made before it is kept", async (t) => {
-  const { auth, session } = await plainDraft(t);
-  const plainDatabase = session.databaseName;
-  const documents = [];
-  session.subscribe(() => documents.push(session.doc));
-  const registrations = [];
-  t.mock.method(globalThis, "fetch", async (url, options) => {
-    if (url === "/api/tools")
-      return Response.json({ retry_token: `token-${registrations.length}` });
-    const input = JSON.parse(options.body);
-    registrations.push(input);
-    if (input.record_storage !== "automerge")
-      return Response.json({ page_id: input.page_id, document_id: input.document_id });
-    // Committed as the refusal arrives, before anything pauses.
-    await session.change((doc) => A.updateText(doc, ["title"], "Typed as the refusal arrived"));
-    return storageRefusal();
-  });
-  // Hold each step of the move, and try to edit inside it.
-  const persist = session.persistLocal.bind(session);
-  const openBackend = session.openBackend.bind(session);
-  const attempts = [];
-  const tryEdit = async (step) => {
-    assert.equal(session.storageSwitch$.snapshot().name, step);
-    assert.equal(session.canWrite, false, step);
-    assert.equal(session.doc.title, "Typed as the refusal arrived", step);
-    try {
-      session.change((doc) => A.updateText(doc, ["title"], "Lost?"));
-      attempts.push([step, "accepted"]);
-    } catch (error) {
-      attempts.push([step, error.constructor.name, error.message]);
-    }
-    await tick();
-  };
-  t.mock.method(session, "persistLocal", async (value, options) => {
-    const step = session.storageSwitch$.snapshot().name;
-    if (step === "checkpointing") await tryEdit(step);
-    if (step === "recording") {
-      await tryEdit(step);
-      // The plain replica stays until the record names the native one.
-      assert.ok((await databaseNames()).includes(plainDatabase));
-    }
-    return persist(value, options);
-  });
-  t.mock.method(session, "openBackend", async () => {
-    await tryEdit("moving");
-    return openBackend();
-  });
-  await session.registerDraft();
-  assert.deepEqual(attempts, [
-    ["checkpointing", "Error", STORAGE_SWITCHING],
-    ["moving", "Error", STORAGE_SWITCHING],
-    ["recording", "Error", STORAGE_SWITCHING],
-  ]);
-  assert.ok(documents.length > 0);
-  assert.ok(
-    documents.every((doc) => doc?.title === "Typed as the refusal arrived"),
-    "every render during the move has the Page",
-  );
-  assert.equal(registrations.length, 2);
-  assert.equal(session.recordStorage, "native");
-  assert.equal(session.doc.title, "Typed as the refusal arrived");
-  const stored = await readLocalPage(auth.identity, session.pageId);
-  assert.equal(A.load(decodeSnapshot(stored.snapshot)).title, "Typed as the refusal arrived");
-  await session.change((doc) => A.updateText(doc, ["title"], "Typed after the move"));
-  assert.equal(session.doc.title, "Typed after the move");
-});
-
-test("a session closed during the move stops, and its plain draft reopens intact", async (t) => {
-  for (const step of ["checkpointing", "moving"]) {
-    await t.test(step, async (t) => {
-      const { auth, session } = await plainDraft(t);
-      await session.change((doc) => A.updateText(doc, ["title"], "Kept through the close"));
-      clearTimeout(session.savedTimer);
-      const plainDatabase = session.databaseName;
-      const original = structuredClone(session.localPage.registration);
-      const registrations = [];
-      t.mock.method(globalThis, "fetch", async (url, options) => {
-        if (url === "/api/tools") return Response.json({ retry_token: "token" });
-        registrations.push(JSON.parse(options.body));
-        return storageRefusal();
-      });
-      const reached = gate();
-      const release = gate();
-      const hold = async () => {
-        reached.open();
-        await release.opened;
-      };
-      if (step === "checkpointing") {
-        const persist = session.persistLocal.bind(session);
-        let held = false;
-        t.mock.method(session, "persistLocal", async (value, options) => {
-          if (!held && session.storageSwitch$.snapshot().name === "checkpointing") {
-            held = true;
-            await hold();
-          }
-          return persist(value, options);
-        });
-      } else {
-        const openBackend = session.openBackend.bind(session);
-        t.mock.method(session, "openBackend", async () => {
-          await hold();
-          return openBackend();
-        });
-      }
-      const registering = session.registerDraft();
-      await reached.opened;
-      const closing = session.close();
-      release.open();
-      await registering;
-      await closing;
-      assert.equal(session.storageSwitch$.snapshot().name, "closed");
-      assert.equal(registrations.length, 1, "the plain registration isn't sent again");
-      assert.ok((await databaseNames()).includes(plainDatabase), "the plain replica is kept");
-      const stored = await readLocalPage(auth.identity, session.pageId);
-      assert.equal(stored.recordStorage, "automerge");
-      assert.equal(stored.registered, false);
-      assert.equal(stored.registration.record_storage, "automerge");
-      assert.equal(stored.registration.document_id, original.document_id);
-      const reopened = await PageSession.open(session.pageId, {
-        authentication: auth,
-        refreshSession: async () => auth,
-      });
-      t.after(() => reopened.close());
-      assert.equal(reopened.recordStorage, "automerge");
-      assert.equal(reopened.doc.title, "Kept through the close");
-    });
-  }
-});
-
-test("a move that fails to open native storage keeps edits paused and the plain draft intact", async (t) => {
-  const { auth, session } = await plainDraft(t);
-  await session.change((doc) => A.updateText(doc, ["title"], "Kept through the failure"));
-  clearTimeout(session.savedTimer);
-  t.mock.method(globalThis, "fetch", async (url) =>
-    url === "/api/tools" ? Response.json({ retry_token: "token" }) : storageRefusal(),
-  );
-  t.mock.method(session, "openBackend", async () => {
-    throw Error("simulated IndexedDB failure");
-  });
-  await assert.rejects(session.registerDraft(), { message: STORAGE_SWITCH_FAILED });
-  assert.equal(session.storageSwitch$.snapshot().name, "failed");
-  assert.equal(session.problem, STORAGE_SWITCH_FAILED);
-  assert.equal(session.canWrite, false);
-  assert.throws(() => session.change(() => {}), { message: STORAGE_SWITCH_FAILED });
-  assert.equal(session.doc.title, "Kept through the failure");
-  await session.close();
-  const stored = await readLocalPage(auth.identity, session.pageId);
-  assert.equal(stored.recordStorage, "automerge");
-  const reopened = await PageSession.open(session.pageId, {
-    authentication: auth,
-    refreshSession: async () => auth,
-  });
-  t.after(() => reopened.close());
-  assert.equal(reopened.recordStorage, "automerge");
-  assert.equal(reopened.doc.title, "Kept through the failure");
-});
-
-test("a second refusal ends the attempt, and a native replica with a plain registration strips it", async (t) => {
-  const { auth, session } = await plainDraft(t);
-  const documentId = session.handle.documentId;
-  const registrations = [];
-  let prepares = 0;
-  let staleTab;
-  t.mock.method(globalThis, "fetch", async (url, options) => {
-    if (url === "/api/tools") {
-      prepares++;
-      // Another tab on the same draft, still plain, writes its checkpoint
-      // back over this tab's move before this tab stores its new token.
-      if (prepares === 2) await writeLocalPage(auth.identity, staleTab);
-      return Response.json({ retry_token: `token-${prepares}` });
-    }
-    const input = JSON.parse(options.body);
-    registrations.push(input);
-    if (registrations.length === 1)
-      staleTab = structuredClone(await readLocalPage(auth.identity, session.pageId));
-    if (input.record_storage === "automerge") return storageRefusal();
-    return Response.json({ page_id: input.page_id, document_id: input.document_id });
-  });
-  await assert.rejects(session.registerDraft(), { message: STORAGE_REFUSED_AGAIN });
-  assert.deepEqual(
-    registrations.map(({ record_storage, retry_token }) => [record_storage, retry_token]),
-    [
-      ["automerge", "token-1"],
-      ["automerge", "token-1"],
-    ],
-    "the other tab's plain registration came back",
-  );
-  assert.equal(session.recordStorage, "native");
-  assert.equal(session.localPage.registered, false);
-  assert.equal(session.canWrite, true);
-  // The next attempt finds a native replica: it drops record_storage and
-  // prepares fresh authority instead of moving again.
-  await session.registerDraft();
-  assert.equal(registrations.length, 4);
-  const accepted = registrations.at(-1);
-  assert.equal("record_storage" in accepted, false);
-  assert.equal(accepted.retry_token, "token-3");
-  assert.equal(accepted.document_id, documentId);
-  assert.equal(session.localPage.registered, true);
-  const stored = await readLocalPage(auth.identity, session.pageId);
-  assert.equal(stored.recordStorage, undefined);
-  assert.equal(stored.registration.record_storage, undefined);
-});
-
-test("a stale plain tab can't write plain storage back over a draft another tab moved", async (t) => {
-  const { auth, session } = await plainDraft(t);
-  // The other tab's record, read while the draft was still plain.
-  const staleTab = structuredClone(await readLocalPage(auth.identity, session.pageId));
-  assert.equal(staleTab.recordStorage, "automerge");
-  t.mock.method(globalThis, "fetch", async (url, options) => {
-    if (url === "/api/tools") return Response.json({ retry_token: "token" });
-    const input = JSON.parse(options.body);
-    if (input.record_storage === "automerge") return storageRefusal();
-    return Response.json({ page_id: input.page_id, document_id: input.document_id });
-  });
-  await session.registerDraft();
-  assert.equal(session.localPage.registered, true);
-  // The stale tab checkpoints with an edit of its own.
-  const edited = A.change(A.load(decodeSnapshot(staleTab.snapshot)), (doc) =>
-    A.updateText(doc, ["title"], "Typed in the stale tab"),
-  );
-  const written = await writeLocalPage(auth.identity, {
-    ...staleTab,
-    snapshot: encodeSnapshot(A.save(edited)),
-  });
-  assert.equal(written.recordStorage, undefined, "the record keeps native storage");
-  assert.equal(written.registered, true);
-  assert.equal(written.registration.record_storage, undefined);
-  assert.equal(A.load(decodeSnapshot(written.snapshot)).title, "Typed in the stale tab");
-  // Only the host's discovery answer may name plain storage.
-  const confirmed = await writeLocalPage(auth.identity, written, { storageFromHost: true });
-  assert.equal(confirmed.recordStorage, undefined);
-  const plain = await writeLocalPage(
-    auth.identity,
-    { ...written, recordStorage: "automerge" },
-    { storageFromHost: true },
-  );
-  assert.equal(plain.recordStorage, "automerge");
-});
-
-test("discovery that names other storage than the open replica pauses edits, records it, and the reload opens it", async (t) => {
-  for (const [local, host] of [
-    ["automerge", "native"],
-    ["native", "automerge"],
-  ]) {
-    await t.test(`${local} replica, ${host} Page`, async (t) => {
-      const { auth, session } = await plainDraft(t, { recordStorage: local });
-      const pageId = session.pageId;
-      const documentId = session.handle.documentId;
-      // A replica of a Page the host knows in the other storage: what a
-      // stale tab's write-back used to leave behind.
-      await session.persistLocal({ registered: true, pending: false });
-      await session.close();
-      const reopened = await PageSession.open(pageId, {
-        authentication: auth,
-        refreshSession: async () => auth,
-      });
-      t.after(() => reopened.close());
-      assert.equal(reopened.recordStorage, local);
-      // Typed inside the checkpoint debounce: only the adopt can save it.
-      await reopened.change((doc) => A.updateText(doc, ["title"], "Typed before discovery"));
-      clearTimeout(reopened.savedTimer);
-      const requests = [];
-      t.mock.method(globalThis, "fetch", async (url) => {
-        requests.push(url);
-        assert.equal(url, `/api/connect?page=${pageId}&sync=automerge`);
-        return Response.json({
-          page_id: pageId,
-          documentId,
-          identity: auth.identity,
-          access: { canRead: true, canWrite: true, role: "owner" },
-          ...(host === "automerge" && { recordStorage: "automerge" }),
-        });
-      });
-      const changed = { code: "RECORD_STORAGE_CHANGED", status: 409, message: STORAGE_ADOPTED };
-      await assert.rejects(reopened.connect(), changed);
-      assert.equal(reopened.storageSwitch$.snapshot().name, "adopted");
-      const stored = await readLocalPage(auth.identity, pageId);
-      assert.equal(stored.recordStorage, host === "automerge" ? "automerge" : undefined);
-      assert.equal(A.load(decodeSnapshot(stored.snapshot)).title, "Typed before discovery");
-      // Edits after the adopt are refused visibly: the reload opens the
-      // other storage's replica, which only the recorded checkpoint reaches.
-      assert.equal(reopened.canWrite, false);
-      assert.throws(
-        () => reopened.change((doc) => A.updateText(doc, ["title"], "Typed after the adopt")),
-        { message: STORAGE_ADOPTED },
-      );
-      assert.equal(reopened.doc.title, "Typed before discovery");
-      // A manual retry answers the same way without recording again.
-      await assert.rejects(reopened.connect(), changed);
-      assert.equal(requests.length, 2);
-      await reopened.close();
-      const reloaded = await PageSession.open(pageId, {
-        authentication: auth,
-        refreshSession: async () => auth,
-      });
-      t.after(() => reloaded.close());
-      assert.equal(reloaded.recordStorage, host);
-      assert.equal(reloaded.handle.documentId, documentId);
-      assert.equal(reloaded.doc.title, "Typed before discovery");
-      assert.equal(reloaded.canWrite, true);
-      await reloaded.change((doc) => A.updateText(doc, ["title"], "Typed after the reload"));
-      assert.equal(reloaded.doc.title, "Typed after the reload");
-    });
-  }
-});
-
-/** A reopened `local` replica of a Page the host knows in `host` storage,
- * with an edit inside the checkpoint debounce and discovery mocked. */
-async function mismatchedReplica(t, { local = "automerge", host = "native" } = {}) {
-  const { auth, session } = await plainDraft(t, { recordStorage: local });
-  const pageId = session.pageId;
-  const documentId = session.handle.documentId;
-  await session.persistLocal({ registered: true, pending: false });
-  await session.close();
-  const reopened = await PageSession.open(pageId, {
-    authentication: auth,
-    refreshSession: async () => auth,
-  });
-  t.after(() => reopened.close());
-  await reopened.change((doc) => A.updateText(doc, ["title"], "Typed before discovery"));
-  clearTimeout(reopened.savedTimer);
-  const requests = [];
-  t.mock.method(globalThis, "fetch", async (url) => {
-    requests.push(url);
-    assert.equal(url, `/api/connect?page=${pageId}&sync=automerge`);
-    return Response.json({
-      page_id: pageId,
-      documentId,
-      identity: auth.identity,
-      access: { canRead: true, canWrite: true, role: "owner" },
-      ...(host === "automerge" && { recordStorage: "automerge" }),
-    });
-  });
-  return { auth, reopened, pageId, requests };
-}
-/** Fail the first local-record write made while adopting with `error`. */
-function failAdoptWrite(t, session, error) {
-  const run = localCatalog.run.bind(localCatalog);
-  let failed = false;
-  t.mock.method(localCatalog, "run", (mode, ...rest) => {
-    if (!failed && mode === "readwrite" && session.storageSwitch$.snapshot().name === "adopting") {
-      failed = true;
-      return Promise.reject(error);
-    }
-    return run(mode, ...rest);
-  });
-}
-
-test("a failed adopt write leaves the record and memory as they were, and the next attempt adopts", async (t) => {
-  const { auth, reopened, pageId } = await mismatchedReplica(t);
-  failAdoptWrite(t, reopened, Error("simulated IndexedDB failure"));
-  await assert.rejects(reopened.connect(), { message: "simulated IndexedDB failure" });
-  assert.equal(reopened.storageSwitch$.snapshot().name, "idle");
-  assert.equal(reopened.localPage.recordStorage, "automerge", "memory keeps the stored mode");
-  assert.equal(reopened.canWrite, true, "edits resume");
-  // A routine debounced save must not write the host's mode unguarded.
-  await reopened.change((doc) => A.updateText(doc, ["title"], "Typed after the failed adopt"));
-  clearTimeout(reopened.savedTimer);
-  await reopened.saveReceipt();
-  let stored = await readLocalPage(auth.identity, pageId);
-  assert.equal(stored.recordStorage, "automerge");
-  assert.equal(A.load(decodeSnapshot(stored.snapshot)).title, "Typed after the failed adopt");
-  // The next attempt adopts, with that edit.
-  await assert.rejects(reopened.connect(), { code: "RECORD_STORAGE_CHANGED", status: 409 });
-  stored = await readLocalPage(auth.identity, pageId);
-  assert.equal(stored.recordStorage, undefined);
-  assert.equal(A.load(decodeSnapshot(stored.snapshot)).title, "Typed after the failed adopt");
-});
-
-test("a local copy deleted during the adopt retires the tab without resuming edits", async (t) => {
-  const { reopened, requests } = await mismatchedReplica(t);
-  failAdoptWrite(
-    t,
-    reopened,
-    Object.assign(Error("Page was deleted"), { code: "LOCAL_PAGE_DELETED", status: 410 }),
-  );
-  await assert.rejects(reopened.connect(), { code: "LOCAL_PAGE_DELETED" });
-  assert.equal(reopened.storageSwitch$.snapshot().name, "closed");
-  assert.equal(reopened.deleted, true);
-  assert.equal(reopened.canWrite, false);
-  assert.equal(requests.length, 1);
-});
-
-test("an adopt through the reconnect loop shows the reload notice and schedules no retry", async (t) => {
-  const { reopened, requests } = await mismatchedReplica(t);
-  PageSession.prototype.retryConnection.mock.restore();
-  await reopened.retryConnection();
-  assert.equal(reopened.storageSwitch$.snapshot().name, "adopted");
-  assert.equal(reopened.problem, STORAGE_ADOPTED);
-  assert.notEqual(reopened.reconnect$.snapshot().name, "waiting");
-  assert.equal(reopened.retryTimer, undefined);
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  assert.equal(requests.length, 1, "nothing reconnects after the 409");
-});
-
-test("a failed move stops re-sending the plain registration", async (t) => {
-  const { session } = await plainDraft(t);
-  const registrations = [];
-  t.mock.method(globalThis, "fetch", async (url, options) => {
-    if (url === "/api/tools") return Response.json({ retry_token: "token" });
-    registrations.push(JSON.parse(options.body));
-    return storageRefusal();
-  });
-  t.mock.method(session, "openBackend", async () => {
-    throw Error("simulated IndexedDB failure");
-  });
-  await assert.rejects(session.registerDraft(), { message: STORAGE_SWITCH_FAILED, status: 409 });
-  await assert.rejects(session.registerDraft(), { message: STORAGE_SWITCH_FAILED, status: 409 });
-  assert.equal(registrations.length, 1);
-});
-
-test("a storage refusal after an expired registration also moves the draft", async (t) => {
-  const { auth, session } = await plainDraft(t);
-  await session.persistLocal({
-    registration: {
-      ...session.localPage.registration,
-      retry_token: "expired-registration-token",
-      idempotency_key: await retryKey("expired-registration-token"),
-    },
-  });
-  const registrations = [];
-  let tokens = 0;
-  t.mock.method(globalThis, "fetch", async (url, options) => {
-    if (url === "/api/tools") return Response.json({ retry_token: `token-${++tokens}` });
-    if (url.startsWith("/api/connect"))
-      return Response.json(
-        { error: "Page access denied", code: "page_access_denied" },
-        { status: 403 },
-      );
-    const input = JSON.parse(options.body);
-    registrations.push(input);
-    if (registrations.length === 1) return expiredRegistration();
-    if (input.record_storage === "automerge") return storageRefusal();
-    return Response.json({ page_id: input.page_id, document_id: input.document_id });
-  });
-  await session.registerDraft();
-  assert.deepEqual(
-    registrations.map(({ record_storage, retry_token }) => [record_storage, retry_token]),
-    [
-      ["automerge", "expired-registration-token"],
-      ["automerge", "token-1"],
-      [undefined, "token-2"],
-    ],
-  );
-  assert.equal(session.recordStorage, "native");
-  assert.equal(session.localPage.registered, true);
-  const stored = await readLocalPage(auth.identity, session.pageId);
-  assert.equal(stored.recordStorage, undefined);
-});
-
 test("ambiguous or unauthorized expiry reconciliation preserves the draft and original request", async (t) => {
   for (const failure of [
     "offline",
@@ -1048,7 +497,7 @@ test("local drafts retain their original account boundary before registration", 
     { authentication: auth, refreshSession: async () => other },
   );
   t.after(() => session.close());
-  await session.connecting.catch(() => {});
+  await session.connecting?.catch(() => {});
   await tick();
   assert.equal(session.authRequired, true);
   assert.equal(session.identity.principal, auth.identity.principal);
@@ -1538,7 +987,7 @@ test("a deletion marker from another tab terminates stale local checkpoint write
   assert.equal(await readLocalPage(auth.identity, session.pageId), null);
 });
 
-test("duplicated tabs open a shared checkpoint larger than an ordinary native edit batch", async (t) => {
+test("duplicated tabs open a shared checkpoint larger than an ordinary edit batch", async (t) => {
   browser(t);
   t.mock.method(PageSession.prototype, "retryConnection", async () => {});
   const auth = authentication(),
@@ -1577,7 +1026,7 @@ test("duplicated tabs open a shared checkpoint larger than an ordinary native ed
   t.after(() => first.close());
   const second = await PageSession.open(pageId, { authentication: auth });
   t.after(() => second.close());
-  assert.notEqual(first.local.seed, second.local.seed, "each tab owns its native replica");
+  assert.notEqual(first.local.seed, second.local.seed, "each tab owns its replica");
   assert.deepEqual(A.getHeads(first.doc), heads);
   assert.deepEqual(A.getHeads(second.doc), heads);
   assert.equal(second.handle.documentId, documentId);
@@ -1665,36 +1114,6 @@ test("reopening imports only checkpoint history the replica does not already hol
   assert.equal(reopened.snapshot().title, "Merged");
 });
 
-test("reopening restores checkpoint changes a same-head stored fragment lacks", async (t) => {
-  browser(t);
-  t.mock.method(PageSession.prototype, "retryConnection", async () => {});
-  const auth = authentication(),
-    pageId = "9c1d2e3f-4a5b-4c6d-8e7f-0a1b2c3d4e5f";
-  const documentId = interpretAsDocumentId(generateAutomergeUrl());
-  const { base, head, leftFirst } = concurrentMergeFixture(pageId);
-  const full = extractRecords(leftFirst).find((record) => record.head === head);
-  assert.ok(A.readBundle(full.blob).changes.length > 1, "the checkpoint bundles history");
-  // A valid partial bundle: the same head, holding only the merge itself.
-  const partial = {
-    kind: "fragment",
-    head,
-    boundary: [],
-    checkpoints: [],
-    blob: A.saveBundle(leftFirst, [head]),
-  };
-  await writeLocalPage(auth.identity, checkpointPage(auth, pageId, documentId, base));
-  const first = await PageSession.open(pageId, { authentication: auth });
-  await first.backend.storeSnapshot(documentIdToBinary(documentId), [partial]);
-  await first.close();
-  await replaceCheckpoint(auth, pageId, leftFirst);
-  const reopened = await PageSession.open(pageId, { authentication: auth });
-  t.after(() => reopened.close());
-  assert.deepEqual(A.getHeads(reopened.doc).sort(), A.getHeads(leftFirst).sort());
-  assert.equal(reopened.doc.left, "1c".repeat(16));
-  assert.equal(reopened.doc.right, "1d".repeat(16));
-  assert.equal(reopened.snapshot().title, "Merged");
-});
-
 test("an offline comment survives a reload: both documents restore from the checkpoint", async (t) => {
   browser(t);
   t.mock.method(PageSession.prototype, "retryConnection", async () => {});
@@ -1740,4 +1159,87 @@ test("an offline comment survives a reload: both documents restore from the chec
   assert.equal(threads.length, 1);
   assert.equal(String(Object.values(threads[0].messages)[0].richText), "Typed offline");
   assert.match(restored.exportRecovery().markdown, /Typed offline/);
+});
+
+/** Attach `session`'s replica to `h` as the Page host's socket would. */
+function attach(session, h) {
+  const link = framePipe();
+  h.accept(link.host, {
+    principal: session.identity.principal,
+    sessionId: `s-${session.senderId}`,
+    senderId: session.senderId,
+    role: "owner",
+  });
+  session.backend.addConnection(link.client, { hostId: h.hostId });
+}
+const hexOfDocument = (documentId) => Buffer.from(documentIdToBinary(documentId)).toString("hex");
+
+test("a local copy saved beside a Subduction replica restores into plain sync, and its unsent edit uploads", async (t) => {
+  browser(t);
+  t.mock.method(PageSession.prototype, "retryConnection", async () => {});
+  const auth = authentication(),
+    pageId = "6f0b8a52-5d0e-4c4f-9a3e-7f2a1c9d4b10";
+  const documentId = interpretAsDocumentId(generateAutomergeUrl());
+  // The host holds the Page as last saved.
+  const base = A.change(A.from(createPageData({ pageId, title: "Before" })), initializePage);
+  const h = await syncHost();
+  await h.seed(hexOfDocument(documentId), "page", base);
+  // An earlier build's checkpoint: no recordStorage (its Subduction replica),
+  // and an edit made offline that the host never confirmed.
+  const edited = A.change(A.clone(base, { actor: "cd".repeat(16) }), (doc) => {
+    doc.title = "Edited offline";
+  });
+  await writeLocalPage(auth.identity, {
+    ...checkpointPage(auth, pageId, documentId, edited),
+    replicaKey: "0:writer",
+    access: { role: "owner", revision: 0, generation: 0, canRead: true, canWrite: true },
+  });
+  const session = await PageSession.open(pageId, { authentication: auth });
+  t.after(() => session.close());
+  assert.match(session.databaseName, /^pages-plain-/);
+  assert.equal(session.doc.title, "Edited offline");
+  assert.equal(session.recoveryPending, true, "the offline edit still needs a receipt");
+  assert.equal((await readLocalPage(auth.identity, pageId)).recordStorage, "automerge");
+  attach(session, h);
+  await until(
+    async () => (await h.document(hexOfDocument(documentId))).title === "Edited offline",
+    {
+      label: "the host has the offline edit",
+    },
+  );
+});
+
+test("a local copy with no readable checkpoint is discarded, and the Page opens from the host with a notice", async (t) => {
+  browser(t);
+  const auth = authentication(),
+    pageId = "1e7c4b90-3a2f-4d8b-b5c6-0f9e8d7a6b54";
+  const documentId = interpretAsDocumentId(generateAutomergeUrl());
+  const hosted = A.change(A.from(createPageData({ pageId, title: "On the host" })), initializePage);
+  const h = await syncHost();
+  await h.seed(hexOfDocument(documentId), "page", hosted);
+  await writeLocalPage(auth.identity, {
+    principal: auth.identity.principal,
+    page_id: pageId,
+    document_id: documentId,
+    title: "Unreadable",
+    snapshot: encodeSnapshot(new Uint8Array([1, 2, 3, 4])),
+    canWrite: true,
+    registered: true,
+    pending: true,
+  });
+  t.mock.method(PageSession.prototype, "retryConnection", async () => {});
+  t.mock.method(PageSession.prototype, "queueSaved", () => {});
+  // Discovery and the socket, as the host answers them.
+  t.mock.method(PageSession.prototype, "connect", async function () {
+    this.connection = { documentId, serverSenderId: h.hostId, peerProfiles: {} };
+    attach(this, h);
+  });
+  const session = await PageSession.open(pageId, { authentication: auth });
+  t.after(() => session.close());
+  assert.equal(session.openNotice, LOCAL_COPY_DISCARDED);
+  assert.equal(session.doc.title, "On the host");
+  const stored = await readLocalPage(auth.identity, pageId);
+  assert.equal(stored.recordStorage, "automerge");
+  assert.equal(stored.pending, false);
+  assert.equal(A.load(decodeSnapshot(stored.snapshot)).title, "On the host");
 });

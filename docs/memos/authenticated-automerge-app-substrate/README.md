@@ -177,12 +177,15 @@ document solely to reconstruct observations we already have.
 
 ## Initial integration evidence
 
-The initial [integration fixture](experiment/README.md) established that published
+Pages no longer uses Subduction: every Page syncs with plain Automerge sync,
+and the Subduction adapter, its patches and these fixtures were removed from
+the experiment. The record below is the historical evidence.
+
+The initial integration fixture established that published
 Subduction 0.23.0 already had the policy interfaces: the tested Repo adapter patch
 forwarded `policy` and `ephemeralPolicy` without changing WASM or the wire protocol. This
 qualified the integration seam, not a production service. The table below records
 that initial evidence; it is not the current Pages qualification checklist. See
-[UPSTREAM.md](experiment/UPSTREAM.md) for the maintained adapter tests and
 [Pages](experiment/pages/README.md) for application qualification.
 
 The fixture used disposable documents, pinned packages, and deterministic

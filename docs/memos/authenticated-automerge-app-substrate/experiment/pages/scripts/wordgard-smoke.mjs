@@ -1421,13 +1421,11 @@ try {
         const scope = await digest(`${identity.principal}\0${pageId}`);
         const seed = sessionStorage.getItem(`pages-native:${scope}`);
         if (!seed) throw Error("Active fixture signer is missing after Saved");
-        // A native replica's records, or a plain one's chunks
-        // (PAGES_RECORD_STORAGE=automerge): either is named by the tab's seed.
+        // The replica's chunks, named by the tab's seed.
         const names = new Set((await indexedDB.databases()).map((entry) => entry.name));
-        const database = [
-          `pages-native-${scope}-${seed.slice(0, 16)}`,
-          `pages-plain-${scope}-${seed.slice(0, 16)}`,
-        ].find((name) => names.has(name));
+        const database = [`pages-plain-${scope}-${seed.slice(0, 16)}`].find((name) =>
+          names.has(name),
+        );
         // Return fingerprints only, never the private signer seed.
         return {
           signer: await digest(seed),

@@ -106,29 +106,12 @@ test("direct grants survive Project revocation and never propagate to children",
   );
 });
 
-test("native author authority expires and old Project generation cannot revive", () => {
+test("Project write authority ends with its lease", () => {
   let clock = now;
-  let current = metadata;
-  const policy = new DocumentPolicy({ metadata: () => current, now: () => clock });
-  const binding = {
-    principal: identity.principal,
-    writer: true,
-    generation: pageGrant(metadata, identity.principal, now).generation,
-  };
-  assert.equal(policy.authorAllowed(binding), true);
+  const policy = new DocumentPolicy({ metadata: () => metadata, now: () => clock });
+  policy.account(identity, true);
   clock = 16000;
-  assert.equal(policy.authorAllowed(binding), false);
-  clock = 17000;
-  current = {
-    ...metadata,
-    projectAccess: {
-      ...metadata.projectAccess,
-      revision: 3,
-      members: { "user:member": { role: "editor", generation: 3 } },
-      valid_until: 30000,
-    },
-  };
-  assert.equal(policy.authorAllowed(binding), false);
+  assert.throws(() => policy.account(identity, true));
 });
 
 test("unrelated Project ACL revisions preserve existing author generation", () => {
@@ -137,48 +120,6 @@ test("unrelated Project ACL revisions preserve existing author generation", () =
     pageGrant(changed, identity.principal, now).generation,
     pageGrant(metadata, identity.principal, now).generation,
   );
-});
-
-test("expired or missing Project leases deny live authority without retiring author keys", async () => {
-  let clock = now;
-  let current = metadata;
-  const stored = new Map();
-  const policy = new DocumentPolicy({
-    metadata: () => current,
-    now: () => clock,
-    storage: { put: async (key, value) => stored.set(key, value) },
-  });
-  const binding = {
-    principal: identity.principal,
-    writer: true,
-    generation: pageGrant(metadata, identity.principal, now).generation,
-  };
-  policy.bindings.set("key", binding);
-  clock = 16001;
-  for (const snapshot of [metadata.projectAccess, null]) {
-    current = {
-      ...metadata,
-      projectAccess: snapshot,
-      acl: { revision: 1, members: { "user:unrelated": { role: "viewer", generation: 1 } } },
-    };
-    await policy.refreshAccess();
-    assert.equal(policy.bindings.get("key"), binding);
-    assert.equal(policy.authorAllowed(binding), false);
-    assert.equal(stored.size, 0);
-  }
-  current = { ...metadata, projectAccess: { ...metadata.projectAccess, valid_until: 30000 } };
-  assert.equal(policy.authorAllowed(binding), true);
-  const revoked = {
-    ...project,
-    acl: { revision: 2, members: { "user:member": { role: "none", generation: 2 } } },
-  };
-  current = {
-    ...metadata,
-    projectAccess: { ...projectObject(revoked), members: revoked.acl.members, valid_until: 30000 },
-  };
-  await policy.refreshAccess();
-  assert.equal(policy.bindings.get("key").retired, true);
-  assert.equal(stored.get("host/binding/key").retired, true);
 });
 
 test("a new grant cannot combine with placement observed before a move", async () => {
@@ -195,58 +136,20 @@ test("a new grant cannot combine with placement observed before a move", async (
   assert.equal(await resolveProjectAccess(env, metadata, now), null);
 });
 
-test("reconnect with direct viewer fallback never retires an unknown Project editor key", async () => {
+test("without a current Project snapshot, a direct viewer grant reads but can't write", () => {
   let current = {
     ...metadata,
     acl: { revision: 1, members: { [identity.principal]: { role: "viewer", generation: 1 } } },
   };
-  const stored = new Map();
-  const policy = new DocumentPolicy({
-    metadata: () => current,
-    now: () => now,
-    storage: { put: async (key, value) => stored.set(key, value) },
-  });
-  const key = "a".repeat(64);
-  const binding = {
-    principal: identity.principal,
-    writer: true,
-    commenter: true,
-    generation: pageGrant(current, identity.principal, now).generation,
-  };
-  policy.bindings.set(key, binding);
-  const options = { reauthenticate: async () => identity, disconnect: async () => {} };
+  const policy = new DocumentPolicy({ metadata: () => current, now: () => now });
   const fresh = current.projectAccess;
   for (const projectAccess of [null, { ...fresh, valid_until: now }]) {
     current = { ...current, projectAccess };
     assert.equal(policy.account(identity).role, "viewer");
-    await assert.rejects(policy.bind(key, "sender", identity, options), {
-      status: 503,
-      code: "project_policy_unavailable",
-    });
-    assert.equal(policy.bindings.get(key), binding);
-    assert.equal(policy.admissions.size, 0);
-    assert.equal(stored.size, 0);
-    assert.equal(policy.authorAllowed(binding), false);
+    assert.throws(() => policy.account(identity, true));
   }
   current = { ...current, projectAccess: fresh };
-  const release = await policy.bind(key, "sender", identity, options);
-  assert.equal(policy.bindings.get(key).writer, true);
-  assert.equal(policy.bindings.get(key).retired, false);
-  assert.equal(policy.authorAllowed(policy.bindings.get(key)), true);
-  release();
-  const revoked = {
-    ...project,
-    acl: { revision: 2, members: { [identity.principal]: { role: "none", generation: 2 } } },
-  };
-  current = {
-    ...current,
-    projectAccess: { ...projectObject(revoked), members: revoked.acl.members, valid_until: 16000 },
-  };
-  const releaseReader = await policy.bind(key, "sender", identity, options);
-  assert.equal(policy.bindings.get(key).writer, false);
-  assert.equal(policy.bindings.get(key).retired, true);
-  assert.equal(stored.get(`host/binding/${key}`).retired, true);
-  releaseReader();
+  assert.equal(policy.account(identity, true).canWrite, true);
 });
 
 test("Project snapshots come only from complete owner Catalog placement", async () => {

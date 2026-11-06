@@ -8,7 +8,7 @@ import { BUILD_FEATURES } from "../model/schema-features.mjs";
 import { AutomergeSyncBackend } from "../sync/backend.mjs";
 import { DocStore, MemoryByteStore } from "../sync/doc-store.mjs";
 import { framePipe } from "../sync/wire.mjs";
-import { Page, recordStorageFor, registeredRecordStorage } from "./index.mjs";
+import { Page } from "./index.mjs";
 import { HOST_SENDER_ID, PlainByteStore } from "./plain-sync.mjs";
 import { documentMutation } from "./mutations.mjs";
 import { applyComment } from "../model/comments.mjs";
@@ -45,7 +45,7 @@ async function fixture(t) {
   const auth = await createAuthFixture();
   t.mock.method(globalThis, "fetch", auth.fetch);
   const storage = new Storage();
-  const env = { ...auth.env, PAGES_RECORD_STORAGE: "automerge" };
+  const env = { ...auth.env };
   const token = auth.apiKey();
   const pages = [];
   const page = () => {
@@ -601,69 +601,38 @@ test("a split DO put never publishes a manifest before its chunk, descriptor and
   assert.equal((await storage.list({ prefix: "plain/actor/" })).size, 128);
 });
 
-test("PAGES_RECORD_STORAGE=automerge selects plain sync for new Pages only", () => {
-  assert.equal(recordStorageFor({ PAGES_RECORD_STORAGE: "automerge" }), "automerge");
-  assert.equal(recordStorageFor({ PAGES_ASYNC_PERSISTENCE: "true" }), "buffered");
-  assert.equal(recordStorageFor({}), "local");
-  // A registered draft keeps its replica's storage; older builds send none.
-  assert.equal(registeredRecordStorage({ PAGES_RECORD_STORAGE: "automerge" }, {}), "local");
-  assert.equal(
-    registeredRecordStorage({ PAGES_RECORD_STORAGE: "automerge" }, { record_storage: "automerge" }),
-    "automerge",
-  );
-  assert.equal(registeredRecordStorage({}, { record_storage: "native" }), "local");
-  // Without the flag, a plain draft is refused: an older build can't boot it.
-  for (const env of [{}, { PAGES_ASYNC_PERSISTENCE: "true" }])
-    assert.throws(() => registeredRecordStorage(env, { record_storage: "automerge" }), {
-      status: 409,
-      code: "record_storage_unsupported",
-    });
+test("a draft registers on plain sync whatever record storage it names", async (t) => {
+  for (const recordStorage of [undefined, "native", "automerge"]) {
+    const f = await fixture(t);
+    if (recordStorage === undefined) delete f.args.record_storage;
+    else f.args.record_storage = recordStorage;
+    const page = f.page();
+    const response = await f.register(page);
+    assert.ok(response.ok, await response.clone().text());
+    assert.equal(page.metadata.recordStorage, "automerge");
+    assert.ok(page.plain, "the host runs PlainSync");
+  }
 });
 
-test("a host without PAGES_RECORD_STORAGE refuses a plain draft before recording it", async (t) => {
+test("a Page record that names Subduction storage is refused unless deleted", async (t) => {
   const f = await fixture(t);
-  delete f.env.PAGES_RECORD_STORAGE;
   const first = f.page();
-  const refused = await f.register(first);
-  assert.equal(refused.status, 409);
-  assert.equal(refused.headers.get("x-pages-create-rejected"), "before-intent");
-  assert.equal((await refused.json()).code, "record_storage_unsupported");
-  assert.equal(first.metadata, undefined);
-  assert.equal(await f.storage.get("host/creation"), undefined);
-  // The same draft registers natively once it drops record_storage.
-  delete f.args.record_storage;
-  const accepted = await f.register(first);
-  assert.ok(accepted.ok, await accepted.clone().text());
-  assert.equal(first.metadata.recordStorage, "local");
-  assert.equal(first.plain, undefined);
-});
-
-test("a plain registration recorded before the flag went off still replays and resumes", async (t) => {
-  // Completed: the receipt replays with its plain metadata.
-  const completed = await fixture(t);
-  const first = completed.page();
-  assert.ok((await completed.register(first)).ok);
-  delete completed.env.PAGES_RECORD_STORAGE;
-  const replayed = await completed.register(completed.page());
-  assert.equal(replayed.status, 201, await replayed.clone().text());
-  assert.equal((await replayed.json()).document_id, completed.args.document_id);
-  // Interrupted after the intent: a restart resumes it as recorded.
-  const interrupted = await fixture(t);
-  const crashed = interrupted.page();
-  t.mock.method(crashed, "initializeRepo", async () => {
-    throw Error("simulated crash after the creation intent");
-  });
-  await interrupted.register(crashed).catch(() => {});
-  assert.equal(
-    (await interrupted.storage.get("host/creation")).metadata.recordStorage,
-    "automerge",
+  assert.ok((await f.register(first)).ok);
+  await first.plain.close();
+  const record = await f.storage.get("host/document");
+  await f.storage.put("host/document", { ...record, recordStorage: "buffered" });
+  const native = f.page();
+  await assert.rejects(
+    native.ready.then(() => native.documentReady()),
+    /Unsupported Page record storage mode/,
   );
-  delete interrupted.env.PAGES_RECORD_STORAGE;
-  const restarted = interrupted.page();
-  const resumed = await interrupted.register(restarted);
-  assert.equal(resumed.status, 201, await resumed.clone().text());
-  assert.equal(restarted.metadata.recordStorage, "automerge");
-  assert.ok(restarted.plain, "the resumed Page runs PlainSync");
+  // A deleted one boots with nothing to serve and answers as deleted.
+  await f.storage.put("host/document", { ...record, recordStorage: "buffered", deleted: true });
+  const deleted = f.page();
+  await deleted.ready;
+  await deleted.initializeRepo();
+  assert.ok(deleted.plain);
+  await deleted.plain.close();
 });
 
 test("a registered automerge Page stores plain history and survives a restart", async (t) => {

@@ -14,12 +14,8 @@ import {
 } from "./admission-reasons.mjs";
 import { authenticate } from "./auth.mjs";
 import { default as gateway, Page } from "./index.mjs";
-import {
-  DocumentPolicy,
-  PermissionDenied,
-  admissionCancelled,
-  leaseExpiryError,
-} from "./policy.mjs";
+import { DocumentPolicy, PermissionDenied, leaseExpiryError } from "./policy.mjs";
+import { plainStub } from "./plain-stub.mjs";
 
 const pageId = "33333333-3333-4333-8333-333333333333";
 
@@ -45,17 +41,15 @@ test("classification is closed: unknown codes and statuses fall back to fixed re
     [Object.assign(Error("x"), { status: 429 }), "connection_capacity"],
     [Object.assign(Error("x"), { status: 426 }), "invalid_request"],
     [new PermissionDenied(), "page_no_grant"],
-    [admissionCancelled("native_admission_timeout"), "native_admission_timeout"],
-    [new PermissionDenied("x", "native_binding_mismatch"), "native_binding_mismatch"],
+    [new PermissionDenied("x", "native_access_changed"), "native_access_changed"],
     [Object.assign(Error("x"), { code: "oauth_invalid_token", status: 401 }), "credential_invalid"],
   ];
   for (const [error, reason] of cases) assert.equal(admissionReason(error), reason);
   assert.equal(
-    admissionCode(new PermissionDenied("x", "native_key_capacity")),
-    "signing_key_rejected",
+    admissionCode(new PermissionDenied("x", "native_frame_too_large")),
+    "request_rejected",
   );
-  assert.equal(admissionCloseCode(new PermissionDenied("x", "native_acl_committing")), 4409);
-  assert.equal(admissionCloseCode(admissionCancelled()), 4503);
+  assert.equal(admissionCloseCode(new PermissionDenied("x", "plain_session_replaced")), 4409);
   // A throw site may hide a deletion from strangers without losing the log reason.
   const hidden = withAdmissionReason(new PermissionDenied(), "page_deleted", "page_access_denied");
   assert.equal(admissionReason(hidden), "page_deleted");
@@ -67,8 +61,8 @@ test("admission logs are one JSON line with no principal, token, message or Page
   t.mock.method(console, "warn", (line) => lines.push(line));
   const record = logAdmissionDenied(
     Object.assign(Error(`user:secret@example.com Bearer tok_123 ${pageId}`), {
-      status: 403,
-      code: "native_binding_pending",
+      status: 503,
+      code: "connection_capacity",
     }),
     {
       stage: "native",
@@ -87,7 +81,7 @@ test("admission logs are one JSON line with no principal, token, message or Page
     "status",
     "timestamp",
   ]);
-  assert.equal(record.reason, "native_binding_pending");
+  assert.equal(record.reason, "connection_capacity");
   assert.equal(record.code, "temporarily_unavailable");
   assert.equal(record.credential, "oidc");
   for (const secret of ["secret", "tok_123", pageId, "Bearer"])
@@ -140,6 +134,7 @@ test("Project lease expiry has one safe wire reason without exposing arbitrary d
 async function disclosureFixture(auth, metadata) {
   const owner = `user:anaconda-fixture:${auth.subject}`;
   const page = Object.assign(Object.create(Page.prototype), {
+    plain: plainStub(),
     ready: Promise.resolve(),
     env: auth.env,
     ctx: { storage: { get: async () => undefined } },
@@ -147,9 +142,7 @@ async function disclosureFixture(auth, metadata) {
     metadata: metadata && { pageId, documentId: "test", owner, tree: "a".repeat(32), ...metadata },
   });
   page.policy = new DocumentPolicy({
-    storage: {},
     metadata: () => page.metadata,
-    serverKey: "f".repeat(64),
   });
   const tokens = Object.fromEntries(
     ["owner", "viewer", "never-granted", "removed", "stranger"].map((who) => [

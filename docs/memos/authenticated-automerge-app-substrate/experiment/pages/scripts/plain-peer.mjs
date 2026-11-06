@@ -1,7 +1,6 @@
-// A raw peer for an `automerge` Page (PAGES_RECORD_STORAGE=automerge): Repo 3
-// over AutomergeSyncBackend on an authenticated socket, with none of the
-// viewer's or tools' rules. Smokes use it where they use a raw native peer on
-// a Subduction Page.
+// A raw peer for a Page: Repo 3 over AutomergeSyncBackend on an
+// authenticated socket, with none of the viewer's or tools' rules. Smokes use
+// it to write what a browser or a misbehaving client would.
 import { Repo } from "@automerge/automerge-repo";
 import { AutomergeSyncBackend } from "../sync/backend.mjs";
 import { DocStore, MemoryByteStore } from "../sync/doc-store.mjs";
@@ -34,4 +33,21 @@ export async function plainPeer({ origin, pageId, cookie, discovery, features = 
       await repo.shutdown();
     },
   };
+}
+
+/** Resolve with `check()`'s first result that isn't false, retrying every
+ * 10 ms; throw its last error, or a timeout, after `timeout` ms. */
+export async function eventually(check, timeout = 4000) {
+  const deadline = Date.now() + timeout;
+  let error;
+  do {
+    try {
+      const result = await check();
+      if (result !== false) return result;
+    } catch (caught) {
+      error = caught;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  } while (Date.now() < deadline);
+  throw error ?? new Error("Condition did not become true");
 }

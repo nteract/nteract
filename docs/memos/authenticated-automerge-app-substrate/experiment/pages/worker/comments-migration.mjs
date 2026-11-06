@@ -381,5 +381,8 @@ export async function operatorCommentsMigration(request, env) {
     }
     return respond({ cells });
   }
-  return respond({ error: "action must be accounts, run or probe", code: "invalid_arguments" }, 400);
+  return respond(
+    { error: "action must be accounts, run or probe", code: "invalid_arguments" },
+    400,
+  );
 }

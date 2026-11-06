@@ -7,6 +7,7 @@ import { proposeSharingMutation, sharingProjection } from "./sharing.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { Page } from "./index.mjs";
 import { errorResponse, HttpError } from "./auth.mjs";
+import { plainStub } from "./plain-stub.mjs";
 
 const now = 1_800_000_000_000;
 const namespace = "user:anaconda";
@@ -53,19 +54,6 @@ async function verifiedIdentity(
     at / 1000,
   );
   return { ...employee, principal, emailProof: { ...session, provider: "app-session" } };
-}
-
-class Storage {
-  values = new Map();
-  async get(key) {
-    return structuredClone(this.values.get(key));
-  }
-  async put(key, value) {
-    this.values.set(key, structuredClone(value));
-  }
-  async list({ prefix = "" } = {}) {
-    return new Map([...this.values].filter(([key]) => key.startsWith(prefix)));
-  }
 }
 
 test("company sharing is disabled by default and rejects consumer or arbitrary configured domains", async () => {
@@ -437,33 +425,17 @@ test("pending domain changes expose only the old/new intersection", () => {
   );
 });
 
-test("native domain readers cannot write, and domain revocation or proof expiry disconnects their lease", async () => {
-  for (const change of ["write", "domain", "deny", "proof", "provider"]) {
+test("domain readers cannot write, and domain revocation or proof expiry ends their access", () => {
+  for (const change of ["write", "domain", "deny", "proof"]) {
     let doc = metadata(),
-      clock = now,
-      disconnected = false;
+      clock = now;
     const identity = { ...employee, domainAccess: lease };
-    const policy = new DocumentPolicy({
-      storage: new Storage(),
-      metadata: () => doc,
-      now: () => clock,
-    });
-    const key = "a".repeat(64);
+    const policy = new DocumentPolicy({ metadata: () => doc, now: () => clock });
     assert.equal(policy.leaseExpiresAt(identity), lease.expiresAt);
     assert.equal(policy.leaseExpiresAt({ ...identity, expiresAt: now + 1000 }), now + 1000);
-    await policy.bind(key, "sender", identity, {
-      reauthenticate: async () =>
-        change === "provider" ? { ...identity, domainAccess: undefined } : identity,
-      disconnect: async () => {
-        disconnected = true;
-      },
-    });
-    assert.equal(policy.bindings.get(key).writer, false);
-    assert.equal((await policy.active(key)).principal, employee.principal);
-    if (change === "domain") {
-      doc = { ...doc, acl: { ...doc.acl, domainView: null } };
-      await policy.refreshAccess();
-    } else if (change === "deny") {
+    assert.equal(policy.account(identity).canRead, true);
+    if (change === "domain") doc = { ...doc, acl: { ...doc.acl, domainView: null } };
+    else if (change === "deny")
       doc = {
         ...doc,
         acl: proposeAccessUpdate(
@@ -473,44 +445,13 @@ test("native domain readers cannot write, and domain revocation or proof expiry 
           { now },
         ).acl,
       };
-      await policy.refreshAccess();
-    } else {
-      if (change === "proof") clock = lease.expiresAt;
-      if (change === "provider") clock += 15_001;
-      await assert.rejects(policy.active(key, change === "write"), /read-only|access denied/i);
-    }
-    assert.equal(disconnected, true, change);
+    else if (change === "proof") clock = lease.expiresAt;
+    assert.throws(
+      () => policy.account(identity, change === "write"),
+      /read-only|access denied|denied/i,
+      change,
+    );
   }
-});
-
-test("domain reader signing keys stay readers across restart and later explicit editor admission", async () => {
-  const storage = new Storage();
-  let doc = metadata();
-  const identity = { ...employee, domainAccess: lease },
-    key = "b".repeat(64);
-  let policy = new DocumentPolicy({ storage, metadata: () => doc, now: () => now });
-  await policy.bind(key, "sender", identity, {
-    reauthenticate: async () => identity,
-    disconnect: async () => {},
-  });
-  await policy.close();
-  doc = {
-    ...doc,
-    acl: proposeAccessUpdate(
-      doc,
-      owner,
-      { principal: employee.principal, role: "editor", expected_revision: 1 },
-      { now },
-    ).acl,
-  };
-  policy = new DocumentPolicy({ storage, metadata: () => doc, now: () => now });
-  await policy.load();
-  await policy.bind(key, "sender", identity, {
-    reauthenticate: async () => identity,
-    disconnect: async () => {},
-  });
-  assert.equal(policy.bindings.get(key).writer, false);
-  await assert.rejects(policy.active(key, true), /Signing key is read-only/);
 });
 
 test("opening a domain Page remembers only that reader's discovery entry, never a permanent grant", async () => {
@@ -518,6 +459,7 @@ test("opening a domain Page remembers only that reader's discovery entry, never 
     calls = [],
     pending = [];
   const page = Object.assign(Object.create(Page.prototype), {
+    plain: plainStub(),
     metadata: { ...doc, pageId: "test-page" },
     handle: { doc: () => ({ title: "Shared by domain" }) },
     titleProjection: {
@@ -558,6 +500,7 @@ test("a domain reader's row is reported again when the Page's content moved sinc
     projections = [],
     pending = [];
   const page = Object.assign(Object.create(Page.prototype), {
+    plain: plainStub(),
     metadata: { ...doc, pageId: "test-page" },
     handle: { doc: () => ({ title: "Shared by domain" }) },
     titleProjection: {
@@ -621,6 +564,7 @@ for (const failing of ["catalog", "d1"]) {
       delivery: { name: "delivered" },
     };
     const page = Object.assign(Object.create(Page.prototype), {
+      plain: plainStub(),
       metadata: { ...metadata(), pageId: "test-page" },
       handle: { doc: () => ({ title: "Shared by domain" }) },
       titleProjection: state,
@@ -670,6 +614,7 @@ test("a domain discovery cannot clear an owner projection still pending", async 
   const values = new Map();
   const doc = metadata();
   const page = Object.assign(Object.create(Page.prototype), {
+    plain: plainStub(),
     metadata: { ...doc, pageId: "test-page" },
     handle: { doc: () => ({ title: "Shared by domain" }) },
     ctx: {
@@ -708,6 +653,7 @@ test("a domain reader's failure during initial fanout does not invalidate owner 
     sent = [];
   const doc = metadata();
   const page = Object.assign(Object.create(Page.prototype), {
+    plain: plainStub(),
     metadata: { ...doc, pageId: "test-page" },
     handle: { doc: () => ({ title: "Shared by domain" }) },
     ctx: {

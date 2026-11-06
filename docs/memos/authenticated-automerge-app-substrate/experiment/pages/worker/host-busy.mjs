@@ -142,41 +142,14 @@ export function pageTransientFailureResponse({
   return response;
 }
 
-/** `response`, or for a transient or storage refusal, the same refusal
- * stated for a tool request's repeat safety (`safeToRepeat`): a tokenless
- * write is told to reconcile and is not retryable. */
-export async function withRepeatSafety(response, safe, signal) {
+/** `response`, or for a transient refusal, the same refusal stated for a
+ * tool request's repeat safety (`safeToRepeat`): a tokenless write is told to
+ * reconcile and is not retryable. `signal` is unused; the tool deadline
+ * passes it. */
+export async function withRepeatSafety(response, safe, _signal) {
   if (transientRefusals.has(response))
     return pageTransientFailureResponse({ binding: transientRefusals.get(response), safe });
-  if (
-    safe !== false ||
-    response.status !== 503 ||
-    !response.headers.get("content-type")?.toLowerCase().includes("json")
-  )
-    return response;
-  // Only tool-body inspection needs the deadline module and its auth dependencies.
-  const { bufferedResponse } = await import("./tool-deadline.mjs");
-  // Buffer under the tool deadline before cloning: teeing a live body would
-  // leave an unread branch that prevents cancellation of the upstream stream.
-  const buffered = await bufferedResponse(response, signal);
-  let body;
-  try {
-    body = await buffered.clone().json();
-  } catch {
-    return buffered;
-  }
-  if (body?.code !== "record_persistence_unavailable") return buffered;
-  const headers = new Headers(buffered.headers);
-  headers.delete("content-length");
-  return Response.json(
-    {
-      ...body,
-      retryable: false,
-      error:
-        "This Page's storage did not confirm its records. This write may have completed. Read back and reconcile before retrying: a write without retry_token is deduplicated only while its receipt is retained.",
-    },
-    { status: buffered.status, headers },
-  );
+  return response;
 }
 
 /** The refusal for an error a stub fetch threw, or the error rethrown.

@@ -175,7 +175,6 @@ for (const fails of [true, false])
         );
         for (const [name, exported, binary] of [
           ["automerge", "automerge.wasm", "automerge.wasm"],
-          ["subduction", "wasm", "subduction.wasm"],
         ]) {
           write(
             `node_modules/@automerge/${name}/package.json`,
@@ -431,12 +430,6 @@ test("app.js renders the shell without a static path to the WASM runtimes", asyn
     assert.equal(shell.includes(editorOnly), false, editorOnly);
   for (const shellInput of ["viewer/main.jsx", "viewer/local-catalog.mjs"])
     assert.ok(shell.includes(shellInput), shellInput);
-  // The shell lists local Pages through the byte store's own file, not the
-  // package index that also loads the Subduction glue.
-  assert.equal(
-    shell.some((input) => /automerge-repo-subduction[/]dist[/]index[.]js$/.test(input)),
-    false,
-  );
   const [editor] = chunks.filter(
     (file) => local(outputs[file].entryPoint ?? "") === "viewer/page-editor.mjs",
   );
@@ -556,7 +549,6 @@ test("index.html names every shell asset by its hashed file", () => {
     ["theme.js", "src"],
     ["app.css", "href"],
     ["automerge.wasm", "href"],
-    ["subduction.wasm", "href"],
     ["app.js", "src"],
   ]) {
     assert.equal(html.split(`${attribute}="${url(name)}"`).length, 2, name);

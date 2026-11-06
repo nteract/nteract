@@ -1,7 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
-import * as N from "@automerge/subduction";
 import { PageSession, pageSyncAddress } from "./session.mjs";
 
 const activityMessage = (revision = 1, epoch = "epoch-one") => ({
@@ -22,12 +21,13 @@ const activityMessage = (revision = 1, epoch = "epoch-one") => ({
   ],
 });
 
-test("native admission pins the freshly discovered activity epoch without changing legacy URLs", () => {
+test("the sync address pins the freshly discovered activity epoch, and names plain sync", () => {
   const address = pageSyncAddress("fixture", "https://page8.runtimed.run/p/fixture", "host+epoch");
   assert.equal(address.protocol, "wss:");
   assert.equal(address.pathname, "/api/sync");
   assert.equal(address.searchParams.get("page"), "fixture");
   assert.equal(address.searchParams.get("activity_epoch"), "host+epoch");
+  assert.equal(address.searchParams.get("sync"), "automerge");
   const legacy = pageSyncAddress("fixture", "http://localhost:8910/", null);
   assert.equal(legacy.protocol, "ws:");
   assert.equal(legacy.searchParams.has("activity_epoch"), false);
@@ -52,7 +52,6 @@ test("a rejected stale-epoch upgrade retires the discovered activity before retr
     Response.json({
       identity: { principal: "account", displayName: "Kyle Kelley" },
       access: { role: "owner", generation: 0, revision: 0, canRead: true, canWrite: true },
-      serverPeerId: "00".repeat(32),
       serverSenderId: "host",
       peerProfiles: {},
       activity: activityMessage(),
@@ -65,7 +64,7 @@ test("a rejected stale-epoch upgrade retires the discovered activity before retr
     this.addEventListener = () => {};
     this.close = () => closed++;
   });
-  t.mock.method(N.SubductionWebSocket, "setup", async (socket) => {
+  t.mock.method(session, "handshakeWithDeadline", async (socket) => {
     assert.equal(socket.address.searchParams.get("activity_epoch"), "epoch-one");
     assert.equal(session.agentProgress.size, 1, "connection discovery installed the snapshot");
     throw Object.assign(Error("Activity host changed"), { status: 409 });
@@ -79,7 +78,7 @@ test("a rejected stale-epoch upgrade retires the discovered activity before retr
   assert.equal(session.activityTimer, undefined);
 });
 
-test("the socket handed to Subduction sends nothing once it starts closing", async (t) => {
+test("the sync socket sends nothing once it starts closing", async (t) => {
   const session = new PageSession("fixture");
   session.credentialCanWrite = true;
   session.replicaKey = "0:writer";
@@ -98,7 +97,6 @@ test("the socket handed to Subduction sends nothing once it starts closing", asy
     Response.json({
       identity: { principal: "account", displayName: "Kyle Kelley" },
       access: { role: "owner", generation: 0, revision: 0, canRead: true, canWrite: true },
-      serverPeerId: "00".repeat(32),
       serverSenderId: "host",
       peerProfiles: {},
       activity: activityMessage(),
@@ -119,16 +117,16 @@ test("the socket handed to Subduction sends nothing once it starts closing", asy
       wire.push(bytes);
     };
   });
-  t.mock.method(N.SubductionWebSocket, "setup", async (socket) => {
+  t.mock.method(session, "handshakeWithDeadline", async (socket) => {
     socket.readyState = 1;
     socket.send(Uint8Array.of(1));
-    // The viewer gives up on this socket while Subduction still has a reply
-    // in flight, as a reconnect or an access change does.
+    // The viewer gives up on this socket while the transport still has a
+    // frame in flight, as a reconnect or an access change does.
     socket.close();
     socket.send(Uint8Array.of(2));
     socket.readyState = 3;
     socket.send(Uint8Array.of(3));
-    throw Object.assign(Error("Subduction WebSocket closed"), { status: 503 });
+    throw Object.assign(Error("The sync connection closed."), { status: 503 });
   });
   await assert.rejects(session.openConnection(false), { status: 503 });
   assert.deepEqual(wire, [Uint8Array.of(1)]);
@@ -172,7 +170,7 @@ test("activity expires locally despite clock skew and replay cannot extend its l
   assert.equal(session.agentProgress.size, 0);
 });
 
-test("disconnect, auth loss, access pause and close immediately retire ephemeral state", async (t) => {
+test("disconnect, auth loss, access pause and close immediately retire ephemeral state", async () => {
   for (const stop of [
     (session) => session.disconnectSockets(),
     (session) => session.requireSignIn(),
@@ -402,7 +400,6 @@ test("each connect response replaces the actor profiles and attested changes", a
     Response.json({
       identity: { principal: "account", displayName: "Kyle Kelley" },
       access: { role: "owner", generation: 0, revision: 0, canRead: true, canWrite: true },
-      serverPeerId: "00".repeat(32),
       serverSenderId: "host",
       peerProfiles: {},
       actorProfiles: { [actor]: ANA, ["cd".repeat(16)]: { principal: 1 } },
@@ -416,7 +413,7 @@ test("each connect response replaces the actor profiles and attested changes", a
     this.addEventListener = () => {};
     this.close = () => {};
   });
-  t.mock.method(N.SubductionWebSocket, "setup", async () => {
+  t.mock.method(session, "handshakeWithDeadline", async () => {
     throw Object.assign(Error("stop after discovery"), { status: 409 });
   });
   await assert.rejects(session.openConnection(false), { status: 409 });

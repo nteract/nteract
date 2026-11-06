@@ -1148,7 +1148,7 @@ test("storage keeps the fields Page hosts read; location and Project records use
   // Page records and Catalog entries keep every field older builds read, and
   // storage keeps the Space names a build from before the Project name reads.
   const metadata = w.page(child.page_id).metadata;
-  for (const field of ["pageId", "owner", "documentId", "tree", "deleted", "createdReceipt"])
+  for (const field of ["pageId", "owner", "documentId", "deleted", "createdReceipt"])
     assert.ok(Object.hasOwn(metadata, field), field);
   const entry = await w.catalogStorage().get(`page/${child.page_id}`);
   for (const field of ["page_id", "title", "created_at", "updated_at"])

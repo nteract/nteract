@@ -126,8 +126,8 @@ test("staging refuses a receipt that leaves a release file out", (t) => {
 
 test("staging refuses a missing release file", (t) => {
   const { root, dist } = bundle(t);
-  rmSync(path.join(dist, "subduction.wasm"));
-  assert.throws(() => stageArtifacts(dist, path.join(root, "release")), /subduction[.]wasm/);
+  rmSync(path.join(dist, "automerge.wasm"));
+  assert.throws(() => stageArtifacts(dist, path.join(root, "release")), /automerge[.]wasm/);
   assert.equal(existsSync(path.join(root, "release")), false);
 });
 

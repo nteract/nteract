@@ -1,13 +1,6 @@
-import * as N from "@automerge/subduction";
 import { isTokenedRequest } from "../model/retry-key.mjs";
 import * as A from "@automerge/automerge";
-import {
-  Repo,
-  documentIdToBinary,
-  generateAutomergeUrl,
-  interpretAsDocumentId,
-} from "@automerge/automerge-repo";
-import { SubductionBackend } from "@automerge/automerge-repo-subduction";
+import { generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
 import {
   beginServerOidcLogin,
   completeServerOidcLogin,
@@ -33,11 +26,11 @@ import { unsupportedMarkdown, unsupportedMarkdownError } from "../model/markdown
 import { commentsGenesis } from "../model/comments-doc.mjs";
 import { applyComment, commentsMigrated } from "../model/comments.mjs";
 import { guardCommentIntent } from "../model/comment-guard.mjs";
-import { CommentAdmission, recordFrame } from "./comment-admission.mjs";
-import { commentsDocUuid, commentsDocumentId, commentsTreeOf } from "./comments-store.mjs";
+import { commentsDocUuid, commentsDocumentId } from "./comments-store.mjs";
 import { storedFormUnsupported } from "../model/stored-form.mjs";
 import { readTargets, writeTargets } from "../model/agent-presence.mjs";
-import { BACKEND_LIMITS, assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
+import { assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
+import { RECORD_STORAGE_MODES } from "../shared/record-storage.mjs";
 import { handleMcp } from "../mcp.mjs";
 import {
   REPLAYED_RECEIPT_HEADER,
@@ -64,7 +57,6 @@ import { handleOAuth, mcpAuthChallenge } from "./oauth.mjs";
 import { sessionStoreReady } from "./isolate-setup.mjs";
 import { signInCallbackOptions } from "./sign-in-failure.mjs";
 import { localOidcStore } from "./local-oidc-store.mjs";
-import { WebSocketByteTransport } from "../shared/byte-transport.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 import { openingTitleWarning } from "../model/title-warning.mjs";
 import { pagePreview } from "../model/page-preview.mjs";
@@ -82,60 +74,25 @@ import {
   json,
   readJson,
 } from "./auth.mjs";
-import { DurableByteStore, persistentSeed } from "./storage.mjs";
 import {
-  DocumentAdmission,
   incompleteHistory,
   isHistoryCapacityError,
   logIncompleteHistory,
 } from "./history-admission.mjs";
 import {
   INTERNAL_PREFIX,
-  listOperationEntries,
   issueRetryToken,
   inspectOperation,
   reserveOperation,
 } from "./operation-journal.mjs";
-import { BufferedRecordStore, RemoteRecordSink } from "./record-persistence.mjs";
-import { RecordMaintenance } from "./record-maintenance.mjs";
-import { guardContext, guardStubs } from "./storage-guard.mjs";
-import {
-  HOST_SENDER_ID,
-  PlainSync,
-  clearPlainStorage,
-  clearPrefixes,
-  plainSessionReplaced,
-  writeMigratedHistory,
-} from "./plain-sync.mjs";
-import {
-  migrationSlot,
-  migrationStart,
-  recordStorageMigrated,
-  recordStorageMigration,
-} from "./record-storage-migration.mjs";
+import { STORAGE_KEYS_PER_CALL, guardContext } from "./storage-guard.mjs";
+import { pageRecordsCall } from "./page-records.mjs";
+import { operatorPageRecordsSweep } from "./page-records-sweep.mjs";
+export { PageRecords } from "./page-records.mjs";
+import { HOST_SENDER_ID, PlainSync, clearPrefixes, plainSessionReplaced } from "./plain-sync.mjs";
 import { logSyncRefused, logSyncRounds } from "./plain-sync-log.mjs";
 import { BLOCKING as BLOCKING_COMMENT_CODES } from "../sync/comments.mjs";
-import {
-  ActorAuthorship,
-  commitAuthor,
-  loadActorEntries,
-  observeRecordSaves,
-  ActorPersistence,
-  MAX_ATTESTED_CHANGES,
-  STORAGE_KEYS_PER_CALL,
-  loadCommitAuthors,
-  replayAuthor,
-} from "./actor-authorship.mjs";
-export { PageRecords } from "./record-persistence.mjs";
-import {
-  COMMENTS_SCOPE,
-  DocumentPolicy,
-  PermissionDenied,
-  admissionCancelled,
-  leaseExpiryError,
-  hex,
-  logicalId,
-} from "./policy.mjs";
+import { DocumentPolicy, PermissionDenied, leaseExpiryError } from "./policy.mjs";
 import {
   ADMISSION_ROUTES,
   admissionCloseCode,
@@ -144,11 +101,9 @@ import {
   admissionErrorResponse,
   admissionReason,
   logAdmissionDenied,
-  transportRefusal,
   withAdmissionReason,
 } from "./admission-reasons.mjs";
 import { buildAdvertisement } from "../shared/build-identity.mjs";
-import { RECORD_STORAGE_MODES } from "../shared/record-storage.mjs";
 import { advertiseBuild } from "./build-advertisement.mjs";
 import {
   bufferedResponse,
@@ -424,6 +379,16 @@ const lifecycleFingerprint = {
   restore_page: "restore_page",
   purge_page: "purge_page",
 };
+const toHex = (bytes) => [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+/** Whether `metadata`'s Page has a PageRecords object, and whether it may be
+ * cleared: `clear` for a Page converted from `buffered` storage or a deleted
+ * `buffered` Page, `held` for a live `buffered` one (its records are its only
+ * history), undefined for a Page that never had one. */
+function pageRecordsHolder(metadata) {
+  if (metadata?.recordStorageMigratedFrom === "buffered") return "clear";
+  if (metadata?.recordStorage !== "buffered") return undefined;
+  return pageState(metadata) === "deleted" ? "clear" : "held";
+}
 const noop = async () => {};
 /** A listing that met a shared Page (or its owner's Catalog) that did not
  * answer. A listing is a read, so it is retryable; an overloaded host asks
@@ -439,35 +404,6 @@ const sharedPagesUnavailable = ({ overloaded = false } = {}) =>
   );
 /** The error an abandoned object refuses with when its reset gave no reason. */
 const abandonedError = () => Object.assign(Error("Page object was reset"), { status: 503 });
-/** Complete the upgrade and close at once with the refusal's admission code.
- * A browser reads a refused HTTP upgrade only as close 1006, which its
- * reconnect treats as transient; the close code lets it count the refusal. */
-/** The record storage a new Page gets. `PAGES_RECORD_STORAGE=automerge` selects
- * plain Automerge sync (worker/plain-sync.mjs); existing Pages keep the mode
- * they were created with. */
-export function recordStorageFor(env) {
-  if (env.PAGES_RECORD_STORAGE === "automerge") return "automerge";
-  return nativeRecordStorage(env);
-}
-
-const nativeRecordStorage = (env) =>
-  env.PAGES_ASYNC_PERSISTENCE === "true" ? "buffered" : "local";
-
-/** A registered draft keeps the storage its browser replica already uses.
- * A plain Automerge draft registers only where `PAGES_RECORD_STORAGE` allows
- * plain storage: a build without plain sync refuses such a Page at boot, so a
- * host with the flag off must stay rollback-safe. The refusal comes before
- * any creation is recorded, and the browser re-creates the draft natively. */
-export function registeredRecordStorage(env, args) {
-  if (args.record_storage !== "automerge") return nativeRecordStorage(env);
-  if (recordStorageFor(env) === "automerge") return "automerge";
-  throw new HttpError(
-    409,
-    "This host doesn't accept plain Automerge Pages",
-    "record_storage_unsupported",
-  );
-}
-
 /** Viewer builds that speak plain Automerge sync send `sync=automerge` on
  * the socket. An older build is refused an `automerge` Page's socket as
  * schema_unsupported, which it shows as "Reload to update". Discovery stays
@@ -477,8 +413,8 @@ function requirePlainSyncClient(request) {
   throw withAdmissionReason(schemaUnsupported(["automerge-sync"]), "schema_unsupported");
 }
 
-/** One structured line when the native per-author check refuses a comment
- * change: the Page, the rule it broke, never content. */
+/** One structured line when the comments document's per-author check
+ * refuses a comment change: the Page, the rule it broke, never content. */
 function logCommentRefused(pageId, reason) {
   console.error(
     JSON.stringify({
@@ -490,12 +426,9 @@ function logCommentRefused(pageId, reason) {
     }),
   );
 }
-/** Keys of journal entries for document `doc` still pending with changes. */
-async function pendingEntryKeys(storage, doc) {
-  return [...(await listOperationEntries(storage))]
-    .filter(([, entry]) => entry.pending && entry.changes && (entry.doc ?? PAGE_DOC) === doc)
-    .map(([key]) => key);
-}
+/** Complete the upgrade and close at once with the refusal's admission code.
+ * A browser reads a refused HTTP upgrade only as close 1006, which its
+ * reconnect treats as transient; the close code lets it count the refusal. */
 function refuseSocket(error, identity) {
   logAdmissionDenied(error, { stage: "page", identity });
   const pair = new WebSocketPair();
@@ -1211,8 +1144,9 @@ const gateway = {
             ? {
                 identity: publicIdentity(identity),
                 editor: "wordgard",
-                // The storage a Page created in this browser should use.
-                ...(recordStorageFor(env) === "automerge" && { recordStorage: "automerge" }),
+                // Viewers from before plain-only sync read this to create
+                // their drafts in plain storage.
+                recordStorage: "automerge",
                 canWrite: identity.canWrite,
                 expiresAt: identity.expiresAt,
               }
@@ -1386,6 +1320,14 @@ const gateway = {
         (await operatorAuthorized(request, env))
       )
         return await operatorCommentsMigration(request, env);
+      // ONE-SHOT MIGRATION route (page-records-sweep.mjs; delete with it).
+      // Behind the same lab operator gate.
+      if (
+        url.pathname === "/api/operator/page-records" &&
+        request.method === "POST" &&
+        (await operatorAuthorized(request, env))
+      )
+        return await operatorPageRecordsSweep(request, env);
       // ONE-SHOT MIGRATION route (comments-migration.mjs; delete with it).
       if (url.pathname === "/api/admin/comments-migration" && request.method === "POST") {
         const identity = await authenticate(request, env);
@@ -3821,15 +3763,13 @@ export class Page {
   }
 
   /** Stop what an abandoned object would go on doing. Background work stops
-   * at once; the policy, plain sync and native backend close once bootHost,
-   * which may still be building them, has returned or thrown
+   * at once; plain sync closes once bootHost, which may still be building
+   * it, has returned or thrown
    * (`bootFinished`). That can be long after a request's
    * `blockConcurrencyWhile` rejected, since initializeRepo assigns them only
    * at its end. The storage guard already refuses their writes. */
   retireAbandoned() {
     const stop = () => {
-      this.recordMaintenance?.stop();
-      this.actorPersistence?.stop?.();
       this.contentActivity?.stop();
       this.pageCard?.stop();
       this.unwatchContent();
@@ -3839,19 +3779,9 @@ export class Page {
       await this.bootFinished;
       // A boot that ran on may have built more since the reset.
       stop();
-      const closes = [
-        () => this.policy?.close?.(),
-        () => this.plain?.close?.(),
-        async () => {
-          // The backend borrows its signer until close finishes.
-          await this.backend?.close?.();
-          this.signer?.free?.();
-        },
-      ];
-      for (const close of closes)
-        await Promise.resolve()
-          .then(close)
-          .catch((error) => logFailure(error, "abandoned-close"));
+      await Promise.resolve()
+        .then(() => this.plain?.close?.())
+        .catch((error) => logFailure(error, "abandoned-close"));
     })();
   }
 
@@ -3859,23 +3789,8 @@ export class Page {
    * once it is abandoned. Never a falsy value then, which the guard would
    * read as "allowed". */
   storageRefusal() {
-    if (this.migrationAbandoned) return this.migrationAbandoned;
-    if (this.migration?.name === "retired") return (this.migratedError ||= recordStorageMigrated());
     if (this.startup.name !== "abandoned") return undefined;
     return (this.bootError ||= abandonedError());
-  }
-
-  /** A sink for this Page's PageRecords object. PageRecords is this host's
-   * record storage, so the same gate refuses its writes once the object is
-   * abandoned. The sink asks for a new stub after one throws, and the gate
-   * wraps each one. */
-  pageRecordsSink(pageId) {
-    return new RemoteRecordSink(
-      guardStubs(
-        () => this.env.PAGE_RECORDS.getByName(pageId),
-        () => this.storageRefusal(),
-      ),
-    );
   }
 
   /** Throw when this object was abandoned (page-startup's `abandoned`). The
@@ -3891,7 +3806,7 @@ export class Page {
    * creation intent (startupOf), and only this host writes its record, which
    * nothing does before the boot. */
   async bootHost(creation) {
-    // Looking up an unknown page must not create a persisted signer or repo.
+    // Looking up an unknown page must not create plain storage or a repo.
     if (!this.metadata && !creation) return;
     if (creation && this.metadata) logCreationIntentConflict(creation.metadata, this.metadata);
     await this.initializeRepo(this.metadata ?? creation?.metadata);
@@ -3904,16 +3819,12 @@ export class Page {
       creation: creation ? recordOf(creation.metadata) : null,
     });
     await this.applyLifecycle(effects, { intent: creation });
-    // Only a host booted on Subduction can convert (record-storage-migration.mjs).
-    if (!this.plain) this.migration = migrationStart(this.env, this.metadata);
   }
 
   /** Wait until the host is booted, starting the boot if nothing has. Throws
    * the boot's error when it failed. Every request except a check answered
    * from the record passes through here before it reads host state. */
   async documentReady() {
-    if (this.migrationAbandoned) throw this.migrationAbandoned;
-    if (this.migration?.name === "retired") throw (this.migratedError ||= recordStorageMigrated());
     for (;;) {
       const { response } = this.stepStartup({ type: "document" });
       if (response.serve === "document") return;
@@ -4043,12 +3954,7 @@ export class Page {
     // Journal recovery writes; a boot the runtime gave up on stops here.
     this.assertNotAbandoned();
     try {
-      await recoverDocumentMutations(
-        this.ctx.storage,
-        this.handle,
-        () => this.flush(),
-        this.admission,
-      );
+      await recoverDocumentMutations(this.ctx.storage, this.handle, () => this.flush());
     } catch (error) {
       if (isHistoryCapacityError(error)) {
         // Capacity is checked on a clone before any pending edit reaches the
@@ -4264,186 +4170,32 @@ export class Page {
   async loadComments() {
     if (this.commentsHandle || !this.commentsUuid) return;
     const documentId = commentsDocumentId(this.commentsUuid);
-    if (this.plain) {
-      this.plain.serve(documentId, "comments");
-    }
+    this.plain.serve(documentId, "comments");
     this.commentsHandle = await this.repo.import(A.save(commentsGenesis(this.commentsUuid)), {
       docId: documentId,
     });
-    this.commentAdmission?.reset();
     this.assertNotAbandoned();
     await recoverDocumentMutations(
       this.ctx.storage,
       this.commentsHandle,
       () => this.flush(),
-      this.commentsAdmission,
       COMMENTS_DOC,
     );
   }
 
+  /** Boot plain Automerge sync for the Page: DocumentPolicy for access, and
+   * PlainSync for history, admission and the host's Repo
+   * (worker/plain-sync.mjs). A Page record that names other storage (a
+   * Subduction Page from before every Page was plain) is refused unless the
+   * Page is deleted. */
   initializeRepo(metadata = this.metadata) {
     if (this.repo) return Promise.resolve();
     if (this.initializing) return this.initializing;
-    // Keep partial native resources private until the complete host is ready.
     const attempt = (async () => {
-      const ctx = this.ctx;
-      let signer, backend;
-      try {
-        if (
-          metadata?.recordStorage !== undefined &&
-          !RECORD_STORAGE_MODES.includes(metadata.recordStorage)
-        )
-          throw Error("Unsupported Page record storage mode");
-        if (metadata?.recordStorage === "automerge") return await this.initializePlain(metadata);
-        signer = N.MemorySigner.fromBytes(await persistentSeed(ctx.storage));
-        const serverKey = hex(signer.verifyingKey());
-        // The comments document is named before any peer can connect, so the
-        // policy serves its tree from the first frame.
-        const commentsUuid = recordCommentsUuid(metadata);
-        const commentsTree = commentsUuid && commentsTreeOf(commentsUuid);
-        const peer = signer.peerId();
-        let serverSenderId;
-        try {
-          serverSenderId = peer.toString();
-        } finally {
-          peer.free();
-        }
-        const policy = new DocumentPolicy({
-          storage: ctx.storage,
-          metadata: () =>
-            this.recoveryBlocked
-              ? {
-                  ...(this.policyMetadata ?? this.metadata),
-                  projectAccess: this.projectAccess,
-                  recoveryBlocked: true,
-                }
-              : { ...(this.policyMetadata ?? this.metadata), projectAccess: this.projectAccess },
-          serverKey,
-          schemaFeatures: (scope) => {
-            const handle = scope === COMMENTS_SCOPE ? this.commentsHandle : this.handle;
-            return handle ? documentFeatures(handle.doc()) : [];
-          },
-          commentsTree: () => commentsTree,
-        });
-        await policy.load();
-        // The comments document's per-author check, at the byte store: the
-        // one place that sees each record's signer and its change.
-        const commentAdmission = new CommentAdmission({
-          tree: () => commentsTree,
-          serverKey,
-          signer: (key) => policy.signer(key),
-          seed: () => this.commentsHandle?.doc(),
-          // Off the save path: block and disconnect the signer, never wait.
-          onRefused: (key, reason) => {
-            logCommentRefused(metadata?.pageId, reason);
-            policy.refuseComments(key).catch((error) => logFailure(error, "comment-refusal"));
-          },
-          // Retryable: close the submitter's connection, keep its key.
-          onThrottled: (key) => policy.throttleComments(key),
-          maxRecordBytes: BACKEND_LIMITS.maxRecordBytes,
-        });
-        const recordStore =
-          metadata?.recordStorage === "buffered"
-            ? new BufferedRecordStore(this.pageRecordsSink(metadata.pageId), {
-                onDirty: (record) => {
-                  this.recordMaintenance?.recordWrite(record);
-                  this.schedulePersistence();
-                },
-              })
-            : new DurableByteStore(ctx.storage);
-        if (recordStore.ready) await recordStore.ready;
-        const actorAuthorship = new ActorAuthorship({
-          serverKey,
-          binding: (key) => policy.bindings.get(key),
-          entries: await loadActorEntries(ctx.storage),
-        });
-        // Retries wait on a held timer, as schedulePersistence does from the
-        // same save callback; saves and connects also retry sooner.
-        const actorPersistence = new ActorPersistence(ctx.storage, {
-          hold: (work) => holdUntilSettled(ctx, work),
-          onError: (error) => logFailure(error, "actor-authorship"),
-        });
-        // Before the backend can save or anything is published, rebuild
-        // bindings and conflicts the persisted entries may lack.
-        actorPersistence.enqueue(
-          actorAuthorship.replay(
-            await loadCommitAuthors(recordStore, (key, value) =>
-              replayAuthor(key, value, BACKEND_LIMITS.maxRecordBytes),
-            ),
-          ),
-        );
-        backend = new SubductionBackend({
-          signer,
-          // Only the backend's saves attest authors; maintenance and flushes
-          // use recordStore itself.
-          storage: commentAdmission.guard(
-            observeRecordSaves(recordStore, (key, value) =>
-              this.recordSaved(actorAuthorship, key, value, actorPersistence),
-            ),
-          ),
-          policy: policy.native(),
-          ephemeralPolicy: policy.ephemeral(),
-          ...BACKEND_LIMITS,
-        });
-        const repo = new Repo({ backend });
-        Object.assign(this, {
-          signer,
-          serverKey,
-          serverSenderId,
-          policy,
-          backend,
-          ...(metadata?.documentId && {
-            admission: new DocumentAdmission(backend, documentIdToBinary(metadata.documentId)),
-          }),
-          ...(commentsUuid && {
-            commentsUuid,
-            commentsAdmission: new DocumentAdmission(
-              backend,
-              documentIdToBinary(commentsDocumentId(commentsUuid)),
-            ),
-          }),
-          commentAdmission,
-          repo,
-          recordStore,
-          actorAuthorship,
-          actorPersistence,
-        });
-        this.recordMaintenance = new RecordMaintenance({
-          enabled:
-            this.env.PAGES_COMPACT_RECORDS === "true" && metadata?.recordStorage === "buffered",
-          compact: () => {
-            if (!this.metadata?.documentId || this.metadata.deleted || this.recoveryBlocked)
-              return { skipped: "unavailable" };
-            return backend.compact(documentIdToBinary(this.metadata.documentId), {
-              // Both compaction barriers drain the remote record sink. Calling
-              // repo/backend.flush here would recurse into its held owner queue.
-              // Removed commit records are replay's evidence: their actor
-              // effects must be stored first.
-              durable: async () => {
-                await recordStore.flush();
-                await actorPersistence.durable();
-              },
-            });
-          },
-          waitUntil: (work) => ctx.waitUntil(work),
-          onError: (error) => logFailure(error, "record-maintenance"),
-        });
-      } catch (error) {
-        const failures = [error];
-        // The backend borrows its signer until close finishes, even on failure.
-        try {
-          await backend?.close();
-        } catch (cleanup) {
-          failures.push(cleanup);
-        }
-        try {
-          signer?.free();
-        } catch (cleanup) {
-          failures.push(cleanup);
-        }
-        if (failures.length > 1) throw new AggregateError(failures, "Page initialization failed");
-        throw error;
-      }
+      const deleted = pageState(metadata) === "deleted";
+      if (metadata && !RECORD_STORAGE_MODES.includes(metadata.recordStorage) && !deleted)
+        throw Error("Unsupported Page record storage mode");
+      await this.initializePlain(metadata, { deleted });
     })();
     this.initializing = attempt;
     const clear = () => {
@@ -4453,14 +4205,10 @@ export class Page {
     return attempt;
   }
 
-  /** initializeRepo for an `automerge` Page: DocumentPolicy for access, and
-   * PlainSync for history, admission and the host's Repo. No signer, record
-   * store, native admission or actor replay: claims are made at admission. */
-  async initializePlain(metadata) {
+  async initializePlain(metadata, { deleted }) {
     const ctx = this.ctx;
     const commentsUuid = recordCommentsUuid(metadata);
     const policy = new DocumentPolicy({
-      storage: ctx.storage,
       metadata: () =>
         this.recoveryBlocked
           ? {
@@ -4469,14 +4217,7 @@ export class Page {
               recoveryBlocked: true,
             }
           : { ...(this.policyMetadata ?? this.metadata), projectAccess: this.projectAccess },
-      serverKey: undefined,
-      schemaFeatures: (scope) => {
-        const handle = scope === COMMENTS_SCOPE ? this.commentsHandle : this.handle;
-        return handle ? documentFeatures(handle.doc()) : [];
-      },
-      commentsTree: () => undefined,
     });
-    await policy.load();
     const plain = new PlainSync({
       storage: ctx.storage,
       policy,
@@ -4490,7 +4231,7 @@ export class Page {
           credential: conn.identity?.credentialKind,
           repeats,
         });
-        // Native admission logs this event too; keep it for comment queries.
+        // Comment queries read this event.
         if (!repeats && BLOCKING_COMMENT_CODES.has(refusal.code))
           logCommentRefused(metadata?.pageId, { code: refusal.code });
       },
@@ -4512,16 +4253,16 @@ export class Page {
         this.broadcastActorSnapshot();
       },
     });
+    // A deleted Page serves nothing: its documents are gone, and a record
+    // from a Subduction Page may name one plain sync can't address.
     const documents = [];
-    if (metadata?.documentId) documents.push([metadata.documentId, "page"]);
-    if (commentsUuid) documents.push([commentsDocumentId(commentsUuid), "comments"]);
-    await plain.load(documents, { deleted: pageState(metadata) === "deleted" });
+    if (!deleted && metadata?.documentId) documents.push([metadata.documentId, "page"]);
+    if (!deleted && commentsUuid) documents.push([commentsDocumentId(commentsUuid), "comments"]);
+    await plain.load(documents, { deleted });
     Object.assign(this, {
-      serverKey: undefined,
       serverSenderId: HOST_SENDER_ID,
       policy,
       plain,
-      backend: undefined,
       repo: plain.repo,
       ...(commentsUuid && { commentsUuid }),
     });
@@ -4535,7 +4276,7 @@ export class Page {
 
   profiles() {
     return {
-      ...(this.plain ? this.plain.profiles() : this.policy.profiles()),
+      ...this.plain.profiles(),
       [this.serverSenderId]: { principal: "service:pages", displayName: "Pages", driver: "API" },
     };
   }
@@ -4545,7 +4286,7 @@ export class Page {
       pageId: this.metadata.pageId,
       access: (identity) => this.policy.account(identity, true),
       readAccess: (identity) => this.policy.account(identity),
-      profiles: () => (this.plain ? this.plain.profiles() : this.policy.profiles()),
+      profiles: () => this.plain.profiles(),
       onChange: (snapshot) => this.broadcastActivity(snapshot),
     });
     return this.activity;
@@ -4593,97 +4334,20 @@ export class Page {
     }
   }
 
-  /** Attest the author of a commit record the backend just stored. Storage
-   * and broadcast run after the save and never fail it. Actor writes go
-   * through ActorPersistence, which retries a failed write until it lands. */
-  recordSaved(actorAuthorship, key, value, persistence = this.actorPersistence) {
-    persistence?.nudge();
-    // The native save has passed signature, ACL and comment admission. Its
-    // serving handle has not received the change yet; known heads are replays.
-    try {
-      const frame = recordFrame(key, value, BACKEND_LIMITS.maxRecordBytes);
-      const session = frame && this.policy?.sessions.get(frame.issuer);
-      const tree = frame?.tree;
-      const scope =
-        tree && this.policy.scopeOf(tree.endsWith("0".repeat(32)) ? tree.slice(0, 32) : tree);
-      const handle = scope === COMMENTS_SCOPE ? this.commentsHandle : this.handle;
-      if (session && handle) {
-        const hashes =
-          frame.kind === "commit"
-            ? [key.split("/").at(-1)]
-            : A.readBundle(frame.blob).changes.map((change) => change.hash);
-        if (hashes.some((hash) => !A.hasHeads(handle.doc(), [hash])))
-          this.browserWrite(session, session.identity, scope);
-      }
-    } catch {
-      /* Usage reporting never fails a record save. */
-    }
-    const author = commitAuthor(key, value, BACKEND_LIMITS.maxRecordBytes);
-    if (!author) return;
-    const effects = actorAuthorship.observe({ ...author, now: Date.now() });
-    if (effects.put.length || effects.remove.length) persistence?.enqueue(effects);
-    if (effects.delta || effects.attested)
-      this.queueActorDelta(effects.delta ?? {}, effects.attested ?? {});
-  }
-
   browserWrite(session, identity, kind) {
     this.browserWrites ??= new BrowserWrites();
     this.browserWrites.admitted(session, identity, kind, this.metadata?.pageId, this.env);
   }
 
-  /** Coalesce actor deltas into one broadcast per microtask, so a batch of
-   * saves reported together goes out once. It uses no timer: under celld an
-   * unheld timer set from a native save callback did not deliver. A
-   * retraction drops that actor's pending hashes, so no hash outlives its
-   * actor's retraction. Pending hashes keep the newest MAX_ATTESTED_CHANGES. */
-  queueActorDelta(actorProfiles, attestedChanges) {
-    const pending = (this.actorDelta ??= { actorProfiles: {}, attestedChanges: {} });
-    for (const [actor, profile] of Object.entries(actorProfiles)) {
-      pending.actorProfiles[actor] = profile;
-      if (profile === null)
-        for (const [hash, owner] of Object.entries(pending.attestedChanges))
-          if (owner === actor) delete pending.attestedChanges[hash];
-    }
-    for (const [hash, actor] of Object.entries(attestedChanges)) {
-      delete pending.attestedChanges[hash];
-      pending.attestedChanges[hash] = actor;
-    }
-    const hashes = Object.keys(pending.attestedChanges);
-    for (const hash of hashes.slice(0, Math.max(0, hashes.length - MAX_ATTESTED_CHANGES)))
-      delete pending.attestedChanges[hash];
-    if (this.actorDeltaQueued) return;
-    this.actorDeltaQueued = true;
-    queueMicrotask(() => this.flushActorDelta());
-  }
-
-  flushActorDelta() {
-    this.actorDeltaQueued = false;
-    const delta = this.actorDelta;
-    this.actorDelta = undefined;
-    if (!delta || !this.handle) return;
-    try {
-      this.handle.broadcast({ kind: "actor-profiles", ...delta });
-    } catch (error) {
-      logFailure(error, "actor-profiles");
-    }
-  }
-
   /** Attested actors and their recent attested change hashes, now. */
   actorSnapshot() {
-    if (this.plain) return this.plain.actorSnapshot();
-    const now = Date.now();
-    const actorProfiles = this.actorAuthorship?.profiles(now) ?? {};
-    return {
-      actorProfiles,
-      attestedChanges: this.actorAuthorship?.attestedChanges(now, actorProfiles) ?? {},
-    };
+    return this.plain.actorSnapshot();
   }
 
   /** Resend the whole snapshot once a socket subscribes: an attestation made
    * after its /api/connect response reached only earlier subscribers. */
   broadcastActorSnapshot() {
-    if (!this.handle || !(this.actorAuthorship || this.plain)) return;
-    this.flushActorDelta();
+    if (!this.handle || !this.plain) return;
     try {
       this.handle.broadcast({ kind: "actor-profiles", ...this.actorSnapshot(), snapshot: true });
     } catch (error) {
@@ -4922,43 +4586,17 @@ export class Page {
     const restricted = restrictAccessDuringCommit(previous, metadata);
     this.policyMetadata = { ...restricted, aclCommitting: true };
     this.activity?.prune();
-    // Do not persist retired signer rows ahead of their grant generation. If
-    // this host record never commits, restart may legitimately retain old access.
-    await this.policy.refreshAccess({ persist: false });
-    this.plain?.refresh();
+    this.plain.refresh();
     if (catalogIndexEpoch(this.env) && listingRestricted(previous, restricted, this.env))
       await this.restrictIndex(restricted, metadata.acl?.revision ?? 0);
     await this.ctx.storage.put("host/document", metadata);
     await this.ctx.storage.sync();
     this.metadata = metadata;
     this.policyMetadata = undefined;
-    await this.policy.refreshAccess();
-    this.plain?.refresh();
+    this.plain.refresh();
     this.activity?.prune();
     this.pendingAccess = undefined;
     this.cacheTitle(undefined, { observe: true });
-  }
-
-  schedulePersistence() {
-    // An abandoned object's flushes are refused; it schedules none.
-    if (this.persistenceScheduled || this.startup.name === "abandoned") return;
-    this.persistenceScheduled = true;
-    this.ctx.waitUntil(
-      (async () => {
-        await new Promise((resolve) => setTimeout(resolve, this.persistenceDelay ?? 1000));
-        try {
-          await this.recordStore.flush();
-          this.persistenceDelay = 1000;
-          this.recordMaintenance?.flushed();
-        } catch (error) {
-          logFailure(error, "record-persistence");
-          this.persistenceDelay = Math.min((this.persistenceDelay ?? 1000) * 2, 30_000);
-        } finally {
-          this.persistenceScheduled = false;
-          if (this.recordStore.dirty) this.schedulePersistence();
-        }
-      })(),
-    );
   }
 
   /**
@@ -5003,8 +4641,7 @@ export class Page {
     if (state === "deleted") return json({ ...base, status: "deleted" });
     if (this.pendingAccess || this.pendingLifecycle)
       return json({ ...base, status: "record_pending" });
-    if (this.recoveryBlocked || this.migration?.name === "retired")
-      return json({ ...base, status: "held" });
+    if (this.recoveryBlocked) return json({ ...base, status: "held" });
     if (!this.handle || !this.commentsHandle) return json({ ...base, status: "unavailable" });
     // Before the plan: nothing awaits between reading the heads and the
     // journaled write but the write's own checks.
@@ -5026,7 +4663,7 @@ export class Page {
       });
     if (this.wires.size && includeConnected !== true)
       return json({ ...base, status: "busy", heads, report });
-    const digest = hex(
+    const digest = toHex(
       new Uint8Array(
         await crypto.subtle.digest("SHA-256", new TextEncoder().encode(heads.join(","))),
       ),
@@ -5035,8 +4672,7 @@ export class Page {
     try {
       receipt = await documentMutation({
         storage: this.ctx.storage,
-        hostActorPrefix: this.plain?.hostActorPrefix,
-        admission: this.commentsAdmission,
+        hostActorPrefix: this.plain.hostActorPrefix,
         handle: this.commentsHandle,
         doc: COMMENTS_DOC,
         pageId: metadata.pageId,
@@ -5134,32 +4770,17 @@ export class Page {
   }
 
   async flush() {
-    if (this.plain) {
-      await this.plain.flush(this.documentIds());
-      await this.ctx.storage.sync();
-      return;
-    }
-    await this.repo.flush(this.documentIds());
-    await this.backend.flush();
-    await this.recordStore?.flush?.();
+    await this.plain.flush(this.documentIds());
     await this.ctx.storage.sync();
   }
 
   fetch(request) {
     // Permission changes/claims and HTTP mutations share one admission order.
-    // Native frames still run directly through the current DocumentPolicy.
-    // Both paths hold the request until it settles (request-hold.mjs): a save
-    // waits for heads and drains the record store's own serialized flush.
-    this.requestsRunning = (this.requestsRunning ?? 0) + 1;
-    this.reportActivity();
+    // Sync frames run directly through SyncHost's own queue. Both paths hold
+    // the request until it settles (request-hold.mjs): a save waits for heads
+    // and the host's flush.
     const settle = (work) => {
-      const settled = work.then(noop, noop).then(() => {
-        this.requestsRunning--;
-        this.reportActivity();
-      });
-      // reportActivity may arm a quiet hold. Keep its originating request
-      // live until that handoff has completed, not just until run() settles.
-      holdUntilSettled(this.ctx, settled);
+      holdUntilSettled(this.ctx, work.then(noop, noop));
       return work;
     };
     if (["/api/sync", "/api/saved"].includes(new URL(request.url).pathname)) {
@@ -5171,263 +4792,58 @@ export class Page {
     return settle(next);
   }
 
-  /** Tell the migration machine how many sockets and requests are live. */
-  reportActivity() {
-    if (!this.migration) return;
-    this.stepMigration({
-      type: "activity",
-      sockets: this.wires.size,
-      requests: this.requestsRunning ?? 0,
-    });
-  }
-
-  /** Step record-storage-migration and run its effects. */
-  stepMigration(event) {
-    if (this.migrationAbandoned) return { state: this.migration, effects: [] };
-    const result = recordStorageMigration.step(this.migration, event);
-    if (result.rejected) return result;
-    this.migration = result.state;
-    for (const effect of result.effects) {
-      if (effect.type === "arm") {
-        this.disarmMigration();
-        if (this.migration.name === "quiet") {
-          const held = new Promise((resolve) => (this.migrationRelease = resolve));
-          holdUntilSettled(this.ctx, held);
-        }
-        this.migrationTimer = setTimeout(() => {
-          const release = this.migrationRelease;
-          this.migrationTimer = undefined;
-          this.migrationRelease = undefined;
-          // Register the next hold before releasing this request's quiet hold.
-          this.stepMigration({ type: "elapsed" });
-          release?.();
-        }, effect.ms);
-        // Backoff is best-effort: no hold keeps an unused native host resident.
-      } else if (effect.type === "disarm") {
-        this.disarmMigration();
-      } else if (effect.type === "convert") {
-        const run = this.runMigration();
-        holdUntilSettled(this.ctx, run);
-        this.disarmMigration();
-      }
-      // `retire` runs inside runMigration's blockConcurrencyWhile.
-    }
-    return result;
-  }
-
-  /** Clear the migration timer and settle the hold it kept. */
-  disarmMigration() {
-    clearTimeout(this.migrationTimer);
-    this.migrationTimer = undefined;
-    this.migrationRelease?.();
-    this.migrationRelease = undefined;
-  }
-
-  /**
-   * Convert this Subduction Page to plain Automerge sync, in place, while
-   * nobody uses it (record-storage-migration.mjs). Runs inside
-   * blockConcurrencyWhile, so no request or socket starts meanwhile, and one
-   * at a time per isolate (the module's shared slot). After the flip the
-   * object retires: its storage refuses writes, its native host closes, and
-   * the throw resets it, so the next request boots plain.
-   */
-  async runMigration() {
-    // Wait for the isolate's slot outside blockConcurrencyWhile, so the wait
-    // can't run into the runtime's deadline; activity is checked again inside.
-    let callbackSettled;
-    let callbackStarted = false;
-    try {
-      const result = await migrationSlot(() => {
-        let settle;
-        callbackSettled = new Promise((resolve) => (settle = resolve));
-        return this.ctx.blockConcurrencyWhile(async () => {
-          callbackStarted = true;
-          const started = Date.now();
-          try {
-            if (this.migrationAbandoned) return;
-            const event = await this.convertRecordStorage(started);
-            const { effects } = this.stepMigration(event);
-            if (effects?.some((effect) => effect.type === "retire")) {
-              await this.retireMigratedHost();
-              throw (this.migratedError ||= recordStorageMigrated());
-            }
-          } finally {
-            settle();
-          }
-        });
-      });
-      if (result?.reason === "slot_timeout") {
-        console.log(
-          JSON.stringify({
-            event: "record_storage.migration",
-            outcome: "skipped",
-            from: this.metadata?.recordStorage ?? "local",
-            page_id: this.metadata?.pageId,
-            reason: result.reason,
-          }),
-        );
-        this.stepMigration(result);
-      }
-    } catch (error) {
-      if (error === this.migratedError) {
-        // The throw resets the object; abort makes the reset explicit.
-        try {
-          this.ctx.abort?.(error);
-        } catch {}
-        return;
-      }
-      // The runtime gave up on the conversion (its deadline) while it may
-      // still run, and a new object may already serve the Page. Fence this
-      // one: its storage refuses every write from here, so the stale
-      // conversion can't write a snapshot or flip the record.
-      this.migrationAbandoned ||= error || recordStorageMigrated();
-      this.disarmMigration();
-      // The runtime's deadline is not the callback's settlement. Its borrowed
-      // native resources remain live until the callback has finished with them.
-      // An unstarted callback borrows nothing; a late start sees the fence.
-      if (callbackStarted) await callbackSettled;
-      await this.retireMigratedHost();
-    }
-  }
-
-  /** The conversion itself. Returns `skipped`, `failed` or `converted`. */
-  async convertRecordStorage(started = Date.now()) {
-    const storage = this.ctx.storage;
-    const from = this.metadata?.recordStorage ?? "local";
-    const log = (outcome, fields = {}) =>
-      console.log(
-        JSON.stringify({
-          event: "record_storage.migration",
-          outcome,
-          from,
-          // Canaries go Page by Page; the line says which.
-          page_id: this.metadata?.pageId,
-          ...fields,
-        }),
-      );
-    const skip = (reason, retryMs) => {
-      log("skipped", { reason });
-      return { type: "skipped", reason, ...(retryMs && { retryMs }) };
-    };
-    if (this.wires.size || (this.requestsRunning ?? 0) > 0) return skip("busy");
-    if (!this.handle || this.plain || this.migration?.name !== "converting")
-      return skip("not_native");
-    if (this.recoveryBlocked) return skip("recovery_blocked");
-    // An access or lifecycle commit whose barrier failed: the stored record
-    // may be newer than this.metadata, and the flip would overwrite it.
-    if (this.pendingAccess || this.pendingLifecycle) return skip("record_pending");
-    // The flip spreads this.metadata: only when storage holds exactly it.
-    // Nothing writes the record meanwhile: this runs in blockConcurrencyWhile.
-    const stored = await storage.get("host/document");
-    if (JSON.stringify(stored) !== JSON.stringify(this.metadata)) return skip("record_pending");
-    if (
-      (await pendingEntryKeys(storage, PAGE_DOC)).length ||
-      (await pendingEntryKeys(storage, COMMENTS_DOC)).length
-    )
-      return skip("journal_pending");
-    let flipping = false;
-    try {
-      // Everything the native host accepted, in its record store (and the
-      // PageRecords sink for a buffered Page).
-      await this.flush();
-      const complete = (doc) => A.getHeads(doc).length > 0 && !A.getMissingDeps(doc, []).length;
-      const page = this.handle.doc();
-      if (!complete(page)) return skip("page_incomplete");
-      const commentsId = this.commentsUuid && commentsDocumentId(this.commentsUuid);
-      const comments = commentsId && this.commentsHandle?.doc();
-      if (commentsId && !(comments && complete(comments))) return skip("comments_incomplete");
-      await this.actorPersistence?.durable();
-      const actors = await loadActorEntries(storage);
-      const blocked = [...(this.policy?.bindings?.values() ?? [])]
-        .filter((binding) => binding.commentsBlocked && typeof binding.principal === "string")
-        .map((binding) => binding.principal);
-      const { claims, bytes } = await writeMigratedHistory(storage, {
-        documents: [
-          { documentId: this.metadata.documentId, doc: page },
-          ...(comments ? [{ documentId: commentsId, doc: comments }] : []),
-        ],
-        actors,
-        blocked,
-      });
-      // The flip names exactly the history just written. Nothing should
-      // move the live documents meanwhile; if something did, don't flip.
-      const same = (a, b) =>
-        JSON.stringify(A.getHeads(a).sort()) === JSON.stringify(A.getHeads(b).sort());
-      if (
-        !same(page, this.handle.doc()) ||
-        (comments && !same(comments, this.commentsHandle.doc()))
-      )
-        return skip("heads_moved");
-      // Leave ten seconds of the runtime's 30 s block deadline for the selector
-      // write and barrier; a late flip could strand edits on a fresh native host.
-      if (Date.now() - started > 20_000) return skip("deadline_margin");
-      flipping = true;
-      await storage.put("host/document", {
-        ...this.metadata,
-        recordStorage: "automerge",
-        recordStorageMigratedFrom: from,
-        recordStorageMigratedAt: new Date().toISOString(),
-      });
-      await storage.sync();
-      log("converted", {
-        claims,
-        blocked: blocked.length,
-        comments: !!comments,
-        bytes,
-        latencyMs: Date.now() - started,
-      });
-      return { type: "converted" };
-    } catch (error) {
-      logFailure(error, "record-storage-migration");
-      // The selector write may have landed even though it, or the barrier
-      // after it, reported failure. The object resets either way, and the
-      // next boot reads the record.
-      if (flipping) return { type: "converted" };
-      return { type: "failed" };
-    }
-  }
-
-  /** A converted Page's Subduction history, which the plain host never reads:
-   * its records, actor entries, signing-key bindings and signer seed here,
-   * and for a buffered Page the PageRecords object's records.
-   * Deleting the Page deletes them too.
-   * Each step is idempotent, so a repeated deletion finishes the job. */
-  async purgeMigratedRecords() {
-    if (this.metadata.recordStorageMigratedFrom === "buffered" && this.env.PAGE_RECORDS) {
-      const records = new BufferedRecordStore(this.pageRecordsSink(this.metadata.pageId));
-      await records.ready;
-      for (const key of await records.list("")) await records.remove(key);
-      await records.flush();
-    }
+  /** What a Page converted from Subduction still holds of it, which the
+   * plain host never reads: native records, actor entries, signing-key
+   * bindings, the signer seed, and for a `buffered` Page its PageRecords
+   * object. Deleting the Page deletes them too. Each step is idempotent, so a
+   * repeated deletion finishes the job. */
+  async purgeConvertedRecords() {
+    if (pageRecordsHolder(this.metadata)) await this.pageRecords("clear");
     await clearPrefixes(this.ctx.storage, ["repo/", "host/actor/", "host/binding/"]);
     await this.ctx.storage.delete("host/signer");
   }
 
-  /** Stop and close the native host of a retired object. Its storage already
-   * refuses writes (storageRefusal), so a close that tries one only logs. */
-  async retireMigratedHost() {
-    if (this.migrationRetiring) return;
-    this.migrationRetiring = true;
-    this.disarmMigration();
-    this.recordMaintenance?.stop();
-    this.actorPersistence?.stop?.();
-    this.contentActivity?.stop();
-    // The card object and host/card stay: the plain host serves the same
-    // Page and its first flush compares against the stored hash.
-    this.pageCard?.stop();
-    this.unwatchContent();
-    for (const close of [
-      () => this.policy?.close?.(),
-      () => this.repo?.shutdown?.(),
-      async () => {
-        // The backend borrows its signer until close finishes.
-        await this.backend?.close?.();
-        this.signer?.free?.();
-      },
-    ])
-      await Promise.resolve()
-        .then(close)
-        .catch((error) => logFailure(error, "record-storage-migration-retire"));
+  /** `inspect` or `clear` this Page's PageRecords object
+   * (worker/page-records.mjs). The abandoned-object gate refuses it like any
+   * other storage write. */
+  async pageRecords(action) {
+    const refusal = this.storageRefusal();
+    if (refusal) throw refusal;
+    return pageRecordsCall(this.env.PAGE_RECORDS.getByName(this.metadata.pageId), action);
+  }
+
+  /**
+   * ONE-SHOT MIGRATION (worker/page-records-sweep.mjs; delete with it). The
+   * operator sweep asks this host to report (`dry_run`) or clear (`apply`)
+   * its PageRecords object. Host only: a request that carries a credential
+   * is refused. Only a Page whose history no longer lives there is cleared:
+   * one converted from `buffered` storage, or a deleted `buffered` Page.
+   */
+  async operatorPageRecords(request) {
+    if (request.headers.has("authorization") || request.headers.has("cookie"))
+      throw spaceNotFound();
+    const { mode } = (await readJson(request)) ?? {};
+    if (!["dry_run", "apply"].includes(mode))
+      throw new HttpError(400, 'mode must be "dry_run" or "apply"', "invalid_arguments");
+    const metadata = this.metadata;
+    if (!metadata) return json({ status: "missing" });
+    const base = {
+      page_id: metadata.pageId,
+      state: pageState(metadata),
+      record_storage: metadata.recordStorage ?? null,
+      ...(metadata.recordStorageMigratedFrom && {
+        migrated_from: metadata.recordStorageMigratedFrom,
+      }),
+    };
+    const holder = pageRecordsHolder(metadata);
+    if (holder === undefined) return json({ ...base, status: "none" });
+    if (holder === "held") return json({ ...base, status: "held" });
+    if (mode === "dry_run") {
+      const records = await this.pageRecords("inspect");
+      return json({ ...base, status: records.keys ? "would_clear" : "empty", records });
+    }
+    const { cleared, after } = await this.pageRecords("clear");
+    return json({ ...base, status: "cleared", cleared, after });
   }
 
   async run(request) {
@@ -5466,6 +4882,9 @@ export class Page {
       // ONE-SHOT MIGRATION route (comments-migration.mjs; delete with it).
       if (url.pathname === "/internal/comments-migration")
         return await this.commentsMigration(request);
+      // ONE-SHOT MIGRATION route (page-records-sweep.mjs; delete with it).
+      if (url.pathname === "/internal/operator-page-records")
+        return await this.operatorPageRecords(request);
       if (url.pathname === "/internal/tombstone") {
         // A pending trash or restore would otherwise rewrite its record over
         // the tombstone when it settles.
@@ -5535,12 +4954,11 @@ export class Page {
             const warning = openingTitleWarning(doc);
             const documentId = interpretAsDocumentId(generateAutomergeUrl());
             const metadata = {
-              recordStorage: recordStorageFor(this.env),
+              recordStorage: "automerge",
               pageId: args.page_id,
               owner: identity.principal,
               ownerName: identity.displayName,
               documentId,
-              tree: logicalId(documentIdToBinary(documentId)),
               // The Page's comments document, by its deployment-relative id.
               comments_doc: await commentsDocUuid(args.page_id),
               deleted: false,
@@ -5679,14 +5097,13 @@ export class Page {
         });
       }
       if (url.pathname === "/api/connect" && request.method === "GET") {
-        this.actorPersistence?.nudge();
         this.cacheTitle(identity);
         return json({
           page_id: this.metadata.pageId,
           documentId: this.metadata.documentId,
           // The comments document syncs on the same socket.
           ...(this.commentsHandle && { commentsDocumentId: commentsDocumentId(this.commentsUuid) }),
-          ...(this.plain ? { recordStorage: "automerge" } : { serverPeerId: this.serverKey }),
+          recordStorage: "automerge",
           serverSenderId: this.serverSenderId,
           identity: publicIdentity(identity),
           canWrite: !this.recoveryBlocked && this.policy.account(identity).canWrite,
@@ -5766,7 +5183,7 @@ export class Page {
             state !== "trashed" &&
             Array.isArray(result.body?.heads)
           ) {
-            // Native edits can land while authority is issued. Capture the
+            // Browser edits can land while authority is issued. Capture the
             // targets on the revision the agent read; cursors carry them forward.
             const heads = result.body.heads;
             this.publishAgentPresence(
@@ -5801,8 +5218,7 @@ export class Page {
         let caret = null;
         const receipt = await documentMutation({
           storage: this.ctx.storage,
-          hostActorPrefix: this.plain?.hostActorPrefix,
-          admission: this.admission,
+          hostActorPrefix: this.plain.hostActorPrefix,
           handle: this.handle,
           operation: body.operation,
           args: body.arguments,
@@ -5937,8 +5353,7 @@ export class Page {
     let page;
     const receipt = await documentMutation({
       storage: this.ctx.storage,
-      hostActorPrefix: this.plain?.hostActorPrefix,
-      admission: this.commentsAdmission,
+      hostActorPrefix: this.plain.hostActorPrefix,
       handle: this.commentsHandle,
       doc: COMMENTS_DOC,
       pageId: this.metadata.pageId,
@@ -5952,7 +5367,7 @@ export class Page {
       },
       guard: (input) => {
         page = this.handle.doc();
-        // The Page's stamp gates both documents, as the native gate does. A
+        // The Page's stamp gates both documents, as SyncHost's gate does. A
         // recorded receipt still replays; this runs for new intents only.
         requireSupportedSchema(page);
         return guardCommentIntent(page, operation, input);
@@ -6148,7 +5563,7 @@ export class Page {
       );
       // Verification awaited crypto and storage. Recheck the live document and
       // record in the same synchronous step that tombstones the Page. While
-      // trashed the policy refuses every native write, so this only catches a
+      // trashed the policy refuses every sync write, so this only catches a
       // change accepted before Trash that applied late.
       if (
         event.preview === "valid" &&
@@ -6300,16 +5715,10 @@ export class Page {
         if (context.intent) {
           this.metadata = context.intent.metadata;
           this.observeActivity();
-          if (!this.plain)
-            this.admission ??= new DocumentAdmission(
-              this.backend,
-              documentIdToBinary(this.metadata.documentId),
-            );
         } else this.metadata = pending.metadata;
         return;
       case "refreshAccess":
-        await this.policy.refreshAccess();
-        this.plain?.refresh();
+        this.plain.refresh();
         this.activity?.prune();
         return;
       case "projectTitle":
@@ -6320,44 +5729,29 @@ export class Page {
         await this.retireIndex();
         return;
       case "closePolicy":
-        this.recordMaintenance?.stop();
         this.contentActivity?.stop();
         this.pageCard?.stop();
         this.unwatchContent();
         this.activity?.close();
-        await this.policy.close();
-        for (const wire of this.wires) await wire.disconnect();
-        this.plain?.disconnectAll();
+        this.plain.disconnectAll();
         return;
       case "deleteDocument":
         await this.forgetContent();
         // Both documents go together: the Page and its comments.
         await this.repo.delete(this.metadata.documentId);
-        if (this.commentsUuid) {
-          this.commentAdmission?.reset();
-          await this.repo.delete(commentsDocumentId(this.commentsUuid));
-        }
+        if (this.commentsUuid) await this.repo.delete(commentsDocumentId(this.commentsUuid));
         // From metadata, not loaded handles: a deleted Page boots without them.
-        await this.plain?.forget(
+        await this.plain.forget(
           [
             this.metadata.documentId,
             this.commentsUuid && commentsDocumentId(this.commentsUuid),
           ].filter(Boolean),
         );
-        if (this.metadata.recordStorageMigratedFrom) await this.purgeMigratedRecords();
-        // A Subduction Page may hold plain history from a conversion that
-        // failed before its flip.
-        if (!this.plain) await clearPlainStorage(this.ctx.storage);
+        if (this.metadata.recordStorageMigratedFrom) await this.purgeConvertedRecords();
         return;
       case "flush":
-        if (this.plain) {
-          if (pageState(this.metadata) !== "deleted") await this.plain.flush(this.documentIds());
-          return;
-        }
-        // A deleted document has nothing left in the repo to flush.
-        if (pageState(this.metadata) !== "deleted") await this.repo.flush(this.documentIds());
-        await this.backend.flush();
-        await this.recordStore?.flush?.();
+        // A deleted document has nothing left to flush; the barrier stays.
+        await this.plain.flush(pageState(this.metadata) === "deleted" ? [] : this.documentIds());
         return;
       case "finishDeletion":
         // Barriers are complete for this process; a restart repeats them.
@@ -6368,16 +5762,13 @@ export class Page {
         await this.forgetContent();
         this.handle = undefined;
         this.commentsHandle = undefined;
-        this.commentAdmission?.reset();
         return;
       case "loadDocument":
         await this.loadDocument();
         return;
       case "importDocument":
         // A replayed creation may find the document stored already.
-        if (this.plain) {
-          this.plain.serve(context.intent.metadata.documentId, "page");
-        }
+        this.plain.serve(context.intent.metadata.documentId, "page");
         this.handle = await this.repo.import(context.intent.bytes, {
           docId: context.intent.metadata.documentId,
         });
@@ -6528,12 +5919,11 @@ export class Page {
         const { doc, bytes } = readRegistration(args);
         try {
           const metadata = {
-            recordStorage: registeredRecordStorage(this.env, args),
+            recordStorage: "automerge",
             pageId: args.page_id,
             owner: identity.principal,
             ownerName: identity.displayName,
             documentId: args.document_id,
-            tree: logicalId(documentIdToBinary(args.document_id)),
             comments_doc: await commentsDocUuid(args.page_id),
             deleted: false,
             registration: digest,
@@ -6567,7 +5957,7 @@ export class Page {
 
   /** `declared` is the schema features the tab's build declared with this
    * receipt; a build from before the stamp sends none, the baseline. When
-   * heads are missing and that build lacks a stamped id, the native gate has
+   * heads are missing and that build lacks a stamped id, the schema gate has
    * refused, or will refuse, those edits: answer `schema_unsupported` rather
    * than wait for heads that can't arrive. */
   async waitForHeads(heads, declared, handle = this.handle) {
@@ -6645,7 +6035,7 @@ export class Page {
         !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(epochs[0])
       )
         throw new HttpError(400, "Invalid activity_epoch");
-      // Discovery and native admission must refer to the same resident host.
+      // Discovery and the socket must refer to the same resident host.
       // Reject before allocating a socket so the browser rediscovers after a
       // restart instead of permanently rejecting the new host's snapshots.
       if (epochs[0] !== this.activityState().epoch)
@@ -6654,210 +6044,25 @@ export class Page {
           "activity_epoch_changed",
         );
     }
-    // The build's schema features, for the native schema gate in policy.put().
-    // A viewer from before the stamp sends none: the baseline.
+    // The build's schema features, for SyncHost's schema gate. A viewer from
+    // before the stamp sends none: the baseline.
     const declared = new URL(request.url).searchParams.getAll("schema_features");
     const features = declared.length > 1 ? null : parseDeclaredFeatures(declared[0]);
     if (!features) throw new HttpError(400, "Invalid schema_features");
     // A plain socket from a tab that already holds one replaces it, so the
     // stale socket's slot is free for this one.
-    const sender = this.plain?.sender(identity, new URL(request.url).searchParams.get("sender"));
-    const capacity = this.connectionCapacity(identity, sender?.replaces?.wire);
+    const sender = this.plain.sender(identity, new URL(request.url).searchParams.get("sender"));
+    const capacity = this.connectionCapacity(identity, sender.replaces?.wire);
     if (capacity) return refuseSocket(capacity, identity);
-    if (this.plain) {
-      try {
-        requirePlainSyncClient(request);
-      } catch (error) {
-        return refuseSocket(error, identity);
-      }
-      return this.connectPlain(request, identity, features, sender);
+    try {
+      requirePlainSyncClient(request);
+    } catch (error) {
+      return refuseSocket(error, identity);
     }
-    const pair = new WebSocketPair();
-    const client = pair[0],
-      socket = pair[1];
-    socket.accept(); // Resident connection; reconnect reconstructs native state.
-    // A transport refusal is logged once here, before the disconnect callback
-    // records a generic cancellation.
-    let refusal;
-    const wire = new WebSocketByteTransport(socket, {
-      onRefusal: (category) => {
-        refusal = transportRefusal(category);
-        logAdmissionDenied(refusal, { stage: "native", identity });
-        admission.abort(refusal);
-        return close(refusal);
-      },
-    });
-    const disconnected = new Promise((resolve) => wire.onDisconnect(resolve));
-    const syncUsage = {
-      surface: "browser-sync",
-      identity,
-      labels: requestClient(request),
-      pageId: this.metadata?.pageId,
-    };
-    // sync.open records the admission decision once: admitted after
-    // addConnection, or refused with its reason. Only an admitted session
-    // records sync.close, with its duration.
-    const syncStarted = Date.now();
-    const usageSession = new UsageSession({
-      ...syncUsage,
-      owner: this.metadata.owner,
-      env: this.env,
-      ctx: this.ctx,
-    });
-    let syncAdmittedAt;
-    wire.onDisconnect(() => {
-      usageSession.event("close");
-      if (syncAdmittedAt !== undefined)
-        logUsage(
-          { action: "sync.close", ...syncUsage, latencyMs: Date.now() - syncAdmittedAt },
-          this.env,
-        );
-    });
-    this.wires.add(wire);
-    this.reportActivity();
-    // HTTP authentication already established this principal. Reserve before
-    // waiting on the native handshake, so idle handshakes cannot bypass quotas.
-    this.wirePrincipals.set(wire, identity.principal);
-    let release = noop;
-    const admission = new AbortController();
-    let leaseTimer;
-    let expiryTimer;
-    const close = (error) =>
-      wire.disconnect(admissionCloseCode(error), admissionCloseReason(error));
-    const armExpiry = (expiresAt, currentIdentity = identity) => {
-      clearTimeout(expiryTimer);
-      if (this.wires.has(wire))
-        expiryTimer = setTimeout(
-          () => void close(leaseExpiryError(currentIdentity, expiresAt)),
-          Math.max(1, expiresAt - Date.now()),
-        );
-    };
-    const handshakeTimer = setTimeout(() => {
-      admission.abort(admissionCancelled("native_admission_timeout"));
-      void close(admission.signal.reason);
-    }, 10_000);
-    wire.onDisconnect(() => {
-      clearTimeout(handshakeTimer);
-      clearInterval(leaseTimer);
-      clearTimeout(expiryTimer);
-      admission.abort(admissionCancelled());
-      release();
-      this.wires.delete(wire);
-      this.reportActivity();
-      this.wirePrincipals.delete(wire);
-      this.activity?.prune();
-      this.broadcastProfiles();
-    });
-    this.ctx.waitUntil(
-      (async () => {
-        let transport;
-        try {
-          transport = await N.AuthenticatedTransport.accept(wire, this.signer);
-        } catch (cause) {
-          throw admission.signal.aborted
-            ? admission.signal.reason
-            : withAdmissionReason(
-                Object.assign(new Error("Native handshake failed", { cause }), { status: 400 }),
-                "native_handshake_failed",
-              );
-        }
-        try {
-          const peer = transport.peerId;
-          let key, senderId;
-          try {
-            key = hex(peer.toBytes());
-            senderId = peer.toString();
-          } finally {
-            peer.free();
-          }
-          // Only the native verified peer and the credential verified on this
-          // upgrade may establish this durable binding, before backend admission.
-          release = await this.policy.bind(key, senderId, identity, {
-            signal: admission.signal,
-            waitUntil: (promise) => this.ctx.waitUntil(promise),
-            reauthenticate: () => this.identify(request),
-            disconnect: (error) => {
-              // A replaced connection ends without a failure, so nothing
-              // else logs it; log it here so replacements show in the host log.
-              if (admissionReason(error) === "native_session_replaced")
-                logAdmissionDenied(error, { stage: "native", identity });
-              return close(error ?? admissionCancelled());
-            },
-            onRenewal: (expiresAt, renewedIdentity) => {
-              if (identity.credentialKind === "api-key") armExpiry(expiresAt, renewedIdentity);
-            },
-            features,
-          });
-          wire.onDisconnect(release);
-          if (!this.wires.has(wire)) return;
-          clearTimeout(handshakeTimer);
-          const leaseExpiresAt = this.policy.leaseExpiresAt(identity);
-          armExpiry(leaseExpiresAt);
-          leaseTimer = setInterval(
-            () => {
-              void this.policy.active(key).catch((error) => close(error));
-            },
-            Math.min(15_000, Math.max(1, leaseExpiresAt - Date.now())),
-          );
-          wire.onDisconnect(() => {
-            clearInterval(leaseTimer);
-            clearTimeout(expiryTimer);
-          });
-          try {
-            await this.backend.addConnection(transport);
-          } catch (cause) {
-            throw withAdmissionReason(
-              Object.assign(new Error("Native connection failed", { cause }), { status: 503 }),
-              "native_connection_failed",
-            );
-          }
-          syncAdmittedAt = Date.now();
-          usageSession.event("admit");
-          logUsage(
-            {
-              action: "sync.open",
-              ...syncUsage,
-              admitted: true,
-              outcome: "ok",
-              latencyMs: syncAdmittedAt - syncStarted,
-            },
-            this.env,
-          );
-          this.broadcastProfiles();
-          this.broadcastActivity();
-          this.broadcastActorSnapshot();
-        } finally {
-          transport.free();
-        }
-        // Native callbacks retain this request's I/O context. Keep it alive
-        // while the resident socket can trigger authorization and storage work,
-        // and run content effects for the edits it brings (watchContent).
-        await Promise.all([
-          disconnected,
-          this.contentActivity?.serve(disconnected),
-          usageSession.serve(disconnected),
-        ]);
-      })().catch((error) => {
-        if (syncAdmittedAt === undefined)
-          logUsage(
-            {
-              action: "sync.open",
-              ...syncUsage,
-              admitted: false,
-              outcome: admissionReason(error),
-              latencyMs: Date.now() - syncStarted,
-            },
-            this.env,
-          );
-        if (error !== refusal) logAdmissionDenied(error, { stage: "native", identity });
-        if (admissionReason(error) === "server_error") logFailure(error, "native-admission");
-        void close(error);
-      }),
-    );
-    return new Response(null, { status: 101, webSocket: client });
+    return this.connectPlain(request, identity, features, sender);
   }
 
-  /** connect() for an `automerge` Page. HTTP authentication already named the
+  /** connect()'s socket. HTTP authentication already named the
    * principal; the socket speaks plain Automerge sync (sync/wire.mjs), and
    * PlainSync checks access on every frame. No handshake, no signing key.
    * `sender` is PlainSync.sender's decision for this socket's presence id. */
@@ -6909,7 +6114,6 @@ export class Page {
       sender.replaces.transport.close(admissionCloseCode(replaced), admissionCode(replaced));
     }
     this.wires.add(wire);
-    this.reportActivity();
     this.wirePrincipals.set(wire, identity.principal);
     // Lease: the credential's deadline, re-armed when an API key renews, and
     // a renewal check every 15 s. A deadline past setTimeout's range re-arms
@@ -6953,7 +6157,6 @@ export class Page {
       clearTimeout(expiry);
       clearInterval(renewal);
       this.wires.delete(wire);
-      this.reportActivity();
       this.wirePrincipals.delete(wire);
       this.activity?.prune();
       this.broadcastProfiles();

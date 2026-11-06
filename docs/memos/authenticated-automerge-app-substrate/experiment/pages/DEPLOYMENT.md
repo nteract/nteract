@@ -30,9 +30,8 @@ The `pages` profile owns `pages.runtimed.run`:
 | Frozen neighbors | `page7`, `page8`, `page9` |
 
 It carries every Page10 flag, the Page quota default and D1 binding, and the
-same celld 0.6.3 runtime and OIDC client. Like Page10, it creates new Pages
-with plain Automerge sync; see [Moving pages off
-Subduction](#moving-pages-off-subduction) for the Pages created before that.
+same celld 0.6.3 runtime and OIDC client. Like Page10, every Page syncs with
+plain Automerge sync ([Plain sync on pages.runtimed.run](#plain-sync-on-pagesruntimedrun)).
 Both serving targets set `memory` in their profile:
 celld sheds cells above `CELLD_MAX_RSS_MB=2560`, and systemd caps the unit at
 `MemoryMax=4G`. At the earlier 768 MB threshold production shed its D1 cell
@@ -84,8 +83,7 @@ The `pages2` profile is a fresh, empty target on its own host:
 
 It carries every Pages flag, memory limit, Page quota default and D1 binding.
 Every Page it creates uses plain Automerge sync, and `RECORD_STORAGE_HISTORY`
-lists `automerge` for it, so no Subduction Page ever exists there and the
-migration canary stays off. Its ports, table, mark and tunnel names differ from
+lists `automerge` for it. Its ports, table, mark and tunnel names differ from
 every lab1 profile; `deployment.test.mjs` checks that across all profiles.
 
 The D1 binding is Pages' `AUTH_D1` (`pages-next-auth`). Nothing needs creating
@@ -146,7 +144,7 @@ check `/whoami` from that session returns the account.
 The allowlisted profile owns `page10.runtimed.run`, service `nteract-page10`,
 listeners `127.0.0.1:9480` / `127.0.0.1:19480`, and the `standalone/page10`
 prefix in the lab1 fleet bucket. It carries every Page9 flag: Wordgard editor,
-buffered persistence, lossless cleanup with `CELLD_DURABILITY=bucket`, sharing,
+lossless cleanup with `CELLD_DURABILITY=bucket`, sharing,
 OAuth, the catalog index, and the hashed-asset, Project-link and index routes.
 It uses production Anaconda verification.
 
@@ -344,13 +342,8 @@ pauses editing in tabs that read the floor until they reload; it does not stop
 older viewers or API clients (see the Build updates policy in the README). A
 rollback publishes a different build id too, so open tabs see the banner again.
 
-Rollback must retain binary record readers and the `PageRecords` binding and
-buffered-storage implementation. A legacy hex-only build cannot read updated
-records, and an older synchronous-only build cannot read buffered Pages.
-Causal record ordering changes only the order and grouping of writes; keys and
-frames are unchanged, so earlier builds read the result. A rollback build still waits
-forever on stored history whose parent never became durable; startup recovery
-from that shape needs this build or later.
+A rollback build must open plain Automerge Pages; see [Rollback and Page
+record storage](#rollback-and-page-record-storage).
 
 The Page8, Page9, Page10 and Pages profiles set `PAGES_CATALOG_INDEX=1`. Changing this epoch label starts
 account reconciliation on the next listing. Reconciliation may take several
@@ -433,24 +426,21 @@ content document; its D1 Space upserts also fail against schema 8. Any future
 rewrite of location entries must bump `LOCATION_SHAPE_VERSION` (to 3) and check
 for the shape it retires before stamping a Catalog.
 
-`scripts/migration-inventory.mjs` audits offline Catalog evidence: a `space/` record with `document_id` is counted as
-`content`, one with the retired field as `legacy_content` with the issue
-`project_content_unmigrated`, and one with both or neither is invalid.
-
 Rollback past #4712. Builds before #4712 can't replay a `move_page` receipt
 for a request with `parent_id: null`. The move already landed, so after such a
 rollback a client should read or list the Page instead of retrying the move.
 
 ### Rollback and Page record storage
 
-A Page keeps the record storage it was created with. A build that doesn't
-know a Page's mode refuses to open it ("Unsupported Page record storage
-mode"), and builds before a2c9d5dde don't know `automerge`. So a target that
-has created plain Automerge Pages can't run such a build.
+A Page's host record names its record storage. This build opens only
+`automerge` (plain Automerge sync) and refuses any other mode with
+"Unsupported Page record storage mode", except on a deleted Page, which serves
+nothing. Builds before a2c9d5dde don't know `automerge`, so a target that holds
+plain Automerge Pages can't run them.
 
 Each build receipt lists the modes its Worker opens as `record_storage`
 (`shared/record-storage.mjs`); the release manifest carries the receipt. A
-receipt without the list counts as opening only the native modes, which
+receipt without the list counts as opening only the Subduction modes, which
 covers every build before the list existed, including a2c9d5dde and #4770.
 
 Plain targets also require `plain_storage_formats` to include
@@ -465,10 +455,9 @@ viewer bundles sharing IndexedDB see no manifest for upgraded documents and
 must resync, rather than interpreting a v2 manifest as a v1 document.
 
 A target may hold a mode when `RECORD_STORAGE_HISTORY` in
-`scripts/deployment/profiles.mjs` lists it, its profile sets `recordStorage`,
-or a release installed on the host was configured with that
-`PAGES_RECORD_STORAGE`. History outlives the profile flag: turning
-`recordStorage` off stops new plain Pages, but the existing ones remain.
+`scripts/deployment/profiles.mjs` lists it, or a release installed on the host
+was configured with that `PAGES_RECORD_STORAGE`. Page10 and Pages list
+`automerge`.
 
 A release that lacks one of those modes is refused, naming the target, the
 release and the reason, by:
@@ -488,126 +477,7 @@ every check. Page10 holds `automerge` Pages, so it can't roll back past
 a2c9d5dde, and can't install a2c9d5dde or #4770 through deploy.mjs either,
 because their receipts predate the list. Builds listing `automerge` but lacking
 `doc-store-v2-host-actor-prefix` are also unsafe and refused. Pages is held to
-the same floor: `RECORD_STORAGE_HISTORY` lists `automerge` for it from the
-commit that set its `recordStorage`, before any plain Page exists there.
-
-### Moving pages off Subduction
-
-The `pages` profile sets `recordStorage: "automerge"`. Merging that changes
-nothing on `pages.runtimed.run`: the running process keeps its configuration
-until an install writes the new `PAGES_RECORD_STORAGE` var and restarts it.
-After that, new Pages use plain Automerge sync and existing Pages stay on
-Subduction. Converting them is a separate canary, listed by Page ID. Run these
-steps from `pages`.
-
-1. **Deploy the profile.** Take a [restore point](#restore-points), then
-   `prepare`, `upload` and `install --apply` as in [Pages release](#pages-release).
-   The configured `wrangler.json` changes, so install restarts with
-   `restart_reasons: ["config"]`. On a one-node fleet that is a short outage
-   (the drain, up to 40 s, then boot). Note when the plain release took over.
-   `running.json` is written once the restarted process serves; the old process
-   kept creating native Pages until then, so use this time, not the rollout's
-   `deployment.json`, which is written before the restart:
-
-   ```sh
-   ssh lab1 sudo date -u -r /etc/nteract-pages-live/running.json +%FT%TZ
-   ```
-
-   `--plain-since` takes only ISO 8601 with `Z` or an offset. Pages created
-   before that time are native. Check one new Page and one old
-   one: `GET /api/connect?page=<id>` answers `recordStorage: "automerge"` for a
-   plain Page and a `serverPeerId` for a Subduction Page.
-
-2. **Inventory.** Export the D1 rows and classify them offline with
-   [record-storage-inventory.mjs](scripts/record-storage-inventory.mjs):
-
-   ```sh
-   node scripts/d1.mjs --target pages \
-     "SELECT page_id, owner, state, created_at FROM pages_catalog_pages" > pages.jsonl
-   node scripts/record-storage-inventory.mjs --target pages --d1 pages.jsonl \
-     --plain-since <time from step 1> > inventory.json
-   ```
-
-   It prints each Page's `storage` (`native`, `automerge` or `unknown`) and the
-   `basis` for it. `--connect` adds `/api/connect` bodies, one per line; those
-   are direct evidence and outrank the creation time. A connect call boots the
-   Page host but never makes it eligible to convert; only a browser socket
-   does. An API key reaches only Pages its account can open:
-
-   ```sh
-   for id in $(node scripts/record-storage-inventory.mjs --d1 pages.jsonl \
-       --plain-since <time> --only native,unknown --format ids); do
-     curl -sS -H "Authorization: Bearer $PAGES_API_KEY" \
-       "https://pages.runtimed.run/api/connect?page=$id"; echo
-   done > connect.jsonl
-   ```
-
-   The D1 rows are a projection: an account whose index hasn't reconciled has
-   no rows. List Page cells with `celld cell list Page ... --all --json` and
-   pass IDs the rows lack as `--page-ids`.
-
-   A Page created within a minute after `--plain-since` is worth probing too:
-   the cutoff is the first served request on the new process, and clocks on the
-   host and in D1 differ slightly.
-
-   Installing a stage built before this profile change turns
-   `PAGES_RECORD_STORAGE` off again, so new Pages go back to Subduction until the
-   next plain install. Existing plain Pages keep opening.
-
-3. **Canary 3 to 5 Pages.** Pick active native Pages you can open in a
-   browser: one with comments, one large buffered Page, one shared Page.
-   Qualify the conversion locally first, on the same source SHA:
-   `node scripts/local-sharing-e2e.mjs --migration`
-   ([record-storage-migration-smoke.mjs](scripts/record-storage-migration-smoke.mjs)).
-   Then write the list on the host, root-only, beside the session secret:
-
-   ```sh
-   ssh lab1 'sudo install -m 0600 -o root -g root /dev/stdin \
-     /etc/nteract-pages-live/record-storage-migration.json' <<< \
-     '{"enabled":true,"pageIds":["<id>","<id>","<id>"]}'
-   node scripts/deploy.mjs --target pages install REMOTE_STAGE --apply
-   ```
-
-   Reinstalling the same stage is allowed when only the configured vars
-   changed; it restarts with `restart_reasons: ["config"]`. The stage must
-   come from this commit or later: an older staged installer ignores the file.
-   Then open each canary in a browser, close the tab, and leave it unused for
-   30 s.
-
-4. **Verify.** For each canary:
-   - `/api/connect` answers `recordStorage: "automerge"`.
-   - The Worker logs a `record_storage.migration` line with
-     `outcome: "converted"` and `from: "buffered"`. Look in the OTEL logs under
-     `standalone/pages-live/telemetry/logs` (see [Telemetry](#telemetry)) and
-     in `journalctl -u nteract-pages-live`. The line's fields don't name the
-     Page, so close one canary at a time when attribution matters. A
-     `skipped` line names its reason; three in a row pause that Page until a
-     new browser session.
-   - The Page's `host/document` now carries `recordStorageMigratedFrom` and
-     `recordStorageMigratedAt`. No route serves that record; confirm it from an
-     exported record with `record-storage-inventory.mjs --records`, which
-     reports `migrated_from` and `migrated_at`.
-   - The Page opens, takes an edit, keeps its comments, and `read_page` over
-     MCP returns the edit.
-
-5. **Widen.** Add IDs to the file (at most 500, unique, lowercase UUIDs; the
-   installer refuses anything else, including `*`) and reinstall. Each change
-   is one restart, so widen in batches. Rerun the inventory with `--canary`
-   for every list you installed: a listed Page without direct evidence is
-   `unknown` until probed.
-
-6. **Rollback floor.** Once step 1 has run, `pages` holds `automerge` Pages.
-   Every entrypoint refuses a build whose receipt lacks `automerge` and
-   `doc-store-v2-host-actor-prefix` ([Rollback and Page record
-   storage](#rollback-and-page-record-storage)). To stop conversions, delete
-   the file or set `enabled: false` and reinstall. Converted Pages stay plain:
-   conversion is one-way, and a restore point from before it drops every edit
-   made since. Taking `recordStorage` out of the profile stops new plain Pages;
-   the history entry stays.
-
-The file may stand in only for a disabled, empty profile policy: the installer
-refuses a profile canary and a host file together. It must be a regular file,
-not a symlink, and not group- or world-writable.
+the same floor.
 
 ### Projects and their storage identity
 
@@ -911,10 +781,68 @@ forward on `main` instead.
 
 Every Page on pages.runtimed.run is on plain Automerge sync: an operator
 conversion on 2026-11-05 left 136 active and 3 trashed Pages on `automerge`, 0
-remaining and 0 unreadable. That operator route is gone; this build has no
-operator routes and the installer writes no operator secret. A Subduction Page
-on another target converts only through the passive canary (README,
-"Migrating existing Pages").
+remaining and 0 unreadable. Page10 was converted the same way. The conversion's
+own operator route is gone. The operator gate and secret stay for the one-shot
+routes above and below (`/api/operator/comments-migration`,
+`/api/operator/page-records`). This build has no Subduction code: it can't open
+or convert a Subduction Page, and refuses one with "Unsupported Page record
+storage mode".
+
+The first install of this build restarts the service with
+`restart_reasons: ["config"]`: the configured `wrangler.json` drops the
+`PAGES_ASYNC_PERSISTENCE`, `PAGES_COMPACT_RECORDS` and `PAGES_RECORD_STORAGE`
+vars. Bindings and migrations are unchanged. Pages that converted from
+Subduction keep their old records in their own storage (`repo/`,
+`host/actor/`, `host/binding/`, `host/signer`) until they are purged, which
+deletes them; nothing reads them.
+
+### Old PageRecords objects
+
+A `buffered` Page kept its Subduction records in a separate PageRecords
+object, named by its Page id. Conversion copied the history into the Page's
+plain storage and left the PageRecords object as it was. pages and page10 hold
+about 138 such objects.
+
+This build keeps the `PageRecords` class and `PAGE_RECORDS` binding
+delete-only (worker/page-records.mjs): `inspect` counts keys and bytes,
+`clear` deletes everything. No read or write path is left. Two things use it:
+
+- **Purge.** Deleting a Page converted from `buffered` storage clears its
+  PageRecords object with the rest of its converted records
+  (`purgeConvertedRecords`). Purge stays permanent.
+- **The one-shot sweep.** ONE-SHOT MIGRATION (worker/page-records-sweep.mjs,
+  scripts/page-records-sweep-operator.mjs; delete them after it has run on
+  both targets). `POST /api/operator/page-records` sits behind the same lab
+  operator gate (worker/operator-gate.mjs). It takes up to 25 cell ids from
+  `celld cell list Page`, and each Page host decides from its own record:
+  `none` (never `buffered`; no object is created by asking), `held` (still
+  `buffered` and not deleted: its records are its only history, so they stay;
+  no deployed Page should report this), `would_clear` or `empty` with
+  `records: {keys, bytes}` on a dry run, `cleared` with `cleared` and `after`
+  on apply, `missing` for a cell without a Page record. A live or trashed Page
+  whose record is still `buffered` refuses to boot on this build, so it reports
+  `error` with an HTTP status instead of `held`; its records are left alone.
+
+```sh
+cd docs/memos/authenticated-automerge-app-substrate/experiment/pages
+node scripts/page-records-sweep-operator.mjs --target pages --mode dry_run > page-records-dry-run.json
+node scripts/page-records-sweep-operator.mjs --target pages --mode apply > page-records-apply.json
+node scripts/page-records-sweep-operator.mjs --target pages --mode dry_run > page-records-verify.json
+```
+
+Run the same three on `--target page10`. The report totals Pages by status,
+and keys and bytes held or cleared; every response goes to a JSON-lines log.
+The verifying dry run should report no `would_clear` and no `held`. Sweeping
+twice is harmless: a cleared object reports `empty`.
+
+**Removing the class.** The follow-up deletes `PageRecords`, its binding,
+worker/page-records.mjs and the sweep, once the verifying dry run is clean on
+both targets. That needs a `deleted_classes` migration. celld 0.6.3 has no
+sign of supporting one: its binary knows `new_sqlite_classes`, `old_tag`,
+`new_tag` and `steps`, not `deleted_classes`, and it already refuses
+`renamed_classes` (see the Space binding in scripts/build.mjs). Until celld
+accepts it, the class stays delete-only and empty. Until then the
+`v2 new_sqlite_classes: ["PageRecords"]` migration tag stays too.
 
 ## Page quotas
 

@@ -18,7 +18,7 @@ import {
   migrateLocationShape,
   shapeState,
 } from "./location-shape.mjs";
-import { STORAGE_KEYS_PER_CALL } from "./actor-authorship.mjs";
+import { STORAGE_KEYS_PER_CALL } from "./storage-guard.mjs";
 import { checkInvariants } from "../model/location.mjs";
 
 /** Durable Object storage in memory. `puts` records the key count of every

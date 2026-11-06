@@ -3,9 +3,9 @@
 //
 // Counterparts are stateful. D1 is SQLite behind the D1 binding
 // (test/sqlite-d1.mjs). The owner's and member's Catalogs are real Catalog
-// objects over in-memory storage. A document store stands in for PageRecords:
-// it holds each document's bytes, a cold start loads them back, and a
-// deletion removes them independently of the Page's own storage.
+// objects over in-memory storage. A document store stands in for plain
+// storage: it holds each document's bytes, a cold start loads them back, and
+// a deletion removes them independently of the rest of the Page's storage.
 //
 // The clock is frozen per suite, and every host starts from the same document
 // bytes and preview secret, so two runs of one row produce byte-identical
@@ -19,27 +19,15 @@ import { SqliteD1 } from "../test/sqlite-d1.mjs";
 import { loadTable } from "../shared/machine-test.mjs";
 import { Page } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";
+import { plainStub } from "./plain-stub.mjs";
 import { pageState } from "./access.mjs";
 import { PURGE_PREVIEW_TTL_MS } from "./trash.mjs";
 import { catalogIndexDatabase } from "./catalog-index.mjs";
-import { fixture, memberKey, ownerKey, pageId, readerKey, serverKey } from "./trash-fixture.mjs";
+import { fixture, pageId } from "./trash-fixture.mjs";
 
 export const TABLE = new URL("../test/fixtures/machines/page-lifecycle.json", import.meta.url);
 const CHILD_ID = "66666666-6666-4666-8666-666666666666";
 const PREVIEW_SECRET = new Uint8Array(32).fill(7);
-/** A writer key whose grant was revoked before its retirement was written. */
-export const STALE_KEY = "4".repeat(64);
-const STALE_BINDING = {
-  principal: "user:anaconda-fixture:former-member",
-  displayName: "Former member",
-  driver: "Browser",
-  senderId: STALE_KEY,
-  generation: 1,
-  writer: true,
-  retired: false,
-  revoked: false,
-  pending: false,
-};
 const PHASES = { trash_page: "trashing", restore_page: "restoring", purge_page: "purging" };
 const ROUTES = {
   trash: "/internal/trash",
@@ -298,32 +286,31 @@ function watchHost(page, h) {
     cacheTitle.call(this, ...args);
     trace.record({ type: "projectTitle" });
   };
-  const policy = page.policy;
-  const refresh = policy.refreshAccess.bind(policy);
-  policy.refreshAccess = async (options) => {
-    await refresh(options);
-    if (options?.persist !== false) trace.record({ type: "refreshAccess" });
-  };
-  const close = policy.close.bind(policy);
-  policy.close = async () => {
-    await close();
-    trace.record({ type: "closePolicy" });
-  };
   page.repo = documentRepo(h);
-  page.backend = {
+  page.plain = tracedPlain(h);
+}
+
+/** A plain-sync stand-in that records the lifecycle effects it performs. */
+function tracedPlain({ trace }) {
+  return plainStub(undefined, {
     async flush() {
       trace.record({ type: "flush" });
     },
-  };
+    refresh() {
+      trace.record({ type: "refreshAccess" });
+    },
+    disconnectAll() {
+      trace.record({ type: "closePolicy" });
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------
 // Hosts in a named state.
 
 /** A Page over fresh storage, D1 and Catalogs. `prune` fills the receipt
- * store to its limit so each new receipt prunes one; `staleBinding` leaves a
- * revoked writer key for the next access refresh to retire. */
-export async function host(s, { prune = false, staleBinding = false } = {}) {
+ * store to its limit so each new receipt prunes one. */
+export async function host(s, { prune = false } = {}) {
   const db = new SqliteD1(":memory:");
   s.t.after(() => db.sqlite.close());
   s.t.mock.timers.setTime(s.now);
@@ -341,7 +328,6 @@ export async function host(s, { prune = false, staleBinding = false } = {}) {
     trace: tracer(),
     cuts: cutter(),
     documents: new Map([[f.initial.documentId, s.docBytes]]),
-    staleBinding,
     token: undefined,
   };
   watchStorage(f.storage, h.trace, h.cuts);
@@ -439,7 +425,6 @@ export async function walk(h, revision) {
   await h.f.storage.put("host/document", metadata);
   await h.f.storage.sync();
   const page = h.install(metadata);
-  await page.policy.load();
   await page.reportIndex({ title: "Launch plan", observedAt: new Date().toISOString() });
   for (let current = 0; current < revision; current++) {
     const k = Math.floor(current / 2) + 1;
@@ -506,8 +491,7 @@ export async function reach(h, state, event) {
       );
       assert.equal(purged.status, 200, JSON.stringify(purged.body));
       // A restart forgets that the deletion barriers finished.
-      if (state.name === "deleting")
-        await h.install(await f.storage.get("host/document")).policy.load();
+      if (state.name === "deleting") h.install(await f.storage.get("host/document"));
       break;
     }
   }
@@ -658,29 +642,6 @@ function rejection(event, response, effects, changed) {
   return undefined;
 }
 
-/** Sessions that show admission effects: the owner's writer key and the
- * member's key on an active Page, the owner's reader key on a trashed one.
- * A host with `staleBinding` also holds a revoked writer key. */
-async function bindSessions(h, state) {
-  const { f } = h;
-  if (state.name === "active") {
-    await f.bind(ownerKey, f.owner);
-    await f.bind(memberKey, f.member);
-  } else if (state.name === "trashed") {
-    await f.bind(readerKey, f.owner);
-  }
-  // Admission writes run behind the bind; let them land before the event.
-  await new Promise((resolve) => setImmediate(resolve));
-}
-
-/** Leave a revoked writer key whose retirement was never written. */
-async function seedStaleBinding(h) {
-  const policy = h.f.page.policy;
-  if (!h.staleBinding || !policy || policy.bindings.has(STALE_KEY)) return;
-  await h.f.storage.put(`host/binding/${STALE_KEY}`, STALE_BINDING);
-  policy.bindings.set(STALE_KEY, { ...STALE_BINDING });
-}
-
 const READABLE = new Set(["active"]);
 function assertAdmission(h, before, result) {
   const { f } = h;
@@ -698,12 +659,6 @@ function assertAdmission(h, before, result) {
   // Members lose access; the owner keeps at most a read-only view.
   assert.throws(() => page.policy.account(member), "member keeps access");
   assert.throws(() => page.policy.account(owner, true), "owner keeps write access");
-  if (before.name === "active") {
-    assert.ok(f.disconnected.includes(memberKey), "member session stays connected");
-    assert.ok(f.disconnected.includes(ownerKey), "owner writer session stays connected");
-  }
-  if (types.has("closePolicy") && before.name === "trashed")
-    assert.ok(f.disconnected.includes(readerKey), "owner reader session stays connected");
 }
 
 const OPERATIONS = { trash: "trash_page", restore: "restore_page", purgeConfirm: "purge_page" };
@@ -771,19 +726,9 @@ export async function boot(h, event, options = {}) {
   );
   const repo = documentRepo(h);
   const mocked = t.mock.method(Page.prototype, "initializeRepo", async function () {
-    this.policy = new DocumentPolicy({
-      storage: this.ctx.storage,
-      metadata: () => this.metadata,
-      serverKey,
-    });
-    await this.policy.load();
-    this.serverKey = serverKey;
+    this.policy = new DocumentPolicy({ metadata: () => this.metadata });
     this.serverSenderId = "server-sender";
-    this.backend = {
-      async flush() {
-        trace.record({ type: "flush" });
-      },
-    };
+    this.plain = tracedPlain(h);
     this.repo = repo;
   });
   Object.defineProperties(Page.prototype, descriptors);
@@ -828,16 +773,14 @@ export async function boot(h, event, options = {}) {
 }
 
 /** The request a row sends, built once so a retry repeats it exactly. */
-async function prepare(h, state, event, options = {}) {
+async function prepare(h, state, event) {
   const { f } = h;
-  await seedStaleBinding(h);
   if (event.type === "tombstone")
     return {
       request: () => new Request("https://pages.internal/internal/tombstone", { method: "POST" }),
     };
   if (event.type === "commitOk" || event.type === "commitFailed")
     return { request: () => new Request("https://pages.internal/internal/lifecycle-state") };
-  if (options.sessions !== false) await bindSessions(h, state);
   const body = await requestBody(h, state, event);
   return {
     body,
@@ -890,7 +833,7 @@ export async function deliver(h, state, event, options = {}) {
   // A settle writes the pending request's receipt.
   const settling = f.page.pendingLifecycle?.key.slice("host/operation/".length);
   const deletion = f.page.metadata?.deletion;
-  const prepared = await prepare(h, state, event, options);
+  const prepared = await prepare(h, state, event);
   const key = prepared.body?.idempotency_key;
   const recorded = key ? await f.storage.get(`host/lifecycle/${key}`) : undefined;
   // The event's observations match what the host holds.
@@ -1007,7 +950,7 @@ export async function scenario(
   row,
   { cut, view = "written", mode = "crash", documentAbsent = false } = {},
 ) {
-  const h = await host(s, { prune: true, staleBinding: true });
+  const h = await host(s, { prune: true });
   await reach(h, row.state, row.event);
   // An earlier build deleted the document; this record still says trashed.
   if (documentAbsent) h.documents.delete(h.f.initial.documentId);
