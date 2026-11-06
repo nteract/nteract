@@ -84,58 +84,91 @@ export function headingPosition(element) {
   return index < 0 ? null : { blockId: section.dataset.blockId, index, heading };
 }
 
-/** How long a scroll waits for its heading to sync and draw. */
+/** How long a scroll waits, once its Page is open, for its heading to draw
+ * or its position to fit. */
 export const SEEK_MS = 15000;
 /** How long after the first scroll late layout (images, diagrams, tables
- * drawing above the heading) scrolls to it again. */
+ * drawing above the target) scrolls to it again. */
 export const SETTLE_MS = 1500;
 
-// The scroll to a heading (main.jsx runs the effects).
+// A scroll to a place on a Page: a heading, or a position Back or Forward
+// returns to. The shell owns one from page load (heading-scroll.mjs runs
+// the effects), so the reader can call it off before the Page has synced.
+//
+// Targets:
+//   { kind: "anchor", anchor }   a heading's anchor
+//   { kind: "position", y }      a scroll position the history entry recorded
 //
 // States:
-//   idle      nothing to scroll to
-//   seeking   { pageId, anchor }: the Page or its heading hasn't drawn yet
-//   settling  { pageId, anchor }: scrolled; layout above may still move it
+//   idle       nothing asked yet
+//   pending    { routeId, target }: the Page hasn't opened, synced or drawn
+//              the target yet. `routeId` is the Page or Project id the
+//              address names.
+//   settling   { routeId, target }: scrolled; layout above may still move it
+//   done       the scroll held through the settle window
+//   cancelled  the reader took over, the app went elsewhere, or the target
+//              never drew
 //
 // Events:
-//   { type: "requested", pageId, anchor }  a fragment to show: the address
-//                                          on open, Back/Forward, a link
-//   { type: "located", pageId }            the heading is drawn on that Page
-//   { type: "resized" }                    the Page's layout changed
-//   { type: "expired" }                    SEEK_MS passed while seeking
-//   { type: "settled" }                    SETTLE_MS passed while settling
-//   { type: "userScrolled" }               the reader scrolled or typed
-//   { type: "left" }                       the Page closed
+//   { type: "requested", routeId, target }  an address to show: page load,
+//                                           Back/Forward, a link
+//   { type: "navigated", routeId }          the app opened that route (or
+//                                           null: a screen with no Page)
+//   { type: "located", pageId, projectId }  the target is drawn on the open
+//                                           Page, shown at that Project's route
+//   { type: "resized" }                     the Page's layout changed
+//   { type: "expired" }                     SEEK_MS passed while pending
+//   { type: "settled" }                     SETTLE_MS passed while settling
+//   { type: "userIntent" }                  the reader scrolled, typed or clicked
 //
-// Effects: "scroll" scrolls the heading to the top of the view.
-export const HEADING_SCROLL_STATES = Object.freeze(["idle", "seeking", "settling"]);
+// Effects: "scroll" scrolls to the target.
+export const HEADING_SCROLL_STATES = Object.freeze([
+  "idle",
+  "pending",
+  "settling",
+  "done",
+  "cancelled",
+]);
 export const initialHeadingScroll = Object.freeze({ name: "idle" });
+const DONE = Object.freeze({ name: "done" });
+const CANCELLED = Object.freeze({ name: "cancelled" });
 
-const idle = (state) => (state.name === "idle" ? state : initialHeadingScroll);
+/** Whether a scroll is waiting or moving: the reader can still call it off. */
+export const headingScrollActive = (state) => state.name === "pending" || state.name === "settling";
+
+const validTarget = (target) =>
+  (target?.kind === "anchor" && typeof target.anchor === "string" && target.anchor !== "") ||
+  (target?.kind === "position" && Number.isFinite(target.y));
+
+const shows = (state, event) =>
+  !!state.routeId && (event.pageId === state.routeId || event.projectId === state.routeId);
 
 /** `{ state, effects }` after `event`. Pure; an event that changes nothing
  * returns `state` itself. */
 export function headingScrollTransition(state, event) {
   const same = { state, effects: [] };
+  const active = headingScrollActive(state);
   switch (event?.type) {
     case "requested":
-      if (!event.pageId || !event.anchor) return { state: idle(state), effects: [] };
+      if (!event.routeId || !validTarget(event.target))
+        return { state: state.name === "idle" ? state : initialHeadingScroll, effects: [] };
       return {
-        state: { name: "seeking", pageId: event.pageId, anchor: event.anchor },
+        state: { name: "pending", routeId: event.routeId, target: event.target },
         effects: [],
       };
+    case "navigated":
+      return active && event.routeId !== state.routeId ? { state: CANCELLED, effects: [] } : same;
     case "located":
-      if (state.name !== "seeking" || event.pageId !== state.pageId) return same;
+      if (state.name !== "pending" || !shows(state, event)) return same;
       return { state: { ...state, name: "settling" }, effects: ["scroll"] };
     case "resized":
       return state.name === "settling" ? { state, effects: ["scroll"] } : same;
     case "expired":
-      return state.name === "seeking" ? { state: idle(state), effects: [] } : same;
+      return state.name === "pending" ? { state: CANCELLED, effects: [] } : same;
     case "settled":
-      return state.name === "settling" ? { state: idle(state), effects: [] } : same;
-    case "userScrolled":
-    case "left":
-      return { state: idle(state), effects: [] };
+      return state.name === "settling" ? { state: DONE, effects: [] } : same;
+    case "userIntent":
+      return active ? { state: CANCELLED, effects: [] } : same;
     default:
       return same;
   }

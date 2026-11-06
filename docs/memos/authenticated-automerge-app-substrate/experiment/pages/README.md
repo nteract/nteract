@@ -132,7 +132,7 @@ was a caret race in the smoke; the editor side is
 | Native table editing | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:tables` | Uses the running Wordgard fixture |
 | Passage edits and revision deltas | `PAGES_ORIGIN=http://localhost:9894 node scripts/passages-changes-smoke.mjs` | Uses the running Wordgard fixture |
 | Reload banner placement, browser presence labels, leaving a final code block, checkbox indent | `PAGES_ORIGIN=http://localhost:9894 node scripts/editor-chrome-smoke.mjs` | Uses the running Wordgard fixture |
-| Heading links: a fragment scrolls to its heading on a cold load, a warm reload and in a fresh context, and holds it while an image above draws late; `#notes-1` picks the second Notes; an unknown anchor stays at the top; table cell links go there read-only and through Go to section; the # copies the link `read_page` names; another Page's heading opens in place; scrolling during the settle stops it | `PAGES_ORIGIN=http://localhost:9894 node scripts/heading-anchors-smoke.mjs` | Uses the running Wordgard fixture |
+| Heading links: a fragment scrolls to its heading on a cold load, a warm reload and in a fresh context, and holds it while an image above draws late; `#notes-1` picks the second Notes; an unknown anchor stays at the top; table cell links go there read-only and through Go to section; the # copies the link `read_page` names; another Page's heading opens in place; Back and Forward restore each entry's position on the same Page and across Pages; scrolling during the settle, or scrolling the preview while sync is held, stops it | `PAGES_ORIGIN=http://localhost:9894 node scripts/heading-anchors-smoke.mjs` | Uses the running Wordgard fixture |
 | Local creation and navigation | `PAGES_ORIGIN=http://localhost:9894 node scripts/navigation-smoke.mjs` | Uses the running Wordgard fixture |
 | Editing, comments, links, diagrams, and recovery | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:editor` | Uses the running Wordgard fixture |
 | History growth and typing latency | `PAGES_ORIGIN=http://localhost:9894 node scripts/latency-smoke.mjs` | Uses the running Wordgard fixture |
@@ -360,8 +360,13 @@ references; it does not publish the Page or change asset access.
   under the pointer copies its link. A fragment in the address scrolls to its
   heading once the Page has synced and drawn it, waiting up to 15 seconds, and
   scrolls again while late layout above it settles; the reader scrolling,
-  typing or clicking first cancels it
+  typing or clicking first cancels it, from page load on, including while the
+  loading preview shows. Each history entry records its scroll position, and
+  Back and Forward return to it once the Page has drawn, or to the entry's
+  heading when it has none. A reload goes to the heading, and the browser's
+  own restoration stays on for other screens
   ([`viewer/HeadingAnchors.jsx`](viewer/HeadingAnchors.jsx),
+  [`viewer/heading-scroll.mjs`](viewer/heading-scroll.mjs),
   [`viewer/heading-links.mjs`](viewer/heading-links.mjs)). Links in a Page to
   this app's Pages and Projects open in place, without a reload or new tab;
   modified clicks still open a tab. The editor's DOM gets no ids: a heading is

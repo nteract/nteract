@@ -26,6 +26,7 @@ const TARGET_ANCHOR = "getting-lean-automerge";
 const UNICODE = "Café ✨ 東京";
 const UNICODE_ANCHOR = "café-東京";
 const IMAGE_ALT = "Sync diagram";
+const SKIP = "the last section";
 
 const checkpoint = (name) => {
   completed.push(name);
@@ -86,6 +87,37 @@ async function expectBelowView(locator) {
   expect(await top(locator)).toBeGreaterThan(VIEWPORT.height);
 }
 
+const scrollY = (page) => page.evaluate(() => window.scrollY);
+/** The scroll position is `y`, give or take a pixel. */
+const expectScrollY = (page, y) =>
+  expect.poll(async () => Math.abs((await scrollY(page)) - y), { timeout: 15000 }).toBeLessThan(2);
+/** The history entry showing now has recorded the current scroll position:
+ * Back and Forward will return to it. */
+const expectRecorded = (page) =>
+  expect
+    .poll(() => page.evaluate(() => history.state?.scroll?.y === window.scrollY), {
+      timeout: 15000,
+    })
+    .toBe(true);
+
+/** Holds the sync socket's messages to the browser until release(): a Page
+ * whose sync is slow, while the boot preview shows. */
+async function holdSync(context) {
+  let released = false;
+  const held = [];
+  await context.routeWebSocket(/\/api\/sync\?/, (ws) => {
+    const server = ws.connectToServer();
+    ws.onMessage((data) => server.send(data));
+    server.onMessage((data) => (released ? ws.send(data) : held.push({ ws, data })));
+  });
+  return {
+    release() {
+      released = true;
+      for (const { ws, data } of held.splice(0)) ws.send(data);
+    },
+  };
+}
+
 /** Holds image asset responses until release(): an image that draws after
  * the Page and its heading. */
 async function holdImages(context) {
@@ -131,6 +163,7 @@ try {
       filler("Lead", 40),
       "## Notes",
       "First notes.",
+      `Skip ahead to [${SKIP}](#${encodeURIComponent(UNICODE_ANCHOR)}).`,
       filler("Middle", 20),
     ].join("\n\n"),
   });
@@ -358,6 +391,39 @@ try {
     checkpoint("the # copies the full link, matching read_page's anchors");
   }
 
+  stage = "Back and Forward on the same Page";
+  {
+    const { page } = reader;
+    await page.goto("about:blank");
+    await page.goto(`${origin}/p/${pageId}`);
+    await expect(page.locator("wg-content").last()).toContainText("Tail paragraph 40.");
+    const skip = page.locator("wg-content a", { hasText: SKIP });
+    await skip.scrollIntoViewIfNeeded();
+    await expect(skip).toBeInViewport();
+    const before = await scrollY(page);
+    expect(before).toBeGreaterThan(0);
+    await skip.click();
+    await expect(page).toHaveURL(targetUrl(UNICODE_ANCHOR));
+    await expectInView(heading(page, UNICODE));
+    const landed = await scrollY(page);
+    await page.mouse.move(640, 400);
+    await page.mouse.wheel(0, 200);
+    await expect.poll(() => scrollY(page)).toBeGreaterThan(landed + 100);
+    await expectRecorded(page);
+    const after = await scrollY(page);
+    await page.goBack();
+    await expect(page).toHaveURL(`${origin}/p/${pageId}`);
+    await expectScrollY(page, before);
+    await frames(page);
+    await expectScrollY(page, before);
+    await page.goForward();
+    await expect(page).toHaveURL(targetUrl(UNICODE_ANCHOR));
+    await expectScrollY(page, after);
+    await frames(page);
+    await expectScrollY(page, after);
+    checkpoint("Back and Forward between a Page and its heading restore each position");
+  }
+
   stage = "cross-Page link";
   {
     const { page } = owner;
@@ -369,23 +435,39 @@ try {
     expect(position).toBeGreaterThan(0);
     await page.evaluate(() => (window.__anchorMarker = "same document"));
     await link.click();
-    await page.getByRole("link", { name: "Open link" }).click();
+    const open = page.getByRole("link", { name: "Open link" });
+    await expect(open).toBeVisible();
+    const before = await scrollY(page);
+    expect(before).toBeGreaterThan(0);
+    await open.click();
     await expect(page).toHaveURL(targetUrl(TARGET_ANCHOR));
     await expectInView(heading(page, TARGET));
     expect(await page.evaluate(() => window.__anchorMarker)).toBe("same document");
     expect(owner.context.pages()).toHaveLength(1);
-    // Back shows the source Page again in the same document. It opens at
-    // its top: the app doesn't restore a Page's scroll position on Back.
+    // The reader moves on a little from the heading, and that entry records it.
+    const landed = await scrollY(page);
+    await page.mouse.move(640, 400);
+    await page.mouse.wheel(0, 300);
+    await expect.poll(() => scrollY(page)).toBeGreaterThan(landed + 100);
+    await expectRecorded(page);
+    const after = await scrollY(page);
+    // Back shows the source Page again in the same document, where it was.
     await page.goBack();
     await expect(page).toHaveURL(`${origin}/p/${source.page_id}`);
     await expect(link).toBeAttached();
+    await expectScrollY(page, before);
+    await frames(page);
+    await expectScrollY(page, before);
+    await expect(link).toBeInViewport();
     expect(await page.evaluate(() => window.__anchorMarker)).toBe("same document");
-    // Forward returns to the heading.
+    // Forward returns to where the reader left the other Page, not its heading.
     await page.goForward();
     await expect(page).toHaveURL(targetUrl(TARGET_ANCHOR));
-    await expectInView(heading(page, TARGET));
+    await expectScrollY(page, after);
+    await frames(page);
+    await expectScrollY(page, after);
     expect(await page.evaluate(() => window.__anchorMarker)).toBe("same document");
-    checkpoint("another Page's heading opens in place; Back and Forward stay in the app");
+    checkpoint("another Page's heading opens in place; Back and Forward restore each position");
   }
 
   stage = "reader scrolls while the heading settles";
@@ -407,6 +489,44 @@ try {
     expect(await top(section)).toBeGreaterThan(400);
     checkpoint("scrolling during the settle stops the scroll to the heading");
     await late.context.close();
+  }
+
+  stage = "slow sync, reader waits";
+  {
+    // A fresh context: nothing cached, so the boot preview shows while the
+    // sync socket is held.
+    const slow = await signIn("dev@localhost");
+    const { page } = slow;
+    const sync = await holdSync(slow.context);
+    await page.goto(targetUrl(TARGET_ANCHOR));
+    await expect(page.locator(".page-preview")).toBeVisible({ timeout: 15000 });
+    sync.release();
+    await expectInView(heading(page, TARGET), 30000);
+    checkpoint("a held sync still scrolls to the heading once it lets through");
+    await slow.context.close();
+  }
+
+  stage = "slow sync, reader scrolls the preview";
+  {
+    const slow = await signIn("dev@localhost");
+    const { page } = slow;
+    const sync = await holdSync(slow.context);
+    await page.goto(targetUrl(TARGET_ANCHOR));
+    await expect(page.locator(".page-preview")).toBeVisible({ timeout: 15000 });
+    await expect(page.locator("wg-content")).toHaveCount(0);
+    await page.mouse.move(640, 400);
+    await page.mouse.wheel(0, 300);
+    await expect.poll(() => scrollY(page)).toBeGreaterThan(0);
+    sync.release();
+    // The whole Page draws; a scroll to the heading would have happened by
+    // two frames later.
+    await expect(page.locator("wg-content").last()).toContainText("Tail paragraph 40.", {
+      timeout: 30000,
+    });
+    await frames(page);
+    await expectBelowView(heading(page, TARGET));
+    checkpoint("scrolling the preview before sync completes cancels the scroll to the heading");
+    await slow.context.close();
   }
 
   assert.deepEqual(errors, []);

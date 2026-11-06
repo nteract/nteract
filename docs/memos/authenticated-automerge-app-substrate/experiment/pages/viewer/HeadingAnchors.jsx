@@ -1,6 +1,7 @@
 // Links to a Page's headings: the "#" beside a heading under the pointer
 // copies its link, a fragment in the address scrolls to its heading once the
-// Page has synced and drawn it, and links in Page content to this app's
+// Page has synced and drawn it, Back and Forward return to the entry's
+// scroll position, and links in Page content to this app's
 // Pages open in place instead of in a new tab.
 //
 // Anchors are computed from the document (model/heading-anchors.mjs). The
@@ -10,20 +11,29 @@ import { useEffect, useRef, useState } from "react";
 import { Observable, animationFrameScheduler, auditTime, fromEvent, merge, timer } from "rxjs";
 import { Hash } from "lucide-react";
 import { pageHeadingAnchors } from "../model/heading-anchors.mjs";
-import { anchorFragment, isPlainNavigation, readPageRoute, writeRoute } from "../shared/routes.mjs";
+import {
+  anchorFragment,
+  isPlainNavigation,
+  readPageRoute,
+  rememberScroll,
+  writeRoute,
+} from "../shared/routes.mjs";
 import {
   SEEK_MS,
   SETTLE_MS,
-  anchorFromHash,
   headingElement,
   headingForAnchor,
   headingPosition,
-  headingScrollTransition,
+  headingScrollActive,
   inAppLink,
-  initialHeadingScroll,
 } from "./heading-links.mjs";
+import { routeIdOf } from "./heading-scroll.mjs";
+import { useStore } from "./store.mjs";
 
 const BUTTON_SIZE = 24;
+/** How often scrolling records the history entry's position. Browsers
+ * throttle history.replaceState, so not on every scroll event. */
+const SCROLL_RECORD_MS = 200;
 
 const mutations = (element) =>
   new Observable((subscriber) => {
@@ -39,15 +49,27 @@ const resizes = (element) =>
     return () => observer.disconnect();
   });
 
+/** Whether the document can scroll down to `y`. */
+const reachable = (y) => y <= 0 || document.documentElement.scrollHeight - window.innerHeight >= y;
+
 /**
  * `session` is the open Page's session; `projectId` the Project whose route
- * shows it, if any. `onOpenRoute(route, anchor)` opens another Page or
- * Project (readPageRoute's answer) with a heading to show.
+ * shows it, if any. `scroll` is the shell's HeadingScroll (heading-scroll.mjs):
+ * this reports its target drawn and runs its scrolls. `onOpenRoute(route,
+ * anchor)` opens another Page or Project (readPageRoute's answer) with a
+ * heading to show.
  */
-export function HeadingAnchors({ article, session, projectId, onOpenRoute, onNotice, onError }) {
-  const [scroll, setScroll] = useState(initialHeadingScroll);
+export function HeadingAnchors({
+  article,
+  session,
+  projectId,
+  scroll: scroller,
+  onOpenRoute,
+  onNotice,
+  onError,
+}) {
+  const scroll = useStore(scroller.store);
   const [hovered, setHovered] = useState(null);
-  const state = useRef(scroll);
   const latest = useRef(null);
   latest.current = { session, projectId, onOpenRoute, onNotice, onError };
   const pageId = session?.pageId ?? null;
@@ -58,15 +80,28 @@ export function HeadingAnchors({ article, session, projectId, onOpenRoute, onNot
   };
   const targetElement = (anchor) =>
     headingElement(article.current, headingForAnchor(anchorsNow(), anchor));
+  /** Whether `target` is drawn and can be scrolled to now. */
+  const targetReady = (target) =>
+    target.kind === "anchor"
+      ? !!targetElement(target.anchor)
+      : !!article.current?.querySelector("wg-content") && reachable(target.y);
 
   function dispatch(event) {
-    const before = state.current;
-    const { state: next, effects } = headingScrollTransition(before, event);
-    state.current = next;
-    if (next !== before) setScroll(next);
-    for (const effect of effects)
-      if (effect === "scroll") targetElement(next.anchor)?.scrollIntoView({ block: "start" });
+    const effects = scroller.dispatch(event);
+    const state = scroller.store.snapshot();
+    for (const effect of effects) {
+      if (effect !== "scroll" || !state.target) continue;
+      if (state.target.kind === "anchor")
+        targetElement(state.target.anchor)?.scrollIntoView({ block: "start" });
+      else window.scrollTo({ top: state.target.y, left: 0, behavior: "instant" });
+    }
   }
+  const located = () =>
+    dispatch({
+      type: "located",
+      pageId: latest.current.session?.pageId ?? null,
+      projectId: latest.current.projectId ?? null,
+    });
 
   /** Whether the address now shows the open Page. */
   const addressShowsPage = () => {
@@ -75,44 +110,30 @@ export function HeadingAnchors({ article, session, projectId, onOpenRoute, onNot
     if (route.kind === "page") return route.pageId === current.session?.pageId;
     return route.kind === "project" && route.projectId === current.projectId;
   };
-  const requestFromAddress = () => {
-    const anchor = anchorFromHash(location.hash);
-    if (anchor && addressShowsPage())
-      dispatch({ type: "requested", pageId: latest.current.session?.pageId, anchor });
+  /** The route id the address names, when it shows the open Page. */
+  const shownRouteId = () => (addressShowsPage() ? routeIdOf(location.href) : null);
+  const remember = () => {
+    if (!headingScrollActive(scroller.store.snapshot()) && addressShowsPage())
+      rememberScroll(window.scrollY);
   };
 
-  // A Page opened at an address with a fragment shows that heading.
-  useEffect(() => {
-    if (!pageId) return;
-    requestFromAddress();
-    return () => dispatch({ type: "left" });
-  }, [pageId]);
-
-  // Back, Forward, and a fragment typed into the address bar.
-  useEffect(() => {
-    const subscription = merge(
-      fromEvent(window, "popstate"),
-      fromEvent(window, "hashchange"),
-    ).subscribe(requestFromAddress);
-    return () => subscription.unsubscribe();
-  }, []);
-
-  // Seeking: look again whenever the Page draws, until the heading is there.
+  // Pending: look again whenever the Page draws or grows, until the target
+  // is there. The wait starts once this Page is open.
   useEffect(() => {
     const element = article.current;
-    if (scroll.name !== "seeking" || !element) return;
+    if (scroll.name !== "pending" || !element) return;
     const look = () => {
-      if (targetElement(scroll.anchor)) dispatch({ type: "located", pageId: scroll.pageId });
+      if (targetReady(scroll.target)) located();
     };
     look();
-    const subscription = mutations(element)
+    const subscription = merge(mutations(element), resizes(element))
       .pipe(auditTime(0, animationFrameScheduler))
       .subscribe(look);
     subscription.add(timer(SEEK_MS).subscribe(() => dispatch({ type: "expired" })));
     return () => subscription.unsubscribe();
-  }, [scroll, pageId]);
+  }, [scroll, pageId, projectId]);
 
-  // Settling: layout drawn late above the heading scrolls to it again.
+  // Settling: layout drawn late above the target scrolls to it again.
   useEffect(() => {
     const element = article.current;
     if (scroll.name !== "settling" || !element) return;
@@ -123,25 +144,26 @@ export function HeadingAnchors({ article, session, projectId, onOpenRoute, onNot
     return () => subscription.unsubscribe();
   }, [scroll]);
 
-  // The reader taking over (scrolling, typing, clicking) ends any scroll.
+  // The history entry showing this Page keeps its scroll position for Back
+  // and Forward. Not while a scroll is pending or moving: during a Page swap
+  // the document is short and the position clamps.
   useEffect(() => {
-    if (scroll.name === "idle") return;
-    const options = { capture: true, passive: true };
-    const subscription = merge(
-      fromEvent(window, "wheel", options),
-      fromEvent(window, "touchmove", options),
-      fromEvent(window, "keydown", options),
-      fromEvent(window, "pointerdown", options),
-    ).subscribe(() => dispatch({ type: "userScrolled" }));
+    if (scroll.name === "done") remember();
+  }, [scroll]);
+  useEffect(() => {
+    const subscription = fromEvent(window, "scroll", { passive: true })
+      .pipe(auditTime(SCROLL_RECORD_MS))
+      .subscribe(remember);
     return () => subscription.unsubscribe();
-  }, [scroll.name]);
+  }, []);
 
   /** Show heading `anchor` of the open Page and put it in the address. */
   function showHere(anchor) {
+    const routeId = shownRouteId() ?? latest.current.session?.pageId;
     writeRoute(`${location.pathname}${location.search}${anchorFragment(anchor)}`, {
       state: history.state,
     });
-    dispatch({ type: "requested", pageId: latest.current.session?.pageId, anchor });
+    scroller.request(routeId, anchor);
   }
 
   // Links in Page content to this app's Pages open here. The editor handles

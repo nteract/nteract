@@ -205,7 +205,38 @@ export function writePageRoute(id, options = {}) {
   writeRoute(`${path}${fragment}`, { ...rest, location, state: { pageId: id ?? null } });
 }
 
-/** Push (or replace) `path` unless the address already shows it. */
+// A history entry's scroll position, in its state under SCROLL_STATE_KEY:
+// `{ path, y }`, where `path` is the address (without fragment) it was
+// measured at. The Page shown at an address swaps in place, so a position
+// counts only for the address it was measured at.
+export const SCROLL_STATE_KEY = "scroll";
+
+/** Record scroll position `y` in the current history entry. */
+export function rememberScroll(
+  y,
+  { history = globalThis.history, location = globalThis.location } = {},
+) {
+  if (!Number.isFinite(y)) return;
+  const path = `${location.pathname}${location.search}`;
+  const saved = history.state?.[SCROLL_STATE_KEY];
+  if (saved?.path === path && saved.y === y) return;
+  history.replaceState({ ...history.state, [SCROLL_STATE_KEY]: { path, y } }, "");
+}
+
+/** The scroll position recorded for the current history entry, or null. */
+export function savedScroll({ history = globalThis.history, location = globalThis.location } = {}) {
+  const saved = history.state?.[SCROLL_STATE_KEY];
+  return saved?.path === `${location.pathname}${location.search}` && Number.isFinite(saved.y)
+    ? saved.y
+    : null;
+}
+
+/**
+ * Push (or replace) `path` unless the address already shows it. A push first
+ * records the current scroll position in the entry it leaves, so Back can
+ * return to it, and starts the new entry without one. A replace keeps the
+ * entry's position while the address (without fragment) stays the same.
+ */
 export function writeRoute(
   path,
   {
@@ -213,10 +244,22 @@ export function writeRoute(
     state = null,
     history = globalThis.history,
     location = globalThis.location,
+    scrollY = globalThis.scrollY,
   } = {},
 ) {
   if (`${location.pathname}${location.search}${location.hash}` === path) return;
-  history[replace ? "replaceState" : "pushState"](state, "", path);
+  const saved = history.state?.[SCROLL_STATE_KEY];
+  let next = state;
+  if (next && SCROLL_STATE_KEY in next) {
+    next = { ...next };
+    delete next[SCROLL_STATE_KEY];
+  }
+  if (replace) {
+    const url = new URL(path, "https://pages.invalid");
+    if (saved && saved.path === `${url.pathname}${url.search}`)
+      next = { ...next, [SCROLL_STATE_KEY]: saved };
+  } else rememberScroll(scrollY, { history, location });
+  history[replace ? "replaceState" : "pushState"](next, "", path);
 }
 
 export function mergePageListings(remote, local) {
