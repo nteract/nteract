@@ -71,6 +71,46 @@ export function editorCommentSpans(spans) {
   return encode(decoded.doc);
 }
 
+/** Spans as stored, for comparing forms: plain data with sorted keys, marks
+ * always present, and adjacent text runs with the same marks joined, the
+ * way Automerge reads them back. */
+function storedForm(spans) {
+  const sorted = (value) =>
+    Array.isArray(value)
+      ? value.map(sorted)
+      : value && typeof value === "object"
+        ? Object.fromEntries(
+            Object.keys(value)
+              .sort()
+              .map((key) => [key, sorted(value[key])]),
+          )
+        : value;
+  const out = [];
+  for (const span of JSON.parse(JSON.stringify(spans))) {
+    const last = out.at(-1);
+    const marks = span.marks ?? {};
+    if (span.type !== "text") out.push(sorted(span));
+    else if (last?.type === "text" && JSON.stringify(last.marks) === JSON.stringify(sorted(marks)))
+      last.value += span.value;
+    else out.push({ type: "text", value: span.value, marks: sorted(marks) });
+  }
+  return JSON.stringify(out);
+}
+
+/** Whether `spans` are in the editor's form: exactly what `encode` writes
+ * for the tree they decode to, with nothing the editor can't hold. Every
+ * writer in this build stores that form. The adapter's form, which earlier
+ * builds wrote, isn't: it opens with a paragraph marker, leaves out a quote's
+ * marker, or keeps a prose newline as text. */
+export function isEditorForm(spans) {
+  try {
+    const decoded = decode(spans);
+    return !decoded.lossy && storedForm(spans) === storedForm(encode(decoded.doc));
+  } catch {
+    return false;
+  }
+}
+
 /** Literal text as a comment's spans: one paragraph, each newline a hard
  * break, no marks. `*` stays a `*`. */
 export const plainCommentSpans = (text) =>

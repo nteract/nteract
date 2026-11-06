@@ -6,6 +6,8 @@ import { applyComment } from "./comments.mjs";
 import { commentDecision } from "./comment-rules.mjs";
 import { commentsGenesis } from "./comments-doc.mjs";
 import { markdownCommentSpans } from "./comment-content.mjs";
+import { adapterSpans } from "./richtext-spans.mjs";
+import { parseMarkdown } from "./markdown-import.mjs";
 import { RICH_FORMAT } from "./richtext-format.mjs";
 
 const ALICE = "account:alice";
@@ -299,11 +301,13 @@ test("a new message is rich text; a bare literal body is refused", () => {
   });
   assert.equal(bare.reason.code, REJECTION.INVALID_VALUE);
   assert.match(bare.reason.message, /rich text/);
-  // An earlier build's rich message carries a Markdown copy: still admitted.
+  // An earlier build's tab still writes a Markdown copy: refused, so no new
+  // old-form message lands after the migration.
   const copy = admit(doc, BOB, "commenter", (d) => {
     d.threads[ids.aliceThread].messages.copy = { ...richMessage("hello", BOB), body: "hello" };
   });
-  assert.equal(copy.ok, true, JSON.stringify(copy.reason));
+  assert.equal(copy.reason?.code, REJECTION.INVALID_VALUE);
+  assert.match(copy.reason.message, /body/);
   for (const bodyFormat of ["markdown", "html"]) {
     const result = admit(doc, BOB, "commenter", (d) => {
       d.threads[ids.aliceThread].messages.format = { ...richMessage("hello", BOB), bodyFormat };
@@ -517,4 +521,43 @@ test("entity sets keep (thread, id) pairs distinct", () => {
   assert.equal([...set].length, 2);
   assert.equal(set.has("a", "b-c"), true);
   assert.equal(set.has("a", "c"), false);
+});
+
+test("new writes must be in the editor's span form; old-form messages stay deletable", () => {
+  const { doc: seeded, ids } = seed();
+  // Two paragraphs: the adapter's form opens with a paragraph marker the
+  // editor never writes.
+  const adapter = adapterSpans(parseMarkdown("One\n\nTwo"));
+  const created = admit(seeded, BOB, "commenter", (d) => {
+    d.threads[ids.aliceThread].messages.adapter = richMessage("", BOB);
+    A.updateSpans(d, ["threads", ids.aliceThread, "messages", "adapter", "richText"], adapter);
+  });
+  assert.equal(created.reason?.code, REJECTION.INVALID_VALUE);
+  assert.match(created.reason.message, /editor/);
+  const bobText = ["threads", ids.bobThread, "messages", ids.bobMessage, "richText"];
+  const edited = admit(seeded, BOB, "commenter", (d) => A.updateSpans(d, bobText, adapter));
+  assert.equal(edited.reason?.code, REJECTION.INVALID_VALUE);
+  const editor = admit(seeded, BOB, "commenter", (d) =>
+    A.updateSpans(d, bobText, markdownCommentSpans("One\n\nTwo")),
+  );
+  assert.equal(editor.ok, true, JSON.stringify(editor.reason));
+  // A message an earlier build stored in the adapter's form, with its copy.
+  const doc = A.change(seeded, (d) => {
+    d.threads[ids.bobThread].messages[ids.bobMessage].body = "One\n\nTwo";
+    A.updateSpans(d, bobText, adapter);
+  });
+  const deleted = admit(doc, BOB, "commenter", (d) => {
+    d.threads[ids.bobThread].messages[ids.bobMessage].deletedAt = now();
+  });
+  assert.equal(deleted.ok, true, JSON.stringify(deleted.reason));
+  // Writing to its copy is refused; removing it with a rewrite is not.
+  const copy = admit(doc, BOB, "commenter", (d) =>
+    A.updateText(d, ["threads", ids.bobThread, "messages", ids.bobMessage, "body"], "new copy"),
+  );
+  assert.equal(copy.reason?.code, REJECTION.INVALID_VALUE);
+  const rewritten = admit(doc, BOB, "commenter", (d) => {
+    delete d.threads[ids.bobThread].messages[ids.bobMessage].body;
+    A.updateSpans(d, bobText, markdownCommentSpans("One\n\nTwo"));
+  });
+  assert.equal(rewritten.ok, true, JSON.stringify(rewritten.reason));
 });

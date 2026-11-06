@@ -732,8 +732,12 @@ rich text in the editor's spans, the form every Page body is in, with no
 `body` copy. Earlier builds stored plain messages as a bare `body`, and rich
 messages in the ProseMirror adapter's span form beside a `body` copy of the
 Markdown they were first written from. This build still reads and admits
-both on existing messages; a follow-up deletes those readers once this run
-has been applied and verified everywhere.
+both on existing messages, and refuses them on anything new: a new message
+with a `body` or adapter-form spans, a write that leaves a message's spans in
+the adapter's form, and any write to `body` but its removal. Earlier viewers
+write those forms, so this build raises `MIN_VIEWER_PROTOCOL` to 3 and their
+tabs must reload. A follow-up deletes the readers once this run has been
+applied and verified everywhere.
 
 The code is marked ONE-SHOT for deletion with that follow-up:
 `model/comments-normalization.mjs` (what changes in a comments document),
@@ -819,6 +823,14 @@ latest result in `host/comments-migration/result/<page_id>`. A pass ends
 crash inside the Page's write replays the journaled change at its next boot.
 `done` is terminal: run `dry_run` again to verify. It should report
 `would_normalize: 0`, no `partial`, and `problems: []` on every Page.
+
+**Before deleting the old-form readers**, run `dry_run` again on every target
+after this build is deployed there, and after any tab of an earlier build has
+had time to reload. This build raises `MIN_VIEWER_PROTOCOL` to 3, so earlier
+tabs must reload before they edit, and its admission refuses a `body` and
+adapter-form spans on anything new. The verifying dry run is what shows no
+old form was written between the apply and the deploy. Delete the readers only
+when it reports `would_normalize: 0` and no `partial` everywhere.
 
 **Revert records.** Every write is recorded twice, durably, as `{key,
 before_heads, after_heads, messages: [{thread_id, message_id, action}]}`: in

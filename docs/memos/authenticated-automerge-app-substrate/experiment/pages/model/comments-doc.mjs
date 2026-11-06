@@ -29,10 +29,13 @@ import * as A from "@automerge/automerge/slim";
  * ```
  *
  * Earlier builds also stored messages with only a literal `body` (no
- * `format`), and rich messages with a `body` copy of the Markdown they were
- * first written from. Reads and admission still accept both on existing
- * messages until the comments migration has rewritten them; a new message is
- * always rich, and no writer stores `body`.
+ * `format`), and rich messages in the ProseMirror adapter's span form with a
+ * `body` copy of the Markdown they were first written from. Reads and
+ * admission still accept both on existing messages until the comments
+ * migration has rewritten them. Admission refuses either form on anything
+ * new: a new message is rich text in the editor's form with no `body`, a
+ * write to a message's spans must leave them in the editor's form, and
+ * `body` may only be removed.
  *
  * A thread is the shape a thread had inside the Page document, unchanged, so
  * the migration copies it whole and every reader projects it the same way.
@@ -51,6 +54,8 @@ import * as A from "@automerge/automerge/slim";
  * this version, and the authority check refuses it until a build adds it.
  */
 export const THREAD_FIELDS = Object.freeze(["target", "author", "createdAt", "status", "messages"]);
+/** `body` is here for messages earlier builds stored; admission refuses it
+ * on a new message and refuses any write to it but its removal. */
 export const MESSAGE_FIELDS = Object.freeze([
   "body",
   "format",

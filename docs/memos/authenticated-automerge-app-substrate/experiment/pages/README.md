@@ -1358,8 +1358,11 @@ checked by the same rule the tools and the browser apply
 (`validateCommentSpans` in [model/comment-content.mjs](model/comment-content.mjs)):
 non-whitespace text or a valid embed, so an image-only comment is content, at
 most 16,000 text characters and 64 KiB of spans. A new message must be rich
-text; a bare literal `body` is admitted only on a message an earlier build
-already stored.
+text in the editor's span form with no `body`, and a write to a message's
+spans must leave them in that form. A bare literal `body`, or adapter-form
+spans beside a `body` copy, is admitted only on a message an earlier build
+already stored, until it's rewritten; `body` can only be removed. Viewers
+before protocol 3 wrote those forms and must reload.
 
 A refused record is never stored or delivered. The store throws a refusal
 (`recordRefused: true`), and the bridge answers that one save without treating
