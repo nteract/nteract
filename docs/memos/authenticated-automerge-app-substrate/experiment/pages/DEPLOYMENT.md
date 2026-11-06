@@ -1074,7 +1074,7 @@ each proxied request and cloudflared passes through to celld and the Worker
 
 | `CF-Visitor` scheme | Answer |
 | --- | --- |
-| `http` | `308` to the same URL with `https:`, path and query kept, before any routing. This covers every method and path, `/health`, `/api/*` and `/mcp` included. A WebSocket upgrade gets the same `308` and no socket. |
+| `http` | `308` to `https:` on the `NOTEBOOK_CLOUD_PUBLIC_ORIGIN` host (the request's host when unset), path and query kept, before any routing. This covers every method and path, `/health`, `/api/*` and `/mcp` included. A WebSocket upgrade gets the same `308` and no socket. |
 | `https` | Served, with `Strict-Transport-Security: max-age=31536000` |
 | absent or malformed | Served as-is, without HSTS |
 

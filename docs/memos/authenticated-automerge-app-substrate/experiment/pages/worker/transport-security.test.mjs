@@ -23,6 +23,22 @@ test("a plain-HTTP edge request is redirected to HTTPS with its path and query",
   assert.equal(response.headers.has("strict-transport-security"), false);
 });
 
+test("the redirect targets the configured public origin, not a private tunnel origin", async () => {
+  const response = await worker.fetch(
+    new Request("http://127.0.0.1:9481/p/x?y=1", { headers: viaEdge("http") }),
+    { NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.runtimed.run" },
+  );
+  assert.equal(response.status, 308);
+  assert.equal(response.headers.get("location"), "https://pages.runtimed.run/p/x?y=1");
+
+  // A path that looks protocol-relative still lands on the public host.
+  const sneaky = await worker.fetch(
+    new Request("http://127.0.0.1:9481//evil.example/x", { headers: viaEdge("http") }),
+    { NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.runtimed.run" },
+  );
+  assert.equal(new URL(sneaky.headers.get("location")).host, "pages.runtimed.run");
+});
+
 test("every method and path is redirected before routing, /health and /api included", async () => {
   // No ASSETS, DB or session keys: any routing past the redirect would fail.
   for (const [method, path] of [

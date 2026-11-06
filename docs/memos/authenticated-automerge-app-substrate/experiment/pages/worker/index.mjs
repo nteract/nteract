@@ -1103,7 +1103,7 @@ export default {
     try {
       // Plain HTTP through Cloudflare is redirected before anything else runs
       // (transport-security.mjs).
-      const insecure = httpsRedirect(request);
+      const insecure = httpsRedirect(request, env);
       if (insecure) return insecure;
       const misconfigured = sessionKeysFailure(env);
       if (misconfigured) return withTransportSecurity(request, misconfigured);

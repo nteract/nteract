@@ -38,14 +38,23 @@ export function edgeScheme(request) {
 }
 
 /** A 308 to the HTTPS form of a plain-HTTP edge request, or null. Path and
- * query are kept; 308 keeps the method and body. A WebSocket upgrade gets the
- * same answer: clients don't follow redirects on a handshake, so it fails with
- * a visible 308 instead of syncing over a scheme that can't carry the cookie. */
-export function httpsRedirect(request) {
+ * query are kept; 308 keeps the method and body. The host comes from
+ * `NOTEBOOK_CLOUD_PUBLIC_ORIGIN` when set, because a tunnel can give the
+ * inbound URL a private origin; otherwise from the request URL. A WebSocket
+ * upgrade gets the same answer: clients don't follow redirects on a handshake,
+ * so it fails with a visible 308 instead of syncing over a scheme that can't
+ * carry the cookie. */
+export function httpsRedirect(request, env = {}) {
   if (edgeScheme(request) !== "http") return null;
-  const url = new URL(request.url);
+  const inbound = new URL(request.url);
+  const publicOrigin = env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN?.trim();
+  // Set path and query as fields: resolving them as a relative URL would let
+  // a `//host/...` path pick the redirect's host.
+  const url = new URL(publicOrigin || inbound.origin);
+  url.pathname = inbound.pathname;
+  url.search = inbound.search;
   url.protocol = "https:";
-  url.port = "";
+  if (!publicOrigin) url.port = "";
   return new Response(`Pages is served over HTTPS: ${url.href}\n`, {
     status: 308,
     headers: { location: url.href, "content-type": "text/plain; charset=utf-8" },
