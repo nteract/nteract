@@ -12,6 +12,7 @@ import {
   Observable,
   animationFrameScheduler,
   auditTime,
+  distinctUntilChanged,
   filter,
   fromEvent,
   map,
@@ -203,23 +204,32 @@ export function HeadingAnchors({
   }, []);
 
   // The "#" beside the heading under the pointer. A heading's row reaches
-  // left across the gutter the "#" sits in, so the pointer can approach the
-  // "#" from either side. The pointer's position is checked again on scroll,
-  // which moves headings under a still pointer, and leaving a row hides the
-  // "#" after a short grace, so a path from the text to it may cut a corner.
+  // left across the gutter and any indent the "#" sits in, so the pointer can
+  // approach the "#" from either side. The pointer's position is checked
+  // again on scroll, which moves headings under a still pointer. Leaving a
+  // row hides the "#" 150ms later, so a path from the text to it may cut a
+  // corner. Typing hides it until the pointer moves.
   useEffect(() => {
     const element = article.current;
     if (!element) return;
     /** Where the pointer is, in the viewport, while it is over the article. */
     let pointer = null;
-    /** The heading level with gutter point (x, y). Headings span the content
-     * column, so its middle finds one past any block indent. */
-    const probeGutter = (x, y) => {
+    /** Whether a key was pressed since the pointer last moved. */
+    let typing = false;
+    /**
+     * The heading whose row holds (x, y) left of its text. The probe looks
+     * at the article's middle, which a heading spanning the content column
+     * covers, including one indented in a list item or quote.
+     */
+    const probeRow = (x, y) => {
       if (typeof document.elementFromPoint !== "function") return null;
       const box = element.getBoundingClientRect();
-      const contentLeft = box.left + (parseFloat(getComputedStyle(element).paddingLeft) || 0);
-      if (x >= contentLeft || x < box.left) return null;
-      return headingPosition(document.elementFromPoint(box.left + box.width / 2, y));
+      const middle = box.left + box.width / 2;
+      if (x < box.left || x >= middle) return null;
+      const position = headingPosition(document.elementFromPoint(middle, y));
+      // A heading in a table cell has no row beyond its cell.
+      if (!position || position.heading.closest("td, th")) return null;
+      return x < position.heading.getBoundingClientRect().left ? position : null;
     };
     let anchorsFor = null;
     let anchors = [];
@@ -239,7 +249,10 @@ export function HeadingAnchors({
         (typeof document.elementFromPoint === "function" ? document.elementFromPoint(x, y) : null);
       if (hit?.closest?.(".heading-anchor")) return "keep";
       if (hit && !element.contains(hit)) return null;
-      const position = headingPosition(hit) ?? (Number.isFinite(x) ? probeGutter(x, y) : null);
+      // A table cell is its own column: its row doesn't reach other cells.
+      const position =
+        headingPosition(hit) ??
+        (Number.isFinite(x) && !hit?.closest?.("td, th") ? probeRow(x, y) : null);
       if (!position) return null;
       const entry = currentAnchors().find(
         (anchor) => anchor.blockId === position.blockId && anchor.index === position.index,
@@ -266,13 +279,18 @@ export function HeadingAnchors({
     const sameSpot = (a, b) =>
       a === b || (!!a && !!b && a.anchor === b.anchor && a.top === b.top && a.left === b.left);
     const show = (next) => {
-      // A sample taken before the pointer left the article arrives late.
-      if (next === "keep" || (next !== null && pointer === null)) return;
+      // Nothing shows once the pointer has left the article, even from a
+      // sample taken before, or after a key until the pointer moves.
+      if (next === "keep" || (next !== null && (pointer === null || typing))) return;
       setHovered((current) => (sameSpot(current, next) ? current : next));
     };
     const fromPointer = (event) => {
-      pointer = { x: event.clientX, y: event.clientY };
-      return { target: event.target, x: event.clientX, y: event.clientY };
+      const { clientX: x, clientY: y } = event;
+      // Browsers send pointerover when a scroll moves content under a still
+      // pointer; only a pointer that moves ends typing.
+      if (!pointer || pointer.x !== x || pointer.y !== y) typing = false;
+      pointer = { x, y };
+      return { target: event.target, x, y };
     };
     const subscription = merge(
       merge(fromEvent(element, "pointerover"), fromEvent(element, "pointermove")).pipe(
@@ -286,6 +304,9 @@ export function HeadingAnchors({
       .pipe(
         auditTime(0, animationFrameScheduler),
         map(resolve),
+        // Each frame off a row is another null; only the first starts the
+        // grace, so moving on through the Page doesn't keep the "#".
+        distinctUntilChanged((a, b) => a === null && b === null),
         switchMap((next) =>
           next === null ? timer(HIDE_GRACE_MS).pipe(map(() => null)) : of(next),
         ),
@@ -296,7 +317,12 @@ export function HeadingAnchors({
       setHovered(null);
     };
     subscription.add(fromEvent(element, "pointerleave").subscribe(leave));
-    subscription.add(fromEvent(element, "keydown").subscribe(() => setHovered(null)));
+    subscription.add(
+      fromEvent(element, "keydown").subscribe(() => {
+        typing = true;
+        setHovered(null);
+      }),
+    );
     return () => {
       subscription.unsubscribe();
       setHovered(null);

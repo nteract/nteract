@@ -294,49 +294,120 @@ test("the # beside a hovered heading copies its link", async () => {
   await act(async () => root.unmount());
 });
 
-test("the # follows the heading's row across the gutter and a still pointer's scroll", async () => {
+/**
+ * Lays out block "two" as the browser would: an 848px article 100px from
+ * the viewport's left, whose 24px left padding is the gutter, and "Plan"
+ * 32px tall at the content's left edge. `under.current` is what the column shows at the pointer's height.
+ */
+async function hoverLayout() {
   history.replaceState(null, "", `/p/${pageId}`);
-  const { article, root } = await mount();
+  const mounted = await mount();
+  const { article } = mounted;
+  // The shell draws the "#" inside the article, so its events reach it.
+  article.append(document.body.lastElementChild);
   drawBlock(article, "two", "<h2>Plan</h2><p>Body</p><h2>Getting lean: Automerge</h2>");
   const [plan, body] = [article.querySelector("h2"), article.querySelector("p")];
-  // A 24px gutter left of an 800px content column; the middle of the column
-  // at the pointer's height is `under`.
-  article.style.paddingLeft = "24px";
-  article.getBoundingClientRect = () => ({
-    left: 0,
-    top: 0,
-    right: 848,
-    width: 848,
-  });
-  let under = plan;
-  document.elementFromPoint = (x) => (x < 24 ? article : under);
-  const move = (target, clientX) =>
+  article.getBoundingClientRect = () => ({ left: 100, top: 0, right: 948, width: 848 });
+  plan.getBoundingClientRect = () => ({ left: 124, top: 0, right: 948, height: 32 });
+  const under = { current: plan };
+  document.elementFromPoint = (x) => (x < 124 ? article : under.current);
+  const pointer = (type, target, clientX) =>
     act(async () =>
-      target.dispatchEvent(new window.MouseEvent("pointermove", { bubbles: true, clientX })),
+      target.dispatchEvent(new window.MouseEvent(type, { bubbles: true, clientX, clientY: 10 })),
     );
-  const shown = () => document.querySelector(".heading-anchor")?.getAttribute("aria-label");
+  const button = () => document.querySelector(".heading-anchor");
+  const shown = () => button()?.getAttribute("aria-label");
+  const wait = (ms) => act(() => new Promise((resolve) => setTimeout(resolve, ms)));
+  const done = async () => {
+    delete document.elementFromPoint;
+    await act(async () => mounted.root.unmount());
+  };
+  return { ...mounted, plan, body, under, pointer, button, shown, wait, done };
+}
+const PLAN = "Copy link to section Plan";
+
+test("the gutter beside a heading shows its #, which stays while the pointer is on it", async () => {
+  const { article, body, under, pointer, button, shown, wait, done } = await hoverLayout();
   try {
-    await move(article, 10);
+    await pointer("pointermove", article, 110);
     await frames();
-    assert.equal(shown(), "Copy link to section Plan", "the gutter beside a heading shows its #");
+    assert.equal(shown(), PLAN, "the gutter beside a heading shows its #");
+    assert.deepEqual([button().style.left, button().style.top], ["0px", "4px"]);
 
-    under = body;
-    await move(body, 100);
+    under.current = body;
+    await pointer("pointermove", body, 200);
     await frames();
-    assert.equal(shown(), "Copy link to section Plan", "a brief detour keeps the #");
-    await act(() => new Promise((resolve) => setTimeout(resolve, 200)));
+    assert.equal(shown(), PLAN, "a brief detour keeps the #");
+    await pointer("pointerover", button(), 112);
+    await frames();
+    await wait(200);
+    assert.equal(shown(), PLAN, "reaching the # cancels its hiding");
+
+    await pointer("pointermove", body, 200);
+    await frames();
+    await wait(200);
     assert.equal(shown(), undefined, "off the row, the # goes");
+  } finally {
+    await done();
+  }
+});
 
-    under = plan;
+test("moving on through the Page hides the # without stopping", async () => {
+  const { article, body, under, pointer, shown, wait, done } = await hoverLayout();
+  try {
+    await pointer("pointermove", article, 110);
+    await frames();
+    assert.equal(shown(), PLAN);
+    under.current = body;
+    for (let x = 200; x < 500; x += 40) {
+      await pointer("pointermove", body, x);
+      await frames();
+      await wait(30);
+    }
+    assert.equal(shown(), undefined, "hidden while the pointer is still moving");
+  } finally {
+    await done();
+  }
+});
+
+test("scrolling a heading under a still pointer shows its #, but not while typing", async () => {
+  const { article, body, plan, under, pointer, shown, done } = await hoverLayout();
+  try {
+    under.current = body;
+    await pointer("pointermove", body, 200);
+    await frames();
+    assert.equal(shown(), undefined);
+
+    under.current = plan;
     await act(async () => window.dispatchEvent(new window.Event("scroll")));
     await frames();
-    assert.equal(
-      shown(),
-      "Copy link to section Plan",
-      "scrolling a heading under the pointer shows its #",
-    );
+    assert.equal(shown(), PLAN, "scrolling a heading under the pointer shows its #");
+
+    await act(async () => article.dispatchEvent(new window.KeyboardEvent("keydown")));
+    assert.equal(shown(), undefined, "a key hides the #");
+    await act(async () => window.dispatchEvent(new window.Event("scroll")));
+    await pointer("pointerover", plan, 200);
+    await frames();
+    assert.equal(shown(), undefined, "a scroll after a key, PageDown say, keeps it hidden");
+
+    await pointer("pointermove", plan, 210);
+    await frames();
+    assert.equal(shown(), PLAN, "moving the pointer shows it again");
   } finally {
-    delete document.elementFromPoint;
-    await act(async () => root.unmount());
+    await done();
+  }
+});
+
+test("a sample from before the pointer left the Page doesn't show the #", async () => {
+  const { article, plan, pointer, shown, done } = await hoverLayout();
+  try {
+    await pointer("pointermove", plan, 200);
+    await act(async () =>
+      article.dispatchEvent(new window.MouseEvent("pointerleave", { bubbles: false })),
+    );
+    await frames();
+    assert.equal(shown(), undefined);
+  } finally {
+    await done();
   }
 });
