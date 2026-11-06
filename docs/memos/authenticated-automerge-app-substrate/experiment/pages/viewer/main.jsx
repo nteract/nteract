@@ -71,6 +71,7 @@ import { listAllPages } from "./page-list.mjs";
 import { listingCache } from "./listing-cache.mjs";
 import { PageRefs } from "./page-refs.mjs";
 import { PageLinkCard } from "./PageLinkCard.jsx";
+import { CurrentPage } from "./current-page.mjs";
 import { PickerWalk } from "./picker-walk.mjs";
 import { SignedOutRecovery } from "./signed-out-recovery.mjs";
 import { ProjectList } from "./project-list.mjs";
@@ -1514,7 +1515,7 @@ function App() {
           },
       ].filter(Boolean)
     : [];
-  return (
+  const body = (
     <div className={page ? "app has-document" : "app"} onKeyDownCapture={formattingShortcut}>
       <header className="app-header">
         <div className="header-navigation">
@@ -1968,7 +1969,7 @@ function App() {
             />
           ) : opening ? (
             shownPreview ? (
-              <PagePreview preview={shownPreview} />
+              <PagePreview preview={shownPreview} pageId={readPageRoute(location.href).pageId} />
             ) : (
               <main className="welcome">
                 <p role="status">Opening…</p>
@@ -2067,6 +2068,8 @@ function App() {
       />
     </div>
   );
+  // Comments read the open Page, whose own links get no Page glyph.
+  return <CurrentPage.Provider value={session?.pageId ?? null}>{body}</CurrentPage.Provider>;
 }
 
 function useDismissibleDisclosure() {

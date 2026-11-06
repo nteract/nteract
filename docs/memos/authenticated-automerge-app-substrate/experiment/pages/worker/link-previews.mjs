@@ -12,23 +12,36 @@
 //    LINK_PREVIEW_PATH. That route is host-internal: the gateway never
 //    forwards a client's path to it (`/internal/*` stays 404 there).
 // 2. The Page host (Page#linkPreview in index.mjs) decides from its stored
-//    record, as a shared-Page check from the record does, with three
-//    differences: it never claims an invitation, it never boots for a caller
-//    it refuses (refusals are decided before any boot), and it writes
-//    nothing: no usage, no title projection, no index report, no Catalog
-//    entry. It boots only for a reader it has admitted whose title the
-//    record can't answer.
+//    record, as a shared-Page check from the record does, but:
+//    - it decides every refusal without starting a boot itself, and starts
+//      or waits for one only for a reader it admitted whose title the record
+//      can't supply;
+//    - it claims no invitation, records no usage or presence, and writes no
+//      title projection, index report or Catalog entry.
+//    Like every request, the first one to a cold host whose record starts
+//    eagerly boots it in the constructor, and the shared `run()` cleanup
+//    may flush content activity that earlier requests deferred.
 //
 // Access is the Page host's: owner, direct grants, Project membership and a
 // company domain all count, which the reader's own Catalog doesn't know
 // about. A pending invitation grants nothing until the invitee opens the
-// Page.
+// Page. A Page whose recovery is blocked still answers, as opening it read
+// only does.
 //
 // A caller who can't open the Page learns nothing, not even whether it
 // exists: a missing Page, a malformed ID, a refusal, a deleted or purged
-// Page, a Page in Trash (for anyone who can't restore it), one whose
-// recovery is blocked, a pending invitation, and a host error or timeout
-// all answer the same 404 PAGE_UNAVAILABLE body.
+// Page, a Page in Trash (for anyone who can't restore it), a pending
+// invitation, and a host error, busy answer or timeout all answer the same
+// 404 PAGE_UNAVAILABLE body. That body therefore can't say why; the viewer
+// shows only "Page unavailable" and asks again sooner than for an answer.
+//
+// Answers are `private, no-store`, as Page assets are: a title or a first
+// screen never stays in the browser's disk cache after sign-out.
+//
+// Follow-up, before P2's viewport loading raises the request volume: the
+// host check runs in the Page's serial request queue (run()), so a burst of
+// previews waits behind edits to that Page and vice versa. It needs only
+// the record, so it can move out of the queue.
 import { HttpError, authenticate, errorResponse } from "./auth.mjs";
 import { catalogIndexTimeouts, withTimeout } from "./catalog-index.mjs";
 import { validPageId } from "./registration.mjs";
@@ -72,41 +85,18 @@ function withHeaders(response, headers) {
   return out;
 }
 
-/** A refusal or error answer: never cached. */
+/** A refusal or error answer: never stored, like every answer here. */
 function uncached(response) {
   return withHeaders(response, { ...BASE_HEADERS, "cache-control": "private, no-store" });
 }
 
 const unavailable = () => uncached(Response.json(PAGE_UNAVAILABLE, { status: 404 }));
 
-/** The ETag of a JSON body: a SHA-256 prefix, strong. */
-export async function bodyTag(text) {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-  const hex = Array.from(new Uint8Array(digest).slice(0, 16), (byte) =>
-    byte.toString(16).padStart(2, "0"),
-  ).join("");
-  return `"${hex}"`;
-}
-
-/** Whether `If-None-Match` names `tag` (or `*`). Weak and strong forms of
- * the same tag match, as RFC 9110's weak comparison for GET says. */
-export function tagMatches(header, tag) {
-  if (!header) return false;
-  return header
-    .split(",")
-    .map((value) => value.trim().replace(/^W\//, ""))
-    .some((value) => value === "*" || value === tag);
-}
-
-/** A 200 answer, or 304 when the caller already holds it. The access check
- * ran for this request either way; `no-cache` makes the browser revalidate
- * every time, so a revoked grant is refused on the next look. */
-async function answer(request, body) {
+/** A 200 answer. The access check ran for this request; nothing is stored,
+ * so the next look checks again. */
+function answer(request, body) {
   const text = JSON.stringify(body);
-  const etag = await bodyTag(text);
-  const headers = { ...BASE_HEADERS, "cache-control": "private, no-cache", etag };
-  if (tagMatches(request.headers.get("if-none-match"), etag))
-    return new Response(null, { status: 304, headers });
+  const headers = { ...BASE_HEADERS, "cache-control": "private, no-store" };
   return new Response(request.method === "HEAD" ? null : text, { status: 200, headers });
 }
 

@@ -3886,22 +3886,25 @@ export class Page {
    * linkUnavailable for anyone else.
    *
    * It decides as a shared-Page check from the record does
-   * (catalogFromRecord), with the host record as the authority, but it has no
-   * side effects:
+   * (catalogFromRecord), with the host record as the authority, except:
    *
-   * - It never claims an invitation. A pending invitee is refused like a
+   * - It claims no invitation. A pending invitee is refused like a
    *   stranger; opening the Page still claims it.
-   * - Every refusal is decided before any boot, from the record alone. It
-   *   boots only for a reader it admitted, when the record can't name the
-   *   title (no stored projection, or one not yet seen to land), and then
-   *   decides again over the loaded record.
-   * - It writes nothing: no usage, no title projection, no index report and
-   *   no Catalog entry. `identify` isn't used, so not even the cached
-   *   Project access changes.
+   * - It decides every refusal from the record without starting a boot
+   *   itself. It starts or waits for one only for a reader it admitted
+   *   whose title the record can't supply (no stored projection, or one not
+   *   yet seen to land), and then decides again over the loaded record.
+   * - It records no usage and writes no title projection, index report or
+   *   Catalog entry. `identify` isn't used, so not even the cached Project
+   *   access changes.
+   *
+   * Like every route, it can't stop the constructor booting a cold host
+   * whose record starts eagerly, nor run()'s shared cleanup flushing
+   * content activity that earlier requests deferred.
    *
    * State is `active`, or `trashed` for a caller who may restore it; anyone
-   * else is refused for a Page in Trash. A loaded host whose recovery is
-   * blocked refuses too; one that hasn't booted can't know that yet.
+   * else is refused for a Page in Trash. A Page whose recovery is blocked
+   * answers as usual: its readers can still open it read only.
    */
   async linkPreview(request) {
     // Only the caller's own credentials: an upload capability opens nothing.
@@ -3957,15 +3960,20 @@ export class Page {
     } else if (projected) {
       title = projected.title;
       contentUpdatedAt = acceptedTime(activity?.content_updated_at);
-    } else if (this.startup.name === "metadata") {
-      // An admitted reader whose title the record can't name: boot.
+    } else {
+      // An admitted reader whose title the record can't name. The startup
+      // state is read now, not before the reads above: another request
+      // (/api/sync and /api/saved skip the queue) may have started the boot,
+      // or finished it, meanwhile. Start it, or wait for it, unless it
+      // failed or the object is going away.
+      if (this.startup.name === "failed" || this.startup.name === "abandoned")
+        throw linkUnavailable();
       await this.documentReady();
       if (this.pendingLifecycle || !this.handle) throw linkUnavailable();
       effective = admit(this.policyMetadata ?? this.metadata);
       title = this.handle.doc().title;
       contentUpdatedAt = this.contentActivity?.value ?? null;
-    } else throw linkUnavailable();
-    if (this.recoveryBlocked) throw linkUnavailable();
+    }
     const answer = catalogAnswer(effective, identity, { title, contentUpdatedAt });
     return json({
       page_id: answer.page_id,

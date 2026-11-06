@@ -4,19 +4,25 @@
 // - loading: a quiet skeleton while the Page's meta is asked for.
 // - readable: the Page's title, when it was edited, its first screen as the
 //   library grid draws it (PageCardPreview), Open (in place, through the
-//   same route opener in-app links use) and Open in new tab.
-// - unavailable: "Page unavailable" and nothing else, the same for a Page
-//   that's private, trashed, deleted or missing.
+//   same route opener in-app links use) and Open in new tab. A link in a
+//   comment offers only Open in new tab, as comment links always open, so
+//   a comment draft is never navigated away from.
+// - unavailable: a lock and "Page unavailable", nothing else. The same face
+//   shows for a Page that's private, trashed, deleted or missing, and for a
+//   host that didn't answer, so it claims no reason.
 // - failed: "Couldn't load a preview".
 //
-// The card never takes focus when the pointer opens it; Tab from the link
-// reaches its buttons, and Escape closes it and returns focus to the link.
-// It sits under the link, or above it when there's no room below, inside
-// the visual viewport, as the link menu does (LinkPopover.jsx).
+// The card never takes focus when the pointer opens it. From a link that
+// has keyboard focus (read-only blocks, comments), Tab reaches its actions;
+// Escape closes it and returns focus to the link, or to the editor a link in
+// an editable block lives in. Using an action closes it. It sits under the
+// link, or above it when there's no room below, inside the visual viewport,
+// as the link menu does (LinkPopover.jsx).
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ExternalLink, Lock } from "lucide-react";
 import { isPlainNavigation } from "../shared/routes.mjs";
+import { takesFocus } from "./editor-focus.mjs";
 import { openInNewTab } from "./link-destination.mjs";
 import { PAGE_LINK_CARD_CLASS, PageLinkCards } from "./page-link-card.mjs";
 import { PageCardPreview } from "./PageCardPreview.jsx";
@@ -85,7 +91,7 @@ export function PageLinkCard({ refs, currentPageId = null, onOpenRoute }) {
       target={state.target}
       onOpen={() => {
         const route = { kind: "page", pageId: state.target.pageId };
-        cards.dispatch({ type: "dismissed", restore: false });
+        cards.acted();
         latest.current.onOpenRoute(route, state.target.anchor);
       }}
     />
@@ -105,18 +111,32 @@ function CardBody({ cards, refs, target, onOpen }) {
       if (cards.card === element.current) cards.card = null;
     };
   }, [cards]);
+  // A link that takes focus itself (read-only blocks, comments) is described
+  // by the card while it shows. Never a link inside editable content: that
+  // markup belongs to the editor, which would read the change as an edit.
+  useLayoutEffect(() => {
+    const link = cards.link;
+    if (!takesFocus(link) || link.closest("[contenteditable='true']")) return;
+    const before = link.getAttribute("aria-describedby");
+    link.setAttribute("aria-describedby", [before, labelId].filter(Boolean).join(" "));
+    return () => {
+      if (before === null) link.removeAttribute("aria-describedby");
+      else link.setAttribute("aria-describedby", before);
+    };
+  }, [cards, labelId]);
   useLayoutEffect(() => {
     const place = () => {
-      const link = cards.link;
-      if (!element.current || !link?.isConnected) return;
+      const links = cards.linkElements.filter((link) => link.isConnected);
+      if (!element.current || !links.length) return;
       const viewport = window.visualViewport;
       const left = (viewport?.offsetLeft ?? 0) + 12;
       const top = (viewport?.offsetTop ?? 0) + 12;
       const right = left + (viewport?.width ?? innerWidth) - 24;
       const bottom = top + (viewport?.height ?? innerHeight) - 24;
-      // The link's line box under the pointer: a link that wraps has several.
-      const rects = [...link.getClientRects()];
-      const anchor = rects[rects.length - 1] ?? link.getBoundingClientRect();
+      // The link's last line box: a link that wraps, or one drawn as several
+      // fragments, has several.
+      const rects = links.flatMap((link) => [...link.getClientRects()]);
+      const anchor = rects[rects.length - 1] ?? links[0].getBoundingClientRect();
       const first = rects[0] ?? anchor;
       const bounds = element.current.getBoundingClientRect();
       const below = anchor.bottom + 8;
@@ -153,16 +173,19 @@ function CardBody({ cards, refs, target, onOpen }) {
       aria-busy={view.face === "loading" || undefined}
     >
       {view.face === "readable" && (
-        <Readable view={view} labelId={labelId} target={target} onOpen={onOpen} />
+        <Readable
+          view={view}
+          labelId={labelId}
+          target={target}
+          onOpen={onOpen}
+          onActed={() => cards.acted()}
+        />
       )}
       {view.face === "unavailable" && (
         <div className="page-link-card-lock">
           <Lock size={18} aria-hidden="true" />
-          <div>
-            <div className="page-link-card-title" id={labelId}>
-              Page unavailable
-            </div>
-            <div className="page-link-card-meta">You can't open this Page.</div>
+          <div className="page-link-card-title" id={labelId}>
+            Page unavailable
           </div>
         </div>
       )}
@@ -186,7 +209,7 @@ function CardBody({ cards, refs, target, onOpen }) {
   );
 }
 
-function Readable({ view, labelId, target, onOpen }) {
+function Readable({ view, labelId, target, onOpen, onActed }) {
   const edited = editedLabel(view.meta.content_updated_at);
   const title = view.meta.title || "Untitled";
   return (
@@ -207,18 +230,32 @@ function Readable({ view, labelId, target, onOpen }) {
         )}
       </div>
       <div className="page-link-card-actions">
-        <a
-          className="primary"
-          href={target.href}
-          onClick={(event) => {
-            if (!isPlainNavigation(event)) return;
-            event.preventDefault();
-            onOpen();
+        {!target.comment && (
+          <a
+            className="primary"
+            href={target.href}
+            onClick={(event) => {
+              if (event.defaultPrevented) return;
+              if (!isPlainNavigation(event)) return void onActed();
+              event.preventDefault();
+              onOpen();
+            }}
+            // A middle click opens a tab and fires no click.
+            onAuxClick={(event) => {
+              if (event.button === 1) onActed();
+            }}
+          >
+            Open
+          </a>
+        )}
+        <button
+          type="button"
+          className={target.comment ? "primary" : "subtle-button"}
+          onClick={() => {
+            openInNewTab(target.href);
+            onActed();
           }}
         >
-          Open
-        </a>
-        <button type="button" className="subtle-button" onClick={() => openInNewTab(target.href)}>
           <ExternalLink size={15} aria-hidden="true" /> Open in new tab
         </button>
       </div>

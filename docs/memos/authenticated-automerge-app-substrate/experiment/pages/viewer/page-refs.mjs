@@ -7,8 +7,9 @@
 // One PageRefs per tab, in memory only (never IndexedDB). Each linked Page
 // has a ref per kind ("meta", "card") for the signed-in account; each ref
 // follows the page-ref machine below: idle → requested → readable,
-// unavailable or failed; a settled answer goes stale after PAGE_REF_TTL_MS,
-// and a failure may be asked again after a backoff. Concurrent asks share
+// unavailable or failed; a readable answer goes stale after PAGE_REF_TTL_MS
+// and an unavailable one sooner, after PAGE_REF_UNAVAILABLE_TTL_MS, and a
+// failure may be asked again after a backoff. Concurrent asks share
 // one request, and at most PAGE_REF_CONCURRENCY requests run at once (the
 // page-ref-pool machine). Another account, sign-out or any 401 drops every
 // ref, aborts the requests in flight and cancels the timers, as the
@@ -23,8 +24,12 @@ import { defineMachine, reject } from "../shared/machine.mjs";
 import { getJson } from "./request.mjs";
 import { Store } from "./store.mjs";
 
-/** How long a settled answer is fresh. */
+/** How long a readable answer is fresh. */
 export const PAGE_REF_TTL_MS = 60_000;
+/** How long an unavailable answer is fresh. Shorter: the routes' one 404
+ * also stands for a host that didn't answer in time, which a reader should
+ * see recover soon. */
+export const PAGE_REF_UNAVAILABLE_TTL_MS = 15_000;
 /** The first wait before a failed ref may ask again; it doubles per failure. */
 export const PAGE_REF_BACKOFF_MS = 2_000;
 /** The longest wait before a failed ref may ask again. */
@@ -59,8 +64,9 @@ const attemptsOf = (state) => {
  *   the old title while a stale one is asked again; `attempts` counts the
  *   failures before it.
  * - readable: `value` is the answer; `stale` once PAGE_REF_TTL_MS passed.
- * - unavailable: the reader can't open the Page (the routes' one 404, which
- *   says nothing about why); `stale` likewise.
+ * - unavailable: the routes' one 404, which says nothing about why: the
+ *   reader can't open the Page, or its host didn't answer. `stale` once
+ *   PAGE_REF_UNAVAILABLE_TTL_MS passed.
  * - failed: the request failed; `attempts` failures in a row. `ready` once
  *   the backoff passed, so the next ask goes out. `last` as in requested.
  *
@@ -176,7 +182,7 @@ export const pageRefMachine = defineMachine({
       case "refused":
         return {
           state: { name: "unavailable", stale: false },
-          effects: [{ type: "expire", ms: PAGE_REF_TTL_MS }],
+          effects: [{ type: "expire", ms: PAGE_REF_UNAVAILABLE_TTL_MS }],
         };
       case "failed": {
         const attempts = state.attempts + 1;

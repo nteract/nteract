@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { ArrowDownRight, ExternalLink, Pencil, Unlink, X } from "lucide-react";
 import { linkDestination } from "./link-destination.mjs";
 import { inAppLink } from "./heading-links.mjs";
+import { linkMenuOpened } from "./link-menu.mjs";
 import "./link-popover.css";
 
 export function LinkPopover({ view, target, editable, editing, onEdit, onChange, onClose }) {
@@ -16,6 +17,8 @@ export function LinkPopover({ view, target, editable, editing, onEdit, onChange,
   const inApp = destination ? inAppLink(destination, location.href) : null;
   const toSection = !!inApp?.samePage && !!inApp.anchor;
   const positioned = position.visibility !== "hidden";
+  // A Page-link card closes while this menu shows (page-link-card.mjs).
+  useEffect(() => linkMenuOpened(), []);
   useEffect(() => {
     setHref(target.attrs.href);
     setError("");

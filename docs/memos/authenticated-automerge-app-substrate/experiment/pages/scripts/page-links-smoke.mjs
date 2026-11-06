@@ -1,6 +1,8 @@
 // Links between Pages in a real browser, against a running local Wordgard
-// fixture: the Page glyph, the hover card's faces, Open in place, and the
-// caret around a glyph link in an editable block.
+// fixture: the Page glyph (once per link, however its text is formatted),
+// the hover card's faces, crossing a formatted link, Escape, keyboard access
+// from a comment link, Open in place, and the caret around a glyph link in
+// an editable block.
 //
 // dev@localhost owns a target Page and a Page that links to it, to a Page
 // alice@localhost keeps private, to a heading on the same Page and to an
@@ -113,11 +115,25 @@ try {
         `[Alice's notes](/p/${secret.page_id}) have the rest. ` +
         `[Another](/p/${slow.page_id}) is slow.`,
       `Jump to [the plan](#plan) or read [the nteract docs](https://nteract.io).`,
+      `Formatted: [the **evening** focus](/p/${target.page_id}), ` +
+        `[a <mark data-color="yellow">highlighted</mark> one](/p/${target.page_id}) and ` +
+        `[some \`inline code\` too](/p/${target.page_id}).`,
       "## Plan",
       "Anything still open moves to tomorrow's list before standup.",
     ].join("\n\n"),
   });
   const sourceUrl = `${origin}/p/${source.page_id}`;
+  // A comment that links to the target: its card offers only Open in new tab.
+  const sourceRead = await tool(owner.page, "read_page", { page_id: source.page_id });
+  const { result: comment } = await tool(owner.page, "manage_page_comment", {
+    page_id: source.page_id,
+    action: "add",
+    block_id: sourceRead.blocks[0].id,
+    body: `See [the evening focus](/p/${target.page_id}) before standup.`,
+    body_format: "markdown",
+    idempotency_key: key(),
+  });
+  assert.ok(comment?.thread_id, "the comment's thread");
   // The routes themselves: alice's Page is the same 404 as a missing one.
   const meta = await owner.page.request.get(`${origin}/p/${target.page_id}/meta.json`);
   assert.equal(meta.status(), 200);
@@ -131,21 +147,40 @@ try {
   stage = "glyph";
   const { page } = owner;
   await page.goto(sourceUrl);
-  await expect(link(page, target.page_id)).toBeVisible({ timeout: 30000 });
+  await expect(link(page, target.page_id).first()).toBeVisible({ timeout: 30000 });
   await expect(link(page, secret.page_id)).toBeVisible();
   // The section link and the external link draw as ordinary links.
   await expect(page.locator('wg-content a[href$="#plan"]')).not.toHaveClass(/page-link/);
   await expect(page.locator('wg-content a[href^="https://nteract.io"]')).not.toHaveClass(
     /page-link/,
   );
-  const glyph = await link(page, target.page_id).evaluate((a) => {
-    const after = getComputedStyle(a, "::after");
-    return { content: after.content, mask: after.maskImage || after.webkitMaskImage };
-  });
-  assert.equal(glyph.content, '"\u2060"');
+  const glyph = await link(page, target.page_id)
+    .first()
+    .evaluate((a) => {
+      const after = getComputedStyle(a, "::after");
+      return { content: after.content, mask: after.maskImage || after.webkitMaskImage };
+    });
+  // The word joiner, with empty alternative text for the accessible name.
+  assert.match(glyph.content, /^"\u2060"( \/ "")?$/);
   assert.match(glyph.mask, /^url\("data:image\/svg\+xml/);
-  await expect(link(page, target.page_id)).toHaveText("the evening focus");
-  checkpoint("only links to other Pages draw the glyph; the link text is unchanged");
+  await expect(link(page, target.page_id).first()).toHaveText("the evening focus");
+  // One element, so one glyph, per link however its text is formatted.
+  const formatted = page.locator("wg-content p", { hasText: "Formatted:" });
+  await expect(formatted.locator("a.page-link")).toHaveText([
+    "the evening focus",
+    "a highlighted one",
+    "some inline code too",
+  ]);
+  for (const [index, tag] of ["strong", "mark", "code"].entries())
+    await expect(formatted.locator("a.page-link").nth(index).locator(tag)).toHaveCount(1);
+  const glyphs = await formatted.evaluate(
+    (p) =>
+      [...p.querySelectorAll("a")].filter((a) =>
+        getComputedStyle(a, "::after").maskImage?.startsWith("url("),
+      ).length,
+  );
+  assert.equal(glyphs, 3, "three links, three glyphs");
+  checkpoint("only links to other Pages draw the glyph, once per link; the link text is unchanged");
 
   stage = "caret and copy";
   {
@@ -171,18 +206,20 @@ try {
       await expect(locator).toHaveText(text);
       return inside.endsWith("Z");
     };
-    const pageLink = await typedAfter(link(page, target.page_id));
+    const pageLink = await typedAfter(link(page, target.page_id).first());
     const external = await typedAfter(page.locator('wg-content a[href^="https://nteract.io"]'));
     assert.equal(pageLink, external, "a glyph link takes typing at its end like any link");
     // Selecting the paragraph copies its text without the glyph.
-    const copied = await link(page, target.page_id).evaluate((a) => {
-      const range = document.createRange();
-      range.selectNodeContents(a.closest("p"));
-      const selection = getSelection();
-      selection.removeAllRanges();
-      selection.addRange(range);
-      return selection.toString();
-    });
+    const copied = await link(page, target.page_id)
+      .first()
+      .evaluate((a) => {
+        const range = document.createRange();
+        range.selectNodeContents(a.closest("p"));
+        const selection = getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        return selection.toString();
+      });
     assert.match(copied, /^Tonight's list is in the evening focus, and Alice's notes have/);
     assert.doesNotMatch(copied, /\u2060/);
     await page.mouse.click(2, 300);
@@ -190,7 +227,7 @@ try {
   }
 
   stage = "readable card";
-  await hover(page, link(page, target.page_id), "readable");
+  await hover(page, link(page, target.page_id).first(), "readable");
   await expect(card(page).locator(".page-link-card-title")).toHaveText(TARGET_TITLE);
   await expect(card(page)).toContainText(/Edited (just now|\d+ (second|minute)s? ago)/);
   await expect(card(page).getByRole("link", { name: "Open", exact: true })).toBeVisible();
@@ -212,11 +249,68 @@ try {
   await expect(card(page)).toHaveCount(0);
   checkpoint("Escape closes the card");
 
+  stage = "formatted link";
+  {
+    // Crossing from plain text into the bold word and on keeps one card.
+    const bold = formatted.locator("a.page-link").first();
+    await hover(page, bold, "readable");
+    const box = await bold.boundingBox();
+    const y = box.y + box.height / 2;
+    for (const x of [box.x + 4, box.x + box.width * 0.45, box.x + box.width - 6]) {
+      await page.mouse.move(x, y, { steps: 3 });
+      await page.waitForTimeout(250);
+      await expect(card(page)).toHaveAttribute("data-face", "readable");
+    }
+    checkpoint("the pointer crosses a formatted link without the card closing");
+  }
+
   stage = "unavailable card";
   await hover(page, link(page, secret.page_id), "unavailable");
-  await expect(card(page)).toHaveText("Page unavailableYou can't open this Page.");
+  await expect(card(page)).toHaveText("Page unavailable");
   await expect(card(page).locator("a, button")).toHaveCount(0);
   checkpoint("a Page the reader can't open says only that");
+
+  stage = "keyboard from a comment link";
+  {
+    await page.mouse.move(2, 2);
+    await expect(card(page)).toHaveCount(0, { timeout: 5000 });
+    await page.getByRole("button", { name: /^Comments/ }).click();
+    await page.locator(`.thread-row[data-thread-id="${comment.thread_id}"]`).click();
+    const commentLink = page.locator(
+      `#page-comments .comment-rich-content a.page-link[data-page-id="${target.page_id}"]`,
+    );
+    await expect(commentLink).toBeVisible();
+    // Focus the element before the link, then Tab onto it: keyboard focus.
+    await commentLink.evaluate((a) => {
+      const all = [...document.querySelectorAll("a[href], button, [tabindex]")];
+      const before = all[all.indexOf(a) - 1];
+      before?.focus();
+    });
+    await page.keyboard.press("Tab");
+    await expect(commentLink).toBeFocused();
+    await expect(card(page)).toHaveAttribute("data-face", "readable", { timeout: 15000 });
+    // A comment link's card offers only Open in new tab.
+    await expect(card(page).locator(".page-link-card-actions > *")).toHaveText([/Open in new tab/]);
+    await expect(page.locator("[data-page-link-announcer]")).toHaveText(TARGET_TITLE);
+    await expect(commentLink).toHaveAttribute("aria-describedby", /page-link-card-/);
+    await page.keyboard.press("Tab");
+    await expect(card(page).getByRole("button", { name: "Open in new tab" })).toBeFocused();
+    await page.keyboard.press("Shift+Tab");
+    await expect(commentLink).toBeFocused();
+    await expect(card(page)).toHaveCount(1);
+    // Escape closes the card only: the thread stays open.
+    await page.keyboard.press("Escape");
+    await expect(card(page)).toHaveCount(0);
+    await expect(commentLink).toBeFocused();
+    await expect(page.locator(".thread-view")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".thread-view")).toHaveCount(0);
+    checkpoint(
+      "Tab reaches a comment link's card and Shift-Tab returns; Escape closes only the card",
+    );
+    await page.goto(sourceUrl);
+    await expect(link(page, target.page_id).first()).toBeVisible({ timeout: 30000 });
+  }
 
   stage = "loading card";
   let release;
@@ -259,9 +353,9 @@ try {
       const shot = await context.newPage();
       shot.on("pageerror", (error) => errors.push(`${label}-${scheme}: ${error.message}`));
       await shot.goto(sourceUrl);
-      await expect(link(shot, target.page_id)).toBeVisible({ timeout: 30000 });
+      await expect(link(shot, target.page_id).first()).toBeVisible({ timeout: 30000 });
       await shoot(shot, `${label}-${scheme}-glyph`);
-      await hover(shot, link(shot, target.page_id), "readable");
+      await hover(shot, link(shot, target.page_id).first(), "readable");
       await expect(card(shot).locator(".page-link-card-title")).toHaveText(TARGET_TITLE);
       await shoot(shot, `${label}-${scheme}-readable`);
       // The card stays inside the viewport.
@@ -275,7 +369,7 @@ try {
   checkpoint(`screenshots: ${shots.length} in ${output}`);
 
   stage = "open in place";
-  await hover(page, link(page, target.page_id), "readable");
+  await hover(page, link(page, target.page_id).first(), "readable");
   await card(page).getByRole("link", { name: "Open", exact: true }).click();
   await expect(page).toHaveURL(`${origin}/p/${target.page_id}`, { timeout: 15000 });
   await expect(page.locator("wg-content").first()).toContainText("Tonight's list, with an owner", {

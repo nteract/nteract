@@ -194,9 +194,14 @@
    it, so no widget enters the editor: a pseudo-element is never selected,
    copied or a caret position, and the link text is unchanged. It is an
    inline box holding a word joiner, so the glyph never wraps away from the
-   link's last word; the icon is the box's padding, masked. */
+   link's last word; the icon is the box's padding, masked. The empty
+   alternative text keeps the word joiner out of the link's accessible name;
+   the first declaration is for browsers without alternative text. A link
+   draws as one element however its text is formatted (PagesLink's rank in
+   model/wordgard-doc.mjs, PagePreview.jsx joinLinks), so it has one glyph. */
 .wordgard-document :is(wg-content, :where(.preview-content)) a.page-link::after {
   content: "\2060";
+  content: "\2060" / "";
   margin-inline-start: 0.16em;
   padding-inline-start: 0.85em;
   background-color: var(--muted-foreground);

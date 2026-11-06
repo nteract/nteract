@@ -100,6 +100,7 @@ import { pageNodes } from "./wordgard-page-config.mjs";
 import { selectionToolbarPosition } from "./selection-toolbar.mjs";
 import { linkDestination, openInNewTab, wantsNewTab } from "./link-destination.mjs";
 import { pagesLinkShape } from "./page-link-shape.mjs";
+import { registerEditor } from "./editor-focus.mjs";
 import { LinkPopover } from "./LinkPopover.jsx";
 import { collapseAtomOnLeave, selectedAtom, selectedImage } from "./image-selection.mjs";
 import { normalizePastedHTML } from "./clipboard-html.mjs";
@@ -502,6 +503,8 @@ export function WordgardEditor(props) {
       ],
     });
     view.current = editor;
+    // A card or menu that closes gives focus back here (editor-focus.mjs).
+    const forgetEditor = registerEditor(editor);
     setImageStatus(null);
     imageTarget.current = null;
     const uploader = createImageUploader({
@@ -917,6 +920,7 @@ export function WordgardEditor(props) {
       collab.destroy();
       bound.destroy();
       if (replica.presenceValue?.block_id === id) replica.publishPresence(null);
+      forgetEditor();
       editor.contentDOM.removeEventListener("focusout", focusout);
       editor.contentDOM.removeEventListener("pointerdown", pointerdown);
       editor.contentDOM.removeEventListener("click", click);

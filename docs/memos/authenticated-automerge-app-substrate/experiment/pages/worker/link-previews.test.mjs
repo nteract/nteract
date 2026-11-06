@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { secretHash } from "@cloud/oidc-session-store.ts";
+import { createServerAppSession } from "@cloud/app-session.ts";
+import {
+  SERVER_SESSION_COOKIE,
+  oidcDatabase,
+  randomSecret,
+  sealServerSecret,
+  secretHash,
+  serverSessionContext,
+  serverSessionId,
+} from "@cloud/oidc-session-store.ts";
 import worker, { Page } from "./index.mjs";
 import { world } from "./projects-fixture.mjs";
 import { proposeAccessUpdate } from "./access.mjs";
@@ -19,7 +28,6 @@ import {
   PAGE_UNAVAILABLE,
   foreignFetch,
   readLinkRoute,
-  tagMatches,
 } from "./link-previews.mjs";
 import { cardKey, pageCard } from "../model/page-card.mjs";
 
@@ -276,53 +284,42 @@ test("signed out is the same 401 for every ID; an MCP OAuth token is refused", a
   }
 });
 
-test("answers carry an ETag; a match is a 304, and the access check still runs", async (t) => {
+test("answers are never stored, carry no ETag, and every request checks access again", async (t) => {
   const l = await linksWorld(t);
   const id = await l.create("Versioned plan");
   await l.setRole(id, "member", "viewer");
-  const first = await l.get("member", id);
-  assert.equal(first.status, 200);
-  const etag = first.headers.get("etag");
-  assert.match(etag, /^"[0-9a-f]{32}"$/);
-  for (const [name, value] of [
-    ["content-type", "application/json"],
-    ["cache-control", "private, no-cache"],
-    ["vary", "Cookie, Authorization"],
-    ["cross-origin-resource-policy", "same-origin"],
-    ["x-content-type-options", "nosniff"],
-  ])
-    assert.equal(first.headers.get(name), value, name);
-  assert.equal(first.headers.get("access-control-allow-origin"), null);
-  for (const match of [etag, `W/${etag}`, `"other", ${etag}`, "*"]) {
-    const again = await l.get("member", id, "meta", { headers: { "if-none-match": match } });
-    assert.equal(again.status, 304, match);
-    assert.equal(again.text, "");
-    assert.equal(again.headers.get("etag"), etag);
-    assert.equal(again.headers.get("cache-control"), "private, no-cache");
+  for (const file of ["meta", "card"]) {
+    const first = await l.get("member", id, file);
+    assert.equal(first.status, 200);
+    for (const [name, value] of [
+      ["content-type", "application/json"],
+      ["cache-control", "private, no-store"],
+      ["vary", "Cookie, Authorization"],
+      ["cross-origin-resource-policy", "same-origin"],
+      ["x-content-type-options", "nosniff"],
+    ])
+      assert.equal(first.headers.get(name), value, `${file}: ${name}`);
+    assert.equal(first.headers.get("etag"), null, file);
+    assert.equal(first.headers.get("access-control-allow-origin"), null, file);
+    // A conditional request is answered in full: there's no stored copy.
+    const again = await l.get("member", id, file, { headers: { "if-none-match": "*" } });
+    assert.equal(again.status, 200, file);
+    assert.equal(again.text, first.text, file);
   }
-  assert.equal(
-    (await l.get("member", id, "meta", { headers: { "if-none-match": '"other"' } })).status,
-    200,
-  );
   // HEAD: the same headers, no body.
   const head = await l.get("member", id, "meta", { method: "HEAD" });
   assert.equal(head.status, 200);
   assert.equal(head.text, "");
-  assert.equal(head.headers.get("etag"), etag);
+  assert.equal(head.headers.get("cache-control"), "private, no-store");
   assert.equal((await l.get("member", id, "card", { method: "HEAD" })).status, 200);
-  // A new title is a new tag.
+  // A new title shows on the next look.
   l.w.page(id).handle.doc = ((doc) => () => ({ ...doc(), title: "Renamed plan" }))(
     l.w.page(id).handle.doc,
   );
-  const renamed = await l.get("member", id, "meta", { headers: { "if-none-match": etag } });
-  assert.equal(renamed.status, 200);
-  assert.equal(renamed.body.title, "Renamed plan");
-  assert.notEqual(renamed.headers.get("etag"), etag);
-  // A revoked reader holding the tag is refused, never told 304.
+  assert.equal((await l.get("member", id)).body.title, "Renamed plan");
+  // A revoked reader is refused on the next look.
   await l.setRole(id, "member", null);
-  const revoked = await l.get("member", id, "meta", {
-    headers: { "if-none-match": renamed.headers.get("etag") },
-  });
+  const revoked = await l.get("member", id, "meta", { headers: { "if-none-match": "*" } });
   assert.equal(revoked.status, 404);
   assert.equal(revoked.text, UNAVAILABLE);
   // Only GET and HEAD.
@@ -332,6 +329,96 @@ test("answers carry an ETag; a match is a 304, and the access check still runs",
       assert.equal(refused.status, 405, method);
       assert.equal(refused.headers.get("allow"), "GET, HEAD");
     }
+});
+
+/** A browser session for `principal`, as the server sign-in flow stores it,
+ * over the world's database. The world names its public origin so the
+ * session's context matches, as a deployment's does. */
+async function browserSession(l, principal) {
+  Object.assign(l.w.env, {
+    NOTEBOOK_CLOUD_PUBLIC_ORIGIN: origin,
+    NOTEBOOK_CLOUD_OIDC_FLOW: "server",
+    NOTEBOOK_CLOUD_APP_SESSION_SECRET: "link-preview-session-fixture-".repeat(2),
+  });
+  const env = l.w.env;
+  await oidcDatabase(env);
+  const now = Math.floor(Date.now() / 1000);
+  const token = randomSecret();
+  const id = await serverSessionId(env, token);
+  const context = serverSessionContext(env, origin);
+  const session = await createServerAppSession(
+    env,
+    {
+      principal,
+      metadata: {
+        provider: "oidc",
+        principalNamespace: namespace,
+        displayName: "Session Reader",
+        email: "reader@example.invalid",
+        emailVerified: true,
+      },
+    },
+    id,
+    now + 3600,
+    now,
+  );
+  await env.DB.prepare(
+    "INSERT INTO oidc_server_sessions (id,context,session_json,sealed,access_expires_at,idle_expires_at,absolute_expires_at) VALUES (?,?,?,?,?,?,?)",
+  )
+    .bind(
+      id,
+      context,
+      JSON.stringify(session),
+      await sealServerSecret(env, {}, `session:${id}:${context}`),
+      now + 3600,
+      now + 7200,
+      now + 86400,
+    )
+    .run();
+  return `${SERVER_SESSION_COOKIE}=${token}`;
+}
+
+test("a browser session cookie reads both routes; sign-out everywhere and a foreign Origin don't", async (t) => {
+  const l = await linksWorld(t);
+  const id = await l.create("Session plan");
+  await l.setRole(id, "member", "viewer");
+  const cookie = await browserSession(l, l.w.member);
+  // As a browser's same-origin fetch sends it: no Origin on a GET, the
+  // session cookie, and Sec-Fetch-Site. The host still sees this origin
+  // (the gateway names it), so its own Origin check passes.
+  const browser = (file, headers = {}) =>
+    l.get(null, id, file, {
+      headers: { cookie, "sec-fetch-site": "same-origin", ...headers },
+    });
+  for (const file of ["meta", "card"]) {
+    const answer = await browser(file);
+    assert.equal(answer.status, 200, `${file}: ${answer.text}`);
+    assert.equal(answer.body.page_id, id, file);
+  }
+  assert.equal((await browser("meta")).body.role, "viewer");
+  // A same-origin Origin header is fine too.
+  assert.equal((await browser("meta", { origin })).status, 200);
+  // A foreign Origin is refused before anything about the Page.
+  for (const from of ["https://evil.example", "https://page2.pages.invalid"]) {
+    const refused = await l.get(null, id, "meta", { headers: { cookie, origin: from } });
+    assert.equal(refused.status, 403, from);
+    assert.doesNotMatch(refused.text, /Session plan/);
+  }
+  // Signing out everywhere ends this session: the next look is a 401.
+  const out = await worker.fetch(
+    new Request(`${origin}/api/auth/logout-all`, {
+      method: "POST",
+      headers: { cookie, origin },
+    }),
+    l.w.env,
+  );
+  assert.equal(out.status, 200, await out.clone().text());
+  for (const file of ["meta", "card"]) {
+    const signedOut = await browser(file);
+    assert.equal(signedOut.status, 401, file);
+    assert.equal(signedOut.body.code, "auth_required", file);
+    assert.doesNotMatch(signedOut.text, /Session plan/);
+  }
 });
 
 test("only same-origin and direct browser requests are answered", async (t) => {
@@ -495,8 +582,6 @@ test("only the two JSON paths are routes; the gateway never forwards the host's 
     `/project/prj_${fixturePageId}/meta.json`,
   ])
     assert.equal(readLinkRoute(path), null, path);
-  assert.ok(tagMatches('W/"a", "b"', '"b"'));
-  assert.ok(!tagMatches(null, '"b"'));
   const l = await linksWorld(t);
   const id = await l.create("Plan");
   const host = l.w.page(id);
@@ -730,16 +815,55 @@ test("without a usable stored title, refusals still don't boot; an admitted read
   }
 });
 
-test("a loaded host whose recovery is blocked refuses; a missing record refuses", async (t) => {
+test("a Page whose recovery is blocked answers its readers, as opening it read only does", async (t) => {
   const h = await hosts(t);
   const page = await h.lazy();
   await page.documentReady();
   page.recoveryBlocked = { code: "page_recovery_blocked", pending: true, message: "Blocked" };
-  assert.deepEqual(await h.preview(page, "member"), refused);
-  assert.deepEqual(await h.preview(page, "owner"), refused);
+  for (const [who, role] of [
+    ["member", "editor"],
+    ["owner", "owner"],
+  ]) {
+    const answer = await h.preview(page, who);
+    assert.equal(answer.status, 200, who);
+    assert.equal(answer.body.role, role, who);
+  }
+  assert.deepEqual(await h.preview(page, "stranger"), refused);
+});
+
+test("a missing record refuses", async (t) => {
+  const h = await hosts(t);
   await h.f.storage.delete("host/document");
   const missing = h.cold();
   await missing.ready;
   assert.deepEqual(await h.preview(missing, "owner"), refused);
-  assert.equal(h.boots(), 1);
+  assert.equal(h.boots(), 0);
+});
+
+test("a boot another request starts during the check still answers an admitted reader", async (t) => {
+  // /api/sync and /api/saved skip the queue, so a boot can start while the
+  // check reads storage. Here one starts from inside the projection read.
+  for (const finish of ["booting", "booted"]) {
+    const h = await hosts(t);
+    await h.f.storage.delete("host/title-projection");
+    const page = await h.lazy();
+    const get = h.f.storage.get.bind(h.f.storage);
+    let started = null;
+    t.mock.method(h.f.storage, "get", async (key) => {
+      if (key === "host/title-projection" && !started) {
+        started = page.documentReady();
+        // Either still booting when the check looks again, or already done.
+        if (finish === "booted") await started;
+      }
+      return get(key);
+    });
+    const member = await h.preview(page, "member");
+    assert.equal(member.status, 200, `${finish}: ${JSON.stringify(member.body)}`);
+    assert.equal(member.body.title, "Launch plan", finish);
+    assert.equal(member.body.role, "editor", finish);
+    await started;
+    assert.equal(h.boots(), 1, `${finish}: one boot, the other request's`);
+    // A stranger checked under the same race is still refused.
+    assert.deepEqual(await h.preview(page, "stranger"), refused, finish);
+  }
 });

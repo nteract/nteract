@@ -133,7 +133,7 @@ was a caret race in the smoke; the editor side is
 | Passage edits and revision deltas | `PAGES_ORIGIN=http://localhost:9894 node scripts/passages-changes-smoke.mjs` | Uses the running Wordgard fixture |
 | Reload banner placement, browser presence labels, leaving a final code block, checkbox indent | `PAGES_ORIGIN=http://localhost:9894 node scripts/editor-chrome-smoke.mjs` | Uses the running Wordgard fixture |
 | Heading links: a fragment scrolls to its heading on a cold load, a warm reload and in a fresh context, and holds it while an image above draws late; `#notes-1` picks the second Notes; an unknown anchor stays at the top; table cell links go there read-only and through Go to section; the # copies the link `read_page` names; another Page's heading opens in place; Back and Forward restore each entry's position on the same Page and across Pages; scrolling during the settle, or scrolling the preview while sync is held, stops it | `PAGES_ORIGIN=http://localhost:9894 node scripts/heading-anchors-smoke.mjs` | Uses the running Wordgard fixture |
-| Links between Pages: the Page glyph only on links to other Pages, typing and copying around it, the hover card's readable, unavailable and loading faces, Escape, Open in place, and screenshots light and dark at 1280 and 390 px | `PAGES_ORIGIN=http://localhost:9894 node scripts/page-links-smoke.mjs` | Uses the running Wordgard fixture |
+| Links between Pages: the Page glyph only on links to other Pages, once per link however its text is formatted, typing and copying around it, the hover card's readable, unavailable and loading faces, crossing a formatted link without closing, Escape, Tab into a comment link's card and back, Open in place, and screenshots light and dark at 1280 and 390 px | `PAGES_ORIGIN=http://localhost:9894 node scripts/page-links-smoke.mjs` | Uses the running Wordgard fixture |
 | Local creation and navigation | `PAGES_ORIGIN=http://localhost:9894 node scripts/navigation-smoke.mjs` | Uses the running Wordgard fixture |
 | Editing, comments, links, diagrams, and recovery | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:editor` | Uses the running Wordgard fixture |
 | History growth and typing latency | `PAGES_ORIGIN=http://localhost:9894 node scripts/latency-smoke.mjs` | Uses the running Wordgard fixture |
@@ -391,27 +391,46 @@ references; it does not publish the Page or change asset access.
   in Page blocks, the loading preview and comments
   ([`viewer/link-destination.mjs`](viewer/link-destination.mjs),
   [`viewer/page-link-shape.mjs`](viewer/page-link-shape.mjs)). CSS draws the
-  glyph (`::after` with a mask), so no widget enters the editor: the caret,
-  selection, typing at the link's end and copying behave as for any link.
-  Resting the pointer on one for 300 ms, or focusing it from the keyboard,
-  opens a hover card ([`viewer/PageLinkCard.jsx`](viewer/PageLinkCard.jsx),
+  glyph (`::after` with a mask and empty alternative text), so no widget
+  enters the editor: the caret, selection, typing at the link's end and
+  copying behave as for any link. A link draws as one element however its
+  text is formatted, so it has one glyph: `PagesLink` has Wordgard's link rank
+  and nests outside bold, italic, strike, code and highlight
+  (`model/wordgard-doc.mjs`; stored spans keep their mark order), and the
+  loading preview joins the fragments the host renders
+  (`PagePreview.jsx` `joinLinks`).
+  Resting the pointer on one for 300 ms opens a hover card
+  ([`viewer/PageLinkCard.jsx`](viewer/PageLinkCard.jsx),
   [`viewer/page-link-card.mjs`](viewer/page-link-card.mjs)). It shows the
   title the reader's own session resolves (two lines at most, direction
   isolated), when the Page was edited, its first screen as the library grid
-  draws it, Open (in place) and Open in new tab; "Page unavailable" and
-  nothing else for a Page the reader can't open, whatever the reason; a
-  skeleton while loading; and "Couldn't load a preview" on failure. The
-  pointer has 200 ms to cross from the link into the card. Escape closes it
-  and returns focus to the link. It never opens while the link menu is open,
-  while a mouse button is down, for touch or pen input, where the device
-  can't hover, or for a link inside a card. Titles and cards live in one
-  in-memory store per tab ([`viewer/page-refs.mjs`](viewer/page-refs.mjs)):
-  each `(account, Page, kind)` ref is fresh for 60 s, a failure retries after
-  a doubling backoff from 2 s, concurrent asks share a request, and at most 6
-  run at once. Another account, sign-out or any 401 drops them all. Refs load
-  only when a card opens; the store takes a non-urgent ask so a viewport
-  observer can drive it later. The routes are under
-  [Link previews](#link-previews).
+  draws it, Open (in place) and Open in new tab; a link in a comment offers
+  only Open in new tab, as comment links always open, so a draft is never
+  navigated away from. A Page the reader can't open shows a lock and "Page
+  unavailable", nothing else: the same answer stands for a host that didn't
+  respond, so it gives no reason. Loading shows a skeleton, and a failure
+  "Couldn't load a preview". The pointer has 200 ms to cross from the link
+  into the card. Using an action closes it, and so do a keypress (for a card
+  the pointer opened) and the link menu opening. It never opens while the
+  link menu is open, while a mouse button is down, for touch or pen input,
+  where the device can't hover, or for a link inside a card.
+  Keyboard focus opens the card at once for links that take focus: in
+  read-only blocks, comments and the loading preview. In an editable block
+  focus stays on the editor, so a caret entering a link opens nothing. From a
+  focused link, Tab moves into the card's actions, Shift-Tab from the first
+  returns to the link, and Tab past the last closes the card and moves on.
+  The link is `aria-describedby` the card while it shows, and a polite live
+  region announces the title or "Page unavailable" once it loads. Escape
+  closes the card, marked handled so a comments panel doesn't also back out,
+  and returns focus to the link, or to the editor (keeping its selection)
+  when the link is editable content. Titles and cards live in one in-memory
+  store per tab ([`viewer/page-refs.mjs`](viewer/page-refs.mjs)): each
+  `(account, Page, kind)` ref is fresh for 60 s, or 15 s when unavailable, a
+  failure retries after a doubling backoff from 2 s, concurrent asks share a
+  request, and at most 6 run at once. Another account, sign-out or any 401
+  drops them all. Refs load only when a card opens; the store takes a
+  non-urgent ask so a viewport observer can drive it later. The routes are
+  under [Link previews](#link-previews).
 - **Code and diagrams:** three backticks on an empty paragraph followed by Enter
   or Space creates code; a language can follow the backticks. Mermaid renders
   through nteract's Pele renderer and SVG sanitizer. Compact Edit diagram,
@@ -2430,22 +2449,33 @@ The target's Page host decides, from its stored record, through the
 host-internal `/internal/link-preview` (the gateway never forwards a client
 path there; `/internal/*` stays 404). The owner, direct grants, Project
 members and company-domain readers all count, unlike `page_cards`, which
-starts from the reader's own Catalog. The check has no side effects: it never
-claims an invitation (a pending invitee is refused until they open the Page),
-records no usage or presence, and writes no Catalog entry, title projection
-or index report. Every refusal is decided from the record before any boot; a
-host boots only for a reader it admitted whose title the record can't name.
-A missing Page, a malformed ID, a refusal, a deleted or purged Page, Trash
-(for anyone who can't restore it), blocked recovery, a pending invitation, a
-host error and a timeout (the shared-Page check's bound) all answer one
-`404 {"error":"Page unavailable","code":"page_unavailable"}`.
+starts from the reader's own Catalog. The check claims no invitation (a
+pending invitee is refused until they open the Page), records no usage or
+presence, and writes no Catalog entry, title projection or index report. It
+decides every refusal from the record without starting a boot itself, and
+starts or waits for one only for a reader it admitted whose title the record
+can't supply. Like every route, the first request to a cold host whose record
+starts eagerly boots it in the constructor, and the shared request cleanup
+may flush content activity earlier requests deferred. A Page whose recovery
+is blocked answers as usual, as opening it read only does. A missing Page, a
+malformed ID, a refusal, a deleted or purged Page, Trash (for anyone who
+can't restore it), a pending invitation, a host error or busy answer, and a
+timeout (the shared-Page check's bound) all answer one
+`404 {"error":"Page unavailable","code":"page_unavailable"}`, so that answer
+can't say why.
 
-Answers carry `Cache-Control: private, no-cache`, a strong `ETag` (a matching
-`If-None-Match` gets 304), `Vary: Cookie, Authorization`,
-`Cross-Origin-Resource-Policy: same-origin` and `nosniff`, and no CORS
-headers. The access check runs on every request, 304 included, so a revoked
-reader is refused at the next look. Refusals are `no-store`. The viewer's
-router reads both paths as missing, never as the Page.
+Every answer is `Cache-Control: private, no-store`, as Page assets are, so a
+title or first screen never stays in the browser's disk cache after sign-out.
+There is no `ETag`: each look runs the access check again, and a revoked
+reader is refused at the next one. Answers also carry
+`Vary: Cookie, Authorization`, `Cross-Origin-Resource-Policy: same-origin`
+and `nosniff`, and no CORS headers. The viewer's router reads both paths as
+missing, never as the Page.
+
+The host check runs in the Page's serial request queue, so a burst of
+previews waits behind edits to that Page, and the reverse. It needs only the
+record; moving it out of the queue is a follow-up before viewport loading
+raises the request volume.
 
 ### Refusal codes and tool hints
 
@@ -3092,8 +3122,8 @@ unfenced cleanup can race with newer uploads reusing those keys.
 hash is the stored JSON card's and both themes exist. The image route decides
 access as `page_cards` does, on every request: the caller's own Catalog entry
 for an owned Page, or its shared entry plus the Page host's record-only check.
-A grid of image cards boots no Page
-document, and a revoked grant fails on the next fetch. Its responses are `private, immutable`
+A grid of image cards boots no Page document, and a revoked grant fails on
+the next fetch. Its responses are `private, immutable`
 and carry `nosniff`. Purge and tombstone delete `card.json`, the image pointer and
 its referenced images, plus orphans found in at most four prefix-listing pages.
 That bounded cleanup may leave orphaned bytes beyond the listing limit.

@@ -7,6 +7,7 @@ import {
   PAGE_REF_BACKOFF_MS,
   PAGE_REF_CONCURRENCY,
   PAGE_REF_TTL_MS,
+  PAGE_REF_UNAVAILABLE_TTL_MS,
   PageRefs,
   backoffMs,
   pageRefMachine,
@@ -21,6 +22,7 @@ const no = (state, rejected) => ({ state, effects: [], rejected });
 const VALUE = { title: "Plan", state: "active", role: "viewer", content_updated_at: null };
 const fetch = [{ type: "fetch" }];
 const expire = [{ type: "expire", ms: PAGE_REF_TTL_MS }];
+const expireUnavailable = [{ type: "expire", ms: PAGE_REF_UNAVAILABLE_TTL_MS }];
 const idle = { name: "idle" };
 const requested = (last = null, attempts = 0) => ({ name: "requested", last, attempts });
 const readable = (stale = false) => ({ name: "readable", value: VALUE, stale });
@@ -39,7 +41,7 @@ const refRows = [
     label: "a refresh's answer replaces the one it refreshed",
     state: requested(lastReadable),
     event: { type: "refused" },
-    expect: ok(unavailable(), expire),
+    expect: ok(unavailable(), expireUnavailable),
   },
   {
     state: requested(null, 2),
@@ -269,6 +271,27 @@ test("concurrent asks share a request; an answer stays fresh for the TTL", async
   l.calls[1].resolve(meta(A, "Renamed"));
   await l.settle();
   assert.equal(l.refs.ref(A, "meta").value.title, "Renamed");
+});
+
+test("an unavailable answer goes stale sooner than a readable one", async () => {
+  assert.ok(PAGE_REF_UNAVAILABLE_TTL_MS < PAGE_REF_TTL_MS);
+  assert.equal(PAGE_REF_UNAVAILABLE_TTL_MS, 15_000);
+  const l = loader();
+  l.refs.account("user:a");
+  l.refs.want(A, ["meta"]);
+  l.refs.want(B, ["meta"]);
+  l.calls[0].resolve(meta(A));
+  l.calls[1].reject(l.error(404, "page_unavailable"));
+  await l.settle();
+  l.advance(PAGE_REF_UNAVAILABLE_TTL_MS - 1);
+  assert.equal(l.refs.ref(B, "meta").stale, false);
+  l.advance(1);
+  assert.equal(l.refs.ref(B, "meta").stale, true, "unavailable: stale at 15 s");
+  assert.equal(l.refs.ref(A, "meta").stale, false, "readable: still fresh");
+  l.refs.want(B, ["meta"]);
+  assert.equal(l.calls.length, 3, "asked again: access may have been granted, or the host is back");
+  l.advance(PAGE_REF_TTL_MS - PAGE_REF_UNAVAILABLE_TTL_MS);
+  assert.equal(l.refs.ref(A, "meta").stale, true, "readable: stale at 60 s");
 });
 
 test("meta and card load in parallel; a 404 is unavailable; a failure backs off", async () => {
