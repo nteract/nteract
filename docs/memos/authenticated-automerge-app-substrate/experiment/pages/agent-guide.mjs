@@ -802,7 +802,10 @@ replace these URLs with public hosting or put base64 image data in Markdown.
    create_page has one), or its last block, with the first section, then
    alternate insert_image and insert_markdown with after_block_id omitted.
    Operations apply in order, and each append lands after the previous one at
-   the end of the Page. To insert after any other block, give every operation
+   the end of the Page. replace_block_markdown rewrites the whole block, so
+   include anything already in it that should stay; to keep a Page's existing
+   blocks untouched, skip it and start with insert_markdown. To insert after
+   any other block, give every operation
    that block's ID as after_block_id and list them in reverse order: each
    lands directly after it, ahead of the ones listed before. A batch takes up
    to 100 operations and applies all or none.
