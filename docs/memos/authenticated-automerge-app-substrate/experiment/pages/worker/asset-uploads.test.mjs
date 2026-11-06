@@ -771,8 +771,12 @@ test("an upload capability authorizes nothing but its upload", async (t) => {
   ]) {
     const response = await worker.fetch(request, w.env);
     assert.equal(response.status, 401, label);
-    if (request.method !== "HEAD")
-      assert.equal((await response.json()).code, "upload_capability_invalid", label);
+    if (request.method !== "HEAD") {
+      const body = await response.json();
+      assert.equal(body.code, "upload_capability_invalid", label);
+      // The advice fits both a misplaced upload and a read.
+      assert.match(body.error, /upload_url create_page_asset_upload returned/, label);
+    }
   }
   for (const path of ["/api/tools", "/mcp", `/api/access?page=${pageId}`, "/whoami"]) {
     const response = await worker.fetch(
@@ -1031,6 +1035,13 @@ test("only a credential-less upload is pointed at create_page_asset_upload", asy
       "POST",
       `/api/pages/${pageId}/assets`,
       { headers: { authorization: "Basic eA==" }, body: png },
+    ],
+    // A browser whose session cookie lapsed still sends Origin; the person
+    // keeps the sign-in message, not advice meant for agents.
+    [
+      "POST",
+      `/api/pages/${pageId}/assets`,
+      { headers: { origin, "content-type": "image/png" }, body: png },
     ],
   ]) {
     const refused = await send(method, path, init);

@@ -160,7 +160,7 @@ export function uploadRefusal(verdict) {
   if (verdict === "misused")
     return new HttpError(
       401,
-      "An upload capability only authorizes a POST of file bytes to its upload_url. Use your Pages credential to read assets.",
+      `An upload capability only authorizes a POST of file bytes to the upload_url ${ASSET_UPLOAD_OPERATION} returned. Use your own Pages credential for anything else, such as reading assets.`,
       "upload_capability_invalid",
     );
   return new HttpError(

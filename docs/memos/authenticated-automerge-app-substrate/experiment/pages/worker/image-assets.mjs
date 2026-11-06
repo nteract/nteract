@@ -319,8 +319,10 @@ async function grantedExpectation(access) {
 
 /** authenticate() for the asset route. An upload with no credential at all
  * is most often an agent whose upload header was lost (curl drops an -H
- * value without a colon), so its refusal names the upload tool first. Other
- * routes keep authenticate()'s own message. */
+ * value without a colon), so its refusal names the upload tool first. A
+ * browser always sends Origin on a POST, so a person whose session cookie
+ * lapsed keeps the sign-in message. Other routes keep authenticate()'s own
+ * message. */
 async function authenticateAssets(request, env, upload) {
   try {
     return await authenticate(request, env);
@@ -329,7 +331,8 @@ async function authenticateAssets(request, env, upload) {
       upload &&
       error?.code === "auth_required" &&
       !request.headers.has("authorization") &&
-      !request.headers.has("cookie")
+      !request.headers.has("cookie") &&
+      !request.headers.has("origin")
     )
       throw new HttpError(
         401,
