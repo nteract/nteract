@@ -68,7 +68,6 @@ export const USAGE_D1 = Object.freeze({
   database_name: "pages-usage",
   database_id: "pages-usage",
 });
-export const USAGE_CRON = "5 0 * * *";
 
 const shared = {
   host: "lab1",

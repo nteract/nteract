@@ -18,7 +18,8 @@ import vm from "node:vm";
 import { build } from "esbuild";
 import { celldCborPlugin } from "./celld-cbor.mjs";
 import { releaseFilesOf } from "./stage-artifacts.mjs";
-import { USAGE_CRON, USAGE_D1 } from "./deployment/profiles.mjs";
+import { USAGE_D1 } from "./deployment/profiles.mjs";
+import { AUTH_CRON, USAGE_CRON } from "../shared/schedule.mjs";
 import { browserMermaidPlugin, mermaidSource } from "./browser-mermaid.mjs";
 import {
   IMMUTABLE,
@@ -113,7 +114,7 @@ for (const fails of [true, false])
   test(
     fails
       ? "failed rebuild removes the previous receipt before replacing any artifacts"
-      : "build.mjs emits PAGES_USAGE and its UTC cron into the local release config",
+      : "build.mjs emits PAGES_USAGE and its UTC crons into the local release config",
     () => {
       const fixture = mkdtempSync(path.join(tmpdir(), "pages-build-failure-"));
       const write = (relative, contents) => {
@@ -138,7 +139,7 @@ for (const fails of [true, false])
           "deployment/profiles.mjs",
         ])
           write(`scripts/${name}`, readFileSync(new URL(`./${name}`, import.meta.url), "utf8"));
-        for (const name of ["favicon.mjs", "product.mjs"])
+        for (const name of ["favicon.mjs", "product.mjs", "schedule.mjs"])
           write(
             `shared/${name}`,
             readFileSync(new URL(`../shared/${name}`, import.meta.url), "utf8"),
@@ -216,8 +217,9 @@ for (const fails of [true, false])
             config.d1_databases.filter((db) => db.binding === "PAGES_USAGE"),
             [USAGE_D1],
           );
-          assert.deepEqual(config.triggers, { crons: [USAGE_CRON] });
+          assert.deepEqual(config.triggers, { crons: [USAGE_CRON, AUTH_CRON] });
           assert.equal(USAGE_CRON, "5 0 * * *");
+          assert.equal(AUTH_CRON, "35 * * * *");
           // The receipt certifies every staged file but itself: the allowlist
           // plus the viewer's hashed files. The stubbed bundler skips the
           // Worker's WASM copy; every public file must exist.

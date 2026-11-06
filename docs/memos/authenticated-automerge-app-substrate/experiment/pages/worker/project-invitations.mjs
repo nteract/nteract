@@ -37,6 +37,22 @@ export async function indexProjectInvitations(env, record) {
   }
 }
 
+/** Deletes at most `limit` expired index rows. `now` is in milliseconds, like expires_at. */
+export async function deleteExpiredProjectInvitations(env, { now, limit }) {
+  if (!Number.isSafeInteger(now) || now < 0) throw new Error("Invalid invitation cleanup time");
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000)
+    throw new Error("Invalid invitation cleanup limit");
+  const db = await database(env);
+  const result = await db
+    .prepare(
+      `DELETE FROM pages_project_invitations WHERE rowid IN
+      (SELECT rowid FROM pages_project_invitations WHERE expires_at <= ? ORDER BY expires_at LIMIT ?)`,
+    )
+    .bind(now, limit)
+    .run();
+  return result.meta?.changes ?? 0;
+}
+
 export async function invitedProjects(env, identity) {
   if (!identity.namespace || (!identity.verifiedEmail && !identity.emailProof)) return [];
   const db = await database(env);

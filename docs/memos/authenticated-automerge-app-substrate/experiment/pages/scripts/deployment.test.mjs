@@ -10,6 +10,7 @@ import { configureDns } from "./deployment/dns.mjs";
 import { accountId as tunnelAccountId } from "./deployment/tunnel.mjs";
 import { pagesFirewall } from "./deployment/firewall.mjs";
 import * as profiles from "./deployment/profiles.mjs";
+import { CRONS } from "../shared/schedule.mjs";
 import * as activation from "./deployment/activation.mjs";
 import * as fs from "node:fs";
 import { createHash } from "node:crypto";
@@ -399,7 +400,7 @@ function installFixture(
       main: "index.js",
       no_bundle: true,
       d1_databases: [profiles.AUTH_D1, profiles.USAGE_D1],
-      triggers: { crons: [profiles.USAGE_CRON] },
+      triggers: { crons: [...CRONS] },
       durable_objects: { bindings: [{ name: "PAGES", class_name: "Page" }] },
       r2_buckets: [{ binding: "PAGES_ASSETS", bucket_name: "pages-images" }],
       migrations: [{ tag: "fixture", new_sqlite_classes: ["Page"] }],
@@ -1496,7 +1497,7 @@ test("company viewing and the catalog index are enabled for Page7 through Pages"
   }
 });
 
-test("Pages and Page10 retain the local build's isolated usage binding and UTC cron", (t) => {
+test("Pages and Page10 retain the local build's isolated usage binding and UTC crons", (t) => {
   for (const target of ["page10", "pages"]) {
     const f = installFixture(t, { target });
     f.execute();
@@ -1506,7 +1507,7 @@ test("Pages and Page10 retain the local build's isolated usage binding and UTC c
       profiles.USAGE_D1,
     );
     assert.notEqual(profiles.USAGE_D1.database_id, profiles.AUTH_D1.database_id);
-    assert.deepEqual(config.triggers, { crons: ["5 0 * * *"] });
+    assert.deepEqual(config.triggers, { crons: ["5 0 * * *", "35 * * * *"] });
   }
   assert.notEqual(
     profiles.deploymentProfile("page10").deployment.prefix,

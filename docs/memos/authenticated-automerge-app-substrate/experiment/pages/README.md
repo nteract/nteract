@@ -1130,6 +1130,17 @@ by an absolute thirty-day grant. Correctly bound code/refresh replay revokes its
 family. Provider tokens stay on the server. Refresh does not refresh verified
 email evidence, and MCP tokens cannot authorize raw HTTP assets, sharing, or sync.
 
+An hourly cron (`35 * * * *` UTC, [shared/schedule.mjs](shared/schedule.mjs))
+sweeps the auth database (worker/auth-maintenance.mjs). It deletes expired
+sign-in transactions and server sessions, expired OAuth consents, codes, tokens
+and grants (keeping a consumed code while its grant lives), grants revoked more
+than an hour ago with their tokens and codes, and expired Project invitation
+index rows. Each run deletes at most 5,000 rows in batches of 500 within 15
+seconds; phases take turns and a persisted cursor resumes the next run where
+this one stopped. It logs counts and phase names only. Request paths keep their
+opportunistic cleanup. Deleted rows remain in celld's storage history and
+bucket versions until those expire.
+
 `/connect` and the public `/llms.txt` are the maintained client setup guides.
 They lead with API keys, the method for coding agents, scripts, and anything
 long-running or headless (Kilo, Claude Code, Codex). OAuth is for interactive

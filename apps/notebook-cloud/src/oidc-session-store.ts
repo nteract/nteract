@@ -50,6 +50,39 @@ export async function oidcDatabase(env: ServerSessionEnvironment): Promise<D1Dat
   return db;
 }
 
+export type ExpiredOidcTable = "oidc_login_transactions" | "oidc_server_sessions";
+
+const EXPIRED_OIDC_ROWS: Record<ExpiredOidcTable, string> = {
+  oidc_login_transactions: `DELETE FROM oidc_login_transactions WHERE state_hash IN
+    (SELECT state_hash FROM oidc_login_transactions WHERE expires_at <= ?1
+     ORDER BY expires_at LIMIT ?2)`,
+  oidc_server_sessions: `DELETE FROM oidc_server_sessions WHERE id IN
+    (SELECT id FROM oidc_server_sessions WHERE idle_expires_at <= ?1 OR absolute_expires_at <= ?1
+     ORDER BY idle_expires_at LIMIT ?2)`,
+};
+
+/**
+ * Deletes at most `limit` expired rows from one sign-in table and returns the
+ * number deleted. Expiry matches what `loadServerSession` and the callback
+ * already refuse, so no usable row is removed. `now` is in seconds.
+ */
+export async function deleteExpiredOidcRows(
+  env: ServerSessionEnvironment,
+  table: ExpiredOidcTable,
+  now: number,
+  limit: number,
+): Promise<number> {
+  const sql = EXPIRED_OIDC_ROWS[table];
+  if (!sql) throw new Error("Unknown sign-in table");
+  if (!Number.isSafeInteger(now) || now < 0) throw new Error("Invalid sign-in cleanup time");
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000)
+    throw new Error("Invalid sign-in cleanup limit");
+  const db = await oidcDatabase(env);
+  const result = await db.prepare(sql).bind(now, limit).run();
+  const changes = result.meta.changes;
+  return typeof changes === "number" ? changes : 0;
+}
+
 export interface ServerSessionRow {
   id: string;
   context: string;
