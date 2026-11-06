@@ -86,6 +86,9 @@ import {
   reserveOperation,
 } from "./operation-journal.mjs";
 import { STORAGE_KEYS_PER_CALL, guardContext } from "./storage-guard.mjs";
+import { pageRecordsCall } from "./page-records.mjs";
+import { operatorPageRecordsSweep } from "./page-records-sweep.mjs";
+export { PageRecords } from "./page-records.mjs";
 import { HOST_SENDER_ID, PlainSync, clearPrefixes, plainSessionReplaced } from "./plain-sync.mjs";
 import { logSyncRefused, logSyncRounds } from "./plain-sync-log.mjs";
 import { BLOCKING as BLOCKING_COMMENT_CODES } from "../sync/comments.mjs";
@@ -377,6 +380,15 @@ const lifecycleFingerprint = {
   purge_page: "purge_page",
 };
 const toHex = (bytes) => [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+/** Whether `metadata`'s Page has a PageRecords object, and whether it may be
+ * cleared: `clear` for a Page converted from `buffered` storage or a deleted
+ * `buffered` Page, `held` for a live `buffered` one (its records are its only
+ * history), undefined for a Page that never had one. */
+function pageRecordsHolder(metadata) {
+  if (metadata?.recordStorageMigratedFrom === "buffered") return "clear";
+  if (metadata?.recordStorage !== "buffered") return undefined;
+  return pageState(metadata) === "deleted" ? "clear" : "held";
+}
 const noop = async () => {};
 /** A listing that met a shared Page (or its owner's Catalog) that did not
  * answer. A listing is a read, so it is retryable; an overloaded host asks
@@ -1308,6 +1320,14 @@ const gateway = {
         (await operatorAuthorized(request, env))
       )
         return await operatorCommentsMigration(request, env);
+      // ONE-SHOT MIGRATION route (page-records-sweep.mjs; delete with it).
+      // Behind the same lab operator gate.
+      if (
+        url.pathname === "/api/operator/page-records" &&
+        request.method === "POST" &&
+        (await operatorAuthorized(request, env))
+      )
+        return await operatorPageRecordsSweep(request, env);
       // ONE-SHOT MIGRATION route (comments-migration.mjs; delete with it).
       if (url.pathname === "/api/admin/comments-migration" && request.method === "POST") {
         const identity = await authenticate(request, env);
@@ -4774,11 +4794,56 @@ export class Page {
 
   /** What a Page converted from Subduction still holds of it, which the
    * plain host never reads: native records, actor entries, signing-key
-   * bindings and the signer seed. Deleting the Page deletes them too. Each step is idempotent, so a
+   * bindings, the signer seed, and for a `buffered` Page its PageRecords
+   * object. Deleting the Page deletes them too. Each step is idempotent, so a
    * repeated deletion finishes the job. */
   async purgeConvertedRecords() {
+    if (pageRecordsHolder(this.metadata)) await this.pageRecords("clear");
     await clearPrefixes(this.ctx.storage, ["repo/", "host/actor/", "host/binding/"]);
     await this.ctx.storage.delete("host/signer");
+  }
+
+  /** `inspect` or `clear` this Page's PageRecords object
+   * (worker/page-records.mjs). The abandoned-object gate refuses it like any
+   * other storage write. */
+  async pageRecords(action) {
+    const refusal = this.storageRefusal();
+    if (refusal) throw refusal;
+    return pageRecordsCall(this.env.PAGE_RECORDS.getByName(this.metadata.pageId), action);
+  }
+
+  /**
+   * ONE-SHOT MIGRATION (worker/page-records-sweep.mjs; delete with it). The
+   * operator sweep asks this host to report (`dry_run`) or clear (`apply`)
+   * its PageRecords object. Host only: a request that carries a credential
+   * is refused. Only a Page whose history no longer lives there is cleared:
+   * one converted from `buffered` storage, or a deleted `buffered` Page.
+   */
+  async operatorPageRecords(request) {
+    if (request.headers.has("authorization") || request.headers.has("cookie"))
+      throw spaceNotFound();
+    const { mode } = (await readJson(request)) ?? {};
+    if (!["dry_run", "apply"].includes(mode))
+      throw new HttpError(400, 'mode must be "dry_run" or "apply"', "invalid_arguments");
+    const metadata = this.metadata;
+    if (!metadata) return json({ status: "missing" });
+    const base = {
+      page_id: metadata.pageId,
+      state: pageState(metadata),
+      record_storage: metadata.recordStorage ?? null,
+      ...(metadata.recordStorageMigratedFrom && {
+        migrated_from: metadata.recordStorageMigratedFrom,
+      }),
+    };
+    const holder = pageRecordsHolder(metadata);
+    if (holder === undefined) return json({ ...base, status: "none" });
+    if (holder === "held") return json({ ...base, status: "held" });
+    if (mode === "dry_run") {
+      const records = await this.pageRecords("inspect");
+      return json({ ...base, status: records.keys ? "would_clear" : "empty", records });
+    }
+    const { cleared, after } = await this.pageRecords("clear");
+    return json({ ...base, status: "cleared", cleared, after });
   }
 
   async run(request) {
@@ -4817,6 +4882,9 @@ export class Page {
       // ONE-SHOT MIGRATION route (comments-migration.mjs; delete with it).
       if (url.pathname === "/internal/comments-migration")
         return await this.commentsMigration(request);
+      // ONE-SHOT MIGRATION route (page-records-sweep.mjs; delete with it).
+      if (url.pathname === "/internal/operator-page-records")
+        return await this.operatorPageRecords(request);
       if (url.pathname === "/internal/tombstone") {
         // A pending trash or restore would otherwise rewrite its record over
         // the tombstone when it settles.

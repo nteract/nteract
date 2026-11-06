@@ -783,17 +783,64 @@ Every Page on pages.runtimed.run is on plain Automerge sync: an operator
 conversion on 2026-11-05 left 136 active and 3 trashed Pages on `automerge`, 0
 remaining and 0 unreadable. Page10 was converted the same way. The conversion's
 own operator route is gone. The operator gate and secret stay for the one-shot
-route above (`/api/operator/comments-migration`). This build has no Subduction code: it can't open
+routes above and below (`/api/operator/comments-migration`,
+`/api/operator/page-records`). This build has no Subduction code: it can't open
 or convert a Subduction Page, and refuses one with "Unsupported Page record
 storage mode".
 
 The first install of this build restarts the service with
 `restart_reasons: ["config"]`: the configured `wrangler.json` drops the
 `PAGES_ASYNC_PERSISTENCE`, `PAGES_COMPACT_RECORDS` and `PAGES_RECORD_STORAGE`
-vars and the `PAGE_RECORDS` binding. Pages that converted from
+vars. Bindings and migrations are unchanged. Pages that converted from
 Subduction keep their old records in their own storage (`repo/`,
 `host/actor/`, `host/binding/`, `host/signer`) until they are purged, which
 deletes them; nothing reads them.
+
+### Old PageRecords objects
+
+A `buffered` Page kept its Subduction records in a separate PageRecords
+object, named by its Page id. Conversion copied the history into the Page's
+plain storage and left the PageRecords object as it was. pages and page10 hold
+about 138 such objects.
+
+This build keeps the `PageRecords` class and `PAGE_RECORDS` binding
+delete-only (worker/page-records.mjs): `inspect` counts keys and bytes,
+`clear` deletes everything. No read or write path is left. Two things use it:
+
+- **Purge.** Deleting a Page converted from `buffered` storage clears its
+  PageRecords object with the rest of its converted records
+  (`purgeConvertedRecords`). Purge stays permanent.
+- **The one-shot sweep.** ONE-SHOT MIGRATION (worker/page-records-sweep.mjs,
+  scripts/page-records-sweep-operator.mjs; delete them after it has run on
+  both targets). `POST /api/operator/page-records` sits behind the same lab
+  operator gate (worker/operator-gate.mjs). It takes up to 25 cell ids from
+  `celld cell list Page`, and each Page host decides from its own record:
+  `none` (never `buffered`; no object is created by asking), `held` (still
+  `buffered` and not deleted: its records are its only history, so they stay;
+  no deployed Page should report this), `would_clear` or `empty` with
+  `records: {keys, bytes}` on a dry run, `cleared` with `cleared` and `after`
+  on apply, `missing` for a cell without a Page record.
+
+```sh
+cd docs/memos/authenticated-automerge-app-substrate/experiment/pages
+node scripts/page-records-sweep-operator.mjs --target pages --mode dry_run > page-records-dry-run.json
+node scripts/page-records-sweep-operator.mjs --target pages --mode apply > page-records-apply.json
+node scripts/page-records-sweep-operator.mjs --target pages --mode dry_run > page-records-verify.json
+```
+
+Run the same three on `--target page10`. The report totals Pages by status,
+and keys and bytes held or cleared; every response goes to a JSON-lines log.
+The verifying dry run should report no `would_clear` and no `held`. Sweeping
+twice is harmless: a cleared object reports `empty`.
+
+**Removing the class.** The follow-up deletes `PageRecords`, its binding,
+worker/page-records.mjs and the sweep, once the verifying dry run is clean on
+both targets. That needs a `deleted_classes` migration. celld 0.6.3 has no
+sign of supporting one: its binary knows `new_sqlite_classes`, `old_tag`,
+`new_tag` and `steps`, not `deleted_classes`, and it already refuses
+`renamed_classes` (see the Space binding in scripts/build.mjs). Until celld
+accepts it, the class stays delete-only and empty. Until then the
+`v2 new_sqlite_classes: ["PageRecords"]` migration tag stays too.
 
 ## Page quotas
 
