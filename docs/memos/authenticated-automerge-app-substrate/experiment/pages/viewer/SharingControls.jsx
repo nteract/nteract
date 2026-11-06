@@ -327,16 +327,17 @@ function PageSharing({
             publicEnabled={false}
             showInitialAccessLoading={loading}
             primitives={primitives}
+            concealEmails
           />
           {inheritedProject && (
-            <p className="muted">
+            <p className="page-sharing-note">
               If {inheritedProject} has members, they also have access through the Project. These
               settings manage this Page's direct grants only.
             </p>
           )}
           {state.error && available && (
             <button
-              className="subtle-button"
+              className="subtle-button page-sharing-retry"
               disabled={state.refreshing || !!busy}
               onClick={() => void cache.read({ force: true }).catch(() => {})}
             >

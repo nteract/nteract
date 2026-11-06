@@ -330,16 +330,27 @@ try {
   await owner.screenshot({ path: `${output}/projects-view.png` });
   await owner.getByRole("button", { name: "Share", exact: true }).click();
   const sharing = owner.getByRole("dialog", { name: "Share Project", exact: true });
-  await expect(sharing.getByLabel("Email", { exact: true })).toBeVisible();
-  await expect(sharing.getByRole("button", { name: "Add access", exact: true })).toBeDisabled();
-  await sharing.getByLabel("Email", { exact: true }).fill("pending-project@localhost");
-  await sharing.getByRole("combobox", { name: /^Project role/ }).selectOption("editor");
-  await sharing.getByRole("button", { name: "Add access", exact: true }).click();
-  await expect(sharing.getByRole("region", { name: "Pending access" })).toContainText(
-    "pending-project@localhost: Can edit",
-  );
+  const inviteEmail = sharing.getByLabel("Invite by email", { exact: true });
+  await expect(inviteEmail).toBeVisible();
+  await expect(sharing.getByRole("button", { name: "Invite", exact: true })).toBeDisabled();
+  await inviteEmail.fill("pending-project@localhost");
+  await sharing.getByRole("combobox", { name: "Access", exact: true }).selectOption("editor");
+  await sharing.getByRole("button", { name: "Invite", exact: true }).click();
+  // Match on the state label: hovering unmasks the email and changes the text.
+  const pendingRow = sharing.locator("[data-sharing-row]").filter({ hasText: "Pending" });
+  await expect(pendingRow).toContainText("p•••@localhost");
+  await expect(pendingRow).toContainText("Can edit");
+  await expect(sharing).not.toContainText("pending-project@localhost");
+  await pendingRow.hover();
+  await expect(pendingRow).toContainText("pending-project@localhost");
   await owner.screenshot({ path: `${output}/project-sharing-desktop.png` });
-  await sharing.getByRole("button", { name: "Close", exact: true }).click();
+  await owner.mouse.move(0, 0);
+  await expect(pendingRow).toContainText("p•••@localhost");
+  await owner.emulateMedia({ colorScheme: "dark" });
+  await owner.screenshot({ path: `${output}/project-sharing-desktop-dark.png` });
+  await owner.emulateMedia({ colorScheme: "light" });
+  await owner.keyboard.press("Escape");
+  await expect(sharing).toHaveCount(0);
   await owner.setViewportSize({ width: 390, height: 844 });
   await owner.getByRole("button", { name: "Share", exact: true }).click();
   await expect(sharing).toBeVisible();
@@ -349,9 +360,11 @@ try {
     sharingBounds.x >= 0 && sharingBounds.x + sharingBounds.width <= 390,
     `Project sharing panel outside mobile viewport: ${JSON.stringify(sharingBounds)}`,
   );
-  await sharing.getByRole("button", { name: "Revoke pending access", exact: true }).click();
-  await expect(sharing.getByRole("region", { name: "Pending access" })).toHaveCount(0);
-  await sharing.getByRole("button", { name: "Close", exact: true }).click();
+  await sharing
+    .getByRole("button", { name: "Remove pending-project@localhost", exact: true })
+    .click();
+  await expect(pendingRow).toHaveCount(0);
+  await owner.keyboard.press("Escape");
   await owner.setViewportSize({ width: 1280, height: 900 });
   complete("The browser opened the unified Project editor and Page tree from an /s/ link");
 
@@ -363,6 +376,25 @@ try {
   await expect(crumbs).toContainText(title);
   await expect(crumbs).toContainText("Roadmap");
   await owner.screenshot({ path: `${output}/projects-breadcrumbs.png` });
+  // A Page in a Project manages its direct grants; the Project note sits
+  // inside the panel's gutter.
+  await owner.getByRole("button", { name: "Share", exact: true }).click();
+  const pageSharing = owner.getByRole("dialog", { name: "Share Page", exact: true });
+  const projectNote = pageSharing.locator(".page-sharing-note");
+  await expect(projectNote).toContainText("they also have access through the Project");
+  const padding = await projectNote.evaluate((node) => {
+    const style = getComputedStyle(node);
+    return [parseFloat(style.paddingLeft), parseFloat(style.paddingRight)];
+  });
+  assert.ok(
+    padding.every((value) => value >= 12),
+    `Project note text runs to the Share Page edge: ${padding}`,
+  );
+  await owner.emulateMedia({ colorScheme: "dark" });
+  await owner.screenshot({ path: `${output}/page-sharing-in-project-dark.png` });
+  await owner.emulateMedia({ colorScheme: "light" });
+  await owner.keyboard.press("Escape");
+  await expect(pageSharing).toHaveCount(0);
   await crumbs.getByRole("link", { name: title }).click();
   await expect(owner.getByLabel("Page title")).toHaveValue(title);
   await expect(owner.locator("wg-content").first()).toContainText("Where the launch lives.");

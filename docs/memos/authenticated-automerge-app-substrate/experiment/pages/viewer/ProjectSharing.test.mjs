@@ -1,9 +1,38 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createRequire } from "node:module";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { build } from "esbuild";
 import { JSDOM } from "jsdom";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { ProjectSharing, projectSharingTransition as step } from "./ProjectSharing.jsx";
+
+// Bundle so the shared panel under src/ resolves React from this workspace,
+// as the Pages build does.
+const require = createRequire(import.meta.url);
+const bundle = await build({
+  entryPoints: [fileURLToPath(new URL("./ProjectSharing.jsx", import.meta.url))],
+  bundle: true,
+  write: false,
+  platform: "node",
+  format: "esm",
+  jsx: "automatic",
+  plugins: [
+    {
+      name: "test-component",
+      setup(build) {
+        build.onResolve({ filter: /^[^./]/ }, ({ path }) => ({
+          path: pathToFileURL(require.resolve(path)).href,
+          external: true,
+        }));
+        build.onLoad({ filter: /\.css$/ }, () => ({ contents: "", loader: "empty" }));
+      },
+    },
+  ],
+});
+const { ProjectSharing, projectSharingTransition: step } = await import(
+  `data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString("base64")}`
+);
 
 test("Project sharing transitions reject out-of-order completions and duplicate saves", () => {
   const states = ["idle", "loading", "ready", "saving", "failed"];
@@ -57,7 +86,15 @@ test("owner shares Project by email with revision fencing; members never fetch t
   };
   try {
     await act(async () =>
-      root.render(createElement(ProjectSharing, { project, tool, open: true, onOpenChange() {} })),
+      root.render(
+        createElement(ProjectSharing, {
+          project,
+          tool,
+          session: { identity: { principal: "owner", displayName: "Kyle Kelley" } },
+          open: true,
+          onOpenChange() {},
+        }),
+      ),
     );
     assert.match(document.body.textContent, /No email is sent/);
     assert.ok(
@@ -69,19 +106,29 @@ test("owner shares Project by email with revision fencing; members never fetch t
       document.querySelector(".page-sharing > button").getAttribute("aria-haspopup"),
       "dialog",
     );
-    await act(async () =>
-      [...document.querySelectorAll("button")]
-        .find((b) => b.textContent === "Copy Project link")
-        .click(),
-    );
+    await act(async () => document.querySelector('button[aria-label="Copy Project link"]').click());
     assert.equal(copied[0], `http://localhost/project/${project.project_id}`);
     assert.match(document.body.textContent, /Project link copied/);
-    assert.match(document.body.textContent, /pending@example.com: Can edit · Pending/);
-    assert.match(document.body.textContent, /expired@example.com: Can view · Expired/);
+    const rows = [...document.querySelectorAll("[data-sharing-row]")];
+    assert.deepEqual(
+      rows.map((row) => row.querySelector("strong").textContent),
+      ["Kyle Kelley", "Collaborator", "p•••@example.com", "e•••@example.com"],
+      "owner first, then members, then invites; emails masked until hover",
+    );
+    assert.doesNotMatch(document.body.textContent, /pending@example\.com/);
+    assert.equal(rows[2].getAttribute("title"), null, "a masked row has no tooltip to leak it");
+    assert.match(rows[2].textContent, /Can edit\s*Pending/);
+    assert.match(rows[3].textContent, /Can view\s*Expired/);
+    const rowProps = (node) =>
+      node[Object.keys(node).find((key) => key.startsWith("__reactProps"))];
+    await act(async () => rowProps(rows[2]).onPointerEnter());
+    assert.equal(rows[2].querySelector("strong").textContent, "pending@example.com");
+    await act(async () => rowProps(rows[2]).onPointerLeave());
+    assert.equal(rows[2].querySelector("strong").textContent, "p•••@example.com");
     assert.equal(document.querySelector('select[aria-label="Role for removed"]'), null);
     assert.doesNotMatch(document.body.textContent, /removed:/);
     await act(async () =>
-      [...document.querySelectorAll("button")].find((b) => b.textContent === "Remove").click(),
+      document.querySelector('button[aria-label="Remove Collaborator"]').click(),
     );
     assert.equal(calls[1][0], "manage_project_access");
     assert.deepEqual(
@@ -97,9 +144,7 @@ test("owner shares Project by email with revision fencing; members never fetch t
     );
     assert.ok(calls[1][1].idempotency_key);
     await act(async () =>
-      [...document.querySelectorAll("button")]
-        .find((b) => b.textContent === "Revoke pending access")
-        .click(),
+      document.querySelector('button[aria-label="Remove pending@example.com"]').click(),
     );
     assert.equal(calls.at(-1)[1].action, "revoke_invite");
     assert.equal(calls.at(-1)[1].invite_id, "pending");
@@ -131,7 +176,7 @@ test("owner shares Project by email with revision fencing; members never fetch t
         .dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true })),
     );
     assert.equal(calls.length, beforeInvalid, "invalid email never reaches sharing API");
-    const memberRole = document.querySelector('select[aria-label="Role for account:member"]');
+    const memberRole = document.querySelector('select[aria-label="Role for Collaborator"]');
     await act(async () => {
       memberRole.value = "commenter";
       memberRole.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
