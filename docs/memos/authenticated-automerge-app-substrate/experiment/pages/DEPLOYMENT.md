@@ -675,8 +675,13 @@ gone. A Page that wrote a migration change keeps its revert records in
 `host/comments-migration/state` and `result/*`; nothing reads them.
 
 This build reads and admits neither old form. A read that meets a message
-with no rich text or with a `body` answers `409 stored_form_unsupported`, and
-the tools refuse to edit one the same way. Admission refuses, as
+with no rich text or with a `body` returns it with an empty body and
+`content_error: "stored_form_unsupported"`, and the viewer shows a
+placeholder in its place; the rest of the thread and the Page stay readable.
+The tools refuse to edit one with `409 stored_form_unsupported`. A replica
+that missed the migration can still hold one: its concurrent `body` write
+survives a merge with the migration's delete. Admission keeps that write off
+the host, so only the replica that wrote it shows the placeholder. Admission refuses, as
 `outdated_form`, a change that creates or touches a message with a `body` or
 without the rich format, a soft delete included, and a new message or content
 write whose spans are out of the editor's form.

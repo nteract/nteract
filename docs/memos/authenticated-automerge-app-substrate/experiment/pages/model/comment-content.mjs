@@ -1,6 +1,6 @@
 import * as A from "@automerge/automerge/slim";
 import { RICH_FORMAT, isRich } from "./richtext-format.mjs";
-import { storedFormUnsupported } from "./stored-form.mjs";
+import { STORED_FORM_UNSUPPORTED, storedFormUnsupported } from "./stored-form.mjs";
 import { parseAgentMarkdown } from "./markdown-import.mjs";
 import { updateSpansConfig } from "./marks.mjs";
 import { exportMarkdown } from "./markdown-serializer.mjs";
@@ -34,10 +34,16 @@ export function commentMarkdown(message) {
  *   spans are still plain text; once they hold formatting, it reads as
  *   Markdown.
  * - A message in a form an earlier build stored (a bare `body`, or a `body`
- *   copy beside its spans) is refused with `stored_form_unsupported`.
+ *   copy beside its spans) reads as an empty plain body with
+ *   `content_error: "stored_form_unsupported"`. Its stored text is never
+ *   shown or guessed at, and the rest of the thread and the Page stay
+ *   readable. Writes to it are still refused (writeCommentSpans).
+ *
+ * Never throws: one message can't make a whole comment list unreadable.
  */
 export function commentBodyProjection(message) {
-  requireStoredMessage(message);
+  if (isStoredFormMessage(message))
+    return { body: "", body_format: "plain", content_error: STORED_FORM_UNSUPPORTED };
   try {
     if (String(message.bodyFormat ?? "") === PLAIN_FORMAT) {
       const text = plainCommentText(A.spans(message, ["richText"]));
@@ -59,12 +65,18 @@ export function commentBodyProjection(message) {
   }
 }
 
-/** Refuse a message stored in a form an earlier build wrote: no rich text,
- * or a `body` copy beside it. The comments migration rewrote every stored
- * message, so meeting one means it didn't come through that rewrite. */
+/** Whether a message is in a form an earlier build wrote: no rich text, or
+ * a `body` copy beside it. The comments migration rewrote every stored
+ * message, so meeting one means it didn't come through that rewrite: a
+ * stale replica's concurrent `body` write survives a merge with the
+ * migration's delete, for one. */
+export function isStoredFormMessage(message) {
+  return !isRich(message) || message.body !== undefined;
+}
+
+/** Refuse to write over a message in an earlier build's form. */
 function requireStoredMessage(message) {
-  if (!isRich(message) || message.body !== undefined)
-    throw storedFormUnsupported("a comment on this Page");
+  if (isStoredFormMessage(message)) throw storedFormUnsupported("a comment on this Page");
 }
 
 /** `spans` in the editor's form: what Wordgard's `encode` writes for the
