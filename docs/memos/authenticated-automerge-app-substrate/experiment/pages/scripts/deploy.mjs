@@ -15,6 +15,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { sourceFingerprint } from "./source-fingerprint.mjs";
 import { stageArtifacts } from "./stage-artifacts.mjs";
+import { parseFromArtifactArgs, promoteFromArtifact } from "./promote-artifact.mjs";
 import {
   deploymentProfile,
   assertQualifiedDeploymentTarget,
@@ -54,13 +55,16 @@ function files(directory, prefix = "") {
       return [relative];
     });
 }
-function prepare() {
-  if (run("git", ["status", "--porcelain"], { cwd: repo }))
+// `sourceRoot` is the checkout whose source and dist are staged: this one, or
+// a promotion worktree holding a gate artifact. The stage lands under this
+// checkout's .context either way. `releaseArtifact` records that artifact.
+function prepare({ sourceRoot = repo, sourceApp = pages, releaseArtifact } = {}) {
+  if (run("git", ["status", "--porcelain"], { cwd: sourceRoot }))
     throw new Error("Commit the reviewed source before preparing a deployment");
-  const source = run("git", ["rev-parse", "HEAD"], { cwd: repo });
-  const dist = path.join(pages, "dist");
+  const source = run("git", ["rev-parse", "HEAD"], { cwd: sourceRoot });
+  const dist = path.join(sourceApp, "dist");
   const buildReceipt = JSON.parse(readFileSync(path.join(dist, "build-receipt.json")));
-  const currentFingerprint = sourceFingerprint(pages, { root: repo });
+  const currentFingerprint = sourceFingerprint(sourceApp, { root: sourceRoot });
   if (buildReceipt.fingerprint?.sha256 !== currentFingerprint.sha256)
     throw new Error("Bundle source fingerprint is stale; build and validate the current source");
   assertReleaseOpensTargetPages(target, { ...buildReceipt, source_sha: source });
@@ -99,14 +103,15 @@ function prepare() {
     "routes.mjs",
     "session-keys.mjs",
   ])
-    cpSync(path.join(scripts, "deployment", name), path.join(output, name));
+    cpSync(path.join(sourceApp, "scripts", "deployment", name), path.join(output, name));
   const manifest = {
     schema: 1,
     source_sha: source,
-    source_tree: run("git", ["rev-parse", "HEAD^{tree}"], { cwd: repo }),
+    source_tree: run("git", ["rev-parse", "HEAD^{tree}"], { cwd: sourceRoot }),
     prepared_at: new Date().toISOString(),
     source_fingerprint: currentFingerprint.sha256,
     build_receipt: buildReceipt,
+    ...(releaseArtifact ? { release_artifact: releaseArtifact } : {}),
     deployment,
     runtime,
     files: Object.fromEntries(
@@ -119,7 +124,13 @@ function prepare() {
   });
   console.log(
     JSON.stringify(
-      { prepared: output, source_sha: source, runtime, files: Object.keys(manifest.files).length },
+      {
+        prepared: output,
+        source_sha: source,
+        runtime,
+        files: Object.keys(manifest.files).length,
+        ...(releaseArtifact ? { release_artifact: releaseArtifact } : {}),
+      },
       null,
       2,
     ),
@@ -130,7 +141,8 @@ const [mode = "plan", stage, flag, extra, ...rest] = args;
 // reads at startup changed.
 const restart = mode === "install" && extra === "--restart";
 const keyMode = ["rotate-key", "retire-key"].includes(mode);
-if (!keyMode && ((extra && !restart) || rest.length))
+const fromArtifact = mode === "prepare" && stage === "--from-artifact";
+if (!keyMode && !fromArtifact && ((extra && !restart) || rest.length))
   throw new Error("Unexpected deployment argument");
 if (
   ["prepare", "upload", "install", "provision", "publish", "rotate-key", "retire-key"].includes(
@@ -140,6 +152,13 @@ if (
   assertQualifiedDeploymentTarget(target);
 if (mode === "plan" && !stage) console.log(JSON.stringify(deployment, null, 2));
 else if (mode === "prepare" && !stage) prepare();
+else if (fromArtifact)
+  promoteFromArtifact({
+    ...parseFromArtifactArgs(args.slice(1)),
+    repo,
+    appRelative: path.relative(repo, pages),
+    prepare,
+  });
 else if (keyMode) {
   // Edits /etc/<service>/session-keys.json on the host. The helper comes from
   // this checkout over SSH stdin and runs as root under the deployment lock;
@@ -209,5 +228,5 @@ else if (keyMode) {
   );
 } else
   throw new Error(
-    "Usage: deploy.mjs [--target pages-next|page3|page4|page5|page6|page7|page8|page9|page10|pages|pages2] [plan | prepare | upload LOCAL_STAGE | install REMOTE_STAGE --apply [--restart] | provision [--apply] | publish REMOTE_STAGE --apply | rotate-key [--apply --from ACTIVE_KID] | retire-key [--kid KID] [--force] [--apply --from ACTIVE_KID]]",
+    "Usage: deploy.mjs [--target pages-next|page3|page4|page5|page6|page7|page8|page9|page10|pages|pages2] [plan | prepare [--from-artifact GATE_RUN_ID [--attempt N] [--worktree]] | upload LOCAL_STAGE | install REMOTE_STAGE --apply [--restart] | provision [--apply] | publish REMOTE_STAGE --apply | rotate-key [--apply --from ACTIVE_KID] | retire-key [--kid KID] [--force] [--apply --from ACTIVE_KID]]",
   );

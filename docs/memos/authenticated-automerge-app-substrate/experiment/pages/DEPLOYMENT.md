@@ -66,6 +66,56 @@ node scripts/deploy.mjs --target pages publish REMOTE_STAGE --apply
 including one an earlier prototype left behind. Remove such a record in
 Cloudflare by hand, after checking nothing serves from it, then rerun.
 
+### Promote production from the CI artifact
+
+Every green push to `main` uploads the gate's `pages-release` artifact. Page10
+deploys from it, and its `build_id` equals a local build of the same commit.
+Production can take the same bytes. Pick the gate run whose release Page10
+qualified, then check that browser E2E passed for its SHA. From `pages`, with
+`gh` signed in:
+
+```sh
+git fetch origin main
+node scripts/deploy.mjs --target pages plan
+node scripts/deploy.mjs --target pages prepare --from-artifact GATE_RUN_ID --worktree
+node scripts/deploy.mjs --target pages upload LOCAL_STAGE
+node scripts/deploy.mjs --target pages install REMOTE_STAGE --apply
+node scripts/deploy.mjs --target pages publish REMOTE_STAGE --apply
+```
+
+`--attempt N` names a rerun attempt; the default is the run's latest. Before
+anything is written, `prepare --from-artifact` uses `gh api` to require:
+
+- The run is `.github/workflows/authenticated-automerge-spike.yml` in
+  `nteract/nteract`, a `push` to `main`, and green at that attempt. Its head
+  SHA is the release's source.
+- The run holds exactly one `pages-release` artifact. It is unexpired, at most
+  64 MiB, and created while that attempt's `Pages release bundle` job ran
+  successfully.
+
+The ZIP downloads to a temp file, and its sha256 must equal the artifact's
+digest before it is parsed. Extraction refuses symlinks, absolute paths, `..`
+or `.git` segments, more than 64 entries, or more than 128 MiB. The file set
+must be exactly the receipt's `files` plus `build-receipt.json`, and each file
+must match its sha256. The receipt must name the run's SHA and a clean tree.
+These are the lab1 controller's rules; change both together.
+
+Without `--worktree`, the release goes into this checkout, which must be clean
+and at the run's SHA with no `dist`. `--worktree` creates a detached worktree at
+`.context/pages-promote/<sha>` instead. Either way the release lands in that
+checkout's `pages/dist`, and the existing `prepare` runs on that checkout. It
+checks the receipt fingerprint against the source there, so the bytes are
+bound to the commit exactly as for a local build. The stage manifest records
+the artifact as `release_artifact`: repository, run, attempt, artifact id,
+digest, size, creation and expiry times, `build_id` and receipt sha256. The
+stage still lands in `.context/pages-deploy/<sha>` of the checkout you ran it
+from. After installing, remove the worktree with `git worktree remove`.
+
+This removes two constraints. Production no longer needs a build on an
+operator's laptop. Production also no longer has to be promoted from Page10's
+build directory on lab1 before the next Page10 deploy prunes it. The artifact
+lasts 30 days, so promote within that window or rebuild locally.
+
 ## pages2 on lab2
 
 The `pages2` profile is a fresh, empty target on its own host:
