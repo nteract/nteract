@@ -37,7 +37,7 @@ const foreignDataframe = (span, pageId) =>
 // paragraph beside the leaf, and the adapter can't place it at all.
 // Preserved Markdown keeps text after it as its own content. A leaf inside a
 // text container reads as a notice instead (dataframeInText).
-const textlessLeaf = ({ type, parents, isEmbed }) =>
+export const textlessLeaf = ({ type, parents, isEmbed }) =>
   !isEmbed &&
   nodeType(type)?.kind === "leaf" &&
   String(type) !== "pages-opaque" &&
@@ -265,6 +265,48 @@ export function validateMarkerValue(value) {
       break;
   }
 }
+
+/** What keeps a block's spans from passing validateRichSpans, or null when
+ * they pass. `leafText` counts text or inline nodes stored straight after a
+ * rule or dataframe; `repaired` says whether the spans pass once read the way
+ * projections read them (readableSpans, every unknown node a notice), marks
+ * aside. Page admission compares these before and after a frame so a frame
+ * is refused only for a tree error it adds. */
+export function spanTreeErrors(spans) {
+  try {
+    validateRichSpans(spans, Infinity);
+    return null;
+  } catch {
+    // Counted below.
+  }
+  let leafText = 0;
+  for (let i = 1; i < spans.length; i++) {
+    const before = spans[i - 1],
+      span = spans[i];
+    if (
+      before.type === "block" &&
+      textlessLeaf(before.value) &&
+      (span.type !== "block" || span.value?.isEmbed)
+    )
+      leafText++;
+  }
+  let repaired = true;
+  try {
+    const unmarked = spans.map((span) =>
+      span.type === "text" ? { type: "text", value: span.value } : span,
+    );
+    validateRichSpans(readableSpans(unmarked, true), Infinity);
+  } catch {
+    repaired = false;
+  }
+  return { leafText, repaired };
+}
+
+/** Whether the tree errors after a frame (`after`) add to those before it
+ * (`before`), both from spanTreeErrors. */
+export const addsTreeError = (before, after) =>
+  after !== null &&
+  (before === null || after.leafText > before.leafText || (before.repaired && !after.repaired));
 
 /** Schema check for native rich-text spans read from any Automerge text
  * object: a Page block's `richText` or a comments-doc message `body`. */

@@ -3,7 +3,12 @@ import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { Repo, cbor, generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
-import { createPageData, initializePage, orderedBlockIds } from "../model/page.mjs";
+import {
+  applyPageOperation,
+  createPageData,
+  initializePage,
+  orderedBlockIds,
+} from "../model/page.mjs";
 import { BUILD_FEATURES } from "../model/schema-features.mjs";
 import { AutomergeSyncBackend } from "../sync/backend.mjs";
 import { DocStore, MemoryByteStore } from "../sync/doc-store.mjs";
@@ -1422,6 +1427,76 @@ test("a host tool edit with content admission refuses answers 400 and journals n
   assert.equal((await refused.json()).code, "invalid_page_content");
   assert.equal(await f.storage.get("host/operation/oversize-block"), undefined);
   assert.deepEqual(A.getHeads(host.handle.doc()), heads);
+});
+
+test("two peers' concurrent edits around a rule are admitted in either order and converge", async (t) => {
+  const identity = {
+    principal: "user:anaconda-fixture:fixture-user",
+    displayName: "Fixture",
+    driver: "Browser",
+    credentialKind: "oidc",
+    canWrite: true,
+    expiresAt: Date.now() + 3_600_000,
+  };
+  const results = [];
+  for (const order of [
+    ["typed", "deleted"],
+    ["deleted", "typed"],
+  ]) {
+    const f = await fixture(t);
+    const host = f.page();
+    assert.ok((await f.register(host)).ok);
+    // "Intro", a rule, then a paragraph the peers race over.
+    await host.handle.change((d) =>
+      applyPageOperation(d, {
+        operation: "edit_page",
+        arguments: {
+          operations: [
+            {
+              op: "replace_block_markdown",
+              block_id: firstBlock(d),
+              markdown: "Intro\n\n---\n\ndoomed words",
+            },
+          ],
+        },
+      }),
+    );
+    await host.flush();
+    const doc = host.handle.doc();
+    const path = ["blocks", firstBlock(doc), "richText"];
+    const text = String(doc.blocks[firstBlock(doc)].richText);
+    const last = text.lastIndexOf("\uFFFC");
+    const frames = {
+      deleted: A.getLastLocalChange(
+        A.change(A.clone(doc, { actor: "0a".repeat(16) }), (d) =>
+          A.splice(d, path, last, text.length - last),
+        ),
+      ),
+      typed: A.getLastLocalChange(
+        A.change(A.clone(doc, { actor: "0b".repeat(16) }), (d) =>
+          A.splice(d, path, last + 1, 0, "kept "),
+        ),
+      ),
+    };
+    const browser = rawSocket(host, identity, { senderId: `b-${order[0]}` });
+    const tree = treeHex(f.args.document_id);
+    order.forEach((name, r) =>
+      browser.client.send({ t: "sync", doc: tree, m: helloWith([frames[name]]), r: r + 1 }),
+    );
+    const landed = () => {
+      const now = String(host.handle.doc().blocks[firstBlock(doc)].richText);
+      return now.includes("kept ") && !now.includes("doomed");
+    };
+    await until(() => landed() || browser.frames.some((frame) => frame.t === "refused"));
+    assert.deepEqual(
+      browser.frames.filter((frame) => frame.t === "refused"),
+      [],
+      `${order.join(" then ")}: nothing refused`,
+    );
+    results.push(A.spans(host.handle.doc(), path));
+    browser.client.close();
+  }
+  assert.deepEqual(results[0], results[1]);
 });
 
 test("a Page holding content from before admission still takes valid browser edits", async (t) => {

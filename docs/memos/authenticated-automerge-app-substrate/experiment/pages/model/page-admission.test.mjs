@@ -41,13 +41,16 @@ const markerIndexes = (doc, path) => {
   return out;
 };
 
-/** `fn` applied to a copy of `doc`; returns admission's answer. */
+/** `fn` applied to a copy of `doc`, loaded into another copy as the host
+ * loads a browser's changes; returns admission's answer. */
 function admit(doc, fn) {
   const next = A.change(A.clone(doc), fn);
+  const preview = A.loadIncremental(A.clone(doc), A.saveSince(next, A.getHeads(doc)));
   try {
-    return admitPageChanges(doc, next);
+    return admitPageChanges(doc, preview);
   } finally {
     A.free(next);
+    A.free(preview);
   }
 }
 const refusedFor = (rule, result) => {
@@ -213,10 +216,9 @@ test("typing, formatting, splits, joins and every node type a host writer stores
     "split",
     admit(doc, (d) => A.splitBlock(d, path, 4, { type: "paragraph", parents: [], attrs: {} })),
   );
-  ok(
-    "join",
-    admit(doc, (d) => A.joinBlock(d, path, markerIndexes(d, path)[1])),
-  );
+  const join = admit(doc, (d) => A.joinBlock(d, path, markerIndexes(d, path)[1]));
+  ok("join", join);
+  assert.equal(join.stats.fullReads, 1, "a join reads its block");
   ok(
     "title",
     admit(doc, (d) => A.updateText(d, ["title"], "Renamed")),
@@ -356,4 +358,215 @@ test("requirePageContent refuses a host write with a 400 before it is journaled"
     rule: "block_size",
   });
   A.free(next);
+});
+
+/** The host's view of two peers' frames: admit each against the live
+ * document in `order`, merging the admitted ones. Returns each answer and
+ * the converged document. */
+function arrive(base, frames, order) {
+  let live = A.clone(base);
+  const answers = {};
+  for (const name of order) {
+    const preview = A.merge(A.clone(live), frames[name]);
+    answers[name] = admitPageChanges(live, preview);
+    if (answers[name].ok) {
+      A.free(live);
+      live = preview;
+    } else A.free(preview);
+  }
+  return { answers, live };
+}
+
+test("concurrent honest edits are admitted in either arrival order and converge", async () => {
+  const { encode, schema } = await import("./wordgard-doc.mjs");
+  const { Leaf } = await import("wordgard/doc");
+  const { Blockquote, HorizontalRule, Paragraph } = await import("wordgard/types");
+  const { PagesDataframe } = await import("./wordgard-doc.mjs");
+  const { updateSpansConfig } = await import("./marks.mjs");
+  const src = `/api/pages/${pageId}/assets/${assetId}`;
+  const leaves = [
+    HorizontalRule,
+    Blockquote.create([PagesDataframe.of({ src, media_type: "application/vnd.apache.parquet" })]),
+  ];
+  for (const leaf of leaves) {
+    let doc = A.from(createPageData({ pageId, title: "Concurrent" }));
+    const id = orderedBlockIds(doc)[0];
+    const tree = schema.doc([
+      Paragraph.create([Leaf.text("Intro")]),
+      leaf,
+      Paragraph.create([Leaf.text("doomed words")]),
+    ]);
+    doc = A.change(doc, (d) => {
+      d.blocks[id].format = RICH_FORMAT;
+      d.blocks[id].richText = "";
+      A.updateSpans(d, textPath(id), encode(tree), updateSpansConfig);
+    });
+    const path = textPath(id);
+    const markers = markerIndexes(doc, path);
+    const last = markers.at(-1);
+    const text = String(doc.blocks[id].richText);
+    // Peer A deletes the last paragraph, marker and text.
+    const deleted = A.change(A.clone(doc, { actor: "0a".repeat(16) }), (d) =>
+      A.splice(d, path, last, text.length - last),
+    );
+    // Peer B types into it.
+    const typed = A.change(A.clone(doc, { actor: "0b".repeat(16) }), (d) =>
+      A.splice(d, path, last + 1, 0, "kept "),
+    );
+    const frames = { deleted, typed };
+    const one = arrive(doc, frames, ["typed", "deleted"]);
+    const two = arrive(doc, frames, ["deleted", "typed"]);
+    for (const [label, run] of [
+      ["typed first", one],
+      ["deleted first", two],
+    ])
+      for (const [name, answer] of Object.entries(run.answers))
+        assert.equal(answer.ok, true, `${label}, ${name}: ${JSON.stringify(answer.reason)}`);
+    assert.deepEqual(A.spans(one.live, path), A.spans(two.live, path));
+    // The delete arriving second met the typed text, and was judged as its
+    // writer made it.
+    assert.equal(one.answers.deleted.stats.writerView, true);
+    assert.equal(two.answers.typed.stats.writerView, true);
+  }
+});
+
+/** A block of explicit spans, for shapes no writer builds directly. */
+function spansPage(spans) {
+  let doc = A.from(createPageData({ pageId, title: "Spans" }));
+  const id = orderedBlockIds(doc)[0];
+  doc = A.change(doc, (d) => {
+    d.blocks[id].format = RICH_FORMAT;
+    d.blocks[id].richText = "";
+    A.updateSpans(d, textPath(id), spans);
+  });
+  return { doc, id, path: textPath(id) };
+}
+// Marker strings as the editor's encoder stores them.
+const marker = (type, parents = [], attrs = {}) => ({
+  type: "block",
+  value: {
+    type: new A.ImmutableString(type),
+    parents: parents.map((parent) => new A.ImmutableString(parent)),
+    attrs: Object.fromEntries(
+      Object.entries(attrs).map(([key, value]) => [key, new A.ImmutableString(value)]),
+    ),
+    isEmbed: false,
+  },
+});
+const run = (value, marks) => ({ type: "text", value, ...(marks && { marks }) });
+
+test("text typed straight after a rule or dataframe is refused without reading the block", () => {
+  const src = `/api/pages/${pageId}/assets/${assetId}`;
+  for (const leaf of [
+    marker("horizontal-rule"),
+    marker("dataframe", [], { src, media_type: "application/vnd.apache.parquet" }),
+  ]) {
+    const { doc, path } = spansPage([
+      marker("paragraph"),
+      run("Intro"),
+      leaf,
+      marker("paragraph"),
+      run("next"),
+    ]);
+    const [, at] = markerIndexes(doc, path);
+    const result = admit(doc, (d) => A.splice(d, path, at + 1, 0, "stray"));
+    refusedFor("structure", result);
+    assert.equal(result.stats.fullReads, 0, "refused from one marker read");
+    // Typing inside the paragraph after it is fine.
+    const inside = admit(doc, (d) => A.splice(d, path, at + 3, 0, "fine"));
+    assert.equal(inside.ok, true);
+    assert.equal(inside.stats.fullReads, 0);
+  }
+});
+
+test("text a merge left after a rule takes more typing, at its start too", () => {
+  // What readers repair into a paragraph: text right after a rule.
+  const { doc, path } = spansPage([
+    marker("paragraph"),
+    run("Intro"),
+    marker("horizontal-rule"),
+    run("left"),
+  ]);
+  const [, rule] = markerIndexes(doc, path);
+  for (const at of [rule + 1, rule + 3, rule + 5]) {
+    const result = admit(doc, (d) => A.splice(d, path, at, 0, "x"));
+    assert.equal(result.ok, true, `at ${at}: ${JSON.stringify(result.reason)}`);
+  }
+});
+
+test("an inherited mark must be one the neighbouring text already holds, by strict value", () => {
+  const { doc, path } = spansPage([
+    marker("paragraph"),
+    run("legacy", { blink: true }),
+    run(" plain words here"),
+  ]);
+  // Inserting and marking in one change reads as a splice carrying the mark.
+  const far = admit(doc, (d) => {
+    A.splice(d, path, 15, 0, "zz");
+    A.mark(d, path, { start: 15, end: 17, expand: "none" }, "blink", true);
+  });
+  refusedFor("mark", far);
+  const loose = admit(doc, (d) => {
+    A.splice(d, path, 7, 0, "zz");
+    A.mark(d, path, { start: 7, end: 9, expand: "none" }, "blink", "true");
+  });
+  refusedFor("mark", loose);
+  // Typing at the end of the legacy run inherits it.
+  assert.equal(admit(doc, (d) => A.splice(d, path, 4, 0, "x")).ok, true);
+});
+
+test("deleting an unknown root key or block field is cleanup, and admitted", () => {
+  let doc = page("Body");
+  const id = blockOf(doc);
+  doc = A.change(doc, (d) => {
+    d.legacyRoot = { kept: true };
+    d.blocks[id].legacy = "x";
+  });
+  assert.equal(
+    admit(doc, (d) => {
+      delete d.legacyRoot;
+    }).ok,
+    true,
+  );
+  assert.equal(
+    admit(doc, (d) => {
+      delete d.blocks[id].legacy;
+    }).ok,
+    true,
+  );
+});
+
+test("a marker deleted by a plain text delete is judged by reading its block", () => {
+  // Deleting the paragraph marker after a rule leaves its text straight
+  // after the rule, which the tree check can't place here.
+  const { doc, path } = spansPage([
+    run("Intro"),
+    marker("horizontal-rule"),
+    marker("paragraph"),
+    run("after"),
+  ]);
+  const at = markerIndexes(doc, path).at(-1);
+  refusedFor(
+    "structure",
+    admit(doc, (d) => A.splice(d, path, at, 1)),
+  );
+  // Deleting text beside it reads nothing.
+  const text = admit(doc, (d) => A.splice(d, path, at + 1, 2));
+  assert.equal(text.ok, true);
+  assert.equal(text.stats.fullReads, 0);
+});
+
+test("a block with a conflict on a field this frame writes is checked on every value", () => {
+  const doc = page("Body");
+  const id = blockOf(doc);
+  // Two concurrent changes in one frame write the same field; only the
+  // winner shows in the patches.
+  const one = A.change(A.clone(doc, { actor: "01".repeat(16) }), (d) => {
+    d.blocks[id].kind = "markdown-but-not";
+  });
+  const two = A.change(A.clone(doc, { actor: "ff".repeat(16) }), (d) => {
+    d.blocks[id].kind = "markdown";
+  });
+  const preview = A.merge(A.clone(one), two);
+  refusedFor("block_entry", admitPageChanges(doc, preview));
 });
