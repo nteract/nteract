@@ -1427,9 +1427,10 @@ people can read in the discussion. Rich message reads return body as Markdown
 with body_format: "markdown". Omitted format keeps new messages literal plain
 text and retains Markdown for edits to an existing rich message. Explicit
 body_format: "plain" inserts the supplied text literally, including its markers.
-Existing plain messages are not automatically reinterpreted. Bodies are limited
-to 16,000 characters and rich structure to 64 KiB; split larger discussions into
-replies or put the detailed table in the document.
+Existing plain messages are not automatically reinterpreted. A message holds at
+most 16,000 text characters (formatting and structure don't count) and 64 KiB of
+rich text; split larger discussions into replies or put the detailed table in
+the document.
 
 ## Hosted MCP
 

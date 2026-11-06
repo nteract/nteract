@@ -82,7 +82,7 @@ test("a forged edit is refused, and the owner keeps syncing both ways on the sam
 
     // Mallory's tab skips the rules and rewrites the owner's message.
     s.attackerDoc.change((draft) =>
-      A.updateText(draft, ["threads", threadId, "messages", messageId, "body"], "Forged"),
+      A.updateText(draft, ["threads", threadId, "messages", messageId, "richText"], "Forged"),
     );
     await settled(() => s.refused.length === 1);
     assert.deepEqual(s.refused[0], { key: s.attacker.keyId, code: "not_message_author" });
@@ -100,11 +100,11 @@ test("a forged edit is refused, and the owner keeps syncing both ways on the sam
       "the refusal dropped no connection",
     );
     assert.equal(
-      String(s.hostDoc.doc().threads[threadId].messages[messageId].body),
+      String(s.hostDoc.doc().threads[threadId].messages[messageId].richText),
       "Owner's note",
     );
     assert.equal(
-      String(s.ownerDoc.doc().threads[threadId].messages[messageId].body),
+      String(s.ownerDoc.doc().threads[threadId].messages[messageId].richText),
       "Owner's note",
       "the forged change never reached another peer",
     );
@@ -131,7 +131,11 @@ test("a burst of forged changes costs a bounded number of checks, and the owner 
     const before = s.admission.stats.checked;
     for (let i = 0; i < 30; i++)
       s.attackerDoc.change((draft) =>
-        A.updateText(draft, ["threads", threadId, "messages", messageId, "body"], `Forged ${i}`),
+        A.updateText(
+          draft,
+          ["threads", threadId, "messages", messageId, "richText"],
+          `Forged ${i}`,
+        ),
       );
     await settled(() => s.throttledKeys.length >= 1);
     await new Promise((resolve) => setTimeout(resolve, 300));
@@ -142,7 +146,7 @@ test("a burst of forged changes costs a bounded number of checks, and the owner 
     s.comment(s.ownerDoc, owner, { action: "reply", thread_id: threadId, body: "Still here" });
     await settled(() => Object.keys(s.hostDoc.doc().threads[threadId].messages).length === 2);
     assert.equal(
-      String(s.hostDoc.doc().threads[threadId].messages[messageId].body),
+      String(s.hostDoc.doc().threads[threadId].messages[messageId].richText),
       "Owner's note",
     );
   } finally {

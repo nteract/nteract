@@ -86,7 +86,7 @@ test("a forged edit of another author's message is refused before it's stored, a
     hb.change((d) =>
       A.updateText(
         d,
-        ["threads", ids.thread_id, "messages", ids.message_id, "body"],
+        ["threads", ids.thread_id, "messages", ids.message_id, "richText"],
         "Alice agrees with Bob",
       ),
     );
@@ -102,7 +102,7 @@ test("a forged edit of another author's message is refused before it's stored, a
     assert.equal(h.store.manifest(id).seq, before, "nothing stored");
     assert.equal((await changesOf(h, id, bobActor)).length, 1, "only Bob's reply is stored");
     await idle();
-    assert.equal(ha.doc().threads[ids.thread_id].messages[ids.message_id].body, "Alice opens");
+    assert.equal(ha.doc().threads[ids.thread_id].messages[ids.message_id].richText, "Alice opens");
 
     // A fresh browser (new session, new actor) is still blocked.
     bob2 = await browser(h, { principal: BOB, role: "commenter" });
@@ -122,13 +122,13 @@ test("a forged edit of another author's message is refused before it's stored, a
     ha.change((d) =>
       A.updateText(
         d,
-        ["threads", ids.thread_id, "messages", ids.message_id, "body"],
+        ["threads", ids.thread_id, "messages", ids.message_id, "richText"],
         "Alice opens, edited",
       ),
     );
     await until(
       async () =>
-        (await h.document(id)).threads[ids.thread_id].messages[ids.message_id].body ===
+        (await h.document(id)).threads[ids.thread_id].messages[ids.message_id].richText ===
         "Alice opens, edited",
     );
   } finally {

@@ -214,19 +214,27 @@ references; it does not publish the Page or change asset access.
   Highlighted passages and thread quotes navigate between text and discussion.
   Draft anchors capture native object identity and text cursors; deleted or
   replaced passages reject submission rather than moving a comment elsewhere.
-  New browser comments use Wordgard for formatting, links, lists, and native
-  table cells. Drafts retain their native spans until Send and survive responsive
-  rail/sheet changes; changing Pages clears local drafts. Expand the sidebar for
-  wider discussions. Agent comments opt in with `body_format: "markdown"` on
-  `manage_page_comment`; rich comment reads return Markdown and the same format
-  marker. Existing unmarked comments remain literal. Omitting the format when
-  editing retains the message's current kind; `plain` can preserve literal syntax.
-  Thread/message IDs and passage anchors stay unchanged. The original `body`
-  string is frozen import provenance, not a current-content mirror for old
-  clients; native `richText` is authoritative once marked rich. If native content
-  cannot be decoded, reads return that original text with
-  `content_error: "rich_text_unavailable"` rather than failing the entire Page. Source is limited to 16,000 characters and native structure
-  to 64 KiB. Formatting-only changes appear in `read_page_changes`.
+  Comments are the same rich text as a Page body: every message is stored as
+  the editor's spans, the form Wordgard's `encode` writes, through the same
+  path Page bodies use. The browser composer is a Wordgard editor that sends its
+  spans as they are, with no Markdown in between; drafts keep their spans until
+  Send and survive responsive rail/sheet changes; changing Pages clears local
+  drafts. Expand the sidebar for wider discussions. Agent comments opt in with
+  `body_format: "markdown"` on `manage_page_comment`; rich comment reads return
+  Markdown computed from the spans and the same format marker. Plain input
+  (`body_format: "plain"`, the default for a new message) is stored as spans
+  with no marks, each newline a hard break, and records `bodyFormat: "plain"`,
+  so reads return the text literally without a format marker, as plain reads
+  always have. Omitting the format when editing retains the message's current
+  kind. Thread/message IDs and passage anchors stay unchanged. No Markdown copy
+  (`body`) is stored; messages earlier builds wrote with only a `body`, or with
+  a `body` copy beside adapter-form spans, still read and validate until the
+  comments migration rewrites them (DEPLOYMENT.md). If native content cannot be
+  decoded, reads return an earlier build's copy or the bare text with
+  `content_error: "rich_text_unavailable"` rather than failing the entire Page.
+  A message holds at most 16,000 text characters (block markers don't count,
+  so the span form never changes a message's length) and 64 KiB of stored
+  spans. Formatting-only changes appear in `read_page_changes`.
 - **Highlights:** the formatting toolbar's highlighter offers the four palette
   colors and Remove; Cmd/Ctrl+Shift+H toggles yellow. A highlight is a text mark
   (`highlight`), so it syncs, merges, and follows edit permission like bold.
@@ -249,7 +257,7 @@ references; it does not publish the Page or change asset access.
     `body_format: "markdown"`) refuse these with
     `400 unsupported_markdown` and `unsupported: { construct, line, column,
     excerpt }`, before anything is written. The column counts code points.
-  - Stored source, browser drafts and paste keep math and HTML as literal,
+  - Stored source and paste keep math and HTML as literal,
     editable text. Lossy source is literal text in full, so nothing is lost.
     Export escapes literal `$` and `<`, so a read is always writable.
   - Export writes lists tight with `-` bullets. The native model doesn't
@@ -1348,7 +1356,10 @@ comments-document record carries its signer's key and its Automerge change, so
 for that signer's principal and role before the record is written. Content is
 checked by the same rule the tools and the browser apply
 (`validateCommentSpans` in [model/comment-content.mjs](model/comment-content.mjs)):
-non-whitespace text or a valid embed, so an image-only comment is content.
+non-whitespace text or a valid embed, so an image-only comment is content, at
+most 16,000 text characters and 64 KiB of spans. A new message must be rich
+text; a bare literal `body` is admitted only on a message an earlier build
+already stored.
 
 A refused record is never stored or delivered. The store throws a refusal
 (`recordRefused: true`), and the bridge answers that one save without treating

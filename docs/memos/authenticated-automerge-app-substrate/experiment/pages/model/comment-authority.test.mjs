@@ -5,6 +5,8 @@ import { EntitySet, REJECTION, admitCommentChanges } from "./comment-authority.m
 import { applyComment } from "./comments.mjs";
 import { commentDecision } from "./comment-rules.mjs";
 import { commentsGenesis } from "./comments-doc.mjs";
+import { markdownCommentSpans } from "./comment-content.mjs";
+import { RICH_FORMAT } from "./richtext-format.mjs";
 
 const ALICE = "account:alice";
 const BOB = "account:bob";
@@ -60,6 +62,14 @@ function admit(doc, principal, role, fn) {
 }
 
 const now = () => new Date().toISOString();
+/** A message as this build writes it: rich text, no `body`. */
+const richMessage = (text, principal) => ({
+  format: RICH_FORMAT,
+  richText: text,
+  author: who(principal),
+  createdAt: now(),
+  deletedAt: null,
+});
 
 /** Raw writes, bypassing comment-rules: what a hostile peer could sync. */
 const RAW = {
@@ -70,17 +80,12 @@ const RAW = {
       createdAt: now(),
       status: { value: "open", at: now() },
       messages: {
-        m1: { body: "hello", author: who(RAW.principal), createdAt: now(), deletedAt: null },
+        m1: richMessage("hello", RAW.principal),
       },
     };
   },
   reply: (d, ids) => {
-    d.threads[ids.thread].messages.newreply = {
-      body: "reply",
-      author: who(RAW.principal),
-      createdAt: now(),
-      deletedAt: null,
-    };
+    d.threads[ids.thread].messages.newreply = richMessage("reply", RAW.principal);
   },
   resolve: (d, ids) => {
     d.threads[ids.thread].status = { value: "resolved", at: now() };
@@ -89,7 +94,7 @@ const RAW = {
     d.threads[ids.thread].status = { value: "open", at: now() };
   },
   edit: (d, ids) => {
-    A.updateText(d, ["threads", ids.thread, "messages", ids.message, "body"], "rewritten");
+    A.updateText(d, ["threads", ids.thread, "messages", ids.message, "richText"], "rewritten");
   },
   delete_message: (d, ids) => {
     d.threads[ids.thread].messages[ids.message].deletedAt = now();
@@ -242,7 +247,7 @@ test("a new thread needs a valid anchor, status and first message, and no unknow
     author: who(BOB),
     createdAt: now(),
     status: { value: "open", at: now() },
-    messages: { m1: { body: "hello", author: who(BOB), createdAt: now(), deletedAt: null } },
+    messages: { m1: richMessage("hello", BOB) },
   });
   for (const [label, patch] of [
     ["anchor", { target: { kind: "elsewhere" } }],
@@ -263,20 +268,90 @@ test("a new thread needs a valid anchor, status and first message, and no unknow
   );
 });
 
-test("an empty or oversized body is refused", () => {
+test("empty or oversized content is refused; markers don't count toward the length", () => {
   const { doc, ids } = seed();
+  const text = ["threads", ids.bobThread, "messages", ids.bobMessage, "richText"];
   const empty = admit(doc, BOB, "commenter", (d) => {
-    A.updateText(d, ["threads", ids.bobThread, "messages", ids.bobMessage, "body"], "   ");
+    A.updateText(d, text, "   ");
   });
   assert.equal(empty.reason.code, REJECTION.INVALID_VALUE);
   const large = admit(doc, BOB, "commenter", (d) => {
-    A.updateText(
-      d,
-      ["threads", ids.bobThread, "messages", ids.bobMessage, "body"],
-      "x".repeat(16001),
-    );
+    A.updateText(d, text, "x".repeat(16001));
   });
   assert.equal(large.reason.code, REJECTION.INVALID_VALUE);
+  // 16000 characters in 100 list items: within the limit.
+  const list = Array.from({ length: 100 }, () => `- ${"x".repeat(160)}`).join("\n");
+  const items = admit(doc, BOB, "commenter", (d) => {
+    A.updateSpans(d, text, markdownCommentSpans(list));
+  });
+  assert.equal(items.ok, true, JSON.stringify(items.reason));
+});
+
+test("a new message is rich text; a bare literal body is refused", () => {
+  const { doc, ids } = seed();
+  const bare = admit(doc, BOB, "commenter", (d) => {
+    d.threads[ids.aliceThread].messages.bare = {
+      body: "hello",
+      author: who(BOB),
+      createdAt: now(),
+      deletedAt: null,
+    };
+  });
+  assert.equal(bare.reason.code, REJECTION.INVALID_VALUE);
+  assert.match(bare.reason.message, /rich text/);
+  // An earlier build's rich message carries a Markdown copy: still admitted.
+  const copy = admit(doc, BOB, "commenter", (d) => {
+    d.threads[ids.aliceThread].messages.copy = { ...richMessage("hello", BOB), body: "hello" };
+  });
+  assert.equal(copy.ok, true, JSON.stringify(copy.reason));
+  for (const bodyFormat of ["markdown", "html"]) {
+    const result = admit(doc, BOB, "commenter", (d) => {
+      d.threads[ids.aliceThread].messages.format = { ...richMessage("hello", BOB), bodyFormat };
+    });
+    assert.equal(result.reason.code, REJECTION.INVALID_VALUE, bodyFormat);
+  }
+  const plain = admit(doc, BOB, "commenter", (d) => {
+    d.threads[ids.aliceThread].messages.plain = {
+      ...richMessage("hello", BOB),
+      bodyFormat: "plain",
+    };
+  });
+  assert.equal(plain.ok, true, JSON.stringify(plain.reason));
+});
+
+test("an existing literal-body message stays admissible until it is rewritten", () => {
+  const { doc: seeded, ids } = seed();
+  // The host rewrites Bob's message to the shape earlier builds stored.
+  const doc = A.change(seeded, (d) => {
+    d.threads[ids.bobThread].messages[ids.bobMessage] = {
+      body: "Bob opens",
+      author: who(BOB),
+      createdAt: now(),
+      deletedAt: null,
+    };
+  });
+  const path = ["threads", ids.bobThread, "messages", ids.bobMessage];
+  const deleted = admit(doc, BOB, "commenter", (d) => {
+    d.threads[ids.bobThread].messages[ids.bobMessage].deletedAt = now();
+  });
+  assert.equal(deleted.ok, true, JSON.stringify(deleted.reason));
+  const emptied = admit(doc, BOB, "commenter", (d) => {
+    A.updateText(d, [...path, "body"], " ");
+  });
+  assert.equal(emptied.reason.code, REJECTION.INVALID_VALUE);
+  // The tools convert it on its next edit, which passes admission.
+  const changes = changesOf(doc, (d) =>
+    applyComment(
+      d,
+      { action: "edit", thread_id: ids.bobThread, message_id: ids.bobMessage, body: "Now rich" },
+      who(BOB),
+      null,
+      { page, role: "commenter" },
+    ),
+  );
+  const converted = admitCommentChanges(doc, changes, BOB, { role: "commenter" });
+  assert.equal(converted.ok, true, JSON.stringify(converted.reason));
+  A.free(converted.next);
 });
 
 test("a rich reply written by the tools passes native admission", () => {

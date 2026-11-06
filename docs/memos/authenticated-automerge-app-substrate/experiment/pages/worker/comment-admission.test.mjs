@@ -174,7 +174,7 @@ test("a commenter editing another author's message is refused before storage and
   const [messageId] = Object.keys(h.comments().threads[threadId].messages);
   // Bob's tab skips the rules and edits Alice's body directly.
   const forged = h.raw(bob.actor, (draft) =>
-    A.updateText(draft, ["threads", threadId, "messages", messageId, "body"], "Rewritten"),
+    A.updateText(draft, ["threads", threadId, "messages", messageId, "richText"], "Rewritten"),
   );
   await assert.rejects(h.store.save(...frame(forged, BOB_KEY)), {
     code: "comment_change_refused",
@@ -462,7 +462,7 @@ test("an identical resend is refused without decoding while nothing new is admit
   const [threadId] = Object.keys(h.comments().threads);
   const [messageId] = Object.keys(h.comments().threads[threadId].messages);
   const forged = h.raw(bob.actor, (d) =>
-    A.updateText(d, ["threads", threadId, "messages", messageId, "body"], "Forged"),
+    A.updateText(d, ["threads", threadId, "messages", messageId, "richText"], "Forged"),
   );
   const record = frame(forged, BOB_KEY);
   const checked = h.admission.stats.checked;

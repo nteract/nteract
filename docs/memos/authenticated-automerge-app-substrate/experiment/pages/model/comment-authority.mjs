@@ -1,6 +1,6 @@
 import * as A from "@automerge/automerge/slim";
 import { RICH_FORMAT } from "./richtext-format.mjs";
-import { validateCommentBody, validateCommentSpans } from "./comment-content.mjs";
+import { PLAIN_FORMAT, validateCommentBody, validateCommentSpans } from "./comment-content.mjs";
 import {
   MESSAGE_EDITABLE,
   MESSAGE_FIELDS,
@@ -164,16 +164,26 @@ function validateStatus(status) {
   );
 }
 
-/** A message's current content: the literal body, and native spans once the
- * message is rich. */
-function validateBody(message, where) {
+/** A message's current content. A new message is rich text: its spans,
+ * and `bodyFormat: "plain"` when its author wrote literal text. An existing
+ * message an earlier build stored as a literal `body` alone may stay that
+ * way until it is next edited or migrated. A `body` beside rich text is a
+ * copy an earlier build kept; nothing reads it, so it only has to be text. */
+function validateBody(message, where, { created = false } = {}) {
   const format = own(message, "format") ? scalar(message.format) : undefined;
   if (own(message, "format") && format !== RICH_FORMAT)
     reject(REJECTION.INVALID_VALUE, "Unsupported message format", where);
   const body = scalar(message.body);
-  if (body === undefined) reject(REJECTION.INVALID_VALUE, "Message body must be text", where);
-  if (format !== RICH_FORMAT && own(message, "richText"))
-    reject(REJECTION.INVALID_VALUE, "richText needs the rich format", where);
+  if (own(message, "body") && body === undefined)
+    reject(REJECTION.INVALID_VALUE, "Message body must be text", where);
+  if (own(message, "bodyFormat") && scalar(message.bodyFormat) !== PLAIN_FORMAT)
+    reject(REJECTION.INVALID_VALUE, 'bodyFormat must be "plain"', where);
+  if (format !== RICH_FORMAT) {
+    if (created) reject(REJECTION.INVALID_VALUE, "A new message must be rich text", where);
+    if (own(message, "richText") || own(message, "bodyFormat"))
+      reject(REJECTION.INVALID_VALUE, "richText needs the rich format", where);
+    if (body === undefined) reject(REJECTION.INVALID_VALUE, "Message body must be text", where);
+  }
   // The shared content rule (comment-content.mjs): the same one the tools and
   // the browser apply before writing, so an honest write always passes here.
   let spans;
@@ -192,9 +202,9 @@ function validateBody(message, where) {
 }
 
 /** Mutable message fields; author-only once the message exists. */
-function validateMessageEdits(message, where) {
+function validateMessageEdits(message, where, options) {
   if (!isMap(message)) reject(REJECTION.INVALID_VALUE, "Message must be a map", where);
-  validateBody(message, where);
+  validateBody(message, where, options);
   const deleted = message.deletedAt;
   if (deleted !== null && deleted !== undefined && !timestamp(deleted))
     reject(REJECTION.INVALID_VALUE, "deletedAt must be null or a timestamp", where);
@@ -208,7 +218,7 @@ function validateNewMessage(message, principal, where) {
   validateAuthor(message.author, principal, where);
   if (!timestamp(message.createdAt))
     reject(REJECTION.INVALID_VALUE, "createdAt must be a timestamp", where);
-  validateMessageEdits(message, where);
+  validateMessageEdits(message, where, { created: true });
 }
 
 /** Entity IDs grouped by thread. Nested maps keep every (thread, ID) pair
