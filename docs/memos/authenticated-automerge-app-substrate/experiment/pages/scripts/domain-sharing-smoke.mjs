@@ -260,7 +260,11 @@ try {
   await owner.getByLabel("Invite by email").fill("alice@localhost");
   await owner.getByLabel("Access", { exact: true }).selectOption("editor");
   await owner.getByRole("button", { name: "Invite", exact: true }).click();
-  await expectPendingInvite(owner, "alice@localhost", "editor");
+  await expectPendingInvite(
+    owner.getByRole("dialog", { name: "Share Page" }),
+    "alice@localhost",
+    "editor",
+  );
   assert.equal(
     (await access({ action: "invite", email: "pending@example.org", role: "viewer" })).status,
     200,
