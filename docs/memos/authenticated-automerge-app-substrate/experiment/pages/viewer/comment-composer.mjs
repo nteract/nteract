@@ -135,3 +135,11 @@ export class CommentComposer {
     );
   }
 }
+
+/** What a recovery record keeps of a draft body: its text and, for a rich
+ * draft, its spans as plain data (IndexedDB keeps no class instances), so the
+ * archive can export its formatting and images. */
+export const draftRecord = (value) => ({
+  body: draftText(value),
+  ...(Array.isArray(value?.spans) && { spans: JSON.parse(JSON.stringify(value.spans)) }),
+});

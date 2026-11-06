@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { resolveCommentDraft } from "./comment-draft.mjs";
 import { reloadGate } from "./build-freshness.mjs";
-import { draftComment, draftText, hasDraftText } from "./comment-composer.mjs";
+import { draftComment, draftRecord, draftText, hasDraftText } from "./comment-composer.mjs";
 import { Store, useStore } from "./store.mjs";
 import { COMMENTS_SHEET_QUERY } from "./comments-layout.mjs";
 import { CommentRichText } from "./CommentRichText.jsx";
@@ -178,7 +178,7 @@ export function CommentsPanel({
             return {
               kind: "reply",
               thread_id: thread.id,
-              body: draftText(value),
+              ...draftRecord(value),
               quote:
                 thread.selectionContext?.status === "attached" ? thread.selectionContext.text : "",
             };

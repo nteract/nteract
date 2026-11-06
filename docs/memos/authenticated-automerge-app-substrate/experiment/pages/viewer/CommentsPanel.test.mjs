@@ -363,6 +363,8 @@ test("reply drafts are readable by the session, so a retirement can archive them
       kind: "reply",
       thread_id: "next",
       body: "Reply typed before the refusal",
+      // The draft's spans travel with it, so a recovery keeps its formatting.
+      spans: [{ type: "text", value: "Reply typed before the refusal", marks: {} }],
       quote: "Passage next",
     },
   ]);
