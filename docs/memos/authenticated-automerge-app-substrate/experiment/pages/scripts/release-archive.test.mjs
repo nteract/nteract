@@ -153,3 +153,23 @@ test("writeReleaseDist writes only into a new dist below plain directories", () 
     fs.rmSync(checkout, { recursive: true, force: true });
   }
 });
+
+test("a write failure partway through extraction removes the new dist", () => {
+  const checkout = fs.mkdtempSync(path.join(tmpdir(), "release-dist-"));
+  try {
+    const files = verifyReleaseArchive(releaseZip(), { sha: SHA }).files;
+    const dist = path.join(checkout, "dist");
+    let writes = 0;
+    const failing = {
+      ...fs,
+      writeFileSync(...args) {
+        if (++writes === 2) throw new Error("disk full");
+        return fs.writeFileSync(...args);
+      },
+    };
+    assert.throws(() => writeReleaseDist({ checkout, dist, files, fs: failing }), /disk full/);
+    assert.equal(fs.existsSync(dist), false);
+  } finally {
+    fs.rmSync(checkout, { recursive: true, force: true });
+  }
+});

@@ -1,7 +1,13 @@
 // Production promotion from the gate's `pages-release` artifact. GitHub I/O
-// goes through the operator's `gh` credentials. The run and artifact rules
-// match the lab1 controller (nteract/preview-infra lib/pages-auth.mjs
-// validatePagesArtifact); change both together.
+// goes through the operator's `gh` credentials. GitHub provenance is the trust
+// root for the bytes: the green run, the release job's window around the
+// artifact's creation, and the artifact digest. The receipt fingerprint then
+// binds those bytes to the source checkout.
+//
+// The repository, run and artifact checks follow the lab1 controller
+// (nteract/preview-infra lib/pages-auth.mjs validatePagesBuild and
+// validatePagesArtifact); change both together. The controller also requires
+// allowlisted actors. Here the operator choosing the run replaces that check.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as nodeFs from "node:fs";
@@ -14,6 +20,8 @@ import {
 } from "./release-archive.mjs";
 
 export const RELEASE_REPOSITORY = "nteract/nteract";
+export const RELEASE_REPOSITORY_ID = "1155631492";
+export const RELEASE_OWNER_ID = "12401040";
 export const RELEASE_WORKFLOW = ".github/workflows/authenticated-automerge-spike.yml";
 export const RELEASE_ARTIFACT = "pages-release";
 export const RELEASE_JOB = "Pages release bundle";
@@ -43,13 +51,21 @@ export function parseFromArtifactArgs(args) {
 
 /** The gate run at one attempt: a green push to main of the Pages workflow in
  * this repository. Returns the attempt and its head SHA. */
+const releaseRepository = (repo) =>
+  repo?.full_name === RELEASE_REPOSITORY &&
+  String(repo.id) === RELEASE_REPOSITORY_ID &&
+  String(repo.owner?.id) === RELEASE_OWNER_ID;
+
 export function validateReleaseRun(run, { runId, attempt }) {
-  check(String(run?.id) === String(runId), "Gate run metadata does not name the requested run");
   check(
-    run.repository?.full_name === RELEASE_REPOSITORY &&
-      run.head_repository?.full_name === RELEASE_REPOSITORY,
+    ID.test(String(run?.id)) && String(run.id) === String(runId),
+    "Gate run metadata does not name the requested run",
+  );
+  check(
+    releaseRepository(run.repository) && releaseRepository(run.head_repository),
     `Gate run must belong to ${RELEASE_REPOSITORY}`,
   );
+  check(ID.test(String(run.run_attempt)), "Gate run has no valid attempt");
   check(run.path === RELEASE_WORKFLOW, `Gate run must come from ${RELEASE_WORKFLOW}`);
   check(run.event === "push" && run.head_branch === "main", "Gate run must be a push to main");
   check(
@@ -142,9 +158,26 @@ export function resolveReleaseArtifact({ runId, attempt, api }) {
   const listed = Array.isArray(artifacts?.artifacts)
     ? artifacts.artifacts.filter((a) => a.name === RELEASE_ARTIFACT)
     : [];
-  const artifact = listed.length === 1 ? api(`${base}/artifacts/${listed[0].id}`) : undefined;
+  const artifact =
+    listed.length === 1 && ID.test(String(listed[0].id))
+      ? api(`${base}/artifacts/${listed[0].id}`)
+      : undefined;
   const jobs = api(`${base}/runs/${run.runId}/attempts/${run.attempt}/jobs?per_page=100`);
   return validateReleaseArtifact(run, { artifact, artifacts, jobs });
+}
+
+/** Re-read the artifact just before download: it must still be the same
+ * unexpired artifact with the same digest and size. */
+export function refreshReleaseArtifact(provenance, { api }) {
+  check(ID.test(provenance.artifact_id), "Release artifact id is invalid");
+  const artifact = api(`repos/${RELEASE_REPOSITORY}/actions/artifacts/${provenance.artifact_id}`);
+  check(
+    String(artifact?.id) === provenance.artifact_id &&
+      artifact.digest === provenance.digest &&
+      artifact.size_in_bytes === provenance.size_in_bytes &&
+      artifact.expired === false,
+    "Release artifact changed or expired before download",
+  );
 }
 
 /** Download to a temp file and check its sha256 against the artifact digest
@@ -153,6 +186,7 @@ export function downloadReleaseArtifact(provenance, { download, fs = nodeFs, tmp
   const directory = fs.mkdtempSync(path.join(tmp, "pages-release-"));
   try {
     const file = path.join(directory, "pages-release.zip");
+    check(ID.test(provenance.artifact_id), "Release artifact id is invalid");
     download(`repos/${RELEASE_REPOSITORY}/actions/artifacts/${provenance.artifact_id}/zip`, file);
     const size = fs.lstatSync(file).size;
     check(
@@ -170,21 +204,9 @@ export function downloadReleaseArtifact(provenance, { download, fs = nodeFs, tmp
   }
 }
 
-/** The checkout prepare runs on: the operator's own, clean and at `sha`, or a
- * new detached worktree at `sha` under .context/pages-promote. */
-export function releaseCheckout({ repo, sha, worktree, git, fs = nodeFs }) {
-  let root = repo;
-  if (worktree) {
-    root = path.join(repo, ".context", "pages-promote", sha);
-    check(!fs.existsSync(root), "Promotion worktree already exists: " + root);
-    try {
-      git(repo, ["cat-file", "-e", sha + "^{commit}"]);
-    } catch {
-      throw new Error(`Commit ${sha} is not in this clone; run git fetch origin main`);
-    }
-    fs.mkdirSync(path.dirname(root), { recursive: true });
-    git(repo, ["worktree", "add", "--detach", root, sha]);
-  }
+/** A source checkout must be the root of a clean tree at `sha`. Returns
+ * its HEAD. */
+export function checkReleaseCheckout({ root, sha, git }) {
   check(
     path.resolve(git(root, ["rev-parse", "--show-toplevel"])) === path.resolve(root),
     "Provide the source checkout root",
@@ -198,15 +220,43 @@ export function releaseCheckout({ repo, sha, worktree, git, fs = nodeFs }) {
     head === sha,
     `Checkout HEAD ${head} is not the gate run's ${sha}; check it out or pass --worktree`,
   );
+  return head;
+}
+
+/** A new detached worktree at `sha` under .context/pages-promote. */
+export function createReleaseWorktree({ repo, sha, git, fs = nodeFs }) {
+  const root = path.join(repo, ".context", "pages-promote", sha);
+  check(!fs.existsSync(root), "Promotion worktree already exists: " + root);
+  try {
+    git(repo, ["cat-file", "-e", sha + "^{commit}"]);
+  } catch {
+    throw new Error(`Commit ${sha} is not in this clone; run git fetch origin main`);
+  }
+  fs.mkdirSync(path.dirname(root), { recursive: true });
+  git(repo, ["worktree", "add", "--detach", root, sha]);
   return root;
 }
 
+function removeReleaseWorktree({ repo, root, git, fs }) {
+  try {
+    git(repo, ["worktree", "remove", "--force", root]);
+  } catch {
+    fs.rmSync(root, { recursive: true, force: true });
+    try {
+      git(repo, ["worktree", "prune"]);
+    } catch {
+      // The directory is gone; a stale worktree entry is harmless.
+    }
+  }
+}
+
+const GH = ["api", "--hostname", "github.com"];
 export const ghApi = (endpoint) =>
   JSON.parse(
     execFileSync(
       "gh",
       [
-        "api",
+        ...GH,
         "-H",
         "Accept: application/vnd.github+json",
         "-H",
@@ -219,7 +269,7 @@ export const ghApi = (endpoint) =>
 export function ghDownload(endpoint, file) {
   const fd = nodeFs.openSync(file, "wx", 0o600);
   try {
-    execFileSync("gh", ["api", endpoint], { stdio: ["ignore", fd, "inherit"] });
+    execFileSync("gh", [...GH, endpoint], { stdio: ["ignore", fd, "inherit"] });
   } finally {
     nodeFs.closeSync(fd);
   }
@@ -227,15 +277,49 @@ export function ghDownload(endpoint, file) {
 export const gitCommand = (cwd, args) =>
   execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 
-/** Resolve, download, verify and extract the gate's release into the source
- * checkout's Pages dist, then hand that checkout to the existing prepare. */
+/** Run the worktree's own deploy.mjs, so verification, staging and helpers
+ * come from the gate SHA, not from the invoking checkout. A fresh worktree
+ * has no node_modules; NODE_PATH lends it this checkout's TypeScript, which
+ * the fingerprint uses only to follow imports. */
+export function worktreeHandoff({ root, appRelative, target, runId, attempt, nodePath }) {
+  const app = path.join(root, appRelative);
+  execFileSync(
+    process.execPath,
+    [
+      path.join(app, "scripts", "deploy.mjs"),
+      "--target",
+      target,
+      "prepare",
+      "--from-artifact",
+      runId,
+      "--attempt",
+      attempt,
+    ],
+    {
+      cwd: app,
+      stdio: "inherit",
+      env: {
+        ...process.env,
+        NODE_PATH: [nodePath, process.env.NODE_PATH].filter(Boolean).join(path.delimiter),
+      },
+    },
+  );
+}
+
+/** Resolve the gate's release. With --worktree, create a worktree at its SHA
+ * and hand off to that worktree's deploy.mjs. Otherwise this checkout must be
+ * clean at that SHA: download, verify and extract into its Pages dist, then
+ * run the existing prepare on it. */
 export function promoteFromArtifact({
   runId,
   attempt,
   worktree = false,
   repo,
   appRelative,
+  target,
   prepare,
+  nodePath,
+  handoff = worktreeHandoff,
   api = ghApi,
   download = ghDownload,
   git = gitCommand,
@@ -243,20 +327,45 @@ export function promoteFromArtifact({
   tmp,
 }) {
   const provenance = resolveReleaseArtifact({ runId, attempt, api });
-  const sourceRoot = releaseCheckout({ repo, sha: provenance.head_sha, worktree, git, fs });
-  const sourceApp = path.join(sourceRoot, appRelative);
+  if (worktree) {
+    const root = createReleaseWorktree({ repo, sha: provenance.head_sha, git, fs });
+    try {
+      checkReleaseCheckout({ root, sha: provenance.head_sha, git });
+      handoff({
+        root,
+        appRelative,
+        target,
+        runId: provenance.run_id,
+        attempt: provenance.run_attempt,
+        nodePath,
+      });
+    } catch (error) {
+      removeReleaseWorktree({ repo, root, git, fs });
+      throw error;
+    }
+    return { worktree: root };
+  }
+  const codeSha = checkReleaseCheckout({ root: repo, sha: provenance.head_sha, git });
+  const sourceApp = path.join(repo, appRelative);
   const dist = path.join(sourceApp, "dist");
   check(
     !fs.existsSync(dist),
     "Pages dist already exists: " + dist + ". Move it aside or pass --worktree",
   );
+  refreshReleaseArtifact(provenance, { api });
   const zip = downloadReleaseArtifact(provenance, { download, fs, tmp });
   const release = verifyReleaseArchive(zip, { sha: provenance.head_sha });
-  writeReleaseDist({ checkout: sourceRoot, dist, files: release.files, fs });
+  writeReleaseDist({ checkout: repo, dist, files: release.files, fs });
   const releaseArtifact = {
     ...provenance,
     build_id: release.receipt.build_id,
     receipt_sha256: release.receiptSha256,
+    code_sha: codeSha,
   };
-  return prepare({ sourceRoot, sourceApp, releaseArtifact });
+  try {
+    return prepare({ releaseArtifact });
+  } catch (error) {
+    fs.rmSync(dist, { recursive: true, force: true });
+    throw error;
+  }
 }

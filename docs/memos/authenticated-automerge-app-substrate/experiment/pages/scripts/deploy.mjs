@@ -55,16 +55,20 @@ function files(directory, prefix = "") {
       return [relative];
     });
 }
-// `sourceRoot` is the checkout whose source and dist are staged: this one, or
-// a promotion worktree holding a gate artifact. The stage lands under this
-// checkout's .context either way. `releaseArtifact` records that artifact.
-function prepare({ sourceRoot = repo, sourceApp = pages, releaseArtifact } = {}) {
-  if (run("git", ["status", "--porcelain"], { cwd: sourceRoot }))
+// `releaseArtifact` describes the gate artifact extracted into dist, when
+// there is one; the manifest records it.
+function prepare({ releaseArtifact } = {}) {
+  if (run("git", ["status", "--porcelain"], { cwd: repo }))
     throw new Error("Commit the reviewed source before preparing a deployment");
-  const source = run("git", ["rev-parse", "HEAD"], { cwd: sourceRoot });
-  const dist = path.join(sourceApp, "dist");
+  const source = run("git", ["rev-parse", "HEAD"], { cwd: repo });
+  if (
+    releaseArtifact &&
+    (releaseArtifact.head_sha !== source || releaseArtifact.code_sha !== source)
+  )
+    throw new Error("The release artifact is not for this checkout's HEAD");
+  const dist = path.join(pages, "dist");
   const buildReceipt = JSON.parse(readFileSync(path.join(dist, "build-receipt.json")));
-  const currentFingerprint = sourceFingerprint(sourceApp, { root: sourceRoot });
+  const currentFingerprint = sourceFingerprint(pages, { root: repo });
   if (buildReceipt.fingerprint?.sha256 !== currentFingerprint.sha256)
     throw new Error("Bundle source fingerprint is stale; build and validate the current source");
   assertReleaseOpensTargetPages(target, { ...buildReceipt, source_sha: source });
@@ -103,11 +107,11 @@ function prepare({ sourceRoot = repo, sourceApp = pages, releaseArtifact } = {})
     "routes.mjs",
     "session-keys.mjs",
   ])
-    cpSync(path.join(sourceApp, "scripts", "deployment", name), path.join(output, name));
+    cpSync(path.join(scripts, "deployment", name), path.join(output, name));
   const manifest = {
     schema: 1,
     source_sha: source,
-    source_tree: run("git", ["rev-parse", "HEAD^{tree}"], { cwd: sourceRoot }),
+    source_tree: run("git", ["rev-parse", "HEAD^{tree}"], { cwd: repo }),
     prepared_at: new Date().toISOString(),
     source_fingerprint: currentFingerprint.sha256,
     build_receipt: buildReceipt,
@@ -157,7 +161,9 @@ else if (fromArtifact)
     ...parseFromArtifactArgs(args.slice(1)),
     repo,
     appRelative: path.relative(repo, pages),
+    target,
     prepare,
+    nodePath: path.join(pages, "..", "node_modules"),
   });
 else if (keyMode) {
   // Edits /etc/<service>/session-keys.json on the host. The helper comes from

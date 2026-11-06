@@ -83,33 +83,50 @@ node scripts/deploy.mjs --target pages install REMOTE_STAGE --apply
 node scripts/deploy.mjs --target pages publish REMOTE_STAGE --apply
 ```
 
-`--attempt N` names a rerun attempt; the default is the run's latest. Before
-anything is written, `prepare --from-artifact` uses `gh api` to require:
+`--attempt N` names a rerun attempt; the default is the run's latest.
+
+GitHub provenance is the trust root for the bytes. Before anything is written,
+`prepare --from-artifact` uses `gh api --hostname github.com` to require:
 
 - The run is `.github/workflows/authenticated-automerge-spike.yml` in
-  `nteract/nteract`, a `push` to `main`, and green at that attempt. Its head
-  SHA is the release's source.
+  `nteract/nteract` (repository and owner checked by id), a `push` to `main`,
+  and green at that attempt. Its head SHA is the release's source.
 - The run holds exactly one `pages-release` artifact. It is unexpired, at most
   64 MiB, and created while that attempt's `Pages release bundle` job ran
   successfully.
 
-The ZIP downloads to a temp file, and its sha256 must equal the artifact's
-digest before it is parsed. Extraction refuses symlinks, absolute paths, `..`
-or `.git` segments, more than 64 entries, or more than 128 MiB. The file set
-must be exactly the receipt's `files` plus `build-receipt.json`, and each file
-must match its sha256. The receipt must name the run's SHA and a clean tree.
-These are the lab1 controller's rules; change both together.
+The artifact metadata is read again just before download and must keep the
+same id, digest and size. The ZIP downloads to a temp file, and its sha256
+must equal that digest before it is parsed. Extraction refuses symlinks,
+absolute paths, `..` or `.git` segments, more than 64 entries, or more than
+128 MiB. The file set must be exactly the receipt's `files` plus
+`build-receipt.json`, and each file must match its sha256. The receipt must
+name the run's SHA and a clean tree.
 
-Without `--worktree`, the release goes into this checkout, which must be clean
-and at the run's SHA with no `dist`. `--worktree` creates a detached worktree at
-`.context/pages-promote/<sha>` instead. Either way the release lands in that
-checkout's `pages/dist`, and the existing `prepare` runs on that checkout. It
-checks the receipt fingerprint against the source there, so the bytes are
-bound to the commit exactly as for a local build. The stage manifest records
-the artifact as `release_artifact`: repository, run, attempt, artifact id,
-digest, size, creation and expiry times, `build_id` and receipt sha256. The
-stage still lands in `.context/pages-deploy/<sha>` of the checkout you ran it
-from. After installing, remove the worktree with `git worktree remove`.
+These follow the lab1 controller's provenance and archive checks; change both
+together. The controller also requires allowlisted GitHub actors for the run.
+This command has no actor check: the operator choosing the run replaces it.
+
+The existing `prepare` then runs on a checkout at the run's SHA, so code and
+source are the same commit. Its fingerprint check binds the receipt to that
+source, as for a local build. Without `--worktree`, that is this checkout: it
+must be clean, at the run's SHA, and have no `dist`; a failure after extraction
+removes the `dist` it wrote. `--worktree` creates a detached worktree at
+`.context/pages-promote/<sha>` and runs that worktree's own
+`scripts/deploy.mjs prepare --from-artifact GATE_RUN_ID --attempt N`, which
+checks the run and artifact again and does the download, extraction and
+staging. The worktree has no `node_modules`, so `NODE_PATH` lends it this
+checkout's TypeScript, which the fingerprint uses only to follow imports. If
+that fails, the worktree is removed. Either way the gate SHA must already
+contain `--from-artifact`; an older SHA's `deploy.mjs` refuses the arguments.
+
+The stage manifest records the artifact as `release_artifact`: repository,
+run, attempt, artifact id, digest, size, creation and expiry times, `build_id`,
+receipt sha256, and `code_sha`, the commit whose scripts staged it. `prepare`
+refuses a `release_artifact` whose `head_sha` or `code_sha` is not its HEAD. The
+stage is the printed `prepared` path: `.context/pages-deploy/<sha>` of the
+checkout that ran `prepare`, which with `--worktree` is inside the worktree.
+Remove the worktree with `git worktree remove` after publishing.
 
 This removes two constraints. Production no longer needs a build on an
 operator's laptop. Production also no longer has to be promoted from Page10's

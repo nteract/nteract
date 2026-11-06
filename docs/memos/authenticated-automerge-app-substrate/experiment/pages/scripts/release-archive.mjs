@@ -320,15 +320,21 @@ export function writeReleaseDist({ checkout, dist, files, fs = nodeFs }) {
     throw error;
   }
   const made = new Set();
-  for (const [file, bytes] of files) {
-    const parts = file.split("/");
-    for (let i = 1; i < parts.length; i++) {
-      const parent = parts.slice(0, i).join("/");
-      if (made.has(parent)) continue;
-      fs.mkdirSync(path.join(dist, parent), { mode: 0o755 });
-      made.add(parent);
+  try {
+    for (const [file, bytes] of files) {
+      const parts = file.split("/");
+      for (let i = 1; i < parts.length; i++) {
+        const parent = parts.slice(0, i).join("/");
+        if (made.has(parent)) continue;
+        fs.mkdirSync(path.join(dist, parent), { mode: 0o755 });
+        made.add(parent);
+      }
+      fs.writeFileSync(path.join(dist, file), bytes, { flag: "wx", mode: 0o644 });
     }
-    fs.writeFileSync(path.join(dist, file), bytes, { flag: "wx", mode: 0o644 });
+  } catch (error) {
+    // dist was created above, so nothing here belongs to anyone else.
+    fs.rmSync(dist, { recursive: true, force: true });
+    throw error;
   }
   return dist;
 }

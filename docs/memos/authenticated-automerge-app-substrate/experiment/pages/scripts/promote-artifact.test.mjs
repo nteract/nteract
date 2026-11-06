@@ -7,7 +7,9 @@ import path from "node:path";
 import {
   RELEASE_ARTIFACT,
   RELEASE_JOB,
+  RELEASE_OWNER_ID,
   RELEASE_REPOSITORY,
+  RELEASE_REPOSITORY_ID,
   RELEASE_WORKFLOW,
   downloadReleaseArtifact,
   parseFromArtifactArgs,
@@ -22,11 +24,17 @@ const RUN = "19000000001";
 const ARTIFACT = 4200;
 const base = `repos/${RELEASE_REPOSITORY}/actions`;
 
+const repository = (overrides = {}) => ({
+  full_name: RELEASE_REPOSITORY,
+  id: Number(RELEASE_REPOSITORY_ID),
+  owner: { id: Number(RELEASE_OWNER_ID) },
+  ...overrides,
+});
 const gateRun = (sha, overrides = {}) => ({
   id: Number(RUN),
   run_attempt: 2,
-  repository: { full_name: RELEASE_REPOSITORY },
-  head_repository: { full_name: RELEASE_REPOSITORY },
+  repository: repository(),
+  head_repository: repository(),
   path: RELEASE_WORKFLOW,
   event: "push",
   head_branch: "main",
@@ -65,6 +73,7 @@ const jobsOf = (...jobs) => ({
 /** A gh stand-in: endpoint → JSON, plus a download that writes `zip`. */
 function fakeGitHub(sha, zip, overrides = {}) {
   const artifact = artifactOf(sha, zip, overrides.artifact);
+  let artifactReads = 0;
   const responses = {
     [`${base}/runs/${RUN}`]: gateRun(sha, overrides.run),
     [`${base}/runs/${RUN}/attempts/2`]: gateRun(sha, overrides.run),
@@ -79,6 +88,12 @@ function fakeGitHub(sha, zip, overrides = {}) {
     calls,
     api(endpoint) {
       calls.push(endpoint);
+      if (
+        endpoint === `${base}/artifacts/${ARTIFACT}` &&
+        ++artifactReads === 2 &&
+        overrides.refreshed
+      )
+        return { ...artifact, ...overrides.refreshed };
       if (!(endpoint in responses)) throw new Error("unexpected gh api " + endpoint);
       return structuredClone(responses[endpoint]);
     },
@@ -111,12 +126,12 @@ function withRepo(fn) {
     fs.rmSync(repo.root, { recursive: true, force: true });
   }
 }
-const recordPrepare = () => {
+const recordPrepare = (root) => {
   const calls = [];
   const prepare = (options) => {
     calls.push({
       ...options,
-      dist: fs.readdirSync(path.join(options.sourceApp, "dist"), { recursive: true }).sort(),
+      dist: fs.readdirSync(path.join(root, "app", "dist"), { recursive: true }).sort(),
     });
     return { prepared: "stage" };
   };
@@ -163,7 +178,11 @@ test("only a green main push of the Pages workflow at the attempt is accepted", 
     [{ head_branch: "feature" }, /push to main/],
     [{ conclusion: "failure" }, /did not succeed/],
     [{ status: "in_progress", conclusion: null }, /did not succeed/],
-    [{ head_repository: { full_name: "fork/nteract" } }, /must belong/],
+    [{ head_repository: repository({ full_name: "fork/nteract" }) }, /must belong/],
+    [{ repository: repository({ id: 1 }) }, /must belong/],
+    [{ head_repository: repository({ owner: { id: 2 } }) }, /must belong/],
+    [{ run_attempt: "1/../2" }, /no valid attempt/],
+    [{ run_attempt: 0 }, /no valid attempt/],
     [{ id: 1 }, /does not name the requested run/],
     [{ head_sha: "short" }, /no head SHA/],
   ];
@@ -276,19 +295,17 @@ test("a download whose sha256 differs from the artifact digest is refused before
   }
 });
 
-test("promotion extracts the verified release into the checkout's dist and runs prepare there", () =>
+test("promotion extracts the verified release into this checkout's dist and runs prepare", () =>
   withRepo(({ root, sha }) => {
     const zip = releaseZip({ sha });
     const gh = fakeGitHub(sha, zip);
-    const { calls, prepare } = recordPrepare();
+    const { calls, prepare } = recordPrepare(root);
     assert.deepEqual(
       promoteFromArtifact({ runId: RUN, repo: root, appRelative: "app", prepare, ...gh }),
       { prepared: "stage" },
     );
     assert.equal(calls.length, 1);
     const [call] = calls;
-    assert.equal(call.sourceRoot, root);
-    assert.equal(call.sourceApp, path.join(root, "app"));
     assert.deepEqual(call.dist, [
       "build-receipt.json",
       "index.js",
@@ -311,9 +328,54 @@ test("promotion extracts the verified release into the checkout's dist and runs 
       expires_at: "2026-12-05T10:05:00Z",
       build_id: "0123456789ab",
       receipt_sha256: call.releaseArtifact.receipt_sha256,
+      code_sha: sha,
     });
     assert.match(call.releaseArtifact.receipt_sha256, /^[0-9a-f]{64}$/);
+    // The artifact is read again immediately before the download.
+    const download = gh.calls.findIndex((c) => c.startsWith("download"));
+    assert.equal(gh.calls[download - 1], `${base}/artifacts/${ARTIFACT}`);
+    assert.equal(gh.calls.filter((c) => c === `${base}/artifacts/${ARTIFACT}`).length, 2);
   }));
+
+test("an artifact that changes or expires before download is refused", () =>
+  withRepo(({ root, sha }) => {
+    const zip = releaseZip({ sha });
+    for (const refreshed of [
+      { digest: "sha256:" + "0".repeat(64) },
+      { id: ARTIFACT + 1 },
+      { expired: true },
+      { size_in_bytes: 1 },
+    ]) {
+      const gh = fakeGitHub(sha, zip, { refreshed });
+      assert.throws(
+        () =>
+          promoteFromArtifact({
+            runId: RUN,
+            repo: root,
+            appRelative: "app",
+            prepare: () => assert.fail("prepare must not run"),
+            ...gh,
+          }),
+        /changed or expired before download/,
+      );
+      assert.equal(
+        gh.calls.some((c) => c.startsWith("download")),
+        false,
+      );
+    }
+  }));
+
+test("an artifact id that is not a positive integer never reaches a request path", () => {
+  const sha = "c".repeat(40);
+  const gh = fakeGitHub(sha, releaseZip({ sha }), {
+    artifacts: listOf({ id: "../../secrets", name: RELEASE_ARTIFACT }),
+  });
+  assert.throws(() => resolveReleaseArtifact({ runId: RUN, api: gh.api }), /does not name/);
+  assert.equal(
+    gh.calls.some((c) => c.includes("secrets")),
+    false,
+  );
+});
 
 test("a dirty checkout, another HEAD or an existing dist is refused before download", () =>
   withRepo(({ root, sha }) => {
@@ -367,26 +429,69 @@ test("an archive that fails extraction checks leaves no dist and never reaches p
     }
   }));
 
-test("--worktree extracts into a new detached worktree at the gate SHA", () =>
+test("a prepare failure after extraction removes the extracted dist", () =>
+  withRepo(({ root, sha }) => {
+    assert.throws(
+      () =>
+        promoteFromArtifact({
+          runId: RUN,
+          repo: root,
+          appRelative: "app",
+          prepare: ({ releaseArtifact }) => {
+            assert.equal(fs.existsSync(path.join(root, "app", "dist", "index.js")), true);
+            assert.equal(releaseArtifact.code_sha, sha);
+            throw new Error("Bundle source fingerprint is stale");
+          },
+          ...fakeGitHub(sha, releaseZip({ sha })),
+        }),
+      /fingerprint is stale/,
+    );
+    assert.equal(fs.existsSync(path.join(root, "app", "dist")), false);
+  }));
+
+test("--worktree hands off to the worktree's own deploy.mjs at the gate SHA", () =>
   withRepo(({ root, sha }) => {
     const zip = releaseZip({ sha });
-    // The operator's checkout is elsewhere and dirty; the worktree is not.
+    // The invoking checkout is elsewhere and dirty; the worktree is not.
     fs.writeFileSync(path.join(root, "app", "source.mjs"), "export const local = 1;\n");
     fs.mkdirSync(path.join(root, "app", "dist"));
-    const { calls, prepare } = recordPrepare();
-    promoteFromArtifact({
-      runId: RUN,
-      worktree: true,
-      repo: root,
-      appRelative: "app",
-      prepare,
-      ...fakeGitHub(sha, zip),
-    });
+    const handoffs = [];
+    const gh = fakeGitHub(sha, zip);
     const worktree = path.join(root, ".context", "pages-promote", sha);
-    assert.equal(calls[0].sourceRoot, worktree);
-    assert.equal(git(worktree, ["rev-parse", "HEAD"]), sha);
-    assert.equal(git(worktree, ["status", "--porcelain"]), "");
-    assert.equal(fs.readFileSync(path.join(worktree, "app/dist/index.js"), "utf8"), "worker");
+    assert.deepEqual(
+      promoteFromArtifact({
+        runId: RUN,
+        worktree: true,
+        repo: root,
+        appRelative: "app",
+        target: "pages",
+        nodePath: "/operator/node_modules",
+        prepare: () => assert.fail("the invoking checkout must not prepare"),
+        handoff: (options) => {
+          assert.equal(git(options.root, ["rev-parse", "HEAD"]), sha);
+          assert.equal(git(options.root, ["status", "--porcelain"]), "");
+          assert.equal(fs.existsSync(path.join(options.root, "app", "dist")), false);
+          handoffs.push(options);
+        },
+        ...gh,
+      }),
+      { worktree },
+    );
+    assert.deepEqual(handoffs, [
+      {
+        root: worktree,
+        appRelative: "app",
+        target: "pages",
+        runId: RUN,
+        attempt: "2",
+        nodePath: "/operator/node_modules",
+      },
+    ]);
+    // The invoking checkout downloads nothing; the worktree's code does.
+    assert.equal(
+      gh.calls.some((c) => c.startsWith("download")),
+      false,
+    );
     assert.throws(
       () =>
         promoteFromArtifact({
@@ -394,9 +499,33 @@ test("--worktree extracts into a new detached worktree at the gate SHA", () =>
           worktree: true,
           repo: root,
           appRelative: "app",
-          prepare,
+          target: "pages",
+          handoff: () => assert.fail("must not hand off"),
           ...fakeGitHub(sha, zip),
         }),
       /worktree already exists/,
     );
+  }));
+
+test("a failed handoff removes the worktree it created", () =>
+  withRepo(({ root, sha }) => {
+    const worktree = path.join(root, ".context", "pages-promote", sha);
+    assert.throws(
+      () =>
+        promoteFromArtifact({
+          runId: RUN,
+          worktree: true,
+          repo: root,
+          appRelative: "app",
+          target: "pages",
+          handoff: () => {
+            assert.equal(fs.existsSync(worktree), true);
+            throw new Error("child prepare failed");
+          },
+          ...fakeGitHub(sha, releaseZip({ sha })),
+        }),
+      /child prepare failed/,
+    );
+    assert.equal(fs.existsSync(worktree), false);
+    assert.equal(git(root, ["worktree", "list"]).split("\n").length, 1);
   }));
