@@ -770,6 +770,10 @@ jobs:
           Write-Host "Producer compiler: $compiler"
           Write-Host "Producer SDK: $env:WindowsSdkDir $env:UCRTVersion"
 
+      - uses: ./.github/actions/pin-msvc-linker
+        with:
+          target: x86_64-pc-windows-msvc
+
       - name: Set up Rust
         uses: dsherret/rust-toolchain-file@v1
 
@@ -993,6 +997,10 @@ jobs:
           if (-not $compiler.StartsWith($tools, [StringComparison]::OrdinalIgnoreCase)) { throw 'cl.exe is outside the selected producer toolset' }
           Write-Host "Producer compiler: $compiler"
           Write-Host "Producer SDK: $env:WindowsSdkDir $env:UCRTVersion"
+
+      - uses: ./.github/actions/pin-msvc-linker
+        with:
+          target: aarch64-pc-windows-msvc
 
       - name: Set up Rust
         uses: dsherret/rust-toolchain-file@v1

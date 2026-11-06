@@ -181,9 +181,57 @@ test("Windows release producers activate a pinned native MSVC environment before
     verificationPrograms.push(verify.split("        run: |\n")[1].trim());
   }
   assert.deepEqual(verificationPrograms, Array(3).fill(verificationPrograms[0]), "all producers enforce the same compiler/environment checks");
+  for (const [id, target] of [
+    ["build-notebook-windows-x64", "x86_64-pc-windows-msvc"],
+    ["build-notebook-windows-arm64", "aarch64-pc-windows-msvc"],
+  ]) {
+    const body = jobs.get(id);
+    const pin = body.slice(body.indexOf("      - uses: ./.github/actions/pin-msvc-linker\n")).split("\n      - ")[0];
+    assert.ok(pin.startsWith("      - uses: ./.github/actions/pin-msvc-linker\n"));
+    assert.ok(body.indexOf(workflowStep(body, "Verify producer MSVC environment")) < body.indexOf(pin));
+    assert.ok(body.indexOf(pin) < body.indexOf("uses: dsherret/rust-toolchain-file@"));
+    assert.match(pin, new RegExp(`target: ${target}`));
+  }
   for (const name of ["Activate producer MSVC environment", "Verify producer MSVC environment"]) {
     assert.match(workflowStep(npm, name), /if: startsWith\(matrix\.target, 'win32-'\)/);
   }
+});
+
+test("native Windows x64 and ARM64 smoke builds execute the producer linker pin action", () => {
+  const body = validationJobs.get("windows-msvc-linker-smoke");
+  assert.ok(body, "missing windows-msvc-linker-smoke job");
+  assert.match(body, /fail-fast: false/);
+  assert.match(body, /runner: windows-2025\n\s+arch: x64\n\s+target: x86_64-pc-windows-msvc/);
+  assert.match(body, /runner: windows-11-vs2026-arm\n\s+arch: arm64\n\s+target: aarch64-pc-windows-msvc/);
+  const activate = workflowStep(body, "Activate producer MSVC environment");
+  const verify = workflowStep(body, "Verify producer MSVC environment");
+  const pin = body.slice(body.indexOf("      - uses: ./.github/actions/pin-msvc-linker\n")).split("\n      - ")[0];
+  const setupRust = "uses: dsherret/rust-toolchain-file@v1";
+  const build = workflowStep(body, "Build native Cargo executable from Git Bash");
+  const verifyLinker = workflowStep(body, "Confirm Cargo used the selected producer linker");
+  assert.ok(body.indexOf(activate) < body.indexOf(verify));
+  assert.ok(body.indexOf(verify) < body.indexOf(pin));
+  assert.ok(body.indexOf(pin) < body.indexOf(setupRust));
+  assert.ok(body.indexOf(setupRust) < body.indexOf(build));
+  assert.ok(body.indexOf(build) < body.indexOf(verifyLinker));
+  assert.match(build, /shell: bash/);
+  assert.match(build, /cargo build --verbose --manifest-path .* --target "\$TARGET"/);
+  assert.match(build, /cygpath -u "\$RUNNER_TEMP"/);
+  assert.match(build, /tee "\$runner_temp\/msvc-linker-smoke\.log"/);
+  assert.match(verifyLinker, /\$env:LINKER_ENV_NAME/);
+  assert.match(verifyLinker, /\$log\.Contains\(\$linker/);
+  assert.match(verifyLinker, /Test-Path \$linker/);
+});
+
+test("shared producer linker action exports a target-specific Cargo linker from verified MSVC paths", () => {
+  const action = readFileSync(new URL("../../.github/actions/pin-msvc-linker/action.yml", import.meta.url), "utf8");
+  assert.match(action, /EXPECTED_RUST_TARGET: \$\{\{ inputs\.target \}\}/);
+  assert.match(action, /Get-Command cl\.exe -ErrorAction Stop/);
+  assert.match(action, /Join-Path \(Split-Path -Parent \$compiler\) 'link\.exe'/);
+  assert.match(action, /Test-Path \$linker/);
+  assert.match(action, /\$linker\.StartsWith\(\$tools, \[StringComparison\]::OrdinalIgnoreCase\)/);
+  assert.match(action, /"\$targetEnv=\$linker" >> \$env:GITHUB_ENV/);
+  assert.ok(validation.includes("      - .github/actions/pin-msvc-linker/**\n"));
 });
 
 test("UI attribution follows production build and gates the single archive publisher", () => {
