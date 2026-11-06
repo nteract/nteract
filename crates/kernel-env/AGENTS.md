@@ -140,6 +140,14 @@ The daemon maintains pre-created environments (base set + user's `default_packag
 Warm-env failures must surface in pool status with a real `error_kind` so
 onboarding does not spin forever waiting for `available > 0`.
 
+With a UV or Conda pool target of 0, a launch that needs a prewarmed env
+builds one on demand with the same warm-env subprocess
+(`runtimed-{uv,conda}-ondemand-{uuid}`). It is never a pool member, never
+recovered at startup, and is swept like any pool dir once no kernel owns it.
+Inline-deps pool reuse and the pool `Take` RPC stay pool-only. Pixi still
+falls back to `pixi exec`. The decision is `decide_take` in
+`crates/runtimed/src/daemon.rs`.
+
 ### First-launch capture
 
 On first launch from pool:
