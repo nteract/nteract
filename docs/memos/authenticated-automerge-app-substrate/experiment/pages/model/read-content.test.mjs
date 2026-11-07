@@ -6,6 +6,7 @@ import { projectPage } from "./page.mjs";
 import { exportMarkdown, parseMarkdown, richDoc, setRichMarkdown } from "./richtext.mjs";
 import { richFromSource } from "./richtext-test-support.mjs";
 import { stampFeatures } from "./schema-features.mjs";
+import { nativeRead } from "./native-read.mjs";
 
 function page(blocks) {
   return A.change(A.from({ page_id: "read-fixture", title: "A title", blocks: {} }), (doc) => {
@@ -37,10 +38,14 @@ const expectedError = (status, code) => (error) => error.status === status && er
 
 test("nested images have bounded typed occurrence metadata, not link or code matches", () => {
   const src = `/api/pages/${crypto.randomUUID()}/assets/${"a".repeat(64)}`;
-  const doc = parseMarkdown(
-    `> ![one](${src} "title")\n>\n> - ![two](${src})\n>\n> [link](${src}) and \`![code](${src})\``,
-  );
-  const fields = nodeFields(doc.firstChild, { maxItems: 1 });
+  const doc = page([
+    {
+      id: "one",
+      markdown: `> ![one](${src} "title")\n>\n> - ![two](${src})\n>\n> [link](${src}) and \`![code](${src})\``,
+    },
+  ]);
+  const first = nativeRead(doc.blocks.one).nodes[0];
+  const fields = nodeFields(first, { maxItems: 1 });
   assert.equal(fields.summary.images.length, 1);
   assert.equal(fields.summary.images_truncated, true);
   assert.deepEqual(fields.summary.images[0], {
@@ -51,14 +56,14 @@ test("nested images have bounded typed occurrence metadata, not link or code mat
     title: "title",
     asset_id: "a".repeat(64),
   });
-  assert.equal(nodeFields(doc.firstChild).summary.images.length, 2);
-  assert.equal(
-    nodeFields(doc.firstChild, { pageId: "other" }).summary.images[0].asset_id,
-    undefined,
-  );
-  const many = parseMarkdown(Array(201).fill(`![x](${src})`).join(" "));
-  assert.equal(nodeFields(many.firstChild).summary.images.length, 200);
-  assert.equal(nodeFields(many.firstChild).summary.images_truncated, true);
+  assert.equal(nodeFields(first).summary.images.length, 2);
+  assert.equal(nodeFields(first, { pageId: "other" }).summary.images[0].asset_id, undefined);
+  const many = page([{ id: "one", markdown: Array(201).fill(`![x](${src})`).join(" ") }]);
+  const manyFirst = nativeRead(many.blocks.one).nodes[0];
+  assert.equal(nodeFields(manyFirst).summary.images.length, 200);
+  assert.equal(nodeFields(manyFirst).summary.images_truncated, true);
+  A.free(doc);
+  A.free(many);
 });
 
 // Markdown carries content, not the Automerge adapter's node provenance flags.

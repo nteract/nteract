@@ -2,14 +2,17 @@ import * as A from "@automerge/automerge/slim";
 import { orderedBlockIds } from "./order.mjs";
 import { projectReadComments } from "./read-comments.mjs";
 import { nodeFields } from "./read-content.mjs";
-import { agentType } from "./node-registry.mjs";
 import { nodeIds } from "./node-ids.mjs";
 import { readableImageIds } from "./image-ids.mjs";
 import { commentMessageState, commentThreadState } from "./comment-content.mjs";
 import { requireRich } from "./richtext-format.mjs";
-import { schema } from "./pm-adapter.mjs";
-import { exportMarkdown } from "./markdown-serializer.mjs";
-import { projectionDoc } from "./richtext-spans.mjs";
+import {
+  nativeRead,
+  readMarkdown,
+  readKind,
+  readVisibleText,
+  readFingerprint,
+} from "./native-read.mjs";
 import { blockMarkdown } from "./richtext-page.mjs";
 
 export const CHANGE_READ_DEFAULT_BYTES = 128 * 1024;
@@ -73,7 +76,7 @@ function options(args) {
 // could report the wrong one.
 function nativeNodes(doc, blockId, headings) {
   const block = doc.blocks[blockId],
-    tree = projectionDoc(block, doc.page_id),
+    tree = nativeRead(block, doc.page_id),
     objectId = A.getObjectId(block, "richText"),
     entries = [];
   let ids;
@@ -83,18 +86,12 @@ function nativeNodes(doc, blockId, headings) {
     return null;
   }
   const imageIds = readableImageIds(doc, blockId, tree);
-  tree.forEach((node, _offset, nodeIndex) => {
-    if (node.type.name === "heading") {
-      while (headings.length && headings.at(-1).level >= node.attrs.level) headings.pop();
+  tree.nodes.forEach((node, nodeIndex) => {
+    if (readKind(node) === "heading") {
+      while (headings.length && headings.at(-1).level >= node.tag.param) headings.pop();
       headings.push({
-        level: node.attrs.level,
-        text: node.textBetween(0, node.content.size, "", (leaf) =>
-          leaf.type.name === "image"
-            ? (leaf.attrs.alt ?? "")
-            : leaf.type.name === "hard_break"
-              ? "\n"
-              : "",
-        ),
+        level: node.tag.param,
+        text: readVisibleText(node),
       });
     }
     const nodeId = ids[nodeIndex].id;
@@ -102,11 +99,11 @@ function nativeNodes(doc, blockId, headings) {
       key: `${objectId}:${nodeId ?? `implicit:${nodeIndex}`}`,
       node_index: nodeIndex,
       node_id: nodeId,
-      type: agentType(node.type.name),
+      type: readKind(node),
       heading_path: headings.map((heading) => heading.text),
-      markdown: exportMarkdown(schema.node("doc", null, [node])),
-      fields: nodeFields(node, { pageId: doc.page_id, imageIds }),
-      fingerprint: canonical(node.toJSON()),
+      markdown: readMarkdown([node]),
+      fields: nodeFields(node, { pageId: doc.page_id, imageIds, metadata: tree.metadata }),
+      fingerprint: canonical(readFingerprint(node, tree.metadata)),
     });
   });
   // Never match ambiguous marker identities by an index that can have shifted.
