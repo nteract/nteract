@@ -16,6 +16,7 @@ import {
   withBrowserLinks,
 } from "./worker/project-api.mjs";
 import { mcpSessionId, usageDropped } from "./worker/usage.mjs";
+import { normalizeAgentAssertions } from "./shared/client-provenance.mjs";
 import { PROJECT_CONTENT_OPERATIONS } from "./worker/project-content.mjs";
 import {
   ASSET_UPLOAD_MAX_BYTES,
@@ -1143,8 +1144,8 @@ const failed = (body) => ({
 
 /** Caller verifies credentials before constructing this request-local server.
  * Every invocation goes through the same authorization and model as HTTP tools.
- * `invoke(operation, args, { kind })` gets kind "resource" for a resource
- * list or read, and none for a tool call.
+ * `invoke(operation, args, { kind, agent })` gets kind "resource" for a resource
+ * list or read. Tool calls carry optional client assertions from params._meta.
  */
 export async function handleMcp(request, invoke, env, { onInitialize } = {}) {
   if (request.method !== "POST")
@@ -1175,8 +1176,18 @@ export async function handleMcp(request, invoke, env, { onInitialize } = {}) {
       return failed({ error: error.message, code: error.code });
     }
     if (!descriptor) return failed({ error: "Unknown tool", code: "unknown_tool" });
+    let agent;
     try {
-      const result = await invoke(params.name, params.arguments ?? {});
+      agent = normalizeAgentAssertions(params._meta?.agent);
+    } catch (error) {
+      return failed({ error: error.message, code: error.code });
+    }
+    try {
+      const result = await invoke(
+        params.name,
+        params.arguments ?? {},
+        agent ? { agent } : undefined,
+      );
       const received = await result.json();
       const body = result.ok
         ? withBrowserLinks(received, origin)
