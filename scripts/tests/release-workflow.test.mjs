@@ -781,36 +781,35 @@ for (const exitStatus of [139, 1]) {
 }
 
 // Run only the actual cache selector against real temporary directory trees.
-// A tiny stat shim supplies GNU stat's format on both macOS and Linux; find,
-// sorting and the selection/failure boundary remain the production shell code.
-function selectImageLauncher(t, entries) {
+function selectImageLauncher(t, entries, {failTraversal = false} = {}) {
   const fixture = mkdtempSync(join(tmpdir(), "image-launcher-"));
   t.after(() => rmSync(fixture, {recursive: true, force: true}));
-  const fixtureHome = join(fixture, "home");
-  const bin = join(fixture, "bin");
+  const fixtureHome = join(fixture, "home with spaces");
   mkdirSync(join(fixtureHome, ".cache"), {recursive: true});
-  mkdirSync(bin);
   for (const [relative, timestamp] of entries) {
     const dir = join(fixtureHome, ".cache", relative);
     mkdirSync(dir, {recursive: true});
     utimesSync(dir, timestamp, timestamp);
   }
-  writeFileSync(join(bin, "stat"), [
-    `#!${process.execPath}`,
-    'const {statSync} = require("node:fs");',
-    'if (process.argv[2] !== "-c" || process.argv[3] !== "%Y %n") process.exit(2);',
-    'for (const path of process.argv.slice(4)) console.log(`${Math.floor(statSync(path).mtimeMs / 1000)} ${path}`);',
-  ].join("\n"), {mode: 0o755});
   const source = readFileSync(new URL("../../images/runtime-peer/smoke.sh", import.meta.url), "utf8");
   const selection = source.match(/^LAUNCHER_DIR=[\s\S]*?(?=\nCONN_FILE=)/m)?.[0];
   assert.ok(selection, "must find the actual launcher cache selection");
   const fail = source.match(/^fail\(\) \{[^\n]+$/m)?.[0];
   assert.ok(fail);
+  // Model an unrelated unreadable/disappearing descendant after a valid match,
+  // independent of filesystem permissions or whether the test runs as root.
+  const find = failTraversal ? [
+    'find() {',
+    '  printf "100 %s\\n" "$FIXTURE_HOME"/.cache/*/launcher/nteract_kernel_launcher',
+    '  printf "find: unrelated cache entry disappeared\\n" >&2',
+    '  return 1',
+    '}',
+  ].join("\n") : "";
   // Substitute only the cache root; never repoint HOME or touch a real cache.
   const result = spawnSync("bash", ["-s"], {
-    input: ["set -euo pipefail", fail, selection.replaceAll("$HOME/.cache", "$FIXTURE_HOME/.cache"), 'printf "selected parent: %s\\n" "$PYTHONPATH_PARENT"'].join("\n"),
+    input: ["set -euo pipefail", fail, find, selection.replaceAll("$HOME/.cache", "$FIXTURE_HOME/.cache"), 'printf "selected parent: %s\\n" "$PYTHONPATH_PARENT"'].join("\n"),
     encoding: "utf8",
-    env: {...process.env, FIXTURE_HOME: fixtureHome, PATH: `${bin}:${process.env.PATH}`},
+    env: {...process.env, FIXTURE_HOME: fixtureHome},
   });
   return {...result, fixtureHome};
 }
@@ -842,6 +841,23 @@ test("image launch shape still selects the newest eligible standalone cache", (t
   ]);
   assert.equal(result.status, 0, result.stderr);
   assert.ok(result.stdout.includes(`selected parent: ${result.fixtureHome}/.cache/runt-nightly/launcher\n`));
+});
+
+test("image launch shape avoids unrelated cache traversal failures", (t) => {
+  const result = selectImageLauncher(t, [
+    ["runt-nightly/launcher/nteract_kernel_launcher", 100],
+    ["uv/temporary-install", 200],
+  ], {failTraversal: true});
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stdout.includes(`selected parent: ${result.fixtureHome}/.cache/runt-nightly/launcher\n`));
+});
+
+test("image launch shape preserves spaces in standalone cache paths", (t) => {
+  const result = selectImageLauncher(t, [
+    ["runt cache/launcher/nteract_kernel_launcher", 100],
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stdout.includes(`selected parent: ${result.fixtureHome}/.cache/runt cache/launcher\n`));
 });
 
 for (const failure of ["download", "checksum", "archive", null]) {

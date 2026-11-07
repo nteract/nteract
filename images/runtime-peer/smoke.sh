@@ -215,8 +215,14 @@ step "tier 2: current_python launch-shape parity"
 # on current_python's PYTHONPATH. A pooled environment's site-packages would
 # also inject its ipykernel/zmq and can be for a different Python interpreter.
 # Retain newest-cache selection for homes with stale caches from earlier runs.
-LAUNCHER_DIR="$(find "$HOME/.cache" -type d -path '*/launcher/nteract_kernel_launcher' 2>/dev/null -exec stat -c '%Y %n' {} + \
-    | sort -rn | head -1 | cut -d' ' -f2-)"
+# Inspect only standalone paths; unrelated caches can change during pool warming.
+LAUNCHER_DIR=""
+for candidate in "$HOME/.cache"/*/launcher/nteract_kernel_launcher; do
+    [ -d "$candidate" ] || continue
+    if [ -z "$LAUNCHER_DIR" ] || [ "$candidate" -nt "$LAUNCHER_DIR" ]; then
+        LAUNCHER_DIR="$candidate"
+    fi
+done
 [ -n "$LAUNCHER_DIR" ] || fail "standalone nteract_kernel_launcher cache not found after daemon launch"
 PYTHONPATH_PARENT="$(dirname "$LAUNCHER_DIR")"
 echo "launcher cache at ${LAUNCHER_DIR}"

@@ -1772,10 +1772,11 @@ pub(crate) mod tests {
         let _store = room.with_streamed_tail().await;
         room.add_session_output().await;
 
-        // Runs at the freeze's first await, after the connected set was read.
+        // Runs after the connected set was read, before the freeze writes.
         let state = room.state.clone();
-        let created = tokio::spawn(async move {
-            state
+        let (created_tx, mut created) = tokio::sync::oneshot::channel();
+        crate::bokeh_session::materialize::before_freeze_write(move || {
+            let mid_freeze = state
                 .with_doc(|doc| {
                     let mid_freeze = doc
                         .get_bokeh_session("session-1")
@@ -1783,11 +1784,12 @@ pub(crate) mod tests {
                     doc.put_bokeh_session("session-2", &record(BokehSessionStatus::Connected, 0))?;
                     Ok(mid_freeze)
                 })
-                .unwrap()
+                .unwrap();
+            created_tx.send(mid_freeze).unwrap();
         });
         room.lose_runtime_agent().await;
         assert!(
-            created.await.unwrap(),
+            created.try_recv().expect("the freeze write hook ran"),
             "created while the freeze was running"
         );
 
