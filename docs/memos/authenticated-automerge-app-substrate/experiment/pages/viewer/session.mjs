@@ -37,7 +37,8 @@ import {
   retireLocalPage,
 } from "./local-pages.mjs";
 export { listLocalPages, retireLocalPage } from "./local-pages.mjs";
-import { entryStanding } from "./local-catalog.mjs";
+import { entryStanding, saveRecoveryCopy } from "./local-catalog.mjs";
+import { RecoveryCapture } from "./recovery-capture.mjs";
 import { CatchUp } from "./catch-up.mjs";
 import { unreadableMessageKeys } from "./comment-thread-display.mjs";
 import { CATCH_UP_LIMIT_MS } from "./catch-up-machine.mjs";
@@ -197,6 +198,9 @@ const headsOf = (doc) => {
 };
 /** A recovery record's raw copy, as it was archived. */
 const recordBytes = (record) => ({
+  document_id: record.document_id,
+  heads: record.heads,
+  comment_heads: record.comment_heads,
   snapshot: record.snapshot,
   ...(record.comments_snapshot && {
     comments_snapshot: record.comments_snapshot,
@@ -335,6 +339,7 @@ function actorProfile(value) {
   return { principal, displayName, driver };
 }
 export class PageSession {
+  refusalEvidence;
   listeners = new Set();
   draftSources = new Set();
   observers = new Set();
@@ -486,6 +491,11 @@ export class PageSession {
     // receipt outages, reconnect stability, and presence and agent-progress
     // lifetimes. Readers of `peers` and `agentProgress` use it too.
     this.now = now;
+    this.recoveryCapture = new RecoveryCapture({
+      capture: (id) => this.captureRecoveryCopy(id),
+      persist: (copy) => saveRecoveryCopy({ principal: copy.principal }, copy),
+      changed: () => this.emit(),
+    });
     // When local edits and the caret go out (outbound-sync-machine.mjs): a
     // run of keystrokes shares one sync round instead of one each.
     // Every backend this session opens schedules its local rounds here.
@@ -1438,6 +1448,50 @@ export class PageSession {
   listRecoveries() {
     return listLocalRecoveries(this.identity, this.pageId);
   }
+  /** Explicit capture only. Never checkpoints, closes, reopens or downloads. */
+  saveRecoveryCopy() {
+    if (!this.alive || this.hidden || this.authRequired)
+      return Promise.reject(Error("Page is not available for capture"));
+    return this.recoveryCapture.save();
+  }
+  captureRecoveryCopy(id) {
+    if (!this.alive || this.hidden || !this.identity?.principal)
+      throw Error("Page is not available for capture");
+    if (!this.#liveCommentsDoc())
+      throw Error("Wait for comments to load before saving a recovery copy.");
+    // Unlike retirement's best-effort draft read, an explicit capture fails
+    // rather than silently omitting a source that could not be read.
+    const drafts = structuredClone([...this.draftSources].flatMap((read) => read() ?? []));
+    const copy = this.exportRecovery(undefined, { drafts, allComments: true });
+    if (
+      !copy.document_id ||
+      !copy.comments_snapshot ||
+      !copy.comments_document_id ||
+      !copy.comment_heads
+    )
+      throw Error(
+        "Both Page and comments must be available before saving a recovery copy. Try again after comments load.",
+      );
+    return {
+      ...copy,
+      principal: this.identity.principal,
+      capture_id: id,
+      archived_at: new Date().toISOString(),
+      recovery_kind: "capture",
+      ...(this.refusalEvidence && { refusal_evidence: { ...this.refusalEvidence } }),
+      fidelity: {
+        native_history: true,
+        assets: "references-only",
+        drafts: "registered-sources-only",
+        input_composition: "not-captured",
+      },
+    };
+  }
+  observeRefusal(evidence) {
+    if (!this.alive || this.hidden || !evidence.correlated) return;
+    this.refusalEvidence = evidence;
+    this.emit();
+  }
   /** Every copy of this Page the person can download, as one bundle: every
    * recovery record, plus this tab's own export while the archive doesn't
    * hold it (it is still writing, or failed). Records are never merged: two
@@ -1497,6 +1551,15 @@ export class PageSession {
     return {
       title: projected.title,
       markdown: projected.markdown,
+      ...(bytes.document_id && { document_id: bytes.document_id }),
+      ...(record?.recovery_kind === "capture" && {
+        capture_id: record.capture_id,
+        recovery_kind: record.recovery_kind,
+        principal: record.principal,
+        archived_at: record.archived_at,
+        refusal_evidence: record.refusal_evidence,
+        fidelity: record.fidelity,
+      }),
       snapshot: bytes.snapshot,
       heads: bytes.heads ?? projected.heads ?? [],
       ...(bytes.comments_snapshot && {
@@ -1526,6 +1589,7 @@ export class PageSession {
       this.pendingComments?.documentId ??
       this.localPage?.comments_document_id;
     return {
+      document_id: this.handle?.documentId ?? this.localPage?.document_id,
       snapshot: encodeSnapshot(A.save(doc)),
       heads: A.getHeads(doc),
       ...(comments && {
@@ -1926,11 +1990,15 @@ export class PageSession {
     this.senderId = `b-${crypto.randomUUID()}`;
     this.databaseName = `pages-plain-${this.localScope}-${this.local.seed.slice(0, 16)}`;
     this.storage = new IdbByteStore(this.databaseName);
-    this.backend = await AutomergeSyncBackend.load({
+    const backend = await AutomergeSyncBackend.load({
       store: new DocStore(this.storage),
       ...BACKEND_LIMITS,
       scheduleLocalSync: this.outbound.scheduleLocalSync,
+      onRefusal: (evidence) => {
+        if (this.backend === backend) this.observeRefusal(evidence);
+      },
     });
+    this.backend = backend;
     this.repo = new Repo({ backend: this.backend });
   }
   /** Merge a stored checkpoint into this replica before a lookup. */

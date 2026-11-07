@@ -25,6 +25,7 @@ import {
   sessionCheckBanner,
 } from "./alerts.mjs";
 import { listLocalPages, retireLocalPage } from "./local-catalog.mjs";
+import { recoveryDownloadAction } from "./recovery-capture.mjs";
 import {
   LIBRARY_DEFAULTS,
   PROJECTS_PATH,
@@ -513,6 +514,7 @@ function App() {
           kind: "comment",
           ...draftRecord(body),
           quote: current.quote,
+          anchor: current.draft,
         },
       ];
     });
@@ -576,6 +578,18 @@ function App() {
     link.download = `${draft.page_id}-local-${bundle ? "copies" : "draft"}.json`;
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  async function saveRecoveryCopy() {
+    const current = host.current;
+    try {
+      await current.saveRecoveryCopy();
+      if (host.current !== current) return;
+      const records = await current.listRecoveries();
+      if (host.current !== current) return;
+      setLocalRecoveries(records);
+    } catch (error) {
+      if (host.current === current) showError(error);
+    }
   }
   /** Open a Page. `nameIt` is for a Page just created: focus its title
    * rather than its empty body. Project routes resolve their content document
@@ -1482,16 +1496,17 @@ function App() {
           },
         },
         { key: "copy-link", label: "Copy link", icon: Link, run: () => copyLink() },
+        {
+          key: "save-recovery",
+          label: "Save recovery copy",
+          run: saveRecoveryCopy,
+        },
         projectDetails.name === "failed" && {
           key: "retry-project-access",
           label: "Retry Project access",
           run: () => loadProjectDetails(session, projectDetails.projectId),
         },
-        localRecoveries.length > 0 && {
-          key: "local-draft",
-          label: "Download previous local draft",
-          run: () => downloadDraft(localRecoveries.at(-1)),
-        },
+        recoveryDownloadAction(localRecoveries, downloadDraft),
         session.canRestore && {
           key: "restore",
           label: "Restore from Trash",
@@ -1802,6 +1817,48 @@ function App() {
                     )}
                   </div>
                 )}
+                {(session.refusalEvidence || session.recoveryCapture?.state.name !== "idle") &&
+                  session.recoveryCapture && (
+                    <div className="access-notice" role="status">
+                      {session.refusalEvidence && (
+                        <p>
+                          Sync returned {session.refusalEvidence.code}. This does not identify an
+                          offending change. Your local copy is unchanged.
+                        </p>
+                      )}
+                      <p>
+                        A recovery copy keeps this tab's native Page, comments and available drafts
+                        in this browser. Asset files and unfinished input composition are not
+                        included.
+                      </p>
+                      {session.recoveryCapture.state.name === "archived" ? (
+                        <p>
+                          Recovery copy saved in this browser, not to the host. Later edits are not
+                          included.
+                        </p>
+                      ) : session.recoveryCapture.state.name === "failed" ? (
+                        <p>
+                          Recovery copy was not confirmed saved. Your active copy is unchanged.
+                          Retry keeps the same captured copy.
+                        </p>
+                      ) : null}
+                      <button
+                        onClick={saveRecoveryCopy}
+                        disabled={["capturing", "persisting"].includes(
+                          session.recoveryCapture.state.name,
+                        )}
+                      >
+                        {session.recoveryCapture.state.name === "failed"
+                          ? "Retry saving recovery copy"
+                          : "Save recovery copy"}
+                      </button>
+                      {session.recoveryCapture.state.name === "archived" && (
+                        <button onClick={() => downloadDraft(session.recoveryCapture.state.record)}>
+                          Download recovery copy
+                        </button>
+                      )}
+                    </div>
+                  )}
                 {session.trash && (
                   <div className="access-notice trash-notice" role="status">
                     <p>This Page is in Trash. It is read-only and hidden from collaborators.</p>
