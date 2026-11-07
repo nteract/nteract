@@ -35,6 +35,17 @@ import { concat } from "./doc-store.mjs";
 const LOOSE_LIMIT = 256;
 const TERMINAL_REFUSALS = new Set(["actor_claimed", "history_capacity", "malformed_change"]);
 
+// One fresh handshake per attempt. Repetition requires an explicit new attempt;
+// it is not evidence that any local history may be discarded.
+export function dependencyRecoveryStep(state, event) {
+  if (event === "start") return state === "retrying" || state === "suspended" ? state : "ready";
+  if (event === "complete" || event === "connect") return "ready";
+  if (event === "suspend") return state === "retrying" ? "suspended" : state;
+  if (event === "resume") return state === "suspended" ? "retrying" : state;
+  if (event === "missing") return state === "ready" ? "retrying" : "blocked";
+  return "blocked";
+}
+
 export class AutomergeSyncBackend {
   #opts;
   #store;
@@ -228,6 +239,7 @@ export class AutomergeSyncBackend {
       }
     } finally {
       if (added.length) {
+        tree.sync.recovery = dependencyRecoveryStep(tree.sync.recovery, "start");
         tree.dirty = true;
         // Even a rejected store must release its hold through the scheduler:
         // a duplicate-record retry repairs persistence without adding edits.
@@ -318,6 +330,7 @@ export class AutomergeSyncBackend {
       this.#settle(tree);
       tree.sync.state = A.decodeSyncState(A.encodeSyncState(tree.sync.state));
       tree.refusedTerminal = false;
+      tree.sync.recovery = dependencyRecoveryStep(tree.sync.recovery, "connect");
       tree.sync.inflight = null;
       clearTimeout(tree.sync.timer);
     }
@@ -371,6 +384,12 @@ export class AutomergeSyncBackend {
     if (tree.deleted || tree.opaque || this.#closed) return;
     this.#settle(tree);
     if (!this.#conn) return this.#finishRound(tree, "no-peers");
+    if (tree.held) {
+      tree.sync.recovery = dependencyRecoveryStep(tree.sync.recovery, "suspend");
+      tree.sync.again ||= force;
+      return;
+    }
+    tree.sync.recovery = dependencyRecoveryStep(tree.sync.recovery, "resume");
     if (tree.sync.inflight !== null) {
       tree.sync.again = true;
       return;
@@ -421,11 +440,14 @@ export class AutomergeSyncBackend {
       return;
     }
     if (frame.t === "refused") {
-      const superseded =
-        frame.r !== undefined && tree.sync.inflight !== null && frame.r !== tree.sync.inflight;
-      if (frame.r !== undefined && frame.r === tree.sync.inflight) tree.sync.inflight = null;
+      const correlated = frame.r !== undefined && frame.r === tree.sync.inflight;
+      const superseded = frame.r !== undefined && !correlated;
+      if (correlated) {
+        tree.sync.inflight = null;
+        clearTimeout(tree.sync.timer);
+      }
       // Keep acknowledged heads, but never treat a refused send as delivered.
-      tree.sync.state = A.decodeSyncState(A.encodeSyncState(tree.sync.state));
+      if (!superseded) tree.sync.state = A.decodeSyncState(A.encodeSyncState(tree.sync.state));
       if (!superseded) tree.refusedTerminal = TERMINAL_REFUSALS.has(frame.code);
       // Always retryable for Repo: a fatal refusal also closes the socket, and
       // the app decides from the close code whether to reconnect. A
@@ -444,6 +466,14 @@ export class AutomergeSyncBackend {
       tree.log.append((sequence) => ({ type: "failure", sequence, error }), 128);
       // A timed-out frame's refusal must not settle a newer round's waiters.
       if (superseded) return;
+      tree.sync.recovery = dependencyRecoveryStep(
+        tree.sync.recovery,
+        correlated && !frame.fatal && frame.code === "missing_dependencies" ? "missing" : "stop",
+      );
+      if (tree.sync.recovery === "retrying") {
+        this.#kick(tree, true);
+        return;
+      }
       return this.#finishRound(tree, "failed");
     }
     const reply = frame.r !== undefined && frame.r === tree.sync.inflight;
@@ -519,9 +549,10 @@ export class AutomergeSyncBackend {
     this.#settle(tree);
     if (outcome === "complete" && tree.refusedTerminal) outcome = "failed";
     if (outcome === "complete") {
+      tree.sync.recovery = dependencyRecoveryStep(tree.sync.recovery, "complete");
       tree.dirty = false;
       this.#saveSyncState(tree);
-    }
+    } else tree.sync.recovery = dependencyRecoveryStep(tree.sync.recovery, "stop");
     if (!tree.sync.waiters.length) return;
     const roundId = String(++this.#round);
     const heads = headsOf(tree);
@@ -549,6 +580,8 @@ export class AutomergeSyncBackend {
     this.#assertOpen("synchronize");
     options?.signal?.throwIfAborted();
     tree.refusedTerminal = false;
+    if (tree.sync.inflight === null)
+      tree.sync.recovery = dependencyRecoveryStep(tree.sync.recovery, "start");
     return new Promise((resolve, reject) => {
       const waiter = { resolve, reject };
       tree.sync.waiters.push(waiter);
@@ -707,6 +740,7 @@ export class AutomergeSyncBackend {
         queue: Promise.resolve(),
         sync: {
           state: A.initSyncState(),
+          recovery: "ready",
           inflight: null,
           again: false,
           waiters: [],

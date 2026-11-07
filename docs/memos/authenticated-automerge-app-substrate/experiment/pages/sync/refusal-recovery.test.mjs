@@ -321,7 +321,7 @@ for (const code of [
       assert.equal((await peer.backend.synchronizeTree(id)).outcome, "complete");
       await until(() => handle.doc().peer === 1);
       await delay(50);
-      assert.equal(refusals, terminal ? 1 : 2);
+      assert.equal(refusals, terminal ? 1 : code === "missing_dependencies" ? 3 : 2);
       const sent = client.link.stats.framesAToB;
       await delay(50);
       assert.equal(client.link.stats.framesAToB, sent);
@@ -334,7 +334,7 @@ for (const code of [
       assert.equal((await peer.backend.synchronizeTree(id)).outcome, "complete");
       await until(() => handle.doc().peer === 2);
       await delay(50);
-      assert.equal(refusals, terminal ? 1 : 3);
+      assert.equal(refusals, terminal ? 1 : code === "missing_dependencies" ? 4 : 3);
       assert.equal((await h.document(id)).n, base.n);
       if (terminal) {
         await client.backend.flush();
@@ -439,7 +439,7 @@ test(
   },
 );
 
-for (const code of ["io", "history_capacity"])
+for (const code of ["io", "history_capacity", "missing_dependencies"])
   test(
     `a late ${code} refusal does not finish or suppress a newer in-flight round`,
     { timeout: 5000 },
