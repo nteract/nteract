@@ -5,8 +5,9 @@
 // marker rewrites and marks with any name and value. Frames are built on
 // the host's heads or on an older base the host has moved past, and two
 // frames on one shared base arrive in both orders. Whenever admission
-// accepts a frame on a block readers read, the block it leaves must still
-// read (spansRead).
+// accepts a frame on a block the real readers read (the editor's decode,
+// blockAddresses, blockMarkdown, projectionDoc), they must still read the
+// block it leaves, and a block the editor drew as stored must stay so.
 // Replay a failure with --test-name-pattern plus PAGES_FUZZ_SEED and
 // PAGES_FUZZ_PATH.
 import test from "node:test";
@@ -16,9 +17,10 @@ import * as A from "@automerge/automerge";
 import { createPageData, orderedBlockIds } from "./page.mjs";
 import { admitPageChanges } from "./page-admission.mjs";
 import { updateSpansConfig } from "./marks.mjs";
-import { RICH_FORMAT, textPath } from "./richtext.mjs";
-import { spansRead } from "./richtext-spans.mjs";
-import { encode } from "./wordgard-doc.mjs";
+import { RICH_FORMAT, blockMarkdown, textPath } from "./richtext.mjs";
+import { projectionDoc, spansRead } from "./richtext-spans.mjs";
+import { blockAddresses } from "./node-addresses.mjs";
+import { decode, encode } from "./wordgard-doc.mjs";
 import { PAGE_ID, pageTreeArbitrary, toWordgardTree } from "../test/random-page-tree.mjs";
 import { fuzzDepth, fuzzParameters as parameters } from "../test/fuzz-parameters.mjs";
 import { freeing } from "../test/free-docs.mjs";
@@ -46,6 +48,14 @@ const MARKERS = [
     parents: ["code-block"],
     attrs: { src: "https://example.org/i.png" },
     isEmbed: true,
+  },
+  {
+    type: "dataframe",
+    parents: ["table", "table-row", "table-cell"],
+    attrs: {
+      src: `/api/pages/${PAGE_ID}/assets/${"b".repeat(64)}`,
+      media_type: "application/vnd.apache.parquet",
+    },
   },
   {
     type: "dataframe",
@@ -143,7 +153,31 @@ function apply(d, path, op) {
   }
 }
 
-const readable = (doc, path) => spansRead(A.spans(doc, path), PAGE_ID);
+/** How the real readers take a block. `reads`: the editor's decode (as the
+ * viewer's binding calls it, full marks), blockAddresses (node ids),
+ * blockMarkdown and projectionDoc all answer without throwing, and
+ * spansRead agrees. `editable`: it reads and decode draws it as stored (a
+ * lossy block is read-only in the editor; it still reads, with notices). */
+function readers(doc, path) {
+  const block = doc.blocks[path[1]];
+  const spans = A.spans(doc, path);
+  const attempt = (fn) => {
+    try {
+      return { ok: true, value: fn() };
+    } catch (error) {
+      if (error instanceof TypeError || error instanceof ReferenceError) throw error;
+      return { ok: false, error };
+    }
+  };
+  const drawn = attempt(() => decode(spans));
+  const reads =
+    drawn.ok &&
+    attempt(() => blockAddresses(spans)).ok &&
+    attempt(() => blockMarkdown(block, PAGE_ID)).ok &&
+    attempt(() => projectionDoc(block, PAGE_ID)).ok &&
+    spansRead(spans, PAGE_ID);
+  return { reads, editable: reads && !drawn.value.lossy };
+}
 
 /** A Page whose one block holds `description`'s tree. */
 function pageOf(description) {
@@ -182,8 +216,12 @@ function admitInto(live, change, path, label, totals) {
   }
   totals.admitted++;
   totals.reads += result.stats.fullReads;
-  if (readable(live, path))
-    assert.ok(readable(preview, path), `${label} left the block unreadable`);
+  const was = readers(live, path);
+  if (was.reads) {
+    const now = readers(preview, path);
+    assert.ok(now.reads, `${label} left the block unreadable`);
+    if (was.editable) assert.ok(now.editable, `${label} left the block read-only in the editor`);
+  }
   return preview;
 }
 
