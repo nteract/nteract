@@ -6,6 +6,7 @@ import { domainAccessForIdentity } from "./domain-access.mjs";
 import { withAdmissionReason } from "./admission-reasons.mjs";
 import { isolateSingleFlight } from "./isolate-setup.mjs";
 import { firstApiKeyUse, logAuthEvent } from "./auth-events.mjs";
+import { clientProvenance } from "./client-provenance.mjs";
 
 // The API-key verifier caches one pending provider lookup per token for 60 s
 // (ANACONDA_API_KEY_CACHE_TTL_MS in @cloud/identity.ts); see isolate-setup.mjs.
@@ -135,6 +136,8 @@ export async function authenticate(request, env) {
   requireSameOrigin(request, env);
   const driver = driverLabel(request);
   const agent = agentLabel(request);
+  const provenance = clientProvenance(request, agent);
+  const requestAssertions = provenance ? { clientProvenance: provenance } : {};
   const authorization = request.headers.get("authorization");
   if (authorization) {
     if (!/^Bearer \S+$/i.test(authorization)) throw new HttpError(401, "Use a bearer credential");
@@ -207,6 +210,7 @@ export async function authenticate(request, env) {
                   ? "Kilo"
                   : "MCP",
           ...(agent && { agent }),
+          ...requestAssertions,
           ...(await mcpSession(request, grant.identity.principal)),
           canWrite: scopes.has("pages:write"),
           canShare: scopes.has("pages:share"),
@@ -275,6 +279,7 @@ export async function authenticate(request, env) {
         accountDisplayName: identity.metadata.displayName || null,
         driver: bearerDriver(driver),
         ...(agent && { agent }),
+        ...requestAssertions,
         ...(await mcpSession(request, identity.principal)),
         canWrite: identity.scope === "editor",
         credentialKind: "api-key",
@@ -307,6 +312,7 @@ export async function authenticate(request, env) {
       displayName: session.displayName || session.principal,
       accountDisplayName: session.displayName || null,
       driver,
+      ...requestAssertions,
       canWrite: true,
       credentialKind: "oidc",
       namespace: session.principalNamespace,

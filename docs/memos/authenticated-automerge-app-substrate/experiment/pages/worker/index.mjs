@@ -37,6 +37,7 @@ import { readTargets, writeTargets } from "../model/agent-presence.mjs";
 import { assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
 import { RECORD_STORAGE_MODES } from "../shared/record-storage.mjs";
 import { handleMcp } from "../mcp.mjs";
+import { forwardClientProvenance, withMcpAgent } from "./client-provenance.mjs";
 import {
   REPLAYED_RECEIPT_HEADER,
   declaredLabels,
@@ -662,6 +663,7 @@ function forwarded(request, path, body) {
     headers.set("x-pages-driver", driverLabel(request));
   const agent = agentLabel(request);
   if (agent) headers.set("x-pages-agent", agent);
+  forwardClientProvenance(request, headers);
   headers.set("content-type", "application/json");
   return new Request(url, { method: "POST", headers, body: JSON.stringify(body) });
 }
@@ -1252,7 +1254,8 @@ const gateway = {
         const identity = await authenticate(request, env);
         return await handleMcp(
           request,
-          async (operation, args, { kind = "tool" } = {}) => {
+          async (operation, args, { kind = "tool", agent } = {}) => {
+            const invocationRequest = withMcpAgent(request, agent);
             const usage = toolUsage(request, "mcp", operation, args, kind, env);
             // A refusal before invoke() authenticates still names the caller.
             usage.seen.identity = identity;
@@ -1260,7 +1263,7 @@ const gateway = {
             try {
               response = await invokeProjectApi(
                 (internal, internalArgs) =>
-                  invoke(request, env, internal, internalArgs, usage.seen),
+                  invoke(invocationRequest, env, internal, internalArgs, usage.seen),
                 operation,
                 args,
               );
