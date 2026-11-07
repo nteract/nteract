@@ -30,7 +30,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
 import * as A from "@automerge/automerge";
-import { createPageData, initializePage, orderedBlockIds } from "../model/page.mjs";
+import {
+  applyPageOperation,
+  createPageData,
+  initializePage,
+  orderedBlockIds,
+} from "../model/page.mjs";
+import { assertDocumentLimits } from "../model/limits.mjs";
 import { admitPageChanges } from "../model/page-admission.mjs";
 import { validateRichSpans } from "../model/richtext-spans.mjs";
 
@@ -171,6 +177,74 @@ for (const [fixture, source] of Object.entries(fixtures)) {
   }
   A.free(live);
 }
+// Many blocks: one 1-character delete in every block of a Page that holds
+// BLOCKS copies of the ADR as separate blocks, inside the document limits
+// (assertDocumentLimits). The frame probes one marker per block.
+const BLOCKS = Number(process.env.PAGES_ADMISSION_BLOCKS || 150);
+{
+  let built = A.change(A.from(createPageData({ pageId, title: "Benchmark" })), (d) =>
+    initializePage(d, adr),
+  );
+  for (let left = BLOCKS - 1; left > 0; left -= 100)
+    built = A.change(built, (d) =>
+      applyPageOperation(d, {
+        operation: "edit_page",
+        arguments: {
+          operations: Array.from({ length: Math.min(100, left) }, () => ({
+            op: "insert_markdown",
+            markdown: adr,
+          })),
+        },
+      }),
+    );
+  assertDocumentLimits(built);
+  const live = A.load(A.save(built));
+  A.free(built);
+  const ids = orderedBlockIds(live);
+  const fixture = `${BLOCKS} blocks`;
+  results.fixtures[fixture] = {
+    markdownBytes: Buffer.byteLength(adr) * BLOCKS,
+    savedBytes: A.save(live).byteLength,
+    blocks: ids.length,
+  };
+  const change = A.getLastLocalChange(
+    A.change(A.clone(live), (d) => {
+      for (const id of ids) A.splice(d, ["blocks", id, "richText"], 4, 1);
+    }),
+  );
+  const manyChecks = {
+    "patch path": (preview) => admitPageChanges(live, preview).stats.fullReads,
+    "full validation": (preview) => {
+      for (const id of ids)
+        validateRichSpans(A.spans(preview, ["blocks", id, "richText"]), Infinity);
+      return ids.length;
+    },
+  };
+  for (const [label, check] of Object.entries(manyChecks)) {
+    const samples = [];
+    let fullReads = 0;
+    for (let i = -2; i < Math.min(SAMPLES, 15); i++) {
+      const preview = A.loadIncremental(A.clone(live), change);
+      const start = performance.now();
+      fullReads = check(preview);
+      const ms = performance.now() - start;
+      A.free(preview);
+      if (i >= 0) samples.push(ms);
+    }
+    results.results.push({
+      fixture,
+      case: "one delete in every block",
+      check: label,
+      fullReads,
+      median: quantile(samples, 0.5),
+      p10: quantile(samples, 0.1),
+      p90: quantile(samples, 0.9),
+      samples,
+    });
+  }
+  A.free(live);
+}
+
 writeFileSync(
   path.join(output, "admission-benchmark.json"),
   `${JSON.stringify(results, null, 2)}\n`,
@@ -180,7 +254,9 @@ const fmt = (n) => n.toFixed(2);
 console.log(`node ${process.version}, ${SAMPLES} samples after ${WARMUP} warmups`);
 for (const [fixture, info] of Object.entries(results.fixtures))
   console.log(
-    `${fixture}: ${info.markdownBytes} Markdown bytes, ${info.nativeLength} native characters, ${info.spanBytes} span JSON bytes`,
+    info.blocks
+      ? `${fixture}: ${info.markdownBytes} Markdown bytes, ${info.savedBytes} saved bytes`
+      : `${fixture}: ${info.markdownBytes} Markdown bytes, ${info.nativeLength} native characters, ${info.spanBytes} span JSON bytes`,
   );
 console.log(`\n| Fixture | Case | ${Object.keys(checks).join(" | ")} |`);
 console.log(
@@ -188,13 +264,15 @@ console.log(
     .map(() => "---:")
     .join(" | ")} |`,
 );
-for (const fixture of Object.keys(fixtures))
-  for (const name of Object.keys(cases)) {
-    const cells = Object.keys(checks).map((label) => {
-      const r = results.results.find(
-        (x) => x.fixture === fixture && x.case === name && x.check === label,
-      );
-      return `${fmt(r.median)} [${fmt(r.p10)}, ${fmt(r.p90)}]${r.fullReads ? ` (${r.fullReads} read)` : ""}`;
-    });
-    console.log(`| ${fixture} | ${name} | ${cells.join(" | ")} |`);
-  }
+const rows = new Map();
+for (const r of results.results) {
+  const key = `${r.fixture}\u0000${r.case}`;
+  if (!rows.has(key)) rows.set(key, [r.fixture, r.case, []]);
+  rows
+    .get(key)[2]
+    .push(
+      `${fmt(r.median)} [${fmt(r.p10)}, ${fmt(r.p90)}]${r.fullReads ? ` (${r.fullReads} read)` : ""}`,
+    );
+}
+for (const [fixture, name, cells] of rows.values())
+  console.log(`| ${fixture} | ${name} | ${cells.join(" | ")} |`);

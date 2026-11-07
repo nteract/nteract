@@ -2046,7 +2046,7 @@ merged result, whatever the batch's writer had seen:
 | Mark | A mark patch's name and value: a known mark with a registry value (`validateMarkValue`), or null. Text inserted with a mark carries it in its splice patch; an unknown or invalid one is admitted only when the text on either side of the insertion point already held exactly that mark and value. |
 | Block marker | Each inserted or changed marker, read alone at its final index (`getBlock`), passes `validateMarkerValue`: known type and parents, and the attrs the adapter reads. |
 | Block size | A block whose native length grows ends at most 262,144 UTF-16 units once merged (markers count one), read from the backend length. |
-| Structure | The block still reads (`spansRead`), judged by reading it whole only when the patches can't show it. |
+| Structure | The block still reads (`spansRead`), and a block the editor drew as stored (its `decode` isn't lossy) still draws so, judged by reading it whole only when the patches can't show it. A new block passes `validateRichSpans` and draws as stored. |
 
 Structure is held to what readers read, not to `validateRichSpans`.
 `spansRead` builds both the ProseMirror and the Wordgard tree through
@@ -2055,30 +2055,39 @@ concurrent edits can merge into a shape only that repair reads, such as text
 one peer typed into a paragraph another deleted after a rule. Holding merges
 to the strict check refused whichever of two honest frames arrived second, so
 the same frame was admitted or refused by arrival order. A block that read
-before the batch and doesn't after is refused; a block that didn't read before
-is never refused for its structure.
+before the batch and doesn't after is refused, and so is a block the editor
+drew as stored that it would now draw lossily and read-only, such as a
+dataframe moved into a table cell. A block that didn't read, or was already
+lossy, before the batch is never refused for its structure.
 
 A block is read whole when the batch inserts, changes or deletes a block
 marker (a marker can move nodes in ways no patch shows), when inserted text
-lands straight after a container marker that doesn't hold text, for a new
-block, a replaced text object, a `richText` that isn't text, a marker the
-patch path can't place, and when the batch's marker probes run out. A text
-delete probes the live block at each deleted index for a removed marker, and
-inserted text probes the marker before it. A batch gets 64 probes across all
-its blocks; past that, each block it touches further is read once. Typing,
+lands straight after a marker that doesn't open text (a table or table row;
+paragraphs, headings, cells, code blocks, list items, quotes and asides open
+text, per the node registry), for a new block, a replaced text object, a
+`richText` that isn't text, a marker the patch path can't place, and when a
+block's marker probes run out. A text delete probes the live block at each
+deleted index for a removed marker, and inserted text probes the marker
+before it. Each block gets 64 probes; past that, it is read once. A frame's
+cost grows with the blocks it touches, so with the document's size. Typing,
 short deletes, formatting and title edits never read a block.
 
 `node scripts/admission-benchmark.mjs` on a 115 KB block: typing one character
 costs about 0.1 ms and deleting one about 0.06 ms, against 22 ms to validate
 the block whole. The costliest frame a client can send cheaply, 1,000
-scattered one-character deletes, costs about 30 ms (one block read).
+scattered one-character deletes, costs about 30 ms (one block read). One
+delete in each of 150 blocks (2.5 MB of Markdown) costs about 11 ms with no
+block read.
 
 Known limits. A concurrent mark or marker attribute that loses to another
 within one batch isn't seen: patches show the winner, and a losing mark never
 surfaces in reads. Marker attributes and block `metadata` have no per-block
-size bound of their own; the 16 MiB history bound covers them. Two concurrent
-frames whose merge readers can't read admit the first to arrive and refuse the
-second; the property tests found no honest editor frames that do this.
+size bound of their own; the 16 MiB history bound covers them. Not every
+honest concurrent frame is admitted. The later of two frames is refused when
+their merge exceeds a block or title bound, when readers can't read or the
+editor can't draw the merged block, or when they conflict on one block field
+or the schema stamp. A refused browser keeps its change, so client recovery
+from a refusal is still needed before this reaches people.
 
 Content stored before these rules stays readable and editable: a write is
 judged by what it writes, so a Page with an unknown mark, an extra field or an
