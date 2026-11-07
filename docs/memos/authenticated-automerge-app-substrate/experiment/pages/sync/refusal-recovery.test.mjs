@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
-import { DocStore, MemoryByteStore } from "./doc-store.mjs";
+import { concat, DocStore, MemoryByteStore } from "./doc-store.mjs";
 import { Refusal } from "./host.mjs";
 import { browser, host, newId, raw, reconnect, until, urlOf } from "./test-helpers.mjs";
 import { encodeFrame } from "./wire.mjs";
@@ -16,7 +16,9 @@ async function fixture(t, { trusted = false, policy, syncTimeoutMs = 1000 } = {}
   const bytes = new MemoryByteStore();
   const h = await host({ bytes, policy });
   const id = newId();
-  const base = A.from({ n: 0 });
+  const base = A.change(A.init({ actor: "aa".repeat(16) }), { time: 0 }, (d) => {
+    d.n = 0;
+  });
   await h.seed(id, "page", base);
   const client = await browser(
     h,
@@ -278,6 +280,7 @@ test(
 for (const code of [
   "actor_claimed",
   "history_capacity",
+  "history_capacity_then_accept",
   "malformed_change",
   "io",
   "closed",
@@ -289,13 +292,18 @@ for (const code of [
     { timeout: 5000 },
     async (t) => {
       let refusals = 0;
-      const terminal = ["actor_claimed", "history_capacity", "malformed_change"].includes(code);
-      const { h, id, base, client, handle } = await fixture(t, {
+      const acceptsOnReconnect = code === "history_capacity_then_accept";
+      const policyCode = acceptsOnReconnect ? "history_capacity" : code;
+      let accepting = false;
+      const terminal = ["actor_claimed", "history_capacity", "malformed_change"].includes(
+        policyCode,
+      );
+      const { h, id, base, bytes, client, handle } = await fixture(t, {
         policy: {
           admit(conn, _doc, _live, _fresh, preview) {
-            if (conn.principal === "account:a") {
+            if (conn.principal === "account:a" && !accepting) {
               refusals++;
-              throw new Refusal(code, "refused");
+              throw new Refusal(policyCode, "refused");
             }
             return preview;
           },
@@ -304,7 +312,7 @@ for (const code of [
       const store = new DocStore(client.bytes);
       const saved = await store.syncState(id);
       await handle.update((doc) =>
-        A.change(doc, (d) => {
+        A.change(A.clone(doc, { actor: "00000000000000000000000000000014" }), { time: 0 }, (d) => {
           d.n = 1;
         }),
       );
@@ -314,27 +322,27 @@ for (const code of [
       t.after(() => peer.repo.shutdown());
       const other = await peer.repo.find(urlOf(id));
       await other.update((doc) =>
-        A.change(doc, (d) => {
+        A.change(A.clone(doc, { actor: "cc".repeat(16) }), { time: 0 }, (d) => {
           d.peer = 1;
         }),
       );
       assert.equal((await peer.backend.synchronizeTree(id)).outcome, "complete");
       await until(() => handle.doc().peer === 1);
       await delay(50);
-      assert.equal(refusals, terminal ? 1 : 2);
+      assert.equal(refusals, terminal ? 1 : code === "missing_dependencies" ? 3 : 2);
       const sent = client.link.stats.framesAToB;
       await delay(50);
       assert.equal(client.link.stats.framesAToB, sent);
       // Another host change must arrive: the first one was acknowledged.
       await other.update((doc) =>
-        A.change(doc, (d) => {
+        A.change(A.clone(doc, { actor: "cc".repeat(16) }), { time: 0 }, (d) => {
           d.peer = 2;
         }),
       );
       assert.equal((await peer.backend.synchronizeTree(id)).outcome, "complete");
       await until(() => handle.doc().peer === 2);
       await delay(50);
-      assert.equal(refusals, terminal ? 1 : 3);
+      assert.equal(refusals, terminal ? 1 : code === "missing_dependencies" ? 4 : 3);
       assert.equal((await h.document(id)).n, base.n);
       if (terminal) {
         await client.backend.flush();
@@ -354,19 +362,57 @@ for (const code of [
           });
         });
         await handle.update((doc) =>
-          A.change(doc, (d) => {
-            d.n = 2;
-          }),
+          A.change(
+            A.clone(doc, { actor: "00000000000000000000000000000014" }),
+            { time: 0 },
+            (d) => {
+              d.n = 2;
+            },
+          ),
         );
         await refused;
         assert.equal(refusals, 3, "local store permits retry");
+        const frames = [];
+        accepting = acceptsOnReconnect;
         reconnect(client, h);
-        assert.equal((await client.backend.synchronizeTree(id)).outcome, "failed");
-        // Bloom false positives can first send a descendant without its refused
-        // parent. missing_dependencies permits a fresh explicit round.
-        for (let retry = 0; refusals < 4 && retry < 3; retry++)
-          assert.equal((await client.backend.synchronizeTree(id)).outcome, "failed");
+        client.link.client.onMessage((frame) => {
+          if (frame.t === "refused") frames.push({ r: frame.r, code: frame.code });
+        });
+        const result = await client.backend.synchronizeTree(id);
+        if (acceptsOnReconnect) {
+          assert.equal(result.outcome, "complete");
+          assert.deepEqual(
+            frames.map((frame) => frame.code),
+            ["missing_dependencies"],
+          );
+          assert.equal(refusals, 3, "no policy refusal after admission is enabled");
+          await client.backend.flush();
+          const persisted = await store.read(id);
+          const restored = A.load(
+            concat([persisted.snapshot, ...persisted.chunks].filter(Boolean)),
+          );
+          const reopened = await host({ bytes });
+          reopened.register(id);
+          const durableHeads = await h.durableHeads(id);
+          assert.deepEqual(durableHeads, A.getHeads(handle.doc()));
+          assert.deepEqual(history(await h.document(id)), history(restored));
+          assert.deepEqual(history(await reopened.document(id)), history(restored));
+          assert.equal(restored.n, 2);
+          assert.equal(restored.peer, 2);
+          A.free(restored);
+          return;
+        }
+        assert.equal(result.outcome, "failed");
+        assert.deepEqual(
+          frames.map((frame) => frame.code),
+          ["missing_dependencies", code],
+          "fixed history must traverse dependency recovery before normal policy admission",
+        );
         assert.equal(refusals, 4, "new connection permits retry");
+        assert.equal((await h.document(id)).n, base.n, "policy still rejects local content");
+        assert.equal(handle.doc().n, 2, "all local edits remain available");
+        await client.backend.flush();
+        assert.deepEqual(await store.syncState(id), saved, "no refused retry becomes saved");
       }
     },
   );
@@ -439,7 +485,7 @@ test(
   },
 );
 
-for (const code of ["io", "history_capacity"])
+for (const code of ["io", "history_capacity", "missing_dependencies"])
   test(
     `a late ${code} refusal does not finish or suppress a newer in-flight round`,
     { timeout: 5000 },
