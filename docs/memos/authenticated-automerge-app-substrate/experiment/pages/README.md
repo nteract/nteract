@@ -1990,9 +1990,12 @@ receives a whole document as one `document` record (an `A.save()` chunk; see
 as loose commits. History is stored as a snapshot plus chunks under one
 manifest per document ([sync/doc-store.mjs](sync/doc-store.mjs)): IndexedDB in
 the browser ([sync/idb-byte-store.mjs](sync/idb-byte-store.mjs)) and the Page's
-Durable Object storage under `plain/` on the host. Every write is one
+Durable Object storage under `plain/` on the host. Ordinary writes use one
 `saveMany` that puts the manifest last, so a manifest never names a missing
-object. Manifests are written only at `sync/<doc>/m2`, preferred over legacy
+object. The host splits it into ordered puts of at most 128 keys. Earlier
+batches can survive a crash without publishing the manifest, including staged
+actor claims passed as `extra`; `extra` is **not** atomic with the manifest.
+Manifests are written only at `sync/<doc>/m2`, preferred over legacy
 `m` on read. The legacy key is removed after the new manifest is durable, so
 an old viewer cannot misread v2. Version 2 manifests hold seq, snapshot and heads; chunk descriptors
 have separate keys, read from snapshot.seq + 1 through manifest.seq. An append
@@ -2006,6 +2009,43 @@ the ack. A failed attempt is logged (`request.failed`, stage `plain-compaction`)
 and later writes back off: each
 failure in a row doubles the writes that skip compaction, up to 256
 ([sync/compaction-machine.mjs](sync/compaction-machine.mjs)).
+
+For bounded metadata that must become visible with history, `DocStore.append`
+accepts an optional synchronous `commitExtra({ seq, heads })` builder in its
+options. It returns `[key, Uint8Array]` entries bound to the prospective manifest,
+not a notification that the write succeeded. The builder must be pure and its
+heads input is a frozen copy. Metadata keys must belong to the caller, outside
+DocStore's reserved `sync/` namespace. A nonempty result requires the explicit
+`saveWithCommitTail(staged, tail)` adapter capability; unsupported stores reject
+before staging. Existing callers, including builders returning no entries, keep
+their ordinary `saveMany` path. Browser IndexedDB and the memory test adapter do
+not currently expose this additional capability.
+
+`PlainByteStore.saveWithCommitTail` validates the whole request before writing:
+entry shapes and byte values, unique keys across staging and tail, the existing
+1,900,000-byte key-plus-value bound, and at most 128 tail keys **including the
+manifest** (at most 127 metadata entries). That key count is Pages policy, not a
+celld API limit. It copies inputs before its first await, stages chunks,
+descriptors and ordinary extras with the existing batching, then writes all
+metadata and the manifest in one separate final multi-key `storage.put`.
+Unused space in a staging batch is never filled with part of the tail.
+Compaction creates no metadata and compaction/removal do not reclaim caller-owned
+metadata; its retention and cleanup need an explicit owner.
+
+The publication guarantee relies on the underlying multi-key put being atomic.
+For pinned celld 0.6.3, [the harness queues the whole
+object](https://github.com/denoland/celld/blob/8702f6d186c77698dbfb30cf29e3b1922a88f008/crates/celld/js/harness.js#L1615-L1652)
+and [storage applies its keys in one SQLite transaction or nested
+savepoint](https://github.com/denoland/celld/blob/8702f6d186c77698dbfb30cf29e3b1922a88f008/crates/celld/storage.rs#L3571-L3594).
+The fault-injection suite exercises real DocStore and PlainByteStore code over
+an atomic storage fixture: staging failures leave old history without new
+metadata, interruptions before the final put publish neither, and a
+committed-then-rejected put is recovered by reloading both. This is not backend crash/failover
+qualification. A rejected put can have committed; DocStore reloads before
+allocating the next sequence. A retry must reconcile durable state rather than
+assume exactly-once execution. Awaiting the put gives local completion, not
+remote durability; the configured `storage.sync()`/output gate is still required
+before reporting durable success.
 
 On the host, [worker/plain-sync.mjs](worker/plain-sync.mjs) runs a `SyncHost`
 ([sync/host.mjs](sync/host.mjs)). Browsers connect to it directly; the host's
@@ -2385,20 +2425,27 @@ for this use. Ordinary `fetch` after a separate DNS check is insufficient.
 
 Before enabling discovery, the Page host must atomically publish events alongside
 admitted, persisted changes from both browser sync and tool edits. The common
-boundary is `sync/host.mjs` persistence (`store.append(..., extra)`), not a
-post-admission callback: those callbacks run after persistence and swallow errors,
+boundary is `sync/host.mjs` persistence using the explicit atomic commit tail
+above, not ordinary `extra` or a post-admission callback: those callbacks run
+after persistence and swallow errors,
 leaving a crash gap. The plain-sync write hook excludes trusted tool writes, and
 content activity coalesces changes and excludes comments. Neither is an event
 source. Change listeners can also run after a celld request ends, when starting
-I/O is unsafe. A durable subscription owner and delivery outbox still need to be
-designed. Use stable occurrence IDs across retries, not snapshot differences or
+I/O is unsafe. The commit-tail primitive is not connected to host admissions and
+does not define or produce events. A durable subscription owner, event identity
+and payload semantics, retention, delivery outbox and production durable alarm
+scheduler still need to be designed. Future change producers must distinguish
+initialization from user edits, including comments genesis admitted through the
+same history path. Use stable occurrence IDs across retries, not snapshot differences or
 activity counters. Subscription creation must authorize filters, verify a fresh signed
 challenge before application data is sent, persist the granted expiration and
 scope cached verification to principal and callback with a bounded lifetime.
 Refresh and unsubscribe must be idempotent and owner-scoped, with revision fences
 for competing refresh, revocation and delivery work. Recheck authorization and
 expiry before delivery, including account disconnection and Page/Project access
-revocation. Persist retry progress, bound exponential backoff, and stop retrying
+revocation. OAuth grants have a durable grant ID to revalidate; API keys still
+need a persistent revocation reference before supporting background delivery.
+Persist retry progress, bound exponential backoff, and stop retrying
 `410`/`413` responses. Rotate secrets with a bounded dual-signature window, avoid
 logging secrets or callback URLs, and enforce the 256 KiB UTF-8 body limit. Do not
 advertise Events until this lifecycle is tested through restart, revocation,

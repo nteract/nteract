@@ -1,4 +1,5 @@
 import { cbor } from "@automerge/automerge-repo";
+import { MAX_COMMIT_TAIL_KEYS, validateCommitTail } from "./commit-tail.mjs";
 
 // Snapshot plus incremental chunks per document, over a byte store with
 // `load`, `saveMany` (ordered batches), `remove` and `list`. The browser
@@ -17,7 +18,11 @@ import { cbor } from "@automerge/automerge-repo";
 // wrote them. Only unpublished seqs may be retried; reclaiming a replaced
 // manifest's objects can't delete anything a newer manifest names. Descriptors
 // are live only between snapshot.seq (exclusive) and manifest.seq (inclusive).
-// A crash before the manifest leaves only orphaned parts/descriptors.
+// A crash before the manifest can leave orphaned parts/descriptors and staged
+// extras. Extras are NOT atomic with the manifest. append's optional commitExtra
+// builder instead requires saveWithCommitTail(staged, tail): stage bulk entries,
+// then publish all bounded tail entries (metadata + manifest) in one atomic put.
+// An adapter without that capability must reject before staging, not fall back.
 //
 // Callers serialize writes per document. The manifest cache is the source of
 // truth between writes; `open` loads it.
@@ -106,11 +111,15 @@ export class DocStore {
   }
 
   /**
-   * Persist one chunk with `extra` entries and commit the manifest. `format`
-   * is fixed by a document's first write: "automerge" chunks concatenate into
-   * one A.load; "opaque" is the contract suite's verbatim record mode.
+   * Persist one chunk with staged `extra` entries and commit the manifest.
+   * `format` is fixed by a document's first write: "automerge" chunks concatenate
+   * into one A.load; "opaque" is the contract suite's verbatim record mode.
+   * Optional synchronous `commitExtra({ seq, heads })` returns byte entries
+   * published atomically with this manifest, at most 127 metadata keys. It must
+   * be pure: failed writes can be retried, and its invocation is not a commit.
+   * Metadata must use caller-owned keys outside DocStore's reserved `sync/`.
    */
-  async append(id, chunk, heads, extra = [], { format = "automerge" } = {}) {
+  async append(id, chunk, heads, extra = [], { format = "automerge", commitExtra } = {}) {
     const m = (await this.open(id)) ?? { ...EMPTY, format };
     if (m.format !== format) throw new Error(`Document ${id} is stored as ${m.format}`);
     const seq = m.seq + 1;
@@ -121,11 +130,31 @@ export class DocStore {
       chunks: [...m.chunks, object],
       heads: [...heads],
     };
-    await this.#commit(id, next, [
-      ...this.#parts(id, seq, chunk),
-      ...(m.version === 2 ? [[chunkKey(id, seq), cbor.encode(object)]] : []),
-      ...extra,
-    ]);
+    let metadata = [];
+    if (commitExtra !== undefined) {
+      if (typeof commitExtra !== "function")
+        throw new TypeError("commitExtra must be a synchronous function");
+      metadata = commitExtra(Object.freeze({ seq, heads: Object.freeze([...next.heads]) }));
+      if (!Array.isArray(metadata)) {
+        // Reject async builders without leaking an eventual rejected promise.
+        // Their result is never used to publish metadata or stage history.
+        Promise.resolve(metadata).catch(() => {});
+        throw new TypeError("commitExtra must synchronously return an entry array");
+      }
+      // Reserve the manifest's key before copying or spreading any metadata.
+      if (metadata.length >= MAX_COMMIT_TAIL_KEYS)
+        throw new RangeError(`Commit metadata permits at most ${MAX_COMMIT_TAIL_KEYS - 1} keys`);
+    }
+    await this.#commit(
+      id,
+      next,
+      [
+        ...this.#parts(id, seq, chunk),
+        ...(m.version === 2 ? [[chunkKey(id, seq), cbor.encode(object)]] : []),
+        ...extra,
+      ],
+      metadata,
+    );
     return next;
   }
 
@@ -184,16 +213,23 @@ export class DocStore {
     await this.#bytes.saveMany([[syncStateKey(id), bytes]]);
   }
 
-  async #commit(id, next, entries) {
+  async #commit(id, next, entries, metadata = []) {
     // Legacy manifests retain their inline chunks until the next compaction.
     // The v2 cache has the same shape for callers, but disk metadata is O(1)
     // in chunk count (heads still scale with concurrent writers).
     const { chunks: _chunks, ...manifest } = next;
+    const publication = [manifestKey(id), cbor.encode(next.version === 2 ? manifest : next)];
+    const tail = [...metadata, publication];
+    if (metadata.length) {
+      validateCommitTail(entries, tail);
+      if (metadata.some(([key]) => key.startsWith("sync/")))
+        throw new Error("Commit metadata cannot use reserved sync/ keys");
+      if (typeof this.#bytes.saveWithCommitTail !== "function")
+        throw new Error("Byte store does not support an atomic commit tail");
+    }
     try {
-      await this.#bytes.saveMany([
-        ...entries,
-        [manifestKey(id), cbor.encode(next.version === 2 ? manifest : next)],
-      ]);
+      if (metadata.length) await this.#bytes.saveWithCommitTail(entries, tail);
+      else await this.#bytes.saveMany([...entries, publication]);
     } catch (error) {
       // A rejected put may have committed. Reload before allocating a seq so
       // a retry cannot overwrite objects the durable manifest already names.

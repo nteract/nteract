@@ -8,6 +8,7 @@ import {
   schemaUnsupported,
 } from "../model/schema-features.mjs";
 import { BLOCKING, commentAdmission } from "../sync/comments.mjs";
+import { MAX_COMMIT_TAIL_KEYS, validateCommitTail } from "../sync/commit-tail.mjs";
 import { HostRepo, hostTreeOf } from "../sync/host-handle.mjs";
 import { Refusal, SyncHost } from "../sync/host.mjs";
 import { socketTransport } from "../sync/wire.mjs";
@@ -32,7 +33,7 @@ import { PermissionDenied, credentialExpired } from "./policy.mjs";
 const PREFIX = "plain/";
 const BLOCKED = "host/comments-blocked/";
 export const HOST_SENDER_ID = "pages-host";
-const PUT_KEYS = 128;
+const PUT_KEYS = MAX_COMMIT_TAIL_KEYS;
 
 /** SyncHost byte store over Durable Object storage, under `plain/`. */
 export class PlainByteStore {
@@ -53,6 +54,23 @@ export class PlainByteStore {
           entries.slice(i, i + PUT_KEYS).map(([k, v]) => [PREFIX + k, new Uint8Array(v)]),
         ),
       );
+  }
+  /**
+   * Stage bulk bytes/claims with the existing ordered batching, then publish a
+   * reserved tail in ONE put, even when staging leaves room in its last batch.
+   * Requires storage.put(object) to be atomic; rejection may still mean it
+   * committed. This does not add a durability barrier or roll staging back.
+   */
+  async saveWithCommitTail(staged, tail) {
+    validateCommitTail(staged, tail);
+    for (const entries of [staged, tail])
+      for (const [key, value] of entries) assertStoredSize(PREFIX + key, value.byteLength);
+    // Snapshot every value before the first await, including the reserved tail.
+    const copy = (entries) => entries.map(([key, value]) => [key, new Uint8Array(value)]);
+    const stagedCopy = copy(staged);
+    const publication = Object.fromEntries(copy(tail).map(([key, value]) => [PREFIX + key, value]));
+    await this.saveMany(stagedCopy);
+    await this.storage.put(publication);
   }
   async remove(key) {
     await this.storage.delete(PREFIX + key);
