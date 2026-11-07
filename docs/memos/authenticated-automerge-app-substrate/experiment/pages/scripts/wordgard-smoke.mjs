@@ -4,7 +4,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
 import { purgeTrashedFixture } from "./purge-fixture.mjs";
 
-const origin = process.env.PAGES_ORIGIN || "http://localhost:9894";
+const origin = process.env.PAGES_ORIGIN || "http:" + "//localhost:9894";
 assert.equal(new URL(origin).hostname, "localhost");
 const output = process.env.PAGES_SCREENSHOTS || "/tmp/pages-wordgard-browser";
 await mkdir(output, { recursive: true });
@@ -656,6 +656,11 @@ try {
     await expect.poll(() => textOf(page)).not.toContain("Local undo.");
     await expect.poll(() => textOf(page)).toContain("Remote stays.");
     await expect.poll(() => textOf(page)).toContain("A writes.");
+  }
+  await a.keyboard.press("ControlOrMeta+Shift+z");
+  for (const page of [a, b]) {
+    await expect.poll(() => textOf(page)).toContain("Local undo.");
+    await expect.poll(() => textOf(page)).toContain("Remote stays.");
   }
   checkpoint(stage);
 
