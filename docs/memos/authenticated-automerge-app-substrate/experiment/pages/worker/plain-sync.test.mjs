@@ -3,7 +3,12 @@ import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { Repo, cbor, generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
-import { createPageData, initializePage } from "../model/page.mjs";
+import {
+  applyPageOperation,
+  createPageData,
+  initializePage,
+  orderedBlockIds,
+} from "../model/page.mjs";
 import { BUILD_FEATURES } from "../model/schema-features.mjs";
 import { AutomergeSyncBackend } from "../sync/backend.mjs";
 import { DocStore, MemoryByteStore } from "../sync/doc-store.mjs";
@@ -12,6 +17,12 @@ import { Page } from "./index.mjs";
 import { HOST_SENDER_ID, PlainByteStore } from "./plain-sync.mjs";
 import { documentMutation } from "./mutations.mjs";
 import { applyComment } from "../model/comments.mjs";
+
+// Browser writes pass Page-body admission (model/page-admission.mjs), so
+// they type into the Page's first block.
+const firstBlock = (doc) => orderedBlockIds(doc)[0];
+const typed = (doc, text) => A.splice(doc, ["blocks", firstBlock(doc), "richText"], 0, 0, text);
+const holds = (doc, text) => String(doc?.blocks?.[firstBlock(doc)]?.richText ?? "").includes(text);
 
 class Storage {
   values = new Map();
@@ -386,9 +397,7 @@ test("plain capacity refusal on restart preserves committed reads and the pendin
     { senderId: "b-capacity" },
   );
   t.after(() => browser.client.close());
-  const candidate = A.change(A.clone(host.handle.doc()), (d) => {
-    d.browser = true;
-  });
+  const candidate = A.change(A.clone(host.handle.doc()), (d) => typed(d, "From browser "));
   const changes = A.getChanges(host.handle.doc(), candidate);
   A.free(candidate);
   // Scale byte accounting near the limit without allocating 16 MiB of history.
@@ -414,7 +423,7 @@ test("plain capacity refusal on restart preserves committed reads and the pendin
       (stored.snapshot?.bytes ?? 0) -
       stored.chunks.reduce((n, chunk) => n + chunk.bytes, 0);
     browser.client.send({ t: "sync", doc: tree, m: helloWith(changes), r: 1 });
-    await until(() => host.handle.doc().browser === true);
+    await until(() => holds(host.handle.doc(), "From browser "));
   });
   const refusals = [];
   const admit = host.plain.host.policy.admitTrusted;
@@ -445,7 +454,7 @@ test("plain capacity refusal on restart preserves committed reads and the pendin
   assert.deepEqual(content.heads, committed);
   assert.equal(content.recovery.code, "page_recovery_blocked");
   assert.equal(content.recovery.pending, true);
-  assert.equal(restarted.handle.doc().browser, true);
+  assert.ok(holds(restarted.handle.doc(), "From browser "));
   assert.deepEqual(await f.storage.get(key), pending);
   const edit = await tool(f, restarted, "edit_page", { ...args, base_heads: committed });
   assert.equal(edit.status, 409);
@@ -780,15 +789,15 @@ test("a browser syncs an automerge Page through connect, and its actor is attrib
     assert.equal(staleFrames.find((frame) => frame.t === "refused").code, "schema_unsupported");
     assert.equal(stale.client.closeCode, 4426);
     assert.equal(handle.doc().title, "Plain Page");
-    handle.change((d) => (d.fromBrowser = true));
-    await until(() => host.handle.doc().fromBrowser === true);
+    handle.change((d) => typed(d, "From browser "));
+    await until(() => holds(host.handle.doc(), "From browser "));
     const actor = A.getActorId(handle.doc());
     assert.equal(host.plain.actorSnapshot().actorProfiles[actor]?.principal, identity.principal);
     // The host's actor-profiles message reaches the browser from the host's
     // sender id, naming the actor and the hash of the change just made.
     const hostMessages = [];
     handle.on("ephemeral-message", (e) => hostMessages.push(e));
-    handle.change((d) => (d.second = true));
+    handle.change((d) => typed(d, "Second "));
     const hash = A.decodeChange(A.getLastLocalChange(handle.doc())).hash;
     await until(() =>
       hostMessages.some(
@@ -1039,9 +1048,9 @@ test("a second browser learns who wrote the first browser's change", async (t) =
     const hb = await b.repo.find(f.args.document_id);
     const seen = [];
     hb.on("ephemeral-message", (e) => seen.push(e));
-    ha.change((d) => (d.fromA = true));
+    ha.change((d) => typed(d, "From A "));
     const hash = A.decodeChange(A.getLastLocalChange(ha.doc())).hash;
-    await until(() => hb.doc().fromA === true);
+    await until(() => holds(hb.doc(), "From A "));
     await until(() => seen.some((e) => e.message?.attestedChanges?.[hash]));
     const delta = seen.find((e) => e.message?.attestedChanges?.[hash]);
     assert.equal(delta.senderId, HOST_SENDER_ID);
@@ -1290,7 +1299,8 @@ test("every plain refusal logs page.sync_refused once, and its repeats once at c
     expiresAt: Date.now() + 3_600_000,
   };
   const doc = treeHex(f.args.document_id);
-  const edit = (n) => A.getLastLocalChange(A.change(A.clone(host.handle.doc()), (d) => (d.n = n)));
+  const edit = (n) =>
+    A.getLastLocalChange(A.change(A.clone(host.handle.doc()), (d) => typed(d, `${n} `)));
 
   // A build without the Page's schema features: fatal, closes the socket.
   const stale = rawSocket(host, identity, { features: [], senderId: "b-stale" });
@@ -1332,6 +1342,202 @@ test("every plain refusal logs page.sync_refused once, and its repeats once at c
   for (const line of refusedLines()) assert.ok(!JSON.stringify(line).includes(identity.principal));
 });
 
+test("invalid Page content is refused without closing the socket or blocking the principal", async (t) => {
+  const f = await fixture(t);
+  const host = f.page();
+  assert.ok((await f.register(host)).ok);
+  const lines = [];
+  t.mock.method(console, "warn", (line) => lines.push(JSON.parse(line)));
+  const identity = {
+    principal: "user:anaconda-fixture:fixture-user",
+    displayName: "Fixture",
+    driver: "Browser",
+    credentialKind: "oidc",
+    canWrite: true,
+    expiresAt: Date.now() + 3_600_000,
+  };
+  const doc = treeHex(f.args.document_id);
+  const path = (d) => ["blocks", firstBlock(d), "richText"];
+  const change = (fn) => A.getLastLocalChange(A.change(A.clone(host.handle.doc()), fn));
+  const browser = rawSocket(host, identity, { senderId: "b-content" });
+  const refused = () => browser.frames.filter((frame) => frame.t === "refused");
+  const stored = host.plain.host.store.manifest(doc).seq;
+  const invalid = [
+    (d) => A.mark(d, path(d), { start: 0, end: 4, expand: "none" }, "blink", true),
+    (d) =>
+      A.mark(
+        d,
+        path(d),
+        { start: 0, end: 4, expand: "none" },
+        "link",
+        JSON.stringify({ href: "javascript:alert(1)", title: null }),
+      ),
+    (d) => A.splitBlock(d, path(d), 2, { type: "marquee", parents: [], attrs: {} }),
+    (d) => (d.blocks[firstBlock(d)].extra = true),
+    (d) => (d.title = 3),
+    (d) => (d.unknown = true),
+  ];
+  invalid.forEach((fn, r) =>
+    browser.client.send({ t: "sync", doc, m: helloWith([change(fn)]), r: r + 1 }),
+  );
+  await until(() => refused().length === invalid.length);
+  for (const frame of refused()) {
+    assert.equal(frame.code, "invalid_page_content");
+    assert.equal(frame.fatal, false);
+  }
+  assert.equal(browser.client.closed, false, "the socket stays open");
+  assert.equal(host.plain.host.store.manifest(doc).seq, stored, "nothing stored");
+  assert.equal(host.plain.blocked.size, 0, "the principal isn't blocked");
+  // A valid edit on the same socket is admitted.
+  browser.client.send({
+    t: "sync",
+    doc,
+    m: helloWith([change((d) => A.splice(d, path(d), 0, 0, "Valid "))]),
+    r: 99,
+  });
+  await until(() => holds(host.handle.doc(), "Valid "));
+  // One line for the first refusal: the rule as a code, no Page id, no
+  // principal and no content.
+  const [line] = lines.filter((entry) => entry.event === "page.sync_refused");
+  assert.deepEqual(
+    (({ reason, rule, fatal, page_id }) => ({ reason, rule, fatal, page_id }))(line),
+    { reason: "invalid_page_content", rule: "mark", fatal: false, page_id: undefined },
+  );
+  browser.client.close();
+  await until(() => lines.filter((entry) => entry.event === "page.sync_refused").length === 2);
+  const repeats = lines.filter((entry) => entry.event === "page.sync_refused")[1];
+  assert.equal(repeats.repeats, invalid.length - 1);
+  assert.equal(repeats.page_id, undefined);
+  for (const entry of lines)
+    for (const secret of [identity.principal, pageId, "blink", "javascript"])
+      assert.ok(!JSON.stringify(entry).includes(secret), secret);
+});
+
+test("a host tool edit with content admission refuses answers 400 and journals nothing", async (t) => {
+  const f = await fixture(t);
+  const host = f.page();
+  assert.ok((await f.register(host)).ok);
+  const heads = A.getHeads(host.handle.doc());
+  const refused = await tool(f, host, "edit_page", {
+    base_heads: heads,
+    idempotency_key: "oversize-block",
+    operations: [{ op: "insert_markdown", markdown: "word ".repeat(53_000) }],
+  });
+  assert.equal(refused.status, 400);
+  assert.equal((await refused.json()).code, "invalid_page_content");
+  assert.equal(await f.storage.get("host/operation/oversize-block"), undefined);
+  assert.deepEqual(A.getHeads(host.handle.doc()), heads);
+});
+
+test("two peers' concurrent edits around a rule are admitted in either order and converge", async (t) => {
+  const identity = {
+    principal: "user:anaconda-fixture:fixture-user",
+    displayName: "Fixture",
+    driver: "Browser",
+    credentialKind: "oidc",
+    canWrite: true,
+    expiresAt: Date.now() + 3_600_000,
+  };
+  const results = [];
+  for (const order of [
+    ["typed", "deleted"],
+    ["deleted", "typed"],
+  ]) {
+    const f = await fixture(t);
+    const host = f.page();
+    assert.ok((await f.register(host)).ok);
+    // "Intro", a rule, then a paragraph the peers race over.
+    await host.handle.change((d) =>
+      applyPageOperation(d, {
+        operation: "edit_page",
+        arguments: {
+          operations: [
+            {
+              op: "replace_block_markdown",
+              block_id: firstBlock(d),
+              markdown: "Intro\n\n---\n\ndoomed words",
+            },
+          ],
+        },
+      }),
+    );
+    await host.flush();
+    const doc = host.handle.doc();
+    const path = ["blocks", firstBlock(doc), "richText"];
+    const text = String(doc.blocks[firstBlock(doc)].richText);
+    const last = text.lastIndexOf("\uFFFC");
+    const frames = {
+      deleted: A.getLastLocalChange(
+        A.change(A.clone(doc, { actor: "0a".repeat(16) }), (d) =>
+          A.splice(d, path, last, text.length - last),
+        ),
+      ),
+      typed: A.getLastLocalChange(
+        A.change(A.clone(doc, { actor: "0b".repeat(16) }), (d) =>
+          A.splice(d, path, last + 1, 0, "kept "),
+        ),
+      ),
+    };
+    const browser = rawSocket(host, identity, { senderId: `b-${order[0]}` });
+    const tree = treeHex(f.args.document_id);
+    order.forEach((name, r) =>
+      browser.client.send({ t: "sync", doc: tree, m: helloWith([frames[name]]), r: r + 1 }),
+    );
+    const landed = () => {
+      const now = String(host.handle.doc().blocks[firstBlock(doc)].richText);
+      return now.includes("kept ") && !now.includes("doomed");
+    };
+    await until(() => landed() || browser.frames.some((frame) => frame.t === "refused"));
+    assert.deepEqual(
+      browser.frames.filter((frame) => frame.t === "refused"),
+      [],
+      `${order.join(" then ")}: nothing refused`,
+    );
+    results.push(A.spans(host.handle.doc(), path));
+    browser.client.close();
+  }
+  assert.deepEqual(results[0], results[1]);
+});
+
+test("a Page holding content from before admission still takes valid browser edits", async (t) => {
+  const f = await fixture(t);
+  const host = f.page();
+  assert.ok((await f.register(host)).ok);
+  // Content no current writer stores, written past admission by the host.
+  await host.handle.change((d) => {
+    const path = ["blocks", firstBlock(d), "richText"];
+    A.mark(d, path, { start: 0, end: 8, expand: "both" }, "blink", true);
+    A.splitBlock(d, path, 9, { type: "paragraph", parents: ["slide"], attrs: {} });
+    d.blocks[firstBlock(d)].legacy = true;
+    d.legacyRoot = { kept: true };
+  });
+  await host.flush();
+  const identity = {
+    principal: "user:anaconda-fixture:fixture-user",
+    displayName: "Fixture",
+    driver: "Browser",
+    credentialKind: "oidc",
+    canWrite: true,
+    expiresAt: Date.now() + 3_600_000,
+  };
+  const browser = await connectBrowser(host, identity, "b-legacy");
+  try {
+    const handle = await browser.repo.find(f.args.document_id);
+    await until(() => handle.doc()?.legacyRoot?.kept === true);
+    const path = ["blocks", firstBlock(handle.doc()), "richText"];
+    // Typing inside the legacy mark, formatting, and a split.
+    handle.change((d) => A.splice(d, path, 2, 0, "typed"));
+    await until(() => holds(host.handle.doc(), "typed"));
+    handle.change((d) => A.mark(d, path, { start: 12, end: 16, expand: "after" }, "em", true));
+    handle.change((d) => A.splitBlock(d, path, 14, { type: "paragraph", parents: [], attrs: {} }));
+    handle.change((d) => A.splice(d, path, 0, 0, "Last "));
+    await until(() => holds(host.handle.doc(), "Last "));
+    assert.equal(host.handle.doc().legacyRoot.kept, true);
+  } finally {
+    await browser.repo.shutdown();
+  }
+});
+
 test("a browser connection logs its sync-round latency when it closes", async (t) => {
   const f = await fixture(t);
   const host = f.page();
@@ -1356,8 +1562,8 @@ test("a browser connection logs its sync-round latency when it closes", async (t
   try {
     const handle = await browser.repo.find(f.args.document_id);
     for (let n = 1; n <= 3; n++) {
-      handle.change((d) => (d.n = n));
-      await until(() => host.handle.doc().n === n);
+      handle.change((d) => typed(d, `Edit ${n} `));
+      await until(() => holds(host.handle.doc(), `Edit ${n} `));
     }
     assert.equal(lines.filter((line) => line.event === "page.sync_rounds").length, 0);
   } finally {

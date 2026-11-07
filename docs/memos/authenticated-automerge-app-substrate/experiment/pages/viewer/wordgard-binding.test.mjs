@@ -42,6 +42,7 @@ import {
   encode,
 } from "./wordgard-model.mjs";
 import { MARK_REGISTRY } from "../model/marks.mjs";
+import { BLOCK_MAX_LENGTH } from "../model/page-shape.mjs";
 import FEATURE_FILE from "../model/features.json" with { type: "json" };
 import {
   documentFeatures,
@@ -1068,4 +1069,18 @@ test("the binding refuses writes to a block decode couldn't draw as stored", () 
     /newer version of Pages/,
   );
   assert.deepEqual(A.getHeads(replica.doc), heads);
+});
+
+test("a write that lengthens a block past the host's size bound is refused; shorter edits still write", () => {
+  const replica = fixture("x".repeat(BLOCK_MAX_LENGTH - 2));
+  const binding = createWordgardBinding(replica, "one");
+  const write = (changes) => binding.applyEditorTransaction(state(binding).update({ changes }));
+  const heads = A.getHeads(replica.doc);
+  assert.throws(() => write({ from: 1, insert: [Leaf.text("abc")] }), /as long as Pages allows/);
+  assert.deepEqual(A.getHeads(replica.doc), heads, "nothing was written");
+  // Typing up to the bound, and deleting past it, still write.
+  write({ from: 1, insert: [Leaf.text("a")] });
+  write({ from: 1, to: 4 });
+  assert.equal(replica.doc.blocks.one.richText.length, BLOCK_MAX_LENGTH - 4);
+  binding.destroy();
 });

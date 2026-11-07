@@ -171,6 +171,9 @@ Branch on code, not on the error message:
   kind side by side, and they'd merge into one. Each delete is checked as it
   applies, so put a delete_node for one of them before this one in the batch,
   or rewrite the block with replace_block_markdown.
+- invalid_page_content (400): the edit would store content no Pages reader
+  accepts, most often a block longer than 262,144 characters. Split the
+  content across blocks; repeating the request unchanged fails again.
 - stored_form_unsupported (409): part of this Page is stored in a form from an
   earlier version of Pages that this build doesn't read. Retrying doesn't
   help; tell the person, since the Page needs an operator.

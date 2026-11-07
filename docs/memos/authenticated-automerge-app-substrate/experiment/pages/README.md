@@ -138,6 +138,7 @@ was a caret race in the smoke; the editor side is
 | Editing, comments, links, diagrams, and recovery | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:editor` | Uses the running Wordgard fixture |
 | History growth and typing latency | `PAGES_ORIGIN=http://localhost:9894 node scripts/latency-smoke.mjs` | Uses the running Wordgard fixture |
 | One keystroke, a hard line break, and one remote character through the Wordgard binding on 115 KB marked, 16 KB marked and 118 KB plain blocks, base revision against this checkout (records timings, gates on nothing) | `node scripts/binding-benchmark.mjs` | Node only, no server or DOM; `PAGES_BINDING_BASE` picks the base (default `origin/main`); writes `test-results/binding-benchmark.json` |
+| Page-body admission for one typed character, one and twelve deleted characters, four bolded characters, a block split, a concurrent typed character and a stale frame of 1,000 scattered deletes on 115 KB marked and 118 KB plain blocks, patch path against whole-block validation (records timings, gates on nothing) | `node scripts/admission-benchmark.mjs` | Node only; writes `test-results/admission-benchmark.json` |
 | `list_pages` for 50 shared Pages with cold and warm Page hosts, p50/p95 (records timings, gates on nothing) | `node scripts/local-sharing-e2e.mjs --listing-bench` | Starts an isolated fixture and restarts it between cold samples; writes `listing-benchmark.json` |
 
 The editor checks exercise the same Wordgard path used by deployed Pages.
@@ -2028,9 +2029,12 @@ stored:
 4. Actor claims. Each new change's actor is unclaimed or claimed by this
    principal. A claim is written in the same `saveMany` as the history it
    covers, and no other document can claim the actor meanwhile.
-5. The schema-feature gate and the 16 MiB history bound, then
-   `admitCommentChanges` for the comments document. A comment rule refusal blocks the principal's
+5. The schema-feature gate and the 16 MiB history bound, then the content
+   rules: `admitPageChanges` for the Page document (see
+   [Page-body admission](#page-body-admission)) and `admitCommentChanges` for
+   the comments document. A comment rule refusal blocks the principal's
    comment writes (`host/comments-blocked/<principal>`) and closes the socket.
+   A Page-body refusal does neither.
 6. Persist, publish who wrote the changes (`actor-profiles`, ahead of the
    changes), reply, then fan out.
 
@@ -2044,6 +2048,83 @@ the closed connection has no frame left running, so a frame refused after the
 close counts too. Each connection also logs `page.sync_rounds`, its sync-round
 latency from frame arrival to ack, summarised every 256 rounds and at close rather
 than per keystroke ([worker/plain-sync-log.mjs](worker/plain-sync-log.mjs)).
+
+#### Page-body admission
+
+[model/page-admission.mjs](model/page-admission.mjs) decides whether a batch
+of changes to the Page document writes only content every Pages reader and
+writer accepts. It judges what the batch changes, from the patches between
+the live document and the preview (`A.diff`), and judges every rule on that
+merged result, whatever the batch's writer had seen:
+
+| Path written | Rule |
+| --- | --- |
+| Root key | One of `page_id`, `title`, `blocks`, `schema`. `page_id` never changes; `page_id`, `title` and `blocks` are never deleted. Deleting any other key is cleanup and is admitted. |
+| `title` | Text or a string, at most 1,024 UTF-16 units once merged, or no longer than before. |
+| `schema` | The stamp keeps every id and gains only well-formed ones. A newer build may stamp an id this build doesn't know; the schema gate then holds the Page for builds without it. |
+| Block entry | A new entry has a UUID key and exactly the fields `id`, `position`, `kind`, `format`, `markdown`, `richText`, `metadata`, each valid ([model/page-shape.mjs](model/page-shape.mjs), shared with registration). A written field passes its rule; no other key, though deleting one is admitted. |
+| Conflicts | A key the batch puts is checked on every value it holds once merged (`getAll`), not only the winner the patches show. Two block entries or text objects under one key are refused. |
+| Mark | A mark patch's name and value: a known mark with a registry value (`validateMarkValue`), or null. Text inserted with a mark carries it in its splice patch; an unknown or invalid one is admitted only when the text on either side of the insertion point already held exactly that mark and value. |
+| Block marker | Each inserted or changed marker, read alone at its final index (`getBlock`), passes `validateMarkerValue`: known type and parents, and the attrs the adapter reads. |
+| Block size | A block whose native length grows ends at most 262,144 UTF-16 units once merged (markers count one), read from the backend length. |
+| Structure | The block still reads (`spansRead`), and a block the editor drew as stored (its `decode` isn't lossy) still draws so, judged by reading it whole only when the patches can't show it. A new block passes `validateRichSpans` and draws as stored. |
+
+Structure is held to what readers read, not to `validateRichSpans`.
+`spansRead` builds both the ProseMirror and the Wordgard tree through
+`readableSpans` and exports Markdown, as every projection does. Two valid
+concurrent edits can merge into a shape only that repair reads, such as text
+one peer typed into a paragraph another deleted after a rule. Holding merges
+to the strict check refused whichever of two honest frames arrived second, so
+the same frame was admitted or refused by arrival order. A block that read
+before the batch and doesn't after is refused, and so is a block the editor
+drew as stored that it would now draw lossily and read-only, such as a
+dataframe moved into a table cell. A block that didn't read, or was already
+lossy, before the batch is never refused for its structure.
+
+A block is read whole when the batch inserts, changes or deletes a block
+marker (a marker can move nodes in ways no patch shows), when inserted text
+lands straight after a marker that doesn't open text (a table or table row;
+paragraphs, headings, cells, code blocks, list items, quotes and asides open
+text, per the node registry), for a new block, a replaced text object, a
+`richText` that isn't text, a marker the patch path can't place, and when a
+block's marker probes run out. A text delete probes the live block at each
+deleted index for a removed marker, and inserted text probes the marker
+before it. Each block gets 64 probes; past that, it is read once. A frame's
+cost grows with the blocks it touches, so with the document's size. Typing,
+short deletes, formatting and title edits never read a block.
+
+`node scripts/admission-benchmark.mjs` on a 115 KB block: typing one character
+costs about 0.1 ms and deleting one about 0.06 ms, against 22 ms to validate
+the block whole. The costliest frame a client can send cheaply, 1,000
+scattered one-character deletes, costs about 30 ms (one block read). One
+delete in each of 150 blocks (2.5 MB of Markdown) costs about 11 ms with no
+block read.
+
+Known limits. A concurrent mark or marker attribute that loses to another
+within one batch isn't seen: patches show the winner, and a losing mark never
+surfaces in reads. Marker attributes and block `metadata` have no per-block
+size bound of their own; the 16 MiB history bound covers them. Not every
+honest concurrent frame is admitted. The later of two frames is refused when
+their merge exceeds a block or title bound, when readers can't read or the
+editor can't draw the merged block, or when they conflict on one block field
+or the schema stamp. A refused browser keeps its change, so client recovery
+from a refusal is still needed before this reaches people.
+
+Content stored before these rules stays readable and editable: a write is
+judged by what it writes, so a Page with an unknown mark, an extra field or an
+over-long title takes every edit that doesn't add to it.
+
+A refusal is `invalid_page_content`, non-fatal: the socket stays open and the
+principal isn't blocked, since a stale build or a client bug sends it as easily
+as anyone. Its `page.sync_refused` line names the broken rule (`mark`,
+`marker`, `block_size`, …) and carries no Page id. Host writers run the same
+check before an intent is journaled (`validate` in
+[worker/mutations.mjs](worker/mutations.mjs)), so a tool edit it refuses
+answers `400 invalid_page_content` and nothing is recorded. `admitTrusted`
+doesn't run it: journal recovery replays bytes that already passed, and a
+refusal there would strand the intent. Registration validates a draft whole
+(`readRegistration`). The browser editor stops a write that would lengthen a
+block past the size bound, so it never sends one the host refuses.
 
 Journaled host edits use a fresh actor per mutation: the Page host's persisted
 random eight-byte prefix followed by eight random bytes. Concurrent producers

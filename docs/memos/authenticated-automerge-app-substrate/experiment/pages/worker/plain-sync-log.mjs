@@ -1,3 +1,4 @@
+import { INVALID_PAGE_CONTENT, PAGE_CONTENT_RULES } from "../model/page-admission.mjs";
 import { ADMISSION_OUTCOMES } from "../shared/admission.mjs";
 import { validPageId } from "./registration.mjs";
 
@@ -9,6 +10,9 @@ import { validPageId } from "./registration.mjs";
 //   page.sync_refused  one browser frame the host refused. The first refusal
 //                      per connection and reason is logged at once; repeats
 //                      are counted and logged once when the socket closes.
+//                      A Page-content refusal (invalid_page_content) names
+//                      the rule it broke and carries no Page id: its count
+//                      is the signal, and the Page's content stays private.
 //   page.sync_rounds   sync-round latency for one browser connection: the
 //                      time from a frame's arrival to its ack, for frames
 //                      whose changes were stored. A browser sends a frame per
@@ -29,7 +33,8 @@ const clean = (record) => {
 };
 
 /** One `page.sync_refused` record. `code`, `status` and `close` are the
- * client-safe admission outcome a fatal refusal closes the socket with. */
+ * client-safe admission outcome a fatal refusal closes the socket with.
+ * `rule` is set for a Page-content refusal, which omits `page_id`. */
 export function syncRefusedRecord({
   pageId,
   kind,
@@ -44,12 +49,18 @@ export function syncRefusedRecord({
       ? refusal.close.reason
       : "request_rejected"
     : undefined;
+  const content = refusal?.code === INVALID_PAGE_CONTENT;
   return clean({
     service: SERVICE,
     event: "page.sync_refused",
-    page_id: pageIdOf(pageId),
+    page_id: content ? undefined : pageIdOf(pageId),
     doc: KINDS.has(kind) ? kind : "unknown",
     reason: REASON.test(refusal?.code ?? "") ? refusal.code : "unknown",
+    rule: content
+      ? PAGE_CONTENT_RULES.includes(refusal.rule)
+        ? refusal.rule
+        : "unknown"
+      : undefined,
     fatal,
     code: outcome,
     status: outcome && ADMISSION_OUTCOMES[outcome].status,

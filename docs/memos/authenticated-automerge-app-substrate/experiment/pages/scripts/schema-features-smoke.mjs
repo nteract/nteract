@@ -181,8 +181,9 @@ try {
 
   stage = "the host accepts edits from a build with the feature";
   const fresh = await syncPeer(cookie, future, [...CURRENT, FUTURE]);
+  // Page-body admission refuses unknown root keys, so the edit types text.
   const freshEdit = await fresh.change((doc) => {
-    doc.freshEdit = "lands";
+    A.splice(doc, textPath(orderedBlockIds(doc)[0]), 0, 0, "Lands. ");
   });
   assert.equal(freshEdit.status, 200, JSON.stringify(freshEdit.body));
   await fresh.close();
@@ -231,7 +232,8 @@ try {
   await page.waitForTimeout(1500);
   const after = await tool("read_page", { page_id: future, comments: "none" });
   assert.deepEqual([...after.body.heads].sort(), [...futureRead.body.heads].sort());
-  assert.equal(after.body.blocks[0].markdown, "Words from a newer build.");
+  // The text the feature-aware peer typed, and nothing from this tab.
+  assert.equal(after.body.blocks[0].markdown, "Lands. Words from a newer build.");
   checkpoint("the viewer shows the notice and writes nothing");
 
   stage = "the notice's Reload reloads the tab";

@@ -82,6 +82,8 @@ export function requireHeads(doc, heads) {
  * the arguments to apply (comment intents use model/comment-guard.mjs).
  * `receiptFields()` adds fields to a new intent's receipt, computed after
  * the guard; they're journaled, so an exact retry returns them unchanged.
+ * `validate(before, after)` throws for a new intent whose edit writes content
+ * the document's rules refuse; it never runs for a recorded intent.
  *
  * An entry the journal recorded for another document (`entry.doc`) never
  * applies here. A finished one returns its receipt with `recorded_doc` naming
@@ -106,6 +108,7 @@ export async function documentMutation({
   scope = `page:${pageId}`,
   guard,
   receiptFields,
+  validate,
 }) {
   const key = internal
     ? `${INTERNAL_PREFIX}${mutationKey(args).slice("host/operation/".length)}`
@@ -187,6 +190,10 @@ export async function documentMutation({
         result = apply(doc, effectiveArgs);
       });
       assertDocumentLimits(after);
+      // Content rules (a Page's are requirePageContent, the rules browser
+      // edits pass at admission) run before the intent is journaled, so a
+      // journaled intent never holds content the host refuses.
+      validate?.(before, after);
       // Warnings describe this exact result, including on retries after later edits.
       // Capture them before the journal budget/barrier, never from the live handle.
       // Per-edit warnings (a replace_match that dropped partial marks) also

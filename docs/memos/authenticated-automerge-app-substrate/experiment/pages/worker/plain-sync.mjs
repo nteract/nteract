@@ -10,6 +10,7 @@ import {
 import { BLOCKING, commentAdmission } from "../sync/comments.mjs";
 import { HostRepo, hostTreeOf } from "../sync/host-handle.mjs";
 import { Refusal, SyncHost } from "../sync/host.mjs";
+import { pageAdmission } from "../sync/page-content.mjs";
 import { socketTransport } from "../sync/wire.mjs";
 import {
   admissionCloseCode,
@@ -182,6 +183,7 @@ export class PlainSync {
     const guardComments = commentAdmission({
       isBlocked: (conn) => this.blocked.has(conn.principal),
     });
+    const guardPage = pageAdmission();
     this.host = new SyncHost({
       bytes: new PlainByteStore(storage),
       hostId: HOST_SENDER_ID,
@@ -192,6 +194,7 @@ export class PlainSync {
         canWrite: (conn, doc) => this.#canWrite(conn, doc),
         admit: async (conn, doc, live, fresh, preview, actorPrincipal) => {
           this.#gate(conn, doc, live, fresh);
+          guardPage(conn, doc, live, fresh, preview);
           return guardComments(conn, doc, live, fresh, preview, actorPrincipal);
         },
         admitTrusted: (doc, live, fresh, preview, context, conn, origin) => {
@@ -201,7 +204,9 @@ export class PlainSync {
           // Keep the history cap, and refuse unknown stored schema features so
           // an older host cannot edit a newer document blindly.
           // Already-admitted relays have no fresh bytes and never reach this
-          // gate.
+          // gate. Page-body rules (requirePageContent) run before a host
+          // write is journaled (documentMutation's `validate`), not here: a
+          // refusal here would strand an intent that recovery must replay.
           this.#gate({ features: BUILD_FEATURES }, doc, live, fresh);
           return preview;
         },

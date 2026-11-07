@@ -24,6 +24,7 @@ import {
   synced,
 } from "./wordgard-projection-state.mjs";
 import { MARK_NAMES, markExpand } from "../model/marks.mjs";
+import { BLOCK_MAX_LENGTH } from "../model/page-shape.mjs";
 import { stampMarks, stampSpans } from "../model/schema-features.mjs";
 
 // Enter inserts LineBreak leaves, while Wordgard's code clipboard parser can
@@ -475,6 +476,13 @@ export function createWordgardBinding(
       };
       try {
         return replica.change((d) => {
+          // A write may not lengthen a block past the bound the Page host
+          // admits (model/page-admission.mjs), or the host would refuse it.
+          const lengthBefore = original.map.wgToAm.at(-1);
+          const keepsBound = (after) => {
+            if (after > BLOCK_MAX_LENGTH && after > lengthBefore)
+              throw Error("This block is as long as Pages allows.");
+          };
           // Schema features this transaction's content needs join the Page's
           // stamp in the same change.
           if (structural) {
@@ -529,6 +537,16 @@ export function createWordgardBinding(
             stampMarks(d, written);
           }
           let pending, inserted;
+          if (!structural)
+            keepsBound(
+              replacements.reduce(
+                (length, range) =>
+                  length +
+                  range.inserted.reduce((n, token) => n + String(token.param).length, 0) -
+                  (original.map.wgToAm[range.to] - original.map.wgToAm[range.from]),
+                lengthBefore,
+              ),
+            );
           if (plain) {
             const map = replacements.reduceRight(
               (result, range) =>
@@ -542,6 +560,7 @@ export function createWordgardBinding(
             }));
           } else {
             const checked = read(d);
+            keepsBound(checked.map.wgToAm.at(-1));
             if (!checked.doc.eq(tr.newDoc)) {
               step({ type: "invalidate" });
               throw Error("Wordgard operation did not reproduce its native Pages projection");
