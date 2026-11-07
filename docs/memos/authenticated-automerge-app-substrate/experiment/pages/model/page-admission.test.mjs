@@ -578,7 +578,7 @@ test("a marker deleted by a plain text delete is judged by reading its block", (
   assert.equal(text.stats.fullReads, 0);
 });
 
-test("a frame's marker probes share one budget; past it, its block is read once", () => {
+test("a block's marker probes have a budget; past it, the block is read once", () => {
   const { doc, path } = spansPage([marker("paragraph"), run("x".repeat(4000))]);
   // 200 one-character deletes, far apart.
   const result = admit(doc, (d) => {
@@ -670,4 +670,192 @@ test("a stale frame deleting the block's last character gets an answer, not an e
   const result = admitPageChanges(longLive, preview);
   assert.equal(typeof result.ok, "boolean");
   A.free(preview);
+});
+
+/** A Page of `count` blocks, each holding `markdown`, built by the host
+ * writer's insert_markdown. */
+function manyBlocks(count, markdown) {
+  let doc = page(markdown);
+  for (let left = count - 1; left > 0; left -= 100)
+    doc = A.change(
+      doc,
+      operation(
+        Array.from({ length: Math.min(100, left) }, () => ({ op: "insert_markdown", markdown })),
+      ),
+    );
+  return doc;
+}
+
+test("one-character deletes across many blocks read no block", () => {
+  // 120 blocks: past a frame-wide budget of 64 probes, every further block
+  // would be read whole.
+  const doc = manyBlocks(120, "Some words in a paragraph here.\n\nAnd a second paragraph.");
+  const ids = orderedBlockIds(doc);
+  const result = admit(doc, (d) => {
+    for (const id of ids) A.splice(d, textPath(id), 4, 1);
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.stats.fullReads, 0, `${result.stats.fullReads} blocks read whole`);
+  // Repeated work inside one block is still bounded: many deletes in one
+  // block run out of that block's probes and read it once.
+  const one = admit(doc, (d) => {
+    for (let i = 0; i < 80; i++) A.splice(d, textPath(ids[0]), 2, 1);
+  });
+  assert.equal(one.ok, true);
+  assert.equal(one.stats.fullReads, 1);
+});
+
+test("typing right after a marker that opens text reads no block", async () => {
+  const {
+    encode,
+    schema,
+    Blockquote,
+    BulletList,
+    Heading,
+    LineBreak,
+    ListItem,
+    OrderedList,
+    Paragraph,
+    PagesImage,
+  } = await import("./wordgard-doc.mjs");
+  const { Leaf } = await import("wordgard/doc");
+  // Markers from both writers: the host's Markdown writer and the editor's
+  // encoder.
+  const hosted = page(
+    "# Head\n\nPara\\\nafter break ![i](https://example.org/i.png) tail\n\n- item\n- [ ] task\n\n1. ordered\n\n> quoted\n\n| a |\n| - |\n| c |",
+  );
+  const editorTree = schema.doc([
+    Heading.of(2).create([Leaf.text("Head")]),
+    Paragraph.create([
+      Leaf.text("one"),
+      LineBreak,
+      Leaf.text("two"),
+      PagesImage.of({ src: "https://example.org/i.png", alt: "", title: null }),
+      Leaf.text("three"),
+    ]),
+    BulletList.create([ListItem.create([Paragraph.create([Leaf.text("item")])])]),
+    OrderedList.of(1).create([ListItem.create([Paragraph.create([Leaf.text("first")])])]),
+    Blockquote.create([Paragraph.create([Leaf.text("quote")])]),
+  ]);
+  let edited = A.from(createPageData({ pageId, title: "Editor" }));
+  const editedId = orderedBlockIds(edited)[0];
+  edited = A.change(edited, (d) => {
+    d.blocks[editedId].format = RICH_FORMAT;
+    d.blocks[editedId].richText = "";
+    A.updateSpans(d, textPath(editedId), encode(editorTree));
+  });
+  for (const doc of [hosted, edited]) {
+    const path = textPath(blockOf(doc));
+    let at = 0;
+    for (const span of A.spans(doc, path)) {
+      if (span.type === "block") {
+        const type = String(span.value.type);
+        const result = admit(doc, (d) => A.splice(d, path, at + 1, 0, "x"));
+        if (type === "table" || type === "table-row") refusedFor("structure", result);
+        else {
+          assert.equal(result.ok, true, `${type}: ${JSON.stringify(result.reason)}`);
+          assert.equal(result.stats.fullReads, 0, `typing after ${type} read the block`);
+        }
+      }
+      at += span.type === "text" ? span.value.length : 1;
+    }
+  }
+});
+
+test("a frame that makes an editable block lossy is refused", async () => {
+  const { decode } = await import("./wordgard-doc.mjs");
+  const doc = page("Intro\n\n| a | b |\n| - | - |\n| c | d |\n\nend");
+  const path = textPath(blockOf(doc));
+  const cell = markerIndexes(doc, path).find(
+    (index) => String(A.block(doc, path, index).type) === "table-cell",
+  );
+  const src = `/api/pages/${pageId}/assets/${assetId}`;
+  const result = admit(doc, (d) =>
+    A.splitBlock(d, path, cell + 1, {
+      type: "dataframe",
+      parents: ["table", "table-row", "table-cell"],
+      attrs: { src, media_type: "application/vnd.apache.parquet" },
+      isEmbed: false,
+    }),
+  );
+  refusedFor("structure", result);
+  // A top-level dataframe stays editable and is admitted.
+  const top = admit(
+    doc,
+    operation([{ op: "insert_node", node: { type: "dataframe", attrs: { asset_id: assetId } } }]),
+  );
+  assert.equal(top.ok, true);
+  const placed = admit(doc, (d) =>
+    A.splitBlock(d, path, markerIndexes(d, path).at(-1), {
+      type: "dataframe",
+      parents: [],
+      attrs: { src, media_type: "application/vnd.apache.parquet" },
+      isEmbed: false,
+    }),
+  );
+  assert.equal(placed.ok, true, JSON.stringify(placed.reason));
+  // A block that was already lossy takes edits that keep it so.
+  const lossy = A.change(A.clone(doc), (d) =>
+    A.splitBlock(d, path, cell + 1, {
+      type: "dataframe",
+      parents: ["table", "table-row", "table-cell"],
+      attrs: { src, media_type: "application/vnd.apache.parquet" },
+      isEmbed: false,
+    }),
+  );
+  assert.equal(decode(A.spans(lossy, path)).lossy, true);
+  const typed = admit(lossy, (d) =>
+    A.splitBlock(d, path, 2, { type: "paragraph", parents: [], attrs: {} }),
+  );
+  assert.equal(typed.ok, true, JSON.stringify(typed.reason));
+});
+
+test("a new block the editor can't draw as stored is refused", () => {
+  const doc = page("Body");
+  const src = `/api/pages/${pageId}/assets/${assetId}`;
+  const withSpans = (spans) => (d) => {
+    const id = crypto.randomUUID();
+    d.blocks[id] = {
+      id,
+      position: new A.RawString("a1"),
+      kind: "markdown",
+      format: RICH_FORMAT,
+      markdown: "",
+      richText: "",
+      metadata: {},
+    };
+    A.updateSpans(d, textPath(id), spans);
+  };
+  // A dataframe in a cell: the strict tree check refuses it already.
+  refusedFor(
+    "structure",
+    admit(
+      doc,
+      withSpans([
+        marker("table"),
+        marker("table-row", ["table"]),
+        marker("table-cell", ["table", "table-row"]),
+        run("cell"),
+        marker("dataframe", ["table", "table-row", "table-cell"], {
+          src,
+          media_type: "application/vnd.apache.parquet",
+        }),
+      ]),
+    ),
+  );
+  // Text straight in a table row: the ProseMirror adapter places it, the
+  // editor's decode refuses it.
+  refusedFor(
+    "structure",
+    admit(
+      doc,
+      withSpans([
+        marker("table"),
+        marker("table-row", ["table"]),
+        run("cell"),
+        marker("paragraph"),
+        run("after"),
+      ]),
+    ),
+  );
 });

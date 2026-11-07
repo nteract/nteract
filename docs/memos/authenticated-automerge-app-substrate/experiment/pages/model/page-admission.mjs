@@ -35,8 +35,11 @@
 //                   final index (getBlock), passes validateMarkerValue.
 //   block size      a block whose native length grows ends at most
 //                   BLOCK_MAX_LENGTH once merged (backend length, not spans).
-//   structure       the block still reads (spansRead): judged by reading the
-//                   block whole, only when the patches can't show it.
+//   structure       the block still reads (spansRead), and a block the
+//                   editor drew as stored (decode, not lossy) still draws
+//                   so: judged by reading the block whole, only when the
+//                   patches can't show it. A new block passes
+//                   validateRichSpans and draws as stored.
 //
 // Structure is held to what readers read, not to validateRichSpans: two
 // valid concurrent edits can merge into a shape only readers' repair reads,
@@ -47,14 +50,16 @@
 //
 // The whole block is read when the batch inserts, changes or deletes a block
 // marker (a marker can move nodes in ways no patch shows), when text lands
-// straight after a container marker that doesn't hold text, for a new block,
-// a replaced text object, a `richText` that isn't a text object, or a marker
-// the patch path couldn't place, and when the batch's marker probes run out.
-// A delete finds the markers it removed by probing `live` at each deleted
-// index; inserted text is probed at the marker before it. A batch gets
-// PROBE_BUDGET probes across all its blocks; past that, each block it touches
-// further is read whole once. Typing, short deletes, formatting and title
-// edits never read a whole block.
+// straight after a marker that doesn't open text (holdsText, from the node
+// registry: a table or table row), for a new block, a replaced text object,
+// a `richText` that isn't a text object, or a marker the patch path couldn't
+// place, and when a block's marker probes run out. A delete finds the
+// markers it removed by probing `live` at each deleted index; inserted text
+// is probed at the marker before it. Each block gets PROBE_BUDGET probes;
+// past that, the block is read whole once. A frame's cost grows with the
+// blocks it touches (one probe budget or one read each), and so with the
+// document's size; it is not bounded independently of it. Typing, short
+// deletes, formatting and title edits never read a whole block.
 //
 // Content stored before this check stays: a write is judged by what it
 // writes, so an edit to a block with legacy content is refused only when the
@@ -65,8 +70,11 @@
 // in the same batch isn't seen (patches show the winner, and losing marks
 // don't surface in reads). Marker attrs and block `metadata` have no
 // per-block size bound of their own; the 16 MiB history bound covers them.
-// Two concurrent frames whose merge readers can't read admit the first to
-// arrive and refuse the second.
+// Honest concurrent frames can be refused: two whose merge exceeds a block
+// or title bound, two whose merge readers can't read or the editor can't
+// draw, and conflicting writes to one block field or the schema stamp. The
+// later arrival is refused; client recovery from a refusal is still needed
+// before this rolls out.
 import * as A from "@automerge/automerge/slim";
 import { validateMarkValue, markSpec } from "./marks.mjs";
 import {
@@ -78,7 +86,8 @@ import {
   validBlockEntry,
   validBlockField,
 } from "./page-shape.mjs";
-import { TEXT_CONTAINERS, nodeType } from "./node-registry.mjs";
+import { nodeType } from "./node-registry.mjs";
+import { decode } from "./wordgard-doc.mjs";
 import {
   spansRead,
   textlessLeaf,
@@ -127,8 +136,9 @@ const reject = (rule) => {
   throw new PageContentRejection(rule);
 };
 
-/** Marker probes a batch may make across all its blocks before the blocks
- * it touches further are read whole instead. */
+/** Marker probes a batch may make in one block before that block is read
+ * whole instead. Each block has its own budget, so a frame's cost grows
+ * with the blocks it touches, at most one probe budget or one read each. */
 export const PROBE_BUDGET = 64;
 
 /** Backend reads of one document at its own heads. */
@@ -177,16 +187,40 @@ function reader(doc) {
   };
 }
 
+/** Whether a registry type's own marker opens text: a node that holds
+ * inline content or only text (kind `text` or `text-container`), or a
+ * container whose marker governs its first paragraph (a quote, an aside, a
+ * list item; model/node-registry.mjs). */
+const opensText = (type) => {
+  const entry = nodeType(type);
+  return (
+    !!entry &&
+    (entry.kind === "text" || entry.kind === "text-container" || entry.governsFirstParagraph)
+  );
+};
+
 /** Whether text may follow `marker` directly without moving any node: a
- * node that holds text, an inline node inside one, or a rule or dataframe
- * (readers read text after one as a paragraph). */
+ * marker that opens text, an inline node whose innermost parent opens text,
+ * or a rule or dataframe (readers read text after one as a paragraph). */
 const holdsText = (marker) => {
   const type = String(marker.type);
-  if (TEXT_CONTAINERS.has(type)) return true;
   const parents = (marker.parents ?? []).map(String);
-  if (marker.isEmbed && parents.some((parent) => TEXT_CONTAINERS.has(parent))) return true;
+  if (marker.isEmbed) return nodeType(type)?.kind === "embed" && opensText(parents.at(-1));
+  if (opensText(type)) return true;
   return nodeType(type) !== undefined && textlessLeaf({ ...marker, parents });
 };
+
+/** Whether the editor draws a block's spans as stored: decode, as the
+ * viewer's binding calls it, places every node without leaving one out. A
+ * block it can't draw so is read-only in the editor. */
+function editable(spans) {
+  try {
+    return !decode(spans).lossy;
+  } catch (error) {
+    if (error instanceof TypeError || error instanceof ReferenceError) throw error;
+    return false;
+  }
+}
 
 function checkMark(name, value) {
   if (value === null || value === undefined) return true;
@@ -363,9 +397,17 @@ function checkBlockText(frame, id, tracker, stats, budget) {
   }
   if (tracker.markerChanged || !placed || unsure) {
     stats.fullReads++;
-    if (spansRead(A.spans(after.doc, keys), pageId)) return;
-    // A block that didn't read before isn't this batch's doing.
-    if (baseText !== null && spansRead(A.spans(before.doc, keys), pageId)) reject("structure");
+    // Each state's spans are read at most once.
+    const afterSpans = A.spans(after.doc, keys);
+    const read = spansRead(afterSpans, pageId);
+    const drawn = read && editable(afterSpans);
+    if (drawn) return;
+    // A block that didn't read, or that the editor already couldn't draw as
+    // stored, before the batch isn't made worse by it.
+    if (baseText === null) return;
+    const beforeSpans = A.spans(before.doc, keys);
+    if (!spansRead(beforeSpans, pageId)) return;
+    if (!read || editable(beforeSpans)) reject("structure");
   }
 }
 
@@ -377,11 +419,13 @@ function checkNewBlock(frame, id, stats) {
   if (after.kind(keys) !== "text") reject("block_entry");
   if (after.length(keys) > BLOCK_MAX_LENGTH) reject("block_size");
   stats.fullReads++;
+  const spans = A.spans(after.doc, keys);
   try {
-    validateRichSpans(A.spans(after.doc, keys), Infinity);
+    validateRichSpans(spans, Infinity);
   } catch {
     reject("structure");
   }
+  if (!editable(spans)) reject("structure");
 }
 
 function checkTitle({ before, after }) {
@@ -440,8 +484,8 @@ function check(live, preview, stats) {
   return stats;
 }
 
-/** The batch's marker probes: `spend(n)` takes `n` of them, or answers false
- * once they have run out. */
+/** One block's marker probes: `spend(n)` takes `n` of them, or answers
+ * false once they have run out. */
 function probeBudget(stats) {
   let left = PROBE_BUDGET;
   return {
@@ -465,11 +509,16 @@ function judge(frame, preview, stats) {
     fields = new Map(),
     texts = new Map(),
     puts = [];
-  const budget = probeBudget(stats);
+  const budgets = new Map();
+  const budgetOf = (id) => {
+    if (!budgets.has(id)) budgets.set(id, probeBudget(stats));
+    return budgets.get(id);
+  };
   const probes = new Map();
   const probe = (id) => {
     if (!probes.has(id)) {
       const baseText = before.text(["blocks", id, "richText"]);
+      const budget = budgetOf(id);
       probes.set(id, (index) =>
         baseText === null || !budget.spend() ? null : before.marker(baseText, index) !== null,
       );
@@ -551,7 +600,7 @@ function judge(frame, preview, stats) {
     }
     for (const [id, tracker] of texts) {
       if (newBlocks.has(id) || !Object.hasOwn(blocks ?? {}, id)) continue;
-      checkBlockText(frame, id, tracker, stats, budget);
+      checkBlockText(frame, id, tracker, stats, budgetOf(id));
     }
   }
   for (const path of puts) checkConflicts(frame, path);
