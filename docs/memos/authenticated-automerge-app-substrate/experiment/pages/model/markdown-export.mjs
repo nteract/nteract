@@ -1,8 +1,17 @@
-import * as A from "@automerge/automerge/slim";
 import MarkdownIt from "markdown-it";
-import { adapter, pmDocFromSpans } from "./pm-adapter.mjs";
-import { exportMarkdown } from "./markdown-serializer.mjs";
+import { Leaf } from "wordgard/doc";
+import {
+  CodeBlock,
+  LineBreak,
+  PagesUnknownBlock,
+  PagesUnknownEmbed,
+  decode,
+  fromMarks,
+} from "./wordgard-doc.mjs";
+import { treeMarkdown } from "./markdown-serializer.mjs";
 import { codeTextUnmarked } from "./richtext-format.mjs";
+import { isKnownBlock } from "./node-registry.mjs";
+import { unknownNodeNotice } from "./richtext-notices.mjs";
 
 const markdown = new MarkdownIt({ html: false });
 // Titles, names and passages are user input. `\s+` consumes a whole run per
@@ -82,36 +91,106 @@ export function unsentCommentsMarkdown(page, saved) {
   return `\n---\n\n## Unsent comments\n\n${note}\n\n${sections.join("\n\n")}\n`;
 }
 
-/** A draft's Markdown: from its editor spans when the record kept them, so
- * formatting and images survive; otherwise its plain text. */
+/** Read-only archive projection. Unknown ancestors need their own notices;
+ * the editor decoder intentionally omits their wrappers. Native positions
+ * here address only these temporary spans, never the stored document. */
+function draftTree(spans) {
+  const readable = [];
+  let parents = [],
+    code = false,
+    unsupported = false;
+  for (const span of spans) {
+    if (span?.type !== "block") {
+      if (span?.type !== "text" || typeof span.value !== "string")
+        throw Error("Invalid draft text");
+      readable.push(span);
+      continue;
+    }
+    const value = span.value;
+    if (
+      !value ||
+      typeof value.type !== "string" ||
+      (value.parents != null && !Array.isArray(value.parents))
+    )
+      throw Error("Invalid draft marker");
+    const next = (value.parents ?? []).map(String);
+    unsupported ||= !isKnownBlock(value.type) || next.some((parent) => !isKnownBlock(parent));
+    let common = 0;
+    while (common < parents.length && parents[common] === next[common]) common++;
+    for (let i = common; i < next.length; i++)
+      if (!isKnownBlock(next[i]))
+        readable.push({
+          type: "block",
+          value: {
+            type: next[i],
+            parents: next.slice(0, i).filter(isKnownBlock),
+            attrs: {},
+            isEmbed: false,
+          },
+        });
+    parents = value.isEmbed ? next : [...next, value.type];
+    if (!value.isEmbed) code = String(value.type) === "code-block";
+    if (code && value.isEmbed && !["hard-break", "image"].includes(String(value.type))) {
+      unsupported = true;
+      readable.push({ type: "text", value: unknownNodeNotice(value.type), marks: {} });
+    } else readable.push({ ...span, value: { ...value, parents: next.filter(isKnownBlock) } });
+  }
+  const clean = codeTextUnmarked(readable);
+  const decoded = decode(clean);
+  // A newline stored as text is not a native hard-break marker. Preserve
+  // its text and marks, including trailing newlines, for old archive spans.
+  const newlines = new Map();
+  let native = 0;
+  for (const span of clean) {
+    if (span.type === "text") {
+      for (let i = span.value.indexOf("\n"); i !== -1; i = span.value.indexOf("\n", i + 1))
+        newlines.set(native + i, span.marks);
+      native += span.value.length;
+    } else native++;
+  }
+  let position = 0;
+  const visit = (node, inCode = false) => {
+    const at = position;
+    if (node.isPlot) {
+      position++;
+      const content = node.content.map((child) => visit(child, node.type === CodeBlock.type));
+      position++;
+      return node.tag.create(content);
+    }
+    position += node.length;
+    unsupported ||= node.type === PagesUnknownBlock || node.type === PagesUnknownEmbed;
+    const offset = decoded.map.wgToAm[at];
+    return !inCode && node.type === LineBreak.type && newlines.has(offset)
+      ? Leaf.text("\n", fromMarks(newlines.get(offset)))
+      : node;
+  };
+  const tree = { content: decoded.doc.content.map((node) => visit(node)) };
+  return { tree, lossy: decoded.lossy || unsupported };
+}
+
+function draftSource(spans) {
+  const source = JSON.stringify(spans, null, 2);
+  let length = 3;
+  for (const [run] of source.matchAll(/`+/g)) length = Math.max(length, run.length + 1);
+  const fence = "`".repeat(length);
+  return `[Unsupported node: archive-spans]\n\n${fence}json\n${source}\n${fence}`;
+}
+
+/** A draft's Markdown, or an explicit source fallback when its structure
+ * cannot be decoded. The fallback keeps every span and asset reference in
+ * order as inert JSON, rather than substituting a possibly stale body. */
 function draftMarkdown(draft) {
   if (Array.isArray(draft?.spans))
     try {
-      // A record holds plain JSON; stored spans name block types and parents
-      // with Automerge's immutable strings, which the adapter reads.
-      const immutable = (value) =>
-        typeof value === "string" ? new A.ImmutableString(value) : value;
-      const spans = draft.spans.map((span) =>
-        span?.type === "block"
-          ? {
-              ...span,
-              value: {
-                ...span.value,
-                type: immutable(span.value?.type),
-                parents: (span.value?.parents ?? []).map(immutable),
-                attrs: Object.fromEntries(
-                  Object.entries(span.value?.attrs ?? {}).map(([key, value]) => [
-                    key,
-                    immutable(value),
-                  ]),
-                ),
-              },
-            }
-          : span,
-      );
-      return exportMarkdown(pmDocFromSpans(adapter, codeTextUnmarked(spans)));
+      // Draft records hold the editor's spans as JSON. The native decoder
+      // reads their string markers directly, without changing the archive.
+      const { tree, lossy } = draftTree(draft.spans);
+      const body = treeMarkdown(tree);
+      return lossy ? `${body}\n\n${draftSource(draft.spans)}` : body;
     } catch {
-      // A record this build can't read as spans still has its text.
+      return [draft.body, draftSource(draft.spans)]
+        .filter((part) => typeof part === "string" && part.length)
+        .join("\n\n");
     }
   return draft?.body;
 }
