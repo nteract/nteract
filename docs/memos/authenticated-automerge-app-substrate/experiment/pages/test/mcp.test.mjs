@@ -1289,3 +1289,22 @@ test("create_page and create_project say a v1_ key needs the listing's retry_tok
     assert.match(description, listing, name);
   }
 });
+
+test("MCP Events stays unavailable until durable delivery and safe transport are integrated", async () => {
+  const invoke = async () => assert.fail("event groundwork must not invoke a tool");
+  const response = await handleMcp(
+    request("initialize", {
+      protocolVersion: "2025-03-26",
+      capabilities: {},
+      clientInfo: { name: "event-boundary-test", version: "1" },
+    }),
+    invoke,
+  );
+  const initialized = (await response.json()).result;
+  assert.ok(initialized.capabilities.tools);
+  assert.equal(Object.hasOwn(initialized.capabilities, "events"), false);
+  for (const method of ["events/list", "events/subscribe", "events/unsubscribe"]) {
+    const result = await handleMcp(request(method), invoke);
+    assert.equal((await result.json()).error.code, -32601, method);
+  }
+});

@@ -2355,6 +2355,55 @@ which emits synchronously and then only on change. Components read
 when `project` allocates. Test timers with `TestScheduler` from `rxjs/testing`,
 as [store.test.mjs](viewer/store.test.mjs) does for a backoff interpreter.
 
+## MCP Events groundwork (not enabled)
+
+[OpenAI MCP Events](https://developers.openai.com/plugins/build/mcp-events)
+supports webhook-triggered work in ChatGPT Work and dots. Pages does **not** yet
+advertise the `events` capability or implement `events/list`, `events/subscribe`
+or `events/unsubscribe`. There are no live subscriptions, durable subscription
+store, event outbox, webhook deliveries or event-triggered wakeups in this slice.
+`read_page_changes` remains a net-diff read tool, not an event log or replay feed.
+
+`worker/mcp-events-wire.mjs` is an internal, unconnected foundation for that
+implementation: strict wire-shape parsing, principal-scoped deterministic IDs
+from canonical JSON, finite lease calculation, and exact-byte Standard Webhooks
+HMAC signing (including dual signatures for a bounded rotation window). These
+helpers do not authorize an event, validate its product-specific argument schema,
+verify a callback, or establish delivery. Lease defaults and maximums are explicit
+caller policy; a request for indefinite retention receives the finite default.
+No event names or payload schemas are advertised yet. The signer accepts a
+serialized body; its caller must validate the event envelope and payload before
+signing and reuse the returned body without reserialization.
+
+The next slice must qualify a safe webhook transport in Pages. HTTPS URL syntax
+checks are not SSRF protection: both verification and delivery must resolve and
+validate public destination addresses at connection time, pin the connection to
+that address while verifying TLS against the original hostname, reject redirects,
+and bound request time and response bytes. celld 0.6.3 exposes socket APIs, but
+Pages does not yet have a qualified resolver, pinned TLS and bounded HTTP client
+for this use. Ordinary `fetch` after a separate DNS check is insufficient.
+
+Before enabling discovery, the Page host must atomically publish events alongside
+admitted, persisted changes from both browser sync and tool edits. The common
+boundary is `sync/host.mjs` persistence (`store.append(..., extra)`), not a
+post-admission callback: those callbacks run after persistence and swallow errors,
+leaving a crash gap. The plain-sync write hook excludes trusted tool writes, and
+content activity coalesces changes and excludes comments. Neither is an event
+source. Change listeners can also run after a celld request ends, when starting
+I/O is unsafe. A durable subscription owner and delivery outbox still need to be
+designed. Use stable occurrence IDs across retries, not snapshot differences or
+activity counters. Subscription creation must authorize filters, verify a fresh signed
+challenge before application data is sent, persist the granted expiration and
+scope cached verification to principal and callback with a bounded lifetime.
+Refresh and unsubscribe must be idempotent and owner-scoped, with revision fences
+for competing refresh, revocation and delivery work. Recheck authorization and
+expiry before delivery, including account disconnection and Page/Project access
+revocation. Persist retry progress, bound exponential backoff, and stop retrying
+`410`/`413` responses. Rotate secrets with a bounded dual-signature window, avoid
+logging secrets or callback URLs, and enforce the 256 KiB UTF-8 body limit. Do not
+advertise Events until this lifecycle is tested through restart, revocation,
+failed verification, retry and concurrent unsubscribe, then qualified in ChatGPT.
+
 ## HTTP and MCP tools
 
 `POST /api/tools` accepts `{operation, arguments}`; `POST /mcp` exposes the same
