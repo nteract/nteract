@@ -1475,29 +1475,133 @@ check which `NOTEBOOK_CLOUD_APP_SESSION_KEYS` the target version runs with: a
 version from before the keyring reads only the single secret. `prepare`
 refuses either variable in a build's committed vars.
 
-## Cloudflare packaging fixture
+## Cloudflare staging readiness
 
 [cloudflare-stage.mjs](scripts/cloudflare-stage.mjs) remains a tested packaging
-path, **not a currently qualified deployment of this release**. It produces Worker
-WASM/assets, SQLite Durable Object bindings, D1 auth configuration, and a private
-`nteract-pages-images` R2 binding. Its fixed configuration targets
-`preview.runt.run` / `nteract-pages-next` with Anaconda staging authentication;
-production API keys are not interchangeable.
+path, **not a currently qualified deployment of this release**. It requires an
+explicit target instead of selecting a live account, domain or identity provider.
+No command creates remote resources, changes a domain, stores secrets or deploys.
+Lab build/configuration output is unchanged.
 
-From `experiment`, clean committed source and a matching Pages build can be
-inspected without publishing:
+From `pages`, after the containing workspace's `npm run setup`:
 
 ```sh
-node pages/scripts/cloudflare-stage.mjs /tmp/pages-cloudflare-release D1_DATABASE_UUID
-node_modules/.bin/wrangler deploy --config /tmp/pages-cloudflare-release/wrangler.json --dry-run
+node scripts/cloudflare-stage.mjs check TARGET.json
+npm run build
+node scripts/cloudflare-stage.mjs dry-run TARGET.json dist
+# Only after source review and a separate authorized commit, then a clean rebuild:
+node scripts/cloudflare-stage.mjs prepare TARGET.json NEW_DESTINATION
 ```
 
-Use a new destination directory and the intended D1 database UUID. The helper
-neither provisions resources nor attaches a domain. Live use needs explicit
-resource, auth, persistence, memory, and recovery qualification, plus configuration
-of the current editor/persistence profile; this staging configuration does not
-select Page10's flags. Do not repoint the existing preview domain as part of a
-Page10 release.
+`check` validates and prints generated configuration offline; it needs no build
+or credentials. `dry-run` validates receipt-certified artifact hashes, copies only
+the release allowlist into a temporary directory, and runs the workspace's pinned
+Wrangler with `--dry-run`. It can qualify an uncommitted build without weakening
+`prepare`'s clean-source, SHA and fingerprint requirements. It always removes its
+temporary stage. Wrangler gets an empty temporary home, no inherited credentials
+or Node options, disabled dotenv loading and telemetry. Wrangler may check its npm
+version; use `check` for strictly offline config validation. Neither command
+establishes resource existence, ownership, emptiness or authorization.
+
+`TARGET.json` is a non-secret object containing exactly these string fields:
+
+| Input | Required operator value |
+| --- | --- |
+| `accountId` | Intended Cloudflare account ID, 32 lowercase hexadecimal characters |
+| `workerName` | New Worker name; independently verify it is unused |
+| `databaseId`, `databaseName` | New empty auth/catalog D1 database UUID and name |
+| `usageDatabaseId`, `usageDatabaseName` | Separate new empty usage D1 database UUID and name |
+| `assetsBucket` | Intended private R2 bucket name; no public bucket access |
+| `publicOrigin` | Exact public HTTPS origin, with no path or trailing slash |
+| `oidcIssuer` | Anaconda OIDC issuer HTTPS URL for the intended provider environment |
+| `oidcClientId`, `oidcAudience` | Registered client ID and comma-separated accepted audiences |
+| `principalNamespace` | Stable identity namespace shared by OIDC and API-key verification |
+| `oidcUserinfoOrigin` | Trusted canonical HTTPS origin of the discovery document's `userinfo_endpoint`, without path or trailing slash |
+| `apiKeyUserinfoUrl` | Intended provider's Anaconda API-key whoami HTTPS endpoint |
+| `oidcTokenAuthMethod` | `none`, `client_secret_basic`, or `client_secret_post`, matching the registered client |
+
+Resource names use 3-63 lowercase letters, digits and hyphens, starting with a
+letter and ending with a letter or digit. Unknown inputs, including `vars`,
+`routes`, `profile` and secret fields, are refused. Provider metadata, audience
+acceptance and endpoint correctness still require live qualification. Production
+and staging Anaconda API keys are not interchangeable.
+
+OIDC authentication discovers `userinfo_endpoint`; there is no endpoint override
+in this helper. `oidcUserinfoOrigin` sets `NOTEBOOK_CLOUD_OIDC_USERINFO_ORIGIN`,
+which the existing verifier requires the discovered endpoint to match exactly.
+Use the issuer's origin for same-origin userinfo, or explicitly trust the
+provider's separate userinfo origin. A different origin is refused before a token
+is sent. `apiKeyUserinfoUrl` remains an actual endpoint for API-key verification.
+
+`NOTEBOOK_CLOUD_OIDC_USERINFO_URL` is not emitted. That old setting never steered
+OIDC requests; `worker/oauth-store.mjs` only includes it in its OAuth context
+fingerprint. Removing a previously set value changes that context and invalidates
+old OAuth context matches. These staging targets must be new and empty. The
+current OAuth context does not include `NOTEBOOK_CLOUD_OIDC_USERINFO_ORIGIN`;
+changing trust origin alone does not invalidate existing grants through that
+fingerprint. Shared auth and fingerprint behavior are unchanged by this helper.
+Revisiting that policy for existing deployments is separate launch work.
+
+URL parse failures report only the known field name, with no original input or
+cause. Unknown field names and unreadable/invalid target JSON also use fixed
+errors, so malformed credential-bearing values are not echoed by these checks.
+
+The generated config carries `DB`, `PAGES_USAGE`, private `PAGES_ASSETS`, and
+`ASSETS`. It takes both crons from `shared/schedule.mjs`: daily usage rollup/purge
+at 00:05 UTC and hourly auth maintenance at minute 35. Catalog indexing is enabled
+at epoch `1`, with the current 250 Page quota. Sharing and OAuth are current
+Worker behavior, not missing enable flags.
+
+Every request runs the Worker first. Its API, auth, MCP, sync, private asset and
+Page/Project preview routes run before the `ASSETS.fetch` SPA fallback. No custom
+domain routes are generated: an operator must separately attach the exact origin
+or select the actual workers.dev origin. `workers_dev` is enabled; preview URLs
+are disabled. Never repoint an existing preview/lab domain through this helper.
+
+The prebuilt ESM entry is `worker/index.js`, with explicit additional-module
+discovery rooted at `worker/` and a `CompiledWasm` rule for `automerge.wasm`.
+Browser WASM stays under `public/`, outside that module root. The original build
+receipt remains unchanged: it certifies the source build's paths/config, not a
+new target-config attestation. `prepare` verifies it before relocation and config
+replacement; a separate Cloudflare deployment receipt/provenance gate is not yet
+implemented.
+
+### New-target storage boundary
+
+The current bundle exports `Page`, `Catalog`, `PageRecords` and `Space`. Staging
+preserves the existing SQLite DO chain: `v1` adds Page/Catalog, `v2` adds
+PageRecords, `v3` adds Space. A new empty target can use that chain without
+rewriting a deployed target's migration history. `PageRecords` remains delete-only
+for converted-record purge; it is not removed from either build.
+
+An empty `DB` initializes auth sessions, OAuth, invitations and quota tables
+lazily. Catalog initialization applies `CATALOG_MIGRATIONS` 1 through 8 in
+`worker/catalog-index.mjs`; `PAGES_USAGE` initializes its separate usage tables.
+There is no Wrangler D1 migration directory to apply. Local SQLite tests cover
+these paths; they do not establish Cloudflare D1 runtime behavior.
+
+A minimal fresh baseline (one DO migration without PageRecords, a consolidated
+D1 schema without unused placement columns, and a compatibility-free bundle)
+requires a separately approved fresh/lab build strategy. This helper does not
+implement that strategy, squash D1, or remove old readers. Do not send a rewritten
+migration chain to an existing Worker.
+
+### Remaining deployment gates
+
+- Independently verify account access, unused Worker name, empty D1 identities,
+  private R2 ownership, plan limits and the intended public domain/workers.dev URL.
+- Register `publicOrigin + /oidc` with the provider. Qualify real browser OIDC,
+  verified userinfo and same-account API-key identity. Store
+  `NOTEBOOK_CLOUD_APP_SESSION_KEYS` through the approved secret process; a single
+  `NOTEBOOK_CLOUD_APP_SESSION_SECRET` is also supported. Confidential OIDC clients
+  additionally need `NOTEBOOK_CLOUD_OIDC_CLIENT_SECRET`. No secret belongs in
+  `TARGET.json` or generated vars. See Session key rotation above.
+- Establish Cloudflare deployment provenance and rollback rules. The lab
+  `deploy.mjs` pipeline is not a Cloudflare deploy path.
+- Qualify Worker startup and memory/CPU limits, SQLite DO/D1 initialization,
+  scheduled maintenance, private assets, browser peers, MCP/OAuth, permissions,
+  reconnect/restart recovery and durable receipts on disposable Cloudflare data.
+  Package validation alone proves none of these live guarantees.
 
 ## Copying a Project to a new target
 
