@@ -9,7 +9,7 @@ import {
   projectPage,
   validateNodeInsertion,
 } from "./page.mjs";
-import { schema, textPath, validateRich } from "./richtext.mjs";
+import { textPath, validateRich } from "./richtext.mjs";
 import { documentFeatures } from "./schema-features.mjs";
 import { decode, encode, PagesDataframe } from "./wordgard-doc.mjs";
 import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
@@ -520,7 +520,8 @@ test("an unreadable dataframe exposes none of its stored attrs in typed reads", 
     const changes = projectReadChanges(next, { since_heads: heads, comments: "none" }).changes;
     assert.ok(!JSON.stringify(changes).includes(stored), stored);
     // The backstop, if such a node ever reaches nodeFields.
-    const node = schema.nodes.dataframe.create({ src: stored, media_type: PARQUET_MEDIA_TYPE });
+    const { PagesDataframe } = await import("./wordgard-doc.mjs");
+    const node = PagesDataframe.of({ src: stored, media_type: PARQUET_MEDIA_TYPE });
     assert.deepEqual(nodeFields(node, { pageId }), { readable: false }, stored);
   }
 });

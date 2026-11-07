@@ -1,5 +1,6 @@
 import * as A from "@automerge/automerge/slim";
 import { textPath } from "./richtext-format.mjs";
+import { readKind, readDescendants } from "./native-read.mjs";
 
 // Enumerate actual live embed characters. Resolving a deleted cursor by position
 // alone is unsafe: Automerge deliberately slides it to a surviving neighbour.
@@ -29,12 +30,20 @@ export function resolveImageId(doc, blockId, imageId) {
 export function readableImageIds(doc, blockId, tree) {
   const result = new Map();
   const nodes = [];
-  tree.descendants((node) => {
-    if (node.type.name === "image") nodes.push(node);
-  });
+  for (const root of tree.nodes) {
+    if (readKind(root) === "image") nodes.push(root);
+    readDescendants(root, (node) => {
+      if (readKind(node) === "image") nodes.push(node);
+    });
+  }
   const ids = imageIds(doc, blockId);
   // Unknown-node projections can change the tree. Never guess an identity.
   if (nodes.length !== ids.length) return result;
-  nodes.forEach((node, index) => result.set(node, ids[index].image_id));
+  const byOffset = new Map(ids.map((entry) => [entry.at, entry.image_id]));
+  for (const node of nodes) {
+    const id = byOffset.get(tree.source.get(node));
+    if (!id) return new Map();
+    result.set(node, id);
+  }
   return result;
 }

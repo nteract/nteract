@@ -12,30 +12,18 @@ import {
 } from "../shared/dataset-assets.mjs";
 import { schema } from "./pm-adapter.mjs";
 import { paragraphFirstItems } from "./pm-markdown-parser.mjs";
-import { exportMarkdown, treeMarkdown } from "./markdown-serializer.mjs";
 import { parseAgentMarkdown, parseMarkdown } from "./markdown-import.mjs";
 import { requireRich, textPath } from "./richtext-format.mjs";
-import { adapterRead, pageSpans, readTree, richDoc } from "./richtext-spans.mjs";
+import { pageSpans, richDoc } from "./richtext-spans.mjs";
+import { nativeRead, readMarkdown } from "./native-read.mjs";
 import { dataframeLabel, unknownNodeNotice } from "./richtext-notices.mjs";
 
 /** A block's Markdown projection. `pageId` is the Page holding the block; a
  * dataframe naming another Page's asset then reads as an unknown-node
- * notice. It reads the block's Wordgard tree; content that tree reads
- * differently or can't hold (adapterRead, or spans decode refuses, such as
- * a heading level out of range) reads through richDoc. */
+ * notice. The read projection does not change or validate stored content. */
 export function blockMarkdown(block, pageId) {
   requireRich(block);
-  if (!adapterRead(block)) {
-    let tree;
-    try {
-      tree = readTree(block, pageId);
-    } catch (error) {
-      if (error?.code !== "unreadable_rich_spans") throw error;
-      tree = null;
-    }
-    if (tree) return treeMarkdown(tree);
-  }
-  return exportMarkdown(richDoc(block, pageId));
+  return readMarkdown(nativeRead(block, pageId).nodes);
 }
 
 // Rich writers stamp the schema features their spans need in the same change.

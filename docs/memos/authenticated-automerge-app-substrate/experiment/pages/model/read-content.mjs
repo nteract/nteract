@@ -1,14 +1,19 @@
 import { orderedBlockIds } from "./order.mjs";
-import { agentType } from "./node-registry.mjs";
 import { readableNodeIds } from "./node-ids.mjs";
 import { readableImageIds } from "./image-ids.mjs";
 import { DATAFRAME_TITLE_MAX, parseAssetPath, readDataframe } from "../shared/dataset-assets.mjs";
 import { requireRich } from "./richtext-format.mjs";
 import { headingAnchorsByBlock } from "./heading-anchors.mjs";
 import { quotableNodeType } from "./richtext-notices.mjs";
-import { schema } from "./pm-adapter.mjs";
-import { exportMarkdown } from "./markdown-serializer.mjs";
-import { projectionDoc } from "./richtext-spans.mjs";
+import {
+  nativeRead,
+  readMarkdown,
+  readKind,
+  readChildren,
+  readDescendants,
+  readVisibleText,
+} from "./native-read.mjs";
+import { Alignment, CodeBlockLanguage, TaskChecked } from "./wordgard-doc.mjs";
 import { projectedBlock } from "./richtext-page.mjs";
 
 const utf8 = new TextEncoder();
@@ -84,16 +89,9 @@ function validateSelectors(doc, args) {
     missing(`Block not found: ${args.node_range.block_id}`);
 }
 
-function visibleText(node) {
-  if (node.type.name === "image") return node.attrs.alt ?? "";
-  if (node.type.name === "hard_break") return "\n";
-  if (node.isText) return node.text;
-  const parts = [];
-  node.forEach((child) => parts.push(visibleText(child)));
-  return parts.join(node.inlineContent ? "" : "\n");
-}
+const visibleText = readVisibleText;
 
-const markdownFor = (nodes) => exportMarkdown(schema.node("doc", null, nodes));
+const markdownFor = readMarkdown;
 
 // node_index addresses a top-level rich-text node in this captured document
 // version; lists, tables and other containers stay intact. node_id
@@ -105,16 +103,23 @@ function indexNodes(doc) {
     anchorsByBlock = headingAnchorsByBlock(doc);
   for (const blockId of orderedBlockIds(doc)) {
     const block = requireRich(doc.blocks[blockId]),
-      tree = projectionDoc(block, doc.page_id),
+      tree = nativeRead(block, doc.page_id),
       ids = readableNodeIds(doc, blockId, tree),
       imageIds = readableImageIds(doc, blockId, tree),
       anchors = blockAnchors(tree, anchorsByBlock.get(blockId) ?? []);
     trees.set(blockId, tree);
-    tree.forEach((node, _offset, nodeIndex) => {
-      const entry = { blockId, nodeIndex, node, nodeId: ids[nodeIndex]?.id ?? null, imageIds };
-      if (node.type.name === "heading") {
+    tree.nodes.forEach((node, nodeIndex) => {
+      const entry = {
+        blockId,
+        nodeIndex,
+        node,
+        nodeId: ids[nodeIndex]?.id ?? null,
+        imageIds,
+        metadata: tree.metadata,
+      };
+      if (readKind(node) === "heading") {
         entry.heading = visibleText(node);
-        entry.level = node.attrs.level;
+        entry.level = node.tag.param;
         entry.anchor = anchors.get(nodeIndex);
         while (headings.length && headings.at(-1).level >= entry.level) headings.pop();
         headings.push(entry);
@@ -134,11 +139,11 @@ function indexNodes(doc) {
 function blockAnchors(tree, anchors) {
   const byIndex = new Map();
   let ordinal = 0;
-  tree.forEach((node, _offset, nodeIndex) => {
-    if (node.type.name === "heading") byIndex.set(nodeIndex, anchors[ordinal++]);
+  tree.nodes.forEach((node, nodeIndex) => {
+    if (readKind(node) === "heading") byIndex.set(nodeIndex, anchors[ordinal++]);
     else
-      node.descendants((child) => {
-        if (child.type.name === "heading") ordinal++;
+      readDescendants(node, (child) => {
+        if (readKind(child) === "heading") ordinal++;
       });
   });
   return ordinal === anchors.length ? byIndex : new Map();
@@ -170,18 +175,18 @@ const bounded = (name, values, max) =>
  *
  * Nested lists read as their own Markdown. `maxItems` bounds per-item
  * arrays. */
-export function nodeFields(node, { pageId, maxItems = Infinity, imageIds } = {}) {
+export function nodeFields(node, { pageId, maxItems = Infinity, imageIds, metadata } = {}) {
   // Child-index paths are relative to this top-level node at the read revision,
   // not stable identities. Image occurrences stay bounded even in change feeds.
-  const fields = ownNodeFields(node, { pageId, maxItems });
+  const fields = ownNodeFields(node, { pageId, maxItems, metadata });
   const images = [];
   let count = 0;
   const limit = Math.min(maxItems, OUTLINE_MAX_ITEMS);
   const visit = (child, path) => {
-    if (child.type.name === "image") {
+    if (readKind(child) === "image") {
       count++;
       if (images.length < limit) {
-        const { src, dark_src, alt, title } = child.attrs;
+        const { src, dark_src, alt, title } = child.param;
         const asset = parseAssetPath(src);
         const darkAsset = parseAssetPath(dark_src);
         images.push({
@@ -203,7 +208,7 @@ export function nodeFields(node, { pageId, maxItems = Infinity, imageIds } = {})
         });
       }
     }
-    child.forEach((nested, _offset, index) => visit(nested, [...path, index]));
+    readChildren(child).forEach((nested, index) => visit(nested, [...path, index]));
   };
   visit(node, []);
   if (count)
@@ -215,15 +220,15 @@ export function nodeFields(node, { pageId, maxItems = Infinity, imageIds } = {})
   return fields;
 }
 
-function ownNodeFields(node, { pageId, maxItems }) {
-  switch (node.type.name) {
+function ownNodeFields(node, { pageId, maxItems, metadata }) {
+  switch (readKind(node)) {
     case "heading":
-      return { attrs: { level: node.attrs.level } };
-    case "code_block":
-      return { attrs: { language: String(node.attrs.params ?? "") } };
-    case "task_list": {
+      return { attrs: { level: node.tag.param } };
+    case "code-block":
+      return { attrs: { language: String(node.mark(CodeBlockLanguage) ?? "") } };
+    case "task-list": {
       const checked = [];
-      node.forEach((item) => checked.push(item.attrs.checked === true));
+      node.content.forEach((item) => checked.push(item.mark(TaskChecked) === true));
       return {
         summary: {
           items: checked.length,
@@ -236,15 +241,20 @@ function ownNodeFields(node, { pageId, maxItems }) {
       // As wide as its widest row, like its Markdown; a concurrent structural
       // edit can leave rows ragged. Alignment comes from the first row.
       let columns = 0;
-      node.forEach((row) => (columns = Math.max(columns, row.childCount)));
+      node.content.forEach((row) => (columns = Math.max(columns, row.content.length)));
       const align = Array.from({ length: columns }, () => null);
-      node.firstChild?.forEach((cell, _offset, index) => (align[index] = cell.attrs.align ?? null));
-      return { summary: { rows: node.childCount, columns, ...bounded("align", align, maxItems) } };
+      node.content[0]?.content.forEach(
+        (cell, index) =>
+          (align[index] = metadata?.get(cell)?.align ?? cell.mark(Alignment) ?? null),
+      );
+      return {
+        summary: { rows: node.content.length, columns, ...bounded("align", align, maxItems) },
+      };
     }
     case "dataframe": {
       // The same check the Markdown projection and the viewer make: a
       // dataframe is readable only when it names an asset on this Page.
-      const value = readDataframe(node.attrs);
+      const value = readDataframe(node.param);
       const asset = value && parseAssetPath(value.src);
       if (!asset || (pageId && asset.pageId !== pageId)) return { readable: false };
       return {
@@ -257,9 +267,9 @@ function ownNodeFields(node, { pageId, maxItems }) {
         },
       };
     }
-    case "unknownBlock":
+    case "unknown":
       return {
-        node_type: quotableNodeType(node.attrs.unknownBlock?.type ?? node.attrs.unknownParentBlock),
+        node_type: quotableNodeType(node.tag.param?.type ?? node.tag.param),
       };
     default:
       return {};
@@ -273,7 +283,7 @@ function outlineEntry(entry, pageId) {
     // Stable across edits; null for a block's implicit first paragraph.
     node_id: entry.nodeId,
     // The agent-facing name set_node and insert_node take (node-registry.mjs).
-    type: agentType(entry.node.type.name),
+    type: readKind(entry.node),
     heading_path: entry.headingPath,
     // Bytes of this node's standalone Markdown projection, excluding inter-node separators.
     markdown_bytes: utf8.encode(markdownFor([entry.node])).byteLength,
@@ -285,7 +295,12 @@ function outlineEntry(entry, pageId) {
           ...(entry.anchor !== undefined && { anchor: entry.anchor }),
         }
       : {}),
-    ...nodeFields(entry.node, { pageId, maxItems: OUTLINE_MAX_ITEMS, imageIds: entry.imageIds }),
+    ...nodeFields(entry.node, {
+      pageId,
+      maxItems: OUTLINE_MAX_ITEMS,
+      imageIds: entry.imageIds,
+      metadata: entry.metadata,
+    }),
   };
 }
 
@@ -346,7 +361,7 @@ function selectedNodes(nodes, trees, args, inScope) {
   }
   const range = args.node_range;
   if (range) {
-    if (range.to > trees.get(range.block_id).childCount)
+    if (range.to > trees.get(range.block_id).nodes.length)
       missing("node_range exceeds this block's top-level nodes");
     return {
       nodes: nodes.filter(
