@@ -14,7 +14,7 @@ const history = (doc) =>
     .sort();
 
 // Synthetic fixtures only. No production hooks or document-content logging.
-async function fixture(t, policy) {
+async function fixture(t, policy, onRefusal) {
   const base = A.change(A.init({ actor: "01".repeat(16) }), { time: 0 }, (d) => {
     d.n = 0;
   });
@@ -36,6 +36,7 @@ async function fixture(t, policy) {
   let closed = false;
   const backend = await AutomergeSyncBackend.load({
     store: new DocStore(clientBytes),
+    onRefusal,
     scheduleLocalSync: (id, run) => {
       starts.set(id, run);
     },
@@ -172,6 +173,72 @@ test("a real Bloom omission recovers on the same socket without another edit", a
   assert.equal(f.isClosed(), false);
   A.free(expected);
   A.free(restored);
+});
+
+test("real dependency recovery records evidence; only explicit capture archives intact history", async (t) => {
+  await import("fake-indexeddb/auto");
+  const { PageSession } = await import("../viewer/session.mjs");
+  const { decodeSnapshot, encodeSnapshot, listLocalRecoveries, writeLocalPage } =
+    await import("../viewer/local-pages.mjs");
+  const { key, store } = await import("../viewer/local-catalog.mjs");
+  const identity = { principal: crypto.randomUUID(), displayName: "Synthetic writer" };
+  const session = new PageSession(crypto.randomUUID(), {
+    authentication: { identity, canWrite: true },
+  });
+  session.acceptAuthentication({ identity, canWrite: true });
+  session.access = { canRead: true, canWrite: true, canComment: true, role: "owner", revision: 0 };
+  const evidence = [];
+  const f = await fixture(t, undefined, (item) => {
+    evidence.push(item);
+    session.observeRefusal(item);
+  });
+  let local = A.clone(f.local);
+  const comments = A.from({ threads: {} });
+  session.handle = { documentId: id, doc: () => local };
+  session.commentsHandle = { documentId: "03".repeat(32), doc: () => comments };
+  session.localPage = {
+    principal: identity.principal,
+    page_id: session.pageId,
+    document_id: id,
+    snapshot: encodeSnapshot(A.save(local)),
+    title: "Synthetic recovery",
+    updated_at: new Date().toISOString(),
+  };
+  session.dispatch({ type: "opened", denied: false });
+  await writeLocalPage(identity, session.localPage);
+  const checkpoint = await store.load(key(identity, session.pageId));
+  const phase = session.phase$.snapshot();
+  const handles = [session.handle, session.commentsHandle];
+  const round = f.backend.synchronizeTree(id);
+  for (let i = 0; i < 4; i++) await f.deliver();
+  assert.equal(evidence.length, 1);
+  assert.equal(evidence[0].code, "missing_dependencies");
+  assert.equal(evidence[0].r, 2);
+  assert.equal(evidence[0].doc, id);
+  assert.equal(evidence[0].correlated, true);
+  assert.ok(Object.isFrozen(evidence[0]));
+  assert.equal(session.recoveryCapture.state.name, "idle");
+  assert.equal((await listLocalRecoveries(identity, session.pageId)).length, 0);
+  await f.drain();
+  assert.equal((await round).outcome, "complete");
+  const native = await new DocStore(f.clientBytes).read(id);
+  A.free(local);
+  local = A.load(concat([native.snapshot, ...native.chunks].filter(Boolean)));
+  const before = history(local);
+  assert.ok(A.hasHeads(local, A.getHeads(f.local)));
+  assert.equal(session.recoveryCapture.state.name, "idle");
+  assert.equal((await listLocalRecoveries(identity, session.pageId)).length, 0);
+  const copy = await session.saveRecoveryCopy();
+  const restored = A.load(decodeSnapshot(copy.snapshot));
+  assert.deepEqual(history(restored), before);
+  assert.deepEqual(history(local), before);
+  assert.deepEqual(copy.refusal_evidence, evidence[0]);
+  assert.deepEqual([session.handle, session.commentsHandle], handles);
+  assert.equal(session.phase$.snapshot(), phase);
+  assert.deepEqual(await store.load(key(identity, session.pageId)), checkpoint);
+  assert.equal((await listLocalRecoveries(identity, session.pageId)).length, 1);
+  assert.equal(f.isClosed(), false);
+  for (const doc of [local, comments, restored]) A.free(doc);
 });
 
 test("repeated missing dependencies exhaust one retry per explicit attempt, not per waiter", async (t) => {

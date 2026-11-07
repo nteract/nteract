@@ -32,6 +32,7 @@ import { commentsGenesis } from "../model/comments-doc.mjs";
 import { applyComment, commentsMigrated } from "../model/comments.mjs";
 import { guardCommentIntent } from "../model/comment-guard.mjs";
 import { commentsDocUuid, commentsDocumentId } from "./comments-store.mjs";
+import { pageDocuments } from "../model/document-types.mjs";
 import { storedFormUnsupported } from "../model/stored-form.mjs";
 import { readTargets, writeTargets } from "../model/agent-presence.mjs";
 import { assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
@@ -5490,11 +5491,13 @@ export class Page {
       }
       if (url.pathname === "/api/connect" && request.method === "GET") {
         this.cacheTitle(identity);
+        const commentsId = this.commentsHandle ? commentsDocumentId(this.commentsUuid) : undefined;
         return json({
           page_id: this.metadata.pageId,
           documentId: this.metadata.documentId,
           // The comments document syncs on the same socket.
-          ...(this.commentsHandle && { commentsDocumentId: commentsDocumentId(this.commentsUuid) }),
+          ...(this.commentsHandle && { commentsDocumentId: commentsId }),
+          documents: pageDocuments(this.metadata.documentId, commentsId),
           recordStorage: "automerge",
           serverSenderId: this.serverSenderId,
           identity: publicIdentity(identity),

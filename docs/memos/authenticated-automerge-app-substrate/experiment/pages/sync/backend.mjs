@@ -73,6 +73,7 @@ export class AutomergeSyncBackend {
       syncTimeoutMs: options.syncTimeoutMs ?? 10_000,
       // The app decides when a local store's round starts (OutboundSync).
       scheduleLocalSync: options.scheduleLocalSync ?? ((_id, start) => queueMicrotask(start)),
+      onRefusal: options.onRefusal ?? (() => {}),
     };
     this.#store = options.store;
     this.#collection = this.#log();
@@ -462,8 +463,16 @@ export class AutomergeSyncBackend {
         code: frame.code,
         message: frame.message,
         fatal: frame.fatal,
+        doc: frame.doc,
+        ...(frame.r !== undefined && { r: frame.r }),
+        correlated,
       };
       tree.log.append((sequence) => ({ type: "failure", sequence, error }), 128);
+      // Evidence only: a frame identifies a send, not an offending change.
+      // An observer must never interrupt the round's settlement.
+      try {
+        this.#opts.onRefusal(Object.freeze({ ...error.refusal }));
+      } catch {}
       // A timed-out frame's refusal must not settle a newer round's waiters.
       if (superseded) return;
       tree.sync.recovery = dependencyRecoveryStep(

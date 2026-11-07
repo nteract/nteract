@@ -86,6 +86,12 @@ const SUITES = Object.freeze([
     timeout: 3 * minute,
   },
   {
+    name: "recovery-capture",
+    script: "scripts/recovery-capture-smoke.mjs",
+    timeout: 3 * minute,
+    optIn: true,
+  },
+  {
     name: "typing",
     script: "scripts/typing-batch-smoke.mjs",
     timeout: 3 * minute,

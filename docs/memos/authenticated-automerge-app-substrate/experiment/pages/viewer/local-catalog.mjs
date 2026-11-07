@@ -105,6 +105,41 @@ export function archiveSnapshot(records, identity, page, sequence) {
   );
 }
 
+/** Persist a capture once, without reading or changing the active checkpoint.
+ * The caller retains this exact payload on retry, including after a lost ack.
+ * An archive survives reload; it is not a receipt from the Page host. */
+export async function saveRecoveryCopy(identity, copy) {
+  if (!identity?.principal || copy.principal !== identity.principal)
+    throw Error("Local Page account does not match");
+  if (
+    !copy.capture_id ||
+    !copy.page_id ||
+    !copy.document_id ||
+    !copy.snapshot ||
+    !copy.comments_document_id ||
+    !copy.comments_snapshot ||
+    !Array.isArray(copy.heads) ||
+    !Array.isArray(copy.comment_heads)
+  )
+    throw Error("Recovery requires both native documents, their IDs and heads");
+  const archiveKey = `recovery/${encodeURIComponent(identity.principal)}/${copy.page_id}/capture-${encodeURIComponent(copy.capture_id)}`;
+  const json = JSON.stringify(copy);
+  return store.run("readwrite", (records, done, fail) => {
+    const request = records.get(archiveKey);
+    request.onsuccess = () => {
+      try {
+        if (request.result && decoder.decode(request.result) !== json)
+          throw Error("Recovery capture ID already names another copy");
+        if (!request.result) records.put(encoder.encode(json), archiveKey);
+        done(JSON.parse(json));
+      } catch (error) {
+        fail(error);
+      }
+    };
+    return request;
+  });
+}
+
 /**
  * Move this account's local copy of a Page into the recovery archive and leave
  * a marker in its place, so nothing renders the copy again. `reason` is
