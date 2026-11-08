@@ -15,7 +15,7 @@ function server() {
     repository: 'nteract/nteract',
     releaseRun: async (id, attempt) => {
       calls.push(`release:${id}/${attempt}`);
-      return {id: Number(id), run_attempt: Number(attempt), repository: {full_name: api.repository}, head_repository: {full_name: api.repository}, head_sha: identity.sourceSha, path: '.github/workflows/release-nightly.yml', event: 'schedule', status: 'completed', conclusion: 'success'};
+      return {id: Number(id), run_attempt: Number(attempt), repository: {full_name: api.repository}, head_repository: {full_name: api.repository}, head_sha: identity.sourceSha, path: '.github/workflows/release-nightly.yml', display_title: 'Nightly Release', event: 'schedule', status: 'completed', conclusion: 'success'};
     },
     release: async tag => { calls.push(`tag:${tag}`); return {id: 789, tag_name: tag, draft: false, prerelease: true}; },
     tagSha: async () => identity.sourceSha,
@@ -64,6 +64,13 @@ test('failed upstream, mismatched tag/source, or changed local bytes cannot uplo
   api.releaseRun = releaseRun; api.tagSha = async () => 'b'.repeat(40);
   await assert.rejects(publishAssets(candidate, files, api), /does not match/);
   await assert.rejects(publishAssets(candidate, {...files, [names[0]]: Buffer.from('repacked')}, api), /checksum/);
+  assert.ok(!calls.some(call => call.startsWith('upload:')));
+});
+test('wheel-only recovery is not an editor release producer', async () => {
+  const {api, calls} = server();
+  const releaseRun = api.releaseRun;
+  api.releaseRun = async (...args) => ({...await releaseRun(...args), event: 'workflow_dispatch', display_title: 'Nightly wheel recovery 42465470406'});
+  await assert.rejects(publishAssets(candidate, files, api), /recovery|release producer/);
   assert.ok(!calls.some(call => call.startsWith('upload:')));
 });
 function buildServer() {
