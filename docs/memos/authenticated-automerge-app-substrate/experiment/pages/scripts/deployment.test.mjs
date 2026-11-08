@@ -440,6 +440,7 @@ function installFixture(
   for (const parent of ["/opt", "/etc", "/var/lib"]) mkdirSync(local(parent), { recursive: true });
   mkdirSync(local("/etc/systemd/system"), { recursive: true });
   const calls = [];
+  const mutations = [];
   const outputs = [];
   const unitState = { dropIns: [], ...service };
   const dropInDir = "/etc/systemd/system/" + deployment.service + ".service.d";
@@ -485,6 +486,22 @@ function installFixture(
     }
     return fs.cpSync(local(from), local(to), ...args);
   };
+  for (const name of [
+    "mkdirSync",
+    "writeFileSync",
+    "chmodSync",
+    "chownSync",
+    "mkdtempSync",
+    "rmSync",
+    "renameSync",
+    "cpSync",
+  ]) {
+    const mutate = filesystem[name];
+    filesystem[name] = (...args) => {
+      mutations.push(name);
+      return mutate(...args);
+    };
+  }
   const childProcess = {
     execFileSync(command, args) {
       calls.push({ command, args });
@@ -602,6 +619,7 @@ function installFixture(
   return {
     execute,
     calls,
+    mutations,
     outputs,
     unitState,
     write,
@@ -1786,7 +1804,7 @@ test("pages2 is a fresh lab2 target with Pages' flags and plain sync only", () =
   );
 });
 
-test("page11 owns a new namespace without inheriting pages2 storage history", () => {
+test("page11 owns a new namespace with its own plain backend storage floor", () => {
   const p = profiles.deploymentProfile("page11");
   assert.equal(p.deployment.host, "lab2");
   assert.equal(p.deployment.hostname, "page11.runtimed.run");
@@ -1795,15 +1813,12 @@ test("page11 owns a new namespace without inheriting pages2 storage history", ()
   assert.equal(p.sharedTunnel, false);
   assert.equal(Number(p.firewallMark) & 0x00ff0000, 0, "avoid Tailscale's mark mask");
   assert.deepEqual(profiles.unitMemory(p), { maxRssMb: 1280, memoryMax: "2G" });
-  assert.equal(profiles.targetRecordStorage("page11").size, 0);
-  assert.doesNotThrow(() => profiles.assertReleaseOpensTargetPages("page11", {}));
-  assert.throws(
-    () =>
-      profiles.assertReleaseOpensTargetPages("page11", {}, [
-        { mode: "automerge", release: "own-prior-release" },
-      ]),
-    /own-prior-release/,
+  assert.deepEqual(
+    [...profiles.targetRecordStorage("page11")],
+    [["automerge", ["RECORD_STORAGE_HISTORY lists it"]]],
   );
+  assert.throws(() => profiles.assertReleaseOpensTargetPages("page11", {}), /record_storage/);
+  assert.doesNotThrow(() => profiles.assertReleaseOpensTargetPages("page11", PLAIN));
   for (const other of profiles.DEPLOYMENT_TARGETS.filter((name) => name !== "page11")) {
     const deployment = profiles.deploymentProfile(other).deployment;
     assert.throws(() =>
@@ -2430,6 +2445,51 @@ test("install refuses an old plain format before any write", (t) => {
   assert.equal(fs.existsSync(f.local(f.release)), false);
   assert.equal(fs.existsSync(f.local(f.audit)), false);
 });
+
+for (const [label, receipt, error] of [
+  ["missing storage declaration", PRE_PLAIN, /record_storage/],
+  [
+    "incompatible storage mode",
+    { ...PLAIN, record_storage: ["local", "buffered"] },
+    /record_storage/,
+  ],
+  ...[undefined, [], ["v1"]].map((formats) => [
+    `incompatible plain format ${JSON.stringify(formats)}`,
+    { ...PLAIN, plain_storage_formats: formats },
+    /plain_storage_formats.*doc-store-v2-host-actor-prefix/,
+  ]),
+])
+  test(`page11 second install refuses ${label} without retired storage vars`, (t) => {
+    const f = installFixture(t, { target: "page11", fresh: true });
+    f.execute();
+    assert.equal(f.outputs.at(-1).installed, true);
+    const config = JSON.parse(f.read(f.release + "/wrangler.json"));
+    assert.equal(Object.hasOwn(config.vars, "PAGES_RECORD_STORAGE"), false);
+    const installed = [
+      f.configDir + "/deployment.json",
+      f.configDir + "/running.json",
+      f.configDir + "/session-secret",
+      f.release + "/wrangler.json",
+    ];
+    const before = installed.map(f.read);
+    f.write(
+      f.stage + "/manifest.json",
+      JSON.stringify({
+        ...f.manifest,
+        source_sha: "c".repeat(40),
+        build_receipt: receipt,
+      }),
+    );
+    f.calls.length = 0;
+    f.mutations.length = 0;
+    assert.throws(f.execute, error);
+    assert.deepEqual(f.mutations, []);
+    assert.ok(f.calls.every(({ args }) => args[0] === "--version"));
+    assert.equal(f.outputs.length, 1);
+    assert.deepEqual(installed.map(f.read), before);
+    assert.equal(fs.existsSync(f.local("/opt/nteract-page11/releases/" + "c".repeat(40))), false);
+    assert.equal(fs.existsSync(f.local(f.configDir + "/rollout-" + "c".repeat(40))), false);
+  });
 
 test("a target that never enabled plain storage accepts a release without it", () => {
   assert.equal(profiles.targetRecordStorage("page9").size, 0);

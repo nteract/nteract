@@ -483,8 +483,8 @@ const targets = Object.freeze({
     }),
     // lab2 holds no other Pages target, so nothing is frozen beside it.
   }),
-  // Separate rich-text experiment. Its first reviewed candidate establishes
-  // storage history; no data or compatibility floor is inherited from pages2.
+  // Separate rich-text experiment using the plain Automerge doc-store backend.
+  // Its storage floor protects that backend, not pages2's rich-text model.
   page11: Object.freeze({
     deployment: Object.freeze({
       host: "lab2",
@@ -553,15 +553,16 @@ export function assertQualifiedDeploymentTarget(target) {
     );
 }
 
-// The record storage each target holds Pages in, beyond the native modes
-// (`local`, `buffered`) of earlier builds. Every Page on page10, pages and
-// pages2 syncs with plain Automerge sync, so a release there must open
+// The record storage each target may hold Pages in, beyond the native modes
+// (`local`, `buffered`) of earlier builds. These targets use the plain Automerge
+// doc-store backend, so a release there must open
 // `automerge` Pages: assertReleaseOpensTargetPages refuses one that can't,
 // including a rollback to a build from before plain sync.
 export const RECORD_STORAGE_HISTORY = Object.freeze({
   page10: Object.freeze(["automerge"]),
   pages: Object.freeze(["automerge"]),
   pages2: Object.freeze(["automerge"]),
+  page11: Object.freeze(["automerge"]),
 });
 const NATIVE_RECORD_STORAGE = Object.freeze(["local", "buffered"]);
 
