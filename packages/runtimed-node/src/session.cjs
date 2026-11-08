@@ -160,8 +160,12 @@ class Session {
     return this._native.restartKernel();
   }
 
-  shutdownNotebook() {
-    return this._native.shutdownNotebook();
+  async shutdownNotebook() {
+    const removed = await this._native.shutdownNotebook();
+    if (removed) {
+      await this.close();
+    }
+    return removed;
   }
 
   addDependency(pkg, options) {
