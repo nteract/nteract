@@ -40,8 +40,16 @@ export function nodeIds(doc, blockId, tree) {
   // richDoc can read a node through notice text (a dataframe naming another
   // Page's asset), which changes its size but never the number of top-level
   // nodes.
-  if (tree && tree.childCount !== nodes.length)
+  if (tree && (tree.nodes?.length ?? tree.childCount) !== nodes.length)
     throw Error("The stored and readable trees disagree on top-level nodes");
+  if (
+    tree?.source &&
+    tree.nodes.some((node, index) => {
+      const at = tree.source.get(node);
+      return at != null && at !== nodes[index].at;
+    })
+  )
+    throw Error("The readable nodes do not correspond to the stored markers");
   return nodes.map(({ at }) => ({ id: at === null ? null : A.getCursor(doc, path, at), at }));
 }
 
@@ -53,7 +61,10 @@ export function readableNodeIds(doc, blockId, tree) {
   try {
     return nodeIds(doc, blockId, tree);
   } catch {
-    return Array.from({ length: tree.childCount }, () => ({ id: null, at: null }));
+    return Array.from({ length: tree.nodes?.length ?? tree.childCount }, () => ({
+      id: null,
+      at: null,
+    }));
   }
 }
 
