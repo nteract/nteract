@@ -9,6 +9,7 @@ import {
 } from "./comments-doc.mjs";
 import { COMMENTING_ROLES, commentDecision } from "./comment-rules.mjs";
 import { BUILD_FEATURES, documentFeatures } from "./schema-features.mjs";
+import { commentAssertions } from "./comment-assertions.mjs";
 
 /** Per-author admission for a comments document (shape in comments-doc.mjs).
  *
@@ -151,9 +152,11 @@ function validateAnchor(anchor) {
 function validateAuthor(author, principal, where) {
   if (
     !isMap(author) ||
-    Object.keys(author).some((k) => !["principal", "displayName", "driver"].includes(k))
+    Object.keys(author).some(
+      (k) => !["principal", "displayName", "driver", "clientAssertions"].includes(k),
+    )
   )
-    reject(REJECTION.INVALID_VALUE, "author must be { principal, displayName, driver }", where);
+    reject(REJECTION.INVALID_VALUE, "author has unsupported fields", where);
   if (scalar(author.principal) !== principal)
     reject(REJECTION.AUTHOR_MISMATCH, "A new entry's author must be the acting principal", where);
   for (const key of ["displayName", "driver"])
@@ -161,6 +164,29 @@ function validateAuthor(author, principal, where) {
       reject(REJECTION.INVALID_VALUE, `author.${key} must be a string`, where);
   if (!boundedString(author.displayName ?? "-", 256) || !boundedString(author.driver ?? "-", 128))
     reject(REJECTION.INVALID_VALUE, "author labels are too long", where);
+  if (own(author, "clientAssertions")) {
+    try {
+      // Ambiguous assertions are refused, not recursively traversed. No loser
+      // may hide an unbounded map or private payload behind a valid winner.
+      if (conflictValues(author, "clientAssertions").length !== 1) throw Error();
+      const claims = author.clientAssertions;
+      commentAssertions(claims);
+      for (const key of Object.keys(claims)) {
+        if (conflictValues(claims, key).length !== 1) throw Error();
+        if (key === "version" || A.isImmutableString(claims[key])) continue;
+        // Labels cannot carry invisible marks or embedded block attributes.
+        if (A.marks(claims, [key]).length) throw Error();
+        if (
+          A.spans(claims, [key]).some(
+            (span) => span.type !== "text" || Object.keys(span.marks ?? {}).length,
+          )
+        )
+          throw Error();
+      }
+    } catch {
+      reject(REJECTION.INVALID_VALUE, "Invalid comment client assertions", where);
+    }
+  }
 }
 
 function validateStatus(status) {
@@ -228,6 +254,7 @@ function validateNewMessage(message, principal, where) {
   for (const key of Object.keys(message))
     if (!MESSAGE_FIELDS.includes(key))
       reject(REJECTION.UNKNOWN_PATH, "Unknown message field", { ...where, field: key });
+  singleCreate(message, "author", where);
   validateAuthor(message.author, principal, where);
   if (!timestamp(message.createdAt))
     reject(REJECTION.INVALID_VALUE, "createdAt must be a timestamp", where);
@@ -270,6 +297,7 @@ function validateNewThread(threads, threadId, principal) {
   for (const key of Object.keys(thread))
     if (!THREAD_FIELDS.includes(key))
       reject(REJECTION.UNKNOWN_PATH, "Unknown thread field", { ...where, field: key });
+  singleCreate(thread, "author", where);
   validateAuthor(thread.author, principal, where);
   if (!timestamp(thread.createdAt))
     reject(REJECTION.INVALID_VALUE, "createdAt must be a timestamp", where);
@@ -451,8 +479,109 @@ function finalize(after, plan, ctx) {
  *   | { ok: false, reason: { code: string, message: string, change?: string, details?: object }, stats: object }}
  *   `next` is `admitted` plus the batch, owned by the caller.
  */
+/** Construction-only policy for new assertion subtrees, including bundled
+ * history. Preview path resolution precedes this guard; it is not a pre-decode
+ * resource limit or a generic rule about deleted comment-body history. */
+function validateAssertionConstruction(operations, backend, stats) {
+  const ancestors = new Set();
+  const slots = new Set();
+  const bytes = new Map();
+  const created = new Map(
+    operations.filter(({ op }) => op.action.startsWith("make")).map((entry) => [entry.id, entry]),
+  );
+  const roots = new Map();
+  const keyOf = (path) => JSON.stringify(path);
+  const rootIndex = (p) =>
+    p[0] === "threads" && p[2] === "author" && p[3] === "clientAssertions"
+      ? 3
+      : p[0] === "threads" &&
+          p[2] === "messages" &&
+          p[4] === "author" &&
+          p[5] === "clientAssertions"
+        ? 5
+        : -1;
+  for (const { op, full, id } of operations) {
+    const index = rootIndex(full);
+    if (index < 0 || full.length !== index + 1 || op.action !== "makeMap") continue;
+    // An absent visible ancestor does not make an admitted author new. Birth
+    // is the fresh make operation's exact native ID, independent of field IDs.
+    const author = created.get(op.obj);
+    const owner = author && created.get(author.op.obj);
+    if (!author || !owner) reject(REJECTION.IMMUTABLE_FIELD, "author is immutable");
+    if (
+      author.op.action !== "makeMap" ||
+      author.op.key !== "author" ||
+      owner.op.action !== "makeMap" ||
+      keyOf(owner.full) !== keyOf(full.slice(0, index - 1))
+    )
+      reject(REJECTION.INVALID_VALUE, "Invalid assertion owner");
+    roots.set(id, full);
+    for (let n = 2; n <= index; n++) ancestors.add(keyOf(full.slice(0, n)));
+  }
+  const rootFor = new Map();
+  const findRoot = (id) => {
+    if (roots.has(id)) return id;
+    if (rootFor.has(id)) return rootFor.get(id);
+    const creation = created.get(id);
+    const root = creation ? findRoot(creation.op.obj) : undefined;
+    rootFor.set(id, root);
+    return root;
+  };
+  for (const { op, full, id } of operations) {
+    const index = rootIndex(full);
+    if (index < 0 && !ancestors.has(keyOf(full))) continue;
+    if (index >= 0 && full.length > index + 2)
+      reject(REJECTION.INVALID_VALUE, "Invalid comment client assertions");
+    const root = roots.has(id) ? id : findRoot(op.obj);
+    if (index >= 0 && !root) reject(REJECTION.IMMUTABLE_FIELD, "author is immutable");
+    const fail = () =>
+      reject(REJECTION.INVALID_VALUE, "Assertion snapshots must be constructed once");
+    if (op.pred?.length) fail();
+    const slot = op.key === undefined ? op.obj : JSON.stringify([op.obj, op.key]);
+    if (op.key !== undefined) {
+      if (slots.has(slot)) fail();
+      slots.add(slot);
+    }
+    if (index < 0 || full.length === index + 1) {
+      if (op.action !== "makeMap" || op.key === undefined) fail();
+      continue;
+    }
+    const field = full[index + 1];
+    if (full.length !== index + 2 || !["version", "name", "model"].includes(field)) fail();
+    if (field === "version") {
+      if (op.action !== "set" || op.value !== 1 || op.key === undefined) fail();
+      continue;
+    }
+    if (op.action === "makeText" && op.key !== undefined) continue;
+    if (
+      op.action !== "set" ||
+      typeof op.value !== "string" ||
+      (op.key === undefined && op.insert !== true)
+    )
+      fail();
+    const size = (bytes.get(slot) ?? 0) + new TextEncoder().encode(op.value).byteLength;
+    if (
+      size > (field === "name" ? 80 : 120) ||
+      // eslint-disable-next-line no-control-regex
+      /[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u.test(op.value)
+    )
+      fail();
+    bytes.set(slot, size);
+  }
+  // Even an invisible racing reply must finish a complete snapshot. Only the
+  // bounded roots created above are materialized, never the document history.
+  for (const id of roots.keys()) {
+    stats.assertionObjectReads++;
+    try {
+      commentAssertions(backend.materialize(id));
+    } catch {
+      reject(REJECTION.INVALID_VALUE, "Invalid comment client assertions");
+    }
+  }
+}
+
 export function admitCommentChanges(admitted, changes, principal, options = {}) {
-  const stats = { changes: 0, ops: 0, pathLookups: 0, entityReads: 0 };
+  const stats = { changes: 0, ops: 0, pathLookups: 0, entityReads: 0, assertionObjectReads: 0 };
   if (typeof principal !== "string" || !principal.length)
     return {
       ok: false,
@@ -541,15 +670,26 @@ export function admitCommentChanges(admitted, changes, principal, options = {}) 
         schema: false,
       },
     };
+    const operations = [];
     for (const change of fresh) {
       current = change.hash;
       stats.changes++;
-      for (const op of change.ops) {
+      for (const [offset, op] of change.ops.entries()) {
         stats.ops++;
         const path = resolve(op.obj, change.hash);
         if (!path) reject(REJECTION.UNRESOLVED_OBJECT, "Operation targets an unknown object");
-        checkOperation(op, op.key === undefined ? path : [...path, op.key], ctx);
+        operations.push({
+          op,
+          id: `${change.startOp + offset}@${change.actor}`,
+          full: op.key === undefined ? path : [...path, op.key],
+          hash: change.hash,
+        });
       }
+    }
+    validateAssertionConstruction(operations, backend, stats);
+    for (const { op, full, hash } of operations) {
+      current = hash;
+      checkOperation(op, full, ctx);
     }
     current = undefined;
     finalize(candidate, ctx.plan, ctx);

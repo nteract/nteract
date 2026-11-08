@@ -46,6 +46,12 @@ const SUITES = Object.freeze([
     timeout: 3 * minute,
   },
   {
+    name: "comment-provenance",
+    script: "scripts/comment-provenance-smoke.mjs",
+    timeout: 3 * minute,
+    optIn: true,
+  },
+  {
     name: "comments-layout",
     script: "scripts/comments-layout-smoke.mjs",
     timeout: 3 * minute,

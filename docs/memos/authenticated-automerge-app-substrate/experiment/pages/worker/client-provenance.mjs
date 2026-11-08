@@ -70,6 +70,9 @@ export function clientProvenance(request, legacyAgent) {
   const agent = { ...(name && { name }), ...(explicit?.id && { id: explicit.id }) };
   return Object.freeze({
     schema_version: 1,
+    // Field origin only, not publication consent. Consumers must not infer
+    // explicit assertions from the merged private telemetry labels below.
+    ...(explicit && { explicitAgent: explicit }),
     assertions: Object.freeze({
       ...(labels.client && { harness: labels.client }),
       ...(Object.keys(agent).length && { agent: Object.freeze(agent) }),

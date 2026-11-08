@@ -9,7 +9,7 @@ import * as A from "@automerge/automerge/slim";
  *   threads: {
  *     [threadId]: {
  *       target: CommentAnchor,     // Automerge cursors into the Page document
- *       author: { principal, displayName, driver },
+ *       author: { principal, displayName, driver, clientAssertions? },
  *       createdAt: ISO string,
  *       status: { value: "open" | "resolved", at: ISO string },
  *       messages: {
@@ -17,7 +17,7 @@ import * as A from "@automerge/automerge/slim";
  *           format: "automerge-rich-text-v1",
  *           richText: rich text,   // the editor's spans, as a Page body holds
  *           bodyFormat?: "plain",  // written as literal text; reads return it
- *           author: { principal, displayName, driver },
+ *           author: { principal, displayName, driver, clientAssertions? },
  *           createdAt: ISO string,
  *           deletedAt: null | ISO string,   // soft delete
  *         },
@@ -47,6 +47,22 @@ import * as A from "@automerge/automerge/slim";
  *
  * `author.principal` is the authenticated account. `displayName` and `driver`
  * are labels the writer supplies; they never authorize anything.
+ * Optional `clientAssertions: { version: 1, name?, model? }` is an
+ * immutable creation snapshot of client-supplied labels, not verified evidence.
+ * Only explicit MCP fields are eligible in this held local proposal; telemetry
+ * headers and clientInfo never authorize publication. No IDs or links are stored.
+ * Absent assertions mean unavailable;
+ * ordinary edits preserve the author's entire subtree without backfilling it.
+ * New assertion construction is stricter than general comment history: one
+ * map, one version, and bounded scalar or insert-only plain label text. Bundled
+ * overwrites, deletes, marks, blocks and unknown fields are rejected even when
+ * their final materialized view looks valid. This does not scrub admitted
+ * history or prohibit normal deleted comment-body history elsewhere.
+ * Assertion birth is identified by fresh native make-operation IDs, never by
+ * visible thread/message lookup. Detached admitted snapshots stay immutable;
+ * complete new snapshots are checked by native object ID even on racing replies.
+ * The owning thread/message must also be born in the batch. A new author map
+ * cannot restart an admitted entity's authorship after that entity detaches.
  * comment-authority.mjs holds the per-author rules every incoming change from
  * a peer must pass.
  *

@@ -118,6 +118,13 @@ test("HTTP legacy fields stay bounded; no server identity, raw session, URLs or 
     assertions: { harness: "Harness/1", model: "model-a" },
   });
   assert.ok(!JSON.stringify(clientProvenance(request)).includes(session));
+  const explicitName = withMcpAgent(request, { name: "Explicit" });
+  const internalHeaders = new Headers();
+  forwardClientProvenance(explicitName, internalHeaders);
+  const internal = new Request("https://pages.invalid/internal/tool", { headers: internalHeaders });
+  assert.deepEqual(clientProvenance(internal).explicitAgent, { name: "Explicit" });
+  assert.equal(clientProvenance(internal).assertions.model, "model-a");
+  assert.equal(clientProvenance(request).explicitAgent, undefined);
   const firstForward = new Headers();
   forwardClientProvenance(request, firstForward);
   const secondForward = new Headers();

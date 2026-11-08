@@ -24,7 +24,7 @@ export function useNow(intervalMs = 60_000) {
 
 export function Avatar({ author, size = 24 }) {
   const who = attribution(author);
-  const mark = who.agent ? agentMarkFor(author?.driver) : null;
+  const mark = who.agent && !who.clientSupplied ? agentMarkFor(author?.driver) : null;
   if (mark)
     return (
       <span
@@ -65,6 +65,11 @@ export function MessageAuthor({ message, now }) {
   return (
     <div className="message-author" title={time ? `${who.label} · ${time}` : who.label}>
       <strong>{who.name}</strong>
+      {who.clientSupplied && (
+        <span className="muted" title={who.detail || undefined}>
+          client-supplied{who.detail ? ` (${who.detail})` : ""}
+        </span>
+      )}
       {who.agent && (
         <span className="comment-delegate" aria-label={`on behalf of ${who.person}`}>
           for {who.onBehalfOf}

@@ -30,6 +30,7 @@ import {
 import { unsupportedMarkdown, unsupportedMarkdownError } from "../model/markdown-scan.mjs";
 import { commentsGenesis } from "../model/comments-doc.mjs";
 import { applyComment, commentsMigrated } from "../model/comments.mjs";
+import { commentAssertionsFromRequest } from "../model/comment-assertions.mjs";
 import { guardCommentIntent } from "../model/comment-guard.mjs";
 import { commentsDocUuid, commentsDocumentId } from "./comments-store.mjs";
 import { pageDocuments } from "../model/document-types.mjs";
@@ -5813,7 +5814,12 @@ export class Page {
             operation === "reply_page_comment"
               ? { ...effectiveArgs, action: "reply" }
               : effectiveArgs,
-            publicIdentity(identity),
+            {
+              ...publicIdentity(identity),
+              // Captured only while constructing a new journal intent. Retries
+              // replay its exact bytes and never replace original assertions.
+              clientAssertions: commentAssertionsFromRequest(identity.clientProvenance),
+            },
             undefined,
             { page, role },
           );

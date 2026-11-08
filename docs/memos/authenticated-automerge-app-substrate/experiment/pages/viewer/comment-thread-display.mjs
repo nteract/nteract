@@ -6,6 +6,7 @@ import { isRich } from "../model/richtext-format.mjs";
 import { STORED_FORM_UNSUPPORTED } from "../model/stored-form.mjs";
 import { orderedBlockIds } from "../model/order.mjs";
 import { presenceColor } from "./presence-color.mjs";
+import { readCommentAssertions } from "../model/comment-assertions.mjs";
 
 export const TITLE_MAX = 100;
 
@@ -86,20 +87,29 @@ export function initials(name) {
 export function attribution(author) {
   const person = author?.displayName?.trim() || "Collaborator";
   const driver = author?.driver?.trim() || "";
-  const agent = Boolean(driver) && driver.toLowerCase() !== "browser";
-  const name = agent ? driver : person;
+  const claims = readCommentAssertions(author?.clientAssertions);
+  const agent = Boolean(claims) || (Boolean(driver) && driver.toLowerCase() !== "browser");
+  const name = claims?.name ?? (agent ? driver || "Client" : person);
+  const detail = claims?.model ? `Model: ${claims.model}` : "";
   const { background, foreground } = presenceColor(author?.principal, driver);
   return {
     agent,
     name,
     person,
     onBehalfOf: agent ? firstName(person) : null,
-    label: agent ? `${driver} on behalf of ${person}` : person,
+    label: claims
+      ? `${name} on behalf of ${person}; client-supplied${detail ? `; ${detail}` : ""}`
+      : agent
+        ? `${driver} on behalf of ${person}`
+        : person,
+    ...(claims && { clientSupplied: true, detail }),
     initials: initials(name),
     personInitials: initials(person),
     color: background,
     foreground,
-    key: `${author?.principal ?? ""}/${driver.toLowerCase()}/${agent ? "" : person}`,
+    key: claims
+      ? JSON.stringify([author?.principal ?? "", driver, claims])
+      : `${author?.principal ?? ""}/${driver.toLowerCase()}/${agent ? "" : person}`,
   };
 }
 

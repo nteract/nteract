@@ -5,6 +5,7 @@ import { COMMENTS_FEATURE, commentThreads } from "./comments-doc.mjs";
 import { commentDecision, requireCommentDecision } from "./comment-rules.mjs";
 import { documentFeatures } from "./schema-features.mjs";
 import { storedFormUnsupported } from "./stored-form.mjs";
+import { commentAssertions, readCommentAuthor } from "./comment-assertions.mjs";
 
 // The text object and final selected character must both survive. Repeated
 // quotes never cause an old comment to silently attach to a different passage.
@@ -56,13 +57,19 @@ export function threadsOf(page, commentsDoc) {
 export function projectComments(page, commentsDoc) {
   return Object.entries(threadsOf(page, commentsDoc)).map(([id, t]) => ({
     ...t,
+    author: readCommentAuthor(t.author),
     id,
     state: t.status?.value,
     selectionContext: selectionContext(page, t.target),
     messages: Object.entries(t.messages ?? {})
       .map(([id, m]) => {
         const { body: _body, richText: _richText, bodyFormat: _bodyFormat, ...rest } = m;
-        return { ...rest, id, ...(!m.deletedAt && commentBodyProjection(m)) };
+        return {
+          ...rest,
+          author: readCommentAuthor(m.author),
+          id,
+          ...(!m.deletedAt && commentBodyProjection(m)),
+        };
       })
       // Messages written in the same millisecond keep one order everywhere.
       .sort(
@@ -204,6 +211,8 @@ export function applyComment(commentsDoc, input, identity, nativeSpans, { page, 
     displayName: identity?.displayName ?? "Collaborator",
     driver: identity?.driver ?? "Browser",
   };
+  if (["add", "reply"].includes(action) && identity?.clientAssertions !== undefined)
+    author.clientAssertions = commentAssertions(identity.clientAssertions);
   const threadId = action === "add" ? crypto.randomUUID() : input.thread_id;
   const messageId = ["add", "reply"].includes(action) ? crypto.randomUUID() : input.message_id;
   const path = (id) => ["threads", threadId, "messages", id];

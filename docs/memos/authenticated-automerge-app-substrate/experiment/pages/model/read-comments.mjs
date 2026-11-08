@@ -1,5 +1,6 @@
 import { selectionContext, threadsOf, validCommentId as validId } from "./comments.mjs";
 import { commentBodyProjection } from "./comment-content.mjs";
+import { readCommentAuthor } from "./comment-assertions.mjs";
 
 const fields = new Set(["state", "block_id", "thread_ids", "include_messages"]);
 const invalid = (message) => {
@@ -64,8 +65,8 @@ function message(id, value) {
   return {
     ...base,
     ...commentBodyProjection(value),
-    // Author labels are mutable document content, not verified audit identity.
-    author: strings(value.author, ["principal", "displayName", "driver"]),
+    // Descriptive labels are client assertions, not verified audit identity.
+    author: readCommentAuthor(value.author),
   };
 }
 
