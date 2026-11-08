@@ -4,12 +4,13 @@
 // PAGES_FUZZ_PATH.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { isDeepStrictEqual } from "node:util";
 import fc from "fast-check";
 import { Leaf, Mark } from "wordgard/doc";
 import * as A from "@automerge/automerge";
 import { applyPageOperation, createPageData, orderedBlockIds } from "./page.mjs";
 import { projectReadContent } from "./read-content.mjs";
-import { blockMarkdown, textPath, RICH_FORMAT } from "./richtext.mjs";
+import { blockMarkdown, parseAgentMarkdown, textPath, RICH_FORMAT } from "./richtext.mjs";
 import { updateSpansConfig } from "./marks.mjs";
 import { stampSpans } from "./schema-features.mjs";
 import { textSegments } from "./replace-match.mjs";
@@ -216,75 +217,138 @@ test("concurrent targeted edits converge, read, and keep comment anchors", () =>
   );
 });
 
-test(
-  "an unchanged read-back write commutes with a peer's concurrent unmark",
-  {
-    todo: "Automerge 3.5 updateSpans re-marks a mark that spans several stored spans, so an unchanged replace_block_markdown wins over a peer's concurrent unmark (model/markdown-projection.test.mjs, KNOWN_DISAGREEMENTS 'mark-runs').",
-  },
-  () => {
-    const trees = pageTreeArbitrary({
-      maxDepth: fuzzDepth,
-      emptyParagraphs: false,
-      separateQuotes: true,
-    });
-    fc.assert(
-      fc.property(trees, fc.nat(), fc.nat(), (description, pick, wordPick) =>
-        freeing((keep) => {
-          let { doc, id } = pageWith(withProtected(description));
-          // Bold one whole text segment, so strong spans runs with other marks.
-          const segments = textSegments(doc.blocks[id]).filter(
-            (segment) => !segment.code && !segment.text.includes(PROTECTED) && segment.text.trim(),
-          );
-          fc.pre(segments.length > 0);
-          const segment = segments[pick % segments.length];
-          doc = A.change(doc, (draft) =>
-            applyPageOperation(draft, {
-              operation: "patch_page",
-              arguments: {
-                operations: [
-                  {
-                    op: "format_match",
-                    block_id: id,
-                    match_text: segment.text,
-                    occurrence: occurrence(
-                      textSegments(doc.blocks[id]),
-                      segment.text,
-                      segment.offset,
-                    ),
-                    add: { strong: true },
-                  },
-                ],
-              },
-            }),
-          );
-          keep(doc);
-          const markdown = projectReadContent(doc, {}).blocks[0].markdown;
-          const rewrite = A.change(A.clone(doc, { actor: ACTORS[0] }), (draft) =>
-            applyPageOperation(draft, {
-              operation: "edit_page",
-              arguments: { operations: [{ op: "replace_block_markdown", block_id: id, markdown }] },
-            }),
-          );
-          const targets = words(doc, id).filter((word) => word.segment.offset === segment.offset);
-          const { word, occurrence: at } = targets[wordPick % targets.length];
-          const unmark = { op: "format_match", block_id: id, match_text: word, occurrence: at };
-          const peer = A.change(A.clone(doc, { actor: ACTORS[1] }), (draft) =>
-            applyPageOperation(draft, {
-              operation: "patch_page",
-              arguments: { operations: [{ ...unmark, remove: ["strong"] }] },
-            }),
-          );
-          keep(rewrite);
-          keep(peer);
-          const merged = keep(A.merge(A.clone(rewrite), peer));
+test("a semantically unchanged read-back write commutes with a peer's concurrent unmark", () => {
+  const trees = pageTreeArbitrary({
+    maxDepth: fuzzDepth,
+    emptyParagraphs: false,
+    separateQuotes: true,
+  });
+  fc.assert(
+    fc.property(trees, fc.nat(), fc.nat(), (description, pick, wordPick) =>
+      freeing((keep) => {
+        let { doc, id } = pageWith(withProtected(description));
+        // Bold one whole text segment, so strong spans runs with other marks.
+        const segments = textSegments(doc.blocks[id]).filter(
+          (segment) => !segment.code && !segment.text.includes(PROTECTED) && segment.text.trim(),
+        );
+        fc.pre(segments.length > 0);
+        const segment = segments[pick % segments.length];
+        doc = A.change(doc, (draft) =>
+          applyPageOperation(draft, {
+            operation: "patch_page",
+            arguments: {
+              operations: [
+                {
+                  op: "format_match",
+                  block_id: id,
+                  match_text: segment.text,
+                  occurrence: occurrence(
+                    textSegments(doc.blocks[id]),
+                    segment.text,
+                    segment.offset,
+                  ),
+                  add: { strong: true },
+                },
+              ],
+            },
+          }),
+        );
+        keep(doc);
+        const markdown = projectReadContent(doc, {}).blocks[0].markdown;
+        const beforeSpans = plainSpans(A.spans(doc, textPath(id)));
+        const rewrite = A.change(A.clone(doc, { actor: ACTORS[0] }), (draft) =>
+          applyPageOperation(draft, {
+            operation: "edit_page",
+            arguments: { operations: [{ op: "replace_block_markdown", block_id: id, markdown }] },
+          }),
+        );
+        const targets = words(doc, id).filter((word) => word.segment.offset === segment.offset);
+        const { word, occurrence: at } = targets[wordPick % targets.length];
+        const unmark = { op: "format_match", block_id: id, match_text: word, occurrence: at };
+        const peer = A.change(A.clone(doc, { actor: ACTORS[1] }), (draft) =>
+          applyPageOperation(draft, {
+            operation: "patch_page",
+            arguments: { operations: [{ ...unmark, remove: ["strong"] }] },
+          }),
+        );
+        keep(rewrite);
+        keep(peer);
+        const unchanged = isDeepStrictEqual(
+          beforeSpans,
+          plainSpans(A.spans(rewrite, textPath(id))),
+        );
+        // Markdown cannot express every native mark boundary. A projection
+        // that reparses differently remains a changed-content write, not a
+        // no-op. Exercise it without promising concurrent-unmark protection.
+        if (unchanged) {
+          assert.deepEqual(A.getHeads(rewrite), A.getHeads(doc));
+          assert.deepEqual(A.save(rewrite), A.save(doc));
+        } else assert.notDeepEqual(A.getHeads(rewrite), A.getHeads(doc));
+        const merged = keep(A.merge(A.clone(rewrite), peer));
+        const reverse = keep(A.merge(A.clone(peer), rewrite));
+        assert.deepEqual(A.getHeads(merged), A.getHeads(reverse));
+        assert.deepEqual(A.spans(merged, textPath(id)), A.spans(reverse, textPath(id)));
+        if (unchanged)
           assert.deepEqual(
             plainSpans(A.spans(merged, textPath(id))),
             plainSpans(A.spans(peer, textPath(id))),
             JSON.stringify({ markdown, unmark }),
           );
+      }),
+    ),
+    parameters,
+  );
+});
+
+test("unchanged multi-span formatting writes no ops and preserves a peer's unmark and anchors", () => {
+  freeing((keep) => {
+    const { doc, id } = pageWith(parseAgentMarkdown("**ab*cd***\n\nProtected passage"));
+    keep(doc);
+    const { comments } = comment(doc, newCommentsDoc(), {
+      action: "add",
+      block_id: id,
+      selected_text: "ab",
+      body: "Keep this anchor",
+    });
+    keep(comments);
+    const source = blockMarkdown(doc.blocks[id]);
+    const rewrite = keep(
+      A.change(A.clone(doc, { actor: ACTORS[0] }), (draft) =>
+        applyPageOperation(draft, {
+          operation: "edit_page",
+          arguments: {
+            operations: [{ op: "replace_block_markdown", block_id: id, markdown: source }],
+          },
         }),
       ),
-      parameters,
     );
-  },
-);
+    assert.deepEqual(A.getHeads(rewrite), A.getHeads(doc));
+    assert.deepEqual(A.save(rewrite), A.save(doc));
+    assert.deepEqual(A.getChanges(doc, rewrite), []);
+    const peer = keep(
+      A.change(A.clone(doc, { actor: ACTORS[1] }), (draft) =>
+        applyPageOperation(draft, {
+          operation: "patch_page",
+          arguments: {
+            operations: [
+              { op: "format_match", block_id: id, match_text: "ab", remove: ["strong"] },
+            ],
+          },
+        }),
+      ),
+    );
+    for (const merged of [
+      keep(A.merge(A.clone(rewrite), peer)),
+      keep(A.merge(A.clone(peer), rewrite)),
+    ]) {
+      assert.deepEqual(A.spans(merged, textPath(id)), A.spans(peer, textPath(id)));
+      assert.deepEqual(projectComments(merged, comments), projectComments(peer, comments));
+      assert.deepEqual(projectComments(merged, comments), projectComments(doc, comments));
+      assert.equal(
+        A.getObjectId(merged.blocks[id], "richText"),
+        A.getObjectId(doc.blocks[id], "richText"),
+      );
+      assert.equal(A.getCursor(merged, textPath(id), 0), A.getCursor(doc, textPath(id), 0));
+    }
+  });
+});

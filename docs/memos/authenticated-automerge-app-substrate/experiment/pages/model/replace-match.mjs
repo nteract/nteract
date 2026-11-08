@@ -3,7 +3,7 @@ import { diffArrays } from "diff";
 import { isRich, textPath } from "./richtext-format.mjs";
 import { parseInlineMarkdown } from "./markdown-inline.mjs";
 import { ancestryAt, blockAddresses, nodeIndexAt } from "./node-addresses.mjs";
-import { richDoc } from "./richtext-spans.mjs";
+import { nativeRead } from "./native-read.mjs";
 import {
   encodeMarkValue,
   isKnownMark,
@@ -44,7 +44,7 @@ export function visibleNodeRange(doc, id, nodeIndex) {
   // node_index names a node of the outline, which read_page builds from the
   // readable tree. When the stored spans count differently (markers a peer
   // wrote under parents no writer produces), an index could name another node.
-  if (nodes.length !== richDoc(block, doc.page_id).childCount)
+  if (nodes.length !== nativeRead(block, doc.page_id).nodes.length)
     throw Error(
       "node_index can't address this block: it holds nodes this version of Pages reads differently from how they're stored. Match without node_index, or rewrite the block with replace_block_markdown.",
     );

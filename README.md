@@ -107,13 +107,13 @@ Execution requests name a synced `cell_id`; the daemon reads the cell source fro
 
 Pages stores native rich text in its own Automerge document, with a separate
 comments document. Its host owns authorization and durable receipts. It has its
-own sync and persistence stack, described in the
-[Pages guide](docs/memos/authenticated-automerge-app-substrate/experiment/pages/README.md#document-and-editor).
+own sync and persistence stack. The rich-text model is described in
+[Pages rich text v2](docs/memos/authenticated-automerge-app-substrate/experiment/pages/RICH-TEXT-V2.md).
 
 ## MCP Server
 
 Both products expose MCP tools. Pages serves its own
-[HTTP MCP endpoint](docs/memos/authenticated-automerge-app-substrate/experiment/pages/README.md#http-and-mcp-tools)
+[HTTP MCP endpoint](docs/memos/authenticated-automerge-app-substrate/experiment/pages/REFERENCE.md#http-and-mcp-tools)
 for document, Project, and comment operations. The setup below is for notebooks.
 
 Run `nteract mcp` to connect AI assistants to notebooks. Local notebooks use the runtime daemon; direct hosted connections use WebSockets without a local daemon. Agents can run code, read and write cells, manage dependencies, and collaborate with humans on the same live notebook.

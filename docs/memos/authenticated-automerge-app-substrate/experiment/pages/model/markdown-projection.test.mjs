@@ -9,7 +9,6 @@ import { Leaf } from "wordgard/doc";
 import markdownCorpus from "./markdown-corpus.json" with { type: "json" };
 import { createPageData, initializePage, orderedBlockIds } from "./page.mjs";
 import {
-  adapterSpans,
   exportMarkdown,
   pageSpans,
   parseAgentMarkdown,
@@ -27,6 +26,7 @@ import {
   ListItem,
   OrderedList,
   PagesDataframe,
+  PagesImage,
   Paragraph,
   TaskChecked,
   TaskList,
@@ -253,7 +253,6 @@ test("nested-only sibling items keep separate outer markers through the shared e
     },
     { type: "text", value: "b", marks: {} },
   ];
-  assert.deepEqual(plainSpans(adapterSpans(tree)), expected);
   assert.deepEqual(plainSpans(pageSpans(tree)), expected);
 });
 
@@ -268,16 +267,85 @@ test("an agent that writes back what it read writes nothing", () => {
         continue;
       }
       const read = exportMarkdown(richDoc(doc.blocks[id]));
-      const after = A.change(A.clone(doc), (draft) => setRichMarkdown(draft, id, read));
-      if (Object.hasOwn(KNOWN_DISAGREEMENTS, caseId))
-        assert.equal(exportMarkdown(richDoc(after.blocks[id])), read, caseId);
-      else
-        assert.deepEqual(
-          A.getHeads(after),
-          A.getHeads(doc),
-          `${literal ? "literal" : "agent"} ${caseId}`,
-        );
+      const after = A.change(A.clone(doc), (draft) => setRichMarkdownKeepingNodes(draft, id, read));
+      assert.deepEqual(
+        A.getHeads(after),
+        A.getHeads(doc),
+        `${literal ? "literal" : "agent"} ${caseId}`,
+      );
+      assert.deepEqual(A.save(after), A.save(doc), caseId);
     }
+});
+
+test("the no-op guard applies intended formatting changes and preserves strict source errors", () => {
+  let doc = A.from(createPageData({ pageId: "projection", title: "Projection" }));
+  const id = orderedBlockIds(doc)[0];
+  doc = A.change(doc, (draft) => setRichMarkdown(draft, id, "**ab*cd***"));
+  const changed = A.change(A.clone(doc), (draft) =>
+    setRichMarkdownKeepingNodes(draft, id, "ab*cd*"),
+  );
+  assert.notDeepEqual(A.getHeads(changed), A.getHeads(doc));
+  assert.equal(exportMarkdown(richDoc(changed.blocks[id])), "ab*cd*");
+  assert.deepEqual(A.spans(changed, textPath(id))[0], { type: "text", value: "ab" });
+  for (const invalid of ["<script>bad</script>", "$x$"])
+    assert.throws(
+      () => A.change(A.clone(doc), (draft) => setRichMarkdownKeepingNodes(draft, id, invalid)),
+      { code: "unsupported_markdown" },
+    );
+});
+
+test("restored rich-only metadata is checked before identical Markdown can be a no-op", () => {
+  const pageId = "55555555-5555-4555-8555-555555555555";
+  const src = `/api/pages/${pageId}/assets/${"b".repeat(64)}`;
+  let doc = A.from(createPageData({ pageId, title: "Projection" }));
+  const id = orderedBlockIds(doc)[0];
+  const spans = encode(
+    wordgardSchema.doc([
+      Paragraph.create([
+        PagesImage.of({ src: "/light.png", dark_src: "/dark.png", alt: "Image", title: null }),
+      ]),
+      PagesDataframe.of({ src, media_type: "application/vnd.apache.parquet", future: "kept" }),
+    ]),
+  );
+  doc = A.change(doc, (draft) => {
+    A.updateSpans(draft, textPath(id), spans, updateSpansConfig);
+    stampSpans(draft, spans);
+  });
+  const markdown = exportMarkdown(richDoc(doc.blocks[id]));
+  const after = A.change(A.clone(doc), (draft) => setRichMarkdownKeepingNodes(draft, id, markdown));
+  assert.deepEqual(A.getHeads(after), A.getHeads(doc));
+  assert.deepEqual(A.save(after), A.save(doc));
+  const malformed = A.change(A.clone(doc), (draft) => {
+    const next = A.spans(draft, textPath(id));
+    next.find((span) => String(span.value?.type) === "dataframe").value.attrs.future = {
+      nested: true,
+    };
+    A.updateSpans(draft, textPath(id), next, updateSpansConfig);
+  });
+  assert.throws(
+    () => A.change(A.clone(malformed), (draft) => setRichMarkdownKeepingNodes(draft, id, markdown)),
+    { code: "markdownless_node" },
+  );
+});
+
+test("a lossy Markdown mark boundary is not mistaken for an unchanged stored target", () => {
+  const spans = [
+    {
+      type: "text",
+      value: "a",
+      marks: { strong: true, link: JSON.stringify({ href: "https://example.org/a", title: null }) },
+    },
+    { type: "text", value: " a", marks: { strong: true } },
+  ];
+  let doc = A.from(createPageData({ pageId: "projection", title: "Projection" }));
+  const id = orderedBlockIds(doc)[0];
+  doc = A.change(doc, (draft) => A.updateSpans(draft, textPath(id), spans, updateSpansConfig));
+  const markdown = exportMarkdown(richDoc(doc.blocks[id]));
+  const target = plainSpans(pageSpans(parseAgentMarkdown(markdown)));
+  assert.notDeepEqual(target, plainSpans(A.spans(doc, textPath(id))));
+  const after = A.change(A.clone(doc), (draft) => setRichMarkdownKeepingNodes(draft, id, markdown));
+  assert.notDeepEqual(A.getHeads(after), A.getHeads(doc));
+  assert.deepEqual(plainSpans(A.spans(after, textPath(id))), target);
 });
 
 // A block's content as an agent reads it, from its stored spans.
@@ -340,7 +408,7 @@ test("a dataframe stays a standalone link before a nested block-first list", () 
   }
 });
 
-test("the editor's encoder stores the same content as the adapter for every corpus case", () => {
+test("the native encoder is stable for every corpus case", () => {
   for (const { id: caseId, markdown } of markdownCorpus.cases)
     for (const literal of unsupportedMarkdown(markdown) ? [true] : [false, true]) {
       let tree;
@@ -350,7 +418,6 @@ test("the editor's encoder stores the same content as the adapter for every corp
         continue;
       }
       const spans = pageSpans(tree);
-      assert.equal(storedRead(spans), storedRead(adapterSpans(tree)), caseId);
       // Encoding the stored spans again writes them unchanged.
       assert.deepEqual(plainSpans(encode(decode(spans).doc)), plainSpans(spans), caseId);
     }
@@ -367,10 +434,11 @@ test("a newline in a paragraph is stored as the hard break the editor writes", (
 });
 
 test("a tree the editor can't hold whole is refused, not stored", () => {
-  const tree = schema.node("doc", null, [
-    schema.node("paragraph", null, [
-      schema.node("image", { src: "/a.png", alt: { nested: true }, title: null }),
-    ]),
-  ]);
-  assert.throws(() => pageSpans(tree), { code: "markdownless_node" });
+  assert.throws(() =>
+    pageSpans(
+      schema.doc([
+        Paragraph.create([PagesImage.of({ src: "/a.png", alt: { nested: true }, title: null })]),
+      ]),
+    ),
+  );
 });

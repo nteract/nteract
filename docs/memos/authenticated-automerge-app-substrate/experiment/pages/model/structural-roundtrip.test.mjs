@@ -19,8 +19,6 @@ import { PAGE_ID, pageTreeArbitrary, toWordgardTree } from "../test/random-page-
 import { fuzzDepth, fuzzParameters as parameters } from "../test/fuzz-parameters.mjs";
 import { freeing } from "../test/free-docs.mjs";
 import { commentSpansMeasure } from "./comment-text.mjs";
-import { adapterSpans } from "./richtext-spans.mjs";
-import { adapter, pmDocFromSpans } from "./pm-adapter.mjs";
 
 const maxDepth = fuzzDepth;
 const trees = pageTreeArbitrary({ maxDepth });
@@ -236,7 +234,7 @@ test("comments store the editor's spans for generated trees, from either span fo
       return freeing((keep) => {
         const page = pageWith(schema.doc([Paragraph.create([Leaf.text("Anchor", Mark.none)])]));
         keep(page.doc);
-        for (const written of [spans, adapterSpans(pmDocFromSpans(adapter, spans))]) {
+        for (const written of [spans, encode(decode(spans).doc)]) {
           const { comments, result } = comment(
             page.doc,
             newCommentsDoc(),

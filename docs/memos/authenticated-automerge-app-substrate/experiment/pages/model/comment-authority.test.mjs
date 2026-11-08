@@ -6,7 +6,7 @@ import { applyComment } from "./comments.mjs";
 import { commentDecision } from "./comment-rules.mjs";
 import { commentsGenesis } from "./comments-doc.mjs";
 import { editorCommentSpans, markdownCommentSpans } from "./comment-content.mjs";
-import { adapterSpans } from "./richtext-spans.mjs";
+import { explicitOpeningSpans } from "./richtext-test-support.mjs";
 import { BLOCKING } from "../sync/comments.mjs";
 import { parseMarkdown } from "./markdown-import.mjs";
 import { RICH_FORMAT } from "./richtext-format.mjs";
@@ -536,7 +536,7 @@ test("every write leaves a message in the editor's span form", () => {
   const { doc: seeded, ids } = seed();
   // Two paragraphs: the adapter's form opens with a paragraph marker the
   // editor never writes.
-  const adapter = adapterSpans(parseMarkdown("One\n\nTwo"));
+  const adapter = explicitOpeningSpans(parseMarkdown("One\n\nTwo"));
   const created = admit(seeded, BOB, "commenter", (d) => {
     d.threads[ids.aliceThread].messages.adapter = richMessage("", BOB);
     A.updateSpans(d, ["threads", ids.aliceThread, "messages", "adapter", "richText"], adapter);
@@ -584,7 +584,7 @@ test("a soft delete never checks the span form; a content write still does", () 
   // differently leaves every stored message like this.
   const { doc: seeded, ids } = seed();
   const bobText = ["threads", ids.bobThread, "messages", ids.bobMessage, "richText"];
-  const adapter = adapterSpans(parseMarkdown("One\n\nTwo"));
+  const adapter = explicitOpeningSpans(parseMarkdown("One\n\nTwo"));
   const doc = A.change(seeded, (d) => A.updateSpans(d, bobText, adapter));
   const deleted = admit(doc, BOB, "commenter", (d) => {
     d.threads[ids.bobThread].messages[ids.bobMessage].deletedAt = now();

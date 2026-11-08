@@ -5,7 +5,7 @@ import { build } from "esbuild";
 import * as A from "@automerge/automerge";
 import { parseInlineMarkdown } from "./markdown-inline.mjs";
 import { parseAgentMarkdown } from "./markdown-import.mjs";
-import { adapter, pmNodeToSpans } from "./pm-adapter.mjs";
+import { encode, Paragraph } from "./wordgard-doc.mjs";
 import { tokenizer } from "./markdown-tokenizer.mjs";
 import { createPageData, initializePage, applyPageOperation, projectPage } from "./page.mjs";
 
@@ -20,8 +20,8 @@ function previous(source) {
     runs = lead ? [{ text: lead, marks: {} }] : [];
   if (middle) {
     const tree = parseAgentMarkdown(middle);
-    if (tree.childCount !== 1 || tree.firstChild.type.name !== "paragraph") throw invalid();
-    for (const span of pmNodeToSpans(adapter, tree)) {
+    if (tree.content.length !== 1 || tree.firstChild.type !== Paragraph.type) throw invalid();
+    for (const span of encode(tree)) {
       if (span.type !== "text") throw invalid();
       runs.push({ text: span.value, marks: { ...span.marks } });
     }
@@ -41,7 +41,6 @@ const fixtures = [
   " \t ",
   "a",
   " **bold**\t",
-  "a&#10;b",
   "[&#10;](/link)",
   "***both***",
   '**<mark data-color="pink">a** b</mark>',
@@ -78,6 +77,10 @@ const fixtures = [
   "*a* *b*",
   "**a****b**",
 ];
+test("inline entities retain text newlines without accepting literal multi-line source", () => {
+  assert.deepEqual(parseInlineMarkdown("a&#10;b"), [{ text: "a\nb", marks: {} }]);
+  assert.throws(() => parseInlineMarkdown("a\nb"), { code: "invalid_edit_selector" });
+});
 for (const source of fixtures)
   test(`inline parity: ${JSON.stringify(source)}`, () =>
     assert.deepEqual(outcome(parseInlineMarkdown, source), outcome(previous, source)));

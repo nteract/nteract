@@ -483,6 +483,55 @@ const targets = Object.freeze({
     }),
     // lab2 holds no other Pages target, so nothing is frozen beside it.
   }),
+  // Separate rich-text experiment using the plain Automerge doc-store backend.
+  // Its storage floor protects that backend, not pages2's rich-text model.
+  page11: Object.freeze({
+    deployment: Object.freeze({
+      host: "lab2",
+      hostname: "page11.runtimed.run",
+      service: "nteract-page11",
+      bucket: shared.bucket,
+      prefix: "standalone/page11",
+      region: shared.region,
+      listen: "127.0.0.1:9483",
+      internalListen: "127.0.0.1:19483",
+      runtime: shared.runtime,
+      requiredVersion: shared.requiredVersion,
+    }),
+    sharing: true,
+    oauth: true,
+    theme: true,
+    viewerChunks: true,
+    viewerAssets: true,
+    projectLinks: true,
+    indexRoutes: true,
+    siftTables: true,
+    whoami: true,
+    accountRoutes: true,
+    linkPreviews: true,
+    cardImages: true,
+    projectAssets: true,
+    firewallTable: "nteract_page11",
+    // Below Tailscale's reserved mark mask (0x00ff0000).
+    firewallMark: "0x00008000",
+    firewallComment: "nteract/preview-infra standalone-page11",
+    companyViewDomains: "anaconda.com",
+    catalogIndex: "1",
+    pageQuota: "250",
+    // celld scopes both D1 databases to this target's fleet prefix.
+    d1: AUTH_D1,
+    otelTracesSampler: "always_on",
+    editor: "wordgard",
+    // lab2 also hosts pages2 with a 4G ceiling; leave room for the OS.
+    memory: Object.freeze({ maxRssMb: 1280, memoryMax: "2G" }),
+    sharedTunnel: false,
+    tunnelService: "cloudflared-page11.service",
+    tunnelSlots: Object.freeze({
+      a: Object.freeze({ service: "cloudflared-page11-a.service", metrics: "127.0.0.1:29483" }),
+      b: Object.freeze({ service: "cloudflared-page11-b.service", metrics: "127.0.0.1:29493" }),
+    }),
+    frozenTargets: Object.freeze(["pages2"]),
+  }),
 });
 /** Every deployment profile name, qualified or not. */
 export const DEPLOYMENT_TARGETS = Object.freeze(Object.keys(targets));
@@ -491,27 +540,29 @@ export function deploymentProfile(target = "pages-next") {
   return targets[target];
 }
 
-// This release is qualified for the isolated Page10, Pages and Pages2 targets.
+// Deployment support includes the isolated Page11 experiment; app qualification
+// is separate and must precede installation.
 // Page10 stays deployable until its Projects are copied to Pages.
 // Historical profiles remain readable for comparison and frozen-release checks.
-export const QUALIFIED_TARGETS = Object.freeze(["page10", "pages", "pages2"]);
+export const QUALIFIED_TARGETS = Object.freeze(["page10", "pages", "pages2", "page11"]);
 export function assertQualifiedDeploymentTarget(target) {
   deploymentProfile(target);
   if (!QUALIFIED_TARGETS.includes(target))
     throw new Error(
-      "This build is qualified only for page10, pages and pages2; earlier deployments are frozen",
+      "This build is qualified only for page10, pages and pages2, plus page11; earlier deployments are frozen",
     );
 }
 
-// The record storage each target holds Pages in, beyond the native modes
-// (`local`, `buffered`) of earlier builds. Every Page on page10, pages and
-// pages2 syncs with plain Automerge sync, so a release there must open
+// The record storage each target may hold Pages in, beyond the native modes
+// (`local`, `buffered`) of earlier builds. These targets use the plain Automerge
+// doc-store backend, so a release there must open
 // `automerge` Pages: assertReleaseOpensTargetPages refuses one that can't,
 // including a rollback to a build from before plain sync.
 export const RECORD_STORAGE_HISTORY = Object.freeze({
   page10: Object.freeze(["automerge"]),
   pages: Object.freeze(["automerge"]),
   pages2: Object.freeze(["automerge"]),
+  page11: Object.freeze(["automerge"]),
 });
 const NATIVE_RECORD_STORAGE = Object.freeze(["local", "buffered"]);
 

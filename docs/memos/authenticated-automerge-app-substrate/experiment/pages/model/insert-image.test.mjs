@@ -9,6 +9,7 @@ import {
   projectPage,
 } from "./page.mjs";
 import { richDoc, parseMarkdown } from "./richtext.mjs";
+import { PagesImage } from "./wordgard-doc.mjs";
 import { assertDocumentLimits } from "./limits.mjs";
 import { imageIds } from "./image-ids.mjs";
 import { documentFeatures } from "./schema-features.mjs";
@@ -40,13 +41,13 @@ test("image insertion creates a native embed without interpreting alt text as Ma
   assert.equal(inserted.asset_url, `/api/pages/${pageId}/assets/${asset_id}`);
   assert.equal(inserted.alt, alt);
   const image = richDoc(after.blocks[inserted.block_id]).firstChild.firstChild;
-  assert.equal(image.type.name, "image");
-  assert.equal(image.attrs.alt, alt);
-  assert.equal(image.attrs.src, inserted.asset_url);
+  assert.equal(image.type, PagesImage);
+  assert.equal(image.param.alt, alt);
+  assert.equal(image.param.src, inserted.asset_url);
   const markdown = projectPage(after).blocks[1].markdown;
   const reparsed = parseMarkdown(markdown).firstChild.firstChild;
-  assert.equal(reparsed.type.name, "image");
-  assert.equal(reparsed.attrs.alt, alt);
+  assert.equal(reparsed.type, PagesImage);
+  assert.equal(reparsed.param.alt, alt);
   assertDocumentLimits(after);
 });
 test("image placement reuses append, prepend and explicit fractional block anchors", () => {
@@ -69,6 +70,31 @@ test("image placement reuses append, prepend and explicit fractional block ancho
     { op: "insert_image", asset_id, alt: "two" },
   ]);
   assert.equal(new Set(result.inserted_images.map((i) => i.block_id)).size, 2);
+});
+test("ordinary inserted images remain editable through Markdown", () => {
+  const { after, result } = apply(fixture(), [
+    { op: "insert_image", asset_id, alt: "Diagram", title: "Title" },
+  ]);
+  const { block_id, asset_url } = result.inserted_images[0];
+  const marker = A.spans(after, ["blocks", block_id, "richText"]).find(
+    (span) => span.type === "block" && String(span.value.type) === "image",
+  );
+  assert.ok(!Object.hasOwn(marker.value.attrs, "dark_src"));
+  const changed = apply(after, [
+    {
+      op: "replace_block_markdown",
+      block_id,
+      markdown: `![Changed](${asset_url} "New title")`,
+    },
+  ]).after;
+  const image = richDoc(changed.blocks[block_id]).firstChild.firstChild;
+  assert.equal(image.param.alt, "Changed");
+  assert.equal(image.param.title, "New title");
+  assert.equal(image.param.src, asset_url);
+  const removed = apply(changed, [
+    { op: "replace_block_markdown", block_id, markdown: "Gone" },
+  ]).after;
+  assert.equal(projectPage(removed).blocks.find((block) => block.id === block_id).markdown, "Gone");
 });
 test("malformed or unplaceable images reject the entire structural batch", () => {
   const before = fixture();
@@ -99,7 +125,7 @@ test("two sources share metadata, preserve marker identity and stamp monotonical
   assert.equal(imageIds(after, block_id)[0].image_id, image_id);
   assert.ok(documentFeatures(after).includes("image-theme-variants"));
   assert.equal(
-    richDoc(after.blocks[block_id]).firstChild.firstChild.attrs.dark_src,
+    richDoc(after.blocks[block_id]).firstChild.firstChild.param.dark_src,
     `/api/pages/${pageId}/assets/${"b".repeat(64)}`,
   );
   const changed = apply(after, [
@@ -108,9 +134,9 @@ test("two sources share metadata, preserve marker identity and stamp monotonical
   assert.equal(imageIds(changed, block_id)[0].image_id, image_id);
   assert.ok(documentFeatures(changed).includes("image-theme-variants"));
   const image = richDoc(changed.blocks[block_id]).firstChild.firstChild;
-  assert.equal(image.attrs.dark_src, null);
-  assert.equal(image.attrs.alt, "Updated");
-  assert.equal(image.attrs.title, "Chart");
+  assert.equal(image.param.dark_src, undefined);
+  assert.equal(image.param.alt, "Updated");
+  assert.equal(image.param.title, "Chart");
   assert.throws(
     () =>
       apply(changed, [

@@ -201,7 +201,10 @@ export function publishIsolated(
   const frozenTunnelConfigs = [];
   for (const frozenTarget of profile.frozenTargets ?? []) {
     const frozen = deploymentProfile(frozenTarget);
-    for (const name of [frozen.deployment.service, frozen.tunnelService].filter(Boolean)) {
+    const connectors = frozen.tunnelSlots
+      ? Object.values(frozen.tunnelSlots).map((slot) => slot.service)
+      : [frozen.tunnelService];
+    for (const name of [frozen.deployment.service, ...connectors].filter(Boolean)) {
       const unit = name.endsWith(".service") ? name : name + ".service";
       frozenPids.set(unit, run("systemctl", ["show", unit, "--property=MainPID", "--value"]));
       const unitPath = "/etc/systemd/system/" + unit;
@@ -212,6 +215,12 @@ export function publishIsolated(
       const contents = read(config);
       frozenConfigs.set(config, contents);
       frozenTunnelConfigs.push(contents);
+      if (frozen.tunnelSlots)
+        for (const name of ["tunnel-installation.json", "tunnel-connector.json"])
+          frozenConfigs.set(
+            "/etc/" + frozen.deployment.service + "/" + name,
+            read("/etc/" + frozen.deployment.service + "/" + name),
+          );
     }
   }
   const manifest = readJson(stage + "/manifest.json");

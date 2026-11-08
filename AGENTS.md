@@ -37,6 +37,7 @@ in both products. Name the product and its state owner when describing a change.
   organize Pages. Its source remains under the original infrastructure
   experiment directory; start with the [Pages guide](docs/memos/authenticated-automerge-app-substrate/experiment/pages/README.md)
   and [scoped instructions](docs/memos/authenticated-automerge-app-substrate/experiment/pages/AGENTS.md).
+  Rich-text work starts at [RICH-TEXT-V2.md](docs/memos/authenticated-automerge-app-substrate/experiment/pages/RICH-TEXT-V2.md).
 - **Sift** is the data explorer and table UI used by notebooks and Pages, also
   available as a standalone library. Start with [its guide](packages/sift/README.md).
 - **Runtime and client libraries** support notebook execution and programmatic

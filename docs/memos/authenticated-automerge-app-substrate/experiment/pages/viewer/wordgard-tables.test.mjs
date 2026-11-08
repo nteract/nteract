@@ -10,10 +10,8 @@ import {
   blockMarkdown,
   parseMarkdown,
   exportMarkdown,
-  adapter,
 } from "../model/richtext.mjs";
 import { richFromSource } from "../model/richtext-test-support.mjs";
-import { pmNodeToSpans } from "@automerge/prosemirror";
 import {
   decode,
   encode,
@@ -24,11 +22,12 @@ import {
   HeaderCell,
   Alignment,
   Strong,
+  Strikethrough,
 } from "./wordgard-model.mjs";
 import { createWordgardBinding } from "./wordgard-binding.mjs";
 
 const path = textPath("one");
-const nativeTableSpans = (markdown) => pmNodeToSpans(adapter, parseMarkdown(markdown));
+const nativeTableSpans = (markdown) => encode(parseMarkdown(markdown));
 function fixture(source, initialDoc) {
   let doc =
     initialDoc ??
@@ -111,7 +110,7 @@ test("table export reimports pipes, code, literal slashes, breaks, links and mar
   }
   // Strikethrough in a cell is native, and round trips.
   const struck = parseMarkdown("| A |\n| --- |\n| ~~done~~ |");
-  assert.equal(struck.firstChild.type.name, "table");
+  assert.equal(struck.firstChild.type, Table.type);
   assert.deepEqual(parseMarkdown(exportMarkdown(struck)).toJSON(), struck.toJSON());
 });
 
@@ -224,10 +223,13 @@ test("ragged concurrent table projections do not drop cells on Markdown export",
 });
 
 test("HTML-looking text remains literal outside tables and mixed syntax stays native", () => {
-  assert.equal(parseMarkdown("text<br>tail").firstChild.textContent, "text<br>tail");
+  assert.equal(
+    parseMarkdown("text<br>tail").firstChild.textContent({ blockSeparator: "", leafText: "" }),
+    "text<br>tail",
+  );
   const mixed = parseMarkdown(`${source}\n\n~~struck~~`);
-  assert.equal(mixed.firstChild.type.name, "table");
-  assert.equal(mixed.lastChild.firstChild.marks[0].type.name, "strike");
+  assert.equal(mixed.firstChild.type, Table.type);
+  assert.equal(mixed.lastChild.firstChild.marks[0].type, Strikethrough.type);
 });
 
 test("row and column deletion preserve other cells, and inserting before the header preserves content", () => {
@@ -259,7 +261,10 @@ test("row and column deletion preserve other cells, and inserting before the hea
 test("escaped literal br tags survive cell editing and Markdown export", () => {
   for (const cell of ["before\\<br>after", "before&lt;br&gt;after", "`before<br>after`"]) {
     const parsed = parseMarkdown(`| Header |\n| --- |\n| ${cell} |`);
-    assert.equal(parsed.firstChild.child(1).firstChild.textContent, "before<br>after");
+    assert.equal(
+      parsed.firstChild.content[1].firstChild.textContent({ blockSeparator: "", leafText: "" }),
+      "before<br>after",
+    );
     assert.deepEqual(parseMarkdown(exportMarkdown(parsed)).toJSON(), parsed.toJSON());
   }
 });

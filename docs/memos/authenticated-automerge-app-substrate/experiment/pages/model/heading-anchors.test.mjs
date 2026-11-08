@@ -12,6 +12,7 @@ import {
 } from "./heading-anchors.mjs";
 import { safeUrl } from "./marks.mjs";
 import { exportMarkdown, parseMarkdown, setRichMarkdown } from "./richtext.mjs";
+import { PagesLink } from "./wordgard-doc.mjs";
 import { richFromSource } from "./richtext-test-support.mjs";
 import { linkDestination } from "../viewer/link-destination.mjs";
 
@@ -146,8 +147,8 @@ test("Markdown heading links round trip as link marks", () => {
   ]) {
     const doc = parseMarkdown(source);
     let href = null;
-    doc.descendants((node) => {
-      href ??= node.marks?.find((mark) => mark.type.name === "link")?.attrs.href ?? null;
+    doc.iterate((node) => {
+      href ??= node.mark(PagesLink)?.href ?? null;
     });
     assert.ok(href?.includes("#"), source);
     assert.equal(exportMarkdown(doc), source);

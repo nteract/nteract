@@ -12,11 +12,13 @@ import {
   unsupportedMarkdown,
 } from "./richtext.mjs";
 import { richFromSource } from "./richtext-test-support.mjs";
+import { readKind } from "./native-read.mjs";
+import { toMarks, PagesLink } from "./wordgard-doc.mjs";
 
 const nodeNames = (doc) => {
   const names = [];
-  doc.descendants((node) => {
-    names.push(node.type.name);
+  doc.iterate((node) => {
+    if (!node.isDoc) names.push(readKind(node));
   });
   return names;
 };
@@ -209,7 +211,11 @@ test("Markdown that would parse to less than it says is refused or kept literal"
     // Literal import keeps every character as text.
     const doc = parseMarkdown(source);
     for (const part of source.split("\n"))
-      if (part.trim()) assert.ok(doc.textContent.includes(part.trim()), `${source}: ${part}`);
+      if (part.trim())
+        assert.ok(
+          doc.textContent({ blockSeparator: "", leafText: "" }).includes(part.trim()),
+          `${source}: ${part}`,
+        );
     assert.ok(parseAgentMarkdown(exportMarkdown(doc)).eq(doc), source);
   }
   // Still native: a used definition, a short row padded with empty cells, an
@@ -266,24 +272,26 @@ test("math and HTML outside code are found with their line and column", () => {
 test("every former preserved-block trigger imports natively", () => {
   for (const [source, names] of [
     ["~~struck~~", ["strike"]],
-    ["Before\n\n---\n\nAfter", ["horizontal_rule"]],
+    ["Before\n\n---\n\nAfter", ["horizontal-rule"]],
     ["Title\n---", ["heading"]],
     ["[Guide][ref]\n\n[ref]: https://example.org", ["link"]],
     ["[Guide][]\n\n[guide]: https://example.org", ["link"]],
     ["[a][b]", []],
-    ["~~~\ncode\n~~~", ["code_block"]],
+    ["~~~\ncode\n~~~", ["code-block"]],
   ]) {
     const doc = parseAgentMarkdown(source);
     const seen = new Set(nodeNames(doc));
-    doc.descendants((node) => node.marks.forEach((mark) => seen.add(mark.type.name)));
+    doc.iterate((node) => {
+      if (node.isText) Object.keys(toMarks(node.marks)).forEach((name) => seen.add(name));
+    });
     assert.ok(!seen.has("raw"), source);
     for (const name of names) assert.ok(seen.has(name), `${JSON.stringify(source)} has ${name}`);
   }
   // A reference to an unsafe destination stays literal text, as does its
   // definition.
   const unsafe = parseAgentMarkdown("[x][r]\n\n[r]: javascript:alert(1)");
-  assert.match(unsafe.textContent, /^\[x\]\[r\]/);
-  unsafe.descendants((node) => assert.ok(!node.marks.some((mark) => mark.type.name === "link")));
+  assert.match(unsafe.textContent({ blockSeparator: "", leafText: "" }), /^\[x\]\[r\]/);
+  unsafe.iterate((node) => assert.ok(!node.marks.some((mark) => mark.type === PagesLink)));
 });
 
 test("literal import keeps math and HTML as their exact text", () => {
@@ -293,16 +301,20 @@ test("literal import keeps math and HTML as their exact text", () => {
     ["<section>Preserve *this*</section>", "<section>Preserve this</section>"],
     ["$x_1 * y_2$ and *z*", "$x_1 * y_2$ and z"],
   ])
-    assert.equal(parseMarkdown(source).textContent, text, JSON.stringify(source));
+    assert.equal(
+      parseMarkdown(source).textContent({ blockSeparator: "", leafText: "" }),
+      text,
+      JSON.stringify(source),
+    );
   // Display math keeps its lines as hard breaks in one paragraph.
   const display = parseMarkdown("$$\n\\{x\\}\n$$");
-  assert.equal(display.childCount, 1);
+  assert.equal(display.content.length, 1);
   assert.deepEqual(nodeNames(display), [
     "paragraph",
     "text",
-    "hard_break",
+    "hard-break",
     "text",
-    "hard_break",
+    "hard-break",
     "text",
   ]);
 });
@@ -388,10 +400,10 @@ test("exported literal math and HTML read back as the same text", () => {
 test("a table break tag may hold spaces around its slash", () => {
   for (const tag of ["<br>", "<br/>", "<br />", "<BR  / >", "<br\t>"]) {
     const doc = parseMarkdown(`| a${tag}b |\n| --- |\n| c |`);
-    assert.ok(nodeNames(doc).includes("hard_break"), tag);
+    assert.ok(nodeNames(doc).includes("hard-break"), tag);
   }
   const doc = parseMarkdown("| a<br / / >b |\n| --- |\n| c |");
-  assert.match(doc.textContent, /<br/);
+  assert.match(doc.textContent({ blockSeparator: "", leafText: "" }), /<br/);
 });
 
 test("a table break tag with an attribute stays literal through import and export", () => {
@@ -402,14 +414,17 @@ test("a table break tag with an attribute stays literal through import and expor
   );
   const imported = richDoc(native.blocks.one);
   assert.ok(nodeNames(imported).includes("table"));
-  assert.ok(!nodeNames(imported).includes("hard_break"));
-  assert.equal(imported.firstChild.firstChild.firstChild.textContent, 'a<br class="x">b');
+  assert.ok(!nodeNames(imported).includes("hard-break"));
+  assert.equal(
+    imported.firstChild.firstChild.firstChild.textContent({ blockSeparator: "", leafText: "" }),
+    'a<br class="x">b',
+  );
 
   // The exported cell escapes `<`, so a later import reads the same text.
   const exported = exportMarkdown(imported);
   assert.ok(exported.includes('a\\<br class="x">b'), exported);
   const reimported = parseAgentMarkdown(exported);
-  assert.ok(!nodeNames(reimported).includes("hard_break"));
+  assert.ok(!nodeNames(reimported).includes("hard-break"));
   assert.ok(reimported.eq(imported), exported);
 });
 
@@ -436,7 +451,10 @@ test("a link whose only content is a line break is unrepresentable", () => {
       return true;
     },
   );
-  assert.match(parseMarkdown(source).textContent, /\[<br>\]\(https:\/\/example\.org\)/);
+  assert.match(
+    parseMarkdown(source).textContent({ blockSeparator: "", leafText: "" }),
+    /\[<br>\]\(https:\/\/example\.org\)/,
+  );
   // Another link to the same destination doesn't cover it: each link needs
   // its own text.
   const shared = "| a |\n| - |\n| [ok](https://example.org) [<br>](https://example.org) |";
@@ -447,7 +465,10 @@ test("a link whose only content is a line break is unrepresentable", () => {
       return true;
     },
   );
-  assert.match(parseMarkdown(shared).textContent, /\[ok\]\(https:\/\/example\.org\) \[<br>\]/);
+  assert.match(
+    parseMarkdown(shared).textContent({ blockSeparator: "", leafText: "" }),
+    /\[ok\]\(https:\/\/example\.org\) \[<br>\]/,
+  );
   // Repeated images and adjacent links sharing an href stay native.
   for (const native of ["![p](i.png) and ![p](i.png)", "[a](https://x.test)[b](https://x.test)"])
     assert.equal(unsupportedMarkdown(native) ?? nativeImportLoss(native), null, native);
@@ -463,7 +484,10 @@ test("entity-only linked newlines are refused for agents and preserved literally
         A.from({ blocks: { one: { id: "one", kind: "markdown", markdown: source } } }),
         (doc) => richFromSource(doc, "one"),
       );
-      assert.equal(richDoc(native.blocks.one).textContent, source);
+      assert.equal(
+        richDoc(native.blocks.one).textContent({ blockSeparator: "", leafText: "" }),
+        source,
+      );
     }
     const source = `[a${entity}b](https://example.org)`;
     assert.equal(nativeImportLoss(source), null, source);
@@ -492,10 +516,14 @@ test("corpus Markdown imports natively or literally, never losing content", () =
       const source = wrap(markdown);
       const label = `${id}: ${JSON.stringify(source).slice(0, 80)}`;
       const doc = parseMarkdown(source);
-      doc.descendants((node) => assert.notEqual(node.type.name, "raw", label));
+      doc.iterate((node) => assert.notEqual(node.type.name, "raw", label));
       if (nativeImportLoss(source)) {
         literalized++;
-        assert.equal(squash(doc.textContent), squash(source.replace(/\r/g, "")), label);
+        assert.equal(
+          squash(doc.textContent({ blockSeparator: "", leafText: "" })),
+          squash(source.replace(/\r/g, "")),
+          label,
+        );
         assert.throws(() => parseAgentMarkdown(source), { code: "unsupported_markdown" }, label);
       } else {
         preserved++;

@@ -20,12 +20,11 @@ import {
   blockMarkdown,
   parseMarkdown,
   richDoc,
-  schema,
   textPath,
   unsupportedMarkdown,
   validateRich,
 } from "./richtext.mjs";
-import { expand, fromMarks, toMarks } from "./wordgard-doc.mjs";
+import { expand, fromMarks, toMarks, Paragraph, PagesHighlight } from "./wordgard-doc.mjs";
 
 function fixture(markdown) {
   let doc = A.from(createPageData({ pageId: "page_fixture", title: "Marks" }));
@@ -53,7 +52,15 @@ const textMarks = (doc, id) =>
 test("every consumer derives its mark list from the registry", () => {
   assert.deepEqual(MARK_NAMES, ["link", "em", "strong", "strike", "highlight", "code"]);
   assert.deepEqual(HIGHLIGHT_COLORS, ["yellow", "green", "blue", "pink"]);
-  assert.deepEqual(Object.keys(schema.marks), [...MARK_NAMES, "unknownMark"]);
+  for (const name of MARK_NAMES) {
+    const value =
+      name === "link"
+        ? encodeMarkValue("link", { href: "/x" })
+        : name === "highlight"
+          ? "yellow"
+          : true;
+    assert.deepEqual(toMarks(fromMarks({ [name]: value })), { [name]: value });
+  }
   assert.deepEqual(updateSpansConfig, {
     defaultExpand: "both",
     perMarkExpand: { link: "none", code: "none" },
@@ -112,16 +119,16 @@ test("unbalanced, nested and unknown-color mark tags stay literal text", () => {
     ['bad <mark data-color="red">x</mark>', 'bad <mark data-color="red">x</mark>'],
   ]) {
     const tree = parseMarkdown(source);
-    assert.equal(tree.textContent, text, source);
+    assert.equal(tree.textContent({ blockSeparator: "", leafText: "" }), text, source);
     let marked = false;
-    tree.descendants((node) => {
-      marked ||= node.marks.some((mark) => mark.type.name === "highlight");
+    tree.iterate((node) => {
+      marked ||= node.marks.some((mark) => mark.type === PagesHighlight);
     });
     assert.equal(marked, false, source);
   }
   // A nested open is literal; the outer pair still highlights.
   const nested = parseMarkdown("<mark>a <mark>b</mark> c");
-  assert.equal(nested.textContent, "a <mark>b c");
+  assert.equal(nested.textContent({ blockSeparator: "", leafText: "" }), "a <mark>b c");
 });
 
 test("literal tag text is escaped on export so it reads back as text", () => {
@@ -129,7 +136,10 @@ test("literal tag text is escaped on export so it reads back as text", () => {
   const after = A.change(doc, (d) => A.splice(d, textPath(id), 0, 4, "use <mark> tags"));
   const markdown = blockMarkdown(after.blocks[id]);
   assert.equal(markdown, "use \\<mark> tags");
-  assert.equal(parseMarkdown(markdown).textContent, "use <mark> tags");
+  assert.equal(
+    parseMarkdown(markdown).textContent({ blockSeparator: "", leafText: "" }),
+    "use <mark> tags",
+  );
   assert.ok(markdownReproduces(after.blocks[id]));
 });
 
@@ -158,15 +168,15 @@ test("other HTML is refused for agents and literal text otherwise", () => {
       excerpt,
     });
     const doc = parseMarkdown(source);
-    assert.equal(doc.firstChild.type.name, "paragraph");
-    assert.equal(doc.textContent, source);
+    assert.equal(doc.firstChild.type, Paragraph.type);
+    assert.equal(doc.textContent({ blockSeparator: "", leafText: "" }), source);
   }
   // Neither is a tag: `<mark:x>` is an autolink to a refused scheme, and a
   // tag's spaces are ASCII, as in CommonMark, so `<mark\u00a0>` is text. An
   // agent may write both.
   for (const source of ["<mark:x>", "<mark\u00a0>x</mark>"]) {
     assert.equal(unsupportedMarkdown(source), null, source);
-    assert.equal(parseMarkdown(source).textContent, source);
+    assert.equal(parseMarkdown(source).textContent({ blockSeparator: "", leafText: "" }), source);
   }
 });
 

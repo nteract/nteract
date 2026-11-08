@@ -6,8 +6,7 @@ import fc from "fast-check";
 import { build } from "esbuild";
 import { commentDraftsMarkdown, pageMarkdown, unsentCommentsMarkdown } from "./markdown-export.mjs";
 import { applyPageOperation, createPageData, initializePage, projectPage } from "./page.mjs";
-import { adapter, pmDocFromSpans } from "./pm-adapter.mjs";
-import { exportMarkdown } from "./markdown-serializer.mjs";
+import { nativeReadSpans, readMarkdown } from "./native-read.mjs";
 import { codeTextUnmarked } from "./richtext-format.mjs";
 import { parseAgentMarkdown } from "./markdown-import.mjs";
 import { pageSpans } from "./richtext-spans.mjs";
@@ -195,7 +194,7 @@ function previousDraftBody(draft) {
             }
           : span,
       );
-      return exportMarkdown(pmDocFromSpans(adapter, codeTextUnmarked(spans)));
+      return readMarkdown(nativeReadSpans(codeTextUnmarked(spans)).nodes);
     } catch {}
   return draft.body;
 }

@@ -16,7 +16,6 @@
   "dependencies": {
     "@automerge/automerge": "3.5.0",
     "@automerge/automerge-repo": "3.0.0-experimental.1",
-    "@automerge/prosemirror": "0.2.0",
     "@modelcontextprotocol/sdk": "1.29.0",
     "@nteract/sift": "0.6.0",
     "diff": "8.0.2",
@@ -26,7 +25,6 @@
     "markdown-it": "14.3.3",
     "modern-screenshot": "4.7.0",
     "pele": "1.5.2",
-    "prosemirror-markdown": "1.13.2",
     "react": "19.2.7",
     "react-dom": "19.2.7",
     "rxjs": "^7.8.2",

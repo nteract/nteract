@@ -6,7 +6,6 @@ import { build } from "esbuild";
 import fc from "fast-check";
 import * as candidate from "./comment-content.mjs";
 import * as reader from "./comment-read.mjs";
-import * as baseline from "../test/comment-read-baseline.mjs";
 import { allInputs } from "../test/address-inputs.mjs";
 import { RICH_FORMAT } from "./richtext-format.mjs";
 import { updateSpansConfig } from "./marks.mjs";
@@ -37,19 +36,71 @@ function richMessage(spans) {
   return doc;
 }
 
-function compare(message, name) {
+function compare(message, name, expected) {
   const before = A.save(message);
   const heads = A.getHeads(message);
-  const expected = baseline.commentBodyProjection(message);
-  assert.deepEqual(candidate.commentBodyProjection(message), expected, name);
-  assert.equal(candidate.commentMarkdown(message), baseline.commentMarkdown(message), name);
-  for (const fn of ["isStoredFormMessage", "commentMessageState", "commentThreadState"])
-    assert.deepEqual(candidate[fn](message), baseline[fn](message), `${name}: ${fn}`);
+  const projected = candidate.commentBodyProjection(message);
+  if (expected) assert.deepEqual(projected, expected, name);
+  assert.equal(candidate.commentMarkdown(message), projected.body, name);
+  const loaded = A.load(before);
+  try {
+    assert.deepEqual(candidate.commentBodyProjection(loaded), projected, `${name}: save/load`);
+  } finally {
+    A.free(loaded);
+  }
+  if (projected.content_error === "rich_text_unavailable")
+    assert.equal(
+      projected.body,
+      typeof message.richText === "string"
+        ? message.richText.replaceAll("\ufffc", "\n").trim()
+        : "",
+      name,
+    );
   assert.deepEqual(A.getHeads(message), heads, `${name}: heads`);
   assert.deepEqual(A.save(message), before, `${name}: saved bytes`);
+  return projected;
 }
 
-test("comment reads match the frozen baseline on stored corpus and generated native frames", () => {
+test("generated comment text and each supported mark have input-derived Markdown expectations", () => {
+  fc.assert(
+    fc.property(
+      fc.array(fc.constantFrom("alpha", "東京", "naïve", "😀"), { minLength: 1, maxLength: 4 }),
+      fc.constantFrom("plain", "strong", "em", "strike", "code", "highlight", "link"),
+      (words, mark) => {
+        const source = words.join(" ");
+        const marks =
+          mark === "plain"
+            ? {}
+            : {
+                [mark]:
+                  mark === "link"
+                    ? JSON.stringify({ href: "/docs", title: "Read me" })
+                    : mark === "highlight"
+                      ? "green"
+                      : true,
+              };
+        const body = {
+          plain: source,
+          strong: `**${source}**`,
+          em: `*${source}*`,
+          strike: `~~${source}~~`,
+          code: `\`${source}\``,
+          highlight: `<mark data-color="green">${source}</mark>`,
+          link: `[${source}](/docs "Read me")`,
+        }[mark];
+        const doc = richMessage([text(source, marks)]);
+        try {
+          compare(doc, `${mark}/${source}`, { body, body_format: "markdown" });
+        } finally {
+          A.free(doc);
+        }
+      },
+    ),
+    { seed: 0xc012, numRuns: 100 },
+  );
+});
+
+test("comment reads preserve stored corpus and generated native frames across save/load", () => {
   for (const { name, spans } of allInputs({ seed: 0xc011, count: 80, maxDepth: 2 })) {
     const doc = richMessage(spans);
     try {
@@ -160,11 +211,89 @@ test("malformed container and embed frames never lose source text", () => {
           text("after"),
         ]);
         try {
-          compare(doc, `${parent}/${child}/${embed}`);
+          const name = `${parent}/${child}/${embed}`;
+          const projected = compare(doc, name);
+          assert.ok(projected.body.includes("before"), `${name}: before survives`);
+          assert.ok(projected.body.includes("after"), `${name}: after survives`);
+          assert.ok(
+            projected.body.indexOf("before") < projected.body.indexOf("after"),
+            `${name}: source order`,
+          );
         } finally {
           A.free(doc);
         }
       }
+    }
+  }
+});
+
+test("representative malformed comments have explicit notice or plain-fallback outcomes", () => {
+  const cases = [
+    {
+      name: "unknown block retains following text",
+      spans: [block("future"), text("after")],
+      expected: { body: "\\[Unsupported node: future\\]\n\nafter", body_format: "markdown" },
+    },
+    {
+      name: "nested paragraph under heading falls back without losing text",
+      spans: [
+        block("heading", [], { level: 2 }),
+        text("before"),
+        block("paragraph", ["heading"]),
+        text("after"),
+      ],
+      expected: {
+        body: "before\nafter",
+        body_format: "plain",
+        content_error: "rich_text_unavailable",
+      },
+    },
+    {
+      name: "table missing row falls back without losing text",
+      spans: [block("table"), text("before"), block("table-cell", ["table"]), text("after")],
+      expected: {
+        body: "before\nafter",
+        body_format: "plain",
+        content_error: "rich_text_unavailable",
+      },
+    },
+    {
+      name: "known block stored as embed in text falls back",
+      spans: [
+        block("paragraph"),
+        text("before"),
+        block("heading", ["paragraph"], { level: 2 }, true),
+        text("after"),
+      ],
+      expected: {
+        body: "before\nafter",
+        body_format: "plain",
+        content_error: "rich_text_unavailable",
+      },
+    },
+    {
+      name: "orphan dataframe missing asset metadata falls back",
+      spans: [block("dataframe"), text("after")],
+      expected: { body: "after", body_format: "plain", content_error: "rich_text_unavailable" },
+    },
+    {
+      name: "mutable marker names remain ordinary text",
+      spans: [
+        {
+          type: "block",
+          value: { type: "heading", parents: [], attrs: { level: 2 }, isEmbed: false },
+        },
+        text("after"),
+      ],
+      expected: { body: "after", body_format: "markdown" },
+    },
+  ];
+  for (const { name, spans, expected } of cases) {
+    const doc = richMessage(spans);
+    try {
+      compare(doc, name, expected);
+    } finally {
+      A.free(doc);
     }
   }
 });

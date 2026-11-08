@@ -10,7 +10,8 @@ import {
 } from "./page.mjs";
 import { projectComments } from "./comments.mjs";
 import { comment, newCommentsDoc } from "./comments-test-support.mjs";
-import { richDoc, schema } from "./richtext.mjs";
+import { richDoc } from "./richtext.mjs";
+import { PagesLink, PagesImage } from "./wordgard-doc.mjs";
 function page(markdown = "Hello 🌊 people") {
   let doc = A.from(createPageData({ pageId: "page_fixture", title: "Test" }));
   return A.change(doc, (d) => initializePage(d, markdown));
@@ -94,12 +95,12 @@ test("anchored Unicode comments follow concurrent text and detach after the sele
   assert.equal(projectComments(doc, comments)[0].selectionContext.status, "detached");
 });
 test("unsafe link and image attributes are inert even in an open document schema", () => {
-  const mark = schema.marks.link.create({ href: "javascript:alert(1)" });
-  assert.equal(schema.marks.link.spec.toDOM(mark)[0], "span");
-  const image = schema.nodes.image.create({ src: "javascript:alert(1)" });
-  assert.equal(schema.nodes.image.spec.toDOM(image)[0], "span");
+  assert.deepEqual(PagesLink.spec.shape.attributes({ href: "javascript:alert(1)" }), {});
+  assert.throws(() => PagesImage.spec.validate({ src: "javascript:alert(1)" }));
   const doc = page("**Bold** and `code`");
-  richDoc(doc.blocks[orderedBlockIds(doc)[0]]).check();
+  richDoc(doc.blocks[orderedBlockIds(doc)[0]]).schema.validate(
+    richDoc(doc.blocks[orderedBlockIds(doc)[0]]),
+  );
 });
 
 // A block whose first paragraph is empty, as the browser editor writes it after
@@ -126,7 +127,7 @@ const edit = (doc, operations) =>
   );
 test("Markdown export omits the blank line Markdown can't turn back into an empty paragraph", () => {
   const { doc, id } = leadingEmptyParagraph();
-  assert.equal(richDoc(doc.blocks[id]).childCount, 2);
+  assert.equal(richDoc(doc.blocks[id]).content.length, 2);
   assert.equal(projectPage(doc).blocks[0].markdown, "Hope you can edit this.");
 });
 test("replace_match keeps an empty paragraph Markdown can't represent", () => {
@@ -134,7 +135,7 @@ test("replace_match keeps an empty paragraph Markdown can't represent", () => {
   const matched = edit(doc, [
     { op: "replace_match", block_id: id, match_text: "edit", replacement: "change" },
   ]);
-  assert.equal(richDoc(matched.blocks[id]).childCount, 2);
+  assert.equal(richDoc(matched.blocks[id]).content.length, 2);
   assert.equal(projectPage(matched).blocks[0].markdown, "Hope you can change this.");
 });
 test("replace_block_markdown replaces the block with exactly the Markdown it is given", () => {
@@ -143,6 +144,6 @@ test("replace_block_markdown replaces the block with exactly the Markdown it is 
     { op: "replace_block_markdown", block_id: id, markdown: projectPage(doc).blocks[0].markdown },
   ]);
   // Markdown has no empty paragraph, so the replacement has one paragraph.
-  assert.equal(richDoc(replaced.blocks[id]).childCount, 1);
+  assert.equal(richDoc(replaced.blocks[id]).content.length, 1);
   assert.equal(projectPage(replaced).blocks[0].markdown, "Hope you can edit this.");
 });

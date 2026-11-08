@@ -118,15 +118,19 @@ function fixture(
   fs.mkdirSync(local("/etc/systemd/system"), { recursive: true });
   for (const frozenTarget of profile.frozenTargets ?? []) {
     const frozen = deploymentProfile(frozenTarget);
-    for (const unit of [frozen.deployment.service + ".service", frozen.tunnelService].filter(
-      Boolean,
-    ))
+    const connectors = frozen.tunnelSlots
+      ? Object.values(frozen.tunnelSlots).map((slot) => slot.service)
+      : [frozen.tunnelService];
+    for (const unit of [frozen.deployment.service + ".service", ...connectors].filter(Boolean))
       write("/etc/systemd/system/" + unit, "unchanged " + unit);
     if (frozen.tunnelService)
       write(
         "/etc/" + frozen.deployment.service + "/tunnel.yml",
         "tunnel: abcdef12-1234-4123-8123-123456789abc\ningress:\n  - service: http_status:404\n",
       );
+    if (frozen.tunnelSlots)
+      for (const name of ["tunnel-installation.json", "tunnel-connector.json"])
+        write("/etc/" + frozen.deployment.service + "/" + name, "unchanged " + name);
   }
   const writes = [],
     calls = [];
@@ -2452,6 +2456,63 @@ test("pages2 publishes fresh on a host without a shared connector", (t) => {
     "enable cloudflared-pages2-a.service",
     "start cloudflared-pages2-a.service",
   ]);
+});
+
+test("page11 publication and retry preserve pages2 slotted connectors", (t) => {
+  const f = fixture(t, { target: "page11", sharedTunnel: false });
+  const result = f.execute();
+  assert.deepEqual(result.frozenTargetsUnchanged, ["pages2"]);
+  assert.equal(result.hostname, "page11.runtimed.run");
+  assert.equal(result.connectorSlot, "a");
+  f.calls.length = 0;
+  assert.equal(f.execute().connectorHandoff, false);
+  assert.ok(
+    f.writes.every(
+      (file) =>
+        file.startsWith("/etc/nteract-page11/") ||
+        /^\/etc\/systemd\/system\/cloudflared-page11-[ab][.]service$/.test(file),
+    ),
+  );
+  assert.ok(lifecycle(f).every((line) => line.includes("cloudflared-page11-a.service")));
+  assert.equal(fs.existsSync(f.local("/etc/systemd/system/cloudflared-pages2.service")), false);
+});
+
+test("page11 detects changes to either pages2 slot and its persistent connector state", (t) => {
+  for (const unit of [
+    "nteract-pages2.service",
+    "cloudflared-pages2-a.service",
+    "cloudflared-pages2-b.service",
+  ]) {
+    const f = fixture(t, { target: "page11", sharedTunnel: false });
+    assert.throws(
+      () => f.executeWith(() => f.changeFrozenPid(unit)),
+      /Frozen Pages service changed/,
+    );
+  }
+  for (const name of ["tunnel.yml", "tunnel-installation.json", "tunnel-connector.json"]) {
+    const f = fixture(t, { target: "page11", sharedTunnel: false });
+    assert.throws(
+      () => f.executeWith(() => f.write("/etc/nteract-pages2/" + name, "concurrent change")),
+      /Frozen Pages configuration changed/,
+    );
+  }
+});
+
+test("page11 rejects a pages2 manifest or tunnel identity before publication writes", (t) => {
+  for (const [file, value] of [
+    ["/tmp/nteract-page11-stage-test1234/manifest.json", inputFor("pages2").manifest],
+    ["/etc/nteract-page11/tunnel-provisioning.json", inputFor("pages2").tunnelReceipt],
+  ]) {
+    const f = fixture(t, { target: "page11", sharedTunnel: false });
+    f.write(file, JSON.stringify(value));
+    assert.throws(f.execute, /Unexpected deployment|provisioning receipt/);
+    assert.deepEqual(f.writes, []);
+    assert.deepEqual(lifecycle(f), []);
+  }
+  const f = fixture(t, { target: "page11", sharedTunnel: false });
+  f.write("/etc/nteract-pages2/tunnel.yml", "tunnel: " + tunnelId + "\n");
+  assert.throws(f.execute, /different tunnel/);
+  assert.deepEqual(f.writes, []);
 });
 
 test("pages2 still checks a shared connector that appears on lab2", (t) => {

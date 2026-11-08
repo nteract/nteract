@@ -16,33 +16,12 @@ import {
   nodeType,
   validHeadingLevel,
 } from "./node-registry.mjs";
-import { adapter, schema } from "./richtext.mjs";
 import { PagesUnknownBlock, PagesUnknownEmbed, decode, encode } from "./wordgard-doc.mjs";
 import { insertedAssets } from "./page.mjs";
 
-test("every adapter block mapping has exactly one registry entry, and back", () => {
-  const mapped = [...new Set(adapter.nodeMappings.map((mapping) => mapping.blockName))].sort();
+test("every stored block type has exactly one registry entry", () => {
   const declared = NODE_TYPES.map((type) => type.block).sort();
-  assert.deepEqual(declared, mapped);
   assert.equal(new Set(declared).size, declared.length);
-});
-
-test("each entry's ProseMirror node, wrapper and kind match the schema", () => {
-  for (const type of NODE_TYPES) {
-    const node = schema.nodes[type.pm];
-    assert.ok(node, `${type.block}: no ProseMirror node ${type.pm}`);
-    const mapping = adapter.nodeMappings.find((item) => item.blockName === type.block);
-    assert.equal(mapping.content.name, type.pm, type.block);
-    assert.equal(mapping.outer?.name ?? null, type.wrapper, type.block);
-    if (type.kind === "embed") assert.equal(mapping.isEmbed ?? false, true, type.block);
-    else assert.notEqual(mapping.isEmbed, true, type.block);
-    if (type.kind === "text-container") {
-      // Text and line breaks only: a paragraph can't go inside.
-      assert.ok(!node.contentMatch.matchType(schema.nodes.paragraph), type.block);
-    }
-    for (const name of Object.keys(type.attrs))
-      assert.ok(name in (node.spec.attrs ?? {}), `${type.block}.${name}`);
-  }
 });
 
 test("feature gates match features.json", () => {
@@ -230,7 +209,6 @@ test("agent-facing types are stored block names, list names or unknown", async (
   const { agentType, LIST_TYPES } = await import("./node-registry.mjs");
   for (const type of NODE_TYPES) if (!type.wrapper) assert.equal(agentType(type.pm), type.block);
   for (const [pm, name] of Object.entries(LIST_TYPES)) {
-    assert.ok(schema.nodes[pm], pm);
     assert.equal(agentType(pm), name);
   }
   assert.equal(agentType("unknownBlock"), "unknown");

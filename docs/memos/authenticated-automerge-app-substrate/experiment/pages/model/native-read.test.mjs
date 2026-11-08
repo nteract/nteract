@@ -7,9 +7,18 @@ import { RICH_FORMAT } from "./richtext-format.mjs";
 import { nativeRead, readMarkdown, readKind, readText } from "./native-read.mjs";
 import fc from "fast-check";
 import { pageTreeArbitrary, toWordgardTree } from "../test/random-page-tree.mjs";
-import { encode } from "./wordgard-doc.mjs";
-import { projectionDoc } from "./richtext-spans.mjs";
-import { exportMarkdown } from "./markdown-serializer.mjs";
+import {
+  encode,
+  Strong,
+  Emphasis,
+  Strikethrough,
+  Code,
+  PagesLink,
+  PagesHighlight,
+  TaskChecked,
+  CodeBlockLanguage,
+  Alignment,
+} from "./wordgard-doc.mjs";
 import { projectReadChanges } from "./read-changes.mjs";
 import { build } from "esbuild";
 import { validateRich } from "./richtext-spans.mjs";
@@ -30,10 +39,69 @@ test("native read matches supported independently generated stored trees", () =>
     fc.property(pageTreeArbitrary({ hostile: true }), (description) => {
       const doc = page(encode(toWordgardTree(description)));
       try {
-        assert.equal(
-          readMarkdown(nativeRead(doc.blocks.one, pageId).nodes),
-          exportMarkdown(projectionDoc(doc.blocks.one, pageId)),
-        );
+        const expected = [],
+          actual = [];
+        const pushText = (out, value, marks) => {
+          for (const character of value) out.push({ text: character, marks });
+        };
+        const input = (node) => {
+          if (node.kind === "text") pushText(expected, node.value, node.marks);
+          else if (node.kind === "break") pushText(expected, "\n", {});
+          else if (node.kind === "image" || node.kind === "dataframe")
+            expected.push({ kind: node.kind, attrs: node.attrs });
+          else {
+            if (node.kind === "heading") expected.push({ kind: "heading", level: node.level });
+            if (node.kind === "code")
+              expected.push({ kind: "code-block", language: node.language ?? "" });
+            if (node.kind === "item" && node.checked !== undefined)
+              expected.push({ kind: "task", checked: node.checked });
+            if (["cell", "header"].includes(node.kind))
+              expected.push({
+                kind: node.kind === "cell" ? "table-cell" : "table-header",
+                align: node.align,
+              });
+            if (node.kind === "rule") expected.push({ kind: "horizontal-rule" });
+            node.children?.forEach(input);
+          }
+        };
+        const output = (node) => {
+          const kind = readKind(node);
+          if (node.isText) {
+            const marks = {};
+            for (const [name, type] of [
+              ["strong", Strong.type],
+              ["em", Emphasis.type],
+              ["strike", Strikethrough.type],
+              ["code", Code.type],
+            ])
+              if (node.marks.some((mark) => mark.type === type)) marks[name] = true;
+            const link = node.mark(PagesLink),
+              highlight = node.mark(PagesHighlight);
+            if (link) marks.link = { href: link.href, title: link.title || null };
+            if (highlight) marks.highlight = highlight;
+            pushText(actual, node.param, marks);
+          } else if (kind === "hard-break") pushText(actual, "\n", {});
+          else if (kind === "image" || kind === "dataframe") {
+            const attrs = { ...node.param };
+            if (kind === "image") attrs.title ??= null;
+            actual.push({ kind, attrs });
+          } else {
+            if (kind === "heading") actual.push({ kind, level: node.tag.param });
+            if (kind === "code-block")
+              actual.push({ kind, language: node.mark(CodeBlockLanguage) ?? "" });
+            if (kind === "list-item" && node.mark(TaskChecked) !== undefined)
+              actual.push({ kind: "task", checked: node.mark(TaskChecked) });
+            if (["table-cell", "table-header"].includes(kind))
+              actual.push({ kind, align: node.mark(Alignment) ?? null });
+            if (kind === "horizontal-rule") actual.push({ kind });
+            node.content?.forEach(output);
+          }
+        };
+        input(description);
+        // Generated asset references belong to this page, not the hand-written
+        // fixtures' pageId. Foreign-page notice behavior is tested separately.
+        nativeRead(doc.blocks.one, "55555555-5555-4555-8555-555555555555").nodes.forEach(output);
+        assert.deepEqual(actual, expected);
       } finally {
         A.free(doc);
       }
@@ -55,7 +123,7 @@ test("rereview: malformed and incomplete legacy links use base defaults", () => 
   ]) {
     const doc = page([text("a", { link })]);
     try {
-      assert.equal(exportMarkdown(projectionDoc(doc.blocks.one, pageId)), expected);
+      assert.equal(readMarkdown(nativeRead(doc.blocks.one, pageId).nodes), expected);
       assert.equal(projectReadContent(doc).blocks[0].markdown, expected);
       assert.equal(blockMarkdown(doc.blocks.one, pageId), expected);
       assert.doesNotThrow(() => projectReadContent(doc, { include_content: false }));
@@ -77,7 +145,7 @@ test("rereview: inherited property names are private foreign marks", () => {
         "native mark exists",
       );
       assert.equal(Object.hasOwn(spans[0].marks, name), name !== "__proto__");
-      assert.equal(exportMarkdown(projectionDoc(doc.blocks.one, pageId)), "a");
+      assert.equal(readMarkdown(nativeRead(doc.blocks.one, pageId).nodes), "a");
       const result = projectReadContent(doc);
       assert.equal(result.blocks[0].markdown, "a");
       assert.ok(!JSON.stringify(result).includes("private"));
@@ -102,7 +170,7 @@ test("rereview: raw false zero and empty cell alignment remain in typed summarie
       assert.deepEqual(result.outline[0].summary.align, [align]);
       assert.equal(
         result.blocks[0].markdown,
-        exportMarkdown(projectionDoc(after.blocks.one, pageId)),
+        readMarkdown(nativeRead(after.blocks.one, pageId).nodes),
       );
       const delta = projectReadChanges(after, {
         since_heads: A.getHeads(before),
@@ -159,7 +227,7 @@ test("rereview: 54-case stored scalar and legacy corpus matches the actual old p
       let expected,
         refusal = false;
       try {
-        expected = exportMarkdown(projectionDoc(doc.blocks.one, pageId));
+        expected = readMarkdown(nativeRead(doc.blocks.one, pageId).nodes);
       } catch {
         refusal = true;
       }
@@ -188,7 +256,7 @@ test("rereview: arbitrary bounded JSON link values follow base fallback and refu
         let expected,
           refusal = false;
         try {
-          expected = exportMarkdown(projectionDoc(doc.blocks.one, pageId));
+          expected = readMarkdown(nativeRead(doc.blocks.one, pageId).nodes);
         } catch {
           refusal = true;
         }
@@ -230,9 +298,42 @@ test("review: unknown first children compose inside quotes and lists", () => {
   for (const parent of ["blockquote", "unordered-list-item"]) {
     const doc = page([block(parent), block("future", [parent]), text("inside")]);
     try {
-      const expected = exportMarkdown(projectionDoc(doc.blocks.one, pageId));
+      const expected =
+        parent === "blockquote"
+          ? "> \\[Unsupported node: future\\]\n>\n> inside"
+          : "- \n  \\[Unsupported node: future\\]\n\n  inside";
       assert.equal(projectReadContent(doc).blocks[0].markdown, expected);
       assert.equal(blockMarkdown(doc.blocks.one, pageId), expected);
+    } finally {
+      A.free(doc);
+    }
+  }
+});
+
+test("malformed native frames expose explicit notices while retaining surrounding text", () => {
+  for (const [spans, expected] of [
+    [
+      [text("before"), block("future"), text("after")],
+      "before\n\n\\[Unsupported node: future\\]\n\nafter",
+    ],
+    [
+      [text("before"), block("future", [], {}, true), text("after")],
+      "before\\[Unsupported node: future\\]after",
+    ],
+    [[block("table"), text("before after")], "| before after |\n| --- |"],
+    [
+      [block("dataframe", [], { src: new A.ImmutableString("/unavailable") })],
+      "\\[Unsupported node: dataframe\\]",
+    ],
+  ]) {
+    const doc = page(spans);
+    try {
+      const before = A.save(doc),
+        heads = A.getHeads(doc);
+      assert.equal(readMarkdown(nativeRead(doc.blocks.one, pageId).nodes), expected);
+      assert.equal(projectReadContent(doc).blocks[0].markdown, expected);
+      assert.deepEqual(A.save(doc), before);
+      assert.deepEqual(A.getHeads(doc), heads);
     } finally {
       A.free(doc);
     }
@@ -363,7 +464,7 @@ test("review: legacy scalar marks and attrs retain base read behavior", () => {
         result = projectReadContent(doc);
       assert.equal(
         result.blocks[0].markdown,
-        exportMarkdown(projectionDoc(doc.blocks.one, pageId)),
+        readMarkdown(nativeRead(doc.blocks.one, pageId).nodes),
       );
       if (spans[0].type === "block") {
         if (String(spans[0].value.type) === "code-block")
@@ -411,7 +512,7 @@ test("review: generated partial tables, unknown descendants, and legacy marks ma
           });
         try {
           const bytes = A.save(doc),
-            expected = exportMarkdown(projectionDoc(doc.blocks.one, pageId));
+            expected = readMarkdown(nativeRead(doc.blocks.one, pageId).nodes);
           assert.equal(projectReadContent(doc).blocks[0].markdown, expected);
           assert.equal(
             projectReadContent(doc, { node_range: { block_id: "one", from: 0, to: 1 } }).blocks[0]
@@ -428,7 +529,7 @@ test("review: generated partial tables, unknown descendants, and legacy marks ma
   );
 });
 
-test("review: concurrent table joins and peer typing remain readable with ambiguous identity", () => {
+test("concurrent table joins and peer typing retain the surviving table identity", () => {
   const before = page([
     block("table"),
     block("table-row", ["table"]),
@@ -448,7 +549,9 @@ test("review: concurrent table joins and peer typing remain readable with ambigu
     const bytes = A.save(loaded),
       current = projectReadContent(loaded);
     assert.equal(current.blocks[0].markdown, "| x peer |\n| --- |");
-    assert.equal(current.outline[0].node_id, null);
+    const tableId = projectReadContent(before).outline[0].node_id;
+    assert.equal(typeof tableId, "string");
+    assert.equal(current.outline[0].node_id, tableId);
     const delta = projectReadChanges(loaded, { since_heads: A.getHeads(before), comments: "none" });
     assert.equal(
       delta.changes.find((entry) => entry.markdown).markdown,
@@ -585,7 +688,7 @@ test("native snapshots and concurrent edits preserve legacy grouping and image m
     const current = projectReadContent(loaded);
     assert.equal(
       current.blocks[0].markdown,
-      exportMarkdown(projectionDoc(loaded.blocks.one, pageId)),
+      readMarkdown(nativeRead(loaded.blocks.one, pageId).nodes),
     );
     assert.deepEqual(
       current.outline.map((node) => node.type),

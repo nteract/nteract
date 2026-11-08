@@ -242,7 +242,7 @@ test("partial reads preserve whole nested lists, tasks, tables, links, code and 
     result = read(doc, { node_range: { block_id: "one", from: 1, to: 5 } });
   assert.deepEqual(
     contentJSON(parseMarkdown(result.blocks[0].markdown).toJSON().content),
-    contentJSON([1, 2, 3, 4].map((index) => tree.child(index).toJSON())),
+    contentJSON([1, 2, 3, 4].map((index) => tree.content[index].toJSON())),
   );
   assert.match(result.blocks[0].markdown, /- \[x\] \*\*Done\*\* 🌊/);
   assert.match(result.blocks[0].markdown, /```mermaid/);

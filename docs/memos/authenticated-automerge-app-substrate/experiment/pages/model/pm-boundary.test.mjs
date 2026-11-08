@@ -3,12 +3,13 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { build } from "esbuild";
+import { viewerBuildOptions } from "../scripts/viewer-chunks.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 // Production code: these directories, recursively, and the root modules.
-// scripts/ is dev tooling and may use ProseMirror directly.
+// Bundled dependencies are checked separately from this source inventory.
 const PRODUCTION_DIRS = ["authz", "model", "shared", "sync", "viewer", "worker"];
-const PM_MODULES = ["model/pm-adapter.mjs", "model/pm-markdown-parser.mjs"];
 const PM_IMPORT =
   /(?:from\s*|import\s*\(\s*|import\s+|require\s*\(\s*)["'](?:@automerge\/prosemirror|prosemirror-[a-z-]+)(?:\/[^"']*)?["']/;
 const SOURCE = /\.(mjs|cjs|js|jsx|ts|tsx)$/;
@@ -26,7 +27,7 @@ const rootModules = () =>
     .filter((entry) => entry.isFile() && SOURCE.test(entry.name) && !isTest(entry.name))
     .map((entry) => join(root, entry.name));
 
-test("only the pm-* modules import ProseMirror packages", () => {
+test("production source has no ProseMirror imports", () => {
   const importers = [
     ...PRODUCTION_DIRS.flatMap((dir) => sources(join(root, dir))),
     ...rootModules(),
@@ -34,7 +35,34 @@ test("only the pm-* modules import ProseMirror packages", () => {
     .filter((path) => PM_IMPORT.test(readFileSync(path, "utf8")))
     .map((path) => relative(root, path).split("\\").join("/"))
     .sort();
-  assert.deepEqual(importers, PM_MODULES);
+  assert.deepEqual(importers, []);
+});
+
+test("complete worker and viewer dependency graphs contain no ProseMirror", async () => {
+  const result = await build({
+    entryPoints: [join(root, "worker/index.mjs"), join(root, "viewer/main.jsx")],
+    outdir: "unused",
+    bundle: true,
+    write: false,
+    metafile: true,
+    platform: "browser",
+    format: "esm",
+    alias: viewerBuildOptions(root, root).alias,
+    external: ["cloudflare:workers", "*.wasm", "pages-sift-assets"],
+    loader: { ".css": "empty", ".svg": "dataurl" },
+    tsconfig: join(root, "tsconfig.json"),
+  });
+  assert.deepEqual(
+    Object.keys(result.metafile.inputs).filter((path) =>
+      /prosemirror|pm-adapter|pm-markdown-parser/.test(path),
+    ),
+    [],
+  );
+  const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+  assert.deepEqual(
+    Object.keys(pkg.dependencies).filter((name) => /prosemirror/.test(name)),
+    [],
+  );
 });
 
 test("the boundary pattern catches every import form", () => {
