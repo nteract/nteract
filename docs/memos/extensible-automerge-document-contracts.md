@@ -95,15 +95,14 @@ author and comment ownership protections. Unknown blocks must survive older
 clients and export/import workflows, or the exporter must explicitly report
 that its output cannot round-trip them.
 
-Pages now follows this shape for node types inside a block's rich text
-([Pages README](authenticated-automerge-app-substrate/experiment/pages/README.md),
-"Document and editor"). A schema feature stamp makes a Page read-only for a
-build that lacks the feature. That build's editor keeps an unknown marker
-exactly as stored and writes it back unchanged. Its Markdown export projects
-`[Unsupported node: <type>]`, and a Markdown rewrite of that block is refused.
-The `dataframe` node has no Markdown form. Agents add it with `insert_node`,
-and Markdown can only keep an existing one in place. Registration still
-refuses unknown block markers.
+Pages follows this shape for node types inside a block's rich text
+([Pages rich text v2](authenticated-automerge-app-substrate/experiment/pages/RICH-TEXT-V2.md)).
+A schema feature stamp makes a Page read-only for a build that lacks the
+feature, and admission refuses unknown types and marks the stamp doesn't name.
+v2 writes are minimal splices that never touch content they don't edit, so the
+codec needs no exact-marker preservation. Agents see content Markdown can't
+hold, such as a `dataframe`, as a `pages-node` reference that keeps the node
+when sent back unchanged (proposed).
 
 NotebookDoc already has an accepted
 [forward-compatibility contract](../adr/schema-evolution-and-genesis.md): frozen
