@@ -1163,6 +1163,20 @@ jobs:
         with:
           include-mcp-widget: true
 
+      # Save-format tests require real Ruff without downloading it from GitHub at test time.
+      - name: Install Ruff for Rust tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="0.15.11"
+          export UV_TOOL_DIR="$RUNNER_TEMP/ruff-tools"
+          export UV_TOOL_BIN_DIR="$RUNNER_TEMP/ruff-bin"
+          uv tool install --python /usr/bin/python3 --no-python-downloads --no-config "ruff==$version"
+          installed_version="$("$UV_TOOL_BIN_DIR/ruff" --version)"
+          test "$installed_version" = "ruff $version"
+          printf '%s\n' "$installed_version"
+          printf '%s\n' "$UV_TOOL_BIN_DIR" >> "$GITHUB_PATH"
+
       - name: Run tests
         run: cargo test --workspace --exclude notebook --exclude runtimed-wasm --exclude sift-wasm --exclude sift-csv-wasm --exclude runtimed-py --exclude runtimed-node --verbose
 

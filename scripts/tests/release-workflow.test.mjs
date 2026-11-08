@@ -860,6 +860,67 @@ test("image launch shape preserves spaces in standalone cache paths", (t) => {
   assert.ok(result.stdout.includes(`selected parent: ${result.fixtureHome}/.cache/runt cache/launcher\n`));
 });
 
+test("Linux Rust Tests provisions the pinned Ruff before running tests", () => {
+  const job = workflowJobs(workflow("build")).get("linux-rust-tests");
+  const step = workflowStep(job, "Install Ruff for Rust tests");
+  const tools = readFileSync(new URL("../../crates/kernel-launch/src/tools.rs", import.meta.url), "utf8");
+  const version = tools.match(/pub const RUFF_TARGET_VERSION: &str = "([^"]+)";/)?.[1];
+  assert.ok(version, "must find the daemon's Ruff version");
+  assert.ok(step.includes(`version="${version}"`));
+  assert.ok(job.indexOf(workflowStep(job, "Install uv")) < job.indexOf(step));
+  assert.ok(job.indexOf(step) < job.indexOf(workflowStep(job, "Run tests")));
+});
+
+for (const failure of ["install", "version-command", "version-mismatch", null]) {
+  test(`Ruff prerequisite ${failure ? `rejects ${failure} failure` : "installs in runner-local directories and publishes PATH"}`, (t) => {
+    const job = workflowJobs(workflow("build")).get("linux-rust-tests");
+    const step = workflowStep(job, "Install Ruff for Rust tests");
+    const script = step.split("        run: |\n")[1];
+    assert.ok(script, "must exercise the actual Ruff installation step");
+    const fixture = mkdtempSync(join(tmpdir(), "ruff prerequisite "));
+    t.after(() => rmSync(fixture, {recursive: true, force: true}));
+    const bin = join(fixture, "bin");
+    const toolBin = join(fixture, "ruff-bin");
+    mkdirSync(bin);
+    mkdirSync(toolBin);
+    writeFileSync(join(bin, "uv"), [
+      "#!/bin/sh",
+      'printf "%s\\n" "$@" > "$RUNNER_TEMP/uv-args"',
+      'printf "%s\\n" "$UV_TOOL_DIR" "$UV_TOOL_BIN_DIR" > "$RUNNER_TEMP/uv-env"',
+      `exit ${failure === "install" ? 23 : 0}`,
+    ].join("\n"), {mode: 0o755});
+    writeFileSync(join(bin, "ruff"), "#!/bin/sh\nexit 91\n", {mode: 0o755});
+    writeFileSync(join(toolBin, "ruff"), [
+      "#!/bin/sh",
+      'printf "%s\\n" "$0" "$@" > "$RUNNER_TEMP/ruff-args"',
+      `printf "ruff ${failure === "version-mismatch" ? "0.0.0" : "0.15.11"}\\n"`,
+      `exit ${failure === "version-command" ? 29 : 0}`,
+    ].join("\n"), {mode: 0o755});
+    const result = spawnSync("/bin/bash", ["-s"], {
+      input: script.split("\n").map(line => line.replace(/^ {10}/, "")).join("\n"),
+      encoding: "utf8",
+      timeout: 10_000,
+      env: {PATH: bin, RUNNER_TEMP: fixture, GITHUB_PATH: join(fixture, "github-path")},
+    });
+    assert.ifError(result.error);
+    assert.equal(readFileSync(join(fixture, "uv-args"), "utf8"), "tool\ninstall\n--python\n/usr/bin/python3\n--no-python-downloads\n--no-config\nruff==0.15.11\n");
+    assert.equal(readFileSync(join(fixture, "uv-env"), "utf8"), `${fixture}/ruff-tools\n${toolBin}\n`);
+    if (failure === "install") {
+      assert.throws(() => readFileSync(join(fixture, "ruff-args")), {code: "ENOENT"});
+    } else {
+      assert.equal(readFileSync(join(fixture, "ruff-args"), "utf8"), `${toolBin}/ruff\n--version\n`);
+    }
+    if (failure) {
+      assert.equal(result.status, failure === "install" ? 23 : failure === "version-command" ? 29 : 1, result.stderr);
+      assert.throws(() => readFileSync(join(fixture, "github-path")), {code: "ENOENT"});
+    } else {
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /ruff 0\.15\.11/);
+      assert.equal(readFileSync(join(fixture, "github-path"), "utf8"), `${toolBin}\n`);
+    }
+  });
+}
+
 for (const failure of ["download", "checksum", "archive", null]) {
   test(`Deno bootstrap ${failure ? `rejects ${failure} failure without fallback` : "installs after all integrity checks pass"}`, (t) => {
     const fixture = mkdtempSync(join(tmpdir(), "deno-bootstrap-"));
