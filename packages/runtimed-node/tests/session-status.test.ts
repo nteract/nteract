@@ -55,3 +55,83 @@ it("preserves the Rust-serialized session status contract", async () => {
     initial_load: "NotNeeded" | "Streaming" | "Ready" | { Failed: { reason: string } };
   }>();
 });
+
+it.each(["true", "false", "reject"] as const)(
+  "cleans up shutdown subscriptions only after native success (%s)",
+  async (outcome) => {
+    const events = [
+      ["onRuntimeState", "runtimeState$"],
+      ["onExecutionTransition", "executionTransitions$"],
+      ["onExecutionViewChange", "executionViewChanges$"],
+      ["onCellChange", "cellChanges$"],
+      ["onBroadcast", "broadcasts$"],
+      ["onSessionStatus", "sessionStatus$"],
+    ] as const;
+    const disposers = events.map(() => vi.fn());
+    const completions = events.map(() => vi.fn());
+    let resolveShutdown!: (removed: boolean) => void;
+    let rejectShutdown!: (error: Error) => void;
+    const shutdown = new Promise<boolean>((resolve, reject) => {
+      resolveShutdown = resolve;
+      rejectShutdown = reject;
+    });
+    let resolveClose!: () => void;
+    const closing = new Promise<void>((resolve) => {
+      resolveClose = resolve;
+    });
+    const native = {
+      ...Object.fromEntries(
+        events.map(([method], index) => [method, () => ({ dispose: disposers[index] })]),
+      ),
+      shutdownNotebook: vi.fn(() => shutdown),
+      close: vi.fn(() => {
+        for (const dispose of disposers) expect(dispose).toHaveBeenCalledOnce();
+        for (const complete of completions) expect(complete).toHaveBeenCalledOnce();
+        return closing;
+      }),
+    };
+    const session = new SessionWrapper(native);
+    const subscriptions = events.map(([, stream], index) =>
+      session[stream].subscribe({ complete: completions[index] }),
+    );
+    const result = session.shutdownNotebook();
+    const settled = vi.fn();
+    void result.then(settled, settled);
+
+    expect(native.shutdownNotebook).toHaveBeenCalledOnce();
+    expect(native.close).not.toHaveBeenCalled();
+    for (const dispose of disposers) expect(dispose).not.toHaveBeenCalled();
+    for (const complete of completions) expect(complete).not.toHaveBeenCalled();
+
+    if (outcome === "true") {
+      resolveShutdown(true);
+      await Promise.resolve();
+      expect(native.close).toHaveBeenCalledOnce();
+      // Drain result reactions while native close is still pending.
+      await Promise.resolve();
+      expect(settled).not.toHaveBeenCalled();
+      resolveClose();
+      await expect(result).resolves.toBe(true);
+    } else {
+      if (outcome === "false") {
+        resolveShutdown(false);
+        await expect(result).resolves.toBe(false);
+      } else {
+        const error = new Error("native shutdown failed");
+        rejectShutdown(error);
+        await expect(result).rejects.toBe(error);
+      }
+      expect(native.close).not.toHaveBeenCalled();
+      for (const dispose of disposers) expect(dispose).not.toHaveBeenCalled();
+      for (const complete of completions) expect(complete).not.toHaveBeenCalled();
+      for (const subscription of subscriptions) expect(subscription.closed).toBe(false);
+      resolveClose();
+    }
+
+    await expect(session.close()).resolves.toBeUndefined();
+    expect(native.close).toHaveBeenCalledTimes(outcome === "true" ? 2 : 1);
+    for (const dispose of disposers) expect(dispose).toHaveBeenCalledOnce();
+    for (const complete of completions) expect(complete).toHaveBeenCalledOnce();
+    for (const subscription of subscriptions) expect(subscription.closed).toBe(true);
+  },
+);
