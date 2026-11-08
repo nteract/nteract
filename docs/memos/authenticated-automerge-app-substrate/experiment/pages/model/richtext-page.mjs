@@ -26,6 +26,45 @@ export function blockMarkdown(block, pageId) {
 }
 
 // Rich writers stamp the schema features their spans need in the same change.
+function writeMarkdownSpans(doc, id, spans) {
+  // Compare stored values, not their Markdown or tolerant read projection.
+  // Keep marker/attribute representation and every hidden field significant.
+  const key = (value) => {
+    if (A.isImmutableString(value)) return ["immutable", String(value)];
+    if (Array.isArray(value)) return ["array", value.map(key)];
+    if (value && typeof value === "object")
+      return [
+        "object",
+        Object.keys(value)
+          .sort()
+          .map((name) => [name, key(value[name])]),
+      ];
+    return [typeof value, value];
+  };
+  const runs = (input) => {
+    const out = [];
+    for (const span of input) {
+      if (span.type !== "text") {
+        out.push(span);
+        continue;
+      }
+      const last = out.at(-1),
+        marks = span.marks ?? {};
+      if (last?.type === "text" && JSON.stringify(key(last.marks)) === JSON.stringify(key(marks)))
+        last.value += span.value;
+      else if (span.value) out.push({ type: "text", value: span.value, marks });
+    }
+    return JSON.stringify(key(out));
+  };
+  const path = textPath(id);
+  // updateSpans can re-mark an unchanged multi-span mark, defeating a peer's
+  // concurrent unmark. Only exact restored runs qualify; an explicit opening
+  // paragraph is still a different stored shape from an implicit one.
+  if (runs(A.spans(doc, path)) === runs(spans)) return;
+  A.updateSpans(doc, path, spans, updateSpansConfig);
+  stampSpans(doc, spans);
+}
+
 // Agent-written Markdown refuses math and HTML (`parseAgentMarkdown`); pass
 // `literal: true` for stored source, which keeps them as text instead.
 export function setRichMarkdown(doc, id, source, { literal = false } = {}) {
@@ -123,7 +162,6 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
     throw Object.assign(Error("A stored dataframe cannot be restored losslessly"), {
       code: "markdownless_node",
     });
-  if (!existing.length && !opaqueImages.length) return setRichMarkdown(doc, id, source);
   const tree = parseAgentMarkdown(source);
   const unmatched = [...existing];
   const refuse = (message) => {
@@ -207,8 +245,7 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
       "This line reads as a dataframe this block doesn't hold. Markdown can't create or move a dataframe; use insert_node with its asset_id.",
     );
   const spans = keepImages(pageSpans(kept));
-  A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
-  stampSpans(doc, spans);
+  writeMarkdownSpans(doc, id, spans);
 }
 export function projectedBlock(block, pageId) {
   const { richText: _rich, ...result } = block;
