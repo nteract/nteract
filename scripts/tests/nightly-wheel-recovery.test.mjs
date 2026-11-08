@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {test} from "node:test";
-import {receipt, recoveryTransition, recoverWheel, downloadWheel, wheelDigest} from "../ci/nightly-wheel-recovery.mjs";
+import {receipt, recoveryTransition, recoverWheel, downloadWheel, wheelDigest, publishWheel} from "../ci/nightly-wheel-recovery.mjs";
 
 const context = () => ({repository: receipt.repository, ref: "refs/heads/main", event: "workflow_dispatch", channel: "nightly", runId: receipt.runId});
 function snapshot(complete = false) {
@@ -170,4 +170,40 @@ test("download rejects another redirect and never follows it", async () => {
 });
 test("download hash checks use SHA256 over exact bytes", () => {
   assert.deepEqual(wheelDigest(Buffer.from("abc")), {size: 3, sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"});
+});
+
+for (const version of ["uv 0.13.7\n", "uv 0.13.7 (x86_64-unknown-linux-gnu)\n", "uv 0.13.7 (53b0f5d92 2026-11-06 x86_64-unknown-linux-gnu)\n"]) {
+  test(`publish effect accepts exact uv release: ${version.trim()}`, () => {
+    const calls = [];
+    const env = {PATH: "/tools", GH_TOKEN: "github-secret", UV_PUBLISH_TOKEN: "pypi-secret", UV_PUBLISH_URL: "https://wrong.invalid", UV_PUBLISH_CHECK_URL: "https://wrong.invalid", UV_PUBLISH_NEW_SETTING: "untrusted", ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-secret"};
+    const original = {...env};
+    const path = `/runner temp/recovery/${receipt.wheels[5].name}`;
+    publishWheel(path, env, (command, args, options) => {
+      calls.push({command, args, options});
+      if (args[0] === "--version") return version;
+    });
+    assert.deepEqual(calls, [
+      {command: "uv", args: ["--version"], options: {encoding: "utf8"}},
+      {command: "uv", args: ["--no-config", "publish", "--trusted-publishing", "always", "--publish-url", "https://upload.pypi.org/legacy/", "--check-url", "https://pypi.org/simple/runtimed/", path], options: {env: {PATH: "/tools", ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-secret"}, stdio: "inherit"}},
+    ]);
+    assert.deepEqual(env, original, "scrubbing does not mutate the caller environment");
+  });
+}
+for (const version of ["uv 0.13.8", "uv 0.13.70", "uv 0.13.7rc1", "uv 0.13.7-rc.1 (target)", "uv 0.13.7+24 (target)", "uv 0.13.7 extra", "uv 0.13.7 ()", "uv 0.13.7 (metadata) trailing", "uv 0.13.7\n(other)", "uv 0.13.7 (metadata\nsecret)"]) {
+  test(`publish effect rejects non-release version ${JSON.stringify(version)}`, () => {
+    let calls = 0;
+    assert.throws(() => publishWheel("one.whl", {}, () => { calls++; return version; }), /^Error: Expected pinned uv 0\.13\.7$/);
+    assert.equal(calls, 1, "version failure prevents publication");
+  });
+}
+test("publish effect propagates version and upload failures without retry", () => {
+  for (const failAt of [1, 2]) {
+    let calls = 0;
+    const error = new Error("command failed");
+    assert.throws(() => publishWheel("one.whl", {}, () => {
+      if (++calls === failAt) throw error;
+      return "uv 0.13.7\n";
+    }), value => value === error);
+    assert.equal(calls, failAt);
+  }
 });

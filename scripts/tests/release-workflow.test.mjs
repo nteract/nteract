@@ -717,7 +717,7 @@ test("runtime-peer image publication keeps packages:write scoped to the two imag
   for (const name of ["release-nightly", "release-stable"]) {
     const caller = workflow(name);
     assert.doesNotMatch(caller, /^permissions:/m, `${name} must not grant workflow-wide permissions`);
-    assert.match(workflowJobs(caller).get("release"), /^    permissions:\n      contents: write\n      id-token: write\n      packages: write\n/m, `${name} release job ceiling`);
+    assert.match(workflowJobs(caller).get("release"), /^    permissions:\n      contents: write\n      id-token: write\n      packages: write\n      actions: read\n/m, `${name} release job ceiling includes recovery metadata access`);
   }
 });
 

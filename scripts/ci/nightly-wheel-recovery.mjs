@@ -143,6 +143,13 @@ export async function downloadWheel(fetcher = fetch) {
   return bytes;
 }
 
+export function publishWheel(wheelPath, env, execute = execFileSync) {
+  // uv appends parenthesized commit/target metadata; +N denotes a post-release build.
+  requireThat(/^uv 0\.13\.7(?: \([^()\r\n]+\))?$/.test(execute("uv", ["--version"], {encoding: "utf8"}).trim()), "Expected pinned uv 0.13.7");
+  const publishEnv = Object.fromEntries(Object.entries(env).filter(([name]) => !name.startsWith("UV_PUBLISH_") && name !== "GH_TOKEN"));
+  execute("uv", ["--no-config", "publish", "--trusted-publishing", "always", "--publish-url", "https://upload.pypi.org/legacy/", "--check-url", "https://pypi.org/simple/runtimed/", wheelPath], {env: publishEnv, stdio: "inherit"});
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     const env = process.env;
@@ -182,9 +189,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         },
         publish: async () => {
           verifyWheel(wheelDigest(readFileSync(wheelPath)));
-          requireThat(execFileSync("uv", ["--version"], {encoding: "utf8"}).trim() === "uv 0.13.7", "Expected pinned uv 0.13.7");
-          const publishEnv = Object.fromEntries(Object.entries(env).filter(([name]) => !name.startsWith("UV_PUBLISH_") && name !== "GH_TOKEN"));
-          execFileSync("uv", ["--no-config", "publish", "--trusted-publishing", "always", "--publish-url", "https://upload.pypi.org/legacy/", "--check-url", "https://pypi.org/simple/runtimed/", wheelPath], {env: publishEnv, stdio: "inherit"});
+          publishWheel(wheelPath, env);
         },
       });
       const message = `PyPI wheel set complete only: runtimed ${receipt.pythonVersion}; producer ${receipt.runId}/${receipt.attempt}, source ${receipt.sourceSha}, PyPI serial ${result.serial}. GitHub assets unchanged. Original run remains failed; channels and downstream consumers remain closed.\n`;
