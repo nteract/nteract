@@ -5,7 +5,7 @@
 // Catalog has checked.
 //
 // The content is page-preview.mjs's JSON: each element [tag, attrs,
-// ...children] from the schema's own toDOM specs, each text run a string.
+// ...children] from Wordgard read nodes, each text run a string.
 // It is never HTML. A card differs from a preview in what it leaves out:
 //
 // - Images become a placeholder holding their alt text. No bytes, no src.
@@ -23,7 +23,9 @@
 // `rich` says the first screen holds Mermaid, a dataframe or an image, which
 // the JSON card can only stand in for. Nothing reads it yet.
 import { isRich } from "./richtext-format.mjs";
-import { richDoc } from "./richtext-spans.mjs";
+import { surfaceRead } from "./page-surface-read.mjs";
+import { readKind } from "./native-read.mjs";
+import { PagesLink } from "./wordgard-doc.mjs";
 import { orderedBlockIds } from "./order.mjs";
 import { renderNode } from "./page-preview.mjs";
 
@@ -126,29 +128,29 @@ const cut = (value, max = 200) =>
 
 /** How a card renders the nodes it changes (see the header). */
 const CARD_OVERRIDES = Object.freeze({
-  node(node, children) {
-    switch (node.type.name) {
+  node(node, children, attrs) {
+    switch (readKind(node)) {
       case "image": {
-        const alt = cut(node.attrs.alt || node.attrs.title);
+        const alt = cut(node.param.alt || node.param.title);
         return [["span", { "data-card-placeholder": "image" }, ...(alt ? [alt] : [])]];
       }
       case "dataframe":
         return [
-          ["div", { "data-card-placeholder": "dataframe" }, cut(node.attrs.title) || "Dataframe"],
+          ["div", { "data-card-placeholder": "dataframe" }, cut(node.param.title) || "Dataframe"],
         ];
-      case "code_block": {
-        const language = codeLanguage(node.attrs.params);
+      case "code-block": {
+        const language = codeLanguage(attrs.params);
         return [
           ["pre", language ? { "data-language": language } : {}, ["code", {}, ...children()]],
         ];
       }
-      case "list_item":
-        if (typeof node.attrs.checked !== "boolean") return undefined;
+      case "list-item":
+        if (typeof attrs.checked !== "boolean") return undefined;
         return [
           [
             "li",
-            { "data-task-checked": String(node.attrs.checked) },
-            ["input", node.attrs.checked ? { checked: "" } : {}],
+            { "data-task-checked": String(attrs.checked) },
+            ["input", attrs.checked ? { checked: "" } : {}],
             ["div", {}, ...children()],
           ],
         ];
@@ -157,7 +159,7 @@ const CARD_OVERRIDES = Object.freeze({
     }
   },
   mark(mark, content) {
-    return mark.type.name === "link" ? [["a", {}, ...content]] : undefined;
+    return mark.type === PagesLink ? [["a", {}, ...content]] : undefined;
   },
 });
 
@@ -166,14 +168,12 @@ function blockNodes(block) {
   if (!isRich(block)) return null;
   let doc;
   try {
-    doc = richDoc(block);
+    doc = surfaceRead(block);
   } catch {
     return null;
   }
-  const children = [];
-  doc.forEach((child) => children.push(child));
   return (function* () {
-    for (const child of children) yield* renderNode(child, CARD_OVERRIDES);
+    for (const child of doc.nodes) yield* renderNode(child, CARD_OVERRIDES, doc.metadata);
   })();
 }
 
@@ -254,7 +254,12 @@ export function cardContent(doc, { maxBytes = CARD_BLOCKS_MAX_BYTES } = {}) {
       bytes = used;
     }
   }
-  return { title, blocks, truncated, rich: blocks.some((block) => holdsRich(block.content)) };
+  return {
+    title,
+    blocks,
+    truncated,
+    rich: blocks.some((block) => holdsRich(block.content)),
+  };
 }
 
 /** SHA-256 over the builder version and exactly what the card shows, as
