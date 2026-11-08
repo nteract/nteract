@@ -4,10 +4,11 @@ import { join, relative } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
+import { viewerBuildOptions } from "../scripts/viewer-chunks.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 // Production code: these directories, recursively, and the root modules.
-// scripts/ is dev tooling and may use ProseMirror directly.
+// Bundled dependencies are checked separately from this source inventory.
 const PRODUCTION_DIRS = ["authz", "model", "shared", "sync", "viewer", "worker"];
 const PM_IMPORT =
   /(?:from\s*|import\s*\(\s*|import\s+|require\s*\(\s*)["'](?:@automerge\/prosemirror|prosemirror-[a-z-]+)(?:\/[^"']*)?["']/;
@@ -46,6 +47,7 @@ test("complete worker and viewer dependency graphs contain no ProseMirror", asyn
     metafile: true,
     platform: "browser",
     format: "esm",
+    alias: viewerBuildOptions(root, root).alias,
     external: ["cloudflare:workers", "*.wasm", "pages-sift-assets"],
     loader: { ".css": "empty", ".svg": "dataurl" },
     tsconfig: join(root, "tsconfig.json"),

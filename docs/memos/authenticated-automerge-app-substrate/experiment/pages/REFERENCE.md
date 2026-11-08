@@ -1,15 +1,16 @@
 # Pages behavior reference
 
-Current behavior of the Page host, viewer and agent tools on `main`. Read the
-code and its colocated tests for exact contracts; this file maps them.
+Behavior of the Page host, viewer and agent tools in this source revision.
+Read the code and its colocated tests for exact contracts; this file maps them.
+The protected deployed service may run an earlier revision.
 
-Rich text is being rebuilt. [RICH-TEXT-V2.md](RICH-TEXT-V2.md) describes the
-separate replacement experiment; it does not change the current contracts
-below. The following table distinguishes removal goals from design options:
+The native path uses Wordgard for both reads and writes; ProseMirror is absent
+from the production graph. [RICH-TEXT-V2.md](RICH-TEXT-V2.md) describes the
+separate-service workflow and remaining design options:
 
 | Current path | Replacement direction or experiment |
 | --- | --- |
-| ProseMirror Markdown parser and span adapter (`model/pm-*.mjs`, `richtext-spans.mjs`) | Markdown tokens parse straight to the Wordgard tree |
+| Native Markdown parser (`model/markdown-native.mjs`) and Wordgard codec | Markdown tokens parse straight to the Wordgard tree |
 | Broad projection diffs (`replace_block_markdown`, `set_node`, `set_image`, comment edits) | Preserve identity and concurrent intent with targeted edits and regression tests |
 | Implicit first paragraph, null first `node_id` | Evaluate explicit markers |
 | Marker `parents` list | Evaluate atomic paths and their merge semantics |
@@ -2907,10 +2908,10 @@ out of it), runs the shape pass like every queued write, then `planMove`
 `project_id: null` (a root in Your items), and a Page moves within its
 container or across them: Your items into a Project, a Project out to Your
 items, or one Project to another. Only a request naming no destination answers
-`move_destination_required`. Because Projects are owner-only and the Catalog
-holds only its owner's Projects, a cross-container move changes no one's
-access; if Project membership ever grants access, the plan must re-check it
-(the guard in `planMoveEvent`). A failed
+`move_destination_required`. Project membership grants inherited access.
+Moves across a Project boundary with current or historical sharing are refused
+with `shared_project_move_unsupported`; moves within that Project remain
+available. Direct Page grants remain separate. A failed
 barrier after the put is `503 move_unconfirmed`; the retry replays the receipt
 or plans again over what is stored and reports where the Page landed.
 

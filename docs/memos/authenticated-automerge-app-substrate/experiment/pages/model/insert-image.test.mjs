@@ -71,6 +71,31 @@ test("image placement reuses append, prepend and explicit fractional block ancho
   ]);
   assert.equal(new Set(result.inserted_images.map((i) => i.block_id)).size, 2);
 });
+test("ordinary inserted images remain editable through Markdown", () => {
+  const { after, result } = apply(fixture(), [
+    { op: "insert_image", asset_id, alt: "Diagram", title: "Title" },
+  ]);
+  const { block_id, asset_url } = result.inserted_images[0];
+  const marker = A.spans(after, ["blocks", block_id, "richText"]).find(
+    (span) => span.type === "block" && String(span.value.type) === "image",
+  );
+  assert.ok(!Object.hasOwn(marker.value.attrs, "dark_src"));
+  const changed = apply(after, [
+    {
+      op: "replace_block_markdown",
+      block_id,
+      markdown: `![Changed](${asset_url} "New title")`,
+    },
+  ]).after;
+  const image = richDoc(changed.blocks[block_id]).firstChild.firstChild;
+  assert.equal(image.param.alt, "Changed");
+  assert.equal(image.param.title, "New title");
+  assert.equal(image.param.src, asset_url);
+  const removed = apply(changed, [
+    { op: "replace_block_markdown", block_id, markdown: "Gone" },
+  ]).after;
+  assert.equal(projectPage(removed).blocks.find((block) => block.id === block_id).markdown, "Gone");
+});
 test("malformed or unplaceable images reject the entire structural batch", () => {
   const before = fixture();
   for (const invalid of [

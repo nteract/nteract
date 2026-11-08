@@ -75,7 +75,8 @@ export function setRichMarkdown(doc, id, source, { literal = false } = {}) {
 }
 export function setRichImage(doc, id, { src, dark_src = null, alt, title = null }) {
   // Construct the embed directly: alt text is content, never Markdown syntax.
-  const tree = schema.doc([Paragraph.create([PagesImage.of({ src, dark_src, alt, title })])]);
+  const attrs = { src, alt, title, ...(dark_src == null ? {} : { dark_src }) };
+  const tree = schema.doc([Paragraph.create([PagesImage.of(attrs)])]);
   const spans = pageSpans(tree);
   A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
   stampSpans(doc, spans);
