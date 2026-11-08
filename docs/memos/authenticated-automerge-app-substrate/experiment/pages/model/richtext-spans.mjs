@@ -2,18 +2,11 @@
 // canonical Page-body spans (pageSpans) and the schema check every rich text
 // passes on admission (validateRichSpans).
 import * as A from "@automerge/automerge/slim";
-import { markSpec, safeUrl, validateMarkValue } from "./marks.mjs";
-import {
-  TEXT_CONTAINERS,
-  isKnownBlock,
-  nodeType,
-  validAlignment,
-  validHeadingLevel,
-} from "./node-registry.mjs";
-import { DATAFRAME_BLOCK, parseAssetPath, readDataframe } from "../shared/dataset-assets.mjs";
+import { TEXT_CONTAINERS, isKnownBlock, nodeType } from "./node-registry.mjs";
+import { DATAFRAME_BLOCK, parseAssetPath } from "../shared/dataset-assets.mjs";
 import { decode, encode } from "./wordgard-doc.mjs";
 import { adapter, pmDocFromSpans, pmNodeToSpans } from "./pm-adapter.mjs";
-import { exportMarkdown } from "./markdown-serializer.mjs";
+import { validateNativeSpans } from "./native-validation.mjs";
 import { codeTextUnmarked, isRich } from "./richtext-format.mjs";
 import { unknownNodeNotice } from "./richtext-notices.mjs";
 
@@ -215,56 +208,5 @@ export function validateRich(block) {
 /** Schema check for native rich-text spans read from any Automerge text
  * object: a Page block's `richText` or a comments-doc message `body`. */
 export function validateRichSpans(spans, maxBytes = 262144) {
-  if (new TextEncoder().encode(JSON.stringify(spans)).length > maxBytes)
-    throw Error("Rich block exceeds content limit");
-  for (const span of spans) {
-    if (span.type === "text") {
-      for (const [name, value] of Object.entries(span.marks ?? {})) {
-        markSpec(name);
-        try {
-          validateMarkValue(name, value);
-        } catch {
-          throw Error(name === "link" ? "Invalid rich link" : "Invalid rich mark value");
-        }
-      }
-    } else if (span.type === "block") {
-      const value = span.value;
-      if (
-        !value ||
-        Object.keys(value).some((k) => !["type", "parents", "attrs", "isEmbed"].includes(k)) ||
-        !Array.isArray(value.parents) ||
-        value.parents.length > 32 ||
-        !isKnownBlock(value.type)
-      )
-        throw Error("Unsupported rich block marker");
-      for (const parent of value.parents)
-        if (!isKnownBlock(parent)) throw Error("Unsupported rich parent");
-      if (String(value.type) === "task-list-item" && typeof value.attrs.checked !== "boolean")
-        throw Error("Invalid task checked state");
-    } else throw Error("Unsupported rich span");
-  }
-  const tree = pmDocFromSpans(adapter, codeTextUnmarked(spans));
-  tree.check();
-  tree.descendants((node) => {
-    if (
-      ["table_cell", "table_header"].includes(node.type.name) &&
-      node.attrs.align != null &&
-      !validAlignment(node.attrs.align)
-    )
-      throw Error("Invalid table alignment");
-    if (node.type.name === "heading" && !validHeadingLevel(node.attrs.level))
-      throw Error("Invalid heading level");
-    if (
-      node.type.name === "image" &&
-      (!safeUrl(node.attrs.src) || (node.attrs.dark_src != null && !safeUrl(node.attrs.dark_src)))
-    )
-      throw Error("Invalid rich image URL");
-    // Lenient: a later build may add media types or attrs under the same
-    // feature. Writers check strictly (dataframeAttrs) before writing.
-    if (node.type.name === "dataframe" && !readDataframe(node.attrs))
-      throw Error("Invalid dataframe: src must be a Page asset path");
-    for (const mark of node.marks)
-      if (mark.type.name === "link" && !safeUrl(mark.attrs.href)) throw Error("Invalid rich link");
-  });
-  exportMarkdown(tree);
+  validateNativeSpans(spans, maxBytes);
 }
