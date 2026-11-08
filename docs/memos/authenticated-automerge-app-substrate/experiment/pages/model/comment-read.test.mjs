@@ -1,0 +1,497 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { readFileSync } from "node:fs";
+import * as A from "@automerge/automerge";
+import { build } from "esbuild";
+import fc from "fast-check";
+import * as candidate from "./comment-content.mjs";
+import * as reader from "./comment-read.mjs";
+import * as baseline from "../test/comment-read-baseline.mjs";
+import { allInputs } from "../test/address-inputs.mjs";
+import { RICH_FORMAT } from "./richtext-format.mjs";
+import { updateSpansConfig } from "./marks.mjs";
+import { captureSelectionTarget } from "./comments.mjs";
+import { projectPage } from "./page.mjs";
+import { projectReadComments } from "./read-comments.mjs";
+import { projectReadChanges } from "./read-changes.mjs";
+import { readTool } from "../worker/tool-reads.mjs";
+import { readChangesTool } from "../worker/tool-changes.mjs";
+import { nativeRead, nativeReadSpans, readFingerprint, readMarkdown } from "./native-read.mjs";
+
+const S = (value) => new A.ImmutableString(value);
+const block = (type, parents = [], attrs = {}, isEmbed = false) => ({
+  type: "block",
+  value: { type: S(type), parents: parents.map(S), attrs, isEmbed },
+});
+const text = (value, marks = {}) => ({ type: "text", value, marks });
+const ACTOR = "11223344556677889900aabbccddeeff00";
+const PAGE = "11111111-1111-4111-8111-111111111111";
+const BLOCK = "22222222-2222-4222-8222-222222222222";
+const AUTHOR = { principal: "user:reader", displayName: "Reader", driver: "Test client" };
+const AT = "2026-11-07T18:00:00-08:00";
+const AUTHORITY = { retry_token: "read-fixture", retry_key_prefix: "fixture_", retry_until: AT };
+
+function richMessage(spans) {
+  let doc = A.from({ format: RICH_FORMAT, richText: "" });
+  doc = A.change(doc, (draft) => A.updateSpans(draft, ["richText"], spans, updateSpansConfig));
+  return doc;
+}
+
+function compare(message, name) {
+  const before = A.save(message);
+  const heads = A.getHeads(message);
+  const expected = baseline.commentBodyProjection(message);
+  assert.deepEqual(candidate.commentBodyProjection(message), expected, name);
+  assert.equal(candidate.commentMarkdown(message), baseline.commentMarkdown(message), name);
+  for (const fn of ["isStoredFormMessage", "commentMessageState", "commentThreadState"])
+    assert.deepEqual(candidate[fn](message), baseline[fn](message), `${name}: ${fn}`);
+  assert.deepEqual(A.getHeads(message), heads, `${name}: heads`);
+  assert.deepEqual(A.save(message), before, `${name}: saved bytes`);
+}
+
+test("comment reads match the frozen baseline on stored corpus and generated native frames", () => {
+  for (const { name, spans } of allInputs({ seed: 0xc011, count: 80, maxDepth: 2 })) {
+    const doc = richMessage(spans);
+    try {
+      compare(doc, name);
+    } finally {
+      A.free(doc);
+    }
+  }
+});
+
+const EXTRA = {
+  "code-hard-break": [
+    block("code-block"),
+    text("one"),
+    block("hard-break", [], {}, true),
+    text("two"),
+  ],
+  mermaid: [block("code-block", [], { params: S("mermaid") }), text("graph TD\nA-->B")],
+  "legacy-heading": [block("heading", [], { level: 9 }), text("title")],
+  "unsafe-link": [text("label", { link: JSON.stringify({ href: "javascript:alert(1)" }) })],
+  "bad-link-json": [text("original", { link: "not-json" })],
+  "image-title": [
+    block(
+      "image",
+      [],
+      { src: S("https://example.org/i.png"), alt: S("alt"), title: S('say "hi"') },
+      true,
+    ),
+  ],
+  "local-dataframe": [
+    block("dataframe", [], {
+      src: S(`/api/pages/${PAGE}/assets/${"a".repeat(64)}`),
+      media_type: S("application/vnd.apache.parquet"),
+      title: S("Rows"),
+    }),
+  ],
+};
+
+test("legacy and corrupt rich comments retain their Markdown or plain fallback", () => {
+  for (const [name, spans] of Object.entries(EXTRA)) {
+    const doc = richMessage(spans);
+    try {
+      compare(doc, name);
+    } finally {
+      A.free(doc);
+    }
+  }
+  for (const type of ["paragraph", "heading", "code-block", "future"]) {
+    for (const parents of [[], ["blockquote"], [S("blockquote")]]) {
+      const doc = richMessage([
+        { type: "block", value: { type, parents, attrs: { level: 2 }, isEmbed: false } },
+        text("original"),
+      ]);
+      try {
+        compare(doc, `string marker ${type}/${JSON.stringify(parents)}`);
+      } finally {
+        A.free(doc);
+      }
+    }
+  }
+});
+
+test("legacy stored scalar attributes keep the actual comment Markdown contract", () => {
+  const fields = {
+    image: ["src", "alt", "title"],
+    dataframe: ["src", "media_type", "title"],
+    "pages-opaque": ["node_type"],
+    heading: ["level"],
+    "ordered-list-item": ["order"],
+    "task-list-item": ["checked"],
+    "code-block": ["params"],
+  };
+  for (const [type, keys] of Object.entries(fields)) {
+    for (const value of [null, false, true, 0, "", 1, {}, [], "custom"]) {
+      const doc = richMessage([
+        block(type, [], Object.fromEntries(keys.map((key) => [key, value])), type === "image"),
+        text("original"),
+      ]);
+      try {
+        compare(doc, `stored ${type} ${JSON.stringify(value)}`);
+      } finally {
+        A.free(doc);
+      }
+    }
+  }
+});
+
+test("malformed container and embed frames never lose source text", () => {
+  const types = [
+    "paragraph",
+    "heading",
+    "code-block",
+    "blockquote",
+    "unordered-list-item",
+    "task-list-item",
+    "table",
+    "table-row",
+    "table-cell",
+    "future",
+  ];
+  for (const parent of types) {
+    for (const child of [...types, "horizontal-rule", "dataframe"]) {
+      for (const embed of [false, true]) {
+        const doc = richMessage([
+          block(parent),
+          text("before"),
+          block(child, [parent], {}, embed),
+          text("after"),
+        ]);
+        try {
+          compare(doc, `${parent}/${child}/${embed}`);
+        } finally {
+          A.free(doc);
+        }
+      }
+    }
+  }
+});
+
+test("legacy block and embed boundaries retain empty nodes and refusal semantics", () => {
+  const types = [
+    "paragraph",
+    "heading",
+    "code-block",
+    "blockquote",
+    "unordered-list-item",
+    "task-list-item",
+    "table",
+    "table-row",
+    "table-cell",
+    "future",
+    "dataframe",
+    "horizontal-rule",
+  ];
+  for (const parent of [null, ...types]) {
+    for (const child of [...types, "hard-break", "image"]) {
+      for (const embed of [false, true]) {
+        for (const tail of [[], [text("after")]]) {
+          const doc = richMessage([
+            ...(parent ? [block(parent)] : []),
+            block(
+              child,
+              [],
+              child === "image" ? { src: S("https://example.org/image.png") } : {},
+              embed,
+            ),
+            ...tail,
+          ]);
+          try {
+            compare(doc, `boundary ${parent}/${child}/${embed}/${tail.length}`);
+          } finally {
+            A.free(doc);
+          }
+        }
+      }
+    }
+  }
+});
+
+test("mixed mutable markers and future-node fallback retain actual base comment reads", () => {
+  const type = fc.constantFrom(
+    "paragraph",
+    "heading",
+    "code-block",
+    "blockquote",
+    "unordered-list-item",
+    "task-list-item",
+    "table",
+    "table-row",
+    "table-cell",
+    "future",
+    "dataframe",
+    "horizontal-rule",
+    "hard-break",
+    "image",
+  );
+  fc.assert(
+    fc.property(
+      fc.record({
+        prefix: fc.option(type, { nil: null }),
+        type,
+        embed: fc.boolean(),
+        parent: fc.option(type, { nil: null }),
+        stringType: fc.boolean(),
+        stringParent: fc.boolean(),
+        tail: fc.boolean(),
+      }),
+      (input) => {
+        const frame = block(
+          input.type,
+          input.parent ? [input.parent] : [],
+          input.type === "image"
+            ? { src: S("https://example.org/i.png") }
+            : input.type === "dataframe"
+              ? EXTRA["local-dataframe"][0].value.attrs
+              : {},
+          input.embed,
+        );
+        if (input.stringType) frame.value.type = input.type;
+        if (input.stringParent) frame.value.parents = input.parent ? [input.parent] : [];
+        const doc = richMessage([
+          ...(input.prefix ? [block(input.prefix), text("before")] : []),
+          frame,
+          ...(input.tail ? [text("after")] : []),
+        ]);
+        try {
+          compare(doc, JSON.stringify(input));
+        } finally {
+          A.free(doc);
+        }
+      },
+    ),
+    { seed: 0xcafe, numRuns: 1000 },
+  );
+});
+
+test("direct reader is the exported implementation and its full import graph excludes PM", async () => {
+  for (const name of [
+    "commentBodyProjection",
+    "commentMarkdown",
+    "commentMessageState",
+    "commentThreadState",
+    "isStoredFormMessage",
+  ])
+    assert.equal(candidate[name], reader[name], `${name} is not a separate facade`);
+  const result = await build({
+    entryPoints: [new URL("./comment-read.mjs", import.meta.url).pathname],
+    bundle: true,
+    write: false,
+    metafile: true,
+    treeShaking: false,
+    platform: "browser",
+    format: "esm",
+  });
+  assert.deepEqual(
+    Object.keys(result.metafile.inputs).filter((path) =>
+      /prosemirror|pm-adapter|pm-markdown-parser|richtext-spans|markdown-import|comment-content/.test(
+        path,
+      ),
+    ),
+    [],
+  );
+});
+
+test("native span entry preserves the block reader and never edits source frames", () => {
+  const doc = richMessage([
+    text("intro"),
+    block("blockquote"),
+    block("future", ["blockquote"]),
+    text("source"),
+    ...EXTRA["code-hard-break"],
+  ]);
+  try {
+    const saved = A.save(doc),
+      spans = A.spans(doc, ["richText"]);
+    const input = JSON.stringify(spans);
+    const direct = nativeRead(doc),
+      fromSpans = nativeReadSpans(spans);
+    for (const read of [direct, fromSpans]) {
+      assert.equal(readMarkdown(read.nodes), readMarkdown(direct.nodes));
+      assert.deepEqual(
+        read.nodes.map((node) => readFingerprint(node, read.metadata)),
+        direct.nodes.map((node) => readFingerprint(node, direct.metadata)),
+      );
+      assert.deepEqual(
+        read.nodes.map((node) => read.source.get(node)),
+        direct.nodes.map((node) => direct.source.get(node)),
+      );
+    }
+    assert.equal(JSON.stringify(spans), input);
+    assert.deepEqual(A.save(doc), saved);
+  } finally {
+    A.free(doc);
+  }
+});
+
+test("read tolerance never changes writer limits or admits reader-only forms", () => {
+  for (const spans of [
+    [text("x".repeat(candidate.COMMENT_MAX_LENGTH + 1))],
+    EXTRA["local-dataframe"],
+    [block("future"), text("source")],
+    [block("heading", [], { level: 9 }), text("legacy")],
+    [text("label", { link: JSON.stringify({ href: "https://example.org", private: "kept" }) })],
+  ]) {
+    const doc = richMessage(spans);
+    try {
+      compare(doc, "readable but inadmissible");
+      assert.throws(() => candidate.validateCommentSpans(A.spans(doc, ["richText"])));
+    } finally {
+      A.free(doc);
+    }
+  }
+  for (const bytes of [candidate.COMMENT_MAX_SOURCE, candidate.COMMENT_MAX_SOURCE + 1]) {
+    const doc = richMessage([
+      text("long", { link: JSON.stringify({ href: `https://example.org/${"x".repeat(bytes)}` }) }),
+    ]);
+    try {
+      compare(doc, `large Markdown ${bytes}`);
+      assert.throws(() => candidate.validateCommentSpans(A.spans(doc, ["richText"])));
+    } finally {
+      A.free(doc);
+    }
+  }
+});
+
+test("unsupported forms, literal bodies, old states and tombstones retain baseline semantics", () => {
+  const messages = [
+    {},
+    { body: "old text" },
+    { format: RICH_FORMAT, body: "old copy", richText: "source" },
+    { format: RICH_FORMAT, richText: ["corrupt"] },
+    { format: RICH_FORMAT, richText: "  literal **text**\n", bodyFormat: "plain" },
+    { format: RICH_FORMAT, richText: "stored", deletedAt: AT },
+    ...["open", "resolved", "deleted", ""].flatMap((status) => [
+      { status },
+      { status: { value: status, at: AT } },
+    ]),
+  ];
+  for (const [index, message] of messages.entries()) {
+    const doc = A.from(message);
+    try {
+      compare(doc, `stored form ${index}`);
+    } finally {
+      A.free(doc);
+    }
+  }
+});
+
+function apiFixture() {
+  let page = A.init({ actor: ACTOR });
+  page = A.change(page, { time: 0 }, (draft) => {
+    draft.page_id = PAGE;
+    draft.title = "Comment read contract";
+    draft.blocks = {
+      [BLOCK]: {
+        id: BLOCK,
+        kind: "markdown",
+        position: "a0",
+        format: RICH_FORMAT,
+        markdown: "",
+        richText: "Keep this passage.",
+        metadata: {},
+      },
+    };
+    draft.schema = { features: ["comments-doc"] };
+  });
+  const target = captureSelectionTarget(page, BLOCK, "this passage");
+  let comments = A.init({ actor: ACTOR });
+  comments = A.change(comments, { time: 0 }, (draft) => {
+    draft.threads = {};
+  });
+  const since = A.getHeads(comments);
+  comments = A.change(comments, { time: 0 }, (draft) => {
+    const message = (richText, extra = {}) => ({
+      format: RICH_FORMAT,
+      richText,
+      author: AUTHOR,
+      createdAt: AT,
+      deletedAt: null,
+      ...extra,
+    });
+    draft.threads.thread = {
+      target,
+      author: AUTHOR,
+      createdAt: AT,
+      status: "open",
+      messages: {
+        native: message(""),
+        plain: message("  literal **text**\n", { bodyFormat: "plain" }),
+        old: { body: "not migrated", author: AUTHOR, createdAt: AT },
+        stale: message("native copy", { body: "outdated Markdown copy" }),
+        bad: message(""),
+        code: message(""),
+        tombstone: message("deleted source", { deletedAt: AT }),
+      },
+    };
+    A.updateSpans(
+      draft,
+      ["threads", "thread", "messages", "native", "richText"],
+      [
+        text("marked", { strong: true, em: true }),
+        block("task-list-item", [], { checked: true }),
+        text("task"),
+      ],
+      updateSpansConfig,
+    );
+    A.updateSpans(
+      draft,
+      ["threads", "thread", "messages", "bad", "richText"],
+      EXTRA["bad-link-json"],
+      updateSpansConfig,
+    );
+    A.updateSpans(
+      draft,
+      ["threads", "thread", "messages", "code", "richText"],
+      EXTRA["code-hard-break"],
+      updateSpansConfig,
+    );
+    draft.threads.resolved = {
+      target: { kind: "block", blockId: BLOCK },
+      author: AUTHOR,
+      createdAt: AT,
+      status: "resolved",
+      messages: { reply: message("resolved source") },
+    };
+    draft.threads.deleted = {
+      target,
+      author: AUTHOR,
+      createdAt: AT,
+      status: { value: "deleted", at: AT },
+      messages: { reply: message("hidden source") },
+    };
+  });
+  return { page, comments, since };
+}
+
+test("read_page, list_page_comments and read_page_changes match the recorded base snapshots", async () => {
+  const { page, comments, since } = apiFixture();
+  try {
+    const saved = [A.save(page), A.save(comments)];
+    const heads = [A.getHeads(page), A.getHeads(comments)];
+    const options = { commentsDoc: comments, issueAuthority: async () => AUTHORITY };
+    const deltaArgs = { since_heads: heads[0], since_comment_heads: since };
+    const actual = {
+      project: projectPage(page, comments),
+      compact: projectReadComments(page, { state: "all" }, comments),
+      summary: projectReadComments(page, { state: "all", include_messages: false }, comments),
+      delta: projectReadChanges(page, deltaArgs, comments),
+      snapshot: projectReadChanges(page, { since_heads: heads[0] }, comments),
+      read: await readTool(page, "read_page", { page_id: PAGE }, options),
+      selected: await readTool(page, "read_page", { comments: "all" }, options),
+      list: await readTool(page, "list_page_comments", { state: "all" }, options),
+      changes: await readChangesTool(page, deltaArgs, options),
+    };
+    const fixture = new URL("./comment-read.golden.json", import.meta.url);
+    // Recorded on unchanged production source at 943115c13, before this slice.
+    // No rewrite mode: a candidate must not bless its own API changes.
+    assert.deepEqual(JSON.parse(JSON.stringify(actual)), JSON.parse(readFileSync(fixture, "utf8")));
+    assert.deepEqual([A.getHeads(page), A.getHeads(comments)], heads);
+    assert.deepEqual([A.save(page), A.save(comments)], saved);
+  } finally {
+    A.free(page);
+    A.free(comments);
+  }
+});
