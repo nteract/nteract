@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {test} from "node:test";
+import {spawnSync} from "node:child_process";
 import {
   compareVersions,
   packageName,
@@ -17,6 +18,7 @@ const run = {
   id: 100, run_attempt: 1,
   repository: {full_name: expected.repository}, head_repository: {full_name: expected.repository},
   path: ".github/workflows/release-nightly.yml", event: "schedule",
+  display_title: "Nightly Release",
   status: "completed", conclusion: "success", head_sha: sourceSha,
 };
 const identity = releaseIdentity(run, expected);
@@ -24,6 +26,30 @@ const plan = releasePlan("0.5.6", identity, "true", "true");
 const nativeTarget = "darwin-arm64";
 const nativeSource = {name: packageName(nativeTarget), version: "0.5.6"};
 const manifest = stampManifest(nativeSource, plan, nativeTarget);
+
+test("manual npm resolver rejects a repair run before writing identity or outputs", () => {
+  const cli = new URL("../ci/npm-release-cli.mjs", import.meta.url).href;
+  const program = `
+    import fs from "node:fs";
+    import {syncBuiltinESMExports} from "node:module";
+    const event = "/mock-event.json";
+    const read = fs.readFileSync;
+    fs.readFileSync = (path, ...args) => path === event ? JSON.stringify({repository: {default_branch: "main"}}) : read(path, ...args);
+    fs.writeFileSync = fs.appendFileSync = () => { throw new Error("unexpected file write"); };
+    syncBuiltinESMExports();
+    Object.assign(process.env, {GITHUB_EVENT_PATH: event, GITHUB_EVENT_NAME: "workflow_dispatch", GITHUB_REF: "refs/heads/main", GITHUB_REPOSITORY: "nteract/nteract", GITHUB_API_URL: "https://api.github.com", RELEASE_RUN_ID: "100", RELEASE_RUN_ATTEMPT: "1"});
+    globalThis.fetch = async url => {
+      if (url !== "https://api.github.com/repos/nteract/nteract/actions/runs/100/attempts/1") throw new Error("unexpected API request");
+      return new Response(JSON.stringify(${JSON.stringify({...run, event: "workflow_dispatch", display_title: "Nightly wheel recovery 42465470406"})}));
+    };
+    process.argv = [process.execPath, "npm-release-cli.mjs", "resolve", "/must-not-write.json"];
+    await import(${JSON.stringify(cli)});
+  `;
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", program], {encoding: "utf8"});
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Wheel-only recovery is not a successful release producer/);
+  assert.doesNotMatch(result.stderr, /unexpected file write|unexpected API request/);
+});
 const empty = () => ({versions: {}, "dist-tags": {}});
 const packument = (versions, tag, version) => ({versions: Object.fromEntries(versions.map(value => [value.version, value])), "dist-tags": tag ? {[tag]: version} : {}});
 
@@ -47,6 +73,9 @@ for (const [name, patch] of [
   ["pull request event", {event: "pull_request"}],
   ["failed release", {conclusion: "failure"}], ["running release", {status: "in_progress"}],
   ["mismatched source", {head_sha: "b".repeat(40)}], ["non-SHA source", {head_sha: "main"}],
+  ["wheel-only recovery", {event: "workflow_dispatch", display_title: "Nightly wheel recovery 42465470406"}],
+  ["invalid recovery input", {event: "workflow_dispatch", display_title: "Nightly wheel recovery invalid"}],
+  ["unrecognized nightly title", {display_title: "other"}],
 ]) {
   test(`rejects ${name}`, () => assert.throws(() => releaseIdentity({...run, ...patch}, expected)));
 }

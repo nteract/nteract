@@ -21,6 +21,7 @@ on:
       - scripts/ci/audit-windows-crt-imports.mjs
       - scripts/ci/filter-unpublished-release-tags.sh
       - scripts/ci/check-release-tag.sh
+      - scripts/ci/nightly-wheel-recovery.mjs
       - scripts/ci/npm-release*
       - scripts/ci/npm-wasm-*
       - scripts/ci/smoke-windows-node-addon.cjs
@@ -43,6 +44,7 @@ on:
       - scripts/tests/audit-linux-node.test.mjs
       - scripts/tests/audit-windows-crt-imports.test.mjs
       - scripts/tests/release-workflow.test.mjs
+      - scripts/tests/nightly-wheel-recovery.test.mjs
       - scripts/tests/notebook-cloud-assets.test.mjs
       - scripts/tests/editor-assets-release.test.mjs
       - scripts/tests/runtime-peer-image-debug.test.mjs
@@ -172,7 +174,7 @@ jobs:
       - uses: pnpm/action-setup@v4
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: node scripts/prepare-npm-license-supplements.mjs --check
-      - run: node --test scripts/tests/audit-linux-node.test.mjs scripts/tests/audit-windows-crt-imports.test.mjs scripts/tests/release-workflow.test.mjs scripts/tests/notebook-cloud-assets.test.mjs scripts/tests/editor-assets-release.test.mjs scripts/tests/runtime-peer-image-debug.test.mjs scripts/tests/stage-notebook-sidecars.test.mjs scripts/tests/npm-*.mjs
+      - run: node --test scripts/tests/audit-linux-node.test.mjs scripts/tests/audit-windows-crt-imports.test.mjs scripts/tests/release-workflow.test.mjs scripts/tests/nightly-wheel-recovery.test.mjs scripts/tests/notebook-cloud-assets.test.mjs scripts/tests/editor-assets-release.test.mjs scripts/tests/runtime-peer-image-debug.test.mjs scripts/tests/stage-notebook-sidecars.test.mjs scripts/tests/npm-*.mjs
       - run: python3 -m unittest scripts/tests/test_release_tag.py -v
       - run: node --test scripts/tests/release-attribution.test.mjs scripts/tests/bundled-npm-licenses.test.mjs
       - run: node --test scripts/tests/prepare-plotly-attribution.test.mjs

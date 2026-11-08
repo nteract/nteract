@@ -410,7 +410,8 @@ test("release qualification requires all binaries, wheel tests, and the AppImage
   ]);
   // In particular, prerelease cannot depend on the optional plugin job.
   for (const id of ["prerelease", ...needs("prerelease")]) {
-    assert.doesNotMatch(jobs.get(id), /^    (?:if|continue-on-error):/m, `${id} must fail closed`);
+    if (id === "compute-version") assert.match(jobs.get(id), /^    if: inputs\.recovery_run_id == ''$/m);
+    else assert.doesNotMatch(jobs.get(id), /^    (?:if|continue-on-error):/m, `${id} must fail closed`);
   }
 });
 
@@ -462,6 +463,43 @@ test("release channels serialize runs without cancelling active publication", ()
     const caller = workflow(`release-${channel}`);
     assert.ok(caller.includes(`concurrency:\n  group: nteract-release-${channel}\n  cancel-in-progress: false\n`));
   }
+});
+
+test("wheel recovery stays in the original workflow pair and cannot start normal release jobs", () => {
+  const nightly = workflow("release-nightly");
+  assert.match(nightly, /run-name:.*inputs\.recovery_run_id != ''.*Nightly wheel recovery/);
+  assert.match(nightly, /recovery_run_id:\n\s+description:[^\n]+\n\s+type: string\n\s+default: ""/);
+  assert.match(nightly, /recovery_run_id: \$\{\{ inputs\.recovery_run_id \|\| '' \}\}/);
+  assert.match(jobs.get("compute-version"), /^    if: inputs\.recovery_run_id == ''$/m);
+  const recovery = jobs.get("recover-nightly-wheel");
+  assert.ok(recovery);
+  assert.match(recovery, /^    if: inputs\.recovery_run_id != ''$/m);
+  assert.match(recovery, /steps:\n      - name: Require the allowlisted nightly dispatch context/);
+  const guard = workflowStep(recovery, "Require the allowlisted nightly dispatch context");
+  assert.doesNotMatch(guard, /\$\{\{/);
+  assert.match(guard, /test "\$RECOVERY_CHANNEL" = nightly/);
+  assert.match(guard, /test "\$RECOVERY_RUN_ID" = 42465470406/);
+  assert.doesNotMatch(recovery, /^    needs:/m);
+  assert.match(recovery, /contents: read\n\s+actions: read\n\s+id-token: write/);
+  assert.match(recovery, /ref: \$\{\{ github.sha \}\}\n\s+persist-credentials: false/);
+  assert.match(recovery, /version: "0\.13\.7"/);
+  assert.doesNotMatch(recovery, /secrets\.|contents: write|packages: write|softprops|--clobber|cargo build|uv publish|always\(\)|continue-on-error/);
+  assert.doesNotMatch(workflow("release-stable"), /recovery_run_id|Nightly wheel recovery/);
+  const reachesCompute = id => id === "compute-version" || needs(id).some(reachesCompute);
+  for (const id of jobs.keys()) {
+    if (id !== "recover-nightly-wheel") assert.ok(reachesCompute(id), `${id} must depend on normal version computation`);
+  }
+});
+
+test("all three release consumers apply the shared identity guard before using source or publishing", () => {
+  for (const name of ["npm-release-cli.mjs", "npm-wasm-release-cli.mjs", "editor-assets-release-cli.mjs"]) {
+    const source = readFileSync(new URL(`../ci/${name}`, import.meta.url), "utf8");
+    assert.match(source, /import[^;]*releaseIdentity[^;]*from ["']\.\/npm-release\.mjs["']/);
+    assert.match(source, /releaseIdentity\(/);
+  }
+  assert.match(validation, /scripts\/ci\/nightly-wheel-recovery\.mjs/);
+  assert.match(validation, /scripts\/tests\/nightly-wheel-recovery\.test\.mjs/);
+  assert.match(validation, /node --test[^\n]*scripts\/tests\/nightly-wheel-recovery\.test\.mjs/);
 });
 
 test("stable and nightly keep publishing their own plugin slice", () => {
