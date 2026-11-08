@@ -200,6 +200,7 @@ export function nativeRead(block, pageId) {
   return nativeReadSpans(A.spans(block, ["richText"]), pageId);
 }
 
+/** Read-only spans, including caller-normalized legacy projection forms. */
 export function nativeReadSpans(input, pageId) {
   const spans = codeTextUnmarked(input);
   const nodes = [],

@@ -1,10 +1,9 @@
 import * as A from "@automerge/automerge/slim";
 import { RICH_FORMAT, isRich } from "./richtext-format.mjs";
-import { STORED_FORM_UNSUPPORTED, storedFormUnsupported } from "./stored-form.mjs";
+import { storedFormUnsupported } from "./stored-form.mjs";
 import { parseAgentMarkdown } from "./markdown-import.mjs";
 import { updateSpansConfig } from "./marks.mjs";
-import { exportMarkdown } from "./markdown-serializer.mjs";
-import { pageSpans, richDoc, validateRichSpans } from "./richtext-spans.mjs";
+import { pageSpans, validateRichSpans } from "./richtext-spans.mjs";
 import { decode, encode } from "./wordgard-doc.mjs";
 import { stampSpans } from "./schema-features.mjs";
 import { DATAFRAME_BLOCK } from "../shared/dataset-assets.mjs";
@@ -13,66 +12,20 @@ import {
   COMMENT_MAX_LENGTH,
   PLAIN_FORMAT,
   commentSpansMeasure,
-  plainCommentText,
 } from "./comment-text.mjs";
+import { isStoredFormMessage } from "./comment-read.mjs";
 
 export { COMMENT_MAX_BYTES, COMMENT_MAX_LENGTH, PLAIN_FORMAT } from "./comment-text.mjs";
+export {
+  commentMarkdown,
+  commentBodyProjection,
+  isStoredFormMessage,
+  commentMessageState,
+  commentThreadState,
+} from "./comment-read.mjs";
 /** The most UTF-8 bytes of `body` source a tool write may send. The stored
  * content rule still applies to what it parses to. */
 export const COMMENT_MAX_SOURCE = COMMENT_MAX_BYTES;
-
-export function commentMarkdown(message) {
-  return commentBodyProjection(message).body;
-}
-
-/** What reads return for a live message: `{ body, body_format? }`.
- *
- * - A rich message reads as Markdown computed from its spans, with
- *   `body_format: "markdown"`.
- * - A message written as plain text reads as that text, literally, with no
- *   `body_format`, the way plain messages always have. That holds while its
- *   spans are still plain text; once they hold formatting, it reads as
- *   Markdown.
- * - A message in a form an earlier build stored (a bare `body`, or a `body`
- *   copy beside its spans) reads as an empty plain body with
- *   `content_error: "stored_form_unsupported"`. Its stored text is never
- *   shown or guessed at, and the rest of the thread and the Page stay
- *   readable. Writes to it are still refused (writeCommentSpans).
- *
- * Never throws: one message can't make a whole comment list unreadable.
- */
-export function commentBodyProjection(message) {
-  if (isStoredFormMessage(message))
-    return { body: "", body_format: "plain", content_error: STORED_FORM_UNSUPPORTED };
-  try {
-    if (String(message.bodyFormat ?? "") === PLAIN_FORMAT) {
-      const text = plainCommentText(A.spans(message, ["richText"]));
-      if (text !== null) return { body: text };
-    }
-    return { body: exportMarkdown(richDoc(message)), body_format: "markdown" };
-  } catch {
-    // Keep the rest of a Page readable: the bare characters of text that
-    // can't be read as spans (a JSON copy of the document). Never repair or
-    // overwrite shared data on read.
-    return {
-      body:
-        typeof message.richText === "string"
-          ? message.richText.replaceAll("\ufffc", "\n").trim()
-          : "",
-      body_format: "plain",
-      content_error: "rich_text_unavailable",
-    };
-  }
-}
-
-/** Whether a message is in a form an earlier build wrote: no rich text, or
- * a `body` copy beside it. The comments migration rewrote every stored
- * message, so meeting one means it didn't come through that rewrite: a
- * stale replica's concurrent `body` write survives a merge with the
- * migration's delete, for one. */
-export function isStoredFormMessage(message) {
-  return !isRich(message) || message.body !== undefined;
-}
 
 /** Refuse to write over a message in an earlier build's form. */
 function requireStoredMessage(message) {
@@ -249,26 +202,4 @@ export function writeCommentSpans(doc, path, spans, { plain = false } = {}) {
   // Comments share the Page's mark and block registry, so they share its stamp.
   stampSpans(doc, spans);
   validateCommentSpans(A.spans(message, ["richText"]));
-}
-
-// JSON values omit marks and table marker attributes; change feeds must include spans.
-// A message without spans (a historical view from before the comments
-// migration) compares as unreadable, so it reads as changed.
-export function commentMessageState(message) {
-  try {
-    return { ...message, spans: A.spans(message, ["richText"]) };
-  } catch {
-    return { ...message, content_error: "rich_text_unavailable" };
-  }
-}
-export function commentThreadState(thread) {
-  return {
-    ...thread,
-    messages: Object.fromEntries(
-      Object.entries(thread.messages ?? {}).map(([id, message]) => [
-        id,
-        commentMessageState(message),
-      ]),
-    ),
-  };
 }

@@ -1,0 +1,1240 @@
+{
+  "project": {
+    "page_id": "11111111-1111-4111-8111-111111111111",
+    "title": "Comment read contract",
+    "blocks": [
+      {
+        "format": "automerge-rich-text-v1",
+        "id": "22222222-2222-4222-8222-222222222222",
+        "kind": "markdown",
+        "markdown": "Keep this passage.",
+        "metadata": {},
+        "position": "a0"
+      }
+    ],
+    "comments": [
+      {
+        "author": {
+          "displayName": "Reader",
+          "driver": "Test client",
+          "principal": "user:reader"
+        },
+        "createdAt": "2026-11-07T18:00:00-08:00",
+        "messages": [
+          {
+            "author": {
+              "displayName": "Reader",
+              "driver": "Test client",
+              "principal": "user:reader"
+            },
+            "createdAt": "2026-11-07T18:00:00-08:00",
+            "deletedAt": null,
+            "format": "automerge-rich-text-v1",
+            "id": "bad",
+            "body": "[original]()",
+            "body_format": "markdown"
+          },
+          {
+            "author": {
+              "displayName": "Reader",
+              "driver": "Test client",
+              "principal": "user:reader"
+            },
+            "createdAt": "2026-11-07T18:00:00-08:00",
+            "deletedAt": null,
+            "format": "automerge-rich-text-v1",
+            "id": "code",
+            "body": "one\ntwo",
+            "body_format": "plain",
+            "content_error": "rich_text_unavailable"
+          },
+          {
+            "author": {
+              "displayName": "Reader",
+              "driver": "Test client",
+              "principal": "user:reader"
+            },
+            "createdAt": "2026-11-07T18:00:00-08:00",
+            "deletedAt": null,
+            "format": "automerge-rich-text-v1",
+            "id": "native",
+            "body": "***marked***\n\n- [x] task",
+            "body_format": "markdown"
+          },
+          {
+            "author": {
+              "displayName": "Reader",
+              "driver": "Test client",
+              "principal": "user:reader"
+            },
+            "createdAt": "2026-11-07T18:00:00-08:00",
+            "id": "old",
+            "body": "",
+            "body_format": "plain",
+            "content_error": "stored_form_unsupported"
+          },
+          {
+            "author": {
+              "displayName": "Reader",
+              "driver": "Test client",
+              "principal": "user:reader"
+            },
+            "createdAt": "2026-11-07T18:00:00-08:00",
+            "deletedAt": null,
+            "format": "automerge-rich-text-v1",
+            "id": "plain",
+            "body": "  literal **text**\n"
+          },
+          {
+            "author": {
+              "displayName": "Reader",
+              "driver": "Test client",
+              "principal": "user:reader"
+            },
+            "createdAt": "2026-11-07T18:00:00-08:00",
+            "deletedAt": null,
+            "format": "automerge-rich-text-v1",
+            "id": "stale",
+            "body": "",
+            "body_format": "plain",
+            "content_error": "stored_form_unsupported"
+          },
+          {
+            "author": {
+              "displayName": "Reader",
+              "driver": "Test client",
+              "principal": "user:reader"
+            },
+            "createdAt": "2026-11-07T18:00:00-08:00",
+            "deletedAt": "2026-11-07T18:00:00-08:00",
+            "format": "automerge-rich-text-v1",
+            "id": "tombstone"
+          }
+        ],
+        "status": "open",
+        "target": {
+          "anchor": {
+            "blockId": "22222222-2222-4222-8222-222222222222",
+            "relativePositionBase64": "MTQyQDExMjIzMzQ0NTU2Njc3ODg5OTAwYWFiYmNjZGRlZWZmMDA=",
+            "textObjectId": "68@11223344556677889900aabbccddeeff00"
+          },
+          "head": {
+            "blockId": "22222222-2222-4222-8222-222222222222",
+            "relativePositionBase64": "MTUzQDExMjIzMzQ0NTU2Njc3ODg5OTAwYWFiYmNjZGRlZWZmMDA=",
+            "textObjectId": "68@11223344556677889900aabbccddeeff00"
+          },
+          "kind": "selection"
+        },
+        "id": "thread",
+        "selectionContext": {
+          "status": "attached",
+          "start": {
+            "blockId": "22222222-2222-4222-8222-222222222222",
+            "offsetUtf16": 5
+          },
+          "end": {
+            "blockId": "22222222-2222-4222-8222-222222222222",
+            "offsetUtf16": 17
+          },
+          "text": "this passage"
+        }
+      },
+      {
+        "author": {
+          "displayName": "Reader",
+          "driver": "Test client",
+          "principal": "user:reader"
+        },
+        "createdAt": "2026-11-07T18:00:00-08:00",
+        "messages": [
+          {
+            "author": {
+              "displayName": "Reader",
+              "driver": "Test client",
+              "principal": "user:reader"
+            },
+            "createdAt": "2026-11-07T18:00:00-08:00",
+            "deletedAt": null,
+            "format": "automerge-rich-text-v1",
+            "id": "reply",
+            "body": "resolved source",
+            "body_format": "markdown"
+          }
+        ],
+        "status": "resolved",
+        "target": {
+          "blockId": "22222222-2222-4222-8222-222222222222",
+          "kind": "block"
+        },
+        "id": "resolved"
+      },
+      {
+        "author": {
+          "displayName": "Reader",
+          "driver": "Test client",
+          "principal": "user:reader"
+        },
+        "createdAt": "2026-11-07T18:00:00-08:00",
+        "messages": [
+          {
+            "author": {
+              "displayName": "Reader",
+              "driver": "Test client",
+              "principal": "user:reader"
+            },
+            "createdAt": "2026-11-07T18:00:00-08:00",
+            "deletedAt": null,
+            "format": "automerge-rich-text-v1",
+            "id": "reply",
+            "body": "hidden source",
+            "body_format": "markdown"
+          }
+        ],
+        "status": {
+          "at": "2026-11-07T18:00:00-08:00",
+          "value": "deleted"
+        },
+        "target": {
+          "anchor": {
+            "blockId": "22222222-2222-4222-8222-222222222222",
+            "relativePositionBase64": "MTQyQDExMjIzMzQ0NTU2Njc3ODg5OTAwYWFiYmNjZGRlZWZmMDA=",
+            "textObjectId": "68@11223344556677889900aabbccddeeff00"
+          },
+          "head": {
+            "blockId": "22222222-2222-4222-8222-222222222222",
+            "relativePositionBase64": "MTUzQDExMjIzMzQ0NTU2Njc3ODg5OTAwYWFiYmNjZGRlZWZmMDA=",
+            "textObjectId": "68@11223344556677889900aabbccddeeff00"
+          },
+          "kind": "selection"
+        },
+        "id": "deleted",
+        "state": "deleted",
+        "selectionContext": {
+          "status": "attached",
+          "start": {
+            "blockId": "22222222-2222-4222-8222-222222222222",
+            "offsetUtf16": 5
+          },
+          "end": {
+            "blockId": "22222222-2222-4222-8222-222222222222",
+            "offsetUtf16": 17
+          },
+          "text": "this passage"
+        }
+      }
+    ]
+  },
+  "compact": [
+    {
+      "id": "thread",
+      "state": null,
+      "block_id": "22222222-2222-4222-8222-222222222222",
+      "createdAt": "2026-11-07T18:00:00-08:00",
+      "selectionContext": {
+        "status": "attached",
+        "start": {
+          "blockId": "22222222-2222-4222-8222-222222222222",
+          "offsetUtf16": 5
+        },
+        "end": {
+          "blockId": "22222222-2222-4222-8222-222222222222",
+          "offsetUtf16": 17
+        },
+        "text": "this passage"
+      },
+      "message_count": 7,
+      "messages": [
+        {
+          "id": "bad",
+          "createdAt": "2026-11-07T18:00:00-08:00",
+          "body": "[original]()",
+          "body_format": "markdown",
+          "author": {
+            "principal": "user:reader",
+            "displayName": "Reader",
+            "driver": "Test client"
+          }
+        },
+        {
+          "id": "code",
+          "createdAt": "2026-11-07T18:00:00-08:00",
+          "body": "one\ntwo",
+          "body_format": "plain",
+          "content_error": "rich_text_unavailable",
+          "author": {
+            "principal": "user:reader",
+            "displayName": "Reader",
+            "driver": "Test client"
+          }
+        },
+        {
+          "id": "native",
+          "createdAt": "2026-11-07T18:00:00-08:00",
+          "body": "***marked***\n\n- [x] task",
+          "body_format": "markdown",
+          "author": {
+            "principal": "user:reader",
+            "displayName": "Reader",
+            "driver": "Test client"
+          }
+        },
+        {
+          "id": "old",
+          "createdAt": "2026-11-07T18:00:00-08:00",
+          "body": "",
+          "body_format": "plain",
+          "content_error": "stored_form_unsupported",
+          "author": {
+            "principal": "user:reader",
+            "displayName": "Reader",
+            "driver": "Test client"
+          }
+        },
+        {
+          "id": "plain",
+          "createdAt": "2026-11-07T18:00:00-08:00",
+          "body": "  literal **text**\n",
+          "author": {
+            "principal": "user:reader",
+            "displayName": "Reader",
+            "driver": "Test client"
+          }
+        },
+        {
+          "id": "stale",
+          "createdAt": "2026-11-07T18:00:00-08:00",
+          "body": "",
+          "body_format": "plain",
+          "content_error": "stored_form_unsupported",
+          "author": {
+            "principal": "user:reader",
+            "displayName": "Reader",
+            "driver": "Test client"
+          }
+        },
+        {
+          "id": "tombstone",
+          "createdAt": "2026-11-07T18:00:00-08:00",
+          "deletedAt": "2026-11-07T18:00:00-08:00"
+        }
+      ]
+    },
+    {
+      "id": "resolved",
+      "state": null,
+      "block_id": "22222222-2222-4222-8222-222222222222",
+      "createdAt": "2026-11-07T18:00:00-08:00",
+      "selectionContext": null,
+      "message_count": 1,
+      "messages": [
+        {
+          "id": "reply",
+          "createdAt": "2026-11-07T18:00:00-08:00",
+          "body": "resolved source",
+          "body_format": "markdown",
+          "author": {
+            "principal": "user:reader",
+            "displayName": "Reader",
+            "driver": "Test client"
+          }
+        }
+      ]
+    },
+    {
+      "id": "deleted",
+      "state": "deleted",
+      "block_id": "22222222-2222-4222-8222-222222222222",
+      "createdAt": "2026-11-07T18:00:00-08:00",
+      "selectionContext": {
+        "status": "attached",
+        "start": {
+          "blockId": "22222222-2222-4222-8222-222222222222",
+          "offsetUtf16": 5
+        },
+        "end": {
+          "blockId": "22222222-2222-4222-8222-222222222222",
+          "offsetUtf16": 17
+        },
+        "text": "this passage"
+      },
+      "message_count": 1,
+      "messages": [
+        {
+          "id": "reply",
+          "createdAt": "2026-11-07T18:00:00-08:00",
+          "body": "hidden source",
+          "body_format": "markdown",
+          "author": {
+            "principal": "user:reader",
+            "displayName": "Reader",
+            "driver": "Test client"
+          }
+        }
+      ]
+    }
+  ],
+  "summary": [
+    {
+      "id": "thread",
+      "state": null,
+      "block_id": "22222222-2222-4222-8222-222222222222",
+      "createdAt": "2026-11-07T18:00:00-08:00",
+      "selectionContext": {
+        "status": "attached",
+        "start": {
+          "blockId": "22222222-2222-4222-8222-222222222222",
+          "offsetUtf16": 5
+        },
+        "end": {
+          "blockId": "22222222-2222-4222-8222-222222222222",
+          "offsetUtf16": 17
+        },
+        "text": "this passage"
+      },
+      "message_count": 7
+    },
+    {
+      "id": "resolved",
+      "state": null,
+      "block_id": "22222222-2222-4222-8222-222222222222",
+      "createdAt": "2026-11-07T18:00:00-08:00",
+      "selectionContext": null,
+      "message_count": 1
+    },
+    {
+      "id": "deleted",
+      "state": "deleted",
+      "block_id": "22222222-2222-4222-8222-222222222222",
+      "createdAt": "2026-11-07T18:00:00-08:00",
+      "selectionContext": {
+        "status": "attached",
+        "start": {
+          "blockId": "22222222-2222-4222-8222-222222222222",
+          "offsetUtf16": 5
+        },
+        "end": {
+          "blockId": "22222222-2222-4222-8222-222222222222",
+          "offsetUtf16": 17
+        },
+        "text": "this passage"
+      },
+      "message_count": 1
+    }
+  ],
+  "delta": {
+    "page_id": "11111111-1111-4111-8111-111111111111",
+    "since_heads": [
+      "6875c24239dacf81021aa7f460a7f4d4705b3cfef0547f7193a888fa74ff5137"
+    ],
+    "heads": [
+      "6875c24239dacf81021aa7f460a7f4d4705b3cfef0547f7193a888fa74ff5137"
+    ],
+    "title_changed": false,
+    "changes": [],
+    "comments": [
+      {
+        "thread_id": "thread",
+        "change": "inserted",
+        "id": "thread",
+        "state": null,
+        "block_id": "22222222-2222-4222-8222-222222222222",
+        "createdAt": "2026-11-07T18:00:00-08:00",
+        "selectionContext": {
+          "status": "attached",
+          "start": {
+            "blockId": "22222222-2222-4222-8222-222222222222",
+            "offsetUtf16": 5
+          },
+          "end": {
+            "blockId": "22222222-2222-4222-8222-222222222222",
+            "offsetUtf16": 17
+          },
+          "text": "this passage"
+        },
+        "message_count": 7
+      },
+      {
+        "thread_id": "resolved",
+        "change": "inserted",
+        "id": "resolved",
+        "state": null,
+        "block_id": "22222222-2222-4222-8222-222222222222",
+        "createdAt": "2026-11-07T18:00:00-08:00",
+        "selectionContext": null,
+        "message_count": 1
+      },
+      {
+        "thread_id": "deleted",
+        "change": "inserted",
+        "id": "deleted",
+        "state": "deleted",
+        "block_id": "22222222-2222-4222-8222-222222222222",
+        "createdAt": "2026-11-07T18:00:00-08:00",
+        "selectionContext": {
+          "status": "attached",
+          "start": {
+            "blockId": "22222222-2222-4222-8222-222222222222",
+            "offsetUtf16": 5
+          },
+          "end": {
+            "blockId": "22222222-2222-4222-8222-222222222222",
+            "offsetUtf16": 17
+          },
+          "text": "this passage"
+        },
+        "message_count": 1
+      }
+    ],
+    "comments_mode": "summary",
+    "comment_heads": [
+      "69a21e7c492890d231149f4f7564227e21bb9350a833ff2d591a3172208c3d88"
+    ],
+    "attribution": "unavailable"
+  },
+  "snapshot": {
+    "page_id": "11111111-1111-4111-8111-111111111111",
+    "since_heads": [
+      "6875c24239dacf81021aa7f460a7f4d4705b3cfef0547f7193a888fa74ff5137"
+    ],
+    "heads": [
+      "6875c24239dacf81021aa7f460a7f4d4705b3cfef0547f7193a888fa74ff5137"
+    ],
+    "title_changed": false,
+    "changes": [],
+    "comments": [
+      {
+        "thread_id": "thread",
+        "change": "snapshot",
+        "id": "thread",
+        "state": null,
+        "block_id": "22222222-2222-4222-8222-222222222222",
+        "createdAt": "2026-11-07T18:00:00-08:00",
+        "selectionContext": {
+          "status": "attached",
+          "start": {
+            "blockId": "22222222-2222-4222-8222-222222222222",
+            "offsetUtf16": 5
+          },
+          "end": {
+            "blockId": "22222222-2222-4222-8222-222222222222",
+            "offsetUtf16": 17
+          },
+          "text": "this passage"
+        },
+        "message_count": 7
+      },
+      {
+        "thread_id": "resolved",
+        "change": "snapshot",
+        "id": "resolved",
+        "state": null,
+        "block_id": "22222222-2222-4222-8222-222222222222",
+        "createdAt": "2026-11-07T18:00:00-08:00",
+        "selectionContext": null,
+        "message_count": 1
+      },
+      {
+        "thread_id": "deleted",
+        "change": "snapshot",
+        "id": "deleted",
+        "state": "deleted",
+        "block_id": "22222222-2222-4222-8222-222222222222",
+        "createdAt": "2026-11-07T18:00:00-08:00",
+        "selectionContext": {
+          "status": "attached",
+          "start": {
+            "blockId": "22222222-2222-4222-8222-222222222222",
+            "offsetUtf16": 5
+          },
+          "end": {
+            "blockId": "22222222-2222-4222-8222-222222222222",
+            "offsetUtf16": 17
+          },
+          "text": "this passage"
+        },
+        "message_count": 1
+      }
+    ],
+    "comments_mode": "summary",
+    "comment_heads": [
+      "69a21e7c492890d231149f4f7564227e21bb9350a833ff2d591a3172208c3d88"
+    ],
+    "attribution": "unavailable",
+    "comments_snapshot": true
+  },
+  "read": {
+    "status": 200,
+    "body": {
+      "page_id": "11111111-1111-4111-8111-111111111111",
+      "title": "Comment read contract",
+      "blocks": [
+        {
+          "format": "automerge-rich-text-v1",
+          "id": "22222222-2222-4222-8222-222222222222",
+          "kind": "markdown",
+          "markdown": "Keep this passage.",
+          "metadata": {},
+          "position": "a0"
+        }
+      ],
+      "comments": [
+        {
+          "author": {
+            "displayName": "Reader",
+            "driver": "Test client",
+            "principal": "user:reader"
+          },
+          "createdAt": "2026-11-07T18:00:00-08:00",
+          "messages": [
+            {
+              "author": {
+                "displayName": "Reader",
+                "driver": "Test client",
+                "principal": "user:reader"
+              },
+              "createdAt": "2026-11-07T18:00:00-08:00",
+              "deletedAt": null,
+              "format": "automerge-rich-text-v1",
+              "id": "bad",
+              "body": "[original]()",
+              "body_format": "markdown"
+            },
+            {
+              "author": {
+                "displayName": "Reader",
+                "driver": "Test client",
+                "principal": "user:reader"
+              },
+              "createdAt": "2026-11-07T18:00:00-08:00",
+              "deletedAt": null,
+              "format": "automerge-rich-text-v1",
+              "id": "code",
+              "body": "one\ntwo",
+              "body_format": "plain",
+              "content_error": "rich_text_unavailable"
+            },
+            {
+              "author": {
+                "displayName": "Reader",
+                "driver": "Test client",
+                "principal": "user:reader"
+              },
+              "createdAt": "2026-11-07T18:00:00-08:00",
+              "deletedAt": null,
+              "format": "automerge-rich-text-v1",
+              "id": "native",
+              "body": "***marked***\n\n- [x] task",
+              "body_format": "markdown"
+            },
+            {
+              "author": {
+                "displayName": "Reader",
+                "driver": "Test client",
+                "principal": "user:reader"
+              },
+              "createdAt": "2026-11-07T18:00:00-08:00",
+              "id": "old",
+              "body": "",
+              "body_format": "plain",
+              "content_error": "stored_form_unsupported"
+            },
+            {
+              "author": {
+                "displayName": "Reader",
+                "driver": "Test client",
+                "principal": "user:reader"
+              },
+              "createdAt": "2026-11-07T18:00:00-08:00",
+              "deletedAt": null,
+              "format": "automerge-rich-text-v1",
+              "id": "plain",
+              "body": "  literal **text**\n"
+            },
+            {
+              "author": {
+                "displayName": "Reader",
+                "driver": "Test client",
+                "principal": "user:reader"
+              },
+              "createdAt": "2026-11-07T18:00:00-08:00",
+              "deletedAt": null,
+              "format": "automerge-rich-text-v1",
+              "id": "stale",
+              "body": "",
+              "body_format": "plain",
+              "content_error": "stored_form_unsupported"
+            },
+            {
+              "author": {
+                "displayName": "Reader",
+                "driver": "Test client",
+                "principal": "user:reader"
+              },
+              "createdAt": "2026-11-07T18:00:00-08:00",
+              "deletedAt": "2026-11-07T18:00:00-08:00",
+              "format": "automerge-rich-text-v1",
+              "id": "tombstone"
+            }
+          ],
+          "status": "open",
+          "target": {
+            "anchor": {
+              "blockId": "22222222-2222-4222-8222-222222222222",
+              "relativePositionBase64": "MTQyQDExMjIzMzQ0NTU2Njc3ODg5OTAwYWFiYmNjZGRlZWZmMDA=",
+              "textObjectId": "68@11223344556677889900aabbccddeeff00"
+            },
+            "head": {
+              "blockId": "22222222-2222-4222-8222-222222222222",
+              "relativePositionBase64": "MTUzQDExMjIzMzQ0NTU2Njc3ODg5OTAwYWFiYmNjZGRlZWZmMDA=",
+              "textObjectId": "68@11223344556677889900aabbccddeeff00"
+            },
+            "kind": "selection"
+          },
+          "id": "thread",
+          "selectionContext": {
+            "status": "attached",
+            "start": {
+              "blockId": "22222222-2222-4222-8222-222222222222",
+              "offsetUtf16": 5
+            },
+            "end": {
+              "blockId": "22222222-2222-4222-8222-222222222222",
+              "offsetUtf16": 17
+            },
+            "text": "this passage"
+          }
+        },
+        {
+          "author": {
+            "displayName": "Reader",
+            "driver": "Test client",
+            "principal": "user:reader"
+          },
+          "createdAt": "2026-11-07T18:00:00-08:00",
+          "messages": [
+            {
+              "author": {
+                "displayName": "Reader",
+                "driver": "Test client",
+                "principal": "user:reader"
+              },
+              "createdAt": "2026-11-07T18:00:00-08:00",
+              "deletedAt": null,
+              "format": "automerge-rich-text-v1",
+              "id": "reply",
+              "body": "resolved source",
+              "body_format": "markdown"
+            }
+          ],
+          "status": "resolved",
+          "target": {
+            "blockId": "22222222-2222-4222-8222-222222222222",
+            "kind": "block"
+          },
+          "id": "resolved"
+        },
+        {
+          "author": {
+            "displayName": "Reader",
+            "driver": "Test client",
+            "principal": "user:reader"
+          },
+          "createdAt": "2026-11-07T18:00:00-08:00",
+          "messages": [
+            {
+              "author": {
+                "displayName": "Reader",
+                "driver": "Test client",
+                "principal": "user:reader"
+              },
+              "createdAt": "2026-11-07T18:00:00-08:00",
+              "deletedAt": null,
+              "format": "automerge-rich-text-v1",
+              "id": "reply",
+              "body": "hidden source",
+              "body_format": "markdown"
+            }
+          ],
+          "status": {
+            "at": "2026-11-07T18:00:00-08:00",
+            "value": "deleted"
+          },
+          "target": {
+            "anchor": {
+              "blockId": "22222222-2222-4222-8222-222222222222",
+              "relativePositionBase64": "MTQyQDExMjIzMzQ0NTU2Njc3ODg5OTAwYWFiYmNjZGRlZWZmMDA=",
+              "textObjectId": "68@11223344556677889900aabbccddeeff00"
+            },
+            "head": {
+              "blockId": "22222222-2222-4222-8222-222222222222",
+              "relativePositionBase64": "MTUzQDExMjIzMzQ0NTU2Njc3ODg5OTAwYWFiYmNjZGRlZWZmMDA=",
+              "textObjectId": "68@11223344556677889900aabbccddeeff00"
+            },
+            "kind": "selection"
+          },
+          "id": "deleted",
+          "state": "deleted",
+          "selectionContext": {
+            "status": "attached",
+            "start": {
+              "blockId": "22222222-2222-4222-8222-222222222222",
+              "offsetUtf16": 5
+            },
+            "end": {
+              "blockId": "22222222-2222-4222-8222-222222222222",
+              "offsetUtf16": 17
+            },
+            "text": "this passage"
+          }
+        }
+      ],
+      "heads": [
+        "6875c24239dacf81021aa7f460a7f4d4705b3cfef0547f7193a888fa74ff5137"
+      ],
+      "comment_heads": [
+        "69a21e7c492890d231149f4f7564227e21bb9350a833ff2d591a3172208c3d88"
+      ],
+      "schema_features": [
+        "comments-doc"
+      ],
+      "retry_token": "read-fixture",
+      "retry_key_prefix": "fixture_",
+      "retry_until": "2026-11-07T18:00:00-08:00"
+    }
+  },
+  "selected": {
+    "status": 200,
+    "body": {
+      "page_id": "11111111-1111-4111-8111-111111111111",
+      "title": "Comment read contract",
+      "blocks": [
+        {
+          "format": "automerge-rich-text-v1",
+          "id": "22222222-2222-4222-8222-222222222222",
+          "kind": "markdown",
+          "markdown": "Keep this passage.",
+          "metadata": {},
+          "position": "a0"
+        }
+      ],
+      "outline": {
+        "entries": [
+          {
+            "block_id": "22222222-2222-4222-8222-222222222222",
+            "node_index": 0,
+            "node_id": null,
+            "type": "paragraph",
+            "heading_path": [],
+            "markdown_bytes": 18
+          }
+        ],
+        "total": 1,
+        "offset": 0,
+        "next_offset": null
+      },
+      "comments_mode": "all",
+      "comments": [
+        {
+          "id": "thread",
+          "state": null,
+          "block_id": "22222222-2222-4222-8222-222222222222",
+          "createdAt": "2026-11-07T18:00:00-08:00",
+          "selectionContext": {
+            "status": "attached",
+            "start": {
+              "blockId": "22222222-2222-4222-8222-222222222222",
+              "offsetUtf16": 5
+            },
+            "end": {
+              "blockId": "22222222-2222-4222-8222-222222222222",
+              "offsetUtf16": 17
+            },
+            "text": "this passage"
+          },
+          "message_count": 7,
+          "messages": [
+            {
+              "id": "bad",
+              "createdAt": "2026-11-07T18:00:00-08:00",
+              "body": "[original]()",
+              "body_format": "markdown",
+              "author": {
+                "principal": "user:reader",
+                "displayName": "Reader",
+                "driver": "Test client"
+              }
+            },
+            {
+              "id": "code",
+              "createdAt": "2026-11-07T18:00:00-08:00",
+              "body": "one\ntwo",
+              "body_format": "plain",
+              "content_error": "rich_text_unavailable",
+              "author": {
+                "principal": "user:reader",
+                "displayName": "Reader",
+                "driver": "Test client"
+              }
+            },
+            {
+              "id": "native",
+              "createdAt": "2026-11-07T18:00:00-08:00",
+              "body": "***marked***\n\n- [x] task",
+              "body_format": "markdown",
+              "author": {
+                "principal": "user:reader",
+                "displayName": "Reader",
+                "driver": "Test client"
+              }
+            },
+            {
+              "id": "old",
+              "createdAt": "2026-11-07T18:00:00-08:00",
+              "body": "",
+              "body_format": "plain",
+              "content_error": "stored_form_unsupported",
+              "author": {
+                "principal": "user:reader",
+                "displayName": "Reader",
+                "driver": "Test client"
+              }
+            },
+            {
+              "id": "plain",
+              "createdAt": "2026-11-07T18:00:00-08:00",
+              "body": "  literal **text**\n",
+              "author": {
+                "principal": "user:reader",
+                "displayName": "Reader",
+                "driver": "Test client"
+              }
+            },
+            {
+              "id": "stale",
+              "createdAt": "2026-11-07T18:00:00-08:00",
+              "body": "",
+              "body_format": "plain",
+              "content_error": "stored_form_unsupported",
+              "author": {
+                "principal": "user:reader",
+                "displayName": "Reader",
+                "driver": "Test client"
+              }
+            },
+            {
+              "id": "tombstone",
+              "createdAt": "2026-11-07T18:00:00-08:00",
+              "deletedAt": "2026-11-07T18:00:00-08:00"
+            }
+          ]
+        },
+        {
+          "id": "resolved",
+          "state": null,
+          "block_id": "22222222-2222-4222-8222-222222222222",
+          "createdAt": "2026-11-07T18:00:00-08:00",
+          "selectionContext": null,
+          "message_count": 1,
+          "messages": [
+            {
+              "id": "reply",
+              "createdAt": "2026-11-07T18:00:00-08:00",
+              "body": "resolved source",
+              "body_format": "markdown",
+              "author": {
+                "principal": "user:reader",
+                "displayName": "Reader",
+                "driver": "Test client"
+              }
+            }
+          ]
+        },
+        {
+          "id": "deleted",
+          "state": "deleted",
+          "block_id": "22222222-2222-4222-8222-222222222222",
+          "createdAt": "2026-11-07T18:00:00-08:00",
+          "selectionContext": {
+            "status": "attached",
+            "start": {
+              "blockId": "22222222-2222-4222-8222-222222222222",
+              "offsetUtf16": 5
+            },
+            "end": {
+              "blockId": "22222222-2222-4222-8222-222222222222",
+              "offsetUtf16": 17
+            },
+            "text": "this passage"
+          },
+          "message_count": 1,
+          "messages": [
+            {
+              "id": "reply",
+              "createdAt": "2026-11-07T18:00:00-08:00",
+              "body": "hidden source",
+              "body_format": "markdown",
+              "author": {
+                "principal": "user:reader",
+                "displayName": "Reader",
+                "driver": "Test client"
+              }
+            }
+          ]
+        }
+      ],
+      "heads": [
+        "6875c24239dacf81021aa7f460a7f4d4705b3cfef0547f7193a888fa74ff5137"
+      ],
+      "comment_heads": [
+        "69a21e7c492890d231149f4f7564227e21bb9350a833ff2d591a3172208c3d88"
+      ],
+      "schema_features": [
+        "comments-doc"
+      ],
+      "retry_token": "read-fixture",
+      "retry_key_prefix": "fixture_",
+      "retry_until": "2026-11-07T18:00:00-08:00"
+    }
+  },
+  "list": {
+    "status": 200,
+    "body": {
+      "page_id": "11111111-1111-4111-8111-111111111111",
+      "title": "Comment read contract",
+      "comments": [
+        {
+          "id": "thread",
+          "state": null,
+          "block_id": "22222222-2222-4222-8222-222222222222",
+          "createdAt": "2026-11-07T18:00:00-08:00",
+          "selectionContext": {
+            "status": "attached",
+            "start": {
+              "blockId": "22222222-2222-4222-8222-222222222222",
+              "offsetUtf16": 5
+            },
+            "end": {
+              "blockId": "22222222-2222-4222-8222-222222222222",
+              "offsetUtf16": 17
+            },
+            "text": "this passage"
+          },
+          "message_count": 7,
+          "messages": [
+            {
+              "id": "bad",
+              "createdAt": "2026-11-07T18:00:00-08:00",
+              "body": "[original]()",
+              "body_format": "markdown",
+              "author": {
+                "principal": "user:reader",
+                "displayName": "Reader",
+                "driver": "Test client"
+              }
+            },
+            {
+              "id": "code",
+              "createdAt": "2026-11-07T18:00:00-08:00",
+              "body": "one\ntwo",
+              "body_format": "plain",
+              "content_error": "rich_text_unavailable",
+              "author": {
+                "principal": "user:reader",
+                "displayName": "Reader",
+                "driver": "Test client"
+              }
+            },
+            {
+              "id": "native",
+              "createdAt": "2026-11-07T18:00:00-08:00",
+              "body": "***marked***\n\n- [x] task",
+              "body_format": "markdown",
+              "author": {
+                "principal": "user:reader",
+                "displayName": "Reader",
+                "driver": "Test client"
+              }
+            },
+            {
+              "id": "old",
+              "createdAt": "2026-11-07T18:00:00-08:00",
+              "body": "",
+              "body_format": "plain",
+              "content_error": "stored_form_unsupported",
+              "author": {
+                "principal": "user:reader",
+                "displayName": "Reader",
+                "driver": "Test client"
+              }
+            },
+            {
+              "id": "plain",
+              "createdAt": "2026-11-07T18:00:00-08:00",
+              "body": "  literal **text**\n",
+              "author": {
+                "principal": "user:reader",
+                "displayName": "Reader",
+                "driver": "Test client"
+              }
+            },
+            {
+              "id": "stale",
+              "createdAt": "2026-11-07T18:00:00-08:00",
+              "body": "",
+              "body_format": "plain",
+              "content_error": "stored_form_unsupported",
+              "author": {
+                "principal": "user:reader",
+                "displayName": "Reader",
+                "driver": "Test client"
+              }
+            },
+            {
+              "id": "tombstone",
+              "createdAt": "2026-11-07T18:00:00-08:00",
+              "deletedAt": "2026-11-07T18:00:00-08:00"
+            }
+          ]
+        },
+        {
+          "id": "resolved",
+          "state": null,
+          "block_id": "22222222-2222-4222-8222-222222222222",
+          "createdAt": "2026-11-07T18:00:00-08:00",
+          "selectionContext": null,
+          "message_count": 1,
+          "messages": [
+            {
+              "id": "reply",
+              "createdAt": "2026-11-07T18:00:00-08:00",
+              "body": "resolved source",
+              "body_format": "markdown",
+              "author": {
+                "principal": "user:reader",
+                "displayName": "Reader",
+                "driver": "Test client"
+              }
+            }
+          ]
+        },
+        {
+          "id": "deleted",
+          "state": "deleted",
+          "block_id": "22222222-2222-4222-8222-222222222222",
+          "createdAt": "2026-11-07T18:00:00-08:00",
+          "selectionContext": {
+            "status": "attached",
+            "start": {
+              "blockId": "22222222-2222-4222-8222-222222222222",
+              "offsetUtf16": 5
+            },
+            "end": {
+              "blockId": "22222222-2222-4222-8222-222222222222",
+              "offsetUtf16": 17
+            },
+            "text": "this passage"
+          },
+          "message_count": 1,
+          "messages": [
+            {
+              "id": "reply",
+              "createdAt": "2026-11-07T18:00:00-08:00",
+              "body": "hidden source",
+              "body_format": "markdown",
+              "author": {
+                "principal": "user:reader",
+                "displayName": "Reader",
+                "driver": "Test client"
+              }
+            }
+          ]
+        }
+      ],
+      "heads": [
+        "6875c24239dacf81021aa7f460a7f4d4705b3cfef0547f7193a888fa74ff5137"
+      ],
+      "comment_heads": [
+        "69a21e7c492890d231149f4f7564227e21bb9350a833ff2d591a3172208c3d88"
+      ],
+      "retry_token": "read-fixture",
+      "retry_key_prefix": "fixture_",
+      "retry_until": "2026-11-07T18:00:00-08:00"
+    }
+  },
+  "changes": {
+    "status": 200,
+    "body": {
+      "page_id": "11111111-1111-4111-8111-111111111111",
+      "since_heads": [
+        "6875c24239dacf81021aa7f460a7f4d4705b3cfef0547f7193a888fa74ff5137"
+      ],
+      "heads": [
+        "6875c24239dacf81021aa7f460a7f4d4705b3cfef0547f7193a888fa74ff5137"
+      ],
+      "title_changed": false,
+      "changes": [],
+      "comments": [
+        {
+          "thread_id": "thread",
+          "change": "inserted",
+          "id": "thread",
+          "state": null,
+          "block_id": "22222222-2222-4222-8222-222222222222",
+          "createdAt": "2026-11-07T18:00:00-08:00",
+          "selectionContext": {
+            "status": "attached",
+            "start": {
+              "blockId": "22222222-2222-4222-8222-222222222222",
+              "offsetUtf16": 5
+            },
+            "end": {
+              "blockId": "22222222-2222-4222-8222-222222222222",
+              "offsetUtf16": 17
+            },
+            "text": "this passage"
+          },
+          "message_count": 7
+        },
+        {
+          "thread_id": "resolved",
+          "change": "inserted",
+          "id": "resolved",
+          "state": null,
+          "block_id": "22222222-2222-4222-8222-222222222222",
+          "createdAt": "2026-11-07T18:00:00-08:00",
+          "selectionContext": null,
+          "message_count": 1
+        },
+        {
+          "thread_id": "deleted",
+          "change": "inserted",
+          "id": "deleted",
+          "state": "deleted",
+          "block_id": "22222222-2222-4222-8222-222222222222",
+          "createdAt": "2026-11-07T18:00:00-08:00",
+          "selectionContext": {
+            "status": "attached",
+            "start": {
+              "blockId": "22222222-2222-4222-8222-222222222222",
+              "offsetUtf16": 5
+            },
+            "end": {
+              "blockId": "22222222-2222-4222-8222-222222222222",
+              "offsetUtf16": 17
+            },
+            "text": "this passage"
+          },
+          "message_count": 1
+        }
+      ],
+      "comments_mode": "summary",
+      "comment_heads": [
+        "69a21e7c492890d231149f4f7564227e21bb9350a833ff2d591a3172208c3d88"
+      ],
+      "attribution": "unavailable",
+      "retry_token": "read-fixture",
+      "retry_key_prefix": "fixture_",
+      "retry_until": "2026-11-07T18:00:00-08:00"
+    }
+  }
+}
