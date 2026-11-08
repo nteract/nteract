@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { execFileSync } from "node:child_process";
 import * as A from "@automerge/automerge";
 import { PlainSync } from "./plain-sync.mjs";
 import { Storage } from "./projects-fixture.mjs";
@@ -147,10 +148,11 @@ for (const kind of ["thread", "message", "missing-version", "valid-reply", "body
   });
 const retained = (doc) =>
   A.getAllChanges(A.load(A.save(doc))).flatMap((bytes) => A.decodeChange(bytes).ops);
-async function open(storage) {
+async function open(storage, enabled = true) {
   const refusals = [];
   const sync = new PlainSync({
     storage,
+    commentAssertionsEnabled: () => enabled,
     policy: { account: () => access },
     now: () => 0,
     onRefused: (_conn, refusal) => refusals.push(refusal.code),
@@ -158,6 +160,91 @@ async function open(storage) {
   await sync.host.load();
   return { sync, refusals };
 }
+
+test("mixed old/prepare then enabled/prepare owners never forward fresh assertions to an old receiver", async () => {
+  const file =
+    "docs/memos/authenticated-automerge-app-substrate/experiment/pages/model/comment-authority.mjs";
+  let source = execFileSync("git", ["show", `943115c13:${file}`], { encoding: "utf8" });
+  source = source.replace(
+    /from "([^"]+)"/g,
+    (_all, specifier) =>
+      `from ${JSON.stringify(specifier.startsWith(".") ? new URL(`../model/${specifier.slice(2)}`, import.meta.url).href : import.meta.resolve(specifier))}`,
+  );
+  const old = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
+  const base = commentsGenesis(crypto.randomUUID()),
+    id = newId(),
+    storage = new Storage();
+  let ids;
+  const attributed = A.change(A.clone(base), (draft) => {
+    ids = applyComment(
+      draft,
+      { block_id: "b", body: "Shared" },
+      { ...who, clientAssertions: { version: 1, name: "Agent" } },
+      undefined,
+      { page, role: "commenter" },
+    );
+  });
+  const oldRefusal = old.admitCommentChanges(base, A.getChanges(base, attributed), who.principal, {
+    role: "commenter",
+  });
+  assert.equal(
+    oldRefusal.reason.code,
+    "invalid_value",
+    "direct mixed old receiving host is unsafe",
+  );
+  const prepare = await open(storage, false);
+  await prepare.sync.host.seed(id, "comments", base);
+  async function send(host, doc) {
+    const socket = raw(host, {
+      ...identity,
+      senderId: crypto.randomUUID(),
+      sessionId: crypto.randomUUID(),
+    });
+    const message = A.decodeSyncMessage(A.generateSyncMessage(A.init(), A.initSyncState())[1]);
+    message.changes = A.getAllChanges(doc);
+    socket.link.client.send({ t: "sync", doc: id, m: A.encodeSyncMessage(message), r: 1 });
+    await until(() => socket.frames.length > 0);
+    const frames = [...socket.frames];
+    socket.link.client.close();
+    return frames;
+  }
+  const refusedFrames = await send(prepare.sync.host, attributed);
+  assert.equal(refusedFrames.find((frame) => frame.t === "refused").fatal, false);
+  assert.deepEqual(prepare.refusals, ["comment_assertions_unavailable"]);
+  assert.equal(prepare.sync.blocked.size, 0);
+  assert.deepEqual(A.getHeads(await prepare.sync.host.document(id)), A.getHeads(base));
+  const legacy = A.change(A.clone(base), (draft) =>
+    applyComment(draft, { block_id: "b", body: "Legacy" }, who, undefined, {
+      page,
+      role: "commenter",
+    }),
+  );
+  const acceptedOld = old.admitCommentChanges(base, A.getChanges(base, legacy), who.principal, {
+    role: "commenter",
+  });
+  assert.equal(acceptedOld.ok, true);
+  await send(prepare.sync.host, legacy);
+  assert.equal(prepare.sync.blocked.size, 0);
+  // Only after all owners/readers carry the precursor may fresh labels flow.
+  const enabled = await open(storage, true);
+  enabled.sync.host.register(id, "comments");
+  await send(enabled.sync.host, attributed);
+  assert.deepEqual(enabled.refusals, []);
+  const accepted = await enabled.sync.host.document(id);
+  await enabled.sync.host.store.compact(id, A.save(accepted), A.getHeads(accepted));
+  const rollback = await open(storage, false);
+  rollback.sync.host.register(id, "comments");
+  await send(rollback.sync.host, attributed); // no fresh changes: no re-gating
+  assert.deepEqual(rollback.refusals, []);
+  const reader = await browser(rollback.sync.host, { ...identity, principal: "Bob" });
+  try {
+    const handle = await reader.repo.find(urlOf(id));
+    assert.equal(handle.doc().threads[ids.thread_id].author.clientAssertions.name, "Agent");
+  } finally {
+    await reader.repo.shutdown();
+  }
+  for (const doc of [base, attributed, legacy, acceptedOld.next]) A.free(doc);
+});
 
 for (const kind of ["thread", "message"])
   test(`fresh concurrent author cannot reset admitted detached ${kind} ownership`, async () => {

@@ -219,6 +219,8 @@ Branch on code, not on the error message:
   restore is settling; retry shortly).
 - Comments: comment_access_denied (commenting needs comment access),
   comment_not_author (only a message's author edits or deletes it).
+- comment_assertions_unavailable (503, retryable): receivers are being prepared
+  for shared comment labels. No new intent was recorded; retry the same key later.
 - Progress and presence: invalid_presence_target, presence_target_not_found,
   presence_revision_changed, progress_session_expired,
   progress_capacity_exceeded, progress_budget_exceeded. See Progress and
@@ -1037,6 +1039,16 @@ page_quota_exceeded with limit and count; tell the person rather than retrying.
   insert_node, move_block, delete_block, or delete_node operations. delete_node
   removes one top-level node by the node_id read_page's outline reports.
 - manage_page_comment: add, reply, resolve, reopen, edit, or delete_message. resolve and
+  reopen accept thread_ids for an atomic batch. For new comments/replies, optional
+  request-level params._meta.agent.name and .model are stored as client-supplied
+  labels visible to existing authorized Page readers, including native history.
+  They are not verified identity and grant no access. Omit either field to leave
+  it unavailable; no backfill or fallback from telemetry headers/clientInfo occurs.
+  Agent IDs, session URLs, harness/provider labels are not shared. No publish flag
+  is required. A retry with the same key returns its original receipt/labels even
+  if assertions change. During receiver preparation, attributed creation returns
+  comment_assertions_unavailable (503), before journaling; retry later with the
+  same key. Existing reads and receipt replay remain available. resolve and
   reopen also take thread_ids to change up to 100 threads in one call. See Comments below.
 - import_page_image: page_id and a ChatGPT-supplied file descriptor; returns a
   private asset_id and asset_url for a subsequent insert_image edit. See Images above.

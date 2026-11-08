@@ -1,5 +1,21 @@
 # Pages
 
+## Shared comment labels
+
+On MCP `tools/call`, optional `params._meta.agent.name` and `.model` accompany
+new comments and replies as immutable client-supplied labels visible to existing
+authorized Page readers. They are not verified identity and do not change access.
+Missing fields preserve existing behavior; no historical backfill or telemetry
+fallback occurs. Legacy headers, clientInfo, IDs, session links and provider
+metadata are excluded. Same-key retries retain the first recorded receipt and
+labels. No additional publication flag is needed.
+
+During receiver preparation, attributed creation returns retryable
+`comment_assertions_unavailable` before journaling; retry later with the same key.
+Unattributed comments, reads, existing receipts and pending journal recovery keep
+working. Native new assertion batches receive a non-blocking refusal, not an
+account block. Locally authored pending native bytes remain on the client.
+
 Pages is a rich collaborative document product for people and agents. It has
 the exploratory feel of a notebook, with room for prose, images, diagrams,
 editable tables, task lists, interactive dataframes, and conversations anchored

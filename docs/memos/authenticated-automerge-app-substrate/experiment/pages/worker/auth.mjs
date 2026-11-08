@@ -429,6 +429,7 @@ export const CLIENT_ERROR_CODES = Object.freeze([
 ]);
 
 export const RETRYABLE_SERVER_CODES = Object.freeze([
+  "comment_assertions_unavailable",
   "request_timeout",
   // A listing met a shared Page or owner Catalog that did not answer.
   "shared_page_unavailable",

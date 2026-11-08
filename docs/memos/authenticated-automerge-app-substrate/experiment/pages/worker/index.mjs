@@ -31,6 +31,10 @@ import { unsupportedMarkdown, unsupportedMarkdownError } from "../model/markdown
 import { commentsGenesis } from "../model/comments-doc.mjs";
 import { applyComment, commentsMigrated } from "../model/comments.mjs";
 import { commentAssertionsFromRequest } from "../model/comment-assertions.mjs";
+import {
+  commentAssertionsEnabled,
+  requireCommentAssertionsEnabled,
+} from "./comment-assertion-rollout.mjs";
 import { guardCommentIntent } from "../model/comment-guard.mjs";
 import { commentsDocUuid, commentsDocumentId } from "./comments-store.mjs";
 import { pageDocuments } from "../model/document-types.mjs";
@@ -4751,6 +4755,7 @@ export class Page {
       storage: ctx.storage,
       policy,
       pageFeatures: () => (this.handle ? documentFeatures(this.handle.doc()) : []),
+      commentAssertionsEnabled: () => commentAssertionsEnabled(this.env),
       onRefused: (conn, refusal, { doc, repeats }) => {
         if (conn.trusted) return logFailure(refusal, "plain-host-write");
         logSyncRefused({
@@ -5809,6 +5814,14 @@ export class Page {
       receiptFields: () => ({ page_heads: A.getHeads(page) }),
       apply: (draft, effectiveArgs) => {
         try {
+          const action =
+            operation === "reply_page_comment" ? "reply" : (effectiveArgs.action ?? "add");
+          const assertions = ["add", "reply"].includes(action)
+            ? commentAssertionsFromRequest(identity.clientProvenance)
+            : undefined;
+          // Only new intents construct labels; recorded journal bytes still
+          // recover and receipts replay after writer disablement.
+          requireCommentAssertionsEnabled(this.env, assertions);
           return applyComment(
             draft,
             operation === "reply_page_comment"
@@ -5818,7 +5831,7 @@ export class Page {
               ...publicIdentity(identity),
               // Captured only while constructing a new journal intent. Retries
               // replay its exact bytes and never replace original assertions.
-              clientAssertions: commentAssertionsFromRequest(identity.clientProvenance),
+              clientAssertions: assertions,
             },
             undefined,
             { page, role },

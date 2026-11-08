@@ -291,6 +291,8 @@ async function startServer(output, deadline) {
       `NOTEBOOK_CLOUD_APP_SESSION_SECRET=${randomBytes(32).toString("hex")}`,
       "NOTEBOOK_CLOUD_LOCAL_OIDC=true",
       "PAGES_CATALOG_INDEX=1",
+      // Disposable fixtures exercise the enabled phase, never remote hosts.
+      "PAGES_COMMENT_ASSERTIONS=enabled",
       "NOTEBOOK_CLOUD_OIDC_FLOW=server",
       `NOTEBOOK_CLOUD_PUBLIC_ORIGIN=${origin}`,
       `NOTEBOOK_CLOUD_OIDC_ISSUER=${origin}/dev/oidc`,

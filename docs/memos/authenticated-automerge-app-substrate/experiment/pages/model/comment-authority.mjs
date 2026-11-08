@@ -73,6 +73,7 @@ export const REJECTION = Object.freeze({
   // refusal never blocks the key (sync/comments.mjs BLOCKING); the tab must
   // reload (viewer protocol 3).
   OUTDATED_FORM: "outdated_form",
+  ASSERTIONS_UNAVAILABLE: "comment_assertions_unavailable",
 });
 
 const MAX_ID_LENGTH = 128;
@@ -578,6 +579,7 @@ function validateAssertionConstruction(operations, backend, stats) {
       reject(REJECTION.INVALID_VALUE, "Invalid comment client assertions");
     }
   }
+  return roots.size;
 }
 
 export function admitCommentChanges(admitted, changes, principal, options = {}) {
@@ -686,13 +688,15 @@ export function admitCommentChanges(admitted, changes, principal, options = {}) 
         });
       }
     }
-    validateAssertionConstruction(operations, backend, stats);
+    const newAssertions = validateAssertionConstruction(operations, backend, stats);
     for (const { op, full, hash } of operations) {
       current = hash;
       checkOperation(op, full, ctx);
     }
     current = undefined;
     finalize(candidate, ctx.plan, ctx);
+    if (newAssertions && options.allowNewAssertions === false)
+      reject(REJECTION.ASSERTIONS_UNAVAILABLE, "Shared comment labels are temporarily unavailable");
     return { ok: true, next: candidate, actors: [...actors], stats };
   } catch (error) {
     if (candidate) A.free(candidate);

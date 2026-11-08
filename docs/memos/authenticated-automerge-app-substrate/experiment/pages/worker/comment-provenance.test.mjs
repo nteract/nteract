@@ -1,11 +1,55 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import worker from "./index.mjs";
-import { fixture, pageId } from "./trash-fixture.mjs";
+import { fixture as baseFixture, pageId } from "./trash-fixture.mjs";
+async function fixture(t) {
+  const f = await baseFixture(t);
+  f.env.PAGES_COMMENT_ASSERTIONS = "enabled";
+  return f;
+}
 import { mcpSessionId } from "./usage.mjs";
 import { attribution, messageRuns } from "../viewer/comment-thread-display.mjs";
 
 const key = () => crypto.randomUUID();
+
+test("prepare refuses new attributed intents, enable shares with readers, disable preserves pending recovery and replay", async (t) => {
+  const f = await fixture(t);
+  delete f.env.PAGES_COMMENT_ASSERTIONS;
+  const args = { action: "add", block_id: f.blockId, body: "Phased", idempotency_key: key() };
+  const before = f.commentHeads();
+  const unavailable = await call(f, "manage_page_comment", args, {
+    name: "Shared",
+    model: "model",
+  });
+  assert.equal(unavailable.code, "comment_assertions_unavailable");
+  assert.deepEqual(f.commentHeads(), before);
+  assert.ok(![...f.storage.durable().keys()].some((entry) => entry.includes(args.idempotency_key)));
+  const legacy = await call(f, "manage_page_comment", { ...args, idempotency_key: key() });
+  assert.ok(legacy.result?.message_id);
+  f.env.PAGES_COMMENT_ASSERTIONS = "enabled";
+  let flushes = 0;
+  f.hooks.flush = () => {
+    if (++flushes === 2) throw Error("after journal before flush");
+  };
+  const failed = await call(f, "manage_page_comment", args, { name: "Shared", model: "model" });
+  assert.ok(failed.error);
+  delete f.hooks.flush;
+  delete f.env.PAGES_COMMENT_ASSERTIONS;
+  await f.crashRestart();
+  const recovered = await call(f, "manage_page_comment", args, { name: "Changed" });
+  assert.ok(recovered.result?.message_id, JSON.stringify(recovered));
+  const read = await call(f, "list_page_comments", {}, undefined, { who: "member" });
+  const msg = read.comments
+    .find((item) => item.id === recovered.result.thread_id)
+    .messages.find((item) => item.id === recovered.result.message_id);
+  assert.deepEqual(msg.author.clientAssertions, { version: 1, name: "Shared", model: "model" });
+  assert.deepEqual(await call(f, "manage_page_comment", args, { model: "Another" }), recovered);
+  assert.equal(
+    (await call(f, "manage_page_comment", { ...args, idempotency_key: key() }, { name: "Next" }))
+      .code,
+    "comment_assertions_unavailable",
+  );
+});
 async function call(f, operation, args, agent, { who = "owner", http = false, headers = {} } = {}) {
   const response = await worker.fetch(
     new Request(`https://pages.invalid/${http ? "api/tools" : "mcp"}`, {

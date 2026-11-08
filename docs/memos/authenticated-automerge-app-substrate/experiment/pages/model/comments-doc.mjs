@@ -49,7 +49,7 @@ import * as A from "@automerge/automerge/slim";
  * are labels the writer supplies; they never authorize anything.
  * Optional `clientAssertions: { version: 1, name?, model? }` is an
  * immutable creation snapshot of client-supplied labels, not verified evidence.
- * Only explicit MCP fields are eligible in this held local proposal; telemetry
+ * Only explicit MCP name/model fields are shared with authorized readers; telemetry
  * headers and clientInfo never authorize publication. No IDs or links are stored.
  * Absent assertions mean unavailable;
  * ordinary edits preserve the author's entire subtree without backfilling it.

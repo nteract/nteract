@@ -10,6 +10,7 @@ export const BLOCKING = new Set(
         REJECTION.INVALID_PRINCIPAL,
         REJECTION.MALFORMED_CHANGE,
         REJECTION.OUTDATED_FORM,
+        REJECTION.ASSERTIONS_UNAVAILABLE,
       ].includes(code),
   ),
 );
@@ -21,7 +22,10 @@ export const BLOCKING = new Set(
  * refusal is fatal; the host's `refused` hook records the block. `isBlocked`
  * says whether a principal's comment writes are already blocked.
  */
-export function commentAdmission({ isBlocked = () => false } = {}) {
+export function commentAdmission({
+  isBlocked = () => false,
+  allowNewAssertions = () => false,
+} = {}) {
   return (conn, doc, live, fresh, preview, actorPrincipal) => {
     if (doc.kind !== "comments") return preview;
     if (isBlocked(conn))
@@ -31,6 +35,7 @@ export function commentAdmission({ isBlocked = () => false } = {}) {
     const result = admitCommentChanges(live, fresh, conn.principal, {
       role: conn.role,
       actorPrincipal,
+      allowNewAssertions: allowNewAssertions(),
       ...(conn.features && { features: conn.features }),
     });
     if (!result.ok)

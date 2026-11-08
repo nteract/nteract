@@ -252,6 +252,42 @@ moved to Page10 and Pages.
 
 ### App-only and full deploys
 
+#### Comment assertion compatibility floor
+
+`PAGES_COMMENT_ASSERTIONS` is a host deployment variable, not a client flag.
+Unset (or any value except `enabled`) means **prepare**: read existing v1 author
+assertions and recover recorded journal intents, but refuse fresh assertion
+creation through tools (retryable 503 before journaling) and untrusted native
+sync (non-blocking `comment_assertions_unavailable`). Validation still runs;
+malformed changes are not excused by preparation. No schema stamp is added and
+ordinary old-tab edits remain valid.
+
+The bounded rollout is:
+
+1. Deploy this receiver/read/recovery code with the variable unset to every node
+   that can own or recover the target's cells. Do not enable while a pre-floor
+   host can acquire ownership. Old hosts reject new authors with blocking
+   `invalid_value`. A writer-only gate would not prevent external native input.
+2. Verify actual live node leases, deployment versions and resident runtime
+   ownership, including recovery/spare nodes. `/health` and an elapsed timer
+   alone are insufficient. If resident-version evidence is unavailable, use a
+   coordinated short write pause and restart every receiving/recovery process
+   onto the precursor; retain unsent client bytes and the existing journal.
+   Do not infer absence of unsaved work from connection counts.
+3. Only after that boundary is established, set `PAGES_COMMENT_ASSERTIONS=enabled`
+   using the existing target configuration/installation path. Its normal config
+   restart rules apply. Mixed prepare/enabled hosts can read the same history;
+   fresh attributed attempts on prepare hosts fail without writing and may retry.
+4. To pause emission again, unset the variable while retaining this code floor.
+   Existing attributed reads, already-admitted native replay and pending journal
+   recovery remain valid. Do not roll back to a pre-floor binary once new-format
+   traffic has been admitted. No data erasure or native history rewrite is a
+   rollback mechanism.
+
+The code enforces each host's phase, not fleet readiness. Operators must verify
+step 2 against the actual target. Local mixed-authority tests are not proof of
+live lease, runtime adoption, or recovery-node configuration.
+
 `install` always runs `celld deploy`, which uploads the release and moves the
 fleet's deployment pointer. A running node adopts the new pointer at its next
 poll (`CELLD_DEPLOY_POLL_S`, 30 s) without restarting. Resident Durable Objects

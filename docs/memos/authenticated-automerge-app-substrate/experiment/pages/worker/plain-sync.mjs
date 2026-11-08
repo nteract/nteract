@@ -162,6 +162,7 @@ export class PlainSync {
     policy,
     now = Date.now,
     pageFeatures = () => [],
+    commentAssertionsEnabled = () => false,
     onRefused = () => {},
     onRounds = () => {},
     onCompactionFailed = () => {},
@@ -181,6 +182,7 @@ export class PlainSync {
     this.recent = new Map();
     const guardComments = commentAdmission({
       isBlocked: (conn) => this.blocked.has(conn.principal),
+      allowNewAssertions: commentAssertionsEnabled,
     });
     this.host = new SyncHost({
       bytes: new PlainByteStore(storage),

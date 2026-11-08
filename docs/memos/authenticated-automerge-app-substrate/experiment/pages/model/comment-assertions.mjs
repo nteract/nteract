@@ -42,9 +42,8 @@ export function commentAssertions(value) {
   return out;
 }
 
-/** Local publication proposal: explicit per-field MCP assertions on comment
- * creation only. Enablement needs a published opt-in contract; origin alone
- * is not consent. Private legacy telemetry and clientInfo never supply labels. */
+/** Explicit MCP name/model accompany new comments for authorized Page readers.
+ * Private legacy telemetry and clientInfo never supply shared labels. */
 export function commentAssertionsFromRequest(context) {
   const claims = context?.explicitAgent;
   const values = { name: claims?.name, model: claims?.model };
