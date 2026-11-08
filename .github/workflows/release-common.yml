@@ -3,6 +3,10 @@ name: Release Pipeline (Reusable)
 on:
   workflow_call:
     inputs:
+      recovery_run_id:
+        description: Allowlisted nightly wheel recovery only; empty runs the normal pipeline
+        type: string
+        default: ""
       release_title:
         description: Display name for the release job
         required: true
@@ -55,7 +59,46 @@ env:
   NTERACT_BUILD_GIT_HASH: ${{ github.event.workflow_run.head_sha || github.sha }}
 
 jobs:
+  recover-nightly-wheel:
+    name: Complete allowlisted nightly PyPI wheel set only
+    if: inputs.recovery_run_id != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      RECOVERY_RUN_ID: ${{ inputs.recovery_run_id }}
+      RECOVERY_CHANNEL: ${{ inputs.version_suffix }}
+    steps:
+      - name: Require the allowlisted nightly dispatch context
+        shell: bash
+        run: |
+          test "$GITHUB_REPOSITORY" = nteract/nteract
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_WORKFLOW_REF" = nteract/nteract/.github/workflows/release-nightly.yml@refs/heads/main
+          test "$RECOVERY_CHANNEL" = nightly
+          test "$RECOVERY_RUN_ID" = 42465470406
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          version: "0.13.7"
+          enable-cache: false
+      - name: Verify and complete only the missing original wheel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/nightly-wheel-recovery.mjs recover
+
   compute-version:
+    if: inputs.recovery_run_id == ''
     name: Compute Version
     runs-on: ubuntu-24.04
     # Reserves the release tag with `git push` (scripts/ci/check-release-tag.sh
@@ -2214,12 +2257,9 @@ jobs:
       # from crates/runt/Cargo.toml so the stable release promotes the same
       # API users install without --pre, even if pyproject.toml was stale.
       #
-      # Trusted-publisher config on PyPI must include entries for the top-level
-      # caller workflows (`release-stable.yml` and `release-nightly.yml`) for
-      # runtimed. PyPI does not match reusable workflow files like this one.
-      # Missing entries surface here as "403 Invalid API Token ... not valid
-      # for project 'X'". Fix at:
-      # https://pypi.org/manage/project/{name}/settings/publishing/.
+      # Preserve the existing caller/common workflow pair for PyPI identity.
+      # Reusable workflow matching differs from caller workflow matching; moving
+      # publication to another filename requires reviewing the registered trust.
 
       - name: Verify release tag matches built source
         env:

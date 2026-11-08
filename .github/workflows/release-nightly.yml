@@ -1,10 +1,16 @@
 name: Nightly Release
+run-name: ${{ inputs.recovery_run_id != '' && format('Nightly wheel recovery {0}', inputs.recovery_run_id) || 'Nightly Release' }}
 
 on:
   schedule:
     # Every day at 9am UTC (24h cadence)
     - cron: "0 9 * * *"
   workflow_dispatch:
+    inputs:
+      recovery_run_id:
+        description: Complete only the allowlisted nightly PyPI wheel set; leave empty for a new release
+        type: string
+        default: ""
 
 # Serialize publication within this channel without cancelling an active release.
 concurrency:
@@ -22,8 +28,10 @@ jobs:
       contents: write
       id-token: write
       packages: write
+      actions: read
     secrets: inherit
     with:
+      recovery_run_id: ${{ inputs.recovery_run_id || '' }}
       release_title: "Nightly Release"
       version_suffix: "nightly"
       manifest_notes_prefix: "Nightly release"

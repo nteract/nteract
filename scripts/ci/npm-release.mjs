@@ -15,6 +15,9 @@ function positiveInteger(value, name) {
 }
 
 export function releaseIdentity(run, expected) {
+  if (String(run.display_title ?? "").startsWith("Nightly wheel recovery ")) {
+    throw new Error("Wheel-only recovery is not a successful release producer");
+  }
   const runId = positiveInteger(expected.runId, "release run ID");
   const runAttempt = positiveInteger(expected.runAttempt, "release run attempt");
   if (String(run.id) !== runId || String(run.run_attempt) !== runAttempt) {
@@ -30,6 +33,9 @@ export function releaseIdentity(run, expected) {
   const channel = channels[run.path];
   if (!channel || !["workflow_dispatch", "schedule", "push"].includes(run.event)) {
     throw new Error("Expected a Stable Release or Nightly Release workflow run");
+  }
+  if (channel === "nightly" && run.display_title !== "Nightly Release") {
+    throw new Error("Expected a normal Nightly Release producer, not a repair run");
   }
   if (run.status !== "completed" || run.conclusion !== "success") {
     throw new Error("Upstream release must have completed successfully");
