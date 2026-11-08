@@ -725,6 +725,115 @@ const editorSurface = {
       ),
     ),
 };
+
+test("comment close returns focus only while the closing interaction still owns it", async (t) => {
+  t.after(() => {
+    delete globalThis.__openPage;
+    delete globalThis.__editor;
+    history.replaceState(null, "", "/");
+  });
+  let close;
+  globalThis.__editor = {
+    ...editorSurface,
+    PageControls: ({ children }) => children,
+    CommentsPanel: ({ open, onClose }) => {
+      close = onClose;
+      return open
+        ? createElement(
+            "div",
+            { id: "page-comments" },
+            createElement("button", { id: "fixture-close", onClick: onClose }, "Close fixture"),
+          )
+        : null;
+    },
+  };
+  globalThis.__openPage = async (id) => fakeSession(id, "one", "Focus fixture");
+  history.replaceState(null, "", `/p/${ROADMAP}`);
+  await boot(signedIn, { ...catalog, read_page: { breadcrumbs: [] } });
+  await settle();
+  const trigger = document.querySelector('[aria-label="Comments"]');
+  assert.ok(trigger);
+  const raf = globalThis.requestAnimationFrame,
+    frames = [];
+  globalThis.requestAnimationFrame = (callback) => (frames.push(callback), frames.length);
+  t.after(() => (globalThis.requestAnimationFrame = raf));
+  const flush = async () => {
+    await act(() => {
+      for (const callback of frames.splice(0)) callback(0);
+    });
+  };
+  const open = async () => {
+    await click(trigger);
+    await flush();
+  };
+  await open();
+  const closeButton = document.querySelector("#fixture-close");
+  closeButton.focus();
+  await act(() => close());
+  await flush();
+  assert.ok(document.activeElement === trigger, "ordinary close returns trigger focus");
+
+  await open();
+  trigger.focus(); // Native modal close already returned focus.
+  await act(() => close());
+  const editable = document.body.appendChild(document.createElement("div"));
+  editable.contentEditable = "true";
+  editable.tabIndex = 0;
+  editable.textContent = "fox";
+  editable.focus();
+  const range = document.createRange();
+  range.selectNodeContents(editable);
+  document.getSelection().removeAllRanges();
+  document.getSelection().addRange(range);
+  await flush();
+  assert.ok(document.activeElement === editable, "editor focus acquired before the frame survives");
+  assert.equal(document.getSelection().toString(), "fox");
+
+  await open();
+  await act(() => close());
+  const other = document.body.appendChild(document.createElement("button"));
+  other.focus();
+  await flush();
+  assert.ok(document.activeElement === other, "another control keeps focus");
+
+  await open();
+  other.focus(); // Native Escape+Tab can move focus before the close event arrives.
+  await act(() => close());
+  await flush();
+  assert.ok(document.activeElement === other, "control focused before onClose keeps focus");
+
+  await open();
+  editable.focus();
+  document.getSelection().removeAllRanges();
+  document.getSelection().addRange(range);
+  await act(() => close());
+  await flush();
+  assert.ok(document.activeElement === editable, "editor focused before onClose keeps focus");
+  assert.equal(document.getSelection().toString(), "fox");
+
+  other.focus();
+  await act(() => close());
+  await flush();
+  assert.ok(document.activeElement === other, "absent panel cannot claim outside focus");
+
+  await open();
+  trigger.focus();
+  await act(() => close());
+  await click(trigger); // Reopen before the old frame.
+  const reopened = document.querySelector("#fixture-close");
+  reopened.focus();
+  await flush();
+  assert.ok(document.activeElement === reopened, "reopened dialog keeps focus");
+  await act(() => close());
+  history.pushState(null, "", "/");
+  await act(() => window.dispatchEvent(new window.PopStateEvent("popstate")));
+  assert.equal(trigger.isConnected, false);
+  other.focus();
+  await flush();
+  assert.ok(document.activeElement === other, "detached trigger is harmless");
+  editable.remove();
+  other.remove();
+});
 const pageAction = (label) =>
   [...document.querySelectorAll(".fake-page-actions button")].find(
     (button) => button.textContent === label,

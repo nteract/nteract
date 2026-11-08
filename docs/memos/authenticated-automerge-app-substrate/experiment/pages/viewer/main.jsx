@@ -1381,8 +1381,29 @@ function App() {
     return () => subscription.unsubscribe();
   }, [target]);
   function closeComments() {
+    const trigger = commentsButton.current;
+    const closingFocus = document.activeElement;
+    const closingSession = host.current;
     setCommentsOpen(false);
-    requestAnimationFrame(() => commentsButton.current?.focus({ preventScroll: true }));
+    if (
+      closingFocus !== trigger &&
+      closingFocus !== document.body &&
+      !document.getElementById("page-comments")?.contains(closingFocus)
+    )
+      return;
+    requestAnimationFrame(() => {
+      // Native dialog close can already return focus. A later frame must not
+      // overwrite a new editor/control selection or a different Page's focus.
+      const active = document.activeElement;
+      if (
+        trigger?.isConnected &&
+        commentsButton.current === trigger &&
+        host.current === closingSession &&
+        trigger.getAttribute("aria-expanded") === "false" &&
+        (active === closingFocus || active === document.body || active === trigger)
+      )
+        trigger.focus({ preventScroll: true });
+    });
   }
   function toggleComments() {
     if (commentsOpen) closeComments();

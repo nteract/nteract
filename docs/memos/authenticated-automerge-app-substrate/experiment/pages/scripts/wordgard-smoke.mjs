@@ -613,6 +613,79 @@ try {
   });
   await commentsToggle.click();
   await expect(a.locator(".comment-composer")).toHaveCount(0);
+  // Deliver the real native close event to React only after a newer focus
+  // owner is established. Escape itself and Tab retain browser semantics.
+  const holdNativeClose = () =>
+    a.evaluate(() => {
+      const dialog = document.getElementById("page-comments");
+      const original = window.requestAnimationFrame;
+      const callbacks = [];
+      window.requestAnimationFrame = (callback) => (callbacks.push(callback), callbacks.length);
+      dialog.addEventListener(
+        "close",
+        (event) => {
+          event.stopImmediatePropagation();
+          window.__deliverNativeCommentClose = () => dialog.dispatchEvent(new Event("close"));
+        },
+        { capture: true, once: true },
+      );
+      window.__finishNativeCommentClose = () => {
+        window.requestAnimationFrame = original;
+        for (const callback of callbacks) callback(performance.now());
+        delete window.__deliverNativeCommentClose;
+        delete window.__finishNativeCommentClose;
+      };
+    });
+  await holdNativeClose();
+  await a.keyboard.press("Escape");
+  await expect
+    .poll(() => a.evaluate(() => typeof window.__deliverNativeCommentClose))
+    .toBe("function");
+  await a.keyboard.press("Tab");
+  const actions = a.locator('summary[aria-label="Document actions"]');
+  await expect(actions).toBeFocused();
+  await a.evaluate(() => window.__deliverNativeCommentClose());
+  await expect(commentsToggle).toHaveAttribute("aria-expanded", "false");
+  await a.evaluate(() => window.__finishNativeCommentClose());
+  await expect(actions).toBeFocused();
+
+  await commentsToggle.click();
+  await holdNativeClose();
+  await a.keyboard.press("Escape");
+  await expect
+    .poll(() => a.evaluate(() => typeof window.__deliverNativeCommentClose))
+    .toBe("function");
+  await selectText(a, "fox");
+  await a.evaluate(() => window.__deliverNativeCommentClose());
+  await expect(commentsToggle).toHaveAttribute("aria-expanded", "false");
+  await a.evaluate(() => window.__finishNativeCommentClose());
+  await expect
+    .poll(() =>
+      a.evaluate(() => ({
+        focused: document.querySelector(".page-block .wordgard-document").wg.hasFocus,
+        selected: getSelection().toString(),
+      })),
+    )
+    .toEqual({ focused: true, selected: "fox" });
+  await expect(a.getByRole("button", { name: "Bold", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+
+  await a.setViewportSize({ width: 390, height: 844 });
+  await commentsToggle.click();
+  // Reproduce a close callback that runs after the editor acquired focus.
+  // Native dialog close restores the trigger before these animation frames.
+  await a.evaluate(() => {
+    const original = window.requestAnimationFrame;
+    const callbacks = [];
+    window.requestAnimationFrame = (callback) => (callbacks.push(callback), callbacks.length);
+    window.__releaseCommentCloseFrames = () => {
+      window.requestAnimationFrame = original;
+      for (const callback of callbacks) callback(performance.now());
+      delete window.__releaseCommentCloseFrames;
+    };
+  });
   await a.keyboard.press("Escape");
   await expect(commentsToggle).toBeFocused();
   assert.equal(await a.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
@@ -621,6 +694,24 @@ try {
 
   stage = "toolbar keyboard state";
   await selectText(a, "fox");
+  const focusState = () =>
+    a.evaluate(() => {
+      const editor = document.querySelector(".page-block .wordgard-document").wg;
+      return {
+        focused: editor.hasFocus,
+        selected: getSelection().toString(),
+        from: editor.state.selection.from,
+        to: editor.state.selection.to,
+        composing: editor.composing,
+      };
+    });
+  await expect
+    .poll(focusState)
+    .toEqual({ focused: true, selected: "fox", from: 5, to: 8, composing: false });
+  await a.evaluate(() => window.__releaseCommentCloseFrames());
+  await expect
+    .poll(focusState)
+    .toEqual({ focused: true, selected: "fox", from: 5, to: 8, composing: false });
   const bold = a.getByRole("button", { name: "Bold", exact: true });
   await expect(bold).toHaveAttribute("aria-pressed", "true");
   await a.keyboard.press("ControlOrMeta+b");
