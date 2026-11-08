@@ -1,7 +1,7 @@
 import * as A from "@automerge/automerge/slim";
 import { diffArrays } from "diff";
 import { isRich, textPath } from "./richtext-format.mjs";
-import { parseInlineMarkdown } from "./markdown-import.mjs";
+import { parseInlineMarkdown } from "./markdown-inline.mjs";
 import { ancestryAt, blockAddresses, nodeIndexAt } from "./node-addresses.mjs";
 import { richDoc } from "./richtext-spans.mjs";
 import {
