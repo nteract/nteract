@@ -1,6 +1,7 @@
 import { orderedBlockIds } from "./order.mjs";
 import { isRich } from "./richtext-format.mjs";
-import { richDoc } from "./richtext-spans.mjs";
+import { readChildren, readKind } from "./native-read.mjs";
+import { surfaceRead } from "./page-surface-read.mjs";
 
 const MAX_HEADING = 1024;
 const MAX_COMPARE = 8192;
@@ -57,11 +58,11 @@ function matchKind(title, heading) {
 function plainText(node) {
   let text = "",
     plain = true;
-  node.forEach((child) => {
-    if (child.isText) text += child.text;
-    else if (child.type.name === "hard_break") text += "\n";
+  for (const child of readChildren(node)) {
+    if (child.isText) text += child.param;
+    else if (readKind(child) === "hard-break") text += "\n";
     else plain = false;
-  });
+  }
   return plain ? text : null;
 }
 
@@ -77,14 +78,13 @@ export function openingTitleWarning(doc) {
       if (blockId.length > 128) return null;
       const block = doc.blocks[blockId];
       if (!block || !isRich(block)) return null;
-      const tree = richDoc(block);
-      for (let index = 0; index < tree.childCount; index++) {
-        const node = tree.child(index);
-        if (!["paragraph", "heading"].includes(node.type.name)) return null;
+      const { nodes } = surfaceRead(block);
+      for (const node of nodes) {
+        if (!["paragraph", "heading"].includes(readKind(node))) return null;
         const heading = plainText(node);
         if (heading === null) return null;
         if (!heading.trim()) continue;
-        if (node.type.name !== "heading" || heading.length > MAX_COMPARE) return null;
+        if (readKind(node) !== "heading" || heading.length > MAX_COMPARE) return null;
         const kind = matchKind(doc.title, heading);
         if (!kind) return null;
         const truncated = heading.length > MAX_HEADING;
