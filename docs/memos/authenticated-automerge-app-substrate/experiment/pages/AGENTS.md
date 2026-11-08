@@ -2,8 +2,8 @@
 
 Pages rich text is being rebuilt around one model. Before touching the document
 model, codec, Markdown, comments content, or agent write tools, read
-[RICH-TEXT-V2.md](RICH-TEXT-V2.md). Its invariants and "What not to do" table
-override older notes, code comments and tests.
+[RICH-TEXT-V2.md](RICH-TEXT-V2.md). It sets the replacement's direction;
+the implementation and tests establish current behavior. Keep the two distinct.
 
 | Task | Start with |
 | --- | --- |
@@ -21,16 +21,17 @@ product. [archive/](archive/) holds superseded notes; don't follow them.
   dependencies, or PM trees as validators.
 - Markdown is an agent-edge format. Never store it or route editor or host
   writes through it.
-- Write minimal changes: splices, marker inserts and deletes, per-key marker
-  puts. No whole-block `A.updateSpans`, no `A.updateBlock`.
+- Preserve text and marker identity with targeted splices, marks, and per-key
+  marker edits. Test broad projection diffs against concurrent edits and
+  comment anchors; `A.updateBlock` is not an in-place attribute update.
 - Movable order is a map plus fractional `position`. No Automerge lists for it.
-  Never rebalance positions.
-- `decode` repairs merge leftovers on read. Neither the editor nor the host
-  writes repairs.
-- v2 targets start empty. Don't add byte-parity goldens, v1 span tolerance,
-  stored-form refusals or migrations.
-- Open decisions in RICH-TEXT-V2.md are proposals. Don't build on one as
-  settled without the maintainer's call.
+  Test tie allocation without overwriting concurrent moves.
+- Handle concurrent merge outcomes deterministically without discarding
+  content. A decoder's tolerance does not replace host admission checks.
+- Fresh-target work does not need historical adapter-byte parity. Retire
+  obsolete fixtures alongside replaced code, not useful behavioral regressions.
+- Make reversible engineering choices in isolated experiments and record the
+  evidence. Do not turn a research proposal into an approved product feature cut.
 
 ## Ownership
 
@@ -62,6 +63,9 @@ issuer; `cargo xtask dev` doesn't start it.
    widths ([Verify changes](README.md#verify-changes)).
 5. From the repo root, before committing: `cargo xtask lint --fix`.
 
-Use local fixtures for development. Every v2 build deploys to `pages2` first.
-Read [DEPLOYMENT.md](DEPLOYMENT.md) before any release work. Local tests don't
-qualify a live identity provider or object-store failover.
+Leave `pages.runtimed.run` unchanged: no deployment, reset, migration, or
+automatic promotion. Build and deploy experiments on a separate service;
+`pages2` is a candidate, and page10 resets are permitted. Verify actual target
+isolation and preservation needs before mutations. Read
+[DEPLOYMENT.md](DEPLOYMENT.md) before release work. Local tests don't qualify
+a live identity provider or object-store failover.

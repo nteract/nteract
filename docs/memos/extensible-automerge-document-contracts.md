@@ -95,14 +95,12 @@ author and comment ownership protections. Unknown blocks must survive older
 clients and export/import workflows, or the exporter must explicitly report
 that its output cannot round-trip them.
 
-Pages follows this shape for node types inside a block's rich text
-([Pages rich text v2](authenticated-automerge-app-substrate/experiment/pages/RICH-TEXT-V2.md)).
-A schema feature stamp makes a Page read-only for a build that lacks the
-feature, and admission refuses unknown types and marks the stamp doesn't name.
-v2 writes are minimal splices that never touch content they don't edit, so the
-codec needs no exact-marker preservation. Agents see content Markdown can't
-hold, such as a `dataframe`, as a `pages-node` reference that keeps the node
-when sent back unchanged (proposed).
+The [Pages rich-text replacement](authenticated-automerge-app-substrate/experiment/pages/RICH-TEXT-V2.md)
+keeps rich content primary and removes ProseMirror. Its exact schema and agent
+interface are experimental. Minimal writes must preserve untouched unknown
+content; they do not remove the need to preserve its marker identity and
+attributes. Markdown projections must retain non-Markdown nodes or explicitly
+report a lossy export. New reference syntax is a proposal, not a current API.
 
 NotebookDoc already has an accepted
 [forward-compatibility contract](../adr/schema-evolution-and-genesis.md): frozen

@@ -8,7 +8,8 @@ source; notebooks execute it.
 
 Rich text is being rebuilt around one model. Read
 [RICH-TEXT-V2.md](RICH-TEXT-V2.md) before touching the document model, the
-codec, the Markdown edge, or agent write tools.
+codec, the Markdown edge, or agent write tools. Build and deploy experiments
+on a separate service; leave `pages.runtimed.run` unchanged.
 
 ## Documents
 
@@ -82,7 +83,7 @@ npm run e2e --workspace @nteract/pages-native-experiment
 `npm run e2e` builds once, then runs each curated browser suite in turn against
 its own loopback celld 0.6.3 with temporary state and a per-suite timeout. Name
 suites to run a subset (`npm run e2e --workspace @nteract/pages-native-experiment -- wordgard sharing`);
-`node scripts/e2e.mjs --list` shows them, including opt-in suites that run only
+`npm run e2e --workspace @nteract/pages-native-experiment -- --list` shows them, including opt-in suites that run only
 when named. Each suite's log, celld log, report, and screenshots (failure
 screenshots and HTML included) land in `pages/test-results/e2e-<timestamp>/<suite>/`.
 Any failure exits non-zero. `PAGES_E2E_RETRIES=1` reruns a failed suite once in
@@ -97,8 +98,9 @@ holding that gate. It downloads the official celld 0.6.3 Linux x86_64
 release, checks the archive hash and the executable hash in `CELLD_RELEASE`,
 installs Playwright's Chromium with system dependencies, runs `npm run e2e` with
 one retry and a flaky budget of one, and always uploads `test-results/`.
-Production promotion is a manual operator step; the operator confirms both
-workflows are green for the exact source SHA before promoting it. On a
+The existing production promotion procedure is manual, but the current
+experiment must not promote to `pages.runtimed.run`. For a permitted target,
+confirm both workflows are green for the exact source SHA. On a
 fresh Linux runner, install browser system dependencies with
 `npx playwright install --with-deps chromium`.
 

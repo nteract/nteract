@@ -11,11 +11,17 @@ checks; their presence is not permission to deploy to them.
 A release that would break existing clients goes to a fresh target instead of
 carrying compatibility code. Deployment never copies data between targets.
 
-| Target | Rich text v2 ([RICH-TEXT-V2.md](RICH-TEXT-V2.md#targets)) |
+| Target | Rich text v2 ([RICH-TEXT-V2.md](RICH-TEXT-V2.md#goal-and-boundary)) |
 | --- | --- |
-| pages2 | Fresh and empty. Every v2 build deploys here first |
-| page10 | Reset empty once the v2 stored shape qualifies on pages2. Export its Projects before the reset |
-| pages | Not reset in place. What happens to it after v2 ships is an open decision |
+| pages2 | Candidate separate service on lab2; verify actual state and isolation before use |
+| page10 | Staging; reset permitted after verifying scope and preservation needs |
+| pages | Leave the running service unchanged. No experimental deployment, reset, migration, or automatic promotion |
+
+The service procedures below document existing operations, not permission to
+mutate `pages`. Streamlined-service experiments use a separate target. Confirm
+application state, auth/catalog storage, deployment pointers, and routes are
+isolated. Project transfer alone is not a complete archive of loose Pages,
+comments, sharing, or history.
 
 ## Pages release
 
@@ -665,7 +671,9 @@ Subduction records under `repo/`, `host/actor/`, `host/binding/`,
 `host/signer`) stay until a purge deletes them. Nothing reads them. The
 root-only `/etc/<service>/operator-secret` file is unused.
 
-v2 targets start empty, so none of this applies to them.
+For a separately created v2 namespace, document its own format and rollback
+floor. A reset permission alone does not establish that old data or receivers
+are absent.
 
 ### Old PageRecords objects
 

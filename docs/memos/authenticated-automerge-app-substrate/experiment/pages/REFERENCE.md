@@ -3,18 +3,18 @@
 Current behavior of the Page host, viewer and agent tools on `main`. Read the
 code and its colocated tests for exact contracts; this file maps them.
 
-Rich text is being rebuilt. [RICH-TEXT-V2.md](RICH-TEXT-V2.md) is the design
-and wins wherever this file disagrees. These parts of `main` are scheduled for
-removal, so don't extend them:
+Rich text is being rebuilt. [RICH-TEXT-V2.md](RICH-TEXT-V2.md) describes the
+separate replacement experiment; it does not change the current contracts
+below. The following table distinguishes removal goals from design options:
 
-| Current path | v2 |
+| Current path | Replacement direction or experiment |
 | --- | --- |
 | ProseMirror Markdown parser and span adapter (`model/pm-*.mjs`, `richtext-spans.mjs`) | Markdown tokens parse straight to the Wordgard tree |
-| Whole-block `A.updateSpans` writes (`replace_block_markdown`, `set_node`, `set_image`, comment edits) | Minimal splices and in-place marker puts |
-| Implicit first paragraph, null first `node_id` | Every node has a marker |
-| Marker `parents` list | One scalar `path` string |
-| `block_id`, `node_index`, `image_id` addressing | `node_id` only |
-| Stored-form refusals and legacy comment forms | Fresh targets, nothing to refuse |
+| Broad projection diffs (`replace_block_markdown`, `set_node`, `set_image`, comment edits) | Preserve identity and concurrent intent with targeted edits and regression tests |
+| Implicit first paragraph, null first `node_id` | Evaluate explicit markers |
+| Marker `parents` list | Evaluate atomic paths and their merge semantics |
+| `block_id`, `node_index`, `image_id` addressing | Evaluate simpler stable addressing |
+| Stored-form refusals and legacy comment forms | Keep current service protections; define a separate fresh-target format boundary |
 
 ## Editor and content features
 
