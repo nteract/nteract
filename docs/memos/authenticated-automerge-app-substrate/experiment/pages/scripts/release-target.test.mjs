@@ -14,8 +14,8 @@ import {
 const scripts = path.dirname(fileURLToPath(import.meta.url));
 const frozen = ["pages-next", "page3", "page4", "page5", "page6", "page7", "page8", "page9"];
 
-test("current build qualifies Page10, Pages and Pages2 while historical profiles remain inspectable", () => {
-  assert.deepEqual(QUALIFIED_TARGETS, ["page10", "pages", "pages2"]);
+test("deployment targets include Page11 while historical profiles remain inspectable", () => {
+  assert.deepEqual(QUALIFIED_TARGETS, ["page10", "pages", "pages2", "page11"]);
   for (const target of QUALIFIED_TARGETS)
     assert.doesNotThrow(() => assertQualifiedDeploymentTarget(target), target);
   for (const target of frozen) {
@@ -72,6 +72,27 @@ test("operator entrypoints reject every frozen target and implicit default befor
     reject("deployment/install.mjs", [stage, "--apply"]);
     reject("deployment/publish.mjs", [stage, "--apply"]);
   }
+});
+
+test("page11 plan prints only its target without SSH", (t) => {
+  const directory = mkdtempSync(path.join(tmpdir(), "page11-plan-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const called = path.join(directory, "called");
+  writeFileSync(path.join(directory, "ssh"), `#!/bin/sh\ntouch '${called}'\nexit 97\n`, {
+    mode: 0o700,
+  });
+  const result = spawnSync(
+    process.execPath,
+    [path.join(scripts, "deploy.mjs"), "--target", "page11", "plan"],
+    {
+      encoding: "utf8",
+      timeout: 5000,
+      env: { ...process.env, PATH: directory + path.delimiter + process.env.PATH },
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), deploymentProfile("page11").deployment);
+  assert.equal(existsSync(called), false);
 });
 
 for (const target of QUALIFIED_TARGETS)

@@ -234,5 +234,5 @@ else if (keyMode) {
   );
 } else
   throw new Error(
-    "Usage: deploy.mjs [--target pages-next|page3|page4|page5|page6|page7|page8|page9|page10|pages|pages2] [plan | prepare [--from-artifact GATE_RUN_ID [--attempt N] [--worktree]] | upload LOCAL_STAGE | install REMOTE_STAGE --apply [--restart] | provision [--apply] | publish REMOTE_STAGE --apply | rotate-key [--apply --from ACTIVE_KID] | retire-key [--kid KID] [--force] [--apply --from ACTIVE_KID]]",
+    "Usage: deploy.mjs [--target pages-next|page3|page4|page5|page6|page7|page8|page9|page10|pages|pages2|page11] [plan | prepare [--from-artifact GATE_RUN_ID [--attempt N] [--worktree]] | upload LOCAL_STAGE | install REMOTE_STAGE --apply [--restart] | provision [--apply] | publish REMOTE_STAGE --apply | rotate-key [--apply --from ACTIVE_KID] | retire-key [--kid KID] [--force] [--apply --from ACTIVE_KID]]",
   );

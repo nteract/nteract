@@ -483,6 +483,55 @@ const targets = Object.freeze({
     }),
     // lab2 holds no other Pages target, so nothing is frozen beside it.
   }),
+  // Separate rich-text experiment. Its first reviewed candidate establishes
+  // storage history; no data or compatibility floor is inherited from pages2.
+  page11: Object.freeze({
+    deployment: Object.freeze({
+      host: "lab2",
+      hostname: "page11.runtimed.run",
+      service: "nteract-page11",
+      bucket: shared.bucket,
+      prefix: "standalone/page11",
+      region: shared.region,
+      listen: "127.0.0.1:9483",
+      internalListen: "127.0.0.1:19483",
+      runtime: shared.runtime,
+      requiredVersion: shared.requiredVersion,
+    }),
+    sharing: true,
+    oauth: true,
+    theme: true,
+    viewerChunks: true,
+    viewerAssets: true,
+    projectLinks: true,
+    indexRoutes: true,
+    siftTables: true,
+    whoami: true,
+    accountRoutes: true,
+    linkPreviews: true,
+    cardImages: true,
+    projectAssets: true,
+    firewallTable: "nteract_page11",
+    // Below Tailscale's reserved mark mask (0x00ff0000).
+    firewallMark: "0x00008000",
+    firewallComment: "nteract/preview-infra standalone-page11",
+    companyViewDomains: "anaconda.com",
+    catalogIndex: "1",
+    pageQuota: "250",
+    // celld scopes both D1 databases to this target's fleet prefix.
+    d1: AUTH_D1,
+    otelTracesSampler: "always_on",
+    editor: "wordgard",
+    // lab2 also hosts pages2 with a 4G ceiling; leave room for the OS.
+    memory: Object.freeze({ maxRssMb: 1280, memoryMax: "2G" }),
+    sharedTunnel: false,
+    tunnelService: "cloudflared-page11.service",
+    tunnelSlots: Object.freeze({
+      a: Object.freeze({ service: "cloudflared-page11-a.service", metrics: "127.0.0.1:29483" }),
+      b: Object.freeze({ service: "cloudflared-page11-b.service", metrics: "127.0.0.1:29493" }),
+    }),
+    frozenTargets: Object.freeze(["pages2"]),
+  }),
 });
 /** Every deployment profile name, qualified or not. */
 export const DEPLOYMENT_TARGETS = Object.freeze(Object.keys(targets));
@@ -491,15 +540,16 @@ export function deploymentProfile(target = "pages-next") {
   return targets[target];
 }
 
-// This release is qualified for the isolated Page10, Pages and Pages2 targets.
+// Deployment support includes the isolated Page11 experiment; app qualification
+// is separate and must precede installation.
 // Page10 stays deployable until its Projects are copied to Pages.
 // Historical profiles remain readable for comparison and frozen-release checks.
-export const QUALIFIED_TARGETS = Object.freeze(["page10", "pages", "pages2"]);
+export const QUALIFIED_TARGETS = Object.freeze(["page10", "pages", "pages2", "page11"]);
 export function assertQualifiedDeploymentTarget(target) {
   deploymentProfile(target);
   if (!QUALIFIED_TARGETS.includes(target))
     throw new Error(
-      "This build is qualified only for page10, pages and pages2; earlier deployments are frozen",
+      "This build is qualified only for page10, pages and pages2, plus page11; earlier deployments are frozen",
     );
 }
 

@@ -205,8 +205,8 @@ const matches = (source, pattern) => [...source.matchAll(pattern)].map((match) =
 // A JavaScript regex literal, character classes included.
 const REGEX_LITERAL = String.raw`\/((?:\\.|\[(?:\\.|[^\]\\\n])*\]|[^/\\[\n])+)\/([dgimsuvy]*)`;
 
-test("the live targets are the qualified ones", () => {
-  assert.deepEqual(QUALIFIED_TARGETS, ["page10", "pages", "pages2"]);
+test("the supported targets include the isolated Page11 experiment", () => {
+  assert.deepEqual(QUALIFIED_TARGETS, ["page10", "pages", "pages2", "page11"]);
 });
 
 for (const target of QUALIFIED_TARGETS)

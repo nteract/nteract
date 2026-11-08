@@ -358,7 +358,7 @@ test("targets and SSH hosts come from the profile or a validated override", asyn
   assert.equal(config.bucket, "s3://nteract-celld-lab-621741996708/standalone/page10");
   assert.equal(config.d1, AUTH_D1);
   assert.equal(deploymentProfile("page10").d1.database_id, "pages-next-auth");
-  assert.deepEqual(QUOTA_TARGETS, ["page10", "pages", "pages2"]);
+  assert.deepEqual(QUOTA_TARGETS, ["page10", "pages", "pages2", "page11"]);
   const pages = pagesConfig;
   assert.equal(pages.service, "nteract-pages-live");
   assert.equal(pages.runtime, "/opt/nteract-pages-live/celld");
@@ -397,7 +397,7 @@ test("every command needs an explicit --target, and nothing is sent without one"
     ["get", "domain", "anaconda.com"],
   ]) {
     const command = argv.find((arg) => ["check", "list", "get", "set", "delete"].includes(arg));
-    const message = `${command} needs --target page10 or pages or pages2. There is no default target, so a command can't write to a D1 it didn't name.`;
+    const message = `${command} needs --target page10 or pages or pages2 or page11. There is no default target, so a command can't write to a D1 it didn't name.`;
     assert.throws(() => parseArgs(argv), { name: "UsageError", message }, JSON.stringify(argv));
     const { err, io } = capture();
     assert.equal(await main(argv, { transport: refuse, ...io }), 2, JSON.stringify(argv));

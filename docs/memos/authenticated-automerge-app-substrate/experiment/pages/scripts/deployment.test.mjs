@@ -351,6 +351,8 @@ function installFixture(
     fresh = false,
     listeners = "",
     rules = "{}",
+    prefixCount = "0",
+    userExists = false,
     installedRuntime,
     candidateVersion,
     qualify = profiles.assertQualifiedDeploymentTarget,
@@ -500,11 +502,12 @@ function installFixture(
           ? deployment.requiredVersion
           : installedRuntime.version;
       if (command === "id") {
-        if (fresh && args.length === 1) throw Object.assign(Error("missing user"), { status: 1 });
+        if (fresh && !userExists && args.length === 1)
+          throw Object.assign(Error("missing user"), { status: 1 });
         return "998";
       }
       if (command === "ss") return listeners;
-      if (command === "/usr/local/bin/aws" && args.includes("KeyCount")) return "0";
+      if (command === "/usr/local/bin/aws" && args.includes("KeyCount")) return prefixCount;
       if (command === "/usr/local/bin/aws" && args.includes("Contents[].Key"))
         return JSON.stringify(
           leases.map(({ node }) => deployment.prefix + "/nodes/" + node + ".json"),
@@ -1381,6 +1384,7 @@ test("every deploy profile owns distinct hosts, ports, prefixes and firewall res
     "page10",
     "pages",
     "pages2",
+    "page11",
   ]);
   const seen = new Map();
   const claim = (kind, value, target) => {
@@ -1780,6 +1784,119 @@ test("pages2 is a fresh lab2 target with Pages' flags and plain sync only", () =
       plain_storage_formats: CURRENT_PLAIN_STORAGE_FORMATS,
     }),
   );
+});
+
+test("page11 owns a new namespace without inheriting pages2 storage history", () => {
+  const p = profiles.deploymentProfile("page11");
+  assert.equal(p.deployment.host, "lab2");
+  assert.equal(p.deployment.hostname, "page11.runtimed.run");
+  assert.equal(p.deployment.prefix, "standalone/page11");
+  assert.deepEqual(p.frozenTargets, ["pages2"]);
+  assert.equal(p.sharedTunnel, false);
+  assert.equal(Number(p.firewallMark) & 0x00ff0000, 0, "avoid Tailscale's mark mask");
+  assert.deepEqual(profiles.unitMemory(p), { maxRssMb: 1280, memoryMax: "2G" });
+  assert.equal(profiles.targetRecordStorage("page11").size, 0);
+  assert.doesNotThrow(() => profiles.assertReleaseOpensTargetPages("page11", {}));
+  assert.throws(
+    () =>
+      profiles.assertReleaseOpensTargetPages("page11", {}, [
+        { mode: "automerge", release: "own-prior-release" },
+      ]),
+    /own-prior-release/,
+  );
+  for (const other of profiles.DEPLOYMENT_TARGETS.filter((name) => name !== "page11")) {
+    const deployment = profiles.deploymentProfile(other).deployment;
+    assert.throws(() =>
+      profiles.verifyDeployment({ source_sha: "a".repeat(40), deployment }, "page11"),
+    );
+    assert.equal(profiles.stagePattern(other).test("/tmp/nteract-page11-stage-abcd1234"), false);
+  }
+});
+
+test("page11 installation and retry preserve neighbors and own existing data", (t) => {
+  const f = installFixture(t, { target: "page11", fresh: true });
+  const neighbors = ["nteract-pages2", "nteract-page10", "nteract-pages-live"];
+  const sentinels = neighbors.flatMap((name) => [
+    `/etc/${name}/ownership.json`,
+    `/var/lib/${name}/keep`,
+    `/opt/${name}/keep`,
+  ]);
+  for (const file of sentinels) f.write(file, "unchanged neighbor");
+  f.execute();
+  const secret = f.read(f.configDir + "/session-secret");
+  const previous = f.read(f.audit + "/previous-deployment.json");
+  f.write("/var/lib/nteract-page11/keep", "existing target data");
+  f.execute();
+  assert.equal(f.read(f.configDir + "/session-secret"), secret);
+  assert.equal(f.read(f.audit + "/previous-deployment.json"), previous);
+  assert.equal(f.read("/var/lib/nteract-page11/keep"), "existing target data");
+  for (const file of sentinels) assert.equal(f.read(file), "unchanged neighbor");
+  const config = JSON.parse(f.read(f.release + "/wrangler.json"));
+  assert.equal(config.vars.NOTEBOOK_CLOUD_PUBLIC_ORIGIN, "https://page11.runtimed.run");
+  assert.equal(config.vars.NOTEBOOK_CLOUD_OIDC_REDIRECT_URI, "https://page11.runtimed.run/oidc");
+  assert.deepEqual(config.d1_databases, [profiles.AUTH_D1, profiles.USAGE_D1]);
+  const deploys = f.calls.filter(({ command }) => command === "runuser");
+  assert.equal(deploys.length, 2);
+  for (const { args } of deploys) {
+    assert.equal(
+      args[args.indexOf("--bucket") + 1],
+      "s3://nteract-celld-lab-621741996708/standalone/page11",
+    );
+    assert.equal(args[1], "nteract-page11");
+  }
+  assert.ok(f.calls.every(({ args }) => !neighbors.some((name) => args.join(" ").includes(name))));
+});
+
+test("page11 refuses occupied resources and nonempty storage before creating a user", (t) => {
+  for (const collision of [
+    { prefixCount: "1" },
+    { userExists: true },
+    { listeners: "LISTEN 0 4096 127.0.0.1:9483 0.0.0.0:*" },
+    { listeners: "LISTEN 0 4096 127.0.0.1:19483 0.0.0.0:*" },
+    { rules: '{"mark":32768}' },
+    { rules: '{"table":"nteract_page11"}' },
+  ]) {
+    const f = installFixture(t, { target: "page11", fresh: true, ...collision });
+    assert.throws(f.execute, /not empty|already exists|occupied/);
+    assert.ok(!f.calls.some(({ command }) => command === "useradd"));
+  }
+  for (const file of [
+    "/opt/nteract-page11/keep",
+    "/etc/nteract-page11/keep",
+    "/var/lib/nteract-page11/keep",
+    "/etc/systemd/system/nteract-page11.service",
+  ]) {
+    const f = installFixture(t, { target: "page11", fresh: true });
+    f.write(file, "unowned");
+    assert.throws(f.execute, /unowned deployment path/);
+    assert.equal(f.read(file), "unowned");
+  }
+});
+
+test("page11 DNS refuses neighboring ownership and retries only its own record", async () => {
+  const f = dnsFixture();
+  const args = { token: "fixture", tunnelId, target: "page11", fetchImpl: f.fetchImpl };
+  assert.equal((await configureDns(args)).present, false);
+  assert.equal((await configureDns({ ...args, apply: true })).name, "page11.runtimed.run");
+  assert.equal((await configureDns({ ...args, apply: true })).changed, false);
+  for (const owner of ["pages", "page10", "pages2"]) {
+    const foreign = dnsFixture([
+      {
+        id: "b".repeat(32),
+        name: "page11.runtimed.run",
+        type: "CNAME",
+        content: `${tunnelId}.cfargotunnel.com`,
+        proxied: true,
+        ttl: 1,
+        comment: "nteract/pages:experiment:" + owner,
+      },
+    ]);
+    await assert.rejects(
+      configureDns({ ...args, apply: true, fetchImpl: foreign.fetchImpl }),
+      /conflicts/,
+    );
+    assert.ok(foreign.calls.every(({ method }) => method === "GET"));
+  }
 });
 
 test("fresh pages2 installation owns page2.runtimed.run, its prefix and its unit", (t) => {
