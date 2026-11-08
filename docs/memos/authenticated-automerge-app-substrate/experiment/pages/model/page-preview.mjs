@@ -1,91 +1,190 @@
 // A read-only rendering of a Page the viewer can show before its WASM
-// runtimes load and its first sync finishes. The host builds it from the
-// rich-text schema's own toDOM specs, so the preview has the same tags and
-// attributes the codec renders. It is plain JSON: each element is
+// runtimes load and its first sync finishes. The host projects Wordgard's
+// native read tree into the preview's stable tags and attributes. Each element is
 // [tag, attributes, ...children] and each text run is a string. The viewer
 // (viewer/PagePreview.jsx) builds elements from an allowlist; nothing here is
 // HTML.
 import { requireRich } from "./richtext-format.mjs";
-import { richDoc } from "./richtext-spans.mjs";
+import { readChildren, readKind } from "./native-read.mjs";
+import { surfaceRead } from "./page-surface-read.mjs";
 import { orderedBlockIds } from "./order.mjs";
-import { safeUrl } from "./marks.mjs";
+import { MARK_REGISTRY, safeUrl } from "./marks.mjs";
+import { unknownNodeNotice } from "./richtext-notices.mjs";
+import { Leaf, Mark } from "wordgard/doc";
+import {
+  Code,
+  Emphasis,
+  PagesForeignMarks,
+  PagesHighlight,
+  PagesLink,
+  Strikethrough,
+  Strong,
+} from "./wordgard-doc.mjs";
 
 /** The most UTF-8 bytes the serialized preview may take. */
 export const PREVIEW_MAX_BYTES = 256 * 1024;
 
-/** A DOMOutputSpec with its content hole filled, as [tag, attrs, ...children]. */
-function fill(spec, children) {
-  if (typeof spec === "string") return spec;
-  const [tag, ...rest] = spec;
-  const attrs =
-    rest.length && rest[0] && typeof rest[0] === "object" && !Array.isArray(rest[0])
-      ? rest.shift()
-      : {};
-  const kept = Object.fromEntries(
-    Object.entries(attrs).filter(([, value]) => value !== null && value !== undefined),
-  );
-  const out = [tag, kept];
-  for (const part of rest) {
-    if (part === 0) out.push(...children);
-    else out.push(fill(part, children));
-  }
-  return out;
-}
+const MARKS = new Map([
+  [PagesLink, "link"],
+  [Emphasis.type, "em"],
+  [Strong.type, "strong"],
+  [Strikethrough.type, "strike"],
+  [PagesHighlight, "highlight"],
+  [Code.type, "code"],
+  [PagesForeignMarks, "foreign"],
+]);
+const MARK_RANK = new Map(
+  [...MARK_REGISTRY.marks.map(({ name }) => name), "foreign"].map((name, index) => [name, index]),
+);
+const TAGS = {
+  paragraph: "p",
+  blockquote: "blockquote",
+  aside: "aside",
+  "bullet-list": "ul",
+  "table-row": "tr",
+  "horizontal-rule": "hr",
+  "hard-break": "br",
+};
 
 /**
- * One schema node as preview content: an array of preview nodes. Without
- * `overrides` it is the node's toDOM rendering. `overrides.node(node,
- * children)` may return a replacement array for a node, where `children()`
+ * One Wordgard read node as preview JSON. `overrides.node(node,
+ * children, attrs)` may return a replacement array, where `children()`
  * renders its content with the same overrides; `overrides.mark(mark,
  * content)` may return a replacement for a mark's wrapper. Returning
- * undefined keeps the schema's own rendering. Cards (page-card.mjs) use them.
+ * undefined keeps the preview rendering. Cards (page-card.mjs) use them.
+ * Metadata is the native reader's private map of stored scalar attributes.
  */
-export function renderNode(node, overrides) {
+export function renderNode(node, overrides, metadata) {
   if (node.isText) {
-    // Marks apply outermost first, the order ProseMirror's serializer uses.
-    let content = [node.text];
-    for (const mark of [...node.marks].reverse()) {
+    let content = [node.param];
+    const marks = [...node.marks].sort(
+      (a, b) => MARK_RANK.get(MARKS.get(b.type)) - MARK_RANK.get(MARKS.get(a.type)),
+    );
+    for (const mark of marks) {
       const replaced = overrides?.mark?.(mark, content);
       if (replaced) {
         content = replaced;
         continue;
       }
-      const toDOM = mark.type.spec.toDOM;
-      content = toDOM ? [fill(toDOM(mark, true), content)] : content;
+      const name = MARKS.get(mark.type);
+      if (name === "link") {
+        const { href, title } = mark.value;
+        content = safeUrl(href)
+          ? [["a", { href, ...(title != null && { title }) }, ...content]]
+          : [["span", {}, ...content]];
+      } else if (name === "highlight")
+        content = [["mark", { "data-highlight": mark.value }, ...content]];
+      else if (name === "foreign") content = [["span", { "data-unknown-mark": true }, ...content]];
+      else if (name) content = [[name === "strike" ? "s" : name, {}, ...content]];
     }
     return content;
   }
   const children = () => {
     const out = [];
-    node.forEach((child) => out.push(...renderNode(child, overrides)));
+    const nodes = readChildren(node);
+    for (let i = 0; i < nodes.length; i++) {
+      let child = nodes[i];
+      if (child.isText) {
+        let text = child.param;
+        while (nodes[i + 1]?.isText && Mark.sameSet(child.marks, nodes[i + 1].marks))
+          text += nodes[++i].param;
+        if (text !== child.param) child = Leaf.text(text, child.marks);
+      }
+      out.push(...renderNode(child, overrides, metadata));
+    }
     return out;
   };
-  const replaced = overrides?.node?.(node, children);
+  const attrs = metadata?.get(node) ?? {};
+  const replaced = overrides?.node?.(node, children, attrs);
   if (replaced) return replaced;
-  if (node.type.name === "image" && safeUrl(node.attrs.src))
-    return [
-      [
-        "img",
-        {
-          src: node.attrs.src,
-          alt: node.attrs.alt ?? "",
-          ...(node.attrs.title != null && { title: node.attrs.title }),
-          ...(node.attrs.dark_src != null &&
-            safeUrl(node.attrs.dark_src) && { dark_src: node.attrs.dark_src }),
-        },
-      ],
-    ];
-  const toDOM = node.type.spec.toDOM;
-  // Unknown or unrenderable nodes keep their text.
-  return toDOM ? [fill(toDOM(node), children())] : children();
+  const kind = readKind(node);
+  if (TAGS[kind]) return [[TAGS[kind], {}, ...children()]];
+  switch (kind) {
+    case "heading":
+      return [[`h${node.tag.param}`, {}, ...children()]];
+    case "code-block":
+      return [["pre", {}, ["code", {}, ...children()]]];
+    case "ordered-list":
+      return [["ol", node.tag.param === 1 ? {} : { start: node.tag.param }, ...children()]];
+    case "task-list":
+      return [["ul", { "data-task-list": "true" }, ...children()]];
+    case "list-item": {
+      const { checked } = attrs;
+      return typeof checked === "boolean"
+        ? [
+            [
+              "li",
+              { "data-task-checked": String(checked) },
+              [
+                "input",
+                {
+                  type: "checkbox",
+                  ...(checked && { checked: "" }),
+                  disabled: "",
+                  contenteditable: "false",
+                  "aria-label": "Task completed",
+                },
+              ],
+              ["div", {}, ...children()],
+            ],
+          ]
+        : [["li", {}, ...children()]];
+    }
+    case "table":
+      return [["table", {}, ["tbody", {}, ...children()]]];
+    case "table-cell":
+    case "table-header":
+      return [
+        [
+          kind === "table-cell" ? "td" : "th",
+          attrs.align == null ? {} : { "data-align": attrs.align },
+          ...children(),
+        ],
+      ];
+    case "image": {
+      const { src, alt, title, dark_src } = node.param;
+      if (!safeUrl(src)) return [["span", {}, "Image omitted"]];
+      return [
+        [
+          "img",
+          {
+            src,
+            alt: alt ?? "",
+            ...(title != null && { title }),
+            ...(dark_src != null && safeUrl(dark_src) && { dark_src }),
+          },
+        ],
+      ];
+    }
+    case "dataframe": {
+      const { media_type, title } = node.param;
+      // Scalar titles are not DOM specs. Zero means no caption; unsupported
+      // title shapes fail closed rather than constructing elements.
+      if (title != null && typeof title !== "string" && title !== 0)
+        throw Error("Unreadable dataframe title");
+      return [
+        [
+          "figure",
+          media_type == null ? {} : { "data-dataframe": media_type },
+          ...(title === 0 ? [] : [title ?? "Dataframe"]),
+        ],
+      ];
+    }
+    case "unknown":
+      return [["div", { "data-unknown-block": "true" }, ...children()]];
+    case "unknown-inline":
+      return [unknownNodeNotice(node.param.type)];
+    default:
+      return children();
+  }
 }
 
 /** One block's preview content, or null when it can't be rendered. */
 export function blockPreview(block) {
   try {
-    const doc = richDoc(requireRich(block));
+    const { nodes, metadata } = surfaceRead(requireRich(block));
     const out = [];
-    doc.forEach((child) => out.push(...renderNode(child)));
+    for (const child of nodes) out.push(...renderNode(child, undefined, metadata));
     return out;
   } catch {
     return null;

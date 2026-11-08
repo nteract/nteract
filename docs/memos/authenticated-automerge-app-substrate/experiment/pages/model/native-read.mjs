@@ -197,7 +197,11 @@ function descriptor(type, attrs = {}) {
 
 export function nativeRead(block, pageId) {
   if (!isRich(block)) throw Error("Block is not rich text");
-  const spans = codeTextUnmarked(A.spans(block, ["richText"]));
+  return nativeReadSpans(A.spans(block, ["richText"]), pageId);
+}
+
+export function nativeReadSpans(input, pageId) {
+  const spans = codeTextUnmarked(input);
   const nodes = [],
     stack = [],
     source = new WeakMap(),
