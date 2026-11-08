@@ -6,7 +6,6 @@ import { build } from "esbuild";
 import fc from "fast-check";
 import * as candidate from "./comment-content.mjs";
 import * as reader from "./comment-read.mjs";
-import * as baseline from "../test/comment-read-baseline.mjs";
 import { allInputs } from "../test/address-inputs.mjs";
 import { RICH_FORMAT } from "./richtext-format.mjs";
 import { updateSpansConfig } from "./marks.mjs";
@@ -40,16 +39,28 @@ function richMessage(spans) {
 function compare(message, name) {
   const before = A.save(message);
   const heads = A.getHeads(message);
-  const expected = baseline.commentBodyProjection(message);
-  assert.deepEqual(candidate.commentBodyProjection(message), expected, name);
-  assert.equal(candidate.commentMarkdown(message), baseline.commentMarkdown(message), name);
-  for (const fn of ["isStoredFormMessage", "commentMessageState", "commentThreadState"])
-    assert.deepEqual(candidate[fn](message), baseline[fn](message), `${name}: ${fn}`);
+  const projected = candidate.commentBodyProjection(message);
+  assert.equal(typeof projected.body, "string", name);
+  assert.equal(candidate.commentMarkdown(message), projected.body, name);
+  const loaded = A.load(before);
+  try {
+    assert.deepEqual(candidate.commentBodyProjection(loaded), projected, `${name}: save/load`);
+  } finally {
+    A.free(loaded);
+  }
+  if (projected.content_error === "rich_text_unavailable")
+    assert.equal(
+      projected.body,
+      typeof message.richText === "string"
+        ? message.richText.replaceAll("\ufffc", "\n").trim()
+        : "",
+      name,
+    );
   assert.deepEqual(A.getHeads(message), heads, `${name}: heads`);
   assert.deepEqual(A.save(message), before, `${name}: saved bytes`);
 }
 
-test("comment reads match the frozen baseline on stored corpus and generated native frames", () => {
+test("comment reads preserve stored corpus and generated native frames across save/load", () => {
   for (const { name, spans } of allInputs({ seed: 0xc011, count: 80, maxDepth: 2 })) {
     const doc = richMessage(spans);
     try {

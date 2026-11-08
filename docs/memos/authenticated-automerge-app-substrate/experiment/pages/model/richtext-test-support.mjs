@@ -3,6 +3,17 @@ import { COMMENTS_FEATURE } from "./comments-doc.mjs";
 import { RICH_FORMAT, isRich } from "./richtext-format.mjs";
 import { setRichMarkdown } from "./richtext-page.mjs";
 import { stampFeatures } from "./schema-features.mjs";
+import * as A from "@automerge/automerge/slim";
+import { encode } from "./wordgard-doc.mjs";
+
+/** Noncanonical opening paragraph for refusal and text-limit fixtures. */
+export const explicitOpeningSpans = (tree) => [
+  {
+    type: "block",
+    value: { type: new A.ImmutableString("paragraph"), parents: [], attrs: {}, isEmbed: false },
+  },
+  ...encode(tree),
+];
 
 /** Inside an `A.change`: give block `id` rich text parsed from its
  * `markdown` field, math and HTML kept as text. */

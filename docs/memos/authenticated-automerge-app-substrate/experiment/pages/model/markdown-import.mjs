@@ -1,10 +1,10 @@
 // Markdown to a native tree: literal imports, agent writes that refuse what
 // Pages can't represent, inline replacement Markdown, and the preservation
 // check behind both.
-import { adapter, pmNodeToSpans } from "./pm-adapter.mjs";
+import { encode } from "./wordgard-doc.mjs";
 import { tokenizer } from "./markdown-tokenizer.mjs";
 import { literalize, normalizeSource, scanMarkdown } from "./markdown-scan.mjs";
-import { literalDoc, parseTokens } from "./pm-markdown-parser.mjs";
+import { literalDoc, parseTokens } from "./markdown-native.mjs";
 import { agentTokens, lostSpansContent, refuseLoss } from "./markdown-import-policy.mjs";
 export { parseInlineMarkdown } from "./markdown-inline.mjs";
 
@@ -51,7 +51,7 @@ export function nativeImportLoss(source) {
  * they miss, such as a link whose only content is a line break.
  */
 export function lostContent(tokens, doc) {
-  return lostSpansContent(tokens, pmNodeToSpans(adapter, doc));
+  return lostSpansContent(tokens, encode(doc));
 }
 
 /** Markdown an agent wrote, as native rich text. Throws a 400

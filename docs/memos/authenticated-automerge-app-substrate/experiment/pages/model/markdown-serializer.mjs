@@ -2,15 +2,11 @@
 // exports. DOM-free and ProseMirror-free, so the Worker and the browser share
 // it.
 //
-// The output follows CommonMark as prosemirror-markdown's serializer writes
-// it (escaping, mark nesting, block separation), plus the Pages rules below.
+// The output follows CommonMark escaping, mark nesting and block separation,
+// plus the Pages rules below.
 // model/markdown-serializer.test.mjs pins it byte for byte against a frozen
 // corpus. A change to any rule here changes what agents read and write back.
 //
-// exportMarkdown also takes a ProseMirror tree (the parser's output, richDoc)
-// and reads it into an editor tree first. That reader is duck-typed, so this
-// module imports no ProseMirror package (model/pm-boundary.test.mjs).
-import { Leaf, Mark } from "wordgard/doc";
 import { MARK_REGISTRY } from "./marks.mjs";
 import { readDataframe } from "../shared/dataset-assets.mjs";
 import { escapeLiteralSyntax } from "./markdown-scan.mjs";
@@ -20,12 +16,10 @@ import {
   Aside,
   Blockquote,
   BulletList,
-  Cell,
   Code,
   CodeBlock,
   CodeBlockLanguage,
   Emphasis,
-  HeaderCell,
   Heading,
   HorizontalRule,
   LineBreak,
@@ -42,7 +36,6 @@ import {
   Strikethrough,
   Strong,
   Table,
-  TableRow,
   TaskChecked,
   TaskList,
 } from "./wordgard-doc.mjs";
@@ -675,107 +668,4 @@ function nodesMarkdown(nodes) {
  * holding a slice of one's top-level nodes). */
 export const treeMarkdown = (doc) => nodesMarkdown(doc.content);
 
-// --- ProseMirror trees --------------------------------------------------------
-
-const pmMarks = (marks) =>
-  marks.reduce((set, mark) => {
-    const { name } = mark.type;
-    const attrs = mark.attrs;
-    const wordgard =
-      name === "link"
-        ? PagesLink.of({ href: attrs.href, title: attrs.title })
-        : name === "highlight"
-          ? PagesHighlight.of(attrs.color)
-          : { strong: Strong, em: Emphasis, strike: Strikethrough, code: Code }[name];
-    if (name === "unknownMark") return PagesForeignMarks.of(attrs.unknownMarks).addToSet(set);
-    if (!wordgard) throw Error(`Mark type \`${name}\` not supported by Markdown renderer`);
-    return wordgard.addToSet(set);
-  }, Mark.none);
-const pmChildren = (node) => {
-  const out = [];
-  node.forEach((child) => out.push(...fromProseMirror(child)));
-  return out;
-};
-/** The editor nodes a ProseMirror node reads as. Shapes the editor model
- * doesn't produce but the parser does (an ordered list's start, marks on an
- * image or a hard break, text holding a newline) are kept, because the
- * serializer reads them; so the nodes are built without schema validation,
- * never into a Wordgard document. An unknown block's children follow its
- * notice. */
-function fromProseMirror(node) {
-  const attrs = node.attrs;
-  switch (node.type.name) {
-    case "text":
-      return [Leaf.text(node.text, pmMarks(node.marks))];
-    case "hard_break":
-      return [LineBreak.withMarks(pmMarks(node.marks))];
-    case "image":
-      return [PagesImage.of({ ...attrs }, pmMarks(node.marks))];
-    case "unknownLeaf":
-      return [PagesUnknownEmbed.of({ type: attrs.unknownBlock?.type }, pmMarks(node.marks))];
-    case "paragraph":
-      return [Paragraph.create(pmChildren(node))];
-    case "heading":
-      return [Heading.of(attrs.level).create(pmChildren(node))];
-    case "code_block":
-      return [
-        (attrs.params
-          ? CodeBlock.withMarks([CodeBlockLanguage.of(String(attrs.params))])
-          : CodeBlock
-        ).create(node.textContent ? [Leaf.text(node.textContent, Mark.none)] : []),
-      ];
-    case "blockquote":
-      return [Blockquote.create(pmChildren(node))];
-    case "aside":
-      return [Aside.create(pmChildren(node))];
-    case "horizontal_rule":
-      return [HorizontalRule];
-    case "bullet_list":
-      return [BulletList.create(pmChildren(node))];
-    case "ordered_list":
-      return [OrderedList.of(attrs.order ?? 1).create(pmChildren(node))];
-    case "task_list":
-      return [TaskList.create(pmChildren(node))];
-    case "list_item":
-      return [
-        (typeof attrs.checked === "boolean"
-          ? ListItem.withMarks([TaskChecked.of(attrs.checked)])
-          : ListItem
-        ).create(pmChildren(node)),
-      ];
-    case "table":
-      return [Table.create(pmChildren(node))];
-    case "table_row":
-      return [TableRow.create(pmChildren(node))];
-    case "table_cell":
-    case "table_header": {
-      const type = node.type.name === "table_cell" ? Cell : HeaderCell;
-      return [
-        (attrs.align ? type.withMarks([Alignment.of(attrs.align)]) : type).create(pmChildren(node)),
-      ];
-    }
-    case "dataframe":
-      return [PagesDataframe.of({ ...attrs })];
-    case "unknownBlock": {
-      const notice = PagesUnknownBlock.of({
-        type: attrs.unknownBlock?.type ?? attrs.unknownParentBlock,
-      });
-      const rest = [];
-      node.forEach((child) => {
-        if (child.type.name !== "paragraph" || child.content.size)
-          rest.push(...fromProseMirror(child));
-      });
-      return [notice, ...rest];
-    }
-    default:
-      throw Error(`Token type \`${node.type.name}\` not supported by Markdown renderer`);
-  }
-}
-const isProseMirror = (doc) => typeof doc?.type?.schema === "object";
-
-/** Pages Markdown for a document: a Wordgard document, or a ProseMirror one
- * (the Markdown parser's output, richDoc), read into a Wordgard document
- * first. */
-export function exportMarkdown(doc) {
-  return nodesMarkdown(isProseMirror(doc) ? pmChildren(doc) : doc.content);
-}
+export const exportMarkdown = treeMarkdown;

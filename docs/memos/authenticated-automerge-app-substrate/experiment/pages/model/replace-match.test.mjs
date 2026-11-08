@@ -62,8 +62,11 @@ test("visible text replacement crosses marks while preserving untouched marks, o
   assert.equal(projectComments(after, comments)[0].selectionContext.text, "🌊 passage");
   assert.equal(projectComments(after, comments)[0].selectionContext.status, "attached");
   assert.ok(projectPage(after).blocks[0].markdown.includes("[🌊 passage](https://example.com)"));
-  assert.match(richDoc(after.blocks[id]).textContent, /Before friends — 🌊 passage.Later./);
-  richDoc(after.blocks[id]).check();
+  assert.match(
+    richDoc(after.blocks[id]).textContent({ blockSeparator: "", leafText: "" }),
+    /Before friends — 🌊 passage.Later./,
+  );
+  richDoc(after.blocks[id]).schema.validate(richDoc(after.blocks[id]));
 });
 
 // A comment on `selected_text`, then one replace_match; returns the anchor's
@@ -246,7 +249,7 @@ test("a match_text that cuts a character is refused, for replace_match and forma
     replacement: `th\u0065\u0301 ${family} 🇺🇦`,
   });
   assert.equal(
-    richDoc(after.blocks[id]).textContent,
+    richDoc(after.blocks[id]).textContent({ blockSeparator: "", leafText: "" }),
     `Order a th\u0065\u0301 ${family} 🇺🇦 au lait.`,
   );
   const anchored = anchorAfter("Order a caf\u0065\u0301 au lait.", "caf\u0065\u0301", {
@@ -310,7 +313,7 @@ test("unchanged words inside the match keep their own marks; inserted text gets 
     const { doc, id } = fixture(source);
     const { after } = replace(doc, id, input);
     assert.equal(projectPage(after).blocks[0].markdown, expected, source);
-    richDoc(after.blocks[id]).check();
+    richDoc(after.blocks[id]).schema.validate(richDoc(after.blocks[id]));
   }
 });
 
@@ -400,7 +403,11 @@ test("rich structural markers and embedded nodes cannot be matched or deleted", 
 test("replacement is literal text, can delete a match, and leaves the next paragraph intact", () => {
   const { doc, id } = fixture("Keep word here.\n\nOther paragraph.");
   const { after } = replace(doc, id, { match_text: "word", replacement: "**literal** $1" });
-  assert.ok(richDoc(after.blocks[id]).textContent.includes("**literal** $1"));
+  assert.ok(
+    richDoc(after.blocks[id])
+      .textContent({ blockSeparator: "", leafText: "" })
+      .includes("**literal** $1"),
+  );
   const deleted = replace(after, id, { match_text: "**literal** $1 ", replacement: "" }).after;
   assert.equal(projectPage(deleted).blocks[0].markdown, "Keep here.\n\nOther paragraph.");
 });
@@ -449,7 +456,7 @@ test("whole formatted runs preserve their shared marks, including link destinati
     const { doc, id } = fixture(source);
     const { after } = replace(doc, id, { match_text: "old words", replacement: "new phrase" });
     assert.equal(projectPage(after).blocks[0].markdown, expected, source);
-    richDoc(after.blocks[id]).check();
+    richDoc(after.blocks[id]).schema.validate(richDoc(after.blocks[id]));
   }
 });
 
@@ -491,7 +498,7 @@ test("a marked word replaced whole keeps its mark, as retyping it would; neighbo
     });
     assert.equal(projectPage(after).blocks[0].markdown, expected, source);
     assert.deepEqual(result.edits, [{ op: "replace_match", block_id: id, matched: 1 }], source);
-    richDoc(after.blocks[id]).check();
+    richDoc(after.blocks[id]).schema.validate(richDoc(after.blocks[id]));
   }
   // Rewritten as one run, the marks are crossed: the new text is plain and
   // every partial mark is reported.
@@ -525,7 +532,7 @@ test("text inserted inside a mark run continues it; the audit repro stays code w
     "The `rotateKey()` helper is in `worker/signing-keys.mjs`.",
   );
   assert.deepEqual(result.edits, [{ op: "replace_match", block_id: id, matched: 1 }]);
-  richDoc(after.blocks[id]).check();
+  richDoc(after.blocks[id]).schema.validate(richDoc(after.blocks[id]));
 
   // A word changed inside a link keeps the href; the link is partial to the match.
   const linked = fixture('See [the old words here](https://example.com "Title") now.');

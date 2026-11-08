@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
-import { pmDocFromSpans, pmNodeToSpans } from "@automerge/prosemirror";
+import { decode, Code } from "./wordgard-doc.mjs";
+import { readKind, readDescendants, readText } from "./native-read.mjs";
 import {
   MATH_SYNTAX,
-  adapter,
   exportMarkdown,
   pageSpans,
   parseAgentMarkdown,
@@ -36,32 +36,29 @@ const BODY = [
 ].join("\n");
 
 // Native content as stored: parsed Markdown after the Automerge span round trip.
-const nativeDoc = (markdown) => pmDocFromSpans(adapter, pageSpans(parseMarkdown(markdown)));
+const nativeDoc = (markdown) => decode(pageSpans(parseMarkdown(markdown))).doc;
 const kinds = (doc) => {
   const names = [];
-  doc.descendants((node) => {
-    names.push(node.type.name);
+  readDescendants(doc, (node) => {
+    names.push(readKind(node));
   });
   return names;
 };
 const codeText = (doc) => {
   const values = [];
-  doc.descendants((node) => {
-    if (node.isText && node.marks.some((mark) => mark.type.name === "code")) values.push(node.text);
+  readDescendants(doc, (node) => {
+    if (node.isText && node.marks.some((mark) => mark.type === Code.type)) values.push(node.param);
   });
   return values;
 };
 
 function assertDiagnosisStructure(doc) {
   assert.ok(!kinds(doc).includes("raw"), "the body is native rich text, not opaque source");
-  assert.ok(!kinds(doc).includes("code_block"), "no inline code span opens a code block");
-  assert.deepEqual(
-    Array.from({ length: doc.childCount }, (_, i) => doc.child(i).type.name),
-    ["paragraph", "paragraph", "bullet_list"],
-  );
-  assert.equal(doc.child(2).childCount, 4);
+  assert.ok(!kinds(doc).includes("code-block"), "no inline code span opens a code block");
+  assert.deepEqual(doc.content.map(readKind), ["paragraph", "paragraph", "bullet-list"]);
+  assert.equal(doc.content[2].content.length, 4);
   assert.deepEqual(codeText(doc), ["\\", "## ", "## ", "- ", "1. ", "> ", "`code`"]);
-  assert.match(doc.child(2).child(3).textContent, /"\$30 and \$25" stays as text\.$/);
+  assert.match(readText(doc.content[2].content[3]), /"\$30 and \$25" stays as text\.$/);
 }
 
 test("the agent diagnosis comment body imports as paragraphs, a list and inline code", () => {
@@ -99,9 +96,9 @@ test("manage_page_comment add with body_format markdown stores the diagnosis as 
   const message = comments.threads[ids.thread_id].messages[ids.message_id];
   const stored = richDoc(message);
   assertDiagnosisStructure(stored);
-  assert.ok(pmDocFromSpans(adapter, markdownCommentSpans(BODY)).eq(stored));
+  assert.ok(decode(markdownCommentSpans(BODY)).doc.eq(stored));
   // The Markdown projection reimports to the stored native content.
-  assert.ok(pmDocFromSpans(adapter, markdownCommentSpans(commentMarkdown(message))).eq(stored));
+  assert.ok(decode(markdownCommentSpans(commentMarkdown(message))).doc.eq(stored));
 });
 
 test("create_page and replace_block_markdown store the diagnosis as native rich text", () => {
@@ -134,7 +131,7 @@ for (const [label, source] of [
   test(`currency is prose: ${label}`, () => {
     const doc = parseMarkdown(source);
     assert.deepEqual(kinds(doc), ["paragraph", "text"]);
-    assert.equal(doc.textContent, source);
+    assert.equal(readText(doc), source);
     assert.equal(exportMarkdown(doc), source);
   });
 }
@@ -145,8 +142,8 @@ function assertLiteralMath(source) {
   assert.equal(unsupportedMarkdown(source)?.construct, "math");
   assert.throws(() => parseAgentMarkdown(source), { code: "unsupported_markdown" });
   const doc = parseMarkdown(source);
-  doc.descendants((node) => assert.notEqual(node.type.name, "raw"));
-  for (const part of source.split(/\r\n?|\n/)) assert.ok(doc.textContent.includes(part.trim()));
+  readDescendants(doc, (node) => assert.notEqual(readKind(node), "raw"));
+  for (const part of source.split(/\r\n?|\n/)) assert.ok(readText(doc).includes(part.trim()));
   const exported = exportMarkdown(doc);
   assert.equal(unsupportedMarkdown(exported), null, exported);
   assert.ok(parseAgentMarkdown(exported).eq(doc), exported);
@@ -216,7 +213,7 @@ for (const space of [
 
 test("other characters before $$ do not open display math", () => {
   for (const source of ["\u200b$$\n\\{x\\}", "x$$\n\\{x\\}", "\u00ad$$\n\\{x\\}"])
-    assert.equal(parseMarkdown(source).firstChild.type.name, "paragraph", JSON.stringify(source));
+    assert.equal(readKind(parseMarkdown(source).firstChild), "paragraph", JSON.stringify(source));
 });
 
 // The pattern has no flags: it writes its own line starts, so a multiline `^`
@@ -270,10 +267,7 @@ for (const [label, source, code] of [
 ]) {
   test(`inline code span: ${label}`, () => {
     const doc = parseMarkdown(source);
-    assert.deepEqual(
-      Array.from({ length: doc.childCount }, (_, i) => doc.child(i).type.name),
-      ["paragraph"],
-    );
+    assert.deepEqual(doc.content.map(readKind), ["paragraph"]);
     assert.deepEqual(codeText(doc), code);
     assert.ok(parseMarkdown(exportMarkdown(doc)).eq(doc), exportMarkdown(doc));
   });
@@ -282,10 +276,7 @@ for (const [label, source, code] of [
 test("an inline code span on one line never opens a fence for later lines", () => {
   const source = "First `` ` `` line\n\n- `\\`\n- `` `code` ``\n\nLast paragraph";
   const doc = parseMarkdown(source);
-  assert.deepEqual(
-    Array.from({ length: doc.childCount }, (_, i) => doc.child(i).type.name),
-    ["paragraph", "bullet_list", "paragraph"],
-  );
+  assert.deepEqual(doc.content.map(readKind), ["paragraph", "bullet-list", "paragraph"]);
   assert.deepEqual(codeText(doc), ["`", "\\", "`code`"]);
   assert.ok(parseMarkdown(exportMarkdown(doc)).eq(doc));
 });

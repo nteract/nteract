@@ -7,7 +7,7 @@ import { Leaf } from "wordgard/doc";
 import { Blockquote, HorizontalRule, Paragraph } from "wordgard/types";
 import { encode, PagesDataframe, schema } from "./wordgard-doc.mjs";
 import { applyPageOperation, createPageData, initializePage, orderedBlockIds } from "./page.mjs";
-import { adapterSpans, blockMarkdown, parseMarkdown, richDoc, textPath } from "./richtext.mjs";
+import { blockMarkdown, parseMarkdown, richDoc, textPath } from "./richtext.mjs";
 import { updateSpansConfig } from "./marks.mjs";
 import { projectReadContent } from "./read-content.mjs";
 import { projectReadChanges } from "./read-changes.mjs";
@@ -176,7 +176,7 @@ test("delete_node removes one node and leaves its neighbours and their ids alone
       { op: "delete_node", block_id: id, node_id: idOf(doc, id, type) },
     ]).doc;
     assert.equal(blockMarkdown(deleted.blocks[id]), projected(SOURCE.replace(removed, "")), type);
-    richDoc(deleted.blocks[id], pageId).check();
+    richDoc(deleted.blocks[id], pageId).schema.validate(richDoc(deleted.blocks[id], pageId));
   }
   // The last node: its range runs to the end of the text.
   const last = outline(doc, id).at(-1).node_id;
@@ -349,7 +349,7 @@ test("concurrent deletes of the same node, or a delete beside a text edit, merge
     { op: "replace_match", block_id: id, match_text: "Closing", replacement: "Final" },
   ]);
   const merged = A.merge(A.clone(one), typed);
-  richDoc(merged.blocks[id], pageId).check();
+  richDoc(merged.blocks[id], pageId).schema.validate(richDoc(merged.blocks[id], pageId));
   assert.match(blockMarkdown(merged.blocks[id]), /Final words$/);
   assert.doesNotMatch(blockMarkdown(merged.blocks[id]), /quoted/);
 });
@@ -486,7 +486,15 @@ test("delete_node refuses to join the lists on either side into one", () => {
     A.updateSpans(
       draft,
       textPath(legacy.id),
-      adapterSpans(parseMarkdown("Intro\n\n> a\n\n---\n\n> - x")).slice(1),
+      encode(parseMarkdown("Intro\n\n> a\n\n---\n\n> - x")).filter(
+        (span, index, spans) =>
+          !(
+            span.type === "block" &&
+            String(span.value.type) === "blockquote" &&
+            spans[index + 1]?.type === "block" &&
+            String(spans[index + 1].value.type) === "unordered-list-item"
+          ),
+      ),
       updateSpansConfig,
     ),
   );
@@ -569,7 +577,7 @@ test("delete_node beside a peer typing into the same node merges into a valid tr
     { op: "replace_match", block_id: id, match_text: "quoted", replacement: "quoted text" },
   ]);
   const merged = A.merge(A.clone(deleted), typed);
-  richDoc(merged.blocks[id], pageId).check();
+  richDoc(merged.blocks[id], pageId).schema.validate(richDoc(merged.blocks[id], pageId));
   assert.ok(outline(merged, id).every((entry) => entry.node_id !== quote));
   // The quote's own text is gone. The peer's new characters survive (a
   // delete removes only what it saw) and join the end of the node before:
@@ -614,7 +622,7 @@ test("text a peer typed into a node deleted after a rule or dataframe reads as a
       types,
     );
     assert.equal(blockMarkdown(merged.blocks[id], pageId), markdown);
-    richDoc(merged.blocks[id], pageId).check();
+    richDoc(merged.blocks[id], pageId).schema.validate(richDoc(merged.blocks[id], pageId));
   }
 });
 

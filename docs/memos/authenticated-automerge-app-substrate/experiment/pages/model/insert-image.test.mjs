@@ -9,6 +9,7 @@ import {
   projectPage,
 } from "./page.mjs";
 import { richDoc, parseMarkdown } from "./richtext.mjs";
+import { PagesImage } from "./wordgard-doc.mjs";
 import { assertDocumentLimits } from "./limits.mjs";
 import { imageIds } from "./image-ids.mjs";
 import { documentFeatures } from "./schema-features.mjs";
@@ -40,13 +41,13 @@ test("image insertion creates a native embed without interpreting alt text as Ma
   assert.equal(inserted.asset_url, `/api/pages/${pageId}/assets/${asset_id}`);
   assert.equal(inserted.alt, alt);
   const image = richDoc(after.blocks[inserted.block_id]).firstChild.firstChild;
-  assert.equal(image.type.name, "image");
-  assert.equal(image.attrs.alt, alt);
-  assert.equal(image.attrs.src, inserted.asset_url);
+  assert.equal(image.type, PagesImage);
+  assert.equal(image.param.alt, alt);
+  assert.equal(image.param.src, inserted.asset_url);
   const markdown = projectPage(after).blocks[1].markdown;
   const reparsed = parseMarkdown(markdown).firstChild.firstChild;
-  assert.equal(reparsed.type.name, "image");
-  assert.equal(reparsed.attrs.alt, alt);
+  assert.equal(reparsed.type, PagesImage);
+  assert.equal(reparsed.param.alt, alt);
   assertDocumentLimits(after);
 });
 test("image placement reuses append, prepend and explicit fractional block anchors", () => {
@@ -99,7 +100,7 @@ test("two sources share metadata, preserve marker identity and stamp monotonical
   assert.equal(imageIds(after, block_id)[0].image_id, image_id);
   assert.ok(documentFeatures(after).includes("image-theme-variants"));
   assert.equal(
-    richDoc(after.blocks[block_id]).firstChild.firstChild.attrs.dark_src,
+    richDoc(after.blocks[block_id]).firstChild.firstChild.param.dark_src,
     `/api/pages/${pageId}/assets/${"b".repeat(64)}`,
   );
   const changed = apply(after, [
@@ -108,9 +109,9 @@ test("two sources share metadata, preserve marker identity and stamp monotonical
   assert.equal(imageIds(changed, block_id)[0].image_id, image_id);
   assert.ok(documentFeatures(changed).includes("image-theme-variants"));
   const image = richDoc(changed.blocks[block_id]).firstChild.firstChild;
-  assert.equal(image.attrs.dark_src, null);
-  assert.equal(image.attrs.alt, "Updated");
-  assert.equal(image.attrs.title, "Chart");
+  assert.equal(image.param.dark_src, undefined);
+  assert.equal(image.param.alt, "Updated");
+  assert.equal(image.param.title, "Chart");
   assert.throws(
     () =>
       apply(changed, [

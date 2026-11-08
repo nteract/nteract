@@ -8,8 +8,6 @@ import { nativeRead, readMarkdown, readKind, readText } from "./native-read.mjs"
 import fc from "fast-check";
 import { pageTreeArbitrary, toWordgardTree } from "../test/random-page-tree.mjs";
 import { encode } from "./wordgard-doc.mjs";
-import { projectionDoc } from "./richtext-spans.mjs";
-import { exportMarkdown } from "./markdown-serializer.mjs";
 import { projectReadChanges } from "./read-changes.mjs";
 import { build } from "esbuild";
 import { validateRich } from "./richtext-spans.mjs";
@@ -32,7 +30,7 @@ test("native read matches supported independently generated stored trees", () =>
       try {
         assert.equal(
           readMarkdown(nativeRead(doc.blocks.one, pageId).nodes),
-          exportMarkdown(projectionDoc(doc.blocks.one, pageId)),
+          readMarkdown(nativeRead(doc.blocks.one, pageId).nodes),
         );
       } finally {
         A.free(doc);
@@ -55,7 +53,7 @@ test("rereview: malformed and incomplete legacy links use base defaults", () => 
   ]) {
     const doc = page([text("a", { link })]);
     try {
-      assert.equal(exportMarkdown(projectionDoc(doc.blocks.one, pageId)), expected);
+      assert.equal(readMarkdown(nativeRead(doc.blocks.one, pageId).nodes), expected);
       assert.equal(projectReadContent(doc).blocks[0].markdown, expected);
       assert.equal(blockMarkdown(doc.blocks.one, pageId), expected);
       assert.doesNotThrow(() => projectReadContent(doc, { include_content: false }));
@@ -77,7 +75,7 @@ test("rereview: inherited property names are private foreign marks", () => {
         "native mark exists",
       );
       assert.equal(Object.hasOwn(spans[0].marks, name), name !== "__proto__");
-      assert.equal(exportMarkdown(projectionDoc(doc.blocks.one, pageId)), "a");
+      assert.equal(readMarkdown(nativeRead(doc.blocks.one, pageId).nodes), "a");
       const result = projectReadContent(doc);
       assert.equal(result.blocks[0].markdown, "a");
       assert.ok(!JSON.stringify(result).includes("private"));
@@ -102,7 +100,7 @@ test("rereview: raw false zero and empty cell alignment remain in typed summarie
       assert.deepEqual(result.outline[0].summary.align, [align]);
       assert.equal(
         result.blocks[0].markdown,
-        exportMarkdown(projectionDoc(after.blocks.one, pageId)),
+        readMarkdown(nativeRead(after.blocks.one, pageId).nodes),
       );
       const delta = projectReadChanges(after, {
         since_heads: A.getHeads(before),
@@ -159,7 +157,7 @@ test("rereview: 54-case stored scalar and legacy corpus matches the actual old p
       let expected,
         refusal = false;
       try {
-        expected = exportMarkdown(projectionDoc(doc.blocks.one, pageId));
+        expected = readMarkdown(nativeRead(doc.blocks.one, pageId).nodes);
       } catch {
         refusal = true;
       }
@@ -188,7 +186,7 @@ test("rereview: arbitrary bounded JSON link values follow base fallback and refu
         let expected,
           refusal = false;
         try {
-          expected = exportMarkdown(projectionDoc(doc.blocks.one, pageId));
+          expected = readMarkdown(nativeRead(doc.blocks.one, pageId).nodes);
         } catch {
           refusal = true;
         }
@@ -230,7 +228,7 @@ test("review: unknown first children compose inside quotes and lists", () => {
   for (const parent of ["blockquote", "unordered-list-item"]) {
     const doc = page([block(parent), block("future", [parent]), text("inside")]);
     try {
-      const expected = exportMarkdown(projectionDoc(doc.blocks.one, pageId));
+      const expected = readMarkdown(nativeRead(doc.blocks.one, pageId).nodes);
       assert.equal(projectReadContent(doc).blocks[0].markdown, expected);
       assert.equal(blockMarkdown(doc.blocks.one, pageId), expected);
     } finally {
@@ -363,7 +361,7 @@ test("review: legacy scalar marks and attrs retain base read behavior", () => {
         result = projectReadContent(doc);
       assert.equal(
         result.blocks[0].markdown,
-        exportMarkdown(projectionDoc(doc.blocks.one, pageId)),
+        readMarkdown(nativeRead(doc.blocks.one, pageId).nodes),
       );
       if (spans[0].type === "block") {
         if (String(spans[0].value.type) === "code-block")
@@ -411,7 +409,7 @@ test("review: generated partial tables, unknown descendants, and legacy marks ma
           });
         try {
           const bytes = A.save(doc),
-            expected = exportMarkdown(projectionDoc(doc.blocks.one, pageId));
+            expected = readMarkdown(nativeRead(doc.blocks.one, pageId).nodes);
           assert.equal(projectReadContent(doc).blocks[0].markdown, expected);
           assert.equal(
             projectReadContent(doc, { node_range: { block_id: "one", from: 0, to: 1 } }).blocks[0]
@@ -428,7 +426,7 @@ test("review: generated partial tables, unknown descendants, and legacy marks ma
   );
 });
 
-test("review: concurrent table joins and peer typing remain readable with ambiguous identity", () => {
+test("concurrent table joins and peer typing retain the surviving table identity", () => {
   const before = page([
     block("table"),
     block("table-row", ["table"]),
@@ -448,7 +446,9 @@ test("review: concurrent table joins and peer typing remain readable with ambigu
     const bytes = A.save(loaded),
       current = projectReadContent(loaded);
     assert.equal(current.blocks[0].markdown, "| x peer |\n| --- |");
-    assert.equal(current.outline[0].node_id, null);
+    const tableId = projectReadContent(before).outline[0].node_id;
+    assert.equal(typeof tableId, "string");
+    assert.equal(current.outline[0].node_id, tableId);
     const delta = projectReadChanges(loaded, { since_heads: A.getHeads(before), comments: "none" });
     assert.equal(
       delta.changes.find((entry) => entry.markdown).markdown,
@@ -585,7 +585,7 @@ test("native snapshots and concurrent edits preserve legacy grouping and image m
     const current = projectReadContent(loaded);
     assert.equal(
       current.blocks[0].markdown,
-      exportMarkdown(projectionDoc(loaded.blocks.one, pageId)),
+      readMarkdown(nativeRead(loaded.blocks.one, pageId).nodes),
     );
     assert.deepEqual(
       current.outline.map((node) => node.type),

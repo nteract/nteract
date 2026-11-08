@@ -187,6 +187,46 @@ function mixed(spans = [dataframeMarker()]) {
 const dataframes = (doc, id) =>
   A.spans(doc, textPath(id)).filter((span) => String(span.value?.type) === "dataframe");
 
+test("a lossy dataframe projection cannot authorize a Markdown rewrite", () => {
+  for (const attrs of [{ media_type: 42 }, { future: { nested: true } }]) {
+    for (const readable of [false, true]) {
+      const { doc, id } = mixed([...(readable ? [dataframeMarker()] : []), dataframeMarker(attrs)]);
+      const heads = A.getHeads(doc),
+        bytes = A.save(doc),
+        frames = dataframes(doc, id);
+      const object = A.getObjectId(doc.blocks[id], "richText");
+      const cursor = A.getCursor(doc, textPath(id), dataframeIndex(doc, id));
+      assert.throws(
+        () =>
+          edit(doc, [
+            {
+              op: "replace_block_markdown",
+              block_id: id,
+              markdown: "hello\n\nworld",
+            },
+          ]),
+        { code: "markdownless_node" },
+      );
+      assert.deepEqual(A.getHeads(doc), heads);
+      assert.deepEqual(A.save(doc), bytes);
+      assert.equal(A.getObjectId(doc.blocks[id], "richText"), object);
+      assert.deepEqual(dataframes(doc, id), frames);
+      assert.equal(A.getCursor(doc, textPath(id), dataframeIndex(doc, id)), cursor);
+      const { doc: after } = edit(doc, [
+        {
+          op: "replace_match",
+          block_id: id,
+          match_text: "hello",
+          replacement: "hi",
+        },
+      ]);
+      assert.deepEqual(dataframes(after, id), frames);
+      assert.equal(A.getCursor(after, textPath(id), dataframeIndex(after, id)), cursor);
+      assert.equal(A.getObjectId(after.blocks[id], "richText"), object);
+    }
+  }
+});
+
 test("replace_block_markdown keeps a dataframe whose read-back line is unchanged", () => {
   const { doc, id } = mixed();
   const markdown = projectPage(doc).blocks[0].markdown;

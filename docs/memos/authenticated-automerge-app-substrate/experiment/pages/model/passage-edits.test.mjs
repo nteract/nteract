@@ -75,8 +75,16 @@ test("node-scoped matching supports list/table/code nodes but never crosses nati
     const { after } = edit(doc, heads, [
       op(id, { match_text: "apple", replacement: "pear", node_index }),
     ]);
-    assert.equal(richDoc(after.blocks[id]).child(node_index).textContent.includes("pear"), true);
-    assert.equal(richDoc(after.blocks[id]).child(0).textContent, "apple");
+    assert.equal(
+      richDoc(after.blocks[id])
+        .content[node_index].textContent({ blockSeparator: "", leafText: "" })
+        .includes("pear"),
+      true,
+    );
+    assert.equal(
+      richDoc(after.blocks[id]).content[0].textContent({ blockSeparator: "", leafText: "" }),
+      "apple",
+    );
   }
   assert.throws(
     () => edit(doc, heads, [op(id, { match_text: "appleother", node_index: 1 })]),

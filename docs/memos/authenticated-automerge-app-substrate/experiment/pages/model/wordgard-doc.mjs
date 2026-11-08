@@ -576,7 +576,8 @@ export function decode(spans) {
   };
   const close = () => {
     if (!stack.at(-1).tag.type.spec.inlineContent && !stack.at(-1).children.length) {
-      open(Paragraph);
+      const type = stack.at(-1).tag.type;
+      open(type === Table.type ? TableRow : type === TableRow.type ? Cell : Paragraph);
       close();
     }
     const frame = stack.pop();
@@ -586,6 +587,8 @@ export function decode(spans) {
     append(frame.tag.create(frame.children));
   };
   const ensureText = () => {
+    if (stack.at(-1)?.tag.type === Table.type) open(TableRow);
+    if (stack.at(-1)?.tag.type === TableRow.type) open(Cell);
     if (!stack.at(-1)?.tag.type.spec.inlineContent) open(Paragraph);
   };
   const leaf = (node, length = 1) => {
@@ -694,9 +697,6 @@ export function decode(spans) {
     else open(desc.tag, true);
   }
   if (!blocks.length && !stack.length) open(Paragraph);
-  // Empty list items and containers still need an editable paragraph.
-  if (stack.length && !stack.at(-1).tag.type.spec.inlineContent && !stack.at(-1).children.length)
-    open(Paragraph);
   while (stack.length) close();
   boundary();
   return { doc: schema.doc(blocks), map: { wgToAm, amToWg }, lossy };

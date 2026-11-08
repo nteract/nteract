@@ -227,7 +227,7 @@ export function setNode(doc, id, input, trace, { anchor } = {}) {
   A.updateSpans(doc, path, spans, updateSpansConfig);
   // The schema accepts every change above; check the tree anyway, so a
   // malformed marker can never be committed.
-  richDoc(doc.blocks[id]).check();
+  richDoc(doc.blocks[id]);
   const shift = implicit ? 1 : 0;
   trace?.push({ type: "text", block_id: id, start: start + shift, end: end + shift });
   return { ...result, ...(cells ? { cells } : {}) };

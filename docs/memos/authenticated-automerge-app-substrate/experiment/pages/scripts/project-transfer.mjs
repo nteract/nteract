@@ -17,6 +17,7 @@ import { open, readFile, rename } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { isProjectId } from "../shared/routes.mjs";
 import { exportMarkdown, parseMarkdown, unsupportedMarkdown } from "../model/richtext.mjs";
+import { PagesImage, schema } from "../model/wordgard-doc.mjs";
 import { DATASET_MAX_BYTES } from "../shared/dataset-assets.mjs";
 import { IMAGE_MAX_BYTES, IMAGE_MEDIA_TYPES, imageAssetUrl } from "../shared/image-assets.mjs";
 import { inspectImage } from "../shared/inspect-image.mjs";
@@ -529,10 +530,10 @@ const PRESERVED_TYPES = new Set(["pages-opaque", "raw"]);
 export function imageInventory(blocks) {
   const images = [];
   for (const markdown of blocks) {
-    parseMarkdown(markdown).descendants((node) => {
-      if (node.type.name !== "image") return;
-      const assetId = ASSET_SRC.exec(node.attrs.src ?? "")?.[1];
-      if (assetId) images.push({ asset_id: assetId, src: node.attrs.src });
+    parseMarkdown(markdown).iterate((node) => {
+      if (node.type !== PagesImage) return;
+      const assetId = ASSET_SRC.exec(node.param.src ?? "")?.[1];
+      if (assetId) images.push({ asset_id: assetId, src: node.param.src });
     });
   }
   return images;
@@ -545,18 +546,16 @@ export function remapImages(markdown, images, targetId) {
   const tree = parseMarkdown(markdown);
   let changed = false;
   const map = (node) => {
-    if (node.type.name === "image" && sources.has(node.attrs.src)) {
+    if (node.type === PagesImage && sources.has(node.param.src)) {
       changed = true;
-      return node.type.create(
-        { ...node.attrs, src: imageAssetUrl(targetId, sources.get(node.attrs.src)) },
-        null,
+      return PagesImage.of(
+        { ...node.param, src: imageAssetUrl(targetId, sources.get(node.param.src)) },
         node.marks,
       );
     }
-    if (node.isLeaf) return node;
-    const children = [];
-    node.forEach((child) => children.push(map(child)));
-    return node.copy(node.content.constructor.fromArray(children));
+    if (!node.isPlot) return node;
+    const children = node.content.map(map);
+    return node === tree ? schema.doc(children) : node.tag.create(children);
   };
   const mapped = map(tree);
   return changed ? exportMarkdown(mapped) : markdown;
@@ -593,8 +592,8 @@ function bundleBody(read, fallbackTitle) {
   const images = imageInventory(blocks);
   const markdownImages = [];
   for (const text of blocks)
-    parseMarkdown(text).descendants((node) => {
-      if (node.type.name === "image") markdownImages.push(node.attrs.src);
+    parseMarkdown(text).iterate((node) => {
+      if (node.type === PagesImage) markdownImages.push(node.param.src);
     });
   if (
     read.image_occurrences?.some((image) => image.dark_src != null) &&
@@ -891,8 +890,8 @@ function validateBody(bundle, page, at, fail) {
     if (!Array.isArray(page.image_variants)) fail(`${at}.image_variants must be an array`);
     const occurrences = [];
     for (const markdown of page.blocks ?? [page.markdown])
-      parseMarkdown(markdown).descendants((node) => {
-        if (node.type.name === "image") occurrences.push(node.attrs.src);
+      parseMarkdown(markdown).iterate((node) => {
+        if (node.type === PagesImage) occurrences.push(node.param.src);
       });
     const ordinals = new Set();
     for (const variant of page.image_variants) {

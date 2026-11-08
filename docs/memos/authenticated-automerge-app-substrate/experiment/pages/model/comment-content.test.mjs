@@ -23,9 +23,11 @@ import {
   markdownCommentSpans,
   plainCommentSpans,
 } from "./comment-content.mjs";
-import { adapterSpans, pageSpans } from "./richtext-spans.mjs";
+import { pageSpans } from "./richtext-spans.mjs";
+import { explicitOpeningSpans } from "./richtext-test-support.mjs";
 import { parseAgentMarkdown } from "./markdown-import.mjs";
-import { schema } from "./pm-adapter.mjs";
+import { schema, Paragraph, PagesImage } from "./wordgard-doc.mjs";
+import { Leaf } from "wordgard/doc";
 import { RICH_FORMAT } from "./richtext-format.mjs";
 
 const identity = { principal: "fixture", displayName: "Writer", driver: "Test" };
@@ -164,7 +166,7 @@ test("a message in an old stored form reads as a placeholder and is refused on w
     A.updateSpans(
       d,
       [...path, "richText"],
-      adapterSpans(parseAgentMarkdown("Adapter **form**\n\nTwo")),
+      explicitOpeningSpans(parseAgentMarkdown("Adapter **form**\n\nTwo")),
     );
   });
   for (const doc of [legacy, adapter]) {
@@ -247,18 +249,16 @@ test("the length limit counts text characters, not block markers", () => {
   assert.throws(() => validateCommentSpans(over), /16000/);
   // The adapter form of a message has one more marker than the editor form;
   // either counts the same.
-  const tree = schema.node("doc", null, [
-    schema.node("paragraph", null, [schema.text("y".repeat(16000))]),
-  ]);
-  assert.doesNotThrow(() => validateCommentSpans(adapterSpans(tree)));
+  const tree = schema.doc([Paragraph.create([Leaf.text("y".repeat(16000))])]);
+  assert.doesNotThrow(() => validateCommentSpans(explicitOpeningSpans(tree)));
   assert.doesNotThrow(() => validateCommentSpans(pageSpans(tree)));
 });
 
 test("an image-only comment is content; whitespace-only text is not", () => {
   const image = pageSpans(
-    schema.node("doc", null, [
-      schema.node("paragraph", null, [
-        schema.node("image", {
+    schema.doc([
+      Paragraph.create([
+        PagesImage.of({
           src: "https://example.org/i.png",
           alt: "",
           title: null,
@@ -339,7 +339,7 @@ test("browser submission stores the editor's spans without a Markdown round trip
       d,
       { action: "add", block_id: "one" },
       identity,
-      adapterSpans(parseAgentMarkdown("**[Linked](https://example.com/)** text")),
+      explicitOpeningSpans(parseAgentMarkdown("**[Linked](https://example.com/)** text")),
     ),
   );
   const [adapterMessage] = Object.values(Object.values(adapterDoc.threads)[0].messages);

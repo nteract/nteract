@@ -118,7 +118,6 @@ test("native task state is a boolean, never a truthy string or number", () => {
 test("the alternative editor renders task state without adding checkboxes to ordinary lists", () => {
   const task = parseMarkdown("- [x] Complete").firstChild.firstChild,
     ordinary = parseMarkdown("- Ordinary").firstChild.firstChild;
-  assert.equal(task.type.spec.toDOM(task)[2][1].checked, "");
-  assert.equal(task.type.spec.toDOM(task)[2][1].disabled, "");
-  assert.deepEqual(ordinary.type.spec.toDOM(ordinary), ["li", 0]);
+  assert.equal(task.mark(TaskChecked), true);
+  assert.equal(ordinary.mark(TaskChecked), undefined);
 });

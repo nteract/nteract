@@ -7,7 +7,8 @@ import {
   textPath,
 } from "./richtext-format.mjs";
 import { quotableNodeType } from "./richtext-notices.mjs";
-import { markdownlessNode, richDoc } from "./richtext-spans.mjs";
+import { markdownlessNode } from "./richtext-spans.mjs";
+import { nativeRead, readKind } from "./native-read.mjs";
 import {
   setRichMarkdown,
   setRichMarkdownKeepingNodes,
@@ -26,7 +27,7 @@ import { COMMENTS_FEATURE } from "./comments-doc.mjs";
 import { orderedBlockIds, positionForInsertion } from "./order.mjs";
 import { anchorOccurrence, formatMatch, replaceMatch } from "./replace-match.mjs";
 import { setNode } from "./set-node.mjs";
-import { agentType, insertOperation } from "./node-registry.mjs";
+import { insertOperation } from "./node-registry.mjs";
 import { stampFeatures } from "./schema-features.mjs";
 export { orderedBlockIds } from "./order.mjs";
 const block = (id = crypto.randomUUID(), position = positionForInsertion()) => ({
@@ -285,16 +286,15 @@ function applyEdit(doc, op, trace, context) {
  * (dropOpeningMarkers), so later deletes in the batch still find their ids. */
 function deleteNode(doc, id, op, trace, opened) {
   requireRich(doc.blocks[id]);
-  const tree = richDoc(doc.blocks[id], doc.page_id);
+  const tree = nativeRead(doc.blocks[id], doc.page_id);
   const { index, start, end } = resolveNodeId(doc, id, op.node_id, tree);
-  const type = agentType(tree.child(index).type.name);
+  const type = readKind(tree.nodes[index]);
   A.splice(doc, textPath(id), start, end - start);
   // Removing whole top-level nodes keeps the tree valid; check it anyway, so
   // a malformed result can never be committed.
-  const result = richDoc(doc.blocks[id], doc.page_id);
-  result.check();
-  if (result.childCount < tree.childCount - 1) {
-    const name = (offset) => agentType(tree.child(index + offset).type.name);
+  const result = nativeRead(doc.blocks[id], doc.page_id);
+  if (result.nodes.length < tree.nodes.length - 1) {
+    const name = (offset) => readKind(tree.nodes[index + offset]);
     // Throwing aborts the whole change, the splice included.
     throw Object.assign(
       Error(

@@ -5,16 +5,14 @@
 // - markdown-tokenizer.mjs: markdown-it with the Pages rules.
 // - markdown-scan.mjs: math and HTML detection, refusal and literal escaping.
 // - markdown-import.mjs: Markdown to a native tree.
-// - pm-adapter.mjs, pm-markdown-parser.mjs: the ProseMirror schema, span
-//   adapter and parser. These are the only production modules that import
-//   ProseMirror packages.
-// - markdown-serializer.mjs: Markdown from a Wordgard or ProseMirror tree.
+// - markdown-native.mjs: block tokens to Wordgard nodes.
+// - markdown-serializer.mjs: Markdown from a Wordgard tree.
 // - richtext-spans.mjs: projection reads, canonical Page spans, validation.
 // - richtext-page.mjs: Page block writers and Markdown projection.
 // - richtext-notices.mjs: notices and labels for nodes Markdown can't hold.
 export { safeUrl, RICH_FORMAT, textPath, isRich, codeTextUnmarked } from "./richtext-format.mjs";
 export { richSize, redundantFirstMarker, isBlankBlock } from "./richtext-format.mjs";
-export { adapter, schema } from "./pm-adapter.mjs";
+export { schema } from "./wordgard-doc.mjs";
 export { unknownNodeNotice, quotableNodeType, dataframeLabel } from "./richtext-notices.mjs";
 export { MATH_SYNTAX, unsupportedMarkdown, unsupportedMarkdownError } from "./markdown-scan.mjs";
 export {
@@ -27,7 +25,6 @@ export {
 export { exportMarkdown } from "./markdown-serializer.mjs";
 export {
   richDoc,
-  adapterSpans,
   pageSpans,
   markdownlessNode,
   validateRich,

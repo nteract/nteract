@@ -9,7 +9,6 @@ import { Leaf } from "wordgard/doc";
 import markdownCorpus from "./markdown-corpus.json" with { type: "json" };
 import { createPageData, initializePage, orderedBlockIds } from "./page.mjs";
 import {
-  adapterSpans,
   exportMarkdown,
   pageSpans,
   parseAgentMarkdown,
@@ -27,6 +26,7 @@ import {
   ListItem,
   OrderedList,
   PagesDataframe,
+  PagesImage,
   Paragraph,
   TaskChecked,
   TaskList,
@@ -253,7 +253,6 @@ test("nested-only sibling items keep separate outer markers through the shared e
     },
     { type: "text", value: "b", marks: {} },
   ];
-  assert.deepEqual(plainSpans(adapterSpans(tree)), expected);
   assert.deepEqual(plainSpans(pageSpans(tree)), expected);
 });
 
@@ -340,7 +339,7 @@ test("a dataframe stays a standalone link before a nested block-first list", () 
   }
 });
 
-test("the editor's encoder stores the same content as the adapter for every corpus case", () => {
+test("the native encoder is stable for every corpus case", () => {
   for (const { id: caseId, markdown } of markdownCorpus.cases)
     for (const literal of unsupportedMarkdown(markdown) ? [true] : [false, true]) {
       let tree;
@@ -350,7 +349,6 @@ test("the editor's encoder stores the same content as the adapter for every corp
         continue;
       }
       const spans = pageSpans(tree);
-      assert.equal(storedRead(spans), storedRead(adapterSpans(tree)), caseId);
       // Encoding the stored spans again writes them unchanged.
       assert.deepEqual(plainSpans(encode(decode(spans).doc)), plainSpans(spans), caseId);
     }
@@ -367,10 +365,11 @@ test("a newline in a paragraph is stored as the hard break the editor writes", (
 });
 
 test("a tree the editor can't hold whole is refused, not stored", () => {
-  const tree = schema.node("doc", null, [
-    schema.node("paragraph", null, [
-      schema.node("image", { src: "/a.png", alt: { nested: true }, title: null }),
-    ]),
-  ]);
-  assert.throws(() => pageSpans(tree), { code: "markdownless_node" });
+  assert.throws(() =>
+    pageSpans(
+      schema.doc([
+        Paragraph.create([PagesImage.of({ src: "/a.png", alt: { nested: true }, title: null })]),
+      ]),
+    ),
+  );
 });

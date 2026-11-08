@@ -17,7 +17,7 @@ import { nodeIds, readableNodeIds } from "./node-ids.mjs";
 import { projectReadContent } from "./read-content.mjs";
 import { visibleNodeRange, visibleRangeAddress } from "./replace-match.mjs";
 import { textPath } from "./richtext-format.mjs";
-import { richDoc } from "./richtext-spans.mjs";
+import { nativeRead } from "./native-read.mjs";
 import { allInputs, pageWithSpans, spansToJSON } from "../test/address-inputs.mjs";
 
 const GOLDEN = new URL("./node-addresses.golden.json", import.meta.url);
@@ -44,7 +44,7 @@ function observe(spans) {
   const { doc, id } = pageWithSpans(spans);
   let tree;
   try {
-    tree = richDoc(doc.blocks[id], doc.page_id);
+    tree = nativeRead(doc.blocks[id], doc.page_id);
   } catch {
     return { readable: false };
   }
