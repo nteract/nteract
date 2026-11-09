@@ -4,7 +4,7 @@
 # Fast path: if target/debug/runt exists, exec it directly (instant).
 # Cold path: if it hasn't been built yet, build it first.
 #
-# Activated automatically via .envrc (direnv) which prepends bin/ to PATH.
+# Not on PATH: run it by path (`bin/runt` from the repo root).
 # For a build-if-stale experience, use `cargo runt` instead (cargo alias).
 
 set -euo pipefail

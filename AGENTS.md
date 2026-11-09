@@ -98,6 +98,14 @@ managed separately. These commands derive and export the worktree namespace;
 `direnv allow` is still useful for an interactive shell but is not required for
 xtask isolation.
 
+New worktrees get direnv allowed by `scripts/direnv-allow-pinned.sh`, which runs
+from the Claude Code session hook and the Codex worktree setup script. Run it
+yourself in a worktree created another way, such as a subagent's. It allows
+`.envrc` only while the file matches main. If direnv reports `.envrc` as blocked
+after a checkout, the file differs from main: read it, and leave the decision to
+run `direnv allow` to the developer. Keep `.envrc` self-contained; it must not
+source checkout files or add checkout directories to `PATH`.
+
 Before every commit, run:
 
 ```bash

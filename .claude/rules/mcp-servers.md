@@ -64,7 +64,7 @@ the dev env to subprocesses; direnv is not required for those xtask paths.
 
 When running CLI commands against system-installed daemons from a dev environment, **always use `env -i`** to strip dev env vars (`RUNTIMED_DEV`, `RUNTIMED_WORKSPACE_PATH`) that would otherwise redirect commands to the per-worktree dev daemon:
 
-**Important:** `env -i` clears `PATH`, and the repo's `bin/runt` (added to PATH by direnv) shadows any installed legacy `runt` with the dev build. Invoke the installed `nteract` link by absolute path (`~/.local/bin` by default) and select the installation with `--channel`:
+**Important:** `env -i` clears `PATH`. Invoke the installed `nteract` link by absolute path (`~/.local/bin` by default) and select the installation with `--channel`:
 
 ```bash
 # Nightly system daemon
@@ -118,5 +118,5 @@ env -i HOME=$HOME "$HOME/.local/bin/nteract" --channel nightly daemon status --j
 - Codex only lists `nteract-notebook` / `nightly` and not `nteract-dev` → the session is missing the project-scoped dev MCP config; use `cargo xtask` until the session is restarted from this repo
 
 **Fix:** Start the dev daemon from the repo root with `cargo xtask dev-daemon`
-or use the owner-mode `nteract-dev` `up` tool. Use direnv only if you want the
-repo's `bin/` wrappers on PATH for interactive shell commands.
+or use the owner-mode `nteract-dev` `up` tool. Use direnv only if you want
+`RUNTIMED_DEV` and `RUNTIMED_WORKSPACE_PATH` set for interactive shell commands.
