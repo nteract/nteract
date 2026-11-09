@@ -54,7 +54,7 @@ source ~/.zshrc
 hide_env_diff = true
 ```
 
-**Worktrees:** direnv ties an allow to the `.envrc` path and content, so each new worktree starts blocked. `scripts/direnv-allow-pinned.sh` allows a worktree's `.envrc` when it matches the one on main, and leaves a changed `.envrc` blocked for you to read. Claude Code sessions and Codex worktree setup run it for you. Prefer it over a `[whitelist]` prefix in `direnv.toml`, which runs any `.envrc` under that path, including one from a contributor's branch.
+**Worktrees:** direnv ties an allow to the `.envrc` path and content, so each new worktree starts blocked. `scripts/direnv-allow-pinned.sh` allows a worktree's `.envrc` when it matches the one on main, and leaves a changed `.envrc` blocked for you to read. Claude Code sessions, their subagent worktrees, and Codex worktree setup run it for you through `scripts/worktree-setup.sh`, which also fills in Git LFS pointer files. Run that script yourself in a worktree you create by hand. Prefer the pinned allow over a `[whitelist]` prefix in `direnv.toml`, which runs any `.envrc` under that path, including one from a contributor's branch.
 
 ## 3. Global one-time setup
 
