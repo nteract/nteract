@@ -79,24 +79,18 @@ pub(crate) fn uv_pyproject_prepare_args(offline: bool, project_dir: &Path) -> Ve
 }
 
 pub(crate) fn uv_pyproject_kernel_args(
+    kernel_entry: &Path,
     bootstrap_dx: bool,
     connection_file: &Path,
     project_dir: &Path,
 ) -> Vec<OsString> {
     let mut args = uv_run_base_args(false, project_dir);
-    let launcher_module = if bootstrap_dx {
-        "nteract_kernel_launcher"
-    } else {
-        "ipykernel_launcher"
-    };
-    args.extend([
-        OsString::from("python"),
-        OsString::from("-Xfrozen_modules=off"),
-        OsString::from("-m"),
-        OsString::from(launcher_module),
-        OsString::from("-f"),
-        connection_file.as_os_str().to_owned(),
-    ]);
+    args.push(OsString::from("python"));
+    args.extend(crate::launcher_cache::python_kernel_args(
+        kernel_entry,
+        bootstrap_dx,
+        connection_file,
+    ));
     args
 }
 
@@ -357,8 +351,9 @@ mod tests {
     }
 
     #[test]
-    fn kernel_args_match_prepare_prefix_and_launch_ipykernel() {
+    fn kernel_args_match_prepare_prefix_and_start_ipykernel_through_entry_script() {
         let args = args_to_strings(uv_pyproject_kernel_args(
+            Path::new("/cache/kernel-entry/kernel_entry.py"),
             false,
             Path::new("/tmp/kernel.json"),
             Path::new("/work/proj"),
@@ -375,7 +370,7 @@ mod tests {
                 "uv",
                 "python",
                 "-Xfrozen_modules=off",
-                "-m",
+                "/cache/kernel-entry/kernel_entry.py",
                 "ipykernel_launcher",
                 "-f",
                 "/tmp/kernel.json",
@@ -386,6 +381,7 @@ mod tests {
     #[test]
     fn kernel_args_use_nteract_launcher_with_bootstrap_dx() {
         let args = args_to_strings(uv_pyproject_kernel_args(
+            Path::new("/cache/kernel-entry/kernel_entry.py"),
             true,
             Path::new("/tmp/kernel.json"),
             Path::new("/work/proj"),
@@ -402,7 +398,7 @@ mod tests {
                 "uv",
                 "python",
                 "-Xfrozen_modules=off",
-                "-m",
+                "/cache/kernel-entry/kernel_entry.py",
                 "nteract_kernel_launcher",
                 "-f",
                 "/tmp/kernel.json",

@@ -1,10 +1,8 @@
 """``python -m nteract_kernel_launcher`` — drops into the kernel main loop.
 
-The daemon spawns kernels as::
-
-    python -m nteract_kernel_launcher -f <connection.json>
-
-which resolves to this module, which calls :func:`main`, which delegates to
+The daemon spawns kernels through ``kernel_entry.py``, which runs this module
+the way ``python -m nteract_kernel_launcher -f <connection.json>`` would. This
+module calls :func:`main`, which delegates to
 ``NteractKernelApp.launch_instance()``. The traitlets ``Type`` cascade on the
 app class causes ipykernel to construct ``NteractKernel`` → ``NteractShell``
 → ``NteractShellDisplayHook`` automatically during ``initialize``. The
