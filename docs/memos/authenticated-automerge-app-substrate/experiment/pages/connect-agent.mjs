@@ -1,6 +1,8 @@
 import { pagesPublicOrigin } from "./agent-guide.mjs";
 import {
   checkAccountCommand,
+  claudeCodeAddCommand,
+  claudeCodeHeaderHelper,
   codexConfig,
   codexHeaderHelper,
   keyFile,
@@ -70,8 +72,8 @@ export function connectAgentResponse(request, env) {
   <p>Create and save the key first. Your agent can prepare a config draft while you do this; tell it when the key is ready. Keep the key out of chat.</p>
   <section aria-labelledby="setup-key"><h2 id="setup-key"><span>1</span> Create an API key</h2>${keyInstructions}</section>
   <section aria-labelledby="setup-save"><h2 id="setup-save"><span>2</span> Save it privately</h2>
-    <p>Kilo and Codex can use the same local key file: <code>${keyFile}</code>. Your agent configures the connection; you enter the key.</p>
-    <p>For multiple accounts, use an account-specific filename such as <code>~/.config/pages/anaconda-api-key-rgbkrk</code>; the path above remains the default. Inspect filenames, not secrets, in <code>~/.config/pages</code>, and ask before reusing or replacing an existing key. Use the chosen path consistently in the save command, Kilo file reference, and Codex helper. Use a separate Codex helper filename per account so existing clients keep their key.</p>
+    <p>Kilo, Claude Code, and Codex can use the same local key file: <code>${keyFile}</code>. Your agent configures the connection; you enter the key.</p>
+    <p>For multiple accounts, use an account-specific filename such as <code>~/.config/pages/anaconda-api-key-rgbkrk</code>; the path above remains the default. Inspect filenames, not secrets, in <code>~/.config/pages</code>, and ask before reusing or replacing an existing key. Use the chosen path consistently in the save command, Kilo file reference, and the Codex and Claude Code helpers. Use a separate helper filename per account so existing clients keep their key.</p>
     <details class="setup-details"><summary>Save the key on macOS or Linux</summary>
       <p>Copy this command into your own terminal. It uses Python 3 to ask for the key with input hidden. Paste the raw key when prompted, then press Enter.</p>
       <pre class="setup-value"><code id="save-key-command">${escapeHtml(saveKeyCommand)}</code></pre>
@@ -101,13 +103,26 @@ export function connectAgentResponse(request, env) {
       <p>To label sessions, add <code>env_http_headers = { "X-Pages-Agent" = "PAGES_AGENT" }</code>. Codex reads the label from that environment variable.</p>
       <p class="setup-note">This works without desktop shell environment variables. Remote execution placement needs its own credential setup. <a href="https://developers.openai.com/codex/mcp">Codex configuration reference</a></p>
     </details>
-    <details class="setup-details" id="other-client"><summary>Claude Code and other MCP clients</summary>
-    <p>Add a remote MCP server using <strong>Streamable HTTP</strong>.</p>
+    <details class="setup-details" id="claude-code"><summary>Claude Code</summary>
+      <p>Ask your agent to save this helper as <code>~/.config/pages/claude-code-headers.py</code>. It contains no secret. Claude Code runs it to read your key; don't run it in chat or print its output.</p>
+      <pre class="setup-value"><code id="claude-code-helper">${escapeHtml(claudeCodeHeaderHelper)}</code></pre>
+      <button type="button" class="setup-copy" data-copy="claude-code-helper" data-copy-message="Helper code copied. Save it as ~/.config/pages/claude-code-headers.py; Claude Code runs it privately." hidden>Copy header helper</button>
+      <p>Then register the server at user scope. Replace both placeholders with absolute paths that contain no spaces, using <code>command -v python3</code> to locate Python.</p>
+      <pre class="setup-value"><code id="claude-code-add">${escapeHtml(claudeCodeAddCommand(setup.origin))}</code></pre>
+      <button type="button" class="setup-copy" data-copy="claude-code-add" data-copy-message="Command copied. Fill in the two absolute paths, then run it in your terminal." hidden>Copy add command</button>
+      <p>Claude Code runs the helper on every connection and gives it 10 seconds. The helper's <code>Authorization</code> header replaces any static one, and Claude Code doesn't fall back to OAuth for this server. User scope skips the folder-trust prompt that project-scoped <code>.mcp.json</code> entries need before a helper runs.</p>
+      <p>Don't use <code>claude mcp add --header "Authorization: Bearer ..."</code>. It writes your key into <code>~/.claude.json</code>.</p>
+      <p>Until the key is saved, <code>claude mcp get pages</code> reports "Needs authentication". After you save it, reload MCP or start a new session, then ask Claude Code to list your Pages.</p>
+      <p>To label sessions, set <code>PAGES_AGENT</code> in the environment you start Claude Code from. The helper sends it as <code>X-Pages-Agent</code>. See <a href="#session-labels">Name each session</a> below.</p>
+      <p class="setup-note">Configuration alone doesn't verify access. Check the connection in step 4. <a href="https://code.claude.com/docs/en/mcp">Claude Code MCP reference</a></p>
+    </details>
+    <details class="setup-details" id="other-client"><summary>Other MCP clients</summary>
+    <p>Use this for clients without a header helper. Add a remote MCP server using <strong>Streamable HTTP</strong>.</p>
     <div class="setup-field-label"><h3>Server URL</h3><button type="button" class="setup-copy" data-copy="mcp-endpoint" aria-label="Copy server URL" hidden>Copy</button></div>
     <pre class="setup-value"><code id="mcp-endpoint">${escapeHtml(setup.endpoint)}</code></pre>
     <div class="setup-field-label"><h3>Headers</h3><button type="button" class="setup-copy" data-copy="mcp-headers" aria-label="Copy headers" hidden>Copy</button></div>
     <pre class="setup-value"><code id="mcp-headers">${escapeHtml(setup.headers)}</code></pre>
-    <p class="setup-note">Replace the placeholders in your client with your key and its name, such as Claude Code. Drop <code>X-Pages-Agent</code> if you don't want a session label. Keep the key in the client's secret settings, outside chats and documents. Signing in to Pages does not sign in your MCP client.</p>
+    <p class="setup-note">Replace the placeholders in your client with your key and its name, such as Cursor. Drop <code>X-Pages-Agent</code> if you don't want a session label. Keep the key in the client's secret settings, outside chats and documents. Signing in to Pages does not sign in your MCP client.</p>
     </details>
     <details class="setup-details" id="session-labels"><summary>Name each session</summary>
       <p>Two headers name the agent in a Page. <code>X-Pages-Driver</code> is the harness, such as Kilo. <code>X-Pages-Agent</code> is a short session label, such as "release agent", at most 80 characters. A blank value means no label. A caret then reads "Kyle's Kilo · release agent".</p>
@@ -116,6 +131,7 @@ export function connectAgentResponse(request, env) {
       <pre class="setup-value"><code id="pages-agent-envrc">${escapeHtml(pagesAgentEnvrc)}</code></pre>
       <button type="button" class="setup-copy" data-copy="pages-agent-envrc" data-copy-message="Label line copied. Add it to the worktree's .envrc, then start Kilo from that shell." hidden>Copy .envrc line</button>
       <p>Start Kilo from a shell that has the variable. When it's unset, Kilo sends an empty header, and Pages shows no label.</p>
+      <p>The Claude Code helper and the Codex <code>env_http_headers</code> line read the same <code>PAGES_AGENT</code> variable. Start those clients from a shell that has it.</p>
       <p class="setup-note">Labels are optional. Each MCP session already gets its own caret through <code>Mcp-Session-Id</code>, so two unlabeled sessions on one key still show separately.</p>
     </details>
     <details class="setup-details" id="client-model"><summary>Name your client and model</summary>

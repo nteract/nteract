@@ -14,6 +14,8 @@ import { CHANGE_ERROR_CODES } from "../worker/tool-changes.mjs";
 import { PRODUCT_NAME } from "../shared/product.mjs";
 import {
   checkAccountCommand,
+  claudeCodeAddCommand,
+  claudeCodeHeaderHelper,
   codexConfig,
   kiloApiKeyConfig,
   kiloConfig,
@@ -96,6 +98,16 @@ test("GET llms.txt is readable without authentication and explains the supported
   assert.ok(guide.includes(kiloConfig(origin)));
   assert.ok(guide.includes(kiloApiKeyConfig(origin)));
   assert.ok(guide.includes(codexConfig(origin)));
+  assert.ok(guide.includes(claudeCodeHeaderHelper));
+  assert.ok(guide.includes(claudeCodeAddCommand(origin)));
+  assert.ok(
+    guide.indexOf("### Codex Desktop / CLI") <
+      guide.indexOf("### Claude Code (local HTTP connection)"),
+  );
+  assert.ok(
+    guide.indexOf("### Claude Code (local HTTP connection)") <
+      guide.indexOf("### Other MCP clients (API key)"),
+  );
   // API keys lead; OAuth follows for interactive clients, with its lifecycle
   // and the shared-token warning.
   assert.ok(
@@ -209,11 +221,15 @@ test("guide documents account-safe onboarding and truthful listing metadata", ()
     "Ask before reusing or replacing an existing key",
     "~/.config/pages/anaconda-api-key as the default",
     "~/.config/pages/anaconda-api-key-rgbkrk",
-    "save command, Kilo file reference, and Codex helper",
-    "separate Codex helper filename per account",
+    "save command, Kilo file reference, and the Codex and Claude Code helpers",
+    "separate helper filename per account",
     "This refuses to overwrite an existing file",
     "Reload MCP or start a new session, then call list_pages from that session",
     "configuration alone is not verification",
+    "Do not use claude mcp add --header",
+    "writes the key into ~/.claude.json",
+    'claude mcp get pages reports "Needs authentication"',
+    "does not fall back to OAuth for this server",
     "quota.count counts active owned Pages, excluding shared Pages",
     "quota.trash_count counts your trashed Pages separately",
     "account-wide counts, not the number of results shown",

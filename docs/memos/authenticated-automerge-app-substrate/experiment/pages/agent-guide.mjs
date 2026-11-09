@@ -1,6 +1,8 @@
 import {
   assetUploadCommand,
   checkAccountCommand,
+  claudeCodeAddCommand,
+  claudeCodeHeaderHelper,
   codexConfig,
   codexHeaderHelper,
   keyFile,
@@ -329,15 +331,15 @@ For clients using the API-key recipes, follow this order:
    the intended account. The recipes below retain ${keyFile} as the default.
    For multiple accounts, choose an account-specific filename such as
    ~/.config/pages/anaconda-api-key-rgbkrk. Use that path consistently in the
-   save command, Kilo file reference, and Codex helper. Use a separate Codex
-   helper filename per account so existing clients keep their key.
+   save command, Kilo file reference, and the Codex and Claude Code helpers. Use
+   a separate helper filename per account so existing clients keep their key.
 2. If no key is available, ask the human immediately:
    "Pages needs a separate Anaconda API key. Please open ${origin}/connect,
    create a key, and save it privately using that page's instructions. Tell me
    when it is ready; do not paste it into this chat. I'll prepare the connection
    settings while you do that."
    In parallel, prepare the private directory, a config draft outside the active
-   client config, and the non-secret Codex helper if needed. Check the client
+   client config, and the non-secret Codex or Claude Code helper if needed. Check the client
    version and preserve its existing settings. Wait for the key before merging
    an active secret reference, enabling MCP, or attempting authentication.
    A browser session alone does not configure an API-key client. Do not create an empty key file,
@@ -453,11 +455,49 @@ To label sessions, add env_http_headers = { "X-Pages-Agent" = "PAGES_AGENT" };
 Codex reads the label from that environment variable.
 Official configuration: https://developers.openai.com/codex/mcp
 
-### Claude Code and other clients (API key)
+### Claude Code (local HTTP connection)
 
-Add a Streamable HTTP server at ${origin}/mcp with the headers under "Configure
-the client" below. Keep the key in the client's secret or header-helper
-settings, never as a literal in a shared or project config.
+Use the same private file. Have the agent save this non-secret helper as
+~/.config/pages/claude-code-headers.py. Claude Code runs it to obtain the
+headers; do not run it in an agent terminal or print its output, which contains
+the key.
+
+\`\`\`python
+${claudeCodeHeaderHelper}
+\`\`\`
+
+Register the server at user scope. Replace both path placeholders with real
+absolute paths that contain no spaces; use command -v python3 to locate the
+interpreter.
+
+\`\`\`sh
+${claudeCodeAddCommand(origin)}
+\`\`\`
+
+Claude Code runs the helper in a shell on every connection, with a 10-second
+timeout and no caching. It reruns the helper once when a tool call gets a 401
+or 403. Helper headers override static headers of the same name. When the helper
+returns Authorization, Claude Code uses it and does not fall back to OAuth for
+this server. Use user scope: project-scoped .mcp.json entries make Claude Code
+ask for folder trust before it runs a helper.
+
+Do not use claude mcp add --header "Authorization: Bearer ...". It takes only
+static headers and writes the key into ~/.claude.json.
+
+Until the key file exists, claude mcp get pages reports "Needs authentication".
+After the human saves the key, reload MCP or start a new session, then call
+list_pages from that session. claude mcp get is a diagnostic, not proof of
+authenticated tool use. To label sessions, set PAGES_AGENT in the environment
+Claude Code starts from; the helper sends it as X-Pages-Agent when it is
+printable ASCII and at most 80 characters.
+Official configuration: https://code.claude.com/docs/en/mcp
+
+### Other MCP clients (API key)
+
+For a client without a header helper, add a Streamable HTTP server at
+${origin}/mcp with the headers under "Configure the client" below. Keep the key
+in the client's secret settings, never as a literal in a shared or project
+config.
 
 ### Name each session
 
