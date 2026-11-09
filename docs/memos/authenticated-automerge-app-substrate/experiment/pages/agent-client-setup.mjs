@@ -106,14 +106,28 @@ export function kiloApiKeyConfig(origin) {
   );
 }
 
-export const codexHeaderHelper = `import json, pathlib, sys
-try:
+// Both header helpers read the raw key the same way and hold no secret.
+const readKeyForHelper = `try:
     key = (pathlib.Path.home() / ".config/pages/anaconda-api-key").read_text().strip()
 except OSError:
     sys.exit("Cannot read the Pages API key. Complete /connect and check file permissions.")
 if not key or any(c.isspace() for c in key):
-    sys.exit("Pages needs an API key. Complete /connect first.")
+    sys.exit("Pages needs an API key. Complete /connect first.")`;
+
+export const codexHeaderHelper = `import json, pathlib, sys
+${readKeyForHelper}
 print(json.dumps({"Authorization": "Bearer " + key}))`;
+
+// Claude Code sends the helper's whole JSON object as request headers. The
+// session label comes from PAGES_AGENT in Claude Code's environment and is
+// dropped when blank, longer than 80 characters, or not printable ASCII.
+export const claudeCodeHeaderHelper = `import json, os, pathlib, sys
+${readKeyForHelper}
+headers = {"Authorization": "Bearer " + key, "X-Pages-Driver": "Claude Code"}
+label = os.environ.get("PAGES_AGENT", "").strip()
+if label and len(label) <= 80 and label.isascii() and label.isprintable():
+    headers["X-Pages-Agent"] = label
+print(json.dumps(headers))`;
 
 /** The Authorization scheme of an upload capability (create_page_asset_upload). */
 export const ASSET_UPLOAD_SCHEME = "Pages-Upload";
@@ -132,4 +146,15 @@ export function codexConfig(origin) {
 url = ${JSON.stringify(origin + "/mcp")}
 http_headers_helper = "'<ABSOLUTE_PATH_TO_PYTHON3>' '<ABSOLUTE_PATH_TO_PAGES_MCP_HEADERS_PY>'"
 http_headers = { "X-Pages-Driver" = "Codex" }`;
+}
+
+// Registers the helper at user scope. Project-scoped entries make Claude Code
+// ask for folder trust before it runs a headersHelper.
+export function claudeCodeAddCommand(origin) {
+  const entry = JSON.stringify({
+    type: "http",
+    url: origin + "/mcp",
+    headersHelper: "<ABSOLUTE_PATH_TO_PYTHON3> <ABSOLUTE_PATH_TO_CLAUDE_CODE_HEADERS_PY>",
+  });
+  return `claude mcp add-json --scope user pages '${entry}'`;
 }

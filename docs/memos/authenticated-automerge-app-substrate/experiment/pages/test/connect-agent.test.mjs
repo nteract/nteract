@@ -5,6 +5,8 @@ import worker from "../worker/index.mjs";
 import { agentConnectionSetup } from "../connect-agent.mjs";
 import {
   checkAccountCommand,
+  claudeCodeAddCommand,
+  claudeCodeHeaderHelper,
   codexConfig,
   kiloApiKeyConfig,
   kiloConfig,
@@ -70,11 +72,13 @@ test("setup is public, uses configured destinations, and never reflects credenti
     "https://anaconda.com/app/profile/api-keys",
   );
   assert.equal(dom.querySelectorAll("input, textarea, form").length, 0);
-  assert.equal(dom.querySelectorAll("[data-copy][hidden]").length, 12);
+  assert.equal(dom.querySelectorAll("[data-copy][hidden]").length, 14);
   assert.equal(dom.getElementById("oauth-endpoint").textContent, origin + "/mcp");
   assert.equal(dom.getElementById("kilo-config").textContent, kiloConfig(origin));
   assert.equal(dom.getElementById("kilo-api-key-config").textContent, kiloApiKeyConfig(origin));
   assert.equal(dom.getElementById("codex-config").textContent, codexConfig(origin));
+  assert.equal(dom.getElementById("claude-code-helper").textContent, claudeCodeHeaderHelper);
+  assert.equal(dom.getElementById("claude-code-add").textContent, claudeCodeAddCommand(origin));
   assert.equal(dom.getElementById("setup-prompt").textContent, setupPrompt(origin));
   assert.equal(dom.getElementById("pages-agent-envrc").textContent, pagesAgentEnvrc);
 });
@@ -111,6 +115,49 @@ test("setup leads with API keys and keeps OAuth for interactive clients", async 
     assert.ok(usage.includes(fact), fact);
 });
 
+test("Claude Code has its own recipe, and the generic block no longer names it", async () => {
+  const response = await worker.fetch(new Request(origin + "/connect"), env);
+  const dom = new JSDOM(await response.text()).window.document;
+  const recipe = dom.getElementById("claude-code");
+  assert.equal(recipe.tagName, "DETAILS");
+  assert.equal(recipe.querySelector("summary").textContent, "Claude Code");
+  assert.ok(dom.querySelector('section[aria-labelledby="setup-client"]').contains(recipe));
+  for (const id of ["claude-code-helper", "claude-code-add"]) {
+    assert.ok(recipe.contains(dom.getElementById(id)), id);
+    const copy = recipe.querySelector(`[data-copy="${id}"]`);
+    assert.equal(copy.hidden, true, id);
+    assert.ok(copy.dataset.copyMessage, id);
+  }
+  const add = dom.getElementById("claude-code-add").textContent;
+  assert.ok(add.startsWith("claude mcp add-json --scope user pages '{"));
+  assert.deepEqual(JSON.parse(add.slice(add.indexOf("'{") + 1, -1)), {
+    type: "http",
+    url: origin + "/mcp",
+    headersHelper: "<ABSOLUTE_PATH_TO_PYTHON3> <ABSOLUTE_PATH_TO_CLAUDE_CODE_HEADERS_PY>",
+  });
+  const helper = dom.getElementById("claude-code-helper").textContent;
+  assert.ok(helper.includes('"X-Pages-Driver": "Claude Code"'));
+  assert.ok(helper.includes('os.environ.get("PAGES_AGENT"'));
+  assert.ok(helper.includes(".config/pages/anaconda-api-key"));
+  const prose = recipe.textContent.replace(/\s+/g, " ");
+  for (const fact of [
+    "contains no secret",
+    "on every connection and gives it 10 seconds",
+    "doesn't fall back to OAuth",
+    "folder-trust prompt",
+    "It writes your key into ~/.claude.json",
+    'reports "Needs authentication"',
+    "Configuration alone doesn't verify access",
+  ])
+    assert.ok(prose.includes(fact), fact);
+  assert.ok(!dom.getElementById("save-key-command").textContent.includes("claude"));
+  // The generic block is for clients without a header helper.
+  const other = dom.getElementById("other-client");
+  assert.equal(other.querySelector("summary").textContent, "Other MCP clients");
+  assert.equal(other.textContent.includes("Claude Code"), false);
+  assert.ok(other.contains(dom.getElementById("mcp-headers")));
+});
+
 test("setup supports HEAD and refuses mutation methods", async () => {
   const response = await worker.fetch(new Request(origin + "/connect", { method: "HEAD" }), env);
   assert.equal(response.status, 200);
@@ -128,7 +175,8 @@ test("setup exposes account-safe saving and reload-before-verification outside c
     "~/.config/pages/anaconda-api-key-rgbkrk",
     "Inspect filenames, not secrets",
     "ask before reusing or replacing an existing key",
-    "separate Codex helper filename per account",
+    "separate helper filename per account",
+    "Codex and Claude Code helpers",
     "refuses to overwrite an existing file",
   ])
     assert.ok(save.textContent.includes(fact), fact);
