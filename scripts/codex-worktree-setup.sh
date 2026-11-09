@@ -4,8 +4,9 @@
 # The Codex UI writes .codex/environments/environment.toml per worktree; keep
 # that generated file out of git and point its setup script at this helper.
 #
-# Claude Code worktrees get the same direnv step from the SessionStart hook
-# in .claude/settings.json. Both call scripts/direnv-allow-pinned.sh.
+# Claude Code worktrees get the same steps from the SessionStart and
+# SubagentStart hooks in .claude/settings.json. All of them call
+# scripts/worktree-setup.sh.
 
 set -euo pipefail
 
@@ -20,8 +21,7 @@ else
   cd "$(git rev-parse --show-toplevel)"
 fi
 
-git lfs pull
-
-# Allow .envrc in direnv only while it matches main. The script exits 0 in
-# every case, so a blocked or missing direnv never fails worktree setup.
-scripts/direnv-allow-pinned.sh
+# Allows .envrc in direnv while it matches main, then hydrates LFS files.
+# A blocked or missing direnv never fails setup. LFS files left as pointers
+# do, because the build needs them.
+scripts/worktree-setup.sh

@@ -41,8 +41,8 @@
           },
           {
             "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/direnv-allow-pinned.sh --hook",
-            "timeout": 10
+            "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/worktree-setup.sh --hook",
+            "timeout": 60
           }
         ]
       }
@@ -55,6 +55,17 @@
             "type": "command",
             "command": "jq -r '.tool_input.file_path // .tool_response.filePath // empty' | { read -r f || exit 0; case \"$f\" in *.rs) rustfmt --edition 2021 \"$f\" ;; *.py) ruff format \"$f\" && ruff check --fix \"$f\" ;; esac; } 2>/dev/null || true",
             "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/worktree-setup.sh --hook",
+            "timeout": 60
           }
         ]
       }
