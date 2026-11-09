@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Dev shortcut — runs `cargo xtask dev` from anywhere in the repo.
 #
-# Activated automatically via .envrc (direnv) which prepends bin/ to PATH.
+# Not on PATH: run it by path (`bin/nb` from the repo root).
 
 set -euo pipefail
 
