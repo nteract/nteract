@@ -12,7 +12,7 @@ host.
 | --- | --- |
 | Pages syncs with plain Automerge sync through its own `AutomergeSyncBackend` | [experiment/UPSTREAM.md](experiment/UPSTREAM.md) |
 | Pinned Repo 3 package, source-hash-checked patches, production identity wrapper | [experiment/README.md](experiment/README.md) |
-| Pages rich-text replacement direction (experimental) | [experiment/pages/RICH-TEXT-V2.md](experiment/pages/RICH-TEXT-V2.md) |
+| Pages direction: destination, order of work, target rules | [experiment/pages/DIRECTION.md](experiment/pages/DIRECTION.md) |
 | Unmet infrastructure promotion gates | [celld memo](../celld-hosted-room-substrate.md) |
 | What applications may store and edit | [Extensible document contracts](../extensible-automerge-document-contracts.md) |
 | October 2026 Repo 3 and Subduction evaluation | [archive/subduction-evaluation-2026-10.md](archive/subduction-evaluation-2026-10.md) |

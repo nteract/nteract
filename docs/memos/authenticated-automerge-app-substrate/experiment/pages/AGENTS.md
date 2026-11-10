@@ -1,13 +1,13 @@
 # Pages contributor instructions
 
-Pages rich text is being rebuilt around one model. Before touching the document
-model, codec, Markdown, comments content, or agent write tools, read
-[RICH-TEXT-V2.md](RICH-TEXT-V2.md). It sets the replacement's direction;
-the implementation and tests establish current behavior. Keep the two distinct.
+Read [DIRECTION.md](DIRECTION.md) first. It is the one direction for Pages
+work: the destination, the order of work, what to delete, and the rules for
+deployed targets. The implementation and tests establish current behavior.
+Keep the two distinct.
 
 | Task | Start with |
 | --- | --- |
-| Rich text, codec, Markdown edge, agent tools | [RICH-TEXT-V2.md](RICH-TEXT-V2.md) |
+| Where Pages is going, what to build or delete next | [DIRECTION.md](DIRECTION.md) |
 | Current host, viewer, tool behavior | [REFERENCE.md](REFERENCE.md), then the code and its colocated tests |
 | Setup and tests | [README.md](README.md#run-locally) |
 | Targets and releases | [DEPLOYMENT.md](DEPLOYMENT.md) |
@@ -28,10 +28,12 @@ product. [archive/](archive/) holds superseded notes; don't follow them.
   Test tie allocation without overwriting concurrent moves.
 - Handle concurrent merge outcomes deterministically without discarding
   content. A decoder's tolerance does not replace host admission checks.
-- Fresh-target work does not need historical adapter-byte parity. Retire
-  obsolete fixtures alongside replaced code, not useful behavioral regressions.
-- Make reversible engineering choices in isolated experiments and record the
-  evidence. Do not turn a research proposal into an approved product feature cut.
+- No parity work. Don't compare bytes with an earlier encoder or add
+  compatibility matrices. Delete fixtures that pin replaced code; keep tests
+  that state behavior.
+- Decide reversible engineering choices in the pull request. Bring the
+  maintainer a choice when it changes what people can do, who can reach the
+  service, where it runs, or what happens to existing documents.
 
 ## Ownership
 
@@ -63,9 +65,9 @@ issuer; `cargo xtask dev` doesn't start it.
    widths ([Verify changes](README.md#verify-changes)).
 5. From the repo root, before committing: `cargo xtask lint --fix`.
 
-Leave `pages.runtimed.run` unchanged: no deployment, reset, migration, or
-automatic promotion. Build and deploy experiments on a separate service;
-`pages2` is a candidate, and page10 resets are permitted. Verify actual target
-isolation and preservation needs before mutations. Read
+`pages.runtimed.run` holds documents people use: don't reset it or deploy this
+work to it, and don't build a migration from it. Every other deployed target is
+a demo and can be reset. Confirm which target a command addresses before it
+mutates anything. Read
 [DEPLOYMENT.md](DEPLOYMENT.md) before release work. Local tests don't qualify
 a live identity provider or object-store failover.

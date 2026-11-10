@@ -11,11 +11,10 @@ checks; their presence is not permission to deploy to them.
 A release that would break existing clients goes to a fresh target instead of
 carrying compatibility code. Deployment never copies data between targets.
 
-| Target | Rich text v2 ([RICH-TEXT-V2.md](RICH-TEXT-V2.md#goal-and-boundary)) |
+| Target | Rule ([DIRECTION.md](DIRECTION.md#rules-for-the-work)) |
 | --- | --- |
-| pages2 | Candidate separate service on lab2; verify actual state and isolation before use |
-| page10 | Staging; reset permitted after verifying scope and preservation needs |
-| pages | Leave the running service unchanged. No experimental deployment, reset, migration, or automatic promotion |
+| pages | Holds documents people use. No reset, no deployment of new-format work, no migration from it |
+| pages2, page10 | Demos. Reset freely; confirm the target a command addresses first |
 
 The service procedures below document existing operations, not permission to
 mutate `pages`. Streamlined-service experiments use a separate target. Confirm

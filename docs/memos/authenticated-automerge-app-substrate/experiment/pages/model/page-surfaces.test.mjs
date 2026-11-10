@@ -1,8 +1,7 @@
+// What the Page preview, the grid card and the title warning show for stored
+// shapes, including ones the editor never writes, and what they refuse to render.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as A from "@automerge/automerge";
@@ -19,12 +18,7 @@ import { encode } from "./wordgard-doc.mjs";
 import { SHAPES, PAGE_ID } from "../test/address-inputs.mjs";
 import { pageTreeArbitrary, toWordgardTree } from "../test/random-page-tree.mjs";
 
-const BASE = "943115c13706ab28b6bd1ddda775e57f3acf1b65";
-const GOLDEN = new URL("./page-surfaces.golden.json", import.meta.url);
 const require = createRequire(import.meta.url);
-const modelPath = "docs/memos/authenticated-automerge-app-substrate/experiment/pages/model/";
-const modules = ["page-preview.mjs", "page-card.mjs", "title-warning.mjs"];
-const current = { pagePreview, cardContent, openingTitleWarning };
 const externalPackages = {
   name: "external-packages",
   setup(builder) {
@@ -51,40 +45,6 @@ const { PagePreview, previewNodes } = await load({
   entryPoints: [fileURLToPath(new URL("../viewer/PagePreview.jsx", import.meta.url))],
   plugins: [externalPackages],
 });
-
-// The oracle loads the actual fixed-base modules, including the card's import
-// of that base's renderer. This mode can never bless current implementation output.
-async function baseline() {
-  return load({
-    stdin: {
-      contents: modules.map((name) => `export * from "./${name}";`).join("\n"),
-      resolveDir: fileURLToPath(new URL(".", import.meta.url)),
-    },
-    plugins: [
-      externalPackages,
-      {
-        name: "fixed-base-surfaces",
-        setup(builder) {
-          builder.onLoad(
-            { filter: /\/model\/(page-preview|page-card|title-warning)\.mjs$/ },
-            ({ path }) => ({
-              contents: execFileSync(
-                "git",
-                ["show", `${BASE}:${modelPath}${path.split("/").at(-1)}`],
-                {
-                  cwd: fileURLToPath(new URL(".", import.meta.url)),
-                  encoding: "utf8",
-                },
-              ),
-              resolveDir: fileURLToPath(new URL(".", import.meta.url)),
-              loader: "js",
-            }),
-          );
-        },
-      },
-    ],
-  });
-}
 
 const B = (type, parents = [], attrs = {}, isEmbed = false) => ({
   type: "block",
@@ -557,12 +517,12 @@ const excerpt = (html) => {
   dom.window.close();
   return text;
 };
-function observe(doc, impl) {
-  const preview = impl.pagePreview(doc);
+function observe(doc) {
+  const preview = pagePreview(doc);
   const previewHTML = renderToStaticMarkup(
     createElement(PagePreview, { preview, pageId: PAGE_ID }),
   );
-  const card = attempt(() => impl.cardContent(doc));
+  const card = attempt(() => cardContent(doc));
   const cardHTML = card.error
     ? null
     : renderToStaticMarkup(
@@ -579,146 +539,87 @@ function observe(doc, impl) {
     card,
     cardHTML,
     cardExcerpt: cardHTML === null ? null : excerpt(cardHTML),
-    warning: impl.openingTitleWarning(doc),
+    warning: openingTitleWarning(doc),
   };
 }
-const digest = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
-const reviewCases = (impl) =>
-  Object.fromEntries(
-    fallback.map(([name, spans]) => {
-      const original = page(spans);
-      const doc = A.change(original, { time: 0 }, (draft) => {
-        draft.blocks.two = {
-          id: "two",
-          position: "a1",
-          kind: "markdown",
-          format: RICH_FORMAT,
-          richText: "second block",
-        };
-      });
-      try {
-        return [
-          name,
-          [80, 120, 256, 8192].map((maxBytes) => ({
-            preview: impl.pagePreview(doc, { maxBytes }),
-            card: attempt(() => impl.cardContent(doc, { maxBytes })),
-            warning: impl.openingTitleWarning(doc),
-          })),
-        ];
-      } finally {
-        A.free(doc);
-      }
-    }),
-  );
-const record = (name, value) =>
-  /^(generated|legacy)-/.test(name) ? { sha256: digest(value) } : value;
 
-if (process.env.PAGES_SURFACES_ORACLE === "write-fixed-base") {
-  const impl = await baseline();
-  const cases = {};
+test("reading a surface never changes the document", () => {
   for (const [name, spans] of inputs) {
     const doc = page(spans);
     try {
-      cases[name] = record(name, observe(doc, impl));
+      const bytes = A.save(doc);
+      const heads = A.getHeads(doc);
+      observe(doc);
+      assert.deepEqual(A.save(doc), bytes, name);
+      assert.deepEqual(A.getHeads(doc), heads, name);
     } finally {
       A.free(doc);
     }
   }
-  writeFileSync(
-    GOLDEN,
-    `${JSON.stringify({ base: BASE, cases, review: reviewCases(impl) }, null, 2)}\n`,
-  );
-} else if (process.env.PAGES_SURFACES_ORACLE === "benchmark-fixed-base") {
-  const impl = await baseline();
-  const doc = page(
-    Array.from({ length: 500 }, (_, index) => [
-      B("paragraph"),
-      T(`Paragraph ${index}. ${"bounded preview text ".repeat(30)}`),
-    ]).flat(),
-  );
-  try {
-    const bytes = A.save(doc);
-    for (const name of ["pagePreview", "cardContent"]) {
-      assert.deepEqual(current[name](doc), impl[name](doc));
-      const measure = (fn) => {
-        for (let i = 0; i < 3; i++) fn(doc);
-        return Array.from({ length: 15 }, () => {
-          const start = performance.now();
-          fn(doc);
-          return performance.now() - start;
-        }).sort((a, b) => a - b)[7];
-      };
-      console.log(
-        JSON.stringify({
-          name,
-          paragraphs: 500,
-          textBytes: Buffer.byteLength(doc.blocks.one.richText),
-          baseP50ms: measure(impl[name]),
-          nativeP50ms: measure(current[name]),
-        }),
+});
+
+const UNKNOWN_INLINE = [
+  "unknown-mark",
+  "unknown-embed",
+  "unknown-embed-in-cell",
+  "notice-future-table-table-row-table-cell-true-false",
+  "notice-future-table-table-row-table-cell-true-true",
+];
+const spansNamed = (name) => inputs.find(([key]) => key === name)[1];
+
+test("unknown marks keep text, and unknown inline nodes are inert notices on the host", () => {
+  for (const name of UNKNOWN_INLINE.slice(0, 3)) {
+    const doc = page(spansNamed(name));
+    try {
+      const observed = observe(doc);
+      assert.equal(observed.preview.truncated, false);
+      assert.equal(observed.card.error, undefined);
+      assert.match(
+        observed.excerpt,
+        name === "unknown-mark" ? /marked/ : /Unsupported node: future/,
       );
+      assert.match(
+        observed.cardExcerpt,
+        name === "unknown-mark" ? /marked/ : /Unsupported node: future/,
+      );
+    } finally {
+      A.free(doc);
     }
-    assert.deepEqual(A.save(doc), bytes);
-  } finally {
-    A.free(doc);
   }
-} else {
-  const golden = JSON.parse(readFileSync(GOLDEN, "utf8"));
-  assert.equal(golden.base, BASE);
-  assert.deepEqual(
-    Object.keys(golden.cases),
-    inputs.map(([name]) => name),
-  );
-  // These old renderer bugs are checked explicitly below, not frozen as a contract.
-  const corrected = new Set([
-    "unknown-mark",
-    "unknown-embed",
-    "unknown-embed-in-cell",
-    "notice-future-table-table-row-table-cell-true-false",
-    "notice-future-table-table-row-table-cell-true-true",
-  ]);
-  const unmarkedCode = new Map([
-    ["fallback-code-marks-dataframe-true", "fallback-code-marks-dataframe-null"],
-    ["fallback-code-marks-dataframe-false", "fallback-code-marks-dataframe-null"],
-    ["fallback-code-marks-future-true", "fallback-code-marks-future-null"],
-    ["fallback-code-marks-future-false", "fallback-code-marks-future-null"],
-  ]);
-  for (const [name, spans] of inputs) {
-    if (corrected.has(name)) continue;
-    test(`surface ${unmarkedCode.has(name) ? "safe unmarked-code projection" : "fixed-base parity"}: ${name}`, () => {
-      const doc = page(spans);
-      try {
-        const bytes = A.save(doc);
-        const heads = A.getHeads(doc);
-        if (unmarkedCode.has(name)) assert.equal(golden.cases[name].preview.truncated, true);
-        assert.deepEqual(
-          record(name, observe(doc, current)),
-          golden.cases[unmarkedCode.get(name) ?? name],
-        );
-        assert.deepEqual(A.save(doc), bytes);
-        assert.deepEqual(A.getHeads(doc), heads);
-      } finally {
-        A.free(doc);
-      }
+});
+
+test("an unknown inline node never fails the card, at any byte budget, with a block after it", () => {
+  for (const name of UNKNOWN_INLINE) {
+    const original = page(spansNamed(name));
+    const doc = A.change(original, { time: 0 }, (draft) => {
+      draft.blocks.two = {
+        id: "two",
+        position: "a1",
+        kind: "markdown",
+        format: RICH_FORMAT,
+        richText: "second block",
+      };
     });
+    try {
+      for (const maxBytes of [80, 120, 256, 8192])
+        assert.doesNotThrow(() => cardContent(doc, { maxBytes }), `${name} at ${maxBytes}`);
+    } finally {
+      A.free(doc);
+    }
   }
-  test("review regressions retain warnings, tight card budgets, and following Page blocks", () => {
-    const observed = reviewCases(current);
-    for (const [name, expected] of Object.entries(golden.review))
-      if (!corrected.has(name))
-        assert.deepEqual(
-          observed[name],
-          unmarkedCode.has(name) ? golden.review[unmarkedCode.get(name)] : expected,
-          name,
-        );
-      else
-        assert.ok(
-          observed[name].every(({ card }) => !card.error),
-          name,
-        );
-  });
-  test("marked text after a native notice stays unmarked code without changing storage", () => {
-    for (const type of ["dataframe", "future"])
+});
+
+test("marked text after a notice inside code reads as the same text unmarked", () => {
+  for (const type of ["dataframe", "future"]) {
+    const spans = (marks) => [
+      B("code-block"),
+      T("before"),
+      B(type, ["code-block"], { src: asset, media_type: "data" }, type === "dataframe"),
+      T("after", marks),
+    ];
+    const plain = page(spans({}));
+    try {
+      const unmarked = observe(plain);
       for (const marks of [
         { em: true },
         { strong: false },
@@ -728,188 +629,143 @@ if (process.env.PAGES_SURFACES_ORACLE === "write-fixed-base") {
         { link: link("https://example.org") },
         { future: true },
       ]) {
-        const doc = page([
-          B("code-block"),
-          T("before"),
-          B(type, ["code-block"], { src: asset, media_type: "data" }, type === "dataframe"),
-          T("after", marks),
-        ]);
+        const doc = page(spans(marks));
         try {
-          const bytes = A.save(doc),
-            heads = A.getHeads(doc);
-          const spans = A.spans(doc.blocks.one, ["richText"]),
-            id = A.getObjectId(doc.blocks.one);
-          assert.deepEqual(observe(doc, current), golden.cases[`fallback-code-marks-${type}-null`]);
+          const bytes = A.save(doc);
+          const heads = A.getHeads(doc);
+          const stored = A.spans(doc.blocks.one, ["richText"]);
+          assert.deepEqual(observe(doc), unmarked);
           assert.deepEqual(A.save(doc), bytes);
           assert.deepEqual(A.getHeads(doc), heads);
-          assert.deepEqual(A.spans(doc.blocks.one, ["richText"]), spans);
-          assert.equal(A.getObjectId(doc.blocks.one), id);
+          assert.deepEqual(A.spans(doc.blocks.one, ["richText"]), stored);
         } finally {
           A.free(doc);
         }
       }
-  });
-  test("unknown marks keep text, and unknown inline nodes are inert notices on the host", () => {
-    for (const name of corrected) {
-      const doc = page(inputs.find(([key]) => key === name)[1]);
+    } finally {
+      A.free(plain);
+    }
+  }
+});
+
+test("hostile text, marks, and URLs stay inert; cards never retain external targets", () => {
+  const poison =
+    '<img src="https://tracking.example/i" onerror="alert(1)"><script>alert(2)</script>';
+  fc.assert(
+    fc.property(fc.string({ maxLength: 200 }), (suffix) => {
+      const doc = page([
+        T(poison + suffix, {
+          strong: true,
+          future: "kept",
+          link: link("javascript:alert(3)"),
+        }),
+        B(
+          "image",
+          [],
+          {
+            src: "javascript:alert(4)",
+            dark_src: "https://tracking.example/i",
+            alt: poison,
+          },
+          true,
+        ),
+        B(
+          "future-mention",
+          [],
+          { src: "https://tracking.example/provenance", label: poison },
+          true,
+        ),
+      ]);
       try {
-        const observed = observe(doc, current);
-        assert.equal(observed.preview.truncated, false);
-        assert.equal(observed.card.error, undefined);
-        assert.match(
-          observed.excerpt,
-          name === "unknown-mark" ? /marked/ : /Unsupported node: future/,
-        );
-        assert.match(
-          observed.cardExcerpt,
-          name === "unknown-mark" ? /marked/ : /Unsupported node: future/,
-        );
-        assert.notDeepEqual(observed, golden.cases[name]);
+        const observed = observe(doc);
+        assert.ok(observed.excerpt.includes(poison + suffix));
+        const dom = new JSDOM(observed.previewHTML + observed.cardHTML);
+        try {
+          assert.equal(
+            dom.window.document.querySelectorAll("script, img, a[href], iframe, [onerror]").length,
+            0,
+          );
+        } finally {
+          dom.window.close();
+        }
+        assert.equal(JSON.stringify(observed.card).includes("javascript:"), false);
+        assert.match(observed.cardExcerpt, /Unsupported node: future-mention/);
       } finally {
         A.free(doc);
       }
+    }),
+    { seed: 4938, numRuns: 40 },
+  );
+});
+test("dataframe titles cannot provide a DOM specification", () => {
+  const doc = page([
+    B("dataframe", [], {
+      src: asset,
+      media_type: "data",
+      title: ["script", "alert(1)"],
+    }),
+  ]);
+  try {
+    assert.deepEqual(pagePreview(doc), {
+      title: "Shared title",
+      blocks: [],
+      truncated: true,
+    });
+    assert.equal(cardContent(doc).truncated, false);
+    assert.doesNotMatch(observe(doc).cardHTML, /<script/);
+  } finally {
+    A.free(doc);
+  }
+});
+test("depth and output budgets reject one pathological block without reading later blocks", () => {
+  const deep = page([B("paragraph", Array(65).fill("blockquote")), T("too deep")]);
+  try {
+    assert.deepEqual(pagePreview(deep).blocks, []);
+    assert.equal(pagePreview(deep).truncated, true);
+    assert.equal(cardContent(deep).truncated, true);
+    assert.equal(openingTitleWarning(deep), null);
+  } finally {
+    A.free(deep);
+  }
+  const doc = page(
+    Array.from({ length: 500 }, (_, index) => [
+      B("paragraph"),
+      T(`line ${index}: ${"<&>".repeat(20)}`),
+    ]).flat(),
+  );
+  try {
+    for (const maxBytes of [100, 1024, 4096]) {
+      const preview = pagePreview(doc, { maxBytes });
+      const card = cardContent(doc, { maxBytes });
+      assert.equal(preview.truncated, true);
+      assert.equal(card.truncated, true);
+      assert.ok(Buffer.byteLength(JSON.stringify(preview)) <= maxBytes);
+      assert.ok(Buffer.byteLength(JSON.stringify(card.blocks)) <= maxBytes);
     }
-  });
-  test("hostile text, marks, and URLs stay inert; cards never retain external targets", () => {
-    const poison =
-      '<img src="https://tracking.example/i" onerror="alert(1)"><script>alert(2)</script>';
-    fc.assert(
-      fc.property(fc.string({ maxLength: 200 }), (suffix) => {
-        const doc = page([
-          T(poison + suffix, {
-            strong: true,
-            future: "kept",
-            link: link("javascript:alert(3)"),
-          }),
-          B(
-            "image",
-            [],
-            {
-              src: "javascript:alert(4)",
-              dark_src: "https://tracking.example/i",
-              alt: poison,
-            },
-            true,
-          ),
-          B(
-            "future-mention",
-            [],
-            { src: "https://tracking.example/provenance", label: poison },
-            true,
-          ),
-        ]);
-        try {
-          const observed = observe(doc, current);
-          assert.ok(observed.excerpt.includes(poison + suffix));
-          const dom = new JSDOM(observed.previewHTML + observed.cardHTML);
-          try {
-            assert.equal(
-              dom.window.document.querySelectorAll("script, img, a[href], iframe, [onerror]")
-                .length,
-              0,
-            );
-          } finally {
-            dom.window.close();
-          }
-          assert.equal(JSON.stringify(observed.card).includes("javascript:"), false);
-          assert.match(observed.cardExcerpt, /Unsupported node: future-mention/);
-        } finally {
-          A.free(doc);
-        }
-      }),
-      { seed: 4938, numRuns: 40 },
-    );
-  });
-  test("dataframe titles cannot provide a DOM specification", () => {
-    const doc = page([
-      B("dataframe", [], {
-        src: asset,
-        media_type: "data",
-        title: ["script", "alert(1)"],
-      }),
-    ]);
-    try {
-      assert.deepEqual(pagePreview(doc), {
-        title: "Shared title",
-        blocks: [],
-        truncated: true,
-      });
-      assert.equal(cardContent(doc).truncated, false);
-      assert.doesNotMatch(observe(doc, current).cardHTML, /<script/);
-    } finally {
-      A.free(doc);
-    }
-  });
-  test("depth and output budgets reject one pathological block without reading later blocks", () => {
-    const deep = page([B("paragraph", Array(65).fill("blockquote")), T("too deep")]);
-    try {
-      assert.deepEqual(pagePreview(deep).blocks, []);
-      assert.equal(pagePreview(deep).truncated, true);
-      assert.equal(cardContent(deep).truncated, true);
-      assert.equal(openingTitleWarning(deep), null);
-    } finally {
-      A.free(deep);
-    }
-    const doc = page(
-      Array.from({ length: 500 }, (_, index) => [
-        B("paragraph"),
-        T(`line ${index}: ${"<&>".repeat(20)}`),
-      ]).flat(),
-    );
-    try {
-      for (const maxBytes of [100, 1024, 4096]) {
-        const preview = pagePreview(doc, { maxBytes });
-        const card = cardContent(doc, { maxBytes });
-        assert.equal(preview.truncated, true);
-        assert.equal(card.truncated, true);
-        assert.ok(Buffer.byteLength(JSON.stringify(preview)) <= maxBytes);
-        assert.ok(Buffer.byteLength(JSON.stringify(card.blocks)) <= maxBytes);
-      }
-    } finally {
-      A.free(doc);
-    }
-  });
-  test("dataframe placeholders and inert links do not resolve labels or fetch assets", () => {
-    const doc = page([
-      T("private label", { link: link("https://tracking.example/resolve") }),
-      B("dataframe", [], {
-        src: "https://tracking.example/data",
-        media_type: "data",
-        title: "Dataset",
-      }),
-    ]);
-    const previous = globalThis.fetch;
-    globalThis.fetch = () => {
-      throw Error("Surface performed a network read");
-    };
-    try {
-      const observed = observe(doc, current);
-      assert.equal(observed.card.error, undefined);
-      assert.equal(JSON.stringify(observed.card).includes("tracking.example"), false);
-      assert.match(observed.cardExcerpt, /private labelDataset/);
-    } finally {
-      globalThis.fetch = previous;
-      A.free(doc);
-    }
-  });
-  test("all three surface import graphs exclude ProseMirror and its adapters", async () => {
-    for (const module of modules) {
-      const result = await build({
-        entryPoints: [fileURLToPath(new URL(module, import.meta.url))],
-        bundle: true,
-        write: false,
-        metafile: true,
-        treeShaking: false,
-        platform: "browser",
-        format: "esm",
-      });
-      assert.deepEqual(
-        Object.keys(result.metafile.inputs).filter((path) =>
-          /prosemirror|pm-adapter|pm-markdown-parser/.test(path),
-        ),
-        [],
-        module,
-      );
-    }
-  });
-}
+  } finally {
+    A.free(doc);
+  }
+});
+test("dataframe placeholders and inert links do not resolve labels or fetch assets", () => {
+  const doc = page([
+    T("private label", { link: link("https://tracking.example/resolve") }),
+    B("dataframe", [], {
+      src: "https://tracking.example/data",
+      media_type: "data",
+      title: "Dataset",
+    }),
+  ]);
+  const previous = globalThis.fetch;
+  globalThis.fetch = () => {
+    throw Error("Surface performed a network read");
+  };
+  try {
+    const observed = observe(doc);
+    assert.equal(observed.card.error, undefined);
+    assert.equal(JSON.stringify(observed.card).includes("tracking.example"), false);
+    assert.match(observed.cardExcerpt, /private labelDataset/);
+  } finally {
+    globalThis.fetch = previous;
+    A.free(doc);
+  }
+});

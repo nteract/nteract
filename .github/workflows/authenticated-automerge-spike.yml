@@ -67,7 +67,7 @@ jobs:
       # Keep checkout paths and filters in sync with imported verifier and UI sources.
       - name: Prepare pinned upstream packages and locked fixture dependencies
         run: npm run setup
-      - name: Test provider fixtures and real Repo/Subduction integration
+      - name: Test provider fixtures and the pinned Repo integration
         run: npm test
       - name: Build native Pages Worker and browser
         run: npm run build --workspace @nteract/pages-native-experiment

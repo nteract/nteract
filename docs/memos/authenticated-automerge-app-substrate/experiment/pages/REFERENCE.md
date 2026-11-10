@@ -5,17 +5,8 @@ Read the code and its colocated tests for exact contracts; this file maps them.
 The protected deployed service may run an earlier revision.
 
 The native path uses Wordgard for both reads and writes; ProseMirror is absent
-from the production graph. [RICH-TEXT-V2.md](RICH-TEXT-V2.md) describes the
-separate-service workflow and remaining design options:
-
-| Current path | Replacement direction or experiment |
-| --- | --- |
-| Native Markdown parser (`model/markdown-native.mjs`) and Wordgard codec | Markdown tokens parse straight to the Wordgard tree |
-| Broad projection diffs (`replace_block_markdown`, `set_node`, `set_image`, comment edits) | Preserve identity and concurrent intent with targeted edits and regression tests |
-| Implicit first paragraph, null first `node_id` | Evaluate explicit markers |
-| Marker `parents` list | Evaluate atomic paths and their merge semantics |
-| `block_id`, `node_index`, `image_id` addressing | Evaluate simpler stable addressing |
-| Stored-form refusals and legacy comment forms | Keep current service protections; define a separate fresh-target format boundary |
+from the production graph. [DIRECTION.md](DIRECTION.md#what-changes-from-today)
+lists what the next format and tool surface change.
 
 ## Editor and content features
 
