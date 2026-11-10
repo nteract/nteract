@@ -181,10 +181,14 @@ export interface ServerSessionGrant {
 export interface ServerSessionProvider {
   /**
    * Exchanges a session's sealed bundle for a fresh grant. It runs under the
-   * row's refresh lease, so a rotating credential is never exchanged twice.
-   * Throw `ServerSessionGrantRejected` when the provider ended the grant, or
-   * `ServerOidcIdentityRejected` when the application refuses the account;
-   * both delete the session. Any other error keeps the row and is retried.
+   * row's refresh lease, so two requests never exchange one bundle at the same
+   * time. Throw `ServerSessionGrantRejected` when the provider ended the
+   * grant, or `ServerOidcIdentityRejected` when the application refuses the
+   * account; both delete the session. Any other error keeps the row, and the
+   * same bundle is handed to `refresh` again after a backoff, so a provider
+   * whose credential rotates must tolerate a repeat of an exchange whose
+   * answer was lost. The grant must name the principal the session already
+   * has; one that names another ends the session.
    */
   refresh(bundle: Record<string, unknown>): Promise<ServerSessionGrant>;
 }
@@ -719,6 +723,36 @@ export async function completeServerOidcLogin(
   return response;
 }
 
+/**
+ * A provider's grant, checked before anything acts on the identity in it. A
+ * grant with no usable expiry throws a plain error: at sign-in nothing is
+ * stored, and at renewal the row is kept and the provider is asked again.
+ * `session` is the row being renewed; a grant for another principal or
+ * namespace than the one it holds is rejected, which ends the session.
+ */
+function checkedProviderGrant(
+  grant: ServerSessionGrant,
+  now: number,
+  session?: ServerSessionRow,
+): ServerSessionGrant {
+  const { principal, metadata } = grant.identity;
+  if (typeof principal !== "string" || !principal || !metadata?.principalNamespace)
+    throw new Error("Server session grant names no principal");
+  if (!Number.isSafeInteger(grant.expiresAt) || grant.expiresAt <= now)
+    throw new Error("Server session grant is already expired");
+  if (session) {
+    let held: { principal?: unknown; principalNamespace?: unknown } = {};
+    try {
+      held = JSON.parse(session.session_json);
+    } catch {
+      // An unreadable row holds no principal a grant could continue.
+    }
+    if (held.principal !== principal || held.principalNamespace !== metadata.principalNamespace)
+      throw new ServerSessionGrantRejected();
+  }
+  return grant;
+}
+
 /** Stores a new session for `grant` and returns its `Set-Cookie` value. */
 async function insertServerSession(
   env: Env,
@@ -783,8 +817,7 @@ export async function createServerSession(
 ): Promise<string> {
   const context = providerSessionContext(env, request);
   const now = Math.floor(Date.now() / 1000);
-  if (!Number.isSafeInteger(grant.expiresAt) || grant.expiresAt <= now)
-    throw new Error("Server session grant is already expired");
+  checkedProviderGrant(grant, now);
   const cookie = await insertServerSession(env, await oidcDatabase(env), context, now, grant);
   notifyAuthEvent(options.onAuthEvent, { type: "sign_in", principal: grant.identity.principal });
   return cookie;
@@ -969,12 +1002,19 @@ async function refreshSession(
     throw new ProviderUnavailable();
   }
   try {
+    // A provider's grant is checked before the profile callback sees its
+    // identity. OIDC proves the same continuity in `validatedIdentity`.
     const verified = config
       ? await refreshOidcGrant(env, config, bundle as unknown as TokenBundle)
-      : await provider!.refresh(bundle);
+      : checkedProviderGrant(
+          await provider!.refresh(bundle),
+          Math.floor(Date.now() / 1000),
+          initial,
+        );
     await syncProfile(verified.identity);
     const refreshedAt = Math.floor(Date.now() / 1000);
-    if (!Number.isSafeInteger(verified.expiresAt) || verified.expiresAt <= refreshedAt)
+    // The profile callback may have outlasted a short provider proof.
+    if (!config && verified.expiresAt <= refreshedAt)
       throw new Error("Server session grant is already expired");
     const idleExpiry = Math.min(
       refreshedAt + SERVER_SESSION_IDLE_SECONDS,

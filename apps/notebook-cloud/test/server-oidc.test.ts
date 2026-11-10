@@ -1134,6 +1134,21 @@ describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
     await assert.rejects(readCloudAppSession(malformed, request), /active must name a kid/);
   });
 
+  it("renews an OIDC session whose token lifetime is a fraction of a second", async (t) => {
+    const f = await fixture(t);
+    f.setTokenTransform(async (tokens) => {
+      tokens.expires_in = 250.5;
+    });
+    const { sessionCookie } = await f.login();
+    const request = f.request(undefined, sessionCookie);
+    f.expireAccess();
+    const renewed = await serverOidcSessionStatus(request, f.env, noopProfile);
+    assert.equal(renewed.status, 200);
+    assert.ok((await renewed.json()).session);
+    assert.equal(f.calls.filter((call) => call.grant === "refresh_token").length, 1);
+    assert.equal(f.countRows(), 1);
+  });
+
   it("supports public PKCE clients without transmitting a client secret", async (t) => {
     const f = await fixture(t, { publicClient: true });
     const { sessionCookie } = await f.login();
@@ -1700,18 +1715,64 @@ describe("server sessions from a sign-in that is not OIDC", { concurrency: false
     assert.equal(f.refreshed.length, 0);
   });
 
-  it("refuses a renewed grant that is already expired and retries later", async (t) => {
+  it("refuses a renewed grant with no usable expiry before the profile callback sees it", async (t) => {
     const f = providerFixture(t);
     const cookie = await f.signIn();
-    f.expireAccess();
-    const stale: ServerSessionProvider = {
-      refresh: async () => ({ ...f.grant(), expiresAt: nowSeconds() - 5 }),
-    };
-    const response = await serverOidcSessionStatus(f.request(cookie), f.env, noopProfile, {
-      provider: stale,
-    });
-    assert.equal(response.status, 503);
-    assert.equal(f.countRows(), 1);
+    for (const expiresAt of [nowSeconds() - 5, Number.NaN, nowSeconds() + 0.5]) {
+      f.expireAccess();
+      f.db.sqlite.prepare("UPDATE oidc_server_sessions SET retry_after = 0").run();
+      const synced: string[] = [];
+      const response = await serverOidcSessionStatus(
+        f.request(cookie),
+        f.env,
+        async (identity) => void synced.push(identity.principal),
+        { provider: { refresh: async () => ({ ...f.grant(), expiresAt }) } },
+      );
+      assert.equal(response.status, 503);
+      assert.deepEqual(synced, []);
+      assert.equal(f.countRows(), 1);
+    }
+  });
+
+  it("ends the session when a renewal names another principal or namespace", async (t) => {
+    for (const identity of [
+      { ...identityFor("Bob"), principal: "user:pair:bob", actorLabel: "user:pair:bob/browser" },
+      identityFor("Alice", { principalNamespace: "user:other" }),
+    ]) {
+      const f = providerFixture(t);
+      const cookie = await f.signIn();
+      f.expireAccess();
+      const synced: string[] = [];
+      const events: ServerOidcAuthEvent[] = [];
+      const response = await serverOidcSessionStatus(
+        f.request(cookie),
+        f.env,
+        async (seen) => void synced.push(seen.principal),
+        {
+          provider: { refresh: async () => f.grant({ identity }) },
+          onAuthEvent: (event) => events.push(event),
+        },
+      );
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).session, null);
+      assert.deepEqual(synced, [], "another account's profile is never synchronized");
+      assert.equal(f.countRows(), 0);
+      assert.deepEqual(events, [
+        { type: "session_expired", principal: PRINCIPAL, reason: "refresh_rejected" },
+      ]);
+    }
+  });
+
+  it("refuses to start a session for a grant that names no principal", async (t) => {
+    const f = providerFixture(t);
+    await assert.rejects(
+      createServerSession(
+        f.request(),
+        f.env,
+        f.grant({ identity: { ...identityFor(), principal: "" } }),
+      ),
+      /names no principal/,
+    );
   });
 
   it("logout during a provider refresh cannot recreate the session", async (t) => {
