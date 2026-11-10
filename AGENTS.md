@@ -138,6 +138,23 @@ target and mutation boundary, and verify every finding against the checkout.
 Model findings are advisory. After a fix, rerun the relevant checks before
 calling the review clear.
 
+Run the review with an installed reviewer agent, not a general one:
+
+```bash
+kilo run --agent kilo-review "<target, mutation boundary and lens>"
+```
+
+`kilo-review` denies edits in its own configuration and may run the builds and
+tests its allowlist names. `kilo-review-source-only` reads files and never
+executes anything. A general agent such as `ask` is read-only by prompt alone,
+so do not use one for a review. `kilo agent list` shows what is installed; if
+neither reviewer agent is, say so instead of substituting another.
+
+The reviewer can run only the command forms its allowlist names, such as
+`pnpm test` or `cargo test`. Give it a test command in one of those forms, or
+run the tests yourself and tell it the result. Its report ends the output;
+the tool calls and file contents ahead of it are not findings.
+
 ### Kilo review authorization
 
 This is a public, open-source repository. The maintainer explicitly authorizes

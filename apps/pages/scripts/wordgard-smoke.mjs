@@ -91,6 +91,10 @@ async function rawCall(page, operation, args) {
 async function selectText(page, text, collapse = false, block = 0) {
   const editor = content(page).nth(block);
   await editor.focus();
+  // A text selection is meaningful only against the rendered tree for the
+  // latest saved edit; otherwise a pending editor render can replace its nodes.
+  await expect(editor).toContainText(text);
+  await saved(page);
   await editor.evaluate(
     (el, { text, collapse }) => {
       const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
@@ -128,6 +132,8 @@ async function selectText(page, text, collapse = false, block = 0) {
       range.setStart(...at(start, true));
       range.setEnd(...at(start + text.length));
       if (collapse) range.collapse(false);
+      if (!range.startContainer.isConnected || !range.endContainer.isConnected)
+        throw Error("Selection range must use connected editor text nodes");
       getSelection().removeAllRanges();
       getSelection().addRange(range);
     },
