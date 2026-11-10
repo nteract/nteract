@@ -127,6 +127,15 @@ test("a profile is refused when it is incomplete, carries a secret or names an u
     assert.throws(() => cloudflareConfig(profile(changes)), pattern);
   assert.throws(() => cloudflareConfig("11111111-1111-4111-8111-111111111111"), /profile object/);
   refuses({ name: "Pages Example" }, /Worker name/);
+  // JSON values a pattern would coerce to a matching string.
+  refuses({ name: 123 }, /Worker name/);
+  refuses({ r2_bucket: 123456 }, /R2 bucket name/);
+  refuses({ account_id: ["0123456789abcdef0123456789abcdef"] }, /account ID/);
+  refuses(
+    { d1: { ...profile().d1, auth: { database_name: "auth", database_id: [AUTH_ID] } } },
+    /d1\.auth\.database_id must be the D1 database UUID/,
+  );
+  refuses({ vars: ["NOTEBOOK_CLOUD_PUBLIC_ORIGIN"] }, /vars must be an object/);
   refuses({ account_id: "not-an-account" }, /account ID/);
   refuses({ workers_dev: undefined }, /workers_dev/);
   refuses({ r2_bucket: "Bad_Bucket" }, /R2 bucket name/);
@@ -141,6 +150,17 @@ test("a profile is refused when it is incomplete, carries a secret or names an u
   refuses({ vars: { ...vars, NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.example/p" } }, /https/);
   refuses({ vars: { PAGES_CATALOG_INDEX: "d1" } }, /NOTEBOOK_CLOUD_PUBLIC_ORIGIN/);
   refuses({ vars: { ...vars, PAGES_DEFAULT_PAGE_QUOTA: 50 } }, /must be a string/);
+  for (const binding of [
+    "ASSETS",
+    "PAGES",
+    "CATALOGS",
+    "PAGE_RECORDS",
+    "PROJECTS",
+    "DB",
+    "PAGES_USAGE",
+    "PAGES_ASSETS",
+  ])
+    refuses({ vars: { ...vars, [binding]: "x" } }, /name of a binding/);
   for (const secret of [
     "NOTEBOOK_CLOUD_APP_SESSION_SECRET",
     "NOTEBOOK_CLOUD_APP_SESSION_KEYS",

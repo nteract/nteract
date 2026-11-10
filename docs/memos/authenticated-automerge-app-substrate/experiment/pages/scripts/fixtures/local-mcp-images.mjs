@@ -33,6 +33,7 @@ export function imageTokenOf(url) {
 // Worker side. Downloads go to the loopback image source the smoke runs, which
 // counts them and checks the fixture identity, so a request from another
 // fixture build or a stale Worker fails the smoke instead of passing silently.
+// `isolate` is a function so its caller can make the id inside a request.
 export function fixtureImageFetch(fallback, { source, identity, isolate, realFetch }) {
   return async (input, init) => {
     const request = new Request(input, init);
@@ -46,7 +47,7 @@ export function fixtureImageFetch(fallback, { source, identity, isolate, realFet
     )
       throw new Error("Image fixture received an unexpected credential or method");
     return realFetch(`${source}/download/${parsed.token}`, {
-      headers: { "X-Pages-E2E-Fixture": identity, "X-Pages-E2E-Isolate": isolate },
+      headers: { "X-Pages-E2E-Fixture": identity, "X-Pages-E2E-Isolate": isolate() },
       signal: request.signal,
     });
   };

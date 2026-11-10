@@ -89,7 +89,9 @@ test("imports original bytes privately without forwarding credentials or retaini
   assert.deepEqual(f.calls.authorize, [true, true]);
   const [[url, options]] = f.calls.fetch;
   assert.equal(url, downloadUrl);
-  assert.equal(options.redirect, "error");
+  // Cloudflare Workers accepts only "follow" and "manual"; "error" throws
+  // before any request leaves.
+  assert.equal(options.redirect, "manual");
   assert.equal(options.credentials, "omit");
   assert.equal(options.referrerPolicy, "no-referrer");
   const headers = new Headers(options.headers);

@@ -20,13 +20,18 @@ const ACCOUNT_ID = /^[0-9a-f]{32}$/;
 // Session keys and client secrets go in with `wrangler secret put`. The other
 // two switch on fixtures that must never run on a public host.
 const REFUSED_VAR = /SECRET|SESSION_KEYS|DEV_TOKEN|LOCAL_OIDC|E2E_ONLY/;
+const R2_BINDING = "PAGES_ASSETS";
 const PROFILE_FIELDS = ["name", "account_id", "workers_dev", "d1", "r2_bucket", "vars"];
+
+// A regular expression coerces what it tests, and the profile is JSON: without
+// the type check a number or a one-element array would pass and reach Wrangler.
+const matches = (pattern, value) => typeof value === "string" && pattern.test(value);
 
 function database(profile, key, binding) {
   const entry = profile.d1?.[key];
   if (typeof entry?.database_name !== "string" || !entry.database_name)
     throw new Error(`Profile d1.${key}.database_name is required`);
-  if (!UUID.test(entry.database_id ?? ""))
+  if (!matches(UUID, entry.database_id))
     throw new Error(`Profile d1.${key}.database_id must be the D1 database UUID`);
   return { binding, database_name: entry.database_name, database_id: entry.database_id };
 }
@@ -44,15 +49,28 @@ export function cloudflareConfig(profile) {
     throw new Error("Provide a deployment profile object");
   const unknown = Object.keys(profile).filter((key) => !PROFILE_FIELDS.includes(key));
   if (unknown.length) throw new Error(`Unknown profile field: ${unknown.join(", ")}`);
-  if (!WORKER_NAME.test(profile.name ?? "")) throw new Error("Profile name must be a Worker name");
-  if (profile.account_id !== undefined && !ACCOUNT_ID.test(profile.account_id))
+  if (!matches(WORKER_NAME, profile.name)) throw new Error("Profile name must be a Worker name");
+  if (profile.account_id !== undefined && !matches(ACCOUNT_ID, profile.account_id))
     throw new Error("Profile account_id must be a Cloudflare account ID");
   if (typeof profile.workers_dev !== "boolean")
     throw new Error("Profile workers_dev must be true or false");
-  if (!BUCKET_NAME.test(profile.r2_bucket ?? ""))
+  if (!matches(BUCKET_NAME, profile.r2_bucket))
     throw new Error("Profile r2_bucket must be an R2 bucket name");
+  const shape = workerShape();
+  // A variable shares one namespace with the bindings; Wrangler refuses a
+  // name declared twice.
+  const bindings = new Set([
+    shape.assets.binding,
+    ...shape.durable_objects.bindings.map((binding) => binding.name),
+    AUTH_D1.binding,
+    USAGE_D1.binding,
+    R2_BINDING,
+  ]);
   const vars = profile.vars ?? {};
+  if (vars === null || typeof vars !== "object" || Array.isArray(vars))
+    throw new Error("Profile vars must be an object");
   for (const [key, value] of Object.entries(vars)) {
+    if (bindings.has(key)) throw new Error(`Profile var ${key} is the name of a binding`);
     if (REFUSED_VAR.test(key)) throw new Error(`${key} does not belong in a profile's vars`);
     if (typeof value !== "string") throw new Error(`Profile var ${key} must be a string`);
   }
@@ -62,7 +80,6 @@ export function cloudflareConfig(profile) {
   } catch {}
   if (origin?.protocol !== "https:" || origin.origin !== vars.NOTEBOOK_CLOUD_PUBLIC_ORIGIN)
     throw new Error("Profile vars need NOTEBOOK_CLOUD_PUBLIC_ORIGIN as an https origin");
-  const shape = workerShape();
   return {
     name: profile.name,
     // Without an account here Wrangler uses CLOUDFLARE_ACCOUNT_ID or asks.
@@ -75,7 +92,7 @@ export function cloudflareConfig(profile) {
       database(profile, "auth", AUTH_D1.binding),
       database(profile, "usage", USAGE_D1.binding),
     ],
-    r2_buckets: [{ binding: "PAGES_ASSETS", bucket_name: profile.r2_bucket }],
+    r2_buckets: [{ binding: R2_BINDING, bucket_name: profile.r2_bucket }],
     observability: { enabled: true },
     vars: { ...vars, ...shape.vars },
   };

@@ -169,7 +169,9 @@ await writeFile(
     [...viewerChunks, ...Object.values(assets)],
   ),
 );
-const shape = workerShape();
+// The installer hashes this file's bytes and restarts celld when they change
+// (scripts/deployment/activation.mjs), so the key order is part of the output.
+const { triggers, vars, ...shape } = workerShape();
 await writeFile(
   path.join(dist, "wrangler.json"),
   JSON.stringify(
@@ -185,8 +187,10 @@ await writeFile(
         },
         USAGE_D1,
       ],
+      triggers,
       // celld scopes this bucket beneath the deployment's fleet prefix.
       r2_buckets: [{ binding: "PAGES_ASSETS", bucket_name: "pages-images" }],
+      vars,
     },
     null,
     2,

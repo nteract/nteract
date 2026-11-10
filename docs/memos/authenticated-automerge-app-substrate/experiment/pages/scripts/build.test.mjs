@@ -219,6 +219,21 @@ for (const fails of [true, false])
             [USAGE_D1],
           );
           assert.deepEqual(config.triggers, { crons: [USAGE_CRON, AUTH_CRON] });
+          // The installer restarts celld when this file's bytes change, so a
+          // reordered key is a restart on every live target.
+          assert.deepEqual(Object.keys(config), [
+            "name",
+            "main",
+            "no_bundle",
+            "compatibility_date",
+            "assets",
+            "durable_objects",
+            "migrations",
+            "d1_databases",
+            "triggers",
+            "r2_buckets",
+            "vars",
+          ]);
           assert.equal(USAGE_CRON, "5 0 * * *");
           assert.equal(AUTH_CRON, "35 * * * *");
           // The receipt certifies every staged file but itself: the allowlist
