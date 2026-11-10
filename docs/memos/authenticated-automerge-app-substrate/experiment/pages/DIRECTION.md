@@ -40,9 +40,10 @@ Comments live in their own document and anchor to the Page with cursors.
 ## What changes from today
 
 1. **Format 2 for `pages.page`.** A block stores `position` and `richText`
-   only. Format 2 drops `kind`, `format`, `markdown` and `metadata`: each
-   holds a constant today, and `markdown` is always the empty string
-   ([model/page.mjs](model/page.mjs)). Tool responses stop reporting `kind`,
+   only. Format 2 drops `kind`, `format`, `markdown` and `metadata`. New
+   blocks get a fixed default for each ([model/page.mjs](model/page.mjs)).
+   Older documents can hold other values, such as Markdown left from an
+   import, but the content is `richText`. Tool responses stop reporting `kind`,
    `format` and `metadata`. The `markdown` a read returns is the projection,
    and it stays.
    Every node gets an explicit opening marker, including a block's first
@@ -136,8 +137,9 @@ records the node addresses agents use.
   cell that runs. `runtimed` keeps kernels, execution and outputs either way.
 - Whether a document type's genesis is fixed the way the notebook's is.
 - Whether the span codec and the agent projections move to Rust compiled to
-  WASM. The editor already applies Automerge text patches to its decoded
-  block and re-decodes only for structure and formatting
+  WASM. The editor already applies eligible Automerge text patches to its
+  decoded block. It re-decodes the block for structure and formatting
+  changes, and when a patch cannot be mapped
   ([viewer/wordgard-binding.mjs](viewer/wordgard-binding.mjs)). The host's
   admission checks and the Markdown and outline projections are the first
   candidates, because the host, the tools and a Rust client can then share

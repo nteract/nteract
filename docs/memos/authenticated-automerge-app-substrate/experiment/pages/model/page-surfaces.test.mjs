@@ -609,6 +609,60 @@ test("an unknown inline node never fails the card, at any byte budget, with a bl
   }
 });
 
+test("an opening heading that repeats the title warns, but not when an image comes first", () => {
+  const warning = (name) => {
+    const doc = page(spansNamed(name));
+    try {
+      return openingTitleWarning(doc);
+    } finally {
+      A.free(doc);
+    }
+  };
+  for (const name of ["native-title", "empty-before-title", "hard-break-title"])
+    assert.equal(warning(name)?.code, "opening_heading_repeats_title", name);
+  assert.equal(warning("image-before-title"), null);
+});
+
+test("unknown parents with different names share one card node", () => {
+  const doc = page(spansNamed("unknown-parent-card-budget"));
+  try {
+    const observed = observe(doc);
+    assert.equal(observed.card.error, undefined);
+    assert.equal(observed.card.truncated, false);
+    assert.equal(observed.card.blocks[0].content.length, 1);
+    assert.match(observed.cardExcerpt, /^line0line1.*line64$/);
+  } finally {
+    A.free(doc);
+  }
+});
+
+test("a following block is kept whole when the byte budget allows and dropped when it does not", () => {
+  const doc = A.change(page(spansNamed("native-title")), { time: 0 }, (draft) => {
+    draft.blocks.two = {
+      id: "two",
+      position: "a1",
+      kind: "markdown",
+      format: RICH_FORMAT,
+      richText: "second block",
+    };
+  });
+  const ids = ({ blocks }) => blocks.map(({ id }) => id);
+  try {
+    for (const maxBytes of [256, 8192]) {
+      const preview = pagePreview(doc, { maxBytes });
+      const card = cardContent(doc, { maxBytes });
+      assert.deepEqual([ids(preview), preview.truncated], [["one", "two"], false], maxBytes);
+      assert.deepEqual([ids(card), card.truncated], [["one", "two"], false], maxBytes);
+    }
+    const preview = pagePreview(doc, { maxBytes: 80 });
+    const card = cardContent(doc, { maxBytes: 80 });
+    assert.deepEqual([ids(preview), preview.truncated], [[], true]);
+    assert.deepEqual([ids(card), card.truncated], [["one"], true]);
+  } finally {
+    A.free(doc);
+  }
+});
+
 test("marked text after a notice inside code reads as the same text unmarked", () => {
   for (const type of ["dataframe", "future"]) {
     const spans = (marks) => [

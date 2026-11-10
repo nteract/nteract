@@ -375,7 +375,7 @@ Browser Repo + Wordgard                 Authorized HTTP / MCP operations
             +--------------------+-------------------+
                                  |
                          Page Durable Object
-                         SyncHost + Repo (worker/plain-sync.mjs)
+                         SyncHost + HostRepo (worker/plain-sync.mjs)
                          host-owned access/control state
                                  |
                          ctx.storage / runtime
@@ -2680,8 +2680,8 @@ A grid card shows a scaled, read-only rendering of the Page's first screen.
 The Page host builds a `card.v1` bundle from its document
 ([page-card.mjs](model/page-card.mjs)): `{ v, card_hash, content_updated_at,
 title, blocks, truncated, rich }`. `blocks` is
-[page-preview.mjs](model/page-preview.mjs)'s JSON from the schema's own `toDOM`
-specs, never HTML, cut at 8 KiB serialized and 64 top-level nodes. A node that
+[page-preview.mjs](model/page-preview.mjs)'s JSON from its own `renderNode`,
+never HTML, cut at 8 KiB serialized and 64 top-level nodes. A node that
 doesn't fit is clipped to its leading children and text (a table keeps whole
 rows), and the card ends there. A top-level node that shows nothing (no text, no
 placeholder, rule or checkbox) is dropped, so an emptied Page has no blocks and
