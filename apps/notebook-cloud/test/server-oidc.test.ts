@@ -1036,6 +1036,64 @@ describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
     ]);
   });
 
+  // In both tests the owner's lease has lapsed, but it saves its renewal in
+  // the gap between another request's read of the row and that request's
+  // delete. The delete misses, and the other request must answer with the
+  // renewed session, not sign the browser out of it.
+  it("keeps a renewal its late owner saved after a new request read the lapsed lease", async (t) => {
+    const f = await fixture(t);
+    const { sessionCookie } = await f.login();
+    const request = f.request(undefined, sessionCookie);
+    f.expireAccess();
+    const events: ServerOidcAuthEvent[] = [];
+    const onAuthEvent = (event: ServerOidcAuthEvent) => events.push(event);
+    const gate = f.gateRefresh();
+    const owner = serverOidcSessionStatus(request, f.env, noopProfile, { onAuthEvent });
+    await gate.entered.promise;
+    f.db.sqlite.prepare("UPDATE oidc_server_sessions SET lease_until = ?").run(nowSeconds() - 1);
+    f.db.afterNextRead = async () => {
+      gate.release.resolve();
+      await owner;
+    };
+    const response = await serverOidcSessionStatus(request, f.env, noopProfile, { onAuthEvent });
+    assert.equal(response.status, 200);
+    assert.ok((await response.json()).session);
+    assert.equal(hasSessionCookie(response), true);
+    assert.ok((await (await owner).json()).session);
+    assert.equal(f.countRows(), 1);
+    assert.equal(f.calls.filter((call) => call.grant === "refresh_token").length, 1);
+    assert.deepEqual(events, []);
+  });
+
+  it("keeps a renewal its late owner saved after a waiting request read the lapsed lease", async (t) => {
+    const f = await fixture(t);
+    const { sessionCookie } = await f.login();
+    const request = f.request(undefined, sessionCookie);
+    f.expireAccess();
+    const events: ServerOidcAuthEvent[] = [];
+    const onAuthEvent = (event: ServerOidcAuthEvent) => events.push(event);
+    const gate = f.gateRefresh();
+    const owner = serverOidcSessionStatus(request, f.env, noopProfile, { onAuthEvent });
+    await gate.entered.promise;
+    // The waiter first reads a live lease. The lease lapses before its claim,
+    // and the owner saves right after the waiter's next read.
+    f.db.afterNextRead = async () => {
+      f.db.sqlite.prepare("UPDATE oidc_server_sessions SET lease_until = ?").run(nowSeconds() - 1);
+      f.db.afterNextRead = async () => {
+        gate.release.resolve();
+        await owner;
+      };
+    };
+    const response = await serverOidcSessionStatus(request, f.env, noopProfile, { onAuthEvent });
+    assert.equal(response.status, 200);
+    assert.ok((await response.json()).session);
+    assert.equal(hasSessionCookie(response), true);
+    assert.ok((await (await owner).json()).session);
+    assert.equal(f.countRows(), 1);
+    assert.equal(f.calls.filter((call) => call.grant === "refresh_token").length, 1);
+    assert.deepEqual(events, []);
+  });
+
   it("rejects ciphertext swapped between login transactions or session records", async (t) => {
     const f = await fixture(t);
     const first = await f.start();

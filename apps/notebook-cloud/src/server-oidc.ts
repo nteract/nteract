@@ -974,7 +974,10 @@ async function refreshSession(
   if (initial.lease && initial.lease_until <= now) {
     // A crashed owner may have consumed a rotating refresh token. Do not let
     // another process reuse it, or let a late owner resurrect the session.
-    return endAbandonedSession(db, initial, initial.lease, options);
+    if (await endAbandonedSession(db, initial, initial.lease, options)) return null;
+    // The row changed after it was read, so `initial` is stale. Its claim
+    // below is fenced on the old generation, and the wait loop then answers
+    // from the row as it stands.
   }
   let bundle: Record<string, unknown>;
   try {
@@ -1023,8 +1026,12 @@ async function refreshSession(
       if (row.retry_after > current) throw new ProviderUnavailable();
       // The owner's lease lapsed before this request's claim or during this
       // wait. The row is as abandoned as one a new request would find.
-      if (row.lease && row.lease_until <= current)
-        return endAbandonedSession(db, row, row.lease, options);
+      if (
+        row.lease &&
+        row.lease_until <= current &&
+        (await endAbandonedSession(db, row, row.lease, options))
+      )
+        return null;
     }
     throw new ProviderUnavailable();
   }
@@ -1101,24 +1108,28 @@ async function refreshSession(
  * Ends a session whose refresh lease lapsed with its owner still named on the
  * row. The delete is fenced on that lease, so of the requests that find the
  * row abandoned, one removes it and reports `lease_abandoned`.
+ *
+ * Returns false when the delete matched nothing: the row changed after `row`
+ * was read. The owner may have saved its renewal in that gap, so the caller
+ * reads the row again and never answers signed-out from `row`.
  */
 async function endAbandonedSession(
   db: D1Database,
   row: ServerSessionRow,
   lease: string,
   options: ServerOidcSessionOptions,
-): Promise<null> {
+): Promise<boolean> {
   const removed = await db
     .prepare("DELETE FROM oidc_server_sessions WHERE id = ? AND generation = ? AND lease = ?")
     .bind(row.id, row.generation, lease)
     .run();
-  if (removed.meta?.changes === 1)
-    notifyAuthEvent(options.onAuthEvent, {
-      type: "session_expired",
-      principal: sessionPrincipal(row),
-      reason: "lease_abandoned",
-    });
-  return null;
+  if (removed.meta?.changes !== 1) return false;
+  notifyAuthEvent(options.onAuthEvent, {
+    type: "session_expired",
+    principal: sessionPrincipal(row),
+    reason: "lease_abandoned",
+  });
+  return true;
 }
 
 export async function deleteServerOidcSession(request: Request, env: Env): Promise<Response> {
