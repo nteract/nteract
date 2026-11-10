@@ -13,6 +13,7 @@ import {
   saveKeyCommand,
 } from "./agent-client-setup.mjs";
 import { PRODUCT_NAME } from "./shared/product.mjs";
+import { admitsAnyClientDocument } from "./worker/oauth-clients.mjs";
 import { richContentGuide, typedReadFields } from "./model/rich-content-guide.mjs";
 
 /** Public onboarding contains no account or document data. URLs come only from
@@ -41,6 +42,7 @@ export const guideUploadCommand = (origin) =>
 
 export function agentGuide(env) {
   const origin = pagesPublicOrigin(env);
+  const anyClientDocument = admitsAnyClientDocument(env);
   const provider = identityProvider(env);
   const key = provider.apiKey;
   const uploadCommand = guideUploadCommand(origin);
@@ -310,13 +312,18 @@ Choose by how the client runs before investigating authentication:
   Claude Code, Codex, cron jobs): use an ${key.name}. The recipes come
   first below. A key works until its chosen expiration, any number of processes
   can share it, and nothing has to refresh it.
-- ChatGPT and other interactive cloud clients using the ChatGPT OAuth client:
-  add the endpoint and complete browser authorization. No API key is needed.
+- ChatGPT, Claude and other interactive clients that sign in with OAuth: add
+  the endpoint and complete browser authorization. No API key is needed.
 - Kilo can also use OAuth, but only for one Kilo process at a time. See the
   shared-token warning in the OAuth section.
-- Other clients: use an ${key.name} if they support bearer headers. Pages
-  accepts the ChatGPT and configured Kilo OAuth clients; arbitrary registration
-  is not enabled. Ask for client support instead of trying unrelated login flows.
+- Other clients: use an ${key.name} if they support bearer headers. For OAuth,
+  this deployment accepts ${
+    anyClientDocument
+      ? "a client whose client ID is the https URL of its client ID metadata document"
+      : "ChatGPT, Claude and Claude Code by their client ID metadata documents"
+  },
+  and the configured Kilo client. Dynamic client registration is not enabled;
+  do not try unrelated login flows.
 
 Ask the human for their step early, and prepare non-secret configuration in
 parallel. **Reload MCP or start a new session, then call list_pages from that
@@ -569,6 +576,34 @@ client pages-chatgpt uses that same callback when a client ID is requested.
 PKCE S256 is required; no client secret is used. Do not invent a callback URL.
 If the client shows a different callback or registration error, report it for
 deployment configuration rather than asking the human for an API key it can't use.
+
+${
+  anyClientDocument
+    ? `Any other MCP client connects the same way when its client ID is the https URL
+of a client ID metadata document it publishes. Pages reads the document once a
+person has signed in and accepts only a callback the document lists; the port
+of a http://localhost or http://127.0.0.1 callback may differ. The client must
+be public (token_endpoint_auth_method none) and use the authorization code flow.
+The consent screen names such a client by the host of its client ID. Pages has
+no registration endpoint, so a client that offers only dynamic client
+registration cannot connect by OAuth.`
+    : `This deployment reads a client ID metadata document only for ChatGPT, Claude
+and Claude Code. Any other client ID gets invalid_client, and Pages has no
+registration endpoint, so another client cannot connect by OAuth here.`
+}
+
+Claude signs in with its own client ID metadata document, from which Pages
+reads its callback. In Claude's web, desktop or mobile app, add a custom
+connector with the server URL ${origin}/mcp and leave the client ID and secret
+empty. In Claude Code, for one session at a time:
+
+\`\`\`sh
+claude mcp add --transport http pages ${origin}/mcp
+\`\`\`
+
+Then run /mcp in Claude Code, choose pages, and authenticate in the browser.
+The shared-token warning below applies to Claude Code sessions that run at the
+same time.
 
 How an OAuth connection lasts: access tokens expire after 10 minutes. Refresh
 tokens rotate: each one works once and is replaced on use. Newly approved

@@ -15,19 +15,23 @@ import {
   OAuthStoreError,
 } from "./oauth-store.mjs";
 import { logAuthEvent, recordOidcEvent } from "./auth-events.mjs";
+import {
+  OAuthError,
+  boundedText,
+  formActionSource,
+  loopbackRedirect,
+  metadataClient,
+  admittedClientUrl,
+  namedClient,
+  redirectAllowed,
+} from "./oauth-clients.mjs";
 
-const CHATGPT_CLIENT = "https://chatgpt.com/oauth/client.json";
-const CHATGPT_REDIRECT = "https://chatgpt.com/connector_platform_oauth_redirect";
-const KILO_REDIRECT = "http://127.0.0.1:19876/mcp/oauth/callback";
 const READ = "pages:read";
 const WRITE = "pages:write";
 const SHARE = "pages:share";
 const OFFLINE = "offline_access";
 const GRANT_TYPES = ["authorization_code", "refresh_token"];
 const MAX_INPUT_BYTES = 16_384;
-// This single fixed, public metadata document is shared by all requests in an
-// isolate. Never retain failed validation or use stale metadata after expiry.
-const clientMetadataCache = { validUntil: 0, pending: null };
 /** Every path handleOAuth answers. The live tunnels admit exactly these
  * (scripts/deployment/routes.mjs oauthPaths). */
 export const OAUTH_ROUTES = new Set([
@@ -43,13 +47,6 @@ const escape = (value) =>
     /[&<>"']/g,
     (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
   );
-class OAuthError extends Error {
-  constructor(error, message, status = 400) {
-    super(message);
-    this.error = error;
-    this.status = status;
-  }
-}
 function response(body, { status = 200, headers = {} } = {}) {
   return new Response(body, {
     status,
@@ -68,15 +65,13 @@ function json(body, status = 200) {
     headers: { "Content-Type": "application/json" },
   });
 }
-/** A Pages-styled HTML document. `body` is trusted markup; escape any input in it. */
-export function html(title, body, status = 200, consentRedirect) {
-  // Chromium checks form-action across a form POST's redirects too. Permit the
-  // registered callback for this client only on the consent page, never a
-  // caller-supplied URL or an entire external origin. Local fixtures use 'self'.
+/** A Pages-styled HTML document. `body` is trusted markup; escape any input in
+ * it. `formTarget` is one more place the page's forms may be sent. Only the
+ * consent page passes it, as `formActionSource()` wrote it for the callback
+ * validated for that request. */
+export function html(title, body, status = 200, formTarget = "") {
   // img-src admits data: only, for the inlined tab icon (shared/favicon.mjs).
-  const formAction =
-    "'self'" +
-    ([CHATGPT_REDIRECT, KILO_REDIRECT].includes(consentRedirect) ? " " + consentRedirect : "");
+  const formAction = "'self'" + (formTarget && " " + formTarget);
   return response(
     `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(tabTitle(title))}</title>${FAVICON_LINK}<script src="${THEME_SCRIPT}"></script><link rel="stylesheet" href="${STYLESHEET}"></head><body><header class="app-header"><a class="brand" href="/">${escape(PRODUCT_NAME)}</a></header><main class="agent-setup"><h1>${escape(title)}</h1>${body}</main></body></html>`,
     {
@@ -150,153 +145,17 @@ export function mcpAuthChallenge(env, original) {
   });
 }
 
-/** The name a person knows a client by, for the consent screen and for a
- * stored grant in the account's "Connected agents" list. */
-export function oauthClientName(clientId) {
-  if ([CHATGPT_CLIENT, "pages-chatgpt"].includes(clientId)) return "ChatGPT";
-  if (clientId === "pages-kilo") return "Kilo";
-  if (clientId === "pages-local-e2e") return "Local test client";
-  return "Unknown client";
-}
-
-// Only these explicit public clients and a loopback-only fixture are recognized.
-// Arbitrary client URLs, redirects, dynamic registration, and metadata redirects
-// are deliberately unsupported. Metadata never controls a network destination.
-function knownClient(clientId, env) {
-  if ([CHATGPT_CLIENT, "pages-chatgpt"].includes(clientId))
-    return {
-      id: clientId,
-      name: oauthClientName(clientId),
-      site: "https://chatgpt.com/",
-      redirectUri: CHATGPT_REDIRECT,
-    };
-  if (clientId === "pages-kilo")
-    return {
-      id: clientId,
-      name: oauthClientName(clientId),
-      site: "https://kilo.ai/",
-      redirectUri: KILO_REDIRECT,
-    };
+/** The client a token or revocation request names. A metadata-document id is
+ * checked for its form and for the deployment's admission as it is now, so a
+ * grant issued to a client the deployment has since stopped admitting gets
+ * `invalid_client`. These endpoints never fetch: the code or grant a request
+ * presents was issued to one client id and matches no other. */
+function requestClient(clientId, env) {
   const origin = pagesPublicOrigin(env);
-  if (
-    clientId === "pages-local-e2e" &&
-    env.PAGES_E2E_ONLY === "true" &&
-    env.NOTEBOOK_CLOUD_LOCAL_OIDC === "true" &&
-    ["localhost", "127.0.0.1", "[::1]"].includes(new URL(origin).hostname)
-  )
-    return {
-      id: clientId,
-      name: oauthClientName(clientId),
-      site: origin,
-      redirectUri: origin + "/oauth/test/callback",
-    };
+  const client = namedClient(clientId, origin, env);
+  if (client) return client;
+  if (admittedClientUrl(clientId, origin, env)) return { id: clientId, named: false };
   throw new OAuthError("invalid_client", "This OAuth client is not supported.");
-}
-async function boundedText(body, limit = MAX_INPUT_BYTES) {
-  if (!body) return "";
-  const reader = body.getReader();
-  const chunks = [];
-  let length = 0;
-  try {
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      length += value.byteLength;
-      if (length > limit) {
-        await reader.cancel();
-        throw new OAuthError("invalid_request", "The request is too large.");
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  const bytes = new Uint8Array(length);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-}
-function metadataFreshUntil(headers) {
-  const directives = (headers.get("cache-control") ?? "")
-    .split(",")
-    .map((part) => part.trim().toLowerCase());
-  if (directives.some((part) => /^(?:no-store|no-cache|private)(?:=|$)/.test(part))) return 0;
-  const maxAges = directives.filter((part) => /^max-age(?:=|$)/.test(part));
-  const seconds = maxAges.length ? maxAges[0].match(/^max-age=(?:"(\d+)"|(\d+))$/) : null;
-  if (maxAges.length > 1 || (maxAges.length && !seconds)) return 0;
-  const lifetime = Math.min(300, seconds ? Number(seconds[1] ?? seconds[2]) : 60);
-  const ageHeader = headers.get("age");
-  if (ageHeader !== null && !/^\d+$/.test(ageHeader)) return 0;
-  const date = Date.parse(headers.get("date") ?? "");
-  const age = Math.max(
-    Number(ageHeader ?? 0),
-    Number.isFinite(date) ? (Date.now() - date) / 1000 : 0,
-    0,
-  );
-  return Date.now() + Math.max(0, lifetime - age) * 1000;
-}
-async function verifyClientMetadata(client) {
-  if (client.id !== CHATGPT_CLIENT) return;
-  if (clientMetadataCache.validUntil > Date.now()) return;
-  if (clientMetadataCache.pending) return clientMetadataCache.pending;
-  clientMetadataCache.validUntil = 0;
-  const pending = fetchAndVerifyClientMetadata().then((validUntil) => {
-    clientMetadataCache.validUntil = validUntil;
-  });
-  clientMetadataCache.pending = pending;
-  try {
-    await pending;
-  } finally {
-    clientMetadataCache.pending = null;
-  }
-}
-async function fetchAndVerifyClientMetadata() {
-  let metadata, freshUntil;
-  try {
-    const fetched = await fetch(CHATGPT_CLIENT, {
-      headers: { Accept: "application/json" },
-      redirect: "manual",
-      signal: AbortSignal.timeout(5000),
-    });
-    if (
-      !fetched.ok ||
-      !/^application\/json(?:;|$)/i.test(fetched.headers.get("content-type") ?? "")
-    ) {
-      await fetched.body?.cancel();
-      throw Error("Unusable metadata");
-    }
-    freshUntil = metadataFreshUntil(fetched.headers);
-    metadata = JSON.parse(await boundedText(fetched.body));
-  } catch {
-    throw new OAuthError(
-      "temporarily_unavailable",
-      "ChatGPT's client information is temporarily unavailable. Try again.",
-      503,
-    );
-  }
-  const methods = metadata?.token_endpoint_auth_methods_supported;
-  if (
-    metadata?.client_id !== CHATGPT_CLIENT ||
-    metadata?.client_name !== "ChatGPT" ||
-    !Array.isArray(metadata?.redirect_uris) ||
-    !metadata.redirect_uris.includes(CHATGPT_REDIRECT) ||
-    !Array.isArray(metadata?.grant_types) ||
-    !metadata.grant_types.includes("authorization_code") ||
-    !Array.isArray(metadata?.response_types) ||
-    !metadata.response_types.includes("code") ||
-    !(
-      metadata.token_endpoint_auth_method === "none" ||
-      (Array.isArray(methods) && methods.includes("none"))
-    )
-  )
-    throw new OAuthError(
-      "invalid_client",
-      "ChatGPT's client information does not match this connection.",
-    );
-  return freshUntil;
 }
 function single(params, name, { required = true, max = 2048 } = {}) {
   const values = params.getAll(name);
@@ -321,18 +180,18 @@ function scopeFor(value) {
   if (requested.has(WRITE)) requested.add(READ);
   return [READ, WRITE, SHARE, OFFLINE].filter((scope) => requested.has(scope)).join(" ");
 }
-async function authorizationRequest(params, env, context) {
-  for (const key of params.keys()) single(params, key, { required: false, max: MAX_INPUT_BYTES });
-  const client = knownClient(single(params, "client_id"), env);
+function authorizationRequest(params, env, context, client) {
   const redirectUri = single(params, "redirect_uri");
-  if (redirectUri !== client.redirectUri)
+  if (!redirectAllowed(client, redirectUri, pagesPublicOrigin(env)))
     throw new OAuthError("invalid_request", "The callback does not match this client.");
   const state = single(params, "state", { required: false, max: 1024 });
   if (state === "") throw new OAuthError("invalid_request", "State must not be empty.");
-  await verifyClientMetadata(client);
-  // Only validated client metadata, an exact registered callback, and a
-  // single bounded state may receive OAuth errors. Other failures stay here.
-  context.authorization = { redirectUri, ...(state === undefined ? {} : { state }) };
+  // Before anyone has chosen, an OAuth error is sent only to the exact callback
+  // of a client Pages names, with a single bounded state. A callback from a
+  // metadata document is one a stranger listed, so its failures stay on a
+  // Pages page: the browser goes there only after Allow access or Cancel.
+  if (client.named)
+    context.authorization = { redirectUri, ...(state === undefined ? {} : { state }) };
   if (single(params, "response_type") !== "code")
     throw new OAuthError("unsupported_response_type", "Use the authorization code flow.");
   const mode = single(params, "response_mode", { required: false });
@@ -349,15 +208,12 @@ async function authorizationRequest(params, env, context) {
     throw new OAuthError("invalid_request", "An S256 PKCE challenge is required.");
   const scope = scopeFor(single(params, "scope", { required: false, max: 256 }));
   return {
-    client,
-    request: {
-      clientId: client.id,
-      redirectUri,
-      resource,
-      codeChallenge,
-      scope,
-      ...(state === undefined ? {} : { state }),
-    },
+    clientId: client.id,
+    redirectUri,
+    resource,
+    codeChallenge,
+    scope,
+    ...(state === undefined ? {} : { state }),
   };
 }
 async function form(request) {
@@ -365,7 +221,15 @@ async function form(request) {
     !/^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers.get("content-type") ?? "")
   )
     throw new OAuthError("invalid_request", "Use an application/x-www-form-urlencoded request.");
-  const params = new URLSearchParams(await boundedText(request.body));
+  let text;
+  try {
+    text = await boundedText(request.body, MAX_INPUT_BYTES);
+  } catch (error) {
+    if (error instanceof RangeError)
+      throw new OAuthError("invalid_request", "The request is too large.");
+    throw error;
+  }
+  const params = new URLSearchParams(text);
   for (const key of params.keys()) single(params, key, { required: false, max: MAX_INPUT_BYTES });
   return params;
 }
@@ -378,7 +242,7 @@ function publicClient(params, request, env) {
       "invalid_client",
       "This endpoint supports public clients with PKCE, without client credentials.",
     );
-  return knownClient(single(params, "client_id"), env);
+  return requestClient(single(params, "client_id"), env);
 }
 async function currentSession(request, env) {
   const refreshed = await serverOidcSessionStatus(request, env, async () => {}, {
@@ -410,6 +274,35 @@ function consentIdentity(session) {
     },
   };
 }
+function signInPage(request, name) {
+  const returnTo = "/oauth/authorize" + new URL(request.url).search;
+  const login = "/api/auth/login?" + new URLSearchParams({ return_to: returnTo });
+  return html(
+    "Connect " + name,
+    `<p>Sign in to Pages to review this connection. Your client will receive access only after you approve it.</p><p><a class="primary setup-action" href="${escape(login)}">Sign in</a></p>`,
+  );
+}
+/** Who is asking and where the browser goes next, as markup for the consent
+ * screen. Both hosts come from validated values: the client id and the
+ * callback checked for this request. A client Pages has no name for is headed
+ * by the host of its id; the name its document gives is shown as a claim. */
+function consentParties(client, redirectUri, origin) {
+  const pages = `<strong>${escape(new URL(origin).host)}</strong>`;
+  const host = `<strong>${escape(client.host)}</strong>`;
+  const parts = [
+    client.known
+      ? `<p><strong>${escape(client.name)}</strong> (${escape(client.host)}) wants access to Pages at ${pages}.</p>`
+      : `<p>${host} wants access to Pages at ${pages}.</p><p>Pages does not know this app.${client.declaredName === client.name ? "" : ` It calls itself \u201c${escape(client.declaredName)}\u201d.`} Allow access only if you trust ${host}.</p>`,
+  ];
+  const callback = new URL(redirectUri);
+  if (callback.origin === new URL(origin).origin) return parts[0];
+  parts.push(
+    loopbackRedirect(redirectUri)
+      ? `<p>Your browser will return to an app on this computer, at <strong>${escape(callback.host)}</strong>. Pages cannot tell which app is listening there. Allow access only if you started this connection yourself.</p>`
+      : `<p>Your browser will return to <strong>${escape(callback.host)}</strong>.</p>`,
+  );
+  return parts.join("");
+}
 async function authorize(request, env, context) {
   if (!["GET", "POST"].includes(request.method)) return methodResponse("GET, POST");
   const origin = pagesPublicOrigin(env);
@@ -425,11 +318,28 @@ async function authorize(request, env, context) {
       "Approve this connection from the Pages consent screen.",
       403,
     );
-  const auth =
-    request.method === "GET"
-      ? await authorizationRequest(new URL(request.url).searchParams, env, context)
-      : null;
-  const current = await currentSession(request, env);
+  let auth = null,
+    current;
+  if (request.method === "GET") {
+    const params = new URL(request.url).searchParams;
+    for (const key of params.keys()) single(params, key, { required: false, max: MAX_INPUT_BYTES });
+    const clientId = single(params, "client_id");
+    let client = namedClient(clientId, origin, env);
+    if (!client) {
+      const url = admittedClientUrl(clientId, origin, env);
+      if (!url) throw new OAuthError("invalid_client", "This OAuth client is not supported.");
+      // Where the deployment admits any client document, a stranger chose this
+      // URL, so Pages fetches a document only for a signed-in person. Until
+      // then the request is unchecked and names no client.
+      current = await currentSession(request, env);
+      if (current.response) return current.response;
+      context.cookie = current.cookie;
+      if (!current.session) return signInPage(request, "an app");
+      client = await metadataClient(url);
+    }
+    auth = { client, request: authorizationRequest(params, env, context, client) };
+  }
+  current ??= await currentSession(request, env);
   if (current.response) return current.response;
   context.cookie = current.cookie;
   if (!current.session) {
@@ -439,12 +349,7 @@ async function authorize(request, env, context) {
         "<p>Your sign-in expired. Return to the client and connect again.</p>",
         401,
       );
-    const returnTo = "/oauth/authorize" + new URL(request.url).search;
-    const login = "/api/auth/login?" + new URLSearchParams({ return_to: returnTo });
-    return html(
-      "Connect " + auth.client.name,
-      `<p>Sign in to Pages to review this connection. Your client will receive access only after you approve it.</p><p><a class="primary setup-action" href="${escape(login)}">Sign in</a></p>`,
-    );
+    return signInPage(request, auth.client.name);
   }
   const binding = { sessionId: current.row.id, principal: current.session.principal };
   if (request.method === "GET") {
@@ -467,9 +372,9 @@ async function authorize(request, env, context) {
     );
     return html(
       `Connect ${auth.client.name} to Pages`,
-      `<p><strong>${escape(auth.client.name)}</strong> (${escape(new URL(auth.client.site).host)}) wants access to Pages at <strong>${escape(new URL(origin).host)}</strong>.</p><p>Signed in as <strong>${escape(current.session.displayName || "your Pages account")}</strong>.</p><ul>${permissions.map((permission) => `<li>${escape(permission)}</li>`).join("")}</ul><p>This connection uses a Pages access token. Your ${escape(identityProvider(env).label)} password and API key are not shared with the client.</p><form method="post" action="/oauth/authorize"><input type="hidden" name="consent_id" value="${escape(consent.consentId)}"><input type="hidden" name="csrf_token" value="${escape(consent.csrfToken)}"><button class="primary setup-action" name="decision" value="approve" type="submit">Allow access</button> <button name="decision" value="cancel" type="submit">Cancel</button></form>`,
+      `${consentParties(auth.client, auth.request.redirectUri, origin)}<p>Signed in as <strong>${escape(current.session.displayName || "your Pages account")}</strong>.</p><ul>${permissions.map((permission) => `<li>${escape(permission)}</li>`).join("")}</ul><p>This connection uses a Pages access token. Your ${escape(identityProvider(env).label)} password and API key are not shared with the client.</p><form method="post" action="/oauth/authorize"><input type="hidden" name="consent_id" value="${escape(consent.consentId)}"><input type="hidden" name="csrf_token" value="${escape(consent.csrfToken)}"><button class="primary setup-action" name="decision" value="approve" type="submit">Allow access</button> <button name="decision" value="cancel" type="submit">Cancel</button></form>`,
       200,
-      auth.client.redirectUri,
+      formActionSource(auth.request.redirectUri, origin),
     );
   }
   const params = await form(request);
@@ -530,7 +435,9 @@ async function token(request, env, context) {
   if (GRANT_TYPES.includes(grant)) context.grantType = grant;
   if (grant === "authorization_code") {
     const redirectUri = single(params, "redirect_uri");
-    if (redirectUri !== client.redirectUri)
+    // A named client has one callback. A metadata-document client's code is
+    // bound in the store to the callback it was issued for.
+    if (client.named && !client.redirectUris.includes(redirectUri))
       throw new OAuthError("invalid_grant", "The authorization grant is invalid.");
     return json(
       await exchangeAuthorizationCode(env, {

@@ -1165,6 +1165,43 @@ whether a handoff ran (`connectorHandoff`). On the host,
 shows the new slot registering its connections before the old one logs
 `Initiating graceful shutdown`.
 
+## Outbound requests
+
+The OAuth server for `/mcp` reads a client's client ID metadata document from
+the client's `client_id`, an `https` URL
+([worker/oauth-clients.mjs](worker/oauth-clients.mjs)). One setting decides
+which URLs it reads:
+
+| `PAGES_OAUTH_ANY_CLIENT_DOCUMENT` | Documents the Worker reads | Who can ask a person for access |
+| --- | --- | --- |
+| unset, or anything but `true` | Three fixed URLs: ChatGPT's and the two Claude publishes | ChatGPT, Claude, Claude Code, and the fixed ids `pages-chatgpt` and `pages-kilo` |
+| `true` | Any `https` URL on a public DNS name that a signed-in person's request names | Any client that publishes a document |
+
+With the setting off, any other `https` client ID gets `invalid_client` and
+nothing is fetched. Turning it off later refuses those clients' token and
+revocation requests too. Their access tokens last at most ten more minutes,
+and a person can still disconnect them from Connected agents.
+
+Turn it on only where outbound connections from the Worker cannot reach a
+private network. The Worker checks how a hostname is spelled, not where it
+resolves. It refuses IP literals, single-label names and reserved suffixes such
+as `.internal` and `.local`, but a public name can resolve to a private
+address. The Worker then opens a TLS connection to port 443 at that address.
+Nothing is read back unless the service there holds a valid certificate for
+the name, so what a signed-in person can learn is whether something answers.
+
+Before turning it on, make the runtime or the network refuse outbound
+connections from the Worker to private, loopback and link-local addresses,
+the cloud provider's instance metadata address included. This matters most
+for an on-premises deployment, where the Worker's host sits on the network it
+would reach. Nothing here says what a given runtime refuses by default: check
+it for the deployment.
+
+A Workers package sets it in the profile's `vars`
+([Cloudflare Workers package](#cloudflare-workers-package)). The host
+installer ([install.mjs](scripts/deployment/install.mjs)) writes no value for
+it, so every target it installs has the setting off.
+
 ## Telemetry
 
 Service units enable `CELLD_OTEL=1` and `CELLD_OTEL_RETENTION=30d` with celld's
@@ -1211,7 +1248,10 @@ the same 30-day retention. They are the record of who signed in or connected
 an agent: the auth tables hold only live state, and expired or revoked rows
 are deleted. Each line has `action`, `timestamp`, and, where known,
 `principal`, `credential` (`oidc`, `oauth` or `api-key`), `client_id`,
-`grant`, `scope` and a coded `reason`:
+`grant`, `scope` and a coded `reason`. `client_id` is the full id of a client
+Pages recognizes (`pages-kilo`, ChatGPT's and Claude's document URLs) and the
+host alone for any other metadata-document client, which a deployment admits
+only with `PAGES_OAUTH_ANY_CLIENT_DOCUMENT` ([Outbound requests](#outbound-requests)):
 
 | `action` | When | Extra fields |
 |---|---|---|

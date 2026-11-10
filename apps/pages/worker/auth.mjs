@@ -1,6 +1,7 @@
 import { readServerAppSession } from "@cloud/oidc-session-store.ts";
 import { pagesPublicOrigin } from "../agent-guide.mjs";
 import { readAccessToken } from "./oauth-store.mjs";
+import { oauthDriverName } from "./oauth-clients.mjs";
 import { domainAccessForIdentity } from "./domain-access.mjs";
 import { withAdmissionReason } from "./admission-reasons.mjs";
 import { verifyApiKey } from "./api-key-verifier.mjs";
@@ -200,11 +201,7 @@ export async function authenticate(request, env) {
           driver:
             request.headers.has("x-pages-driver") || new URL(request.url).searchParams.has("driver")
               ? bearerDriver(driver)
-              : ["pages-chatgpt", "https://chatgpt.com/oauth/client.json"].includes(grant.clientId)
-                ? "ChatGPT"
-                : grant.clientId === "pages-kilo"
-                  ? "Kilo"
-                  : "MCP",
+              : oauthDriverName(grant.clientId),
           ...(agent && { agent }),
           ...requestAssertions,
           ...(await mcpSession(request, grant.identity.principal)),

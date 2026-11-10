@@ -985,9 +985,29 @@ namespaces explicitly when they represent the same account. HTTP
 authentication admits a sync socket for that account, and the host checks its
 access on every frame. Disabled editor controls are not authorization.
 
-Pages also serves OAuth for `/mcp`. Its predefined ChatGPT and Kilo clients require
-exact callbacks, PKCE S256, resource validation, sign-in, and consent. Arbitrary
-client metadata fetching and dynamic registration are disabled. Codes are
+Pages also serves OAuth for `/mcp`. Every client is public and needs PKCE S256,
+resource validation, sign-in, and consent. Two kinds are admitted
+([worker/oauth-clients.mjs](worker/oauth-clients.mjs)). The clients Pages names
+(`pages-chatgpt`, `pages-kilo`) each have one exact callback. Any other client
+names itself with a client ID metadata document: its `client_id` is an `https`
+URL on a public DNS name, with the default port, a path, and no query or
+fragment. By default Pages reads only three such URLs, ChatGPT's and the two
+Claude publishes, and answers any other with `invalid_client`. A deployment
+that sets `PAGES_OAUTH_ANY_CLIENT_DOCUMENT` to `true` reads any
+([DEPLOYMENT.md](DEPLOYMENT.md#outbound-requests) says when that is safe).
+Once a person has signed in, Pages fetches the URL without following
+redirects, reading at most 5 KB of JSON within five seconds, and keeps a valid
+document for its `max-age`, five minutes at most, in a 64-entry cache. The
+document's `client_id` must equal the URL, and the requested callback must be
+one it lists: `https`, or `http` on `localhost` or `127.0.0.1` where the port
+may differ. A callback whose path has `;`, `,` or a quote is refused, so the
+consent page's `form-action` always names the callback's origin and path. One
+request fetches a client ID at a time; another request for it waits on its own
+timer and then reads the cache ([worker/isolate-setup.mjs](worker/isolate-setup.mjs)
+says why). The consent screen names such a client by the host of its client
+ID, shows the host the browser returns to, and quotes the name the document
+gives as a claim. The token and revocation endpoints never fetch. Dynamic
+registration is disabled. Codes are
 single-use; access tokens last ten minutes, with rotating refresh tokens bounded
 by an absolute thirty-day grant. Correctly bound code/refresh replay revokes its
 family. Provider tokens stay on the server. Refresh does not refresh verified

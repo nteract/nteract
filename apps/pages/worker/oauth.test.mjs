@@ -12,6 +12,7 @@ import {
   SERVER_SESSION_COOKIE,
 } from "@cloud/oidc-session-store.ts";
 import { handleOAuth, mcpAuthChallenge } from "./oauth.mjs";
+import { metadataFetchTimeouts } from "./oauth-clients.mjs";
 import { FAVICON_LINK } from "../shared/favicon.mjs";
 import { readAccessToken } from "./oauth-store.mjs";
 
@@ -51,7 +52,46 @@ const origin = "https://page10.example";
 const callback = "https://chatgpt.com/connector_platform_oauth_redirect";
 const kiloCallback = "http://127.0.0.1:19876/mcp/oauth/callback";
 const metadataUrl = "https://chatgpt.com/oauth/client.json";
+const claude = "https://claude.ai/oauth/mcp-oauth-client-metadata";
+const claudeCallback = "https://claude.ai/api/mcp/auth_callback";
+const claudeCode = "https://claude.ai/oauth/claude-code-client-metadata";
+// The documents Anthropic publishes at those two client ids.
+const claudeDocument = {
+  client_id: claude,
+  client_name: "Claude",
+  client_uri: "https://claude.ai",
+  redirect_uris: [claudeCallback],
+  grant_types: [
+    "authorization_code",
+    "refresh_token",
+    "urn:ietf:params:oauth:grant-type:jwt-bearer",
+  ],
+  response_types: ["code"],
+  token_endpoint_auth_method: "none",
+};
+const claudeCodeDocument = {
+  client_id: claudeCode,
+  client_name: "Claude Code",
+  client_uri: "https://claude.ai",
+  redirect_uris: ["http://localhost/callback", "http://127.0.0.1/callback"],
+  grant_types: ["authorization_code", "refresh_token"],
+  response_types: ["code"],
+  token_endpoint_auth_method: "none",
+};
 const verifier = "v".repeat(43);
+// The deployment setting that admits a client document Pages has no entry for.
+const anyDocument = { PAGES_OAUTH_ANY_CLIENT_DOCUMENT: "true" };
+/** Answer metadata fetches from `documents`, uncached, and record each one. */
+function serve(t, documents) {
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    calls.push({ url, options });
+    return documents[url]
+      ? Response.json(documents[url], { headers: { "Cache-Control": "no-store" } })
+      : new Response(null, { status: 404 });
+  });
+  return calls;
+}
 function fixture(t, extra = {}) {
   const env = {
     NOTEBOOK_CLOUD_PUBLIC_ORIGIN: origin,
@@ -412,15 +452,34 @@ test("codes enforce S256, client, callback, resource and one-use; no confidentia
   assert.equal((await exchange(env, value)).status, 400);
 });
 
-test("CIMD fetches only the exact trusted URL, accepts none intersection, rejects arbitrary URLs before fetch", async (t) => {
-  const env = fixture(t),
+test("a metadata-document client is fetched only for a signed-in person, and never when its id is malformed", async (t) => {
+  const env = fixture(t, anyDocument),
     login = await session(env);
-  const calls = [];
-  t.mock.method(globalThis, "fetch", async (url, options) => {
-    calls.push({ url, options });
-    return Response.json(metadata(), { headers: { "Cache-Control": "no-store" } });
-  });
+  const calls = serve(t, { [metadataUrl]: metadata(), [claude]: claudeDocument });
+  // Signed out: the request names no client yet and nothing is fetched.
+  for (const client_id of [metadataUrl, claude, "https://stranger.example/client.json"]) {
+    const params = await authorization(env, {
+      client_id,
+      redirect_uri: "https://stranger.example",
+    });
+    const result = await handleOAuth(get("/oauth/authorize?" + params), env);
+    assert.equal(result.status, 200);
+    assert.equal(result.headers.get("location"), null);
+    assert.equal(
+      result.headers.get("content-security-policy").match(/form-action ([^;]+)/)[1],
+      "'self'",
+    );
+    const text = await result.text();
+    assert.match(text, /<h1>Connect an app<\/h1>/);
+    // Outside the sign-in link's return address, the page names no client.
+    assert.doesNotMatch(text.replace(/href="[^"]+"/g, ""), /stranger|claude|ChatGPT|<form/i);
+    const link = text.match(/href="(\/api\/auth\/login\?[^"]+)"/)[1].replaceAll("&amp;", "&");
+    assert.equal(new URL(link, origin).searchParams.get("return_to"), "/oauth/authorize?" + params);
+  }
+  assert.equal(calls.length, 0);
+  // Signed in: the document at the exact client id is fetched, once.
   const screen = await consent(env, login, { client_id: metadataUrl, scope: "pages:write" });
+  assert.match(screen.text, /<h1>Connect ChatGPT to Pages<\/h1>/);
   assert.match(screen.text, /Read the Pages/);
   assert.match(screen.text, /Create Pages/);
   assert.equal(calls.length, 1);
@@ -429,17 +488,486 @@ test("CIMD fetches only the exact trusted URL, accepts none intersection, reject
   assert.ok(calls[0].options.signal instanceof AbortSignal);
   for (const client_id of [
     "http://127.0.0.1/private",
+    "https://127.0.0.1/private",
+    "https://169.254.169.254/latest/meta-data",
+    "https://localhost/client.json",
+    "https://metadata.google.internal/client.json",
     "https://chatgpt.com/oauth/client.json?x=1",
-    "https://evil.example/metadata.json",
-  ]) {
-    const result = await handleOAuth(
-      get("/oauth/authorize?" + (await authorization(env, { client_id })), login.cookie),
+    "https://chatgpt.com:8443/oauth/client.json",
+    "https://chatgpt.com/",
+    "https://page10.example/assets/client.json",
+    "unregistered",
+  ])
+    for (const cookie of [login.cookie, null]) {
+      const result = await handleOAuth(
+        get("/oauth/authorize?" + (await authorization(env, { client_id })), cookie),
+        env,
+      );
+      assert.equal(result.status, 400, client_id);
+      assert.equal(result.headers.get("location"), null);
+    }
+  assert.equal(calls.length, 1);
+  // The token and revocation endpoints never fetch, whatever client they name.
+  for (const client_id of [metadataUrl, claude, "https://stranger.example/client.json"]) {
+    assert.equal((await exchange(env, "c".repeat(43), { client_id })).status, 400);
+    const refreshed = await handleOAuth(
+      post("/oauth/token", {
+        grant_type: "refresh_token",
+        client_id,
+        resource: origin + "/mcp",
+        refresh_token: "pages_rt_" + "r".repeat(43),
+      }),
       env,
     );
-    assert.equal(result.status, 400);
-    assert.equal(result.headers.get("location"), null);
+    assert.equal((await refreshed.json()).error, "invalid_grant");
+    const revoked = await handleOAuth(
+      post("/oauth/revoke", { client_id, token: "pages_rt_" + "r".repeat(43) }),
+      env,
+    );
+    assert.equal(revoked.status, 200);
   }
+  const refused = await exchange(env, "c".repeat(43), { client_id: "https://10.0.0.8/c.json" });
+  assert.equal((await refused.json()).error, "invalid_client");
   assert.equal(calls.length, 1);
+});
+
+test("by default only the documents Pages recognizes are read; any other client id is refused with no fetch", async (t) => {
+  const stranger = "https://stranger.example/client.json",
+    landing = "https://stranger.example/landing";
+  const documents = {
+    [metadataUrl]: metadata(),
+    [claude]: claudeDocument,
+    [claudeCode]: claudeCodeDocument,
+    [stranger]: {
+      client_id: stranger,
+      client_name: "Stranger",
+      redirect_uris: [landing],
+      token_endpoint_auth_method: "none",
+    },
+  };
+  // Unset, and any value but "true", leave the setting off.
+  for (const extra of [
+    {},
+    { PAGES_OAUTH_ANY_CLIENT_DOCUMENT: "false" },
+    { PAGES_OAUTH_ANY_CLIENT_DOCUMENT: "1" },
+    { PAGES_OAUTH_ANY_CLIENT_DOCUMENT: "TRUE" },
+    { PAGES_OAUTH_ANY_CLIENT_DOCUMENT: "" },
+  ]) {
+    const env = fixture(t, extra),
+      login = await session(env);
+    const calls = serve(t, documents);
+    for (const cookie of [login.cookie, null]) {
+      const result = await handleOAuth(
+        get(
+          "/oauth/authorize?" +
+            (await authorization(env, { client_id: stranger, redirect_uri: landing })),
+          cookie,
+        ),
+        env,
+      );
+      assert.equal(result.status, 400);
+      assert.equal(result.headers.get("location"), null);
+      const text = await result.text();
+      assert.match(text, /This OAuth client is not supported\./);
+      assert.doesNotMatch(text, /Sign in<\/a>|<form/);
+    }
+    const exchanged = await exchange(env, "c".repeat(43), {
+      client_id: stranger,
+      redirect_uri: landing,
+    });
+    assert.equal((await exchanged.json()).error, "invalid_client");
+    const revoked = await handleOAuth(
+      post("/oauth/revoke", { client_id: stranger, token: "pages_rt_" + "r".repeat(43) }),
+      env,
+    );
+    assert.equal((await revoked.json()).error, "invalid_client");
+    assert.equal(calls.length, 0, JSON.stringify(extra));
+    // The three documents Pages recognizes still reach the consent screen.
+    for (const [client_id, redirect_uri, heading] of [
+      [metadataUrl, callback, "Connect ChatGPT to Pages"],
+      [claude, claudeCallback, "Connect Claude to Pages"],
+      [claudeCode, "http://localhost:3118/callback", "Connect Claude Code to Pages"],
+    ]) {
+      const screen = await consent(env, login, { client_id, redirect_uri });
+      assert.ok(screen.text.includes(`<h1>${heading}</h1>`), heading);
+    }
+    assert.deepEqual(
+      calls.map((call) => call.url),
+      [metadataUrl, claude, claudeCode],
+    );
+    globalThis.fetch.mock.restore();
+  }
+  // Turned on, the same request from the unknown client reaches consent.
+  const env = fixture(t, anyDocument),
+    login = await session(env);
+  const calls = serve(t, documents);
+  const screen = await consent(env, login, { client_id: stranger, redirect_uri: landing });
+  assert.match(screen.text, /<h1>Connect stranger\.example to Pages<\/h1>/);
+  assert.deepEqual(
+    calls.map((call) => call.url),
+    [stranger],
+  );
+});
+
+test("Claude connects by its metadata document: consent, code, refresh and revoke", async (t) => {
+  const env = fixture(t),
+    login = await session(env);
+  const calls = serve(t, { [claude]: claudeDocument });
+  const options = {
+    client_id: claude,
+    redirect_uri: claudeCallback,
+    scope: "pages:read pages:write pages:share offline_access",
+  };
+  const screen = await consent(env, login, options);
+  assert.match(screen.text, /<h1>Connect Claude to Pages<\/h1>/);
+  assert.match(
+    screen.text,
+    /<strong>Claude<\/strong> \(claude\.ai\) wants access to Pages at <strong>page10\.example<\/strong>/,
+  );
+  assert.match(screen.text, /Your browser will return to <strong>claude\.ai<\/strong>\./);
+  assert.doesNotMatch(screen.text, /does not know this app|on this computer/);
+  assert.equal(
+    screen.result.headers.get("content-security-policy").match(/form-action ([^;]+)/)[1],
+    "'self' " + claudeCallback,
+  );
+  const approved = await approve(env, login, screen.fields);
+  const target = new URL(approved.headers.get("location"));
+  assert.equal(target.origin + target.pathname, claudeCallback);
+  assert.equal(target.searchParams.get("iss"), origin);
+  assert.equal(target.searchParams.get("state"), "client-state");
+  const grant = target.searchParams.get("code");
+  // The code belongs to this client id and this callback.
+  assert.equal((await exchange(env, grant)).status, 400);
+  const exchanged = await exchange(env, grant, options);
+  assert.equal(exchanged.status, 200);
+  const tokens = await exchanged.json();
+  assert.equal(tokens.scope, "offline_access pages:read pages:share pages:write");
+  const access = await readAccessToken(env, tokens.access_token, { resource: origin + "/mcp" });
+  assert.equal(access.clientId, claude);
+  assert.equal(access.identity.principal, "user:anaconda:person");
+  const refresh = (client_id, refresh_token) =>
+    handleOAuth(
+      post("/oauth/token", {
+        grant_type: "refresh_token",
+        client_id,
+        resource: origin + "/mcp",
+        refresh_token,
+      }),
+      env,
+    );
+  // Another client cannot refresh or revoke this grant.
+  assert.equal((await refresh(claudeCode, tokens.refresh_token)).status, 400);
+  await handleOAuth(
+    post("/oauth/revoke", { client_id: claudeCode, token: tokens.refresh_token }),
+    env,
+  );
+  const rotated = await refresh(claude, tokens.refresh_token);
+  assert.equal(rotated.status, 200);
+  const next = await rotated.json();
+  assert.match(next.refresh_token, /^pages_rt_/);
+  assert.ok(await readAccessToken(env, next.access_token, { resource: origin + "/mcp" }));
+  const revoked = await handleOAuth(
+    post("/oauth/revoke", { client_id: claude, token: next.refresh_token }),
+    env,
+  );
+  assert.equal(revoked.status, 200);
+  assert.equal(await readAccessToken(env, next.access_token, { resource: origin + "/mcp" }), null);
+  assert.equal((await refresh(claude, next.refresh_token)).status, 400);
+  // One fetch, for the consent screen. Token requests made none.
+  assert.equal(calls.length, 1);
+});
+
+test("Claude Code returns to a loopback port it chose, and the consent screen says so", async (t) => {
+  const env = fixture(t),
+    login = await session(env);
+  serve(t, { [claudeCode]: claudeCodeDocument });
+  for (const redirect_uri of [
+    "http://localhost:3118/callback",
+    "http://127.0.0.1:49152/callback",
+  ]) {
+    const options = { client_id: claudeCode, redirect_uri };
+    const screen = await consent(env, login, options);
+    const host = new URL(redirect_uri).host;
+    assert.match(screen.text, /<h1>Connect Claude Code to Pages<\/h1>/);
+    assert.ok(
+      screen.text.includes(
+        `Your browser will return to an app on this computer, at <strong>${host}</strong>. Pages cannot tell which app is listening there. Allow access only if you started this connection yourself.`,
+      ),
+    );
+    assert.equal(
+      screen.result.headers.get("content-security-policy").match(/form-action ([^;]+)/)[1],
+      "'self' " + redirect_uri,
+    );
+    const approved = await approve(env, login, screen.fields);
+    const target = new URL(approved.headers.get("location"));
+    assert.equal(target.origin + target.pathname, redirect_uri);
+    const grant = target.searchParams.get("code");
+    // The port is free at authorization, then fixed for that code.
+    const moved = await exchange(env, grant, {
+      ...options,
+      redirect_uri: "http://localhost:3119/callback",
+    });
+    assert.equal(moved.status, 400);
+    assert.equal((await exchange(env, grant, options)).status, 200);
+  }
+  for (const redirect_uri of [
+    "http://localhost:3118/other",
+    "http://localhost:3118/callback?next=evil",
+    "http://[::1]:3118/callback",
+    "http://127.0.0.2:3118/callback",
+    "http://192.168.1.1:3118/callback",
+    "https://localhost:3118/callback",
+    "https://evil.example/callback",
+    claudeCallback,
+  ]) {
+    const result = await handleOAuth(
+      get(
+        "/oauth/authorize?" + (await authorization(env, { client_id: claudeCode, redirect_uri })),
+        login.cookie,
+      ),
+      env,
+    );
+    assert.equal(result.status, 400, redirect_uri);
+    assert.equal(result.headers.get("location"), null);
+    assert.equal(
+      result.headers.get("content-security-policy").match(/form-action ([^;]+)/)[1],
+      "'self'",
+    );
+  }
+});
+
+test("a client Pages has no name for is shown by its host; the name it claims is quoted and escaped", async (t) => {
+  const env = fixture(t, anyDocument),
+    login = await session(env);
+  const client_id = "https://claude.ai.attacker.example/oauth/mcp-oauth-client-metadata";
+  const redirect_uri = "https://collector.example/cb?kind=mcp";
+  const unnameable = "https://collector.example/cb;script-src%20*";
+  serve(t, {
+    [client_id]: {
+      client_id,
+      client_name: 'Claude</strong><img src=x onerror="alert(1)">',
+      client_uri: "https://claude.ai",
+      logo_uri: "https://claude.ai/logo.png",
+      redirect_uris: [redirect_uri, unnameable, claudeCallback],
+      token_endpoint_auth_method: "none",
+    },
+  });
+  const screen = await consent(env, login, { client_id, redirect_uri });
+  assert.match(screen.text, /<h1>Connect claude\.ai\.attacker\.example to Pages<\/h1>/);
+  assert.ok(
+    screen.text.includes(
+      "<p><strong>claude.ai.attacker.example</strong> wants access to Pages at <strong>page10.example</strong>.</p>" +
+        "<p>Pages does not know this app. It calls itself “Claude&lt;/strong&gt;&lt;img src=x onerror=&quot;alert(1)&quot;&gt;”. " +
+        "Allow access only if you trust <strong>claude.ai.attacker.example</strong>.</p>" +
+        "<p>Your browser will return to <strong>collector.example</strong>.</p>",
+    ),
+    screen.text,
+  );
+  assert.doesNotMatch(screen.text, /<img|<strong>Claude|logo\.png/);
+  // The policy names the callback's origin and path, never the whole origin.
+  assert.equal(
+    screen.result.headers.get("content-security-policy"),
+    "default-src 'none'; script-src 'self'; style-src 'self'; img-src data:; base-uri 'none'; form-action 'self' https://collector.example/cb; frame-ancestors 'none'",
+  );
+  // A listed callback whose path could end or extend the policy is refused
+  // like an unlisted one: no consent screen, no redirect, no wider policy.
+  const refused = await handleOAuth(
+    get(
+      "/oauth/authorize?" + (await authorization(env, { client_id, redirect_uri: unnameable })),
+      login.cookie,
+    ),
+    env,
+  );
+  assert.equal(refused.status, 400);
+  assert.equal(refused.headers.get("location"), null);
+  assert.equal(
+    refused.headers.get("content-security-policy").match(/form-action ([^;]+)/)[1],
+    "'self'",
+  );
+  const refusal = await refused.text();
+  assert.match(refusal, /The callback does not match this client\./);
+  assert.doesNotMatch(refusal, /<form/);
+  // The document lists Claude's callback too, and the screen still names this
+  // host as the asker. The code sent there is stored with this client id and
+  // the request's PKCE challenge, so a token request naming Claude's client
+  // id is refused.
+  const options = { client_id, redirect_uri: claudeCallback };
+  const borrowed = await consent(env, login, options);
+  assert.match(borrowed.text, /<h1>Connect claude\.ai\.attacker\.example to Pages<\/h1>/);
+  assert.match(borrowed.text, /Your browser will return to <strong>claude\.ai<\/strong>\./);
+  const sent = new URL((await approve(env, login, borrowed.fields)).headers.get("location"));
+  assert.equal(sent.origin + sent.pathname, claudeCallback);
+  const grant = sent.searchParams.get("code");
+  assert.equal((await exchange(env, grant, { ...options, client_id: claude })).status, 400);
+  assert.equal(
+    (await exchange(env, grant, { ...options, code_verifier: "w".repeat(43) })).status,
+    400,
+  );
+});
+
+test("a document that changes its callbacks after consent does not move a pending consent or an issued code", async (t) => {
+  const env = fixture(t, anyDocument),
+    login = await session(env);
+  const client_id = "https://changing.example/client.json";
+  const first = "https://changing.example/callback",
+    second = "https://elsewhere.example/callback";
+  const documents = {
+    [client_id]: {
+      client_id,
+      client_name: "Changing",
+      redirect_uris: [first],
+      token_endpoint_auth_method: "none",
+    },
+  };
+  const calls = serve(t, documents);
+  const screen = await consent(env, login, { client_id, redirect_uri: first });
+  documents[client_id] = { ...documents[client_id], redirect_uris: [second] };
+  // The consent the person saw keeps the callback it was shown with.
+  const approved = new URL((await approve(env, login, screen.fields)).headers.get("location"));
+  assert.equal(approved.origin + approved.pathname, first);
+  const grant = approved.searchParams.get("code");
+  // The code stays bound to that callback: the document's new one cannot
+  // redeem it, and the token endpoint does not read the document again.
+  const moved = await exchange(env, grant, { client_id, redirect_uri: second });
+  assert.equal((await moved.json()).error, "invalid_grant");
+  assert.equal((await exchange(env, grant, { client_id, redirect_uri: first })).status, 200);
+  assert.equal(calls.length, 1);
+  // A new authorization request reads the document as it is now.
+  const stale = await handleOAuth(
+    get(
+      "/oauth/authorize?" + (await authorization(env, { client_id, redirect_uri: first })),
+      login.cookie,
+    ),
+    env,
+  );
+  assert.equal(stale.status, 400);
+  assert.equal(calls.length, 2);
+});
+
+test("a request waiting on another request's document fetch resumes on its own timer and finishes its store work", async (t) => {
+  const env = fixture(t, anyDocument),
+    login = await session(env);
+  const saved = { ...metadataFetchTimeouts };
+  t.after(() => Object.assign(metadataFetchTimeouts, saved));
+  // A poll interval no other timer uses, so the waiter's own timer is the
+  // one this test sees scheduled.
+  metadataFetchTimeouts.poll = 7;
+  const client_id = "https://concurrent.example/client.json",
+    redirect_uri = "https://concurrent.example/callback";
+  let release,
+    calls = 0;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  t.mock.method(globalThis, "fetch", async () => {
+    calls++;
+    await gate;
+    return Response.json(
+      {
+        client_id,
+        client_name: "Concurrent",
+        redirect_uris: [redirect_uri],
+        token_endpoint_auth_method: "none",
+      },
+      { headers: { "Cache-Control": "max-age=300" } },
+    );
+  });
+  // Set up the OAuth store before timers are mocked.
+  await consent(env, login);
+  const consents = () =>
+    env.DB.sqlite.prepare("SELECT count(*) AS n FROM pages_oauth_consents").get().n;
+  const before = consents();
+  const turns = async (count = 50) => {
+    for (let i = 0; i < count; i++) await new Promise((resolve) => setImmediate(resolve));
+  };
+  const request = async (overrides = {}) =>
+    handleOAuth(
+      get(
+        "/oauth/authorize?" + (await authorization(env, { client_id, redirect_uri, ...overrides })),
+        login.cookie,
+      ),
+      env,
+    );
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const mocked = globalThis.setTimeout;
+  const polling = new Promise((resolve) => {
+    globalThis.setTimeout = function (callback, delay, ...rest) {
+      if (delay === metadataFetchTimeouts.poll) {
+        globalThis.setTimeout = mocked;
+        resolve();
+      }
+      return mocked.call(this, callback, delay, ...rest);
+    };
+  });
+  // The owner starts the fetch. Its request is invalid, so it answers as soon
+  // as the document arrives, before the waiter has done anything else.
+  const owner = request({ response_type: "token" });
+  while (calls < 1) await turns(5);
+  const waiter = request();
+  let settled = false;
+  waiter.then(
+    () => (settled = true),
+    () => (settled = true),
+  );
+  await polling;
+  assert.equal(calls, 1, "the waiter did not start a second fetch");
+  release();
+  assert.equal((await owner).status, 400);
+  await turns();
+  assert.equal(settled, false, "the owner's response does not resume the waiter");
+  assert.equal(consents(), before);
+  t.mock.timers.tick(metadataFetchTimeouts.poll);
+  // The waiter runs on from its own timer: it reads the kept document, then
+  // writes its consent to the store and answers.
+  const result = await waiter;
+  assert.equal(result.status, 200);
+  assert.match(await result.text(), /name="consent_id"/);
+  assert.equal(consents(), before + 1);
+  assert.equal(calls, 1);
+});
+
+test("a metadata-document client gets no redirect until the person chooses", async (t) => {
+  const env = fixture(t, anyDocument),
+    login = await session(env);
+  const client_id = "https://stranger.example/client.json",
+    redirect_uri = "https://stranger.example/landing";
+  serve(t, {
+    [client_id]: {
+      client_id,
+      client_name: "Stranger",
+      redirect_uris: [redirect_uri],
+      token_endpoint_auth_method: "none",
+    },
+  });
+  // The same faults send a named client an OAuth error. Here they stay on a
+  // Pages page, so a link to /oauth/authorize is not a redirect to this site.
+  for (const invalid of [
+    { response_type: "token" },
+    { scope: "admin" },
+    { code_challenge_method: "plain" },
+    { resource: "https://evil.example/mcp" },
+    { response_mode: "form_post" },
+    { redirect_uri: "https://stranger.example/unlisted" },
+    { redirect_uri: origin + "/oauth/authorize" },
+  ]) {
+    const result = await handleOAuth(
+      get(
+        "/oauth/authorize?" + (await authorization(env, { client_id, redirect_uri, ...invalid })),
+        login.cookie,
+      ),
+      env,
+    );
+    assert.equal(result.status, 400, JSON.stringify(invalid));
+    assert.equal(result.headers.get("location"), null);
+    assert.match(await result.text(), /Connection not completed/);
+  }
+  const screen = await consent(env, login, { client_id, redirect_uri });
+  const denied = new URL(
+    (await approve(env, login, { ...screen.fields, decision: "cancel" })).headers.get("location"),
+  );
+  assert.equal(denied.origin + denied.pathname, redirect_uri);
+  assert.equal(denied.searchParams.get("error"), "access_denied");
+  assert.equal(denied.searchParams.get("iss"), origin);
 });
 
 test("CIMD failures, redirects, oversized JSON and incompatible metadata fail closed", async (t) => {
@@ -604,117 +1132,6 @@ test("code issuance failure returns a bound OAuth error and preserves the renewe
   assert.ok(result.headers.get("set-cookie"));
   assert.equal(env.DB.sqlite.prepare("SELECT count(*) AS n FROM pages_oauth_codes").get().n, 0);
   assert.equal((await approve(env, login, screen.fields)).status, 403);
-});
-
-test("successful CIMD validation is cached briefly, honors cache directives, coalesces and never retains failures", async (t) => {
-  const env = fixture(t);
-  let now = Date.now(),
-    calls = 0,
-    headers = {},
-    value = metadata(),
-    status = 200,
-    gate;
-  t.mock.method(Date, "now", () => now);
-  t.mock.method(globalThis, "fetch", async () => {
-    calls++;
-    if (gate) await gate;
-    return Response.json(value, { status, headers });
-  });
-  const request = await authorization(env, { client_id: metadataUrl });
-  const perform = () => handleOAuth(get("/oauth/authorize?" + request), env);
-  for (const directive of [
-    "no-store, max-age=300",
-    "no-cache, max-age=300",
-    'no-cache="Set-Cookie", max-age=300',
-    "private, max-age=300",
-    "max-age=0",
-    "max-age=abc",
-    "max-age=10, max-age=300",
-  ]) {
-    now += 1_000_000;
-    headers = { "Cache-Control": directive };
-    const before = calls;
-    assert.equal((await perform()).status, 200);
-    assert.equal((await perform()).status, 200);
-    assert.equal(calls - before, 2, directive);
-  }
-  for (const [cacheHeaders, seconds] of [
-    [{}, 60],
-    [{ "Cache-Control": "max-age=900" }, 300],
-    [{ "Cache-Control": 'max-age="10"', Age: "3" }, 7],
-    [
-      { "Cache-Control": "max-age=100", Date: new Date(now + 1_000_000 - 80_000).toUTCString() },
-      20,
-    ],
-  ]) {
-    now += 1_000_000;
-    // Construct Date relative to the current request, not prior test cases.
-    headers = cacheHeaders.Date
-      ? { ...cacheHeaders, Date: new Date(now - 80_000).toUTCString() }
-      : cacheHeaders;
-    const before = calls;
-    assert.equal((await perform()).status, 200);
-    now += seconds * 1000 - 1000;
-    assert.equal((await perform()).status, 200);
-    assert.equal(calls - before, 1);
-    now += 1000;
-    assert.equal((await perform()).status, 200);
-    assert.equal(calls - before, 2);
-  }
-  now += 1_000_000;
-  headers = { "Cache-Control": "max-age=300" };
-  value = metadata({ client_id: "unexpected" });
-  const beforeInvalid = calls;
-  assert.equal((await perform()).status, 400);
-  assert.equal((await perform()).status, 400);
-  assert.equal(calls - beforeInvalid, 2);
-  value = metadata();
-  status = 503;
-  assert.equal((await perform()).status, 503);
-  assert.equal((await perform()).status, 503);
-  assert.equal(calls - beforeInvalid, 4);
-
-  status = 200;
-  headers = { "Cache-Control": "no-store" };
-  let release;
-  gate = new Promise((resolve) => {
-    release = resolve;
-  });
-  const beforeParallel = calls;
-  const one = perform(),
-    two = perform(),
-    three = perform();
-  await new Promise(setImmediate);
-  assert.equal(calls - beforeParallel, 1);
-  release();
-  assert.deepEqual(
-    (await Promise.all([one, two, three])).map((result) => result.status),
-    [200, 200, 200],
-  );
-  gate = undefined;
-  assert.equal((await perform()).status, 200);
-  assert.equal(calls - beforeParallel, 2);
-
-  // Even a warm validation cache cannot admit another client or callback.
-  headers = { "Cache-Control": "max-age=300" };
-  assert.equal((await perform()).status, 200);
-  const beforeUnknown = calls;
-  for (const invalid of [
-    { client_id: "https://evil.example/client.json" },
-    { redirect_uri: "https://chatgpt.com/unregistered" },
-  ]) {
-    const result = await handleOAuth(
-      get("/oauth/authorize?" + (await authorization(env, { client_id: metadataUrl, ...invalid }))),
-      env,
-    );
-    assert.equal(result.status, 400);
-    assert.equal(result.headers.get("location"), null);
-  }
-  assert.equal(calls, beforeUnknown);
-  // Leave the isolate cache expired for any later tests.
-  now += 1_000_000;
-  status = 503;
-  assert.equal((await perform()).status, 503);
 });
 
 test("preconfigured Kilo grants requested read/write/offline scopes only to its exact loopback callback", async (t) => {

@@ -9,7 +9,8 @@
  * retention. Each line is one JSON object with `event: "pages.auth.v1"` and an
  * `action` from AUTH_ACTIONS.
  *
- * Recorded: principal, OAuth client id (known clients only), a short grant or
+ * Recorded: principal, OAuth client id (a client Pages recognizes in full,
+ * any other metadata-document client by its host), a short grant or
  * invitation reference, scopes, and enum reasons. A reference is the first 12
  * hex digits of SHA-256 over the id: it joins events of one grant without
  * naming the stored row.
@@ -22,6 +23,8 @@
  * Emission never fails or delays a request beyond one digest. A record that
  * can't be built is dropped and counted; the next line carries the count as
  * `dropped`. */
+
+import { loggedClientId } from "./oauth-clients.mjs";
 
 export const AUTH_EVENT = "pages.auth.v1";
 export const AUTH_ACTIONS = Object.freeze([
@@ -46,12 +49,6 @@ export const AUTH_ACTIONS = Object.freeze([
  * out everywhere in Pages; `rfc7009` is a client's revocation request;
  * `system` is a replay or reuse defence. */
 export const REVOKED_BY = Object.freeze(["user", "rfc7009", "system"]);
-export const KNOWN_CLIENT_IDS = Object.freeze([
-  "https://chatgpt.com/oauth/client.json",
-  "pages-chatgpt",
-  "pages-kilo",
-  "pages-local-e2e",
-]);
 const CREDENTIALS = ["oidc", "oauth", "api-key"];
 const GRANT_TYPES = ["authorization_code", "refresh_token"];
 const SCOPES = new Set(["pages:read", "pages:write", "pages:share", "offline_access"]);
@@ -87,8 +84,6 @@ const principalOf = (value) =>
   value.includes(":")
     ? value
     : undefined;
-const clientOf = (value) =>
-  value === undefined ? undefined : KNOWN_CLIENT_IDS.includes(value) ? value : "unknown";
 const scopeOf = (value, action) => {
   if (typeof value !== "string") return undefined;
   if (API_KEY_SCOPES.includes(value)) return value;
@@ -132,7 +127,7 @@ export function authEvent({
     action,
     principal: principalOf(principal),
     credential: oneOf(CREDENTIALS)(credential),
-    client_id: clientOf(clientId),
+    client_id: loggedClientId(clientId),
     grant: refOf(grant),
     grant_type: oneOf(GRANT_TYPES)(grantType),
     scope: scopeOf(scope, action),

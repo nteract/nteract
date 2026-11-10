@@ -196,10 +196,20 @@ test("an auth record has a fixed shape and drops anything outside its allowlists
       service: "nteract-pages-native",
       event: AUTH_EVENT,
       action: "sign_in.failed",
-      client_id: "unknown",
+      // A metadata-document client Pages has no name for is recorded by host:
+      // the rest of its URL is text a stranger chose.
+      client_id: "evil.example",
       timestamp: "2026-11-06T00:00:00.000Z",
     },
   );
+  const client = (clientId) => authEvent({ action: "oauth.token_refused", clientId }).client_id;
+  assert.equal(
+    client("https://claude.ai/oauth/claude-code-client-metadata"),
+    "https://claude.ai/oauth/claude-code-client-metadata",
+  );
+  for (const clientId of ["free text", "http://evil.example/c", "https://10.0.0.8/c", 7])
+    assert.equal(client(clientId), "unknown");
+  assert.equal(client(undefined), undefined);
   assert.throws(() => authEvent({ action: "oauth.unknown" }), TypeError);
   assert.equal(AUTH_ACTIONS.length, new Set(AUTH_ACTIONS).size);
 });
