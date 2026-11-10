@@ -78,11 +78,10 @@ Comments live in their own document and anchor to the Page with cursors.
    it writes, and a release to a target is refused when the target's
    documents are in another format. Both work on format 1, so they land
    first.
-2. **Tag the last format 1 commit.** It is the parent of the first change
-   that makes `main` unfit for `pages.runtimed.run`: the first delete below,
-   or the format 2 block shape, whichever lands first. From the tag on,
-   `main` is never promoted to that service. A fix for it goes on a
-   maintenance branch cut from the tag.
+2. **The last format 1 commit is tagged `pages-format-1`.**
+   `pages.runtimed.run` runs that commit, and `main` is never promoted to
+   that service. A fix for it goes on a maintenance branch cut from the tag,
+   built from that branch and promoted by hand.
 3. **Delete what a new service does not need** (list below).
 4. **Format 2**, deployed to a new, empty service. The block shape comes
    first. Explicit opening markers follow as their own change, because they
@@ -118,14 +117,14 @@ records the node addresses agents use.
   such as comments, is a change to that script. Copying is optional and is
   not a gate.
 - **`pages.runtimed.run` holds documents people use.** Do not reset it, and do
-  not build a migration from it. A release in the stored form `main` writes
-  today (format 1) may be promoted to it by hand, once `page10` runs the same
-  build, up to the format 1 tag. Format 2 work never deploys to it.
+  not build a migration from it. It runs the commit tagged `pages-format-1`.
+  Nothing from `main` deploys to it: a fix is a commit on a maintenance
+  branch cut from that tag.
 - **Other deployed targets are demos.** Keep this list current.
 
   | Target | Host | State |
   | --- | --- | --- |
-  | `pages` | lab1 | In use. Promoted by hand from the build `page10` runs |
+  | `pages` | lab1 | In use. Runs `pages-format-1`. Takes fixes from its maintenance branch only |
   | `page10` | lab1 | Preview. Deployed from `main` automatically. Reset freely |
   | `pages2` (`page2.runtimed.run`) | lab2 | Demo. Reset freely |
   | `page11` | lab2 | Profile in source only; nothing is deployed |
