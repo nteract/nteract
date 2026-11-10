@@ -319,3 +319,59 @@ test("an approval waits for its exchange while other pairings start", async (t) 
   });
   assert.equal(answer.status, "approved");
 });
+
+test("a refusal is its status, whatever its body holds", async () => {
+  const broken = () =>
+    new ReadableStream({
+      start(controller) {
+        controller.error(new Error("connection reset"));
+      },
+    });
+  const bodies = [() => "Unauthorized", () => "{not json", broken, () => null];
+  for (const body of bodies) {
+    for (const status of [401, 403])
+      assert.deepEqual(
+        await readKiloProfile(async () => new Response(body(), { status }), {
+          appUrl: args.appUrl,
+          token: "t",
+        }),
+        { refused: true },
+      );
+    assert.deepEqual(
+      await refreshKiloTokens(async () => new Response(body(), { status: 401 }), {
+        appUrl: args.appUrl,
+        refreshToken: "r",
+      }),
+      { refused: "REFUSED" },
+    );
+  }
+  assert.deepEqual(
+    await refreshKiloTokens(async () => response(401, { error: "USER_BLOCKED" }), {
+      appUrl: args.appUrl,
+      refreshToken: "r",
+    }),
+    { refused: "USER_BLOCKED" },
+  );
+});
+
+test("a body that breaks off is an outage, and one over the limit is a protocol error", async () => {
+  const cutShort = async () =>
+    new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"user":'));
+          controller.error(new Error("connection reset"));
+        },
+      }),
+      { status: 200 },
+    );
+  await assert.rejects(
+    readKiloProfile(cutShort, { appUrl: args.appUrl, token: "t" }),
+    KiloUnavailable,
+  );
+  const tooLarge = async () => new Response("x".repeat(64 * 1024 + 1), { status: 200 });
+  await assert.rejects(
+    readKiloProfile(tooLarge, { appUrl: args.appUrl, token: "t" }),
+    KiloProtocolError,
+  );
+});

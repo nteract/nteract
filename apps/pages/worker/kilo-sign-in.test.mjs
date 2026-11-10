@@ -217,7 +217,8 @@ test("the session cookie authenticates as the encoded Kilo principal without ema
   await approve(kilo, page);
   const result = await poll(env, started.cookie);
   const cookies = result.response.headers.getSetCookie();
-  assert.equal(cookies.length, 2);
+  // Only the session cookie: a poll's answer leaves the pairing cookie alone.
+  assert.equal(cookies.length, 1);
   const sessionCookie = cookies.find((value) => value.startsWith(`${SERVER_SESSION_COOKIE}=`));
   const session = await readServerAppSession(
     env,
@@ -557,4 +558,91 @@ test("a pairing a request is working on outlives its deadline and another sign-i
     env.DB.sqlite.prepare("SELECT count(*) AS n FROM kilo_pairings WHERE expires_at = 1").get().n,
     0,
   );
+});
+
+test("a late answer from a finished pairing leaves a newer pairing's cookie alone", async (t) => {
+  const kilo = await startLocalKilo();
+  const { env } = fixture(t, kilo);
+  for (const ending of ["signed_in", "denied"]) {
+    const first = await begin(env);
+    const page = await handleKiloSignIn(request("/sign-in", { cookie: first.cookie }), env);
+    if (ending === "signed_in") await approve(kilo, page);
+    else await kilo.deny((await page.text()).match(/class="pairing-code"><strong>([^<]+)/)[1]);
+    const answer = await poll(env, first.cookie);
+    assert.equal(answer.body.status, ending);
+    assert.equal(pairingCookie(answer.response), undefined, ending);
+    // The finished pairing's cookie names nothing afterwards.
+    assert.deepEqual((await poll(env, first.cookie)).body, { status: "expired" });
+  }
+});
+
+test("a profile whose body breaks off keeps the approved grant for the next poll", async (t) => {
+  const kilo = await startLocalKilo();
+  const { env } = fixture(t, kilo);
+  const started = await begin(env);
+  await approve(kilo, await handleKiloSignIn(request("/sign-in", { cookie: started.cookie }), env));
+  const original = globalThis.fetch;
+  let broke = false;
+  t.mock.method(globalThis, "fetch", async (input, init) => {
+    if (broke || new URL(input).pathname !== "/api/profile") return original(input, init);
+    broke = true;
+    return new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"user":'));
+          controller.error(new Error("connection reset"));
+        },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  });
+  assert.deepEqual((await poll(env, started.cookie)).body, { status: "pending" });
+  assert.equal(env.DB.sqlite.prepare("SELECT state FROM kilo_pairings").get().state, "approved");
+  assert.equal((await poll(env, started.cookie)).body.status, "signed_in");
+  assert.equal(kilo.requests().filter((item) => item.path === "/api/device-auth/token").length, 1);
+});
+
+test("a renewal whose profile Kilo refuses ends the session, whatever the refusal's body", async (t) => {
+  const kilo = await startLocalKilo();
+  const { env } = fixture(t, kilo);
+  const client = await import("./kilo-pairing-client.mjs");
+  const provider = kiloSessionProvider(env, request("/api/auth/session"));
+  const broken = () =>
+    new ReadableStream({
+      start(controller) {
+        controller.error(new Error("connection reset"));
+      },
+    });
+  const original = globalThis.fetch;
+  for (const refusal of [
+    () => new Response("Unauthorized", { status: 401 }),
+    () =>
+      new Response("{not json", { status: 403, headers: { "content-type": "application/json" } }),
+    () => new Response(broken(), { status: 401 }),
+    () => new Response(null, { status: 403 }),
+  ]) {
+    const started = await client.startKiloPairing(fetch, {
+      appUrl: kilo.origin,
+      client: { id: "pages", name: "Pages", redirectOrigin: origin },
+    });
+    await kilo.approve(started.userCode, user);
+    const exchange = await client.exchangeKiloDeviceCode(fetch, {
+      appUrl: kilo.origin,
+      deviceCode: started.deviceCode,
+    });
+    const mock = t.mock.method(globalThis, "fetch", async (input, init) =>
+      new URL(input).pathname === "/api/profile" ? refusal() : original(input, init),
+    );
+    await assert.rejects(
+      provider.refresh({
+        kind: "kilo",
+        appUrl: kilo.origin,
+        userId: user.id,
+        name: "Stored Name",
+        refreshToken: exchange.refreshToken,
+      }),
+      ServerSessionGrantRejected,
+    );
+    mock.mock.restore();
+  }
 });

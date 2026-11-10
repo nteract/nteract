@@ -184,7 +184,8 @@ const sessionBundle = (config, { id, name }, refreshToken) => ({
  * code keeps the row and asks again. Once Kilo has rotated the refresh token,
  * the new one is always returned: a profile that can't be read then leaves
  * the stored name in place, because failing would discard the only refresh
- * token Kilo still accepts. */
+ * token Kilo still accepts. A profile Kilo refuses is not that case: a 401 or
+ * 403 ends the session whatever its body holds. */
 export function kiloSessionProvider(env, request) {
   const config = kiloSignIn(env, request);
   if (!config) return undefined;
@@ -225,7 +226,6 @@ export function kiloSessionProvider(env, request) {
 
 const pairingCookie = (secret, maxAge) =>
   `${PAIRING_COOKIE}=${secret}; Path=/; Max-Age=${Math.max(0, maxAge)}; HttpOnly; Secure; SameSite=Lax`;
-const clearedCookie = () => pairingCookie("", 0);
 const sealBinding = (id) => `kilo-pairing:${id}`;
 
 /** A same-origin path to land on after sign-in, or `/`. The URL parser decides
@@ -295,11 +295,13 @@ const noStore = (response) => {
   return response;
 };
 
-/** A poll's answer. A terminal status clears the pairing cookie. */
+/** A poll's answer. It never touches the pairing cookie: a browser that has
+ * started another sign-in since this request began holds a newer cookie under
+ * the same name, and a late answer must not erase it. A finished pairing's
+ * cookie names no row and lapses by itself. */
 function pollAnswer(status, { returnTo, sessionCookie } = {}) {
   const response = noStore(json(returnTo ? { status, return_to: returnTo } : { status }));
   if (sessionCookie) response.headers.append("Set-Cookie", sessionCookie);
-  if (status !== "pending") response.headers.append("Set-Cookie", clearedCookie());
   return response;
 }
 
@@ -490,9 +492,9 @@ async function advancePairing(request, env, config, now) {
         sealed: await sealServerSecret(env, grant, sealBinding(row.id)),
       });
       // This write loses only when the claim lapsed and another request took
-      // the row. The grant can't be stored and the device code is spent, so
-      // this request has nothing left to do; the row is the other request's.
-      if (!stored) return pollAnswer("failed");
+      // the row. The grant can't be stored and the device code is spent. The
+      // row is the other request's to end: Kilo will tell it `expired`.
+      if (!stored) return pollAnswer("pending");
       row = stored;
     }
     const grant = await openServerSecret(env, row.sealed, sealBinding(row.id));

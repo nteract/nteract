@@ -94,14 +94,22 @@ async function request(
     } catch {}
     throw unavailable ? new KiloUnavailable(retryAfterSeconds) : new KiloProtocolError();
   }
-  const bytes = await readLimited(response);
+  // A refusal is its status. Its body is read when it can be, because a
+  // refresh refusal names its reason there, but a body that is missing, cut
+  // short or not JSON never turns a refusal into another kind of answer.
+  const refusal = response.status >= 400 && response.status < 500;
   let data;
-  if (bytes.length) {
-    try {
-      data = JSON.parse(new TextDecoder().decode(bytes));
-    } catch {
-      throw new KiloProtocolError();
+  try {
+    const bytes = await readLimited(response);
+    if (bytes.length) {
+      try {
+        data = JSON.parse(new TextDecoder().decode(bytes));
+      } catch {
+        throw new KiloProtocolError();
+      }
     }
+  } catch (error) {
+    if (!refusal) throw error;
   }
   return { status: response.status, data };
 }
@@ -130,8 +138,10 @@ async function readLimited(response) {
       chunks.push(value);
     }
   } catch (error) {
+    // A body over the limit is Kilo's answer and is refused as one. A body
+    // that stalls or breaks off is the network's, and the call may work later.
     if (error instanceof KiloProtocolError) throw error;
-    throw new KiloProtocolError();
+    throw new KiloUnavailable();
   }
   const bytes = new Uint8Array(size);
   let offset = 0;
@@ -273,20 +283,21 @@ export async function exchangeKiloDeviceCode(fetch, { appUrl, deviceCode, timeou
 /** Trades a refresh token for a new token and a new refresh token. Kilo
  * retires the old refresh token with this call, and treats a later use of it
  * as theft, so a caller exchanges each one once and stores the answer.
- * `refused` names why Kilo ended the grant; signing in again is the only way
- * forward. */
+ * `refused` means Kilo ended the grant, and names its reason when Kilo gave
+ * one this module knows; signing in again is the only way forward. */
 export async function refreshKiloTokens(fetch, { appUrl, refreshToken, timeoutMs } = {}) {
   const result = await request(fetch, appUrl, "/api/auth/native/refresh", {
     method: "POST",
     body: { refreshToken },
     timeoutMs,
   });
-  if (
-    result.status === 401 &&
-    object(result.data) &&
-    ["INVALID_REFRESH_TOKEN", "SESSION_REVOKED", "USER_BLOCKED"].includes(result.data.error)
-  ) {
-    return { refused: result.data.error };
+  if (result.status === 401) {
+    const reason = object(result.data) ? result.data.error : undefined;
+    return {
+      refused: ["INVALID_REFRESH_TOKEN", "SESSION_REVOKED", "USER_BLOCKED"].includes(reason)
+        ? reason
+        : "REFUSED",
+    };
   }
   const data = expectStatus(result, 200);
   if (
