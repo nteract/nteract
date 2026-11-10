@@ -19,7 +19,7 @@ import {
 } from "./oauth-store.mjs";
 import { plainStub } from "./plain-stub.mjs";
 
-const origin = "https://page7.example";
+const origin = "https://page10.example";
 const resource = `${origin}/mcp`;
 const pageId = "33333333-3333-4333-8333-333333333333";
 const clientId = "https://chatgpt.com/oauth/client.json";

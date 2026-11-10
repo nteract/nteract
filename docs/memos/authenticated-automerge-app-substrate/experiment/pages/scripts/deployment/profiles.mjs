@@ -95,192 +95,8 @@ export function unitMemory(profile) {
   return { maxRssMb, memoryMax };
 }
 const targets = Object.freeze({
-  "pages-next": Object.freeze({
-    deployment: Object.freeze({
-      host: shared.host,
-      hostname: "pages-next.runtimed.run",
-      service: "nteract-pages-next",
-      bucket: shared.bucket,
-      prefix: "standalone/pages-next",
-      region: shared.region,
-      listen: "127.0.0.1:9472",
-      internalListen: "127.0.0.1:19472",
-      runtime: shared.runtime,
-      requiredVersion: shared.requiredVersion,
-    }),
-    firewallTable: "nteract_pages_next",
-    firewallMark: "0x20000000",
-    firewallComment: "nteract/preview-infra standalone-pages-next",
-  }),
-  page3: Object.freeze({
-    deployment: Object.freeze({
-      host: shared.host,
-      hostname: "page3.runtimed.run",
-      service: "nteract-page3",
-      bucket: shared.bucket,
-      prefix: "standalone/page3",
-      region: shared.region,
-      listen: "127.0.0.1:9473",
-      internalListen: "127.0.0.1:19473",
-      runtime: shared.runtime,
-      requiredVersion: shared.requiredVersion,
-    }),
-    firewallTable: "nteract_page3",
-    firewallMark: "0x10000000",
-    firewallComment: "nteract/preview-infra standalone-page3",
-    tunnelService: "cloudflared-page3.service",
-  }),
-  page4: Object.freeze({
-    deployment: Object.freeze({
-      host: shared.host,
-      hostname: "page4.runtimed.run",
-      service: "nteract-page4",
-      bucket: shared.bucket,
-      prefix: "standalone/page4",
-      region: shared.region,
-      listen: "127.0.0.1:9474",
-      internalListen: "127.0.0.1:19474",
-      runtime: shared.runtime,
-      requiredVersion: shared.requiredVersion,
-    }),
-    firewallTable: "nteract_page4",
-    firewallMark: "0x08000000",
-    firewallComment: "nteract/preview-infra standalone-page4",
-    editor: "wordgard",
-    tunnelService: "cloudflared-page4.service",
-    frozenTargets: Object.freeze(["pages-next", "page3"]),
-  }),
-  page5: Object.freeze({
-    deployment: Object.freeze({
-      host: shared.host,
-      hostname: "page5.runtimed.run",
-      service: "nteract-page5",
-      bucket: shared.bucket,
-      prefix: "standalone/page5",
-      region: shared.region,
-      listen: "127.0.0.1:9475",
-      internalListen: "127.0.0.1:19475",
-      runtime: shared.runtime,
-      requiredVersion: shared.requiredVersion,
-    }),
-    sharing: true,
-    firewallTable: "nteract_page5",
-    firewallMark: "0x04000000",
-    firewallComment: "nteract/preview-infra standalone-page5",
-    editor: "wordgard",
-    tunnelService: "cloudflared-page5.service",
-    frozenTargets: Object.freeze(["pages-next", "page3", "page4"]),
-  }),
-  page6: Object.freeze({
-    deployment: Object.freeze({
-      host: shared.host,
-      hostname: "page6.runtimed.run",
-      service: "nteract-page6",
-      bucket: shared.bucket,
-      prefix: "standalone/page6",
-      region: shared.region,
-      listen: "127.0.0.1:9476",
-      internalListen: "127.0.0.1:19476",
-      runtime: shared.runtime,
-      requiredVersion: shared.requiredVersion,
-    }),
-    sharing: true,
-    firewallTable: "nteract_page6",
-    firewallMark: "0x02000000",
-    firewallComment: "nteract/preview-infra standalone-page6",
-    editor: "wordgard",
-    tunnelService: "cloudflared-page6.service",
-    frozenTargets: Object.freeze(["pages-next", "page3", "page4", "page5"]),
-  }),
-  page7: Object.freeze({
-    deployment: Object.freeze({
-      host: shared.host,
-      hostname: "page7.runtimed.run",
-      service: "nteract-page7",
-      bucket: shared.bucket,
-      prefix: "standalone/page7",
-      region: shared.region,
-      listen: "127.0.0.1:9477",
-      internalListen: "127.0.0.1:19477",
-      runtime: shared.runtime,
-      requiredVersion: shared.requiredVersion,
-    }),
-    sharing: true,
-    oauth: true,
-    firewallTable: "nteract_page7",
-    firewallMark: "0x01000000",
-    firewallComment: "nteract/preview-infra standalone-page7",
-    companyViewDomains: "anaconda.com",
-    editor: "wordgard",
-    tunnelService: "cloudflared-page7.service",
-    frozenTargets: Object.freeze(["pages-next", "page3", "page4", "page5", "page6"]),
-  }),
-  page8: Object.freeze({
-    deployment: Object.freeze({
-      host: shared.host,
-      hostname: "page8.runtimed.run",
-      service: "nteract-page8",
-      bucket: shared.bucket,
-      prefix: "standalone/page8",
-      region: shared.region,
-      listen: "127.0.0.1:9478",
-      internalListen: "127.0.0.1:19478",
-      runtime: shared.runtime,
-      requiredVersion: shared.requiredVersion,
-    }),
-    sharing: true,
-    oauth: true,
-    theme: true,
-    firewallTable: "nteract_page8",
-    firewallMark: "0x00800000",
-    firewallComment: "nteract/preview-infra standalone-page8",
-    companyViewDomains: "anaconda.com",
-    catalogIndex: "1",
-    // The Cloudflare edge forwards an unsampled traceparent, and celld's
-    // default parent-based sampler then drops every request-scoped log line.
-    otelTracesSampler: "always_on",
-    editor: "wordgard",
-    tunnelService: "cloudflared-page8.service",
-    frozenTargets: Object.freeze(["pages-next", "page3", "page4", "page5", "page6", "page7"]),
-  }),
-  page9: Object.freeze({
-    deployment: Object.freeze({
-      host: shared.host,
-      hostname: "page9.runtimed.run",
-      service: "nteract-page9",
-      bucket: shared.bucket,
-      prefix: "standalone/page9",
-      region: shared.region,
-      listen: "127.0.0.1:9479",
-      internalListen: "127.0.0.1:19479",
-      runtime: shared.runtime,
-      requiredVersion: shared.requiredVersion,
-    }),
-    sharing: true,
-    oauth: true,
-    theme: true,
-    // The viewer loads its editor from content-hashed /chunks/*.js files.
-    viewerChunks: true,
-    // The shell's own files (app.js, app.css, theme.js, mermaid.js and both
-    // WASM runtimes) ship under content-hashed names too.
-    viewerAssets: true,
-    // A Project opens at /project/<id>; older /s/<id> links open it too.
-    projectLinks: true,
-    // The viewer's index routes: /projects and /pages.
-    indexRoutes: true,
-    firewallTable: "nteract_page9",
-    firewallMark: "0x00400000",
-    firewallComment: "nteract/preview-infra standalone-page9",
-    companyViewDomains: "anaconda.com",
-    catalogIndex: "1",
-    // The Cloudflare edge forwards an unsampled traceparent, and celld's
-    // default parent-based sampler then drops every request-scoped log line.
-    otelTracesSampler: "always_on",
-    editor: "wordgard",
-    tunnelService: "cloudflared-page9.service",
-    frozenTargets: Object.freeze(["page7", "page8"]),
-  }),
-  // A fresh, empty target with no data or route compatibility with Page9.
+  // Pages held here before pages.runtimed.run; it stays deployable until its
+  // Projects are copied there.
   page10: Object.freeze({
     deployment: Object.freeze({
       host: shared.host,
@@ -334,7 +150,6 @@ const targets = Object.freeze({
     // The Cloudflare edge forwards an unsampled traceparent, and celld's
     // default parent-based sampler then drops every request-scoped log line.
     otelTracesSampler: "always_on",
-    editor: "wordgard",
     // celld sheds cells above CELLD_MAX_RSS_MB. At 768 MB production shed its
     // D1 cell repeatedly and signed-in requests failed while it restored.
     // lab1 has 31 GB; MemoryMax stays above the shedding threshold.
@@ -348,7 +163,6 @@ const targets = Object.freeze({
       a: Object.freeze({ service: "cloudflared-page10-a.service", metrics: "127.0.0.1:29480" }),
       b: Object.freeze({ service: "cloudflared-page10-b.service", metrics: "127.0.0.1:29490" }),
     }),
-    frozenTargets: Object.freeze(["page7", "page8", "page9"]),
   }),
   // pages.runtimed.run: the lasting home for Pages. It starts empty, with
   // Page10's flags and runtime; scripts/project-transfer.mjs copies Projects in.
@@ -408,7 +222,6 @@ const targets = Object.freeze({
     // The Cloudflare edge forwards an unsampled traceparent, and celld's
     // default parent-based sampler then drops every request-scoped log line.
     otelTracesSampler: "always_on",
-    editor: "wordgard",
     // Same limits as Page10; see its memory comment.
     memory: SERVING_MEMORY,
     // The single connector unit earlier releases installed, then the two
@@ -418,8 +231,6 @@ const targets = Object.freeze({
       a: Object.freeze({ service: "cloudflared-pages-live-a.service", metrics: "127.0.0.1:29481" }),
       b: Object.freeze({ service: "cloudflared-pages-live-b.service", metrics: "127.0.0.1:29491" }),
     }),
-    // Page10 stays deployable, so it is not frozen here.
-    frozenTargets: Object.freeze(["page7", "page8", "page9"]),
   }),
   // page2.runtimed.run (target pages2): a fresh, empty target on its own host, lab2 (m7i.large,
   // 8 GB). Pages' flags; it has only ever held plain Automerge Pages. Its listeners,
@@ -470,7 +281,6 @@ const targets = Object.freeze({
     // pages2 starts with its own auth, OIDC and quota tables.
     d1: AUTH_D1,
     otelTracesSampler: "always_on",
-    editor: "wordgard",
     // m7i.large has 8 GB. MemoryMax 4G leaves the host room for cloudflared.
     memory: SERVING_MEMORY,
     // lab2 runs no shared cloudflared connector (/etc/cloudflared/config.yml);
@@ -521,7 +331,6 @@ const targets = Object.freeze({
     // celld scopes both D1 databases to this target's fleet prefix.
     d1: AUTH_D1,
     otelTracesSampler: "always_on",
-    editor: "wordgard",
     // lab2 also hosts pages2 with a 4G ceiling; leave room for the OS.
     memory: Object.freeze({ maxRssMb: 1280, memoryMax: "2G" }),
     sharedTunnel: false,
@@ -535,22 +344,19 @@ const targets = Object.freeze({
 });
 /** Every deployment profile name, qualified or not. */
 export const DEPLOYMENT_TARGETS = Object.freeze(Object.keys(targets));
-export function deploymentProfile(target = "pages-next") {
+export function deploymentProfile(target) {
   if (!Object.hasOwn(targets, target)) throw new Error("Unknown Pages deployment target");
   return targets[target];
 }
 
-// Deployment support includes the isolated Page11 experiment; app qualification
-// is separate and must precede installation.
+// Every profile is a live target. Installation and publication run only for
+// these four; app qualification is separate and must precede installation.
 // Page10 stays deployable until its Projects are copied to Pages.
-// Historical profiles remain readable for comparison and frozen-release checks.
 export const QUALIFIED_TARGETS = Object.freeze(["page10", "pages", "pages2", "page11"]);
 export function assertQualifiedDeploymentTarget(target) {
   deploymentProfile(target);
   if (!QUALIFIED_TARGETS.includes(target))
-    throw new Error(
-      "This build is qualified only for page10, pages and pages2, plus page11; earlier deployments are frozen",
-    );
+    throw new Error("This build deploys only page10, pages, pages2 and page11");
 }
 
 // The record storage each target may hold Pages in, beyond the native modes
@@ -622,11 +428,12 @@ export function assertReleaseOpensTargetPages(target, receipt, observed = []) {
 
 export function selectTarget(argv) {
   const args = [...argv];
-  const target = args[0] === "--target" ? (args.splice(0, 2)[1] ?? "") : "pages-next";
+  if (args[0] !== "--target") throw new Error("Name the Pages deployment target with --target");
+  const target = args.splice(0, 2)[1] ?? "";
   deploymentProfile(target);
   return { target, args };
 }
-export function stagePattern(target = "pages-next") {
+export function stagePattern(target) {
   const { deployment } = deploymentProfile(target);
   return new RegExp("^/tmp/" + deployment.service + "-stage-[A-Za-z0-9]{8}$");
 }
@@ -635,7 +442,7 @@ export function stageTarget(stage) {
   if (!target) throw new Error("Explicit prepared stage for a known Pages target required");
   return target;
 }
-export function verifyDeployment(manifest, target = "pages-next") {
+export function verifyDeployment(manifest, target) {
   const { deployment } = deploymentProfile(target);
   if (
     JSON.stringify(manifest.deployment) !== JSON.stringify(deployment) ||

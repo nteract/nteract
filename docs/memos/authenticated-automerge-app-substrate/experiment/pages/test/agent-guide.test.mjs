@@ -35,7 +35,7 @@ test("MCP_ERROR_CODES lists every code the MCP endpoint writes itself", () => {
   assert.deepEqual(new Set(codeLiterals("../mcp.mjs")), new Set(MCP_ERROR_CODES));
 });
 
-const origin = "https://pages-next.runtimed.run";
+const origin = "https://page10.runtimed.run";
 const env = {
   NOTEBOOK_CLOUD_PUBLIC_ORIGIN: origin,
   get DB() {

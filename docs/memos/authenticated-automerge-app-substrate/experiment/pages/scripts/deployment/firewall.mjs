@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { deploymentProfile, selectTarget, assertQualifiedDeploymentTarget } from "./profiles.mjs";
 
-export function pagesFirewall(uid, existing = false, target = "pages-next") {
+export function pagesFirewall(uid, existing = false, target) {
   const profile = deploymentProfile(target);
   if (!Number.isSafeInteger(uid) || uid < 1) throw new Error("Dedicated operator UID required");
   return `${existing ? "delete table inet " + profile.firewallTable + "\n" : ""}table inet ${profile.firewallTable} {
@@ -22,12 +22,7 @@ export function pagesFirewall(uid, existing = false, target = "pages-next") {
 }\n`;
 }
 
-export function applyPagesFirewall(
-  uid,
-  existing = false,
-  run = execFileSync,
-  target = "pages-next",
-) {
+export function applyPagesFirewall(uid, existing = false, run = execFileSync, target) {
   const rules = pagesFirewall(uid, existing, target);
   // nft rejects Node's socket-backed stdin on this host. Give it a regular
   // file in a private root-owned directory; -f still applies one transaction.

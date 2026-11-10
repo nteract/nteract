@@ -1,12 +1,10 @@
 # Pages deployment
 
-The current release is qualified for three isolated celld targets: **Pages**
-(`pages.runtimed.run`), **Page10**, and **Pages2** (`page2.runtimed.run`, on its
-own host, lab2). Page9 and earlier services are frozen.
-Deployment helpers reject mutations to those targets and check their
-fingerprints when publishing Pages or Page10. Historical profiles remain in
-[profiles.mjs](scripts/deployment/profiles.mjs) for inspection and isolation
-checks; their presence is not permission to deploy to them.
+The current release is qualified for four isolated celld targets: **Pages**
+(`pages.runtimed.run`), **Page10**, **Pages2** (`page2.runtimed.run`, on its
+own host, lab2) and **Page11** (`page11.runtimed.run`, also on lab2).
+[profiles.mjs](scripts/deployment/profiles.mjs) lists the profiles, and the
+deployment helpers reject any other target name.
 
 A release that would break existing clients goes to a fresh target instead of
 carrying compatibility code. Deployment never copies data between targets.
@@ -34,7 +32,6 @@ The `pages` profile owns `pages.runtimed.run`:
 | Listeners | `127.0.0.1:9481`, internal `127.0.0.1:19481` |
 | Firewall | table `nteract_pages_live`, mark `0x00100000` |
 | Tunnel connectors | `cloudflared-pages-live-a.service` (metrics `127.0.0.1:29481`) and `cloudflared-pages-live-b.service` (`127.0.0.1:29491`), tunnel `nteract-pages-live`; see [Connector handoff](#connector-handoff) |
-| Frozen neighbors | `page7`, `page8`, `page9` |
 
 It carries every Page10 flag, the Page quota default and D1 binding, and the
 same celld 0.6.3 runtime and OIDC client. Like Page10, every Page syncs with
@@ -217,7 +214,7 @@ check `/whoami` from that session returns the account.
 
 The allowlisted profile owns `page10.runtimed.run`, service `nteract-page10`,
 listeners `127.0.0.1:9480` / `127.0.0.1:19480`, and the `standalone/page10`
-prefix in the lab1 fleet bucket. It carries every Page9 flag: Wordgard editor,
+prefix in the lab1 fleet bucket. It enables
 lossless cleanup with `CELLD_DURABILITY=bucket`, sharing,
 OAuth, the catalog index, and the hashed-asset, Project-link and index routes.
 It uses production Anaconda verification.
@@ -246,16 +243,15 @@ or simultaneous operator commands from crossing service boundaries.
 
 Each target owns its `/opt`, `/etc`, and `/var/lib` directories, session secret,
 service account, firewall table/mark, and release stage. Page10's firewall mark
-is `0x00200000`, the next bit below Page9's `0x00400000`; Pages takes the next,
-`0x00100000`. The installer checks
+is `0x00200000` and Pages' is `0x00100000`. The installer checks
 ownership and resource conflicts, preserves Durable Object bindings/migrations
 and persistent data, and touches only the selected service. Installation and
 publication require SSH and sudo on the target's host (lab1, or lab2 for pages2).
 
 Each installation copies `firewall.mjs` and `profiles.mjs` into its own
-`/opt/<service>`, and its unit's `ExecStartPre` runs that copy. A frozen service
-keeps the copy that qualified it, so Page9 keeps restarting after qualification
-moved to Page10 and Pages.
+`/opt/<service>`, and its unit's `ExecStartPre` runs that copy. A service keeps
+the copy of the release that installed it, so it restarts the same way until its
+next install.
 
 ### App-only and full deploys
 
@@ -419,7 +415,7 @@ rollback publishes a different build id too, so open tabs see the banner again.
 A rollback build must open plain Automerge Pages; see [Rollback and Page
 record storage](#rollback-and-page-record-storage).
 
-The Page8, Page9, Page10 and Pages profiles set `PAGES_CATALOG_INDEX=1`. Changing this epoch label starts
+Every profile sets `PAGES_CATALOG_INDEX=1`. Changing this epoch label starts
 account reconciliation on the next listing. Reconciliation may take several
 listings. Unsetting the variable turns the index off, and listings read Catalog
 entries directly.
@@ -555,7 +551,7 @@ the same floor.
 
 ### Projects and their storage identity
 
-Projects were called Spaces through 3548b9750, which Page8 runs. Callers now see
+Storage names Projects as Spaces. Callers see
 Projects: tool names, `project_id`, error codes, routes and viewer labels.
 Storage keeps every Space name exactly as 3548b9750 writes it:
 
@@ -940,15 +936,12 @@ routes stay private. The catch-all is the edge's: an empty 404 with no content
 type, which the Worker never sees. A gateway route that ingress doesn't admit
 works locally, where celld runs without a tunnel, and fails only through the
 edge ([Gateway routes and the allowlist](#gateway-routes-and-the-allowlist)).
-Page10 serves Page9's route set on its own hostname and listener, plus Sift's
-WASM route. Its only predecessor is its own config without that route; the
-publisher refuses any other installation receipt, including Page9's earlier
-ones. The
-route migrations below are Page9's history; Page10 starts at the end of them.
-Pages serves Page10's route set on `pages.runtimed.run` and `127.0.0.1:9481`,
-with the same single predecessor, and refuses Page10's installation receipts.
+Page10 serves this route set on its own hostname and listener. Pages serves
+the same set on `pages.runtimed.run` and `127.0.0.1:9481`. Each publisher
+migrates only from an installation its own target's earlier release sealed, and
+refuses another target's installation receipts.
 
-All three admit the viewer's content-hashed chunks, `/chunks/` followed by
+Every target admits the viewer's content-hashed chunks, `/chunks/` followed by
 eight base32 characters and `.js`. `build-receipt.json` maps each chunk to the
 sha256 of its bytes in `viewer_chunks`. `prepare` stages exactly those chunks,
 checks each one's bytes against its digest first, and refuses a changed chunk or
@@ -956,8 +949,8 @@ a `public/chunks` directory that holds any other file.
 
 The shell's own files are hashed the same way: `app-<hash>.js`,
 `app-<hash>.css`, `theme-<hash>.js`, `mermaid-<hash>.js`,
-`automerge-<hash>.wasm`, `subduction-<hash>.wasm` and `sift-<hash>.wasm`. All
-three admit each name with its own extension only. `viewer_assets` in the
+`automerge-<hash>.wasm`, `subduction-<hash>.wasm` and `sift-<hash>.wasm`. Every
+target admits each name with its own extension only. `viewer_assets` in the
 receipt maps each to its sha256, and the name's hash must be the first 40 bits
 of that digest. `prepare` stages exactly those seven files, checks their bytes
 first, and refuses any other file of that shape in `public`.
@@ -971,24 +964,19 @@ since the build. The gate workflow's `release` job builds from a clean
 checkout, stages the bundle this way, and uploads it as the `pages-release`
 artifact.
 
-Page10 and Pages admit `sift-<hash>.wasm` through their own route group, which
-Page9 never had. Each publisher migrates only from its config without that
+Page10 and Pages admit `sift-<hash>.wasm` through their own route group. Each publisher migrates only from its config without that
 group, so the first release with Sift tables hands off that target's connector
 once; later releases are no-ops.
 
-All three admit Project links: `/project/<id>` and the older `/s/<id>`, where the
+Every target admits Project links: `/project/<id>` and the older `/s/<id>`, where the
 ID is `prj_` or `sp_` followed by a lowercase v4 UUID, with an optional
 trailing slash. These are the paths `shared/routes.mjs` opens as a Project;
-the viewer rewrites `/s/<id>` to `/project/<id>`. Page9's publisher migrates only
-from its hashed-asset config to this one, so an older installation must
-publish the hashed-asset release first.
+the viewer rewrites `/s/<id>` to `/project/<id>`.
 
-All three admit the viewer's index routes, `/projects` and `/pages`, as exact
+Every target admits the viewer's index routes, `/projects` and `/pages`, as exact
 paths with an optional trailing slash. `/pages` keeps its search in `?q=`;
 ingress matches the path only. These are the paths `shared/routes.mjs` opens
-as index routes. Page9's publisher migrates only from its Project-link config
-to this one, so an older installation must publish the Project-link release
-first.
+as index routes.
 
 Page10, Pages and Pages2 admit the account routes (`accountPaths` in
 [routes.mjs](scripts/deployment/routes.mjs)): `/api/auth/logout-all`,
@@ -1174,7 +1162,7 @@ shows the new slot registering its connections before the old one logs
 ## Telemetry
 
 Service units enable `CELLD_OTEL=1` and `CELLD_OTEL_RETENTION=30d` with celld's
-five-minute/5 MiB batching defaults. Page8 through Page10 and Pages also set
+five-minute/5 MiB batching defaults. Every profile also sets
 `OTEL_TRACES_SAMPLER=always_on`. Requests reach it with a `traceparent` whose
 sampled flag is clear. For a request with an unsampled parent, celld's default
 `parentbased_always_on` sampler records nothing, including the Worker's
@@ -1458,7 +1446,7 @@ Each step reads a bearer token from the environment and sends it only in the
 | import | `PAGES_TARGET_TOKEN` or `PAGES_TARGET_TOKEN_FILE` | write access on the target (`cloud:read` + `cloud:write`) |
 
 Use an Anaconda API key from the provider environment the target verifies
-against (production for Page9 and later). Create it at
+against. Create it at
 https://anaconda.com/app/profile/api-keys, linked from each target's `/connect`
 page: User Resources read-only for export, read and write for import, Platform
 Channels no access. Save it with the `/connect` instructions, which write
@@ -1477,7 +1465,7 @@ list it. The target Project belongs to the account that imports it.
 ```sh
 PAGES_SOURCE_TOKEN_FILE=~/.config/pages/anaconda-api-key \
   node scripts/project-transfer.mjs export \
-  --source https://page9.runtimed.run \
+  --source https://page10.runtimed.run \
   --project prj_797f9475-6855-4ce5-8203-9f66cfc417c1 \
   --out guide.bundle.json
 ```
@@ -1489,7 +1477,7 @@ The bundle is JSON for review before import:
   "format": "nteract-pages-project-bundle",
   "version": 5,
   "bundle_id": "<uuid>",
-  "source": { "origin": "https://page9.runtimed.run", "project_id": "prj_…", "document_id": "…" },
+  "source": { "origin": "https://page10.runtimed.run", "project_id": "prj_…", "document_id": "…" },
   "exported_at": "2026-11-01T00:00:00.000Z",
   "project": {
     "title": "…",

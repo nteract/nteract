@@ -6,28 +6,23 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  DEPLOYMENT_TARGETS,
   QUALIFIED_TARGETS,
   assertQualifiedDeploymentTarget,
   deploymentProfile,
 } from "./deployment/profiles.mjs";
 
 const scripts = path.dirname(fileURLToPath(import.meta.url));
-const frozen = ["pages-next", "page3", "page4", "page5", "page6", "page7", "page8", "page9"];
 
-test("deployment targets include Page11 while historical profiles remain inspectable", () => {
+test("deployment targets are exactly the four qualified profiles", () => {
   assert.deepEqual(QUALIFIED_TARGETS, ["page10", "pages", "pages2", "page11"]);
+  assert.deepEqual(DEPLOYMENT_TARGETS, QUALIFIED_TARGETS);
   for (const target of QUALIFIED_TARGETS)
     assert.doesNotThrow(() => assertQualifiedDeploymentTarget(target), target);
-  for (const target of frozen) {
-    assert.ok(deploymentProfile(target).deployment.hostname);
-    assert.throws(
-      () => assertQualifiedDeploymentTarget(target),
-      /qualified only for page10, pages and pages2/,
-    );
-  }
+  assert.throws(() => assertQualifiedDeploymentTarget("pages-next"), /Unknown Pages/);
 });
 
-test("operator entrypoints reject every frozen target and implicit default before external calls", (t) => {
+test("operator entrypoints reject an unnamed or unknown target before external calls", (t) => {
   const directory = mkdtempSync(path.join(tmpdir(), "pages-release-guard-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const called = path.join(directory, "external-call");
@@ -41,37 +36,46 @@ test("operator entrypoints reject every frozen target and implicit default befor
     PATH: directory + path.delimiter + process.env.PATH,
     CLOUDFLARE_API_TOKEN: "",
   };
-  const reject = (entry, args) => {
+  const reject = (entry, args, message) => {
     const result = spawnSync(process.execPath, [path.join(scripts, entry), ...args], {
       env,
       encoding: "utf8",
       timeout: 5000,
     });
     assert.equal(result.status, 1, `${entry} ${args.join(" ")}: ${result.stderr}`);
-    assert.match(result.stderr, /This build is qualified only for page10, pages and pages2/);
-    assert.equal(existsSync(called), false, "qualification must precede SSH/SCP");
+    assert.match(result.stderr, message);
+    assert.equal(existsSync(called), false, "target selection must precede SSH/SCP");
   };
-  for (const target of [undefined, ...frozen]) {
-    const selected = target ?? "pages-next";
-    const prefix = target ? ["--target", target] : [];
-    const stage = `/tmp/${deploymentProfile(selected).deployment.service}-stage-ZZguard1`;
-    reject("deploy.mjs", [...prefix, "prepare"]);
-    reject("deploy.mjs", [...prefix, "upload", path.join(directory, "absent-stage")]);
-    reject("deploy.mjs", [...prefix, "install", stage, "--apply"]);
-    reject("deploy.mjs", [...prefix, "provision"]);
-    reject("deploy.mjs", [...prefix, "provision", "--apply"]);
-    reject("deploy.mjs", [...prefix, "publish", stage, "--apply"]);
-    reject("deploy.mjs", [...prefix, "rotate-key"]);
-    reject("deploy.mjs", [...prefix, "retire-key", "--apply", "--from", "k2"]);
-    reject("deployment/firewall.mjs", prefix);
-    reject("deployment/dns.mjs", [...prefix, "12345678-1234-4123-8123-123456789abc", "--apply"]);
-    reject("deployment/tunnel.mjs", [...prefix, "--apply"]);
+  const unnamed = /Name the Pages deployment target with --target/;
+  const unknown = /Unknown Pages deployment target/;
+  for (const [prefix, message] of [
+    [[], unnamed],
+    [["--target", "pages-next"], unknown],
+    [["--target", "elsewhere"], unknown],
+  ]) {
+    const stage = "/tmp/nteract-pages-live-stage-ZZguard1";
+    reject("deploy.mjs", [...prefix, "prepare"], message);
+    reject("deploy.mjs", [...prefix, "upload", path.join(directory, "absent-stage")], message);
+    reject("deploy.mjs", [...prefix, "install", stage, "--apply"], message);
+    reject("deploy.mjs", [...prefix, "provision"], message);
+    reject("deploy.mjs", [...prefix, "provision", "--apply"], message);
+    reject("deploy.mjs", [...prefix, "publish", stage, "--apply"], message);
+    reject("deploy.mjs", [...prefix, "rotate-key"], message);
+    reject("deploy.mjs", [...prefix, "retire-key", "--apply", "--from", "k2"], message);
+    reject("deployment/firewall.mjs", prefix, message);
+    reject(
+      "deployment/dns.mjs",
+      [...prefix, "12345678-1234-4123-8123-123456789abc", "--apply"],
+      message,
+    );
+    reject("deployment/tunnel.mjs", [...prefix, "--apply"], message);
   }
-  for (const target of frozen) {
-    const stage = `/tmp/${deploymentProfile(target).deployment.service}-stage-ZZguard1`;
-    reject("deployment/install.mjs", [stage, "--apply"]);
-    reject("deployment/publish.mjs", [stage, "--apply"]);
-  }
+  for (const entry of ["deployment/install.mjs", "deployment/publish.mjs"])
+    reject(
+      entry,
+      ["/tmp/nteract-pages-next-stage-ZZguard1", "--apply"],
+      /Explicit prepared stage for a known Pages target required/,
+    );
 });
 
 test("page11 plan prints only its target without SSH", (t) => {

@@ -368,12 +368,10 @@ test("targets and SSH hosts come from the profile or a validated override", asyn
   assert.equal(targetConfig("page10", "root@lab1").host, "root@lab1");
   for (const host of ["-oProxyCommand=sh", "lab1;id", "lab 1", ""])
     assert.throws(() => targetConfig("page10", host), UsageError, host);
-  const { err, io } = capture();
+  const { io } = capture();
   const refuse = async () => {
     throw new Error("transport must not run");
   };
-  assert.equal(await main(["--target", "page9", "list"], { transport: refuse, ...io }), 2);
-  assert.match(err.join("\n"), /page9 has no Page quotas/);
   assert.equal(await main(["--target", "nope", "list"], { transport: refuse, ...io }), 2);
   assert.equal(
     await main([...TARGET, "--ssh-host", "-oProxyCommand=x", "list"], { transport: refuse, ...io }),

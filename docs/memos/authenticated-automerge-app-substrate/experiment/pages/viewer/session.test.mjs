@@ -22,7 +22,7 @@ const activityMessage = (revision = 1, epoch = "epoch-one") => ({
 });
 
 test("the sync address pins the freshly discovered activity epoch, and names plain sync", () => {
-  const address = pageSyncAddress("fixture", "https://page8.runtimed.run/p/fixture", "host+epoch");
+  const address = pageSyncAddress("fixture", "https://page10.runtimed.run/p/fixture", "host+epoch");
   assert.equal(address.protocol, "wss:");
   assert.equal(address.pathname, "/api/sync");
   assert.equal(address.searchParams.get("page"), "fixture");
@@ -40,7 +40,7 @@ test("a rejected stale-epoch upgrade retires the discovered activity before retr
   const locationBefore = Object.getOwnPropertyDescriptor(globalThis, "location");
   Object.defineProperty(globalThis, "location", {
     configurable: true,
-    value: { href: "https://page8.runtimed.run/" },
+    value: { href: "https://page10.runtimed.run/" },
   });
   t.after(() => {
     if (locationBefore) Object.defineProperty(globalThis, "location", locationBefore);
@@ -387,7 +387,7 @@ test("each connect response replaces the actor profiles and attested changes", a
   const locationBefore = Object.getOwnPropertyDescriptor(globalThis, "location");
   Object.defineProperty(globalThis, "location", {
     configurable: true,
-    value: { href: "https://page8.runtimed.run/" },
+    value: { href: "https://page10.runtimed.run/" },
   });
   t.after(() => {
     if (locationBefore) Object.defineProperty(globalThis, "location", locationBefore);

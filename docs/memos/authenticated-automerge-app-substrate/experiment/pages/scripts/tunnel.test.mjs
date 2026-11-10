@@ -59,7 +59,7 @@ function host(root, { install, dropAfterInstall = 0 } = {}) {
 }
 const etc = () => {
   const root = mkdtempSync(path.join(tmpdir(), "tunnel-etc-"));
-  execFileSync("mkdir", [path.join(root, "nteract-page9")]);
+  execFileSync("mkdir", [path.join(root, "nteract-page10")]);
   return root;
 };
 
@@ -68,12 +68,12 @@ test("inspection reports an absent tunnel without touching Cloudflare or the hos
   const h = host(etc());
   const result = await provisionTunnel({
     token: "t",
-    target: "page9",
+    target: "page10",
     fetchImpl: cf.fetchImpl,
     run: h.run,
   });
   assert.deepEqual(result, {
-    name: "nteract-page9",
+    name: "nteract-page10",
     tunnelId: null,
     created: false,
     installed: false,
@@ -87,7 +87,7 @@ test("apply creates the tunnel and installs private credentials and a receipt", 
   const cf = cloudflare();
   const result = await provisionTunnel({
     token: "t",
-    target: "page9",
+    target: "page10",
     apply: true,
     fetchImpl: cf.fetchImpl,
     run: host(root).run,
@@ -95,7 +95,7 @@ test("apply creates the tunnel and installs private credentials and a receipt", 
   });
   assert.equal(result.created, true);
   assert.equal(JSON.stringify(result).includes(Buffer.alloc(32, 7).toString("base64")), false);
-  const d = path.join(root, "nteract-page9");
+  const d = path.join(root, "nteract-page10");
   const credentials = JSON.parse(readFileSync(path.join(d, "tunnel.json"), "utf8"));
   assert.deepEqual(credentials, {
     AccountTag: accountId,
@@ -108,20 +108,20 @@ test("apply creates the tunnel and installs private credentials and a receipt", 
     schema: 1,
     account_id: accountId,
     tunnel_id: tunnelId,
-    name: "nteract-page9",
+    name: "nteract-page10",
     config_src: "local",
   });
   assert.deepEqual(readdirSync(d).sort(), ["tunnel-provisioning.json", "tunnel.json"]);
   // A rerun finds the tunnel and the matching receipt and changes nothing.
   const again = await provisionTunnel({
     token: "t",
-    target: "page9",
+    target: "page10",
     apply: true,
-    fetchImpl: cloudflare([{ id: tunnelId, name: "nteract-page9" }]).fetchImpl,
+    fetchImpl: cloudflare([{ id: tunnelId, name: "nteract-page10" }]).fetchImpl,
     run: host(root).run,
   });
   assert.deepEqual(again, {
-    name: "nteract-page9",
+    name: "nteract-page10",
     tunnelId,
     created: false,
     installed: true,
@@ -134,7 +134,7 @@ test("a failure between the two moves removes the stranded file and the new tunn
   await assert.rejects(
     provisionTunnel({
       token: "t",
-      target: "page9",
+      target: "page10",
       apply: true,
       fetchImpl: cf.fetchImpl,
       run: host(root, { install: "between" }).run,
@@ -146,11 +146,11 @@ test("a failure between the two moves removes the stranded file and the new tunn
     ["GET", "POST", "DELETE"],
   );
   assert.equal(cf.calls.at(-1).pathname.endsWith(`/cfd_tunnel/${tunnelId}`), true);
-  assert.deepEqual(readdirSync(path.join(root, "nteract-page9")), []);
+  assert.deepEqual(readdirSync(path.join(root, "nteract-page10")), []);
   // A rerun starts clean.
   const rerun = await provisionTunnel({
     token: "t",
-    target: "page9",
+    target: "page10",
     apply: true,
     fetchImpl: cloudflare().fetchImpl,
     run: host(root).run,
@@ -163,14 +163,14 @@ test("a lost acknowledgement after both files land keeps the tunnel", async () =
   const cf = cloudflare();
   const result = await provisionTunnel({
     token: "t",
-    target: "page9",
+    target: "page10",
     apply: true,
     fetchImpl: cf.fetchImpl,
     run: host(root, { install: "lost" }).run,
   });
-  assert.deepEqual(result, { name: "nteract-page9", tunnelId, created: true, installed: true });
+  assert.deepEqual(result, { name: "nteract-page10", tunnelId, created: true, installed: true });
   assert.ok(cf.calls.every(({ method }) => method !== "DELETE"));
-  assert.deepEqual(readdirSync(path.join(root, "nteract-page9")).sort(), [
+  assert.deepEqual(readdirSync(path.join(root, "nteract-page10")).sort(), [
     "tunnel-provisioning.json",
     "tunnel.json",
   ]);
@@ -182,7 +182,7 @@ test("an unanswered reconcile check leaves the tunnel and its files for an opera
   await assert.rejects(
     provisionTunnel({
       token: "t",
-      target: "page9",
+      target: "page10",
       apply: true,
       fetchImpl: cf.fetchImpl,
       run: host(root, { install: "lost", dropAfterInstall: 1 }).run,
@@ -190,7 +190,7 @@ test("an unanswered reconcile check leaves the tunnel and its files for an opera
     /didn't answer a check/,
   );
   assert.ok(cf.calls.every(({ method }) => method !== "DELETE"));
-  assert.deepEqual(readdirSync(path.join(root, "nteract-page9")).sort(), [
+  assert.deepEqual(readdirSync(path.join(root, "nteract-page10")).sort(), [
     "tunnel-provisioning.json",
     "tunnel.json",
   ]);
@@ -198,45 +198,45 @@ test("an unanswered reconcile check leaves the tunnel and its files for an opera
 
 test("cleanup removes this tunnel's files whatever their JSON spacing", () => {
   const root = etc();
-  const d = path.join(root, "nteract-page9");
+  const d = path.join(root, "nteract-page10");
   writeFileSync(path.join(d, "tunnel.json"), `{ "TunnelID" :  "${tunnelId}" }`);
-  removeOwnedFiles("page9", tunnelId, { run: host(root).run });
+  removeOwnedFiles("page10", tunnelId, { run: host(root).run });
   assert.deepEqual(readdirSync(d), []);
 });
 
 test("an unreadable tunnel file counts as unknown, never as absent", async () => {
   const root = etc();
-  const d = path.join(root, "nteract-page9");
+  const d = path.join(root, "nteract-page10");
   writeFileSync(path.join(d, "tunnel-provisioning.json"), `{"tunnel_id":"${tunnelId}"}`);
   // A directory named like the credentials file makes grep fail to read it.
   execFileSync("mkdir", [path.join(d, "tunnel.json")]);
-  const cf = cloudflare([{ id: tunnelId, name: "nteract-page9" }]);
+  const cf = cloudflare([{ id: tunnelId, name: "nteract-page10" }]);
   await assert.rejects(
     provisionTunnel({
       token: "t",
-      target: "page9",
+      target: "page10",
       apply: true,
       fetchImpl: cf.fetchImpl,
       run: host(root).run,
     }),
     /Could not read the host's tunnel files/,
   );
-  assert.throws(() => removeOwnedFiles("page9", tunnelId, { run: host(root).run }));
+  assert.throws(() => removeOwnedFiles("page10", tunnelId, { run: host(root).run }));
   assert.ok(cf.calls.every(({ method }) => method === "GET"));
 });
 
 test("cleanup leaves files that name another tunnel", () => {
   const root = etc();
-  const d = path.join(root, "nteract-page9");
+  const d = path.join(root, "nteract-page10");
   writeFileSync(path.join(d, "tunnel.json"), '{"TunnelID":"00000000-0000-4000-8000-000000000000"}');
-  removeOwnedFiles("page9", tunnelId, { run: host(root).run });
+  removeOwnedFiles("page10", tunnelId, { run: host(root).run });
   assert.deepEqual(readdirSync(d), ["tunnel.json"]);
 });
 
 test("a host that isn't ready stops before Cloudflare creates anything", async () => {
   for (const prepare of [
-    (root) => execFileSync("rmdir", [path.join(root, "nteract-page9")]),
-    (root) => writeFileSync(path.join(root, "nteract-page9", "tunnel.json"), "{}"),
+    (root) => execFileSync("rmdir", [path.join(root, "nteract-page10")]),
+    (root) => writeFileSync(path.join(root, "nteract-page10", "tunnel.json"), "{}"),
   ]) {
     const root = etc();
     prepare(root);
@@ -244,7 +244,7 @@ test("a host that isn't ready stops before Cloudflare creates anything", async (
     await assert.rejects(
       provisionTunnel({
         token: "t",
-        target: "page9",
+        target: "page10",
         apply: true,
         fetchImpl: cf.fetchImpl,
         run: host(root).run,
@@ -255,11 +255,11 @@ test("a host that isn't ready stops before Cloudflare creates anything", async (
 });
 
 test("an existing tunnel without matching host credentials refuses with a recovery step", async () => {
-  const cf = cloudflare([{ id: tunnelId, name: "nteract-page9" }]);
+  const cf = cloudflare([{ id: tunnelId, name: "nteract-page10" }]);
   await assert.rejects(
     provisionTunnel({
       token: "t",
-      target: "page9",
+      target: "page10",
       apply: true,
       fetchImpl: cf.fetchImpl,
       run: host(etc()).run,
@@ -271,22 +271,22 @@ test("an existing tunnel without matching host credentials refuses with a recove
 
 test("an ambiguous listing refuses", async () => {
   const cf = cloudflare([
-    { id: tunnelId, name: "nteract-page9" },
-    { id: tunnelId, name: "nteract-page9" },
+    { id: tunnelId, name: "nteract-page10" },
+    { id: tunnelId, name: "nteract-page10" },
   ]);
   await assert.rejects(
-    provisionTunnel({ token: "t", target: "page9", apply: true, fetchImpl: cf.fetchImpl }),
+    provisionTunnel({ token: "t", target: "page10", apply: true, fetchImpl: cf.fetchImpl }),
     /ambiguous/,
   );
 });
 
 test("install never replaces a file that appeared after the check", () => {
   const root = etc();
-  const d = path.join(root, "nteract-page9");
+  const d = path.join(root, "nteract-page10");
   writeFileSync(path.join(d, "tunnel-provisioning.json"), "existing");
   assert.throws(() =>
     installTunnelFiles(
-      "page9",
+      "page10",
       { credentials: { TunnelSecret: "s" }, receipt: { schema: 1 } },
       { run: host(root).run },
     ),
@@ -339,19 +339,6 @@ const page10Record = {
   ttl: 1,
   comment: "nteract/pages:experiment:page10",
 };
-
-for (const target of ["pages-next", "page3", "page4", "page5", "page6", "page7", "page8", "page9"])
-  for (const apply of [false, true])
-    test(`provisionTarget refuses frozen ${target} (apply: ${apply}) before any call`, async () => {
-      const cf = edge();
-      const h = host(etcFor(target));
-      await assert.rejects(
-        provisionTarget({ token, target, apply, fetchImpl: cf.fetchImpl, run: h.run }),
-        /qualified only for page10, pages and pages2/,
-      );
-      assert.equal(cf.calls.length, 0);
-      assert.equal(h.runs.length, 0);
-    });
 
 test("provision retry after a DNS failure creates only DNS and keeps the tunnel", async () => {
   const root = etcFor("page10");
@@ -526,7 +513,7 @@ test("provision refuses a DNS record another target owns", async () => {
     fetchImpl: cloudflare().fetchImpl,
     run: host(root).run,
   });
-  const foreign = { ...page10Record, comment: "nteract/pages:experiment:page9" };
+  const foreign = { ...page10Record, comment: "nteract/pages:experiment:pages" };
   const cf = edge([{ id: tunnelId, name: "nteract-page10" }], [foreign]);
   await assert.rejects(
     provisionTarget({

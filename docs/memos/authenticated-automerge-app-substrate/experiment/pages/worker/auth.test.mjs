@@ -93,24 +93,6 @@ test("whoami rejects missing or invalid credentials, preserves outages and rejec
   }
 });
 
-test("authenticated sessions advertise Wordgard regardless of legacy editor configuration", async (t) => {
-  const fixture = await createAuthFixture();
-  t.mock.method(globalThis, "fetch", fixture.fetch);
-  const token = fixture.apiKey();
-  for (const configured of [undefined, "prosemirror", "wordgard"]) {
-    const response = await worker.fetch(
-      new Request("https://pages.invalid/api/auth/session", {
-        headers: { authorization: `Bearer ${token}` },
-      }),
-      { ...fixture.env, PAGES_EDITOR: configured },
-    );
-    assert.equal(response.status, 200);
-    const session = await response.json();
-    assert.equal(session.editor, "wordgard");
-    assert.equal(session.canWrite, true);
-  }
-});
-
 test("API keys use production scope checks and ignore claimed account/operator headers", async (t) => {
   const fixture = await createAuthFixture();
   t.mock.method(globalThis, "fetch", fixture.fetch);

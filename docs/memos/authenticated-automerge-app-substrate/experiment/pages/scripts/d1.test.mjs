@@ -23,13 +23,6 @@ test("a command without a target or SQL sends nothing", async () => {
   );
 });
 
-test("a target without a D1 database is refused before sending", async () => {
-  const { io, err } = capture();
-  const code = await main(["--target", "page3", "SELECT 1"], { ...io, transport: async () => {} });
-  assert.equal(code, 2);
-  assert.match(err.join("\n"), /no quota database|page3/);
-});
-
 test("rows print one JSON object per line and the receipt names the target", async () => {
   const { io, out, err } = capture();
   let received;

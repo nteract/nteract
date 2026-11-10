@@ -1,5 +1,5 @@
 // One disposable Page through real HTTP and MCP. The default uses local OIDC.
-// Live use is limited to Page8 and requires --allow-page8 plus an existing
+// Live use is limited to Page10 and requires --allow-page10 plus an existing
 // authorized PAGES_API_KEY_FILE. This script never starts servers or deploys.
 import assert from "node:assert/strict";
 import { constants } from "node:fs";
@@ -11,8 +11,8 @@ const origin = process.env.PAGES_ORIGIN ?? "http://localhost:9896";
 const target = new URL(origin);
 assert.equal(target.origin, origin, "PAGES_ORIGIN must be an origin without a trailing slash");
 const local = target.hostname === "localhost" && target.protocol === "http:";
-const page8 = origin === "https://page8.runtimed.run" && process.argv.includes("--allow-page8");
-assert.ok(local || page8, "Only local OIDC or explicitly opted-in Page8 is supported");
+const page10 = origin === "https://page10.runtimed.run" && process.argv.includes("--allow-page10");
+assert.ok(local || page10, "Only local OIDC or explicitly opted-in Page10 is supported");
 const secrets = new Set();
 const report = { origin, completed: [], cleanedUp: false };
 const started = performance.now();
@@ -186,7 +186,7 @@ try {
   else {
     assert.ok(
       process.env.PAGES_API_KEY_FILE,
-      "Page8 requires an existing authorized PAGES_API_KEY_FILE",
+      "Page10 requires an existing authorized PAGES_API_KEY_FILE",
     );
     const key = await existingApiKey(process.env.PAGES_API_KEY_FILE);
     secrets.add(key);

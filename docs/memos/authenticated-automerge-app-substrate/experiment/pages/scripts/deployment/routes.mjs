@@ -9,8 +9,8 @@ export const chunkPaths = "chunks/[A-Z2-7]{8}[.]js|";
 export const assetPaths =
   "(app|theme|mermaid)-[A-Z2-7]{8}[.]js|app-[A-Z2-7]{8}[.]css|(automerge|subduction)-[A-Z2-7]{8}[.]wasm|";
 // Sift's content-hashed WASM (scripts/viewer-chunks.mjs VIEWER_ASSET), loaded
-// only when a Page shows a Parquet dataframe. A separate group, so Page9's frozen
-// asset route bytes stay exactly as deployed.
+// only when a Page shows a Parquet dataframe. A separate group, so the asset
+// route bytes stay unchanged for a profile without Sift tables.
 export const siftPaths = "sift-[A-Z2-7]{8}[.]wasm|";
 // Exact identity endpoint; the Worker enforces GET and authentication.
 export const whoamiPaths = "whoami|";
@@ -45,7 +45,7 @@ export const cardImagePaths = `pages/${uuid}/card-image(/[0-9a-f]{64}-(light|dar
 // sha256. Inside the api/( group.
 export const projectAssetPaths = `projects/(prj|sp)_${uuid}/assets(/[0-9a-f]{64})?|`;
 
-export function routesFor(target = "pages-next", legacy = false) {
+export function routesFor(target) {
   const profile = deploymentProfile(target);
   const { hostname, listen } = profile.deployment;
   const renderer = profile.tunnelService ? "mermaid[.]js|" : "";
@@ -55,34 +55,32 @@ export function routesFor(target = "pages-next", legacy = false) {
   const sift = profile.siftTables ? siftPaths : "";
   const projects = profile.projectLinks ? projectPaths : "";
   const index = profile.indexRoutes ? indexPaths : "";
-  // Frozen deployments retain their exact route receipts. Sharing targets expose
-  // only the public setup page, its script, and the authenticated access API.
+  // Sharing targets expose only the public setup page, its script, and the authenticated access API.
   const sharing = profile.sharing === true;
   const authenticatedAssets = profile.oauth === true;
   const connect = sharing ? "connect|connect[.]js|" : "";
   const access = sharing ? "access|" : "";
-  const paths = legacy
-    ? "index[.]html|app[.](js|css)|(automerge|subduction)[.]wasm|health|mcp|api/(tools|connect|sync|saved|auth/(login|logout|session))|oidc"
-    : "index[.]html|app[.](js|css)|" +
-      theme +
-      chunks +
-      assets +
-      sift +
-      renderer +
-      connect +
-      (profile.whoami === true ? whoamiPaths : "") +
-      (authenticatedAssets ? oauthPaths : "") +
-      "(automerge|subduction)[.]wasm|health|mcp|llms[.]txt|p/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/?|" +
-      projects +
-      index +
-      (profile.linkPreviews === true ? linkPreviewPaths : "") +
-      "api/(" +
-      access +
-      (authenticatedAssets ? imagePaths : "") +
-      (profile.accountRoutes === true ? accountPaths : "") +
-      (profile.cardImages === true ? cardImagePaths : "") +
-      (profile.projectAssets === true ? projectAssetPaths : "") +
-      "tools|connect|sync|saved|pages/register|auth/(login|logout|session))|oidc";
+  const paths =
+    "index[.]html|app[.](js|css)|" +
+    theme +
+    chunks +
+    assets +
+    sift +
+    renderer +
+    connect +
+    (profile.whoami === true ? whoamiPaths : "") +
+    (authenticatedAssets ? oauthPaths : "") +
+    "(automerge|subduction)[.]wasm|health|mcp|llms[.]txt|p/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/?|" +
+    projects +
+    index +
+    (profile.linkPreviews === true ? linkPreviewPaths : "") +
+    "api/(" +
+    access +
+    (authenticatedAssets ? imagePaths : "") +
+    (profile.accountRoutes === true ? accountPaths : "") +
+    (profile.cardImages === true ? cardImagePaths : "") +
+    (profile.projectAssets === true ? projectAssetPaths : "") +
+    "tools|connect|sync|saved|pages/register|auth/(login|logout|session))|oidc";
   return `  - hostname: ${hostname}
     path: ^/(${paths})?$
     service: http://${listen}
