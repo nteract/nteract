@@ -63,7 +63,7 @@ jobs:
         with:
           node-version: "24"
           package-manager-cache: false
-      - name: Prepare pinned upstream packages and locked fixture dependencies
+      - name: Prepare pinned upstream packages and locked dependencies
         run: npm run setup
       # The release asset is gzip; CELLD_RELEASE.sha256 pins the decompressed
       # executable that Page8 runs, so both hashes are checked.
@@ -105,12 +105,12 @@ jobs:
         env:
           PAGES_E2E_RETRIES: "1"
           PAGES_E2E_MAX_FLAKY: "1"
-        run: npm run e2e --workspace @nteract/pages-native-experiment
+        run: npm run e2e
       - name: Upload E2E artifacts
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pages-browser-e2e
-          path: apps/pages/pages/test-results/
+          path: apps/pages/test-results/
           retention-days: 7
           if-no-files-found: ignore

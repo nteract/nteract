@@ -1,7 +1,7 @@
 # celld as a Hosted Room Substrate
 
 **Status:** Proposal. The evidence below records deployments as of 2026-10-29.
-For current Pages targets, see the [Pages deployment guide](../../apps/pages/pages/DEPLOYMENT.md).
+For current Pages targets, see the [Pages deployment guide](../../apps/pages/DEPLOYMENT.md).
 Pages is now a product in its own right. The historical Page8 checks below
 remain evidence for that release; the infrastructure promotion gates still
 need qualification.
@@ -26,7 +26,7 @@ Related:
   lists where each hosted deployment runs today.
 - [Authenticated Automerge application infrastructure](authenticated-automerge-app-substrate/README.md)
   explores reusable synchronization and account authorization independently
-  of the host runtime choice. The [Pages product](../../apps/pages/pages/DEPLOYMENT.md)
+  of the host runtime choice. The [Pages product](../../apps/pages/DEPLOYMENT.md)
   uses that infrastructure and runs on celld. Its deployment does not change
   the promotion gates below.
 - [AWS Rust Room Host](aws-rust-room-host.md) — a from-scratch Rust
@@ -41,7 +41,7 @@ At that date, celld hosted notebook-cloud previews and the Page8 QA service.
 | Deployment | What runs | Runtime and storage | Source |
 |------------|-----------|---------------------|--------|
 | `main.runtimed.run` and `<id>.runtimed.run` PR previews | `apps/notebook-cloud` Workers, packaged by `scripts/celld-local.mjs export` in CI | celld on EC2. The private `nteract/preview-infra` controller owns the runtime version, bindings, storage, and credentials. This repo does not pin that runtime. | `.github/preview/README.md`, `apps/notebook-cloud/DEPLOY.md` |
-| `page8.runtimed.run` | Pages experiment: `Page`, `Catalog`, and `PageRecords` Durable Objects; D1 for server sessions and MCP OAuth state; R2 `PAGES_ASSETS` for images | Official celld 0.6.3 Linux x86_64, SHA-256 pinned in `CELLD_RELEASE`. One profile host, `lab1`. `CELLD_DURABILITY=bucket` against an S3 fleet bucket under `standalone/page8`. Ingress through a dedicated Cloudflare Tunnel. Anaconda production OIDC. | `apps/pages/pages/DEPLOYMENT.md`, `scripts/build.mjs`, `scripts/deployment/profiles.mjs`, `scripts/deployment/install.mjs` |
+| `page8.runtimed.run` | Pages experiment: `Page`, `Catalog`, and `PageRecords` Durable Objects; D1 for server sessions and MCP OAuth state; R2 `PAGES_ASSETS` for images | Official celld 0.6.3 Linux x86_64, SHA-256 pinned in `CELLD_RELEASE`. One profile host, `lab1`. `CELLD_DURABILITY=bucket` against an S3 fleet bucket under `standalone/page8`. Ingress through a dedicated Cloudflare Tunnel. Anaconda production OIDC. | `apps/pages/DEPLOYMENT.md`, `scripts/build.mjs`, `scripts/deployment/profiles.mjs`, `scripts/deployment/install.mjs` |
 
 Page7 and earlier Pages services are frozen; the deploy helpers refuse to
 mutate them. `preview.runt.run` stays on Cloudflare.

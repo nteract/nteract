@@ -1,6 +1,6 @@
 packages:
   - apps/*
-  # Pages is an npm workspace with its own lockfile (apps/pages/README.md).
+  # Pages uses npm and its own lockfile (apps/pages/README.md).
   - "!apps/pages"
   - packages/*
   - packages/runtimed-node/npm/*

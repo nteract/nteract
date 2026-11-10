@@ -1,7 +1,6 @@
 # Upstream integration lane
 
-The [Pages workspace](README.md) and [Pages application](pages/README.md)
-build the `automerge-repo` package at Repo revision
+[Pages](README.md) builds the `automerge-repo` package at Repo revision
 `afec0444191a5a662e065f24193bef58ab07122a`, with Automerge `3.5.0`. It requires
 Node >=22.13, Git, and npm.
 
@@ -18,8 +17,16 @@ TypeScript package. `upstream-provenance.json` records the revision and before /
 after hashes of every patched file. Existing dirty source caches are rejected.
 No canonical upstream checkout, global installation, or live service is changed.
 
+For a controller that separates online acquisition from offline execution,
+`node setup.mjs --acquire-only` requires a regular `package-lock.json` matching
+HEAD and stops after installation and patching, before compilation. It never
+falls back to `npm install`. Run `npm run build:upstream`, then `npm run build`,
+in the offline phase. The flag does not isolate networking itself; the host must
+enforce a private network namespace. `test/setup.test.mjs` covers both modes and
+`test/patch-wordgard.test.mjs` the editor patch.
+
 Pages syncs with plain Automerge sync messages through its own
-`SedimentreeBackend`, `AutomergeSyncBackend` (`pages/sync/backend.mjs`).
+`SedimentreeBackend`, `AutomergeSyncBackend` (`sync/backend.mjs`).
 `npm run test:contract` runs Repo 3's backend contract against it.
 
 ## DocumentDelegate
@@ -49,7 +56,7 @@ wait on a missing dependency, leave it unchanged and skip the whole-document
 The document record patch in `patch-document-record.mjs` adds a third record
 kind a backend may deliver to Repo: `{ kind: "document", heads, blob }`, where
 `blob` is one complete Automerge document chunk (`A.save()`). Pages' plain
-Automerge sync backend (`pages/sync`) holds whole documents in that form, and
+Automerge sync backend (`sync/`) holds whole documents in that form, and
 the sync reply to a cold client already carries one. Without the kind, the
 document reached Repo as a fragment bundle: Repo validates a bundle by decoding
 every change, then replays it. On the Feedback Page of October 31 that was 65 ms
@@ -60,7 +67,7 @@ batch, then refuses the batch unless the record's claimed heads are in the
 result. Repo never stores document records: `extractRecords` still produces
 only commits and fragments, and `SedimentreeRecord` and `RecordBatch` are
 unchanged, so `MemoryBackend` behaves as before. The new `DeliveredRecord` type, `copyDeliveredRecord` and
-`validateDeliveredRecord` name the wider set. `document-record.test.mjs` covers
+`validateDeliveredRecord` name the wider set. `test/document-record.test.mjs` covers
 loading, mixing with loose commits, refused heads, a bad checksum or chunk type,
 and a real Repo opening a document delivered as one record. Pages carries this
 patch rather than proposing it upstream.

@@ -52,7 +52,7 @@ jobs:
         with:
           node-version: "24"
           package-manager-cache: false
-      - name: Prepare pinned upstream packages and locked fixture dependencies
+      - name: Prepare pinned upstream packages and locked dependencies
         run: npm run setup
       - name: Choose the search parameters
         env:
@@ -76,7 +76,7 @@ jobs:
           {
             echo "### Pages property search"
             echo
-            echo "Replay a failure from \`apps/pages/pages\`:"
+            echo "Replay a failure from \`apps/pages\`:"
             echo
             echo '```sh'
             echo "PAGES_FUZZ_SEED=$SEED PAGES_FUZZ_DEPTH=$DEPTH PAGES_FUZZ_PATH='<path from the log>' \\"
@@ -84,4 +84,4 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Search the Pages properties
-        run: npm run test:properties --workspace @nteract/pages-native-experiment
+        run: npm run test:properties

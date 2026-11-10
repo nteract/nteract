@@ -115,7 +115,7 @@ export function setup(
     { stdio: "inherit" },
   );
   patchWordgard("node_modules/wordgard");
-  if (!acquireOnly) execFileSync("npm", ["run", "build"], { stdio: "inherit" });
+  if (!acquireOnly) execFileSync("npm", ["run", "build:upstream"], { stdio: "inherit" });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href)

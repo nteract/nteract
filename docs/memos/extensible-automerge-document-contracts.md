@@ -95,7 +95,7 @@ author and comment ownership protections. Unknown blocks must survive older
 clients and export/import workflows, or the exporter must explicitly report
 that its output cannot round-trip them.
 
-The [Pages direction](../../apps/pages/pages/DIRECTION.md)
+The [Pages direction](../../apps/pages/DIRECTION.md)
 keeps rich content primary and removes ProseMirror. Its exact schema and agent
 interface are experimental. Minimal writes must preserve untouched unknown
 content; they do not remove the need to preserve its marker identity and
