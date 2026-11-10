@@ -246,7 +246,7 @@ async function completeHandoff(request, env, config) {
   if (!binding) return signInFailed(400, "binding_missing");
   const now = Math.floor(Date.now() / 1000);
   // One statement takes the row, so of two callbacks with the same state one
-  // goes on to spend the code.
+  // goes on to trade the code.
   const row = await env.DB.prepare(
     "DELETE FROM kilo_handoffs WHERE state_hash = ? AND binding_hash = ? AND expires_at > ? RETURNING return_to",
   )
@@ -270,6 +270,7 @@ async function completeHandoff(request, env, config) {
       secret: config.secret,
       code,
       origin: config.origin,
+      state,
     });
   } catch (error) {
     if (error instanceof KiloUnavailable) return signInFailed(503, "kilo_unavailable", returnTo);
@@ -278,6 +279,7 @@ async function completeHandoff(request, env, config) {
     throw error;
   }
   if (account.refused === "client") return signInFailed(503, "exchange_refused_client", returnTo);
+  if (account.refused === "account") return signInFailed(403, "exchange_refused_account", returnTo);
   if (account.refused) return signInFailed(400, "exchange_refused_code", returnTo);
   const sessionCookie = await createServerSession(
     request,

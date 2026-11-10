@@ -1,7 +1,8 @@
 // Node-only loopback fake of the two Kilo routes Pages signs in through
 // (worker/kilo-exchange.mjs): the page a browser is sent to, and the code
-// exchange. It allows a list of Pages origins, issues single-use codes that
-// expire, and checks the exchange secret.
+// exchange. It allows a list of Pages origins, issues codes that expire and
+// are good only for the origin and state they were issued for, and checks the
+// exchange secret. Like Kilo's, a code is not single use.
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 
@@ -20,19 +21,19 @@ export async function startLocalKiloHandoff({ origins, secret, port = 0, now = D
   let override = null;
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, "http://127.0.0.1");
-    if (req.method === "GET" && url.pathname === "/pages/enter") {
+    if (req.method === "GET" && url.pathname === "/pages-auth") {
       const origin = url.searchParams.get("origin");
       const state = url.searchParams.get("state");
       if (!origins.includes(origin) || !state) return send(res, 400, { error: "bad_request" });
       // The real page sends a browser without a session to sign in first.
       if (!account) return send(res, 401, { error: "signed_out" });
       const code = randomBytes(32).toString("base64url");
-      codes.set(code, { origin, account, expiresAt: now() + CODE_SECONDS * 1000 });
+      codes.set(code, { origin, state, account, expiresAt: now() + CODE_SECONDS * 1000 });
       const callback = new URL("/api/auth/kilo/callback", origin);
       callback.search = new URLSearchParams({ code, state }).toString();
       return res.writeHead(302, { location: callback.href }).end();
     }
-    if (req.method === "POST" && url.pathname === "/api/pages/exchange") {
+    if (req.method === "POST" && url.pathname === "/api/pages-auth/exchange") {
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
       let body;
@@ -41,20 +42,32 @@ export async function startLocalKiloHandoff({ origins, secret, port = 0, now = D
       } catch {
         return send(res, 400, { error: "bad_json" });
       }
-      exchanges.push({ authorization: req.headers.authorization, origin: body?.origin });
+      exchanges.push({
+        authorization: req.headers.authorization,
+        origin: body?.origin,
+        state: body?.state,
+      });
       if (override) {
         const answer = override;
         override = null;
         return answer(req, res);
       }
       if (req.headers.authorization !== `Bearer ${secret}`)
-        return send(res, 401, { error: "bad_client" });
+        return send(res, 401, { error: "invalid_client" });
       const issued = codes.get(body?.code);
-      codes.delete(body?.code);
-      if (!issued || issued.origin !== body.origin || issued.expiresAt <= now())
-        return send(res, 400, { error: "bad_code" });
+      if (
+        !issued ||
+        issued.origin !== body.origin ||
+        issued.state !== body.state ||
+        issued.expiresAt <= now()
+      )
+        return send(res, 400, { error: "invalid_code" });
+      if (issued.account.blocked) return send(res, 403, { error: "account_unavailable" });
       return send(res, 200, {
+        // Kilo sends no email. This one is here so the tests can show Pages
+        // would not keep it.
         user: { id: issued.account.id, name: issued.account.name, email: issued.account.email },
+        organizations: [],
       });
     }
     return send(res, 404, { error: "not_found" });

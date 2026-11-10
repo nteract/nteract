@@ -107,7 +107,7 @@ test("a sign-in that starts and ends in one browser makes a session without an e
   const { env, kilo, lines } = await fixture(t);
   const started = await begin(env, { returnTo: "/p/abc?view=1#top" });
   const enter = new URL(started.enter);
-  assert.equal(enter.origin + enter.pathname, `${kilo.origin}/pages/enter`);
+  assert.equal(enter.origin + enter.pathname, `${kilo.origin}/pages-auth`);
   assert.equal(enter.searchParams.get("origin"), origin);
   assert.deepEqual([...enter.searchParams.keys()].sort(), ["origin", "state"]);
   assert.match(started.cookie, /^__Host-pages_kilo_handoff=[A-Za-z0-9_-]{43}$/);
@@ -121,9 +121,9 @@ test("a sign-in that starts and ends in one browser makes a session without an e
   assert.equal(session.displayName, "Example Person");
   assert.equal(JSON.stringify(session).includes(user.email), false);
   assert.deepEqual(rows(env), []);
-  assert.deepEqual(kilo.exchanges(), [{ authorization: `Bearer ${secret}`, origin }]);
-  const logged = lines.join("\n");
   const state = enter.searchParams.get("state");
+  assert.deepEqual(kilo.exchanges(), [{ authorization: `Bearer ${secret}`, origin, state }]);
+  const logged = lines.join("\n");
   const code = new URL(address).searchParams.get("code");
   for (const value of [state, code, secret, user.email, started.cookie.split("=")[1]])
     assert.equal(logged.includes(value), false);
@@ -285,17 +285,30 @@ test("a Kilo that refuses, fails or answers badly ends the sign-in without a ses
   }
 });
 
-test("a code Kilo already accepted, or issued to another origin, is refused", async (t) => {
+test("a code from one sign-in can't finish another", async (t) => {
   const { env, kilo } = await fixture(t);
   const started = await begin(env);
   const address = await throughKilo(started.enter);
+  // Someone who got hold of that code presents it under a sign-in of their own.
+  const theirs = await begin(env);
+  const forged = new URL(await throughKilo(theirs.enter));
+  forged.searchParams.set("code", new URL(address).searchParams.get("code"));
+  const refused = await callback(env, forged.href, theirs.cookie);
+  assert.equal(refused.status, 400);
+  assert.equal(setCookie(refused, SERVER_SESSION_COOKIE), undefined);
+  assert.equal(kilo.exchanges().at(-1).state, forged.searchParams.get("state"));
+  // The sign-in the code belongs to still finishes.
   assert.equal((await callback(env, address, started.cookie)).status, 303);
-  // The same code under a fresh sign-in from the same browser.
-  const next = await begin(env, { cookie: started.cookie });
-  const reused = new URL(await throughKilo(next.enter));
-  reused.searchParams.set("code", new URL(address).searchParams.get("code"));
-  assert.equal((await callback(env, reused.href, started.cookie)).status, 400);
-  assert.equal(kilo.exchanges().length, 2);
+});
+
+test("an account Kilo has blocked is not signed in", async (t) => {
+  const { env, kilo, lines } = await fixture(t);
+  kilo.signIn({ ...user, blocked: true });
+  const started = await begin(env);
+  const refused = await callback(env, await throughKilo(started.enter), started.cookie);
+  assert.equal(refused.status, 403);
+  assert.equal(setCookie(refused, SERVER_SESSION_COOKIE), undefined);
+  assert.equal(reasons(lines)[0].reason, "exchange_refused_account");
 });
 
 test("a deployment whose secret Kilo doesn't accept signs nobody in", async (t) => {
