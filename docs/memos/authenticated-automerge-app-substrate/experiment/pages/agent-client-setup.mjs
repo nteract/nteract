@@ -1,14 +1,19 @@
 // Public recipes only. Neither the guide nor /connect handles a credential.
-export const keyFile = "~/.config/pages/anaconda-api-key";
+import { identityProvider } from "./identity-provider.mjs";
+
+// The recipes use only the provider's fixed names, which no deployment setting
+// changes. A provider chosen per deployment would make these functions of it.
+const key = identityProvider().apiKey;
+export const keyFile = key.keyFile;
 
 export const saveKeyCommand = `python3 -c '
 import getpass, os, pathlib, sys
 if not sys.stdin.isatty():
     sys.exit("Run this in your own terminal to enter the key privately.")
-path = pathlib.Path.home() / ".config/pages/anaconda-api-key"
+path = pathlib.Path.home() / "${key.homePath}"
 if path.exists() or path.is_symlink():
     sys.exit("No key saved: file already exists. Confirm reuse or choose a different account-specific filename.")
-key = getpass.getpass("Anaconda API key (hidden): ").strip()
+key = getpass.getpass("${key.name} (hidden): ").strip()
 if not key or any(c.isspace() for c in key):
     sys.exit("No key saved: paste the API key only, without spaces.")
 os.umask(0o077)
@@ -31,7 +36,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
 try:
-    key = (pathlib.Path.home() / ".config/pages/anaconda-api-key").read_text().strip()
+    key = (pathlib.Path.home() / "${key.homePath}").read_text().strip()
 except OSError:
     sys.exit("Cannot read the Pages key file. Check the chosen path and permissions.")
 if not key or any(c.isspace() for c in key):
@@ -60,7 +65,7 @@ PY`;
 }
 
 export function setupPrompt(origin) {
-  return `Configure Pages for ${origin}/ using the agent guide at ${origin}/llms.txt. Coding agents, CLIs, and scripts connect with an Anaconda API key; ChatGPT and other interactive cloud clients use OAuth. Inspect filenames, not secrets, in ~/.config/pages; ask me before reusing or replacing an existing key. For multiple accounts, use an account-specific filename such as ~/.config/pages/anaconda-api-key-rgbkrk consistently in the save command and client recipe; ${keyFile} remains the default. Ask me early to save an API key privately through ${origin}/connect, or to complete browser authorization, as needed. Prepare the non-secret settings while I do that. Do not ask me to paste credentials into chat or enable an empty-key connection. Preserve my other client settings. Reload MCP or start a new session, then call list_pages from that session to verify the connection. Configuration alone is not verification.`;
+  return `Configure Pages for ${origin}/ using the agent guide at ${origin}/llms.txt. Coding agents, CLIs, and scripts connect with an ${key.name}; ChatGPT and other interactive cloud clients use OAuth. Inspect filenames, not secrets, in ~/.config/pages; ask me before reusing or replacing an existing key. For multiple accounts, use an account-specific filename such as ${keyFile}-rgbkrk consistently in the save command and client recipe; ${keyFile} remains the default. Ask me early to save an API key privately through ${origin}/connect, or to complete browser authorization, as needed. Prepare the non-secret settings while I do that. Do not ask me to paste credentials into chat or enable an empty-key connection. Preserve my other client settings. Reload MCP or start a new session, then call list_pages from that session to verify the connection. Configuration alone is not verification.`;
 }
 
 export function kiloConfig(origin) {
@@ -108,7 +113,7 @@ export function kiloApiKeyConfig(origin) {
 
 // Both header helpers read the raw key the same way and hold no secret.
 const readKeyForHelper = `try:
-    key = (pathlib.Path.home() / ".config/pages/anaconda-api-key").read_text().strip()
+    key = (pathlib.Path.home() / "${key.homePath}").read_text().strip()
 except OSError:
     sys.exit("Cannot read the Pages API key. Complete /connect and check file permissions.")
 if not key or any(c.isspace() for c in key):

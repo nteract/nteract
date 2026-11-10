@@ -1,4 +1,5 @@
 import { pagesPublicOrigin } from "./agent-guide.mjs";
+import { identityProvider } from "./identity-provider.mjs";
 import {
   checkAccountCommand,
   claudeCodeAddCommand,
@@ -23,20 +24,16 @@ const escapeHtml = (value) =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character],
   );
 
-// Provider destinations are fixed, never inferred from request headers or a
-// caller-supplied return URL. Unknown providers get operator setup instructions.
+// Provider destinations come from the deployment's identity provider, never
+// from request headers or a caller-supplied return URL.
 export function agentConnectionSetup(env) {
   const origin = pagesPublicOrigin(env);
-  const production = [
-    "https://anaconda.com/api/auth/sessions/whoami",
-    "https://auth.anaconda.com/api/auth/sessions/whoami",
-  ].includes(env.NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL);
+  const key = identityProvider(env).apiKey;
   return {
     origin,
     endpoint: origin + "/mcp",
-    apiKeyUrl: production ? "https://anaconda.com/app/profile/api-keys" : null,
-    headers:
-      "Authorization: Bearer <YOUR_ANACONDA_API_KEY>\nX-Pages-Driver: <YOUR_CLIENT_NAME>\nX-Pages-Agent: <OPTIONAL_SESSION_LABEL>",
+    apiKeyUrl: key.createUrl,
+    headers: `Authorization: Bearer <YOUR_${key.envVar}>\nX-Pages-Driver: <YOUR_CLIENT_NAME>\nX-Pages-Agent: <OPTIONAL_SESSION_LABEL>`,
   };
 }
 
@@ -44,17 +41,8 @@ export function connectAgentResponse(request, env) {
   if (!["GET", "HEAD"].includes(request.method))
     return new Response(null, { status: 405, headers: { Allow: "GET, HEAD" } });
   const setup = agentConnectionSetup(env);
-  const keyInstructions = setup.apiKeyUrl
-    ? `<p>Sign in to Anaconda with the account you use for Pages, then create a key named for your client.</p>
-      <dl class="setup-permissions">
-        <div><dt>User Resources</dt><dd>Read and write <span>(or Read-only)</span></dd></div>
-        <div><dt>Platform Channels</dt><dd>No access</dd></div>
-      </dl>
-      <p>Choose an expiration and copy the key. It is shown only once. Save it in step 2 before closing the Anaconda tab.</p>
-      <a class="primary setup-action" href="${setup.apiKeyUrl}" target="_blank" rel="noopener noreferrer">Create API key <span aria-hidden="true">↗</span><span class="sr-only"> (opens in a new tab)</span></a>
-      <p class="setup-note">This key has Anaconda User Resources permissions, not just Pages access. Each Page's sharing permissions still apply.</p>`
-    : `<p>Ask the deployment owner for the API-key setup instructions for this identity provider. This deployment does not use the standard production Anaconda key endpoint.</p>
-      <p class="setup-note">Production and staging credentials are separate. Use a key for this deployment's provider.</p>`;
+  const provider = identityProvider(env);
+  const key = provider.apiKey;
   const body = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escapeHtml(tabTitle("Connect an agent"))}</title>${FAVICON_LINK}<script src="${THEME_SCRIPT}"></script><link rel="stylesheet" href="${STYLESHEET}"><link rel="describedby" type="text/plain" href="/llms.txt"></head>
@@ -62,7 +50,7 @@ export function connectAgentResponse(request, env) {
 <main class="agent-setup">
   <h1>Connect an agent</h1>
   <p class="setup-intro">Let your agent read, edit, and comment on your Pages.</p>
-  <p>Coding agents, CLIs, and scripts connect with an Anaconda API key. ChatGPT and other interactive cloud clients sign in with OAuth. Your agent can prepare the settings while you create a key or authorize access.</p>
+  <p>Coding agents, CLIs, and scripts connect with an ${key.name}. ChatGPT and other interactive cloud clients sign in with OAuth. Your agent can prepare the settings while you create a key or authorize access.</p>
   <details class="setup-details"><summary>Give your agent the setup steps</summary>
     <pre class="setup-value setup-prose"><code id="setup-prompt">${escapeHtml(setupPrompt(setup.origin))}</code></pre>
     <button type="button" class="setup-copy" data-copy="setup-prompt" data-copy-message="Setup instructions copied. Paste them into your agent chat." hidden>Copy setup instructions</button>
@@ -70,10 +58,10 @@ export function connectAgentResponse(request, env) {
   <h2 id="setup-api-key-clients">Coding agents and scripts: use an API key</h2>
   <p>Use an API key for Kilo, Claude Code, Codex, scripts, and anything that runs long or unattended. The key works until the expiration you choose. Any number of agents and processes can share it, and nothing needs to refresh it.</p>
   <p>Create and save the key first. Your agent can prepare a config draft while you do this; tell it when the key is ready. Keep the key out of chat.</p>
-  <section aria-labelledby="setup-key"><h2 id="setup-key"><span>1</span> Create an API key</h2>${keyInstructions}</section>
+  <section aria-labelledby="setup-key"><h2 id="setup-key"><span>1</span> Create an API key</h2>${key.connectInstructions}</section>
   <section aria-labelledby="setup-save"><h2 id="setup-save"><span>2</span> Save it privately</h2>
     <p>Kilo, Claude Code, and Codex can use the same local key file: <code>${keyFile}</code>. Your agent configures the connection; you enter the key.</p>
-    <p>For multiple accounts, use an account-specific filename such as <code>~/.config/pages/anaconda-api-key-rgbkrk</code>; the path above remains the default. Inspect filenames, not secrets, in <code>~/.config/pages</code>, and ask before reusing or replacing an existing key. Use the chosen path consistently in the save command, Kilo file reference, and the Codex and Claude Code helpers. Use a separate helper filename per account so existing clients keep their key.</p>
+    <p>For multiple accounts, use an account-specific filename such as <code>${keyFile}-rgbkrk</code>; the path above remains the default. Inspect filenames, not secrets, in <code>~/.config/pages</code>, and ask before reusing or replacing an existing key. Use the chosen path consistently in the save command, Kilo file reference, and the Codex and Claude Code helpers. Use a separate helper filename per account so existing clients keep their key.</p>
     <details class="setup-details"><summary>Save the key on macOS or Linux</summary>
       <p>Copy this command into your own terminal. It uses Python 3 to ask for the key with input hidden. Paste the raw key when prompted, then press Enter.</p>
       <pre class="setup-value"><code id="save-key-command">${escapeHtml(saveKeyCommand)}</code></pre>
@@ -148,7 +136,7 @@ export function connectAgentResponse(request, env) {
       <button type="button" class="setup-copy" data-copy="check-account-command" data-copy-message="Account check copied. Confirm the key file path before running it in your terminal." hidden>Copy account check</button>
     </details>
     <p class="setup-note"><code>quota.count</code> counts active owned Pages, excluding shared Pages; <code>quota.trash_count</code> counts your trashed Pages separately. Counts include pending creations and lifecycle reservations in owned catalog slots. These are account-wide counts, not the number of results shown. A null <code>content_updated_at</code> means no content edit time is recorded, including for new Pages and legacy Pages; don't invent an edit timestamp from other dates.</p>
-    <p class="setup-note">If it fails, check that the key is saved, unexpired, and belongs to this deployment's Anaconda environment. Missing access to one Page can also mean it hasn't been shared with that account.</p>
+    <p class="setup-note">If it fails, check that the key is saved, unexpired, and belongs to this deployment's ${provider.label} environment. Missing access to one Page can also mean it hasn't been shared with that account.</p>
     <p class="setup-note">For CLI setup, tool details, and troubleshooting, read the <a href="/llms.txt">agent guide</a>.</p>
   </section>
   <section aria-labelledby="setup-oauth"><h2 id="setup-oauth">ChatGPT and cloud clients: use OAuth</h2>
