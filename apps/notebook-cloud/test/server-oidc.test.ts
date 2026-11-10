@@ -1763,16 +1763,84 @@ describe("server sessions from a sign-in that is not OIDC", { concurrency: false
     }
   });
 
-  it("refuses to start a session for a grant that names no principal", async (t) => {
+  it("starts a session only for a principal that sign-out-everywhere can name", async (t) => {
     const f = providerFixture(t);
-    await assert.rejects(
-      createServerSession(
-        f.request(),
+    const named = (principal: string, principalNamespace = "user:pair") =>
+      f.grant({ identity: { ...identityFor("Alice", { principalNamespace }), principal } });
+    for (const grant of [named(""), named("p".repeat(513)), named(PRINCIPAL, "")])
+      await assert.rejects(
+        createServerSession(f.request(), f.env, grant),
+        /names no usable principal/,
+      );
+    const longest = "p".repeat(512);
+    await createServerSession(f.request(), f.env, named(longest));
+    assert.equal(await revokeServerSessionsFor(f.env, longest, ORIGIN), 1);
+  });
+
+  it("refuses a bundle that would not survive sealing, at sign-in and at renewal", async (t) => {
+    const f = providerFixture(t);
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const malformed = [undefined, null, [], "token", circular, { count: 1n }] as unknown as Record<
+      string,
+      unknown
+    >[];
+    for (const bundle of malformed)
+      await assert.rejects(
+        createServerSession(f.request(), f.env, f.grant({ bundle })),
+        /not a JSON record/,
+      );
+    const cookie = await f.signIn();
+    const stored = () =>
+      f.db.sqlite.prepare("SELECT sealed, generation FROM oidc_server_sessions").get();
+    const before = stored();
+    for (const bundle of malformed) {
+      f.expireAccess();
+      f.db.sqlite.prepare("UPDATE oidc_server_sessions SET retry_after = 0").run();
+      const synced: string[] = [];
+      const response = await serverOidcSessionStatus(
+        f.request(cookie),
         f.env,
-        f.grant({ identity: { ...identityFor(), principal: "" } }),
-      ),
-      /names no principal/,
+        async (identity) => void synced.push(identity.principal),
+        { provider: { refresh: async () => f.grant({ bundle }) } },
+      );
+      assert.equal(response.status, 503);
+      assert.deepEqual(synced, []);
+      assert.deepEqual(stored(), before, "the usable bundle is still the one stored");
+    }
+    // The session still renews once the provider answers properly.
+    f.expireAccess();
+    f.db.sqlite.prepare("UPDATE oidc_server_sessions SET retry_after = 0").run();
+    const renewed = await serverOidcSessionStatus(f.request(cookie), f.env, noopProfile, {
+      provider: f.provider,
+    });
+    assert.equal(renewed.status, 200);
+    assert.deepEqual(f.refreshed, [{ kind: "pair", refreshToken: "first-refresh-token" }]);
+  });
+
+  it("does not store a grant that lapsed while the profile callback ran", async (t) => {
+    const f = providerFixture(t);
+    const cookie = await f.signIn();
+    f.expireAccess();
+    const stored = () =>
+      f.db.sqlite.prepare("SELECT sealed, generation FROM oidc_server_sessions").get();
+    const before = stored();
+    const realNow = Date.now;
+    t.after(() => {
+      Date.now = realNow;
+    });
+    const response = await serverOidcSessionStatus(
+      f.request(cookie),
+      f.env,
+      async () => {
+        // The callback outlasts the grant: the clock is past its expiry on return.
+        Date.now = () => realNow() + 10_000;
+      },
+      { provider: { refresh: async () => f.grant({ expiresAt: nowSeconds() + 5 }) } },
     );
+    Date.now = realNow;
+    assert.equal(response.status, 503);
+    assert.deepEqual(stored(), before);
   });
 
   it("logout during a provider refresh cannot recreate the session", async (t) => {

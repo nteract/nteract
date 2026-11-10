@@ -45,6 +45,8 @@ const LOGIN_SECONDS = 600;
 // The browser checks once a minute. Leave another minute for scheduling/network
 // delay rather than waiting until a request is already about to lose authority.
 const REFRESH_WINDOW_SECONDS = 120;
+// How long one request owns a session's renewal before another may take over.
+const REFRESH_LEASE_SECONDS = 120;
 
 interface Config {
   issuer: string;
@@ -176,19 +178,23 @@ export interface ServerSessionGrant {
  * and calls `createServerSession`; the session then lives in the same rows,
  * under the same cookie, lease and expiry rules as an OIDC session. A
  * deployment uses one method, so `refresh` must reject a bundle it didn't
- * issue.
+ * issue. Rows don't record which method made them: after a deployment changes
+ * its method, a session from the old one stays valid until its proof lapses,
+ * unless its row is deleted.
  */
 export interface ServerSessionProvider {
   /**
    * Exchanges a session's sealed bundle for a fresh grant. It runs under the
-   * row's refresh lease, so two requests never exchange one bundle at the same
-   * time. Throw `ServerSessionGrantRejected` when the provider ended the
-   * grant, or `ServerOidcIdentityRejected` when the application refuses the
-   * account; both delete the session. Any other error keeps the row, and the
-   * same bundle is handed to `refresh` again after a backoff, so a provider
-   * whose credential rotates must tolerate a repeat of an exchange whose
-   * answer was lost. The grant must name the principal the session already
-   * has; one that names another ends the session.
+   * row's refresh lease, which keeps other requests from exchanging the same
+   * bundle for `REFRESH_LEASE_SECONDS`; finish well inside that, because a
+   * request can take the row over once the lease lapses. Throw
+   * `ServerSessionGrantRejected` when the provider ended the grant, or
+   * `ServerOidcIdentityRejected` when the application refuses the account;
+   * both delete the session. Any other error keeps the row, and the same
+   * bundle is handed to `refresh` again after a backoff, so a provider whose
+   * credential rotates must tolerate a repeat of an exchange whose answer was
+   * lost. The grant must name the principal the session already has; one that
+   * names another ends the session.
    */
   refresh(bundle: Record<string, unknown>): Promise<ServerSessionGrant>;
 }
@@ -724,11 +730,12 @@ export async function completeServerOidcLogin(
 }
 
 /**
- * A provider's grant, checked before anything acts on the identity in it. A
- * grant with no usable expiry throws a plain error: at sign-in nothing is
- * stored, and at renewal the row is kept and the provider is asked again.
- * `session` is the row being renewed; a grant for another principal or
- * namespace than the one it holds is rejected, which ends the session.
+ * A provider's grant, checked before anything acts on the identity in it, and
+ * returned with the bundle exactly as it will be sealed. A malformed grant
+ * throws a plain error: at sign-in nothing is stored, and at renewal the row
+ * keeps the bundle it has and the provider is asked again. `session` is the
+ * row being renewed; a grant for another principal or namespace than the one
+ * it holds is rejected, which ends the session.
  */
 function checkedProviderGrant(
   grant: ServerSessionGrant,
@@ -736,10 +743,29 @@ function checkedProviderGrant(
   session?: ServerSessionRow,
 ): ServerSessionGrant {
   const { principal, metadata } = grant.identity;
-  if (typeof principal !== "string" || !principal || !metadata?.principalNamespace)
-    throw new Error("Server session grant names no principal");
+  const namespace = metadata?.principalNamespace;
+  // The length bound is `revokeServerSessionsFor`'s: every stored session
+  // must be one that sign-out-everywhere can name.
+  if (
+    typeof principal !== "string" ||
+    !principal ||
+    principal.length > 512 ||
+    typeof namespace !== "string" ||
+    !namespace
+  )
+    throw new Error("Server session grant names no usable principal");
   if (!Number.isSafeInteger(grant.expiresAt) || grant.expiresAt <= now)
     throw new Error("Server session grant is already expired");
+  // Sealing stringifies the bundle, and renewal parses it back into a record.
+  // A value that doesn't survive that would end the session at its next renewal.
+  let bundle: unknown;
+  try {
+    bundle = JSON.parse(JSON.stringify(grant.bundle));
+  } catch {
+    bundle = undefined;
+  }
+  if (typeof bundle !== "object" || bundle === null || Array.isArray(bundle))
+    throw new Error("Server session grant bundle is not a JSON record");
   if (session) {
     let held: { principal?: unknown; principalNamespace?: unknown } = {};
     try {
@@ -747,10 +773,10 @@ function checkedProviderGrant(
     } catch {
       // An unreadable row holds no principal a grant could continue.
     }
-    if (held.principal !== principal || held.principalNamespace !== metadata.principalNamespace)
+    if (held.principal !== principal || held.principalNamespace !== namespace)
       throw new ServerSessionGrantRejected();
   }
-  return grant;
+  return { ...grant, bundle: bundle as Record<string, unknown> };
 }
 
 /** Stores a new session for `grant` and returns its `Set-Cookie` value. */
@@ -817,8 +843,8 @@ export async function createServerSession(
 ): Promise<string> {
   const context = providerSessionContext(env, request);
   const now = Math.floor(Date.now() / 1000);
-  checkedProviderGrant(grant, now);
-  const cookie = await insertServerSession(env, await oidcDatabase(env), context, now, grant);
+  const checked = checkedProviderGrant(grant, now);
+  const cookie = await insertServerSession(env, await oidcDatabase(env), context, now, checked);
   notifyAuthEvent(options.onAuthEvent, { type: "sign_in", principal: grant.identity.principal });
   return cookie;
 }
@@ -989,7 +1015,7 @@ async function refreshSession(
   const claimed = await db
     .prepare(`UPDATE oidc_server_sessions SET lease = ?, lease_until = ?
     WHERE id = ? AND generation = ? AND lease_until <= ? AND retry_after <= ? AND idle_expires_at > ? AND absolute_expires_at > ?`)
-    .bind(lease, now + 120, initial.id, initial.generation, now, now, now, now)
+    .bind(lease, now + REFRESH_LEASE_SECONDS, initial.id, initial.generation, now, now, now, now)
     .run();
   if (claimed.meta.changes !== 1) {
     // Another node may own a rotating refresh token. Never exchange it twice.
