@@ -118,6 +118,11 @@ Before every commit, run:
 cargo xtask lint --fix
 ```
 
+It installs what it needs in a new worktree: JS dependencies through the
+pinned pnpm, and its own Python environment under `target/`. Run the whole
+command; do not substitute a single-file `vp check`. If it fails before
+linting, report the failing step and its output.
+
 Run the narrow tests for the code you changed, then widen verification when the
 risk or subsystem guide calls for it. Use the `testing` skill for repository
 test workflows.
