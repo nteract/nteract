@@ -1,4 +1,4 @@
-// Real local celld + OIDC + native Subduction exercise. No production credentials.
+// Real local celld + OIDC exercise over plain Automerge sync. No production credentials.
 import assert from "node:assert/strict";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { purgeTrashedFixture } from "./purge-fixture.mjs";

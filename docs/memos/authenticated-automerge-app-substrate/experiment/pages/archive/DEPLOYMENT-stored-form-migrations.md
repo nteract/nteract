@@ -1,6 +1,6 @@
 # Pages stored-form migrations, November 2026
 
-Archived 2026-11-08: superseded by docs/memos/authenticated-automerge-app-substrate/experiment/pages/DEPLOYMENT.md ("Stored forms and rollback rules") and RICH-TEXT-V2.md; historical only.
+Archived 2026-11-08: superseded by docs/memos/authenticated-automerge-app-substrate/experiment/pages/DEPLOYMENT.md ("Stored forms and rollback rules") and DIRECTION.md; historical only.
 
 The record of the one-shot migrations that moved pages and page10 to the v1 stored forms: rich-text blocks, the comments document, plain Automerge sync, and the PageRecords sweep.
 

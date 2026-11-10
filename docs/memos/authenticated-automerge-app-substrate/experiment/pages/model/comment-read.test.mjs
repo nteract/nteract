@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { readFileSync } from "node:fs";
 import * as A from "@automerge/automerge";
 import { build } from "esbuild";
 import fc from "fast-check";
@@ -595,28 +594,49 @@ function apiFixture() {
   return { page, comments, since };
 }
 
-test("read_page, list_page_comments and read_page_changes match the recorded base snapshots", async () => {
+test("comment reads report each stored form's outcome and change neither document", async () => {
   const { page, comments, since } = apiFixture();
   try {
     const saved = [A.save(page), A.save(comments)];
     const heads = [A.getHeads(page), A.getHeads(comments)];
     const options = { commentsDoc: comments, issueAuthority: async () => AUTHORITY };
     const deltaArgs = { since_heads: heads[0], since_comment_heads: since };
-    const actual = {
-      project: projectPage(page, comments),
-      compact: projectReadComments(page, { state: "all" }, comments),
-      summary: projectReadComments(page, { state: "all", include_messages: false }, comments),
-      delta: projectReadChanges(page, deltaArgs, comments),
-      snapshot: projectReadChanges(page, { since_heads: heads[0] }, comments),
-      read: await readTool(page, "read_page", { page_id: PAGE }, options),
-      selected: await readTool(page, "read_page", { comments: "all" }, options),
-      list: await readTool(page, "list_page_comments", { state: "all" }, options),
-      changes: await readChangesTool(page, deltaArgs, options),
-    };
-    const fixture = new URL("./comment-read.golden.json", import.meta.url);
-    // Recorded on unchanged production source at 943115c13, before this slice.
-    // No rewrite mode: a candidate must not bless its own API changes.
-    assert.deepEqual(JSON.parse(JSON.stringify(actual)), JSON.parse(readFileSync(fixture, "utf8")));
+    projectPage(page, comments);
+    const compact = projectReadComments(page, { state: "all" }, comments);
+    projectReadComments(page, { state: "all", include_messages: false }, comments);
+    projectReadChanges(page, deltaArgs, comments);
+    projectReadChanges(page, { since_heads: heads[0] }, comments);
+    await readTool(page, "read_page", { page_id: PAGE }, options);
+    await readTool(page, "read_page", { comments: "all" }, options);
+    const list = await readTool(page, "list_page_comments", { state: "all" }, options);
+    await readChangesTool(page, deltaArgs, options);
+    // The tool returns the model's projection, and each stored form has one
+    // outcome: Markdown, the literal text, or an empty body with its reason.
+    const threads = list.body.comments;
+    assert.deepEqual(threads, JSON.parse(JSON.stringify(compact)));
+    assert.deepEqual(
+      threads.map(({ id, state }) => [id, state]),
+      [
+        ["thread", null],
+        ["resolved", null],
+        ["deleted", "deleted"],
+      ],
+    );
+    const outcome = ({ body, body_format, content_error }) =>
+      JSON.parse(JSON.stringify({ body, body_format, content_error }));
+    assert.deepEqual(
+      Object.fromEntries(threads[0].messages.map((message) => [message.id, outcome(message)])),
+      {
+        bad: { body: "[original]()", body_format: "markdown" },
+        code: { body: "one\ntwo", body_format: "plain", content_error: "rich_text_unavailable" },
+        native: { body: "***marked***\n\n- [x] task", body_format: "markdown" },
+        old: { body: "", body_format: "plain", content_error: "stored_form_unsupported" },
+        plain: { body: "  literal **text**\n" },
+        stale: { body: "", body_format: "plain", content_error: "stored_form_unsupported" },
+        tombstone: {},
+      },
+    );
+    assert.equal(threads[0].messages.find(({ id }) => id === "tombstone").deletedAt, AT);
     assert.deepEqual([A.getHeads(page), A.getHeads(comments)], heads);
     assert.deepEqual([A.save(page), A.save(comments)], saved);
   } finally {

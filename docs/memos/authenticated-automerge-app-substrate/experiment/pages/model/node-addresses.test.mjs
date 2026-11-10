@@ -1,9 +1,9 @@
-// Node addressing against frozen expectations. model/node-addresses.golden.json
+// Node addressing against recorded expectations. model/node-addresses.golden.json
 // holds, for every input in test/address-inputs.mjs (hand-written stored
 // shapes, the Markdown corpus written as rich text, seeded random editor
-// trees), the node ids, outline node_index and types the ProseMirror traversal
-// produced before node ids moved to the Wordgard tree, and the node ranges and
-// per-text node_index node-addresses.mjs computes.
+// trees), the node ids, outline node_index and types read_page reports, and
+// the node ranges and per-text node_index node-addresses.mjs computes. Agents
+// address nodes by these values, so a change here is a tool-contract change.
 //
 // Regenerate only when an input or an intended behavior changes:
 // PAGES_UPDATE_ADDRESSES=1 npm exec -- tsx --tsconfig tsconfig.json --test model/node-addresses.test.mjs

@@ -1,6 +1,6 @@
 # Pages rich text v1: codec, Markdown import, stored forms
 
-Archived 2026-11-08: superseded by docs/memos/authenticated-automerge-app-substrate/experiment/pages/RICH-TEXT-V2.md; historical only.
+Archived 2026-11-08: superseded by docs/memos/authenticated-automerge-app-substrate/experiment/pages/DIRECTION.md; historical only.
 
 This is the pre-v2 description of the Page rich-text codec, the ProseMirror Markdown path, and the stored forms the v1 build refuses. It was the "Document and editor" section of the Pages README.
 

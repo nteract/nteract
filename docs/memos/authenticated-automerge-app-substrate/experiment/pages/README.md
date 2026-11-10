@@ -6,17 +6,16 @@ anchored to passages. People write in the Wordgard editor. Agents read and edit
 the same content over HTTP and MCP. Projects organize Pages. Code blocks display
 source; notebooks execute it.
 
-Rich text is being rebuilt around one model. Read
-[RICH-TEXT-V2.md](RICH-TEXT-V2.md) before touching the document model, the
-codec, the Markdown edge, or agent write tools. Build and deploy experiments
-on a separate service; leave `pages.runtimed.run` unchanged.
+[DIRECTION.md](DIRECTION.md) is the one direction for this work: where Pages
+is going, the order of work, and the rules for deployed targets. Read it
+before changing the document model, sync, or agent tools.
 
 ## Documents
 
 | Doc | Read it for |
 | --- | --- |
 | [AGENTS.md](AGENTS.md) | Contributor rules and workflow |
-| [RICH-TEXT-V2.md](RICH-TEXT-V2.md) | The rich-text model, invariants, open decisions, build order |
+| [DIRECTION.md](DIRECTION.md) | Destination, what changes, order of work, rules for targets |
 | [REFERENCE.md](REFERENCE.md) | Current host, viewer and tool behavior on `main` |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Targets, release, rollback, operations |
 | [../README.md](../README.md), [../UPSTREAM.md](../UPSTREAM.md) | Shared workspace, pinned Repo 3 and its patches |

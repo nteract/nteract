@@ -107,8 +107,8 @@ Execution requests name a synced `cell_id`; the daemon reads the cell source fro
 
 Pages stores native rich text in its own Automerge document, with a separate
 comments document. Its host owns authorization and durable receipts. It has its
-own sync and persistence stack. The rich-text model is described in
-[Pages rich text v2](docs/memos/authenticated-automerge-app-substrate/experiment/pages/RICH-TEXT-V2.md).
+own sync and persistence stack. Where the product is going is in
+[Pages direction](docs/memos/authenticated-automerge-app-substrate/experiment/pages/DIRECTION.md).
 
 ## MCP Server
 
