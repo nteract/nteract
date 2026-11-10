@@ -1440,8 +1440,28 @@ asks. `vars` holds the deployment's plain variables: the public origin
 (required, an `https` origin), the identity provider's settings and any
 `PAGES_*` setting such as `PAGES_CATALOG_INDEX`. The helper refuses a profile
 with an unknown field, a D1 id that is not a UUID, or a variable that is a
-secret or a test switch. It sets no route: attaching a domain is a separate
-action.
+secret or a test switch.
+
+A deployment served from its own hostname names it, with the zone that holds
+it, and turns `workers_dev` off:
+
+```json
+{
+  "workers_dev": false,
+  "custom_domain": { "hostname": "pages.example.com", "zone_name": "example.com" },
+  "vars": { "NOTEBOOK_CLOUD_PUBLIC_ORIGIN": "https://pages.example.com" }
+}
+```
+
+The package then carries one route, `{ pattern, zone_name, custom_domain:
+true }`, and `wrangler deploy` attaches the domain and creates its DNS record.
+The zone must be in the same Cloudflare account as the Worker. The helper
+refuses a custom domain that is not the public origin, and one beside
+`workers_dev: true`: the Worker checks requests against one origin, so a
+second address would serve pages a browser cannot use. Name the zone here and
+do not use `wrangler deploy --domain`, which cannot name it: the API then
+answers "Can't infer zone from route" for a zone it would find by name.
+Without `custom_domain` the package sets no route.
 
 Create the two D1 databases and the R2 bucket first, then put their names and
 ids in the profile. From `apps/pages`, with clean committed source and a

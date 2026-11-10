@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Package this build for one Cloudflare Workers deployment, described by a
-// profile file kept outside the repository. Resource creation, secrets and
-// domain attachment are explicit Wrangler operations; this helper only reads
-// and copies.
+// profile file kept outside the repository. Resource creation and secrets are
+// explicit Wrangler operations; this helper only reads and copies. A profile
+// that names a custom domain gets it as a route, and `wrangler deploy`
+// attaches it.
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -22,7 +23,18 @@ const ACCOUNT_ID = /^[0-9a-f]{32}$/;
 const REFUSED_VAR = /SECRET|SESSION_KEYS|DEV_TOKEN|LOCAL_OIDC|E2E_ONLY/;
 const VAR_NAME = /^[A-Z][A-Z0-9_]*$/;
 const R2_BINDING = "PAGES_ASSETS";
-const PROFILE_FIELDS = ["name", "account_id", "workers_dev", "d1", "r2_bucket", "vars"];
+// A lowercase DNS name of two or more labels, with no trailing dot.
+const HOSTNAME =
+  /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+const PROFILE_FIELDS = [
+  "name",
+  "account_id",
+  "workers_dev",
+  "custom_domain",
+  "d1",
+  "r2_bucket",
+  "vars",
+];
 
 // A regular expression coerces what it tests, and the profile is JSON: without
 // the type check a number or a one-element array would pass and reach Wrangler.
@@ -37,14 +49,42 @@ function database(profile, key, binding) {
   return { binding, database_name: entry.database_name, database_id: entry.database_id };
 }
 
+/** The route that attaches a profile's custom domain, or undefined when it
+ * names none.
+ *
+ * The zone is named, never inferred: Cloudflare's API can fail to work the
+ * zone out from the hostname alone ("Can't infer zone from route"), which is
+ * all `wrangler deploy --domain` gives it. A deployment with a custom domain
+ * has one address. Its public origin must be that hostname, and `workers_dev`
+ * must be off, so the Worker never also serves people's documents from an
+ * origin its own origin checks refuse. */
+function customDomainRoute(profile, origin) {
+  const domain = profile.custom_domain;
+  if (domain === undefined) return undefined;
+  if (domain === null || typeof domain !== "object" || Array.isArray(domain))
+    throw new Error("Profile custom_domain must be an object");
+  const unknown = Object.keys(domain).filter((key) => !["hostname", "zone_name"].includes(key));
+  if (unknown.length) throw new Error(`Unknown profile custom_domain field: ${unknown.join(", ")}`);
+  const { hostname, zone_name: zone } = domain;
+  if (!matches(HOSTNAME, hostname))
+    throw new Error("Profile custom_domain.hostname must be a lowercase DNS name");
+  if (!matches(HOSTNAME, zone) || (hostname !== zone && !hostname.endsWith(`.${zone}`)))
+    throw new Error("Profile custom_domain.zone_name must be the zone that holds the hostname");
+  if (origin.host !== hostname)
+    throw new Error("Profile vars NOTEBOOK_CLOUD_PUBLIC_ORIGIN must be the custom domain");
+  if (profile.workers_dev)
+    throw new Error("Profile workers_dev must be false when it names a custom_domain");
+  return { pattern: hostname, zone_name: zone, custom_domain: true };
+}
+
 /** The Wrangler configuration for one Cloudflare deployment of this build.
  *
  * Everything the build decides is fixed here: the entry module, the Durable
  * Object classes and their migrations, the cron triggers and the asset
  * handling. Everything a deployment decides comes from `profile`: its name
- * and account, its two D1 databases and R2 bucket, and its plain variables
- * (public origin, identity provider, quotas). A profile names resources that
- * already exist; nothing here creates them. */
+ * and account, its custom domain, its two D1 databases and R2 bucket, and its
+ * plain variables (public origin, identity provider, quotas). A profile names
+ * resources that already exist; nothing here creates them. */
 export function cloudflareConfig(profile) {
   if (profile === null || typeof profile !== "object" || Array.isArray(profile))
     throw new Error("Provide a deployment profile object");
@@ -84,6 +124,7 @@ export function cloudflareConfig(profile) {
   } catch {}
   if (origin?.protocol !== "https:" || origin.origin !== vars.NOTEBOOK_CLOUD_PUBLIC_ORIGIN)
     throw new Error("Profile vars need NOTEBOOK_CLOUD_PUBLIC_ORIGIN as an https origin");
+  const route = customDomainRoute(profile, origin);
   return {
     name: profile.name,
     // Without an account here Wrangler uses CLOUDFLARE_ACCOUNT_ID or asks.
@@ -92,6 +133,7 @@ export function cloudflareConfig(profile) {
     ...shape,
     workers_dev: profile.workers_dev,
     preview_urls: false,
+    ...(route && { routes: [route] }),
     d1_databases: [
       database(profile, "auth", AUTH_D1.binding),
       database(profile, "usage", USAGE_D1.binding),
