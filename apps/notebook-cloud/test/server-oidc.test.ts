@@ -1208,6 +1208,54 @@ describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
     assert.ok(await readCloudAppSession(retired, freshRequest));
   });
 
+  it("keeps a late owner's renewal when the reader can't open the seal it replaced", async (t) => {
+    const f = await fixture(t);
+    const legacy = f.env.NOTEBOOK_CLOUD_APP_SESSION_SECRET!;
+    const next = "rotated-session-key-with-at-least-thirty-two-bytes";
+    const withKeys = (active: string, keys: Record<string, string>): Env => ({
+      ...f.env,
+      NOTEBOOK_CLOUD_APP_SESSION_KEYS: JSON.stringify({ active, keys }),
+    });
+    const { sessionCookie } = await f.login();
+    const request = f.request(undefined, sessionCookie);
+    // The row keeps its k1 id and is resealed under k2.
+    f.expireAccess();
+    const rotated = withKeys("k2", { k1: legacy, k2: next });
+    assert.equal((await serverOidcSessionStatus(request, rotated, noopProfile)).status, 200);
+    const sealed = () =>
+      String(f.db.sqlite.prepare("SELECT sealed FROM oidc_server_sessions").get()!.sealed);
+    assert.match(sealed(), /^k2\./);
+    // A rollback in progress: the owner holds both keys and seals under k1,
+    // and the reader holds k1 alone. The reader reads the owner's lapsed
+    // lease over the k2 seal, and the owner saves before the reader's delete.
+    f.expireAccess();
+    const gate = f.gateRefresh();
+    const owner = serverOidcSessionStatus(
+      request,
+      withKeys("k1", { k1: legacy, k2: next }),
+      noopProfile,
+    );
+    await gate.entered.promise;
+    f.db.sqlite.prepare("UPDATE oidc_server_sessions SET lease_until = ?").run(nowSeconds() - 1);
+    f.db.afterNextRead = async () => {
+      gate.release.resolve();
+      await owner;
+    };
+    const events: ServerOidcAuthEvent[] = [];
+    const response = await serverOidcSessionStatus(
+      request,
+      withKeys("k1", { k1: legacy }),
+      noopProfile,
+      { onAuthEvent: (event) => events.push(event) },
+    );
+    assert.match(sealed(), /^k1\./);
+    assert.equal(response.status, 200);
+    assert.ok((await response.json()).session);
+    assert.equal(hasSessionCookie(response), true);
+    assert.equal(f.countRows(), 1);
+    assert.deepEqual(events, []);
+  });
+
   it("refuses sealed credentials under an unknown kid and a malformed keyring", async (t) => {
     const f = await fixture(t);
     const legacy = f.env.NOTEBOOK_CLOUD_APP_SESSION_SECRET!;

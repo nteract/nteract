@@ -46,8 +46,8 @@ const LOGIN_SECONDS = 600;
 // delay rather than waiting until a request is already about to lose authority.
 const REFRESH_WINDOW_SECONDS = 120;
 // How long one request's claim on a session's renewal is honored. A renewal
-// still running past it is treated as abandoned: the next request to see the
-// lapsed lease ends the session.
+// still running past it is treated as abandoned: a request that sees the
+// lapsed lease deletes the session, unless the owner saves first.
 const REFRESH_LEASE_SECONDS = 120;
 
 interface Config {
@@ -189,8 +189,8 @@ export interface ServerSessionProvider {
    * Exchanges a session's sealed bundle for a fresh grant. It runs under the
    * row's refresh lease, which keeps every other request from exchanging the
    * same bundle. Finish well inside `REFRESH_LEASE_SECONDS`: once the lease
-   * lapses, the next request to see it deletes the session and this call's
-   * grant is discarded. Throw
+   * lapses, a request that sees it deletes the session, and a grant returned
+   * after that delete is discarded. Throw
    * `ServerSessionGrantRejected` when the provider ended the grant, or
    * `ServerOidcIdentityRejected` when the application refuses the account;
    * both delete the session. Any other error keeps the row, and the same
@@ -975,9 +975,12 @@ async function refreshSession(
     // A crashed owner may have consumed a rotating refresh token. Do not let
     // another process reuse it, or let a late owner resurrect the session.
     if (await endAbandonedSession(db, initial, initial.lease, options)) return null;
-    // The row changed after it was read, so `initial` is stale. Its claim
-    // below is fenced on the old generation, and the wait loop then answers
-    // from the row as it stands.
+    // The row changed after `initial` was read, so nothing here may act on
+    // `initial`. A renewal the owner saved in that gap is the answer. A row
+    // still at this generation was released for a retry.
+    const row = await loadServerSession(env, request, Math.floor(Date.now() / 1000));
+    if (!row || row.generation !== initial.generation) return row;
+    throw new ProviderUnavailable();
   }
   let bundle: Record<string, unknown>;
   try {
@@ -1111,7 +1114,7 @@ async function refreshSession(
  *
  * Returns false when the delete matched nothing: the row changed after `row`
  * was read. The owner may have saved its renewal in that gap, so the caller
- * reads the row again and never answers signed-out from `row`.
+ * must read the row again before it answers.
  */
 async function endAbandonedSession(
   db: D1Database,
