@@ -115,11 +115,12 @@ const post = (path, fields, headers = {}) =>
     body: new URLSearchParams(fields),
   });
 
-/** One approved Kilo connection for the signed-in browser `login`. */
-async function connectAgent(env, login) {
+/** One approved connection for the signed-in browser `login`: Kilo's, unless
+ * another client and callback are named. */
+async function connectAgent(env, login, clientId = "pages-kilo", redirectUri = kiloCallback) {
   const query = new URLSearchParams({
-    client_id: "pages-kilo",
-    redirect_uri: kiloCallback,
+    client_id: clientId,
+    redirect_uri: redirectUri,
     response_type: "code",
     resource: origin + "/mcp",
     code_challenge: await secretHash(verifier),
@@ -141,10 +142,10 @@ async function connectAgent(env, login) {
   const code = new URL(approved.headers.get("location")).searchParams.get("code");
   const issued = await handleOAuth(
     post("/oauth/token", {
-      client_id: "pages-kilo",
+      client_id: clientId,
       resource: origin + "/mcp",
       grant_type: "authorization_code",
-      redirect_uri: kiloCallback,
+      redirect_uri: redirectUri,
       code_verifier: verifier,
       code,
     }),
@@ -315,6 +316,44 @@ test("sign out everywhere needs this origin and a browser session", async (t) =>
   }
   assert.equal(await signedIn(env, login), person);
   assert.equal(await agentWorks(env, tokens), true);
+});
+
+test("the connected agents list names a metadata-document client by product or host, never by its own claim", async (t) => {
+  const env = fixture(t);
+  const login = await signIn(env);
+  const claudeCode = "https://claude.ai/oauth/claude-code-client-metadata";
+  const stranger = "https://app.example/client.json";
+  const documents = {
+    [claudeCode]: {
+      client_id: claudeCode,
+      client_name: "Claude Code",
+      redirect_uris: ["http://localhost/callback", "http://127.0.0.1/callback"],
+      token_endpoint_auth_method: "none",
+    },
+    [stranger]: {
+      client_id: stranger,
+      client_name: "Kilo",
+      redirect_uris: ["https://app.example/callback"],
+      token_endpoint_auth_method: "none",
+    },
+  };
+  t.mock.method(globalThis, "fetch", async (url) =>
+    Response.json(documents[url], { headers: { "Cache-Control": "no-store" } }),
+  );
+  await connectAgent(env, login, claudeCode, "http://localhost:3118/callback");
+  await connectAgent(env, login, stranger, "https://app.example/callback");
+  const response = await call(env, "/api/auth/grants", { cookie: login.cookie, origin: null });
+  const { agents } = await response.json();
+  assert.deepEqual(agents.map((agent) => agent.name).sort(), ["Claude Code", "app.example"]);
+  assert.doesNotMatch(JSON.stringify(agents), /client\.json|oauth\/claude-code/);
+  // Either connection disconnects like any other.
+  for (const agent of agents) {
+    const revoked = await call(env, `/api/auth/grants/${agent.id}/revoke`, {
+      method: "POST",
+      cookie: login.cookie,
+    });
+    assert.deepEqual(await revoked.json(), { revoked: true });
+  }
 });
 
 test("the connected agents list shows the caller's live connections without secrets", async (t) => {

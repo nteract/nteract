@@ -1211,7 +1211,9 @@ the same 30-day retention. They are the record of who signed in or connected
 an agent: the auth tables hold only live state, and expired or revoked rows
 are deleted. Each line has `action`, `timestamp`, and, where known,
 `principal`, `credential` (`oidc`, `oauth` or `api-key`), `client_id`,
-`grant`, `scope` and a coded `reason`:
+`grant`, `scope` and a coded `reason`. `client_id` is the full id of a client
+Pages recognizes (`pages-kilo`, ChatGPT's and Claude's document URLs) and the
+host alone for any other metadata-document client:
 
 | `action` | When | Extra fields |
 |---|---|---|

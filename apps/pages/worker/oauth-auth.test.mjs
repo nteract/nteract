@@ -70,7 +70,7 @@ function database(t) {
 async function fixture(
   t,
   scope = "pages:read pages:write offline_access",
-  { identity = person, env: extraEnv = {} } = {},
+  { identity = person, env: extraEnv = {}, client = clientId } = {},
 ) {
   t.mock.method(globalThis, "fetch", () =>
     assert.fail("Pages OAuth must not send tokens to an external provider"),
@@ -78,7 +78,7 @@ async function fixture(
   const env = { ...environment(), DB: database(t), ...extraEnv };
   const verifier = "v".repeat(43);
   const { code } = await issueAuthorizationCode(env, {
-    clientId,
+    clientId: client,
     redirectUri: "https://chatgpt.com/connector_platform/oauth_redirect",
     resource,
     scope,
@@ -87,7 +87,7 @@ async function fixture(
   });
   const tokens = await exchangeAuthorizationCode(env, {
     code,
-    clientId,
+    clientId: client,
     redirectUri: "https://chatgpt.com/connector_platform/oauth_redirect",
     resource,
     codeVerifier: verifier,
@@ -222,6 +222,24 @@ test("tools/list and ping answer without a credential; other methods still chall
     env,
   );
   assert.notEqual(withCookie.status, 200, "a cookie takes the authenticated path");
+});
+
+test("a grant's client names the driver unless the request sends its own label", async (t) => {
+  for (const [client, driver] of [
+    ["pages-kilo", "Kilo"],
+    ["https://claude.ai/oauth/mcp-oauth-client-metadata", "Claude"],
+    ["https://claude.ai/oauth/claude-code-client-metadata", "Claude Code"],
+    ["https://app.example/client.json", "app.example"],
+    ["pages-local-e2e", "MCP"],
+  ]) {
+    const f = await fixture(t, undefined, { client });
+    assert.equal(
+      (await authenticate(request("/mcp", f.tokens.access_token), f.env)).driver,
+      driver,
+    );
+    const labelled = request("/mcp", f.tokens.access_token, { "x-pages-driver": "Release agent" });
+    assert.equal((await authenticate(labelled, f.env)).driver, "Release agent");
+  }
 });
 
 test("Pages-issued tokens authenticate MCP and each host-only forwarding hop locally", async (t) => {

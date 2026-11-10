@@ -19,7 +19,7 @@ import {
 import { withAdmissionReason } from "./admission-reasons.mjs";
 import { logAuthEvent, sessionRowPrincipal } from "./auth-events.mjs";
 import { HttpError, json, logFailure, requireSameOrigin } from "./auth.mjs";
-import { oauthClientName } from "./oauth.mjs";
+import { oauthClientName } from "./oauth-clients.mjs";
 import { listGrantsFor, revokeGrantFor, revokeGrantsFor } from "./oauth-store.mjs";
 
 const LOGOUT_ALL = "/api/auth/logout-all";
