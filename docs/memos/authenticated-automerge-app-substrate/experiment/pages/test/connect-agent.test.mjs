@@ -13,7 +13,7 @@ import {
   pagesAgentEnvrc,
   setupPrompt,
 } from "../agent-client-setup.mjs";
-const origin = "https://page5.runtimed.run";
+const origin = "https://page10.runtimed.run";
 const env = {
   NOTEBOOK_CLOUD_PUBLIC_ORIGIN: origin,
   NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL: "https://anaconda.com/api/auth/sessions/whoami",

@@ -222,8 +222,8 @@ finally:
 });
 
 test("Kilo OAuth recipe binds the supported public client without a static credential", () => {
-  const { pages } = JSON.parse(kiloConfig("https://page7.runtimed.run")).mcp;
-  assert.equal(pages.url, "https://page7.runtimed.run/mcp");
+  const { pages } = JSON.parse(kiloConfig("https://page10.runtimed.run")).mcp;
+  assert.equal(pages.url, "https://page10.runtimed.run/mcp");
   assert.deepEqual(pages.oauth, {
     clientId: "pages-kilo",
     scope: "pages:read pages:write offline_access",
@@ -232,7 +232,7 @@ test("Kilo OAuth recipe binds the supported public client without a static crede
 });
 
 test("Kilo API-key recipe uses static bearer auth and a file reference rather than an empty credential", () => {
-  const { pages } = JSON.parse(kiloApiKeyConfig("https://page7.runtimed.run")).mcp;
+  const { pages } = JSON.parse(kiloApiKeyConfig("https://page10.runtimed.run")).mcp;
   assert.equal(pages.oauth, false);
   assert.deepEqual(pages.headers, {
     Authorization: "Bearer {file:~/.config/pages/anaconda-api-key}",

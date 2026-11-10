@@ -372,8 +372,8 @@ test("targets and SSH hosts come from the profile or a validated override", asyn
   const refuse = async () => {
     throw new Error("transport must not run");
   };
-  assert.equal(await main(["--target", "page9", "list"], { transport: refuse, ...io }), 2);
-  assert.match(err.join("\n"), /page9 has no Page quotas/);
+  assert.equal(await main(["--target", "pages-next", "list"], { transport: refuse, ...io }), 2);
+  assert.match(err.join("\n"), /pages-next has no Page quotas/);
   assert.equal(await main(["--target", "nope", "list"], { transport: refuse, ...io }), 2);
   assert.equal(
     await main([...TARGET, "--ssh-host", "-oProxyCommand=x", "list"], { transport: refuse, ...io }),

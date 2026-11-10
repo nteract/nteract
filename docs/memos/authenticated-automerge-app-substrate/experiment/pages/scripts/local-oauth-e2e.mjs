@@ -120,7 +120,6 @@ try {
     path.join(runtime, ".dev.vars"),
     Object.entries({
       PAGES_E2E_ONLY: "true",
-      PAGES_EDITOR: "wordgard",
       PAGES_CATALOG_INDEX: "1",
       NOTEBOOK_CLOUD_APP_SESSION_SECRET: randomBytes(32).toString("hex"),
       NOTEBOOK_CLOUD_LOCAL_OIDC: "true",

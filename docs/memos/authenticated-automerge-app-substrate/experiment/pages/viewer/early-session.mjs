@@ -21,7 +21,7 @@ export const SESSION_URL = "/api/auth/session";
 export const EARLY_SESSION = "__pagesEarlySession";
 export const EARLY_CONNECT = "__pagesEarlyConnect";
 
-// Measured from the request's start. A cold load on page9 takes the slot
+// Measured from the request's start. A cold load takes the slot
 // about 1.4 s after theme.js starts it (session start ~0.27 s, WASM done
 // ~1.66 s). 5 s covers that on slower links; past it, one more round trip is a
 // small share of the load and the answer is old enough to have been overtaken.

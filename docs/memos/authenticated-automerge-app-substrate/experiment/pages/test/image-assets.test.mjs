@@ -46,7 +46,7 @@ const parquetFixture =
 const parquetBytes = () => new Uint8Array(Buffer.from(parquetFixture, "base64"));
 const pageId = "33333333-3333-4333-8333-333333333333";
 const otherId = "44444444-4444-4444-8444-444444444444";
-const publicOrigin = "https://page7.runtimed.run";
+const publicOrigin = "https://page10.runtimed.run";
 
 class Bucket {
   objects = new Map();

@@ -12,7 +12,7 @@ import {
 } from "./deployment/profiles.mjs";
 
 const scripts = path.dirname(fileURLToPath(import.meta.url));
-const frozen = ["pages-next", "page3", "page4", "page5", "page6", "page7", "page8", "page9"];
+const frozen = ["pages-next"];
 
 test("deployment targets include Page11 while historical profiles remain inspectable", () => {
   assert.deepEqual(QUALIFIED_TARGETS, ["page10", "pages", "pages2", "page11"]);
@@ -22,7 +22,7 @@ test("deployment targets include Page11 while historical profiles remain inspect
     assert.ok(deploymentProfile(target).deployment.hostname);
     assert.throws(
       () => assertQualifiedDeploymentTarget(target),
-      /qualified only for page10, pages and pages2/,
+      /deploys only page10, pages, pages2 and page11/,
     );
   }
 });
@@ -48,7 +48,7 @@ test("operator entrypoints reject every frozen target and implicit default befor
       timeout: 5000,
     });
     assert.equal(result.status, 1, `${entry} ${args.join(" ")}: ${result.stderr}`);
-    assert.match(result.stderr, /This build is qualified only for page10, pages and pages2/);
+    assert.match(result.stderr, /This build deploys only page10, pages, pages2 and page11/);
     assert.equal(existsSync(called), false, "qualification must precede SSH/SCP");
   };
   for (const target of [undefined, ...frozen]) {

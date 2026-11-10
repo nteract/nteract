@@ -12,7 +12,7 @@ import { plainStub } from "./plain-stub.mjs";
 const now = 1_800_000_000_000;
 const namespace = "user:anaconda";
 const env = {
-  NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://page7.example",
+  NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://page10.example",
   NOTEBOOK_CLOUD_APP_SESSION_SECRET: "domain-proof-fixture-secret-".repeat(2),
   NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE: namespace,
   PAGES_COMPANY_VIEW_DOMAINS: "anaconda.com",

@@ -23,8 +23,12 @@ export { routesFor } from "./routes.mjs";
 export const legacyRoutes = routesFor("pages-next", true);
 export const routes = routesFor();
 
+// A profile with a tunnelService owns its tunnel and connector and publishes
+// through publishIsolated. Only a profile without one edits the shared tunnel.
+export const publishesIsolated = (target) => Boolean(deploymentProfile(target).tunnelService);
+
 export function insertRoutes(before, target = "pages-next") {
-  if (deploymentProfile(target).frozenTargets)
+  if (publishesIsolated(target))
     throw new Error("This target requires its dedicated tunnel publisher");
   const { hostname } = deploymentProfile(target).deployment;
   const updated = routesFor(target);
@@ -168,7 +172,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   assertQualifiedDeploymentTarget(target);
   if (process.getuid() !== 0 || apply !== "--apply" || extra)
     throw new Error("Explicit root publication with prepared stage required");
-  if (deploymentProfile(target).tunnelService) {
+  if (publishesIsolated(target)) {
     console.log(JSON.stringify(publishIsolated(stage)));
     process.exit(0);
   }
@@ -265,9 +269,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       "https://m.runtimed.run/api/sync?page=test",
       "https://main.runtimed.run/",
       "https://deploy.runtimed.run/operator",
-      ...(target === "page3"
-        ? ["https://pages-next.runtimed.run/", "https://pages-next.runtimed.run/api/sync?page=test"]
-        : ["https://page3.runtimed.run/", "https://page3.runtimed.run/api/sync?page=test"]),
     ]) {
       const current = run("/usr/bin/cloudflared", [
         "--config",

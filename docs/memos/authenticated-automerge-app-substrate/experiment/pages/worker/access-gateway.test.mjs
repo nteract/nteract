@@ -15,7 +15,7 @@ import { DocumentPolicy } from "./policy.mjs";
 import { plainStub } from "./plain-stub.mjs";
 
 const pageId = "33333333-3333-4333-8333-333333333333";
-const publicOrigin = "https://page5.runtimed.run";
+const publicOrigin = "https://page10.runtimed.run";
 const privateOrigin = "http://127.0.0.1:9475";
 
 async function gatewayFixture(t) {

@@ -1,12 +1,10 @@
 # Pages deployment
 
-The current release is qualified for three isolated celld targets: **Pages**
-(`pages.runtimed.run`), **Page10**, and **Pages2** (`page2.runtimed.run`, on its
-own host, lab2). Page9 and earlier services are frozen.
-Deployment helpers reject mutations to those targets and check their
-fingerprints when publishing Pages or Page10. Historical profiles remain in
-[profiles.mjs](scripts/deployment/profiles.mjs) for inspection and isolation
-checks; their presence is not permission to deploy to them.
+The current release is qualified for four isolated celld targets: **Pages**
+(`pages.runtimed.run`), **Page10**, **Pages2** (`page2.runtimed.run`, on its
+own host, lab2) and **Page11** (`page11.runtimed.run`, also on lab2).
+[profiles.mjs](scripts/deployment/profiles.mjs) lists the profiles, and the
+deployment helpers reject any other target name.
 
 A release that would break existing clients goes to a fresh target instead of
 carrying compatibility code. Deployment never copies data between targets.
@@ -34,7 +32,6 @@ The `pages` profile owns `pages.runtimed.run`:
 | Listeners | `127.0.0.1:9481`, internal `127.0.0.1:19481` |
 | Firewall | table `nteract_pages_live`, mark `0x00100000` |
 | Tunnel connectors | `cloudflared-pages-live-a.service` (metrics `127.0.0.1:29481`) and `cloudflared-pages-live-b.service` (`127.0.0.1:29491`), tunnel `nteract-pages-live`; see [Connector handoff](#connector-handoff) |
-| Frozen neighbors | `page7`, `page8`, `page9` |
 
 It carries every Page10 flag, the Page quota default and D1 binding, and the
 same celld 0.6.3 runtime and OIDC client. Like Page10, every Page syncs with
@@ -253,9 +250,9 @@ and persistent data, and touches only the selected service. Installation and
 publication require SSH and sudo on the target's host (lab1, or lab2 for pages2).
 
 Each installation copies `firewall.mjs` and `profiles.mjs` into its own
-`/opt/<service>`, and its unit's `ExecStartPre` runs that copy. A frozen service
-keeps the copy that qualified it, so Page9 keeps restarting after qualification
-moved to Page10 and Pages.
+`/opt/<service>`, and its unit's `ExecStartPre` runs that copy. A service keeps
+the copy of the release that installed it, so it restarts the same way until its
+next install.
 
 ### App-only and full deploys
 
@@ -1477,7 +1474,7 @@ list it. The target Project belongs to the account that imports it.
 ```sh
 PAGES_SOURCE_TOKEN_FILE=~/.config/pages/anaconda-api-key \
   node scripts/project-transfer.mjs export \
-  --source https://page9.runtimed.run \
+  --source https://page10.runtimed.run \
   --project prj_797f9475-6855-4ce5-8203-9f66cfc417c1 \
   --out guide.bundle.json
 ```
@@ -1489,7 +1486,7 @@ The bundle is JSON for review before import:
   "format": "nteract-pages-project-bundle",
   "version": 5,
   "bundle_id": "<uuid>",
-  "source": { "origin": "https://page9.runtimed.run", "project_id": "prj_…", "document_id": "…" },
+  "source": { "origin": "https://page10.runtimed.run", "project_id": "prj_…", "document_id": "…" },
   "exported_at": "2026-11-01T00:00:00.000Z",
   "project": {
     "title": "…",

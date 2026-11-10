@@ -18,8 +18,6 @@ import {
   linkPreviewPaths,
   projectAssetPaths,
   routesFor,
-  imagePaths,
-  indexPaths,
   siftPaths,
   whoamiPaths,
 } from "./routes.mjs";
@@ -52,7 +50,7 @@ export function isolatedPublicationPlan({
   tunnelReceipt,
   sharedConfig,
   frozenTunnelConfigs = [],
-  target = "page3",
+  target,
 }) {
   const deployment = verifyDeployment(manifest, target);
   const { service, configPath, credentialsPath, unitPath } = publicationPaths(target);
@@ -280,19 +278,7 @@ export function publishIsolated(
   // Only the exact known predecessor for this target may migrate. Other targets
   // and arbitrary local edits still require inspection instead of adoption.
   const previousConfig =
-    target === "page3"
-      ? base.replace("|mermaid[.]js|", "|")
-      : target === "page5"
-        ? base.replace("|connect|connect[.]js|", "|")
-        : target === "page7"
-          ? base.replace(imagePaths, "")
-          : target === "page8"
-            ? base.replace("|theme[.]js|", "|")
-            : target === "page9"
-              ? base.replace(indexPaths, "")
-              : target === "page10" || target === "pages"
-                ? base.replace(whoamiPaths, "")
-                : null;
+    target === "page10" || target === "pages" ? base.replace(whoamiPaths, "") : null;
   // Each predecessor is an exact (config, units) pair this run may migrate
   // from. A slotted target also migrates from its legacy single unit, with or
   // without a route change. Its pending receipt names the units to roll back to.
@@ -646,7 +632,7 @@ export function publishIsolated(
   const connector = slotted ? handOffConnector() : restartConnector();
 
   // A single connector unit restarts in place. The edge has no connector
-  // while it stops, so only frozen targets without slots take this path.
+  // while it stops, so only targets without slots take this path.
   function restartConnector() {
     run("systemctl", ["enable", service]);
     try {

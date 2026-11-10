@@ -6,7 +6,7 @@ import { catalogIndexTimeouts } from "./catalog-index.mjs";
 import { TOOL_REQUEST_TIMEOUT_MS } from "./tool-deadline.mjs";
 
 const pageId = "33333333-3333-4333-8333-333333333333";
-const publicOrigin = "https://page7.runtimed.run";
+const publicOrigin = "https://page10.runtimed.run";
 const pageUrl = `${publicOrigin}/p/${pageId}`;
 
 test("MCP gateway returns its normal error response when public origin is missing", async (t) => {

@@ -64,7 +64,7 @@ class SqliteD1 {
     }
   }
 }
-const origin = "https://page7.example";
+const origin = "https://page10.example";
 const resource = `${origin}/mcp`;
 const start = 1_800_000_000;
 const verifier = "v".repeat(43);

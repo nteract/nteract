@@ -21,7 +21,7 @@ const descriptor = (overrides = {}) => ({
   ...overrides,
 });
 const request = (signal) =>
-  new Request("https://page7.runtimed.run/mcp", {
+  new Request("https://page10.runtimed.run/mcp", {
     method: "POST",
     headers: { authorization: "Bearer private-pages-token", cookie: "private-cookie=value" },
     ...(signal && { signal }),

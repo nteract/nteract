@@ -47,7 +47,7 @@ class SqliteD1 {
     }
   }
 }
-const origin = "https://page7.example";
+const origin = "https://page10.example";
 const callback = "https://chatgpt.com/connector_platform_oauth_redirect";
 const kiloCallback = "http://127.0.0.1:19876/mcp/oauth/callback";
 const metadataUrl = "https://chatgpt.com/oauth/client.json";
@@ -212,7 +212,7 @@ test("metadata and challenge use configured public origin; unknown OAuth routes 
   const challenged = mcpAuthChallenge(env, new Response("sign in", { status: 401 }));
   assert.match(
     challenged.headers.get("www-authenticate"),
-    /^Bearer resource_metadata="https:\/\/page7.example\//,
+    /^Bearer resource_metadata="https:\/\/page10.example\//,
   );
   assert.doesNotMatch(challenged.headers.get("www-authenticate"), /scope=/);
   const forbidden = new Response(null, { status: 403 });

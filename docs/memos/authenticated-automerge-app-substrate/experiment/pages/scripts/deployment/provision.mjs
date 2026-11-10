@@ -14,7 +14,7 @@ import { provisionTunnel } from "./tunnel.mjs";
 export async function provisionTarget({ token, target, apply = false, fetchImpl = fetch, run }) {
   if (typeof apply !== "boolean") throw new Error("apply must be a boolean");
   // The qualification gate lives here, not only in the CLI, so no importer can
-  // create or inspect edge resources for a frozen target.
+  // create or inspect edge resources for a target outside QUALIFIED_TARGETS.
   assertQualifiedDeploymentTarget(target);
   const tunnel = await provisionTunnel({ token, target, apply, fetchImpl, run });
   // Inspecting before the tunnel exists leaves no UUID for DNS to check against.

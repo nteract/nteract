@@ -119,7 +119,7 @@ test("legibleEnv wraps the object namespaces the gateway forwards to and nothing
     PROJECTS: { getByName: () => stub },
     PAGE_RECORDS: { getByName: () => stub },
     DB: { prepare() {} },
-    PAGES_EDITOR: "wordgard",
+    PAGES_CATALOG_INDEX: "1",
   };
   const legible = legibleEnv(env);
   for (const name of ["PAGES", "CATALOGS", "PROJECTS"]) {
@@ -128,7 +128,7 @@ test("legibleEnv wraps the object namespaces the gateway forwards to and nothing
   }
   assert.equal(legible.PAGE_RECORDS, env.PAGE_RECORDS);
   assert.equal(legible.DB, env.DB);
-  assert.equal(legible.PAGES_EDITOR, "wordgard");
+  assert.equal(legible.PAGES_CATALOG_INDEX, "1");
   assert.equal(legibleEnv({}).PAGES, undefined);
 });
 

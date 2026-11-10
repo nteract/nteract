@@ -231,7 +231,6 @@ try {
       Object.entries({
         PAGES_E2E_ONLY: "true",
         ...(domainView ? { PAGES_COMPANY_VIEW_DOMAINS: "anaconda.com" } : {}),
-        PAGES_EDITOR: "wordgard",
         PAGES_CATALOG_INDEX: "1",
         NOTEBOOK_CLOUD_APP_SESSION_SECRET: sessionSecret,
         NOTEBOOK_CLOUD_LOCAL_OIDC: "true",

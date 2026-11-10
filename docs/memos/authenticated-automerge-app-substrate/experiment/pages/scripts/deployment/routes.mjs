@@ -9,8 +9,8 @@ export const chunkPaths = "chunks/[A-Z2-7]{8}[.]js|";
 export const assetPaths =
   "(app|theme|mermaid)-[A-Z2-7]{8}[.]js|app-[A-Z2-7]{8}[.]css|(automerge|subduction)-[A-Z2-7]{8}[.]wasm|";
 // Sift's content-hashed WASM (scripts/viewer-chunks.mjs VIEWER_ASSET), loaded
-// only when a Page shows a Parquet dataframe. A separate group, so Page9's frozen
-// asset route bytes stay exactly as deployed.
+// only when a Page shows a Parquet dataframe. A separate group, so the asset
+// route bytes stay unchanged for a profile without Sift tables.
 export const siftPaths = "sift-[A-Z2-7]{8}[.]wasm|";
 // Exact identity endpoint; the Worker enforces GET and authentication.
 export const whoamiPaths = "whoami|";
@@ -55,8 +55,7 @@ export function routesFor(target = "pages-next", legacy = false) {
   const sift = profile.siftTables ? siftPaths : "";
   const projects = profile.projectLinks ? projectPaths : "";
   const index = profile.indexRoutes ? indexPaths : "";
-  // Frozen deployments retain their exact route receipts. Sharing targets expose
-  // only the public setup page, its script, and the authenticated access API.
+  // Sharing targets expose only the public setup page, its script, and the authenticated access API.
   const sharing = profile.sharing === true;
   const authenticatedAssets = profile.oauth === true;
   const connect = sharing ? "connect|connect[.]js|" : "";

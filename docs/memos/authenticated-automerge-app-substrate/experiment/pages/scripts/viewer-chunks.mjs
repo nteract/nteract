@@ -16,7 +16,7 @@ import { FAVICON_HREF } from "../shared/favicon.mjs";
 import { PRODUCT_NAME } from "../shared/product.mjs";
 
 export const VIEWER_ENTRY = "public/app.js";
-// esbuild's [hash] is eight base32 characters. Staging and the page9 ingress
+// esbuild's [hash] is eight base32 characters. Staging and the tunnel ingress
 // route admit exactly this shape.
 export const VIEWER_CHUNK = /^public\/chunks\/[A-Z2-7]{8}\.js$/;
 const VIEWER_CHUNK_STYLE = /^public\/chunks\/[A-Z2-7]{8}\.css$/;
@@ -36,7 +36,7 @@ export const VIEWER_ASSETS = Object.freeze([
   "automerge.wasm",
   "sift.wasm",
 ]);
-// Staging and the page9 ingress route admit exactly these shapes.
+// Staging and the tunnel ingress route admit exactly these shapes.
 const VIEWER_ASSET = /^public\/(app|theme|mermaid|automerge|sift)-([A-Z2-7]{8})\.(js|css|wasm)$/;
 export const IMMUTABLE = "public, max-age=31536000, immutable";
 
