@@ -302,7 +302,8 @@ export function clientFromMetadata(url, metadata) {
 
 /** A body's text, read up to `limit` bytes. A longer body is a RangeError.
  * When `signal` aborts, the read stops with the signal's reason, whether or
- * not the runtime ties the body to the signal that fetched it. */
+ * not the runtime ties the body to the signal that fetched it, and without
+ * waiting for the body's cancellation to finish. */
 export async function boundedText(body, limit, signal) {
   if (!body) return "";
   const reader = body.getReader();
@@ -327,7 +328,7 @@ export async function boundedText(body, limit, signal) {
       chunks.push(value);
     }
   } catch (error) {
-    await reader.cancel().catch(() => {});
+    await (aborted ? Promise.race([reader.cancel(), aborted]) : reader.cancel()).catch(() => {});
     throw error;
   } finally {
     reader.releaseLock();

@@ -613,6 +613,11 @@ test("a fetch that outlasts its time limit is abandoned, headers or body", async
   const saved = { ...metadataFetchTimeouts };
   t.after(() => Object.assign(metadataFetchTimeouts, saved));
   metadataFetchTimeouts.fetch = 20;
+  // `AbortSignal.timeout()` does not keep the event loop alive, and a stalled
+  // fetch holds nothing else. This timer does, so the abort is what ends each
+  // case below, whichever tests run beside this one.
+  const alive = setInterval(() => {}, 1000);
+  t.after(() => clearInterval(alive));
   const signals = [];
   let respond;
   t.mock.method(globalThis, "fetch", (url, { signal }) => {
@@ -648,7 +653,30 @@ test("a fetch that outlasts its time limit is abandoned, headers or body", async
   await assert.rejects(metadataClient(url), refused(url));
   assert.equal(signals[1].reason.name, "TimeoutError");
   assert.equal(cancelled, true, "the stalled body is cancelled");
-  // Neither left its client id held.
+  // A body whose cancellation never finishes does not outlast the limit
+  // either, whether it stalls or runs past the size limit.
+  for (const [host, chunk] of [
+    ["stalled-cancel.example", '{"client_id":'],
+    ["oversized-cancel.example", "x".repeat(6000)],
+  ]) {
+    let cancelling = false;
+    respond = async () =>
+      new Response(
+        new ReadableStream({
+          start: (controller) => controller.enqueue(new TextEncoder().encode(chunk)),
+          cancel: () => {
+            cancelling = true;
+            return new Promise(() => {});
+          },
+        }),
+        { headers: { "Content-Type": "application/json" } },
+      );
+    url = new URL(`https://${host}/client.json`);
+    await assert.rejects(metadataClient(url), refused(url));
+    assert.equal(cancelling, true, host);
+    assert.equal(signals.at(-1).reason.name, "TimeoutError", host);
+  }
+  // None of them left its client id held.
   respond = async (id) => answer(id, "no-store");
   assert.equal((await metadataClient(url)).id, url.href);
 });

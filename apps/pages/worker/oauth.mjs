@@ -146,8 +146,10 @@ export function mcpAuthChallenge(env, original) {
 }
 
 /** The client a token or revocation request names. A metadata-document id is
- * checked for its form only: these endpoints never fetch, because the code or
- * grant a request presents was issued to one client id and matches no other. */
+ * checked for its form and for the deployment's admission as it is now, so a
+ * grant issued to a client the deployment has since stopped admitting gets
+ * `invalid_client`. These endpoints never fetch: the code or grant a request
+ * presents was issued to one client id and matches no other. */
 function requestClient(clientId, env) {
   const origin = pagesPublicOrigin(env);
   const client = namedClient(clientId, origin, env);
