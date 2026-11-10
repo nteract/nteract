@@ -16,8 +16,8 @@ export async function startLocalKilo({ port = 0, now = Date.now } = {}) {
   const pending = new Map();
   const sessions = new Map();
   const refreshes = new Map();
-  const usedRefreshes = new Set();
-  const usedRefreshSessions = new Map();
+  // Retired refresh token → its session. Kilo treats reuse of one as theft.
+  const retiredRefreshes = new Map();
   const requests = [];
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, "http://127.0.0.1");
@@ -145,20 +145,14 @@ export async function startLocalKilo({ port = 0, now = Date.now } = {}) {
     if (req.method === "POST" && url.pathname === "/api/auth/native/refresh") {
       const previous = refreshes.get(body?.refreshToken);
       if (!previous) {
-        const old = usedRefreshSessions.get(body?.refreshToken);
-        if (old) old.revoked = true;
-        return send(res, 401, { error: old ? "SESSION_REVOKED" : "INVALID_REFRESH_TOKEN" });
+        const reused = retiredRefreshes.get(body?.refreshToken);
+        if (reused) reused.revoked = true;
+        return send(res, 401, { error: reused ? "SESSION_REVOKED" : "INVALID_REFRESH_TOKEN" });
       }
       if (previous.revoked) return send(res, 401, { error: "SESSION_REVOKED" });
-      if (previous.rotated) {
-        previous.revoked = true;
-        return send(res, 401, { error: "SESSION_REVOKED" });
-      }
       if (previous.blocked) return send(res, 401, { error: "USER_BLOCKED" });
       refreshes.delete(body.refreshToken);
-      usedRefreshes.add(body.refreshToken);
-      usedRefreshSessions.set(body.refreshToken, previous);
-      previous.rotated = true;
+      retiredRefreshes.set(body.refreshToken, previous);
       for (const [accessToken, active] of sessions)
         if (active === previous) sessions.delete(accessToken);
       const next = opaque();

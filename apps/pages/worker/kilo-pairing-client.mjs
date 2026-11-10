@@ -1,9 +1,24 @@
-/** Server-side client for Kilo device pairing and profile endpoints.
- * The legacy poll secret is never used, and `supportsRefresh` is always sent. */
+/** Kilo's device pairing, token refresh and profile endpoints, called from the
+ * Worker.
+ *
+ * Two rules keep the credential Pages receives short-lived. The exchange
+ * always sends `supportsRefresh`, so Kilo answers with a one-hour token and a
+ * rotating refresh token; an approval without a refresh token is refused. And
+ * the legacy poll secret Kilo also returns from a start is never read, stored
+ * or returned: polling with it yields a token that lasts for years.
+ *
+ * The module holds no state and logs nothing. Each call takes the `fetch` to
+ * use and Kilo's app URL. Error messages are fixed text, so a token, code or
+ * response body can't reach a log through them. */
 
 const MAX_BODY_BYTES = 64 * 1024;
 const DEFAULT_TIMEOUT_MS = 10_000;
+// Kilo's refreshable tokens last an hour. A longer one is the kind Kilo issues
+// without `supportsRefresh`, which this module never accepts.
+const MAX_TOKEN_SECONDS = 7200;
 
+/** Kilo didn't answer, or answered 429 or 5xx. The same call may work later;
+ * `retryAfterSeconds` is set when Kilo said how much later. */
 export class KiloUnavailable extends Error {
   constructor(retryAfterSeconds) {
     super("Kilo is temporarily unavailable");
@@ -12,6 +27,8 @@ export class KiloUnavailable extends Error {
   }
 }
 
+/** Kilo answered with something this module doesn't accept: an unexpected
+ * status, a redirect, a body over the limit, or a missing or malformed field. */
 export class KiloProtocolError extends Error {
   constructor() {
     super("Kilo returned an invalid response");
@@ -40,19 +57,15 @@ function baseUrl(appUrl) {
   return url;
 }
 
-function timeoutMs(options) {
-  const value = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  if (!Number.isFinite(value) || value <= 0) throw new TypeError("timeoutMs must be positive");
-  return value;
-}
-
 async function request(
   fetcher,
   appUrl,
   path,
-  { method = "GET", body, token, forwardedFor, userAgent, timeout } = {},
+  { method = "GET", body, token, forwardedFor, userAgent, timeoutMs = DEFAULT_TIMEOUT_MS } = {},
 ) {
   const base = baseUrl(appUrl);
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
+    throw new TypeError("timeoutMs must be positive");
   const headers = new Headers({ accept: "application/json" });
   if (body !== undefined) headers.set("content-type", "application/json");
   if (token !== undefined) headers.set("authorization", `Bearer ${token}`);
@@ -63,9 +76,9 @@ async function request(
     response = await fetcher(new URL(path, base), {
       method,
       headers,
+      // Inspected, never followed: a credential stays at the configured origin.
       redirect: "manual",
-      credentials: "omit",
-      signal: AbortSignal.timeout(timeout ?? DEFAULT_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
       ...(body !== undefined && { body: JSON.stringify(body) }),
     });
   } catch {
@@ -74,14 +87,14 @@ async function request(
   const retryHeader = response.headers.get("retry-after");
   const retryAfterSeconds =
     retryHeader !== null && /^\d+(?:\.\d+)?$/.test(retryHeader) ? Number(retryHeader) : undefined;
-  if (response.status === 429 || response.status >= 500) {
+  const unavailable = response.status === 429 || response.status >= 500;
+  if (unavailable || (response.status >= 300 && response.status < 400)) {
     try {
       await response.body?.cancel();
     } catch {}
-    throw new KiloUnavailable(retryAfterSeconds);
+    throw unavailable ? new KiloUnavailable(retryAfterSeconds) : new KiloProtocolError();
   }
   const bytes = await readLimited(response);
-  if (response.status >= 300 && response.status < 400) throw new KiloProtocolError();
   let data;
   if (bytes.length) {
     try {
@@ -137,9 +150,15 @@ function expectStatus(result, status) {
   return result.data;
 }
 
+/** Asks Kilo for a pairing that names `client` on its approval page.
+ * `forwardedFor` is the address of the person signing in: Kilo limits pending
+ * pairings per address, so without it every person shares the Worker's.
+ * Returns the secret `deviceCode` to exchange, and the `userCode` and
+ * `verificationUrl` to show the person. The URL is on `appUrl`'s origin and
+ * carries that user code, or the answer is refused. */
 export async function startKiloPairing(
   fetch,
-  { appUrl, client, forwardedFor, userAgent, timeoutMs: timeout } = {},
+  { appUrl, client, forwardedFor, userAgent, timeoutMs } = {},
 ) {
   const base = baseUrl(appUrl);
   if (
@@ -175,7 +194,7 @@ export async function startKiloPairing(
     },
     forwardedFor,
     userAgent,
-    timeout: timeoutMs({ timeoutMs: timeout }),
+    timeoutMs,
   });
   const data = expectStatus(result, 200);
   if (
@@ -212,14 +231,14 @@ export async function startKiloPairing(
   };
 }
 
-export async function exchangeKiloDeviceCode(
-  fetch,
-  { appUrl, deviceCode, timeoutMs: timeout } = {},
-) {
+/** Asks whether the person has answered a pairing. `approved` comes once per
+ * device code: Kilo consumes the code with that answer, and a later call
+ * reads `expired`. Store the result before calling again. */
+export async function exchangeKiloDeviceCode(fetch, { appUrl, deviceCode, timeoutMs } = {}) {
   const result = await request(fetch, appUrl, "/api/device-auth/token", {
     method: "POST",
     body: { deviceCode, supportsRefresh: true },
-    timeout: timeoutMs({ timeoutMs: timeout }),
+    timeoutMs,
   });
   const data = result.data;
   if (result.status === 202 && object(data) && data.status === "pending")
@@ -235,7 +254,7 @@ export async function exchangeKiloDeviceCode(
     nonempty(data.token) &&
     nonempty(data.refreshToken) &&
     positive(data.expiresIn) &&
-    data.expiresIn <= 7200 &&
+    data.expiresIn <= MAX_TOKEN_SECONDS &&
     nonempty(data.userId) &&
     nonempty(data.userEmail)
   ) {
@@ -251,11 +270,16 @@ export async function exchangeKiloDeviceCode(
   throw new KiloProtocolError();
 }
 
-export async function refreshKiloTokens(fetch, { appUrl, refreshToken, timeoutMs: timeout } = {}) {
+/** Trades a refresh token for a new token and a new refresh token. Kilo
+ * retires the old refresh token with this call, and treats a later use of it
+ * as theft, so a caller exchanges each one once and stores the answer.
+ * `refused` names why Kilo ended the grant; signing in again is the only way
+ * forward. */
+export async function refreshKiloTokens(fetch, { appUrl, refreshToken, timeoutMs } = {}) {
   const result = await request(fetch, appUrl, "/api/auth/native/refresh", {
     method: "POST",
     body: { refreshToken },
-    timeout: timeoutMs({ timeoutMs: timeout }),
+    timeoutMs,
   });
   if (
     result.status === 401 &&
@@ -269,23 +293,25 @@ export async function refreshKiloTokens(fetch, { appUrl, refreshToken, timeoutMs
     !object(data) ||
     !nonempty(data.token) ||
     !nonempty(data.refreshToken) ||
-    !positive(data.expiresIn)
+    !positive(data.expiresIn) ||
+    data.expiresIn > MAX_TOKEN_SECONDS
   )
     throw new KiloProtocolError();
   return { token: data.token, refreshToken: data.refreshToken, expiresInSeconds: data.expiresIn };
 }
 
-export async function readKiloProfile(fetch, { appUrl, token, timeoutMs: timeout } = {}) {
-  const result = await request(fetch, appUrl, "/api/profile", {
-    token,
-    timeout: timeoutMs({ timeoutMs: timeout }),
-  });
+/** Who a token belongs to, and the organizations they are in. `refused` means
+ * Kilo no longer accepts the token. `name` is null when the account has none.
+ * Nothing here says the email address was verified. */
+export async function readKiloProfile(fetch, { appUrl, token, timeoutMs } = {}) {
+  const result = await request(fetch, appUrl, "/api/profile", { token, timeoutMs });
   if (result.status === 401 || result.status === 403) return { refused: true };
   const data = expectStatus(result, 200);
   if (
     !object(data) ||
     !object(data.user) ||
-    ![data.user.id, data.user.email, data.user.name].every(nonempty) ||
+    ![data.user.id, data.user.email].every(nonempty) ||
+    !(data.user.name == null || typeof data.user.name === "string") ||
     !Array.isArray(data.organizations ?? []) ||
     !(data.organizations ?? []).every(
       (org) => object(org) && [org.id, org.name, org.role].every(nonempty),
@@ -296,7 +322,7 @@ export async function readKiloProfile(fetch, { appUrl, token, timeoutMs: timeout
   return {
     id: data.user.id,
     email: data.user.email,
-    name: data.user.name,
-    organizations: data.organizations ?? [],
+    name: data.user.name || null,
+    organizations: (data.organizations ?? []).map(({ id, name, role }) => ({ id, name, role })),
   };
 }

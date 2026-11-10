@@ -253,5 +253,57 @@ test("sends refresh support and never sends cookies", async () => {
   });
   assert.equal(new Headers(captured.options.headers).has("cookie"), false);
   assert.equal(captured.options.redirect, "manual");
-  assert.equal(captured.options.credentials, "omit");
+  // Workers' fetch has no cookie jar, and an unsupported `credentials` option
+  // can be refused there, so the request leaves it unset.
+  assert.equal("credentials" in captured.options, false);
+});
+
+test("a session refreshes again and again with each new refresh token", async (t) => {
+  const kilo = await fixture(t);
+  const pair = await start(kilo);
+  await kilo.approve(pair.userCode, user);
+  let grant = await exchangeKiloDeviceCode(fetch, {
+    appUrl: kilo.origin,
+    deviceCode: pair.deviceCode,
+  });
+  for (let round = 0; round < 3; round++) {
+    const next = await refreshKiloTokens(fetch, {
+      appUrl: kilo.origin,
+      refreshToken: grant.refreshToken,
+    });
+    assert.notEqual(next.refreshToken, grant.refreshToken);
+    // The token a refresh replaces stops working; the new one names the same person.
+    assert.deepEqual(await readKiloProfile(fetch, { appUrl: kilo.origin, token: grant.token }), {
+      refused: true,
+    });
+    assert.equal(
+      (await readKiloProfile(fetch, { appUrl: kilo.origin, token: next.token })).id,
+      user.id,
+    );
+    grant = next;
+  }
+});
+
+test("a profile without a name reads as null, and extra organization fields are dropped", async () => {
+  const fetcher = async () =>
+    response(200, {
+      user: { id: "user-2", email: "quiet@example.test", name: null, image: null },
+      organizations: [{ id: "org-2", name: "Org", role: "owner", seats: 40 }],
+      hasPersonalAccount: true,
+    });
+  assert.deepEqual(await readKiloProfile(fetcher, { appUrl: args.appUrl, token: "t" }), {
+    id: "user-2",
+    email: "quiet@example.test",
+    name: null,
+    organizations: [{ id: "org-2", name: "Org", role: "owner" }],
+  });
+});
+
+test("a refreshed token that outlives Kilo's refreshable lifetime is refused", async () => {
+  const fetcher = async () =>
+    response(200, { token: "t", refreshToken: "r", expiresIn: 5 * 365 * 24 * 60 * 60 });
+  await assert.rejects(
+    refreshKiloTokens(fetcher, { appUrl: args.appUrl, refreshToken: "old" }),
+    KiloProtocolError,
+  );
 });
