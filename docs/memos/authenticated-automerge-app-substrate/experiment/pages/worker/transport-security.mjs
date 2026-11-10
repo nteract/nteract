@@ -20,6 +20,8 @@
  * HSTS has no `includeSubDomains` or `preload`: other runtimed.run hosts are
  * not Pages', and pinning them is not this host's call. */
 
+import { setResponseHeaders } from "./response-headers.mjs";
+
 export const HSTS = "max-age=31536000";
 
 /** The visitor's scheme at the Cloudflare edge, or null when the request did
@@ -66,21 +68,5 @@ export function httpsRedirect(request, env = {}) {
 export function withTransportSecurity(request, response) {
   if (edgeScheme(request) !== "https") return response;
   if (response.status === 101 || response.webSocket) return response;
-  try {
-    response.headers.set("strict-transport-security", HSTS);
-    return response;
-  } catch (error) {
-    if (!(error instanceof TypeError)) throw error;
-  }
-  // Durable Object and asset responses carry immutable headers. A 204, 205
-  // or 304 from them can still have an empty stream body, which the Response
-  // constructor refuses for those statuses.
-  const secured = new Response(
-    NULL_BODY_STATUSES.has(response.status) ? null : response.body,
-    response,
-  );
-  secured.headers.set("strict-transport-security", HSTS);
-  return secured;
+  return setResponseHeaders(response, [["strict-transport-security", HSTS]]);
 }
-
-const NULL_BODY_STATUSES = new Set([204, 205, 304]);

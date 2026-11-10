@@ -36,6 +36,7 @@
 // is the stored JSON card's and both themes exist.
 import { authenticate, HttpError, errorResponse } from "./auth.mjs";
 import { validPageId } from "./registration.mjs";
+import { setResponseHeaders } from "./response-headers.mjs";
 import { inspectImage, readImageBody } from "./image-assets.mjs";
 import { CARD_IMAGE_MAX_BYTES } from "../shared/card-images.mjs";
 
@@ -294,11 +295,14 @@ export function cardImageRefusal(error, stage = "card-image") {
   return response;
 }
 
+// Refusals passed through from the Page host arrive with immutable headers,
+// so the result may be a copy.
 function cardImageHeaders(response, cache = "private, no-store") {
-  response.headers.set("Cache-Control", cache);
-  response.headers.set("X-Content-Type-Options", "nosniff");
-  response.headers.set("Cross-Origin-Resource-Policy", "same-origin");
-  return response;
+  return setResponseHeaders(response, [
+    ["Cache-Control", cache],
+    ["X-Content-Type-Options", "nosniff"],
+    ["Cross-Origin-Resource-Policy", "same-origin"],
+  ]);
 }
 
 /**

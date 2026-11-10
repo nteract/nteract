@@ -1405,29 +1405,54 @@ check which `NOTEBOOK_CLOUD_APP_SESSION_KEYS` the target version runs with: a
 version from before the keyring reads only the single secret. `prepare`
 refuses either variable in a build's committed vars.
 
-## Cloudflare packaging fixture
+## Cloudflare Workers package
 
-[cloudflare-stage.mjs](scripts/cloudflare-stage.mjs) remains a tested packaging
-path, **not a currently qualified deployment of this release**. It produces Worker
-WASM/assets, SQLite Durable Object bindings, D1 auth configuration, and a private
-`nteract-pages-images` R2 binding. Its fixed configuration targets
-`preview.runt.run` / `nteract-pages-next` with Anaconda staging authentication;
-production API keys are not interchangeable.
+[cloudflare-stage.mjs](scripts/cloudflare-stage.mjs) packages a build for one
+Cloudflare Workers deployment. It is a tested packaging path, **not a qualified
+deployment**: no Workers deployment has run this release with people on it.
 
-From `experiment`, clean committed source and a matching Pages build can be
-inspected without publishing:
+The Worker's classes, migrations, cron triggers and asset handling come from
+[worker-shape.mjs](scripts/worker-shape.mjs), which the celld build also uses.
+Everything a deployment decides comes from a profile, a JSON file kept outside
+the repository:
+
+```json
+{
+  "name": "pages-example",
+  "account_id": "0123456789abcdef0123456789abcdef",
+  "workers_dev": true,
+  "d1": {
+    "auth": { "database_name": "pages-example-auth", "database_id": "D1_UUID" },
+    "usage": { "database_name": "pages-example-usage", "database_id": "D1_UUID" }
+  },
+  "r2_bucket": "pages-example-assets",
+  "vars": {
+    "NOTEBOOK_CLOUD_PUBLIC_ORIGIN": "https://pages-example.example.workers.dev"
+  }
+}
+```
+
+`account_id` is optional; without it Wrangler uses `CLOUDFLARE_ACCOUNT_ID` or
+asks. `vars` holds the deployment's plain variables: the public origin
+(required, an `https` origin), the identity provider's settings and any
+`PAGES_*` setting such as `PAGES_CATALOG_INDEX`. The helper refuses a profile
+with an unknown field, a D1 id that is not a UUID, or a variable that is a
+secret or a test switch. It sets no route: attaching a domain is a separate
+action.
+
+Create the two D1 databases and the R2 bucket first, then put their names and
+ids in the profile. From `experiment`, with clean committed source and a
+matching Pages build:
 
 ```sh
-node pages/scripts/cloudflare-stage.mjs /tmp/pages-cloudflare-release D1_DATABASE_UUID
+node pages/scripts/cloudflare-stage.mjs /tmp/pages-cloudflare-release PROFILE.json
 node_modules/.bin/wrangler deploy --config /tmp/pages-cloudflare-release/wrangler.json --dry-run
 ```
 
-Use a new destination directory and the intended D1 database UUID. The helper
-neither provisions resources nor attaches a domain. Live use needs explicit
-resource, auth, persistence, memory, and recovery qualification, plus configuration
-of the current editor/persistence profile; this staging configuration does not
-select Page10's flags. Do not repoint the existing preview domain as part of a
-Page10 release.
+Use a new destination directory each time. The session keyring goes in with
+`wrangler secret put` ([On Cloudflare](#on-cloudflare)), never in the profile. A
+Worker with people on it also needs the memory, recovery and overload behaviour
+qualified on Workers; the limits in this release are sized for the celld hosts.
 
 ## Copying a Project to a new target
 
