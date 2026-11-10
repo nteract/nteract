@@ -6,8 +6,9 @@
 import { authenticateAnacondaApiKeyRequest } from "@cloud/identity.ts";
 import { isolateSingleFlight } from "./isolate-setup.mjs";
 
-// The verifier caches one pending provider lookup per token for 60 s
-// (ANACONDA_API_KEY_CACHE_TTL_MS in @cloud/identity.ts); see isolate-setup.mjs.
+// One lookup per token at a time in this isolate (isolate-setup.mjs). The hold
+// outlasts the verifier's own cache of a lookup, which it keeps for 60 s
+// (ANACONDA_API_KEY_CACHE_TTL_MS in @cloud/identity.ts).
 const apiKeyLookup = isolateSingleFlight({ holdMs: 65_000 });
 
 // What the verifier throws for a valid key whose scopes stop short of the one
@@ -16,8 +17,9 @@ const SCOPE_REFUSED = "Anaconda API key scopes do not allow requested scope";
 
 /** The account an API key stands for, as an editor when the key's scopes allow
  * it and as a viewer otherwise. `authorization` is the request's header as
- * sent and `token` the key inside it. Throws the verifier's own error: an
- * AuthError for a key the provider refuses, anything else for an outage. */
+ * sent and `token` the key inside it. Throws the verifier's error unchanged.
+ * Its status tells a refused key (401) from a provider that is down or rate
+ * limiting (503); auth.mjs turns each into its own refusal. */
 export async function verifyApiKey(request, env, { token, authorization }) {
   // Caller identity/scope/operator headers are never forwarded to the verifier.
   const verify = (scope) =>

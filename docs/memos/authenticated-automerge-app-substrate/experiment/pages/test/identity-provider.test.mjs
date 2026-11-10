@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -81,9 +82,20 @@ test("a deployment can turn on only the provider's reviewed company domains", ()
   assert.deepEqual(on("example.com"), []);
 });
 
-// Code the Worker and the viewer ship. Deployment tooling under scripts/ names
+// Code the Worker and the viewer ship: the modules at the top level, and
+// everything under these directories. Deployment tooling under scripts/ names
 // the provider's addresses on purpose, and tests may name anything.
-const SHIPPED = [".", "worker", "viewer", "shared", "model", "sync", "authz"];
+const SHIPPED_DIRECTORIES = ["worker", "viewer", "shared", "model", "sync", "authz"];
+const isSource = (file) => /\.(mjs|js|jsx|ts|tsx)$/.test(file) && !/\.test\./.test(file);
+function shippedFiles(root = app) {
+  const top = readdirSync(root).filter(isSource);
+  const nested = SHIPPED_DIRECTORIES.flatMap((dir) =>
+    readdirSync(path.join(root, dir), { recursive: true })
+      .filter(isSource)
+      .map((file) => `${dir}/${file.split(path.sep).join("/")}`),
+  );
+  return [...top, ...nested];
+}
 // Each entry says why the file names the provider and what would remove it.
 const NAMES_THE_PROVIDER = new Map([
   ["identity-provider.mjs", "the description itself"],
@@ -96,12 +108,27 @@ const NAMES_THE_PROVIDER = new Map([
 ]);
 
 test("shipped code names the provider only where the list above says", () => {
-  const named = [];
-  for (const dir of SHIPPED)
-    for (const file of readdirSync(path.join(app, dir)).sort()) {
-      if (!/\.(mjs|js|jsx|ts|tsx)$/.test(file) || /\.test\./.test(file)) continue;
-      const relative = dir === "." ? file : `${dir}/${file}`;
-      if (/anaconda/i.test(readFileSync(path.join(app, relative), "utf8"))) named.push(relative);
-    }
+  const files = shippedFiles();
+  // The scan sees both levels; an empty or shallow listing would pass vacuously.
+  assert.ok(files.includes("agent-guide.mjs") && files.includes("worker/auth.mjs"));
+  const named = files.filter((file) =>
+    /anaconda/i.test(readFileSync(path.join(app, file), "utf8")),
+  );
   assert.deepEqual(named.sort(), [...NAMES_THE_PROVIDER.keys()].sort());
+});
+
+test("the scan reaches nested directories and skips tests and tooling", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "pages-provider-scan-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const dir of [...SHIPPED_DIRECTORIES, "viewer/panels/deep", "scripts"])
+    mkdirSync(path.join(root, dir), { recursive: true });
+  for (const file of [
+    "guide.mjs",
+    "viewer/panels/deep/Provider.jsx",
+    "viewer/panels/Provider.test.jsx",
+    "viewer/notes.md",
+    "scripts/install.mjs",
+  ])
+    writeFileSync(path.join(root, file), "");
+  assert.deepEqual(shippedFiles(root), ["guide.mjs", "viewer/panels/deep/Provider.jsx"]);
 });
