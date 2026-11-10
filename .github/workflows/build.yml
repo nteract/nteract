@@ -41,6 +41,7 @@ jobs:
       browser_e2e_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.browser_e2e == 'true' }}
       wasm_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.wasm == 'true' }}
       python_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.python == 'true' }}
+      python_lint_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.python_lint == 'true' }}
       node_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.node == 'true' }}
       windows_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.windows == 'true' }}
       windows_restart_changed: ${{ steps.filter.outputs.windows_restart == 'true' }}
@@ -164,6 +165,14 @@ jobs:
               - "uv.lock"
               - "Cargo.toml"
               - "Cargo.lock"
+            # What ruff and ty read: the `tool.ruff` include globs, the
+            # `python/` tree ty checks, and their configuration and pins in
+            # the root pyproject.toml.
+            python_lint:
+              - ".github/workflows/build.yml"
+              - "python/**"
+              - "scripts/**/*.py"
+              - "pyproject.toml"
             node:
               - ".github/workflows/build.yml"
               - "packages/runtimed-node/**"
@@ -246,7 +255,9 @@ jobs:
   lint:
     name: Lint & Format
     needs: [changes]
-    if: needs.changes.outputs.source_changed == 'true'
+    # The root pyproject.toml is not in the `source` filter, so a change to
+    # the ruff or ty configuration alone still has to start this job.
+    if: needs.changes.outputs.source_changed == 'true' || needs.changes.outputs.python_lint_changed == 'true'
     # Keep generic PR/build checks on GitHub-hosted capacity. The Anaconda
     # runner pool is reserved for post-merge/manual env-heavy lanes below.
     runs-on: ubuntu-24.04
@@ -302,6 +313,31 @@ jobs:
           fi
 
           "$bin" -color
+
+      # The Python half of `cargo xtask lint`. Keep these commands in step
+      # with the ones it runs (crates/xtask/src/main.rs).
+      - name: Install uv
+        if: needs.changes.outputs.python_lint_changed == 'true'
+        uses: astral-sh/setup-uv@v8.1.0
+
+      # ruff and ty come from the `dev` group at the versions pinned in the
+      # root pyproject.toml. ty also needs the group's third-party packages to
+      # resolve imports. It reads the workspace members from source through
+      # `tool.ty.environment.extra-paths`, so `--no-install-workspace` skips
+      # them and the maturin build of runtimed. uv.lock is not committed, so
+      # the sync resolves; it cannot be `--locked`.
+      - name: Sync Python lint environment
+        if: needs.changes.outputs.python_lint_changed == 'true'
+        run: uv sync --no-install-workspace
+
+      - name: Check Python (ruff + ty)
+        if: needs.changes.outputs.python_lint_changed == 'true'
+        run: |
+          failed=0
+          uv run --no-sync python -I -m ruff check . || failed=1
+          uv run --no-sync python -I -m ruff format --check . || failed=1
+          uv run --no-sync python -I -m ty check python/ || failed=1
+          exit "$failed"
 
   # Pull requests with source changes always run the two branch-protection checks
   # above: Lint & Format and JS Tests & Benchmarks. Docs/agent-only changes run
@@ -1826,9 +1862,8 @@ jobs:
     # Unit-level pytest coverage for the Python packages: runtimed (bindings),
     # dx (formatter + refs), prewarm (pool), nteract (MCP smoke). These do not
     # need a live daemon; the integration half is handled by
-    # `runtimed-py-integration` above. Lint/format/type-check is already
-    # covered by the Lint & Format job (`cargo xtask lint`), so this job
-    # runs pytest only.
+    # `runtimed-py-integration` above. The Lint & Format job runs ruff and ty,
+    # so this job runs pytest only.
     name: Python Unit Tests
     needs: [changes]
     if: |
@@ -1993,7 +2028,7 @@ jobs:
             echo
             echo "| Lane | Result | Runner class | Signal | Failure triage |"
             echo "| --- | --- | --- | --- | --- |"
-            echo "| Lint & Format | ${{ needs.lint.result }} | GitHub-hosted | formatting, lint, workflow syntax | repo hygiene / workflow syntax |"
+            echo "| Lint & Format | ${{ needs.lint.result }} | GitHub-hosted | formatting, lint, Python lint and types, workflow syntax | repo hygiene / workflow syntax |"
             echo "| JS Tests & Benchmarks | ${{ needs.js-tests.result }} | GitHub-hosted | frontend unit tests and JS benchmark smoke | frontend correctness / perf smoke |"
             echo
             echo "## Advisory PR lanes also running on main"
