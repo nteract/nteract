@@ -78,11 +78,10 @@ Comments live in their own document and anchor to the Page with cursors.
    it writes, and a release to a target is refused when the target's
    documents are in another format. Both work on format 1, so they land
    first.
-2. **Tag the last format 1 commit.** It is the parent of the first change
-   that makes `main` unfit for `pages.runtimed.run`: the first delete below,
-   or the format 2 block shape, whichever lands first. From the tag on,
-   `main` is never promoted to that service. A fix for it goes on a
-   maintenance branch cut from the tag.
+2. **The last format 1 commit is tagged `pages-format-1`.**
+   `pages.runtimed.run` runs that commit, and `main` is never promoted to
+   that service. A fix for it goes on a maintenance branch cut from the tag,
+   built from that branch and promoted by hand.
 3. **Delete what a new service does not need** (list below).
 4. **Format 2**, deployed to a new, empty service. The block shape comes
    first. Explicit opening markers follow as their own change, because they
@@ -96,7 +95,7 @@ Comments live in their own document and anchor to the Page with cursors.
 | When | What | Why it can go |
 | --- | --- | --- |
 | Any time | A snapshot file with no regenerate command, or a test that compares against a fixed commit | It pins code that no longer exists and cannot follow an intended change |
-| After the format 1 tag | `PageRecords`, `recordStorage` stamps and guards, `stored-form.mjs`, the old-encoder fixture in `test/` | They protect documents and open tabs on `pages.runtimed.run`. A new service has neither. The `PageRecords` Durable Object class stays declared, with an empty body, while a deployed target still binds it |
+| After the format 1 tag | `PageRecords`, `recordStorage` stamps and guards, `stored-form.mjs` | They protect documents and open tabs on `pages.runtimed.run`. A new service has neither. The `PageRecords` Durable Object class stays declared, with an empty body, while a deployed target still binds it |
 | With format 2 | The `pm` names in `model/node-registry.mjs`, `SUBDUCTION_LOG` in the cold-open benchmark, comments that name removed code | They are read by current code; rename them with the format change |
 | With format 2 | `UNDECLARED_FORMATS` in `model/document-types.mjs`, the reading of a socket that sends no `formats` | It describes tabs opened before the parameter. A new service has none, so a socket without `formats` is refused there |
 
@@ -118,14 +117,14 @@ records the node addresses agents use.
   such as comments, is a change to that script. Copying is optional and is
   not a gate.
 - **`pages.runtimed.run` holds documents people use.** Do not reset it, and do
-  not build a migration from it. A release in the stored form `main` writes
-  today (format 1) may be promoted to it by hand, once `page10` runs the same
-  build, up to the format 1 tag. Format 2 work never deploys to it.
+  not build a migration from it. It runs the commit tagged `pages-format-1`.
+  Nothing from `main` deploys to it: a fix is a commit on a maintenance
+  branch cut from that tag.
 - **Other deployed targets are demos.** Keep this list current.
 
   | Target | Host | State |
   | --- | --- | --- |
-  | `pages` | lab1 | In use. Promoted by hand from the build `page10` runs |
+  | `pages` | lab1 | In use. Runs `pages-format-1`. Takes fixes from its maintenance branch only |
   | `page10` | lab1 | Preview. Deployed from `main` automatically. Reset freely |
   | `pages2` (`page2.runtimed.run`) | lab2 | Demo. Reset freely |
   | `page11` | lab2 | Profile in source only; nothing is deployed |

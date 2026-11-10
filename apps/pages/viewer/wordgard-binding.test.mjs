@@ -57,7 +57,6 @@ import {
   wordgardListStarts,
 } from "./wordgard-binding.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
-import { encode as previousEncode } from "../test/wordgard-encode-d53a6e64b.mjs";
 function fixture(markdown = "hello 🌊 world") {
   let doc = A.change(A.from({ blocks: { one: { id: "one", kind: "markdown", markdown } } }), (d) =>
     richFromSource(d, "one"),
@@ -575,14 +574,8 @@ const imageSrc = `/api/pages/${"3".repeat(8)}/assets/${"a".repeat(64)}`;
 const image = PagesImage.of({ src: imageSrc, alt: "cat", title: null });
 // The browser editor's commit path: local transactions through the binding,
 // remote projections back into the editor, Backspace/Delete as deleteUnit.
-// `previousBuild` stands in for a tab running d53a6e64b: its encoder, and a
-// rejection path that restores the projection but keeps the undo history.
-function editorFor(replica, id, { previousBuild = false } = {}) {
-  const binding = createWordgardBinding(
-      replica,
-      id,
-      previousBuild ? { encodeSpans: previousEncode } : {},
-    ),
+function editorFor(replica, id) {
+  const binding = createWordgardBinding(replica, id),
     undoHistory = wordgardHistory(),
     errors = [];
   let editorState = GardState.create({
@@ -608,7 +601,7 @@ function editorFor(replica, id, { previousBuild = false } = {}) {
       try {
         commitEditorTransactions(editor, binding, trs, {
           annotations: [Transaction.remote.of(true), Transaction.addToHistory.of(false)],
-          undoHistory: previousBuild ? null : undoHistory,
+          undoHistory,
         });
       } catch (error) {
         errors.push(error.message);
@@ -847,61 +840,6 @@ test("a failed write check makes the next write read the block again", () => {
   assert.ok(!heading(binding.current.doc));
   assert.ok(decode(A.spans(replica.doc, textPath("one"))).doc.eq(binding.current.doc));
   binding.destroy();
-});
-
-test("a tab from the previous build rejects structural edits to the new shape without corruption", () => {
-  // The current build writes an explicit marker for an empty first paragraph:
-  // Paragraph(), Paragraph(image), Paragraph("Hope").
-  const replica = fixture("Hope"),
-    current = editorFor(replica, "one");
-  current.dispatch({ changes: { from: 1, insert: [image] } });
-  current.dispatch({ selection: { anchor: 2 } });
-  assert.equal(current.run(enter), true);
-  current.dispatch({ selection: { anchor: 1 } });
-  assert.equal(current.run(enter), true);
-  assertInSync(current, replica, "one", "current build");
-  assert.equal(current.state.doc.content.length, 3);
-  assert.equal(String(nativeSpans(replica, "one")[0].value.type), "paragraph");
-  current.binding.destroy();
-
-  // The previous build decodes it, and plain typing still commits.
-  const previous = editorFor(replica, "one", { previousBuild: true }),
-    text = () =>
-      nativeSpans(replica, "one")
-        .filter((span) => span.type === "text")
-        .map((span) => span.value)
-        .join("");
-  assert.ok(previous.state.doc.eq(decode(nativeSpans(replica, "one")).doc));
-  const hope = previous.state.doc.length - 1 - "Hope".length;
-  previous.dispatch({ changes: { from: hope, insert: [Leaf.text("Still ")] } });
-  assertInSync(previous, replica, "one", "previous build typing");
-  assert.equal(text(), "Still Hope");
-
-  // Its encoder drops the empty first paragraph, so the safety check rejects
-  // any structural edit that keeps it. The native change rolls back and the
-  // editor shows the accepted Page again.
-  const rejection = ["Wordgard operation did not reproduce its native Pages projection"],
-    accepted = A.save(replica.doc),
-    restored = previous.state.doc,
-    [pos] = imagePositions(restored);
-  previous.dispatch({ selection: GardSelection.node(pos, restored.nodeAt(pos)) });
-  assert.equal(previous.run(deleteUnit, "backward"), true);
-  assert.deepEqual(previous.errors, rejection);
-  assert.deepEqual(A.save(replica.doc), accepted, "the Page is unchanged");
-  assert.ok(previous.state.doc.eq(restored), "the editor shows the accepted Page");
-
-  // That build keeps the rejected deletion in its undo history, and undo would
-  // insert a second image. The inverse is structural too, so it is rejected
-  // the same way while the empty first paragraph remains.
-  previous.errors.length = 0;
-  const undoSpec = undo({ state: previous.state });
-  assert.ok(undoSpec);
-  assert.equal(imagePositions(previous.state.update(undoSpec).newDoc).length, 2);
-  previous.dispatch(undoSpec);
-  assert.deepEqual(previous.errors, rejection);
-  assert.deepEqual(A.save(replica.doc), accepted, "no duplicate image reaches the Page");
-  assert.ok(previous.state.doc.eq(restored));
-  previous.binding.destroy();
 });
 
 test("editor writes stamp the schema features their content needs in the same change", (t) => {
