@@ -52,8 +52,9 @@ export async function startLocalKilo({ port = 0, now = Date.now } = {}) {
       )
         return send(res, 400, { error: "bad_client" });
       const ip = req.headers["x-forwarded-for"] ?? "unknown";
+      // An answered pairing stays until its device code is exchanged or it expires.
       for (const [key, item] of pending)
-        if (item.state !== "pending" || item.expiresAt <= now()) pending.delete(key);
+        if (item.state === "consumed" || item.expiresAt <= now()) pending.delete(key);
       if (
         [...pending.values()].filter((item) => item.state === "pending" && item.ip === ip).length >=
         5

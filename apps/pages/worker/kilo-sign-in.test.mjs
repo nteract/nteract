@@ -188,8 +188,11 @@ test("browser pairing persists the grant before profile lookup and issues a no-p
     for (const secret of secrets) assert.equal(content.includes(secret), false);
   }
   await new Promise((resolve) => setTimeout(resolve, 0));
+  // The audit log names the principal, which holds the account id, and nothing else.
+  assert.ok(lines.some((line) => line.includes("sign_in.succeeded")));
   for (const line of lines)
-    for (const secret of secrets.slice(0, 1)) assert.equal(line.includes(secret), false);
+    for (const secret of secrets.filter((value) => value !== user.id))
+      assert.equal(line.includes(secret), false);
   const responses = await kilo.requests();
   assert.equal(responses.filter((item) => item.path === "/api/device-auth/token").length, 1);
   const table = env.DB.sqlite.prepare("SELECT count(*) AS count FROM kilo_pairings").get();
@@ -332,6 +335,10 @@ test("the landing path stays on this origin, and a second click keeps the pairin
   for (const hostile of [
     "/\t/evil.example",
     "//evil.example",
+    // Dot segments the parser resolves, leaving a path that starts with two slashes.
+    "/a/..//evil.example",
+    "/%2e%2e//evil.example",
+    "/.//evil.example",
     "/\\evil.example",
     "https://evil.example/",
     "/api/auth/login",
@@ -350,10 +357,7 @@ test("the landing path stays on this origin, and a second click keeps the pairin
   assert.equal(again.status, 303);
   assert.equal(pairingCookie(again), undefined, "the browser keeps the pairing it has");
   assert.equal(starts(), before, "Kilo is not asked for another pairing");
-  await approve(
-    kilo,
-    await handleKiloSignIn(request("/sign-in", { cookie: first.cookie }), env),
-  );
+  await approve(kilo, await handleKiloSignIn(request("/sign-in", { cookie: first.cookie }), env));
   assert.equal((await poll(env, first.cookie)).body.return_to, "/p/later");
 });
 
@@ -386,10 +390,7 @@ test("a second click while a poll owns the pairing doesn't lose the approved gra
   release();
   const finished = (await owner).body;
   assert.deepEqual(finished, { status: "signed_in", return_to: "/p/later" });
-  assert.equal(
-    kilo.requests().filter((item) => item.path === "/api/device-auth/token").length,
-    1,
-  );
+  assert.equal(kilo.requests().filter((item) => item.path === "/api/device-auth/token").length, 1);
 });
 
 test("two pairing cookies name no pairing, and the page loads its script from this origin", async (t) => {
@@ -482,4 +483,78 @@ test("session renewal rotates the stored credential and rejects ended or foreign
     KiloUnavailable,
   );
   assert.equal(typeof originalFetch, "function");
+});
+
+test("a renewal keeps the rotated refresh token when the profile can't be read", async (t) => {
+  const kilo = await startLocalKilo();
+  const { env } = fixture(t, kilo);
+  const client = await import("./kilo-pairing-client.mjs");
+  const started = await client.startKiloPairing(fetch, {
+    appUrl: kilo.origin,
+    client: { id: "pages", name: "Pages", redirectOrigin: origin },
+  });
+  await kilo.approve(started.userCode, user);
+  const exchange = await client.exchangeKiloDeviceCode(fetch, {
+    appUrl: kilo.origin,
+    deviceCode: started.deviceCode,
+  });
+  const bundle = {
+    kind: "kilo",
+    appUrl: kilo.origin,
+    userId: user.id,
+    name: "Stored Name",
+    refreshToken: exchange.refreshToken,
+  };
+  const original = globalThis.fetch;
+  const outage = t.mock.method(globalThis, "fetch", async (input, init) => {
+    if (new URL(input).pathname === "/api/profile") throw new Error("offline");
+    return original(input, init);
+  });
+  const provider = kiloSessionProvider(env, request("/api/auth/session"));
+  const renewed = await provider.refresh(bundle);
+  outage.mock.restore();
+  // Kilo retired the old refresh token, so the new one must reach the row.
+  assert.notEqual(renewed.bundle.refreshToken, bundle.refreshToken);
+  assert.equal(renewed.identity.principal, "user:kilo:person%3Aone");
+  assert.equal(renewed.identity.metadata.displayName, "Stored Name");
+  assert.equal(renewed.bundle.name, "Stored Name");
+  // The stored token still renews, and a readable profile refreshes the name.
+  const again = await provider.refresh(renewed.bundle);
+  assert.equal(again.identity.metadata.displayName, user.name);
+  assert.equal(again.identity.metadata.email, undefined);
+});
+
+test("a session that can't be stored leaves no pairing to make a second one", async (t) => {
+  const kilo = await startLocalKilo();
+  const { env } = fixture(t, kilo);
+  const started = await begin(env);
+  await approve(kilo, await handleKiloSignIn(request("/sign-in", { cookie: started.cookie }), env));
+  const prepare = env.DB.prepare.bind(env.DB);
+  env.DB.prepare = (sql) => {
+    if (/INSERT INTO oidc_server_sessions/.test(sql)) throw new Error("storage is down");
+    return prepare(sql);
+  };
+  await assert.rejects(poll(env, started.cookie), /storage is down/);
+  env.DB.prepare = prepare;
+  assert.equal(env.DB.sqlite.prepare("SELECT count(*) AS n FROM kilo_pairings").get().n, 0);
+  assert.equal(env.DB.sqlite.prepare("SELECT count(*) AS n FROM oidc_server_sessions").get().n, 0);
+  assert.deepEqual((await poll(env, started.cookie)).body, { status: "expired" });
+});
+
+test("a pairing a request is working on outlives its deadline and another sign-in's cleanup", async (t) => {
+  const kilo = await startLocalKilo();
+  const { env } = fixture(t, kilo);
+  const owned = await begin(env);
+  const far = Math.floor(Date.now() / 1000) + 3600;
+  env.DB.sqlite.prepare("UPDATE kilo_pairings SET expires_at = 1, busy_until = ?").run(far);
+  await begin(env);
+  assert.equal(env.DB.sqlite.prepare("SELECT count(*) AS n FROM kilo_pairings").get().n, 2);
+  assert.deepEqual((await poll(env, owned.cookie)).body, { status: "pending" });
+  // Once nothing is working on it, the same row is expired and cleaned up.
+  env.DB.sqlite.prepare("UPDATE kilo_pairings SET busy_until = 0 WHERE expires_at = 1").run();
+  await begin(env);
+  assert.equal(
+    env.DB.sqlite.prepare("SELECT count(*) AS n FROM kilo_pairings WHERE expires_at = 1").get().n,
+    0,
+  );
 });

@@ -12,12 +12,20 @@
  * again. Every write names the row's revision, so a late request can't undo a
  * newer step.
  *
+ * Two limits come from Kilo's protocol and are not closed here. Whoever opens
+ * the approval link decides who gets signed in: a person talked into
+ * approving a link someone else started signs that other browser in as
+ * themselves, and Kilo's approval page, which names this site and asks for a
+ * confirmation, is the only guard. And an exchange whose answer is lost after
+ * Kilo consumed the device code can't be repeated: the next poll reads
+ * `expired`, and the person starts again.
+ *
  * Kilo's token is a full API credential for that person. Pages calls only the
  * profile and refresh routes with it. The one-hour token lives in the pairing
  * row, sealed, until the session exists; the session keeps the refresh token,
  * sealed. Kilo gives no sign that an email address is verified, so these
- * identities carry no email proof: inviting by email, company-domain view and
- * email quota rules stay off for them. */
+ * identities carry no email at all: inviting by email, company-domain view
+ * and email quota rules stay off for them. */
 import { createServerSession, ServerSessionGrantRejected } from "@cloud/server-oidc.ts";
 import {
   cookieValue,
@@ -138,8 +146,9 @@ export function pairingTransition(state, event) {
   return { ...next };
 }
 
-/** The identity a Kilo profile stands for. `emailVerified` is always false:
- * Kilo doesn't say whether an address was confirmed. */
+/** The identity a Kilo account stands for: its id and, when it has one, its
+ * name. The email address is left out, because Kilo doesn't say whether it
+ * was confirmed and nothing here may act on an unconfirmed one. */
 export function kiloIdentity(config, profile) {
   const principal = `${config.namespace}:${encodeURIComponent(profile.id)}`;
   return {
@@ -152,26 +161,30 @@ export function kiloIdentity(config, profile) {
       provider: "oidc",
       transport: "host-session-cookie",
       principalNamespace: config.namespace,
-      email: profile.email,
-      emailVerified: false,
       ...(profile.name ? { displayName: profile.name } : {}),
     },
   };
 }
 
-/** What a session keeps to renew itself. The one-hour token is not in it. */
-const sessionBundle = (config, userId, refreshToken) => ({
+/** What a session keeps to renew itself. The one-hour token is not in it.
+ * The name is, so a renewal that can't read the profile still has an identity
+ * to return with the refresh token Kilo just issued. */
+const sessionBundle = (config, { id, name }, refreshToken) => ({
   kind: "kilo",
   appUrl: config.appUrl,
-  userId,
+  userId: id,
+  ...(name ? { name } : {}),
   refreshToken,
 });
 
 /** Renews Kilo sessions for `serverOidcSessionStatus`, or undefined when this
  * deployment doesn't use Kilo. A bundle from another sign-in method or another
  * Kilo origin, a refresh Kilo refuses, and a profile for another person each
- * end the session. Kilo being unreachable propagates, and the session code
- * keeps the row and asks again. */
+ * end the session. A refresh Kilo can't answer propagates, and the session
+ * code keeps the row and asks again. Once Kilo has rotated the refresh token,
+ * the new one is always returned: a profile that can't be read then leaves
+ * the stored name in place, because failing would discard the only refresh
+ * token Kilo still accepts. */
 export function kiloSessionProvider(env, request) {
   const config = kiloSignIn(env, request);
   if (!config) return undefined;
@@ -189,15 +202,22 @@ export function kiloSessionProvider(env, request) {
         refreshToken: bundle.refreshToken,
       });
       if (refreshed.refused) throw new ServerSessionGrantRejected();
-      const profile = await readKiloProfile(fetch, {
-        appUrl: config.appUrl,
-        token: refreshed.token,
-      });
-      if (profile.refused || profile.id !== bundle.userId) throw new ServerSessionGrantRejected();
+      let account = { id: bundle.userId, name: bundle.name };
+      try {
+        const profile = await readKiloProfile(fetch, {
+          appUrl: config.appUrl,
+          token: refreshed.token,
+        });
+        if (profile.refused || profile.id !== bundle.userId) throw new ServerSessionGrantRejected();
+        account = profile;
+      } catch (error) {
+        if (!(error instanceof KiloUnavailable) && !(error instanceof KiloProtocolError))
+          throw error;
+      }
       return {
-        identity: kiloIdentity(config, profile),
+        identity: kiloIdentity(config, account),
         expiresAt: Math.floor(Date.now() / 1000) + Math.floor(refreshed.expiresInSeconds),
-        bundle: sessionBundle(config, bundle.userId, refreshed.refreshToken),
+        bundle: sessionBundle(config, account, refreshed.refreshToken),
       };
     },
   };
@@ -210,7 +230,9 @@ const sealBinding = (id) => `kilo-pairing:${id}`;
 
 /** A same-origin path to land on after sign-in, or `/`. The URL parser decides
  * what the browser would open, so a value it reads as another origin, such as
- * one hiding a second slash behind a tab, is refused. */
+ * one hiding a second slash behind a tab, is refused. So is one whose
+ * normalized path starts with two slashes, as `/a/..//host` does: handed back
+ * to a browser, that path is another origin. */
 function safeReturnTo(value, origin) {
   if (typeof value !== "string" || !value.startsWith("/") || /[\\\t\r\n]/.test(value)) return "/";
   let url;
@@ -219,7 +241,12 @@ function safeReturnTo(value, origin) {
   } catch {
     return "/";
   }
-  if (url.origin !== origin || url.pathname === PAGE_PATH || url.pathname.startsWith("/api/auth/"))
+  if (
+    url.origin !== origin ||
+    url.pathname.startsWith("//") ||
+    url.pathname === PAGE_PATH ||
+    url.pathname.startsWith("/api/auth/")
+  )
     return "/";
   return url.pathname + url.search + url.hash;
 }
@@ -312,11 +339,13 @@ async function beginPairing(request, env, config, now) {
         .run();
       return toPage();
     }
+    // A row a request is working on is that request's to finish or end.
     await env.DB.prepare(
       `DELETE FROM kilo_pairings WHERE id IN
-       (SELECT id FROM kilo_pairings WHERE expires_at <= ? ORDER BY expires_at LIMIT 100)`,
+       (SELECT id FROM kilo_pairings WHERE expires_at <= ? AND busy_until <= ?
+        ORDER BY expires_at LIMIT 100)`,
     )
-      .bind(now)
+      .bind(now, now)
       .run();
     const started = await startKiloPairing(fetch, {
       appUrl: config.appUrl,
@@ -409,7 +438,10 @@ async function poll() {
     if (response.status >= 400 && response.status < 500) return end(ENDED.failed);
     result = await response.json();
   } catch {}
-  if (result && result.status === "signed_in") return location.replace(result.return_to || "/");
+  if (result && result.status === "signed_in") {
+    const path = String(result.return_to || "/");
+    return location.replace(/^\\/(?![\\/\\\\])/.test(path) ? path : "/");
+  }
   if (result && Object.hasOwn(ENDED, result.status)) return end(ENDED[result.status]);
   setTimeout(poll, ${POLL_SECONDS * 1000});
 }
@@ -423,10 +455,17 @@ async function advancePairing(request, env, config, now) {
   requireSameOrigin(request, env);
   const found = await findPairing(request, env);
   if (!found) return pollAnswer("expired");
-  if (found.expires_at <= now)
-    return endPairing(env, found, pairingTransition(found.state, "deadline_passed").state, "expired");
-  // One request at a time works on a pairing; the rest are told to keep waiting.
+  // One request at a time works on a pairing; the rest are told to keep
+  // waiting, even past the deadline: the owner may hold an approval it is
+  // about to store.
   if (found.busy_until > now) return pollAnswer("pending");
+  if (found.expires_at <= now)
+    return endPairing(
+      env,
+      found,
+      pairingTransition(found.state, "deadline_passed").state,
+      "expired",
+    );
   let row = await writePairing(env, found, { busy_until: now + CLAIM_SECONDS });
   if (!row) return pollAnswer("pending");
   try {
@@ -450,9 +489,10 @@ async function advancePairing(request, env, config, now) {
         state: next.state,
         sealed: await sealServerSecret(env, grant, sealBinding(row.id)),
       });
-      // Only a claim that outlived CLAIM_SECONDS loses this write. The grant
-      // can't be stored, and the device code is spent: the pairing is over.
-      if (!stored) return endPairing(env, row, "failed", "claim_lost");
+      // This write loses only when the claim lapsed and another request took
+      // the row. The grant can't be stored and the device code is spent, so
+      // this request has nothing left to do; the row is the other request's.
+      if (!stored) return pollAnswer("failed");
       row = stored;
     }
     const grant = await openServerSecret(env, row.sealed, sealBinding(row.id));
@@ -464,21 +504,27 @@ async function advancePairing(request, env, config, now) {
         : "profile_read";
     const next = pairingTransition("approved", event);
     if (next.effect === "delete") return endPairing(env, row, next.state, event);
+    // The pairing goes before the session is made, and only the request that
+    // removes it makes one. A request that dies in between costs the person a
+    // second sign-in; the other order could make two sessions that share one
+    // refresh token.
+    const ended = await env.DB.prepare(
+      "DELETE FROM kilo_pairings WHERE id = ? AND revision = ? RETURNING return_to",
+    )
+      .bind(row.id, row.revision)
+      .first();
+    if (!ended) return pollAnswer("pending");
     const sessionCookie = await createServerSession(
       request,
       env,
       {
         identity: kiloIdentity(config, profile),
         expiresAt: grant.tokenExpiresAt,
-        bundle: sessionBundle(config, grant.userId, grant.refreshToken),
+        bundle: sessionBundle(config, profile, grant.refreshToken),
       },
       { onAuthEvent: recordOidcEvent },
     );
-    // The session exists, so the pairing goes whatever its revision is now.
-    const ended = await env.DB.prepare("DELETE FROM kilo_pairings WHERE id = ? RETURNING return_to")
-      .bind(row.id)
-      .first();
-    return pollAnswer(next.state, { returnTo: ended?.return_to ?? "/", sessionCookie });
+    return pollAnswer(next.state, { returnTo: ended.return_to, sessionCookie });
   } catch (error) {
     if (error instanceof KiloUnavailable) {
       // Let the next poll ask Kilo again without waiting out this claim.

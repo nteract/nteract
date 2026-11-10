@@ -307,3 +307,15 @@ test("a refreshed token that outlives Kilo's refreshable lifetime is refused", a
     KiloProtocolError,
   );
 });
+
+test("an approval waits for its exchange while other pairings start", async (t) => {
+  const kilo = await fixture(t);
+  const first = await start(kilo);
+  await kilo.approve(first.userCode, user);
+  await start(kilo);
+  const answer = await exchangeKiloDeviceCode(fetch, {
+    appUrl: kilo.origin,
+    deviceCode: first.deviceCode,
+  });
+  assert.equal(answer.status, "approved");
+});
