@@ -65,9 +65,10 @@ issuer; `cargo xtask dev` doesn't start it.
    widths ([Verify changes](README.md#verify-changes)).
 5. From the repo root, before committing: `cargo xtask lint --fix`.
 
-`pages.runtimed.run` holds documents people use: don't reset it or deploy this
-work to it, and don't build a migration from it. Every other deployed target is
-a demo and can be reset. Confirm which target a command addresses before it
-mutates anything. Read
+`pages.runtimed.run` holds documents people use: don't reset it and don't build
+a migration from it. A format 1 release may be promoted to it by hand once
+page10 runs the same build; format 2 work never deploys there. Every other
+deployed target is a demo and can be reset. Confirm which target a command
+addresses before it mutates anything. Read
 [DEPLOYMENT.md](DEPLOYMENT.md) before release work. Local tests don't qualify
 a live identity provider or object-store failover.

@@ -99,14 +99,16 @@ records the node addresses agents use.
 
 - **The new service starts empty.** It needs no reader for any earlier stored
   form and no migration from an existing target.
-- **`pages.runtimed.run` holds documents people use.** Do not reset it or
-  deploy this work to it. It does not need migrating either. Copying a Project
-  across with `scripts/project-transfer.mjs` is optional and is not a gate.
+- **`pages.runtimed.run` holds documents people use.** Do not reset it, and do
+  not build a migration from it. A release in the stored form `main` writes
+  today (format 1) may be promoted to it by hand, once `page10` runs the same
+  build. Format 2 work never deploys to it. Copying a Project across with
+  `scripts/project-transfer.mjs` is optional and is not a gate.
 - **Other deployed targets are demos.** Keep this list current.
 
   | Target | Host | State |
   | --- | --- | --- |
-  | `pages` | lab1 | In use. Deployed by hand |
+  | `pages` | lab1 | In use. Promoted by hand from the build `page10` runs |
   | `page10` | lab1 | Preview. Deployed from `main` automatically. Reset freely |
   | `pages2` (`page2.runtimed.run`) | lab2 | Demo. Reset freely |
   | `page11` | lab2 | Profile in source only; nothing is deployed |
