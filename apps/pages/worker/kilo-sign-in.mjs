@@ -453,9 +453,12 @@ setTimeout(poll, ${POLL_SECONDS * 1000});
 /** `POST /api/auth/pairing`: one step of this browser's pairing. Answers
  * `pending`, or a terminal `signed_in`, `denied`, `expired` or `failed`. No
  * answer carries a code, a token, or anything about the account. */
-async function advancePairing(request, env, config, now) {
+async function advancePairing(request, env, config) {
   requireSameOrigin(request, env);
   const found = await findPairing(request, env);
+  // Read the clock after the row: the claim below lasts CLAIM_SECONDS from
+  // now, and time spent getting here must not come out of it.
+  const now = Math.floor(Date.now() / 1000);
   if (!found) return pollAnswer("expired");
   // One request at a time works on a pairing; the rest are told to keep
   // waiting, even past the deadline: the owner may hold an approval it is
@@ -484,7 +487,7 @@ async function advancePairing(request, env, config, now) {
       const grant = {
         token: answer.token,
         refreshToken: answer.refreshToken,
-        tokenExpiresAt: now + Math.floor(answer.expiresInSeconds),
+        tokenExpiresAt: Math.floor(Date.now() / 1000) + Math.floor(answer.expiresInSeconds),
         userId: answer.userId,
       };
       const stored = await writePairing(env, row, {
@@ -546,7 +549,6 @@ export async function handleKiloSignIn(request, env) {
   if (![LOGIN_PATH, PAGE_PATH, POLL_PATH, SCRIPT_PATH].includes(pathname)) return null;
   const config = kiloSignIn(env, request);
   if (!config) return null;
-  const now = Math.floor(Date.now() / 1000);
   const route = `${request.method} ${pathname}`;
   if (route === `GET ${SCRIPT_PATH}`)
     return noStore(
@@ -559,8 +561,9 @@ export async function handleKiloSignIn(request, env) {
     );
   // Every other route reads or writes the pairing table.
   await ready(env.DB);
+  const now = Math.floor(Date.now() / 1000);
   if (route === `GET ${LOGIN_PATH}`) return beginPairing(request, env, config, now);
   if (route === `GET ${PAGE_PATH}`) return signInPage(request, env, config, now);
-  if (route === `POST ${POLL_PATH}`) return advancePairing(request, env, config, now);
+  if (route === `POST ${POLL_PATH}`) return advancePairing(request, env, config);
   return noStore(new Response(null, { status: 405 }));
 }

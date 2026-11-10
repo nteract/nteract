@@ -646,3 +646,29 @@ test("a renewal whose profile Kilo refuses ends the session, whatever the refusa
     mock.mock.restore();
   }
 });
+
+test("time spent reaching a pairing doesn't come out of the claim that protects its exchange", async (t) => {
+  const kilo = await startLocalKilo();
+  const { env } = fixture(t, kilo);
+  const started = await begin(env);
+  const realNow = Date.now;
+  let skew = 0;
+  t.mock.method(Date, "now", () => realNow() + skew);
+  // Finding the row takes 25 seconds.
+  const prepare = env.DB.prepare.bind(env.DB);
+  env.DB.prepare = (sql) => {
+    if (sql.startsWith("SELECT * FROM kilo_pairings")) skew = 25_000;
+    return prepare(sql);
+  };
+  const original = globalThis.fetch;
+  let remaining;
+  t.mock.method(globalThis, "fetch", async (input, init) => {
+    if (new URL(input).pathname === "/api/device-auth/token") {
+      const { busy_until } = env.DB.sqlite.prepare("SELECT busy_until FROM kilo_pairings").get();
+      remaining = busy_until - Math.floor(Date.now() / 1000);
+    }
+    return original(input, init);
+  });
+  assert.deepEqual((await poll(env, started.cookie)).body, { status: "pending" });
+  assert.equal(remaining, 30, "the whole claim is ahead of the exchange");
+});

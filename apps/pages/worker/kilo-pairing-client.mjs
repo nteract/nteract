@@ -132,7 +132,10 @@ async function readLimited(response) {
       if (done) break;
       size += value.byteLength;
       if (size > MAX_BODY_BYTES) {
-        await reader.cancel();
+        // Whether or not the stream lets go, the answer is over the limit.
+        try {
+          await reader.cancel();
+        } catch {}
         throw new KiloProtocolError();
       }
       chunks.push(value);

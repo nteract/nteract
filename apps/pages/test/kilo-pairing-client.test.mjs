@@ -375,3 +375,22 @@ test("a body that breaks off is an outage, and one over the limit is a protocol 
     KiloProtocolError,
   );
 });
+
+test("a body over the limit is a protocol error even when the stream won't cancel", async () => {
+  const stubborn = async () =>
+    new Response(
+      new ReadableStream({
+        pull(controller) {
+          controller.enqueue(new Uint8Array(32 * 1024));
+        },
+        cancel() {
+          throw new Error("can't cancel");
+        },
+      }),
+      { status: 200 },
+    );
+  await assert.rejects(
+    readKiloProfile(stubborn, { appUrl: args.appUrl, token: "t" }),
+    KiloProtocolError,
+  );
+});
