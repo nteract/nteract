@@ -97,8 +97,10 @@ holding that gate. It downloads the official celld 0.6.3 Linux x86_64
 release, checks the archive hash and the executable hash in `CELLD_RELEASE`,
 installs Playwright's Chromium with system dependencies, runs `npm run e2e` with
 one retry and a flaky budget of one, and always uploads `test-results/`.
-The existing production promotion procedure is manual, but the current
-experiment must not promote to `pages.runtimed.run`. For a permitted target,
+Promotion to `pages.runtimed.run` is manual
+([Promote production from the CI artifact](DEPLOYMENT.md#promote-production-from-the-ci-artifact)).
+A format 1 release may be promoted once page10 runs the same build; format 2
+work must not deploy there. Before promoting,
 confirm both workflows are green for the exact source SHA. On a
 fresh Linux runner, install browser system dependencies with
 `npx playwright install --with-deps chromium`.

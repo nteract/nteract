@@ -11,11 +11,12 @@ carrying compatibility code. Deployment never copies data between targets.
 
 | Target | Rule ([DIRECTION.md](DIRECTION.md#rules-for-the-work)) |
 | --- | --- |
-| pages | Holds documents people use. No reset, no deployment of new-format work, no migration from it |
+| pages | Holds documents people use. No reset and no migration from it. A format 1 release is promoted by hand from the build page10 runs; format 2 work never deploys here |
 | pages2, page10 | Demos. Reset freely; confirm the target a command addresses first |
 
-The service procedures below document existing operations, not permission to
-mutate `pages`. Streamlined-service experiments use a separate target. Confirm
+The procedures below promote a format 1 release to `pages`. They are not
+permission to reset it or to deploy format 2 work to it; that work uses a
+separate target. Confirm
 application state, auth/catalog storage, deployment pointers, and routes are
 isolated. Project transfer alone is not a complete archive of loose Pages,
 comments, sharing, or history.
@@ -385,7 +386,9 @@ aws s3 cp versions.json \
   s3://nteract-celld-lab-621741996708/standalone/<prefix>-snapshots/<date>-<label>/versions.json
 ```
 
-Take one before a release that changes storage. To restore, stop the service on
+Take one before a release that changes storage. A release that changes only the
+app does not need one: it rolls back by moving the fleet pointer to the previous
+release ([When a wait times out](#when-a-wait-times-out)). To restore, stop the service on
 every node of the fleet, copy each listed version back over its key
 (`aws s3api copy-object --copy-source '<bucket>/<key>?versionId=<id>'`), delete
 current keys under the prefix that the manifest does not list, move each node's
