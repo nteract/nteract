@@ -17,6 +17,7 @@ const events = [
   "profile_read",
   "profile_refused",
   "profile_mismatch",
+  "kilo_protocol_error",
   "deadline_passed",
 ];
 const states = ["pending", "approved", "signed_in", "denied", "expired", "failed"];
@@ -106,7 +107,7 @@ async function poll(env, cookie, headers = {}) {
 }
 async function approve(kilo, pageResponse, account = user) {
   const page = await pageResponse.text();
-  const code = page.match(/class="user-code"[^>]*>([^<]+)/)?.[1];
+  const code = page.match(/class="pairing-code"><strong>([^<]+)/)?.[1];
   assert.ok(code);
   assert.equal(await kilo.approve(code, account), true);
   return page;
@@ -118,10 +119,12 @@ test("pairingTransition accepts only the declared state and event combinations",
     ["pending:kilo_approved", ["approved", "persist_grant"]],
     ["pending:kilo_denied", ["denied", "delete"]],
     ["pending:kilo_expired", ["expired", "delete"]],
+    ["pending:kilo_protocol_error", ["failed", "delete"]],
     ["pending:deadline_passed", ["expired", "delete"]],
     ["approved:profile_read", ["signed_in", "create_session"]],
     ["approved:profile_refused", ["failed", "delete"]],
     ["approved:profile_mismatch", ["failed", "delete"]],
+    ["approved:kilo_protocol_error", ["failed", "delete"]],
     ["approved:deadline_passed", ["expired", "delete"]],
   ]);
   for (const state of states)
@@ -261,7 +264,7 @@ test("profile lookup outage resumes the stored approved grant without re-exchang
     return original(input, init);
   });
   assert.equal((await poll(env, started.cookie)).body.status, "pending");
-  await new Promise((resolve) => setTimeout(resolve, 2100));
+  // The failed request gave up its claim, so the next poll resumes at once.
   assert.equal((await poll(env, started.cookie)).body.status, "signed_in");
   assert.equal(
     (await kilo.requests()).filter((item) => item.path === "/api/device-auth/token").length,
@@ -275,7 +278,7 @@ test("denial, expiry, user mismatch, origin refusal, and unavailable start are b
   const { env } = fixture(t, kilo);
   const denied = await begin(env);
   const deniedPage = await handleKiloSignIn(request("/sign-in", { cookie: denied.cookie }), env);
-  const deniedCode = (await deniedPage.text()).match(/class="user-code"[^>]*>([^<]+)/)[1];
+  const deniedCode = (await deniedPage.text()).match(/class="pairing-code"><strong>([^<]+)/)[1];
   await kilo.deny(deniedCode);
   assert.equal((await poll(env, denied.cookie)).body.status, "denied");
   const expired = await begin(env);
@@ -303,16 +306,111 @@ test("denial, expiry, user mismatch, origin refusal, and unavailable start are b
     });
   });
   assert.equal((await poll(env, mismatch.cookie)).body.status, "failed");
-  assert.equal(
-    (await poll(env, mismatch.cookie, { Origin: "https://evil.example" })).response.status,
-    403,
-  );
+  // The gateway turns this refusal into its 403 answer.
+  await assert.rejects(poll(env, mismatch.cookie, { Origin: "https://evil.example" }), {
+    status: 403,
+  });
   const unavailable = await startLocalKilo();
   await unavailable.close();
   const badEnv = { ...env, PAGES_KILO_APP_URL: unavailable.origin };
   const failedStart = await handleKiloSignIn(request("/api/auth/login"), badEnv);
   assert.equal(failedStart.status, 503);
-  assert.match(await failedStart.text(), /Sign-in is temporarily unavailable/);
+  assert.match(await failedStart.text(), /couldn(&#39;|')t reach Kilo/);
+});
+
+test("the landing path stays on this origin, and a second click keeps the pairing", async (t) => {
+  const kilo = await startLocalKilo();
+  const { env } = fixture(t, kilo);
+  const landing = async (returnTo) => {
+    const started = await begin(env, returnTo);
+    const page = await handleKiloSignIn(request("/sign-in", { cookie: started.cookie }), env);
+    await approve(kilo, page);
+    return (await poll(env, started.cookie)).body.return_to;
+  };
+  assert.equal(await landing("/p/abc?x=1#top"), "/p/abc?x=1#top");
+  // A URL parser drops the tab, which would leave a scheme-relative URL.
+  for (const hostile of [
+    "/\t/evil.example",
+    "//evil.example",
+    "/\\evil.example",
+    "https://evil.example/",
+    "/api/auth/login",
+    "/sign-in",
+  ])
+    assert.equal(await landing(hostile), "/", hostile);
+
+  const first = await begin(env, "/pages");
+  const starts = () =>
+    kilo.requests().filter((item) => item.path === "/api/device-auth/codes").length;
+  const before = starts();
+  const again = await handleKiloSignIn(
+    request("/api/auth/login?return_to=%2Fp%2Flater", { cookie: first.cookie }),
+    env,
+  );
+  assert.equal(again.status, 303);
+  assert.equal(pairingCookie(again), undefined, "the browser keeps the pairing it has");
+  assert.equal(starts(), before, "Kilo is not asked for another pairing");
+  await approve(
+    kilo,
+    await handleKiloSignIn(request("/sign-in", { cookie: first.cookie }), env),
+  );
+  assert.equal((await poll(env, first.cookie)).body.return_to, "/p/later");
+});
+
+test("a second click while a poll owns the pairing doesn't lose the approved grant", async (t) => {
+  const kilo = await startLocalKilo();
+  const { env } = fixture(t, kilo);
+  const started = await begin(env);
+  await approve(kilo, await handleKiloSignIn(request("/sign-in", { cookie: started.cookie }), env));
+  const original = globalThis.fetch;
+  let entered;
+  const exchanging = new Promise((resolve) => (entered = resolve));
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  t.mock.method(globalThis, "fetch", async (input, init) => {
+    const response = await original(input, init);
+    if (new URL(input).pathname === "/api/device-auth/token") {
+      entered();
+      await held;
+    }
+    return response;
+  });
+  const owner = poll(env, started.cookie);
+  await exchanging;
+  // Kilo has consumed the device code; the owner has not stored the grant yet.
+  assert.equal((await poll(env, started.cookie)).body.status, "pending");
+  await handleKiloSignIn(
+    request("/api/auth/login?return_to=%2Fp%2Flater", { cookie: started.cookie }),
+    env,
+  );
+  release();
+  const finished = (await owner).body;
+  assert.deepEqual(finished, { status: "signed_in", return_to: "/p/later" });
+  assert.equal(
+    kilo.requests().filter((item) => item.path === "/api/device-auth/token").length,
+    1,
+  );
+});
+
+test("two pairing cookies name no pairing, and the page loads its script from this origin", async (t) => {
+  const kilo = await startLocalKilo();
+  const { env } = fixture(t, kilo);
+  const a = await begin(env);
+  const b = await begin(env);
+  assert.deepEqual((await poll(env, `${a.cookie}; ${b.cookie}`)).body, { status: "expired" });
+  const page = await handleKiloSignIn(request("/sign-in", { cookie: a.cookie }), env);
+  const policy = page.headers.get("content-security-policy");
+  assert.match(policy, /script-src 'self'/);
+  assert.match(policy, /connect-src 'self'$/);
+  assert.equal(page.headers.get("cache-control"), "no-store");
+  const body = await page.text();
+  assert.match(body, /<script src="\/api\/auth\/kilo-pairing\.js" defer><\/script>/);
+  assert.doesNotMatch(body, /<script>|onclick=|javascript:/);
+  const script = await handleKiloSignIn(request("/api/auth/kilo-pairing.js"), env);
+  assert.match(script.headers.get("content-type"), /^text\/javascript/);
+  assert.match(await script.text(), /fetch\("\/api\/auth\/pairing"/);
+  const none = await handleKiloSignIn(request("/sign-in"), env);
+  assert.match(await none.text(), /expired or already finished/);
 });
 
 test("session renewal rotates the stored credential and rejects ended or foreign grants", async (t) => {

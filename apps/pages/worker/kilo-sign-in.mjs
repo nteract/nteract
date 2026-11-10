@@ -1,13 +1,34 @@
+/** Browser sign-in with a Kilo account, by device pairing.
+ *
+ * Kilo doesn't send a browser back after it approves a pairing, so Pages asks:
+ * the sign-in page polls this Worker, and the Worker polls Kilo. The pairing
+ * is bound to one browser by an HttpOnly cookie whose hash is the row id, and
+ * the device code never leaves the Worker.
+ *
+ * A pairing is `pending` until Kilo approves it and `approved` until its
+ * session exists. `approved` is stored because Kilo answers `approved` once:
+ * the grant is in the row before the profile is read, so a request that dies
+ * there is resumed by the next poll and the device code is never exchanged
+ * again. Every write names the row's revision, so a late request can't undo a
+ * newer step.
+ *
+ * Kilo's token is a full API credential for that person. Pages calls only the
+ * profile and refresh routes with it. The one-hour token lives in the pairing
+ * row, sealed, until the session exists; the session keeps the refresh token,
+ * sealed. Kilo gives no sign that an email address is verified, so these
+ * identities carry no email proof: inviting by email, company-domain view and
+ * email quota rules stay off for them. */
 import { createServerSession, ServerSessionGrantRejected } from "@cloud/server-oidc.ts";
 import {
+  cookieValue,
   openServerSecret,
   randomSecret,
   sealServerSecret,
   secretHash,
 } from "@cloud/oidc-session-store.ts";
 import { html } from "./oauth.mjs";
-import { HttpError, json, requireSameOrigin } from "./auth.mjs";
-import { logAuthEvent } from "./auth-events.mjs";
+import { json, requireSameOrigin } from "./auth.mjs";
+import { recordOidcEvent } from "./auth-events.mjs";
 import { migrateSchema } from "./catalog-index.mjs";
 import { isolateSetup } from "./isolate-setup.mjs";
 import {
@@ -19,15 +40,18 @@ import {
   startKiloPairing,
 } from "./kilo-pairing-client.mjs";
 
-const COOKIE = "__Host-pages_kilo_pairing";
-const TABLE = "kilo_pairings";
-const FAILURES = new Set([
-  "denied",
-  "expired",
-  "profile_refused",
-  "profile_mismatch",
-  "protocol_error",
-]);
+const PAIRING_COOKIE = "__Host-pages_kilo_pairing";
+const LOGIN_PATH = "/api/auth/login";
+const PAGE_PATH = "/sign-in";
+const POLL_PATH = "/api/auth/pairing";
+const SCRIPT_PATH = "/api/auth/kilo-pairing.js";
+// How often the page asks, and how soon after a "not yet" Kilo is asked again.
+const POLL_SECONDS = 2;
+// How long one request owns a pairing while it talks to Kilo. It outlasts the
+// client's timeouts for an exchange and a profile read together, so a slow
+// answer can't let a second request exchange the same device code.
+const CLAIM_SECONDS = 30;
+
 const MIGRATIONS = Object.freeze([
   Object.freeze({
     version: 1,
@@ -51,54 +75,71 @@ const ready = isolateSetup((db) =>
   migrateSchema(db, { table: "kilo_pairing_schema", migrations: MIGRATIONS }),
 );
 
-/** Resolves the configured Kilo origin and this deployment's public client. */
+/** This deployment's Kilo sign-in settings, or null when it doesn't use Kilo.
+ * `PAGES_KILO_APP_URL` turns it on and must be a bare `https:` origin; a
+ * loopback `http:` origin is accepted only beside the local test issuer flag.
+ * A set but unusable value throws, so a misconfigured deployment fails loudly
+ * and never falls back to another sign-in. */
 export function kiloSignIn(env, request) {
-  if (!env?.PAGES_KILO_APP_URL) return null;
+  const configured = env?.PAGES_KILO_APP_URL;
+  if (!configured) return null;
+  let app;
   try {
-    const configuredUrl = String(env.PAGES_KILO_APP_URL);
-    const app = new URL(configuredUrl);
-    const local = ["localhost", "127.0.0.1", "[::1]"].includes(app.hostname);
-    if (
-      (app.protocol !== "https:" &&
-        !(app.protocol === "http:" && local && env.NOTEBOOK_CLOUD_LOCAL_OIDC === "true")) ||
-      configuredUrl.includes("?") ||
-      configuredUrl.includes("#") ||
-      app.username ||
-      app.password ||
-      app.pathname !== "/" ||
-      app.search ||
-      app.hash
-    )
-      throw new Error();
-    const publicOrigin = new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin;
-    return {
-      appUrl: app.origin,
-      namespace: env.PAGES_KILO_PRINCIPAL_NAMESPACE?.trim() || "user:kilo",
-      client: { id: "pages", name: "Pages", redirectOrigin: publicOrigin },
-    };
+    app = new URL(String(configured));
   } catch {
     throw new Error("Kilo sign-in is misconfigured");
   }
+  const loopback =
+    app.protocol === "http:" &&
+    ["localhost", "127.0.0.1", "[::1]"].includes(app.hostname) &&
+    env.NOTEBOOK_CLOUD_LOCAL_OIDC === "true";
+  if (
+    (app.protocol !== "https:" && !loopback) ||
+    String(configured).replace(/\/$/, "") !== app.origin ||
+    app.username ||
+    app.password
+  )
+    throw new Error("Kilo sign-in is misconfigured");
+  const origin = new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin;
+  return {
+    appUrl: app.origin,
+    origin,
+    namespace: env.PAGES_KILO_PRINCIPAL_NAMESPACE?.trim() || "user:kilo",
+    // What Kilo's approval page shows the person.
+    client: { id: "pages", name: "Pages", redirectOrigin: origin },
+  };
 }
 
-/** Advances one pairing without I/O; callers persist the returned state before effects. */
+const TRANSITIONS = {
+  pending: {
+    kilo_pending: { state: "pending", effect: "wait" },
+    kilo_approved: { state: "approved", effect: "persist_grant" },
+    kilo_denied: { state: "denied", effect: "delete" },
+    kilo_expired: { state: "expired", effect: "delete" },
+    kilo_protocol_error: { state: "failed", effect: "delete" },
+    deadline_passed: { state: "expired", effect: "delete" },
+  },
+  approved: {
+    profile_read: { state: "signed_in", effect: "create_session" },
+    profile_refused: { state: "failed", effect: "delete" },
+    profile_mismatch: { state: "failed", effect: "delete" },
+    kilo_protocol_error: { state: "failed", effect: "delete" },
+    deadline_passed: { state: "expired", effect: "delete" },
+  },
+};
+
+/** The next state of a pairing and the one effect the caller owes for it.
+ * `pending` and `approved` are stored; `signed_in`, `denied`, `expired` and
+ * `failed` end the pairing and its row. An event that can't happen in a state
+ * throws. */
 export function pairingTransition(state, event) {
-  const move = (next, effect) => ({ state: next, effect });
-  if (state === "pending") {
-    if (event === "kilo_pending") return move("pending", "wait");
-    if (event === "kilo_approved") return move("approved", "persist_grant");
-    if (event === "kilo_denied") return move("denied", "delete");
-    if (event === "kilo_expired" || event === "deadline_passed") return move("expired", "delete");
-  } else if (state === "approved") {
-    if (event === "profile_read") return move("signed_in", "create_session");
-    if (event === "profile_refused" || event === "profile_mismatch")
-      return move("failed", "delete");
-    if (event === "deadline_passed") return move("expired", "delete");
-  }
-  throw new Error("Invalid Kilo pairing transition");
+  const next = Object.hasOwn(TRANSITIONS, state) && TRANSITIONS[state][event];
+  if (!next) throw new Error("Invalid Kilo pairing transition");
+  return { ...next };
 }
 
-/** Builds the host-session identity with no email proof. */
+/** The identity a Kilo profile stands for. `emailVerified` is always false:
+ * Kilo doesn't say whether an address was confirmed. */
 export function kiloIdentity(config, profile) {
   const principal = `${config.namespace}:${encodeURIComponent(profile.id)}`;
   return {
@@ -107,6 +148,7 @@ export function kiloIdentity(config, profile) {
     actorLabel: `${principal}/browser`,
     scope: "owner",
     metadata: {
+      // The session label every server session carries (app-session.ts).
       provider: "oidc",
       transport: "host-session-cookie",
       principalNamespace: config.namespace,
@@ -117,13 +159,30 @@ export function kiloIdentity(config, profile) {
   };
 }
 
-/** Returns the refresh adapter for this configured Kilo origin. */
+/** What a session keeps to renew itself. The one-hour token is not in it. */
+const sessionBundle = (config, userId, refreshToken) => ({
+  kind: "kilo",
+  appUrl: config.appUrl,
+  userId,
+  refreshToken,
+});
+
+/** Renews Kilo sessions for `serverOidcSessionStatus`, or undefined when this
+ * deployment doesn't use Kilo. A bundle from another sign-in method or another
+ * Kilo origin, a refresh Kilo refuses, and a profile for another person each
+ * end the session. Kilo being unreachable propagates, and the session code
+ * keeps the row and asks again. */
 export function kiloSessionProvider(env, request) {
   const config = kiloSignIn(env, request);
   if (!config) return undefined;
   return {
     async refresh(bundle) {
-      if (bundle?.kind !== "kilo" || bundle.appUrl !== config.appUrl)
+      if (
+        bundle?.kind !== "kilo" ||
+        bundle.appUrl !== config.appUrl ||
+        typeof bundle.userId !== "string" ||
+        typeof bundle.refreshToken !== "string"
+      )
         throw new ServerSessionGrantRejected();
       const refreshed = await refreshKiloTokens(fetch, {
         appUrl: config.appUrl,
@@ -137,337 +196,323 @@ export function kiloSessionProvider(env, request) {
       if (profile.refused || profile.id !== bundle.userId) throw new ServerSessionGrantRejected();
       return {
         identity: kiloIdentity(config, profile),
-        expiresAt: Math.floor(Date.now() / 1000) + refreshed.expiresInSeconds,
-        bundle: { ...bundle, refreshToken: refreshed.refreshToken },
+        expiresAt: Math.floor(Date.now() / 1000) + Math.floor(refreshed.expiresInSeconds),
+        bundle: sessionBundle(config, bundle.userId, refreshed.refreshToken),
       };
     },
   };
 }
 
-function cookieSecret(request) {
-  const value = request.headers.get("cookie") ?? "";
-  for (const part of value.split(";")) {
-    const [name, ...rest] = part.trim().split("=");
-    if (name === COOKIE) return rest.join("=") || null;
+const pairingCookie = (secret, maxAge) =>
+  `${PAIRING_COOKIE}=${secret}; Path=/; Max-Age=${Math.max(0, maxAge)}; HttpOnly; Secure; SameSite=Lax`;
+const clearedCookie = () => pairingCookie("", 0);
+const sealBinding = (id) => `kilo-pairing:${id}`;
+
+/** A same-origin path to land on after sign-in, or `/`. The URL parser decides
+ * what the browser would open, so a value it reads as another origin, such as
+ * one hiding a second slash behind a tab, is refused. */
+function safeReturnTo(value, origin) {
+  if (typeof value !== "string" || !value.startsWith("/") || /[\\\t\r\n]/.test(value)) return "/";
+  let url;
+  try {
+    url = new URL(value, origin);
+  } catch {
+    return "/";
   }
-  return null;
+  if (url.origin !== origin || url.pathname === PAGE_PATH || url.pathname.startsWith("/api/auth/"))
+    return "/";
+  return url.pathname + url.search + url.hash;
 }
-function bindingCookie(secret, maxAge = 0) {
-  return `${COOKIE}=${secret}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${Math.max(0, maxAge)}`;
+
+/** The pairing this browser's cookie names, or null. Two cookies of the name,
+ * or one that isn't a pairing secret, name nothing. */
+async function findPairing(request, env) {
+  const secret = cookieValue(request, PAIRING_COOKIE);
+  if (!secret || !/^[A-Za-z0-9_-]{43}$/.test(secret)) return null;
+  return env.DB.prepare("SELECT * FROM kilo_pairings WHERE id = ?")
+    .bind(await secretHash(secret))
+    .first();
 }
-function codedFailure(reason, principal) {
-  if (!FAILURES.has(reason)) reason = "protocol_error";
-  void logAuthEvent({
-    action: "sign_in.failed",
-    ...(principal && { principal }),
-    credential: "oidc",
+
+/** One fenced write of a pairing's state. Returns the row as stored, or null
+ * when another request moved it first. Where to land afterwards is not part of
+ * the state: `beginPairing` sets it without the fence, so a second click never
+ * invalidates the request that holds the claim. */
+async function writePairing(env, row, changes) {
+  const next = { ...row, ...changes, revision: row.revision + 1 };
+  const result = await env.DB.prepare(
+    `UPDATE kilo_pairings SET state = ?, sealed = ?, busy_until = ?, revision = ?
+     WHERE id = ? AND revision = ?`,
+  )
+    .bind(next.state, next.sealed, next.busy_until, next.revision, row.id, row.revision)
+    .run();
+  return result.meta?.changes === 1 ? next : null;
+}
+
+const deletePairing = (env, row) =>
+  env.DB.prepare("DELETE FROM kilo_pairings WHERE id = ? AND revision = ?")
+    .bind(row.id, row.revision)
+    .run();
+
+const signInFailed = (reason) =>
+  recordOidcEvent({
+    type: "sign_in_failed",
     reason,
-    phase: "browser",
+    phase: "pairing",
     kind: "kilo",
     outcome: "failure_page",
   });
-}
-function responseJson(body, status = 200, cookies = []) {
-  const response = json(body, status);
-  for (const cookie of Array.isArray(cookies) ? cookies : [cookies])
-    if (cookie) response.headers.append("Set-Cookie", cookie);
+
+const noStore = (response) => {
   response.headers.set("Cache-Control", "no-store");
   return response;
-}
-function returnTo(value) {
-  if (
-    typeof value !== "string" ||
-    !value.startsWith("/") ||
-    value.startsWith("//") ||
-    /[\\\r\n]/.test(value) ||
-    value.startsWith("/api/auth/") ||
-    value === "/sign-in"
-  )
-    return "/";
-  return value;
-}
-function signInScript() {
-  return `const status = document.querySelector('[role="status"]');
-const startAgain = '<a href="/api/auth/login">Start again</a>';
-const messages = { denied: 'Sign-in was denied. ', expired: 'Sign-in expired. ', failed: 'Sign-in could not be completed. ' };
-async function poll() {
-  try {
-    const response = await fetch('/api/auth/pairing', { method: 'POST', credentials: 'same-origin', headers: { 'Origin': location.origin } });
-    const result = await response.json();
-    if (result.status === 'signed_in') { location.replace(result.return_to); return; }
-    if (result.status in messages) { status.textContent = ''; status.insertAdjacentHTML('beforeend', messages[result.status] + startAgain); return; }
-  } catch {}
-  setTimeout(poll, 2000);
-}
-setTimeout(poll, 2000);`;
+};
+
+/** A poll's answer. A terminal status clears the pairing cookie. */
+function pollAnswer(status, { returnTo, sessionCookie } = {}) {
+  const response = noStore(json(returnTo ? { status, return_to: returnTo } : { status }));
+  if (sessionCookie) response.headers.append("Set-Cookie", sessionCookie);
+  if (status !== "pending") response.headers.append("Set-Cookie", clearedCookie());
+  return response;
 }
 
-async function readRow(env, id) {
-  await ready(env.DB);
-  return env.DB.prepare(`SELECT * FROM ${TABLE} WHERE id = ?`).bind(id).first();
-}
-async function pruneExpired(env, now) {
-  const result = await env.DB.prepare(
-    `SELECT id, revision FROM ${TABLE} WHERE expires_at <= ? ORDER BY expires_at LIMIT 100`,
-  )
-    .bind(now)
-    .all();
-  for (const row of result.results ?? []) await deleteRow(env, row);
-}
-async function deleteRow(env, row) {
-  return env.DB.prepare(`DELETE FROM ${TABLE} WHERE id = ? AND revision = ?`)
-    .bind(row.id, row.revision)
-    .run();
-}
-async function updateRow(env, row, changes) {
-  return env.DB.prepare(
-    `UPDATE ${TABLE} SET state = ?, sealed = ?, busy_until = ?, revision = revision + 1 WHERE id = ? AND revision = ?`,
-  )
-    .bind(changes.state, changes.sealed, changes.busyUntil, row.id, row.revision)
-    .run();
-}
-async function logStartFailure(error) {
-  if (!(error instanceof KiloUnavailable)) codedFailure("protocol_error");
+/** Ends a pairing: its row goes, the audit log gets a coded reason, and the
+ * page is told the terminal state. */
+async function endPairing(env, row, state, reason) {
+  await deletePairing(env, row);
+  signInFailed(reason);
+  return pollAnswer(state);
 }
 
-/** Handles browser Kilo sign-in routes, returning null for unrelated requests or disabled deployments. */
-export async function handleKiloSignIn(request, env) {
+/** `GET /api/auth/login`: starts a pairing and sends the browser to the
+ * sign-in page. A browser that already holds a live pairing keeps it, so
+ * repeated clicks don't spend Kilo's limit on pending pairings per address. */
+async function beginPairing(request, env, config, now) {
   const url = new URL(request.url);
+  const supplied = request.headers.get("origin");
   if (
-    !["/api/auth/login", "/sign-in", "/api/auth/pairing", "/api/auth/kilo-pairing.js"].includes(
-      url.pathname,
-    )
+    (supplied && supplied !== config.origin) ||
+    request.headers.get("sec-fetch-site") === "cross-site"
   )
-    return null;
-  const config = kiloSignIn(env, request);
-  if (!config) return null;
-  const now = Math.floor(Date.now() / 1000);
-  if (url.pathname === "/api/auth/kilo-pairing.js" && request.method === "GET")
-    return new Response(signInScript(), {
-      headers: {
-        "Content-Type": "text/javascript; charset=utf-8",
-        "Cache-Control": "no-store",
-        "X-Content-Type-Options": "nosniff",
-      },
-    });
-  if (url.pathname === "/api/auth/login" && request.method === "GET") {
-    const publicOrigin = new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin;
-    if (
-      (request.headers.get("origin") && request.headers.get("origin") !== publicOrigin) ||
-      request.headers.get("sec-fetch-site") === "cross-site"
-    )
-      return new Response("Forbidden", { status: 403, headers: { "Cache-Control": "no-store" } });
-    try {
-      await ready(env.DB);
-      await pruneExpired(env, now);
-      const started = await startKiloPairing(fetch, {
-        appUrl: config.appUrl,
-        client: config.client,
-        forwardedFor: request.headers.get("cf-connecting-ip") ?? undefined,
-        userAgent: request.headers.get("user-agent") ?? undefined,
-      });
-      const secret = randomSecret();
-      const id = await secretHash(secret);
-      const expiresAt = now + started.expiresInSeconds;
-      const sealed = await sealServerSecret(
-        env,
-        { deviceCode: started.deviceCode },
-        `kilo-pairing:${id}`,
-      );
-      await env.DB.prepare(
-        `INSERT INTO ${TABLE} (id,state,sealed,user_code,verification_url,return_to,expires_at) VALUES (?, 'pending', ?, ?, ?, ?, ?)`,
-      )
-        .bind(
-          id,
-          sealed,
-          started.userCode,
-          started.verificationUrl,
-          returnTo(url.searchParams.get("return_to")),
-          expiresAt,
-        )
-        .run();
-      return new Response(null, {
+    return noStore(new Response("Start sign-in from this Pages site.", { status: 403 }));
+  const returnTo = safeReturnTo(url.searchParams.get("return_to"), config.origin);
+  const toPage = (cookie) =>
+    noStore(
+      new Response(null, {
         status: 303,
-        headers: {
-          Location: "/sign-in",
-          "Set-Cookie": bindingCookie(secret, expiresAt - now),
-          "Cache-Control": "no-store",
-        },
-      });
-    } catch (error) {
-      await logStartFailure(error);
-      return html("Sign-in unavailable", "<p>Sign-in is temporarily unavailable.</p>", 503);
-    }
-  }
-  if (url.pathname === "/sign-in" && request.method === "GET") {
-    const secret = cookieSecret(request);
-    const row = secret ? await readRow(env, await secretHash(secret)) : null;
-    if (!row || row.expires_at <= now) {
-      if (row) codedFailure("expired");
-      return html(
-        "Sign-in expired",
-        '<p>This sign-in has expired.</p><p><a class="primary setup-action" href="/api/auth/login">Start again</a></p>',
-      );
-    }
-    const safeCode = row.user_code.replace(
-      /[&<>"']/g,
-      (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
+        headers: { Location: PAGE_PATH, ...(cookie ? { "Set-Cookie": cookie } : {}) },
+      }),
     );
-    const safeUrl = new URL(row.verification_url);
-    if (safeUrl.origin !== config.appUrl)
-      return html("Sign-in failed", "<p>Sign-in could not be completed.</p>", 500);
-    const page = html(
-      "Sign in with Kilo",
-      `<p>Pages uses your Kilo account.</p><h2 class="user-code">${safeCode}</h2><p class="setup-actions"><a class="primary setup-action" href="${safeUrl.href}" target="_blank" rel="noopener noreferrer">Approve in Kilo</a></p><p>This page continues by itself after approval.</p><p role="status" aria-live="polite">Waiting for approval.</p><script src="/api/auth/kilo-pairing.js" defer></script>`,
-    );
-    page.headers.set(
-      "Content-Security-Policy",
-      page.headers
-        .get("Content-Security-Policy")
-        .replace("script-src 'self';", "script-src 'self'; connect-src 'self';"),
-    );
-    return page;
-  }
-  if (url.pathname === "/api/auth/pairing" && request.method === "POST") {
-    try {
-      requireSameOrigin(request, env);
-    } catch (error) {
-      if (error instanceof HttpError)
-        return responseJson({ error: "origin_rejected" }, error.status);
-      return responseJson({ error: "origin_rejected" }, 403);
+  try {
+    const live = await findPairing(request, env);
+    if (live && live.expires_at > now) {
+      // The newest click says where to land.
+      await env.DB.prepare("UPDATE kilo_pairings SET return_to = ? WHERE id = ?")
+        .bind(returnTo, live.id)
+        .run();
+      return toPage();
     }
-    const secret = cookieSecret(request);
-    const row = secret ? await readRow(env, await secretHash(secret)) : null;
-    if (!row || row.expires_at <= now) {
-      if (row) codedFailure("expired");
-      return responseJson({ status: "expired" }, 200, bindingCookie("", 0));
-    }
-    const busyUntil = now + (row.state === "pending" ? 2 : 30);
-    const claim = await env.DB.prepare(
-      `UPDATE ${TABLE} SET busy_until = ?, revision = revision + 1 WHERE id = ? AND revision = ? AND busy_until <= ?`,
+    await env.DB.prepare(
+      `DELETE FROM kilo_pairings WHERE id IN
+       (SELECT id FROM kilo_pairings WHERE expires_at <= ? ORDER BY expires_at LIMIT 100)`,
     )
-      .bind(busyUntil, row.id, row.revision, now)
+      .bind(now)
       .run();
-    if (!claim.meta?.changes) return responseJson({ status: "pending" });
-    const claimed = { ...row, revision: row.revision + 1, busy_until: busyUntil };
-    let grant;
+    const started = await startKiloPairing(fetch, {
+      appUrl: config.appUrl,
+      client: config.client,
+      // Kilo limits pending pairings per address; without the person's own,
+      // everyone would share this Worker's.
+      forwardedFor: request.headers.get("cf-connecting-ip") ?? undefined,
+      userAgent: request.headers.get("user-agent") ?? undefined,
+    });
+    const secret = randomSecret();
+    const id = await secretHash(secret);
+    const lifetime = Math.floor(started.expiresInSeconds);
+    await env.DB.prepare(
+      `INSERT INTO kilo_pairings (id, state, sealed, user_code, verification_url, return_to, expires_at)
+       VALUES (?, 'pending', ?, ?, ?, ?, ?)`,
+    )
+      .bind(
+        id,
+        await sealServerSecret(env, { deviceCode: started.deviceCode }, sealBinding(id)),
+        started.userCode,
+        started.verificationUrl,
+        returnTo,
+        now + lifetime,
+      )
+      .run();
+    return toPage(pairingCookie(secret, lifetime));
+  } catch (error) {
+    signInFailed(error instanceof KiloUnavailable ? "provider_unavailable" : "start_failed");
+    return noStore(
+      html(
+        "Sign-in is unavailable",
+        `<p>Pages couldn't reach Kilo to start signing you in. Try again in a moment.</p><p class="setup-actions"><a class="primary setup-action" href="${LOGIN_PATH}">Try again</a></p>`,
+        503,
+      ),
+    );
+  }
+}
+
+const escapeHtml = (value) =>
+  value.replace(
+    /[&<>"']/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
+  );
+
+/** `GET /sign-in`: the code to approve and the link to Kilo. Without a live
+ * pairing it offers a fresh start and never redirects to one, so a reload
+ * can't start pairing after pairing. */
+async function signInPage(request, env, config, now) {
+  const row = await findPairing(request, env);
+  // The link is the one Kilo returned, on the configured Kilo origin only.
+  const approval = row && new URL(row.verification_url);
+  if (!row || row.expires_at <= now || approval.origin !== config.appUrl)
+    return noStore(
+      html(
+        "Sign-in isn't active",
+        `<p>This sign-in has expired or already finished.</p><p class="setup-actions"><a class="primary setup-action" href="${LOGIN_PATH}">Sign in</a></p>`,
+      ),
+    );
+  const page = noStore(
+    html(
+      "Sign in with Kilo",
+      `<p>Pages uses your Kilo account. Approve this sign-in in Kilo, and check that Kilo shows the same code.</p><p class="pairing-code"><strong>${escapeHtml(row.user_code)}</strong></p><p class="setup-actions"><a class="primary setup-action" href="${escapeHtml(approval.href)}" target="_blank" rel="noopener noreferrer">Approve in Kilo</a></p><p role="status">Waiting for approval. This page continues by itself.</p><script src="${SCRIPT_PATH}" defer></script>`,
+    ),
+  );
+  // The page's script polls this origin; html()'s policy allows no connections.
+  page.headers.set(
+    "Content-Security-Policy",
+    `${page.headers.get("Content-Security-Policy")}; connect-src 'self'`,
+  );
+  return page;
+}
+
+// Served from its own route because html()'s policy allows no inline script.
+const PAGE_SCRIPT = `const status = document.querySelector('[role="status"]');
+const ENDED = {
+  denied: "Sign-in was denied in Kilo.",
+  expired: "This sign-in expired.",
+  failed: "Pages couldn't finish signing you in.",
+};
+function end(message) {
+  const again = document.createElement("a");
+  again.href = "${LOGIN_PATH}";
+  again.textContent = "Start again";
+  status.replaceChildren(message + " ", again);
+}
+async function poll() {
+  let result = null;
+  try {
+    const response = await fetch("${POLL_PATH}", { method: "POST", credentials: "same-origin" });
+    if (response.status >= 400 && response.status < 500) return end(ENDED.failed);
+    result = await response.json();
+  } catch {}
+  if (result && result.status === "signed_in") return location.replace(result.return_to || "/");
+  if (result && Object.hasOwn(ENDED, result.status)) return end(ENDED[result.status]);
+  setTimeout(poll, ${POLL_SECONDS * 1000});
+}
+setTimeout(poll, ${POLL_SECONDS * 1000});
+`;
+
+/** `POST /api/auth/pairing`: one step of this browser's pairing. Answers
+ * `pending`, or a terminal `signed_in`, `denied`, `expired` or `failed`. No
+ * answer carries a code, a token, or anything about the account. */
+async function advancePairing(request, env, config, now) {
+  requireSameOrigin(request, env);
+  const found = await findPairing(request, env);
+  if (!found) return pollAnswer("expired");
+  if (found.expires_at <= now)
+    return endPairing(env, found, pairingTransition(found.state, "deadline_passed").state, "expired");
+  // One request at a time works on a pairing; the rest are told to keep waiting.
+  if (found.busy_until > now) return pollAnswer("pending");
+  let row = await writePairing(env, found, { busy_until: now + CLAIM_SECONDS });
+  if (!row) return pollAnswer("pending");
+  try {
     if (row.state === "pending") {
-      const pending = await openServerSecret(env, row.sealed, `kilo-pairing:${row.id}`);
-      try {
-        const exchanged = await exchangeKiloDeviceCode(fetch, {
-          appUrl: config.appUrl,
-          deviceCode: pending.deviceCode,
-        });
-        if (exchanged.status === "pending") return responseJson({ status: "pending" });
-        if (exchanged.status === "denied" || exchanged.status === "expired") {
-          const result = pairingTransition(
-            "pending",
-            exchanged.status === "denied" ? "kilo_denied" : "kilo_expired",
-          );
-          await deleteRow(env, claimed);
-          codedFailure(exchanged.status);
-          return responseJson({ status: result.state }, 200, bindingCookie("", 0));
-        }
-        const result = pairingTransition("pending", "kilo_approved");
-        grant = {
-          token: exchanged.token,
-          refreshToken: exchanged.refreshToken,
-          tokenExpiresAt: now + exchanged.expiresInSeconds,
-          userId: exchanged.userId,
-        };
-        const sealed = await sealServerSecret(env, grant, `kilo-pairing:${row.id}`);
-        const approvedLease = now + 30;
-        const saved = await updateRow(env, claimed, {
-          state: result.state,
-          sealed,
-          busyUntil: approvedLease,
-        });
-        if (!saved.meta?.changes) return responseJson({ status: "pending" });
-        Object.assign(claimed, {
-          state: "approved",
-          sealed,
-          busy_until: approvedLease,
-          revision: claimed.revision + 1,
-        });
-      } catch (error) {
-        if (error instanceof KiloUnavailable) {
-          await env.DB.prepare(
-            `UPDATE ${TABLE} SET busy_until = ?, revision = revision + 1 WHERE id = ? AND revision = ?`,
-          )
-            .bind(now, claimed.id, claimed.revision)
-            .run();
-          return responseJson({ status: "pending" });
-        }
-        if (error instanceof KiloProtocolError) {
-          await deleteRow(env, claimed);
-          codedFailure("protocol_error");
-          return responseJson({ status: "failed" }, 200, bindingCookie("", 0));
-        }
-        throw error;
+      const { deviceCode } = await openServerSecret(env, row.sealed, sealBinding(row.id));
+      const answer = await exchangeKiloDeviceCode(fetch, { appUrl: config.appUrl, deviceCode });
+      const next = pairingTransition("pending", `kilo_${answer.status}`);
+      if (next.effect === "wait") {
+        await writePairing(env, row, { busy_until: now + POLL_SECONDS });
+        return pollAnswer("pending");
       }
+      if (next.effect === "delete") return endPairing(env, row, next.state, answer.status);
+      // Kilo has consumed the device code. Store the grant before using it.
+      const grant = {
+        token: answer.token,
+        refreshToken: answer.refreshToken,
+        tokenExpiresAt: now + Math.floor(answer.expiresInSeconds),
+        userId: answer.userId,
+      };
+      const stored = await writePairing(env, row, {
+        state: next.state,
+        sealed: await sealServerSecret(env, grant, sealBinding(row.id)),
+      });
+      // Only a claim that outlived CLAIM_SECONDS loses this write. The grant
+      // can't be stored, and the device code is spent: the pairing is over.
+      if (!stored) return endPairing(env, row, "failed", "claim_lost");
+      row = stored;
     }
-    if (!grant) grant = await openServerSecret(env, claimed.sealed, `kilo-pairing:${claimed.id}`);
-    let profile;
-    try {
-      profile = await readKiloProfile(fetch, { appUrl: config.appUrl, token: grant.token });
-    } catch (error) {
-      if (error instanceof KiloUnavailable) {
-        await env.DB.prepare(
-          `UPDATE ${TABLE} SET busy_until = ?, revision = revision + 1 WHERE id = ? AND revision = ?`,
-        )
-          .bind(now, claimed.id, claimed.revision)
-          .run();
-        return responseJson({ status: "pending" });
-      }
-      if (error instanceof KiloProtocolError) {
-        await deleteRow(env, claimed);
-        codedFailure("protocol_error", `${config.namespace}:${encodeURIComponent(grant.userId)}`);
-        return responseJson({ status: "failed" }, 200, bindingCookie("", 0));
-      }
-      throw error;
-    }
-    const principal = `${config.namespace}:${encodeURIComponent(grant.userId)}`;
-    if (profile.refused || profile.id !== grant.userId) {
-      const reason = profile.refused ? "profile_refused" : "profile_mismatch";
-      const result = pairingTransition(
-        "approved",
-        profile.refused ? "profile_refused" : "profile_mismatch",
-      );
-      await deleteRow(env, claimed);
-      codedFailure(reason, principal);
-      return responseJson({ status: result.state }, 200, bindingCookie("", 0));
-    }
-    pairingTransition("approved", "profile_read");
-    const identity = kiloIdentity(config, profile);
+    const grant = await openServerSecret(env, row.sealed, sealBinding(row.id));
+    const profile = await readKiloProfile(fetch, { appUrl: config.appUrl, token: grant.token });
+    const event = profile.refused
+      ? "profile_refused"
+      : profile.id !== grant.userId
+        ? "profile_mismatch"
+        : "profile_read";
+    const next = pairingTransition("approved", event);
+    if (next.effect === "delete") return endPairing(env, row, next.state, event);
     const sessionCookie = await createServerSession(
       request,
       env,
       {
-        identity,
+        identity: kiloIdentity(config, profile),
         expiresAt: grant.tokenExpiresAt,
-        bundle: {
-          kind: "kilo",
-          appUrl: config.appUrl,
-          userId: grant.userId,
-          refreshToken: grant.refreshToken,
-        },
+        bundle: sessionBundle(config, grant.userId, grant.refreshToken),
       },
-      {
-        onAuthEvent: (event) => {
-          if (event.type === "sign_in")
-            void logAuthEvent({
-              action: "sign_in.succeeded",
-              principal: event.principal,
-              credential: "oidc",
-            });
-        },
-      },
+      { onAuthEvent: recordOidcEvent },
     );
-    await deleteRow(env, claimed);
-    return responseJson({ status: "signed_in", return_to: row.return_to }, 200, [
-      sessionCookie,
-      bindingCookie("", 0),
-    ]);
+    // The session exists, so the pairing goes whatever its revision is now.
+    const ended = await env.DB.prepare("DELETE FROM kilo_pairings WHERE id = ? RETURNING return_to")
+      .bind(row.id)
+      .first();
+    return pollAnswer(next.state, { returnTo: ended?.return_to ?? "/", sessionCookie });
+  } catch (error) {
+    if (error instanceof KiloUnavailable) {
+      // Let the next poll ask Kilo again without waiting out this claim.
+      await writePairing(env, row, { busy_until: now });
+      return pollAnswer("pending");
+    }
+    if (!(error instanceof KiloProtocolError)) throw error;
+    const event = "kilo_protocol_error";
+    return endPairing(env, row, pairingTransition(row.state, event).state, event);
   }
-  return null;
+}
+
+/** Kilo sign-in's routes. Returns null for any other path, and for every path
+ * when this deployment doesn't use Kilo, so the caller's own routes answer. */
+export async function handleKiloSignIn(request, env) {
+  const { pathname } = new URL(request.url);
+  if (![LOGIN_PATH, PAGE_PATH, POLL_PATH, SCRIPT_PATH].includes(pathname)) return null;
+  const config = kiloSignIn(env, request);
+  if (!config) return null;
+  const now = Math.floor(Date.now() / 1000);
+  const route = `${request.method} ${pathname}`;
+  if (route === `GET ${SCRIPT_PATH}`)
+    return noStore(
+      new Response(PAGE_SCRIPT, {
+        headers: {
+          "Content-Type": "text/javascript; charset=utf-8",
+          "X-Content-Type-Options": "nosniff",
+        },
+      }),
+    );
+  // Every other route reads or writes the pairing table.
+  await ready(env.DB);
+  if (route === `GET ${LOGIN_PATH}`) return beginPairing(request, env, config, now);
+  if (route === `GET ${PAGE_PATH}`) return signInPage(request, env, config, now);
+  if (route === `POST ${POLL_PATH}`) return advancePairing(request, env, config, now);
+  return noStore(new Response(null, { status: 405 }));
 }
