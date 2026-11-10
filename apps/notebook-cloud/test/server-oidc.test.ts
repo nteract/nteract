@@ -1648,6 +1648,29 @@ describe("server sessions from a sign-in that is not OIDC", { concurrency: false
     assert.equal(f.countRows(), 1);
   });
 
+  it("renews a bundle of the provider's own shape, with no refreshToken field", async (t) => {
+    const f = providerFixture(t);
+    const seen: Record<string, unknown>[] = [];
+    const provider: ServerSessionProvider = {
+      async refresh(bundle) {
+        seen.push(bundle);
+        return f.grant({ bundle: { ticket: `ticket-${seen.length + 1}` } });
+      },
+    };
+    const cookie = (
+      await createServerSession(f.request(), f.env, f.grant({ bundle: { ticket: "ticket-1" } }))
+    ).split(";", 1)[0]!;
+    for (let round = 0; round < 2; round++) {
+      f.expireAccess();
+      const response = await serverOidcSessionStatus(f.request(cookie), f.env, noopProfile, {
+        provider,
+      });
+      assert.equal(response.status, 200);
+      assert.ok((await response.json()).session);
+    }
+    assert.deepEqual(seen, [{ ticket: "ticket-1" }, { ticket: "ticket-2" }]);
+  });
+
   it("ends the session when the provider rejects its grant or the application refuses the account", async (t) => {
     for (const [outcome, reason, status] of [
       ["rejected", "refresh_rejected", 200],
