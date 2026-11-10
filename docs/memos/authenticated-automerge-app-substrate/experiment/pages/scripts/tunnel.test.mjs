@@ -340,19 +340,6 @@ const page10Record = {
   comment: "nteract/pages:experiment:page10",
 };
 
-for (const target of ["pages-next"])
-  for (const apply of [false, true])
-    test(`provisionTarget refuses frozen ${target} (apply: ${apply}) before any call`, async () => {
-      const cf = edge();
-      const h = host(etcFor(target));
-      await assert.rejects(
-        provisionTarget({ token, target, apply, fetchImpl: cf.fetchImpl, run: h.run }),
-        /deploys only page10, pages, pages2 and page11/,
-      );
-      assert.equal(cf.calls.length, 0);
-      assert.equal(h.runs.length, 0);
-    });
-
 test("provision retry after a DNS failure creates only DNS and keeps the tunnel", async () => {
   const root = etcFor("page10");
   const cf = edge();

@@ -95,23 +95,6 @@ export function unitMemory(profile) {
   return { maxRssMb, memoryMax };
 }
 const targets = Object.freeze({
-  "pages-next": Object.freeze({
-    deployment: Object.freeze({
-      host: shared.host,
-      hostname: "pages-next.runtimed.run",
-      service: "nteract-pages-next",
-      bucket: shared.bucket,
-      prefix: "standalone/pages-next",
-      region: shared.region,
-      listen: "127.0.0.1:9472",
-      internalListen: "127.0.0.1:19472",
-      runtime: shared.runtime,
-      requiredVersion: shared.requiredVersion,
-    }),
-    firewallTable: "nteract_pages_next",
-    firewallMark: "0x20000000",
-    firewallComment: "nteract/preview-infra standalone-pages-next",
-  }),
   // Pages held here before pages.runtimed.run; it stays deployable until its
   // Projects are copied there.
   page10: Object.freeze({
@@ -361,7 +344,7 @@ const targets = Object.freeze({
 });
 /** Every deployment profile name, qualified or not. */
 export const DEPLOYMENT_TARGETS = Object.freeze(Object.keys(targets));
-export function deploymentProfile(target = "pages-next") {
+export function deploymentProfile(target) {
   if (!Object.hasOwn(targets, target)) throw new Error("Unknown Pages deployment target");
   return targets[target];
 }
@@ -445,11 +428,12 @@ export function assertReleaseOpensTargetPages(target, receipt, observed = []) {
 
 export function selectTarget(argv) {
   const args = [...argv];
-  const target = args[0] === "--target" ? (args.splice(0, 2)[1] ?? "") : "pages-next";
+  if (args[0] !== "--target") throw new Error("Name the Pages deployment target with --target");
+  const target = args.splice(0, 2)[1] ?? "";
   deploymentProfile(target);
   return { target, args };
 }
-export function stagePattern(target = "pages-next") {
+export function stagePattern(target) {
   const { deployment } = deploymentProfile(target);
   return new RegExp("^/tmp/" + deployment.service + "-stage-[A-Za-z0-9]{8}$");
 }
@@ -458,7 +442,7 @@ export function stageTarget(stage) {
   if (!target) throw new Error("Explicit prepared stage for a known Pages target required");
   return target;
 }
-export function verifyDeployment(manifest, target = "pages-next") {
+export function verifyDeployment(manifest, target) {
   const { deployment } = deploymentProfile(target);
   if (
     JSON.stringify(manifest.deployment) !== JSON.stringify(deployment) ||

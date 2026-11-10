@@ -5,7 +5,6 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { sourceFingerprint } from "./source-fingerprint.mjs";
-import { insertRoutes, publishesIsolated, routes } from "./deployment/publish.mjs";
 import { configureDns } from "./deployment/dns.mjs";
 import { pagesFirewall } from "./deployment/firewall.mjs";
 import * as profiles from "./deployment/profiles.mjs";
@@ -67,27 +66,13 @@ test("fingerprint follows imported auth source and ignores output/unrelated chur
   }
 });
 
-test("publication inserts only owned hostname rules and refuses conflicts", () => {
-  const original =
-    'tunnel: test\ningress:\n  - hostname: m.runtimed.run\n    service: http://127.0.0.1:9471\n  - hostname: "*.runtimed.run"\n    service: http://127.0.0.1:29999\n  - service: http_status:404\n';
-  const updated = insertRoutes(original);
-  assert.equal(updated.replace(routes, ""), original);
-  assert.equal(insertRoutes(updated), updated);
-  assert.throws(() => insertRoutes(original.replace('"*.runtimed.run"', "other.example")));
-  assert.throws(() => insertRoutes(original + "\n# pages-next.runtimed.run is owned elsewhere"));
-  assert.match(routes, /api\/\(tools\|connect\|sync\|saved/);
-  assert.match(routes, /hostname: pages-next.runtimed.run\n    service: http_status:404/);
-});
-
-test("every deployable target publishes through its own tunnel, never the shared one", () => {
-  const sharedTunnel =
-    'tunnel: test\ningress:\n  - hostname: "*.runtimed.run"\n    service: http_status:404\n';
+test("every deployable target owns a tunnel service, so publication never edits a shared tunnel", () => {
   for (const target of profiles.QUALIFIED_TARGETS) {
-    assert.equal(publishesIsolated(target), true, target);
-    assert.throws(() => insertRoutes(sharedTunnel, target), /dedicated tunnel publisher/, target);
+    const profile = profiles.deploymentProfile(target);
+    assert.match(profile.tunnelService, /^cloudflared-.+[.]service$/, target);
+    assert.ok(profile.tunnelSlots.a && profile.tunnelSlots.b, target);
   }
-  // Only a target that has not been qualified can still edit the shared tunnel.
-  assert.equal(publishesIsolated("pages-next"), false);
+  assert.deepEqual(profiles.DEPLOYMENT_TARGETS, profiles.QUALIFIED_TARGETS);
   assert.deepEqual(
     Object.fromEntries(
       profiles.QUALIFIED_TARGETS.map((target) => [
@@ -100,13 +85,14 @@ test("every deployable target publishes through its own tunnel, never the shared
 });
 
 test("service firewall uses its own cgroup, table and mark", () => {
-  const rules = pagesFirewall(998);
-  assert.match(rules, /table inet nteract_pages_next/);
-  assert.match(rules, /system.slice\/nteract-pages-next.service/);
-  assert.match(rules, /0x20000000/);
+  const rules = pagesFirewall(998, false, "page10");
+  assert.match(rules, /table inet nteract_page10/);
+  assert.match(rules, /system.slice\/nteract-page10.service/);
+  assert.match(rules, /0x00200000/);
   assert.match(rules, /meta skuid \{ 0, 998 \}/);
   assert.doesNotMatch(rules, /nteract-pages.service|nteract_operator|0x40000000|0x80000000/);
-  assert.throws(() => pagesFirewall(0));
+  assert.throws(() => pagesFirewall(0, false, "page10"));
+  assert.throws(() => pagesFirewall(998), /Unknown Pages deployment target/);
 });
 
 function dnsFixture(initial = []) {
@@ -140,21 +126,28 @@ function dnsFixture(initial = []) {
 const tunnelId = "b08c5d4e-41e9-4b75-8ada-4d4b84b58770";
 test("DNS defaults to read-only and creates only the exact owned CNAME", async () => {
   const fixture = dnsFixture();
-  const before = await configureDns({ token: "fixture", tunnelId, fetchImpl: fixture.fetchImpl });
+  const before = await configureDns({
+    token: "fixture",
+    tunnelId,
+    target: "page10",
+    fetchImpl: fixture.fetchImpl,
+  });
   assert.equal(before.present, false);
   assert.ok(fixture.calls.every((call) => call.method === "GET"));
   const created = await configureDns({
     token: "fixture",
     tunnelId,
+    target: "page10",
     apply: true,
     fetchImpl: fixture.fetchImpl,
   });
   assert.equal(created.changed, true);
-  assert.equal(created.name, "pages-next.runtimed.run");
+  assert.equal(created.name, "page10.runtimed.run");
   assert.equal(fixture.calls.filter((call) => call.method === "POST").length, 1);
   const again = await configureDns({
     token: "fixture",
     tunnelId,
+    target: "page10",
     apply: true,
     fetchImpl: fixture.fetchImpl,
   });
@@ -164,12 +157,12 @@ test("DNS defaults to read-only and creates only the exact owned CNAME", async (
 test("DNS refuses foreign ownership, another tunnel, and ambiguous records", async () => {
   const desired = {
     id: "b".repeat(32),
-    name: "pages-next.runtimed.run",
+    name: "page10.runtimed.run",
     type: "CNAME",
     content: `${tunnelId}.cfargotunnel.com`,
     proxied: true,
     ttl: 1,
-    comment: "nteract/pages:experiment:pages-next",
+    comment: "nteract/pages:experiment:page10",
   };
   for (const records of [
     [{ ...desired, comment: "foreign" }],
@@ -178,7 +171,13 @@ test("DNS refuses foreign ownership, another tunnel, and ambiguous records", asy
   ]) {
     const fixture = dnsFixture(records);
     await assert.rejects(
-      configureDns({ token: "fixture", tunnelId, apply: true, fetchImpl: fixture.fetchImpl }),
+      configureDns({
+        token: "fixture",
+        tunnelId,
+        target: "page10",
+        apply: true,
+        fetchImpl: fixture.fetchImpl,
+      }),
     );
     assert.ok(fixture.calls.every((call) => call.method === "GET"));
   }
@@ -188,6 +187,7 @@ test("DNS transport errors do not echo credentials", async () => {
     configureDns({
       token: "secret-value",
       tunnelId,
+      target: "page10",
       fetchImpl: async () => {
         throw new Error("secret-value");
       },
@@ -366,7 +366,7 @@ function installFixture(
   {
     failure,
     previous = true,
-    target = "pages-next",
+    target = "page10",
     fresh = false,
     listeners = "",
     rules = "{}",
@@ -652,28 +652,6 @@ function installFixture(
   };
 }
 
-// Historical installer fixtures model the release that qualified that target.
-// They retain recovery/collision coverage without weakening the real CLI guard.
-function historicalInstallFixture(t, options = {}) {
-  return installFixture(t, {
-    ...options,
-    ...(!profiles.QUALIFIED_TARGETS.includes(options.target) && {
-      qualify: profiles.deploymentProfile,
-    }),
-  });
-}
-
-test("current installer refuses pages-next before host commands or release writes", (t) => {
-  const fixture = installFixture(t, { target: "pages-next" });
-  assert.throws(fixture.execute, /deploys only page10, pages, pages2 and page11/);
-  assert.deepEqual(fixture.calls, []);
-  assert.equal(fs.existsSync(fixture.local(fixture.release)), false);
-  assert.equal(fs.existsSync(fixture.local(fixture.audit)), false);
-  assert.deepEqual(JSON.parse(fixture.read(fixture.configDir + "/deployment.json")), {
-    id: "previous",
-  });
-});
-
 test("version parsing tolerates allocator diagnostics without accepting ambiguous builds", () => {
   assert.equal(profiles.parseRuntimeVersion("celld 0.6.3\n"), "celld 0.6.3");
   assert.equal(
@@ -692,12 +670,12 @@ test("version parsing tolerates allocator diagnostics without accepting ambiguou
 });
 
 test("installer accepts an official runtime with allocator warning stdout", (t) => {
-  const fixture = historicalInstallFixture(t, {
+  const fixture = installFixture(t, {
     candidateVersion: "WARN allocator background thread unavailable\ncelld 0.6.3\n",
     installedRuntime: { version: "WARN allocator background thread unavailable\ncelld 0.6.1\n" },
   });
   fixture.execute();
-  assert.equal(fixture.read("/opt/nteract-pages-next/celld"), "qualified runtime");
+  assert.equal(fixture.read("/opt/nteract-page10/celld"), "qualified runtime");
 });
 
 test("all Pages targets require the verified 0.6.3 Linux executable", () => {
@@ -721,8 +699,8 @@ test("all Pages targets require the verified 0.6.3 Linux executable", () => {
 
 for (const installed of ["celld 0.6.1", "celld 0.6.2", "celld 0.6.3"])
   test(`installation permits ${installed} to the pinned release and keeps telemetry on retry`, (t) => {
-    const fixture = historicalInstallFixture(t, {
-      target: "pages-next",
+    const fixture = installFixture(t, {
+      target: "page10",
       installedRuntime: {
         version: installed,
         ...(installed === "celld 0.6.3" && { bytes: "qualified runtime" }),
@@ -730,12 +708,11 @@ for (const installed of ["celld 0.6.1", "celld 0.6.2", "celld 0.6.3"])
     });
     fixture.execute();
     fixture.execute();
-    assert.equal(fixture.read("/opt/nteract-pages-next/celld"), "qualified runtime");
-    const unit = fixture.read("/etc/systemd/system/nteract-pages-next.service");
+    assert.equal(fixture.read("/opt/nteract-page10/celld"), "qualified runtime");
+    const unit = fixture.read("/etc/systemd/system/nteract-page10.service");
     assert.match(unit, /Environment=CELLD_OTEL=1\n/);
     assert.match(unit, /Environment=CELLD_OTEL_RETENTION=30d\n/);
     assert.doesNotMatch(unit, /CELLD_OTEL_(?:FLUSH_MS|FLUSH_BYTES|SINK)=/);
-    assert.doesNotMatch(unit, /OTEL_TRACES_SAMPLER=/);
   });
 
 for (const installed of [
@@ -747,34 +724,34 @@ for (const installed of [
   "unknown",
 ])
   test(`installation refuses to replace an existing ${installed} build before mutation`, (t) => {
-    const fixture = historicalInstallFixture(t, {
-      target: "pages-next",
+    const fixture = installFixture(t, {
+      target: "page10",
       installedRuntime: { version: installed },
     });
     assert.throws(
       fixture.execute,
       /newer or unrecognized|same version but a different build|canonical celld release/,
     );
-    assert.equal(fixture.read("/opt/nteract-pages-next/celld"), "previous runtime");
+    assert.equal(fixture.read("/opt/nteract-page10/celld"), "previous runtime");
     assert.equal(fs.existsSync(fixture.local(fixture.release)), false);
     assert.ok(fixture.calls.every(({ args }) => args[0] === "--version"));
   });
 
 test("runtime copy mismatch preserves the active executable and can be retried", (t) => {
-  const fixture = historicalInstallFixture(t, {
-    target: "pages-next",
+  const fixture = installFixture(t, {
+    target: "page10",
     failure: "runtime-copy",
     installedRuntime: { version: "celld 0.6.1" },
   });
   assert.throws(fixture.execute, /Copied celld differs/);
-  assert.equal(fixture.read("/opt/nteract-pages-next/celld"), "previous runtime");
+  assert.equal(fixture.read("/opt/nteract-page10/celld"), "previous runtime");
   assert.ok(fixture.calls.every(({ command }) => command !== "runuser"));
   fixture.execute();
-  assert.equal(fixture.read("/opt/nteract-pages-next/celld"), "qualified runtime");
+  assert.equal(fixture.read("/opt/nteract-page10/celld"), "qualified runtime");
 });
 
 test("installer rejects unqualified staged or changed source runtimes before mutation", (t) => {
-  const badManifest = historicalInstallFixture(t);
+  const badManifest = installFixture(t);
   badManifest.write(
     badManifest.stage + "/manifest.json",
     JSON.stringify({
@@ -784,9 +761,9 @@ test("installer rejects unqualified staged or changed source runtimes before mut
   );
   assert.throws(badManifest.execute, /official celld 0.6.3/);
   assert.deepEqual(badManifest.calls, []);
-  const badVersion = historicalInstallFixture(t, { candidateVersion: "celld 0.6.1" });
+  const badVersion = installFixture(t, { candidateVersion: "celld 0.6.1" });
   assert.throws(badVersion.execute, /official celld 0.6.3/);
-  const badBytes = historicalInstallFixture(t);
+  const badBytes = installFixture(t);
   badBytes.write(profiles.CELLD_RELEASE.path, "unexpected runtime");
   assert.throws(badBytes.execute, /official celld 0.6.3/);
   for (const fixture of [badVersion, badBytes])
@@ -796,7 +773,7 @@ test("installer rejects unqualified staged or changed source runtimes before mut
 for (const failure of ["deploy", "restart"])
   for (const previous of [true, false])
     test(`installation retries ${failure} failure with previous deployment ${previous}`, (t) => {
-      const fixture = historicalInstallFixture(t, { failure, previous });
+      const fixture = installFixture(t, { failure, previous });
       assert.throws(fixture.execute, /failed \(status 1\)/);
       const before = fixture.read(fixture.audit + "/previous-deployment.json");
       assert.deepEqual(JSON.parse(before), previous ? { id: "previous" } : null);
@@ -810,7 +787,7 @@ for (const failure of ["deploy", "restart"])
     });
 
 test("installation fills only missing verified artifacts after a partial copy", (t) => {
-  const fixture = historicalInstallFixture(t, { failure: "copy" });
+  const fixture = installFixture(t, { failure: "copy" });
   assert.throws(fixture.execute, /injected copy failure/);
   assert.equal(fs.existsSync(fixture.local(fixture.release + "/public/app.js")), false);
   fixture.execute();
@@ -820,7 +797,7 @@ test("installation fills only missing verified artifacts after a partial copy", 
 
 for (const tampering of ["artifact", "extra-file", "symlink", "audit-manifest", "wrangler"])
   test(`installation retry rejects changed ${tampering}`, (t) => {
-    const fixture = historicalInstallFixture(t, { failure: "deploy" });
+    const fixture = installFixture(t, { failure: "deploy" });
     assert.throws(fixture.execute, /failed \(status 1\)/);
     if (tampering === "artifact") fixture.write(fixture.release + "/index.js", "modified");
     if (tampering === "extra-file") fixture.write(fixture.release + "/unexpected.js", "extra");
@@ -849,33 +826,40 @@ for (const tampering of ["artifact", "extra-file", "symlink", "audit-manifest", 
     assert.equal(fixture.calls.filter(({ command }) => command === "runuser").length, 1);
   });
 
-test("deployment CLI preserves defaults and requires an explicit allowlisted page10 target", () => {
+test("deployment CLI requires an explicit allowlisted target", () => {
   const command = new URL("./deploy.mjs", import.meta.url);
   const plan = (args) =>
     JSON.parse(execFileSync(process.execPath, [command.pathname, ...args], { encoding: "utf8" }));
-  const next = plan([]),
+  const pages = plan(["--target", "pages", "plan"]),
     page10 = plan(["--target", "page10", "plan"]);
-  assert.equal(next.hostname, "pages-next.runtimed.run");
+  assert.equal(pages.hostname, "pages.runtimed.run");
   assert.equal(page10.hostname, "page10.runtimed.run");
   for (const key of ["hostname", "service", "prefix", "listen", "internalListen"])
-    assert.notEqual(page10[key], next[key], key);
-  assert.equal(page10.bucket, next.bucket);
+    assert.notEqual(page10[key], pages[key], key);
+  assert.equal(page10.bucket, pages.bucket);
+  assert.throws(
+    () => execFileSync(process.execPath, [command.pathname, "plan"], { stdio: "pipe" }),
+    /Name the Pages deployment target with --target/,
+  );
+  assert.throws(() => profiles.selectTarget([]), /Name the Pages deployment target/);
+  assert.throws(() => profiles.selectTarget(["plan"]), /Name the Pages deployment target/);
   for (const argv of [["--target"], ["--target", "elsewhere"], ["--target", "__proto__"]])
     assert.throws(() => profiles.selectTarget(argv), /Unknown Pages deployment target/);
 });
 
 test("prepared stages and manifests cannot cross deployment targets", () => {
-  const next = profiles.deploymentProfile().deployment;
+  const pages = profiles.deploymentProfile("pages").deployment;
   const page10 = profiles.deploymentProfile("page10").deployment;
   assert.equal(profiles.stageTarget("/tmp/nteract-page10-stage-abcd1234"), "page10");
-  assert.equal(profiles.stagePattern().test("/tmp/nteract-page10-stage-abcd1234"), false);
+  assert.equal(profiles.stagePattern("pages").test("/tmp/nteract-page10-stage-abcd1234"), false);
   assert.throws(() => profiles.stageTarget("/tmp/nteract-page10-stage-abcd1234/../other"));
   assert.throws(() =>
-    profiles.verifyDeployment({ source_sha: "a".repeat(40), deployment: next }, "page10"),
+    profiles.verifyDeployment({ source_sha: "a".repeat(40), deployment: pages }, "page10"),
   );
   assert.throws(() =>
     profiles.verifyDeployment({ source_sha: "a".repeat(40), deployment: page10 }),
   );
+  assert.throws(() => profiles.stagePattern(), /Unknown Pages deployment target/);
 });
 
 test("page10 firewall refreshes only its own table and cgroup", () => {
@@ -883,15 +867,17 @@ test("page10 firewall refreshes only its own table and cgroup", () => {
   assert.match(rules, /^delete table inet nteract_page10\n/);
   assert.match(rules, /system.slice\/nteract-page10.service/);
   assert.match(rules, /0x00200000/);
-  assert.doesNotMatch(rules, /pages.next|0x20000000/);
+  assert.doesNotMatch(rules, /pages.live|0x00100000/);
 });
 
-test("page10 DNS is independently owned and never adopts pages-next records", async () => {
+test("page10 DNS is independently owned and never adopts pages records", async () => {
   const fixture = dnsFixture();
   const args = { token: "fixture", tunnelId, target: "page10", fetchImpl: fixture.fetchImpl };
   assert.equal((await configureDns(args)).present, false);
   assert.ok(
-    fixture.calls.every(({ url, method }) => method === "GET" && !url.includes("pages-next")),
+    fixture.calls.every(
+      ({ url, method }) => method === "GET" && !url.includes("pages.runtimed.run"),
+    ),
   );
   const created = await configureDns({ ...args, apply: true });
   assert.equal(created.name, "page10.runtimed.run");
@@ -905,7 +891,7 @@ test("page10 DNS is independently owned and never adopts pages-next records", as
       content: `${tunnelId}.cfargotunnel.com`,
       proxied: true,
       ttl: 1,
-      comment: "nteract/pages:experiment:pages-next",
+      comment: "nteract/pages:experiment:pages",
     },
   ]);
   await assert.rejects(
@@ -915,9 +901,9 @@ test("page10 DNS is independently owned and never adopts pages-next records", as
   assert.ok(foreign.calls.every(({ method }) => method === "GET"));
 });
 
-for (const target of ["pages-next", "page10"])
+for (const target of profiles.QUALIFIED_TARGETS)
   test(`${target} installation retains auth, bindings, and bucket durability with isolated service state`, (t) => {
-    const fixture = historicalInstallFixture(t, { target });
+    const fixture = installFixture(t, { target });
     fixture.execute();
     const deployment = profiles.deploymentProfile(target).deployment;
     const config = JSON.parse(fixture.read(fixture.release + "/wrangler.json"));
@@ -951,7 +937,7 @@ for (const target of ["pages-next", "page10"])
     );
     assert.ok(unit.includes("firewall.mjs --target " + target));
     assert.ok(unit.includes("s3://" + deployment.bucket + "/" + deployment.prefix));
-    for (const otherTarget of ["pages-next", "page10"].filter((value) => value !== target)) {
+    for (const otherTarget of profiles.QUALIFIED_TARGETS.filter((value) => value !== target)) {
       const other = profiles.deploymentProfile(otherTarget).deployment.service;
       for (const directory of ["/opt/", "/etc/", "/var/lib/"])
         assert.equal(fs.existsSync(fixture.local(directory + other)), false);
@@ -963,24 +949,27 @@ for (const target of ["pages-next", "page10"])
     }
   });
 
-test("page10 installation rejects a pages-next manifest before running any host command", (t) => {
-  const fixture = historicalInstallFixture(t, { target: "page10" });
+test("page10 installation rejects a pages manifest before running any host command", (t) => {
+  const fixture = installFixture(t, { target: "page10" });
   fixture.write(
     fixture.stage + "/manifest.json",
-    JSON.stringify({ ...fixture.manifest, deployment: profiles.deploymentProfile().deployment }),
+    JSON.stringify({
+      ...fixture.manifest,
+      deployment: profiles.deploymentProfile("pages").deployment,
+    }),
   );
   assert.throws(fixture.execute, /Unexpected deployment target/);
   assert.equal(fixture.calls.length, 0);
 });
 
-test("new page10 setup tolerates pages-next resources but rejects its own port or mark collisions", (t) => {
+test("new page10 setup tolerates pages resources but rejects its own port or mark collisions", (t) => {
   const existing =
-    "LISTEN 0 4096 127.0.0.1:9472 0.0.0.0:*\nLISTEN 0 4096 127.0.0.1:19472 0.0.0.0:*";
-  const fixture = historicalInstallFixture(t, {
+    "LISTEN 0 4096 127.0.0.1:9481 0.0.0.0:*\nLISTEN 0 4096 127.0.0.1:19481 0.0.0.0:*";
+  const fixture = installFixture(t, {
     target: "page10",
     fresh: true,
     listeners: existing,
-    rules: '{"name":"nteract_pages_next","mark":536870912}',
+    rules: '{"name":"nteract_pages_live","mark":1048576}',
   });
   fixture.execute();
   assert.equal(
@@ -993,7 +982,7 @@ test("new page10 setup tolerates pages-next resources but rejects its own port o
     { listeners: existing + "\nLISTEN 0 4096 127.0.0.1:9480 0.0.0.0:*" },
     { rules: '{"mark":2097152}' },
   ]) {
-    const rejected = historicalInstallFixture(t, { target: "page10", fresh: true, ...collision });
+    const rejected = installFixture(t, { target: "page10", fresh: true, ...collision });
     assert.throws(rejected.execute, /port is occupied|firewall namespace or mark is occupied/);
     assert.equal(
       rejected.calls.some(({ command }) => command === "useradd"),
@@ -1009,7 +998,7 @@ test("every deploy profile owns distinct hosts, ports, prefixes and firewall res
   // Every profile, so a new one can't skip the check. Ports are compared
   // across hosts too: a profile may move hosts, and its ports must stay free.
   const targets = profiles.DEPLOYMENT_TARGETS;
-  assert.deepEqual(targets, ["pages-next", "page10", "pages", "pages2", "page11"]);
+  assert.deepEqual(targets, ["page10", "pages", "pages2", "page11"]);
   const seen = new Map();
   const claim = (kind, value, target) => {
     if (value === undefined) return;
@@ -1051,7 +1040,7 @@ for (const target of Object.keys(frozenBy))
       for (const key of ["firewallTable", "firewallMark", "tunnelService"])
         assert.notEqual(profile[key], previous[key], `${other}: ${key}`);
       assert.equal(profiles.stagePattern(other).test(stage), false);
-      const rejected = historicalInstallFixture(t, { target });
+      const rejected = installFixture(t, { target });
       rejected.write(
         rejected.stage + "/manifest.json",
         JSON.stringify({
@@ -1093,7 +1082,7 @@ for (const target of Object.keys(frozenBy))
       { rules: JSON.stringify({ mark: Number(profile.firewallMark) }) },
       { rules: JSON.stringify({ table: profile.firewallTable }) },
     ]) {
-      const rejected = historicalInstallFixture(t, { target, fresh: true, ...collision });
+      const rejected = installFixture(t, { target, fresh: true, ...collision });
       assert.throws(rejected.execute, /port is occupied|firewall namespace or mark is occupied/);
       assert.equal(
         rejected.calls.some(({ command }) => command === "useradd"),
@@ -2015,10 +2004,9 @@ test("plain targets refuse receipts that know automerge but not the current plai
       () => profiles.assertReleaseOpensTargetPages("pages", receipt),
       /plain_storage_formats.*doc-store-v2-host-actor-prefix/,
     );
-    assert.doesNotThrow(() => profiles.assertReleaseOpensTargetPages("pages-next", receipt));
     assert.throws(
       () =>
-        profiles.assertReleaseOpensTargetPages("pages-next", receipt, [
+        profiles.assertReleaseOpensTargetPages("page10", receipt, [
           { mode: "automerge", release: "old" },
         ]),
       /plain_storage_formats/,
@@ -2082,16 +2070,25 @@ for (const [label, receipt, error] of [
     assert.equal(fs.existsSync(f.local(f.configDir + "/rollout-" + "c".repeat(40))), false);
   });
 
-test("a target that never enabled plain storage accepts a release without it", () => {
-  assert.equal(profiles.targetRecordStorage("pages-next").size, 0);
-  assert.doesNotThrow(() => profiles.assertReleaseOpensTargetPages("pages-next", PRE_PLAIN));
-  // Unless its host has run a release configured to create plain Pages.
+test("a release the host ran with plain storage is named beside the target's history", () => {
+  assert.deepEqual(
+    [...profiles.targetRecordStorage("page10", [{ mode: "automerge", release: "a2c9d5dded35" }])],
+    [
+      [
+        "automerge",
+        [
+          "RECORD_STORAGE_HISTORY lists it",
+          "release a2c9d5dded35 on the host was configured with it",
+        ],
+      ],
+    ],
+  );
   assert.throws(
     () =>
-      profiles.assertReleaseOpensTargetPages("pages-next", PRE_PLAIN, [
+      profiles.assertReleaseOpensTargetPages("page10", PRE_PLAIN, [
         { mode: "automerge", release: "a2c9d5dded35" },
       ]),
-    /pages-next may hold "automerge" Pages \(release a2c9d5dded35 on the host was configured with it\)/,
+    /page10 may hold "automerge" Pages \(RECORD_STORAGE_HISTORY lists it; release a2c9d5dded35 on the host was configured with it\)/,
   );
 });
 
@@ -2111,7 +2108,7 @@ test("Pages refuses a release without plain storage from its history alone", () 
 });
 
 test("serving targets hold plain Pages for good, and no profile names record storage", () => {
-  for (const target of ["pages-next", "page10", "pages", "pages2", "page11"]) {
+  for (const target of ["page10", "pages", "pages2", "page11"]) {
     const profile = profiles.deploymentProfile(target);
     for (const key of ["recordStorage", "recordStorageMigration", "asyncPersistence"])
       assert.equal(profile[key], undefined, `${target} ${key}`);
@@ -2164,22 +2161,13 @@ test("Pages refuses to install a release without plain storage before any write"
   assert.deepEqual(JSON.parse(f.read(f.configDir + "/deployment.json")), { id: "previous" });
 });
 
-test("a target that never created plain Pages installs a release without plain storage", (t) => {
-  const f = historicalInstallFixture(t, {
-    target: "pages-next",
-    buildReceipt: { build_id: PRE_PLAIN.build_id },
-  });
-  f.execute();
-  assert.equal(f.outputs.at(-1).installed, true);
-});
-
 test("a host release configured with plain storage blocks a release without it", (t) => {
-  const f = historicalInstallFixture(t, {
-    target: "pages-next",
+  const f = installFixture(t, {
+    target: "page10",
     buildReceipt: { build_id: PRE_PLAIN.build_id },
   });
   f.write(
-    "/opt/nteract-pages-next/releases/" + "e".repeat(40) + "/wrangler.json",
+    "/opt/nteract-page10/releases/" + "e".repeat(40) + "/wrangler.json",
     JSON.stringify({ vars: { PAGES_RECORD_STORAGE: "automerge" } }),
   );
   assert.throws(f.execute, /release e{12} on the host was configured with it/);
@@ -2220,16 +2208,17 @@ test("a timeout does not name a rollback to a release without the plain format c
   assert.match(message, /plain_storage_formats/);
 });
 
-test("serving targets shed above 2.5 GB and older targets keep their shipped limits", () => {
+test("serving targets shed above 2.5 GB and a profile without memory keeps the default limits", () => {
   for (const target of ["page10", "pages"])
     assert.deepEqual(profiles.unitMemory(profiles.deploymentProfile(target)), {
       maxRssMb: 2560,
       memoryMax: "4G",
     });
-  assert.deepEqual(
-    profiles.unitMemory(profiles.deploymentProfile("pages-next")),
-    profiles.DEFAULT_MEMORY,
-  );
+  assert.deepEqual(profiles.unitMemory(profiles.deploymentProfile("page11")), {
+    maxRssMb: 1280,
+    memoryMax: "2G",
+  });
+  assert.deepEqual(profiles.unitMemory({}), profiles.DEFAULT_MEMORY);
   assert.deepEqual(profiles.DEFAULT_MEMORY, { maxRssMb: 768, memoryMax: "1G" });
   for (const memory of [
     { maxRssMb: 100, memoryMax: "4G" },

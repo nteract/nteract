@@ -65,11 +65,11 @@ test("dedicated page10 plan cannot use shared or unowned tunnel credentials", ()
   assert.match(plan.config, /hostname: page10.runtimed.run/);
   assert.match(plan.config, /http:\/\/127.0.0.1:9480/);
   assert.ok(plan.config.endsWith("  - service: http_status:404\n"));
-  assert.doesNotMatch(plan.config, /pages-next|\*\.runtimed.run/);
+  assert.doesNotMatch(plan.config, /pages[.]runtimed[.]run|\*\.runtimed.run/);
   assert.doesNotMatch(plan.unit, /\/etc\/cloudflared\/|cloudflared\.service/);
   assert.ok(!JSON.stringify(plan).includes(input.credentials.TunnelSecret));
   for (const changed of [
-    { manifest: { ...input.manifest, deployment: deploymentProfile("pages-next").deployment } },
+    { manifest: { ...input.manifest, deployment: deploymentProfile("pages").deployment } },
     { tunnelReceipt: { ...input.tunnelReceipt, name: "existing-tunnel" } },
     { credentials: { ...input.credentials, AccountTag: "f".repeat(32) } },
     { sharedConfig: "tunnel: " + tunnelId + "\n" },
@@ -430,20 +430,14 @@ test("Page10 admits exactly /projects and /pages", () => {
 });
 
 const whoamiRejected = ["/whoami/", "/whoami/private", "/whoamiX", "/Whoami", "/api/whoami"];
-test("only explicit live profiles admit exact whoami, never legacy routes", () => {
-  for (const target of ["pages-next", "page10", "pages"]) {
-    const enabled = ["page10", "pages"].includes(target);
-    assert.equal(deploymentProfile(target).whoami === true, enabled);
-    for (const legacy of [false, true]) {
-      const route = new RegExp(/^    path: (.+)$/m.exec(routesFor(target, legacy))[1]);
-      assert.equal(route.test("/whoami"), enabled && !legacy, target);
-      assert.equal(
-        route.test(new URL("https://example.com/whoami?probe=1").pathname),
-        enabled && !legacy,
-      );
-      for (const pathname of [...whoamiRejected, "/whoami.json", "/x/whoami", "/%77hoami"])
-        assert.equal(route.test(pathname), false, `${target} ${pathname}`);
-    }
+test("every live profile admits exact whoami and nothing near it", () => {
+  for (const target of ["page10", "pages"]) {
+    assert.equal(deploymentProfile(target).whoami, true);
+    const route = new RegExp(/^    path: (.+)$/m.exec(routesFor(target))[1]);
+    assert.equal(route.test("/whoami"), true, target);
+    assert.equal(route.test(new URL("https://example.com/whoami?probe=1").pathname), true);
+    for (const pathname of [...whoamiRejected, "/whoami.json", "/x/whoami", "/%77hoami"])
+      assert.equal(route.test(pathname), false, `${target} ${pathname}`);
   }
 });
 
@@ -615,8 +609,8 @@ test("pages installs fresh and refuses Page10's receipts", (t) => {
   );
 });
 
-test("OAuth and private images publish only exact Page10 and Pages routes while pages-next remains closed", () => {
-  for (const target of ["pages-next", "page10", "pages"]) {
+test("OAuth and private images publish only exact Page10 and Pages routes", () => {
+  for (const target of ["page10", "pages"]) {
     const route = new RegExp(/^    path: (.+)$/m.exec(routesFor(target))[1]);
     for (const pathname of [
       "/oauth/authorize",
@@ -628,11 +622,7 @@ test("OAuth and private images publish only exact Page10 and Pages routes while 
       "/api/pages/08c583e5-d29e-4f1e-b06b-333965254e94/assets",
       "/api/pages/08c583e5-d29e-4f1e-b06b-333965254e94/assets/" + "a".repeat(64),
     ])
-      assert.equal(
-        route.test(pathname),
-        ["page10", "pages"].includes(target),
-        `${target}: ${pathname}`,
-      );
+      assert.equal(route.test(pathname), true, `${target}: ${pathname}`);
     for (const pathname of [
       "/oauth/register",
       "/oauth/test/callback",
@@ -1684,22 +1674,19 @@ const accountRejected = [
   "/auth/grants",
 ];
 
-test("only page10, pages and pages2 admit the exact account routes, never legacy routes", () => {
-  for (const target of ["pages-next", ...ACCOUNT_TARGETS]) {
-    const enabled = ACCOUNT_TARGETS.includes(target);
-    assert.equal(deploymentProfile(target).accountRoutes === true, enabled, target);
+test("page10, pages and pages2 admit the exact account routes", () => {
+  for (const target of ACCOUNT_TARGETS) {
+    assert.equal(deploymentProfile(target).accountRoutes, true, target);
     const current = routesFor(target);
-    assert.equal(current.split(accountPaths).length, enabled ? 2 : 1, target);
-    for (const legacy of [false, true]) {
-      const route = new RegExp(/^    path: (.+)$/m.exec(routesFor(target, legacy))[1]);
-      for (const pathname of accountAdmitted)
-        assert.equal(route.test(pathname), enabled && !legacy, `${target} ${pathname}`);
-      for (const pathname of accountRejected)
-        assert.equal(route.test(pathname), false, `${target} ${pathname}`);
-      // The routes that were there stay admitted.
-      for (const pathname of ["/api/auth/login", "/api/auth/logout", "/api/auth/session"])
-        assert.equal(route.test(pathname), true, `${target} ${pathname}`);
-    }
+    assert.equal(current.split(accountPaths).length, 2, target);
+    const route = new RegExp(/^    path: (.+)$/m.exec(current)[1]);
+    for (const pathname of accountAdmitted)
+      assert.equal(route.test(pathname), true, `${target} ${pathname}`);
+    for (const pathname of accountRejected)
+      assert.equal(route.test(pathname), false, `${target} ${pathname}`);
+    // The routes that were there stay admitted.
+    for (const pathname of ["/api/auth/login", "/api/auth/logout", "/api/auth/session"])
+      assert.equal(route.test(pathname), true, `${target} ${pathname}`);
   }
 });
 
@@ -1846,33 +1833,27 @@ const previewRejected = [
   `/api/projects/prj_${previewUuid}/assets/${previewHash}/private`,
 ];
 
-test("only page10, pages and pages2 admit link previews, card images and Project assets, never legacy routes", () => {
-  for (const target of ["pages-next", ...PREVIEW_TARGETS]) {
-    const enabled = PREVIEW_TARGETS.includes(target);
+test("page10, pages and pages2 admit link previews, card images and Project assets", () => {
+  for (const target of PREVIEW_TARGETS) {
     const profile = deploymentProfile(target);
     for (const flag of ["linkPreviews", "cardImages", "projectAssets"])
-      assert.equal(profile[flag] === true, enabled, `${target} ${flag}`);
+      assert.equal(profile[flag], true, `${target} ${flag}`);
     const current = routesFor(target);
     for (const group of [linkPreviewPaths, cardImagePaths, projectAssetPaths])
-      assert.equal(current.split(group).length, enabled ? 2 : 1, `${target} ${group}`);
-    for (const legacy of [false, true]) {
-      const route = new RegExp(/^    path: (.+)$/m.exec(routesFor(target, legacy))[1]);
-      for (const pathname of previewAdmitted)
-        assert.equal(route.test(pathname), enabled && !legacy, `${target} ${pathname}`);
-      for (const pathname of previewRejected)
-        assert.equal(route.test(pathname), false, `${target} ${pathname}`);
-    }
+      assert.equal(current.split(group).length, 2, `${target} ${group}`);
+    const route = new RegExp(/^    path: (.+)$/m.exec(current)[1]);
+    for (const pathname of previewAdmitted)
+      assert.equal(route.test(pathname), true, `${target} ${pathname}`);
+    for (const pathname of previewRejected)
+      assert.equal(route.test(pathname), false, `${target} ${pathname}`);
     // The viewer routes beside them stay as they were.
-    if (enabled) {
-      const route = new RegExp(/^    path: (.+)$/m.exec(current)[1]);
-      for (const pathname of [
-        `/p/${previewUuid}`,
-        `/p/${previewUuid}/`,
-        `/project/prj_${previewUuid}`,
-        `/api/pages/${previewUuid}/assets/${previewHash}`,
-      ])
-        assert.equal(route.test(pathname), true, `${target} ${pathname}`);
-    }
+    for (const pathname of [
+      `/p/${previewUuid}`,
+      `/p/${previewUuid}/`,
+      `/project/prj_${previewUuid}`,
+      `/api/pages/${previewUuid}/assets/${previewHash}`,
+    ])
+      assert.equal(route.test(pathname), true, `${target} ${pathname}`);
   }
 });
 
