@@ -26,13 +26,7 @@ import { controllerDeploymentCompatibility } from "./deployment/controller-compa
 export { controllerDeploymentCompatibility } from "./deployment/controller-compatibility.mjs";
 
 export const controllerDeploymentTarget = "page10";
-export const controllerAppRelativePath = path.join(
-  "docs",
-  "memos",
-  "authenticated-automerge-app-substrate",
-  "experiment",
-  "pages",
-);
+export const controllerAppRelativePath = path.join("apps", "pages", "pages");
 export const controllerDeploymentHelpers = Object.freeze([
   "install.mjs",
   "activation.mjs",
@@ -101,7 +95,7 @@ export function controllerPaths({
 } = {}) {
   const trustedScripts = path.resolve(trustedScriptsDir);
   const trustedApp = path.resolve(trustedScripts, "..");
-  const trustedCheckout = path.resolve(trustedApp, "../../../../..");
+  const trustedCheckout = path.resolve(trustedApp, "../../..");
   const relativeApp = path.relative(trustedCheckout, trustedApp);
   if (!relativeApp || relativeApp.startsWith("../") || path.isAbsolute(relativeApp))
     throw new Error("Trusted Pages app must stay inside its checkout");

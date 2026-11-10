@@ -124,6 +124,9 @@ staging. The worktree has no `node_modules`, so `NODE_PATH` lends it this
 checkout's TypeScript, which the fingerprint uses only to follow imports. If
 that fails, the worktree is removed. Either way the gate SHA must already
 contain `--from-artifact`; an older SHA's `deploy.mjs` refuses the arguments.
+The handoff runs the worktree's `deploy.mjs` at this checkout's Pages path, so
+the gate SHA must hold Pages at the same path. Promote a gate SHA from before
+a directory move from a checkout that predates the move.
 
 The stage manifest records the artifact as `release_artifact`: repository,
 run, attempt, artifact id, digest, size, creation and expiry times, `build_id`,
@@ -1441,7 +1444,7 @@ secret or a test switch. It sets no route: attaching a domain is a separate
 action.
 
 Create the two D1 databases and the R2 bucket first, then put their names and
-ids in the profile. From `experiment`, with clean committed source and a
+ids in the profile. From `apps/pages`, with clean committed source and a
 matching Pages build:
 
 ```sh

@@ -1,6 +1,6 @@
 # Upstream integration lane
 
-The maintained [integration fixture](README.md) and [Pages application](pages/README.md)
+The [Pages workspace](README.md) and [Pages application](pages/README.md)
 build the `automerge-repo` package at Repo revision
 `afec0444191a5a662e065f24193bef58ab07122a`, with Automerge `3.5.0`. It requires
 Node >=22.13, Git, and npm.
@@ -17,12 +17,6 @@ source-hash-checked patches in `patch-upstream.mjs`, installs from
 TypeScript package. `upstream-provenance.json` records the revision and before /
 after hashes of every patched file. Existing dirty source caches are rejected.
 No canonical upstream checkout, global installation, or live service is changed.
-
-The test command selects `tsconfig.test.json`, which resolves the production
-identity module's `runtimed` capability re-export directly to the real
-`packages/runtimed/src/scope-capabilities.ts`. This avoids loading the unrelated
-package barrel or relying on a root dependency installation; it does not replace
-credential verification. The focused CI job uses the same standalone setup.
 
 Pages syncs with plain Automerge sync messages through its own
 `SedimentreeBackend`, `AutomergeSyncBackend` (`pages/sync/backend.mjs`).

@@ -114,10 +114,7 @@ function createFixture(t) {
     "setup.mjs",
     "UPSTREAM.md",
   ])
-    write(
-      path.join(sourceRoot, "docs/memos/authenticated-automerge-app-substrate/experiment", name),
-      "{}\n",
-    );
+    write(path.join(sourceRoot, "apps/pages", name), "{}\n");
   write(path.join(sourceRoot, "package.json"), "{}\n");
   write(path.join(sourceRoot, "pnpm-lock.yaml"), "lockfileVersion: 9\n");
   write(path.join(sourceApp, "worker", "index.mjs"), "export const ok = true;\n");

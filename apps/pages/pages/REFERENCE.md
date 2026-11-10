@@ -1010,7 +1010,7 @@ Only a browser session cookie reaches these routes; a bearer
 credential is refused, and writes need this origin. Grants record their
 principal in an indexed column, backfilled from the identity snapshot of older
 rows; sessions are found through an expression index on the session's principal
-([oidc-session-store.ts](../../../../../apps/notebook-cloud/src/oidc-session-store.ts)).
+([oidc-session-store.ts](../../notebook-cloud/src/oidc-session-store.ts)).
 Grants issued before the column existed show no connection date. Last use is
 not recorded. `GET /api/auth/session` answers `accountControls: true` for a
 browser session, and the viewer offers the dialog only then. If the list
@@ -1835,7 +1835,7 @@ document an adopted one replaces.
 Edits from the API go through the host's Repo and the same admission queue.
 `sync/*.test.mjs` covers the backend, host, store and gates;
 `worker/plain-sync.test.mjs` covers registration, restart and a browser
-through the Page host; `npm run test:contract` in the experiment runs Repo 3's
+through the Page host; `npm run test:contract` in `apps/pages` runs Repo 3's
 backend contract.
 
 ### Page quotas

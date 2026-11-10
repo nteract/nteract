@@ -117,7 +117,7 @@ records the node addresses agents use.
   a reader keeps what it does not understand. A change that reshapes existing
   data never rewrites in place under the same document ID: it takes a new
   format number and a new document. This is nteract's notebook convention,
-  from [schema evolution and genesis](../../../../adr/schema-evolution-and-genesis.md):
+  from [schema evolution and genesis](../../../docs/adr/schema-evolution-and-genesis.md):
   additive writes on a fixed root, and a separate document for a structural
   change.
 - **No parity work.** No byte-for-byte comparison with an earlier encoder, no

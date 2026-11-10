@@ -3,7 +3,7 @@ import { Copy, Share2 } from "lucide-react";
 import {
   SharingPanel,
   nativePrimitives,
-} from "../../../../../../src/components/sharing/SharingPanel.tsx";
+} from "../../../../src/components/sharing/SharingPanel.tsx";
 
 /** Grantable Page roles and their labels, weakest first. */
 import { ROLE_LABELS } from "./sharing-roles.mjs";

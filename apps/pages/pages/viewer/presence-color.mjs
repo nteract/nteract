@@ -3,7 +3,7 @@
 import {
   peerColor,
   readableForegroundForColor,
-} from "../../../../../../packages/runtimed/src/notebook-actor-color.ts";
+} from "../../../../packages/runtimed/src/notebook-actor-color.ts";
 
 // The session label and MCP session tag join the key when present, so two
 // sessions of one account and harness get different colors; keys without them

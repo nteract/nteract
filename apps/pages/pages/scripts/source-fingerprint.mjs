@@ -17,7 +17,7 @@ const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const repository = (app) =>
   execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: app, encoding: "utf8" }).trim();
 
-/** Hash only the prototype, pinned experiment setup, and imported local source. */
+/** Hash only the Pages app, the pinned upstream setup, and imported local source. */
 export function sourceFingerprint(app, { root = repository(app) } = {}) {
   // Install/publish can import the adapter without build dependencies. Only
   // preparation needs TypeScript, resolved from this trusted checkout.

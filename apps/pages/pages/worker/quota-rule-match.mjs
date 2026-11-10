@@ -7,7 +7,7 @@
  * this module imports sharing.ts by relative path and imports nothing that
  * needs the Worker runtime.
  */
-import { normalizeInviteEmail } from "../../../../../../apps/notebook-cloud/src/sharing.ts";
+import { normalizeInviteEmail } from "../../../../apps/notebook-cloud/src/sharing.ts";
 
 /** The largest limit any rule or default can set. Catalog scans that read
  * every entry stay bounded by it. */

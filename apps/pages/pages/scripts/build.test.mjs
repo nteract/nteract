@@ -379,7 +379,7 @@ test("the blocking theme asset applies preferences without loading the editor", 
 test("shared renderer resolves ESM imports through fixture paths without a root install", async (t) => {
   const root = mkdtempSync(path.join(tmpdir(), "pages-renderer-dependencies-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const fixture = path.join(root, "experiment/pages");
+  const fixture = path.join(root, "apps/pages/pages");
   const source = path.join(root, "src/shared-renderer.mjs");
   mkdirSync(fixture, { recursive: true });
   mkdirSync(path.dirname(source), { recursive: true });
@@ -400,7 +400,7 @@ test("shared renderer resolves ESM imports through fixture paths without a root 
     ["dompurify", "dist/purify.es.mjs", 'export default "browser purifier";'],
     ["pele", "dist/pele.js", 'export const mount = "browser renderer";'],
   ]) {
-    const directory = path.join(root, "experiment/node_modules", name);
+    const directory = path.join(root, "apps/pages/node_modules", name);
     mkdirSync(path.join(directory, "dist"), { recursive: true });
     writeFileSync(path.join(directory, "package.json"), JSON.stringify({ name, type: "module" }));
     writeFileSync(path.join(directory, relative), contents);
@@ -418,9 +418,9 @@ test("shared renderer resolves ESM imports through fixture paths without a root 
   assert.match(result.outputFiles[0].text, /browser renderer/);
   const files = Object.keys(result.metafile.inputs);
   assert.ok(
-    files.some((file) => file.endsWith("experiment/node_modules/dompurify/dist/purify.es.mjs")),
+    files.some((file) => file.endsWith("apps/pages/node_modules/dompurify/dist/purify.es.mjs")),
   );
-  assert.ok(files.some((file) => file.endsWith("experiment/node_modules/pele/dist/pele.js")));
+  assert.ok(files.some((file) => file.endsWith("apps/pages/node_modules/pele/dist/pele.js")));
 });
 
 test("app.js renders the shell without a static path to the WASM runtimes", async (t) => {

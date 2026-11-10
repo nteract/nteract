@@ -4,7 +4,7 @@ import { Share2 } from "lucide-react";
 import {
   SharingPanel,
   nativePrimitives,
-} from "../../../../../../src/components/sharing/SharingPanel.tsx";
+} from "../../../../src/components/sharing/SharingPanel.tsx";
 import { projectPath } from "../shared/routes.mjs";
 import { ROLE_LABELS } from "./sharing-roles.mjs";
 import "./sharing-panel.css";

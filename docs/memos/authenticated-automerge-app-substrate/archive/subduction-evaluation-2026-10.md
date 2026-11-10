@@ -1,6 +1,6 @@
 # Repo 3 and Subduction evaluation, October 2026
 
-Archived 2026-11-08: superseded by docs/memos/authenticated-automerge-app-substrate/README.md and experiment/UPSTREAM.md; historical only. Pages uses plain Automerge sync, not Subduction.
+Archived 2026-11-08: superseded by docs/memos/authenticated-automerge-app-substrate/README.md and apps/pages/UPSTREAM.md; historical only. Pages uses plain Automerge sync, not Subduction.
 
 ## What the source evaluation established
 
@@ -77,7 +77,7 @@ Subduction 0.23.0 already had the policy interfaces: the tested Repo adapter pat
 forwarded `policy` and `ephemeralPolicy` without changing WASM or the wire protocol. This
 qualified the integration seam, not a production service. The table below records
 that initial evidence; it is not the current Pages qualification checklist. See
-[Pages](../experiment/pages/README.md) for application qualification.
+[Pages](../../../../apps/pages/pages/README.md) for application qualification.
 
 The fixture used disposable documents, pinned packages, and deterministic
 credentials. Fixture tests must not be reported as live provider qualification;

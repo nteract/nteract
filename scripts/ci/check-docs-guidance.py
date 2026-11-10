@@ -36,6 +36,7 @@ def is_guidance_path(path: Path) -> bool:
         or rel in {"README.md", "CONTRIBUTING.md", "DESIGN.md", "RELEASING.md"}
         or rel == "scripts/ci/check-docs-guidance.py"
         or rel.startswith("docs/")
+        or rel.startswith("apps/pages/")
         or rel.startswith(".agents/")
         or rel.startswith(".claude/")
     )

@@ -11,7 +11,7 @@ import { openDiagramViewer } from "./diagram-viewer.mjs";
 // A deploy retires this tab's copy, so a failed import usually means the
 // server moved on; main.jsx points onRendererUnavailable at the build check,
 // which raises the reload banner when that's the cause.
-const loadMermaid = () => import("../../../../../../src/components/markdown/mermaid-renderer.ts");
+const loadMermaid = () => import("../../../../src/components/markdown/mermaid-renderer.ts");
 let rendererUnavailable = () => {};
 /** `listener` runs each time a lazily loaded renderer (Mermaid, or a
  * dataframe's table) fails to load. */

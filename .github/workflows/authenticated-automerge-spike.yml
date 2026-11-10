@@ -6,7 +6,7 @@ name: Pages experiment
 on:
   pull_request:
     paths:
-      - docs/memos/authenticated-automerge-app-substrate/experiment/**
+      - apps/pages/**
       - apps/notebook-cloud/src/**
       - packages/local-oidc/src/**
       - packages/runtimed/src/scope-capabilities.ts
@@ -17,7 +17,7 @@ on:
   push:
     branches: [main]
     paths:
-      - docs/memos/authenticated-automerge-app-substrate/experiment/**
+      - apps/pages/**
       - apps/notebook-cloud/src/**
       - packages/local-oidc/src/**
       - packages/runtimed/src/scope-capabilities.ts
@@ -44,13 +44,13 @@ jobs:
     timeout-minutes: 15
     defaults:
       run:
-        working-directory: docs/memos/authenticated-automerge-app-substrate/experiment
+        working-directory: apps/pages
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
           sparse-checkout: |
-            docs/memos/authenticated-automerge-app-substrate/experiment
+            apps/pages
             apps/notebook-cloud/src
             packages/runtimed/src
             packages/local-oidc/src
@@ -84,13 +84,13 @@ jobs:
       contents: read
     defaults:
       run:
-        working-directory: docs/memos/authenticated-automerge-app-substrate/experiment
+        working-directory: apps/pages
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
           sparse-checkout: |
-            docs/memos/authenticated-automerge-app-substrate/experiment
+            apps/pages
             apps/notebook-cloud/src
             packages/runtimed/src
             packages/local-oidc/src
@@ -106,7 +106,7 @@ jobs:
       - name: Build native Pages Worker and browser
         run: npm run build --workspace @nteract/pages-native-experiment
       - name: Stage and verify the release bundle
-        working-directory: docs/memos/authenticated-automerge-app-substrate/experiment/pages
+        working-directory: apps/pages/pages
         env:
           RELEASE_DIR: ${{ runner.temp }}/pages-release
           SOURCE_SHA: ${{ github.sha }}
@@ -165,13 +165,13 @@ jobs:
         shard: [1, 2, 3, 4]
     defaults:
       run:
-        working-directory: docs/memos/authenticated-automerge-app-substrate/experiment
+        working-directory: apps/pages
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
           sparse-checkout: |
-            docs/memos/authenticated-automerge-app-substrate/experiment
+            apps/pages
             apps/notebook-cloud/src
             packages/runtimed/src
             packages/local-oidc/src

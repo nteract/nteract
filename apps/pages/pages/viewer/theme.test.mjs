@@ -136,7 +136,7 @@ const contrast = (a, b) => (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
 test("own text selection resolves to a readable token pair in each theme", async () => {
   const css = await readFile(new URL("./style.css", import.meta.url), "utf8");
   const tokens = await readFile(
-    new URL("../../../../../../src/styles/notebook-tokens.css", import.meta.url),
+    new URL("../../../../src/styles/notebook-tokens.css", import.meta.url),
     "utf8",
   );
   assert.match(

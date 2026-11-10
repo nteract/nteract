@@ -8,7 +8,7 @@ name: Pages browser E2E
 on:
   pull_request:
     paths:
-      - docs/memos/authenticated-automerge-app-substrate/experiment/**
+      - apps/pages/**
       - apps/notebook-cloud/src/**
       - packages/local-oidc/src/**
       - packages/runtimed/src/scope-capabilities.ts
@@ -19,7 +19,7 @@ on:
   push:
     branches: [main]
     paths:
-      - docs/memos/authenticated-automerge-app-substrate/experiment/**
+      - apps/pages/**
       - apps/notebook-cloud/src/**
       - packages/local-oidc/src/**
       - packages/runtimed/src/scope-capabilities.ts
@@ -46,13 +46,13 @@ jobs:
     timeout-minutes: 20
     defaults:
       run:
-        working-directory: docs/memos/authenticated-automerge-app-substrate/experiment
+        working-directory: apps/pages
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
           sparse-checkout: |
-            docs/memos/authenticated-automerge-app-substrate/experiment
+            apps/pages
             apps/notebook-cloud/src
             packages/runtimed/src
             packages/local-oidc/src
@@ -111,6 +111,6 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pages-browser-e2e
-          path: docs/memos/authenticated-automerge-app-substrate/experiment/pages/test-results/
+          path: apps/pages/pages/test-results/
           retention-days: 7
           if-no-files-found: ignore

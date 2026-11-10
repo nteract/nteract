@@ -38,18 +38,17 @@ People edit rich content directly; agents use Markdown and structured operations
 on that same content. Pages displays code and diagrams; kernel execution lives
 in notebooks.
 
-Start with the [Pages guide](docs/memos/authenticated-automerge-app-substrate/experiment/pages/README.md)
+Start with the [Pages guide](apps/pages/pages/README.md)
 for features, local development, and tests, or the
-[deployment guide](docs/memos/authenticated-automerge-app-substrate/experiment/pages/DEPLOYMENT.md)
-for release targets. Its source still lives under the original infrastructure
-experiment directory; Pages is a product in its own right.
+[deployment guide](apps/pages/pages/DEPLOYMENT.md)
+for release targets. Its source lives in `apps/pages`.
 
 ## What's in here
 
 | Project | Purpose |
 |---------|---------|
 | nteract notebooks | Desktop and hosted notebooks for code execution and data exploration |
-| [Pages](docs/memos/authenticated-automerge-app-substrate/experiment/pages/README.md) | Rich collaborative documents for people and agents |
+| [Pages](apps/pages/pages/README.md) | Rich collaborative documents for people and agents |
 | [Sift](packages/sift/README.md) | Interactive data exploration and table rendering, used in notebooks and Pages and available as a standalone library |
 | `runtimed` | Notebook runtime daemon for environment pools, sync, kernel execution, and outputs |
 | `nteract` command | CLI for notebooks, workstations, runtime operations, and supervised notebook MCP |
@@ -70,7 +69,7 @@ summaries. Sift powers dataframe exploration in notebooks and Pages; see the
 ## Install
 
 These instructions install nteract Desktop and its notebook tools. Pages has a
-separate [local setup](docs/memos/authenticated-automerge-app-substrate/experiment/pages/README.md#run-locally).
+separate [local setup](apps/pages/pages/README.md#run-locally).
 
 Download the latest release from [GitHub Releases](https://github.com/nteract/nteract/releases).
 
@@ -108,12 +107,12 @@ Execution requests name a synced `cell_id`; the daemon reads the cell source fro
 Pages stores native rich text in its own Automerge document, with a separate
 comments document. Its host owns authorization and durable receipts. It has its
 own sync and persistence stack. Where the product is going is in
-[Pages direction](docs/memos/authenticated-automerge-app-substrate/experiment/pages/DIRECTION.md).
+[Pages direction](apps/pages/pages/DIRECTION.md).
 
 ## MCP Server
 
 Both products expose MCP tools. Pages serves its own
-[HTTP MCP endpoint](docs/memos/authenticated-automerge-app-substrate/experiment/pages/REFERENCE.md#http-and-mcp-tools)
+[HTTP MCP endpoint](apps/pages/pages/REFERENCE.md#http-and-mcp-tools)
 for document, Project, and comment operations. The setup below is for notebooks.
 
 Run `nteract mcp` to connect AI assistants to notebooks. Local notebooks use the runtime daemon; direct hosted connections use WebSockets without a local daemon. Agents can run code, read and write cells, manage dependencies, and collaborate with humans on the same live notebook.
@@ -265,6 +264,7 @@ nteract/nteract
 │   ├── notebook/          # Desktop notebook Tauri app
 │   ├── notebook-cloud/    # Hosted notebook worker (Cloudflare)
 │   ├── elements/          # Elements design system catalog
+│   ├── pages/             # Pages npm workspace; the application is in pages/pages
 │   ├── mcp-app/           # MCP widget dev app
 │   └── renderer-test/     # Isolated renderer test harness
 ├── packages/               # Client and UI libraries
@@ -302,8 +302,6 @@ nteract/nteract
 ├── plugins/                # Agent plugin distribution
 │   └── nteract/           # Codex plugin package
 └── docs/                   # Design, decisions, and operations
-    └── memos/authenticated-automerge-app-substrate/experiment/
-        └── pages/          # Pages application (historical source location)
 ```
 
 ## Development
@@ -311,7 +309,7 @@ nteract/nteract
 Choose the workflow for the project you're changing:
 
 - **Notebooks and runtime:** use the prerequisites and `cargo xtask` commands below.
-- **Pages:** use its [npm workspace setup and tests](docs/memos/authenticated-automerge-app-substrate/experiment/pages/README.md#run-locally).
+- **Pages:** use its [npm workspace setup and tests](apps/pages/pages/README.md#run-locally).
 - **Sift:** use its [standalone development guide](packages/sift/README.md#quick-start).
 
 ### Prerequisites
@@ -418,7 +416,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for contributor workflows,
 [AGENTS.md](AGENTS.md) for agent guidance, and [docs/README.md](docs/README.md)
 for the documentation map. Key entry points:
 
-- [Pages contributor guidance](docs/memos/authenticated-automerge-app-substrate/experiment/pages/AGENTS.md): document model, editor, host, and tests
+- [Pages contributor guidance](apps/pages/pages/AGENTS.md): document model, editor, host, and tests
 - `crates/runtimed/AGENTS.md`: architecture, daemon, state ownership
 - `apps/notebook/src/AGENTS.md`: frontend architecture
 - `crates/notebook-wire/AGENTS.md`: wire protocol

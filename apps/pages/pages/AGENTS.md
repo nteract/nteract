@@ -12,8 +12,11 @@ Keep the two distinct.
 | Setup and tests | [README.md](README.md#run-locally) |
 | Targets and releases | [DEPLOYMENT.md](DEPLOYMENT.md) |
 
-The directory and npm workspace names still contain `experiment`. Pages is a
-product. [archive/](archive/) holds superseded notes; don't follow them.
+The npm workspace is still named `@nteract/pages-native-experiment`, and the
+gate workflow is still `authenticated-automerge-spike.yml` ("Pages
+experiment"). The page10 controller pins both names, so they change with it.
+Pages is a product. [archive/](archive/) holds superseded notes; don't follow
+them.
 
 ## Rules for rich-text work
 
@@ -54,13 +57,13 @@ product. [archive/](archive/) holds superseded notes; don't follow them.
 
 ## Develop and verify
 
-Run setup and the Pages build from the containing `experiment` workspace
+Run setup and the Pages build from the workspace root, `apps/pages`
 ([Run locally](README.md#run-locally)). Pages uses celld and a loopback OIDC
 issuer; `cargo xtask dev` doesn't start it.
 
 1. Run the narrow tests for the contract you changed.
 2. Run `npm test --workspace @nteract/pages-native-experiment` and the build.
-3. Shared backend changes: also run `npm test` in `experiment`.
+3. Shared backend changes: also run `npm test` in `apps/pages`.
 4. Browser changes: run the relevant E2E suites and check wide and narrow
    widths ([Verify changes](README.md#verify-changes)).
 5. From the repo root, before committing: `cargo xtask lint --fix`.

@@ -1,15 +1,18 @@
-# Authenticated Automerge integration fixture
+# Pages workspace
 
-The shared workspace for the [Pages product](pages/README.md): the pinned
-Repo 3 package Pages builds on, its source-hash-checked patches, and the
-production identity wrapper the Pages host and tests reuse. Start with Pages
-for the application, editor, MCP tools, and deployment workflow. Production
-notebook dependencies and document formats remain unchanged.
+The npm workspace for the [Pages product](pages/README.md). The application
+is in [pages/](pages/). This directory holds what it builds on: the pinned
+Repo 3 package, its source-hash-checked patches, the Wordgard patch, and the
+identity-provider fixture the Pages tests share (`auth-fixtures.mjs`). Start
+with Pages for the application, editor, MCP tools, and deployment workflow.
 
-The [infrastructure memo](../README.md) and
-[document-contract memo](../../extensible-automerge-document-contracts.md)
-describe the research questions. [UPSTREAM.md](UPSTREAM.md) records the pinned
-source and the patches.
+The workspace uses npm and its own `package-lock.json`. The repository's pnpm
+workspace excludes it, so a root `pnpm install` neither installs nor needs it.
+
+The [infrastructure memo](../../docs/memos/authenticated-automerge-app-substrate/README.md) and
+[document-contract memo](../../docs/memos/extensible-automerge-document-contracts.md)
+describe the research this grew from. [UPSTREAM.md](UPSTREAM.md) records the
+pinned source and the patches.
 
 ## Run
 
@@ -32,20 +35,14 @@ Normal `npm run setup` retains its combined acquisition/build behavior.
 Tests generate their own credentials. Provider responses are fixture data; no
 Anaconda account, API key, or live document is needed.
 
-The test command selects `tsconfig.test.json`, which resolves the production
-identity module's `runtimed` capability re-export directly to the real
-`packages/runtimed/src/scope-capabilities.ts`. This avoids loading the unrelated
-package barrel or relying on a root dependency installation; it does not replace
-credential verification. The focused CI job uses the same standalone setup.
+The test command selects `tsconfig.test.json`. It maps a `runtimed` import to
+`packages/runtimed/src/scope-capabilities.ts`, so code loaded from this
+directory needs no root dependency installation.
+`pages/worker/host-busy.test.mjs` checks that worker code loads under it. The
+focused CI job uses the same standalone setup.
 
 ## What the root tests cover
 
-- `auth.test.mjs`: `auth.mjs` reuses the production OIDC ID-token and Anaconda
-  API-key verifiers from `apps/notebook-cloud` and returns an immutable,
-  recognized identity. The wrapper isolates issuer and endpoint principal
-  namespaces by default; joining their subjects needs both namespaces
-  configured. That is an experimental mapping policy, not a change to
-  production identities.
 - `document-record.test.mjs`: the document-record patch
   ([UPSTREAM.md](UPSTREAM.md)).
 - `patch-wordgard.test.mjs` and `setup.test.mjs`: the editor patch and setup's

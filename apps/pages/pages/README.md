@@ -49,8 +49,8 @@ Source layout under this directory:
 
 ## Run locally
 
-Use Node 22.13 or newer, Git, npm, and `celld` 0.6.3 on `PATH`. From the
-containing `experiment` directory:
+Use Node 22.13 or newer, Git, npm, and `celld` 0.6.3 on `PATH`. From
+`apps/pages`, the workspace root:
 
 ```sh
 npm run setup
@@ -69,7 +69,7 @@ The notebook `cargo xtask dev` workflow doesn't start Pages.
 
 ## Verify changes
 
-From `experiment`:
+From `apps/pages`:
 
 ```sh
 npm test

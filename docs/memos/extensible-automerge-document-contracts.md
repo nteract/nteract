@@ -95,7 +95,7 @@ author and comment ownership protections. Unknown blocks must survive older
 clients and export/import workflows, or the exporter must explicitly report
 that its output cannot round-trip them.
 
-The [Pages direction](authenticated-automerge-app-substrate/experiment/pages/DIRECTION.md)
+The [Pages direction](../../apps/pages/pages/DIRECTION.md)
 keeps rich content primary and removes ProseMirror. Its exact schema and agent
 interface are experimental. Minimal writes must preserve untouched unknown
 content; they do not remove the need to preserve its marker identity and
@@ -170,7 +170,7 @@ newer schema version or discard unknown data merely to mount an older editor.
 | Unauthorized runtime writes | Ordinary writer rejected by native role gate; actual RuntimeStateDoc field validation remains untested |
 | Comments and revoked presence | Live presence revocation passed; comment authorship and anchor integration remain untested |
 
-The [spike](authenticated-automerge-app-substrate/experiment/README.md) tests small
+The [spike](../../apps/pages/README.md) tests small
 representative documents. Complete the remaining fixtures
 before changing Pages or notebook admission. Results should distinguish fixture
 proof, real editor behavior, and deployment behavior. A later ADR can record a

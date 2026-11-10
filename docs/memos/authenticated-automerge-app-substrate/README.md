@@ -1,6 +1,6 @@
 # Authenticated Automerge infrastructure for applications
 
-**Status:** infrastructure research. [Pages](experiment/pages/README.md) is the
+**Status:** infrastructure research. [Pages](../../../apps/pages/pages/README.md) is the
 product built on it; start there for the editor, model, agent tools and
 deployment. Production notebook adoption is undecided.
 
@@ -10,9 +10,9 @@ host.
 
 | Today | Where |
 | --- | --- |
-| Pages syncs with plain Automerge sync through its own `AutomergeSyncBackend` | [experiment/UPSTREAM.md](experiment/UPSTREAM.md) |
-| Pinned Repo 3 package, source-hash-checked patches, production identity wrapper | [experiment/README.md](experiment/README.md) |
-| Pages direction: destination, order of work, target rules | [experiment/pages/DIRECTION.md](experiment/pages/DIRECTION.md) |
+| Pages syncs with plain Automerge sync through its own `AutomergeSyncBackend` | [apps/pages/UPSTREAM.md](../../../apps/pages/UPSTREAM.md) |
+| Pinned Repo 3 package and its source-hash-checked patches | [apps/pages/README.md](../../../apps/pages/README.md) |
+| Pages direction: destination, order of work, target rules | [apps/pages/pages/DIRECTION.md](../../../apps/pages/pages/DIRECTION.md) |
 | Unmet infrastructure promotion gates | [celld memo](../celld-hosted-room-substrate.md) |
 | What applications may store and edit | [Extensible document contracts](../extensible-automerge-document-contracts.md) |
 | October 2026 Repo 3 and Subduction evaluation | [archive/subduction-evaluation-2026-10.md](archive/subduction-evaluation-2026-10.md) |

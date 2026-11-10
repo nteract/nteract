@@ -1,4 +1,4 @@
-import "../../../../../../src/styles/notebook-tokens.css";
+import "../../../../src/styles/notebook-tokens.css";
 import React, { useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";

@@ -4,7 +4,7 @@
 // route or request.
 //
 // This string is the Pages copy of crates/notebook/icons/32x32.png. Pages CI
-// checks out only the experiment tree, so nothing here reads the desktop crate.
+// checks out only the Pages tree, so nothing here reads the desktop crate.
 // When the app icon changes, regenerate this string from the repo root with
 // `base64 < crates/notebook/icons/32x32.png | tr -d '\n'`.
 // scripts/build.test.mjs checks that it decodes to a complete 32x32 PNG.

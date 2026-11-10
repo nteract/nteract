@@ -18,7 +18,7 @@ import {
 const hostRefusal = () =>
   new Response(HOST_BUSY_TEXT, { status: 503, headers: { "content-type": "text/plain" } });
 
-test("host-busy imports work with the parent experiment's tsconfig", () => {
+test("host-busy imports work with the parent workspace's tsconfig", () => {
   const result = spawnSync(
     process.execPath,
     [

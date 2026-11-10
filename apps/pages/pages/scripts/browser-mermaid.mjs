@@ -1,7 +1,7 @@
 import path from "node:path";
 
 export const mermaidSource = (app) =>
-  path.resolve(app, "../../../../../src/components/markdown/mermaid-renderer.ts");
+  path.resolve(app, "../../../src/components/markdown/mermaid-renderer.ts");
 
 // Keep the source import intact for sourceFingerprint, but serve the existing
 // notebook renderer as a separate local module loaded only by Mermaid blocks.

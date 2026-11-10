@@ -18,7 +18,7 @@ import ts from "typescript";
 
 test("fingerprint follows imported auth source and ignores output/unrelated churn", () => {
   const root = mkdtempSync(path.join(tmpdir(), "pages-inputs-"));
-  const app = path.join(root, "experiment/pages");
+  const app = path.join(root, "apps/pages/pages");
   const write = (file, value) => {
     const absolute = path.join(root, file);
     mkdirSync(path.dirname(absolute), { recursive: true });
@@ -33,8 +33,8 @@ test("fingerprint follows imported auth source and ignores output/unrelated chur
       "setup.mjs",
       "UPSTREAM.md",
     ])
-      write("experiment/" + name, name.endsWith(".json") ? "{}" : "");
-    write("experiment/pages/worker.mjs", 'import "@cloud/identity.ts";');
+      write("apps/pages/" + name, name.endsWith(".json") ? "{}" : "");
+    write("apps/pages/pages/worker.mjs", 'import "@cloud/identity.ts";');
     write(
       "apps/notebook-cloud/src/identity.ts",
       'import "./verify.ts"; import "@nteract/local-oidc"; import "runtimed";',
@@ -52,13 +52,13 @@ test("fingerprint follows imported auth source and ignores output/unrelated chur
       ".env",
       ".dev.vars",
     ])
-      write("experiment/pages/" + output, "not an input");
+      write("apps/pages/pages/" + output, "not an input");
     write("unrelated/README.md", "unrelated change");
     assert.equal(sourceFingerprint(app, { root }).sha256, original.sha256);
     write("apps/notebook-cloud/src/verify.ts", "export const verified = false;");
     assert.notEqual(sourceFingerprint(app, { root }).sha256, original.sha256);
     const updated = sourceFingerprint(app, { root }).sha256;
-    write("experiment/pages/new.mjs", "export const feature = true;");
+    write("apps/pages/pages/new.mjs", "export const feature = true;");
     assert.notEqual(sourceFingerprint(app, { root }).sha256, updated);
     assert.ok(original.files["packages/runtimed/src/scope-capabilities.ts"]);
   } finally {
