@@ -32,12 +32,12 @@ jobs:
     name: Detect source changes
     runs-on: ubuntu-24.04
     outputs:
-      source_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.source == 'true' || steps.e2e_source_filter.outputs.e2e_source == 'true' }}
+      source_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.source == 'true' || steps.app_source_filter.outputs.app_source == 'true' || steps.e2e_source_filter.outputs.e2e_source == 'true' }}
       docs_agent_changed: ${{ steps.filter.outputs.docs_agent == 'true' }}
       docs_agent_files: ${{ steps.filter.outputs.docs_agent_files }}
       ci_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.ci == 'true' }}
       rust_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.rust == 'true' }}
-      frontend_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.frontend == 'true' }}
+      frontend_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.frontend == 'true' || steps.app_source_filter.outputs.app_source == 'true' }}
       browser_e2e_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.browser_e2e == 'true' }}
       wasm_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.wasm == 'true' }}
       python_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.python == 'true' }}
@@ -60,7 +60,6 @@ jobs:
               - ".github/workflows/**"
               - ".github/actions/**"
               - ".github/actionlint.yaml"
-              - "apps/**"
               - "bin/**"
               - "crates/**"
               - "python/**"
@@ -81,6 +80,7 @@ jobs:
               - "vitest.config.ts"
             docs_agent:
               - "docs/**"
+              - "apps/pages/**"
               - ".agents/**"
               - ".claude/**"
               - "scripts/ci/check-docs-guidance.py"
@@ -105,7 +105,6 @@ jobs:
               - "rust-toolchain.toml"
             frontend:
               - ".github/workflows/build.yml"
-              - "apps/**"
               - "src/**"
               - "packages/**"
               - "plugins/**"
@@ -199,6 +198,19 @@ jobs:
               - "crates/notebook/windows-app-manifest.xml"
               - "Cargo.toml"
               - "Cargo.lock"
+
+      # Pages has its own workflows (authenticated-automerge-spike.yml,
+      # pages-browser-e2e.yml), so apps/pages alone does not count as source
+      # for this workflow's build, test and release lanes.
+      - name: Check app source paths
+        id: app_source_filter
+        uses: dorny/paths-filter@v4
+        with:
+          predicate-quantifier: every
+          filters: |
+            app_source:
+              - "apps/**"
+              - "!apps/pages/**"
 
       - name: Check e2e source paths
         id: e2e_source_filter
