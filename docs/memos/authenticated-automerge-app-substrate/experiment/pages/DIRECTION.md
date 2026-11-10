@@ -7,8 +7,9 @@ another document or an older plan disagrees, this one wins.
 ## Destination
 
 Pages becomes one document type in a service for shared work between people
-and agents. A Page is a rich document. Notebooks are a candidate second type.
-The service has no settled name. It moves to its own repository; this
+and agents. A Page is a rich document. The notebook documents are the next
+types: `NotebookDoc`, `RuntimeStateDoc`, `CommsDoc` and `CommentsDoc` keep the
+shapes they have in nteract. The service has no settled name. It moves to its own repository; this
 directory is the source until then.
 
 | Layer | Owner | Rule |
@@ -45,7 +46,10 @@ Comments live in their own document and anchor to the Page with cursors.
    document ID helpers, record sizing, the Sedimentree backend interface in
    [sync/backend.mjs](sync/backend.mjs), and one `Repo` in the browser
    session. Replace those with direct Automerge calls and drop the pinned
-   upstream checkout and its patches.
+   upstream checkout and its patches. Presence stays as it is: selections and
+   agent progress travel as `eph` frames that the host relays and stamps with
+   the sender ([sync/wire.mjs](sync/wire.mjs)). This is Pages' own presence,
+   separate from the notebook protocol's.
 3. **Type and format checked at the socket.** A client declares the formats
    it reads. The host refuses a socket that lacks the document's current
    format. Today the registry in
@@ -57,7 +61,9 @@ Comments live in their own document and anchor to the Page with cursors.
    node-scoped writes, or stay fenced on current heads.
 5. **One address for agents.** `node_id` replaces the mix of `block_id`,
    `node_id`, `node_index` and `image_id`. `edit_page` and `patch_page` become
-   one tool with one operation list.
+   one tool with one operation list. Only the addressing changes. Every
+   operation stays: text and formatting edits, images, Parquet dataframes,
+   node insert, delete and retype, and block moves. Uploads keep their flow.
 
 ## Order of work
 
@@ -75,7 +81,7 @@ Comments live in their own document and anchor to the Page with cursors.
 | When | What | Why it can go |
 | --- | --- | --- |
 | Any time | A snapshot file with no regenerate command, or a test that compares against a fixed commit | It pins code that no longer exists and cannot follow an intended change |
-| After the `page3`–`page9` services are torn down | Their deployment profiles, the frozen-neighbor checks that name them, and the `PAGES_EDITOR` setting | Publishing to `pages` verifies those services stay unchanged, so the profiles are live until the services are gone |
+| Any time, profiles before host files | Deployment profiles for `page3`–`page9` and `pages-next`, the frozen-neighbor lists that name them, and the `PAGES_EDITOR` setting | Those services are stopped. Publishing to `pages` or `page10` reads each listed neighbor's unit file, so remove the profiles here before deleting unit files, `/opt` and `/etc` directories, tunnels and DNS records on lab1 |
 | When this source stops deploying to `pages.runtimed.run` | `PageRecords`, `recordStorage` stamps and guards, `stored-form.mjs`, the old-encoder fixture in `test/` | They protect documents and open tabs on that service. A new service has neither |
 | With format 2 | The `pm` names in `model/node-registry.mjs`, `SUBDUCTION_LOG` in the cold-open benchmark, comments that name removed code | They are read by current code; rename them with the format change |
 
@@ -91,10 +97,23 @@ records the node addresses agents use.
 - **`pages.runtimed.run` holds documents people use.** Do not reset it or
   deploy this work to it. It does not need migrating either. Copying a Project
   across with `scripts/project-transfer.mjs` is optional and is not a gate.
-- **Other deployed targets are demos.** Reset them freely.
-- **A format change is a new format number and a new document.** No in-place
-  rewrite under the same document ID. The notebook register reached the same
-  rule in [schema evolution and genesis](../../../../adr/schema-evolution-and-genesis.md).
+- **Other deployed targets are demos.** Keep this list current.
+
+  | Target | Host | State |
+  | --- | --- | --- |
+  | `pages` | lab1 | In use. Deployed by hand |
+  | `page10` | lab1 | Preview. Deployed from `main` automatically. Reset freely |
+  | `pages2` (`page2.runtimed.run`) | lab2 | Demo. Reset freely |
+  | `page11` | lab2 | Profile in source only; nothing is deployed |
+  | `page3`–`page9`, `pages-next` | lab1 | Stopped and disabled. Do not restart; files await removal |
+- **Additive changes stay in the document. Structural changes get a new
+  document.** New keys and new node types layer onto existing documents, and
+  a reader keeps what it does not understand. A change that reshapes existing
+  data never rewrites in place under the same document ID: it takes a new
+  format number and a new document. This is nteract's notebook convention,
+  from [schema evolution and genesis](../../../../adr/schema-evolution-and-genesis.md):
+  additive writes on a fixed root, and a separate document for a structural
+  change.
 - **No parity work.** No byte-for-byte comparison with an earlier encoder, no
   compatibility matrix, no readiness program. A demonstrated content-loss or
   access bug is a bug: fix it with a test that states the behavior.
@@ -108,6 +127,7 @@ records the node addresses agents use.
 - The service and repository name.
 - What a client keeps when the host refuses its offline edits, for example
   after access is revoked or the format changes.
-- How a notebook document type divides work with `runtimed`, which owns
-  kernels, execution and outputs.
+- How a Page shows notebook work: a static output in a report, or a live
+  cell that runs. `runtimed` keeps kernels, execution and outputs either way.
+- Whether a document type's genesis is fixed the way the notebook's is.
 - Whether marker `parents` becomes a scalar path, and how small blocks get.
