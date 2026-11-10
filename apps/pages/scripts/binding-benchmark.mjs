@@ -29,7 +29,6 @@ import { GardSelection, GardState, Transaction } from "wordgard/state";
 import { Command, insertLineBreak, insertText } from "wordgard/command";
 import { schema } from "../model/wordgard-doc.mjs";
 import { setRichMarkdown } from "../model/richtext-page.mjs";
-import { RICH_FORMAT } from "../model/richtext-format.mjs";
 import { projectChanges } from "../viewer/wordgard-projection.mjs";
 
 const pages = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -191,7 +190,7 @@ const results = {
 };
 for (const [fixture, source] of Object.entries(fixtures)) {
   const base = A.change(
-    A.from({ blocks: { b: { format: RICH_FORMAT, richText: "" } } }, { actor: "01".repeat(16) }),
+    A.from({ blocks: { b: { position: "a0", richText: "" } } }, { actor: "01".repeat(16) }),
     (d) => setRichMarkdown(d, "b", source),
   );
   results.fixtures[fixture] = {

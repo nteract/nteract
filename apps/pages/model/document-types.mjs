@@ -4,7 +4,7 @@
 // each type.
 export const DOCUMENT_TYPES = Object.freeze({
   "pages.page": Object.freeze({
-    1: Object.freeze({ type: "pages.page", format: 1 }),
+    2: Object.freeze({ type: "pages.page", format: 2 }),
   }),
   "pages.comments": Object.freeze({
     1: Object.freeze({ type: "pages.comments", format: 1 }),
@@ -30,7 +30,7 @@ export function pageDocuments(documentId, commentsDocumentId) {
   };
 }
 
-/** The formats this build reads, by type: `{ "pages.page": [1], ... }`. A
+/** The formats this build reads, by type: `{ "pages.page": [2], ... }`. A
  * build receipt records this as `document_formats`. */
 export function formatsByType() {
   return Object.fromEntries(
@@ -53,7 +53,7 @@ export function currentFormats() {
   return Object.keys(DOCUMENT_TYPES).map((type) => ({ type, format: currentFormat(type) }));
 }
 
-/** Query-string form of a reader's formats: `pages.comments:1,pages.page:1`,
+/** Query-string form of a reader's formats: `pages.comments:1,pages.page:2`,
  * sorted so one build always sends one value. */
 export function encodeDeclaredFormats(formats) {
   return formats
@@ -67,17 +67,10 @@ export const BUILD_FORMATS = encodeDeclaredFormats(readableFormats());
 
 const MAX_DECLARED_FORMATS = 32;
 const DECLARED_FORMAT = /^([a-z][a-z0-9.-]{0,63}):([1-9][0-9]{0,8})$/;
-// A client that sends no `formats` is a build from before the parameter. Such
-// a build reads format 1 of both types and nothing else.
-const UNDECLARED_FORMATS = Object.freeze([
-  Object.freeze({ type: "pages.page", format: 1 }),
-  Object.freeze({ type: "pages.comments", format: 1 }),
-]);
-/** A client's formats from the `formats` query value. No value means
- * `UNDECLARED_FORMATS`. A malformed value is null. A well-formed type this
- * build does not know is kept: a client may read types this host has none of. */
+/** A client's formats from the `formats` query value. A missing or malformed
+ * value is null. A well-formed type this build does not know is kept: a
+ * client may read types this host has none of. */
 export function parseDeclaredFormats(value) {
-  if (value === undefined) return UNDECLARED_FORMATS;
   if (typeof value !== "string") return null;
   const pairs = value.split(",");
   if (pairs.length > MAX_DECLARED_FORMATS || new Set(pairs).size !== pairs.length) return null;

@@ -376,8 +376,9 @@ export const RECORD_STORAGE_HISTORY = Object.freeze({
 // only by starting empty. The values are literals because the staged installer
 // copies this module without model/document-types.mjs.
 const FORMAT_1_DOCUMENTS = Object.freeze({ "pages.page": 1, "pages.comments": 1 });
+const FORMAT_2_DOCUMENTS = Object.freeze({ "pages.page": 2, "pages.comments": 1 });
 export const TARGET_DOCUMENT_FORMATS = Object.freeze({
-  page10: FORMAT_1_DOCUMENTS,
+  page10: FORMAT_2_DOCUMENTS,
   pages: FORMAT_1_DOCUMENTS,
   pages2: FORMAT_1_DOCUMENTS,
   page11: FORMAT_1_DOCUMENTS,

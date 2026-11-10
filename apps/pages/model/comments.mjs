@@ -1,5 +1,4 @@
 import * as A from "@automerge/automerge/slim";
-import { requireRich } from "./richtext-format.mjs";
 import { commentBodyProjection, setCommentContent } from "./comment-content.mjs";
 import { COMMENTS_FEATURE, commentThreads } from "./comments-doc.mjs";
 import { commentDecision, requireCommentDecision } from "./comment-rules.mjs";
@@ -14,7 +13,7 @@ export function selectionContext(doc, target) {
     b = target.head;
   if (!Object.hasOwn(doc.blocks, a?.blockId) || a.blockId !== b?.blockId)
     return { status: "detached" };
-  const block = requireRich(doc.blocks[a.blockId]);
+  const block = doc.blocks[a.blockId];
   try {
     const path = ["blocks", a.blockId, "richText"];
     if ([a, b].some((p) => A.getObjectId(block, "richText") !== String(p.textObjectId)))
@@ -85,7 +84,6 @@ export function captureSelectionTarget(doc, id, selected, occurrence = 1) {
   if (!Object.hasOwn(doc.blocks, id) || !block) throw Error("Comment block not found");
   if (!Number.isSafeInteger(occurrence) || occurrence < 1 || occurrence > 10000)
     throw Error("Invalid selection occurrence");
-  requireRich(block);
   const name = "richText";
   let start = -1;
   for (let i = 0; i < occurrence; i++) {

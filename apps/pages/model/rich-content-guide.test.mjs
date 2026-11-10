@@ -102,10 +102,16 @@ test("edit_page takes delete_node by node_id, and the guides say where the id co
 
 test("the typed-field guide names every agent type a read can report", async () => {
   const { typedReadFields } = await import("./rich-content-guide.mjs");
-  const { LIST_TYPES } = await import("./node-registry.mjs");
   const text = typedReadFields();
-  for (const name of [...Object.values(LIST_TYPES), "pages-opaque", "unknown", "code-block"])
-    assert.ok(text.includes(name), `typedReadFields lacks ${name}`);
+  const names = [
+    "bullet-list",
+    "ordered-list",
+    "task-list",
+    "pages-opaque",
+    "unknown",
+    "code-block",
+  ];
+  for (const name of names) assert.ok(text.includes(name), `typedReadFields lacks ${name}`);
 });
 
 test("/llms.txt has the rich content section with the language menu", () => {

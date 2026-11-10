@@ -261,6 +261,19 @@ test("malformed and mismatched snapshots reserve no capacity and leave the key r
         ),
       ).toString("base64"),
     },
+    ...[
+      // A stored block holds exactly `position` and `richText`.
+      (block) => (block.metadata = {}),
+      (block) => (block.extension = "kept"),
+      (block) => (block.id = "id"),
+      (block) => (block.markdown = ""),
+      (block) => delete block.position,
+      (block) => delete block.richText,
+    ].map((edit) => ({
+      initial_snapshot_base64: Buffer.from(
+        A.save(A.change(A.clone(doc), (draft) => edit(draft.blocks[Object.keys(draft.blocks)[0]]))),
+      ).toString("base64"),
+    })),
     {
       initial_snapshot_base64: Buffer.from(
         A.save(

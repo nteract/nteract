@@ -44,9 +44,8 @@ const { decode, schema } = await import("./wordgard-model.mjs");
 const { selectedTable, tableKeys } = await import("./wordgard-tables.mjs");
 
 function editor(markdown) {
-  const native = A.change(
-    A.from({ blocks: { one: { id: "one", kind: "markdown", markdown } } }),
-    (d) => richFromSource(d, "one"),
+  const native = A.change(A.from({ blocks: { one: { markdown } } }), (d) =>
+    richFromSource(d, "one"),
   );
   const state = GardState.create({
     doc: decode(A.spans(native, textPath("one"))).doc,

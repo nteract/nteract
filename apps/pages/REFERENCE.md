@@ -1825,13 +1825,12 @@ relayed change from a claimed actor is refused.
 Discovery and the socket carry `sync=automerge`; a build without it gets
 `schema_unsupported` ("Reload to update"). The socket also carries `formats`, the
 document formats the build reads, as sorted `type:format` pairs
-(`pages.comments:1,pages.page:1`). The host writes one format of each type, so
+(`pages.comments:1,pages.page:2`). The host writes one format of each type, so
 a Page's documents are in the formats its build writes. A socket whose
 `formats` lacks one of them is closed as `schema_unsupported`, and the viewer
 shows "Reload to update". Every type is required, because a Page can gain its
 comments document while a socket is open. A socket with no `formats` is a
-build from before the parameter and is read as format 1 of both types. A
-repeated or malformed `formats` is a 400. Discovery takes no `formats` and
+400, as is a repeated or malformed `formats`. Discovery takes no `formats` and
 stays open to every reader. Presence ids are per tab
 (`sender`), stamped by the host on every relay.
 

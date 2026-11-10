@@ -5,10 +5,9 @@ import assert from "node:assert/strict";
 import fc from "fast-check";
 import * as A from "@automerge/automerge";
 import { createPageData, orderedBlockIds } from "./page.mjs";
-import { blockMarkdown, isBlankBlock, textPath, RICH_FORMAT } from "./richtext.mjs";
+import { blockMarkdown, isBlankBlock, textPath } from "./richtext.mjs";
 import { MARK_NAMES, updateSpansConfig } from "./marks.mjs";
 import { stampSpans } from "./schema-features.mjs";
-import { STORED_FORM_UNSUPPORTED } from "./stored-form.mjs";
 import { encode } from "../viewer/wordgard-model.mjs";
 import { PAGE_ID, pageTreeArbitrary, toWordgardTree } from "../test/random-page-tree.mjs";
 
@@ -17,27 +16,17 @@ const parameters = {
   numRuns: Number(process.env.PAGES_FUZZ_RUNS ?? 50),
 };
 
-function storedBlock(spans, fields = {}) {
+function storedBlock(spans) {
   let doc = A.from(createPageData({ pageId: PAGE_ID, title: "Blank" }));
   const id = orderedBlockIds(doc)[0];
   doc = A.change(doc, (draft) => {
-    Object.assign(draft.blocks[id], fields);
-    if (fields.format !== RICH_FORMAT) {
-      delete draft.blocks[id].format;
-      delete draft.blocks[id].richText;
-    } else {
-      draft.blocks[id].richText = "";
-      A.updateSpans(draft, textPath(id), spans, updateSpansConfig);
-      stampSpans(draft, spans);
-    }
+    draft.blocks[id].richText = "";
+    A.updateSpans(draft, textPath(id), spans, updateSpansConfig);
+    stampSpans(draft, spans);
   });
   return doc.blocks[id];
 }
-const richBlock = (children, fields = {}) =>
-  storedBlock(encode(toWordgardTree({ kind: "doc", children })), {
-    format: RICH_FORMAT,
-    ...fields,
-  });
+const richBlock = (children) => storedBlock(encode(toWordgardTree({ kind: "doc", children })));
 const projectedBlank = (block) => !blockMarkdown(block).trim();
 
 const text = (value, marks = {}) => ({ kind: "text", value, marks });
@@ -130,9 +119,7 @@ test("isBlankBlock knows which marks keep whitespace visible", () => {
   const linkStrong = richBlock([paragraph(text(" ", { link: MARK_VALUES.link, strong: true }))]);
   assert.equal(projectedBlank(linkStrong), true);
   assert.equal(isBlankBlock(linkStrong), true);
-  const future = storedBlock([{ type: "text", value: " ", marks: { future: true } }], {
-    format: RICH_FORMAT,
-  });
+  const future = storedBlock([{ type: "text", value: " ", marks: { future: true } }]);
   assert.equal(projectedBlank(future), true);
   assert.equal(isBlankBlock(future), true);
 });
@@ -143,24 +130,17 @@ test("isBlankBlock treats nodes this build doesn't know as content", () => {
     [unknown("future-embed", [], true)],
     [unknown("paragraph", ["future-aside"], false)],
   ]) {
-    const block = storedBlock(spans, { format: RICH_FORMAT });
+    const block = storedBlock(spans);
     assert.equal(projectedBlank(block), false);
     assert.equal(isBlankBlock(block), false);
   }
-});
-
-test("isBlankBlock fails closed on a block without rich text, as blockMarkdown does", () => {
-  const block = storedBlock([], { markdown: "" });
-  const refusal = { status: 409, code: STORED_FORM_UNSUPPORTED };
-  assert.throws(() => blockMarkdown(block), refusal);
-  assert.throws(() => isBlankBlock(block), refusal);
 });
 
 function agreesOnTrees(arbitrary) {
   let blanks = 0;
   fc.assert(
     fc.property(arbitrary, (description) => {
-      const block = storedBlock(encode(toWordgardTree(description)), { format: RICH_FORMAT });
+      const block = storedBlock(encode(toWordgardTree(description)));
       const blank = projectedBlank(block);
       if (blank) blanks++;
       assert.equal(isBlankBlock(block), blank);

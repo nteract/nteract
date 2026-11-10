@@ -10,14 +10,9 @@ import { stampFeatures } from "./schema-features.mjs";
 function page(title, blocks) {
   return A.change(A.from({ title, blocks: {} }), (doc) => {
     for (const [index, entry] of blocks.entries()) {
-      const { id = `block-${index}`, markdown, rich = true, kind = "markdown", position } = entry;
-      doc.blocks[id] = {
-        id,
-        kind,
-        position: new A.RawString(position ?? `a${index}`),
-        markdown,
-      };
-      if (rich) richFromSource(doc, id);
+      const { id = `block-${index}`, markdown, position } = entry;
+      doc.blocks[id] = { position: new A.RawString(position ?? `a${index}`), markdown };
+      richFromSource(doc, id);
     }
     stampFeatures(doc, ["comments-doc"]);
   });
@@ -51,10 +46,9 @@ test("an opening native heading produces bounded plain feedback without changing
   assert.deepEqual(projectPage(doc), projected);
 });
 
-test("matching uses native text rather than stale import provenance", () => {
+test("matching uses the current native text", () => {
   let doc = page("Current title", [{ markdown: "# Original title" }]);
   doc = A.change(doc, (draft) => setRichMarkdown(draft, "block-0", "# Current title"));
-  assert.equal(doc.blocks["block-0"].markdown, "# Original title");
   assert.equal(openingTitleWarning(doc).heading, "Current title");
   doc = A.change(doc, (draft) => setRichMarkdown(draft, "block-0", "Opening prose."));
   assert.equal(openingTitleWarning(doc), null);
@@ -142,26 +136,8 @@ test("empty text nodes are skipped across native blocks using fractional order a
   assert.equal(openingTitleWarning(tied), null);
 });
 
-test("a block without rich text, or one this build can't read, gives no warning", () => {
-  assert.equal(warning("Shared title", "# Shared title", { rich: false }), null);
-  assert.equal(
-    openingTitleWarning({ title: "Shared title", blocks: { bad: { kind: "unknown" } } }),
-    null,
-  );
-  assert.equal(
-    openingTitleWarning({
-      title: "Shared title",
-      blocks: { bad: { format: "future-format", markdown: "# Shared title" } },
-    }),
-    null,
-  );
-  assert.equal(
-    openingTitleWarning({
-      title: "Shared title",
-      blocks: { bad: { format: "automerge-rich-text-v1" } },
-    }),
-    null,
-  );
+test("a malformed document gives no warning", () => {
+  assert.equal(openingTitleWarning({ title: "Shared title", blocks: { bad: {} } }), null);
   assert.equal(openingTitleWarning(null), null);
 });
 

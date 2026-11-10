@@ -2,7 +2,6 @@
 // wrote each message, when, and where the thread points in the Page. Nothing
 // here writes to a document; stored Markdown stays exactly as written.
 import * as A from "@automerge/automerge/slim";
-import { isRich } from "../model/richtext-format.mjs";
 import { STORED_FORM_UNSUPPORTED } from "../model/stored-form.mjs";
 import { orderedBlockIds } from "../model/order.mjs";
 import { presenceColor } from "./presence-color.mjs";
@@ -174,36 +173,32 @@ function outline(doc) {
   order.forEach((blockId, index) => {
     const block = doc.blocks[blockId];
     const entry = { index, before: [...path], changes: [], kind: "Block" };
-    // A block without rich text is in a form this build doesn't read: it
-    // stays a plain "Block" and adds no headings.
-    if (isRich(block)) {
-      let offset = 0,
-        first = true,
-        heading = null;
-      for (const span of A.spans(block, ["richText"])) {
-        if (span.type === "block") {
-          const type = String(span.value?.type ?? "");
-          const parents = (span.value?.parents ?? []).map(String);
-          if (first) entry.kind = kindOf(type, parents);
-          first = false;
-          heading = type === "heading" ? { level: Number(span.value?.attrs?.level) || 1 } : null;
-          if (heading) heading.offset = offset;
-          offset += 1;
-          continue;
+    let offset = 0,
+      first = true,
+      heading = null;
+    for (const span of A.spans(block, ["richText"])) {
+      if (span.type === "block") {
+        const type = String(span.value?.type ?? "");
+        const parents = (span.value?.parents ?? []).map(String);
+        if (first) entry.kind = kindOf(type, parents);
+        first = false;
+        heading = type === "heading" ? { level: Number(span.value?.attrs?.level) || 1 } : null;
+        if (heading) heading.offset = offset;
+        offset += 1;
+        continue;
+      }
+      if (span.type === "text") {
+        if (first) entry.kind = "Paragraph";
+        first = false;
+        const text = String(span.value ?? "");
+        if (heading) {
+          heading.text = (heading.text ?? "") + text;
+          const level = heading.level;
+          while (path.length && path.at(-1).level >= level) path.pop();
+          if (path.at(-1) !== heading) path.push(heading);
+          entry.changes.push({ offset: heading.offset, path: [...path] });
         }
-        if (span.type === "text") {
-          if (first) entry.kind = "Paragraph";
-          first = false;
-          const text = String(span.value ?? "");
-          if (heading) {
-            heading.text = (heading.text ?? "") + text;
-            const level = heading.level;
-            while (path.length && path.at(-1).level >= level) path.pop();
-            if (path.at(-1) !== heading) path.push(heading);
-            entry.changes.push({ offset: heading.offset, path: [...path] });
-          }
-          offset += text.length;
-        }
+        offset += text.length;
       }
     }
     blocks.set(blockId, entry);
@@ -281,7 +276,7 @@ export function passageExcerpt(doc, thread, { before = 60, after = 110 } = {}) {
     return { before: "", passage: context.text ?? "", after: "" };
   if (context?.status === "attached") {
     const block = doc?.blocks?.[context.start.blockId];
-    const source = isRich(block) ? String(block.richText ?? "") : "";
+    const source = String(block?.richText ?? "");
     const from = context.start.offsetUtf16,
       to = context.end.offsetUtf16;
     if (!source || to > source.length) return { before: "", passage: context.text, after: "" };
@@ -310,7 +305,7 @@ export function passageExcerpt(doc, thread, { before = 60, after = 110 } = {}) {
   }
   if (target.kind === "block") {
     const block = doc?.blocks?.[target.blockId];
-    if (!isRich(block)) return null;
+    if (!block) return null;
     const source = String(block.richText ?? "");
     const text = source.replace(/[\ufffc\n]+/g, " ").trim();
     if (!text) return null;

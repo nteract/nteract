@@ -23,9 +23,8 @@ const text = (value) => [Leaf.text(value)];
 // changes reach Automerge first and project into the editor; local edits reach
 // the editor first, are written, then the preview re-resolves.
 function fixture(markdown) {
-  let doc = A.change(
-    A.from({ page_id: pageId, blocks: { one: { id: "one", kind: "markdown", markdown } } }),
-    (d) => richFromSource(d, "one"),
+  let doc = A.change(A.from({ page_id: pageId, blocks: { one: { markdown } } }), (d) =>
+    richFromSource(d, "one"),
   );
   const observers = new Set();
   const replica = {

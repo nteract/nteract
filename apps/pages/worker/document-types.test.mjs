@@ -17,7 +17,7 @@ test("connect describes host-owned IDs without changing document bytes or host m
   const { status, body } = await f.pageCall("owner", `/api/connect?page=${pageId}`);
   assert.equal(status, 200);
   assert.deepEqual(body.documents, {
-    page: { id: metadata.documentId, type: "pages.page", format: 1 },
+    page: { id: metadata.documentId, type: "pages.page", format: 2 },
     comments: { id: commentsDocumentId(commentsUuid), type: "pages.comments", format: 1 },
   });
   assert.equal(body.documentId, body.documents.page.id);
@@ -43,7 +43,7 @@ test("comments descriptors follow handle availability, not document content or U
   assert.equal(status, 200);
   assert.equal(Object.hasOwn(body, "commentsDocumentId"), false);
   assert.deepEqual(body.documents, {
-    page: { id: f.page.metadata.documentId, type: "pages.page", format: 1 },
+    page: { id: f.page.metadata.documentId, type: "pages.page", format: 2 },
   });
   assert.equal(f.page.commentsHandle, undefined);
 });
@@ -62,7 +62,7 @@ test("Project content discovery describes pages.page, not a separate document ty
   assert.deepEqual(body.documents.page, {
     id: host.metadata.documentId,
     type: "pages.page",
-    format: 1,
+    format: 2,
   });
 });
 
@@ -217,12 +217,14 @@ test("a socket declaring the current formats is accepted", async (t) => {
   assert.equal(closed, undefined);
 });
 
-test("a socket declaring no formats is read as format 1 and accepted", async (t) => {
+test("a socket declaring no formats is a 400", async (t) => {
   const f = await fixture(t);
   const { sockets, accepted } = fakeSockets(t, f.page);
-  const { closed } = openSocket(f, sockets, undefined);
-  assert.equal(closed, undefined);
-  assert.equal(accepted.mock.callCount(), 1);
+  assert.throws(
+    () => openSocket(f, sockets, undefined),
+    (error) => error.status === 400 && error.message === "Invalid formats",
+  );
+  assert.equal(accepted.mock.callCount(), 0);
 });
 
 test("a socket lacking the current format of a document the Page holds is closed", async (t) => {
@@ -230,8 +232,8 @@ test("a socket lacking the current format of a document the Page holds is closed
   const { sockets, accepted } = fakeSockets(t, f.page);
   for (const formats of [
     "pages.comments:1",
-    "pages.page:1",
-    "pages.page:2,pages.comments:1",
+    "pages.page:2",
+    "pages.page:1,pages.comments:1",
     "pages.future:1",
   ])
     assert.equal(openSocket(f, sockets, formats).closed?.reason, "schema_unsupported", formats);
@@ -241,7 +243,7 @@ test("a socket lacking the current format of a document the Page holds is closed
 test("a socket may declare formats beyond the current ones", async (t) => {
   const f = await fixture(t);
   const { sockets, accepted } = fakeSockets(t, f.page);
-  const { closed } = openSocket(f, sockets, "pages.comments:1,pages.future:3,pages.page:1");
+  const { closed } = openSocket(f, sockets, "pages.comments:1,pages.future:3,pages.page:2");
   assert.equal(closed, undefined);
   assert.equal(accepted.mock.callCount(), 1);
 });
@@ -250,7 +252,7 @@ test("a Page with no comments document yet still requires pages.comments", async
   const f = await fixture(t);
   f.page.commentsHandle = undefined;
   const { sockets, accepted } = fakeSockets(t, f.page);
-  const { response, closed } = openSocket(f, sockets, "pages.page:1");
+  const { response, closed } = openSocket(f, sockets, "pages.page:2");
   assert.equal(response.status, 101);
   assert.equal(closed.reason, "schema_unsupported");
   assert.equal(accepted.mock.callCount(), 0);
@@ -259,15 +261,15 @@ test("a Page with no comments document yet still requires pages.comments", async
 test("a malformed or repeated formats parameter is a 400", async (t) => {
   const f = await fixture(t);
   const { sockets } = fakeSockets(t, f.page);
-  for (const formats of ["", "pages.page", "pages.page:x", "pages.page:1,pages.page:1"])
+  for (const formats of ["", "pages.page", "pages.page:x", "pages.page:2,pages.page:2"])
     assert.throws(
       () => openSocket(f, sockets, formats),
       (error) => error.status === 400 && error.message === "Invalid formats",
       formats,
     );
   const url = new URL("https://pages.invalid/api/sync?sync=automerge");
-  url.searchParams.append("formats", "pages.page:1,pages.comments:1");
-  url.searchParams.append("formats", "pages.page:1,pages.comments:1");
+  url.searchParams.append("formats", "pages.page:2,pages.comments:1");
+  url.searchParams.append("formats", "pages.page:2,pages.comments:1");
   assert.throws(
     () => f.page.connect(new Request(url, { headers: { upgrade: "websocket" } }), {}),
     (error) => error.status === 400 && error.message === "Invalid formats",

@@ -13,9 +13,9 @@ import {
   readableFormats,
 } from "./document-types.mjs";
 
-test("the registry names only the existing Page and comments formats", () => {
+test("the registry names Page format 2 and comments format 1", () => {
   assert.deepEqual(DOCUMENT_TYPES, {
-    "pages.page": { 1: { type: "pages.page", format: 1 } },
+    "pages.page": { 2: { type: "pages.page", format: 2 } },
     "pages.comments": { 1: { type: "pages.comments", format: 1 } },
   });
   assert.ok(Object.isFrozen(DOCUMENT_TYPES));
@@ -27,11 +27,11 @@ test("the registry names only the existing Page and comments formats", () => {
 
 test("descriptors project the existing IDs, with optional comments", () => {
   assert.deepEqual(pageDocuments("existing-page"), {
-    page: { id: "existing-page", type: "pages.page", format: 1 },
+    page: { id: "existing-page", type: "pages.page", format: 2 },
   });
   const documents = pageDocuments("existing-page", "existing-comments");
   assert.deepEqual(documents, {
-    page: { id: "existing-page", type: "pages.page", format: 1 },
+    page: { id: "existing-page", type: "pages.page", format: 2 },
     comments: { id: "existing-comments", type: "pages.comments", format: 1 },
   });
   for (const descriptor of Object.values(documents)) {
@@ -40,11 +40,11 @@ test("descriptors project the existing IDs, with optional comments", () => {
     assert.deepEqual(withExtraField, { ...descriptor, future: "ignored" });
   }
   documents.page.format = 99;
-  assert.equal(pageDocuments("another-page").page.format, 1);
+  assert.equal(pageDocuments("another-page").page.format, 2);
 });
 
 test("descriptor parsing rejects unknown types and formats without coercion", () => {
-  const known = { id: "existing", type: "pages.page", format: 1 };
+  const known = { id: "existing", type: "pages.page", format: 2 };
   for (const type of [
     "pages.future",
     "pages.project",
@@ -54,8 +54,11 @@ test("descriptor parsing rejects unknown types and formats without coercion", ()
     "",
   ])
     assert.equal(parseDocumentDescriptor({ ...known, type }), null, type);
+  const unregistered = { "pages.page": 1, "pages.comments": 2 };
+  for (const [type, format] of Object.entries(unregistered))
+    assert.equal(parseDocumentDescriptor({ ...known, type, format }), null, `${type}@${format}`);
   for (const type of Object.keys(DOCUMENT_TYPES))
-    for (const format of [0, -1, 2, 1.5, "1", null, undefined, NaN, Infinity, 2 ** 53])
+    for (const format of [0, -1, 1.5, "1", null, undefined, NaN, Infinity, 2 ** 53])
       assert.equal(parseDocumentDescriptor({ ...known, type, format }), null, `${type}@${format}`);
 });
 
@@ -65,27 +68,27 @@ test("descriptor parsing rejects malformed values and preserves opaque IDs", () 
     undefined,
     true,
     1,
-    "pages.page@1",
+    "pages.page@2",
     [],
     {},
-    { type: "pages.page", format: 1 },
+    { type: "pages.page", format: 2 },
   ])
     assert.equal(parseDocumentDescriptor(value), null);
   for (const id of ["", null, undefined, 1, {}, []])
-    assert.equal(parseDocumentDescriptor({ id, type: "pages.page", format: 1 }), null);
+    assert.equal(parseDocumentDescriptor({ id, type: "pages.page", format: 2 }), null);
   const descriptor = { id: "host-owned-id", type: "pages.comments", format: 1 };
   assert.deepEqual(parseDocumentDescriptor(descriptor), descriptor);
   assert.notEqual(parseDocumentDescriptor(descriptor), descriptor);
 });
 
 test("a build reads and writes the formats the registry lists", () => {
-  assert.deepEqual(formatsByType(), { "pages.page": [1], "pages.comments": [1] });
+  assert.deepEqual(formatsByType(), { "pages.page": [2], "pages.comments": [1] });
   assert.deepEqual(readableFormats(), [
-    { type: "pages.page", format: 1 },
+    { type: "pages.page", format: 2 },
     { type: "pages.comments", format: 1 },
   ]);
   assert.deepEqual(currentFormats(), readableFormats());
-  assert.equal(BUILD_FORMATS, "pages.comments:1,pages.page:1");
+  assert.equal(BUILD_FORMATS, "pages.comments:1,pages.page:2");
 });
 
 test("declared formats encode sorted and parse back", () => {
@@ -104,15 +107,8 @@ test("declared formats encode sorted and parse back", () => {
   assert.deepEqual(missingFormats(parseDeclaredFormats(BUILD_FORMATS), readableFormats()), []);
 });
 
-test("no formats value is a build from before the parameter: format 1 only", () => {
-  const undeclared = parseDeclaredFormats(undefined);
-  assert.deepEqual(undeclared, [
-    { type: "pages.page", format: 1 },
-    { type: "pages.comments", format: 1 },
-  ]);
-  assert.deepEqual(missingFormats(undeclared, currentFormats()), []);
-  const format2 = [{ type: "pages.page", format: 2 }];
-  assert.deepEqual(missingFormats(undeclared, format2), format2);
+test("no formats value parses to null", () => {
+  assert.equal(parseDeclaredFormats(undefined), null);
 });
 
 test("declared formats that are malformed parse to null", () => {
@@ -150,13 +146,13 @@ test("a well-formed type this build does not know is not malformed", () => {
 
 test("missing formats are the required pairs the client does not list", () => {
   const required = [
-    { type: "pages.page", format: 1 },
+    { type: "pages.page", format: 2 },
     { type: "pages.comments", format: 1 },
   ];
   assert.deepEqual(missingFormats(readableFormats(), required), []);
-  assert.deepEqual(missingFormats([{ type: "pages.page", format: 1 }], required), [
+  assert.deepEqual(missingFormats([{ type: "pages.page", format: 2 }], required), [
     { type: "pages.comments", format: 1 },
   ]);
-  assert.deepEqual(missingFormats([{ type: "pages.page", format: 2 }], required), required);
+  assert.deepEqual(missingFormats([{ type: "pages.page", format: 1 }], required), required);
   assert.deepEqual(missingFormats([], required), required);
 });

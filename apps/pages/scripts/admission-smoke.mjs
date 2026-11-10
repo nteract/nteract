@@ -204,7 +204,7 @@ try {
     await one.close();
     await two.close();
     // A build without plain sync is refused the socket as a schema update.
-    const oldBuild = new URL(`/api/sync?page=${pageId}`, origin);
+    const oldBuild = new URL(`/api/sync?page=${pageId}&formats=${BUILD_FORMATS}`, origin);
     oldBuild.protocol = "ws:";
     const old = new WebSocket(oldBuild, {
       headers: { cookie: ownerCookie, origin },

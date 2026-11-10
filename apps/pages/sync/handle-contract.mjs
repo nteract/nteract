@@ -395,7 +395,7 @@ export function handleContract(name, makeFixture) {
       const f = await makeFixture(t);
       const base = f.handle.doc();
       let candidate = A.change(A.clone(base), (d) => {
-        d.blocks.added = { richText: "first" };
+        d.blocks.added = { position: "a1", richText: "first" };
       });
       candidate = A.change(candidate, (d) => {
         d.blocks.added.richText += " second";

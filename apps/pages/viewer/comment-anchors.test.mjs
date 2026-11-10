@@ -12,9 +12,7 @@ import { schema } from "./wordgard-model.mjs";
 import { createWordgardBinding } from "./wordgard-binding.mjs";
 
 function page(markdown) {
-  let doc = A.change(A.from({ blocks: { one: { id: "one", kind: "markdown", markdown } } }), (d) =>
-    richFromSource(d, "one"),
-  );
+  let doc = A.change(A.from({ blocks: { one: { markdown } } }), (d) => richFromSource(d, "one"));
   const observers = new Set();
   const replica = {
     get doc() {

@@ -147,6 +147,7 @@ function createFixture(t) {
     build_id: fingerprint.sha256.slice(0, 12),
     record_storage: ["local", "buffered", "automerge"],
     plain_storage_formats: ["doc-store-v2-host-actor-prefix"],
+    document_formats: { "pages.page": [2], "pages.comments": [1] },
     viewer_chunks: viewerChunks,
     viewer_assets: viewerAssets,
     files: Object.fromEntries(

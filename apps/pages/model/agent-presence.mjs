@@ -2,7 +2,7 @@
 // from tool calls the host already authorized, held in memory, and broadcast as
 // part of page-activity. It is never stored in the document or a receipt.
 import * as A from "@automerge/automerge/slim";
-import { isRich, textPath } from "./richtext-format.mjs";
+import { textPath } from "./richtext-format.mjs";
 import { textSegments, visibleNodeRange } from "./replace-match.mjs";
 
 export const AGENT_PRESENCE = Object.freeze({
@@ -107,7 +107,7 @@ export function writeTargets(doc, trace) {
   const last = trace?.at(-1);
   if (!last || !Object.hasOwn(doc.blocks ?? {}, last.block_id)) return [];
   if (last.type === "block") return [{ kind: "block", block_id: last.block_id }];
-  if (last.type !== "text" || !isRich(doc.blocks[last.block_id])) return [];
+  if (last.type !== "text") return [];
   return [textTarget(doc, "text", last.block_id, last.start, last.end)];
 }
 
@@ -120,7 +120,7 @@ export function readTargets(doc, args = {}, body = {}) {
   if (!args || body?.include_content === false || args.include_content === false) return [];
   const blocks = Array.isArray(body?.blocks) ? body.blocks : [];
   const ids = [...new Set(blocks.map((block) => block?.id))].filter(
-    (id) => typeof id === "string" && Object.hasOwn(doc.blocks ?? {}, id) && isRich(doc.blocks[id]),
+    (id) => typeof id === "string" && Object.hasOwn(doc.blocks ?? {}, id),
   );
   if (Array.isArray(args.search) && args.search.length) {
     const terms = args.search.filter((term) => typeof term === "string" && term.length);

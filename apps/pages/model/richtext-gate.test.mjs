@@ -408,9 +408,8 @@ test("a table break tag may hold spaces around its slash", () => {
 
 test("a table break tag with an attribute stays literal through import and export", () => {
   const source = '| a<br class="x">b |\n| --- |\n| c |';
-  const native = A.change(
-    A.from({ blocks: { one: { id: "one", kind: "markdown", markdown: source } } }),
-    (doc) => richFromSource(doc, "one"),
+  const native = A.change(A.from({ blocks: { one: { markdown: source } } }), (doc) =>
+    richFromSource(doc, "one"),
   );
   const imported = richDoc(native.blocks.one);
   assert.ok(nodeNames(imported).includes("table"));
@@ -480,9 +479,8 @@ test("entity-only linked newlines are refused for agents and preserved literally
       const source = `${prefix}[${entity}](https://example.org)`;
       assert.throws(() => parseAgentMarkdown(source), { code: "unsupported_markdown" }, source);
       assert.deepEqual(nativeImportLoss(source), { kind: "link", value: "https://example.org" });
-      const native = A.change(
-        A.from({ blocks: { one: { id: "one", kind: "markdown", markdown: source } } }),
-        (doc) => richFromSource(doc, "one"),
+      const native = A.change(A.from({ blocks: { one: { markdown: source } } }), (doc) =>
+        richFromSource(doc, "one"),
       );
       assert.equal(
         richDoc(native.blocks.one).textContent({ blockSeparator: "", leafText: "" }),

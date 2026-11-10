@@ -513,13 +513,8 @@ function apiFixture() {
     draft.title = "Comment read contract";
     draft.blocks = {
       [BLOCK]: {
-        id: BLOCK,
-        kind: "markdown",
         position: "a0",
-        format: RICH_FORMAT,
-        markdown: "",
         richText: "Keep this passage.",
-        metadata: {},
       },
     };
     draft.schema = { features: ["comments-doc"] };

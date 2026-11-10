@@ -1,11 +1,7 @@
 import * as A from "@automerge/automerge/slim";
 import { selectionContext } from "../model/comments.mjs";
-import { requireRich } from "../model/richtext-format.mjs";
 import { draftComment, hasDraftText } from "./comment-composer.mjs";
 
-// A block without rich text is in a form this build doesn't read; commenting
-// on it fails closed.
-const textField = (block) => (requireRich(block), "richText");
 const changedPassage = () => Error("Selected passage was removed or replaced; select it again");
 
 function commentBlock(doc, blockId) {
@@ -31,7 +27,7 @@ export function captureCommentDraft(doc, blockId, selection) {
       occurrence > 10000
     )
       throw Error("Select a passage before commenting");
-    const field = textField(block),
+    const field = "richText",
       source = block[field],
       textObjectId = A.getObjectId(block, field);
     if (typeof source !== "string" || !textObjectId) throw changedPassage();
@@ -62,7 +58,7 @@ export function resolveCommentDraft(doc, draft) {
   if (A.getObjectId(block) !== draft.blockObjectId)
     throw Error("Comment block was replaced; choose another passage");
   if (draft.target.kind === "block") return { block_id: draft.blockId };
-  const field = textField(block),
+  const field = "richText",
     path = ["blocks", draft.blockId, field],
     context = selectionContext(doc, draft.target);
   if (context?.status !== "attached") throw changedPassage();

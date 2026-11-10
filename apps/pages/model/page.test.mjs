@@ -16,6 +16,30 @@ function page(markdown = "Hello 🌊 people") {
   let doc = A.from(createPageData({ pageId: "page_fixture", title: "Test" }));
   return A.change(doc, (d) => initializePage(d, markdown));
 }
+test("a stored block holds exactly position and richText, and its key is its id", () => {
+  let doc = page();
+  const [first] = orderedBlockIds(doc);
+  assert.deepEqual(Object.keys(doc.blocks[first]).sort(), ["position", "richText"]);
+  doc = A.change(doc, (d) =>
+    applyPageOperation(d, {
+      operation: "edit_page",
+      arguments: {
+        operations: [
+          { op: "insert_markdown", after_block_id: first, markdown: "Inserted." },
+          { op: "insert_markdown", markdown: "Appended." },
+        ],
+      },
+    }),
+  );
+  const ids = orderedBlockIds(doc);
+  assert.equal(ids.length, 3);
+  for (const id of ids)
+    assert.deepEqual(Object.keys(doc.blocks[id]).sort(), ["position", "richText"], id);
+  assert.deepEqual(
+    projectPage(doc).blocks.map((block) => [block.id, Object.keys(block).sort()]),
+    ids.map((id) => [id, ["id", "markdown", "position"]]),
+  );
+});
 const identity = { principal: "account:one", displayName: "Kyle Kelley", driver: "Browser" };
 test("targeted text edits preserve unknown document fields and rich text identity", () => {
   let doc = page();

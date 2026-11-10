@@ -490,6 +490,8 @@ export async function readWholePage(client, address, options) {
       heads: read.heads,
       retry_token: read.retry_token,
       retry_key_prefix: read.retry_key_prefix,
+      // A format 1 source reports each block's `kind`; a format 2 source
+      // reports none, and a block without one is Markdown.
       blocks: (blocks ?? []).map((block) => ({
         markdown: block.markdown ?? "",
         kind: block.kind,

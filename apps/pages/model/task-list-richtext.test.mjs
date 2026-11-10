@@ -14,9 +14,7 @@ import { decode, encode, TaskList, TaskChecked } from "./wordgard-doc.mjs";
 
 const path = textPath("one");
 const fixture = (markdown) =>
-  A.change(A.from({ blocks: { one: { id: "one", kind: "markdown", markdown } } }), (doc) =>
-    richFromSource(doc, "one"),
-  );
+  A.change(A.from({ blocks: { one: { markdown } } }), (doc) => richFromSource(doc, "one"));
 const checkedStates = (doc) =>
   A.spans(doc, path)
     .filter((span) => span.type === "block" && String(span.value.type) === "task-list-item")

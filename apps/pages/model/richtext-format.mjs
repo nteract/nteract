@@ -1,20 +1,13 @@
 // The rich-text block format and span helpers that need no codec. The browser
 // imports these without loading markdown-it or ProseMirror.
 import * as A from "@automerge/automerge/slim";
-import { storedFormUnsupported } from "./stored-form.mjs";
 
 export { safeUrl } from "./marks.mjs";
 
 export const RICH_FORMAT = "automerge-rich-text-v1";
 export const textPath = (id) => ["blocks", id, "richText"];
-export const isRich = (block) => block?.format === RICH_FORMAT;
-/** `block`, when it holds rich text. Every block this build or the one
- * before wrote does; one an earlier build stored as Markdown alone fails
- * closed. */
-export function requireRich(block) {
-  if (!isRich(block)) throw storedFormUnsupported("a block on this Page");
-  return block;
-}
+/** Whether a comment message stores rich text. Page blocks always do. */
+export const isRich = (message) => message?.format === RICH_FORMAT;
 // Code text is unformatted: ProseMirror's code_block allows no marks and a
 // Markdown fence can't express them. Marks a writer left on code text are not
 // read, so one stray mark can't make the whole Page unreadable.
@@ -44,11 +37,10 @@ const inlineParents = (parents = []) =>
  * paragraphs with whitespace text and trailing hard breaks. Any other marker
  * (heading, list item, quote, code block, table, rule) or embed (image,
  * dataframe, a node this build doesn't know) has a Markdown form, and so does
- * a hard break followed by text in its paragraph (`\` at the line end). A
- * block without rich text fails closed, as blockMarkdown does. */
+ * a hard break followed by text in its paragraph (`\` at the line end). */
 export function isBlankBlock(block) {
   let breakPending = false;
-  for (const span of A.spans(requireRich(block), ["richText"])) {
+  for (const span of A.spans(block, ["richText"])) {
     if (span.type === "text") {
       if (breakPending || span.value.trim()) return false;
       // In a blank block no mark is open before this run: only text, an
@@ -69,9 +61,7 @@ export function isBlankBlock(block) {
   return true;
 }
 export function richSize(block) {
-  return isRich(block)
-    ? new TextEncoder().encode(JSON.stringify(A.spans(block, ["richText"]))).length
-    : 0;
+  return new TextEncoder().encode(JSON.stringify(A.spans(block, ["richText"]))).length;
 }
 /** Whether `spans` open with a marker the editor wouldn't write: a plain
  * top-level paragraph marker before content, or as the only node (encode's

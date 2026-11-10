@@ -11,7 +11,7 @@ import {
 import { DATAFRAME_BLOCK, parseAssetPath, readDataframe } from "../shared/dataset-assets.mjs";
 import { decode, encode, schema } from "./wordgard-doc.mjs";
 import { treeMarkdown } from "./markdown-serializer.mjs";
-import { codeTextUnmarked, isRich } from "./richtext-format.mjs";
+import { codeTextUnmarked } from "./richtext-format.mjs";
 
 export const readTree = (block) => decode(codeTextUnmarked(A.spans(block, ["richText"]))).doc;
 export const richDoc = readTree;
@@ -19,7 +19,6 @@ export const pageSpans = encode;
 
 /** The first stored type a Markdown rewrite cannot reproduce. */
 export function markdownlessNode(block, pageId) {
-  if (!isRich(block)) return null;
   for (const span of A.spans(block, ["richText"])) {
     if (span.type !== "block") continue;
     const type = String(span.value.type),

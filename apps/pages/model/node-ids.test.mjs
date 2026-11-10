@@ -603,7 +603,6 @@ test("text a peer typed into a node deleted after a rule or dataframe reads as a
     const id = orderedBlockIds(doc)[0];
     const tree = schema.doc([Paragraph.create([Leaf.text("Intro")]), leaf, doomed()]);
     doc = A.change(doc, (draft) => {
-      draft.blocks[id].format = "automerge-rich-text-v1";
       draft.blocks[id].richText = "";
       A.updateSpans(draft, textPath(id), encode(tree), updateSpansConfig);
     });

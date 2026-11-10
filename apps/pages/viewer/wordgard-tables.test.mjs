@@ -31,9 +31,7 @@ const nativeTableSpans = (markdown) => encode(parseMarkdown(markdown));
 function fixture(source, initialDoc) {
   let doc =
     initialDoc ??
-    A.change(A.from({ blocks: { one: { id: "one", kind: "markdown", markdown: source } } }), (d) =>
-      richFromSource(d, "one"),
-    );
+    A.change(A.from({ blocks: { one: { markdown: source } } }), (d) => richFromSource(d, "one"));
   const observers = new Set();
   return {
     get doc() {

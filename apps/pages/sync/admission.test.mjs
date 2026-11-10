@@ -15,7 +15,7 @@ const who = (principal) => ({
   displayName: principal.slice(8),
   driver: "Browser",
 });
-const page = A.from({ blocks: { b1: { id: "b1", markdown: "One" } } });
+const page = A.from({ blocks: { b1: { position: "a0", richText: "One" } } });
 const changesOf = async (h, id, actor) =>
   A.getAllChanges(await h.document(id))
     .map((c) => A.decodeChange(c))

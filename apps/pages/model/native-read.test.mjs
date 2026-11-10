@@ -3,7 +3,6 @@ import test from "node:test";
 import * as A from "@automerge/automerge";
 import { projectReadContent } from "./read-content.mjs";
 import { blockMarkdown } from "./richtext-page.mjs";
-import { RICH_FORMAT } from "./richtext-format.mjs";
 import { nativeRead, readMarkdown, readKind, readText } from "./native-read.mjs";
 import fc from "fast-check";
 import { pageTreeArbitrary, toWordgardTree } from "../test/random-page-tree.mjs";
@@ -567,7 +566,7 @@ function page(spans) {
     A.from({
       page_id: pageId,
       blocks: {
-        one: { id: "one", position: "a0", kind: "markdown", format: RICH_FORMAT, richText: "" },
+        one: { position: "a0", richText: "" },
       },
     }),
     (doc) => {

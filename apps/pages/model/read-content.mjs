@@ -2,7 +2,6 @@ import { orderedBlockIds } from "./order.mjs";
 import { readableNodeIds } from "./node-ids.mjs";
 import { readableImageIds } from "./image-ids.mjs";
 import { DATAFRAME_TITLE_MAX, parseAssetPath, readDataframe } from "../shared/dataset-assets.mjs";
-import { requireRich } from "./richtext-format.mjs";
 import { headingAnchorsByBlock } from "./heading-anchors.mjs";
 import { quotableNodeType } from "./richtext-notices.mjs";
 import {
@@ -102,8 +101,7 @@ function indexNodes(doc) {
     headings = [],
     anchorsByBlock = headingAnchorsByBlock(doc);
   for (const blockId of orderedBlockIds(doc)) {
-    const block = requireRich(doc.blocks[blockId]),
-      tree = nativeRead(block, doc.page_id),
+    const tree = nativeRead(doc.blocks[blockId], doc.page_id),
       ids = readableNodeIds(doc, blockId, tree),
       imageIds = readableImageIds(doc, blockId, tree),
       anchors = blockAnchors(tree, anchorsByBlock.get(blockId) ?? []);
@@ -392,9 +390,9 @@ function projectedSlices(doc, nodes) {
       });
   }
   return slices.map(({ blockId, from, to, nodes: slice }) => {
-    const { richText: _rich, ...block } = doc.blocks[blockId];
     return {
-      ...block,
+      id: blockId,
+      position: doc.blocks[blockId].position,
       markdown: markdownFor(slice),
       partial: true,
       node_range: { block_id: blockId, from, to },
@@ -420,7 +418,7 @@ export function projectReadContent(doc, args = {}) {
         ? []
         : chosen.selection
           ? projectedSlices(doc, chosen.nodes)
-          : orderedIds.map((id) => projectedBlock(doc.blocks[id], doc.page_id)),
+          : orderedIds.map((id) => projectedBlock(doc, id)),
     outline,
     ...(chosen.selection
       ? { selection: chosen.selection }

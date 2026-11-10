@@ -86,7 +86,7 @@ const doc = A.change(A.from({ page_id: pageId, title: "Title", blocks: {} }), (d
     ["two", "## Plan\n\n## Getting lean: Automerge"],
   ];
   blocks.forEach(([id, markdown], index) => {
-    d.blocks[id] = { id, position: new A.RawString(`a${index}`), kind: "markdown", markdown };
+    d.blocks[id] = { position: new A.RawString(`a${index}`), markdown };
     richFromSource(d, id);
   });
 });

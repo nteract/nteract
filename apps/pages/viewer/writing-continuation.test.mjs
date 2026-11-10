@@ -77,18 +77,6 @@ test("readonly and closed sessions cannot continue writing, even after an earlie
   }
 });
 
-test("a non-editable empty block is not mistaken for a writable trailing paragraph", () => {
-  const current = session(),
-    oldId = orderedBlockIds(current.doc)[0];
-  current.change((doc) => {
-    doc.blocks[oldId].format = "unknown-document-format";
-  });
-  const id = writingContinuation(current);
-  assert.notEqual(id, oldId);
-  assert.deepEqual(orderedBlockIds(current.doc), [oldId, id]);
-  assert.equal(current.doc.blocks[oldId].format, "unknown-document-format");
-});
-
 test("only a Page with one empty paragraph is empty", () => {
   const page = (markdown) => projectPage(session(markdown).doc);
   assert.equal(isEmptyPage(page("")), true, "a new Page");
@@ -100,7 +88,4 @@ test("only a Page with one empty paragraph is empty", () => {
   const current = session("Before");
   writingContinuation(current);
   assert.equal(isEmptyPage(projectPage(current.doc)), false, "content and a blank paragraph");
-  const legacy = page("");
-  legacy.blocks[0] = { ...legacy.blocks[0], format: "markdown" };
-  assert.equal(isEmptyPage(legacy), false, "a block the rich editor doesn't render");
 });
