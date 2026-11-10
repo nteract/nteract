@@ -1,4 +1,5 @@
 import { identityProvider } from "./identity-provider.mjs";
+import { OAUTH_REFRESH_REUSE_SECONDS } from "./shared/oauth-grant.mjs";
 import {
   assetUploadCommand,
   checkAccountCommand,
@@ -377,17 +378,23 @@ ${claudeCodeOAuthCommand(origin)}
 \`\`\`
 
 Then run /mcp in Claude Code, choose pages, and authenticate in the browser.
-The shared-token warning below applies to Claude Code sessions that run at the
-same time.
+Claude Code sessions that run at the same time share that connection, as
+described below.
 
 How an OAuth connection lasts: access tokens expire after 10 minutes. Refresh
-tokens rotate: each one works once and is replaced on use. Newly approved
+tokens rotate: each one is replaced on use. Newly approved
 connections receive them, including clients that do not request offline_access.
 The grant expires 30 days after authorization, however often it refreshes.
 Nothing needs to run in the background: the client refreshes on its next use
 within those 30 days. After 30 days, authorize again.
 
-${part.oneProcessPerTokenSet}
+A client can keep one stored token set for several processes: Kilo Desktop
+beside the CLI, several worktrees, or several Claude Code sessions. When two of
+them refresh in the same moment, each gets its own tokens, because a refresh
+token can be used again for ${OAUTH_REFRESH_REUSE_SECONDS} seconds after its first use. Each process
+must read the stored tokens before it refreshes. A refresh token presented
+later than that is replay: Pages revokes the whole grant, and the person
+authorizes again. Do not copy a token set to another machine or another store.
 
 OAuth credentials work on /mcp and authenticated GET /whoami, not the JSON API,
 sharing API, or native sync. To add a local image, an OAuth client calls
@@ -1361,11 +1368,7 @@ deployment configuration rather than asking the human for an API key it can't us
     claudeConnectorParagraph: `Claude signs in with its own client ID metadata document, from which Pages
 reads its callback. In Claude's web, desktop or mobile app, add a custom
 connector with the server URL ${origin}/mcp and leave the client ID and secret
-empty. In Claude Code, for one session at a time:`,
-    oneProcessPerTokenSet: `Do not share one OAuth token set between processes. If two processes store
-the same tokens and refresh concurrently, Pages treats the second use of the
-refresh token as replay and revokes the whole grant. Do not use OAuth for
-several concurrent agents or CLI runs; use an API key there.`,
+empty. In Claude Code:`,
     kiloAuthorizeParagraph: `Run kilo mcp auth pages. The human follows the browser link, signs in, checks the
 account and permissions, and approves. If no browser opens, give the human the
 link Kilo prints; do not retrieve browser cookies or search for credentials.
@@ -1463,18 +1466,18 @@ Choose by how the client runs before investigating authentication:
   can share it, and nothing has to refresh it.
 - ChatGPT, Claude and other interactive clients that sign in with OAuth: add
   the endpoint and complete browser authorization. No API key is needed.
-- Kilo can also use OAuth, but only for one Kilo process at a time. See the
-  shared-token warning in the OAuth section.
+- Kilo can also use OAuth. Its processes share one stored connection; see the
+  Kilo OAuth recipe.
 - Other clients: use an ${key.name} if they support bearer headers. For OAuth,
   this deployment accepts ${acceptedClients},
   and the configured Kilo client. Dynamic client registration is not enabled;
   do not try unrelated login flows.`,
-    kiloOAuthHeadingAndIntro: `### Kilo Desktop / CLI (OAuth, one process at a time)
+    kiloOAuthHeadingAndIntro: `### Kilo Desktop / CLI (OAuth)
 
-Use this for a single Kilo process. If several Kilo processes share one set of
-OAuth credentials (Kilo Desktop plus the CLI, or several worktrees running at
-once), concurrent refreshes can revoke the grant. Use the API-key recipe above
-for those setups.`,
+Use this when you don't want to manage a key. Kilo Desktop, the CLI and every
+worktree share one set of OAuth credentials, so one authorization serves all of
+them. The grant ends after 30 days and needs a person to renew it; the API-key
+recipe above does not.`,
     kiloConfigMigration: `If migrating the existing Pages entry, remove its Authorization header and
 replace oauth: false with the oauth object above. Keep X-Pages-Driver and any
 unrelated headers/settings. Do not delete the old key file: removing the header
@@ -1772,12 +1775,7 @@ use.`,
 its callback. In Claude's web, desktop or mobile app, add a custom connector
 with the server URL ${origin}/mcp and leave the client ID and
 secret empty. In the connector dialog the defaults are right: "Sign in now" and
-"Use Claude's published identity". In Claude Code, for one session at a time:`,
-    oneProcessPerTokenSet: `Do not share one OAuth token set between processes. If two processes store the
-same tokens and refresh concurrently, Pages treats the second use of the refresh
-token as replay and revokes the whole grant. Run one Kilo process, or one Claude
-Code session, against this deployment at a time. If the grant is revoked,
-authorize again.`,
+"Use Claude's published identity". In Claude Code:`,
     kiloAuthorizeParagraph: `Run kilo mcp auth pages. The human follows the browser link, signs in, checks
 the account and permissions, and approves. If no browser opens, give the human
 the link Kilo prints; do not retrieve browser cookies or search for credentials.
@@ -1881,9 +1879,8 @@ account (principal, display_name). If the account is unexpected, check it with
 the human.`,
     kiloOAuthHeadingAndIntro: `### Kilo Desktop / CLI (OAuth)
 
-Run one Kilo process against this deployment at a time. If several Kilo
-processes share one set of OAuth credentials (Kilo Desktop plus the CLI, or
-several worktrees running at once), concurrent refreshes revoke the grant.`,
+Kilo Desktop, the CLI and every worktree share one set of OAuth credentials, so
+one authorization serves all of them.`,
     kiloConfigMigration: `If the config already has a Pages entry for this deployment, remove its
 Authorization header and replace its oauth setting with the object above. A
 request that still sends that header is refused with api_keys_unsupported. Keep

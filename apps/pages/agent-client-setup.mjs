@@ -170,7 +170,7 @@ export function claudeCodeAddCommand(origin) {
   return `claude mcp add-json --scope user pages '${entry}'`;
 }
 
-/** The Claude Code command that connects by OAuth, for one session at a time.
+/** The Claude Code command that registers the server for OAuth.
  * Claude Code authenticates in the browser after /mcp. */
 export function claudeCodeOAuthCommand(origin) {
   return `claude mcp add --transport http pages ${origin}/mcp`;
