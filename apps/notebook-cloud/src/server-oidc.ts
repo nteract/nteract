@@ -1114,7 +1114,8 @@ async function refreshSession(
  *
  * Returns false when the delete matched nothing: the row changed after `row`
  * was read. The owner may have saved its renewal in that gap, so the caller
- * must read the row again before it answers.
+ * answers with a session or a sign-out only from a fresh read of the row.
+ * Without one it backs off with `ProviderUnavailable`.
  */
 async function endAbandonedSession(
   db: D1Database,
