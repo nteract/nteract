@@ -12,6 +12,7 @@ import {
   setupPrompt,
 } from "../agent-client-setup.mjs";
 import { connectAgentResponse } from "../connect-agent.mjs";
+import { identityProvider } from "../identity-provider.mjs";
 import { FAVICON_LINK } from "../shared/favicon.mjs";
 
 test("private key recipe keeps secrets out of output and rejects empty input without overwriting", () => {
@@ -121,7 +122,7 @@ with tempfile.TemporaryDirectory() as directory:
 });
 
 test("setup prompt requires account-safe selection and session verification", () => {
-  const prompt = setupPrompt("https://pages.example");
+  const prompt = setupPrompt("https://pages.example", identityProvider());
   for (const fact of [
     "Inspect filenames, not secrets",
     "ask me before reusing or replacing an existing key",

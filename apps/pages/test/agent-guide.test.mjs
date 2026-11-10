@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import worker from "../worker/index.mjs";
-import { agentGuide, guideUploadCommand } from "../agent-guide.mjs";
+import { agentGuide, guidePartNames, guideUploadCommand } from "../agent-guide.mjs";
 import { issueAssetUpload } from "../worker/asset-uploads.mjs";
 import { MCP_ERROR_CODES, tools } from "../mcp.mjs";
 import { CLIENT_ERROR_CODES, RETRYABLE_SERVER_CODES } from "../worker/auth.mjs";
@@ -12,6 +12,7 @@ import { STATUS_FALLBACK_CODES } from "../worker/project-api.mjs";
 import { READ_ERROR_CODES } from "../worker/tool-reads.mjs";
 import { CHANGE_ERROR_CODES } from "../worker/tool-changes.mjs";
 import { PRODUCT_NAME } from "../shared/product.mjs";
+import { identityProvider } from "../identity-provider.mjs";
 import {
   checkAccountCommand,
   claudeCodeAddCommand,
@@ -67,8 +68,10 @@ test("GET llms.txt is readable without authentication and explains the supported
     guide.indexOf("## Error codes"),
     guide.indexOf("## Connect your agent"),
   );
+  // api_keys_unsupported belongs to a deployment with no API keys; the
+  // Kilo guide's error list holds it (test/identity-provider.test.mjs).
   for (const code of new Set([
-    ...CLIENT_ERROR_CODES,
+    ...CLIENT_ERROR_CODES.filter((code) => code !== "api_keys_unsupported"),
     ...RETRYABLE_SERVER_CODES,
     ...HOST_REFUSAL_CODES,
     ...Object.keys(MOVE_STATUS),
@@ -444,4 +447,50 @@ test("the guide's curl line and create_page_asset_upload's example send the same
   // Every -H value is a whole header: curl drops one without a colon.
   for (const [, value] of example.matchAll(/-H '([^']*)'/g)) assert.match(value, /^[A-Za-z-]+: \S/);
   assert.match(example, /-H 'Authorization: Pages-Upload <token>'/);
+});
+
+test("the guide for a deployment with no API keys lists every client error code and keeps the same sections", () => {
+  const kilo = {
+    NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.example",
+    PAGES_KILO_APP_URL: "https://kilo.example",
+  };
+  const keyed = { NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.example" };
+  const guide = agentGuide(kilo);
+  for (const marker of ["## Quick start", "## Error codes", "auth_required", "invalid_retry_token"])
+    assert.ok(guide.indexOf(marker) < 12_000, marker);
+  const codeList = guide.slice(
+    guide.indexOf("## Error codes"),
+    guide.indexOf("## Connect your agent"),
+  );
+  // invalid_api_key is the keyed provider's refusal; the Kilo list holds
+  // api_keys_unsupported in its place.
+  for (const code of CLIENT_ERROR_CODES.filter((code) => code !== "invalid_api_key"))
+    assert.match(codeList, new RegExp(`\\b${code}\\b`), code);
+  assert.doesNotMatch(codeList, /invalid_api_key/);
+  // Every top-level section is in both variants, in the same order.
+  const sections = (text) => [...text.matchAll(/^## .+$/gm)].map(([heading]) => heading);
+  assert.deepEqual(sections(guide), sections(agentGuide(keyed)));
+  // The OAuth sections keep their order.
+  const order = [
+    "### Name each session",
+    "### ChatGPT / cloud connection (OAuth)",
+    "### Kilo Desktop / CLI (OAuth)",
+  ].map((heading) => guide.indexOf(heading));
+  assert.ok(order.every((index) => index > 0));
+  assert.deepEqual(
+    [...order].sort((a, b) => a - b),
+    order,
+  );
+});
+
+test("both provider variants of the guide define the same passages", () => {
+  const origin = "https://pages.example";
+  const names = guidePartNames({
+    origin,
+    provider: identityProvider({ NOTEBOOK_CLOUD_PUBLIC_ORIGIN: origin }),
+    acceptedClients: "",
+    uploadCommand: guideUploadCommand(origin),
+  });
+  assert.ok(names.keyed.length > 20);
+  assert.deepEqual([...names.keyed].sort(), [...names.oauthOnly].sort());
 });

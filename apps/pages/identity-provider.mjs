@@ -2,15 +2,22 @@
  *
  * Everything Pages says or checks that depends on the provider comes from this
  * description: its name, the credential a coding agent sends, where a person
- * creates one, the file and variables the setup recipes use, and the company
- * domains an owner may open a Page to. The agent guide (/llms.txt), the connect
- * page, the setup recipes and the auth refusals read it; none of them names a
- * provider itself (test/identity-provider.test.mjs holds them to that).
+ * creates one, the file and variables the setup recipes use, whether the
+ * provider vouches for an email address, and the company domains an owner may
+ * open a Page to. The agent guide (/llms.txt), the connect page, the setup
+ * recipes and the auth refusals read it; none of them names a provider itself
+ * (test/identity-provider.test.mjs holds them to that).
  *
- * Anaconda is the only provider. A second one adds its description here and
- * `identityProvider` picks between them from the deployment's settings. A
- * provider with no long-lived keys needs `apiKey` to be optional, and the guide
- * and connect page to leave out their API-key sections for it. */
+ * Two providers exist. A deployment with `PAGES_KILO_APP_URL` set signs in
+ * with Kilo accounts; every other deployment signs in with Anaconda.
+ * `identityProvider` picks between them from the deployment's settings.
+ *
+ * `apiKey` is null for a provider with no long-lived keys. Readers of the
+ * description branch on it: the guide and the connect page leave out their
+ * API-key sections, the setup prompt asks for OAuth only, and `authenticate`
+ * refuses a bearer that is not a Pages OAuth access token without asking the
+ * provider about it. A reader that needs a key's name or path reads it from
+ * `apiKey` only after checking it is not null. */
 
 // The production Anaconda account service. A deployment that verifies keys
 // anywhere else has no known page where a person creates one.
@@ -68,7 +75,27 @@ const anacondaConnectInstructions = (createUrl) =>
     : `<p>Ask the deployment owner for the API-key setup instructions for this identity provider. This deployment does not use the standard production Anaconda key endpoint.</p>
       <p class="setup-note">Production and staging credentials are separate. Use a key for this deployment's provider.</p>`;
 
-export function identityProvider(env = {}) {
+const KILO = Object.freeze({
+  id: "kilo",
+  /** What people call the provider, in running text. */
+  label: "Kilo",
+  /** Email domains an owner may open a Page to for viewing. Kilo has none. */
+  companyDomains: Object.freeze([]),
+  /** The long-lived credential coding agents and scripts send as a bearer.
+   * Null when the provider has no such credential: agents connect by OAuth. */
+  apiKey: null,
+  /** Whether accounts carry an email address the provider has verified. An
+   * invitation by email can be accepted only where this is true. */
+  verifiedEmail: false,
+});
+
+/** The description of the provider this deployment signs in with. */
+export function identityProvider(env) {
+  if (env?.PAGES_KILO_APP_URL) return KILO;
+  return anacondaProvider(env ?? {});
+}
+
+function anacondaProvider(env) {
   const createUrl = ANACONDA_PRODUCTION_USERINFO.includes(
     env.NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL,
   )
@@ -81,6 +108,9 @@ export function identityProvider(env = {}) {
     /** Email domains an owner may open a Page to for viewing. A deployment
      * turns each on with PAGES_COMPANY_VIEW_DOMAINS; it cannot add others. */
     companyDomains: ["anaconda.com"],
+    /** Whether accounts carry an email address the provider has verified. An
+     * invitation by email can be accepted only where this is true. */
+    verifiedEmail: true,
     /** The long-lived credential coding agents and scripts send as a bearer. */
     apiKey: {
       name: "Anaconda API key",

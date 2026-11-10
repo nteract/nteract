@@ -1165,6 +1165,24 @@ whether a handoff ran (`connectorHandoff`). On the host,
 shows the new slot registering its connections before the old one logs
 `Initiating graceful shutdown`.
 
+## Identity provider
+
+A deployment signs people and agents in with Anaconda, unless
+`PAGES_KILO_APP_URL` is set. That setting turns on the Kilo redirect sign-in
+([worker/kilo-handoff.mjs](worker/kilo-handoff.mjs)) and also selects Kilo as
+the identity provider ([identity-provider.mjs](identity-provider.mjs)). A Kilo
+deployment differs in three ways:
+
+- It has no API keys. The agent guide (`/llms.txt`) and the connect page
+  (`/connect`) describe OAuth only, and agents connect their MCP client by
+  OAuth.
+- A bearer that does not have the form of a credential Pages issues (an OAuth
+  access token or an upload capability) is refused with `api_keys_unsupported`
+  (401) before the Worker makes any outbound request. A Kilo credential is
+  never forwarded to another service.
+- Email invitations cannot be accepted, because Kilo accounts carry no
+  verified email.
+
 ## Outbound requests
 
 The OAuth server for `/mcp` reads a client's client ID metadata document from

@@ -77,7 +77,7 @@ const mcpSession = async (request, principal) => {
   return session ? { session } : {};
 };
 
-/** Where a person gets an API key: absolute from the configured public
+/** Where a person connects an agent: absolute from the configured public
  * origin, or the bare path when none is configured. Never the request URL. */
 function connectLink(env) {
   try {
@@ -87,16 +87,33 @@ function connectLink(env) {
   }
 }
 
-/** The refusal for a request that presents no credential at all. It names the
- * header API clients send and where a person gets a key. */
-export const credentialRequired = (env) =>
-  withAdmissionReason(
+/** The refusal for a request that presents no credential at all. For a
+ * provider with API keys it names the header API clients send and where a
+ * person gets a key. For one without, it sends the client to OAuth. */
+export const credentialRequired = (env) => {
+  const key = identityProvider(env).apiKey;
+  return withAdmissionReason(
     new HttpError(
       401,
-      `Send Authorization: Bearer <${identityProvider(env).apiKey.name}>; see ${connectLink(env)}`,
+      key
+        ? `Send Authorization: Bearer <${key.name}>; see ${connectLink(env)}`
+        : `This deployment has no API keys. Connect your MCP client by OAuth; see ${connectLink(env)}`,
       "auth_required",
     ),
     "credential_missing",
+  );
+};
+
+/** The refusal for a bearer that is not a Pages OAuth access token, on a
+ * deployment whose provider has no API keys. */
+const apiKeysUnsupported = (env) =>
+  withAdmissionReason(
+    new HttpError(
+      401,
+      `This deployment does not accept API keys. Connect your MCP client by OAuth; see ${connectLink(env)}`,
+      "api_keys_unsupported",
+    ),
+    "credential_invalid",
   );
 
 export function requireSameOrigin(request, env) {
@@ -218,6 +235,9 @@ export async function authenticate(request, env) {
         env,
       );
     }
+    // The provider has no API keys, so the bearer is not one. Refuse it here:
+    // verifyApiKey would send the token to an account service that cannot know it.
+    if (!identityProvider(env).apiKey) throw apiKeysUnsupported(env);
     let identity;
     try {
       identity = await verifyApiKey(request, env, { token, authorization });
@@ -328,6 +348,7 @@ export function requireWrite(identity) {
 export const CLIENT_ERROR_CODES = Object.freeze([
   "auth_required",
   "invalid_api_key",
+  "api_keys_unsupported",
   "unknown_operation",
   "invalid_arguments",
   "invalid_page_id",

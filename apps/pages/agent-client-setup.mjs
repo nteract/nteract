@@ -1,8 +1,9 @@
 // Public recipes only. Neither the guide nor /connect handles a credential.
 import { identityProvider } from "./identity-provider.mjs";
 
-// The recipes use only the provider's fixed names, which no deployment setting
-// changes. A provider chosen per deployment would make these functions of it.
+// These recipes are the keyed provider's: they use its fixed key names, which
+// no deployment setting changes. A provider with no API key (`apiKey: null`)
+// uses none of them, and its readers never call them.
 const key = identityProvider().apiKey;
 export const keyFile = key.keyFile;
 
@@ -41,7 +42,7 @@ except OSError:
     sys.exit("Cannot read the Pages key file. Check the chosen path and permissions.")
 if not key or any(c.isspace() for c in key):
     sys.exit("Invalid key file. Save only the raw API key privately.")
-request = urllib.request.Request(${JSON.stringify(origin + "/whoami")}, headers={"Authorization": "Bearer " + key})
+request = urllib.request.Request(${JSON.stringify(origin + "/whoami")}, headers={"Authorization": "Bearer " + key, "User-Agent": "pages-account-check"})
 try:
     with urllib.request.build_opener(NoRedirect).open(request, timeout=30) as response:
         result = json.load(response)
@@ -64,8 +65,13 @@ except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError, K
 PY`;
 }
 
-export function setupPrompt(origin) {
+export function setupPrompt(origin, provider) {
+  if (!provider.apiKey) return oauthSetupPrompt(origin, provider);
   return `Configure Pages for ${origin}/ using the agent guide at ${origin}/llms.txt. Coding agents, CLIs, and scripts connect with an ${key.name}; ChatGPT and other interactive cloud clients use OAuth. Inspect filenames, not secrets, in ~/.config/pages; ask me before reusing or replacing an existing key. For multiple accounts, use an account-specific filename such as ${keyFile}-rgbkrk consistently in the save command and client recipe; ${keyFile} remains the default. Ask me early to save an API key privately through ${origin}/connect, or to complete browser authorization, as needed. Prepare the non-secret settings while I do that. Do not ask me to paste credentials into chat or enable an empty-key connection. Preserve my other client settings. Reload MCP or start a new session, then call list_pages from that session to verify the connection. Configuration alone is not verification.`;
+}
+
+function oauthSetupPrompt(origin, provider) {
+  return `Configure Pages for ${origin}/ using the agent guide at ${origin}/llms.txt. This deployment has no API keys. It connects by OAuth with a ${provider.label} account. Add the Pages MCP server to my client with the recipe for that client. Ask me early to complete the browser authorization. Prepare the settings while I do that. Do not ask me to paste credentials into chat, and do not look for any other credential. Preserve my other client settings. Reload MCP or start a new session, then call list_pages from that session to verify the connection. Configuration alone is not verification.`;
 }
 
 export function kiloConfig(origin) {
@@ -162,4 +168,10 @@ export function claudeCodeAddCommand(origin) {
     headersHelper: "<ABSOLUTE_PATH_TO_PYTHON3> <ABSOLUTE_PATH_TO_CLAUDE_CODE_HEADERS_PY>",
   });
   return `claude mcp add-json --scope user pages '${entry}'`;
+}
+
+/** The Claude Code command that connects by OAuth, for one session at a time.
+ * Claude Code authenticates in the browser after /mcp. */
+export function claudeCodeOAuthCommand(origin) {
+  return `claude mcp add --transport http pages ${origin}/mcp`;
 }
