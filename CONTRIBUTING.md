@@ -184,7 +184,10 @@ as it is:
   `python -I -m`, without falling back to global executables.
 
 A missing `uv` or a failed sync fails the check and says so apart from lint
-findings. `--fix` applies available formatting and lint fixes. To check
+findings. The lint environment exists on macOS and Linux, the platforms
+`tool.uv.environments` covers. On other platforms `uv sync` has nothing to
+install, so lint runs `ruff` and `ty` from the environment uv selects and you
+prepare that one yourself. `--fix` applies available formatting and lint fixes. To check
 without fixing:
 
 ```bash

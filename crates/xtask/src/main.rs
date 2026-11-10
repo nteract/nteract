@@ -508,9 +508,10 @@ fn path_with_corepack_shims() -> Option<std::ffi::OsString> {
                 .is_ok_and(|status| status.success());
         if !enabled {
             eprintln!(
-                "Warning: could not create Corepack shims in {}; a nested `pnpm` resolves from PATH.",
+                "Warning: `corepack enable --install-directory {}` failed.",
                 shim_dir.display()
             );
+            eprintln!("A nested `pnpm` resolves from PATH and may not be the pinned version.");
             return None;
         }
     }
@@ -3922,12 +3923,23 @@ fn default_dev_vite_port() -> Option<u16> {
 /// development and stay as they are.
 const PYTHON_LINT_ENV: &str = "target/xtask/python-lint-env";
 
-/// A `uv` command that targets the lint environment.
+/// Whether lint owns its Python environment on this platform.
+///
+/// `tool.uv.environments` in `pyproject.toml` covers macOS and Linux, and
+/// `uv sync` refuses any other platform. There, lint cannot build its own
+/// environment: it runs the tools from the environment uv selects, which
+/// someone has to prepare by hand.
+const LINT_OWNS_PYTHON_ENV: bool = cfg!(any(target_os = "macos", target_os = "linux"));
+
+/// A `uv` command for Python lint, aimed at the lint environment where lint
+/// owns one.
 fn python_lint_uv() -> Command {
     let mut command = Command::new("uv");
-    command
-        .env("UV_PROJECT_ENVIRONMENT", PYTHON_LINT_ENV)
-        .env_remove("VIRTUAL_ENV");
+    if LINT_OWNS_PYTHON_ENV {
+        command
+            .env("UV_PROJECT_ENVIRONMENT", PYTHON_LINT_ENV)
+            .env_remove("VIRTUAL_ENV");
+    }
     command
 }
 
@@ -4040,6 +4052,11 @@ fn cmd_lint(fix: bool) {
         if !uv_available {
             failed = true;
             eprintln!("Python lint requires uv. Install uv before retrying.");
+        } else if !LINT_OWNS_PYTHON_ENV {
+            println!("Python lint uses the existing uv environment on this platform.");
+            if !lint_python(fix) {
+                failed = true;
+            }
         } else {
             println!("=== Python (lint environment) ===");
             let synced = sync_python_lint_env();
