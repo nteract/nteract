@@ -6,7 +6,7 @@ name: Pages experiment
 on:
   pull_request:
     paths:
-      - docs/memos/authenticated-automerge-app-substrate/experiment/**
+      - apps/pages/**
       - apps/notebook-cloud/src/**
       - packages/local-oidc/src/**
       - packages/runtimed/src/scope-capabilities.ts
@@ -17,7 +17,7 @@ on:
   push:
     branches: [main]
     paths:
-      - docs/memos/authenticated-automerge-app-substrate/experiment/**
+      - apps/pages/**
       - apps/notebook-cloud/src/**
       - packages/local-oidc/src/**
       - packages/runtimed/src/scope-capabilities.ts
@@ -44,13 +44,13 @@ jobs:
     timeout-minutes: 15
     defaults:
       run:
-        working-directory: docs/memos/authenticated-automerge-app-substrate/experiment
+        working-directory: apps/pages
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
           sparse-checkout: |
-            docs/memos/authenticated-automerge-app-substrate/experiment
+            apps/pages
             apps/notebook-cloud/src
             packages/runtimed/src
             packages/local-oidc/src
@@ -61,16 +61,14 @@ jobs:
         with:
           node-version: "24"
           package-manager-cache: false
-      # No root dependency installation: the fixture's tsx configuration resolves
-      # identity.ts's capability re-export to the actual scope-capabilities source.
-      # Shared Mermaid rendering and sharing UI use fixture-pinned browser dependencies.
+      # No root dependency installation: tsconfig.json resolves identity.ts's
+      # capability re-export to the actual scope-capabilities source. Shared
+      # Mermaid rendering and sharing UI use Pages' own pinned browser dependencies.
       # Keep checkout paths and filters in sync with imported verifier and UI sources.
-      - name: Prepare pinned upstream packages and locked fixture dependencies
+      - name: Prepare pinned upstream packages and locked dependencies
         run: npm run setup
-      - name: Test provider fixtures and the pinned Repo integration
-        run: npm test
       - name: Build native Pages Worker and browser
-        run: npm run build --workspace @nteract/pages-native-experiment
+        run: npm run build
 
   # Builds the release bundle from a tree no test has run in, so the receipt
   # can say source_dirty false. stageArtifacts checks every file against the
@@ -84,13 +82,13 @@ jobs:
       contents: read
     defaults:
       run:
-        working-directory: docs/memos/authenticated-automerge-app-substrate/experiment
+        working-directory: apps/pages
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
           sparse-checkout: |
-            docs/memos/authenticated-automerge-app-substrate/experiment
+            apps/pages
             apps/notebook-cloud/src
             packages/runtimed/src
             packages/local-oidc/src
@@ -101,12 +99,11 @@ jobs:
         with:
           node-version: "24"
           package-manager-cache: false
-      - name: Prepare pinned upstream packages and locked fixture dependencies
+      - name: Prepare pinned upstream packages and locked dependencies
         run: npm run setup
       - name: Build native Pages Worker and browser
-        run: npm run build --workspace @nteract/pages-native-experiment
+        run: npm run build
       - name: Stage and verify the release bundle
-        working-directory: docs/memos/authenticated-automerge-app-substrate/experiment/pages
         env:
           RELEASE_DIR: ${{ runner.temp }}/pages-release
           SOURCE_SHA: ${{ github.sha }}
@@ -165,13 +162,13 @@ jobs:
         shard: [1, 2, 3, 4]
     defaults:
       run:
-        working-directory: docs/memos/authenticated-automerge-app-substrate/experiment
+        working-directory: apps/pages
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
           sparse-checkout: |
-            docs/memos/authenticated-automerge-app-substrate/experiment
+            apps/pages
             apps/notebook-cloud/src
             packages/runtimed/src
             packages/local-oidc/src
@@ -182,9 +179,9 @@ jobs:
         with:
           node-version: "24"
           package-manager-cache: false
-      - name: Prepare pinned upstream packages and locked fixture dependencies
+      - name: Prepare pinned upstream packages and locked dependencies
         run: npm run setup
       - name: Test native Pages model, policy, and MCP
         env:
           NODE_OPTIONS: --test-shard=${{ matrix.shard }}/${{ strategy.job-total }}
-        run: npm test --workspace @nteract/pages-native-experiment
+        run: npm test

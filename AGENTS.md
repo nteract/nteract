@@ -34,10 +34,10 @@ in both products. Name the product and its state owner when describing a change.
   diagrams, tables, task lists, interactive dataframes, and passage comments.
   It is notebook-like, with its own editor, document model, host, HTTP API, and
   MCP server. Pages currently displays code; notebooks execute it. Projects
-  organize Pages. Its source remains under the original infrastructure
-  experiment directory; start with the [Pages guide](docs/memos/authenticated-automerge-app-substrate/experiment/pages/README.md)
-  and [scoped instructions](docs/memos/authenticated-automerge-app-substrate/experiment/pages/AGENTS.md).
-  Pages work starts at [DIRECTION.md](docs/memos/authenticated-automerge-app-substrate/experiment/pages/DIRECTION.md).
+  organize Pages. Its source is in `apps/pages`, with its own npm lockfile; start with
+  the [Pages guide](apps/pages/README.md) and
+  [scoped instructions](apps/pages/AGENTS.md).
+  Pages work starts at [DIRECTION.md](apps/pages/DIRECTION.md).
 - **Sift** is the data explorer and table UI used by notebooks and Pages, also
   available as a standalone library. Start with [its guide](packages/sift/README.md).
 - **Runtime and client libraries** support notebook execution and programmatic
