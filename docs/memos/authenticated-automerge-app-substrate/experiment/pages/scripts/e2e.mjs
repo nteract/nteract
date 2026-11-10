@@ -8,7 +8,7 @@
 // Two suite kinds:
 // - `script`: a smoke that expects a running local Wordgard fixture. The runner
 //   stages dist/ into a temporary runtime, starts `celld dev` with loopback OIDC
-//   and the Page8 persistence flags, and points PAGES_ORIGIN at it.
+//   and its persistence flags, and points PAGES_ORIGIN at it.
 // - `harness`: a self-hosting harness (local-sharing-e2e.mjs mode or
 //   local-oauth-e2e.mjs). It starts its own fixture Worker and celld; the runner
 //   passes --skip-build and PAGES_E2E_OUTPUT.

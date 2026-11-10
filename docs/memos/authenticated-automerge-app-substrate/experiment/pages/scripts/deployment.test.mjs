@@ -1189,7 +1189,7 @@ test("fresh Page10 installation owns its origin, storage, runtime and service", 
   );
   assert.match(unit, /--listen 127[.]0[.]0[.]1:9480 --internal-listen 127[.]0[.]0[.]1:19480/);
   // Each service starts from its own installed copy of the firewall helper and
-  // profiles, so frozen Page9 keeps the copy that qualified it.
+  // profiles, so installing one target never changes another's copy.
   assert.match(
     unit,
     /ExecStartPre=\+\/usr\/bin\/node \/opt\/nteract-page10\/firewall[.]mjs --target page10\n/,

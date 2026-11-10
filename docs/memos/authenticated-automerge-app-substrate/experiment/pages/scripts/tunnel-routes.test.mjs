@@ -382,3 +382,31 @@ test("the gateway answers every GATEWAY request itself and serves APP from the s
   for (const path of ["/api/nope", LINK_PREVIEW_PATH, "/internal/create"])
     assert.equal((await send("GET", path)).catchAll, true, path);
 });
+
+test("every target's ingress pattern refuses private routes, extra segments and malformed Page IDs", () => {
+  const page = "/p/12345678-1234-4123-8123-123456789abc";
+  for (const target of QUALIFIED_TARGETS) {
+    const pattern = new RegExp(/^    path: (.+)$/m.exec(routesFor(target))[1]);
+    for (const pathname of [page, page + "/", "/api/pages/register", "/llms.txt"])
+      assert.equal(pattern.test(pathname), true, target + " admits " + pathname);
+    for (const pathname of [
+      "/state",
+      "/internal/create",
+      "/internal/register",
+      "/dev/oidc/authorize",
+      "/api/pages",
+      "/api/pages/register/extra",
+      "/api/other",
+      "/api/auth/other",
+      "/llms.txt/extra",
+      "/llmsXtxt",
+      "/p/not-a-page",
+      page + "/private",
+      page + "x",
+      // A Page ID is a v4 UUID: the version and variant digits are checked.
+      page.replace("-4123-", "-5123-"),
+      page.replace("-8123-", "-7123-"),
+    ])
+      assert.equal(pattern.test(pathname), false, target + " refuses " + pathname);
+  }
+});
