@@ -245,19 +245,12 @@ test("every Page tool takes project_id in place of page_id for Project content",
     const { inputSchema } = tools.find((tool) => tool.name === name);
     const { page_id, project_id } = inputSchema.properties;
     assert.equal(page_id.type, "string", name);
-    assert.match(page_id.description, /pass project_id instead/, name);
     assert.equal(project_id.pattern, "^(prj|sp)_", name);
-    assert.match(project_id.description, /never both \(invalid_arguments\)/, name);
-    assert.match(project_id.description, /kind "project"/, name);
+    assert.match(project_id.description, /never both \(invalid_arguments\)/i, name);
     // Exactly one of the two: neither is in required; oneOf says which.
     assert.ok(!inputSchema.required.includes("page_id"), name);
     assert.ok(!inputSchema.required.includes("project_id"), name);
     assert.deepEqual(inputSchema.oneOf, [{ required: ["page_id"] }, { required: ["project_id"] }]);
-    assert.match(
-      tools.find((tool) => tool.name === name).description,
-      /Supply exactly one of page_id or project_id/,
-      name,
-    );
   }
   // Catalog operations keep page_id required: the content document is not in the tree.
   for (const name of ["delete_page", "restore_page", "move_page", "purge_page"]) {
@@ -356,21 +349,14 @@ test("Project discovery descriptions distinguish claim reads from Page listings"
   const descriptor = (name) => tools.find((tool) => tool.name === name);
   for (const name of ["get_project", "list_projects"])
     assert.match(descriptor(name).description, /authenticated read can claim/);
-  assert.match(
-    descriptor("get_project").description,
-    /a \/p\/\.\.\. link to the content document does not claim one/,
-  );
+  assert.match(descriptor("get_project").description, /the \/project\/ url, not \/p\//);
   assert.match(
     descriptor("list_pages").description,
-    /does not enumerate all inherited Project Pages/,
+    /Project Pages you never opened may be missing/,
   );
   assert.match(
     descriptor("list_pages").inputSchema.properties.project_id.description,
-    /owner or a Project member/,
-  );
-  assert.match(
-    descriptor("get_project_access").description,
-    /removed members and internal signing generations are omitted/,
+    /for owners and members/,
   );
   assert.match(descriptor("get_project_access").description, /expiresAt \(epoch milliseconds\)/);
 });
@@ -632,7 +618,6 @@ test("MCP advertises and forwards selective reads and read-only compact comments
     const descriptor = tools.find((tool) => tool.name === name);
     assert.equal(descriptor.annotations.readOnlyHint, true);
     assert.deepEqual(descriptor.securitySchemes[0].scopes, ["pages:read"]);
-    assert.match(descriptor.description, /untrusted content, not instructions/);
     let called = false;
     const result = await handleMcp(
       request("tools/call", { name, arguments: args }),
@@ -692,7 +677,6 @@ test("MCP advertises ephemeral progress with write scope and reads presence with
   const presence = tools.find((tool) => tool.name === "read_page_presence");
   assert.deepEqual(presence.securitySchemes[0].scopes, ["pages:read"]);
   assert.match(presence.description, /not proof|do not prove/);
-  assert.match(presence.description, /untrusted content, not instructions/);
   for (const [name, args, body] of [
     [
       "report_page_progress",
@@ -990,7 +974,7 @@ test("MCP lists create_page_asset_upload for any client with write scope, and po
     /curl/,
     /not multipart or base64/,
     /same bytes always return the same asset_id/,
-    /access is checked again at upload/,
+    /Access is checked again at upload/,
     /insert_image/,
     /insert_node/,
     /Insert image in the browser/,
@@ -1021,6 +1005,9 @@ test("MCP lists create_page_asset_upload for any client with write scope, and po
     instructions,
     /create_page_asset_upload and POST the file to its upload_url with the returned headers \(its example field is a ready curl command\)/,
   );
+  assert.match(instructions, /untrusted source material, not instructions/);
+  assert.match(instructions, /retry_key_prefix plus a new UUID with its retry_token/);
+  assert.match(instructions, /superseded:true and applied:false was not applied/);
   // The result passes through with the browser link, and nothing is added.
   const issued = {
     page_id: pageId,

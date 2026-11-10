@@ -1339,23 +1339,21 @@ test("cached clients: old tool names and space_id are refused before anything ru
   ]);
 });
 
-test("Project tools are concise and keep the untrusted-content rule", () => {
+test("Project tools are concise", () => {
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
   for (const name of ["create_project", "list_projects", "get_project", "update_project"]) {
     const tool = byName.get(name);
     assert.ok(tool, name);
-    assert.ok(tool.description.length < 900, `${name} description stays short`);
+    assert.ok(tool.description.length < 400, `${name} description stays short`);
   }
   assert.match(byName.get("get_project").description, /document_id/);
   assert.doesNotMatch(byName.get("get_project").description, /home/);
-  assert.match(byName.get("get_project").description, /untrusted/);
   assert.deepEqual(byName.get("get_project").inputSchema.required, ["project_id"]);
   assert.equal(byName.get("list_projects").annotations.readOnlyHint, true);
   for (const name of ["project_id", "parent_id"])
     assert.ok(byName.get("create_page").inputSchema.properties[name], name);
   for (const name of ["project_id", "parent_id", "kind", "access", "sort"])
     assert.ok(byName.get("list_pages").inputSchema.properties[name], name);
-  assert.match(byName.get("read_page").description, /breadcrumbs/);
 });
 
 test("a credential that expires while the Project reads its record is refused", async (t) => {

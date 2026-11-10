@@ -7,6 +7,7 @@ import {
   MARK_SYNTAX,
   NODE_OPERATIONS,
   checkCoverage,
+  markdownRules,
   markdownSyntax,
   pageLinks,
   richContentGuide,
@@ -45,25 +46,22 @@ test("a block with no Markdown form is covered by its node operation", () => {
 
 const editOps = ["format_match", "occurrence", "all:true", "replacement_markdown", "set_node"];
 
-test("every surface an MCP agent reads names the rich content people get", () => {
-  const syntax = [...Object.values(MARK_SYNTAX), ...BLOCK_SYNTAX.map(([, text]) => text)];
+test("server instructions carry only the Markdown rules Pages adds, and /llms.txt the full syntax", () => {
+  const instructions = richContentInstructions("https://pages.example");
+  assert.ok(instructions.includes(markdownRules()));
+  assert.ok(instructions.includes(MARK_SYNTAX.highlight));
+  assert.match(instructions, /```mermaid code block renders as a diagram/);
+  assert.match(instructions, /unsupported_markdown/);
+  assert.ok(instructions.includes("[text](#anchor)"), "heading links are described");
+  assert.ok(instructions.endsWith("https://pages.example/llms.txt."));
+  // Tool schemas don't repeat Markdown syntax an agent already knows.
   const markdown = tools.find((tool) => tool.name === "create_page").inputSchema.properties.markdown
     .description;
-  const instructions = richContentInstructions("https://pages.example");
-  for (const [name, text] of [
-    ["create_page markdown", markdown],
-    ["server instructions", instructions],
-  ]) {
-    for (const piece of syntax) assert.ok(text.includes(piece), `${name} lacks ${piece}`);
-    assert.match(text, /```mermaid code block renders as a diagram/, name);
-    assert.match(text, /unsupported_markdown/, name);
-  }
-  for (const op of editOps) assert.ok(instructions.includes(op), `instructions lack ${op}`);
-  assert.ok(instructions.endsWith("https://pages.example/llms.txt."));
-  assert.equal(markdown.includes(markdownSyntax()), true);
-  // Agents learn to link to headings wherever they learn link syntax.
-  for (const text of [markdown, instructions])
-    assert.ok(text.includes("[text](#anchor)"), "heading links are described");
+  assert.equal(markdown.includes(BLOCK_SYNTAX[0][1]), false);
+  const guide = agentGuide({ NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.example" });
+  const syntax = [...Object.values(MARK_SYNTAX), ...BLOCK_SYNTAX.map(([, text]) => text)];
+  for (const piece of syntax) assert.ok(guide.includes(piece), `/llms.txt lacks ${piece}`);
+  assert.ok(guide.includes(markdownSyntax()));
 });
 
 test("patch_page advertises set_node, occurrence, all and replacement_markdown", () => {
@@ -122,10 +120,7 @@ test("agents learn to link Pages and Projects with autolinks, wherever they read
   const sentence = pageLinks();
   assert.match(sentence, /autolink, <https:\/\/…\/p\/<page_id>>/);
   assert.match(sentence, /don't turn an autolink into \[Title\]\(url\)/);
-  const markdown = tools.find((tool) => tool.name === "create_page").inputSchema.properties.markdown
-    .description;
   for (const text of [
-    markdown,
     richContentInstructions("https://pages.example"),
     agentGuide({ NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.example" }),
   ])

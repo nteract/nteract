@@ -19,6 +19,7 @@ import { LOCATION_REVISION_KEY, MOVE_STATUS, movePage, movePageSpec } from "./mo
 import { CrashStorage } from "./operation-intent-fixture.mjs";
 import { Storage, ids, world } from "./projects-fixture.mjs";
 import { tools } from "../mcp.mjs";
+import { agentGuide } from "../agent-guide.mjs";
 import { runPageCreation } from "../viewer/page-create-machine.mjs";
 
 const TABLE = new URL("../test/fixtures/machines/move-page.json", import.meta.url);
@@ -35,7 +36,8 @@ test("move-page: the table covers every state and event, and the machine agrees"
   for (const code of Object.keys(MOVE_STATUS)) assert.ok(MOVE_STATUS[code] >= 400, code);
 });
 
-test("the move_page tool declares its keys, positions and refusals", () => {
+test("the move_page tool declares its keys and positions, and the guide its refusals", () => {
+  const guide = agentGuide({ NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.example" });
   const tool = tools.find((entry) => entry.name === "move_page");
   assert.deepEqual(tool.inputSchema.required, ["page_id", "idempotency_key", "retry_token"]);
   assert.equal(tool.inputSchema.additionalProperties, false);
@@ -61,12 +63,12 @@ test("the move_page tool declares its keys, positions and refusals", () => {
     "move_destination_required",
     "project_not_found",
     "placement_mismatch",
-    "Your items",
     "nesting_depth_exceeded",
     "position_sibling_unknown",
-    "heads",
     "trashed_descendants",
   ])
+    assert.match(guide, new RegExp(word), word);
+  for (const word of ["project_content_protected", "Your items", "sub-pages"])
     assert.match(tool.description, new RegExp(word), word);
 });
 

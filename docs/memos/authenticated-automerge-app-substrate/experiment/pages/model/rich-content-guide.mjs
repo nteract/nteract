@@ -1,5 +1,5 @@
-// What agents are told about rich content. The MCP server instructions, the
-// create_page/edit_page markdown description and /llms.txt all read this
+// What agents are told about rich content. The MCP server instructions read
+// markdownRules(); /llms.txt reads the full guide in this
 // module, so an agent learns about every mark, block and diagram language the
 // editor offers people. The lists derive from marks.json, features.json and
 // shared/code-languages.mjs; rich-content-guide.test.mjs fails when one of
@@ -80,6 +80,13 @@ export function markdownSyntax() {
   return `Pages stores Markdown as native rich text: ${join(inlineList())}; ${join(blockList())}. Highlight colors are ${HIGHLIGHT_COLORS.join(", ")} or #rrggbb. ${diagram}. ${headingLinks()} ${pageLinks()} Math ($…$) and raw HTML are refused with unsupported_markdown; escape a literal $ or < with a backslash.`;
 }
 
+/** Where Pages Markdown differs from what an agent already writes, in a few
+ * sentences. The MCP server instructions carry this; the full syntax list
+ * stays in /llms.txt. */
+export function markdownRules() {
+  return `Write ordinary Markdown; Pages stores it as native rich text. Pages-specific: highlights are ${MARK_SYNTAX.highlight} (${HIGHLIGHT_COLORS.join(", ")} or #rrggbb). ${diagram}. ${headingLinks()} ${pageLinks()} Math ($…$) and raw HTML are refused with unsupported_markdown; escape a literal $ or < with a backslash.`;
+}
+
 /** The typed fields read_page's outline entries and read_page_changes'
  * changed nodes carry, in one paragraph. Every description of them reads this
  * function, so they can't disagree. */
@@ -94,7 +101,7 @@ export function richEditOperations() {
 
 /** The rich-content paragraph for the MCP server instructions. */
 export function richContentInstructions(origin) {
-  return `${markdownSyntax()} ${richEditOperations()} Full guide: ${origin}/llms.txt.`;
+  return `${markdownRules()} Full guide, including typed read fields and node operations: ${origin}/llms.txt.`;
 }
 
 /** The rich-content section of /llms.txt. */
