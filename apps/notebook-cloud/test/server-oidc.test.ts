@@ -989,6 +989,111 @@ describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
     );
   });
 
+  it("never lets a reader with a pre-lease snapshot take over a lease that lapsed since", async (t) => {
+    const f = await fixture(t);
+    const { sessionCookie } = await f.login();
+    const request = f.request(undefined, sessionCookie);
+    f.expireAccess();
+    const events: ServerOidcAuthEvent[] = [];
+    const onAuthEvent = (event: ServerOidcAuthEvent) => events.push(event);
+    // The stale reader loads the row while it has no lease, then stalls.
+    const read = deferred();
+    const resume = deferred();
+    f.db.afterNextRead = async () => {
+      read.resolve();
+      await resume.promise;
+    };
+    const staleReader = serverOidcSessionStatus(request, f.env, noopProfile, { onAuthEvent });
+    await read.promise;
+    // The owner claims the lease and is held inside the provider exchange
+    // until its lease has lapsed.
+    const ownerGate = f.gateRefresh();
+    const owner = serverOidcSessionStatus(request, f.env, noopProfile, { onAuthEvent });
+    await ownerGate.entered.promise;
+    f.db.sqlite.prepare("UPDATE oidc_server_sessions SET lease_until = ?").run(nowSeconds() - 1);
+    // The owner still waits on its own gate; a second exchange would enter
+    // this one. Hold the owner until the stale reader has answered or
+    // exchanged, so the owner's write cannot decide the outcome first.
+    const takeoverGate = f.gateRefresh();
+    resume.resolve();
+    await Promise.race([staleReader, takeoverGate.entered.promise]);
+    takeoverGate.release.resolve();
+    ownerGate.release.resolve();
+    const [staleResponse, lateResponse] = await Promise.all([staleReader, owner]);
+    assert.equal(
+      f.calls.filter((call) => call.grant === "refresh_token").length,
+      1,
+      "a lapsed lease must never be taken over by a reader that did not see it",
+    );
+    for (const response of [staleResponse, lateResponse]) {
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).session, null);
+      assert.equal(hasSessionCookie(response), false);
+    }
+    assert.equal(f.countRows(), 0);
+    assert.deepEqual(events, [
+      { type: "session_expired", principal: "user:test:alice", reason: "lease_abandoned" },
+    ]);
+  });
+
+  // In both tests the owner's lease has lapsed, but it saves its renewal in
+  // the gap between another request's read of the row and that request's
+  // delete. The delete misses, and the other request must answer with the
+  // renewed session, not sign the browser out of it.
+  it("keeps a renewal its late owner saved after a new request read the lapsed lease", async (t) => {
+    const f = await fixture(t);
+    const { sessionCookie } = await f.login();
+    const request = f.request(undefined, sessionCookie);
+    f.expireAccess();
+    const events: ServerOidcAuthEvent[] = [];
+    const onAuthEvent = (event: ServerOidcAuthEvent) => events.push(event);
+    const gate = f.gateRefresh();
+    const owner = serverOidcSessionStatus(request, f.env, noopProfile, { onAuthEvent });
+    await gate.entered.promise;
+    f.db.sqlite.prepare("UPDATE oidc_server_sessions SET lease_until = ?").run(nowSeconds() - 1);
+    f.db.afterNextRead = async () => {
+      gate.release.resolve();
+      await owner;
+    };
+    const response = await serverOidcSessionStatus(request, f.env, noopProfile, { onAuthEvent });
+    assert.equal(response.status, 200);
+    assert.ok((await response.json()).session);
+    assert.equal(hasSessionCookie(response), true);
+    assert.ok((await (await owner).json()).session);
+    assert.equal(f.countRows(), 1);
+    assert.equal(f.calls.filter((call) => call.grant === "refresh_token").length, 1);
+    assert.deepEqual(events, []);
+  });
+
+  it("keeps a renewal its late owner saved after a waiting request read the lapsed lease", async (t) => {
+    const f = await fixture(t);
+    const { sessionCookie } = await f.login();
+    const request = f.request(undefined, sessionCookie);
+    f.expireAccess();
+    const events: ServerOidcAuthEvent[] = [];
+    const onAuthEvent = (event: ServerOidcAuthEvent) => events.push(event);
+    const gate = f.gateRefresh();
+    const owner = serverOidcSessionStatus(request, f.env, noopProfile, { onAuthEvent });
+    await gate.entered.promise;
+    // The waiter first reads a live lease. The lease lapses before its claim,
+    // and the owner saves right after the waiter's next read.
+    f.db.afterNextRead = async () => {
+      f.db.sqlite.prepare("UPDATE oidc_server_sessions SET lease_until = ?").run(nowSeconds() - 1);
+      f.db.afterNextRead = async () => {
+        gate.release.resolve();
+        await owner;
+      };
+    };
+    const response = await serverOidcSessionStatus(request, f.env, noopProfile, { onAuthEvent });
+    assert.equal(response.status, 200);
+    assert.ok((await response.json()).session);
+    assert.equal(hasSessionCookie(response), true);
+    assert.ok((await (await owner).json()).session);
+    assert.equal(f.countRows(), 1);
+    assert.equal(f.calls.filter((call) => call.grant === "refresh_token").length, 1);
+    assert.deepEqual(events, []);
+  });
+
   it("rejects ciphertext swapped between login transactions or session records", async (t) => {
     const f = await fixture(t);
     const first = await f.start();
@@ -1101,6 +1206,54 @@ describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
       NOTEBOOK_CLOUD_APP_SESSION_KEYS: JSON.stringify({ active: "k2", keys: { k2: next } }),
     };
     assert.ok(await readCloudAppSession(retired, freshRequest));
+  });
+
+  it("keeps a late owner's renewal when the reader can't open the seal it replaced", async (t) => {
+    const f = await fixture(t);
+    const legacy = f.env.NOTEBOOK_CLOUD_APP_SESSION_SECRET!;
+    const next = "rotated-session-key-with-at-least-thirty-two-bytes";
+    const withKeys = (active: string, keys: Record<string, string>): Env => ({
+      ...f.env,
+      NOTEBOOK_CLOUD_APP_SESSION_KEYS: JSON.stringify({ active, keys }),
+    });
+    const { sessionCookie } = await f.login();
+    const request = f.request(undefined, sessionCookie);
+    // The row keeps its k1 id and is resealed under k2.
+    f.expireAccess();
+    const rotated = withKeys("k2", { k1: legacy, k2: next });
+    assert.equal((await serverOidcSessionStatus(request, rotated, noopProfile)).status, 200);
+    const sealed = () =>
+      String(f.db.sqlite.prepare("SELECT sealed FROM oidc_server_sessions").get()!.sealed);
+    assert.match(sealed(), /^k2\./);
+    // A rollback in progress: the owner holds both keys and seals under k1,
+    // and the reader holds k1 alone. The reader reads the owner's lapsed
+    // lease over the k2 seal, and the owner saves before the reader's delete.
+    f.expireAccess();
+    const gate = f.gateRefresh();
+    const owner = serverOidcSessionStatus(
+      request,
+      withKeys("k1", { k1: legacy, k2: next }),
+      noopProfile,
+    );
+    await gate.entered.promise;
+    f.db.sqlite.prepare("UPDATE oidc_server_sessions SET lease_until = ?").run(nowSeconds() - 1);
+    f.db.afterNextRead = async () => {
+      gate.release.resolve();
+      await owner;
+    };
+    const events: ServerOidcAuthEvent[] = [];
+    const response = await serverOidcSessionStatus(
+      request,
+      withKeys("k1", { k1: legacy }),
+      noopProfile,
+      { onAuthEvent: (event) => events.push(event) },
+    );
+    assert.match(sealed(), /^k1\./);
+    assert.equal(response.status, 200);
+    assert.ok((await response.json()).session);
+    assert.equal(hasSessionCookie(response), true);
+    assert.equal(f.countRows(), 1);
+    assert.deepEqual(events, []);
   });
 
   it("refuses sealed credentials under an unknown kid and a malformed keyring", async (t) => {
@@ -1880,5 +2033,47 @@ describe("server sessions from a sign-in that is not OIDC", { concurrency: false
     const response = await pending;
     assert.equal((await response.json()).session, null);
     assert.equal(f.countRows(), 0);
+  });
+
+  it("ends a session whose provider refresh outlasted its lease, without a second refresh", async (t) => {
+    const f = providerFixture(t);
+    const cookie = await f.signIn();
+    f.expireAccess();
+    const events: ServerOidcAuthEvent[] = [];
+    const options = {
+      provider: f.provider,
+      onAuthEvent: (event: ServerOidcAuthEvent) => events.push(event),
+    };
+    // The stale reader loads the row while it has no lease, then stalls.
+    const read = deferred();
+    const resume = deferred();
+    f.db.afterNextRead = async () => {
+      read.resolve();
+      await resume.promise;
+    };
+    const staleReader = serverOidcSessionStatus(f.request(cookie), f.env, noopProfile, options);
+    await read.promise;
+    const ownerGate = f.gateRefresh();
+    const owner = serverOidcSessionStatus(f.request(cookie), f.env, noopProfile, options);
+    await ownerGate.entered.promise;
+    f.db.sqlite.prepare("UPDATE oidc_server_sessions SET lease_until = ?").run(nowSeconds() - 1);
+    // The owner still waits on its own gate; a second refresh would enter
+    // this one. Hold the owner until the stale reader has answered or
+    // refreshed, so the owner's write cannot decide the outcome first.
+    const takeoverGate = f.gateRefresh();
+    resume.resolve();
+    await Promise.race([staleReader, takeoverGate.entered.promise]);
+    takeoverGate.release.resolve();
+    ownerGate.release.resolve();
+    const [staleResponse, lateResponse] = await Promise.all([staleReader, owner]);
+    assert.deepEqual(f.refreshed, [{ kind: "pair", refreshToken: "first-refresh-token" }]);
+    for (const response of [staleResponse, lateResponse]) {
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).session, null);
+    }
+    assert.equal(f.countRows(), 0);
+    assert.deepEqual(events, [
+      { type: "session_expired", principal: PRINCIPAL, reason: "lease_abandoned" },
+    ]);
   });
 });

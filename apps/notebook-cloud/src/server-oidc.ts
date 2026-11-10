@@ -1,4 +1,4 @@
-import type { Env as NotebookEnvironment } from "./cloudflare-types.ts";
+import type { D1Database, Env as NotebookEnvironment } from "./cloudflare-types.ts";
 import {
   appSessionAccountKey,
   APP_SESSION_ACCOUNT_KEY_HEADER,
@@ -45,7 +45,9 @@ const LOGIN_SECONDS = 600;
 // The browser checks once a minute. Leave another minute for scheduling/network
 // delay rather than waiting until a request is already about to lose authority.
 const REFRESH_WINDOW_SECONDS = 120;
-// How long one request owns a session's renewal before another may take over.
+// How long one request's claim on a session's renewal is honored. A renewal
+// still running past it is treated as abandoned: a request that sees the
+// lapsed lease deletes the session, unless the owner saves first.
 const REFRESH_LEASE_SECONDS = 120;
 
 interface Config {
@@ -185,9 +187,10 @@ export interface ServerSessionGrant {
 export interface ServerSessionProvider {
   /**
    * Exchanges a session's sealed bundle for a fresh grant. It runs under the
-   * row's refresh lease, which keeps other requests from exchanging the same
-   * bundle for `REFRESH_LEASE_SECONDS`; finish well inside that, because a
-   * request can take the row over once the lease lapses. Throw
+   * row's refresh lease, which keeps every other request from exchanging the
+   * same bundle. Finish well inside `REFRESH_LEASE_SECONDS`: once the lease
+   * lapses, a request that sees it deletes the session, and a grant returned
+   * after that delete is discarded. Throw
    * `ServerSessionGrantRejected` when the provider ended the grant, or
    * `ServerOidcIdentityRejected` when the application refuses the account;
    * both delete the session. Any other error keeps the row, and the same
@@ -971,17 +974,13 @@ async function refreshSession(
   if (initial.lease && initial.lease_until <= now) {
     // A crashed owner may have consumed a rotating refresh token. Do not let
     // another process reuse it, or let a late owner resurrect the session.
-    const removed = await db
-      .prepare("DELETE FROM oidc_server_sessions WHERE id = ? AND generation = ? AND lease = ?")
-      .bind(initial.id, initial.generation, initial.lease)
-      .run();
-    if (removed.meta?.changes === 1)
-      notifyAuthEvent(options.onAuthEvent, {
-        type: "session_expired",
-        principal: sessionPrincipal(initial),
-        reason: "lease_abandoned",
-      });
-    return null;
+    if (await endAbandonedSession(db, initial, initial.lease, options)) return null;
+    // The row changed after `initial` was read, so nothing here may act on
+    // `initial`. A renewal the owner saved in that gap is the answer. A row
+    // still at this generation was released for a retry.
+    const row = await loadServerSession(env, request, Math.floor(Date.now() / 1000));
+    if (!row || row.generation !== initial.generation) return row;
+    throw new ProviderUnavailable();
   }
   let bundle: Record<string, unknown>;
   try {
@@ -1012,9 +1011,12 @@ async function refreshSession(
   // access proof. A `ServerSessionProvider` decides from its own bundle.
   if (config && !bundle.refreshToken) return initial.access_expires_at > now ? initial : null;
   const lease = randomSecret();
+  // Only an unleased row can be claimed. Every release clears `lease` or
+  // deletes the row, so a row that still names one has an owner that may have
+  // spent the sealed credential, however long ago its `lease_until` passed.
   const claimed = await db
     .prepare(`UPDATE oidc_server_sessions SET lease = ?, lease_until = ?
-    WHERE id = ? AND generation = ? AND lease_until <= ? AND retry_after <= ? AND idle_expires_at > ? AND absolute_expires_at > ?`)
+    WHERE id = ? AND generation = ? AND lease IS NULL AND lease_until <= ? AND retry_after <= ? AND idle_expires_at > ? AND absolute_expires_at > ?`)
     .bind(lease, now + REFRESH_LEASE_SECONDS, initial.id, initial.generation, now, now, now, now)
     .run();
   if (claimed.meta.changes !== 1) {
@@ -1023,7 +1025,16 @@ async function refreshSession(
       await new Promise((resolve) => setTimeout(resolve, 200));
       const row = await loadServerSession(env, request, Math.floor(Date.now() / 1000));
       if (!row || row.generation !== initial.generation) return row;
-      if (row.retry_after > Math.floor(Date.now() / 1000)) throw new ProviderUnavailable();
+      const current = Math.floor(Date.now() / 1000);
+      if (row.retry_after > current) throw new ProviderUnavailable();
+      // The owner's lease lapsed before this request's claim or during this
+      // wait. The row is as abandoned as one a new request would find.
+      if (
+        row.lease &&
+        row.lease_until <= current &&
+        (await endAbandonedSession(db, row, row.lease, options))
+      )
+        return null;
     }
     throw new ProviderUnavailable();
   }
@@ -1094,6 +1105,35 @@ async function refreshSession(
     );
     throw new ProviderUnavailable();
   }
+}
+
+/**
+ * Ends a session whose refresh lease lapsed with its owner still named on the
+ * row. The delete is fenced on that lease, so of the requests that find the
+ * row abandoned, one removes it and reports `lease_abandoned`.
+ *
+ * Returns false when the delete matched nothing: the row changed after `row`
+ * was read. The owner may have saved its renewal in that gap, so the caller
+ * answers with a session or a sign-out only from a fresh read of the row.
+ * Without one it backs off with `ProviderUnavailable`.
+ */
+async function endAbandonedSession(
+  db: D1Database,
+  row: ServerSessionRow,
+  lease: string,
+  options: ServerOidcSessionOptions,
+): Promise<boolean> {
+  const removed = await db
+    .prepare("DELETE FROM oidc_server_sessions WHERE id = ? AND generation = ? AND lease = ?")
+    .bind(row.id, row.generation, lease)
+    .run();
+  if (removed.meta?.changes !== 1) return false;
+  notifyAuthEvent(options.onAuthEvent, {
+    type: "session_expired",
+    principal: sessionPrincipal(row),
+    reason: "lease_abandoned",
+  });
+  return true;
 }
 
 export async function deleteServerOidcSession(request: Request, env: Env): Promise<Response> {
