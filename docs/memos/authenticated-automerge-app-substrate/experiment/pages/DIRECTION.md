@@ -42,7 +42,9 @@ Comments live in their own document and anchor to the Page with cursors.
 1. **Format 2 for `pages.page`.** A block stores `position` and `richText`
    only. Format 2 drops `kind`, `format`, `markdown` and `metadata`: each
    holds a constant today, and `markdown` is always the empty string
-   ([model/page.mjs](model/page.mjs)). Tool responses stop reporting them too.
+   ([model/page.mjs](model/page.mjs)). Tool responses stop reporting `kind`,
+   `format` and `metadata`. The `markdown` a read returns is the projection,
+   and it stays.
    Every node gets an explicit opening marker, including a block's first
    paragraph, so every node has an id.
 2. **Sync without `automerge-repo`.** Pages uses the Repo package for CBOR,
