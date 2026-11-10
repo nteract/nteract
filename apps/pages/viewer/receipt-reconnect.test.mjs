@@ -618,6 +618,21 @@ test("refused native admission does not reset reconnect backoff", async (t) => {
   assert.equal(f.session.retryAttempts, 1);
 });
 
+test("a socket the host closes as schema_unsupported shows the reload notice", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  assert.equal(f.session.schemaGate.editable, true);
+  const socket = f.sockets.at(-1);
+  hostClose(socket, 4426, "schema_unsupported");
+  f.session.socketDisconnected(socket);
+  assert.equal(f.session.schemaGate.refused, true);
+  assert.equal(f.session.schemaGate.editable, false);
+  assert.equal(f.session.connectionProblem, "", "the schema notice is the only banner");
+  assert.equal(f.session.retryTimer, undefined);
+  await f.advance(60_000);
+  assert.equal(f.sockets.length, 1, "no automatic reconnect");
+});
+
 test("a refused signing key stops automatic reconnects until an explicit retry", async (t) => {
   const f = fixture(t);
   await f.start();

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { BUILD_FORMATS } from "../model/document-types.mjs";
 import { BUILD_FEATURES } from "../model/schema-features.mjs";
 import { Page } from "./index.mjs";
 import { Storage, world } from "./projects-fixture.mjs";
@@ -98,7 +99,7 @@ test(
     const token = w.auth.apiKey({ userId: "member-user" });
     const request = () =>
       new Request(
-        `https://pages.invalid/api/sync?sync=automerge&schema_features=${BUILD_FEATURES.join(",")}`,
+        `https://pages.invalid/api/sync?sync=automerge&formats=${BUILD_FORMATS}&schema_features=${BUILD_FEATURES.join(",")}`,
         {
           headers: { authorization: `Bearer ${token}`, upgrade: "websocket" },
         },

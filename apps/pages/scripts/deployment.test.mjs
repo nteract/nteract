@@ -2022,6 +2022,47 @@ test("plain targets refuse receipts that know automerge but not the current plai
   }
 });
 
+test("a release must list the document formats a target's documents are in", () => {
+  const formats = { "pages.page": [1], "pages.comments": [1] };
+  for (const target of ["pages", "page10", "pages2", "page11"]) {
+    assert.doesNotThrow(() =>
+      profiles.assertReleaseOpensTargetPages(target, { ...PLAIN, document_formats: formats }),
+    );
+    // A receipt built before the field wrote and read format 1 of both types.
+    assert.doesNotThrow(() => profiles.assertReleaseOpensTargetPages(target, PLAIN));
+  }
+  for (const [type, listed] of [
+    ["pages.page", [2]],
+    ["pages.page", []],
+    ["pages.comments", [2]],
+    ["pages.comments", undefined],
+  ])
+    assert.throws(
+      () =>
+        profiles.assertReleaseOpensTargetPages("page10", {
+          ...PLAIN,
+          document_formats: { ...formats, [type]: listed },
+        }),
+      (error) => {
+        assert.match(error.message, /^Refusing release d{12} \(build 9ae4ed83e44e\) for page10: /);
+        assert.match(
+          error.message,
+          new RegExp(`page10's ${type.replace(".", "\\.")} documents are in format 1`),
+        );
+        assert.match(error.message, /lists document_formats/);
+        return true;
+      },
+    );
+  // Only an absent field means a receipt from before it. Anything else that
+  // lists no formats opens no documents.
+  for (const document_formats of [{}, null, [], "pages.page:1", { "pages.page": "1" }])
+    assert.throws(
+      () => profiles.assertReleaseOpensTargetPages("page10", { ...PLAIN, document_formats }),
+      /documents are in format 1/,
+      JSON.stringify(document_formats),
+    );
+});
+
 test("install refuses an old plain format before any write", (t) => {
   const f = installFixture(t, {
     target: "page10",
@@ -2134,6 +2175,7 @@ test("the build receipt lists every record storage mode the Worker opens", async
   const { PLAIN_STORAGE_FORMATS } = await import("../shared/record-storage.mjs");
   assert.deepEqual(PLAIN_STORAGE_FORMATS, CURRENT_PLAIN_STORAGE_FORMATS);
   assert.match(source, /plain_storage_formats: \[\.\.\.PLAIN_STORAGE_FORMATS\]/);
+  assert.match(source, /document_formats: documentFormats/);
   for (const entry of ["deploy.mjs", "deployment/install.mjs"])
     assert.match(
       fs.readFileSync(new URL(entry, import.meta.url), "utf8"),

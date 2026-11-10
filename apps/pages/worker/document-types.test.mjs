@@ -5,7 +5,7 @@ import * as A from "@automerge/automerge";
 import { fixture, pageId, commentsUuid } from "./trash-fixture.mjs";
 import { world } from "./projects-fixture.mjs";
 import { commentsDocumentId } from "./comments-store.mjs";
-import { parseDocumentDescriptor } from "../model/document-types.mjs";
+import { BUILD_FORMATS, parseDocumentDescriptor } from "../model/document-types.mjs";
 import { PageSession } from "../viewer/session.mjs";
 import { previewAnswer } from "../viewer/early-session.mjs";
 
@@ -147,4 +147,129 @@ test("existing discovery consumers ignore known and unknown additive documents m
   assert.equal(outcomes[1].documentId, body.documentId);
   assert.deepEqual(outcomes[1].comments, [{ type: "open", id: body.commentsDocumentId }]);
   assert.deepEqual(outcomes[1].sockets, [body.serverSenderId]);
+});
+
+/** Install a WebSocketPair and Response that record each refusal's close, and
+ * stand in for the Page's accepted socket. Returns what each connect did. */
+function fakeSockets(t, host) {
+  const sockets = [];
+  class Socket extends EventTarget {
+    accept() {}
+    send() {}
+    close(code, reason) {
+      this.closed = { code, reason };
+    }
+  }
+  const globals = {
+    WebSocketPair: class {
+      constructor() {
+        this[0] = new Socket();
+        this[1] = new Socket();
+        sockets.push(this[1]);
+      }
+    },
+    Response: class {
+      constructor(_body, options) {
+        Object.assign(this, options);
+      }
+    },
+  };
+  for (const [name, value] of Object.entries(globals)) {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
+    Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+    t.after(() => {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    });
+  }
+  t.mock.method(console, "warn", () => {});
+  const accepted = t.mock.method(host, "connectPlain", () => ({ status: 101, accepted: true }));
+  return { sockets, accepted };
+}
+
+/** Open a socket on the fixture's Page, declaring `formats` (a query value, or
+ * nothing). Returns the connect response and, for a refusal, its closed socket. */
+function openSocket(f, sockets, formats) {
+  const url = new URL("https://pages.invalid/api/sync");
+  url.searchParams.set("sync", "automerge");
+  url.searchParams.set("sender", `b-${crypto.randomUUID()}`);
+  if (formats !== undefined) url.searchParams.set("formats", formats);
+  const identity = {
+    principal: f.owner,
+    displayName: "Owner",
+    driver: "Browser",
+    credentialKind: "api-key",
+    canWrite: true,
+    expiresAt: Date.now() + 3_600_000,
+  };
+  const response = f.page.connect(
+    new Request(url, { headers: { upgrade: "websocket" } }),
+    identity,
+  );
+  return { response, closed: response.accepted ? undefined : sockets.at(-1).closed };
+}
+
+test("a socket declaring the current formats is accepted", async (t) => {
+  const f = await fixture(t);
+  const { sockets, accepted } = fakeSockets(t, f.page);
+  const { closed } = openSocket(f, sockets, BUILD_FORMATS);
+  assert.equal(accepted.mock.callCount(), 1);
+  assert.equal(closed, undefined);
+});
+
+test("a socket declaring no formats is read as format 1 and accepted", async (t) => {
+  const f = await fixture(t);
+  const { sockets, accepted } = fakeSockets(t, f.page);
+  const { closed } = openSocket(f, sockets, undefined);
+  assert.equal(closed, undefined);
+  assert.equal(accepted.mock.callCount(), 1);
+});
+
+test("a socket lacking the current format of a document the Page holds is closed", async (t) => {
+  const f = await fixture(t);
+  const { sockets, accepted } = fakeSockets(t, f.page);
+  for (const formats of [
+    "pages.comments:1",
+    "pages.page:1",
+    "pages.page:2,pages.comments:1",
+    "pages.future:1",
+  ])
+    assert.equal(openSocket(f, sockets, formats).closed?.reason, "schema_unsupported", formats);
+  assert.equal(accepted.mock.callCount(), 0);
+});
+
+test("a socket may declare formats beyond the current ones", async (t) => {
+  const f = await fixture(t);
+  const { sockets, accepted } = fakeSockets(t, f.page);
+  const { closed } = openSocket(f, sockets, "pages.comments:1,pages.future:3,pages.page:1");
+  assert.equal(closed, undefined);
+  assert.equal(accepted.mock.callCount(), 1);
+});
+
+test("a Page with no comments document yet still requires pages.comments", async (t) => {
+  const f = await fixture(t);
+  f.page.commentsHandle = undefined;
+  const { sockets, accepted } = fakeSockets(t, f.page);
+  const { response, closed } = openSocket(f, sockets, "pages.page:1");
+  assert.equal(response.status, 101);
+  assert.equal(closed.reason, "schema_unsupported");
+  assert.equal(accepted.mock.callCount(), 0);
+});
+
+test("a malformed or repeated formats parameter is a 400", async (t) => {
+  const f = await fixture(t);
+  const { sockets } = fakeSockets(t, f.page);
+  for (const formats of ["", "pages.page", "pages.page:x", "pages.page:1,pages.page:1"])
+    assert.throws(
+      () => openSocket(f, sockets, formats),
+      (error) => error.status === 400 && error.message === "Invalid formats",
+      formats,
+    );
+  const url = new URL("https://pages.invalid/api/sync?sync=automerge");
+  url.searchParams.append("formats", "pages.page:1,pages.comments:1");
+  url.searchParams.append("formats", "pages.page:1,pages.comments:1");
+  assert.throws(
+    () => f.page.connect(new Request(url, { headers: { upgrade: "websocket" } }), {}),
+    (error) => error.status === 400 && error.message === "Invalid formats",
+  );
 });

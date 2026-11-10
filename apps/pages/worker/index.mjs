@@ -32,7 +32,12 @@ import { commentsGenesis } from "../model/comments-doc.mjs";
 import { applyComment, commentsMigrated } from "../model/comments.mjs";
 import { guardCommentIntent } from "../model/comment-guard.mjs";
 import { commentsDocUuid, commentsDocumentId } from "./comments-store.mjs";
-import { pageDocuments } from "../model/document-types.mjs";
+import {
+  currentFormats,
+  missingFormats,
+  pageDocuments,
+  parseDeclaredFormats,
+} from "../model/document-types.mjs";
 import { storedFormUnsupported } from "../model/stored-form.mjs";
 import { readTargets, writeTargets } from "../model/agent-presence.mjs";
 import { assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
@@ -446,6 +451,17 @@ const abandonedError = () => Object.assign(Error("Page object was reset"), { sta
 function requirePlainSyncClient(request) {
   if (new URL(request.url).searchParams.get("sync") === "automerge") return;
   throw withAdmissionReason(schemaUnsupported(["automerge-sync"]), "schema_unsupported");
+}
+
+/** A socket's client declares the document formats it reads as `formats`.
+ * No host holds two formats of one type, so a Page's documents are in the
+ * formats this build writes. That includes a comments document the Page
+ * gains while the socket is open, so every type is required of every socket.
+ * A client that lacks one is refused as schema_unsupported, which its viewer
+ * shows as "Reload to update". */
+function requireReadableDocuments(declared) {
+  if (!missingFormats(declared, currentFormats()).length) return;
+  throw withAdmissionReason(schemaUnsupported(["document-formats"]), "schema_unsupported");
 }
 
 /** One structured line when the comments document's per-author check
@@ -6485,6 +6501,10 @@ export class Page {
     const declared = new URL(request.url).searchParams.getAll("schema_features");
     const features = declared.length > 1 ? null : parseDeclaredFeatures(declared[0]);
     if (!features) throw new HttpError(400, "Invalid schema_features");
+    // The document formats the client reads, for requireReadableDocuments.
+    const formats = new URL(request.url).searchParams.getAll("formats");
+    const readable = formats.length > 1 ? null : parseDeclaredFormats(formats[0]);
+    if (!readable) throw new HttpError(400, "Invalid formats");
     // A plain socket from a tab that already holds one replaces it, so the
     // stale socket's slot is free for this one.
     const sender = this.plain.sender(identity, new URL(request.url).searchParams.get("sender"));
@@ -6492,6 +6512,7 @@ export class Page {
     if (capacity) return refuseSocket(capacity, identity);
     try {
       requirePlainSyncClient(request);
+      requireReadableDocuments(readable);
     } catch (error) {
       return refuseSocket(error, identity);
     }

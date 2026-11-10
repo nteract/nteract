@@ -25,6 +25,7 @@ import {
   BUILD_FEATURES,
   SCHEMA_GATE_INITIAL,
   schemaGateStep,
+  schemaUnsupported,
   stampFeatures,
 } from "../model/schema-features.mjs";
 import {
@@ -43,6 +44,7 @@ import { CatchUp } from "./catch-up.mjs";
 import { unreadableMessageKeys } from "./comment-thread-display.mjs";
 import { CATCH_UP_LIMIT_MS } from "./catch-up-machine.mjs";
 import { BACKEND_LIMITS } from "../model/limits.mjs";
+import { BUILD_FORMATS } from "../model/document-types.mjs";
 import { retryKey } from "../model/retry-key.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 import { admissionCloseOutcome } from "../shared/admission.mjs";
@@ -253,9 +255,13 @@ const receiptRetryDelay = (attempt, transient) =>
       ? backoffStep(attempt)
       : undefined
     : RECEIPT_RETRY_DELAYS[attempt];
-// Not retryable by openPageWithRetry: the same tab key cannot succeed.
+/** What a person can do about an admission `stop`. A build the host no longer
+ * accepts reloads into one it does; any other stop is a refused tab key. */
+const stopMessage = (admission) =>
+  admission?.code === "schema_unsupported" ? schemaUnsupported([]).message : SIGNING_KEY_REFUSED;
+// Not retryable by openPageWithRetry: this tab cannot succeed as it is.
 export const signingKeyRefused = (admission, cause) =>
-  Object.assign(Error(SIGNING_KEY_REFUSED, cause === undefined ? undefined : { cause }), {
+  Object.assign(Error(stopMessage(admission), cause === undefined ? undefined : { cause }), {
     code: "SIGNING_KEY_REFUSED",
     admission,
   });
@@ -282,12 +288,15 @@ function socketOpened(socket) {
 }
 /** `features` is this build's schema features. The host refuses edits from a
  * tab whose build lacks an id the Page is stamped with; no parameter means the
- * baseline, as for builds from before the stamp. */
+ * baseline, as for builds from before the stamp. `formats` is the document
+ * formats this build reads: the host refuses a socket whose client does not
+ * read the formats it writes. */
 export function pageSyncAddress(pageId, href, activityEpoch, features = []) {
   const address = new URL(`/api/sync?page=${encodeURIComponent(pageId)}`, href);
   address.protocol = address.protocol === "https:" ? "wss:" : "ws:";
   // Plain Automerge sync (sync/wire.mjs), the only sync the host speaks.
   address.searchParams.set("sync", "automerge");
+  address.searchParams.set("formats", BUILD_FORMATS);
   if (activityEpoch) address.searchParams.set("activity_epoch", activityEpoch);
   if (features.length) address.searchParams.set("schema_features", [...features].sort().join(","));
   return address;
@@ -1330,13 +1339,20 @@ export class PageSession {
     }
   }
   /** The host refused this connection with an admission `stop`.
-   * Reconnecting as is cannot succeed, so wait for an explicit Retry or a
+   * Reconnecting as is cannot succeed, so wait for a person: a reload when
+   * the host no longer accepts this build, otherwise an explicit Retry or a
    * new tab. */
   refuseNative(admission) {
     this.reconnect({ type: "keyRefused" });
     this.refusal = admission;
     // A first open may still be waiting for the document over this socket.
     this.rejectLookup?.(signingKeyRefused(admission));
+    if (admission.code === "schema_unsupported") {
+      // The schema notice says to reload; no second banner.
+      this.stepSchema({ type: "refused" });
+      this.renderStatus();
+      return;
+    }
     this.showConnectionProblem(SIGNING_KEY_REFUSED);
   }
   /** Stop syncing while keeping the local draft. `denied` removes access,

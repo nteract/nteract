@@ -370,6 +370,18 @@ export const RECORD_STORAGE_HISTORY = Object.freeze({
   pages2: Object.freeze(["automerge"]),
   page11: Object.freeze(["automerge"]),
 });
+// The format each target's documents are in, by document type. A release that
+// does not read a target's format cannot open its documents, so
+// assertReleaseOpensTargetPages refuses it. A target moves to another format
+// only by starting empty. The values are literals because the staged installer
+// copies this module without model/document-types.mjs.
+const FORMAT_1_DOCUMENTS = Object.freeze({ "pages.page": 1, "pages.comments": 1 });
+export const TARGET_DOCUMENT_FORMATS = Object.freeze({
+  page10: FORMAT_1_DOCUMENTS,
+  pages: FORMAT_1_DOCUMENTS,
+  pages2: FORMAT_1_DOCUMENTS,
+  page11: FORMAT_1_DOCUMENTS,
+});
 const NATIVE_RECORD_STORAGE = Object.freeze(["local", "buffered"]);
 
 /** The record storage modes beyond the native ones that `target` may hold
@@ -393,7 +405,11 @@ export function targetRecordStorage(target, observed = []) {
  * `receipt` is the release's build receipt (manifest `build_receipt`, or
  * dist/build-receipt.json); its `record_storage` lists the modes the Worker
  * opens. A receipt without the list predates it and opens none beyond the
- * native modes, so it counts as lacking every other mode. */
+ * native modes, so it counts as lacking every other mode. Its
+ * `document_formats` maps each document type to the formats the build reads. A
+ * receipt without it was built before the field, when the build wrote and read
+ * format 1 of `pages.page` and `pages.comments`, so it counts as listing exactly
+ * those. */
 export function assertReleaseOpensTargetPages(target, receipt, observed = []) {
   const declared = Array.isArray(receipt?.record_storage) ? receipt.record_storage : [];
   const required = targetRecordStorage(target, observed);
@@ -411,6 +427,19 @@ export function assertReleaseOpensTargetPages(target, receipt, observed = []) {
         `${declared.length ? JSON.stringify(declared) : "none"}. A build without a Page's ` +
         `record storage fails to open it with "Unsupported Page record storage mode".`,
     );
+  const documentFormats =
+    receipt?.document_formats === undefined
+      ? { "pages.page": [1], "pages.comments": [1] }
+      : receipt.document_formats;
+  for (const [type, format] of Object.entries(TARGET_DOCUMENT_FORMATS[target] ?? {})) {
+    const listed = Array.isArray(documentFormats?.[type]) ? documentFormats[type] : [];
+    if (!listed.includes(format))
+      throw new Error(
+        `Refusing release ${release} for ${target}: ${target}'s ${type} documents are in format ` +
+          `${format}; the release's build receipt lists document_formats ${JSON.stringify(listed)} ` +
+          `for ${type}. A build that does not read a document's format cannot open it.`,
+      );
+  }
   // Keep the deploy-time requirement here: the staged installer copies this
   // module without the Worker's shared modules. All operator entrypoints use
   // this guard, including old-stage install and rollback qualification.

@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DOCUMENT_TYPES, pageDocuments, parseDocumentDescriptor } from "./document-types.mjs";
+import {
+  DOCUMENT_TYPES,
+  currentFormats,
+  BUILD_FORMATS,
+  encodeDeclaredFormats,
+  formatsByType,
+  missingFormats,
+  pageDocuments,
+  parseDeclaredFormats,
+  parseDocumentDescriptor,
+  readableFormats,
+} from "./document-types.mjs";
 
 test("the registry names only the existing Page and comments formats", () => {
   assert.deepEqual(DOCUMENT_TYPES, {
@@ -65,4 +76,87 @@ test("descriptor parsing rejects malformed values and preserves opaque IDs", () 
   const descriptor = { id: "host-owned-id", type: "pages.comments", format: 1 };
   assert.deepEqual(parseDocumentDescriptor(descriptor), descriptor);
   assert.notEqual(parseDocumentDescriptor(descriptor), descriptor);
+});
+
+test("a build reads and writes the formats the registry lists", () => {
+  assert.deepEqual(formatsByType(), { "pages.page": [1], "pages.comments": [1] });
+  assert.deepEqual(readableFormats(), [
+    { type: "pages.page", format: 1 },
+    { type: "pages.comments", format: 1 },
+  ]);
+  assert.deepEqual(currentFormats(), readableFormats());
+  assert.equal(BUILD_FORMATS, "pages.comments:1,pages.page:1");
+});
+
+test("declared formats encode sorted and parse back", () => {
+  const formats = [
+    { type: "pages.page", format: 1 },
+    { type: "pages.comments", format: 1 },
+    { type: "pages.page", format: 2 },
+  ];
+  const value = encodeDeclaredFormats(formats);
+  assert.equal(value, "pages.comments:1,pages.page:1,pages.page:2");
+  assert.deepEqual(parseDeclaredFormats(value), [
+    { type: "pages.comments", format: 1 },
+    { type: "pages.page", format: 1 },
+    { type: "pages.page", format: 2 },
+  ]);
+  assert.deepEqual(missingFormats(parseDeclaredFormats(BUILD_FORMATS), readableFormats()), []);
+});
+
+test("no formats value is a build from before the parameter: format 1 only", () => {
+  const undeclared = parseDeclaredFormats(undefined);
+  assert.deepEqual(undeclared, [
+    { type: "pages.page", format: 1 },
+    { type: "pages.comments", format: 1 },
+  ]);
+  assert.deepEqual(missingFormats(undeclared, currentFormats()), []);
+  const format2 = [{ type: "pages.page", format: 2 }];
+  assert.deepEqual(missingFormats(undeclared, format2), format2);
+});
+
+test("declared formats that are malformed parse to null", () => {
+  const tooMany = Array.from({ length: 33 }, (_, i) => `pages.t${i}:1`).join(",");
+  for (const value of [
+    null,
+    1,
+    ["pages.page:1"],
+    "",
+    "pages.page",
+    "pages.page:",
+    ":1",
+    "pages.page:x",
+    "pages.page:1.5",
+    "pages.page:0",
+    "pages.page:-1",
+    "pages.page:01",
+    "pages.page:1,",
+    ",pages.page:1",
+    "pages.page:1,,pages.comments:1",
+    "pages.page:1,pages.page:1",
+    "pages.page:1:1",
+    "Pages.Page:1",
+    tooMany,
+  ])
+    assert.equal(parseDeclaredFormats(value), null, String(value));
+});
+
+test("a well-formed type this build does not know is not malformed", () => {
+  assert.deepEqual(parseDeclaredFormats("pages.future:3,pages.page:1"), [
+    { type: "pages.future", format: 3 },
+    { type: "pages.page", format: 1 },
+  ]);
+});
+
+test("missing formats are the required pairs the client does not list", () => {
+  const required = [
+    { type: "pages.page", format: 1 },
+    { type: "pages.comments", format: 1 },
+  ];
+  assert.deepEqual(missingFormats(readableFormats(), required), []);
+  assert.deepEqual(missingFormats([{ type: "pages.page", format: 1 }], required), [
+    { type: "pages.comments", format: 1 },
+  ]);
+  assert.deepEqual(missingFormats([{ type: "pages.page", format: 2 }], required), required);
+  assert.deepEqual(missingFormats([], required), required);
 });

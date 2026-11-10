@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
 import { eventually, plainPeer } from "./plain-peer.mjs";
+import { BUILD_FORMATS } from "../model/document-types.mjs";
 
 const origin = process.env.PAGES_ORIGIN || "http://localhost:9894";
 assert.equal(new URL(origin).hostname, "localhost");
@@ -216,7 +217,10 @@ try {
       code: 4426,
       reason: "schema_unsupported",
     });
-    const textAddress = new URL(`/api/sync?page=${pageId}&sync=automerge`, origin);
+    const textAddress = new URL(
+      `/api/sync?page=${pageId}&sync=automerge&formats=${BUILD_FORMATS}`,
+      origin,
+    );
     textAddress.protocol = "ws:";
     const text = new WebSocket(textAddress, {
       headers: { cookie: ownerCookie, origin },
@@ -241,7 +245,10 @@ try {
   const memberCookie = await cookieFor(member);
   const rawSocket = () => {
     // Without `sync=automerge` the host refuses the socket before the quota.
-    const address = new URL(`/api/sync?page=${pageId}&sync=automerge`, origin);
+    const address = new URL(
+      `/api/sync?page=${pageId}&sync=automerge&formats=${BUILD_FORMATS}`,
+      origin,
+    );
     address.protocol = "ws:";
     const socket = new WebSocket(address, {
       headers: { cookie: memberCookie, origin },
