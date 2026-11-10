@@ -129,23 +129,27 @@ test("a sign-in that starts and ends in one browser makes a session without an e
     assert.equal(logged.includes(value), false);
 });
 
-test("a callback opened in another browser signs nobody in and spends nothing", async (t) => {
-  const { env, kilo } = await fixture(t);
-  const started = await begin(env);
-  const address = await throughKilo(started.enter);
+test("a callback that reaches another browser signs nobody in and ends that sign-in", async (t) => {
+  const { env, kilo, lines } = await fixture(t);
   const other = await begin(env);
-  for (const cookie of [undefined, other.cookie]) {
+  for (const cookie of [undefined, other.cookie, `${other.cookie}; ${other.cookie}`]) {
+    lines.length = 0;
+    const started = await begin(env);
+    const address = await throughKilo(started.enter);
     const refused = await callback(env, address, cookie);
     assert.equal(refused.status, 400);
+    assert.equal(reasons(lines)[0].reason, "binding_mismatch");
     assert.equal(setCookie(refused, SERVER_SESSION_COOKIE), undefined);
     assert.equal(refused.headers.get("referrer-policy"), "no-referrer");
     assert.equal(refused.headers.get("cache-control"), "no-store");
     assert.equal((await refused.text()).includes(new URL(address).searchParams.get("code")), false);
+    // The address that browser was left holding is no use to the one that
+    // started the sign-in.
+    const carriedBack = await callback(env, address, started.cookie);
+    assert.equal(carriedBack.status, 400);
+    assert.equal(setCookie(carriedBack, SERVER_SESSION_COOKIE), undefined);
   }
   assert.equal(kilo.exchanges().length, 0);
-  const response = await callback(env, address, started.cookie);
-  assert.equal(response.status, 303);
-  assert.ok(await sessionOf(env, response));
 });
 
 test("a callback is taken once, by one of two requests that carry it", async (t) => {
@@ -191,16 +195,20 @@ test("a sign-in started in a second tab doesn't break the one in the first", asy
 });
 
 test("a sign-in left longer than its deadline can't finish", async (t) => {
-  const { env, kilo } = await fixture(t);
+  const { env, kilo, lines } = await fixture(t);
   const started = await begin(env);
   const address = await throughKilo(started.enter);
+  const abandoned = await begin(env, { cookie: started.cookie });
   env.DB.sqlite
     .prepare("UPDATE kilo_handoffs SET expires_at = ?")
     .run(Math.floor(Date.now() / 1000));
   const refused = await callback(env, address, started.cookie);
   assert.equal(refused.status, 400);
+  assert.equal(reasons(lines)[0].reason, "handoff_expired");
   assert.equal(kilo.exchanges().length, 0);
-  // The next sign-in clears it out.
+  // The next sign-in clears out the one nobody came back for.
+  assert.ok(abandoned.enter);
+  assert.equal(rows(env).length, 1);
   await begin(env);
   assert.equal(rows(env).length, 1);
 });
@@ -239,8 +247,6 @@ test("a callback that isn't one Kilo sends is refused before the row is touched"
     [`?code=${code}&code=${code}&state=${state}`, started.cookie, "callback_malformed"],
     [`?code=${"c".repeat(2049)}&state=${state}`, started.cookie, "callback_malformed"],
     [`?error=access_denied&state=${state}`, started.cookie, "provider_error"],
-    [`?code=${code}&state=${state}`, undefined, "binding_missing"],
-    [`?code=${code}&state=${state}`, `${started.cookie}; ${started.cookie}`, "binding_missing"],
   ]) {
     lines.length = 0;
     const refused = await callback(env, path + query, cookie);

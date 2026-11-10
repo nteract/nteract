@@ -7,9 +7,11 @@
  * callback takes the stored row, trades the code for the person it names,
  * and starts a Pages session.
  *
- * The row is removed only by a callback that carries both its `state` and the
- * cookie it was started with. A link to Kilo's page or to the callback that
- * is opened in another browser therefore signs nobody in. Kilo never sees the
+ * The first callback that names a `state` takes its row, and a session follows
+ * only if that callback also carries the cookie the sign-in started with. A
+ * link to Kilo's page or to the callback that is opened in another browser
+ * therefore signs nobody in, and it ends that sign-in: a code that reached the
+ * wrong browser can't be carried back to the right one. Kilo never sees the
  * landing path, so it can't be made to send a person anywhere but the fixed
  * callback.
  *
@@ -242,15 +244,13 @@ async function completeHandoff(request, env, config) {
     params.getAll("code").length !== 1
   )
     return signInFailed(400, "callback_malformed");
-  const binding = bindingOf(request);
-  if (!binding) return signInFailed(400, "binding_missing");
   const now = Math.floor(Date.now() / 1000);
-  // One statement takes the row, so of two callbacks with the same state one
-  // goes on to trade the code.
+  // One statement takes the row, whichever browser the callback reached, so a
+  // state is good for one callback and of two that carry it one goes on.
   const row = await env.DB.prepare(
-    "DELETE FROM kilo_handoffs WHERE state_hash = ? AND binding_hash = ? AND expires_at > ? RETURNING return_to",
+    "DELETE FROM kilo_handoffs WHERE state_hash = ? RETURNING binding_hash, return_to, expires_at",
   )
-    .bind(await secretHash(state), await secretHash(binding), now)
+    .bind(await secretHash(state))
     .first();
   if (!row) {
     // A repeated redirect or a restored tab delivers a callback whose sign-in
@@ -262,6 +262,10 @@ async function completeHandoff(request, env, config) {
     if (session) return noStore(new Response(null, { status: 303, headers: { Location: "/" } }));
     return signInFailed(400, "handoff_missing");
   }
+  if (row.expires_at <= now) return signInFailed(400, "handoff_expired");
+  const binding = bindingOf(request);
+  if (!binding || (await secretHash(binding)) !== row.binding_hash)
+    return signInFailed(400, "binding_mismatch");
   const returnTo = safeReturnTo(row.return_to, config.origin);
   let account;
   try {
