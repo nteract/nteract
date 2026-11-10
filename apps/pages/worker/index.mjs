@@ -79,6 +79,7 @@ import {
   verifyAssetUpload,
 } from "./asset-uploads.mjs";
 import { sessionStoreReady } from "./isolate-setup.mjs";
+import { handleKiloSignIn, kiloSessionProvider } from "./kilo-handoff.mjs";
 import { signInCallbackOptions } from "./sign-in-failure.mjs";
 import { localOidcStore } from "./local-oidc-store.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
@@ -1182,6 +1183,8 @@ const gateway = {
           credential: { kind: identity.credentialKind, can_write: identity.canWrite },
         });
       }
+      const kilo = await handleKiloSignIn(request, env);
+      if (kilo) return kilo;
       if (url.pathname === "/api/auth/login" && request.method === "GET")
         return beginServerOidcLogin(request, env);
       if (url.pathname === "/oidc")
@@ -1209,6 +1212,7 @@ const gateway = {
         if (!request.headers.has("authorization")) {
           refreshed = await serverOidcSessionStatus(request, env, noop, {
             onAuthEvent: recordOidcEvent,
+            provider: kiloSessionProvider(env, request),
           });
           if (!refreshed.ok) return refreshed;
         }
