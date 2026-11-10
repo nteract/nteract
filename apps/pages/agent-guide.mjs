@@ -210,8 +210,9 @@ Branch on code, not on the error message:
   Trash or be purged), not_page_owner (only the owner places a Page),
   move_destination_required (neither parent_id nor project_id names a
   destination),
-  invalid_position (position isn't "first", "last", {"before": id} or
-  {"after": id}), position_sibling_unknown (that Page isn't a sibling there).
+  invalid_position (more than one of position, before and after, or position
+  isn't "first" or "last"), position_sibling_unknown (the before or after
+  Page isn't a sibling there).
    move_unconfirmed (503, retryable:true): the move was written but its
    durability wasn't confirmed; retry the same key, token and payload.
    shared_project_move_unsupported: a cross-Project move involves current or
@@ -1153,9 +1154,9 @@ Project. Only the owner can move, trash or share Pages in its hierarchy.
 Sharing an individual Page does not grant access to its Project or sibling and
 descendant Pages.
 
-- move_page: page_id, a destination, optional position ("first", "last",
-  {"before": page_id} or {"after": page_id}), idempotency_key and the
-  list_pages retry_token. The destination is parent_id (a Page you own, in any
+- move_page: page_id, a destination, an optional place among the new siblings
+  (position "first" or "last", or before or after with a sibling's page_id; at
+  most one, last by default), idempotency_key and the list_pages retry_token. The destination is parent_id (a Page you own, in any
   Project or Your items), project_id (a Project you own: its top level), or
   project_id: null (a root in Your items); with both, the parent must be in
   that Project (placement_mismatch). One call reparents a Page you own within

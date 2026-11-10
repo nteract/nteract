@@ -115,16 +115,21 @@ export function normalizeHighlight(value) {
   return decodeMarkValue("highlight", color);
 }
 
-/** JSON Schema for one format_match `add` object, derived from the registry. */
+/** JSON Schema for one format_match `add` object, derived from the registry.
+ * It uses only typed properties and `pattern`, the subset mcp.mjs keeps tool
+ * schemas in: a flag is a boolean that `encodeMarkValue` requires to be true,
+ * and a string rule's enum and pattern are one alternation. */
 export function formatAddSchema() {
   const properties = {};
   for (const spec of registry.marks) {
     const rule = spec.value;
-    if (rule.type === "flag") properties[spec.name] = { const: true };
+    if (rule.type === "flag") properties[spec.name] = { type: "boolean" };
     else if (rule.type === "string")
       properties[spec.name] = {
         type: "string",
-        anyOf: [{ enum: rule.enum }, { pattern: rule.pattern }],
+        pattern: [...(rule.enum?.length ? [`^(?:${rule.enum.join("|")})$`] : []), rule.pattern]
+          .filter(Boolean)
+          .join("|"),
       };
     else if (rule.type === "json-object")
       properties[spec.name] = {

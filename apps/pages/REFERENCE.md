@@ -2189,6 +2189,13 @@ static and carry no account data. `initialize`, `tools/call` and every other met
 return the OAuth challenge without one, so MCP clients still start sign-in from
 `initialize`. A presented credential that fails still gets the challenge.
 
+Tool input schemas use a small JSON Schema subset: typed properties, `enum`,
+`required`, `items` and simple bounds, with no `oneOf`, `anyOf`, `allOf`,
+`const` or `$ref`. Clients and model providers rewrite, drop or reject those
+keywords, each differently. A choice between shapes is an `op` or `action`
+enum on one flat object, and the host checks which fields each choice takes
+([mcp.mjs](mcp.mjs)).
+
 Other endpoints include `/api/access` for sharing, `/api/connect` for native
 admission details, `/api/sync` for binary WebSockets, `/api/saved` for durable
 receipts, and the browser routes `/p/<page_id>/meta.json` and `card.json`
@@ -2862,7 +2869,7 @@ draft that hasn't registered says to wait for it to sync.
 | `create_page` | adds `project_id?`, `parent_id?` | adds `project_id`, `parent_id` (`null` at the top level) |
 | `list_pages` | adds `project_id?`, `parent_id?` (`null` = top level), `kind?` | owned rows add `project_id`, `parent_id`, `position`; never the content document |
 | `read_page` and every other tool taking `page_id` | `project_id` in place of `page_id` addresses the Project's content (exactly one; both is `invalid_arguments`) | adds `kind` (`page` or `project`), `project_id`, `parent_id`, `breadcrumbs`; content reads carry its `page_id` (= `document_id`) |
-| `move_page` | `page_id`, `parent_id`, `position?`, `idempotency_key`, `retry_token` | `page_id`, `project_id`, `parent_id`, `position`, `location_revision`, `descendants`, `trashed_descendants` |
+| `move_page` | `page_id`, `parent_id`, `position?` or `before?` or `after?`, `idempotency_key`, `retry_token` | `page_id`, `project_id`, `parent_id`, `position`, `location_revision`, `descendants`, `trashed_descendants` |
 
 Every Project and item operation goes through the caller's own Catalog, which
 calls the Project and Pages with the caller's credentials. A Project never calls a

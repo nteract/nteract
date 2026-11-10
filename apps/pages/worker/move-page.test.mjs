@@ -42,6 +42,8 @@ test("the move_page tool declares its keys and positions, and the guide its refu
   assert.deepEqual(tool.inputSchema.required, ["page_id", "idempotency_key", "retry_token"]);
   assert.equal(tool.inputSchema.additionalProperties, false);
   assert.deepEqual(Object.keys(tool.inputSchema.properties).sort(), [
+    "after",
+    "before",
     "idempotency_key",
     "page_id",
     "parent_id",
@@ -115,16 +117,18 @@ async function stage(w, title = "Moves") {
     return created.body.page_id;
   };
   const authority = (await w.call("owner", "list_pages")).body;
-  const moveArgs = (pageId, parentId, position, extra = {}) => ({
+  // `slot` is "first" or "last" (the position field), or { before } or
+  // { after } (the flat sibling fields).
+  const moveArgs = (pageId, parentId, slot, extra = {}) => ({
     page_id: pageId,
     ...(parentId === TOP ? { project_id: project.project_id } : { parent_id: parentId }),
-    ...(position !== undefined && { position }),
+    ...(typeof slot === "string" ? { position: slot } : slot),
     retry_token: authority.retry_token,
     idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
     ...extra,
   });
-  const move = (pageId, parentId, position, extra) =>
-    w.call("owner", "move_page", moveArgs(pageId, parentId, position, extra));
+  const move = (pageId, parentId, slot, extra) =>
+    w.call("owner", "move_page", moveArgs(pageId, parentId, slot, extra));
   const entries = () => locationEntries(w.catalogStorage());
   // The Project's top level, in sibling order.
   const top = (list) =>
@@ -546,6 +550,10 @@ test("each refusal carries its code and status, over HTTP and as MCP structured 
     ["project_id_as_page_id", 400, s.moveArgs(a, s.project.project_id)],
     ["invalid_position", 400, s.moveArgs(a, TOP, "middle")],
     ["invalid_position", 400, s.moveArgs(a, TOP, { before: a, after: a })],
+    ["invalid_position", 400, s.moveArgs(a, TOP, "first", { after: b })],
+    ["invalid_position", 400, s.moveArgs(a, TOP, { position: { before: b } })],
+    ["invalid_position", 400, s.moveArgs(a, TOP, { before: 7 })],
+    ["invalid_position", 400, s.moveArgs(a, TOP, { position: null })],
     ["invalid_position", 400, s.moveArgs(a, TOP, { before: a })],
     ["position_sibling_unknown", 400, s.moveArgs(a, TOP, { after: c })],
     ["position_sibling_unknown", 400, s.moveArgs(a, TOP, { before: trashed })],

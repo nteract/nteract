@@ -66,7 +66,10 @@ const PNG = Buffer.from(
  * is a document in `pages` flagged `content`: never listed, addressed by the
  * Page tools through project_id, named by get_project as document_id.
  */
-function fakePages(origin, { outlinePage = 100, token = KEY, insertNode = true } = {}) {
+function fakePages(
+  origin,
+  { outlinePage = 100, token = KEY, insertNode = true, opSchemas = false } = {},
+) {
   const pages = new Map();
   // Stored asset bytes by "<page_id>/<asset_id>", as the asset routes keep them.
   const assets = new Map();
@@ -471,7 +474,11 @@ function fakePages(origin, { outlinePage = 100, token = KEY, insertNode = true }
               inputSchema: {
                 properties: {
                   operations: {
-                    items: { oneOf: ops.map((op) => ({ properties: { op: { const: op } } })) },
+                    // opSchemas: the pages-format-1 service's shape, a schema
+                    // per op under oneOf.
+                    items: opSchemas
+                      ? { oneOf: ops.map((op) => ({ properties: { op: { const: op } } })) }
+                      : { properties: { op: { enum: ops } } },
                   },
                 },
               },
@@ -2059,6 +2066,18 @@ test("import refuses a target without insert_node before any write", async () =>
   const older = fakePages(TARGET, { insertNode: false });
   await importBundle(client(older, TARGET), plain.bundle, { store: memoryStore(), ...quick });
   assert.equal(older.calls.filter((call) => call.name === "tools/list").length, 0);
+});
+
+test("import reads insert_node from a target that lists a schema per op", async () => {
+  const { bundle } = await dataframeSource();
+  const target = fakePages(TARGET, { opSchemas: true });
+  await importBundle(client(target, TARGET), bundle, { store: memoryStore(), ...quick });
+  assert.equal(target.calls.filter((call) => call.name === "tools/list").length, 1);
+  const without = fakePages(TARGET, { opSchemas: true, insertNode: false });
+  await assert.rejects(
+    importBundle(client(without, TARGET), bundle, { store: memoryStore(), ...quick }),
+    (error) => error.code === "dataframes_unsupported",
+  );
 });
 
 test("the client sends its credential only to same-origin asset paths", async () => {

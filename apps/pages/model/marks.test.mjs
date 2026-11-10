@@ -5,6 +5,7 @@ import {
   MARK_NAMES,
   HIGHLIGHT_COLORS,
   decodeMarkValue,
+  validateMarkValue,
   encodeMarkValue,
   formatAddSchema,
   updateSpansConfig,
@@ -67,6 +68,20 @@ test("every consumer derives its mark list from the registry", () => {
   });
   assert.equal(expand, updateSpansConfig);
   assert.deepEqual(Object.keys(formatAddSchema().properties), MARK_NAMES);
+});
+
+test("the format_match add schema accepts the highlight values the registry does", () => {
+  const { highlight, strong } = formatAddSchema().properties;
+  assert.deepEqual(strong, { type: "boolean" });
+  const pattern = new RegExp(highlight.pattern);
+  for (const color of [...HIGHLIGHT_COLORS, "#00ff7f"]) {
+    assert.ok(pattern.test(color), color);
+    assert.doesNotThrow(() => validateMarkValue("highlight", color), color);
+  }
+  for (const color of ["red", "yellowish", "#00ff7", "x#00ff7f", "#00FF7F"]) {
+    assert.equal(pattern.test(color), false, color);
+    assert.throws(() => validateMarkValue("highlight", color), color);
+  }
 });
 
 test("mark values validate against the registry shapes", () => {

@@ -66,17 +66,15 @@ test("server instructions carry only the Markdown rules Pages adds, and /llms.tx
 
 test("patch_page advertises set_node, occurrence, all and replacement_markdown", () => {
   const patch = tools.find((tool) => tool.name === "patch_page");
-  const [replace, format, setNode] = patch.inputSchema.properties.operations.items.oneOf;
-  assert.deepEqual(
-    [replace, format, setNode].map((op) => op.properties.op.const),
-    ["replace_match", "format_match", "set_node"],
-  );
-  assert.ok(replace.properties.replacement_markdown);
-  assert.deepEqual(replace.required, ["op", "block_id", "match_text"]);
-  for (const op of [replace, format, setNode]) assert.ok(op.properties.occurrence);
-  assert.deepEqual(format.properties.all, { ...format.properties.all, const: true });
+  const operation = patch.inputSchema.properties.operations.items;
+  assert.deepEqual(operation.properties.op.enum, ["replace_match", "format_match", "set_node"]);
+  assert.deepEqual(operation.required, ["op", "block_id", "match_text"]);
+  for (const field of ["replacement_markdown", "occurrence", "type", "attrs"])
+    assert.ok(operation.properties[field], field);
+  assert.equal(operation.properties.all.type, "boolean");
+  assert.match(operation.properties.all.description, /^format_match: true formats every match/);
   for (const field of ["checked", "language", "heading_level", "align"])
-    assert.equal(field in setNode.properties, false, `set_node advertises top-level ${field}`);
+    assert.equal(field in operation.properties, false, `set_node advertises top-level ${field}`);
   assert.match(patch.description, /set_node/);
   // Agents learn the {type, attrs} shape.
   assert.match(patch.description, /type heading, attrs \{level\}/);
@@ -86,11 +84,11 @@ test("patch_page advertises set_node, occurrence, all and replacement_markdown",
 
 test("edit_page takes delete_node by node_id, and the guides say where the id comes from", async () => {
   const editPage = tools.find((tool) => tool.name === "edit_page");
-  const deleteNode = editPage.inputSchema.properties.operations.items.oneOf.find(
-    (variant) => variant.properties.op.const === "delete_node",
-  );
-  assert.deepEqual(deleteNode.required, ["op", "block_id", "node_id"]);
-  assert.equal(deleteNode.additionalProperties, false);
+  const operation = editPage.inputSchema.properties.operations.items;
+  assert.ok(operation.properties.op.enum.includes("delete_node"));
+  assert.match(operation.properties.op.description, /delete_node: block_id, node_id\./);
+  assert.match(operation.properties.node_id.description, /^delete_node: top-level node_id/);
+  assert.equal(operation.additionalProperties, false);
   assert.match(editPage.description, /delete_node removes one top-level node/);
   const { typedReadFields } = await import("./rich-content-guide.mjs");
   assert.match(typedReadFields(), /node_id names a top-level node/);

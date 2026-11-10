@@ -614,6 +614,28 @@ function validateCreateInput(args) {
 }
 
 /**
+ * Where a move puts the Page among its new siblings, as `planMove` takes it:
+ * "first", "last", `{ before: pageId }` or `{ after: pageId }`. The arguments
+ * name it with at most one of `position` ("first" or "last", the default),
+ * `before` or `after` (a sibling's Page ID): three flat fields, so the tool
+ * schema needs no union.
+ */
+function requestedPosition(args) {
+  const named = ["position", "before", "after"].filter((key) => args[key] !== undefined);
+  if (named.length === 0) return "last";
+  const [key] = named;
+  const value = args[key];
+  const position = key === "position" ? value : { [key]: value };
+  if (named.length > 1 || typeof value !== "string" || !validPosition(position))
+    throw new HttpError(
+      400,
+      'Give at most one of position ("first" or "last"), before or after (a sibling Page ID)',
+      "invalid_position",
+    );
+  return position;
+}
+
+/**
  * move_page's arguments as the Catalog runs them: `{ pageId, parentId,
  * spaceId, position }`. Every refusal here is deterministic input, so it
  * consumes no key and runs no shape pass. The destination is any of:
@@ -649,13 +671,7 @@ function validateMoveInput(args) {
     : args.space_id === null
       ? null
       : requireSpaceIdArgument(args.space_id);
-  const position = args.position === undefined ? "last" : args.position;
-  if (!validPosition(position))
-    throw new HttpError(
-      400,
-      'position is "first", "last", {"before": page_id} or {"after": page_id}',
-      "invalid_position",
-    );
+  const position = requestedPosition(args);
   if (typeof args.retry_token !== "string")
     throw new HttpError(
       400,

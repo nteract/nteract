@@ -320,8 +320,13 @@ export function pagesClient({
     if (!Array.isArray(tools))
       throw new TransferError(`tools/list on ${base}: unreadable response`);
     const editPage = tools.find((tool) => tool?.name === "edit_page");
-    const variants = editPage?.inputSchema?.properties?.operations?.items?.oneOf ?? [];
-    return variants.some((variant) => variant?.properties?.op?.const === operation);
+    // A target names its ops in one `op` enum. The pages-format-1 service
+    // lists a schema per op under oneOf, each with an `op` enum or const.
+    const items = editPage?.inputSchema?.properties?.operations?.items;
+    const names = (op) => op?.enum ?? [op?.const];
+    return [items, ...(items?.oneOf ?? [])].some((schema) =>
+      names(schema?.properties?.op).includes(operation),
+    );
   }
   return {
     origin: base,

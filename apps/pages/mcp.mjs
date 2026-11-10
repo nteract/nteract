@@ -28,7 +28,16 @@ import {
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 
+/**
+ * Tool input schemas stay inside the JSON Schema subset that MCP clients and
+ * model providers forward as written: typed properties, enum, required, items
+ * and simple bounds. No oneOf, anyOf, allOf, const or $ref: clients rewrite,
+ * drop or reject those, each differently. A choice between shapes is an `op`
+ * or `action` enum on one flat object, and the host checks which fields each
+ * choice takes. test/mcp.test.mjs walks every schema for this.
+ */
 const string = { type: "string" };
+const choice = (...values) => ({ type: "string", enum: values });
 const title = {
   ...string,
   description: "Page title, shown above the body. Don't repeat it as an opening heading.",
@@ -50,15 +59,21 @@ const project = {
 /**
  * Tools that take a document selector: page_id for a Page, or project_id in
  * its place for a Project's content document (worker/project-content.mjs
- * owns the set). tool() adds project_id and the exactly-one rule to each.
+ * owns the set). tool() adds project_id to each and takes page_id out of
+ * `required`; the two descriptions say one is needed, and the host refuses
+ * both or neither with invalid_arguments.
  * Catalog operations (create, move, delete, restore, purge) are not here: the
  * content document is not in the Page tree.
  */
 const PROJECT_CONTENT_TOOLS = PROJECT_CONTENT_OPERATIONS;
+const contentPage = {
+  ...page,
+  description: `${page.description} Required unless project_id is given.`,
+};
 const contentProject = {
   ...project,
   description:
-    "Project ID: address the Project's content instead of a Page. Never both (invalid_arguments).",
+    "Project ID: address the Project's content instead of a Page. Give page_id or project_id, never both (invalid_arguments).",
 };
 const parent = {
   type: ["string", "null"],
@@ -135,6 +150,7 @@ const readSelectors = {
     description: "Include recent selections and agent progress.",
   },
   comments: {
+    type: "string",
     enum: ["none", "summary", "open", "all"],
     description: "summary omits messages; open/all include them. Use none for body work.",
   },
@@ -188,7 +204,7 @@ const matchProperties = {
   replacement: {
     ...string,
     maxLength: 262144,
-    description: "Literal text. Give this or replacement_markdown.",
+    description: "replace_match: literal text. Give this or replacement_markdown.",
   },
   context_before: {
     ...string,
@@ -214,49 +230,8 @@ const locator = {
   occurrence: matchProperties.occurrence,
   node_index: nodeIndex,
 };
-const replaceMatchOperation = {
-  type: "object",
-  properties: {
-    op: { const: "replace_match" },
-    ...locator,
-    replacement: matchProperties.replacement,
-    replacement_markdown: {
-      ...string,
-      maxLength: 262144,
-      description:
-        "One line of inline Markdown. Only differing words are rewritten. Refused in code blocks.",
-    },
-  },
-  required: ["op", "block_id", "match_text"],
-  additionalProperties: false,
-};
-const formatMatchOperation = {
-  type: "object",
-  properties: {
-    op: { const: "format_match" },
-    ...locator,
-    all: {
-      const: true,
-      description:
-        "Format every match in the block (max 1000; code blocks skipped). Not with occurrence or conflict_scope target.",
-    },
-    add: {
-      ...formatAddSchema(),
-      description: `Marks to apply. Flags take true; highlight takes ${HIGHLIGHT_COLORS.join(", ")} or #rrggbb; link takes {href, title?}.`,
-    },
-    remove: {
-      type: "array",
-      minItems: 1,
-      uniqueItems: true,
-      items: { enum: MARK_NAMES },
-      description: "Marks to clear.",
-    },
-  },
-  required: ["op", "block_id", "match_text"],
-  additionalProperties: false,
-};
-// set_node's attrs schema, from model/node-registry.mjs: one property per
-// settable attribute, under the name read_page reports.
+// set_node's attrs, from model/node-registry.mjs: one property per settable
+// attribute, under the name read_page reports.
 const ATTR_DESCRIPTIONS = {
   level: "Heading level, 1 to 6.",
   language: 'Code block language; "" for plain text.',
@@ -274,19 +249,47 @@ const attrSchema = ({ spec }) =>
             enum: [...spec.values, ...(spec.nullable ? [null] : [])],
           }
         : { ...string, maxLength: 64 };
-const setNodeOperation = {
+/** One patch_page operation: every field replace_match, format_match and
+ * set_node take, each named for its op. */
+const patchOperation = {
   type: "object",
-  description: "Change the type or attrs of the node holding match_text, keeping its text.",
   properties: {
-    op: { const: "set_node" },
+    op: {
+      ...choice("replace_match", "format_match", "set_node"),
+      description:
+        "replace_match takes replacement or replacement_markdown. format_match takes add or remove, and all. set_node takes type or attrs.",
+    },
     ...locator,
+    replacement: matchProperties.replacement,
+    replacement_markdown: {
+      ...string,
+      maxLength: 262144,
+      description:
+        "replace_match: one line of inline Markdown. Only differing words are rewritten. Refused in code blocks.",
+    },
+    add: {
+      ...formatAddSchema(),
+      description: `format_match: marks to apply. Flags take true; highlight takes ${HIGHLIGHT_COLORS.join(", ")} or #rrggbb; link takes {href, title?}.`,
+    },
+    remove: {
+      type: "array",
+      minItems: 1,
+      uniqueItems: true,
+      items: choice(...MARK_NAMES),
+      description: "format_match: marks to clear.",
+    },
+    all: {
+      type: "boolean",
+      description:
+        "format_match: true formats every match in the block (max 1000; code blocks skipped). Not with occurrence or conflict_scope target.",
+    },
     type: {
-      type: "string",
-      enum: retypeTargets("paragraph"),
-      description: "paragraph, or heading with attrs.level.",
+      ...choice(...retypeTargets("paragraph")),
+      description: "set_node: paragraph, or heading with attrs.level.",
     },
     attrs: {
       type: "object",
+      description: "set_node: attributes to set, keeping the node's text.",
       properties: Object.fromEntries(
         Object.entries(SETTABLE_ATTRS).map(([name, attr]) => [
           name,
@@ -298,6 +301,99 @@ const setNodeOperation = {
     },
   },
   required: ["op", "block_id", "match_text"],
+  additionalProperties: false,
+};
+/** A Page-local asset: the SHA-256 of its bytes, as an upload returns it. */
+const assetId = { type: "string", pattern: "^[a-f0-9]{64}$" };
+/** One edit_page operation: every field its ops take, each named for its
+ * ops. */
+const editOperation = {
+  type: "object",
+  properties: {
+    op: {
+      ...choice(
+        "set_title",
+        "replace_block_markdown",
+        "insert_markdown",
+        "move_block",
+        "delete_block",
+        "insert_image",
+        "set_image",
+        "insert_node",
+        "delete_node",
+      ),
+      description:
+        "set_title: title. replace_block_markdown: block_id, markdown. insert_markdown: markdown, after_block_id. move_block: block_id, after_block_id. delete_block: block_id. insert_image: asset_id, alt; optional dark_asset_id, title, after_block_id. set_image: block_id, image_id and the fields to change. insert_node: node, after_block_id. delete_node: block_id, node_id.",
+    },
+    block_id: string,
+    title: {
+      type: ["string", "null"],
+      maxLength: 2048,
+      description:
+        "set_title: the Page title, shown above the body. Image ops: the image's title; null clears it.",
+    },
+    markdown: markdownBody,
+    after_block_id: {
+      type: ["string", "null"],
+      description: "Inserts and move_block: after this block; null prepends, omitted appends.",
+    },
+    asset_id: {
+      ...assetId,
+      description:
+        "Image ops: asset uploaded to this Page (create_page_asset_upload or import_page_image).",
+    },
+    dark_asset_id: {
+      ...assetId,
+      type: ["string", "null"],
+      description:
+        "Image ops: dark-theme variant uploaded to this Page; null on set_image removes it.",
+    },
+    alt: {
+      type: "string",
+      maxLength: 2048,
+      description: "Image ops: alt text; empty for a decorative image.",
+    },
+    image_id: {
+      type: "string",
+      maxLength: 192,
+      description: "set_image: image_id from summary.images, not a node_id.",
+    },
+    node: {
+      type: "object",
+      description: "insert_node: the node to place in its own block.",
+      properties: {
+        type: {
+          ...choice("dataframe"),
+          description: "An interactive table of a dataset asset.",
+        },
+        attrs: {
+          type: "object",
+          properties: {
+            asset_id: { ...assetId, description: "Parquet asset uploaded to this Page." },
+            title: {
+              type: "string",
+              maxLength: 200,
+              description: "Caption above the table.",
+            },
+            media_type: {
+              ...choice("application/vnd.apache.parquet"),
+              description: "Defaults to Parquet.",
+            },
+          },
+          required: ["asset_id"],
+          additionalProperties: false,
+        },
+      },
+      required: ["type", "attrs"],
+      additionalProperties: false,
+    },
+    node_id: {
+      type: "string",
+      maxLength: 192,
+      description: "delete_node: top-level node_id from the outline.",
+    },
+  },
+  required: ["op"],
   additionalProperties: false,
 };
 /** MCP clients treat an absent hint as its default: a write that is
@@ -330,7 +426,7 @@ const accessPrincipal = {
   maxLength: 512,
   description: "Account principal from an access read; never guessed.",
 };
-const accessRole = { enum: ["viewer", "commenter", "editor", null] };
+const accessRole = { type: ["string", "null"], enum: ["viewer", "commenter", "editor", null] };
 const accessKey = {
   ...guard.idempotency_key,
   description: "A new plain key of 8–128 letters, digits, _ or -.",
@@ -346,9 +442,10 @@ const tool = (name, description, properties, required, annotations, share = fals
     description,
     inputSchema: {
       type: "object",
-      properties: content ? { ...properties, project_id: contentProject } : properties,
+      properties: content
+        ? { ...properties, page_id: contentPage, project_id: contentProject }
+        : properties,
       required: content ? required.filter((field) => field !== "page_id") : required,
-      ...(content && { oneOf: [{ required: ["page_id"] }, { required: ["project_id"] }] }),
       additionalProperties: false,
     },
     annotations,
@@ -378,6 +475,7 @@ export const tools = [
     {
       page_id: page,
       action: {
+        type: "string",
         enum: ["invite", "set_role", "revoke_invite", "set_domain_view"],
       },
       email: {
@@ -408,7 +506,7 @@ export const tools = [
     "Share a whole Project as its owner, at the revision from get_project_access. invite takes an exact known email and role; no email is sent. set_role takes a member's principal (null removes). revoke_invite takes invite_id. Project access covers content and all Pages; direct Page grants stay separate. Needs pages:share consent.",
     {
       project_id: project,
-      action: { enum: ["invite", "set_role", "revoke_invite"] },
+      action: { type: "string", enum: ["invite", "set_role", "revoke_invite"] },
       email: {
         ...string,
         description: "Exact known email for invite; never guessed.",
@@ -457,15 +555,18 @@ export const tools = [
       },
       parent_id: parent,
       kind: {
+        type: "string",
         enum: ["page", "notebook", "dashboard", "result"],
         description: "Only page has items today.",
       },
       access: {
+        type: "string",
         enum: ["owned", "shared"],
         description:
           "Only owned, or only shared with you. shared doesn't combine with in_trash or project_id.",
       },
       sort: {
+        type: "string",
         enum: ["activity", "created", "title"],
         description:
           "activity (default): last edited by content_updated_at (last trashed with in_trash). created lists the newest first. title: by lowercased code point.",
@@ -521,6 +622,7 @@ export const tools = [
         description: "comment_heads from your last read or comment receipt.",
       },
       comments: {
+        type: "string",
         enum: ["none", "summary", "all"],
         description: "Default summary; all includes messages of changed threads.",
       },
@@ -538,7 +640,7 @@ export const tools = [
     "Read comment threads without the body. Defaults to open threads. Returns heads, comment_heads and retry authority for manage_page_comment. Author labels are not verified identity.",
     {
       page_id: page,
-      state: { enum: ["open", "resolved", "all"] },
+      state: { type: "string", enum: ["open", "resolved", "all"] },
       block_id: {
         ...string,
         description: "Filter by block ID.",
@@ -625,6 +727,7 @@ export const tools = [
     {
       page_id: page,
       content_type: {
+        type: "string",
         enum: ASSET_UPLOAD_TYPES,
         description: "Bind the upload to this type. Without it, send application/octet-stream.",
       },
@@ -677,141 +780,7 @@ export const tools = [
         type: "array",
         minItems: 1,
         maxItems: 100,
-        items: {
-          oneOf: [
-            {
-              type: "object",
-              properties: {
-                op: {
-                  enum: [
-                    "set_title",
-                    "replace_block_markdown",
-                    "insert_markdown",
-                    "move_block",
-                    "delete_block",
-                  ],
-                },
-                block_id: string,
-                title,
-                markdown: markdownBody,
-                after_block_id: {
-                  type: ["string", "null"],
-                  description: "After this block; null prepends, omitted appends.",
-                },
-              },
-              required: ["op"],
-            },
-            {
-              type: "object",
-              properties: {
-                op: { const: "insert_image" },
-                dark_asset_id: {
-                  type: "string",
-                  pattern: "^[a-f0-9]{64}$",
-                  description: "Dark-theme variant uploaded to this Page.",
-                },
-                title: { type: ["string", "null"], maxLength: 2048 },
-                asset_id: {
-                  type: "string",
-                  pattern: "^[a-f0-9]{64}$",
-                  description:
-                    "Asset uploaded to this Page (create_page_asset_upload or import_page_image).",
-                },
-                alt: {
-                  type: "string",
-                  maxLength: 2048,
-                  description: "Alt text; empty for a decorative image.",
-                },
-                after_block_id: {
-                  type: ["string", "null"],
-                  description: "Insert after this block; null prepends, omitted appends.",
-                },
-              },
-              required: ["op", "asset_id", "alt"],
-              additionalProperties: false,
-            },
-            {
-              type: "object",
-              properties: {
-                op: { const: "set_image" },
-                block_id: { type: "string" },
-                image_id: {
-                  type: "string",
-                  maxLength: 192,
-                  description: "image_id from summary.images, not a node_id.",
-                },
-                asset_id: { type: "string", pattern: "^[a-f0-9]{64}$" },
-                dark_asset_id: {
-                  type: ["string", "null"],
-                  pattern: "^[a-f0-9]{64}$",
-                  description: "Page-local dark asset; null removes the alternate.",
-                },
-                alt: { type: "string", maxLength: 2048 },
-                title: { type: ["string", "null"], maxLength: 2048 },
-              },
-              required: ["op", "block_id", "image_id"],
-              additionalProperties: false,
-            },
-            {
-              type: "object",
-              properties: {
-                op: { const: "insert_node" },
-                node: {
-                  type: "object",
-                  properties: {
-                    type: {
-                      const: "dataframe",
-                      description: "An interactive table of a dataset asset.",
-                    },
-                    attrs: {
-                      type: "object",
-                      properties: {
-                        asset_id: {
-                          type: "string",
-                          pattern: "^[a-f0-9]{64}$",
-                          description: "Parquet asset uploaded to this Page.",
-                        },
-                        title: {
-                          type: "string",
-                          maxLength: 200,
-                          description: "Caption above the table.",
-                        },
-                        media_type: {
-                          const: "application/vnd.apache.parquet",
-                          description: "Defaults to Parquet.",
-                        },
-                      },
-                      required: ["asset_id"],
-                      additionalProperties: false,
-                    },
-                  },
-                  required: ["type", "attrs"],
-                  additionalProperties: false,
-                },
-                after_block_id: {
-                  type: ["string", "null"],
-                  description: "Insert after this block; null prepends, omitted appends.",
-                },
-              },
-              required: ["op", "node"],
-              additionalProperties: false,
-            },
-            {
-              type: "object",
-              properties: {
-                op: { const: "delete_node" },
-                block_id: string,
-                node_id: {
-                  type: "string",
-                  maxLength: 192,
-                  description: "Top-level node_id from the outline.",
-                },
-              },
-              required: ["op", "block_id", "node_id"],
-              additionalProperties: false,
-            },
-          ],
-        },
+        items: editOperation,
       },
     },
     ["page_id", "base_heads", "idempotency_key", "operations"],
@@ -823,6 +792,7 @@ export const tools = [
     {
       ...guard,
       conflict_scope: {
+        type: "string",
         enum: ["page", "target"],
         description:
           "page (default) needs exact current heads. target accepts older heads when each target is unchanged (not with all).",
@@ -831,9 +801,7 @@ export const tools = [
         type: "array",
         minItems: 1,
         maxItems: 100,
-        items: {
-          oneOf: [replaceMatchOperation, formatMatchOperation, setNodeOperation],
-        },
+        items: patchOperation,
       },
     },
     ["page_id", "base_heads", "idempotency_key", "operations"],
@@ -849,6 +817,7 @@ export const tools = [
         description: "Heads of the read that supplied selected_text; only used for add.",
       },
       action: {
+        type: "string",
         enum: ["add", "reply", "resolve", "reopen", "edit", "delete_message"],
       },
       block_id: string,
@@ -866,7 +835,7 @@ export const tools = [
       },
       message_id: string,
       body: string,
-      body_format: { enum: ["plain", "markdown"] },
+      body_format: { type: "string", enum: ["plain", "markdown"] },
       selected_text: string,
       occurrence: { type: "integer", minimum: 1 },
     },
@@ -982,24 +951,11 @@ export const tools = [
         description: "Project you own (its top level without parent_id); null for Your items.",
       },
       position: {
-        description:
-          'Among new siblings: "first", "last" (default), {"before": id} or {"after": id}.',
-        oneOf: [
-          { enum: ["first", "last"] },
-          {
-            type: "object",
-            properties: { before: page },
-            required: ["before"],
-            additionalProperties: false,
-          },
-          {
-            type: "object",
-            properties: { after: page },
-            required: ["after"],
-            additionalProperties: false,
-          },
-        ],
+        ...choice("first", "last"),
+        description: "Among its new siblings; last is the default. Not with before or after.",
       },
+      before: { ...string, description: "Place it just before this sibling Page." },
+      after: { ...string, description: "Place it just after this sibling Page." },
       retry_token: {
         ...guard.retry_token,
         description: "From list_pages.",
@@ -1015,6 +971,7 @@ export const tools = [
     {
       page_id: page,
       action: {
+        type: "string",
         enum: ["preview", "confirm"],
         description: "preview changes nothing; confirm deletes.",
       },

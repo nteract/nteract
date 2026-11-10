@@ -54,11 +54,12 @@ test("content descriptors accept exactly one selector without changing placement
     if (PROJECT_CONTENT_OPERATIONS.has(tool.name)) {
       assert.ok(tool.inputSchema.properties.project_id, tool.name);
       assert.ok(!tool.inputSchema.required.includes("page_id"), tool.name);
-      assert.deepEqual(tool.inputSchema.oneOf, [
-        { required: ["page_id"] },
-        { required: ["project_id"] },
-      ]);
-    } else assert.equal(tool.inputSchema.oneOf, undefined, tool.name);
+      assert.match(
+        tool.inputSchema.properties.page_id.description,
+        /Required unless project_id is given/,
+        tool.name,
+      );
+    }
   }
   assert.ok(
     tools.find((tool) => tool.name === "move_page").inputSchema.required.includes("page_id"),
