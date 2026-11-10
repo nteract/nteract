@@ -21,6 +21,7 @@ directory is the source until then.
 | Host | One host per document | Identity, access, admission, persistence, receipts |
 | Document type | A type module: `type` plus integer `format` | Genesis, admission checks, projections for readers |
 | Rich text | Wordgard tree, memory only | Decoded from Automerge spans. No ProseMirror |
+| Change flow | Automerge bytes, then patches, then a projection stream, then views | The same shape as nteract notebooks. Derived state lives in RxJS streams outside React |
 | Agent edge | HTTP and MCP tools | Markdown and outline are projections. Writes are node operations |
 
 The host does not need to understand a document's content to sync it. It asks
@@ -39,9 +40,11 @@ Comments live in their own document and anchor to the Page with cursors.
 ## What changes from today
 
 1. **Format 2 for `pages.page`.** A block stores `position` and `richText`
-   only. `kind`, `format`, `markdown` and `metadata` hold constants today
-   ([model/page.mjs](model/page.mjs)). Every node gets an explicit opening
-   marker, including a block's first paragraph, so every node has an id.
+   only. Format 2 drops `kind`, `format`, `markdown` and `metadata`: each
+   holds a constant today, and `markdown` is always the empty string
+   ([model/page.mjs](model/page.mjs)). Tool responses stop reporting them too.
+   Every node gets an explicit opening marker, including a block's first
+   paragraph, so every node has an id.
 2. **Sync without `automerge-repo`.** Pages uses the Repo package for CBOR,
    document ID helpers, record sizing, the Sedimentree backend interface in
    [sync/backend.mjs](sync/backend.mjs), and one `Repo` in the browser
@@ -130,4 +133,11 @@ records the node addresses agents use.
 - How a Page shows notebook work: a static output in a report, or a live
   cell that runs. `runtimed` keeps kernels, execution and outputs either way.
 - Whether a document type's genesis is fixed the way the notebook's is.
+- Whether the span codec and the agent projections move to Rust compiled to
+  WASM. The editor already applies Automerge text patches to its decoded
+  block and re-decodes only for structure and formatting
+  ([viewer/wordgard-binding.mjs](viewer/wordgard-binding.mjs)). The host's
+  admission checks and the Markdown and outline projections are the first
+  candidates, because the host, the tools and a Rust client can then share
+  one codec. Moving the editor's document into WASM is a larger step.
 - Whether marker `parents` becomes a scalar path, and how small blocks get.
