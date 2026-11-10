@@ -736,6 +736,63 @@ test("Claude Code returns to a loopback port it chose, and the consent screen sa
   }
 });
 
+test("a local Pages server refuses a native client on its own loopback name and says which name to use", async (t) => {
+  for (const [local, same, other] of [
+    ["http://localhost:9894", "localhost", "127.0.0.1"],
+    ["http://127.0.0.1:9894", "127.0.0.1", "localhost"],
+  ]) {
+    const env = fixture(t, { NOTEBOOK_CLOUD_PUBLIC_ORIGIN: local }),
+      login = await session(env);
+    serve(t, { [claudeCode]: claudeCodeDocument });
+    const refused = await handleOAuth(
+      get(
+        "/oauth/authorize?" +
+          (await authorization(env, {
+            client_id: claudeCode,
+            redirect_uri: `http://${same}:54034/callback`,
+          })),
+        login.cookie,
+      ),
+      env,
+    );
+    assert.equal(refused.status, 400, local);
+    assert.equal(refused.headers.get("location"), null);
+    const text = await refused.text();
+    assert.ok(
+      text.includes(
+        `This client listens on ${same}, the name this local Pages server uses, so your browser would send it your Pages session. Run Pages on ${other} to connect it.`,
+      ),
+      text,
+    );
+    assert.doesNotMatch(text, /<form/);
+    // The same client on the other loopback name gets its consent screen.
+    const redirect_uri = `http://${other}:54034/callback`;
+    const screen = await consent(env, login, { client_id: claudeCode, redirect_uri });
+    assert.match(screen.text, /<h1>Connect Claude Code to Pages<\/h1>/);
+    assert.equal(
+      screen.result.headers.get("content-security-policy").match(/form-action ([^;]+)/)[1],
+      "'self' " + redirect_uri,
+    );
+  }
+  // A public deployment keeps the plain refusal.
+  const env = fixture(t, anyDocument),
+    login = await session(env);
+  const client_id = "https://app.example/client.json";
+  const redirect_uri = "https://page10.example:8443/cb";
+  serve(t, {
+    [client_id]: { ...claudeCodeDocument, client_id, redirect_uris: [redirect_uri] },
+  });
+  const refused = await handleOAuth(
+    get(
+      "/oauth/authorize?" + (await authorization(env, { client_id, redirect_uri })),
+      login.cookie,
+    ),
+    env,
+  );
+  assert.equal(refused.status, 400);
+  assert.match(await refused.text(), /The callback does not match this client\./);
+});
+
 test("a client Pages has no name for is shown by its host; the name it claims is quoted and escaped", async (t) => {
   const env = fixture(t, anyDocument),
     login = await session(env);

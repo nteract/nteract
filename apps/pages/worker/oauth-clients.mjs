@@ -215,8 +215,11 @@ export function loopbackRedirect(redirectUri) {
  * The one exception is the port of a loopback callback (RFC 8252 section
  * 7.3): a native app binds whichever port is free, so its listed callback
  * matches on scheme, host, path and query alone. A metadata-document client
- * is never sent to the Pages host, which the consent screen would show as a
- * destination the person already trusts. */
+ * is never sent to the Pages hostname, on any port. The consent screen would
+ * show a destination the person already trusts, and the browser would send
+ * the Pages session cookie there: a cookie belongs to a hostname, not to a
+ * port. That holds on a loopback origin too, where the callback would be
+ * another program on the same computer (`loopbackNameClash`). */
 export function redirectAllowed(client, redirectUri, origin) {
   if (client.named) return client.redirectUris.includes(redirectUri);
   const url = redirectUrl(redirectUri);
@@ -232,6 +235,18 @@ export function redirectAllowed(client, redirectUri, origin) {
       candidate.search === url.search
     );
   });
+}
+
+/** The loopback name Pages is not using, when Pages runs on a loopback origin
+ * and `redirectUri` is a callback on that origin's hostname; otherwise null.
+ * `redirectAllowed` refuses such a callback. A local server reaches that
+ * client by running under the other name, so the two do not share cookies. */
+export function loopbackNameClash(redirectUri, origin) {
+  const url = redirectUrl(redirectUri);
+  const pages = new URL(origin);
+  if (!url || pages.protocol !== "http:" || !LOOPBACK_HOSTS.has(pages.hostname)) return null;
+  if (url.hostname !== pages.hostname) return null;
+  return pages.hostname === "localhost" ? "127.0.0.1" : "localhost";
 }
 
 /** The `form-action` source for a validated callback. Chromium checks

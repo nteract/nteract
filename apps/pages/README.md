@@ -62,6 +62,13 @@ Setup fetches and verifies the pinned upstream source, installs locked
 dependencies, and builds the Repo packages. Rebuild after source changes. Dev
 serves `http://localhost:9894`; `PAGES_PORT` picks another port.
 
+`PAGES_HOST=127.0.0.1` serves the same server as `http://127.0.0.1:9894`. Use
+it to connect a native MCP client that listens on `localhost` for its OAuth
+callback, such as Claude Code. Pages refuses a callback on its own hostname,
+because the browser would send the Pages session cookie there. A client that
+listens on `127.0.0.1` needs the default, `localhost`. Sign-in and the `/mcp`
+address follow the name: `http://127.0.0.1:9894/mcp`.
+
 Local sign-in uses a loopback-only OIDC issuer that a public deployment can't
 enable. State persists under `dist/.celld`. A Page records its storage
 mode at creation; changing a persistence flag doesn't migrate local documents.

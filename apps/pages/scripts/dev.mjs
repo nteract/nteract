@@ -6,7 +6,14 @@ import { fileURLToPath } from "node:url";
 const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const port = Number(process.env.PAGES_PORT || 9894);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("Invalid PAGES_PORT");
-const origin = `http://localhost:${port}`;
+// The loopback name in the public origin. celld listens on 127.0.0.1 under
+// either name. A native MCP client also listens on a loopback name for its
+// OAuth callback, and Pages refuses a callback on its own hostname: pick the
+// name the client does not use.
+const host = process.env.PAGES_HOST || "localhost";
+if (!["localhost", "127.0.0.1"].includes(host))
+  throw new Error("PAGES_HOST must be localhost or 127.0.0.1");
+const origin = `http://${host}:${port}`;
 let secret;
 try {
   secret = (await readFile(path.join(app, "dist/.dev.vars"), "utf8")).match(

@@ -10,6 +10,7 @@ import {
   clientFromMetadata,
   formActionSource,
   loggedClientId,
+  loopbackNameClash,
   loopbackRedirect,
   metadataClient,
   metadataClientUrl,
@@ -404,6 +405,45 @@ test("a callback matches a listed one exactly, except the port of a loopback cal
   for (const uri of odd.redirectUris) assert.equal(redirectAllowed(odd, uri, origin), false, uri);
   assert.equal(loopbackRedirect("https://app.example/callback"), false);
   assert.equal(loopbackRedirect("http://evil.example/callback"), false);
+});
+
+test("a callback on the Pages hostname is refused on every port, on a loopback origin too", () => {
+  const id = "https://app.example/client.json";
+  const web = client(id, {
+    redirect_uris: [
+      "https://pages.example/cb",
+      "https://pages.example:8443/cb",
+      "https://near.pages.example/cb",
+    ],
+  });
+  assert.equal(redirectAllowed(web, "https://pages.example/cb", origin), false);
+  assert.equal(redirectAllowed(web, "https://pages.example:8443/cb", origin), false);
+  assert.equal(redirectAllowed(web, "https://near.pages.example/cb", origin), true);
+  assert.equal(loopbackNameClash("https://pages.example:8443/cb", origin), null);
+
+  // A cookie belongs to a hostname, not a port: a native client listening on
+  // the name a local Pages server uses would be sent the Pages session.
+  const native = clientFromMetadata(new URL(CLAUDE_CODE), published[CLAUDE_CODE]);
+  for (const [local, same, other] of [
+    ["http://localhost:9894", "localhost", "127.0.0.1"],
+    ["http://127.0.0.1:9894", "127.0.0.1", "localhost"],
+    ["http://localhost", "localhost", "127.0.0.1"],
+  ]) {
+    for (const port of ["", ":9894", ":54034"]) {
+      const clash = `http://${same}${port}/callback`;
+      assert.equal(redirectAllowed(native, clash, local), false, `${clash} at ${local}`);
+      assert.equal(loopbackNameClash(clash, local), other, `${clash} at ${local}`);
+      const apart = `http://${other}${port}/callback`;
+      assert.equal(redirectAllowed(native, apart, local), true, `${apart} at ${local}`);
+      assert.equal(loopbackNameClash(apart, local), null, `${apart} at ${local}`);
+    }
+  }
+  // Only an `http` loopback origin has another name to run under.
+  assert.equal(loopbackNameClash("http://localhost:3118/callback", "https://localhost:9894"), null);
+  assert.equal(loopbackNameClash("http://localhost:3118/callback", "http://[::1]:9894"), null);
+  // Not a callback at all.
+  for (const uri of ["http://localhost:3118/cb#f", "http://user@localhost/cb", "", undefined])
+    assert.equal(loopbackNameClash(uri, "http://localhost:9894"), null, String(uri));
 });
 
 test("the consent form may be sent to the callback's origin and path", () => {
