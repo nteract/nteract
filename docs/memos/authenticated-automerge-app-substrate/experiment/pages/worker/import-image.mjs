@@ -68,7 +68,9 @@ async function downloadImage(request, url) {
         // Never forward the caller's cookie, OAuth token, or provider headers.
         const response = await fetch(url.href, {
           method: "GET",
-          redirect: "error",
+          // Cloudflare Workers refuses `redirect: "error"`. A manual redirect
+          // comes back as its 3xx response, refused below.
+          redirect: "manual",
           credentials: "omit",
           referrerPolicy: "no-referrer",
           signal: controller.signal,

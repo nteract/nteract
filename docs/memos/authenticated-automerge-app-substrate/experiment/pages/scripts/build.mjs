@@ -1,6 +1,6 @@
 import { celldCborPlugin } from "./celld-cbor.mjs";
 import { AUTH_D1, USAGE_D1 } from "./deployment/profiles.mjs";
-import { CRONS } from "../shared/schedule.mjs";
+import { workerShape } from "./worker-shape.mjs";
 import { mermaidSource } from "./browser-mermaid.mjs";
 import { siftWasmPath } from "./browser-sift.mjs";
 import { sourceFingerprint, writeBuildReceipt } from "./source-fingerprint.mjs";
@@ -169,37 +169,16 @@ await writeFile(
     [...viewerChunks, ...Object.values(assets)],
   ),
 );
+// The installer hashes this file's bytes and restarts celld when they change
+// (scripts/deployment/activation.mjs), so the key order is part of the output.
+const { triggers, vars, ...shape } = workerShape();
 await writeFile(
   path.join(dist, "wrangler.json"),
   JSON.stringify(
     {
       name: "nteract-pages-next",
       main: "index.js",
-      no_bundle: true,
-      compatibility_date: "2026-10-01",
-      assets: {
-        directory: "public",
-        binding: "ASSETS",
-        not_found_handling: "single-page-application",
-        run_worker_first: true,
-      },
-      durable_objects: {
-        bindings: [
-          { name: "PAGES", class_name: "Page" },
-          { name: "CATALOGS", class_name: "Catalog" },
-          // Delete-only: purge clears old buffered records
-          // (worker/page-records.mjs).
-          { name: "PAGE_RECORDS", class_name: "PageRecords" },
-          // Projects keep the Space class: the class name is the storage identity for
-          // Projects, and celld 0.6.3 refuses renamed_classes migrations.
-          { name: "PROJECTS", class_name: "Space" },
-        ],
-      },
-      migrations: [
-        { tag: "v1", new_sqlite_classes: ["Page", "Catalog"] },
-        { tag: "v2", new_sqlite_classes: ["PageRecords"] },
-        { tag: "v3", new_sqlite_classes: ["Space"] },
-      ],
+      ...shape,
       d1_databases: [
         {
           binding: AUTH_D1.binding,
@@ -208,10 +187,10 @@ await writeFile(
         },
         USAGE_D1,
       ],
-      triggers: { crons: [...CRONS] },
+      triggers,
       // celld scopes this bucket beneath the deployment's fleet prefix.
       r2_buckets: [{ binding: "PAGES_ASSETS", bucket_name: "pages-images" }],
-      vars: { NOTEBOOK_CLOUD_OIDC_FLOW: "server" },
+      vars,
     },
     null,
     2,

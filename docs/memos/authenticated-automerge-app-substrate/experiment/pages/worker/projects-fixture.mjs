@@ -10,6 +10,17 @@ import { DocumentPolicy } from "./policy.mjs";
 import { plainStub } from "./plain-stub.mjs";
 import { LOCATION_SHAPE_KEY, shapeState } from "./location-shape.mjs";
 
+/** A response as a Durable Object stub returns it on Cloudflare Workers: its
+ * headers refuse writes. Node's own responses allow them, so code that sets a
+ * header on a host's answer would pass here and throw in production. */
+export function immutableHeaders(response) {
+  for (const write of ["set", "append", "delete"])
+    response.headers[write] = () => {
+      throw new TypeError("Can't modify immutable headers.");
+    };
+  return response;
+}
+
 export class Storage {
   values = new Map();
   async get(key) {
@@ -78,7 +89,7 @@ export async function world(t, { index = "1", storage: newStorage = () => new St
         faults.delete(id);
         return Response.json({ error: "Lost response" }, { status: 500 });
       }
-      return response;
+      return immutableHeaders(response);
     },
   });
   const env = {

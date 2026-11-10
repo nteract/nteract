@@ -7,7 +7,9 @@ export { Page, Catalog, PageRecords, Space } from "../../worker/index.mjs";
 
 const origin = PAGES_E2E_ORIGIN;
 // Identifies this isolate in the image source's report. Nothing depends on it.
-const isolate = crypto.randomUUID();
+// Made on first use: Cloudflare Workers refuses random values at module scope.
+let isolateId;
+const isolate = () => (isolateId ??= crypto.randomUUID());
 const realFetch = globalThis.fetch.bind(globalThis);
 globalThis.fetch = fixtureImageFetch(fixtureFetch(origin, PAGES_E2E_RESPONSES, realFetch), {
   source: PAGES_E2E_IMAGE_SOURCE,
@@ -22,7 +24,7 @@ export default {
       return new Response("Local test fixture only", { status: 403 });
     if (url.pathname === "/__e2e/image-source") {
       if (request.method !== "GET") return new Response(null, { status: 405 });
-      return Response.json({ fixture: PAGES_E2E_FIXTURE_ID, isolate });
+      return Response.json({ fixture: PAGES_E2E_FIXTURE_ID, isolate: isolate() });
     }
     return worker.fetch(request, env, ctx);
   },

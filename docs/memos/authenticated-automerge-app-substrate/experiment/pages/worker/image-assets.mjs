@@ -1,5 +1,6 @@
 import { authenticate, HttpError, errorResponse } from "./auth.mjs";
 import { validPageId } from "./registration.mjs";
+import { setResponseHeaders } from "./response-headers.mjs";
 import {
   IMAGE_MAX_BYTES,
   IMAGE_MAX_DIMENSION,
@@ -114,11 +115,14 @@ export async function readImageBody(
   return bytes;
 }
 
+/** Mark a response as private. Refusals passed through from the Page host
+ * arrive with immutable headers, so the result may be a copy. */
 export function privateImageResponse(response) {
-  response.headers.set("Cache-Control", "private, no-store");
-  response.headers.set("X-Content-Type-Options", "nosniff");
-  response.headers.set("Cross-Origin-Resource-Policy", "same-origin");
-  return response;
+  return setResponseHeaders(response, [
+    ["Cache-Control", "private, no-store"],
+    ["X-Content-Type-Options", "nosniff"],
+    ["Cross-Origin-Resource-Policy", "same-origin"],
+  ]);
 }
 
 function storedImageMetadata(object, pageId, assetId) {

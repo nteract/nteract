@@ -22,7 +22,7 @@ test("MCP image fixture forwards only well-formed synthetic URLs and never reach
     {
       source: "http://127.0.0.1:5678",
       identity: "fixture-a",
-      isolate: "isolate-1",
+      isolate: () => "isolate-1",
       realFetch: async (url, init) => {
         forwarded.push({ url, headers: init.headers });
         return new Response("forwarded");
