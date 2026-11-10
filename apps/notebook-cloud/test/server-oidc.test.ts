@@ -20,13 +20,22 @@ import {
 import {
   beginServerOidcLogin,
   completeServerOidcLogin,
+  createServerSession,
   deleteServerOidcSession,
   serverOidcSessionStatus,
   ServerOidcIdentityRejected,
+  ServerSessionGrantRejected,
   type ServerOidcAuthEvent,
+  type ServerOidcEnvironment,
+  type ServerSessionGrant,
+  type ServerSessionProvider,
 } from "../src/server-oidc.ts";
-import { revokeServerSessionsFor, SERVER_SESSION_COOKIE } from "../src/oidc-session-store.ts";
-import { AuthError } from "../src/identity.ts";
+import {
+  readServerAppSession,
+  revokeServerSessionsFor,
+  SERVER_SESSION_COOKIE,
+} from "../src/oidc-session-store.ts";
+import { AuthError, type AuthenticatedConnection } from "../src/identity.ts";
 
 // The repository's Node 20 type definitions predate node:sqlite, while the
 // Node 22 test runtime provides it. This adapter executes actual SQLite SQL;
@@ -1440,5 +1449,284 @@ describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
     const status = await serverOidcSessionStatus(request, f.env, noopProfile);
     assert.equal((await status.json()).session, null);
     assert.equal(f.calls.length, 1);
+  });
+});
+
+describe("server sessions from a sign-in that is not OIDC", { concurrency: false }, () => {
+  const PRINCIPAL = "user:pair:alice";
+  const identityFor = (
+    displayName = "Alice",
+    metadata: Partial<AuthenticatedConnection["metadata"]> = {},
+  ): AuthenticatedConnection => ({
+    principal: PRINCIPAL,
+    operator: "browser",
+    actorLabel: `${PRINCIPAL}/browser`,
+    scope: "owner",
+    metadata: {
+      provider: "oidc",
+      transport: "host-session-cookie",
+      principalNamespace: "user:pair",
+      displayName,
+      ...metadata,
+    },
+  });
+
+  // A deployment with no OIDC issuer or client. Any network request fails the
+  // test: the provider is the only way a session reaches the outside.
+  function providerFixture(t: TestContext) {
+    const db = new SqliteD1();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      throw new Error("a provider session must not use the OIDC endpoints");
+    };
+    t.after(() => {
+      globalThis.fetch = originalFetch;
+      db.sqlite.close();
+    });
+    const env: ServerOidcEnvironment = {
+      DB: db,
+      NOTEBOOK_CLOUD_PUBLIC_ORIGIN: ORIGIN,
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: "test-session-encryption-key-with-at-least-32-bytes",
+    };
+    const refreshed: Record<string, unknown>[] = [];
+    let outcome: "grant" | "rejected" | "identity_rejected" | "unavailable" = "grant";
+    let gate: {
+      entered: ReturnType<typeof deferred>;
+      release: ReturnType<typeof deferred>;
+    } | null = null;
+    const provider: ServerSessionProvider = {
+      async refresh(bundle) {
+        refreshed.push(bundle);
+        if (gate) {
+          gate.entered.resolve();
+          await gate.release.promise;
+        }
+        if (outcome === "rejected") throw new ServerSessionGrantRejected();
+        if (outcome === "identity_rejected") throw new ServerOidcIdentityRejected();
+        if (outcome === "unavailable") throw new Error("provider is down: secret-detail");
+        return {
+          identity: identityFor("Alice Renewed"),
+          expiresAt: nowSeconds() + 300,
+          bundle: { kind: "pair", refreshToken: `rotated-${refreshed.length}` },
+        };
+      },
+    };
+    const request = (cookie?: string) =>
+      new Request(`${ORIGIN}/api/auth/session`, {
+        headers: { ...(cookie ? { Cookie: cookie } : {}), Origin: ORIGIN },
+      });
+    const grant = (overrides: Partial<ServerSessionGrant> = {}): ServerSessionGrant => ({
+      identity: identityFor(),
+      expiresAt: nowSeconds() + 300,
+      bundle: { kind: "pair", refreshToken: "first-refresh-token" },
+      ...overrides,
+    });
+    const signIn = async () =>
+      (await createServerSession(request(), env, grant())).split(";", 1)[0]!;
+    const countRows = () =>
+      Number(db.sqlite.prepare("SELECT count(*) AS n FROM oidc_server_sessions").get()!.n);
+    const expireAccess = (remainingSeconds = 30) => {
+      const expiry = nowSeconds() + remainingSeconds;
+      db.sqlite
+        .prepare(
+          "UPDATE oidc_server_sessions SET access_expires_at = ?, session_json = json_set(session_json, '$.expiresAt', ?)",
+        )
+        .run(expiry, expiry);
+    };
+    return {
+      env,
+      db,
+      provider,
+      refreshed,
+      request,
+      grant,
+      signIn,
+      countRows,
+      expireAccess,
+      setOutcome(value: typeof outcome) {
+        outcome = value;
+      },
+      gateRefresh() {
+        gate = { entered: deferred(), release: deferred() };
+        return gate;
+      },
+    };
+  }
+
+  it("starts a session the app session gate reads, with the credential only in the sealed bundle", async (t) => {
+    const f = providerFixture(t);
+    const events: ServerOidcAuthEvent[] = [];
+    const setCookie = await createServerSession(f.request(), f.env, f.grant(), {
+      onAuthEvent: (event) => events.push(event),
+    });
+    assert.match(setCookie, /; Path=\/; Max-Age=\d+; HttpOnly; Secure; SameSite=Lax$/);
+    const cookie = setCookie.split(";", 1)[0]!;
+    const session = await readServerAppSession(f.env, f.request(cookie), nowSeconds());
+    assert.equal(session?.principal, PRINCIPAL);
+    assert.equal(session?.principalNamespace, "user:pair");
+    assert.equal(session?.displayName, "Alice");
+    // Nothing verified the email, so the session carries no email proof.
+    assert.equal(session?.identityVerifiedAt, undefined);
+    assert.equal(session?.verifiedEmailBinding, undefined);
+    assert.deepEqual(events, [{ type: "sign_in", principal: PRINCIPAL }]);
+    const row = f.db.sqlite.prepare("SELECT * FROM oidc_server_sessions").get()!;
+    assert.equal(JSON.stringify(row).includes("first-refresh-token"), false);
+    assert.equal(JSON.stringify(row).includes(cookie.split("=")[1]!), false);
+
+    const status = await serverOidcSessionStatus(f.request(cookie), f.env, noopProfile, {
+      provider: f.provider,
+    });
+    assert.equal(status.status, 200);
+    assert.equal((await status.json()).session.display_name, "Alice");
+    assert.equal(f.refreshed.length, 0, "a fresh session is not refreshed");
+  });
+
+  it("refuses a grant that is already expired and a deployment without session keys", async (t) => {
+    const f = providerFixture(t);
+    for (const expiresAt of [nowSeconds() - 1, nowSeconds(), Number.NaN, 1.5])
+      await assert.rejects(
+        createServerSession(f.request(), f.env, f.grant({ expiresAt })),
+        /already expired/,
+      );
+    await assert.rejects(
+      createServerSession(
+        f.request(),
+        { ...f.env, NOTEBOOK_CLOUD_APP_SESSION_SECRET: undefined },
+        f.grant(),
+      ),
+      /not configured/,
+    );
+    await assert.rejects(
+      createServerSession(f.request(), { ...f.env, DB: undefined }, f.grant()),
+      /not configured/,
+    );
+    // Each refusal comes before any storage: the session table was never made.
+    assert.throws(() => f.countRows(), /no such table/);
+  });
+
+  it("renews through the provider once under the lease and stores the bundle it returns", async (t) => {
+    const f = providerFixture(t);
+    const cookie = await f.signIn();
+    f.expireAccess();
+    const gate = f.gateRefresh();
+    const first = serverOidcSessionStatus(f.request(cookie), f.env, noopProfile, {
+      provider: f.provider,
+    });
+    await gate.entered.promise;
+    const second = serverOidcSessionStatus(f.request(cookie), f.env, noopProfile, {
+      provider: f.provider,
+    });
+    gate.release.resolve();
+    const [a, b] = await Promise.all([first, second]);
+    assert.equal(a.status, 200);
+    assert.equal(b.status, 200);
+    assert.equal((await a.json()).session.display_name, "Alice Renewed");
+    assert.deepEqual(f.refreshed, [{ kind: "pair", refreshToken: "first-refresh-token" }]);
+
+    // The next renewal hands the provider the bundle the last one returned.
+    f.expireAccess();
+    const again = await serverOidcSessionStatus(f.request(cookie), f.env, noopProfile, {
+      provider: f.provider,
+    });
+    assert.equal(again.status, 200);
+    assert.deepEqual(f.refreshed[1], { kind: "pair", refreshToken: "rotated-1" });
+    assert.equal(f.countRows(), 1);
+  });
+
+  it("ends the session when the provider rejects its grant or the application refuses the account", async (t) => {
+    for (const [outcome, reason, status] of [
+      ["rejected", "refresh_rejected", 200],
+      ["identity_rejected", "identity_rejected", 403],
+    ] as const) {
+      const f = providerFixture(t);
+      const cookie = await f.signIn();
+      f.expireAccess();
+      f.setOutcome(outcome);
+      const events: ServerOidcAuthEvent[] = [];
+      const response = await serverOidcSessionStatus(f.request(cookie), f.env, noopProfile, {
+        provider: f.provider,
+        onAuthEvent: (event) => events.push(event),
+      });
+      assert.equal(response.status, status);
+      if (status === 200) assert.equal((await response.json()).session, null);
+      assert.equal(hasSessionCookie(response), false);
+      assert.equal(f.countRows(), 0);
+      assert.deepEqual(events, [{ type: "session_expired", principal: PRINCIPAL, reason }]);
+      assert.equal(await readServerAppSession(f.env, f.request(cookie), nowSeconds()), null);
+    }
+  });
+
+  it("keeps the row when the provider fails, without extending an expired proof or logging the failure", async (t) => {
+    const f = providerFixture(t);
+    const cookie = await f.signIn();
+    f.expireAccess();
+    f.setOutcome("unavailable");
+    const logged: string[] = [];
+    t.mock.method(console, "warn", (...values: unknown[]) => logged.push(JSON.stringify(values)));
+    t.mock.method(console, "log", (...values: unknown[]) => logged.push(JSON.stringify(values)));
+    const unavailable = await serverOidcSessionStatus(f.request(cookie), f.env, noopProfile, {
+      provider: f.provider,
+    });
+    assert.equal(unavailable.status, 503);
+    assert.equal(f.countRows(), 1);
+    assert.equal(logged.join("\n").includes("secret-detail"), false);
+    // Backoff: the provider is not asked again inside the retry window.
+    await serverOidcSessionStatus(f.request(cookie), f.env, noopProfile, { provider: f.provider });
+    assert.equal(f.refreshed.length, 1);
+    f.expireAccess(-1);
+    assert.equal(await readServerAppSession(f.env, f.request(cookie), nowSeconds()), null);
+
+    f.db.sqlite.prepare("UPDATE oidc_server_sessions SET retry_after = 0").run();
+    f.setOutcome("grant");
+    const recovered = await serverOidcSessionStatus(f.request(cookie), f.env, noopProfile, {
+      provider: f.provider,
+    });
+    assert.equal(recovered.status, 200);
+    assert.equal((await recovered.json()).session.display_name, "Alice Renewed");
+  });
+
+  it("does not delete a session it cannot open because the deployment lost its session key", async (t) => {
+    const f = providerFixture(t);
+    const cookie = await f.signIn();
+    f.expireAccess();
+    const response = await serverOidcSessionStatus(
+      f.request(cookie),
+      { ...f.env, NOTEBOOK_CLOUD_APP_SESSION_SECRET: undefined },
+      noopProfile,
+      { provider: f.provider },
+    );
+    assert.equal(response.status, 503);
+    assert.equal(f.countRows(), 1);
+    assert.equal(f.refreshed.length, 0);
+  });
+
+  it("refuses a renewed grant that is already expired and retries later", async (t) => {
+    const f = providerFixture(t);
+    const cookie = await f.signIn();
+    f.expireAccess();
+    const stale: ServerSessionProvider = {
+      refresh: async () => ({ ...f.grant(), expiresAt: nowSeconds() - 5 }),
+    };
+    const response = await serverOidcSessionStatus(f.request(cookie), f.env, noopProfile, {
+      provider: stale,
+    });
+    assert.equal(response.status, 503);
+    assert.equal(f.countRows(), 1);
+  });
+
+  it("logout during a provider refresh cannot recreate the session", async (t) => {
+    const f = providerFixture(t);
+    const cookie = await f.signIn();
+    f.expireAccess();
+    const gate = f.gateRefresh();
+    const pending = serverOidcSessionStatus(f.request(cookie), f.env, noopProfile, {
+      provider: f.provider,
+    });
+    await gate.entered.promise;
+    await deleteServerOidcSession(f.request(cookie), f.env);
+    gate.release.resolve();
+    const response = await pending;
+    assert.equal((await response.json()).session, null);
+    assert.equal(f.countRows(), 0);
   });
 });

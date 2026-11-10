@@ -80,7 +80,11 @@ class ProviderUnavailable extends Error {
     super("Provider unavailable");
   }
 }
-class InvalidGrant extends Error {}
+/**
+ * The provider ended the grant behind a session: its refresh token is spent,
+ * revoked or unknown. The session is deleted and the browser signs in again.
+ */
+export class ServerSessionGrantRejected extends Error {}
 
 /**
  * Why a callback was refused before any provider exchange. These codes are the
@@ -155,9 +159,41 @@ export type ServerOidcAuthEvent =
     };
 export type ServerOidcAuthEventListener = (event: ServerOidcAuthEvent) => void;
 
+/**
+ * What a sign-in proved, and what renewing it needs. `expiresAt` (seconds) is
+ * when the provider's proof lapses and the session must be refreshed. `bundle`
+ * is sealed into the session row and handed back to the provider's `refresh`;
+ * it is the only place a provider credential is stored.
+ */
+export interface ServerSessionGrant {
+  identity: AuthenticatedConnection;
+  expiresAt: number;
+  bundle: Record<string, unknown>;
+}
+
+/**
+ * A sign-in method that is not OIDC. The application runs the sign-in itself
+ * and calls `createServerSession`; the session then lives in the same rows,
+ * under the same cookie, lease and expiry rules as an OIDC session. A
+ * deployment uses one method, so `refresh` must reject a bundle it didn't
+ * issue.
+ */
+export interface ServerSessionProvider {
+  /**
+   * Exchanges a session's sealed bundle for a fresh grant. It runs under the
+   * row's refresh lease, so a rotating credential is never exchanged twice.
+   * Throw `ServerSessionGrantRejected` when the provider ended the grant, or
+   * `ServerOidcIdentityRejected` when the application refuses the account;
+   * both delete the session. Any other error keeps the row and is retried.
+   */
+  refresh(bundle: Record<string, unknown>): Promise<ServerSessionGrant>;
+}
+
 export interface ServerOidcSessionOptions {
   /** Receives session expiry outcomes for an application's audit log. */
   onAuthEvent?: ServerOidcAuthEventListener;
+  /** Renews sessions with this provider in place of the OIDC token endpoint. */
+  provider?: ServerSessionProvider;
 }
 
 /** A listener never fails or changes the sign-in flow. */
@@ -293,7 +329,7 @@ function logFailure(
   const kind =
     error instanceof CallbackRejected
       ? "callback_rejected"
-      : error instanceof InvalidGrant
+      : error instanceof ServerSessionGrantRejected
         ? "grant_rejected"
         : error instanceof ProviderUnavailable
           ? "provider_unavailable"
@@ -528,7 +564,7 @@ async function exchangeToken(
         code === "auth_required" &&
         params.get("grant_type") === "refresh_token")
     )
-      throw new InvalidGrant();
+      throw new ServerSessionGrantRejected();
     throw new ProviderUnavailable(response.status);
   }
   if (
@@ -641,37 +677,19 @@ export async function completeServerOidcLogin(
     const verified = await validatedIdentity(env, config, tokens, transaction.nonce);
     phase = "session_storage";
     await syncProfile(verified.identity);
-    const sessionToken = randomSecret(),
-      id = await serverSessionId(env, sessionToken);
-    const session = await createServerAppSession(
-      env,
-      verified.identity,
-      id,
-      Math.min(verified.expiresAt, now + SERVER_SESSION_IDLE_SECONDS),
-      now,
-    );
     const bundle: TokenBundle = {
       refreshToken: tokens.refresh_token,
       nonce: transaction.nonce,
       subject: verified.subject,
     };
-    await db
-      .prepare(
-        `INSERT INTO oidc_server_sessions (id, context, session_json, sealed, access_expires_at, idle_expires_at, absolute_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .bind(
-        id,
-        config.context,
-        JSON.stringify(session),
-        await sealServerSecret(env, bundle, `session:${id}:${config.context}`),
-        verified.expiresAt,
-        now + SERVER_SESSION_IDLE_SECONDS,
-        now + SERVER_SESSION_ABSOLUTE_SECONDS,
-      )
-      .run();
+    const cookie = await insertServerSession(env, db, config.context, now, {
+      identity: verified.identity,
+      expiresAt: verified.expiresAt,
+      bundle: { ...bundle },
+    });
     response = privateResponse(null, 303, {
       Location: safeReturnTo(transaction.returnTo, config.origin),
-      "Set-Cookie": serverSessionCookie(sessionToken),
+      "Set-Cookie": cookie,
     });
     notifyAuthEvent(options.onAuthEvent, {
       type: "sign_in",
@@ -699,6 +717,77 @@ export async function completeServerOidcLogin(
   }
   response.headers.append("Set-Cookie", loginCookie("", 0));
   return response;
+}
+
+/** Stores a new session for `grant` and returns its `Set-Cookie` value. */
+async function insertServerSession(
+  env: Env,
+  db: Awaited<ReturnType<typeof oidcDatabase>>,
+  context: string,
+  now: number,
+  grant: ServerSessionGrant,
+): Promise<string> {
+  const sessionToken = randomSecret(),
+    id = await serverSessionId(env, sessionToken);
+  const session = await createServerAppSession(
+    env,
+    grant.identity,
+    id,
+    Math.min(grant.expiresAt, now + SERVER_SESSION_IDLE_SECONDS),
+    now,
+  );
+  await db
+    .prepare(
+      `INSERT INTO oidc_server_sessions (id, context, session_json, sealed, access_expires_at, idle_expires_at, absolute_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      id,
+      context,
+      JSON.stringify(session),
+      await sealServerSecret(env, grant.bundle, `session:${id}:${context}`),
+      grant.expiresAt,
+      now + SERVER_SESSION_IDLE_SECONDS,
+      now + SERVER_SESSION_ABSOLUTE_SECONDS,
+    )
+    .run();
+  return serverSessionCookie(sessionToken);
+}
+
+/**
+ * The context of a session row in a deployment whose sign-in is a
+ * `ServerSessionProvider`. It is the one `loadServerSession` expects, and it
+ * refuses a deployment without the storage and keys a session needs, as
+ * `configFor` does for OIDC.
+ */
+function providerSessionContext(env: Env, request: Request): string {
+  // A malformed keyring throws its own error here rather than reading as unset.
+  if (!env.DB || !sessionKeyring(env)) throw new Error("Server sign-in is not configured");
+  return serverSessionContext(
+    env,
+    new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN?.trim() || request.url).origin,
+  );
+}
+
+/**
+ * Starts a session for a sign-in the application completed with its own
+ * `ServerSessionProvider`, and returns the `Set-Cookie` value that carries it.
+ * The caller has already verified `grant.identity` with the provider and bound
+ * the sign-in to this browser; nothing here checks either. Pass the same
+ * provider to `serverOidcSessionStatus` so the session can be renewed.
+ */
+export async function createServerSession(
+  request: Request,
+  env: Env,
+  grant: ServerSessionGrant,
+  options: ServerOidcSessionOptions = {},
+): Promise<string> {
+  const context = providerSessionContext(env, request);
+  const now = Math.floor(Date.now() / 1000);
+  if (!Number.isSafeInteger(grant.expiresAt) || grant.expiresAt <= now)
+    throw new Error("Server session grant is already expired");
+  const cookie = await insertServerSession(env, await oidcDatabase(env), context, now, grant);
+  notifyAuthEvent(options.onAuthEvent, { type: "sign_in", principal: grant.identity.principal });
+  return cookie;
 }
 
 /**
@@ -786,6 +875,27 @@ export async function serverOidcSessionStatus(
   }
 }
 
+/** Exchanges an OIDC session's refresh token and re-validates who it names. */
+async function refreshOidcGrant(
+  env: Env,
+  config: Config,
+  bundle: TokenBundle,
+): Promise<ServerSessionGrant> {
+  const metadata = await providerMetadata(config);
+  const tokens = await exchangeToken(
+    env,
+    config,
+    metadata.token_endpoint,
+    new URLSearchParams({ grant_type: "refresh_token", refresh_token: bundle.refreshToken! }),
+  );
+  const verified = await validatedIdentity(env, config, tokens, bundle.nonce, bundle.subject);
+  return {
+    identity: verified.identity,
+    expiresAt: verified.expiresAt,
+    bundle: { ...bundle, refreshToken: tokens.refresh_token ?? bundle.refreshToken },
+  };
+}
+
 async function refreshSession(
   request: Request,
   env: Env,
@@ -793,8 +903,10 @@ async function refreshSession(
   syncProfile: (identity: AuthenticatedConnection) => Promise<void>,
   options: ServerOidcSessionOptions = {},
 ): Promise<ServerSessionRow | null> {
-  const config = configFor(env, request),
-    db = await oidcDatabase(env);
+  const provider = options.provider;
+  const config = provider ? null : configFor(env, request);
+  const context = config?.context ?? providerSessionContext(env, request);
+  const db = await oidcDatabase(env);
   const now = Math.floor(Date.now() / 1000);
   if (initial.retry_after > now) throw new ProviderUnavailable();
   if (initial.lease && initial.lease_until <= now) {
@@ -812,12 +924,12 @@ async function refreshSession(
       });
     return null;
   }
-  let bundle: TokenBundle;
+  let bundle: Record<string, unknown>;
   try {
-    bundle = await openServerSecret<TokenBundle>(
+    bundle = await openServerSecret<Record<string, unknown>>(
       env,
       initial.sealed,
-      `session:${initial.id}:${config.context}`,
+      `session:${initial.id}:${context}`,
     );
   } catch (error) {
     // No key here opens it, so no later request can either: end the session
@@ -837,7 +949,9 @@ async function refreshSession(
       });
     return null;
   }
-  if (!bundle.refreshToken) return initial.access_expires_at > now ? initial : null;
+  // An OIDC provider may issue no refresh token; that session ends with its
+  // access proof. A `ServerSessionProvider` decides from its own bundle.
+  if (config && !bundle.refreshToken) return initial.access_expires_at > now ? initial : null;
   const lease = randomSecret();
   const claimed = await db
     .prepare(`UPDATE oidc_server_sessions SET lease = ?, lease_until = ?
@@ -855,16 +969,13 @@ async function refreshSession(
     throw new ProviderUnavailable();
   }
   try {
-    const metadata = await providerMetadata(config);
-    const tokens = await exchangeToken(
-      env,
-      config,
-      metadata.token_endpoint,
-      new URLSearchParams({ grant_type: "refresh_token", refresh_token: bundle.refreshToken }),
-    );
-    const verified = await validatedIdentity(env, config, tokens, bundle.nonce, bundle.subject);
+    const verified = config
+      ? await refreshOidcGrant(env, config, bundle as unknown as TokenBundle)
+      : await provider!.refresh(bundle);
     await syncProfile(verified.identity);
     const refreshedAt = Math.floor(Date.now() / 1000);
+    if (!Number.isSafeInteger(verified.expiresAt) || verified.expiresAt <= refreshedAt)
+      throw new Error("Server session grant is already expired");
     const idleExpiry = Math.min(
       refreshedAt + SERVER_SESSION_IDLE_SECONDS,
       initial.absolute_expires_at,
@@ -883,18 +994,17 @@ async function refreshSession(
       "session_json = ?, sealed = ?, access_expires_at = ?, idle_expires_at = ?, generation = generation + 1, lease = NULL, lease_until = 0, retry_after = 0",
       [
         JSON.stringify(session),
-        await sealServerSecret(
-          env,
-          { ...bundle, refreshToken: tokens.refresh_token ?? bundle.refreshToken },
-          `session:${initial.id}:${config.context}`,
-        ),
+        await sealServerSecret(env, verified.bundle, `session:${initial.id}:${context}`),
         verified.expiresAt,
         idleExpiry,
       ],
     );
     return saved ? loadServerSession(env, request, refreshedAt) : null;
   } catch (error) {
-    if (error instanceof InvalidGrant || error instanceof ServerOidcIdentityRejected) {
+    if (
+      error instanceof ServerSessionGrantRejected ||
+      error instanceof ServerOidcIdentityRejected
+    ) {
       logFailure("auth.server_session.expired", "refresh", error);
       await db
         .prepare("DELETE FROM oidc_server_sessions WHERE id = ? AND generation = ? AND lease = ?")
@@ -903,7 +1013,8 @@ async function refreshSession(
       notifyAuthEvent(options.onAuthEvent, {
         type: "session_expired",
         principal: sessionPrincipal(initial),
-        reason: error instanceof InvalidGrant ? "refresh_rejected" : "identity_rejected",
+        reason:
+          error instanceof ServerSessionGrantRejected ? "refresh_rejected" : "identity_rejected",
       });
       if (error instanceof ServerOidcIdentityRejected) throw error;
       return null;
