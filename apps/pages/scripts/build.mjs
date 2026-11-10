@@ -3,6 +3,7 @@ import { AUTH_D1, USAGE_D1 } from "./deployment/profiles.mjs";
 import { workerShape } from "./worker-shape.mjs";
 import { mermaidSource } from "./browser-mermaid.mjs";
 import { siftWasmPath } from "./browser-sift.mjs";
+import { formatsByType } from "../model/document-types.mjs";
 import { sourceFingerprint, writeBuildReceipt } from "./source-fingerprint.mjs";
 import { releaseFilesOf } from "./stage-artifacts.mjs";
 import {
@@ -201,5 +202,6 @@ writeBuildReceipt(app, {
   viewerChunks,
   viewerAssets: Object.values(assets),
   releaseFiles: releaseFilesOf(viewerChunks, Object.values(assets)),
+  documentFormats: formatsByType(),
 });
 console.log("Built native Pages Worker, WASM and viewer into dist.");

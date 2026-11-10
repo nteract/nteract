@@ -43,6 +43,7 @@ import { CatchUp } from "./catch-up.mjs";
 import { unreadableMessageKeys } from "./comment-thread-display.mjs";
 import { CATCH_UP_LIMIT_MS } from "./catch-up-machine.mjs";
 import { BACKEND_LIMITS } from "../model/limits.mjs";
+import { BUILD_FORMATS } from "../model/document-types.mjs";
 import { retryKey } from "../model/retry-key.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 import { admissionCloseOutcome } from "../shared/admission.mjs";
@@ -282,12 +283,15 @@ function socketOpened(socket) {
 }
 /** `features` is this build's schema features. The host refuses edits from a
  * tab whose build lacks an id the Page is stamped with; no parameter means the
- * baseline, as for builds from before the stamp. */
+ * baseline, as for builds from before the stamp. `formats` is the document
+ * formats this build reads: the host refuses a socket whose client does not
+ * read the format of the Page's documents. */
 export function pageSyncAddress(pageId, href, activityEpoch, features = []) {
   const address = new URL(`/api/sync?page=${encodeURIComponent(pageId)}`, href);
   address.protocol = address.protocol === "https:" ? "wss:" : "ws:";
   // Plain Automerge sync (sync/wire.mjs), the only sync the host speaks.
   address.searchParams.set("sync", "automerge");
+  address.searchParams.set("formats", BUILD_FORMATS);
   if (activityEpoch) address.searchParams.set("activity_epoch", activityEpoch);
   if (features.length) address.searchParams.set("schema_features", [...features].sort().join(","));
   return address;

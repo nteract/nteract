@@ -1803,7 +1803,14 @@ relayed change from an actor the host hasn't seen binds to the relayer. A
 relayed change from a claimed actor is refused.
 
 Discovery and the socket carry `sync=automerge`; a build without it gets
-`schema_unsupported` ("Reload to update"). Presence ids are per tab
+`schema_unsupported` ("Reload to update"). The socket also carries `formats`, the
+document formats the build reads, as sorted `type:format` pairs
+(`pages.comments:1,pages.page:1`). The host writes one format of each type, so
+a Page's documents are in the format its build writes. A socket whose `formats`
+is absent, or lacks that format of `pages.page` (and of `pages.comments`, when
+the Page has a comments document), is closed as `schema_unsupported`. A
+repeated or malformed `formats` is a 400. Discovery takes no `formats` and
+stays open to every reader. Presence ids are per tab
 (`sender`), stamped by the host on every relay.
 
 A browser may still hold a local copy saved beside a Subduction replica, from

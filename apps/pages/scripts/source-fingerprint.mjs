@@ -139,7 +139,13 @@ export function sourceFingerprint(app, { root = repository(app) } = {}) {
  * checked file by file without the source tree. */
 export function writeBuildReceipt(
   app,
-  { expectedFingerprint, viewerChunks = [], viewerAssets = [], releaseFiles = [] } = {},
+  {
+    expectedFingerprint,
+    viewerChunks = [],
+    viewerAssets = [],
+    releaseFiles = [],
+    documentFormats,
+  } = {},
 ) {
   const root = repository(app);
   const fingerprint = sourceFingerprint(app, { root });
@@ -162,6 +168,10 @@ export function writeBuildReceipt(
     // refuses a release whose receipt lacks a mode the target may hold.
     record_storage: [...RECORD_STORAGE_MODES],
     plain_storage_formats: [...PLAIN_STORAGE_FORMATS],
+    // The formats of each document type this build reads, by type. Deployment
+    // refuses a release that does not read the formats a target's documents
+    // are in.
+    document_formats: documentFormats,
     viewer_chunks: certify(viewerChunks),
     viewer_assets: certify(viewerAssets),
     files: certify(releaseFiles),

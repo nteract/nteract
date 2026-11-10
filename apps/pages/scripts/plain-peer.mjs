@@ -5,10 +5,12 @@ import { Repo } from "@automerge/automerge-repo";
 import { AutomergeSyncBackend } from "../sync/backend.mjs";
 import { DocStore, MemoryByteStore } from "../sync/doc-store.mjs";
 import { socketTransport } from "../sync/wire.mjs";
+import { BUILD_FORMATS } from "../model/document-types.mjs";
 
 /** `discovery` is the /api/connect body for `pageId`. */
 export async function plainPeer({ origin, pageId, cookie, discovery, features = [] }) {
   const address = new URL(`/api/sync?page=${encodeURIComponent(pageId)}&sync=automerge`, origin);
+  address.searchParams.set("formats", BUILD_FORMATS);
   address.protocol = address.protocol === "https:" ? "wss:" : "ws:";
   if (discovery.activity?.epoch)
     address.searchParams.set("activity_epoch", discovery.activity.epoch);

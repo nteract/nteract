@@ -4,6 +4,7 @@ import * as A from "@automerge/automerge";
 import { Repo, cbor, generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
 import { createAuthFixture } from "../auth-fixtures.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
+import { BUILD_FORMATS } from "../model/document-types.mjs";
 import { BUILD_FEATURES } from "../model/schema-features.mjs";
 import { AutomergeSyncBackend } from "../sync/backend.mjs";
 import { DocStore, MemoryByteStore } from "../sync/doc-store.mjs";
@@ -1213,6 +1214,7 @@ test("a tab's new plain socket replaces its stale one and takes its connection s
   const open = (sender, who = identity) => {
     const url = new URL("https://pages.invalid/api/sync");
     url.searchParams.set("sync", "automerge");
+    url.searchParams.set("formats", BUILD_FORMATS);
     url.searchParams.set("sender", sender);
     const response = host.connect(new Request(url, { headers: { upgrade: "websocket" } }), who);
     assert.equal(response.status, 101);

@@ -140,6 +140,10 @@ for (const fails of [true, false])
           "deployment/profiles.mjs",
         ])
           write(`scripts/${name}`, readFileSync(new URL(`./${name}`, import.meta.url), "utf8"));
+        write(
+          "model/document-types.mjs",
+          readFileSync(new URL("../model/document-types.mjs", import.meta.url), "utf8"),
+        );
         for (const name of ["favicon.mjs", "product.mjs", "schedule.mjs"])
           write(
             `shared/${name}`,
@@ -246,6 +250,7 @@ for (const fails of [true, false])
             options.releaseFiles,
             releaseFilesOf(options.viewerChunks, options.viewerAssets),
           );
+          assert.deepEqual(options.documentFormats, { "pages.page": [1], "pages.comments": [1] });
           assert.ok(options.releaseFiles.includes("index.js"));
           assert.ok(options.releaseFiles.includes("public/chunks/ABCDEFGH.js"));
           assert.ok(!options.releaseFiles.includes("build-receipt.json"));
