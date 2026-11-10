@@ -87,7 +87,6 @@ Comments live in their own document and anchor to the Page with cursors.
 | When | What | Why it can go |
 | --- | --- | --- |
 | Any time | A snapshot file with no regenerate command, or a test that compares against a fixed commit | It pins code that no longer exists and cannot follow an intended change |
-| Any time, profiles before host files | Deployment profiles for `page3`–`page9` and `pages-next`, the frozen-neighbor lists that name them, and the `PAGES_EDITOR` setting | Those services are stopped. Publishing to `pages` or `page10` reads each listed neighbor's unit file, so remove the profiles here before deleting unit files, `/opt` and `/etc` directories, tunnels and DNS records on lab1 |
 | When this source stops deploying to `pages.runtimed.run` | `PageRecords`, `recordStorage` stamps and guards, `stored-form.mjs`, the old-encoder fixture in `test/` | They protect documents and open tabs on that service. A new service has neither |
 | With format 2 | The `pm` names in `model/node-registry.mjs`, `SUBDUCTION_LOG` in the cold-open benchmark, comments that name removed code | They are read by current code; rename them with the format change |
 
@@ -111,7 +110,6 @@ records the node addresses agents use.
   | `page10` | lab1 | Preview. Deployed from `main` automatically. Reset freely |
   | `pages2` (`page2.runtimed.run`) | lab2 | Demo. Reset freely |
   | `page11` | lab2 | Profile in source only; nothing is deployed |
-  | `page3`–`page9`, `pages-next` | lab1 | Stopped and disabled. Do not restart; files await removal |
 - **Additive changes stay in the document. Structural changes get a new
   document.** New keys and new node types layer onto existing documents, and
   a reader keeps what it does not understand. A change that reshapes existing
