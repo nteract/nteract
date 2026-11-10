@@ -101,9 +101,83 @@ test("the profile supplies the deployment's name, databases, bucket and variable
     PAGES_CATALOG_INDEX: "d1",
     NOTEBOOK_CLOUD_OIDC_FLOW: "server",
   });
-  assert.equal(config.routes, undefined, "attaching a domain is a separate action");
+  assert.equal(config.routes, undefined, "a profile without a custom domain sets no route");
   const account = "0123456789abcdef0123456789abcdef";
   assert.equal(cloudflareConfig(profile({ account_id: account })).account_id, account);
+});
+
+const DOMAIN = { hostname: "pages.example.com", zone_name: "example.com" };
+const onDomain = (changes = {}) =>
+  profile({
+    workers_dev: false,
+    custom_domain: DOMAIN,
+    vars: { ...profile().vars, NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.example.com" },
+    ...changes,
+  });
+
+test("a profile's custom domain becomes one route that names its zone", () => {
+  const config = cloudflareConfig(onDomain());
+  assert.deepEqual(config.routes, [
+    { pattern: "pages.example.com", zone_name: "example.com", custom_domain: true },
+  ]);
+  assert.equal(config.workers_dev, false);
+  // A zone can be several labels up from the hostname, or the hostname itself.
+  const deep = { hostname: "pages.dev.example.co.uk", zone_name: "example.co.uk" };
+  assert.deepEqual(
+    cloudflareConfig(
+      onDomain({
+        custom_domain: deep,
+        vars: { NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.dev.example.co.uk" },
+      }),
+    ).routes,
+    [{ pattern: deep.hostname, zone_name: deep.zone_name, custom_domain: true }],
+  );
+  const apex = { hostname: "example.com", zone_name: "example.com" };
+  assert.equal(
+    cloudflareConfig(
+      onDomain({
+        custom_domain: apex,
+        vars: { NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://example.com" },
+      }),
+    ).routes[0].pattern,
+    "example.com",
+  );
+});
+
+test("a custom domain is refused unless it is the deployment's one address", () => {
+  const refuses = (changes, pattern) =>
+    assert.throws(() => cloudflareConfig(onDomain(changes)), pattern);
+  refuses({ workers_dev: true }, /workers_dev must be false/);
+  const vars = onDomain().vars;
+  refuses(
+    {
+      vars: { ...vars, NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages-example.example.workers.dev" },
+    },
+    /must be the custom domain/,
+  );
+  refuses(
+    { vars: { ...vars, NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.example.com:8443" } },
+    /must be the custom domain/,
+  );
+  refuses({ custom_domain: "pages.example.com" }, /custom_domain must be an object/);
+  refuses({ custom_domain: [DOMAIN] }, /custom_domain must be an object/);
+  refuses({ custom_domain: null }, /custom_domain must be an object/);
+  refuses({ custom_domain: { ...DOMAIN, path: "/p" } }, /Unknown profile custom_domain field/);
+  refuses({ custom_domain: { hostname: DOMAIN.hostname } }, /zone_name must be the zone/);
+  for (const hostname of [
+    "Pages.example.com",
+    "pages.example.com.",
+    "pages.example.com/p",
+    "https://pages.example.com",
+    "*.example.com",
+    "localhost",
+    "pages..example.com",
+    ["pages.example.com"],
+    undefined,
+  ])
+    refuses({ custom_domain: { ...DOMAIN, hostname } }, /hostname must be a lowercase DNS name/);
+  for (const zone_name of ["other.com", "ample.com", "pages.example.com.evil.com", "com", 7])
+    refuses({ custom_domain: { ...DOMAIN, zone_name } }, /zone_name must be the zone/);
 });
 
 test("the Worker's classes, migrations, schedule and asset handling come from the shared shape", () => {
