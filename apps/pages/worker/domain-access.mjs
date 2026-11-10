@@ -3,9 +3,11 @@ import {
   NOTEBOOK_CLOUD_IDENTITY_PROOF_MAX_AGE_SECONDS,
 } from "@cloud/app-session.ts";
 import { normalizeInviteEmail } from "@cloud/sharing.ts";
+import { identityProvider } from "../identity-provider.mjs";
 
 // Deliberately a company allowlist, never a caller-provided domain or a consumer
-// provider blocklist. This deployment can enable only the reviewed company.
+// provider blocklist. A deployment can enable only the domains reviewed for its
+// identity provider.
 export function companyViewDomains(env) {
   const configured = env.PAGES_COMPANY_VIEW_DOMAINS;
   if (
@@ -15,7 +17,8 @@ export function companyViewDomains(env) {
   )
     return [];
   const values = [...new Set(configured.split(",").map((value) => value.trim().toLowerCase()))];
-  return values.every((value) => value === "anaconda.com") ? values : [];
+  const reviewed = identityProvider(env).companyDomains;
+  return values.every((value) => reviewed.includes(value)) ? values : [];
 }
 
 export function configuredDomainView(metadata, env) {

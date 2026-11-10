@@ -1,16 +1,12 @@
-import { authenticateAnacondaApiKeyRequest } from "@cloud/identity.ts";
 import { readServerAppSession } from "@cloud/oidc-session-store.ts";
 import { pagesPublicOrigin } from "../agent-guide.mjs";
 import { readAccessToken } from "./oauth-store.mjs";
 import { domainAccessForIdentity } from "./domain-access.mjs";
 import { withAdmissionReason } from "./admission-reasons.mjs";
-import { isolateSingleFlight } from "./isolate-setup.mjs";
+import { verifyApiKey } from "./api-key-verifier.mjs";
+import { identityProvider } from "../identity-provider.mjs";
 import { firstApiKeyUse, logAuthEvent } from "./auth-events.mjs";
 import { clientProvenance } from "./client-provenance.mjs";
-
-// The API-key verifier caches one pending provider lookup per token for 60 s
-// (ANACONDA_API_KEY_CACHE_TTL_MS in @cloud/identity.ts); see isolate-setup.mjs.
-const apiKeyLookup = isolateSingleFlight({ holdMs: 65_000 });
 
 export class HttpError extends Error {
   constructor(status, message, code) {
@@ -96,7 +92,7 @@ export const credentialRequired = (env) =>
   withAdmissionReason(
     new HttpError(
       401,
-      `Send Authorization: Bearer <Anaconda API key>; see ${connectLink(env)}`,
+      `Send Authorization: Bearer <${identityProvider(env).apiKey.name}>; see ${connectLink(env)}`,
       "auth_required",
     ),
     "credential_missing",
@@ -225,30 +221,9 @@ export async function authenticate(request, env) {
         env,
       );
     }
-    // Caller identity/scope/operator headers are never forwarded to the verifier.
-    const verify = (scope) =>
-      // The provider cache keys on the token, whatever the scheme's case.
-      apiKeyLookup(token, () =>
-        authenticateAnacondaApiKeyRequest(
-          new Request(request.url, {
-            headers: {
-              Authorization: authorization,
-              "X-Notebook-Cloud-Auth-Provider": "anaconda-api-key",
-              "x-scope": scope,
-              "x-operator": "pages-api",
-            },
-          }),
-          env,
-        ),
-      );
     let identity;
     try {
-      try {
-        identity = await verify("editor");
-      } catch (error) {
-        if (error.message !== "Anaconda API key scopes do not allow requested scope") throw error;
-        identity = await verify("viewer");
-      }
+      identity = await verifyApiKey(request, env, { token, authorization });
     } catch (error) {
       // A provider outage is not a credential verdict.
       const status = error?.status ?? (error?.name === "AuthError" ? 401 : 500);
@@ -258,7 +233,7 @@ export async function authenticate(request, env) {
         throw withAdmissionReason(
           new HttpError(
             401,
-            `${error.message}. Check that the key is current and from this deployment's Anaconda account, or create a new one at ${connectLink(env)}`,
+            `${error.message}. Check that the key is current and from this deployment's ${identityProvider(env).label} account, or create a new one at ${connectLink(env)}`,
             "invalid_api_key",
           ),
           "credential_invalid",
@@ -284,8 +259,8 @@ export async function authenticate(request, env) {
         canWrite: identity.scope === "editor",
         credentialKind: "api-key",
         namespace: identity.metadata.principalNamespace,
-        // Same trust contract as notebook invite resolution: the authenticated
-        // Anaconda whoami endpoint returns server-verified account email.
+        // Same trust contract as notebook invite resolution: the provider's
+        // authenticated account endpoint returns server-verified account email.
         verifiedEmail:
           identity.metadata.emailVerified === true ? identity.metadata.email : undefined,
         expiresAt: Date.now() + 60_000,

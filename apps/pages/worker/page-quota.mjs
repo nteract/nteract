@@ -18,7 +18,7 @@
  * a Page the account already has.
  *
  * Only server-verified email counts. An API key's identity carries the email
- * Anaconda whoami verified. A browser session or OAuth grant carries only HMAC
+ * the identity provider's account endpoint verified. A browser session or OAuth grant carries only HMAC
  * bindings of the verified email and its domain (app-session.ts), so each rule
  * is checked against those bindings at the time they were verified. Nothing a
  * caller sends is read as an email.
