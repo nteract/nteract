@@ -1009,8 +1009,12 @@ ID, shows the host the browser returns to, and quotes the name the document
 gives as a claim. The token and revocation endpoints never fetch. Dynamic
 registration is disabled. Codes are
 single-use; access tokens last ten minutes, with rotating refresh tokens bounded
-by an absolute thirty-day grant. Correctly bound code/refresh replay revokes its
-family. Provider tokens stay on the server. Refresh does not refresh verified
+by an absolute thirty-day grant. Correctly bound code replay revokes its
+family. So does refresh replay, except within 30 seconds of the token's first
+use: each use in that window gets its own tokens, so the processes of one
+client that share stored tokens can refresh at the same moment. A stolen
+refresh token used inside that window is not detected. Provider tokens stay on
+the server. Refresh does not refresh verified
 email evidence, and MCP tokens cannot authorize raw HTTP assets, sharing, or sync.
 An OAuth client uploads a local image through `create_page_asset_upload`, whose
 Page-scoped capability names its grant and stops working when the grant is
