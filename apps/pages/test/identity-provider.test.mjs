@@ -101,7 +101,10 @@ function shippedFiles(root = app) {
 // Each entry says why the file names the provider and what would remove it.
 const NAMES_THE_PROVIDER = new Map([
   ["identity-provider.mjs", "the description itself"],
-  ["auth-fixtures.mjs", "the tests' fake provider endpoints; not shipped, leaves if it moves under test/"],
+  [
+    "auth-fixtures.mjs",
+    "the tests' fake provider endpoints; not shipped, leaves if it moves under test/",
+  ],
   ["worker/api-key-verifier.mjs", "calls the provider's verifier"],
   ["worker/usage.mjs", "a comment on why this operator may record principals"],
   ["viewer/ConnectedAgents.jsx", "viewer text; needs the provider in the session it loads"],
