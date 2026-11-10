@@ -1406,7 +1406,8 @@ attachment and a generated image are not interchangeable proof of support.
 If the client cannot supply a file descriptor but can run curl, use
 create_page_asset_upload; otherwise ask the human to upload through Pages'
 image control instead of inserting a broken placeholder link.`,
-    uploadCapabilityParagraph: `An OAuth token itself works only on /mcp and never authorizes the asset route.
+    uploadCapabilityParagraph: `An OAuth token itself works only on /mcp and GET /whoami, and never authorizes
+the asset route.
 OAuth clients upload with create_page_asset_upload instead: its Pages-Upload
 capability is a separate, Page-scoped credential, not the OAuth token, and
 revoking the connection also ends the upload URLs it issued. Revoking an API
@@ -1818,7 +1819,8 @@ uploaded attachment and a generated image are not interchangeable proof of
 support. If the client cannot supply a file descriptor but can run curl, use
 create_page_asset_upload; otherwise ask the human to upload through Pages' image
 control instead of inserting a broken placeholder link.`,
-    uploadCapabilityParagraph: `An OAuth token itself works only on /mcp and never authorizes the asset route.
+    uploadCapabilityParagraph: `An OAuth token itself works only on /mcp and GET /whoami, and never authorizes
+the asset route.
 OAuth clients upload with create_page_asset_upload instead: its Pages-Upload
 capability is a separate, Page-scoped credential, not the OAuth token, and
 revoking the connection also ends the upload URLs it issued. They stop at
@@ -1871,16 +1873,22 @@ ${provider.label} account in the browser and approves. Choose the route by clien
   and the configured Kilo client. Dynamic client registration is not enabled;
   do not try unrelated login flows.
 
-A script or unattended job has no way to sign in on this deployment. Do not send
-or search for any other credential. list_pages returns the account (principal,
-display_name). If the account is unexpected, check it with the human.`,
+A script or unattended job cannot get its first authorization without a person
+in a browser, and this deployment has no other credential to give it. Once a
+person has approved a connection, the client can refresh it unattended for 30
+days. Do not send or search for any other credential. list_pages returns the
+account (principal, display_name). If the account is unexpected, check it with
+the human.`,
     kiloOAuthHeadingAndIntro: `### Kilo Desktop / CLI (OAuth)
 
 Run one Kilo process against this deployment at a time. If several Kilo
 processes share one set of OAuth credentials (Kilo Desktop plus the CLI, or
 several worktrees running at once), concurrent refreshes revoke the grant.`,
-    kiloConfigMigration: `If the config already has a Pages entry, replace its oauth setting with the
-object above. Keep X-Pages-Driver and any unrelated headers/settings.`,
+    kiloConfigMigration: `If the config already has a Pages entry for this deployment, remove its
+Authorization header and replace its oauth setting with the object above. A
+request that still sends that header is refused with api_keys_unsupported. Keep
+X-Pages-Driver and any unrelated headers/settings. Leave any key file alone;
+entries for other deployments may still read it.`,
     authenticationSection: `Browser: ${origin}/ — choose Sign in, or open ${origin}/api/auth/login.
 Agents connect over MCP by OAuth, with the same ${provider.label} account as browser sign-in.
 This deployment has no API keys. The OAuth scopes are pages:read, pages:write

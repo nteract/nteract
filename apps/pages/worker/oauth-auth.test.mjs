@@ -926,3 +926,42 @@ test("OAuth MCP clients trash, restore, preview and confirm permanent deletion",
   assert.deepEqual(purged, { page_id: pageId, deleted: true, purged: true });
   assert.equal(removed, 1);
 });
+
+test("a Kilo deployment authenticates its own OAuth tokens and refuses any other bearer locally", async (t) => {
+  const kiloPerson = {
+    principal: "user:kilo:person",
+    namespace: "user:kilo",
+    displayName: "Kilo Person",
+  };
+  // The fixture fails the test on any outbound request.
+  const f = await fixture(t, "pages:read pages:write offline_access", {
+    identity: kiloPerson,
+    env: {
+      NOTEBOOK_CLOUD_OIDC_ISSUER: undefined,
+      NOTEBOOK_CLOUD_OIDC_CLIENT_ID: undefined,
+      NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE: undefined,
+      PAGES_KILO_APP_URL: "https://kilo.example",
+      PAGES_KILO_EXCHANGE_SECRET: "s".repeat(43),
+    },
+  });
+  const identity = await authenticate(request("/mcp", f.tokens.access_token), f.env);
+  assert.equal(identity.principal, kiloPerson.principal);
+  assert.equal(identity.credentialKind, "oauth");
+  assert.equal(identity.canWrite, true);
+
+  const whoami = await worker.fetch(request("/whoami", f.tokens.access_token, {}, "GET"), f.env);
+  assert.equal(whoami.status, 200, await whoami.clone().text());
+  const { account, credential } = await whoami.json();
+  assert.deepEqual(account, { principal: kiloPerson.principal, display_name: "Kilo Person" });
+  assert.equal(credential.kind, "oauth");
+
+  const call = { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "list_pages" } };
+  for (const token of ["kilo-cli-token", "a.b.c"]) {
+    const refused = await worker.fetch(request("/mcp", token, {}, "POST", call), f.env);
+    assert.equal(refused.status, 401, token);
+    assert.match(refused.headers.get("www-authenticate") ?? "", /resource_metadata=/);
+    const body = await refused.text();
+    assert.match(body, /api_keys_unsupported/);
+    assert.doesNotMatch(body, new RegExp(token.replace(/\./g, "\\.")));
+  }
+});

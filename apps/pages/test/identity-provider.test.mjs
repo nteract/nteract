@@ -119,6 +119,9 @@ test("the guide and the connect page for a provider with no API key describe OAu
     assert.ok(!text.includes(saveKeyCommand), `${name} save command`);
     assert.ok(text.includes("pages-kilo"), name);
     assert.ok(text.includes("kilo mcp auth pages"), name);
+    // An entry left from an API-key setup would be refused: both surfaces say to
+    // take its header out.
+    assert.match(text, /remove its\s+(?:<code>)?Authorization(?:<\/code>)?\s+header/, name);
     assert.ok(text.includes(claudeCodeOAuthCommand("https://pages.example")), name);
     assert.match(text, /no API keys/, name);
     assert.ok(text.includes("list_pages"), name);

@@ -193,6 +193,7 @@ function oauthOnlyContent(setup, provider, env) {
       <p>Merge into <code>~/.config/kilo/kilo.jsonc</code>, the global config (or your customized XDG config directory), preserving other settings. This is the Desktop/CLI format. Project configs and the older VS Code extension use different rules.</p>
       <pre class="setup-value"><code id="kilo-config">${escapeHtml(kiloConfig(setup.origin))}</code></pre>
       <button type="button" class="setup-copy" data-copy="kilo-config" data-copy-message="Kilo OAuth config copied. Merge it into global config, then run kilo mcp auth pages." hidden>Copy Kilo config</button>
+      <p>If you already have a Pages entry for this deployment, remove its <code>Authorization</code> header and replace its <code>oauth</code> setting with the one above. Leave any key file alone; entries for other deployments may still read it.</p>
       <p>Then sign in from your terminal:</p>
       <pre class="setup-value"><code id="kilo-login">kilo mcp auth pages</code></pre>
       <button type="button" class="setup-copy" data-copy="kilo-login" data-copy-message="Login command copied. Run it and follow the browser sign-in link." hidden>Copy login command</button>
