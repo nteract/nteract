@@ -1,3 +1,4 @@
+use std::path::{Component, Path};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
@@ -104,6 +105,94 @@ async fn notebook_writes_allowed(room: &NotebookRoom, notebook_id: &str) -> bool
     }
 }
 
+/// Only remove descendants of the selected environment caches, never a cache
+/// root or a sibling state directory. Resolve symlinks before allowing cleanup
+/// so a nested link cannot redirect deletion outside its selected cache.
+async fn is_managed_env_cleanup_root(root: &Path, cache_dirs: &[&Path]) -> bool {
+    if root.components().any(|part| part == Component::ParentDir) {
+        return false;
+    }
+    let Ok(canonical_root) = tokio::fs::canonicalize(root).await else {
+        return false;
+    };
+    for cache_dir in cache_dirs {
+        if root == *cache_dir || !root.starts_with(cache_dir) {
+            continue;
+        }
+        if let Ok(canonical_cache) = tokio::fs::canonicalize(cache_dir).await {
+            if canonical_root != canonical_cache && canonical_root.starts_with(canonical_cache) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+async fn cleanup_room_environment(
+    room: &NotebookRoom,
+    pool_cache_dir: &Path,
+    uv_cache_dir: &Path,
+    conda_cache_dir: &Path,
+) {
+    let borrowed = room
+        .runtime_agent_launched_config
+        .read()
+        .await
+        .as_ref()
+        .is_some_and(|config| config.local_environment.is_some());
+    let env_path = room.runtime_agent_env_path.read().await.clone();
+    if let Some(ref path) = env_path.filter(|_| !borrowed) {
+        let has_saved_path = room.file_binding.has_saved_path().await;
+        let metadata = {
+            let doc = room.doc.read().await;
+            doc.get_metadata_snapshot()
+        };
+        let preserve = should_preserve_env_on_eviction(
+            has_saved_path,
+            path,
+            metadata.as_ref(),
+            uv_cache_dir,
+            conda_cache_dir,
+        );
+        if preserve {
+            info!(
+                "[notebook-sync] Preserving captured env {:?} on kernel teardown (saved notebook)",
+                path
+            );
+        } else {
+            let root = crate::paths::pool_env_root(path);
+            if !is_managed_env_cleanup_root(&root, &[pool_cache_dir, uv_cache_dir, conda_cache_dir])
+                .await
+            {
+                warn!(
+                    "[notebook-sync] Refusing to delete env {:?} on kernel teardown (not within cache dir)",
+                    root
+                );
+            } else if root.exists() {
+                info!(
+                    "[notebook-sync] Cleaning up env {:?} on kernel teardown",
+                    root
+                );
+                if let Err(e) = tokio::fs::remove_dir_all(&root).await {
+                    warn!(
+                        "[notebook-sync] Failed to clean up env {:?} on kernel teardown: {}",
+                        root, e
+                    );
+                }
+            }
+        }
+        // Clear the env-path slot now that the directory is
+        // gone (or has been intentionally preserved under a
+        // new unified-hash name). Leaving the old path here
+        // would mis-report the env to `runt env clean` and
+        // friends once the dir no longer exists.
+        if !preserve {
+            let mut ep = room.runtime_agent_env_path.write().await;
+            *ep = None;
+        }
+    }
+}
+
 /// Handle a peer disconnecting from a room.
 ///
 /// When the last peer leaves we tear down the kernel and clean up the
@@ -145,6 +234,7 @@ pub(super) async fn handle_peer_disconnect(
         // 2. Kernel running with no peers (idle timeout)
         // Without this, kernels would leak indefinitely.
         let teardown_delay = daemon.room_eviction_delay().await;
+        let pool_cache_dir = daemon.config.cache_dir.clone();
         let rooms_for_teardown = rooms.clone();
         let room_for_teardown = room.clone();
         let notebook_id_for_teardown = notebook_id.to_string();
@@ -609,68 +699,13 @@ pub(super) async fn handle_peer_disconnect(
             // Use pool_env_root() to normalise pixi paths — their
             // venv_path is nested (e.g. .pixi/envs/default) but we
             // operate on the top-level runtimed-pixi-* directory.
-            {
-                let borrowed = room_for_teardown
-                    .runtime_agent_launched_config
-                    .read()
-                    .await
-                    .as_ref()
-                    .is_some_and(|config| config.local_environment.is_some());
-                let env_path = room_for_teardown
-                    .runtime_agent_env_path
-                    .read()
-                    .await
-                    .clone();
-                if let Some(ref path) = env_path.filter(|_| !borrowed) {
-                    let has_saved_path = room_for_teardown.file_binding.has_saved_path().await;
-                    let metadata = {
-                        let doc = room_for_teardown.doc.read().await;
-                        doc.get_metadata_snapshot()
-                    };
-                    let preserve = should_preserve_env_on_eviction(
-                        has_saved_path,
-                        path,
-                        metadata.as_ref(),
-                        &kernel_env::uv::default_cache_dir_uv(),
-                        &kernel_env::conda::default_cache_dir_conda(),
-                    );
-                    if preserve {
-                        info!(
-                            "[notebook-sync] Preserving captured env {:?} on kernel teardown (saved notebook)",
-                            path
-                        );
-                    } else {
-                        let root = crate::paths::pool_env_root(path);
-                        let cache_dir = crate::paths::default_cache_dir();
-                        if !crate::is_within_cache_dir(&root, &cache_dir) {
-                            warn!(
-                                "[notebook-sync] Refusing to delete env {:?} on kernel teardown (not within cache dir)",
-                                root
-                            );
-                        } else if root.exists() {
-                            info!(
-                                "[notebook-sync] Cleaning up env {:?} on kernel teardown",
-                                root
-                            );
-                            if let Err(e) = tokio::fs::remove_dir_all(&root).await {
-                                warn!(
-                                    "[notebook-sync] Failed to clean up env {:?} on kernel teardown: {}",
-                                    root, e
-                                );
-                            }
-                        }
-                    }
-                    // Clear the env-path slot now that the directory is
-                    // gone (or has been intentionally preserved under a
-                    // new unified-hash name). Leaving the old path here
-                    // would mis-report the env to `runt env clean` and
-                    // friends once the dir no longer exists.
-                    if !preserve {
-                        let mut ep = room_for_teardown.runtime_agent_env_path.write().await;
-                        *ep = None;
-                    }
-                }
-            }
+            cleanup_room_environment(
+                &room_for_teardown,
+                &pool_cache_dir,
+                &kernel_env::uv::default_cache_dir_uv(),
+                &kernel_env::conda::default_cache_dir_conda(),
+            )
+            .await;
 
             // Stamp the room as "kernel torn down at now" so the ghost
             // reaper can find it. If a peer raced in between the last
@@ -707,6 +742,204 @@ pub(super) async fn handle_peer_disconnect(
 mod tests {
     use super::*;
     use crate::blob_store::BlobStore;
+
+    fn cleanup_test_room(root: &Path, saved: bool) -> NotebookRoom {
+        NotebookRoom::new_fresh(
+            uuid::Uuid::new_v4(),
+            saved.then(|| root.join("saved.ipynb")),
+            root,
+            Arc::new(BlobStore::new(root.join("blobs"))),
+            false,
+        )
+    }
+
+    #[tokio::test]
+    async fn cleanup_removes_untitled_captured_envs_from_each_selected_cache() {
+        // Cache selection is independent: one kind may reuse the legacy root
+        // while another uses the new namespace, or both may be worktree-local.
+        for (uv_dir, conda_dir) in [
+            ("nteract/envs", "nteract/conda-envs"),
+            ("runt/envs", "nteract/conda-envs"),
+            ("nteract/envs", "runt/conda-envs"),
+            (
+                "runt-nightly/worktrees/test/envs",
+                "runt-nightly/worktrees/test/conda-envs",
+            ),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let uv_cache = tmp.path().join(uv_dir);
+            let conda_cache = tmp.path().join(conda_dir);
+            let pool_cache = tmp.path().join("configured-pool");
+            for cache in [&uv_cache, &conda_cache] {
+                let env = cache.join("0123456789abcdef");
+                std::fs::create_dir_all(&env).unwrap();
+                std::fs::write(env.join("sentinel"), b"environment").unwrap();
+                let room = cleanup_test_room(tmp.path(), false);
+                *room.runtime_agent_env_path.write().await = Some(env.clone());
+
+                cleanup_room_environment(&room, &pool_cache, &uv_cache, &conda_cache).await;
+
+                assert!(
+                    !env.exists(),
+                    "untitled environment was not removed: {env:?}"
+                );
+                assert!(cache.is_dir(), "never remove the cache root");
+                assert!(room.runtime_agent_env_path.read().await.is_none());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn cleanup_removes_configured_pool_envs_including_nested_pixi() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool_cache = tmp.path().join("custom-pool");
+        let uv_cache = tmp.path().join("envs");
+        let conda_cache = tmp.path().join("conda-envs");
+        for relative in [
+            "runtimed-uv-ondemand-test",
+            "runtimed-conda-ondemand-test",
+            "runtimed-pixi-test/.pixi/envs/default",
+        ] {
+            let env = pool_cache.join(relative);
+            std::fs::create_dir_all(&env).unwrap();
+            let room = cleanup_test_room(tmp.path(), false);
+            *room.runtime_agent_env_path.write().await = Some(env.clone());
+
+            cleanup_room_environment(&room, &pool_cache, &uv_cache, &conda_cache).await;
+
+            assert!(!crate::paths::pool_env_root(&env).exists());
+            assert!(pool_cache.is_dir());
+        }
+    }
+
+    #[tokio::test]
+    async fn cleanup_preserves_saved_captured_uv_and_conda_envs() {
+        use super::super::{captured_env_disk_state_in, captured_env_for_runtime};
+        use notebook_doc::metadata::{
+            CondaInlineMetadata, NotebookMetadataSnapshot, UvInlineMetadata,
+        };
+
+        for runtime in [CapturedEnvRuntime::Uv, CapturedEnvRuntime::Conda] {
+            let tmp = tempfile::tempdir().unwrap();
+            let uv_cache = tmp.path().join("envs");
+            let conda_cache = tmp.path().join("conda-envs");
+            let mut metadata = NotebookMetadataSnapshot::default();
+            metadata.runt.env_id = Some("saved-cleanup-test".into());
+            match runtime {
+                CapturedEnvRuntime::Uv => {
+                    metadata.runt.uv = Some(UvInlineMetadata {
+                        dependencies: vec!["numpy".into()],
+                        requires_python: None,
+                        prerelease: None,
+                    })
+                }
+                CapturedEnvRuntime::Conda => {
+                    metadata.runt.conda = Some(CondaInlineMetadata {
+                        dependencies: vec!["numpy".into()],
+                        channels: vec!["conda-forge".into()],
+                        python: Some("3.12".into()),
+                    })
+                }
+            }
+            let captured = captured_env_for_runtime(Some(&metadata), runtime).unwrap();
+            let env = captured_env_disk_state_in(&captured, &uv_cache, &conda_cache)
+                .env_path()
+                .to_path_buf();
+            std::fs::create_dir_all(&env).unwrap();
+            std::fs::write(env.join("sentinel"), b"saved").unwrap();
+            let room = cleanup_test_room(tmp.path(), true);
+            {
+                let mut doc = room.doc.write().await;
+                doc.set_metadata_snapshot(&metadata).unwrap();
+            }
+            *room.runtime_agent_env_path.write().await = Some(env.clone());
+
+            cleanup_room_environment(&room, &uv_cache, &uv_cache, &conda_cache).await;
+
+            assert_eq!(std::fs::read(env.join("sentinel")).unwrap(), b"saved");
+            assert_eq!(*room.runtime_agent_env_path.read().await, Some(env));
+        }
+    }
+
+    #[tokio::test]
+    async fn cleanup_never_removes_borrowed_env_even_inside_managed_cache() {
+        use notebook_protocol::protocol::{LaunchedEnvConfig, LocalEnvironmentIdentity};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("conda-envs");
+        let env = cache.join("borrowed");
+        std::fs::create_dir_all(&env).unwrap();
+        std::fs::write(env.join("sentinel"), b"borrowed").unwrap();
+        let room = cleanup_test_room(tmp.path(), false);
+        *room.runtime_agent_env_path.write().await = Some(env.clone());
+        *room.runtime_agent_launched_config.write().await = Some(LaunchedEnvConfig {
+            local_environment: Some(LocalEnvironmentIdentity {
+                id: "borrowed".into(),
+                name: "borrowed".into(),
+                python_version: None,
+            }),
+            ..Default::default()
+        });
+
+        cleanup_room_environment(&room, &cache, &cache, &cache).await;
+
+        assert_eq!(std::fs::read(env.join("sentinel")).unwrap(), b"borrowed");
+        assert_eq!(*room.runtime_agent_env_path.read().await, Some(env));
+    }
+
+    #[tokio::test]
+    async fn cleanup_refuses_cache_roots_state_siblings_and_parent_traversal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let uv_cache = tmp.path().join("envs");
+        let conda_cache = tmp.path().join("conda-envs");
+        let outside = tmp.path().join("notebook-docs");
+        let lookalike = tmp.path().join("conda-envs-other");
+        for path in [&uv_cache, &conda_cache, &outside, &lookalike] {
+            std::fs::create_dir_all(path).unwrap();
+            std::fs::write(path.join("sentinel"), b"keep").unwrap();
+        }
+        for env in [
+            uv_cache.clone(),
+            conda_cache.clone(),
+            tmp.path().to_path_buf(),
+            outside.clone(),
+            lookalike.clone(),
+            conda_cache.join("../notebook-docs"),
+        ] {
+            let room = cleanup_test_room(tmp.path(), false);
+            *room.runtime_agent_env_path.write().await = Some(env);
+            cleanup_room_environment(&room, &uv_cache, &uv_cache, &conda_cache).await;
+            for path in [&uv_cache, &conda_cache, &outside, &lookalike] {
+                assert_eq!(std::fs::read(path.join("sentinel")).unwrap(), b"keep");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cleanup_refuses_symlink_escape_but_supports_selected_cache_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("conda-envs");
+        let real_cache = tmp.path().join("real-cache");
+        let outside = tmp.path().join("project");
+        std::fs::create_dir_all(real_cache.join("owned")).unwrap();
+        std::fs::create_dir_all(outside.join("env")).unwrap();
+        std::fs::write(outside.join("env/sentinel"), b"keep").unwrap();
+        std::os::unix::fs::symlink(&real_cache, &cache).unwrap();
+        std::os::unix::fs::symlink(&outside, cache.join("escape")).unwrap();
+        let room = cleanup_test_room(tmp.path(), false);
+        *room.runtime_agent_env_path.write().await = Some(cache.join("escape/env"));
+        cleanup_room_environment(&room, &cache, &cache, &cache).await;
+        assert_eq!(
+            std::fs::read(outside.join("env/sentinel")).unwrap(),
+            b"keep"
+        );
+
+        *room.runtime_agent_env_path.write().await = Some(cache.join("owned"));
+        cleanup_room_environment(&room, &cache, &cache, &cache).await;
+        assert!(!real_cache.join("owned").exists());
+        assert!(cache.is_dir());
+    }
 
     fn empty_projection(generation: u64) -> Arc<runtimed_client::protocol::NotebookProjection> {
         Arc::new(runtimed_client::protocol::NotebookProjection {
