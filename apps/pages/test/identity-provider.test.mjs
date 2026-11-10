@@ -6,7 +6,12 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { agentGuide } from "../agent-guide.mjs";
 import { agentConnectionSetup, connectAgentResponse } from "../connect-agent.mjs";
-import { keyFile, saveKeyCommand, setupPrompt } from "../agent-client-setup.mjs";
+import {
+  claudeCodeOAuthCommand,
+  keyFile,
+  saveKeyCommand,
+  setupPrompt,
+} from "../agent-client-setup.mjs";
 import { identityProvider } from "../identity-provider.mjs";
 import { credentialRequired } from "../worker/auth.mjs";
 import { companyViewDomains } from "../worker/domain-access.mjs";
@@ -17,6 +22,7 @@ const production = {
   ...origin,
   NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL: "https://anaconda.com/api/auth/sessions/whoami",
 };
+const kilo = { ...origin, PAGES_KILO_APP_URL: "https://kilo.example" };
 const staging = {
   ...origin,
   NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL:
@@ -69,8 +75,120 @@ test("the guide, the connect page, the recipes and the refusals say what the pro
   assert.equal(keyFile, key.keyFile);
   assert.ok(saveKeyCommand.includes(`"${key.homePath}"`));
   assert.ok(saveKeyCommand.includes(`${key.name} (hidden)`));
-  assert.ok(setupPrompt("https://pages.example").includes(key.name));
+  assert.ok(setupPrompt("https://pages.example", provider).includes(key.name));
   assert.ok(credentialRequired(production).message.includes(`Bearer <${key.name}>`));
+});
+
+test("PAGES_KILO_APP_URL selects Kilo, which has no API key and no verified email", () => {
+  assert.deepEqual(identityProvider(kilo), {
+    id: "kilo",
+    label: "Kilo",
+    companyDomains: [],
+    apiKey: null,
+    verifiedEmail: false,
+  });
+  // The setting's presence selects the provider; kiloSignIn validates the URL.
+  assert.equal(identityProvider({ PAGES_KILO_APP_URL: "not a url" }).id, "kilo");
+  for (const env of [undefined, {}, production, { PAGES_KILO_APP_URL: "" }]) {
+    assert.equal(identityProvider(env).id, "anaconda");
+    assert.equal(identityProvider(env).verifiedEmail, true);
+  }
+});
+
+test("the guide and the connect page for a provider with no API key describe OAuth only", async () => {
+  const provider = identityProvider(kilo);
+  const guide = agentGuide(kilo);
+  const page = await (
+    await connectAgentResponse(new Request("https://pages.example/connect"), kilo)
+  ).text();
+  const keyFileHome = identityProvider(production).apiKey.homePath;
+  for (const [name, text] of [
+    ["guide", guide],
+    ["page", page],
+  ]) {
+    for (const pattern of [
+      /anaconda/i,
+      /oauth: false/,
+      /Authorization: Bearer </,
+      /api-key\b.*recommended/i,
+      /cloud:(read|write)/,
+      /\$[A-Z_]*API_KEY/,
+    ])
+      assert.doesNotMatch(text, pattern, `${name} ${pattern}`);
+    assert.ok(!text.includes(keyFileHome), `${name} key file`);
+    assert.ok(!text.includes(saveKeyCommand), `${name} save command`);
+    assert.ok(text.includes("pages-kilo"), name);
+    assert.ok(text.includes("kilo mcp auth pages"), name);
+    assert.ok(text.includes(claudeCodeOAuthCommand("https://pages.example")), name);
+    assert.match(text, /no API keys/, name);
+    assert.ok(text.includes("list_pages"), name);
+  }
+  for (const heading of [
+    "API-key connection",
+    "Save the key privately",
+    "Check the account without exposing the key",
+    "(API key, recommended)",
+    "Codex Desktop / CLI",
+    "Other MCP clients (API key)",
+    "Get an API key",
+    "use an API key",
+  ])
+    assert.ok(!guide.includes(heading), heading);
+  assert.match(guide, /^- api_keys_unsupported \(401\)/m);
+  assert.doesNotMatch(guide, /^- invalid_api_key/m);
+  assert.match(guide, /^- auth_required \(401\): .*OAuth/m);
+  assert.match(
+    guide,
+    /carry no verified email, so an invitation by email\s+cannot be accepted here yet/,
+  );
+  assert.match(guide, /\/api\/tools accepts no\s+OAuth token/);
+  assert.match(guide, /"X-Pages-Agent": "\{env:PAGES_AGENT\}" to the headers object/);
+  assert.ok(
+    guide.replace(/\s+/g, " ").includes(`"Sign in now" and "Use Claude's published identity"`),
+  );
+  assert.ok(guide.includes(`signs people and agents in with ${provider.label} accounts`));
+  for (const heading of [
+    "Create an API key",
+    "Save it privately",
+    "Check an API key",
+    "header helper",
+    "claude mcp add-json",
+  ])
+    assert.ok(!page.includes(heading), heading);
+  for (const id of page.match(/data-copy="[^"]+"/g).map((attribute) => attribute.slice(11, -1)))
+    assert.ok(page.includes(`id="${id}"`), `copy target ${id}`);
+});
+
+test("the guide keeps the same error codes, email note and client list for each provider", () => {
+  const anyClient = { ...kilo, PAGES_OAUTH_ANY_CLIENT_DOCUMENT: "true" };
+  assert.match(agentGuide(anyClient), /client ID is the https URL of its client ID metadata/);
+  assert.match(agentGuide(kilo), /ChatGPT, Claude and Claude Code by their client ID/);
+  // The email note belongs to a provider with no verified email, not to Kilo by name.
+  assert.doesNotMatch(agentGuide(production), /carry no verified email/);
+  assert.match(agentGuide(kilo), /carry no verified email/);
+  // Both variants answer every code a client can receive.
+  assert.match(agentGuide(production), /^- invalid_api_key/m);
+  assert.doesNotMatch(agentGuide(production), /api_keys_unsupported/);
+});
+
+test("setup, connection details and refusals for a provider with no API key name no key", () => {
+  const provider = identityProvider(kilo);
+  const prompt = setupPrompt("https://pages.example", provider);
+  assert.match(prompt, /no API keys/);
+  assert.match(prompt, /OAuth/);
+  assert.match(prompt, /list_pages/);
+  assert.doesNotMatch(prompt, /key file|~\/\.config|paste credentials into chat and/);
+  assert.doesNotMatch(prompt, /Anaconda|API key;/);
+  const setup = agentConnectionSetup(kilo);
+  assert.equal(setup.apiKeyUrl, null);
+  assert.doesNotMatch(setup.headers, /Authorization/);
+  assert.match(setup.headers, /X-Pages-Driver/);
+  const refusal = credentialRequired(kilo);
+  assert.equal(refusal.status, 401);
+  assert.equal(refusal.code, "auth_required");
+  assert.match(refusal.message, /no API keys/);
+  assert.match(refusal.message, /OAuth; see https:\/\/pages\.example\/connect$/);
+  assert.doesNotMatch(refusal.message, /Bearer/);
 });
 
 test("a deployment can turn on only the provider's reviewed company domains", () => {

@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { JSDOM } from "jsdom";
 import worker from "../worker/index.mjs";
 import { agentConnectionSetup } from "../connect-agent.mjs";
+import { identityProvider } from "../identity-provider.mjs";
 import {
   checkAccountCommand,
   claudeCodeAddCommand,
@@ -79,7 +80,10 @@ test("setup is public, uses configured destinations, and never reflects credenti
   assert.equal(dom.getElementById("codex-config").textContent, codexConfig(origin));
   assert.equal(dom.getElementById("claude-code-helper").textContent, claudeCodeHeaderHelper);
   assert.equal(dom.getElementById("claude-code-add").textContent, claudeCodeAddCommand(origin));
-  assert.equal(dom.getElementById("setup-prompt").textContent, setupPrompt(origin));
+  assert.equal(
+    dom.getElementById("setup-prompt").textContent,
+    setupPrompt(origin, identityProvider(env)),
+  );
   assert.equal(dom.getElementById("pages-agent-envrc").textContent, pagesAgentEnvrc);
 });
 

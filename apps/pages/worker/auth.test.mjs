@@ -618,3 +618,69 @@ test("passage-conflict transport exposes only bounded recovery addresses", async
   assert.equal(body.conflicts[0].markdown, undefined);
   assert.equal(body.private, undefined);
 });
+
+test("a Kilo deployment refuses every non-OAuth bearer before any outbound request", async (t) => {
+  const fixture = await createAuthFixture();
+  const outbound = [];
+  t.mock.method(globalThis, "fetch", async (...args) => {
+    outbound.push(String(args[0]?.url ?? args[0]));
+    return fixture.fetch(...args);
+  });
+  const env = {
+    ...fixture.env,
+    NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.invalid",
+    PAGES_KILO_APP_URL: "https://kilo.invalid",
+  };
+  const call = async (headers) => {
+    const response = await worker.fetch(
+      new Request("https://pages.invalid/api/tools", {
+        method: "POST",
+        headers: { "content-type": "application/json", ...headers },
+        body: JSON.stringify({ operation: "list_pages", arguments: {} }),
+      }),
+      env,
+    );
+    return { status: response.status, body: await response.json() };
+  };
+  // A key the keyed provider would accept, and a token no provider knows.
+  for (const token of [fixture.apiKey(), "kilo-cli-token", "a.b.c"]) {
+    const refused = await call({ authorization: `Bearer ${token}` });
+    assert.equal(refused.status, 401, token);
+    assert.equal(refused.body.code, "api_keys_unsupported", token);
+    assert.match(refused.body.error, /does not accept API keys/);
+    assert.match(refused.body.error, /OAuth; see https:\/\/pages\.invalid\/connect$/);
+    assert.doesNotMatch(refused.body.error, new RegExp(token.replace(/\./g, "\\.")));
+  }
+  // Refusals ahead of the key check keep their own codes.
+  const upload = await call({ authorization: "Bearer pu1.token" });
+  assert.equal(upload.body.code, "upload_capability_invalid");
+  // A Pages OAuth token is handled by its own branch, never the key check.
+  const oauth = await call({ authorization: "Bearer pages_not-a-grant" });
+  assert.equal(oauth.status, 403);
+  assert.notEqual(oauth.body.code, "api_keys_unsupported");
+  const missing = await call({});
+  assert.equal(missing.status, 401);
+  assert.equal(missing.body.code, "auth_required");
+  assert.match(missing.body.error, /no API keys/);
+  assert.doesNotMatch(missing.body.error, /Bearer/);
+  assert.deepEqual(outbound, [], "no request left the deployment");
+});
+
+test("a bearer on a Kilo deployment is refused with the key-verifier fixture left untouched", async (t) => {
+  const fixture = await createAuthFixture();
+  const verifier = t.mock.method(globalThis, "fetch", () => {
+    throw Error("A Kilo deployment must not contact an account service");
+  });
+  const env = { ...fixture.env, PAGES_KILO_APP_URL: "https://kilo.invalid" };
+  await assert.rejects(
+    authenticate(
+      new Request("https://pages.invalid/mcp", {
+        method: "POST",
+        headers: { authorization: `Bearer ${fixture.apiKey()}` },
+      }),
+      env,
+    ),
+    { status: 401, code: "api_keys_unsupported" },
+  );
+  assert.equal(verifier.mock.callCount(), 0);
+});

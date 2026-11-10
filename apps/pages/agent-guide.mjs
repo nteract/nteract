@@ -4,6 +4,7 @@ import {
   checkAccountCommand,
   claudeCodeAddCommand,
   claudeCodeHeaderHelper,
+  claudeCodeOAuthCommand,
   codexConfig,
   codexHeaderHelper,
   keyFile,
@@ -44,25 +45,25 @@ export function agentGuide(env) {
   const origin = pagesPublicOrigin(env);
   const anyClientDocument = admitsAnyClientDocument(env);
   const provider = identityProvider(env);
-  const key = provider.apiKey;
-  const uploadCommand = guideUploadCommand(origin);
+  const part = (provider.apiKey ? keyedParts : oauthOnlyParts)({
+    origin,
+    provider,
+    acceptedClients: acceptedOAuthClients(anyClientDocument),
+    uploadCommand: guideUploadCommand(origin),
+  });
+  const emailInviteNote = provider.verifiedEmail
+    ? ""
+    : `
+
+Accounts on this deployment carry no verified email, so an invitation by email
+cannot be accepted here yet.`;
   return `# ${PRODUCT_NAME}
 
-Shared documents that people and agents edit together. Agents connect over MCP
-at ${origin}/mcp or call the JSON API at ${origin}/api/tools. Human setup:
-${origin}/connect.
+${part.opening}
 
 ## Quick start
 
-Every request sends Authorization: Bearer <${key.name}>. Without a key,
-start with "Connect your agent" below. List what this account can open:
-
-\`\`\`sh
-curl -sS ${origin}/api/tools \\
-  -H "Authorization: Bearer $${key.envVar}" \\
-  -H "Content-Type: application/json" \\
-  -d '{"operation":"list_pages","arguments":{}}'
-\`\`\`
+${part.quickStartConnect}
 
 Then read a Page from that list, or create one. A plain idempotency_key of
 8–128 letters, digits, underscores or hyphens needs no retry_token:
@@ -75,11 +76,7 @@ Then read a Page from that list, or create one. A plain idempotency_key of
 {"operation":"create_page","arguments":{"title":"Release plan","markdown":"We are preparing the next release.","idempotency_key":"release-plan-0001"}}
 \`\`\`
 
-A successful result for a Page carries url, the browser link: create_page,
-read_page, edit_page, move_page and the rest, except a confirmed purge. A Project
-result carries url (/project/<project_id>) and document_id, its content
-document's ID; use url when linking the Project. List results carry url on each
-entry. MCP tools take the same names and arguments.
+${part.urlFieldParagraph}
 
 A Project's content is read and edited with the Page tools by passing
 project_id instead of page_id:
@@ -111,12 +108,7 @@ the body beside error, under the HTTP status. An MCP result carries the same
 object with result.isError: true; check isError even when HTTP succeeds.
 Branch on code, not on the error message:
 
-- auth_required (401): no credential was sent. Send Authorization: Bearer
-  <${key.name}>; get a key at ${origin}/connect.
-- invalid_api_key (401): the key was rejected. It may be expired or revoked,
-  or belong to another ${provider.label} environment. Replace it through /connect. When
-  ${provider.label} itself is rate limiting or down, the answer is a 503 instead: retry
-  later and keep the key.
+${part.authErrorItems}
 - oauth_invalid_token (401), oauth_insufficient_scope (403): an OAuth client's
   grant is gone or lacks pages:read/pages:write/pages:share. Reconnect the client
   and obtain separate sharing consent when sharing tools need pages:share.
@@ -305,211 +297,14 @@ retryable:true means a retry can succeed; the code says whether to read first.
 
 ## Connect your agent
 
-MCP endpoint: ${origin}/mcp. Human setup: ${origin}/connect.
-Choose by how the client runs before investigating authentication:
-
-- Coding agents, CLIs, scripts, and anything long-running or headless (Kilo,
-  Claude Code, Codex, cron jobs): use an ${key.name}. The recipes come
-  first below. A key works until its chosen expiration, any number of processes
-  can share it, and nothing has to refresh it.
-- ChatGPT, Claude and other interactive clients that sign in with OAuth: add
-  the endpoint and complete browser authorization. No API key is needed.
-- Kilo can also use OAuth, but only for one Kilo process at a time. See the
-  shared-token warning in the OAuth section.
-- Other clients: use an ${key.name} if they support bearer headers. For OAuth,
-  this deployment accepts ${
-    anyClientDocument
-      ? "a client whose client ID is the https URL of its client ID metadata document"
-      : "ChatGPT, Claude and Claude Code by their client ID metadata documents"
-  },
-  and the configured Kilo client. Dynamic client registration is not enabled;
-  do not try unrelated login flows.
+${part.connectRoutes}
 
 Ask the human for their step early, and prepare non-secret configuration in
 parallel. **Reload MCP or start a new session, then call list_pages from that
 session.** Only a successful list_pages call proves the connection works;
 configuration alone is not verification.
 
-### API-key connection: first ask the human
-
-For clients using the API-key recipes, follow this order:
-
-1. Check whether a key is already explicitly configured for Pages (a supplied
-   secret path/header or ${key.envVar} / ${key.alternateEnvVar}). Check presence
-   without displaying its value. Inspect filenames, not secrets, in ~/.config/pages.
-   Ask before reusing or replacing an existing key; do not assume it belongs to
-   the intended account. The recipes below retain ${keyFile} as the default.
-   For multiple accounts, choose an account-specific filename such as
-   ${key.keyFile}-rgbkrk. Use that path consistently in the
-   save command, Kilo file reference, and the Codex and Claude Code helpers. Use
-   a separate helper filename per account so existing clients keep their key.
-2. If no key is available, ask the human immediately:
-   "Pages needs a separate ${key.name}. Please open ${origin}/connect,
-   create a key, and save it privately using that page's instructions. Tell me
-   when it is ready; do not paste it into this chat. I'll prepare the connection
-   settings while you do that."
-   In parallel, prepare the private directory, a config draft outside the active
-   client config, and the non-secret Codex or Claude Code helper if needed. Check the client
-   version and preserve its existing settings. Wait for the key before merging
-   an active secret reference, enabling MCP, or attempting authentication.
-   A browser session alone does not configure an API-key client. Do not create an empty key file,
-   enable a connection without a key, install an ${provider.label} CLI just for setup,
-   inspect client binaries, or search app/keyring storage to find credentials.
-3. After the human saves the key, merge the client recipe below into their
-   existing configuration. Preserve unrelated settings and existing servers.
-   If they supplied another secret path, use that path consistently instead.
-4. Reload the client's MCP connection or start a new session, then call list_pages
-   from that session. Only a successful
-   authenticated tool call proves it works; a saved config is not a connection.
-   An empty Pages list is a successful result. Until then report the exact stage:
-   prepared and waiting for a key, configured but not verified, or connected.
-
-Do not paste keys into chat, print resolved config/headers, or put credentials in
-URLs. For 401, check key presence, expiry, and provider environment once, then ask
-the human to replace the key through /connect. For 403, check User Resources
-scopes and Page sharing permissions. Do not retry in a loop.
-
-### Save the key privately (human step, macOS/Linux)
-
-Create the key through /connect, then run this in your own terminal. Python 3
-prompts with input hidden and writes a user-only file. Paste only the raw key,
-not an environment-variable assignment. Nothing is sent to the agent or this page.
-This refuses to overwrite an existing file. Change the path in the command for
-an account-specific file; ask before reusing or replacing an existing key.
-If Python 3 is unavailable, ask the agent to prepare an equivalent private local
-file without overwriting an existing key and enter the key yourself; no CLI
-installation is required.
-
-\`\`\`sh
-${saveKeyCommand}
-\`\`\`
-
-### Check the account without exposing the key
-
-After the human confirms the chosen key, GET ${origin}/whoami checks which account
-it authenticates without creating or editing a Page. It requires authentication
-and returns account {principal, display_name, email?} and credential {kind,
-can_write}. display_name may be null; email is included only when the provider
-supplies a verified email. kind is api-key, oidc, or oauth. No credential expiry
-is reported. can_write describes credential scope, not permission to edit every
-Page; sharing permissions still apply. Responses are not cached.
-
-This API-key check reads the private file directly, refuses redirects, and prints
-only account and credential summary fields. Change its path to the confirmed
-account-specific filename. Never print the key or resolved Authorization header.
-Errors do not print response bodies or redirect destinations.
-
-\`\`\`sh
-${checkAccountCommand(origin)}
-\`\`\`
-
-Check the returned account with the human before proceeding if it is unexpected.
-A successful HTTP check is not MCP verification: reload MCP or start a new
-session, then call list_pages from that session. list_pages includes the same
-account object as /whoami, alongside its existing principal and quota fields.
-
-### Kilo Desktop / CLI (API key, recommended)
-
-Once the key file is nonempty, merge this into the GLOBAL
-~/.config/kilo/kilo.jsonc (respect XDG_CONFIG_HOME if customized). This is the
-Kilo Desktop/CLI format, not the legacy VS Code mcpServers format. Secret file
-references belong in global config; project configs may drop variable headers.
-The file contains the raw key only. oauth: false keeps this recipe on API-key
-authentication; kilo mcp auth is not the setup path for this recipe.
-
-\`\`\`json
-${kiloApiKeyConfig(origin)}
-\`\`\`
-
-If the existing Pages entry uses OAuth, replace its oauth object with
-oauth: false and add the Authorization header. Keep X-Pages-Driver and any
-unrelated headers/settings. X-Pages-Agent is optional; see "Name each session"
-below. One shared entry serves every worktree.
-
-Reload the Pages server in Kilo or restart the desktop app. kilo mcp list is a
-connection diagnostic; also call list_pages from the actual session using it.
-If a key is already supplied through an environment variable, you may replace
-the Authorization value with "Bearer {env:${key.envVar}}" (or the explicitly
-configured ${key.alternateEnvVar}). Do this only when the running Kilo process
-actually inherits that variable. A shell-only variable does not establish that
-Desktop has it; otherwise ask the human to save the key through /connect. Do not
-silently use a nonexistent file just because an environment variable was found.
-Official configuration: https://kilo.ai/docs/automate/mcp/using-in-cli
-
-### Codex Desktop / CLI (local HTTP connection)
-
-Use the same private file. Have the agent save this non-secret helper as
-~/.config/pages/mcp-headers.py. Codex runs it to obtain the header; do not run it
-in an agent terminal or print its output, which contains the key.
-
-\`\`\`python
-${codexHeaderHelper}
-\`\`\`
-
-Merge this into ~/.codex/config.toml (or the configured CODEX_HOME). Replace
-both path placeholders with real absolute paths; use command -v python3 to
-locate the interpreter. Keep the quotes around paths with spaces.
-
-\`\`\`toml
-${codexConfig(origin)}
-\`\`\`
-
-http_headers_helper is supported in current Codex.
-This recipe avoids shell environment inheritance in a desktop app. Do not also
-set bearer_token_env_var or a literal Authorization header: those take precedence.
-For an older Codex, use the supported bearer_token_env_var = "${key.envVar}"
-option only when that variable is actually available to the running client, or
-ask the human to update. Never put the key value in config. Restart/reload MCP,
-then call list_pages. codex mcp get/list checks config only, not authentication.
-To label sessions, add env_http_headers = { "X-Pages-Agent" = "PAGES_AGENT" };
-Codex reads the label from that environment variable.
-Official configuration: https://developers.openai.com/codex/mcp
-
-### Claude Code (local HTTP connection)
-
-Use the same private file. Have the agent save this non-secret helper as
-~/.config/pages/claude-code-headers.py. Claude Code runs it to obtain the
-headers; do not run it in an agent terminal or print its output, which contains
-the key.
-
-\`\`\`python
-${claudeCodeHeaderHelper}
-\`\`\`
-
-Register the server at user scope. Replace both path placeholders with real
-absolute paths that contain no spaces; use command -v python3 to locate the
-interpreter.
-
-\`\`\`sh
-${claudeCodeAddCommand(origin)}
-\`\`\`
-
-Claude Code runs the helper in a shell on every connection, with a 10-second
-timeout and no caching. It reruns the helper once when a tool call gets a 401
-or 403. Helper headers override static headers of the same name. When the helper
-returns Authorization, Claude Code uses it and does not fall back to OAuth for
-this server. Use user scope: project-scoped .mcp.json entries make Claude Code
-ask for folder trust before it runs a helper.
-
-Do not use claude mcp add --header "Authorization: Bearer ...". It takes only
-static headers and writes the key into ~/.claude.json.
-
-Until the key file exists, claude mcp get pages reports "Needs authentication".
-After the human saves the key, reload MCP or start a new session, then call
-list_pages from that session. claude mcp get is a diagnostic, not proof of
-authenticated tool use. To label sessions, set PAGES_AGENT in the environment
-Claude Code starts from; the helper sends it as X-Pages-Agent when it is
-printable ASCII and at most 80 characters.
-Official configuration: https://code.claude.com/docs/en/mcp
-
-### Other MCP clients (API key)
-
-For a client without a header helper, add a Streamable HTTP server at
-${origin}/mcp with the headers under "Configure the client" below. Keep the key
-in the client's secret settings, never as a literal in a shared or project
-config.
-
-### Name each session
+${part.apiKeyConnectionSections}### Name each session
 
 Two optional headers name the agent in a Page:
 
@@ -521,20 +316,13 @@ A caret then reads "Kyle's Kilo · release agent". Both labels are
 self-declared. Pages always shows them under the account the credential
 authenticates; they never change who made an edit or what it can access.
 
-For Kilo, keep one shared config entry with
-"X-Pages-Agent": "{env:PAGES_AGENT}", as in the recipe above. Kilo substitutes
-environment variables when it loads config, and sends an empty header when the
-variable is unset, which Pages treats as no label. Each worktree sets its own
-label, for example in its .envrc:
+${part.kiloLabelParagraph}
 
 \`\`\`sh
 ${pagesAgentEnvrc}
 \`\`\`
 
-The Kilo process must start with that variable in its environment, such as
-from a shell where direnv loaded the .envrc. Labels are optional: each MCP
-session already gets its own caret through Mcp-Session-Id, so two unlabeled
-sessions on one key still show separately.
+${part.unlabeledSessionsParagraph}
 
 ### Name your client and model
 
@@ -563,19 +351,9 @@ Add a custom MCP server in the client's connection or plugin settings:
   sharing permissions still apply. The consent screen also explains that the
   connection can remain active for up to 30 days.
 
-The human follows the client's authorization link, signs in to Pages with
-${provider.label}, checks the account and requested permissions, and approves. Pages
-issues credentials for this deployment's MCP endpoint; the client never receives
-an ${key.name} or provider refresh token. Do not copy browser cookies.
+${part.humanAuthorizesParagraph}
 
-Discovery: ${origin}/.well-known/oauth-protected-resource/mcp and
-${origin}/.well-known/oauth-authorization-server. The supported ChatGPT client ID
-is https://chatgpt.com/oauth/client.json, with callback
-https://chatgpt.com/connector_platform_oauth_redirect. The predefined public
-client pages-chatgpt uses that same callback when a client ID is requested.
-PKCE S256 is required; no client secret is used. Do not invent a callback URL.
-If the client shows a different callback or registration error, report it for
-deployment configuration rather than asking the human for an API key it can't use.
+${part.oauthDiscoveryParagraph}
 
 ${
   anyClientDocument
@@ -592,13 +370,10 @@ and Claude Code. Any other client ID gets invalid_client, and Pages has no
 registration endpoint, so another client cannot connect by OAuth here.`
 }
 
-Claude signs in with its own client ID metadata document, from which Pages
-reads its callback. In Claude's web, desktop or mobile app, add a custom
-connector with the server URL ${origin}/mcp and leave the client ID and secret
-empty. In Claude Code, for one session at a time:
+${part.claudeConnectorParagraph}
 
 \`\`\`sh
-claude mcp add --transport http pages ${origin}/mcp
+${claudeCodeOAuthCommand(origin)}
 \`\`\`
 
 Then run /mcp in Claude Code, choose pages, and authenticate in the browser.
@@ -612,10 +387,7 @@ The grant expires 30 days after authorization, however often it refreshes.
 Nothing needs to run in the background: the client refreshes on its next use
 within those 30 days. After 30 days, authorize again.
 
-Do not share one OAuth token set between processes. If two processes store
-the same tokens and refresh concurrently, Pages treats the second use of the
-refresh token as replay and revokes the whole grant. Do not use OAuth for
-several concurrent agents or CLI runs; use an API key there.
+${part.oneProcessPerTokenSet}
 
 OAuth credentials work on /mcp and authenticated GET /whoami, not the JSON API,
 sharing API, or native sync. To add a local image, an OAuth client calls
@@ -624,12 +396,7 @@ Images below.
 After authorization, call list_pages from the actual connected chat. A
 configured plugin alone isn't proof.
 
-### Kilo Desktop / CLI (OAuth, one process at a time)
-
-Use this for a single Kilo process. If several Kilo processes share one set of
-OAuth credentials (Kilo Desktop plus the CLI, or several worktrees running at
-once), concurrent refreshes can revoke the grant. Use the API-key recipe above
-for those setups.
+${part.kiloOAuthHeadingAndIntro}
 
 Ask the human early to complete browser authorization. Meanwhile, merge this
 non-secret configuration into GLOBAL ~/.config/kilo/kilo.jsonc (respect
@@ -640,19 +407,9 @@ is the Desktop/CLI format, not the older VS Code extension's mcpServers format.
 ${kiloConfig(origin)}
 \`\`\`
 
-If migrating the existing Pages entry, remove its Authorization header and
-replace oauth: false with the oauth object above. Keep X-Pages-Driver and any
-unrelated headers/settings. Do not delete the old key file: removing the header
-is enough to stop this connection using it, and other clients may still need it.
+${part.kiloConfigMigration}
 
-Run kilo mcp auth pages. The human follows the browser link, signs in, checks the
-account and permissions, and approves. If no browser opens, give the human the
-link Kilo prints; do not retrieve browser cookies or search for credentials.
-Reload the Pages server or restart Kilo Desktop, then call list_pages from the
-actual chat. kilo mcp list is a diagnostic, not proof of authenticated tool use.
-If authorization reports a callback mismatch, report the URL without tokens;
-do not substitute a guessed client ID or silently fall back to an old key.
-If the grant was revoked or expired, run kilo mcp auth pages again.
+${part.kiloAuthorizeParagraph}
 
 This deployment's public client is pages-kilo, with exact callback
 http://127.0.0.1:19876/mcp/oauth/callback, PKCE S256, and no client secret.
@@ -677,44 +434,7 @@ further limits the account's Page permissions.
 
 ## Authentication
 
-Browser: ${origin}/ — choose Sign in, or open ${origin}/api/auth/login.
-Coding agents and scripts use an ${key.name} for the same provider
-environment as browser sign-in. Supported interactive clients can authorize
-with OAuth as described above. Production and staging keys are not interchangeable. Browser sign-in
-cookies and API keys are separate credentials; an OIDC access token is not an
-API key.
-
-### Get an API key
-
-Human setup page: ${origin}/connect
-
-${key.createGuide}
-
-Agents: use a credential explicitly configured for this service or ask the account
-owner to complete the setup above. Do not search browser profiles, app databases,
-or keyring files for credentials. Keep keys out of chat, documents, URLs, and logs.
-
-### Configure the client
-
-Send these headers on API and MCP requests:
-
-\`\`\`http
-Authorization: Bearer <${key.envVar}>
-X-Pages-Driver: Kilo
-X-Pages-Agent: release agent
-X-Pages-Client: kilo-cli/1.4.2
-X-Pages-Model: anthropic/claude-opus-5.5
-Content-Type: application/json
-\`\`\`
-
-Use your application's name for X-Pages-Driver (for example Codex or Kilo).
-X-Pages-Agent is an optional session label; omit it or send it blank for no
-label. X-Pages-Client and X-Pages-Model are optional usage labels; see "Name
-your client and model" above. The verified key supplies the account and
-author name; driver and agent labels are self-declared, not proof of a vendor
-or a permission grant. Keys need cloud:read for
-reading or cloud:write for reading and editing. API clients can omit Origin;
-a foreign Origin is rejected. Browser cookie writes require this site's Origin.
+${part.authenticationSection}
 
 ## Sharing
 
@@ -725,10 +445,7 @@ independent: removing Project membership does not remove a direct Page grant;
 removing a direct grant does not remove Project access. Existing live sync access
 from Project membership can remain valid for up to 15 seconds after revocation.
 
-All four access tools require separately approved pages:share for OAuth;
-mutations also require pages:write, and all require pages:read. Only the owner
-can manage access. Editing consent alone never authorizes sharing. An OAuth
-scope refusal requires fresh consent, not a different account or a guessed key.
+${part.sharingScopeParagraph}${emailInviteNote}
 
 - get_project_access takes project_id and returns revision, members and
   invitation records in invites for the owner. Members are keyed by principal,
@@ -774,23 +491,7 @@ matching pending invitations; list_pages with project_id lists their accessible
 Pages at every depth. Without project_id, list_pages is not a complete inventory
 of inherited access: Project Pages not previously opened may be absent.
 
-GET ${origin}/api/access?page=<page_id> returns your effective access; owners also
-receive members, pending invitations, domainOptions, and domainView.
-domainOptions lists only company domains your own credential proves with a fresh
-verified email; it is empty otherwise. domainProof maps each company domain to
-verified, expired (sign in again with the same account), or missing.
-domainViewOwnerVerified: false means the
-Page is still shared with that company but you cannot currently prove it; you can
-set Restricted. Owners may POST to the same endpoint with
-an action, expected_revision from access.revision, and a new idempotency_key.
-Actions are invite (email, role: viewer, commenter or editor), set_role (principal,
-role: viewer, commenter, editor or null to remove), revoke_invite (invite_id), and set_domain_view (domain
-from domainOptions, or null for Restricted; a company domain you cannot prove
-returns 403 with code company_email_proof_required). Company access is always view-only;
-individual editor grants still work, and explicit removals override the domain.
-Browser/OAuth company proof expires after six hours without fresh sign-in;
-refreshing an OAuth token does not renew that identity proof. A 409 requires reading
-access again. An uncertain request can be retried with its identical key and body.
+${part.accessEndpointParagraph}
 
 ${richContentGuide()}
 ## Images
@@ -803,14 +504,16 @@ replace these URLs with public hosting or put base64 image data in Markdown.
 ### Which path to use
 
 - ChatGPT, with an attached or generated file: import_page_image.
-- Any agent with a shell or HTTP client, signed in with an API key or OAuth
-  (Kilo, Claude Code, Codex, Cursor, scripts): call create_page_asset_upload,
-  then send the file to the upload_url it returns with curl.
-- An API-key script may also POST the file directly to
-  ${origin}/api/pages/<page_id>/assets with its own bearer header.
+${part.uploadPathItems}
 - No shell and no file parameters (for example a web chat): ask the person to
   use Insert image in the browser, or to paste or drop the file into the Page.
   Don't insert a placeholder link.
+- A shell that cannot reach this host (a hosted sandbox behind a network
+  allowlist): the POST to upload_url fails before it reaches Pages, usually as
+  a proxy 403 or a failed CONNECT. Do not retry it, and do not put the file's
+  bytes in a tool argument. Tell the person the upload needs ${new URL(origin).host}
+  in the client's allowed network domains, or ask them to use Insert image in
+  the browser.
 
 ### Add images end to end
 
@@ -823,27 +526,7 @@ replace these URLs with public hosting or put base64 image data in Markdown.
    diagram reads well at about 960 to 1920 pixels. A text-heavy phone mockup
    exported at 2x of a 380-pixel design (about 760 pixels) stays legible on a
    phone but looks large on a desktop; export it at 1x if desktop matters more.
-2. Upload it. Call create_page_asset_upload with page_id (or project_id). It
-   needs write access (pages:write for OAuth, cloud:write for an API key) and
-   edit access to the Page. Its example field is a ready curl command; put in
-   your file's path and run it:
-
-   ${uploadCommand}
-
-   Send the raw bytes, not multipart or base64. The answer has asset_id,
-   asset_url (also url for existing clients), mime_type and size, plus width
-   and height for an image.
-
-   - Repeating an upload is safe: the same bytes always return the same
-     asset_id.
-   - One URL takes several files until its expires_at, 10 minutes after you
-     asked; then request another.
-   - Optional content_type, size and sha256 arguments bind the URL to one file.
-   - The Pages-Upload header works only on that upload route. Never send your
-     own API key there, and keep the token out of Page content and comments.
-   - Access is checked again at upload: if your access is removed before you
-     upload, the upload is refused. Revoking an API key doesn't end the URLs
-     it already issued; they stop at expires_at.
+${part.uploadStep}
 3. Insert it. Call read_page, then edit_page with insert_image, the asset_id
    and descriptive alt text. after_block_id is optional (omitted appends; null
    prepends). For a dark-theme variant, upload the dark file to the same Page
@@ -862,12 +545,7 @@ replace these URLs with public hosting or put base64 image data in Markdown.
    that block's ID as after_block_id and list them in reverse order: each
    lands directly after it, ahead of the ones listed before. A batch takes up
    to 100 operations and applies all or none.
-5. Verify. read_page lists each image in its outline entry's summary.images
-   with asset_id, dark_asset_id, alt and image_id, in block order. An outline
-   returns at most 100 entries per read: on a long Page, pass outline.next_offset
-   as outline_offset, with that read's heads as expected_heads, until it is
-   null. An API-key client can also GET ${origin}<asset_url> with its bearer
-   header to confirm the image serves.
+${part.verifyImageStep}
 
 Step 4 as one batch, with a dark variant on the first image:
 
@@ -893,10 +571,7 @@ In the browser, use Insert image, paste a screenshot, or drop an image into an
 editable block. The same limits apply. An upload completes before its reference
 is inserted into the shared document.
 
-The API-key byte route takes the same body and Content-Type at
-${origin}/api/pages/<page_id>/assets with the client's configured bearer header,
-and answers the same way. GET or HEAD of the returned path requires this Page's
-current read permission.
+${part.byteRouteParagraph}
 
 ChatGPT can transfer an attached image through import_page_image. Pass page_id
 and the file descriptor supplied by ChatGPT: file has download_url and file_id,
@@ -907,17 +582,7 @@ does not follow redirects or accept arbitrary remote URLs. Do not pass base64
 image data, a local/sandbox path, or a temporary ChatGPT link as the document's
 image reference.
 
-import_page_image requires pages:read and pages:write plus current Page edit
-access. It copies the bytes into private Page storage and returns asset_id,
-asset_url, mime_type, size, width, and height. It does not insert content.
-Repeating an import of identical bytes to the same Page reuses the asset.
-No additional API key or public hosting is needed. If ChatGPT does not expose this tool yet, refresh the connection's
-tool list. Newly generated images must be available as transferable files in
-that client; this handoff still needs a separate live ChatGPT trial. An uploaded
-attachment and a generated image are not interchangeable proof of support.
-If the client cannot supply a file descriptor but can run curl, use
-create_page_asset_upload; otherwise ask the human to upload through Pages'
-image control instead of inserting a broken placeholder link.
+${part.importPageImageParagraph}
 
 After any upload or import, call read_page and insert the returned
 asset_id through edit_page. The dedicated insert_image operation creates one
@@ -965,28 +630,11 @@ file download, even if the temporary source link has expired. A fresh insertion
 requires a new read and operation key. Verify the block through read_page and
 the authenticated Page; an upload receipt alone does not mean it was inserted.
 
-An OAuth token itself works only on /mcp and never authorizes the asset route.
-OAuth clients upload with create_page_asset_upload instead: its Pages-Upload
-capability is a separate, Page-scoped credential, not the OAuth token, and
-revoking the connection also ends the upload URLs it issued. Revoking an API
-key doesn't end upload URLs it already issued; they stop at expires_at, at
-most 10 minutes. Removing the principal's Page access ends them at once. MCP can import
-files and preserve image references, but it does not return image pixels. Pages
-has no tool that fetches an arbitrary remote URL, and image bytes don't go in
-tool arguments. A reference from read_page is not evidence that an
-agent has seen the image. Copying a document to another deployment also requires
-transferring its private assets; copying Markdown alone is insufficient.
+${part.uploadCapabilityParagraph}
 
 ## Datasets
 
-A Page can show a Parquet file as an interactive table. The file is a private
-Page asset like an image, up to 5 MiB, and the same upload route stores it:
-get an upload URL from create_page_asset_upload (content_type
-application/vnd.apache.parquet) and POST the raw bytes there, or POST them to
-${origin}/api/pages/<page_id>/assets with Content-Type
-application/vnd.apache.parquet and your API-key bearer header. The response
-contains asset_id, asset_url, mime_type and size. In the browser, an editor can
-drop or paste a .parquet file into a block.
+${part.datasetUploadParagraph}
 
 Show it with a dataframe node. Dataframes have no Markdown syntax; place one
 with an edit_page operation:
@@ -1016,16 +664,11 @@ In a block with no dataframe, such a line stays a link. replace_match and
 set_node edit around a dataframe without touching it; delete_node removes it
 by the node_id read_page's outline reports. A missing asset is dataset_not_found (404).
 
-Readers see a Sift table: they can sort, filter and scroll it, and those
-changes stay in their own view. Nothing they do changes the document. Pages
-does not decode the file on the server, so read the Parquet yourself when you
-need its rows, schema or row count; GET of asset_url with your bearer header
-returns the bytes. The table loads with the reader's own session.
+${part.datasetReaderParagraph}
 
 ## JSON tools
 
-POST ${origin}/api/tools with {"operation":"<name>","arguments":{...}}, as in
-Quick start above.
+${part.jsonToolsParagraph}
 
 read_page returns title, ordered blocks, comments, heads, retry_token, retry_key_prefix, and
 retry_until. Keep the returned page_id and block IDs. Every tool that takes page_id
@@ -1611,8 +1254,7 @@ discussions into replies or put the detailed table in the document.
 
 ## Hosted MCP
 
-Endpoint: ${origin}/mcp (Streamable HTTP, POST).
-Use the same authentication headers plus:
+${part.hostedMcpHeaders}
 
 \`\`\`http
 Accept: application/json, text/event-stream
@@ -1629,11 +1271,7 @@ The same operations and guards apply. Results contain JSON in content[].text
 and the same object in structuredContent; check result.isError even when HTTP
 succeeds. Error codes are listed under "Error codes" near the top.
 
-Tool annotations mark reads readOnlyHint, keyed writes idempotentHint, and
-delete_page and purge_page destructiveHint. resources/list returns document
-links and resources/read reads those URLs. API-key clients send an ${provider.label} API
-key; supported OAuth clients send a Pages access token. Both authenticate with
-Authorization: Bearer, using the connection instructions above.
+${part.toolAnnotationsParagraph}
 
 Tool edits sync into the browser editor and carry the account/driver label.
 Each tool batch is atomic and never streams keystrokes. After it commits, people in
@@ -1664,4 +1302,644 @@ export function agentGuideResponse(request, env) {
       Link: '</llms.txt>; rel="self"; type="text/plain"',
     },
   });
+}
+
+/** The OAuth clients a deployment admits besides the ones Pages names. */
+const acceptedOAuthClients = (anyClientDocument) =>
+  anyClientDocument
+    ? "a client whose client ID is the https URL of its client ID metadata document"
+    : "ChatGPT, Claude and Claude Code by their client ID metadata documents";
+
+// The guide is one template. Each passage that depends on the provider is one
+// entry of keyedParts (a provider with an API key) or oauthOnlyParts (one
+// without), and the two objects have the same entry names.
+//
+// An entry is a whole unit of text: a paragraph, a list item, a numbered step
+// or a section. It never starts or ends inside a sentence and is never a lone
+// word, so a reader of the template can see what each sentence says. When a
+// shared paragraph differs between the variants by even one word, the whole
+// paragraph is an entry in both objects. Duplicated wording is the cost.
+// Name an entry for what it says. oauthOnlyParts leaves out every API-key
+// section and recipe. test/agent-guide.test.mjs holds the names equal.
+
+/** The names of the provider-dependent entries of each variant. Exported for
+ * test/agent-guide.test.mjs, which checks the two lists are equal. */
+export const guidePartNames = (partsOptions) => ({
+  keyed: Object.keys(keyedParts(partsOptions)),
+  oauthOnly: Object.keys(oauthOnlyParts(partsOptions)),
+});
+
+function keyedParts({ origin, provider, acceptedClients, uploadCommand }) {
+  const key = provider.apiKey;
+  return {
+    urlFieldParagraph: `A successful result for a Page carries url, the browser link: create_page,
+read_page, edit_page, move_page and the rest, except a confirmed purge. A Project
+result carries url (/project/<project_id>) and document_id, its content
+document's ID; use url when linking the Project. List results carry url on each
+entry. MCP tools take the same names and arguments.`,
+    kiloLabelParagraph: `For Kilo, keep one shared config entry with
+"X-Pages-Agent": "{env:PAGES_AGENT}", as in the recipe above. Kilo substitutes
+environment variables when it loads config, and sends an empty header when the
+variable is unset, which Pages treats as no label. Each worktree sets its own
+label, for example in its .envrc:`,
+    unlabeledSessionsParagraph: `The Kilo process must start with that variable in its environment, such as
+from a shell where direnv loaded the .envrc. Labels are optional: each MCP
+session already gets its own caret through Mcp-Session-Id, so two unlabeled
+sessions on one key still show separately.`,
+    humanAuthorizesParagraph: `The human follows the client's authorization link, signs in to Pages with
+${provider.label}, checks the account and requested permissions, and approves. Pages
+issues credentials for this deployment's MCP endpoint; the client never receives
+an ${key.name} or provider refresh token. Do not copy browser cookies.`,
+    oauthDiscoveryParagraph: `Discovery: ${origin}/.well-known/oauth-protected-resource/mcp and
+${origin}/.well-known/oauth-authorization-server. The supported ChatGPT client ID
+is https://chatgpt.com/oauth/client.json, with callback
+https://chatgpt.com/connector_platform_oauth_redirect. The predefined public
+client pages-chatgpt uses that same callback when a client ID is requested.
+PKCE S256 is required; no client secret is used. Do not invent a callback URL.
+If the client shows a different callback or registration error, report it for
+deployment configuration rather than asking the human for an API key it can't use.`,
+    claudeConnectorParagraph: `Claude signs in with its own client ID metadata document, from which Pages
+reads its callback. In Claude's web, desktop or mobile app, add a custom
+connector with the server URL ${origin}/mcp and leave the client ID and secret
+empty. In Claude Code, for one session at a time:`,
+    oneProcessPerTokenSet: `Do not share one OAuth token set between processes. If two processes store
+the same tokens and refresh concurrently, Pages treats the second use of the
+refresh token as replay and revokes the whole grant. Do not use OAuth for
+several concurrent agents or CLI runs; use an API key there.`,
+    kiloAuthorizeParagraph: `Run kilo mcp auth pages. The human follows the browser link, signs in, checks the
+account and permissions, and approves. If no browser opens, give the human the
+link Kilo prints; do not retrieve browser cookies or search for credentials.
+Reload the Pages server or restart Kilo Desktop, then call list_pages from the
+actual chat. kilo mcp list is a diagnostic, not proof of authenticated tool use.
+If authorization reports a callback mismatch, report the URL without tokens;
+do not substitute a guessed client ID or silently fall back to an old key.
+If the grant was revoked or expired, run kilo mcp auth pages again.`,
+    sharingScopeParagraph: `All four access tools require separately approved pages:share for OAuth;
+mutations also require pages:write, and all require pages:read. Only the owner
+can manage access. Editing consent alone never authorizes sharing. An OAuth
+scope refusal requires fresh consent, not a different account or a guessed key.`,
+    accessEndpointParagraph: `GET ${origin}/api/access?page=<page_id> returns your effective access; owners also
+receive members, pending invitations, domainOptions, and domainView.
+domainOptions lists only company domains your own credential proves with a fresh
+verified email; it is empty otherwise. domainProof maps each company domain to
+verified, expired (sign in again with the same account), or missing.
+domainViewOwnerVerified: false means the
+Page is still shared with that company but you cannot currently prove it; you can
+set Restricted. Owners may POST to the same endpoint with
+an action, expected_revision from access.revision, and a new idempotency_key.
+Actions are invite (email, role: viewer, commenter or editor), set_role (principal,
+role: viewer, commenter, editor or null to remove), revoke_invite (invite_id), and set_domain_view (domain
+from domainOptions, or null for Restricted; a company domain you cannot prove
+returns 403 with code company_email_proof_required). Company access is always view-only;
+individual editor grants still work, and explicit removals override the domain.
+Browser/OAuth company proof expires after six hours without fresh sign-in;
+refreshing an OAuth token does not renew that identity proof. A 409 requires reading
+access again. An uncertain request can be retried with its identical key and body.`,
+    importPageImageParagraph: `import_page_image requires pages:read and pages:write plus current Page edit
+access. It copies the bytes into private Page storage and returns asset_id,
+asset_url, mime_type, size, width, and height. It does not insert content.
+Repeating an import of identical bytes to the same Page reuses the asset.
+No additional API key or public hosting is needed. If ChatGPT does not expose this tool yet, refresh the connection's
+tool list. Newly generated images must be available as transferable files in
+that client; this handoff still needs a separate live ChatGPT trial. An uploaded
+attachment and a generated image are not interchangeable proof of support.
+If the client cannot supply a file descriptor but can run curl, use
+create_page_asset_upload; otherwise ask the human to upload through Pages'
+image control instead of inserting a broken placeholder link.`,
+    uploadCapabilityParagraph: `An OAuth token itself works only on /mcp and never authorizes the asset route.
+OAuth clients upload with create_page_asset_upload instead: its Pages-Upload
+capability is a separate, Page-scoped credential, not the OAuth token, and
+revoking the connection also ends the upload URLs it issued. Revoking an API
+key doesn't end upload URLs it already issued; they stop at expires_at, at
+most 10 minutes. Removing the principal's Page access ends them at once. MCP can import
+files and preserve image references, but it does not return image pixels. Pages
+has no tool that fetches an arbitrary remote URL, and image bytes don't go in
+tool arguments. A reference from read_page is not evidence that an
+agent has seen the image. Copying a document to another deployment also requires
+transferring its private assets; copying Markdown alone is insufficient.`,
+    datasetUploadParagraph: `A Page can show a Parquet file as an interactive table. The file is a private
+Page asset like an image, up to 5 MiB, and the same upload route stores it:
+get an upload URL from create_page_asset_upload (content_type
+application/vnd.apache.parquet) and POST the raw bytes there, or POST them to
+${origin}/api/pages/<page_id>/assets with Content-Type
+application/vnd.apache.parquet and your API-key bearer header. The response
+contains asset_id, asset_url, mime_type and size. In the browser, an editor can
+drop or paste a .parquet file into a block.`,
+    datasetReaderParagraph: `Readers see a Sift table: they can sort, filter and scroll it, and those
+changes stay in their own view. Nothing they do changes the document. Pages
+does not decode the file on the server, so read the Parquet yourself when you
+need its rows, schema or row count; GET of asset_url with your bearer header
+returns the bytes. The table loads with the reader's own session.`,
+    toolAnnotationsParagraph: `Tool annotations mark reads readOnlyHint, keyed writes idempotentHint, and
+delete_page and purge_page destructiveHint. resources/list returns document
+links and resources/read reads those URLs. API-key clients send an ${provider.label} API
+key; supported OAuth clients send a Pages access token. Both authenticate with
+Authorization: Bearer, using the connection instructions above.`,
+    opening: `Shared documents that people and agents edit together. Agents connect over MCP
+at ${origin}/mcp or call the JSON API at ${origin}/api/tools. Human setup:
+${origin}/connect.`,
+    quickStartConnect: `Every request sends Authorization: Bearer <${key.name}>. Without a key,
+start with "Connect your agent" below. List what this account can open:
+
+\`\`\`sh
+curl -sS ${origin}/api/tools \\
+  -H "Authorization: Bearer $${key.envVar}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"operation":"list_pages","arguments":{}}'
+\`\`\``,
+    authErrorItems: `- auth_required (401): no credential was sent. Send Authorization: Bearer
+  <${key.name}>; get a key at ${origin}/connect.
+- invalid_api_key (401): the key was rejected. It may be expired or revoked,
+  or belong to another ${provider.label} environment. Replace it through /connect. When
+  ${provider.label} itself is rate limiting or down, the answer is a 503 instead: retry
+  later and keep the key.`,
+    connectRoutes: `MCP endpoint: ${origin}/mcp. Human setup: ${origin}/connect.
+Choose by how the client runs before investigating authentication:
+
+- Coding agents, CLIs, scripts, and anything long-running or headless (Kilo,
+  Claude Code, Codex, cron jobs): use an ${key.name}. The recipes come
+  first below. A key works until its chosen expiration, any number of processes
+  can share it, and nothing has to refresh it.
+- ChatGPT, Claude and other interactive clients that sign in with OAuth: add
+  the endpoint and complete browser authorization. No API key is needed.
+- Kilo can also use OAuth, but only for one Kilo process at a time. See the
+  shared-token warning in the OAuth section.
+- Other clients: use an ${key.name} if they support bearer headers. For OAuth,
+  this deployment accepts ${acceptedClients},
+  and the configured Kilo client. Dynamic client registration is not enabled;
+  do not try unrelated login flows.`,
+    kiloOAuthHeadingAndIntro: `### Kilo Desktop / CLI (OAuth, one process at a time)
+
+Use this for a single Kilo process. If several Kilo processes share one set of
+OAuth credentials (Kilo Desktop plus the CLI, or several worktrees running at
+once), concurrent refreshes can revoke the grant. Use the API-key recipe above
+for those setups.`,
+    kiloConfigMigration: `If migrating the existing Pages entry, remove its Authorization header and
+replace oauth: false with the oauth object above. Keep X-Pages-Driver and any
+unrelated headers/settings. Do not delete the old key file: removing the header
+is enough to stop this connection using it, and other clients may still need it.`,
+    authenticationSection: `Browser: ${origin}/ — choose Sign in, or open ${origin}/api/auth/login.
+Coding agents and scripts use an ${key.name} for the same provider
+environment as browser sign-in. Supported interactive clients can authorize
+with OAuth as described above. Production and staging keys are not interchangeable. Browser sign-in
+cookies and API keys are separate credentials; an OIDC access token is not an
+API key.
+
+### Get an API key
+
+Human setup page: ${origin}/connect
+
+${key.createGuide}
+
+Agents: use a credential explicitly configured for this service or ask the account
+owner to complete the setup above. Do not search browser profiles, app databases,
+or keyring files for credentials. Keep keys out of chat, documents, URLs, and logs.
+
+### Configure the client
+
+Send these headers on API and MCP requests:
+
+\`\`\`http
+Authorization: Bearer <${key.envVar}>
+X-Pages-Driver: Kilo
+X-Pages-Agent: release agent
+X-Pages-Client: kilo-cli/1.4.2
+X-Pages-Model: anthropic/claude-opus-5.5
+Content-Type: application/json
+\`\`\`
+
+Use your application's name for X-Pages-Driver (for example Codex or Kilo).
+X-Pages-Agent is an optional session label; omit it or send it blank for no
+label. X-Pages-Client and X-Pages-Model are optional usage labels; see "Name
+your client and model" above. The verified key supplies the account and
+author name; driver and agent labels are self-declared, not proof of a vendor
+or a permission grant. Keys need cloud:read for
+reading or cloud:write for reading and editing. API clients can omit Origin;
+a foreign Origin is rejected. Browser cookie writes require this site's Origin.`,
+    uploadPathItems: `- Any agent with a shell or HTTP client, signed in with an API key or OAuth
+  (Kilo, Claude Code, Codex, Cursor, scripts): call create_page_asset_upload,
+  then send the file to the upload_url it returns with curl.
+- An API-key script may also POST the file directly to
+  ${origin}/api/pages/<page_id>/assets with its own bearer header.`,
+    apiKeyConnectionSections: `### API-key connection: first ask the human
+
+For clients using the API-key recipes, follow this order:
+
+1. Check whether a key is already explicitly configured for Pages (a supplied
+   secret path/header or ${key.envVar} / ${key.alternateEnvVar}). Check presence
+   without displaying its value. Inspect filenames, not secrets, in ~/.config/pages.
+   Ask before reusing or replacing an existing key; do not assume it belongs to
+   the intended account. The recipes below retain ${keyFile} as the default.
+   For multiple accounts, choose an account-specific filename such as
+   ${key.keyFile}-rgbkrk. Use that path consistently in the
+   save command, Kilo file reference, and the Codex and Claude Code helpers. Use
+   a separate helper filename per account so existing clients keep their key.
+2. If no key is available, ask the human immediately:
+   "Pages needs a separate ${key.name}. Please open ${origin}/connect,
+   create a key, and save it privately using that page's instructions. Tell me
+   when it is ready; do not paste it into this chat. I'll prepare the connection
+   settings while you do that."
+   In parallel, prepare the private directory, a config draft outside the active
+   client config, and the non-secret Codex or Claude Code helper if needed. Check the client
+   version and preserve its existing settings. Wait for the key before merging
+   an active secret reference, enabling MCP, or attempting authentication.
+   A browser session alone does not configure an API-key client. Do not create an empty key file,
+   enable a connection without a key, install an ${provider.label} CLI just for setup,
+   inspect client binaries, or search app/keyring storage to find credentials.
+3. After the human saves the key, merge the client recipe below into their
+   existing configuration. Preserve unrelated settings and existing servers.
+   If they supplied another secret path, use that path consistently instead.
+4. Reload the client's MCP connection or start a new session, then call list_pages
+   from that session. Only a successful
+   authenticated tool call proves it works; a saved config is not a connection.
+   An empty Pages list is a successful result. Until then report the exact stage:
+   prepared and waiting for a key, configured but not verified, or connected.
+
+Do not paste keys into chat, print resolved config/headers, or put credentials in
+URLs. For 401, check key presence, expiry, and provider environment once, then ask
+the human to replace the key through /connect. For 403, check User Resources
+scopes and Page sharing permissions. Do not retry in a loop.
+
+### Save the key privately (human step, macOS/Linux)
+
+Create the key through /connect, then run this in your own terminal. Python 3
+prompts with input hidden and writes a user-only file. Paste only the raw key,
+not an environment-variable assignment. Nothing is sent to the agent or this page.
+This refuses to overwrite an existing file. Change the path in the command for
+an account-specific file; ask before reusing or replacing an existing key.
+If Python 3 is unavailable, ask the agent to prepare an equivalent private local
+file without overwriting an existing key and enter the key yourself; no CLI
+installation is required.
+
+\`\`\`sh
+${saveKeyCommand}
+\`\`\`
+
+### Check the account without exposing the key
+
+After the human confirms the chosen key, GET ${origin}/whoami checks which account
+it authenticates without creating or editing a Page. It requires authentication
+and returns account {principal, display_name, email?} and credential {kind,
+can_write}. display_name may be null; email is included only when the provider
+supplies a verified email. kind is api-key, oidc, or oauth. No credential expiry
+is reported. can_write describes credential scope, not permission to edit every
+Page; sharing permissions still apply. Responses are not cached.
+
+This API-key check reads the private file directly, refuses redirects, and prints
+only account and credential summary fields. Change its path to the confirmed
+account-specific filename. Never print the key or resolved Authorization header.
+Errors do not print response bodies or redirect destinations.
+
+\`\`\`sh
+${checkAccountCommand(origin)}
+\`\`\`
+
+Check the returned account with the human before proceeding if it is unexpected.
+A successful HTTP check is not MCP verification: reload MCP or start a new
+session, then call list_pages from that session. list_pages includes the same
+account object as /whoami, alongside its existing principal and quota fields.
+
+### Kilo Desktop / CLI (API key, recommended)
+
+Once the key file is nonempty, merge this into the GLOBAL
+~/.config/kilo/kilo.jsonc (respect XDG_CONFIG_HOME if customized). This is the
+Kilo Desktop/CLI format, not the legacy VS Code mcpServers format. Secret file
+references belong in global config; project configs may drop variable headers.
+The file contains the raw key only. oauth: false keeps this recipe on API-key
+authentication; kilo mcp auth is not the setup path for this recipe.
+
+\`\`\`json
+${kiloApiKeyConfig(origin)}
+\`\`\`
+
+If the existing Pages entry uses OAuth, replace its oauth object with
+oauth: false and add the Authorization header. Keep X-Pages-Driver and any
+unrelated headers/settings. X-Pages-Agent is optional; see "Name each session"
+below. One shared entry serves every worktree.
+
+Reload the Pages server in Kilo or restart the desktop app. kilo mcp list is a
+connection diagnostic; also call list_pages from the actual session using it.
+If a key is already supplied through an environment variable, you may replace
+the Authorization value with "Bearer {env:${key.envVar}}" (or the explicitly
+configured ${key.alternateEnvVar}). Do this only when the running Kilo process
+actually inherits that variable. A shell-only variable does not establish that
+Desktop has it; otherwise ask the human to save the key through /connect. Do not
+silently use a nonexistent file just because an environment variable was found.
+Official configuration: https://kilo.ai/docs/automate/mcp/using-in-cli
+
+### Codex Desktop / CLI (local HTTP connection)
+
+Use the same private file. Have the agent save this non-secret helper as
+~/.config/pages/mcp-headers.py. Codex runs it to obtain the header; do not run it
+in an agent terminal or print its output, which contains the key.
+
+\`\`\`python
+${codexHeaderHelper}
+\`\`\`
+
+Merge this into ~/.codex/config.toml (or the configured CODEX_HOME). Replace
+both path placeholders with real absolute paths; use command -v python3 to
+locate the interpreter. Keep the quotes around paths with spaces.
+
+\`\`\`toml
+${codexConfig(origin)}
+\`\`\`
+
+http_headers_helper is supported in current Codex.
+This recipe avoids shell environment inheritance in a desktop app. Do not also
+set bearer_token_env_var or a literal Authorization header: those take precedence.
+For an older Codex, use the supported bearer_token_env_var = "${key.envVar}"
+option only when that variable is actually available to the running client, or
+ask the human to update. Never put the key value in config. Restart/reload MCP,
+then call list_pages. codex mcp get/list checks config only, not authentication.
+To label sessions, add env_http_headers = { "X-Pages-Agent" = "PAGES_AGENT" };
+Codex reads the label from that environment variable.
+Official configuration: https://developers.openai.com/codex/mcp
+
+### Claude Code (local HTTP connection)
+
+Use the same private file. Have the agent save this non-secret helper as
+~/.config/pages/claude-code-headers.py. Claude Code runs it to obtain the
+headers; do not run it in an agent terminal or print its output, which contains
+the key.
+
+\`\`\`python
+${claudeCodeHeaderHelper}
+\`\`\`
+
+Register the server at user scope. Replace both path placeholders with real
+absolute paths that contain no spaces; use command -v python3 to locate the
+interpreter.
+
+\`\`\`sh
+${claudeCodeAddCommand(origin)}
+\`\`\`
+
+Claude Code runs the helper in a shell on every connection, with a 10-second
+timeout and no caching. It reruns the helper once when a tool call gets a 401
+or 403. Helper headers override static headers of the same name. When the helper
+returns Authorization, Claude Code uses it and does not fall back to OAuth for
+this server. Use user scope: project-scoped .mcp.json entries make Claude Code
+ask for folder trust before it runs a helper.
+
+Do not use claude mcp add --header "Authorization: Bearer ...". It takes only
+static headers and writes the key into ~/.claude.json.
+
+Until the key file exists, claude mcp get pages reports "Needs authentication".
+After the human saves the key, reload MCP or start a new session, then call
+list_pages from that session. claude mcp get is a diagnostic, not proof of
+authenticated tool use. To label sessions, set PAGES_AGENT in the environment
+Claude Code starts from; the helper sends it as X-Pages-Agent when it is
+printable ASCII and at most 80 characters.
+Official configuration: https://code.claude.com/docs/en/mcp
+
+### Other MCP clients (API key)
+
+For a client without a header helper, add a Streamable HTTP server at
+${origin}/mcp with the headers under "Configure the client" below. Keep the key
+in the client's secret settings, never as a literal in a shared or project
+config.
+
+`,
+    uploadStep: `2. Upload it. Call create_page_asset_upload with page_id (or project_id). It
+   needs write access (pages:write for OAuth, cloud:write for an API key) and
+   edit access to the Page. Its example field is a ready curl command; put in
+   your file's path and run it:
+
+   ${uploadCommand}
+
+   Send the raw bytes, not multipart or base64. The answer has asset_id,
+   asset_url (also url for existing clients), mime_type and size, plus width
+   and height for an image.
+
+   - Repeating an upload is safe: the same bytes always return the same
+     asset_id.
+   - One URL takes several files until its expires_at, 10 minutes after you
+     asked; then request another.
+   - Optional content_type, size and sha256 arguments bind the URL to one file.
+   - The Pages-Upload header works only on that upload route. Never send your
+     own API key there, and keep the token out of Page content and comments.
+   - Access is checked again at upload: if your access is removed before you
+     upload, the upload is refused. Revoking an API key doesn't end the URLs
+     it already issued; they stop at expires_at.`,
+    verifyImageStep: `5. Verify. read_page lists each image in its outline entry's summary.images
+   with asset_id, dark_asset_id, alt and image_id, in block order. An outline
+   returns at most 100 entries per read: on a long Page, pass outline.next_offset
+   as outline_offset, with that read's heads as expected_heads, until it is
+   null. An API-key client can also GET ${origin}<asset_url> with its bearer
+   header to confirm the image serves.`,
+    byteRouteParagraph: `The API-key byte route takes the same body and Content-Type at
+${origin}/api/pages/<page_id>/assets with the client's configured bearer header,
+and answers the same way. GET or HEAD of the returned path requires this Page's
+current read permission.`,
+    jsonToolsParagraph: `POST ${origin}/api/tools with {"operation":"<name>","arguments":{...}}, as in
+Quick start above.`,
+    hostedMcpHeaders: `Endpoint: ${origin}/mcp (Streamable HTTP, POST).
+Use the same authentication headers plus:`,
+  };
+}
+
+function oauthOnlyParts({ origin, provider, acceptedClients, uploadCommand }) {
+  return {
+    urlFieldParagraph: `A successful result for a Page carries url, the browser link: create_page,
+read_page, edit_page, move_page and the rest, except a confirmed purge. A
+Project result carries url (/project/<project_id>) and document_id, its content
+document's ID; use url when linking the Project. List results carry url on each
+entry.`,
+    kiloLabelParagraph: `For Kilo, add "X-Pages-Agent": "{env:PAGES_AGENT}" to the headers object of the
+Kilo recipe below. Kilo substitutes environment variables when it loads config,
+and sends an empty header when the variable is unset, which Pages treats as no
+label. Each worktree sets its own label, for example in its .envrc:`,
+    unlabeledSessionsParagraph: `The Kilo process must start with that variable in its environment, such as from
+a shell where direnv loaded the .envrc. Labels are optional: each MCP session
+already gets its own caret through Mcp-Session-Id, so two unlabeled sessions on
+one account still show separately.`,
+    humanAuthorizesParagraph: `The human follows the client's authorization link, signs in to Pages with
+${provider.label}, checks the account and requested permissions, and approves.
+Pages issues credentials for this deployment's MCP endpoint; the client never
+receives a ${provider.label} account credential. Do not copy browser cookies.`,
+    oauthDiscoveryParagraph: `Discovery: ${origin}/.well-known/oauth-protected-resource/mcp and
+${origin}/.well-known/oauth-authorization-server. The supported
+ChatGPT client ID is https://chatgpt.com/oauth/client.json, with callback
+https://chatgpt.com/connector_platform_oauth_redirect. The predefined public
+client pages-chatgpt uses that same callback when a client ID is requested. PKCE
+S256 is required; no client secret is used. Do not invent a callback URL. If the
+client shows a different callback or registration error, report it for
+deployment configuration rather than asking the human for a credential it can't
+use.`,
+    claudeConnectorParagraph: `Claude signs in with its own client ID metadata document, from which Pages reads
+its callback. In Claude's web, desktop or mobile app, add a custom connector
+with the server URL ${origin}/mcp and leave the client ID and
+secret empty. In the connector dialog the defaults are right: "Sign in now" and
+"Use Claude's published identity". In Claude Code, for one session at a time:`,
+    oneProcessPerTokenSet: `Do not share one OAuth token set between processes. If two processes store the
+same tokens and refresh concurrently, Pages treats the second use of the refresh
+token as replay and revokes the whole grant. Run one Kilo process, or one Claude
+Code session, against this deployment at a time. If the grant is revoked,
+authorize again.`,
+    kiloAuthorizeParagraph: `Run kilo mcp auth pages. The human follows the browser link, signs in, checks
+the account and permissions, and approves. If no browser opens, give the human
+the link Kilo prints; do not retrieve browser cookies or search for credentials.
+Reload the Pages server or restart Kilo Desktop, then call list_pages from the
+actual chat. kilo mcp list is a diagnostic, not proof of authenticated tool use.
+If authorization reports a callback mismatch, report the URL without tokens; do
+not substitute a guessed client ID or silently fall back to another credential.
+If the grant was revoked or expired, run kilo mcp auth pages again.`,
+    sharingScopeParagraph: `All four access tools require separately approved pages:share for OAuth;
+mutations also require pages:write, and all require pages:read. Only the owner
+can manage access. Editing consent alone never authorizes sharing. An OAuth
+scope refusal requires fresh consent, not a different account or a guessed
+credential.`,
+    accessEndpointParagraph: `get_page_access returns your effective access; owners also receive members,
+pending invitations, domainOptions, and domainView. domainOptions lists only
+company domains your own credential proves with a fresh verified email; it is
+empty otherwise. domainProof maps each company domain to verified, expired (sign
+in again with the same account), or missing. domainViewOwnerVerified: false
+means the Page is still shared with that company but you cannot currently prove
+it; you can set Restricted. Owners call manage_page_access with an action,
+expected_revision from access.revision, and a new idempotency_key. Actions are
+invite (email, role: viewer, commenter or editor), set_role (principal, role:
+viewer, commenter, editor or null to remove), revoke_invite (invite_id), and
+set_domain_view (domain from domainOptions, or null for Restricted; a company
+domain you cannot prove returns 403 with code company_email_proof_required).
+Company access is always view-only; individual editor grants still work, and
+explicit removals override the domain. Browser/OAuth company proof expires after
+six hours without fresh sign-in; refreshing an OAuth token does not renew that
+identity proof. A 409 requires reading access again. An uncertain request can be
+retried with its identical key and body.`,
+    importPageImageParagraph: `import_page_image requires pages:read and pages:write plus current Page edit
+access. It copies the bytes into private Page storage and returns asset_id,
+asset_url, mime_type, size, width, and height. It does not insert content.
+Repeating an import of identical bytes to the same Page reuses the asset. No
+public hosting is needed. If ChatGPT does not expose this tool yet, refresh the
+connection's tool list. Newly generated images must be available as transferable
+files in that client; this handoff still needs a separate live ChatGPT trial. An
+uploaded attachment and a generated image are not interchangeable proof of
+support. If the client cannot supply a file descriptor but can run curl, use
+create_page_asset_upload; otherwise ask the human to upload through Pages' image
+control instead of inserting a broken placeholder link.`,
+    uploadCapabilityParagraph: `An OAuth token itself works only on /mcp and never authorizes the asset route.
+OAuth clients upload with create_page_asset_upload instead: its Pages-Upload
+capability is a separate, Page-scoped credential, not the OAuth token, and
+revoking the connection also ends the upload URLs it issued. They stop at
+expires_at, at most 10 minutes. Removing the principal's Page access ends them
+at once. MCP can import files and preserve image references, but it does not
+return image pixels. Pages has no tool that fetches an arbitrary remote URL, and
+image bytes don't go in tool arguments. A reference from read_page is not
+evidence that an agent has seen the image. Copying a document to another
+deployment also requires transferring its private assets; copying Markdown alone
+is insufficient.`,
+    datasetUploadParagraph: `A Page can show a Parquet file as an interactive table. The file is a private
+Page asset like an image, up to 5 MiB, and the same upload route stores it: get
+an upload URL from create_page_asset_upload (content_type
+application/vnd.apache.parquet) and POST the raw bytes there. The response
+contains asset_id, asset_url, mime_type and size. In the browser, an editor can
+drop or paste a .parquet file into a block.`,
+    datasetReaderParagraph: `Readers see a Sift table: they can sort, filter and scroll it, and those changes
+stay in their own view. Nothing they do changes the document. Pages does not
+decode the file on the server, so read the Parquet yourself when you need its
+rows, schema or row count; an OAuth token cannot GET asset_url, so keep the
+source file. The table loads with the reader's own session.`,
+    toolAnnotationsParagraph: `Tool annotations mark reads readOnlyHint, keyed writes idempotentHint, and
+delete_page and purge_page destructiveHint. resources/list returns document
+links and resources/read reads those URLs. A supported OAuth client sends a
+Pages access token as Authorization: Bearer.`,
+    opening: `Shared documents that people and agents edit together. Agents connect over MCP
+at ${origin}/mcp. This deployment signs people and agents in with ${provider.label}
+accounts and has no API keys. Human setup: ${origin}/connect.`,
+    quickStartConnect: `Connect the MCP client by OAuth: see "Connect your agent" below. Then call
+list_pages to list what this account can open. The JSON examples in this guide
+show a tool's name as operation and its arguments as arguments. An MCP tool
+takes that name and those arguments.`,
+    authErrorItems: `- auth_required (401): no credential was sent. Connect the MCP client by OAuth;
+  see ${origin}/connect.
+- api_keys_unsupported (401): the bearer is not a Pages OAuth access token. This
+  deployment has no API keys. A ${provider.label} API token is not a Pages credential;
+  do not send it here. Connect the MCP client by OAuth.`,
+    connectRoutes: `MCP endpoint: ${origin}/mcp. Human setup: ${origin}/connect.
+This deployment signs people and agents in with ${provider.label} accounts and has
+no API keys. Every client connects by OAuth. The person signs in with their
+${provider.label} account in the browser and approves. Choose the route by client:
+
+- Kilo Desktop and CLI: the configured client pages-kilo. See "Kilo Desktop / CLI
+  (OAuth)" below.
+- Claude (web, desktop and mobile) and Claude Code: their client ID metadata
+  documents. See "ChatGPT / cloud connection (OAuth)" below.
+- ChatGPT: the same section.
+- Other clients: this deployment accepts
+  ${acceptedClients},
+  and the configured Kilo client. Dynamic client registration is not enabled;
+  do not try unrelated login flows.
+
+A script or unattended job has no way to sign in on this deployment. Do not send
+or search for any other credential. list_pages returns the account (principal,
+display_name). If the account is unexpected, check it with the human.`,
+    kiloOAuthHeadingAndIntro: `### Kilo Desktop / CLI (OAuth)
+
+Run one Kilo process against this deployment at a time. If several Kilo
+processes share one set of OAuth credentials (Kilo Desktop plus the CLI, or
+several worktrees running at once), concurrent refreshes revoke the grant.`,
+    kiloConfigMigration: `If the config already has a Pages entry, replace its oauth setting with the
+object above. Keep X-Pages-Driver and any unrelated headers/settings.`,
+    authenticationSection: `Browser: ${origin}/ — choose Sign in, or open ${origin}/api/auth/login.
+Agents connect over MCP by OAuth, with the same ${provider.label} account as browser sign-in.
+This deployment has no API keys. The OAuth scopes are pages:read, pages:write
+and, approved separately, pages:share. A browser sign-in cookie and an OAuth
+access token are separate credentials.
+
+### Configure the client
+
+Send these optional headers on MCP requests. The OAuth client adds
+Authorization itself:
+
+\`\`\`http
+X-Pages-Driver: Kilo
+X-Pages-Agent: release agent
+X-Pages-Client: kilo-cli/1.4.2
+X-Pages-Model: anthropic/claude-opus-5.5
+\`\`\`
+
+Use your application's name for X-Pages-Driver (for example Kilo or Claude Code).
+X-Pages-Agent is an optional session label; omit it or send it blank for no
+label. X-Pages-Client and X-Pages-Model are optional usage labels; see "Name
+your client and model" above. The signed-in account supplies the account and
+author name; driver and agent labels are self-declared, not proof of a vendor
+or a permission grant.`,
+    uploadPathItems: `- Any agent with a shell or HTTP client, connected by OAuth (Kilo, Claude Code,
+  Cursor): call create_page_asset_upload, then send the file to the upload_url
+  it returns with curl.`,
+    apiKeyConnectionSections: ``,
+    uploadStep: `2. Upload it. Call create_page_asset_upload with page_id (or project_id). It
+   needs write access (pages:write) and edit access
+   to the Page. Its example field is a ready curl command; put in your file's
+   path and run it:
+
+   ${uploadCommand}
+
+   Send the raw bytes, not multipart or base64. The answer has asset_id,
+   asset_url (also url for existing clients), mime_type and size, plus width
+   and height for an image.
+
+   - Repeating an upload is safe: the same bytes always return the same
+     asset_id.
+   - One URL takes several files until its expires_at, 10 minutes after you
+     asked; then request another.
+   - Optional content_type, size and sha256 arguments bind the URL to one file.
+   - The Pages-Upload header works only on that upload route. Never send your
+     own OAuth token there, and keep the token out of Page content and comments.
+   - Access is checked again at upload: if your access is removed before you
+     upload, the upload is refused. Revoking the OAuth connection also ends the
+     URLs it issued.`,
+    verifyImageStep: `5. Verify. read_page lists each image in its outline entry's summary.images
+   with asset_id, dark_asset_id, alt and image_id, in block order. An outline
+   returns at most 100 entries per read: on a long Page, pass outline.next_offset
+   as outline_offset, with that read's heads as expected_heads, until it is
+   null.`,
+    byteRouteParagraph: `GET or HEAD of the returned path requires this Page's current read permission.`,
+    jsonToolsParagraph: `Agents call these operations as MCP tools, with the names and arguments shown
+as operation and arguments in the JSON examples. ${origin}/api/tools accepts no
+OAuth token.`,
+    hostedMcpHeaders: `Endpoint: ${origin}/mcp (Streamable HTTP, POST).
+The OAuth client sends Authorization itself. Also send:`,
+  };
 }
