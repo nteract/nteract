@@ -263,8 +263,8 @@ export function applyTextPatches(projection, patches, path) {
   return { projection: { doc: changes.apply(projection.doc), map, lossy: false }, changes };
 }
 
-// `encodeSpans` exists for mixed-version tests that stand in for an older
-// build's encoder. The editor always uses the current `encode`.
+// `encodeSpans` lets a test replace the encoder to force a failed write check.
+// The editor always uses the current `encode`.
 //
 // The binding carries the decoded block forward through the projection
 // lifecycle in wordgard-projection-state.mjs. A whole-block read (A.spans +
