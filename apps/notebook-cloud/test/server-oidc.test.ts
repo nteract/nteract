@@ -980,6 +980,53 @@ describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
     );
   });
 
+  it("never lets a reader with a pre-lease snapshot take over a lease that lapsed since", async (t) => {
+    const f = await fixture(t);
+    const { sessionCookie } = await f.login();
+    const request = f.request(undefined, sessionCookie);
+    f.expireAccess();
+    const events: ServerOidcAuthEvent[] = [];
+    const onAuthEvent = (event: ServerOidcAuthEvent) => events.push(event);
+    // The stale reader loads the row while it has no lease, then stalls.
+    const read = deferred();
+    const resume = deferred();
+    f.db.afterNextRead = async () => {
+      read.resolve();
+      await resume.promise;
+    };
+    const staleReader = serverOidcSessionStatus(request, f.env, noopProfile, { onAuthEvent });
+    await read.promise;
+    // The owner claims the lease and is held inside the provider exchange
+    // until its lease has lapsed.
+    const ownerGate = f.gateRefresh();
+    const owner = serverOidcSessionStatus(request, f.env, noopProfile, { onAuthEvent });
+    await ownerGate.entered.promise;
+    f.db.sqlite.prepare("UPDATE oidc_server_sessions SET lease_until = ?").run(nowSeconds() - 1);
+    // The owner still waits on its own gate; a second exchange would enter
+    // this one. Hold the owner until the stale reader has answered or
+    // exchanged, so the owner's write cannot decide the outcome first.
+    const takeoverGate = f.gateRefresh();
+    resume.resolve();
+    await Promise.race([staleReader, takeoverGate.entered.promise]);
+    takeoverGate.release.resolve();
+    ownerGate.release.resolve();
+    const [staleResponse, lateResponse] = await Promise.all([staleReader, owner]);
+    assert.equal(
+      f.calls.filter((call) => call.grant === "refresh_token").length,
+      1,
+      "a lapsed lease must never be taken over by a reader that did not see it",
+    );
+    for (const response of [staleResponse, lateResponse]) {
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).session, null);
+      assert.equal(hasSessionCookie(response), false);
+    }
+    assert.equal(f.countRows(), 0);
+    assert.deepEqual(events, [
+      { type: "session_expired", principal: "user:test:alice", reason: "lease_abandoned" },
+    ]);
+  });
+
   it("rejects ciphertext swapped between login transactions or session records", async (t) => {
     const f = await fixture(t);
     const first = await f.start();

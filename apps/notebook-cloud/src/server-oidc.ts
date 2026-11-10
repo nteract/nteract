@@ -1,4 +1,4 @@
-import type { Env as NotebookEnvironment } from "./cloudflare-types.ts";
+import type { D1Database, Env as NotebookEnvironment } from "./cloudflare-types.ts";
 import {
   appSessionAccountKey,
   APP_SESSION_ACCOUNT_KEY_HEADER,
@@ -800,17 +800,7 @@ async function refreshSession(
   if (initial.lease && initial.lease_until <= now) {
     // A crashed owner may have consumed a rotating refresh token. Do not let
     // another process reuse it, or let a late owner resurrect the session.
-    const removed = await db
-      .prepare("DELETE FROM oidc_server_sessions WHERE id = ? AND generation = ? AND lease = ?")
-      .bind(initial.id, initial.generation, initial.lease)
-      .run();
-    if (removed.meta?.changes === 1)
-      notifyAuthEvent(options.onAuthEvent, {
-        type: "session_expired",
-        principal: sessionPrincipal(initial),
-        reason: "lease_abandoned",
-      });
-    return null;
+    return endAbandonedSession(db, initial, initial.lease, options);
   }
   let bundle: TokenBundle;
   try {
@@ -839,9 +829,12 @@ async function refreshSession(
   }
   if (!bundle.refreshToken) return initial.access_expires_at > now ? initial : null;
   const lease = randomSecret();
+  // Only an unleased row can be claimed. Every release clears `lease` or
+  // deletes the row, so a row that still names one has an owner that may have
+  // spent the refresh token, however long ago its `lease_until` passed.
   const claimed = await db
     .prepare(`UPDATE oidc_server_sessions SET lease = ?, lease_until = ?
-    WHERE id = ? AND generation = ? AND lease_until <= ? AND retry_after <= ? AND idle_expires_at > ? AND absolute_expires_at > ?`)
+    WHERE id = ? AND generation = ? AND lease IS NULL AND lease_until <= ? AND retry_after <= ? AND idle_expires_at > ? AND absolute_expires_at > ?`)
     .bind(lease, now + 120, initial.id, initial.generation, now, now, now, now)
     .run();
   if (claimed.meta.changes !== 1) {
@@ -850,7 +843,12 @@ async function refreshSession(
       await new Promise((resolve) => setTimeout(resolve, 200));
       const row = await loadServerSession(env, request, Math.floor(Date.now() / 1000));
       if (!row || row.generation !== initial.generation) return row;
-      if (row.retry_after > Math.floor(Date.now() / 1000)) throw new ProviderUnavailable();
+      const current = Math.floor(Date.now() / 1000);
+      if (row.retry_after > current) throw new ProviderUnavailable();
+      // The owner's lease lapsed before this request's claim or during this
+      // wait. The row is as abandoned as one a new request would find.
+      if (row.lease && row.lease_until <= current)
+        return endAbandonedSession(db, row, row.lease, options);
     }
     throw new ProviderUnavailable();
   }
@@ -917,6 +915,30 @@ async function refreshSession(
     );
     throw new ProviderUnavailable();
   }
+}
+
+/**
+ * Ends a session whose refresh lease lapsed with its owner still named on the
+ * row. The delete is fenced on that lease, so of the requests that find the
+ * row abandoned, one removes it and reports `lease_abandoned`.
+ */
+async function endAbandonedSession(
+  db: D1Database,
+  row: ServerSessionRow,
+  lease: string,
+  options: ServerOidcSessionOptions,
+): Promise<null> {
+  const removed = await db
+    .prepare("DELETE FROM oidc_server_sessions WHERE id = ? AND generation = ? AND lease = ?")
+    .bind(row.id, row.generation, lease)
+    .run();
+  if (removed.meta?.changes === 1)
+    notifyAuthEvent(options.onAuthEvent, {
+      type: "session_expired",
+      principal: sessionPrincipal(row),
+      reason: "lease_abandoned",
+    });
+  return null;
 }
 
 export async function deleteServerOidcSession(request: Request, env: Env): Promise<Response> {
