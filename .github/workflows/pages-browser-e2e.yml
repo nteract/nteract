@@ -75,7 +75,7 @@ jobs:
           curl --fail --silent --show-error --location --retry 3 -o "$RUNNER_TEMP/celld.gz" "$CELLD_URL"
           echo "$CELLD_GZ_SHA256  $RUNNER_TEMP/celld.gz" | sha256sum --check --strict
           gunzip --stdout "$RUNNER_TEMP/celld.gz" > "$RUNNER_TEMP/celld"
-          expected=$(node --input-type=module -e 'import { CELLD_RELEASE } from "./pages/scripts/deployment/profiles.mjs"; console.log(CELLD_RELEASE.sha256)')
+          expected=$(node --input-type=module -e 'import { CELLD_RELEASE } from "./scripts/deployment/profiles.mjs"; console.log(CELLD_RELEASE.sha256)')
           echo "$expected  $RUNNER_TEMP/celld" | sha256sum --check --strict
           chmod +x "$RUNNER_TEMP/celld"
           "$RUNNER_TEMP/celld" --version

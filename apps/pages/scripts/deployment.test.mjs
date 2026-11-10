@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 
-test("fingerprint follows imported auth source and ignores output/unrelated churn", () => {
+test("fingerprint follows imported auth source and ignores output, generated upstream and unrelated churn", () => {
   const root = mkdtempSync(path.join(tmpdir(), "pages-inputs-"));
   const app = path.join(root, "apps/pages");
   const write = (file, value) => {
@@ -35,6 +35,12 @@ test("fingerprint follows imported auth source and ignores output/unrelated chur
     ])
       write("apps/pages/" + name, name.endsWith(".json") ? "{}" : "");
     write("apps/pages/worker.mjs", 'import "@cloud/identity.ts";');
+    // Setup generates upstream/. An import into it is pinned by setup.mjs and
+    // upstream-provenance.json, so the fingerprint neither follows nor needs it.
+    write(
+      "apps/pages/contract.vitest.mjs",
+      'import "./upstream/packages/automerge-repo/test/contract.ts";',
+    );
     write(
       "apps/notebook-cloud/src/identity.ts",
       'import "./verify.ts"; import "@nteract/local-oidc"; import "runtimed";',
@@ -48,6 +54,8 @@ test("fingerprint follows imported auth source and ignores output/unrelated chur
       "dist/app.js",
       "node_modules/fake/index.js",
       "test-results/out.txt",
+      "upstream/packages/automerge-repo/src/index.ts",
+      ".source-cache/README.md",
       ".celld/state",
       ".env",
       ".dev.vars",

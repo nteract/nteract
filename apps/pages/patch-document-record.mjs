@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 
 // Repo 3 accepts history as loose changes or fragment bundles. A backend that
-// speaks Automerge sync (pages/sync) holds whole documents as `A.save()`
+// speaks Automerge sync (sync/) holds whole documents as `A.save()`
 // chunks, and turning one into a bundle costs more than the cold sync itself:
 // Repo decodes every change of a bundle to validate it, then replays it. On
 // Feedback Oct 31 that was 65 + 77 ms against 21 ms to load the save chunk.
