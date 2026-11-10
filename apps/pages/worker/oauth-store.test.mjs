@@ -640,7 +640,101 @@ test("a revoked grant issues nothing inside the window", async (t) => {
   assert.equal(issued(), before);
 });
 
-test("a refresh table created before consumed_at gains the column and its spent rows stay strict", async (t) => {
+// Runs `between` after rotateRefreshToken has read the token's row and before
+// its batch, once. This is the stale read a concurrent request works from.
+function afterRefreshRead(t, f, between) {
+  const prepare = f.env.DB.prepare.bind(f.env.DB);
+  let pending = between;
+  t.mock.method(f.env.DB, "prepare", (sql) => {
+    const statement = prepare(sql);
+    if (!sql.startsWith("SELECT r.scope AS token_scope")) return statement;
+    return {
+      ...statement,
+      bind(...values) {
+        const bound = statement.bind(...values);
+        return {
+          ...bound,
+          async first() {
+            const row = await bound.first();
+            const run = pending;
+            pending = null;
+            if (run) await run(row);
+            return row;
+          },
+        };
+      },
+    };
+  });
+}
+const tokenRows = (f) =>
+  f.env.DB.sqlite
+    .prepare(
+      `SELECT (SELECT count(*) FROM pages_oauth_access_tokens) +
+      (SELECT count(*) FROM pages_oauth_refresh_tokens) AS n`,
+    )
+    .get().n;
+
+test("a grant revoked after the read of a reusable token issues nothing", async (t) => {
+  const f = fixture(t),
+    g = await grant(f);
+  const binding = { refreshToken: g.tokens.refresh_token, clientId: g.input.clientId, resource };
+  const first = await rotateRefreshToken(f.env, binding, { now: start + 1 });
+  let before;
+  afterRefreshRead(t, f, async (row) => {
+    assert.notEqual(row.consumed_by, null, "the read saw a spent token");
+    assert.equal(row.revoked_at, null, "and a live grant");
+    await revokeOAuthToken(
+      f.env,
+      { token: first.refresh_token, clientId: g.input.clientId },
+      { now: start + 2 },
+    );
+    before = tokenRows(f);
+  });
+  await assert.rejects(rotateRefreshToken(f.env, binding, { now: start + 2 }), invalidGrant);
+  assert.equal(tokenRows(f), before);
+});
+
+test("a late replay that lands between a reuse's read and its batch stops the reuse", async (t) => {
+  const f = fixture(t),
+    g = await grant(f);
+  const binding = { refreshToken: g.tokens.refresh_token, clientId: g.input.clientId, resource };
+  const first = await rotateRefreshToken(f.env, binding, { now: start + 1 });
+  const late = start + 2 + OAUTH_REFRESH_REUSE_SECONDS;
+  let before;
+  afterRefreshRead(t, f, async () => {
+    await assert.rejects(rotateRefreshToken(f.env, binding, { now: late }), invalidGrant);
+    before = tokenRows(f);
+  });
+  // This request is inside the window by its own clock, and read a live grant.
+  await assert.rejects(rotateRefreshToken(f.env, binding, { now: start + 2 }), invalidGrant);
+  assert.equal(tokenRows(f), before);
+  assert.equal(revokedAt(f), late);
+  assert.equal(await readAccessToken(f.env, first.access_token, { now: late }), null);
+});
+
+test("a row spent before consumed_at existed stays strict after the column is added", async (t) => {
+  const f = fixture(t),
+    g = await grant(f);
+  const binding = { refreshToken: g.tokens.refresh_token, clientId: g.input.clientId, resource };
+  await rotateRefreshToken(f.env, binding, { now: start + 1 });
+  // The table as it shipped before the column, with its rows.
+  f.env.DB.sqlite.exec(`
+    CREATE TABLE refresh_before (
+      token_hash TEXT PRIMARY KEY, grant_id TEXT NOT NULL,
+      scope TEXT NOT NULL, expires_at INTEGER NOT NULL, consumed_by TEXT
+    );
+    INSERT INTO refresh_before SELECT token_hash, grant_id, scope, expires_at, consumed_by
+      FROM pages_oauth_refresh_tokens;
+    DROP TABLE pages_oauth_refresh_tokens;
+    ALTER TABLE refresh_before RENAME TO pages_oauth_refresh_tokens;
+  `);
+  f.restart();
+  await assert.rejects(rotateRefreshToken(f.env, binding, { now: start + 1 }), invalidGrant);
+  assert.deepEqual(spentAt(f), [null]);
+  assert.equal(revokedAt(f), start + 1);
+});
+
+test("a refresh table created before consumed_at gains the column for new uses", async (t) => {
   const f = fixture(t);
   f.env.DB.sqlite.exec(`CREATE TABLE pages_oauth_refresh_tokens (
     token_hash TEXT PRIMARY KEY, grant_id TEXT NOT NULL,

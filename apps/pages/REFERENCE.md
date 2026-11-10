@@ -1056,10 +1056,12 @@ bucket versions until those expire.
 They lead with API keys, the method for coding agents, scripts, and anything
 long-running or headless (Kilo, Claude Code, Codex). OAuth is for interactive
 cloud clients such as ChatGPT: the client refreshes on next use, so nothing runs
-in the background, and the person authorizes again after thirty days. One OAuth
-token set must not be shared between processes. Two processes refreshing it
-concurrently trip replay detection and revoke the grant, so concurrent agents
-use an API key. Agents can prepare non-secret configuration while a person
+in the background, and the person authorizes again after thirty days. A client
+that keeps one stored token set for several processes can refresh from more
+than one of them at once: uses of one refresh token within 30 seconds each get
+their own tokens. Each process has to read the stored tokens before it
+refreshes, because a refresh token presented more than 30 seconds after another
+process spent it is replay and revokes the grant. Agents can prepare non-secret configuration while a person
 creates a key or authorizes the connection; a successful `list_pages` call
 verifies access.
 
