@@ -20,6 +20,7 @@ const ACCOUNT_ID = /^[0-9a-f]{32}$/;
 // Session keys and client secrets go in with `wrangler secret put`. The other
 // two switch on fixtures that must never run on a public host.
 const REFUSED_VAR = /SECRET|SESSION_KEYS|DEV_TOKEN|LOCAL_OIDC|E2E_ONLY/;
+const VAR_NAME = /^[A-Z][A-Z0-9_]*$/;
 const R2_BINDING = "PAGES_ASSETS";
 const PROFILE_FIELDS = ["name", "account_id", "workers_dev", "d1", "r2_bucket", "vars"];
 
@@ -70,6 +71,9 @@ export function cloudflareConfig(profile) {
   if (vars === null || typeof vars !== "object" || Array.isArray(vars))
     throw new Error("Profile vars must be an object");
   for (const [key, value] of Object.entries(vars)) {
+    // Every variable the Worker reads is upper snake case. Wrangler groups
+    // bindings in a plain object, so a name such as `constructor` breaks it.
+    if (!VAR_NAME.test(key)) throw new Error(`Profile var ${key} must be upper snake case`);
     if (bindings.has(key)) throw new Error(`Profile var ${key} is the name of a binding`);
     if (REFUSED_VAR.test(key)) throw new Error(`${key} does not belong in a profile's vars`);
     if (typeof value !== "string") throw new Error(`Profile var ${key} must be a string`);

@@ -150,6 +150,8 @@ test("a profile is refused when it is incomplete, carries a secret or names an u
   refuses({ vars: { ...vars, NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.example/p" } }, /https/);
   refuses({ vars: { PAGES_CATALOG_INDEX: "d1" } }, /NOTEBOOK_CLOUD_PUBLIC_ORIGIN/);
   refuses({ vars: { ...vars, PAGES_DEFAULT_PAGE_QUOTA: 50 } }, /must be a string/);
+  for (const name of ["constructor", "toString", "__proto__", "pages_catalog_index", "1ST"])
+    refuses({ vars: { ...vars, ...JSON.parse(`{"${name}":"x"}`) } }, /must be upper snake case/);
   for (const binding of [
     "ASSETS",
     "PAGES",
