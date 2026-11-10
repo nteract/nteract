@@ -1,3 +1,4 @@
+import { identityProvider } from "./identity-provider.mjs";
 import {
   assetUploadCommand,
   checkAccountCommand,
@@ -40,6 +41,8 @@ export const guideUploadCommand = (origin) =>
 
 export function agentGuide(env) {
   const origin = pagesPublicOrigin(env);
+  const provider = identityProvider(env);
+  const key = provider.apiKey;
   const uploadCommand = guideUploadCommand(origin);
   return `# ${PRODUCT_NAME}
 
@@ -49,12 +52,12 @@ ${origin}/connect.
 
 ## Quick start
 
-Every request sends Authorization: Bearer <Anaconda API key>. Without a key,
+Every request sends Authorization: Bearer <${key.name}>. Without a key,
 start with "Connect your agent" below. List what this account can open:
 
 \`\`\`sh
 curl -sS ${origin}/api/tools \\
-  -H "Authorization: Bearer $ANACONDA_API_KEY" \\
+  -H "Authorization: Bearer $${key.envVar}" \\
   -H "Content-Type: application/json" \\
   -d '{"operation":"list_pages","arguments":{}}'
 \`\`\`
@@ -107,10 +110,10 @@ object with result.isError: true; check isError even when HTTP succeeds.
 Branch on code, not on the error message:
 
 - auth_required (401): no credential was sent. Send Authorization: Bearer
-  <Anaconda API key>; get a key at ${origin}/connect.
+  <${key.name}>; get a key at ${origin}/connect.
 - invalid_api_key (401): the key was rejected. It may be expired or revoked,
-  or belong to another Anaconda environment. Replace it through /connect. When
-  Anaconda itself is rate limiting or down, the answer is a 503 instead: retry
+  or belong to another ${provider.label} environment. Replace it through /connect. When
+  ${provider.label} itself is rate limiting or down, the answer is a 503 instead: retry
   later and keep the key.
 - oauth_invalid_token (401), oauth_insufficient_scope (403): an OAuth client's
   grant is gone or lacks pages:read/pages:write/pages:share. Reconnect the client
@@ -304,14 +307,14 @@ MCP endpoint: ${origin}/mcp. Human setup: ${origin}/connect.
 Choose by how the client runs before investigating authentication:
 
 - Coding agents, CLIs, scripts, and anything long-running or headless (Kilo,
-  Claude Code, Codex, cron jobs): use an Anaconda API key. The recipes come
+  Claude Code, Codex, cron jobs): use an ${key.name}. The recipes come
   first below. A key works until its chosen expiration, any number of processes
   can share it, and nothing has to refresh it.
 - ChatGPT and other interactive cloud clients using the ChatGPT OAuth client:
   add the endpoint and complete browser authorization. No API key is needed.
 - Kilo can also use OAuth, but only for one Kilo process at a time. See the
   shared-token warning in the OAuth section.
-- Other clients: use an Anaconda API key if they support bearer headers. Pages
+- Other clients: use an ${key.name} if they support bearer headers. Pages
   accepts the ChatGPT and configured Kilo OAuth clients; arbitrary registration
   is not enabled. Ask for client support instead of trying unrelated login flows.
 
@@ -325,16 +328,16 @@ configuration alone is not verification.
 For clients using the API-key recipes, follow this order:
 
 1. Check whether a key is already explicitly configured for Pages (a supplied
-   secret path/header or ANACONDA_API_KEY / ANACONDA_AUTH_API_KEY). Check presence
+   secret path/header or ${key.envVar} / ${key.alternateEnvVar}). Check presence
    without displaying its value. Inspect filenames, not secrets, in ~/.config/pages.
    Ask before reusing or replacing an existing key; do not assume it belongs to
    the intended account. The recipes below retain ${keyFile} as the default.
    For multiple accounts, choose an account-specific filename such as
-   ~/.config/pages/anaconda-api-key-rgbkrk. Use that path consistently in the
+   ${key.keyFile}-rgbkrk. Use that path consistently in the
    save command, Kilo file reference, and the Codex and Claude Code helpers. Use
    a separate helper filename per account so existing clients keep their key.
 2. If no key is available, ask the human immediately:
-   "Pages needs a separate Anaconda API key. Please open ${origin}/connect,
+   "Pages needs a separate ${key.name}. Please open ${origin}/connect,
    create a key, and save it privately using that page's instructions. Tell me
    when it is ready; do not paste it into this chat. I'll prepare the connection
    settings while you do that."
@@ -343,7 +346,7 @@ For clients using the API-key recipes, follow this order:
    version and preserve its existing settings. Wait for the key before merging
    an active secret reference, enabling MCP, or attempting authentication.
    A browser session alone does not configure an API-key client. Do not create an empty key file,
-   enable a connection without a key, install an Anaconda CLI just for setup,
+   enable a connection without a key, install an ${provider.label} CLI just for setup,
    inspect client binaries, or search app/keyring storage to find credentials.
 3. After the human saves the key, merge the client recipe below into their
    existing configuration. Preserve unrelated settings and existing servers.
@@ -419,8 +422,8 @@ below. One shared entry serves every worktree.
 Reload the Pages server in Kilo or restart the desktop app. kilo mcp list is a
 connection diagnostic; also call list_pages from the actual session using it.
 If a key is already supplied through an environment variable, you may replace
-the Authorization value with "Bearer {env:ANACONDA_API_KEY}" (or the explicitly
-configured ANACONDA_AUTH_API_KEY). Do this only when the running Kilo process
+the Authorization value with "Bearer {env:${key.envVar}}" (or the explicitly
+configured ${key.alternateEnvVar}). Do this only when the running Kilo process
 actually inherits that variable. A shell-only variable does not establish that
 Desktop has it; otherwise ask the human to save the key through /connect. Do not
 silently use a nonexistent file just because an environment variable was found.
@@ -447,7 +450,7 @@ ${codexConfig(origin)}
 http_headers_helper is supported in current Codex.
 This recipe avoids shell environment inheritance in a desktop app. Do not also
 set bearer_token_env_var or a literal Authorization header: those take precedence.
-For an older Codex, use the supported bearer_token_env_var = "ANACONDA_API_KEY"
+For an older Codex, use the supported bearer_token_env_var = "${key.envVar}"
 option only when that variable is actually available to the running client, or
 ask the human to update. Never put the key value in config. Restart/reload MCP,
 then call list_pages. codex mcp get/list checks config only, not authentication.
@@ -554,9 +557,9 @@ Add a custom MCP server in the client's connection or plugin settings:
   connection can remain active for up to 30 days.
 
 The human follows the client's authorization link, signs in to Pages with
-Anaconda, checks the account and requested permissions, and approves. Pages
+${provider.label}, checks the account and requested permissions, and approves. Pages
 issues credentials for this deployment's MCP endpoint; the client never receives
-an Anaconda API key or provider refresh token. Do not copy browser cookies.
+an ${key.name} or provider refresh token. Do not copy browser cookies.
 
 Discovery: ${origin}/.well-known/oauth-protected-resource/mcp and
 ${origin}/.well-known/oauth-authorization-server. The supported ChatGPT client ID
@@ -640,7 +643,7 @@ further limits the account's Page permissions.
 ## Authentication
 
 Browser: ${origin}/ — choose Sign in, or open ${origin}/api/auth/login.
-Coding agents and scripts use an Anaconda API key for the same provider
+Coding agents and scripts use an ${key.name} for the same provider
 environment as browser sign-in. Supported interactive clients can authorize
 with OAuth as described above. Production and staging keys are not interchangeable. Browser sign-in
 cookies and API keys are separate credentials; an OIDC access token is not an
@@ -650,38 +653,7 @@ API key.
 
 Human setup page: ${origin}/connect
 
-For production Anaconda, open https://anaconda.com/app/profile/api-keys and sign
-in with the same account you use for Pages. Choose Create API Key, name it for
-your client (for example "Pages - Kilo"), and set:
-
-- User Resources: Read and write for editing (cloud:read + cloud:write), or
-  Read-only for reading (cloud:read).
-- Platform Channels: No access. Pages does not need package repository access.
-- Expiration: choose the duration you need.
-
-Copy the newly created key into your MCP client's secret/header configuration;
-Anaconda shows the secret only when it is created. Naming a key for Pages does
-not scope it exclusively to Pages: User Resources is an Anaconda account scope.
-Pages also enforces the account's per-Page viewer/editor/owner permissions.
-Official instructions: https://www.anaconda.com/docs/anaconda-platform/user/api-keys
-
-If you already use the anaconda-auth CLI, it can supply an explicitly authorized
-key through its supported command. This is optional; do not install it just for
-MCP setup. The browser route above is the default:
-
-\`\`\`sh
-export ANACONDA_API_KEY="$(anaconda auth api-key --at anaconda.com)"
-\`\`\`
-
-The last command captures the key without printing it. The CLI normally requests
-repository access too; the browser flow above lets you create a dedicated key
-with just User Resources. CLI documentation: https://anaconda.github.io/anaconda-auth/
-
-The account URL and CLI commands above are for production Anaconda. For a staging
-deployment, use its Anaconda account site and matching CLI --at domain instead;
-a production key will not work. If the client already has ANACONDA_AUTH_API_KEY,
-it can use that value as the bearer key; ANACONDA_API_KEY is the variable name in
-these examples. The service receives the header, not the environment variable.
+${key.createGuide}
 
 Agents: use a credential explicitly configured for this service or ask the account
 owner to complete the setup above. Do not search browser profiles, app databases,
@@ -692,7 +664,7 @@ or keyring files for credentials. Keep keys out of chat, documents, URLs, and lo
 Send these headers on API and MCP requests:
 
 \`\`\`http
-Authorization: Bearer <ANACONDA_API_KEY>
+Authorization: Bearer <${key.envVar}>
 X-Pages-Driver: Kilo
 X-Pages-Agent: release agent
 X-Pages-Client: kilo-cli/1.4.2
@@ -1624,7 +1596,7 @@ succeeds. Error codes are listed under "Error codes" near the top.
 
 Tool annotations mark reads readOnlyHint, keyed writes idempotentHint, and
 delete_page and purge_page destructiveHint. resources/list returns document
-links and resources/read reads those URLs. API-key clients send an Anaconda API
+links and resources/read reads those URLs. API-key clients send an ${provider.label} API
 key; supported OAuth clients send a Pages access token. Both authenticate with
 Authorization: Bearer, using the connection instructions above.
 

@@ -1,4 +1,5 @@
 import { pagesPublicOrigin } from "../agent-guide.mjs";
+import { identityProvider } from "../identity-provider.mjs";
 import { FAVICON_LINK } from "../shared/favicon.mjs";
 import { PRODUCT_NAME, tabTitle } from "../shared/product.mjs";
 import { STYLESHEET, THEME_SCRIPT } from "../shared/shell-assets.mjs";
@@ -466,7 +467,7 @@ async function authorize(request, env, context) {
     );
     return html(
       `Connect ${auth.client.name} to Pages`,
-      `<p><strong>${escape(auth.client.name)}</strong> (${escape(new URL(auth.client.site).host)}) wants access to Pages at <strong>${escape(new URL(origin).host)}</strong>.</p><p>Signed in as <strong>${escape(current.session.displayName || "your Pages account")}</strong>.</p><ul>${permissions.map((permission) => `<li>${escape(permission)}</li>`).join("")}</ul><p>This connection uses a Pages access token. Your Anaconda password and API key are not shared with the client.</p><form method="post" action="/oauth/authorize"><input type="hidden" name="consent_id" value="${escape(consent.consentId)}"><input type="hidden" name="csrf_token" value="${escape(consent.csrfToken)}"><button class="primary setup-action" name="decision" value="approve" type="submit">Allow access</button> <button name="decision" value="cancel" type="submit">Cancel</button></form>`,
+      `<p><strong>${escape(auth.client.name)}</strong> (${escape(new URL(auth.client.site).host)}) wants access to Pages at <strong>${escape(new URL(origin).host)}</strong>.</p><p>Signed in as <strong>${escape(current.session.displayName || "your Pages account")}</strong>.</p><ul>${permissions.map((permission) => `<li>${escape(permission)}</li>`).join("")}</ul><p>This connection uses a Pages access token. Your ${escape(identityProvider(env).label)} password and API key are not shared with the client.</p><form method="post" action="/oauth/authorize"><input type="hidden" name="consent_id" value="${escape(consent.consentId)}"><input type="hidden" name="csrf_token" value="${escape(consent.csrfToken)}"><button class="primary setup-action" name="decision" value="approve" type="submit">Allow access</button> <button name="decision" value="cancel" type="submit">Cancel</button></form>`,
       200,
       auth.client.redirectUri,
     );
