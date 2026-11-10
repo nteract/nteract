@@ -21,7 +21,7 @@ import {
   formActionSource,
   loopbackRedirect,
   metadataClient,
-  metadataClientUrl,
+  admittedClientUrl,
   namedClient,
   redirectAllowed,
 } from "./oauth-clients.mjs";
@@ -152,7 +152,7 @@ function requestClient(clientId, env) {
   const origin = pagesPublicOrigin(env);
   const client = namedClient(clientId, origin, env);
   if (client) return client;
-  if (metadataClientUrl(clientId, origin)) return { id: clientId, named: false };
+  if (admittedClientUrl(clientId, origin, env)) return { id: clientId, named: false };
   throw new OAuthError("invalid_client", "This OAuth client is not supported.");
 }
 function single(params, name, { required = true, max = 2048 } = {}) {
@@ -324,10 +324,11 @@ async function authorize(request, env, context) {
     const clientId = single(params, "client_id");
     let client = namedClient(clientId, origin, env);
     if (!client) {
-      const url = metadataClientUrl(clientId, origin);
+      const url = admittedClientUrl(clientId, origin, env);
       if (!url) throw new OAuthError("invalid_client", "This OAuth client is not supported.");
-      // A stranger chose this URL, so Pages fetches it only for a signed-in
-      // person. Until then the request is unchecked and names no client.
+      // Where the deployment admits any client document, a stranger chose this
+      // URL, so Pages fetches a document only for a signed-in person. Until
+      // then the request is unchecked and names no client.
       current = await currentSession(request, env);
       if (current.response) return current.response;
       context.cookie = current.cookie;

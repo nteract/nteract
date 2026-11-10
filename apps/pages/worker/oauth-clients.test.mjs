@@ -5,12 +5,15 @@ import {
   CHATGPT_REDIRECT,
   KILO_REDIRECT,
   OAuthError,
+  admitsAnyClientDocument,
+  admittedClientUrl,
   clientFromMetadata,
   formActionSource,
   loggedClientId,
   loopbackRedirect,
   metadataClient,
   metadataClientUrl,
+  metadataFetchTimeouts,
   namedClient,
   oauthClientName,
   oauthDriverName,
@@ -70,6 +73,28 @@ const document = (id, extra = {}) => ({
   ...extra,
 });
 const client = (id, extra) => clientFromMetadata(new URL(id), document(id, extra));
+// Real I/O turns. Tests mock only setTimeout, so these still advance.
+const turns = async (count = 50) => {
+  for (let i = 0; i < count; i++) await new Promise((resolve) => setImmediate(resolve));
+};
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+function track(promise) {
+  const state = { settled: false };
+  promise.then(
+    () => (state.settled = true),
+    () => (state.settled = true),
+  );
+  return state;
+}
+const answer = (url, cacheControl = "max-age=300") =>
+  Response.json(document(url), { headers: { "Cache-Control": cacheControl } });
 
 test("a metadata-document client id is a canonical https URL on a public DNS name", () => {
   for (const id of [
@@ -136,6 +161,31 @@ test("a metadata-document client id is a canonical https URL on a public DNS nam
     "https://app.example/" + "x".repeat(256),
   ])
     assert.equal(metadataClientUrl(id, origin), null, String(id));
+});
+
+test("a deployment reads only the documents Pages recognizes unless it admits any client document", () => {
+  const stranger = "https://app.example/client.json";
+  const on = { PAGES_OAUTH_ANY_CLIENT_DOCUMENT: "true" };
+  for (const env of [undefined, {}, { PAGES_OAUTH_ANY_CLIENT_DOCUMENT: "false" }]) {
+    assert.equal(admitsAnyClientDocument(env), false);
+    for (const id of [CLAUDE, CLAUDE_CODE, CHATGPT_CLIENT])
+      assert.equal(admittedClientUrl(id, origin, env)?.href, id);
+    assert.equal(admittedClientUrl(stranger, origin, env), null);
+    // A recognized host is not enough: the whole client id is.
+    assert.equal(admittedClientUrl("https://claude.ai/oauth/another-client", origin, env), null);
+    assert.equal(admittedClientUrl(CLAUDE + "/confidential_client", origin, env), null);
+  }
+  assert.equal(admitsAnyClientDocument(on), true);
+  assert.equal(admittedClientUrl(stranger, origin, on)?.href, stranger);
+  assert.equal(admittedClientUrl(CLAUDE, origin, on)?.href, CLAUDE);
+  // The setting never admits a URL Pages would not fetch, or a fixed id.
+  for (const id of [
+    "https://10.0.0.8/c.json",
+    "https://app.internal/c.json",
+    "pages-kilo",
+    origin + "/c.json",
+  ])
+    assert.equal(admittedClientUrl(id, origin, on), null, id);
 });
 
 test("Pages names its own clients; any other is called by the host of its id", () => {
@@ -344,6 +394,11 @@ test("a callback matches a listed one exactly, except the port of a loopback cal
       "http://[::1]/callback",
       "https://pages.example/oauth/authorize",
       "http://10.0.0.8/callback",
+      // A path the consent page's policy could not name.
+      "https://app.example/cb;script-src%20*",
+      "https://app.example/cb,https://evil.example",
+      "https://app.example/cb'unsafe-inline'",
+      "http://localhost/cb;x",
     ],
   });
   for (const uri of odd.redirectUris) assert.equal(redirectAllowed(odd, uri, origin), false, uri);
@@ -351,31 +406,32 @@ test("a callback matches a listed one exactly, except the port of a loopback cal
   assert.equal(loopbackRedirect("http://evil.example/callback"), false);
 });
 
-test("the consent form may be sent to the validated callback and nowhere else", () => {
+test("the consent form may be sent to the callback's origin and path", () => {
   assert.equal(formActionSource(CHATGPT_REDIRECT, origin), CHATGPT_REDIRECT);
   assert.equal(formActionSource(KILO_REDIRECT, origin), KILO_REDIRECT);
   assert.equal(
     formActionSource("http://localhost:3118/callback", origin),
     "http://localhost:3118/callback",
   );
+  // A policy source has no query. The URL parser has already encoded a space.
   assert.equal(
     formActionSource("https://app.example/cb?kind=mcp", origin),
     "https://app.example/cb",
   );
-  // A path that could end or extend the policy admits only the origin.
-  for (const path of [
-    "/cb;script-src%20*",
-    "/cb;script-src *",
-    "/cb,https://evil.example",
-    "/cb'unsafe-inline'",
-  ]) {
-    const source = formActionSource("https://app.example" + path, origin);
-    assert.equal(source, "https://app.example", path);
-  }
-  // The URL parser has already encoded a space.
   assert.equal(formActionSource("https://app.example/a b", origin), "https://app.example/a%20b");
+  // A callback that is refused has no source, and the policy is never widened
+  // to its origin.
+  for (const uri of [
+    "https://app.example/cb;script-src%20*",
+    "https://app.example/cb;script-src *",
+    "https://app.example/cb,https://evil.example",
+    "https://app.example/cb'unsafe-inline'",
+    "javascript:alert(1)",
+  ]) {
+    assert.equal(formActionSource(uri, origin), "", uri);
+    assert.equal(loopbackRedirect(uri), false, uri);
+  }
   assert.equal(formActionSource(origin + "/oauth/test/callback", origin), "");
-  assert.equal(formActionSource("javascript:alert(1)", origin), "");
 });
 
 test("a document is fetched without redirects, bounded in size and time, and only as JSON", async (t) => {
@@ -423,7 +479,6 @@ test("a document is fetched without redirects, bounded in size and time, and onl
     (id) => json(id, { padding: "x".repeat(5120) }),
     () => new Response("\xff\xfe", { headers: { "Content-Type": "application/json" } }),
     () => new TypeError("fetch failed"),
-    () => new DOMException("The operation timed out.", "TimeoutError"),
   ];
   for (const [index, build] of unavailable.entries()) {
     url = next();
@@ -553,27 +608,165 @@ test("a document is kept for its max-age less its age, five minutes at most, and
   await assert.rejects(perform(), { status: 503 });
 });
 
-test("at most 16 documents are fetched at once, and one client id shares a fetch", async (t) => {
-  const now = Date.now() + 50_000_000;
-  t.mock.method(Date, "now", () => now);
-  let release,
-    calls = 0;
-  const gate = new Promise((resolve) => {
-    release = resolve;
+test("a fetch that outlasts its time limit is abandoned, headers or body", async (t) => {
+  assert.equal(metadataFetchTimeouts.fetch, 5000);
+  const saved = { ...metadataFetchTimeouts };
+  t.after(() => Object.assign(metadataFetchTimeouts, saved));
+  metadataFetchTimeouts.fetch = 20;
+  const signals = [];
+  let respond;
+  t.mock.method(globalThis, "fetch", (url, { signal }) => {
+    signals.push(signal);
+    return respond(url, signal);
   });
+  const refused = (url) => ({
+    error: "temporarily_unavailable",
+    status: 503,
+    message: `Pages could not read the client information at ${url.hostname}. Try again.`,
+  });
+  // No response: the fetch ends when its own signal aborts, as a real one does.
+  respond = (url, signal) =>
+    new Promise((_, reject) =>
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+    );
+  let url = new URL("https://stalled-headers.example/client.json");
+  await assert.rejects(metadataClient(url), refused(url));
+  assert.equal(signals[0].reason.name, "TimeoutError");
+  // Headers arrive and the body never ends.
+  let cancelled = false;
+  respond = async () =>
+    new Response(
+      new ReadableStream({
+        start: (controller) => controller.enqueue(new TextEncoder().encode('{"client_id":')),
+        cancel: () => {
+          cancelled = true;
+        },
+      }),
+      { headers: { "Content-Type": "application/json" } },
+    );
+  url = new URL("https://stalled-body.example/client.json");
+  await assert.rejects(metadataClient(url), refused(url));
+  assert.equal(signals[1].reason.name, "TimeoutError");
+  assert.equal(cancelled, true, "the stalled body is cancelled");
+  // Neither left its client id held.
+  respond = async (id) => answer(id, "no-store");
+  assert.equal((await metadataClient(url)).id, url.href);
+});
+
+test("a request waiting on another's fetch resumes from its own timer, then reads the cache", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const gate = deferred();
+  let calls = 0;
   t.mock.method(globalThis, "fetch", async (url) => {
     calls++;
-    await gate;
-    return Response.json(document(url), { headers: { "Cache-Control": "no-store" } });
+    await gate.promise;
+    return answer(url);
+  });
+  const url = new URL("https://shared.example/client.json");
+  const owner = metadataClient(url);
+  const waiter = metadataClient(url);
+  const waiting = track(waiter);
+  await turns();
+  assert.equal(calls, 1, "only the first request fetches");
+  gate.resolve();
+  const client = await owner;
+  await turns();
+  assert.equal(waiting.settled, false, "the owner's fetch settling does not resume the waiter");
+  t.mock.timers.tick(metadataFetchTimeouts.poll);
+  assert.equal(await waiter, client);
+  assert.equal(calls, 1);
+});
+
+test("a waiter fetches for itself when the fetch it waited on kept nothing", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  for (const [host, first] of [
+    ["unkept.example", (url) => answer(url, "no-store")],
+    ["failed.example", () => new Response(null, { status: 503 })],
+  ]) {
+    const gate = deferred();
+    const responses = [first, (url) => answer(url, "no-store")];
+    let calls = 0;
+    t.mock.method(globalThis, "fetch", async (url) => {
+      const respond = responses[calls++];
+      if (calls === 1) await gate.promise;
+      return respond(url);
+    });
+    const url = new URL(`https://${host}/client.json`);
+    const owner = metadataClient(url);
+    const waiter = metadataClient(url);
+    const owning = track(owner);
+    await turns();
+    assert.equal(calls, 1, host);
+    gate.resolve();
+    await turns();
+    assert.equal(owning.settled, true, host);
+    assert.equal(calls, 1, "the waiter has not resumed inside the owner's fetch");
+    t.mock.timers.tick(metadataFetchTimeouts.poll);
+    assert.equal((await waiter).id, url.href);
+    assert.equal(calls, 2, host);
+    globalThis.fetch.mock.restore();
+  }
+});
+
+test("a waiter gives up after its wait, and takes over a client id whose fetch was abandoned", async (t) => {
+  const saved = { ...metadataFetchTimeouts };
+  t.after(() => Object.assign(metadataFetchTimeouts, saved));
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  let calls = 0,
+    respond = () => new Promise(() => {});
+  t.mock.method(globalThis, "fetch", (url) => (calls++, respond(url)));
+  const advance = async (ms) => {
+    for (let elapsed = 0; elapsed <= ms; elapsed += metadataFetchTimeouts.poll) {
+      t.mock.timers.tick(metadataFetchTimeouts.poll);
+      await turns(2);
+    }
+  };
+  // A fetch that never settles holds its id for its time limit and a second.
+  const url = new URL("https://hung.example/client.json");
+  metadataClient(url);
+  metadataFetchTimeouts.wait = 1000;
+  const impatient = metadataClient(url);
+  const leaving = track(impatient);
+  await advance(1000);
+  assert.equal(leaving.settled, true);
+  await assert.rejects(impatient, {
+    error: "temporarily_unavailable",
+    status: 503,
+    message: "Pages is still reading hung.example. Try again.",
+  });
+  assert.equal(calls, 1);
+  // With the usual wait, a later request outlasts the hold and fetches itself.
+  metadataFetchTimeouts.wait = saved.wait;
+  const patient = metadataClient(url);
+  respond = async (id) => answer(id);
+  await advance(6000);
+  assert.equal((await patient).id, url.href);
+  assert.equal(calls, 2);
+});
+
+test("at most 16 client ids are fetched at once; a waiter takes no slot", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const gate = deferred();
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async (url) => {
+    calls++;
+    await gate.promise;
+    return answer(url, "no-store");
   });
   const url = (n) => new URL(`https://slow-${n}.example/client.json`);
-  const waiting = Array.from({ length: 16 }, (_, n) => metadataClient(url(n)));
-  const shared = metadataClient(url(0));
-  await assert.rejects(metadataClient(url(16)), { error: "temporarily_unavailable", status: 503 });
+  const owners = Array.from({ length: 16 }, (_, n) => metadataClient(url(n)));
+  const waiter = metadataClient(url(0));
+  await assert.rejects(metadataClient(url(16)), {
+    error: "temporarily_unavailable",
+    status: 503,
+    message: "Pages is checking too many clients at once. Try again.",
+  });
+  await turns();
   assert.equal(calls, 16);
-  release();
-  const clients = await Promise.all([...waiting, shared]);
-  assert.equal(clients[16], clients[0]);
+  gate.resolve();
+  await Promise.all(owners);
   assert.equal((await metadataClient(url(16))).id, url(16).href);
-  assert.equal(calls, 17);
+  t.mock.timers.tick(metadataFetchTimeouts.poll);
+  assert.equal((await waiter).id, url(0).href);
+  assert.equal(calls, 18);
 });

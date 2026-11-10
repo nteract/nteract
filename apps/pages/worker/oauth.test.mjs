@@ -12,6 +12,7 @@ import {
   SERVER_SESSION_COOKIE,
 } from "@cloud/oidc-session-store.ts";
 import { handleOAuth, mcpAuthChallenge } from "./oauth.mjs";
+import { metadataFetchTimeouts } from "./oauth-clients.mjs";
 import { FAVICON_LINK } from "../shared/favicon.mjs";
 import { readAccessToken } from "./oauth-store.mjs";
 
@@ -78,6 +79,8 @@ const claudeCodeDocument = {
   token_endpoint_auth_method: "none",
 };
 const verifier = "v".repeat(43);
+// The deployment setting that admits a client document Pages has no entry for.
+const anyDocument = { PAGES_OAUTH_ANY_CLIENT_DOCUMENT: "true" };
 /** Answer metadata fetches from `documents`, uncached, and record each one. */
 function serve(t, documents) {
   const calls = [];
@@ -450,7 +453,7 @@ test("codes enforce S256, client, callback, resource and one-use; no confidentia
 });
 
 test("a metadata-document client is fetched only for a signed-in person, and never when its id is malformed", async (t) => {
-  const env = fixture(t),
+  const env = fixture(t, anyDocument),
     login = await session(env);
   const calls = serve(t, { [metadataUrl]: metadata(), [claude]: claudeDocument });
   // Signed out: the request names no client yet and nothing is fetched.
@@ -526,6 +529,84 @@ test("a metadata-document client is fetched only for a signed-in person, and nev
   const refused = await exchange(env, "c".repeat(43), { client_id: "https://10.0.0.8/c.json" });
   assert.equal((await refused.json()).error, "invalid_client");
   assert.equal(calls.length, 1);
+});
+
+test("by default only the documents Pages recognizes are read; any other client id is refused with no fetch", async (t) => {
+  const stranger = "https://stranger.example/client.json",
+    landing = "https://stranger.example/landing";
+  const documents = {
+    [metadataUrl]: metadata(),
+    [claude]: claudeDocument,
+    [claudeCode]: claudeCodeDocument,
+    [stranger]: {
+      client_id: stranger,
+      client_name: "Stranger",
+      redirect_uris: [landing],
+      token_endpoint_auth_method: "none",
+    },
+  };
+  // Unset, and any value but "true", leave the setting off.
+  for (const extra of [
+    {},
+    { PAGES_OAUTH_ANY_CLIENT_DOCUMENT: "false" },
+    { PAGES_OAUTH_ANY_CLIENT_DOCUMENT: "1" },
+    { PAGES_OAUTH_ANY_CLIENT_DOCUMENT: "TRUE" },
+    { PAGES_OAUTH_ANY_CLIENT_DOCUMENT: "" },
+  ]) {
+    const env = fixture(t, extra),
+      login = await session(env);
+    const calls = serve(t, documents);
+    for (const cookie of [login.cookie, null]) {
+      const result = await handleOAuth(
+        get(
+          "/oauth/authorize?" +
+            (await authorization(env, { client_id: stranger, redirect_uri: landing })),
+          cookie,
+        ),
+        env,
+      );
+      assert.equal(result.status, 400);
+      assert.equal(result.headers.get("location"), null);
+      const text = await result.text();
+      assert.match(text, /This OAuth client is not supported\./);
+      assert.doesNotMatch(text, /Sign in<\/a>|<form/);
+    }
+    const exchanged = await exchange(env, "c".repeat(43), {
+      client_id: stranger,
+      redirect_uri: landing,
+    });
+    assert.equal((await exchanged.json()).error, "invalid_client");
+    const revoked = await handleOAuth(
+      post("/oauth/revoke", { client_id: stranger, token: "pages_rt_" + "r".repeat(43) }),
+      env,
+    );
+    assert.equal((await revoked.json()).error, "invalid_client");
+    assert.equal(calls.length, 0, JSON.stringify(extra));
+    // The three documents Pages recognizes still reach the consent screen.
+    for (const [client_id, redirect_uri, heading] of [
+      [metadataUrl, callback, "Connect ChatGPT to Pages"],
+      [claude, claudeCallback, "Connect Claude to Pages"],
+      [claudeCode, "http://localhost:3118/callback", "Connect Claude Code to Pages"],
+    ]) {
+      const screen = await consent(env, login, { client_id, redirect_uri });
+      assert.ok(screen.text.includes(`<h1>${heading}</h1>`), heading);
+    }
+    assert.deepEqual(
+      calls.map((call) => call.url),
+      [metadataUrl, claude, claudeCode],
+    );
+    globalThis.fetch.mock.restore();
+  }
+  // Turned on, the same request from the unknown client reaches consent.
+  const env = fixture(t, anyDocument),
+    login = await session(env);
+  const calls = serve(t, documents);
+  const screen = await consent(env, login, { client_id: stranger, redirect_uri: landing });
+  assert.match(screen.text, /<h1>Connect stranger\.example to Pages<\/h1>/);
+  assert.deepEqual(
+    calls.map((call) => call.url),
+    [stranger],
+  );
 });
 
 test("Claude connects by its metadata document: consent, code, refresh and revoke", async (t) => {
@@ -656,17 +737,18 @@ test("Claude Code returns to a loopback port it chose, and the consent screen sa
 });
 
 test("a client Pages has no name for is shown by its host; the name it claims is quoted and escaped", async (t) => {
-  const env = fixture(t),
+  const env = fixture(t, anyDocument),
     login = await session(env);
   const client_id = "https://claude.ai.attacker.example/oauth/mcp-oauth-client-metadata";
-  const redirect_uri = "https://collector.example/cb;script-src%20*";
+  const redirect_uri = "https://collector.example/cb?kind=mcp";
+  const unnameable = "https://collector.example/cb;script-src%20*";
   serve(t, {
     [client_id]: {
       client_id,
       client_name: 'Claude</strong><img src=x onerror="alert(1)">',
       client_uri: "https://claude.ai",
       logo_uri: "https://claude.ai/logo.png",
-      redirect_uris: [redirect_uri, claudeCallback],
+      redirect_uris: [redirect_uri, unnameable, claudeCallback],
       token_endpoint_auth_method: "none",
     },
   });
@@ -682,20 +764,170 @@ test("a client Pages has no name for is shown by its host; the name it claims is
     screen.text,
   );
   assert.doesNotMatch(screen.text, /<img|<strong>Claude|logo\.png/);
-  // The callback's path could extend the policy, so only its origin is admitted.
+  // The policy names the callback's origin and path, never the whole origin.
   assert.equal(
     screen.result.headers.get("content-security-policy"),
-    "default-src 'none'; script-src 'self'; style-src 'self'; img-src data:; base-uri 'none'; form-action 'self' https://collector.example; frame-ancestors 'none'",
+    "default-src 'none'; script-src 'self'; style-src 'self'; img-src data:; base-uri 'none'; form-action 'self' https://collector.example/cb; frame-ancestors 'none'",
   );
-  // The document lists Claude's callback too. Listing it sends a code there,
-  // which only Claude can use; the screen still names this host as the asker.
-  const borrowed = await consent(env, login, { client_id, redirect_uri: claudeCallback });
+  // A listed callback whose path could end or extend the policy is refused
+  // like an unlisted one: no consent screen, no redirect, no wider policy.
+  const refused = await handleOAuth(
+    get(
+      "/oauth/authorize?" + (await authorization(env, { client_id, redirect_uri: unnameable })),
+      login.cookie,
+    ),
+    env,
+  );
+  assert.equal(refused.status, 400);
+  assert.equal(refused.headers.get("location"), null);
+  assert.equal(
+    refused.headers.get("content-security-policy").match(/form-action ([^;]+)/)[1],
+    "'self'",
+  );
+  const refusal = await refused.text();
+  assert.match(refusal, /The callback does not match this client\./);
+  assert.doesNotMatch(refusal, /<form/);
+  // The document lists Claude's callback too, and the screen still names this
+  // host as the asker. The code sent there is stored with this client id and
+  // the request's PKCE challenge, so a token request naming Claude's client
+  // id is refused.
+  const options = { client_id, redirect_uri: claudeCallback };
+  const borrowed = await consent(env, login, options);
   assert.match(borrowed.text, /<h1>Connect claude\.ai\.attacker\.example to Pages<\/h1>/);
   assert.match(borrowed.text, /Your browser will return to <strong>claude\.ai<\/strong>\./);
+  const sent = new URL((await approve(env, login, borrowed.fields)).headers.get("location"));
+  assert.equal(sent.origin + sent.pathname, claudeCallback);
+  const grant = sent.searchParams.get("code");
+  assert.equal((await exchange(env, grant, { ...options, client_id: claude })).status, 400);
+  assert.equal(
+    (await exchange(env, grant, { ...options, code_verifier: "w".repeat(43) })).status,
+    400,
+  );
+});
+
+test("a document that changes its callbacks after consent does not move a pending consent or an issued code", async (t) => {
+  const env = fixture(t, anyDocument),
+    login = await session(env);
+  const client_id = "https://changing.example/client.json";
+  const first = "https://changing.example/callback",
+    second = "https://elsewhere.example/callback";
+  const documents = {
+    [client_id]: {
+      client_id,
+      client_name: "Changing",
+      redirect_uris: [first],
+      token_endpoint_auth_method: "none",
+    },
+  };
+  const calls = serve(t, documents);
+  const screen = await consent(env, login, { client_id, redirect_uri: first });
+  documents[client_id] = { ...documents[client_id], redirect_uris: [second] };
+  // The consent the person saw keeps the callback it was shown with.
+  const approved = new URL((await approve(env, login, screen.fields)).headers.get("location"));
+  assert.equal(approved.origin + approved.pathname, first);
+  const grant = approved.searchParams.get("code");
+  // The code stays bound to that callback: the document's new one cannot
+  // redeem it, and the token endpoint does not read the document again.
+  const moved = await exchange(env, grant, { client_id, redirect_uri: second });
+  assert.equal((await moved.json()).error, "invalid_grant");
+  assert.equal((await exchange(env, grant, { client_id, redirect_uri: first })).status, 200);
+  assert.equal(calls.length, 1);
+  // A new authorization request reads the document as it is now.
+  const stale = await handleOAuth(
+    get(
+      "/oauth/authorize?" + (await authorization(env, { client_id, redirect_uri: first })),
+      login.cookie,
+    ),
+    env,
+  );
+  assert.equal(stale.status, 400);
+  assert.equal(calls.length, 2);
+});
+
+test("a request waiting on another request's document fetch resumes on its own timer and finishes its store work", async (t) => {
+  const env = fixture(t, anyDocument),
+    login = await session(env);
+  const saved = { ...metadataFetchTimeouts };
+  t.after(() => Object.assign(metadataFetchTimeouts, saved));
+  // A poll interval no other timer uses, so the waiter's own timer is the
+  // one this test sees scheduled.
+  metadataFetchTimeouts.poll = 7;
+  const client_id = "https://concurrent.example/client.json",
+    redirect_uri = "https://concurrent.example/callback";
+  let release,
+    calls = 0;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  t.mock.method(globalThis, "fetch", async () => {
+    calls++;
+    await gate;
+    return Response.json(
+      {
+        client_id,
+        client_name: "Concurrent",
+        redirect_uris: [redirect_uri],
+        token_endpoint_auth_method: "none",
+      },
+      { headers: { "Cache-Control": "max-age=300" } },
+    );
+  });
+  // Set up the OAuth store before timers are mocked.
+  await consent(env, login);
+  const consents = () =>
+    env.DB.sqlite.prepare("SELECT count(*) AS n FROM pages_oauth_consents").get().n;
+  const before = consents();
+  const turns = async (count = 50) => {
+    for (let i = 0; i < count; i++) await new Promise((resolve) => setImmediate(resolve));
+  };
+  const request = async (overrides = {}) =>
+    handleOAuth(
+      get(
+        "/oauth/authorize?" + (await authorization(env, { client_id, redirect_uri, ...overrides })),
+        login.cookie,
+      ),
+      env,
+    );
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const mocked = globalThis.setTimeout;
+  const polling = new Promise((resolve) => {
+    globalThis.setTimeout = function (callback, delay, ...rest) {
+      if (delay === metadataFetchTimeouts.poll) {
+        globalThis.setTimeout = mocked;
+        resolve();
+      }
+      return mocked.call(this, callback, delay, ...rest);
+    };
+  });
+  // The owner starts the fetch. Its request is invalid, so it answers as soon
+  // as the document arrives, before the waiter has done anything else.
+  const owner = request({ response_type: "token" });
+  while (calls < 1) await turns(5);
+  const waiter = request();
+  let settled = false;
+  waiter.then(
+    () => (settled = true),
+    () => (settled = true),
+  );
+  await polling;
+  assert.equal(calls, 1, "the waiter did not start a second fetch");
+  release();
+  assert.equal((await owner).status, 400);
+  await turns();
+  assert.equal(settled, false, "the owner's response does not resume the waiter");
+  assert.equal(consents(), before);
+  t.mock.timers.tick(metadataFetchTimeouts.poll);
+  // The waiter runs on from its own timer: it reads the kept document, then
+  // writes its consent to the store and answers.
+  const result = await waiter;
+  assert.equal(result.status, 200);
+  assert.match(await result.text(), /name="consent_id"/);
+  assert.equal(consents(), before + 1);
+  assert.equal(calls, 1);
 });
 
 test("a metadata-document client gets no redirect until the person chooses", async (t) => {
-  const env = fixture(t),
+  const env = fixture(t, anyDocument),
     login = await session(env);
   const client_id = "https://stranger.example/client.json",
     redirect_uri = "https://stranger.example/landing";

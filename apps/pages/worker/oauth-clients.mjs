@@ -6,9 +6,17 @@
  * - A client Pages names itself: a fixed id with one exact callback.
  * - A client that names itself with a client ID metadata document: its id is
  *   an `https` URL, and the JSON document at that URL lists its callbacks.
- *   Anyone can publish one, so admission proves only that the request names a
- *   callback the owner of that URL listed. A signed-in person still has to
- *   approve the consent screen, which shows the URL's host.
+ *   Admission proves only that the request names a callback the owner of that
+ *   URL listed. A signed-in person still has to approve the consent screen,
+ *   which shows the URL's host.
+ *
+ * Which documents are read is the deployment's choice. By default only the
+ * document URLs in `CLIENT_NAMES` are: ChatGPT's and Claude's. With
+ * `PAGES_OAUTH_ANY_CLIENT_DOCUMENT` set to "true", any `https` URL that passes
+ * `metadataClientUrl` is, so anyone who can publish a document can ask. The
+ * Worker checks how that URL's host is spelled, not where it resolves, so the
+ * setting belongs only where outbound requests cannot reach a private
+ * network (DEPLOYMENT.md, Outbound requests).
  *
  * There is no dynamic registration and no client secret. */
 
@@ -23,7 +31,14 @@ const MAX_CLIENT_ID_LENGTH = 256;
 const MAX_REDIRECT_URIS = 32;
 const MAX_CACHED_CLIENTS = 64;
 const MAX_METADATA_FETCHES = 16;
-const FETCH_TIMEOUT_MS = 5000;
+/** Mutable so tests can shorten them. `fetch` bounds one read of a metadata
+ * document, headers and body. `wait` bounds how long a request waits for
+ * another request's fetch of the same client id; `poll` is the interval of
+ * its own timer. */
+export const metadataFetchTimeouts = { fetch: 5000, wait: 10_000, poll: 5 };
+// How long past its timeout a fetch still holds its client id. A fetch that
+// never settles, because its request was dropped, frees the id after this.
+const FETCH_HOLD_SLACK_MS = 1000;
 // A driver label longer than this is refused elsewhere (auth.mjs driverLabel).
 const MAX_DRIVER_LENGTH = 80;
 // The IPv6 loopback literal is left out: a Content-Security-Policy source
@@ -45,9 +60,11 @@ const PRIVATE_SUFFIXES = new Set([
   "onion",
   "test",
 ]);
-/** Product names for client ids Pages recognizes. A metadata-document id is
- * here only for its name: the document, not this table, admits it and lists
- * its callbacks. Any other metadata-document client is called by its host. */
+/** The client ids Pages recognizes, with their product names. A document URL
+ * here is one Pages reads in every deployment; the document still lists the
+ * callbacks. Where the deployment admits any client document, the table adds
+ * nothing to admission and only names these clients: any other
+ * metadata-document client is called by its host. */
 const CLIENT_NAMES = new Map([
   ["pages-chatgpt", "ChatGPT"],
   [CHATGPT_CLIENT, "ChatGPT"],
@@ -109,6 +126,20 @@ export function metadataClientUrl(clientId, origin) {
   return url;
 }
 
+/** Whether this deployment reads a metadata document from any `https` client
+ * id, not only the ones in `CLIENT_NAMES`. Off unless the setting is exactly
+ * "true". */
+export function admitsAnyClientDocument(env) {
+  return env?.PAGES_OAUTH_ANY_CLIENT_DOCUMENT === "true";
+}
+
+/** The URL of the metadata document this deployment reads for `clientId`, or
+ * null when it admits no such client. */
+export function admittedClientUrl(clientId, origin, env) {
+  const url = metadataClientUrl(clientId, origin);
+  return url && (CLIENT_NAMES.has(clientId) || admitsAnyClientDocument(env)) ? url : null;
+}
+
 /** The name a person knows a client by, in the account's "Connected agents"
  * list and wherever a stored grant is described. A metadata-document client
  * Pages has no name for is called by the host of its id, never by the name it
@@ -164,7 +195,10 @@ function redirectUrl(value) {
   } catch {
     return null;
   }
-  if (url.username || url.password) return null;
+  // The consent page names the callback's origin and path in its
+  // Content-Security-Policy. A path with a character that could end or extend
+  // the policy (";", ",", a quote) is no callback at all.
+  if (url.username || url.password || !/^[A-Za-z0-9._~%/+=@:-]*$/.test(url.pathname)) return null;
   if (url.protocol === "https:") return url;
   return url.protocol === "http:" && LOOPBACK_HOSTS.has(url.hostname) ? url : null;
 }
@@ -176,7 +210,8 @@ export function loopbackRedirect(redirectUri) {
 }
 
 /** Whether `client` may be sent back to `redirectUri`. A callback is `https`
- * or loopback `http`, and must be one the client lists, compared as a string.
+ * or loopback `http`, has a path a policy source can name, and must be one
+ * the client lists, compared as a string.
  * The one exception is the port of a loopback callback (RFC 8252 section
  * 7.3): a native app binds whichever port is free, so its listed callback
  * matches on scheme, host, path and query alone. A metadata-document client
@@ -201,14 +236,13 @@ export function redirectAllowed(client, redirectUri, origin) {
 
 /** The `form-action` source for a validated callback. Chromium checks
  * `form-action` across the redirect that follows the consent form's POST, so
- * the consent page has to admit the callback it will be sent to. A path with
- * a character that could end or extend the policy is left out, which admits
- * that callback's origin instead. A callback on the Pages origin needs no
- * source beyond 'self'. */
+ * the consent page has to admit the callback it will be sent to. A policy
+ * source cannot carry a query, so the policy matches the callback's origin
+ * and path. A callback on the Pages origin needs no source beyond 'self'. */
 export function formActionSource(redirectUri, origin) {
   const url = redirectUrl(redirectUri);
   if (!url || url.origin === new URL(origin).origin) return "";
-  return url.origin + (/^[A-Za-z0-9._~%/+=@:-]*$/.test(url.pathname) ? url.pathname : "");
+  return url.origin + url.pathname;
 }
 
 function displayName(value) {
@@ -266,23 +300,35 @@ export function clientFromMetadata(url, metadata) {
   };
 }
 
-/** A body's text, read up to `limit` bytes. A longer body is a RangeError. */
-export async function boundedText(body, limit) {
+/** A body's text, read up to `limit` bytes. A longer body is a RangeError.
+ * When `signal` aborts, the read stops with the signal's reason, whether or
+ * not the runtime ties the body to the signal that fetched it. */
+export async function boundedText(body, limit, signal) {
   if (!body) return "";
   const reader = body.getReader();
+  const aborted =
+    signal &&
+    new Promise((_, reject) => {
+      if (signal.aborted) reject(signal.reason);
+      else signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    });
+  // Unobserved once the body has been read.
+  aborted?.catch(() => {});
   const chunks = [];
   let length = 0;
   try {
     for (;;) {
-      const { value, done } = await reader.read();
+      const { value, done } = await (aborted
+        ? Promise.race([reader.read(), aborted])
+        : reader.read());
       if (done) break;
       length += value.byteLength;
-      if (length > limit) {
-        await reader.cancel();
-        throw new RangeError("Body too large");
-      }
+      if (length > limit) throw new RangeError("Body too large");
       chunks.push(value);
     }
+  } catch (error) {
+    await reader.cancel().catch(() => {});
+    throw error;
   } finally {
     reader.releaseLock();
   }
@@ -324,10 +370,11 @@ async function fetchClient(url) {
     // The URL is one a stranger chose. Redirects are not followed, so the
     // request goes only to the host that was checked, and nothing but the
     // parsed document leaves this function.
+    const signal = AbortSignal.timeout(metadataFetchTimeouts.fetch);
     const fetched = await fetch(url.href, {
       headers: { Accept: "application/json" },
       redirect: "manual",
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      signal,
     });
     if (
       fetched.status !== 200 ||
@@ -339,7 +386,7 @@ async function fetchClient(url) {
       throw Error("Unusable metadata");
     }
     freshUntil = metadataFreshUntil(fetched.headers);
-    metadata = JSON.parse(await boundedText(fetched.body, MAX_METADATA_BYTES));
+    metadata = JSON.parse(await boundedText(fetched.body, MAX_METADATA_BYTES, signal));
   } catch {
     throw new OAuthError(
       "temporarily_unavailable",
@@ -354,37 +401,59 @@ async function fetchClient(url) {
 // client id. Only a document that passed validation is kept, and only while
 // it is fresh. Both maps are bounded: a stranger chooses the keys.
 const cachedClients = new Map();
-const metadataFetches = new Map();
+// Client ids being fetched, each with the time its fetch stops holding it.
+// This holds no promise: see `metadataClient`.
+const fetchingClients = new Map();
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const busy = (message) => new OAuthError("temporarily_unavailable", message, 503);
+
+function keepClient(id, client, freshUntil) {
+  const now = Date.now();
+  if (freshUntil <= now) return;
+  for (const [key, entry] of cachedClients) if (entry.freshUntil <= now) cachedClients.delete(key);
+  // A Map keeps insertion order, so the first key is the oldest entry.
+  if (cachedClients.size >= MAX_CACHED_CLIENTS)
+    cachedClients.delete(cachedClients.keys().next().value);
+  cachedClients.set(id, { client, freshUntil });
+}
 
 /** The client a metadata document describes. `url` comes from
- * `metadataClientUrl`. Concurrent requests for one id share a fetch. */
+ * `metadataClientUrl`.
+ *
+ * One request fetches a client id at a time, and no request awaits a promise
+ * another request created: celld 0.6.3 would resume the waiter inside the
+ * fetching request and drop its later work when that request responds
+ * (isolate-setup.mjs). The request that starts a fetch awaits it. Another
+ * request for the same id waits on its own timer until that fetch is over,
+ * then reads the cache, or fetches for itself when nothing was kept (a failed
+ * fetch, or a document that says not to store it). */
 export async function metadataClient(url) {
   const id = url.href;
-  const cached = cachedClients.get(id);
-  if (cached?.freshUntil > Date.now()) return cached.client;
-  cachedClients.delete(id);
-  const pending = metadataFetches.get(id);
-  if (pending) return pending;
-  if (metadataFetches.size >= MAX_METADATA_FETCHES)
-    throw new OAuthError(
-      "temporarily_unavailable",
-      "Pages is checking too many clients at once. Try again.",
-      503,
-    );
-  const fetching = fetchClient(url)
-    .then(({ client, freshUntil }) => {
-      const now = Date.now();
-      if (freshUntil > now) {
-        for (const [key, entry] of cachedClients)
-          if (entry.freshUntil <= now) cachedClients.delete(key);
-        // A Map keeps insertion order, so the first key is the oldest entry.
-        if (cachedClients.size >= MAX_CACHED_CLIENTS)
-          cachedClients.delete(cachedClients.keys().next().value);
-        cachedClients.set(id, { client, freshUntil });
-      }
-      return client;
-    })
-    .finally(() => metadataFetches.delete(id));
-  metadataFetches.set(id, fetching);
-  return fetching;
+  const giveUp = Date.now() + metadataFetchTimeouts.wait;
+  for (;;) {
+    const now = Date.now();
+    const cached = cachedClients.get(id);
+    if (cached?.freshUntil > now) return cached.client;
+    cachedClients.delete(id);
+    const held = fetchingClients.get(id);
+    if (held === undefined || now >= held.until) break;
+    if (now >= giveUp) throw busy(`Pages is still reading ${url.hostname}. Try again.`);
+    await sleep(metadataFetchTimeouts.poll);
+  }
+  // Claimed below in the same synchronous step as the check above.
+  const now = Date.now();
+  for (const [key, entry] of fetchingClients) if (now >= entry.until) fetchingClients.delete(key);
+  if (fetchingClients.size >= MAX_METADATA_FETCHES)
+    throw busy("Pages is checking too many clients at once. Try again.");
+  const hold = { until: now + metadataFetchTimeouts.fetch + FETCH_HOLD_SLACK_MS };
+  fetchingClients.set(id, hold);
+  try {
+    const { client, freshUntil } = await fetchClient(url);
+    keepClient(id, client, freshUntil);
+    return client;
+  } finally {
+    // A fetch that outlived its hold leaves a newer request's claim alone.
+    if (fetchingClients.get(id) === hold) fetchingClients.delete(id);
+  }
 }
