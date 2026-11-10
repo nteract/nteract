@@ -442,6 +442,9 @@ impl PnpmCommand {
         command.args(self.prefix_args());
         if self.source == PnpmSource::Corepack {
             command.env("COREPACK_ENABLE_DOWNLOAD_PROMPT", "0");
+            if let Some(path) = path_with_corepack_shims() {
+                command.env("PATH", path);
+            }
         }
         command
     }
@@ -473,6 +476,51 @@ impl PnpmCommand {
         parts.extend(args.iter().map(|arg| (*arg).to_string()));
         parts.join(" ")
     }
+}
+
+/// Directory of Corepack's `pnpm` shims for this checkout, relative to the
+/// workspace root.
+const COREPACK_SHIM_DIR: &str = "target/xtask/corepack-shims";
+
+/// `PATH` for a `corepack pnpm` command, with this checkout's Corepack shims
+/// first.
+///
+/// pnpm starts `pnpm install` by bare name when `node_modules` is behind the
+/// lockfile, and package scripts call `pnpm` the same way. Those lookups go
+/// through `PATH`, where the first `pnpm` need not be the pinned version. A
+/// shim sends them back through Corepack, which reads `packageManager`.
+///
+/// Returns `None` when the shims cannot be created; the command then runs
+/// with the inherited `PATH`.
+fn path_with_corepack_shims() -> Option<std::ffi::OsString> {
+    let shim_dir = workspace_root_or_exit().join(COREPACK_SHIM_DIR);
+
+    // `exists` follows symlinks, so a shim that points into a Node install
+    // that has since been removed is created again.
+    if !shim_dir.join(pnpm_bin()).exists() {
+        let enabled = fs::create_dir_all(&shim_dir).is_ok()
+            && Command::new(corepack_bin())
+                .args(["enable", "--install-directory"])
+                .arg(&shim_dir)
+                .arg("pnpm")
+                .stdin(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success());
+        if !enabled {
+            eprintln!(
+                "Warning: could not create Corepack shims in {}; a nested `pnpm` resolves from PATH.",
+                shim_dir.display()
+            );
+            return None;
+        }
+    }
+
+    prepend_to_path(&shim_dir, env::var_os("PATH").as_deref())
+}
+
+fn prepend_to_path(dir: &Path, path: Option<&std::ffi::OsStr>) -> Option<std::ffi::OsString> {
+    let inherited = path.map(env::split_paths).into_iter().flatten();
+    env::join_paths(std::iter::once(dir.to_path_buf()).chain(inherited)).ok()
 }
 
 fn resolve_pnpm_command_or_exit() -> PnpmCommand {
@@ -3865,10 +3913,76 @@ fn default_dev_vite_port() -> Option<u16> {
     runt_workspace::default_vite_port()
 }
 
-fn python_lint_command(module: &str) -> Command {
+/// Python environment that `cargo xtask lint` owns, relative to the workspace
+/// root.
+///
+/// It holds ruff, ty and the third-party packages ty resolves imports
+/// against. Lint reads and writes this environment only: `.venv` and an
+/// environment selected by an inherited `UV_PROJECT_ENVIRONMENT` are for
+/// development and stay as they are.
+const PYTHON_LINT_ENV: &str = "target/xtask/python-lint-env";
+
+/// A `uv` command that targets the lint environment.
+fn python_lint_uv() -> Command {
     let mut command = Command::new("uv");
+    command
+        .env("UV_PROJECT_ENVIRONMENT", PYTHON_LINT_ENV)
+        .env_remove("VIRTUAL_ENV");
+    command
+}
+
+/// Bring the lint environment up to date with the `dev` dependency group.
+///
+/// `--no-install-workspace` installs the group's third-party packages and
+/// leaves out the workspace members, so nothing is built with maturin and no
+/// editable install points at this checkout. ty reads the members' sources
+/// through `tool.ty.environment.extra-paths` in `pyproject.toml`.
+fn sync_python_lint_env() -> bool {
+    python_lint_uv()
+        .args(["sync", "--no-install-workspace"])
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// Run a lint tool as a module of the lint environment's Python.
+///
+/// `--no-sync` keeps `uv run` from installing the workspace members that
+/// `sync_python_lint_env` leaves out, including when an inherited
+/// `UV_NO_SYNC=false` asks for a sync. `-I` isolates Python, so a tool missing
+/// from the environment fails instead of loading from a global install or
+/// `PYTHONPATH`.
+fn python_lint_command(module: &str) -> Command {
+    let mut command = python_lint_uv();
     command.args(["run", "--no-sync", "python", "-I", "-m", module]);
     command
+}
+
+/// Run ruff and ty from the lint environment. Returns whether all passed.
+fn lint_python(fix: bool) -> bool {
+    let passed = |command: &mut Command| command.status().is_ok_and(|status| status.success());
+    let mut ok = true;
+
+    println!("=== Python (ruff) ===");
+    let check_args: &[&str] = if fix {
+        &["check", "--fix", "."]
+    } else {
+        &["check", "."]
+    };
+    ok &= passed(python_lint_command("ruff").args(check_args));
+    let format_args: &[&str] = if fix {
+        &["format", "."]
+    } else {
+        &["format", "--check", "."]
+    };
+    ok &= passed(python_lint_command("ruff").args(format_args));
+    println!();
+
+    // ty has no fix mode.
+    println!("=== Python (ty) ===");
+    ok &= passed(python_lint_command("ty").args(["check", "python/"]));
+    println!();
+
+    ok
 }
 
 /// Run linting and formatting checks across all languages.
@@ -3915,63 +4029,34 @@ fn cmd_lint(fix: bool) {
     }
     println!();
 
-    // Lint the existing Python environment. Dependency setup belongs to `uv sync`
-    // or `cargo xtask dev`, never a formatting/type-check pass. Pass --no-sync
-    // explicitly so inherited UV_NO_SYNC=false cannot turn installation back on.
-    // Load modules with isolated Python so missing tools cannot fall through to
-    // unrelated global executables or PYTHONPATH entries.
+    // Python tools run from the lint environment, which lint syncs itself. A
+    // new worktree needs no Python setup, and the development environment is
+    // never the one that changes.
     if Path::new("pyproject.toml").exists() {
-        if Command::new("uv")
+        let uv_available = Command::new("uv")
             .arg("--version")
             .output()
-            .is_ok_and(|output| output.status.success())
-        {
-            let mut python_failed = false;
-            println!("=== Python (ruff) ===");
-
-            // ruff check
-            let check_args = if fix {
-                vec!["check", "--fix", "."]
-            } else {
-                vec!["check", "."]
-            };
-            let check_status = python_lint_command("ruff").args(&check_args).status();
-            if !check_status.map(|s| s.success()).unwrap_or(false) {
-                python_failed = true;
-            }
-
-            // ruff format
-            let format_args = if fix {
-                vec!["format", "."]
-            } else {
-                vec!["format", "--check", "."]
-            };
-            let format_status = python_lint_command("ruff").args(&format_args).status();
-            if !format_status.map(|s| s.success()).unwrap_or(false) {
-                python_failed = true;
-            }
+            .is_ok_and(|output| output.status.success());
+        if !uv_available {
+            failed = true;
+            eprintln!("Python lint requires uv. Install uv before retrying.");
+        } else {
+            println!("=== Python (lint environment) ===");
+            let synced = sync_python_lint_env();
             println!();
-
-            // ty is a workspace dev dependency. The --fix flag has no effect
-            // on this type check.
-            println!("=== Python (ty) ===");
-            let ty_status = python_lint_command("ty")
-                .args(["check", "python/"])
-                .status();
-            if !ty_status.map(|s| s.success()).unwrap_or(false) {
-                python_failed = true;
-            }
-            println!();
-            if python_failed {
+            if synced {
+                if !lint_python(fix) {
+                    failed = true;
+                }
+            } else {
                 failed = true;
                 eprintln!(
-                    "Python lint uses the existing environment without syncing dependencies."
+                    "Python lint did not run: `uv sync --no-install-workspace` could not prepare {PYTHON_LINT_ENV}."
                 );
-                eprintln!("If tools or dependencies are missing, check UV_PROJECT_ENVIRONMENT, then run `uv sync` in this checkout.");
+                eprintln!(
+                    "This is an environment failure, not a lint finding. See the uv output above."
+                );
             }
-        } else {
-            failed = true;
-            eprintln!("Python lint requires uv. Install uv and prepare this checkout with `uv sync` before retrying.");
         }
     }
 
@@ -5987,6 +6072,25 @@ mod tests {
     fn parse_pnpm_package_manager_version_rejects_non_pnpm_specs() {
         assert!(parse_pnpm_package_manager_version("npm@11.0.0").is_err());
         assert!(parse_pnpm_package_manager_version("pnpm@").is_err());
+    }
+
+    #[test]
+    fn prepend_to_path_puts_the_directory_ahead_of_inherited_entries() {
+        let inherited = env::join_paths(["/ambient/bin", "/usr/bin"].map(PathBuf::from)).unwrap();
+        let path = prepend_to_path(Path::new("/checkout/shims"), Some(&inherited)).unwrap();
+        assert_eq!(
+            env::split_paths(&path).collect::<Vec<_>>(),
+            ["/checkout/shims", "/ambient/bin", "/usr/bin"].map(PathBuf::from)
+        );
+    }
+
+    #[test]
+    fn prepend_to_path_works_without_an_inherited_path() {
+        let path = prepend_to_path(Path::new("/checkout/shims"), None).unwrap();
+        assert_eq!(
+            env::split_paths(&path).collect::<Vec<_>>(),
+            [PathBuf::from("/checkout/shims")]
+        );
     }
 
     #[test]

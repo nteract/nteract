@@ -167,13 +167,25 @@ cargo xtask lint --fix
 ```
 
 This runs Rust formatting, source control-byte checks, JS/TS checks (`vp check`),
-and Python lint/format (`ruff`) and type checks (`ty`). Python checks use
-`uv run --no-sync python -I -m`: tools come from the selected Python
-environment, without falling back to global executables. Lint does not install
-dependencies or repoint editable packages to another worktree. Prepare this
-checkout with `uv sync` first if needed; check `UV_PROJECT_ENVIRONMENT` before syncing so it selects the intended
-environment. Missing `uv`, lint tools, or type-check dependencies fail the check.
-`--fix` applies available formatting and lint fixes. To check without fixing:
+and Python lint/format (`ruff`) and type checks (`ty`). It needs no setup
+beyond `uv` and Corepack (or the pinned pnpm), so it runs in a new worktree
+as it is:
+
+- JS dependencies install through the pnpm version pinned in `package.json`.
+  When xtask runs pnpm through Corepack, it puts Corepack shims from
+  `target/xtask/corepack-shims` first on `PATH`, so a nested `pnpm` is the
+  pinned version whatever `pnpm` the shell finds first.
+- Python tools run from a lint environment in `target/xtask/python-lint-env`.
+  Lint syncs it with `uv sync --no-install-workspace`: the `dev` group's
+  third-party packages, at the `ruff` and `ty` versions pinned in
+  `pyproject.toml`, without the workspace members. It never reads or changes
+  `.venv` or the environment `UV_PROJECT_ENVIRONMENT` selects, so lint cannot
+  repoint editable packages to another worktree. Tools load with
+  `python -I -m`, without falling back to global executables.
+
+A missing `uv` or a failed sync fails the check and says so apart from lint
+findings. `--fix` applies available formatting and lint fixes. To check
+without fixing:
 
 ```bash
 cargo xtask lint
