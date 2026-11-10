@@ -1,6 +1,6 @@
 # Pages direction
 
-**Status:** the one direction for Pages work, set November 9, 2026. Where
+**Status:** the one direction for Pages work, set November 10, 2026. Where
 another document or an older plan disagrees, this one wins.
 [REFERENCE.md](REFERENCE.md) describes what the code does today.
 
@@ -9,8 +9,8 @@ another document or an older plan disagrees, this one wins.
 Pages becomes one document type in a service for shared work between people
 and agents. A Page is a rich document. The notebook documents are the next
 types: `NotebookDoc`, `RuntimeStateDoc`, `CommsDoc` and `CommentsDoc` keep the
-shapes they have in nteract. The service has no settled name. It moves to its own repository; this
-directory is the source until then.
+shapes they have in nteract. The service has no settled name. Its source
+stays in this directory of the nteract monorepo.
 
 | Layer | Owner | Rule |
 | --- | --- | --- |
@@ -73,21 +73,30 @@ Comments live in their own document and anchor to the Page with cursors.
 
 ## Order of work
 
-1. **Pare down here.** Delete what the destination does not need (list
-   below). This makes the move smaller.
-2. **Move to the new repository** with history. Shared sign-in code and
-   shared UI arrive as packages nteract publishes. Vendor a file only until
-   its package exists; never import across repositories by path.
-3. **Format 2 and the socket check**, deployed to a new, empty service.
-4. **Agent tools on format 2.**
-5. **A second document type**, once Pages runs on the type boundary.
+1. **The socket check and the release gate.** The host refuses a socket that
+   lacks the document's format. A build's release receipt names the formats
+   it writes, and a release to a target is refused when the target's
+   documents are in another format. Both work on format 1, so they land
+   first.
+2. **Tag the last format 1 commit.** It is the parent of the first change
+   that makes `main` unfit for `pages.runtimed.run`: the first delete below,
+   or the format 2 block shape, whichever lands first. From the tag on,
+   `main` is never promoted to that service. A fix for it goes on a
+   maintenance branch cut from the tag.
+3. **Delete what a new service does not need** (list below).
+4. **Format 2**, deployed to a new, empty service. The block shape comes
+   first. Explicit opening markers follow as their own change, because they
+   move node ids, the golden node addresses and the editor's caret
+   positions.
+5. **Agent tools on format 2.**
+6. **A second document type**, once Pages runs on the type boundary.
 
 ### Delete
 
 | When | What | Why it can go |
 | --- | --- | --- |
 | Any time | A snapshot file with no regenerate command, or a test that compares against a fixed commit | It pins code that no longer exists and cannot follow an intended change |
-| When this source stops deploying to `pages.runtimed.run` | `PageRecords`, `recordStorage` stamps and guards, `stored-form.mjs`, the old-encoder fixture in `test/` | They protect documents and open tabs on that service. A new service has neither |
+| After the format 1 tag | `PageRecords`, `recordStorage` stamps and guards, `stored-form.mjs`, the old-encoder fixture in `test/` | They protect documents and open tabs on `pages.runtimed.run`. A new service has neither. The `PageRecords` Durable Object class stays declared, with an empty body, while a deployed target still binds it |
 | With format 2 | The `pm` names in `model/node-registry.mjs`, `SUBDUCTION_LOG` in the cold-open benchmark, comments that name removed code | They are read by current code; rename them with the format change |
 
 Keep tests that state behavior: concurrent edits, comment anchors, access
@@ -98,12 +107,19 @@ records the node addresses agents use.
 ## Rules for the work
 
 - **The new service starts empty.** It needs no reader for any earlier stored
-  form and no migration from an existing target.
+  form and no migration from an existing target. The host never loads a
+  format 1 document beside format 2 ones, and never converts one in place.
+- **A Project moves by copy, through the agent edge.**
+  `scripts/project-transfer.mjs` reads a Project from one target's `/mcp`
+  and writes it to another's, so it needs no code in the host and works
+  across formats. It copies content, titles, images, dataframes and the Page
+  tree. It does not copy comments, sharing, Trash or history. Copying more,
+  such as comments, is a change to that script. Copying is optional and is
+  not a gate.
 - **`pages.runtimed.run` holds documents people use.** Do not reset it, and do
   not build a migration from it. A release in the stored form `main` writes
   today (format 1) may be promoted to it by hand, once `page10` runs the same
-  build. Format 2 work never deploys to it. Copying a Project across with
-  `scripts/project-transfer.mjs` is optional and is not a gate.
+  build, up to the format 1 tag. Format 2 work never deploys to it.
 - **Other deployed targets are demos.** Keep this list current.
 
   | Target | Host | State |
@@ -130,7 +146,9 @@ records the node addresses agents use.
 ## Not decided
 
 - The runtime and account system of the production service.
-- The service and repository name.
+- The service name.
+- Whether the source moves to another repository. That is a question of who
+  owns the product, and no step in the order of work waits on it.
 - What a client keeps when the host refuses its offline edits, for example
   after access is revoked or the format changes.
 - How a Page shows notebook work: a static output in a report, or a live
