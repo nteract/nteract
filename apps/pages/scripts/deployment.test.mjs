@@ -2053,10 +2053,14 @@ test("a release must list the document formats a target's documents are in", () 
         return true;
       },
     );
-  assert.throws(
-    () => profiles.assertReleaseOpensTargetPages("page10", { ...PLAIN, document_formats: {} }),
-    /documents are in format 1/,
-  );
+  // Only an absent field means a receipt from before it. Anything else that
+  // lists no formats opens no documents.
+  for (const document_formats of [{}, null, [], "pages.page:1", { "pages.page": "1" }])
+    assert.throws(
+      () => profiles.assertReleaseOpensTargetPages("page10", { ...PLAIN, document_formats }),
+      /documents are in format 1/,
+      JSON.stringify(document_formats),
+    );
 });
 
 test("install refuses an old plain format before any write", (t) => {

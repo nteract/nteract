@@ -217,13 +217,12 @@ test("a socket declaring the current formats is accepted", async (t) => {
   assert.equal(closed, undefined);
 });
 
-test("a socket declaring no formats is closed as schema_unsupported", async (t) => {
+test("a socket declaring no formats is read as format 1 and accepted", async (t) => {
   const f = await fixture(t);
   const { sockets, accepted } = fakeSockets(t, f.page);
-  const { response, closed } = openSocket(f, sockets, undefined);
-  assert.equal(response.status, 101);
-  assert.equal(closed.reason, "schema_unsupported");
-  assert.equal(accepted.mock.callCount(), 0);
+  const { closed } = openSocket(f, sockets, undefined);
+  assert.equal(closed, undefined);
+  assert.equal(accepted.mock.callCount(), 1);
 });
 
 test("a socket lacking the current format of a document the Page holds is closed", async (t) => {
@@ -247,13 +246,14 @@ test("a socket may declare formats beyond the current ones", async (t) => {
   assert.equal(accepted.mock.callCount(), 1);
 });
 
-test("a Page without a comments document does not require pages.comments", async (t) => {
+test("a Page with no comments document yet still requires pages.comments", async (t) => {
   const f = await fixture(t);
   f.page.commentsHandle = undefined;
   const { sockets, accepted } = fakeSockets(t, f.page);
-  assert.equal(openSocket(f, sockets, "pages.page:1").closed, undefined);
-  assert.equal(accepted.mock.callCount(), 1);
-  assert.equal(openSocket(f, sockets, "pages.comments:1").closed?.reason, "schema_unsupported");
+  const { response, closed } = openSocket(f, sockets, "pages.page:1");
+  assert.equal(response.status, 101);
+  assert.equal(closed.reason, "schema_unsupported");
+  assert.equal(accepted.mock.callCount(), 0);
 });
 
 test("a malformed or repeated formats parameter is a 400", async (t) => {

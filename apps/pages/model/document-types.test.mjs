@@ -84,7 +84,7 @@ test("a build reads and writes the formats the registry lists", () => {
     { type: "pages.page", format: 1 },
     { type: "pages.comments", format: 1 },
   ]);
-  assert.deepEqual(currentFormats(["pages.page"]), [{ type: "pages.page", format: 1 }]);
+  assert.deepEqual(currentFormats(), readableFormats());
   assert.equal(BUILD_FORMATS, "pages.comments:1,pages.page:1");
 });
 
@@ -104,8 +104,15 @@ test("declared formats encode sorted and parse back", () => {
   assert.deepEqual(missingFormats(parseDeclaredFormats(BUILD_FORMATS), readableFormats()), []);
 });
 
-test("no formats value declares nothing", () => {
-  assert.deepEqual(parseDeclaredFormats(undefined), []);
+test("no formats value is a build from before the parameter: format 1 only", () => {
+  const undeclared = parseDeclaredFormats(undefined);
+  assert.deepEqual(undeclared, [
+    { type: "pages.page", format: 1 },
+    { type: "pages.comments", format: 1 },
+  ]);
+  assert.deepEqual(missingFormats(undeclared, currentFormats()), []);
+  const format2 = [{ type: "pages.page", format: 2 }];
+  assert.deepEqual(missingFormats(undeclared, format2), format2);
 });
 
 test("declared formats that are malformed parse to null", () => {

@@ -427,9 +427,12 @@ export function assertReleaseOpensTargetPages(target, receipt, observed = []) {
         `${declared.length ? JSON.stringify(declared) : "none"}. A build without a Page's ` +
         `record storage fails to open it with "Unsupported Page record storage mode".`,
     );
-  const documentFormats = receipt?.document_formats ?? { "pages.page": [1], "pages.comments": [1] };
+  const documentFormats =
+    receipt?.document_formats === undefined
+      ? { "pages.page": [1], "pages.comments": [1] }
+      : receipt.document_formats;
   for (const [type, format] of Object.entries(TARGET_DOCUMENT_FORMATS[target] ?? {})) {
-    const listed = Array.isArray(documentFormats[type]) ? documentFormats[type] : [];
+    const listed = Array.isArray(documentFormats?.[type]) ? documentFormats[type] : [];
     if (!listed.includes(format))
       throw new Error(
         `Refusing release ${release} for ${target}: ${target}'s ${type} documents are in format ` +

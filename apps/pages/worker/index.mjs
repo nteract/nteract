@@ -455,13 +455,12 @@ function requirePlainSyncClient(request) {
 
 /** A socket's client declares the document formats it reads as `formats`.
  * No host holds two formats of one type, so a Page's documents are in the
- * format this build writes: `pages.page`, and `pages.comments` when the Page
- * has a comments document. A client that declares nothing, or lacks one of
- * them, is refused as schema_unsupported, which it shows as "Reload to
- * update". */
-function requireReadableDocuments(declared, hasComments) {
-  const required = currentFormats(["pages.page", ...(hasComments ? ["pages.comments"] : [])]);
-  if (!missingFormats(declared, required).length) return;
+ * formats this build writes. That includes a comments document the Page
+ * gains while the socket is open, so every type is required of every socket.
+ * A client that lacks one is refused as schema_unsupported, which its viewer
+ * shows as "Reload to update". */
+function requireReadableDocuments(declared) {
+  if (!missingFormats(declared, currentFormats()).length) return;
   throw withAdmissionReason(schemaUnsupported(["document-formats"]), "schema_unsupported");
 }
 
@@ -6513,7 +6512,7 @@ export class Page {
     if (capacity) return refuseSocket(capacity, identity);
     try {
       requirePlainSyncClient(request);
-      requireReadableDocuments(readable, !!this.commentsHandle);
+      requireReadableDocuments(readable);
     } catch (error) {
       return refuseSocket(error, identity);
     }
