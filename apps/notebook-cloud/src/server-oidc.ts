@@ -45,7 +45,9 @@ const LOGIN_SECONDS = 600;
 // The browser checks once a minute. Leave another minute for scheduling/network
 // delay rather than waiting until a request is already about to lose authority.
 const REFRESH_WINDOW_SECONDS = 120;
-// How long one request owns a session's renewal before another may take over.
+// How long one request's claim on a session's renewal is honored. A renewal
+// still running past it is treated as abandoned: the next request to see the
+// lapsed lease ends the session.
 const REFRESH_LEASE_SECONDS = 120;
 
 interface Config {
@@ -185,9 +187,10 @@ export interface ServerSessionGrant {
 export interface ServerSessionProvider {
   /**
    * Exchanges a session's sealed bundle for a fresh grant. It runs under the
-   * row's refresh lease, which keeps other requests from exchanging the same
-   * bundle for `REFRESH_LEASE_SECONDS`; finish well inside that, because a
-   * request can take the row over once the lease lapses. Throw
+   * row's refresh lease, which keeps every other request from exchanging the
+   * same bundle. Finish well inside `REFRESH_LEASE_SECONDS`: once the lease
+   * lapses, the next request to see it deletes the session and this call's
+   * grant is discarded. Throw
    * `ServerSessionGrantRejected` when the provider ended the grant, or
    * `ServerOidcIdentityRejected` when the application refuses the account;
    * both delete the session. Any other error keeps the row, and the same
@@ -1004,7 +1007,7 @@ async function refreshSession(
   const lease = randomSecret();
   // Only an unleased row can be claimed. Every release clears `lease` or
   // deletes the row, so a row that still names one has an owner that may have
-  // spent the refresh token, however long ago its `lease_until` passed.
+  // spent the sealed credential, however long ago its `lease_until` passed.
   const claimed = await db
     .prepare(`UPDATE oidc_server_sessions SET lease = ?, lease_until = ?
     WHERE id = ? AND generation = ? AND lease IS NULL AND lease_until <= ? AND retry_after <= ? AND idle_expires_at > ? AND absolute_expires_at > ?`)

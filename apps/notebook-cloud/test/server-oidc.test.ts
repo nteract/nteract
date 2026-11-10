@@ -1928,4 +1928,46 @@ describe("server sessions from a sign-in that is not OIDC", { concurrency: false
     assert.equal((await response.json()).session, null);
     assert.equal(f.countRows(), 0);
   });
+
+  it("ends a session whose provider refresh outlasted its lease, without a second refresh", async (t) => {
+    const f = providerFixture(t);
+    const cookie = await f.signIn();
+    f.expireAccess();
+    const events: ServerOidcAuthEvent[] = [];
+    const options = {
+      provider: f.provider,
+      onAuthEvent: (event: ServerOidcAuthEvent) => events.push(event),
+    };
+    // The stale reader loads the row while it has no lease, then stalls.
+    const read = deferred();
+    const resume = deferred();
+    f.db.afterNextRead = async () => {
+      read.resolve();
+      await resume.promise;
+    };
+    const staleReader = serverOidcSessionStatus(f.request(cookie), f.env, noopProfile, options);
+    await read.promise;
+    const ownerGate = f.gateRefresh();
+    const owner = serverOidcSessionStatus(f.request(cookie), f.env, noopProfile, options);
+    await ownerGate.entered.promise;
+    f.db.sqlite.prepare("UPDATE oidc_server_sessions SET lease_until = ?").run(nowSeconds() - 1);
+    // The owner still waits on its own gate; a second refresh would enter
+    // this one. Hold the owner until the stale reader has answered or
+    // refreshed, so the owner's write cannot decide the outcome first.
+    const takeoverGate = f.gateRefresh();
+    resume.resolve();
+    await Promise.race([staleReader, takeoverGate.entered.promise]);
+    takeoverGate.release.resolve();
+    ownerGate.release.resolve();
+    const [staleResponse, lateResponse] = await Promise.all([staleReader, owner]);
+    assert.deepEqual(f.refreshed, [{ kind: "pair", refreshToken: "first-refresh-token" }]);
+    for (const response of [staleResponse, lateResponse]) {
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).session, null);
+    }
+    assert.equal(f.countRows(), 0);
+    assert.deepEqual(events, [
+      { type: "session_expired", principal: PRINCIPAL, reason: "lease_abandoned" },
+    ]);
+  });
 });
