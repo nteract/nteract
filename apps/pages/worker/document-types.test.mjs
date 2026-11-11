@@ -7,7 +7,7 @@ import { createAuthFixture } from "../auth-fixtures.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import { Storage, fixture, pageId, commentsUuid } from "./trash-fixture.mjs";
 import { world } from "./projects-fixture.mjs";
-import { commentsDocumentId } from "./comments-store.mjs";
+import { commentsDocUuid, commentsDocumentId } from "./comments-store.mjs";
 import {
   BUILD_FORMATS,
   WRITTEN_FORMATS,
@@ -359,7 +359,7 @@ test("every route that opens a record's documents refuses a format this build do
   const { f, page, loads } = await storedPage(t);
   const refused = (response, label) => {
     assert.equal(response.status, 409, `${label}: ${JSON.stringify(response.body)}`);
-    assert.equal(response.body.code, "stored_form_unsupported", label);
+    assert.equal(response.body.code, "document_format_unsupported", label);
     assert.doesNotMatch(response.body.error, /reload/i, label);
   };
   refused(await f.pageCall("owner", `/api/connect?page=${pageId}`), "connect");
@@ -395,7 +395,7 @@ test("every route that opens a record's documents refuses a format this build do
   for (const formats of [BUILD_FORMATS, "pages.comments:1,pages.page:99"])
     assert.deepEqual(
       openSocket(f, sockets, formats).closed,
-      { code: 4427, reason: "stored_form_unsupported" },
+      { code: 4427, reason: "document_format_unsupported" },
       formats,
     );
   assert.equal(accepted.mock.callCount(), 0);
@@ -569,7 +569,7 @@ test("a registered draft's record is stamped, and in a format this build doesn't
     arguments: { page_id: pageId },
   });
   assert.equal(read.status, 409);
-  assert.equal((await read.json()).code, "stored_form_unsupported");
+  assert.equal((await read.json()).code, "document_format_unsupported");
   assert.equal(host.handle, undefined);
   const trashed = await h.call(host, "/internal/trash", {
     page_id: pageId,
@@ -589,4 +589,56 @@ test("a registered draft's record is stamped, and in a format this build doesn't
   assert.equal(pageState(await h.storage.get("host/document")), "deleted");
   assert.equal(await plainKeys(), 0);
   assert.equal(host.handle, undefined);
+});
+
+test("a retained creation intent in a format this build doesn't write installs its record and imports nothing", async (t) => {
+  const h = await plainHost(t);
+  const doc = A.change(A.from(createPageData({ pageId, title: "Intent" })), (draft) =>
+    initializePage(draft, "Intent text"),
+  );
+  t.after(() => A.free(doc));
+  const metadata = {
+    recordStorage: "automerge",
+    pageId,
+    owner: `user:anaconda-fixture:${h.auth.subject}`,
+    ownerName: "Owner",
+    documentId: interpretAsDocumentId(generateAutomergeUrl()),
+    comments_doc: await commentsDocUuid(pageId),
+    documentFormats: UNOPENED,
+    deleted: false,
+    createdReceipt: { page_id: pageId, title: "Intent", heads: A.getHeads(doc) },
+  };
+  await h.storage.put("host/creation", { metadata, bytes: A.save(doc) });
+  // A cold boot commits the intent.
+  const host = h.page();
+  await host.ready;
+  // Plain sync keeps only its host actor prefix: no document was stored.
+  const plainKeys = async () => [...(await h.storage.list({ prefix: "plain/" })).keys()];
+  assert.deepEqual(await plainKeys(), ["plain/host-actor-prefix"]);
+  assert.deepEqual(await h.storage.get("host/document"), metadata);
+  assert.equal(await h.storage.get("host/creation"), undefined);
+  assert.equal(host.handle, undefined);
+  assert.equal(host.commentsHandle, undefined);
+  const read = await h.call(host, "/internal/tool", {
+    operation: "read_page",
+    arguments: { page_id: pageId },
+  });
+  assert.equal(read.status, 409);
+  assert.equal((await read.json()).code, "document_format_unsupported");
+  const trashed = await h.call(host, "/internal/trash", {
+    page_id: pageId,
+    idempotency_key: "trash-intent",
+  });
+  assert.equal(trashed.status, 200, await trashed.clone().text());
+  const preview = await h.call(host, "/internal/purge", { page_id: pageId, action: "preview" });
+  assert.equal(preview.status, 200, await preview.clone().text());
+  const purged = await h.call(host, "/internal/purge", {
+    page_id: pageId,
+    action: "confirm",
+    preview_token: (await preview.json()).preview_token,
+    idempotency_key: "purge-intent",
+  });
+  assert.equal(purged.status, 200, await purged.clone().text());
+  assert.equal(pageState(await h.storage.get("host/document")), "deleted");
+  assert.deepEqual(await plainKeys(), []);
 });

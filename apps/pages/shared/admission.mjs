@@ -25,7 +25,7 @@ export const ADMISSION_OUTCOMES = Object.freeze({
   schema_unsupported: Object.freeze({ status: 409, close: 4426, retry: "stop" }),
   // The Page's host record names document formats this build doesn't write.
   // No client build fixes that; the owner can still delete the Page.
-  stored_form_unsupported: Object.freeze({ status: 409, close: 4427, retry: "stop" }),
+  document_format_unsupported: Object.freeze({ status: 409, close: 4427, retry: "stop" }),
 });
 
 const byClose = new Map(

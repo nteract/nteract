@@ -342,6 +342,26 @@ test("a draft the host can't read stops with a message, keeps its local copy and
   assert.equal(connectionFailureRetries(error), false);
 });
 
+test("a reconnect that meets an unreadable draft shows the draft's recovery text", async (t) => {
+  const { session } = await expiredRegistrationFixture(t);
+  t.mock.method(globalThis, "fetch", async (url) => {
+    assert.equal(url, "/api/pages/register");
+    return Response.json(
+      {
+        error:
+          "Pages can't read this draft Page, stored in a form from an earlier version of Pages.",
+        code: "stored_form_unsupported",
+      },
+      { status: 409 },
+    );
+  });
+  // The reconnect handler, not registerDraft alone, decides what is shown.
+  await session.attemptConnection();
+  assert.equal(session.connectionProblem, DRAFT_FORM_UNSUPPORTED);
+  assert.equal(session.retryTimer, undefined);
+  assert.equal(session.deleted, false);
+});
+
 test("ambiguous or unauthorized expiry reconciliation preserves the draft and original request", async (t) => {
   for (const failure of [
     "offline",

@@ -686,7 +686,7 @@ the release only. The Page host checks each Page's own record: a record
 stores its documents' formats as `documentFormats`, from creation or
 registration on. Discovery reports those formats, the socket requires them,
 and a record in any format the running build doesn't write is refused with
-`409 stored_form_unsupported` on every document route while its owner can
+`409 document_format_unsupported` on every document route while its owner can
 still list, trash, restore and permanently delete it
 ([REFERENCE.md](REFERENCE.md#document-formats-in-the-host-record)).
 

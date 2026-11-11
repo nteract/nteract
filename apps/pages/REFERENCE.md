@@ -1859,16 +1859,21 @@ either format deletes that rule.
 
 A record whose formats aren't exactly the ones the build writes opens
 neither document. Discovery, the socket (closed `4427`), `/api/saved`, every
-agent read and edit, comments, presence, image and card uploads answer `409
-stored_form_unsupported`, and the viewer shows "This Page is stored in a
-format this version of Pages doesn't open. Its owner can delete it." with no
-reload. The shared-Page check and sharing still answer from the record, so
-the Page keeps its listing title. Its owner can trash, restore and
+agent read and edit, comments, presence, image uploads and card uploads
+answer `409 document_format_unsupported`, and the viewer shows "This Page is
+stored in a format this version of Pages doesn't open. Its owner can delete
+it." with no reload. A retained creation intent for such a record installs
+the record and imports no document. The shared-Page check and sharing still
+answer from the record, so the Page keeps its listing title. The JSON card
+and card image the host stored earlier are still served (`page_cards`, the
+card-image route): like the stored title, they are projections, and they
+show the owner what they are deleting. Its owner can trash, restore and
 permanently delete it: receipts carry the title the host last projected
 (`host/title-projection`), a trash with `base_heads` is refused as invalid,
 and the purge preview describes the record with `heads`, `comment_threads`
 and `comment_count` null. Permanent deletion removes its stored documents
-by id, as for any Page.
+by id, as for any Page. `stored_form_unsupported` keeps its own meaning: a
+stored form inside a document or draft that this build doesn't read.
 
 A browser may still hold a local copy saved beside a Subduction replica, from
 before every Page was plain. Its checkpoint is plain Automerge, so the tab

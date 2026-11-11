@@ -92,10 +92,10 @@ test("a record names exactly the registered types at their written formats", () 
     assert.equal(recordFormatsWritten({ documentFormats }), false, JSON.stringify(documentFormats));
 });
 
-test("an unopened record's refusal is a 409 stored_form_unsupported", () => {
+test("an unopened record's refusal is a 409 document_format_unsupported", () => {
   const error = documentFormatsUnsupported();
   assert.equal(error.status, 409);
-  assert.equal(error.code, "stored_form_unsupported");
+  assert.equal(error.code, "document_format_unsupported");
   assert.doesNotMatch(error.message, /reload/i);
 });
 

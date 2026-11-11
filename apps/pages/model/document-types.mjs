@@ -1,5 +1,3 @@
-import { STORED_FORM_UNSUPPORTED } from "./stored-form.mjs";
-
 // Host-owned document identities, independent of Automerge content and the
 // additive schema-feature gates. Project content uses pages.page too.
 // A build reads every format registered here and writes the highest one of
@@ -65,7 +63,7 @@ export function documentFormatsUnsupported() {
     Error(
       "This Page is stored in a format this version of Pages doesn't open. Its owner can delete it.",
     ),
-    { status: 409, code: STORED_FORM_UNSUPPORTED },
+    { status: 409, code: "document_format_unsupported" },
   );
 }
 

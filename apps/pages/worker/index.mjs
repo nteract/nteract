@@ -6285,6 +6285,9 @@ export class Page {
         await this.loadDocument();
         return;
       case "importDocument":
+        // An intent whose record names formats this build doesn't write
+        // imports nothing: its record installs and the host refuses it.
+        if (!recordFormatsWritten(context.intent.metadata)) return;
         // A replayed creation may find the document stored already.
         this.plain.serve(context.intent.metadata.documentId, "page");
         this.handle = await this.repo.import(context.intent.bytes, {

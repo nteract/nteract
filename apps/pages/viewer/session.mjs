@@ -133,18 +133,17 @@ export function classifyRefusal(error) {
 // 409s that retrying can't fix: this build lacks a feature the Page uses, the
 // host can't read a draft an earlier build saved, or the Page is stored in a
 // format the host doesn't open.
-const RELOAD_REQUIRED_CODES = new Set(["unsupported_schema_feature", "stored_form_unsupported"]);
-/** Shown when the host refuses to open a Page whose record names document
- * formats it doesn't open. Reloading can't help, so it doesn't say to. */
+const UNRETRYABLE_CODES = new Set([
+  "unsupported_schema_feature",
+  "stored_form_unsupported",
+  "document_format_unsupported",
+]);
+/** Shown when the host closes a socket as document_format_unsupported, which
+ * carries no message: the Page's host record names document formats the
+ * host doesn't open. Reloading can't help, so it doesn't say to. Discovery's
+ * refusal carries the same text from the host. */
 export const PAGE_FORMAT_UNSUPPORTED =
   "This Page is stored in a format this version of Pages doesn't open. Its owner can delete it.";
-/** The connection problem a failed connection shows: the Page's stored
- * format for a host that refused it as one, otherwise the error's message. */
-export function connectionProblemOf(error) {
-  return error?.status === 409 && error.code === "stored_form_unsupported"
-    ? PAGE_FORMAT_UNSUPPORTED
-    : error?.message;
-}
 /** Shown when the host refuses to register a draft an earlier version of
  * Pages saved in a form this build doesn't read. */
 export const DRAFT_FORM_UNSUPPORTED =
@@ -166,14 +165,14 @@ function draftUnreadable(error) {
  * Stops, until Retry, an `online` event, sign-in or a reload:
  * - a 401 or 403 (sign-in, or a refused signing key over HTTP),
  * - an admission close that says stop,
- * - a 409 in RELOAD_REQUIRED_CODES.
+ * - a 409 in UNRETRYABLE_CODES.
  * Everything else retries: no status, a 5xx, and any other 4xx. A 404
  * without page_deleted, 408, 409, 425 or 429 is a host that may answer
  * differently in a moment, a deploy cutover included. */
 export function connectionFailureRetries(error) {
   if (error?.status === 401 || error?.status === 403) return false;
   if (error?.code === "SIGNING_KEY_REFUSED") return false;
-  if (error?.status === 409 && RELOAD_REQUIRED_CODES.has(error.code)) return false;
+  if (error?.status === 409 && UNRETRYABLE_CODES.has(error.code)) return false;
   return true;
 }
 export const ACCESS_REVOKED = "You no longer have access to this Page.";
@@ -273,7 +272,7 @@ const receiptRetryDelay = (attempt, transient) =>
 const stopMessage = (admission) =>
   admission?.code === "schema_unsupported"
     ? schemaUnsupported([]).message
-    : admission?.code === "stored_form_unsupported"
+    : admission?.code === "document_format_unsupported"
       ? PAGE_FORMAT_UNSUPPORTED
       : SIGNING_KEY_REFUSED;
 // Not retryable by openPageWithRetry: this tab cannot succeed as it is.
@@ -2502,7 +2501,7 @@ export class PageSession {
           retryAfterMs: error.retryAfterMs,
         });
       } else {
-        this.showConnectionProblem(connectionProblemOf(error));
+        this.showConnectionProblem(error.message);
         // An admission close during the handshake is a refusal; the next
         // attempt's discovery still stops on a definitive answer.
         if (connectionFailureRetries(error))
