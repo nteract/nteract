@@ -10,6 +10,7 @@ import {
 } from "./replace-match.mjs";
 import { nodeChange, setNode } from "./set-node.mjs";
 import { markUnmarkedText } from "./richtext-page.mjs";
+import { readSpans } from "./richtext-format.mjs";
 
 // Operations a target-scoped batch may contain. Each finds one literal range
 // the same way; replace_match changes its text, format_match its marks and
@@ -53,7 +54,7 @@ function clippedMarks(doc, path, start, end) {
 function markerOffsets(doc, path) {
   const result = [];
   let offset = 0;
-  for (const span of A.spans(doc, path)) {
+  for (const span of readSpans(doc, path)) {
     if (span.type === "block") result.push(offset++);
     else offset += span.value.length;
   }

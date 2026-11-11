@@ -16,7 +16,7 @@ import { ancestryAt, blockAddresses, nodeIndexAt } from "./node-addresses.mjs";
 import { nodeIds, readableNodeIds } from "./node-ids.mjs";
 import { projectReadContent } from "./read-content.mjs";
 import { visibleNodeRange, visibleRangeAddress } from "./replace-match.mjs";
-import { textPath } from "./richtext-format.mjs";
+import { textPath, readSpans } from "./richtext-format.mjs";
 import { nativeRead } from "./native-read.mjs";
 import { blockMarkdown, markUnmarkedText } from "./richtext-page.mjs";
 import { decode } from "./wordgard-doc.mjs";
@@ -60,7 +60,7 @@ function observe(spans) {
   const ids = readableNodeIds(doc, id, tree);
   let addresses;
   try {
-    addresses = blockAddresses(A.spans(doc, textPath(id)));
+    addresses = blockAddresses(readSpans(doc, textPath(id)));
   } catch {
     addresses = null;
   }
@@ -73,7 +73,7 @@ function observe(spans) {
       ...(addresses && {
         placed: addresses.placed,
         ranges: addresses.nodes.map(({ start, end }) => [start, end]),
-        text: textIndexes(addresses, A.spans(doc, textPath(id))),
+        text: textIndexes(addresses, readSpans(doc, textPath(id))),
       }),
     },
     outline,
@@ -152,7 +152,7 @@ test("replace_match scopes node_index and addresses passages by the frozen range
       }
       let at = 0;
       let run = 0;
-      for (const span of A.spans(doc, path)) {
+      for (const span of readSpans(doc, path)) {
         if (span.type === "text" && run++ % step === 0) {
           const end = at + (/[\ud800-\udbff]/.test(text[at]) ? 2 : 1);
           observed.text.push(visibleRangeAddress(doc, id, at, end).node_index);
@@ -173,20 +173,20 @@ test("a block holding a node this build can't place gives no ids", () => {
   for (const shape of ["dataframe-in-cell", "unknown-in-cell", "unknown-embed-in-code"]) {
     const { spans } = inputs.find((input) => input.name === `shape/${shape}`);
     const { doc, id } = pageWithSpans(spans);
-    assert.equal(blockAddresses(A.spans(doc, textPath(id))).placed, false, shape);
+    assert.equal(blockAddresses(readSpans(doc, textPath(id))).placed, false, shape);
     assert.throws(() => nodeIds(doc, id), shape);
   }
   for (const shape of ["unknown-embed-in-cell", "unknown-block", "unknown-parent", "aside"]) {
     const { spans } = inputs.find((input) => input.name === `shape/${shape}`);
     const { doc, id } = pageWithSpans(spans);
-    assert.equal(blockAddresses(A.spans(doc, textPath(id))).placed, true, shape);
+    assert.equal(blockAddresses(readSpans(doc, textPath(id))).placed, true, shape);
   }
 });
 
 test("text stored after an unknown block is that node's content", () => {
   const { spans } = inputs.find((input) => input.name === "shape/unknown-block-then-text");
   const { doc, id } = pageWithSpans(spans);
-  const addresses = blockAddresses(A.spans(doc, textPath(id)));
+  const addresses = blockAddresses(readSpans(doc, textPath(id)));
   const text = doc.blocks[id].richText;
   assert.deepEqual(
     addresses.nodes.map(({ start, end, at }) => ({ start, end, at })),
@@ -238,12 +238,12 @@ test("every reader reads unmarked text, and marking it gives every node an id", 
     const { doc, id } = pageWithSpans(spans);
     const tree = nativeRead(doc.blocks[id], doc.page_id);
     const ids = nodeIds(doc, id, tree);
-    assert.equal(blockAddresses(A.spans(doc, textPath(id))).nodes.length, ids.length, shape);
+    assert.equal(blockAddresses(readSpans(doc, textPath(id))).nodes.length, ids.length, shape);
     // A top-level paragraph of unmarked text has no id; unmarked text inside
     // a container is inside a node that has one.
     assert.equal(ids.filter((entry) => entry.id === null).length, topLevel ? 1 : 0, shape);
     const marked = A.change(A.clone(doc), (draft) => assert.ok(markUnmarkedText(draft, id)));
-    assert.equal(decode(A.spans(marked, textPath(id))).unmarked.length, 0, shape);
+    assert.equal(decode(readSpans(marked, textPath(id))).unmarked.length, 0, shape);
     assert.ok(
       nodeIds(marked, id).every((entry) => typeof entry.id === "string"),
       shape,
@@ -271,7 +271,7 @@ test("an inline node continues the node before it when that node can hold it, an
   ]) {
     const { spans } = inputs.find((input) => input.name === `shape/${shape}`);
     const { doc, id } = pageWithSpans(spans);
-    const decoded = decode(A.spans(doc, textPath(id)));
+    const decoded = decode(readSpans(doc, textPath(id)));
     assert.equal(decoded.lossy, false, shape);
     assert.equal(String(decoded.doc), tree, shape);
     const native = nativeRead(doc.blocks[id], PAGE_ID).nodes;
@@ -291,7 +291,7 @@ test("an inline node continues the node before it when that node can hold it, an
         },
       }),
     );
-    assert.deepEqual(decode(A.spans(written, textPath(id))).unmarked, [], shape);
+    assert.deepEqual(decode(readSpans(written, textPath(id))).unmarked, [], shape);
     assert.equal(blockMarkdown(written.blocks[id], PAGE_ID), markdown.replace(match, "w"), shape);
   }
 });
@@ -299,7 +299,7 @@ test("an inline node continues the node before it when that node can hold it, an
 test("ancestry names each container and its stored attrs", () => {
   const { spans } = inputs.find((input) => input.name === "shape/nested-lists");
   const { doc, id } = pageWithSpans(spans);
-  const addresses = blockAddresses(A.spans(doc, textPath(id)));
+  const addresses = blockAddresses(readSpans(doc, textPath(id)));
   const text = doc.blocks[id].richText;
   assert.deepEqual(ancestryAt(addresses, text.indexOf("task")), [
     { type: "OrderedList", attrs: {} },

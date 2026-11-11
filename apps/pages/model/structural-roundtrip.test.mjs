@@ -19,6 +19,7 @@ import { PAGE_ID, pageTreeArbitrary, toWordgardTree } from "../test/random-page-
 import { fuzzDepth, fuzzParameters as parameters } from "../test/fuzz-parameters.mjs";
 import { freeing } from "../test/free-docs.mjs";
 import { commentSpansMeasure } from "./comment-text.mjs";
+import { readSpans } from "./richtext-format.mjs";
 
 const maxDepth = fuzzDepth;
 const trees = pageTreeArbitrary({ maxDepth });
@@ -105,7 +106,7 @@ test("independent editor trees survive Automerge storage and have distinct outli
         const expected = toWordgardTree(description);
         const { doc, id } = pageWith(expected);
         keep(doc);
-        const decoded = decode(A.spans(doc, textPath(id)));
+        const decoded = decode(readSpans(doc, textPath(id)));
         assert.equal(decoded.lossy, false);
         assert.deepEqual(snapshot(decoded.doc), snapshot(expected));
         const read = projectReadContent(doc, {});
@@ -137,7 +138,7 @@ test("agent read-back replacement preserves independently generated editor trees
             }),
           ),
         );
-        const decoded = decode(A.spans(after, textPath(id)));
+        const decoded = decode(readSpans(after, textPath(id)));
         assert.equal(decoded.lossy, false);
         assert.deepEqual(snapshot(decoded.doc), snapshot(expected), markdown);
         assert.deepEqual(
@@ -201,7 +202,7 @@ test("targeted edits preserve unrelated node ids and comment anchors across gene
           ...generated.content,
           Paragraph.create([Leaf.text(anchor, Mark.none)]),
         ]);
-        assert.deepEqual(snapshot(decode(A.spans(after, textPath(id))).doc), snapshot(expected));
+        assert.deepEqual(snapshot(decode(readSpans(after, textPath(id))).doc), snapshot(expected));
       }),
     ),
     parameters,
@@ -236,7 +237,7 @@ test("comments store the editor's spans for generated trees, from either span fo
           );
           keep(comments);
           const message = comments.threads[result.thread_id].messages[result.message_id];
-          const stored = A.spans(message, ["richText"]);
+          const stored = readSpans(message, ["richText"]);
           assert.equal(message.body, undefined);
           // The adapter's form can differ in attrs it fills in (a link's empty
           // title); whatever it reads as is stored in the editor's form.

@@ -58,6 +58,7 @@ import {
   wordgardListStarts,
 } from "./wordgard-binding.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
+import { readSpans, splitBlockStored } from "../model/richtext-format.mjs";
 function fixture(markdown = "hello 🌊 world") {
   let doc = A.change(A.from({ blocks: { one: { markdown } } }), (d) => richFromSource(d, "one"));
   const observers = new Set();
@@ -105,14 +106,14 @@ test("structural edits keep nested opaque image attrs; unsupported values refuse
     for (const future of ["opaque", { nested: true }]) {
       const replica = fixture(source);
       replica.change((d) => {
-        const spans = A.spans(d, textPath("one"));
+        const spans = readSpans(d, textPath("one"));
         for (const span of spans)
           if (span.type === "block" && String(span.value.type) === "image")
             span.value.attrs.future = future;
         A.updateSpans(d, textPath("one"), spans);
       });
       const binding = createWordgardBinding(replica, "one");
-      const before = A.spans(replica.doc, textPath("one"));
+      const before = readSpans(replica.doc, textPath("one"));
       const tr = state(binding).update({
         changes: {
           from: binding.current.doc.length,
@@ -121,10 +122,10 @@ test("structural edits keep nested opaque image attrs; unsupported values refuse
       });
       if (typeof future === "object") {
         assert.throws(() => binding.applyEditorTransaction(tr), /newer version/);
-        assert.deepEqual(A.spans(replica.doc, textPath("one")), before);
+        assert.deepEqual(readSpans(replica.doc, textPath("one")), before);
       } else {
         binding.applyEditorTransaction(tr);
-        const image = A.spans(replica.doc, textPath("one")).find(
+        const image = readSpans(replica.doc, textPath("one")).find(
           (s) => s.type === "block" && String(s.value.type) === "image",
         );
         assert.equal(String(image.value.attrs.future), future);
@@ -142,7 +143,7 @@ test("typing and formatting retain native object identity and exact offsets afte
     state(binding).update({ changes: { from: 1, insert: [Leaf.text("New ")] } }),
   );
   assert.equal(replica.doc.blocks.one.richText, "\ufffcNew hello 🌊 world");
-  assert.equal(A.spans(replica.doc, textPath("one"))[0].type, "block");
+  assert.equal(readSpans(replica.doc, textPath("one"))[0].type, "block");
   assert.equal(A.getObjectId(replica.doc.blocks.one, "richText"), object);
   assert.equal(A.getCursorPosition(replica.doc, textPath("one"), cursor), 13);
   const before = replica.doc;
@@ -193,7 +194,7 @@ test("incoming changes publish an incremental projection and actor metadata", ()
   assert.equal(event.nativeAfter, replica.doc);
   assert.ok(event.changes.apply(event.before.doc).eq(event.after.doc));
   assert.equal(event.changes.mapPos(6), 6);
-  assert.ok(binding.current.doc.eq(decode(A.spans(replica.doc, textPath("one"))).doc));
+  assert.ok(binding.current.doc.eq(decode(readSpans(replica.doc, textPath("one"))).doc));
   binding.destroy();
 });
 test("stale editor transactions reject without changing shared state", () => {
@@ -380,7 +381,7 @@ test("the Enter fence command creates native code and language changes round-tri
       fence === "```" ? undefined : "mermaid",
     );
     assert.equal(
-      String(A.spans(replica.doc, textPath("one"))[0].value.attrs.params),
+      String(readSpans(replica.doc, textPath("one"))[0].value.attrs.params),
       fence === "```" ? "" : "mermaid",
     );
     const type = (text) => {
@@ -397,15 +398,15 @@ test("the Enter fence command creates native code and language changes round-tri
     type(" B --> C");
     const source = "graph TD\n A[🌊] --> B\n B --> C";
     editor.dispatch({ changes: { from: 0, add: CodeBlockLanguage.of("mermaid") } });
-    assert.equal(String(A.spans(replica.doc, textPath("one"))[0].value.attrs.params), "mermaid");
+    assert.equal(String(readSpans(replica.doc, textPath("one"))[0].value.attrs.params), "mermaid");
     editor.dispatch({
       changes: { from: 0, remove: CodeBlockLanguage.isInSet(editorState.doc.content[0].tag.marks) },
     });
-    assert.equal(String(A.spans(replica.doc, textPath("one"))[0].value.attrs.params), "");
+    assert.equal(String(readSpans(replica.doc, textPath("one"))[0].value.attrs.params), "");
     assert.equal(editorState.doc.content[0].mark(CodeBlockLanguage), undefined);
     assert.equal(editorState.doc.textContent(), source);
     assert.equal(
-      A.spans(replica.doc, textPath("one"))
+      readSpans(replica.doc, textPath("one"))
         .filter((span) => span.type === "text")
         .map((span) => span.value)
         .join(""),
@@ -480,7 +481,7 @@ test("combined bold, italic and titled links retain canonical marks through undo
       binding.applyEditorTransaction(tr);
       editorState = tr.state;
       assert.ok(binding.current.doc.eq(editorState.doc));
-      assert.ok(decode(A.spans(replica.doc, textPath("one"))).doc.eq(editorState.doc));
+      assert.ok(decode(readSpans(replica.doc, textPath("one"))).doc.eq(editorState.doc));
     },
   };
   const link = { href: "/p/fixture", title: "Stable title" };
@@ -488,7 +489,7 @@ test("combined bold, italic and titled links retain canonical marks through undo
   assert.equal(Command.dispatch(editor, toggleMark, Emphasis), true);
   assert.equal(Command.dispatch(editor, toggleMark, PagesLink.of(link)), true);
   const combined = editorState.doc;
-  const spans = A.spans(replica.doc, textPath("one"));
+  const spans = readSpans(replica.doc, textPath("one"));
   assert.equal(spans[1].value, "alpha");
   assert.deepEqual(spans[1].marks, { strong: true, em: true, link: JSON.stringify(link) });
   assert.deepEqual(spans[2], { type: "text", value: " beta" });
@@ -556,7 +557,7 @@ test("non-default ordered-list input and paste normalize before native commit wi
     assert.equal(editorState.doc.content[0].tag.param, 1);
     const normalized = editorState.doc;
     assert.ok(
-      A.spans(replica.doc, textPath("one")).some(
+      readSpans(replica.doc, textPath("one")).some(
         (span) => span.type === "block" && String(span.value.type) === "ordered-list-item",
       ),
     );
@@ -613,7 +614,7 @@ function editorFor(replica, id) {
   };
   return editor;
 }
-const nativeSpans = (replica, id) => A.spans(replica.doc, ["blocks", id, "richText"]);
+const nativeSpans = (replica, id) => readSpans(replica.doc, ["blocks", id, "richText"]);
 const imagePositions = (doc) => {
   const positions = [];
   for (let pos = 0; pos < doc.length; pos++)
@@ -838,7 +839,7 @@ test("a failed write check makes the next write read the block again", () => {
   );
   assert.equal(paths[0], "read", "the projection is read again after the failed check");
   assert.ok(!heading(binding.current.doc));
-  assert.ok(decode(A.spans(replica.doc, textPath("one"))).doc.eq(binding.current.doc));
+  assert.ok(decode(readSpans(replica.doc, textPath("one"))).doc.eq(binding.current.doc));
   binding.destroy();
 });
 
@@ -988,7 +989,7 @@ test("the binding refuses writes to a block decode couldn't draw as stored", () 
   const replica = fixture("Before\n\nAfter");
   replica.change((d) => {
     const at = d.blocks.one.richText.indexOf("After") - 1;
-    A.splitBlock(d, textPath("one"), at, {
+    splitBlockStored(d, textPath("one"), at, {
       type: new A.ImmutableString("paragraph"),
       parents: [new A.ImmutableString("callout")],
       attrs: {},

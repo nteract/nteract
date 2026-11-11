@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import { JSDOM } from "jsdom";
+import { readSpans } from "../model/richtext-format.mjs";
 
 // Wordgard mounts real DOM: give it a jsdom window for these key tests.
 const dom = new JSDOM("<!doctype html><body></body>", { pretendToBeVisual: true });
@@ -48,7 +49,7 @@ function editor(markdown) {
     richFromSource(d, "one"),
   );
   const state = GardState.create({
-    doc: decode(A.spans(native, textPath("one"))).doc,
+    doc: decode(readSpans(native, textPath("one"))).doc,
     config: [...schema.elements.map((e) => GardState.schemaElement.of(e)), tables(), tableKeys],
   });
   return new Wordgard({ state, parent: document.body });

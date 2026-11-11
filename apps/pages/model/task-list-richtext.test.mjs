@@ -11,12 +11,13 @@ import {
 } from "./richtext.mjs";
 import { richFromSource } from "./richtext-test-support.mjs";
 import { decode, encode, TaskList, TaskChecked } from "./wordgard-doc.mjs";
+import { readSpans } from "./richtext-format.mjs";
 
 const path = textPath("one");
 const fixture = (markdown) =>
   A.change(A.from({ blocks: { one: { markdown } } }), (doc) => richFromSource(doc, "one"));
 const checkedStates = (doc) =>
-  A.spans(doc, path)
+  readSpans(doc, path)
     .filter((span) => span.type === "block" && String(span.value.type) === "task-list-item")
     .map((span) => span.value.attrs.checked);
 
@@ -33,7 +34,7 @@ test("task Markdown imports native checked values and round trips through Wordga
     "- [ ] [Read the plan](https://example.com/plan)\n- [x] **Bold** and `code`",
   ]) {
     const native = fixture(source),
-      tree = decode(A.spans(native, path)).doc,
+      tree = decode(readSpans(native, path)).doc,
       spans = encode(tree),
       rewritten = A.change(native, (doc) => A.updateSpans(doc, path, spans));
     validateRich(native.blocks.one);
@@ -49,7 +50,7 @@ test("task Markdown imports native checked values and round trips through Wordga
     const projected = exportMarkdown(parseMarkdown(source));
     assert.deepEqual(parseMarkdown(projected).toJSON(), parseMarkdown(source).toJSON());
   }
-  const list = decode(A.spans(fixture("- [x] Done\n- [ ] Next"), path)).doc.content[0];
+  const list = decode(readSpans(fixture("- [x] Done\n- [ ] Next"), path)).doc.content[0];
   assert.equal(list.type, TaskList.type);
   assert.deepEqual(
     list.content.map((item) => item.mark(TaskChecked)),
@@ -105,7 +106,7 @@ test("agent checkbox edits retain text identity and merge with concurrent writin
 test("native task state is a boolean, never a truthy string or number", () => {
   for (const invalid of ["true", 1, null]) {
     const original = fixture("- [ ] Task"),
-      spans = A.spans(original, path);
+      spans = readSpans(original, path);
     spans[0].value.attrs.checked = invalid;
     const bad = A.change(original, (doc) => A.updateSpans(doc, path, spans));
     assert.throws(() => validateRich(bad.blocks.one), /Invalid task checked state/);

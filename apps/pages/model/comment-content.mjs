@@ -1,7 +1,7 @@
 import * as A from "@automerge/automerge/slim";
 import { parseAgentMarkdown } from "./markdown-import.mjs";
 import { updateSpansConfig } from "./marks.mjs";
-import { updateSpansExactly } from "./richtext-format.mjs";
+import { updateSpansExactly, readSpans } from "./richtext-format.mjs";
 import { pageSpans, validateRichSpans } from "./richtext-spans.mjs";
 import { Leaf } from "wordgard/doc";
 import { LineBreak, Paragraph, decode, encode, schema } from "./wordgard-doc.mjs";
@@ -267,5 +267,5 @@ export function writeCommentSpans(doc, path, spans, { plain = false } = {}) {
   } else if (message.bodyFormat !== undefined) delete message.bodyFormat;
   // Comments share the Page's mark and block registry, so they share its stamp.
   stampSpans(doc, spans);
-  validateCommentSpans(A.spans(message, ["richText"]));
+  validateCommentSpans(readSpans(message, ["richText"]));
 }

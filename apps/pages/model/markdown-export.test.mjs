@@ -7,7 +7,7 @@ import { build } from "esbuild";
 import { commentDraftsMarkdown, pageMarkdown, unsentCommentsMarkdown } from "./markdown-export.mjs";
 import { applyPageOperation, createPageData, initializePage, projectPage } from "./page.mjs";
 import { nativeReadSpans, readMarkdown } from "./native-read.mjs";
-import { codeTextUnmarked } from "./richtext-format.mjs";
+import { codeTextUnmarked, readSpans } from "./richtext-format.mjs";
 import { parseAgentMarkdown } from "./markdown-import.mjs";
 import { pageSpans } from "./richtext-spans.mjs";
 import { decode, encode } from "./wordgard-doc.mjs";
@@ -430,7 +430,7 @@ test("concurrent text after a rule keeps both leaf and following text", () => {
   base = A.change(base, (draft) =>
     A.updateSpans(draft, ["richText"], [...pageSpans(parseAgentMarkdown("---\n\nword"))]),
   );
-  const spans = A.spans(base, ["richText"]);
+  const spans = readSpans(base, ["richText"]);
   const paragraph = spans.findIndex(
     (span) => span.type === "block" && String(span.value.type) === "paragraph",
   );
@@ -444,7 +444,7 @@ test("concurrent text after a rule keeps both leaf and following text", () => {
   const merged = A.merge(a, b);
   const bytes = A.save(merged);
   const output = commentDraftsMarkdown([
-    { kind: "comment", spans: json(A.spans(merged, ["richText"])) },
+    { kind: "comment", spans: json(readSpans(merged, ["richText"])) },
   ]);
   assert.match(output, /> ---\n>\n> peer word/);
   assert.deepEqual(A.save(merged), bytes);
@@ -500,7 +500,7 @@ test("draft export survives native save/load and concurrent edits without changi
     merged = A.merge(left, right);
     loaded = A.load(A.save(merged));
     const bytes = A.save(loaded);
-    const spans = A.spans(loaded, ["richText"]);
+    const spans = readSpans(loaded, ["richText"]);
     const draft = {
       kind: "reply",
       thread_id: "thread",

@@ -22,7 +22,7 @@
 //
 // An id is meaningful only with its block_id: cursors are per text object.
 import * as A from "@automerge/automerge/slim";
-import { textPath } from "./richtext-format.mjs";
+import { textPath, readSpans } from "./richtext-format.mjs";
 import { blockAddresses } from "./node-addresses.mjs";
 
 // A cursor is `<counter>@<actor hex>`; Pages accepts actors of up to 64 bytes
@@ -37,7 +37,7 @@ export const MAX_NODE_ID = 192;
  * can't place where it was stored. */
 export function nodeIds(doc, blockId, tree) {
   const path = textPath(blockId);
-  const { nodes, placed } = blockAddresses(A.spans(doc, path));
+  const { nodes, placed } = blockAddresses(readSpans(doc, path));
   if (!placed) throw Error("This block holds a node this build can't place");
   // richDoc can read a node through notice text (a dataframe naming another
   // Page's asset), which changes its size but never the number of top-level
@@ -92,7 +92,7 @@ export function resolveNodeId(doc, blockId, nodeId, tree) {
     throw notFound(
       "node_id doesn't name a node in this block: it was deleted, or it came from another block. Read the outline again for current ids.",
     );
-  const length = A.spans(doc, textPath(blockId)).reduce(
+  const length = readSpans(doc, textPath(blockId)).reduce(
     (total, span) => total + (span.type === "text" ? span.value.length : 1),
     0,
   );

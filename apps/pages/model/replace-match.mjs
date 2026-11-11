@@ -1,6 +1,6 @@
 import * as A from "@automerge/automerge/slim";
 import { diffArrays } from "diff";
-import { textPath } from "./richtext-format.mjs";
+import { textPath, readSpans } from "./richtext-format.mjs";
 import { parseInlineMarkdown } from "./markdown-inline.mjs";
 import { ancestryAt, blockAddresses, nodeIndexAt } from "./node-addresses.mjs";
 import { nativeRead } from "./native-read.mjs";
@@ -39,7 +39,7 @@ export function visibleNodeRange(doc, id, nodeIndex) {
   if (!Number.isSafeInteger(nodeIndex) || nodeIndex < 0)
     throw Error("node_index must be a nonnegative integer from the read outline");
   const block = doc.blocks[id];
-  const { nodes } = blockAddresses(A.spans(doc, textPath(id)));
+  const { nodes } = blockAddresses(readSpans(doc, textPath(id)));
   // node_index names a node of the outline, which read_page builds from the
   // readable tree. When the stored spans count differently (markers a peer
   // wrote under parents no writer produces) or a readable node opens at
@@ -65,7 +65,7 @@ export function visibleNodeRange(doc, id, nodeIndex) {
  * range, and the containers around its first and last characters, which a
  * target-scoped edit compares across revisions. */
 export function visibleRangeAddress(doc, id, start, end) {
-  const addresses = blockAddresses(A.spans(doc, textPath(id)));
+  const addresses = blockAddresses(readSpans(doc, textPath(id)));
   const last = end - (/^[\udc00-\udfff]$/.test(doc.blocks[id].richText[end - 1]) ? 2 : 1);
   const nodeIndex = nodeIndexAt(addresses, start);
   if (nodeIndex !== nodeIndexAt(addresses, last)) throw Error("Match crosses top-level nodes");
@@ -88,7 +88,7 @@ export function textSegments(block) {
   let offset = 0;
   let segment;
   let code = false;
-  for (const span of A.spans(block, ["richText"])) {
+  for (const span of readSpans(block, ["richText"])) {
     if (span.type === "block") {
       code = String(span.value?.type) === "code-block";
       segment = undefined;
@@ -670,7 +670,7 @@ export function formatMatch(doc, id, input, trace, { anchor, budget } = {}) {
 export function inCodeBlock(doc, path, at) {
   let pos = 0,
     code = false;
-  for (const span of A.spans(doc, path)) {
+  for (const span of readSpans(doc, path)) {
     if (pos > at) break;
     if (span.type === "block") {
       code = String(span.value?.type) === "code-block";

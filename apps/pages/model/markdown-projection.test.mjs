@@ -37,6 +37,7 @@ import {
 import { updateSpansConfig } from "./marks.mjs";
 import { stampSpans } from "./schema-features.mjs";
 import { richDoc } from "./richtext.mjs";
+import { readSpans, updateSpansExactly } from "./richtext-format.mjs";
 
 test("lists read back tight with - bullets, loose only when an item holds several blocks", () => {
   for (const [source, expected] of [
@@ -92,7 +93,7 @@ test("numbered lists past nine keep continuation lines inside their item", () =>
 const rewritten = (doc, id) => {
   const path = textPath(id);
   return A.change(A.clone(doc), (draft) =>
-    A.updateSpans(draft, path, encode(decode(A.spans(draft, path)).doc), updateSpansConfig),
+    updateSpansExactly(draft, path, encode(decode(readSpans(draft, path)).doc), updateSpansConfig),
   );
 };
 // Spans as plain values, for comparing writers. Adjacent text with the same
@@ -152,7 +153,7 @@ test("a rewrite with unchanged spans re-marks a multi-span mark over a peer's co
   const path = ["t"];
   let base = A.from({ t: "" });
   base = A.change(base, (draft) =>
-    A.updateSpans(
+    updateSpansExactly(
       draft,
       path,
       [
@@ -166,11 +167,11 @@ test("a rewrite with unchanged spans re-marks a multi-span mark over a peer's co
     A.unmark(draft, path, { start: 0, end: 2, expand: "both" }, "strong"),
   );
   const rewrite = A.change(A.clone(base, { actor: "aa" }), (draft) =>
-    A.updateSpans(draft, path, A.spans(draft, path), updateSpansConfig),
+    updateSpansExactly(draft, path, readSpans(draft, path), updateSpansConfig),
   );
   assert.notDeepEqual(A.getHeads(rewrite), A.getHeads(base));
   const merged = A.merge(A.clone(rewrite), peer);
-  assert.deepEqual(A.spans(merged, path)[0], {
+  assert.deepEqual(readSpans(merged, path)[0], {
     type: "text",
     value: "ab",
     marks: { strong: true },
@@ -202,7 +203,7 @@ test("an editor rewrite of any block Pages wrote from Markdown writes nothing", 
         // Invisible: the editor tree and the agent's read are unchanged.
         const after = rewritten(doc, id);
         const path = textPath(id);
-        assert.ok(decode(A.spans(after, path)).doc.eq(decode(A.spans(doc, path)).doc), caseId);
+        assert.ok(decode(readSpans(after, path)).doc.eq(decode(readSpans(doc, path)).doc), caseId);
         assert.equal(
           exportMarkdown(richDoc(after.blocks[id])),
           exportMarkdown(richDoc(doc.blocks[id])),
@@ -313,7 +314,7 @@ test("the no-op guard applies intended formatting changes and preserves strict s
   );
   assert.notDeepEqual(A.getHeads(changed), A.getHeads(doc));
   assert.equal(exportMarkdown(richDoc(changed.blocks[id])), "ab*cd*");
-  assert.deepEqual(A.spans(changed, textPath(id))[1], { type: "text", value: "ab" });
+  assert.deepEqual(readSpans(changed, textPath(id))[1], { type: "text", value: "ab" });
   for (const invalid of ["<script>bad</script>", "$x$"])
     assert.throws(
       () => A.change(A.clone(doc), (draft) => setRichMarkdownKeepingNodes(draft, id, invalid)),
@@ -337,7 +338,7 @@ test("restored rich-only metadata is checked before identical Markdown can be a 
     ]),
   );
   doc = A.change(doc, (draft) => {
-    A.updateSpans(draft, textPath(id), spans, updateSpansConfig);
+    updateSpansExactly(draft, textPath(id), spans, updateSpansConfig);
     stampSpans(draft, spans);
   });
   const markdown = exportMarkdown(richDoc(doc.blocks[id]));
@@ -345,11 +346,11 @@ test("restored rich-only metadata is checked before identical Markdown can be a 
   assert.deepEqual(A.getHeads(after), A.getHeads(doc));
   assert.deepEqual(A.save(after), A.save(doc));
   const malformed = A.change(A.clone(doc), (draft) => {
-    const next = A.spans(draft, textPath(id));
+    const next = readSpans(draft, textPath(id));
     next.find((span) => String(span.value?.type) === "dataframe").value.attrs.future = {
       nested: true,
     };
-    A.updateSpans(draft, textPath(id), next, updateSpansConfig);
+    updateSpansExactly(draft, textPath(id), next, updateSpansConfig);
   });
   assert.throws(
     () => A.change(A.clone(malformed), (draft) => setRichMarkdownKeepingNodes(draft, id, markdown)),
@@ -371,13 +372,13 @@ test("a lossy Markdown mark boundary is not mistaken for an unchanged stored tar
     (draft) => initializePage(draft),
   );
   const id = orderedBlockIds(doc)[0];
-  doc = A.change(doc, (draft) => A.updateSpans(draft, textPath(id), spans, updateSpansConfig));
+  doc = A.change(doc, (draft) => updateSpansExactly(draft, textPath(id), spans, updateSpansConfig));
   const markdown = exportMarkdown(richDoc(doc.blocks[id]));
   const target = plainSpans(pageSpans(parseAgentMarkdown(markdown)));
-  assert.notDeepEqual(target, plainSpans(A.spans(doc, textPath(id))));
+  assert.notDeepEqual(target, plainSpans(readSpans(doc, textPath(id))));
   const after = A.change(A.clone(doc), (draft) => setRichMarkdownKeepingNodes(draft, id, markdown));
   assert.notDeepEqual(A.getHeads(after), A.getHeads(doc));
-  assert.deepEqual(plainSpans(A.spans(after, textPath(id))), target);
+  assert.deepEqual(plainSpans(readSpans(after, textPath(id))), target);
 });
 
 // A block's content as an agent reads it, from its stored spans.
@@ -387,7 +388,7 @@ const storedRead = (spans) => {
     (draft) => initializePage(draft),
   );
   const id = orderedBlockIds(doc)[0];
-  doc = A.change(doc, (draft) => A.updateSpans(draft, textPath(id), spans, updateSpansConfig));
+  doc = A.change(doc, (draft) => updateSpansExactly(draft, textPath(id), spans, updateSpansConfig));
   return exportMarkdown(richDoc(doc.blocks[id]));
 };
 
@@ -433,14 +434,14 @@ test("a dataframe stays a standalone link before a nested block-first list", () 
     const id = orderedBlockIds(doc)[0];
     const spans = encode(tree);
     doc = A.change(doc, (draft) => {
-      A.updateSpans(draft, textPath(id), spans, updateSpansConfig);
+      updateSpansExactly(draft, textPath(id), spans, updateSpansConfig);
       stampSpans(draft, spans);
     });
     const markdown = exportMarkdown(richDoc(doc.blocks[id]));
     const after = A.change(A.clone(doc), (draft) =>
       setRichMarkdownKeepingNodes(draft, id, markdown),
     );
-    assert.deepEqual(decode(A.spans(after, textPath(id))).doc.toJSON(), tree.toJSON(), markdown);
+    assert.deepEqual(decode(readSpans(after, textPath(id))).doc.toJSON(), tree.toJSON(), markdown);
     assert.deepEqual(A.getHeads(after), A.getHeads(doc), markdown);
   }
 });

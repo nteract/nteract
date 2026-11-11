@@ -38,7 +38,7 @@ import {
   storedParents,
 } from "./wordgard-doc.mjs";
 import { treeMarkdown } from "./markdown-serializer.mjs";
-import { codeTextUnmarked } from "./richtext-format.mjs";
+import { codeTextUnmarked, readSpans } from "./richtext-format.mjs";
 import { unknownNodeNotice } from "./richtext-notices.mjs";
 import { parseAssetPath } from "../shared/dataset-assets.mjs";
 import { isKnownBlock, TEXT_CONTAINERS } from "./node-registry.mjs";
@@ -199,7 +199,7 @@ function descriptor(type, attrs = {}) {
 }
 
 export function nativeRead(block, pageId) {
-  return nativeReadSpans(A.spans(block, ["richText"]), pageId);
+  return nativeReadSpans(readSpans(block, ["richText"]), pageId);
 }
 
 /** A read-only projection of stored spans. */

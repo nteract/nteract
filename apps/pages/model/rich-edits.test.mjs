@@ -8,6 +8,7 @@ import { blockMarkdown, textPath } from "./richtext.mjs";
 import { guardPassageEdits } from "./passage-edits.mjs";
 import { documentFeatures } from "./schema-features.mjs";
 import { decode, encode } from "./wordgard-doc.mjs";
+import { readSpans, updateSpansExactly } from "./richtext-format.mjs";
 
 function fixture(markdown) {
   let doc = A.from(createPageData({ pageId: "rich_edits", title: "Rich edits" }));
@@ -30,7 +31,7 @@ const projected = (markdown) => {
 };
 const refuses = (doc, operations, pattern) => assert.throws(() => apply(doc, operations), pattern);
 const markers = (doc, id) =>
-  A.spans(doc, textPath(id))
+  readSpans(doc, textPath(id))
     .filter((span) => span.type === "block")
     .map((span) => [String(span.value.type), { ...span.value.attrs }]);
 
@@ -470,7 +471,7 @@ test("set_node updates markers in place and leaves every text mark alone", () =>
   });
   const marks = (d) =>
     JSON.stringify(
-      A.spans(d, path)
+      readSpans(d, path)
         .filter((span) => span.type === "text")
         .map((span) => [span.value, span.marks ?? {}]),
     );
@@ -478,7 +479,7 @@ test("set_node updates markers in place and leaves every text mark alone", () =>
   const markerOffsets = (d) => {
     const found = [];
     let at = 0;
-    for (const span of A.spans(d, path)) {
+    for (const span of readSpans(d, path)) {
       if (span.type === "block") found.push([at++, String(span.value.type)]);
       else at += span.value.length;
     }
@@ -578,7 +579,7 @@ test("an editor rewrite after an import or a set_node writes nothing", () => {
     const path = textPath(id);
     const heads = A.getHeads(doc);
     const after = A.change(A.clone(doc), (draft) =>
-      A.updateSpans(draft, path, encode(decode(A.spans(draft, path)).doc)),
+      updateSpansExactly(draft, path, encode(decode(readSpans(draft, path)).doc)),
     );
     return A.diff(after, heads, A.getHeads(after)).map((patch) => [
       patch.action,
@@ -817,12 +818,12 @@ test("a retype drops only the old type's own attrs and keeps a newer build's", (
   // A newer build's attr on the second paragraph's marker.
   const extra = A.change(A.clone(plain), (draft) => {
     let seen = 0;
-    const spans = A.spans(draft, textPath(id)).map((span) =>
+    const spans = readSpans(draft, textPath(id)).map((span) =>
       span.type === "block" && seen++ === 1
         ? { ...span, value: { ...span.value, attrs: { anchor: "a1" } } }
         : span,
     );
-    A.updateSpans(draft, textPath(id), spans);
+    updateSpansExactly(draft, textPath(id), spans);
   });
   assert.deepEqual(markers(extra, id), [
     ["paragraph", {}],

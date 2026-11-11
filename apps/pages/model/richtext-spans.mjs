@@ -11,15 +11,15 @@ import {
 import { DATAFRAME_BLOCK, parseAssetPath, readDataframe } from "../shared/dataset-assets.mjs";
 import { decode, encode, schema } from "./wordgard-doc.mjs";
 import { treeMarkdown } from "./markdown-serializer.mjs";
-import { codeTextUnmarked } from "./richtext-format.mjs";
+import { codeTextUnmarked, readSpans } from "./richtext-format.mjs";
 
-export const readTree = (block) => decode(codeTextUnmarked(A.spans(block, ["richText"]))).doc;
+export const readTree = (block) => decode(codeTextUnmarked(readSpans(block, ["richText"]))).doc;
 export const richDoc = readTree;
 export const pageSpans = encode;
 
 /** The first stored type a Markdown rewrite cannot reproduce. */
 export function markdownlessNode(block, pageId) {
-  for (const span of A.spans(block, ["richText"])) {
+  for (const span of readSpans(block, ["richText"])) {
     if (span.type !== "block") continue;
     const type = String(span.value.type),
       parents = (span.value.parents ?? []).map(String);
@@ -35,7 +35,7 @@ export function markdownlessNode(block, pageId) {
   return null;
 }
 
-export const validateRich = (block) => validateRichSpans(A.spans(block, ["richText"]));
+export const validateRich = (block) => validateRichSpans(readSpans(block, ["richText"]));
 
 /** Admission checks stored envelopes and attributes before asking the native schema
  * to validate structure. A tolerant read projection cannot authorize a write. */

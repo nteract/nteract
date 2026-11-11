@@ -20,7 +20,7 @@ import { nativeRead } from "./native-read.mjs";
 import { blockAddresses, nodeIndexAt } from "./node-addresses.mjs";
 import { isKnownBlock, NODE_TYPES } from "./node-registry.mjs";
 import { visibleNodeRange } from "./replace-match.mjs";
-import { updateSpansExactly } from "./richtext-format.mjs";
+import { parentsValue, readSpans, updateSpansExactly } from "./richtext-format.mjs";
 import { nodeIds } from "./node-ids.mjs";
 import {
   storedParents,
@@ -67,7 +67,7 @@ function pageWith(tree) {
 function runs(doc, id) {
   const out = [];
   let at = 0;
-  for (const span of A.spans(doc, textPath(id))) {
+  for (const span of readSpans(doc, textPath(id))) {
     if (span.type === "text") out.push({ start: at, end: at + span.value.length });
     at += span.type === "text" ? span.value.length : 1;
   }
@@ -77,7 +77,7 @@ function runs(doc, id) {
 /** The editor's structural rewrite: a new top-level node list, written
  * through encode as the binding writes a structural transaction. */
 function rewrite(doc, id, change) {
-  const tree = decode(A.spans(doc, textPath(id))).doc;
+  const tree = decode(readSpans(doc, textPath(id))).doc;
   const content = change([...tree.content]);
   if (!content) return null;
   const spans = encode(schema.doc(content.length ? content : [Paragraph.create([])]));
@@ -86,7 +86,7 @@ function rewrite(doc, id, change) {
     stampSpans(draft, spans);
   });
   // A writer stores exactly what it was given.
-  assert.equal(canonical(plainSpans(A.spans(next, textPath(id)))), canonical(plainSpans(spans)));
+  assert.equal(canonical(plainSpans(readSpans(next, textPath(id)))), canonical(plainSpans(spans)));
   return next;
 }
 
@@ -131,14 +131,14 @@ function edit(doc, id, { kind, pick, variant }) {
       const ids = nodeIds(doc, id);
       if (ids.length < 2) return null;
       const index = run
-        ? nodeIndexAt(blockAddresses(A.spans(doc, textPath(id))), run.start)
+        ? nodeIndexAt(blockAddresses(readSpans(doc, textPath(id))), run.start)
         : pick % ids.length;
       if (!ids[index].id) return null;
       return tool(doc, id, "edit_page", { op: "delete_node", node_id: ids[index].id });
     }
     case "set-node":
     case "format": {
-      const words = A.spans(doc, textPath(id))
+      const words = readSpans(doc, textPath(id))
         .flatMap((span) => (span.type === "text" ? span.value.split(/\s+/) : []))
         .filter((word) => /^[A-Za-z]{3,}$/.test(word));
       if (!words.length) return null;
@@ -295,7 +295,7 @@ function readAll(doc, id, label, options) {
   }
 }
 function readEvery(doc, id, label, { lossy = false } = {}) {
-  const spans = A.spans(doc, textPath(id));
+  const spans = readSpans(doc, textPath(id));
   const decoded = decode(spans);
   if (!lossy) assert.equal(decoded.lossy, false, label);
   const tree = decoded.doc;
@@ -369,7 +369,7 @@ test("whatever a merge of writers leaves, every reader reads it and repair chang
           const result = keep(
             order.slice(1).reduce((left, right) => A.merge(left, right), A.clone(order[0])),
           );
-          const spans = canonical(plainSpans(A.spans(result, textPath(id))));
+          const spans = canonical(plainSpans(readSpans(result, textPath(id))));
           if (stored === null) [merged, stored] = [result, spans];
           else assert.equal(spans, stored);
         }
@@ -462,7 +462,7 @@ test("two writers that mark the same unmarked text at once leave an empty paragr
         ),
       ),
     );
-    assert.equal(decode(A.spans(unmarked, path)).unmarked.length, 1);
+    assert.equal(decode(readSpans(unmarked, path)).unmarked.length, 1);
     // A host write and a second writer\'s repair, each from the same snapshot.
     const host = keep(
       tool(A.clone(unmarked, { actor: ACTORS[0] }), id, "patch_page", {
@@ -487,7 +487,7 @@ test("two writers that mark the same unmarked text at once leave an empty paragr
       tool(A.clone(merged), id, "edit_page", { op: "delete_node", node_id: read.ids[0].id }),
     );
     assert.equal(
-      String(decode(A.spans(cleaned, path)).doc),
+      String(decode(readSpans(cleaned, path)).doc),
       `Doc(Paragraph(" typed"),Paragraph("Second"[Strong]))`,
     );
     assert.equal(readAll(cleaned, id, "cleaned").markdown, read.markdown);
@@ -511,7 +511,7 @@ const nested = (outer) => [
   { type: "text", value: "b" },
 ];
 const parentsOf = (doc) =>
-  A.spans(doc, ["text"]).flatMap((span) =>
+  readSpans(doc, ["text"]).flatMap((span) =>
     span.type === "block" ? [span.value.parents.map(String)] : [],
   );
 
@@ -528,48 +528,93 @@ function pageWithSpans(spans) {
   return { doc, id };
 }
 
+/** `spans` with each marker's parents in their stored form, one string. */
+const stored = (spans) =>
+  spans.map((span) =>
+    span.type === "block"
+      ? { ...span, value: { ...span.value, parents: parentsValue(span.value.parents) } }
+      : span,
+  );
+const written = (spans) =>
+  spans.flatMap((span) => (span.type === "block" ? [span.value.parents.map(String)] : []));
+const key = (parents) => parents.join("/");
+
 test("a structural write stores the parents it is given, and a miswritten block still reads", () => {
   // Automerge 3.5's updateSpans, on a rewrite that drops an outer container,
-  // stores a table row's parents as [table, table].
+  // stores a table row's parents as [table, table] when parents are lists.
   const before = nested(["blockquote", "ordered-list-item"]);
   const after = nested(["ordered-list-item"]);
-  const given = after.flatMap((span) =>
-    span.type === "block" ? [span.value.parents.map(String)] : [],
-  );
   let raw = A.change(A.from({ text: "" }), (d) => A.updateSpans(d, ["text"], before));
   raw = A.change(raw, (d) => A.updateSpans(d, ["text"], after));
-  assert.notDeepEqual(parentsOf(raw), given);
-  // The writers' path gives every marker the value it was given.
-  let exact = A.change(A.from({ text: "" }), (d) => A.updateSpans(d, ["text"], before));
-  const row = A.getCursor(exact, ["text"], 7);
-  exact = A.change(exact, (d) => updateSpansExactly(d, ["text"], after));
-  assert.deepEqual(parentsOf(exact), given);
-  // The fix-up keeps the marker, so its cursor (its node id) still resolves.
-  assert.equal(A.spans(exact, ["text"]).filter((span) => span.type === "block").length, 6);
-  assert.equal(typeof A.getCursorPosition(exact, ["text"], row), "number");
-  // The miswritten spans read in every reader: the repeated table drops out.
-  const { doc, id } = pageWithSpans(A.spans(raw, ["text"]));
+  assert.notDeepEqual(parentsOf(raw), written(after));
+  // Stored as one string each, updateSpans alone stores what it is given.
+  let scalar = A.change(A.from({ text: "" }), (d) => A.updateSpans(d, ["text"], stored(before)));
+  const row = A.getCursor(scalar, ["text"], 7);
+  scalar = A.change(scalar, (d) => A.updateSpans(d, ["text"], stored(after)));
+  assert.deepEqual(parentsOf(scalar), written(after));
+  assert.equal(typeof A.getCursorPosition(scalar, ["text"], row), "number");
+  // The miswritten spans still read in every reader: the repeated table
+  // drops out.
+  const { doc, id } = pageWithSpans(readSpans(raw, ["text"]));
   const read = readAll(doc, id, "miswritten", { lossy: true });
   assert.equal(read.decoded.lossy, true);
   assert.equal(String(read.decoded.doc.content[0].type.name), "OrderedList");
 });
 
+/** Two writers rewrite one block from `base`, as `a` and `b`, at once. */
+function concurrently(base, a, b) {
+  const start = A.change(A.from({ text: "" }), (d) => updateSpansExactly(d, ["text"], base));
+  const write = (actor, spans) =>
+    A.change(A.clone(start, { actor }), (d) => updateSpansExactly(d, ["text"], spans));
+  const merged = A.merge(write(ACTORS[0], a), write(ACTORS[1], b));
+  // A marker's parents merge as one value: each marker holds parents one
+  // writer gave some marker, never a mix of both.
+  const given = new Set([...written(a), ...written(b)].map(key));
+  for (const parents of parentsOf(merged)) assert.ok(given.has(key(parents)), key(parents));
+  return pageWithSpans(readSpans(merged, ["text"]));
+}
+
 test("two writers that indent the same list item at once leave a block every reader reads", () => {
-  const base = A.change(A.from({ text: "" }), (d) =>
-    A.updateSpans(d, ["text"], nested(["unordered-list-item"])),
-  );
-  const indent = (actor) =>
-    A.change(A.clone(base, { actor }), (d) =>
-      updateSpansExactly(d, ["text"], nested(["unordered-list-item", "unordered-list-item"])),
-    );
-  const merged = A.merge(indent(ACTORS[0]), indent(ACTORS[1]));
-  // Marker parents merge element by element: the merge stores parents
-  // neither writer wrote.
-  assert.ok(parentsOf(merged).some((parents) => parents.filter((p) => p === "table").length > 1));
-  const { doc, id } = pageWithSpans(A.spans(merged, ["text"]));
+  const indented = nested(["unordered-list-item", "unordered-list-item"]);
+  const { doc, id } = concurrently(nested(["unordered-list-item"]), indented, indented);
   const read = readAll(doc, id, "concurrent indent", { lossy: true });
-  assert.equal(read.decoded.lossy, true);
-  assert.match(read.markdown, /a/);
+  // Both writers insert the marker the indent shifts in, so the table's
+  // first row gains an empty header cell.
+  assert.equal(read.decoded.lossy, false);
+  assert.equal(read.markdown, "- \n  - \n    |  | a |\n    | --- | --- |\n    | b |  |");
+  assert.deepEqual(
+    readSpans(doc, textPath(id)).filter((span) => String(span.value?.type) === "table-header")
+      .length,
+    2,
+  );
+});
+
+const items = (depths, outer = []) =>
+  depths.flatMap((depth, i) => {
+    const around = [...outer, ...Array(depth).fill("unordered-list-item")];
+    return [
+      marker("unordered-list-item", around),
+      marker("paragraph", [...around, "unordered-list-item"]),
+      { type: "text", value: `item ${i}` },
+    ];
+  });
+
+test("one writer indents list items while another quotes the list: one writer's parents win", () => {
+  const indent = items([0, 1, 1]);
+  const quote = [marker("blockquote", []), ...items([0, 0, 0], ["blockquote"])];
+  const { doc, id } = concurrently(items([0, 0, 0]), indent, quote);
+  const read = readAll(doc, id, "indent and quote", { lossy: true });
+  assert.equal(read.decoded.lossy, false);
+  // Each changed marker keeps the parents of the writer whose change sorts
+  // last; here the quote's, so the indents are lost.
+  assert.equal(read.markdown, "> - item 0\n> - item 1\n> - item 2");
+});
+
+test("two writers that indent different list items at once both keep their indent", () => {
+  const { doc, id } = concurrently(items([0, 0, 0]), items([0, 1, 0]), items([0, 0, 1]));
+  const read = readAll(doc, id, "different indents", { lossy: true });
+  assert.equal(read.decoded.lossy, false);
+  assert.equal(read.markdown, "- item 0\n  - item 1\n  - item 2");
 });
 
 // Random marker values: names from the registry and junk, in any order and

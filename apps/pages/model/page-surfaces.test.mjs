@@ -16,6 +16,7 @@ import { openingTitleWarning } from "./title-warning.mjs";
 import { encode } from "./wordgard-doc.mjs";
 import { SHAPES, PAGE_ID } from "../test/address-inputs.mjs";
 import { pageTreeArbitrary, toWordgardTree } from "../test/random-page-tree.mjs";
+import { readSpans } from "./richtext-format.mjs";
 
 const require = createRequire(import.meta.url);
 const externalPackages = {
@@ -677,11 +678,11 @@ test("marked text after a notice inside code reads as the same text unmarked", (
         try {
           const bytes = A.save(doc);
           const heads = A.getHeads(doc);
-          const stored = A.spans(doc.blocks.one, ["richText"]);
+          const stored = readSpans(doc.blocks.one, ["richText"]);
           assert.deepEqual(observe(doc), unmarked);
           assert.deepEqual(A.save(doc), bytes);
           assert.deepEqual(A.getHeads(doc), heads);
-          assert.deepEqual(A.spans(doc.blocks.one, ["richText"]), stored);
+          assert.deepEqual(readSpans(doc.blocks.one, ["richText"]), stored);
         } finally {
           A.free(doc);
         }

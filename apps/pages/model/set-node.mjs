@@ -13,7 +13,7 @@
 // checked, language, heading_level or align is refused with the typed field
 // that replaces it.
 import * as A from "@automerge/automerge/slim";
-import { textPath, updateSpansExactly } from "./richtext-format.mjs";
+import { textPath, updateSpansExactly, readSpans } from "./richtext-format.mjs";
 import { richDoc } from "./richtext-spans.mjs";
 import { updateSpansConfig } from "./marks.mjs";
 import { locateRange } from "./replace-match.mjs";
@@ -174,7 +174,7 @@ const withAttrs = (span, attrs, type = span.value.type) => ({
 export function setNode(doc, id, input, trace, { anchor } = {}) {
   const change = nodeChange(input);
   const { path, start, end } = locateRange(doc, id, { ...input, op: "set_node" }, anchor);
-  const spans = A.spans(doc, textPath(id));
+  const spans = readSpans(doc, textPath(id));
   const index = targetMarker(spans, governingMarker(spans, start));
   const result = { op: "set_node", block_id: id, matched: 1 };
   const names = Object.keys(change.attrs);

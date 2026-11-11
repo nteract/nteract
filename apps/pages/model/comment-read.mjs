@@ -1,7 +1,7 @@
 // Comment reads have no writer or editor-schema dependency. Legacy tolerance
 // here projects stored content only; it never makes that content admissible.
 import * as A from "@automerge/automerge/slim";
-import { codeTextUnmarked } from "./richtext-format.mjs";
+import { codeTextUnmarked, readSpans } from "./richtext-format.mjs";
 import { PLAIN_FORMAT, plainCommentText } from "./comment-text.mjs";
 import { nativeReadSpans, readChildren, readKind, readMarkdown } from "./native-read.mjs";
 import { isKnownBlock, nodeType, TEXT_CONTAINERS } from "./node-registry.mjs";
@@ -181,7 +181,7 @@ export function commentMarkdown(message) {
  * repairs or overwrites shared content. */
 export function commentBodyProjection(message) {
   try {
-    const spans = A.spans(message, ["richText"]);
+    const spans = readSpans(message, ["richText"]);
     if (String(message.bodyFormat ?? "") === PLAIN_FORMAT) {
       const text = plainCommentText(spans);
       if (text !== null) return { body: text };
@@ -232,7 +232,7 @@ export function commentBodyProjection(message) {
 // JSON values omit marks and table marker attributes; change feeds need spans.
 export function commentMessageState(message) {
   try {
-    return { ...message, spans: A.spans(message, ["richText"]) };
+    return { ...message, spans: readSpans(message, ["richText"]) };
   } catch {
     return { ...message, content_error: "rich_text_unavailable" };
   }

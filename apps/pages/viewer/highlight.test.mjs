@@ -16,6 +16,7 @@ import {
   wordgardCodeNewlines,
 } from "./wordgard-binding.mjs";
 import { clearHighlight, selectionHighlight, setHighlight, toggleHighlight } from "./highlight.mjs";
+import { readSpans } from "../model/richtext-format.mjs";
 
 function setup(markdown) {
   let doc = A.change(A.from({ blocks: { one: { markdown } } }), (d) => richFromSource(d, "one"));
@@ -55,12 +56,12 @@ function setup(markdown) {
       const tr = state.update({ ...spec, annotations: history.isolate.of(true) });
       binding.applyEditorTransaction(tr);
       state = tr.state;
-      assert.ok(decode(A.spans(replica.doc, textPath("one"))).doc.eq(state.doc));
+      assert.ok(decode(readSpans(replica.doc, textPath("one"))).doc.eq(state.doc));
     },
   };
   // The paragraph's text and marks, after its own opening marker.
   const spans = () =>
-    A.spans(replica.doc, textPath("one"))
+    readSpans(replica.doc, textPath("one"))
       .slice(1)
       .map((span) => [span.value, span.marks ?? {}]);
   return { replica, binding, editor, spans };
@@ -158,11 +159,11 @@ function editorFor(doc, id = "one") {
       const tr = state.update(spec);
       binding.applyEditorTransaction(tr);
       state = tr.state;
-      assert.ok(decode(A.spans(replica.doc, textPath(id))).doc.eq(state.doc));
+      assert.ok(decode(readSpans(replica.doc, textPath(id))).doc.eq(state.doc));
     },
   };
   const spans = () =>
-    A.spans(replica.doc, textPath(id))
+    readSpans(replica.doc, textPath(id))
       .filter((span) => span.type === "text")
       .map((span) => [span.value, span.marks ?? {}]);
   return { binding, editor, spans, replica };
@@ -341,7 +342,7 @@ test("every formatting-only command keeps every Automerge cursor in prose and co
           `${name} (${markdown.slice(0, 5)}): character ${at}`,
         ),
       );
-      const marks = A.spans(after, path)
+      const marks = readSpans(after, path)
         .filter((span) => span.type === "text")
         .map((span) => span.marks ?? {});
       if (code)

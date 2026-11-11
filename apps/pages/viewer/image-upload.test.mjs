@@ -21,6 +21,7 @@ import {
   uploadFiles,
   uploadPageImage,
 } from "./image-upload.mjs";
+import { readSpans } from "../model/richtext-format.mjs";
 
 const assetId = "a".repeat(64),
   pageId = "33333333-3333-4333-8333-333333333333",
@@ -107,7 +108,7 @@ test("image clipboard HTML preserves the native reference, alt and title without
       }),
       (d) => richFromSource(d, "one"),
     );
-    const original = decode(A.spans(native, textPath("one"))).doc,
+    const original = decode(readSpans(native, textPath("one"))).doc,
       fragment = serialize(original).toDOM(dom.window.document),
       pasted = parse(schema, fragment);
     assert.ok(pasted.eq(original));
@@ -511,7 +512,7 @@ for (const [where, anchor, expected] of [
     assert.equal(states[0].preview, null);
     assert.equal(states.at(-1), null);
     assert.match(blockMarkdown(f.replica.doc.blocks.one), expected);
-    const markers = A.spans(f.replica.doc, textPath("one")).filter(
+    const markers = readSpans(f.replica.doc, textPath("one")).filter(
       (span) => span.type === "block" && String(span.value.type) === "dataframe",
     );
     assert.equal(markers.length, 1);

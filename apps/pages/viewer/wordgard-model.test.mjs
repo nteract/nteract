@@ -22,6 +22,7 @@ import {
   PagesUnknownBlock,
   PagesUnknownEmbed,
 } from "./wordgard-model.mjs";
+import { readSpans, splitBlockStored } from "../model/richtext-format.mjs";
 // The marker a writer puts before a top-level paragraph.
 const opening = () => ({
   type: "block",
@@ -32,7 +33,7 @@ function fixture(markdown) {
 }
 test("Wordgard reads actual Pages spans with UTF-16 positions", () => {
   const doc = fixture("A🌊 **bold**"),
-    spans = A.spans(doc, textPath("one"));
+    spans = readSpans(doc, textPath("one"));
   // The first paragraph opens with its marker, so editor positions inside it
   // equal native offsets.
   assert.equal(spans[0].type, "block");
@@ -69,9 +70,9 @@ test("Pages headings, nested lists, quotes, hard breaks, code params and links r
     '![Diagram](https://example.com/image.png "Image title")',
   ]) {
     const native = fixture(source),
-      tree = decode(A.spans(native, textPath("one"))).doc;
+      tree = decode(readSpans(native, textPath("one"))).doc;
     const rewritten = A.change(native, (d) => A.updateSpans(d, textPath("one"), encode(tree)));
-    assert.ok(decode(A.spans(rewritten, textPath("one"))).doc.eq(tree), source);
+    assert.ok(decode(readSpans(rewritten, textPath("one"))).doc.eq(tree), source);
     validateRich(rewritten.blocks.one);
     assert.equal(blockMarkdown(rewritten.blocks.one), blockMarkdown(native.blocks.one), source);
   }
@@ -93,7 +94,7 @@ test("a stored preserved Markdown marker reads as an unknown block and keeps its
   const source = "<div>preserved unsupported markup</div>";
   // Import never writes one: this HTML is literal text in a paragraph.
   assert.equal(
-    decode(A.spans(fixture(source), textPath("one"))).doc.content[0].type,
+    decode(readSpans(fixture(source), textPath("one"))).doc.content[0].type,
     Paragraph.type,
   );
   const tree = decode(preservedSpans(source)).doc;
@@ -104,7 +105,7 @@ test("a stored preserved Markdown marker reads as an unknown block and keeps its
 });
 test("native positions preserve paragraph ends and opaque leaf endpoints", () => {
   const native = fixture("## 🌊 Heading\n\nNext  \nline"),
-    { doc, map } = decode(A.spans(native, textPath("one")));
+    { doc, map } = decode(readSpans(native, textPath("one")));
   let pos = 0;
   for (const block of doc.content) {
     const end = pos + block.length - 1;
@@ -158,7 +159,7 @@ test("an empty first paragraph keeps its own native marker when content follows 
     const spans = encode(tree);
     assert.ok(decode(spans).doc.eq(tree), String(tree));
     const doc = A.change(fixture(""), (d) => A.updateSpans(d, textPath("one"), spans));
-    assert.ok(decode(A.spans(doc, textPath("one"))).doc.eq(tree), String(tree));
+    assert.ok(decode(readSpans(doc, textPath("one"))).doc.eq(tree), String(tree));
     assert.doesNotThrow(() => blockMarkdown(doc.blocks.one));
   }
   // A lone empty paragraph and a non-empty first paragraph have their markers.
@@ -189,9 +190,9 @@ test("marks this build doesn't know decode as plain text and encode back unchang
   // An edit to the same block keeps the foreign marks on untouched text.
   const native = A.change(fixture(""), (d) => A.updateSpans(d, textPath("one"), spans));
   const rewritten = A.change(native, (d) =>
-    A.updateSpans(d, textPath("one"), encode(decode(A.spans(native, textPath("one"))).doc)),
+    A.updateSpans(d, textPath("one"), encode(decode(readSpans(native, textPath("one"))).doc)),
   );
-  assert.deepEqual(A.spans(rewritten, textPath("one")), A.spans(native, textPath("one")));
+  assert.deepEqual(readSpans(rewritten, textPath("one")), readSpans(native, textPath("one")));
 });
 
 test("highlights decode to palette or custom colors and round trip", () => {
@@ -236,7 +237,7 @@ function withUnknown(source, marker, at) {
   let doc = fixture(source);
   const path = textPath("one");
   doc = A.change(doc, (d) =>
-    A.splitBlock(d, path, at(d.blocks.one.richText), {
+    splitBlockStored(d, path, at(d.blocks.one.richText), {
       attrs: {},
       ...marker,
       type: S(marker.type),
@@ -245,7 +246,7 @@ function withUnknown(source, marker, at) {
   );
   // Rewrite once in the editor's form, so the next rewrite measures only the
   // unknown node. A lossy block is never rewritten, by the editor or here.
-  const decoded = decode(A.spans(doc, path));
+  const decoded = decode(readSpans(doc, path));
   if (decoded.lossy) return doc;
   return A.change(doc, (d) => A.updateSpans(d, path, encode(decoded.doc)));
 }
@@ -253,13 +254,13 @@ const rewriteWrites = (doc) => {
   const path = textPath("one"),
     heads = A.getHeads(doc);
   const after = A.change(A.clone(doc), (d) =>
-    A.updateSpans(d, path, encode(decode(A.spans(d, path)).doc)),
+    A.updateSpans(d, path, encode(decode(readSpans(d, path)).doc)),
   );
   return A.diff(after, heads, A.getHeads(after));
 };
 const types = (doc) => {
   const found = [];
-  decode(A.spans(doc, textPath("one"))).doc.iterate((node) => {
+  decode(readSpans(doc, textPath("one"))).doc.iterate((node) => {
     found.push(node.type);
   });
   return found;
@@ -281,7 +282,7 @@ test("an unknown block or embed decodes to a notice and encodes back exactly", (
     { type: "future-chart", parents: [], attrs, isEmbed: false },
     beforeAfter,
   );
-  const decoded = decode(A.spans(block, textPath("one")));
+  const decoded = decode(readSpans(block, textPath("one")));
   assert.equal(decoded.lossy, false);
   const node = decoded.doc.content[1];
   assert.equal(node.type, PagesUnknownBlock);
@@ -308,7 +309,7 @@ test("an unknown block or embed decodes to a notice and encodes back exactly", (
       insideAfter,
     );
     assert.ok(types(embed).includes(PagesUnknownEmbed), label);
-    assert.equal(decode(A.spans(embed, textPath("one"))).lossy, false, label);
+    assert.equal(decode(readSpans(embed, textPath("one"))).lossy, false, label);
     assert.deepEqual(rewriteWrites(embed), [], label);
   }
   const listed = withUnknown(
@@ -316,7 +317,7 @@ test("an unknown block or embed decodes to a notice and encodes back exactly", (
     { type: "future-chart", parents: ["unordered-list-item"], isEmbed: false },
     (text) => text.length,
   );
-  assert.equal(decode(A.spans(listed, textPath("one"))).lossy, false);
+  assert.equal(decode(readSpans(listed, textPath("one"))).lossy, false);
   assert.deepEqual(rewriteWrites(listed), []);
 });
 
@@ -352,7 +353,7 @@ test("decode marks a block it can't draw as stored lossy, and keeps the stored m
     ],
   ]) {
     const doc = withUnknown(source, marker, at);
-    const decoded = decode(A.spans(doc, textPath("one")));
+    const decoded = decode(readSpans(doc, textPath("one")));
     assert.equal(decoded.lossy, true, label);
     if (drawn) assert.ok(types(doc).includes(drawn), label);
     // Where it was drawn as an embed, encode still writes the stored block.

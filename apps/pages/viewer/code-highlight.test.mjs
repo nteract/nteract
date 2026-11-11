@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { CODE_LANGUAGES, languageFor, tokenClass } from "./code-highlight.mjs";
 import { StringStream } from "@codemirror/streamparser";
+import { readSpans } from "../model/richtext-format.mjs";
 
 test("a stored language finds its highlighter by first word, any case", () => {
   for (const [stored, name] of [
@@ -93,7 +94,7 @@ test("highlighting writes nothing: code spans stay unmarked and comments stay at
   const end = state.doc.length - 1;
   state = state.update({ selection: GardSelection.Text.create({ anchor: end }) }).state;
   Command.dispatch(editor, insertText, { from: end, to: end, insert: "  # done" });
-  const spans = A.spans(doc, textPath(id)).filter((span) => span.type === "text");
+  const spans = readSpans(doc, textPath(id)).filter((span) => span.type === "text");
   assert.ok(spans.length);
   assert.deepEqual(
     spans.map((span) => span.marks ?? {}),

@@ -17,6 +17,7 @@ import { DEFAULT_PAGE_QUOTA } from "./page-quota.mjs";
 import { REPLAYED_RECEIPT_HEADER } from "./usage.mjs";
 import { fingerprint } from "./mutations.mjs";
 import { plainStub } from "./plain-stub.mjs";
+import { readSpans } from "../model/richtext-format.mjs";
 
 class Storage {
   values = new Map();
@@ -333,7 +334,7 @@ test("a draft two tabs merged into unmarked text or a container with no marker r
     A.splice(draft, path, draft.blocks[path[1]].richText.length, 0, " typed"),
   );
   const draft = A.merge(deleted, typed);
-  assert.deepEqual(A.spans(draft, path), [{ type: "text", value: " typed" }]);
+  assert.deepEqual(readSpans(draft, path), [{ type: "text", value: " typed" }]);
   const request = {
     ...args,
     initial_snapshot_base64: Buffer.from(A.save(draft)).toString("base64"),

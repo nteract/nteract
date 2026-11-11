@@ -13,6 +13,7 @@ import {
 } from "./richtext.mjs";
 import { projectReadContent } from "./read-content.mjs";
 import { pagePreview } from "./page-preview.mjs";
+import { readSpans, splitBlockStored } from "./richtext-format.mjs";
 
 const S = (value) => new A.ImmutableString(value);
 function withUnknown(source, marker, at) {
@@ -20,7 +21,7 @@ function withUnknown(source, marker, at) {
   doc = A.change(doc, (draft) => initializePage(draft, source));
   const id = orderedBlockIds(doc)[0];
   doc = A.change(doc, (draft) =>
-    A.splitBlock(draft, textPath(id), at(draft.blocks[id].richText), {
+    splitBlockStored(draft, textPath(id), at(draft.blocks[id].richText), {
       ...marker,
       type: S(marker.type),
       parents: marker.parents.map(S),
@@ -92,7 +93,7 @@ test("replace_block_markdown refuses a block holding an unknown node; text edits
     { op: "replace_match", block_id: id, match_text: "After", replacement: "Later" },
     { op: "format_match", block_id: id, match_text: "Before", add: { strong: true } },
   ]);
-  const types = A.spans(edited, textPath(id))
+  const types = readSpans(edited, textPath(id))
     .filter((span) => span.type === "block")
     .map((span) => String(span.value.type));
   assert.ok(types.includes("future-chart"));
@@ -168,7 +169,7 @@ test("reads project unknown nodes the adapter can't place", () => {
 test("registration still refuses a marker this build doesn't know", () => {
   const { doc, id } = futureChart();
   assert.throws(
-    () => validateRichSpans(A.spans(doc, textPath(id))),
+    () => validateRichSpans(readSpans(doc, textPath(id))),
     /Unsupported rich block marker/,
   );
 });

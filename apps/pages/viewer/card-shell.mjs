@@ -15,11 +15,10 @@
 // the first capture, so neither grows the app's first download. Images are
 // drawn at card size before they are inlined, and a cross-origin image is
 // never drawn onto a canvas: it becomes a transparent pixel.
-import * as A from "@automerge/automerge/slim";
 import { Wordgard } from "wordgard/editor";
 import { filter, firstValueFrom, interval, race, take, timer } from "rxjs";
 import { cardContent } from "../model/page-card.mjs";
-import { textPath } from "../model/richtext-format.mjs";
+import { textPath, readSpans } from "../model/richtext-format.mjs";
 import { decode } from "./wordgard-model.mjs";
 import { readOnlyPageConfig } from "./wordgard-page-config.mjs";
 import { CARD_IMAGE_MAX_BYTES } from "../shared/card-images.mjs";
@@ -91,7 +90,7 @@ export function shellBlocks(doc) {
   const blocks = [];
   for (const { id } of cardContent(doc).blocks) {
     if (budget.nodes <= 0 || budget.text <= 0) break;
-    blocks.push({ id, spans: firstScreenSpans(A.spans(doc, textPath(id)), budget) });
+    blocks.push({ id, spans: firstScreenSpans(readSpans(doc, textPath(id)), budget) });
   }
   return blocks;
 }

@@ -28,6 +28,7 @@ import { unmarkedSpans } from "./richtext-test-support.mjs";
 import { parseAgentMarkdown } from "./markdown-import.mjs";
 import { schema, Paragraph, PagesImage } from "./wordgard-doc.mjs";
 import { Leaf } from "wordgard/doc";
+import { readSpans } from "./richtext-format.mjs";
 
 const identity = { principal: "fixture", displayName: "Writer", driver: "Test" };
 const fixture = () =>
@@ -66,7 +67,7 @@ test("Markdown comments store native tables and marks, with Markdown tool projec
   const { doc, path } = add(fixture());
   const message = messageAt(doc, path);
   assert.equal(message.body, undefined, "a rich message stores no Markdown copy");
-  const spans = A.spans(message, ["richText"]);
+  const spans = readSpans(message, ["richText"]);
   assert.deepEqual(plain(spans), plain(pageSpans(parseAgentMarkdown(table))), "editor form");
   assert.ok(spans.some((s) => s.type === "block" && String(s.value.type) === "table-cell"));
   assert.ok(spans.some((s) => s.type === "text" && s.marks?.strong));
@@ -94,7 +95,7 @@ test("plain input is stored as unformatted spans and read back literally", () =>
   assert.equal(message.format, undefined, "a message stores its spans and no format field");
   assert.equal(message.bodyFormat, "plain", "the author's format is recorded");
   assert.equal(message.body, undefined);
-  const spans = A.spans(message, ["richText"]);
+  const spans = readSpans(message, ["richText"]);
   assert.deepEqual(plain(spans), plain(plainCommentSpans(literal)));
   assert.ok(spans.every((span) => span.type !== "text" || !Object.keys(span.marks ?? {}).length));
   assert.ok(
@@ -217,7 +218,7 @@ test("comment inputs bound source and structural size and reject invalid format"
   ])
     assert.throws(() => add(fixture(), body, extra), error);
   const { doc, path } = add(fixture());
-  assert.doesNotThrow(() => validateCommentSpans(A.spans(messageAt(doc, path), ["richText"])));
+  assert.doesNotThrow(() => validateCommentSpans(readSpans(messageAt(doc, path), ["richText"])));
 });
 
 test("concurrent rich replies preserve both messages and the original selection anchor", () => {
@@ -250,7 +251,7 @@ test("browser submission stores the editor's spans without a Markdown round trip
     ),
   );
   const [adapterMessage] = Object.values(Object.values(adapterDoc.threads)[0].messages);
-  assert.deepEqual(plain(A.spans(adapterMessage, ["richText"])), plain(spans));
+  assert.deepEqual(plain(readSpans(adapterMessage, ["richText"])), plain(spans));
   let ids;
   const doc = A.change(fixture(), (d) => {
     ids = applyComment(
@@ -262,7 +263,7 @@ test("browser submission stores the editor's spans without a Markdown round trip
   });
   const saved = A.load(A.save(doc));
   const message = saved.threads[ids.thread_id].messages[ids.message_id];
-  assert.deepEqual(plain(A.spans(message, ["richText"])), plain(spans));
+  assert.deepEqual(plain(readSpans(message, ["richText"])), plain(spans));
   assert.equal(message.body, undefined, "the spans are the message");
   assert.match(projectComments(saved)[0].messages[0].body, /example.com/);
 });

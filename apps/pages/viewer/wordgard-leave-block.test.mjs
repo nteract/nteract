@@ -19,6 +19,7 @@ import {
 } from "./wordgard-model.mjs";
 import { createWordgardBinding, wordgardCodeNewlines } from "./wordgard-binding.mjs";
 import { exitBlock, finalBlock, leaveFinalBlock } from "./wordgard-leave-block.mjs";
+import { readSpans } from "../model/richtext-format.mjs";
 
 function fixture(markdown) {
   let doc = A.from(createPageData({ pageId: "page_fixture", title: "Leave block" }));
@@ -63,7 +64,7 @@ function fixture(markdown) {
         binding.applyEditorTransaction(tr);
         state = tr.state;
       }
-      assert.ok(decode(A.spans(doc, path)).doc.eq(state.doc), "editor and native agree");
+      assert.ok(decode(readSpans(doc, path)).doc.eq(state.doc), "editor and native agree");
       validateRich(doc.blocks[id]);
     },
     select(anchor, head = anchor) {

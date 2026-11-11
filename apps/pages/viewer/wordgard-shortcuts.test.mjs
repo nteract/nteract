@@ -34,6 +34,7 @@ import {
 import { taskLists } from "./wordgard-task-lists.mjs";
 import { delimitedSpan, markdownShortcuts } from "./wordgard-shortcuts.mjs";
 import { displaySymbols, symbolRanges } from "./wordgard-symbols.mjs";
+import { readSpans } from "../model/richtext-format.mjs";
 
 // The editor configuration WordgardEditor installs, minus the DOM.
 const editorConfig = () => [
@@ -88,7 +89,7 @@ function fixture(markdown, { comment, extra = [] } = {}) {
         binding.applyEditorTransaction(tr);
         state = tr.state;
       }
-      assert.ok(decode(A.spans(doc, path)).doc.eq(state.doc), "editor and native document agree");
+      assert.ok(decode(readSpans(doc, path)).doc.eq(state.doc), "editor and native document agree");
       validateRich(doc.blocks[id]);
     },
     select(anchor, head = anchor) {
@@ -489,7 +490,7 @@ test("inline code keeps the typed characters' Automerge identity", () => {
   const before = cursorsFor(f, ["say ", "hel"]);
   f.editor.type("lo`");
   assertSameCharacters(f, before);
-  const spans = A.spans(f.replica.doc, f.path).filter((span) => span.type === "text");
+  const spans = readSpans(f.replica.doc, f.path).filter((span) => span.type === "text");
   assert.deepEqual(
     spans.map((span) => [span.value, span.marks ?? {}]),
     [

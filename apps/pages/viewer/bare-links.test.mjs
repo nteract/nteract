@@ -6,6 +6,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import { JSDOM } from "jsdom";
+import { readSpans } from "../model/richtext-format.mjs";
 
 const dom = new JSDOM("<!doctype html><body></body>", { pretendToBeVisual: true });
 for (const name of [
@@ -52,7 +53,7 @@ function editor(markdown) {
     richFromSource(d, "one"),
   );
   const state = GardState.create({
-    doc: decode(A.spans(native, textPath("one"))).doc,
+    doc: decode(readSpans(native, textPath("one"))).doc,
     config: [
       ...schema.elements.map((e) => GardState.schemaElement.of(e)),
       history(),

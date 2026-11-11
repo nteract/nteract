@@ -25,6 +25,7 @@ import {
   validateRich,
 } from "./richtext.mjs";
 import { expand, fromMarks, toMarks, Paragraph, PagesHighlight } from "./wordgard-doc.mjs";
+import { readSpans } from "./richtext-format.mjs";
 
 function fixture(markdown) {
   let doc = A.from(createPageData({ pageId: "page_fixture", title: "Marks" }));
@@ -45,7 +46,7 @@ const structure = (node) =>
 const markdownReproduces = (block) =>
   structure(parseMarkdown(blockMarkdown(block))) === structure(richDoc(block));
 const textMarks = (doc, id) =>
-  A.spans(doc.blocks[id], ["richText"])
+  readSpans(doc.blocks[id], ["richText"])
     .filter((span) => span.type === "text")
     .map((span) => [span.value, span.marks ?? {}]);
 

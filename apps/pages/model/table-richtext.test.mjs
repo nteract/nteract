@@ -10,6 +10,7 @@ import {
 } from "./richtext.mjs";
 import { richFromSource } from "./richtext-test-support.mjs";
 import { decode, encode } from "./wordgard-doc.mjs";
+import { readSpans } from "./richtext-format.mjs";
 
 test("tables nested in quotes and lists retain every row inside their container", () => {
   for (const source of [
@@ -23,7 +24,7 @@ test("tables nested in quotes and lists retain every row inside their container"
     const native = A.change(A.from({ blocks: { one: { markdown: source } } }), (d) =>
       richFromSource(d, "one"),
     );
-    const tree = decode(A.spans(native, textPath("one"))).doc;
+    const tree = decode(readSpans(native, textPath("one"))).doc;
     assert.ok(decode(encode(tree)).doc.eq(tree));
     validateRich(native.blocks.one);
     assert.equal(blockMarkdown(native.blocks.one), source);

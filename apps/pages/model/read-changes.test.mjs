@@ -9,6 +9,7 @@ import { stampFeatures } from "./schema-features.mjs";
 import { replaceMatch } from "./replace-match.mjs";
 import { applyComment as applyCommentTo } from "./comments.mjs";
 import { comment, newCommentsDoc } from "./comments-test-support.mjs";
+import { readSpans, splitBlockStored } from "./richtext-format.mjs";
 
 const author = { principal: "user", displayName: "Collaborator", driver: "Browser" };
 function page(markdown = "# Start\n\nFirst paragraph.\n\n## Later\n\nSecond paragraph.") {
@@ -37,7 +38,7 @@ function read(doc, since_heads, options = {}) {
 function markerCursor(doc, n) {
   let at = 0,
     seen = 0;
-  for (const span of A.spans(doc, textPath("one"))) {
+  for (const span of readSpans(doc, textPath("one"))) {
     if (span.type === "block" && !span.value.isEmbed && !span.value.parents.length && seen++ === n)
       return A.getCursor(doc, textPath("one"), at);
     at += span.type === "text" ? span.value.length : 1;
@@ -128,7 +129,7 @@ test("inserting an earlier native node does not report untouched shifted nodes a
   let doc = page();
   const before = A.getHeads(doc);
   doc = A.change(doc, (draft) => {
-    A.splitBlock(draft, textPath("one"), 0, {
+    splitBlockStored(draft, textPath("one"), 0, {
       type: new A.RawString("paragraph"),
       parents: [],
       attrs: {},

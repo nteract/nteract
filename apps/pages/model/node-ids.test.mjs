@@ -13,6 +13,7 @@ import { updateSpansConfig } from "./marks.mjs";
 import { projectReadContent } from "./read-content.mjs";
 import { projectReadChanges } from "./read-changes.mjs";
 import { MAX_NODE_ID, nodeIds, nodeRange, resolveNodeId } from "./node-ids.mjs";
+import { readSpans, splitBlockStored } from "./richtext-format.mjs";
 
 const pageId = "44444444-4444-4444-8444-444444444444";
 const assetId = "e".repeat(64);
@@ -67,7 +68,7 @@ test("the outline gives every top-level node an id, the block's opening paragrap
   for (const entry of entries) assert.equal(typeof entry.node_id, "string");
   assert.equal(new Set(entries.map((entry) => entry.node_id)).size, entries.length);
   // The id is the cursor at the node's opening marker.
-  const spans = A.spans(doc, textPath(id));
+  const spans = readSpans(doc, textPath(id));
   for (const { id: nodeId, at } of nodeIds(doc, id)) {
     assert.equal(A.getCursor(doc, textPath(id), at), nodeId);
     let index = 0,
@@ -132,7 +133,7 @@ test("a node keeps its id through text, mark and attribute edits and edits aroun
   // node_index after it, and no node_id.
   const peer = A.change(A.clone(doc, { actor: "ab".repeat(16) }), (draft) => {
     const at = draft.blocks[id].richText.indexOf("Closing") - 1;
-    A.splitBlock(draft, textPath(id), at, {
+    splitBlockStored(draft, textPath(id), at, {
       type: S("paragraph"),
       parents: [],
       attrs: {},
@@ -194,7 +195,7 @@ test("deleting the node that opens a block leaves the next node, and its id, as 
   const after = edit(doc, [{ op: "delete_node", block_id: id, node_id: heading }]).doc;
   assert.equal(blockMarkdown(after.blocks[id]), "First paragraph\n\nSecond");
   // "First paragraph" now opens the block with its own marker and id.
-  const [first] = A.spans(after, textPath(id));
+  const [first] = readSpans(after, textPath(id));
   assert.equal(String(first.value.type), "paragraph");
   assert.equal(outline(after, id)[0].node_id, outline(doc, id)[1].node_id);
   assert.equal(outline(after, id)[1].node_id, outline(doc, id)[2].node_id);
@@ -222,7 +223,7 @@ test("delete_node on a block's only node, set_node on its first paragraph, and a
   );
   // A node a peer inserts before the first one leaves its id alone.
   const inserted = A.change(A.clone(doc), (draft) => {
-    A.splitBlock(draft, textPath(id), 0, {
+    splitBlockStored(draft, textPath(id), 0, {
       type: S("horizontal-rule"),
       parents: [],
       attrs: {},
@@ -247,13 +248,13 @@ test("delete_node removes a dataframe and an unknown node, which have no text", 
   const emptied = edit(doc, [{ op: "delete_node", block_id: block, node_id: frame.node_id }]).doc;
   assert.equal(blockMarkdown(emptied.blocks[block]), "");
   assert.deepEqual(
-    A.spans(emptied, textPath(block)).map((span) => String(span.value.type)),
+    readSpans(emptied, textPath(block)).map((span) => String(span.value.type)),
     ["paragraph"],
   );
 
   const unknown = fixture("Before\n\nAfter");
   const withChart = A.change(unknown.doc, (draft) =>
-    A.splitBlock(
+    splitBlockStored(
       draft,
       textPath(unknown.id),
       draft.blocks[unknown.id].richText.indexOf("After") - 1,
@@ -279,7 +280,7 @@ test("ids after a node read through notice text still name their own markers", (
   const { doc: base, id } = fixture("Intro\n\nAfter\n\n## Heading");
   const other = "55555555-5555-4555-8555-555555555555";
   const doc = A.change(base, (draft) =>
-    A.splitBlock(draft, textPath(id), draft.blocks[id].richText.indexOf("After") - 1, {
+    splitBlockStored(draft, textPath(id), draft.blocks[id].richText.indexOf("After") - 1, {
       type: S("dataframe"),
       parents: [],
       attrs: {
@@ -304,7 +305,7 @@ test("ids after a node read through notice text still name their own markers", (
 test("a block the binding can't place reads with null ids, and delete_node points to delete_block", () => {
   const { doc: base, id } = fixture("| a | b |\n| --- | --- |\n| After | 2 |\n\n## Heading");
   const doc = A.change(base, (draft) =>
-    A.splitBlock(draft, textPath(id), draft.blocks[id].richText.indexOf("After") + 2, {
+    splitBlockStored(draft, textPath(id), draft.blocks[id].richText.indexOf("After") + 2, {
       type: S("future-chart"),
       parents: [S("table"), S("table-row"), S("table-cell")],
       attrs: {},
@@ -439,7 +440,7 @@ test("every node kind gets an id at its own opening marker", () => {
   const opening = [];
   let at = 0,
     previous = null;
-  for (const span of A.spans(doc, textPath(id))) {
+  for (const span of readSpans(doc, textPath(id))) {
     if (span.type === "block" && !span.value.isEmbed && !span.value.parents.length) {
       const type = String(span.value.type);
       // Items of one list share a list; only the first opens it.
@@ -651,7 +652,7 @@ test("text a peer typed into a node deleted after a rule or dataframe reads as a
     );
     assert.equal(blockMarkdown(merged.blocks[id], pageId), markdown);
     richDoc(merged.blocks[id], pageId).schema.validate(richDoc(merged.blocks[id], pageId));
-    assert.equal(decode(A.spans(merged, textPath(id))).unmarked.length, 1);
+    assert.equal(decode(readSpans(merged, textPath(id))).unmarked.length, 1);
     expectMarkedByNextWrite(merged, id, markdown);
   }
 });
@@ -661,7 +662,7 @@ test("text a peer typed into a node deleted after a rule or dataframe reads as a
  * an id, and the block reads as `markdown` with the write's own edit. */
 function expectMarkedByNextWrite(doc, id, markdown) {
   const entries = outline(doc, id);
-  const unmarkedTopLevel = blockAddresses(A.spans(doc, textPath(id))).nodes.some(
+  const unmarkedTopLevel = blockAddresses(readSpans(doc, textPath(id))).nodes.some(
     (node) => node.at === null,
   );
   assert.equal(
@@ -671,7 +672,7 @@ function expectMarkedByNextWrite(doc, id, markdown) {
   const written = patch(doc, [
     { op: "replace_match", block_id: id, match_text: "Intro", replacement: "Opening" },
   ]);
-  assert.deepEqual(decode(A.spans(written, textPath(id))).unmarked, []);
+  assert.deepEqual(decode(readSpans(written, textPath(id))).unmarked, []);
   for (const entry of outline(written, id)) assert.equal(typeof entry.node_id, "string");
   // Ids the merged block had stay.
   for (const entry of entries)
@@ -691,7 +692,7 @@ test("text a merge leaves with no marker reads, has no id, and the next write ma
       { op: "replace_match", block_id: id, match_text: "words", replacement: "words typed" },
     ]);
     const merged = A.merge(A.clone(deleted), typed);
-    assert.equal(A.spans(merged, textPath(id))[0].type, "text");
+    assert.equal(readSpans(merged, textPath(id))[0].type, "text");
     assert.equal(blockMarkdown(merged.blocks[id], pageId), " typed\n\nSecond");
     assert.deepEqual(
       outline(merged, id).map((entry) => [entry.type, entry.node_id === null]),
@@ -765,7 +766,7 @@ test("read_page_changes reports a block without node ids as a whole block", () =
   const { doc: base, id } = fixture("| a | b |\n| --- | --- |\n| After | 2 |\n\n## Heading");
   const since = A.getHeads(base);
   const doc = A.change(base, (draft) =>
-    A.splitBlock(draft, textPath(id), draft.blocks[id].richText.indexOf("After") + 2, {
+    splitBlockStored(draft, textPath(id), draft.blocks[id].richText.indexOf("After") + 2, {
       type: S("future-chart"),
       parents: [S("table"), S("table-row"), S("table-cell")],
       attrs: {},

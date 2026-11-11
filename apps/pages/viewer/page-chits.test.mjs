@@ -4,6 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import { JSDOM } from "jsdom";
+import { readSpans } from "../model/richtext-format.mjs";
 
 const dom = new JSDOM("<!doctype html><body></body>", {
   pretendToBeVisual: true,
@@ -58,7 +59,7 @@ function treeOf(markdown) {
   const native = A.change(A.from({ blocks: { one: { markdown } } }), (d) =>
     richFromSource(d, "one"),
   );
-  return decode(A.spans(native, textPath("one"))).doc;
+  return decode(readSpans(native, textPath("one"))).doc;
 }
 
 function editor(markdown, { editable = true, currentProjectId = null } = {}) {

@@ -14,6 +14,7 @@ import { projectReadChanges } from "./read-changes.mjs";
 import { readTool } from "../worker/tool-reads.mjs";
 import { readChangesTool } from "../worker/tool-changes.mjs";
 import { nativeRead, nativeReadSpans, readFingerprint, readMarkdown } from "./native-read.mjs";
+import { readSpans } from "./richtext-format.mjs";
 
 const S = (value) => new A.ImmutableString(value);
 const block = (type, parents = [], attrs = {}, isEmbed = false) => ({
@@ -430,7 +431,7 @@ test("native span entry preserves the block reader and never edits source frames
   ]);
   try {
     const saved = A.save(doc),
-      spans = A.spans(doc, ["richText"]);
+      spans = readSpans(doc, ["richText"]);
     const input = JSON.stringify(spans);
     const direct = nativeRead(doc),
       fromSpans = nativeReadSpans(spans);
@@ -463,7 +464,7 @@ test("read tolerance never changes writer limits or admits reader-only forms", (
     const doc = richMessage(spans);
     try {
       compare(doc, "readable but inadmissible");
-      assert.throws(() => candidate.validateCommentSpans(A.spans(doc, ["richText"])));
+      assert.throws(() => candidate.validateCommentSpans(readSpans(doc, ["richText"])));
     } finally {
       A.free(doc);
     }
@@ -474,7 +475,7 @@ test("read tolerance never changes writer limits or admits reader-only forms", (
     ]);
     try {
       compare(doc, `large Markdown ${bytes}`);
-      assert.throws(() => candidate.validateCommentSpans(A.spans(doc, ["richText"])));
+      assert.throws(() => candidate.validateCommentSpans(readSpans(doc, ["richText"])));
     } finally {
       A.free(doc);
     }

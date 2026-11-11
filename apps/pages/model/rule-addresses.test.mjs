@@ -10,6 +10,7 @@ import { visibleNodeRange, visibleRangeAddress } from "./replace-match.mjs";
 import { encode } from "./wordgard-doc.mjs";
 import { PAGE_ID, pageWithSpans } from "../test/address-inputs.mjs";
 import { toWordgardTree } from "../test/random-page-tree.mjs";
+import { splitBlockStored } from "./richtext-format.mjs";
 
 const S = (value) => new A.ImmutableString(value);
 const block = (type, parents = [], attrs = {}) => ({
@@ -159,8 +160,8 @@ const marker = (type, parents = [], attrs = {}) => ({ type, parents, attrs });
 function headingAbove(doc, id, at, opening = false) {
   return A.change(A.clone(doc), (draft) => {
     const path = ["blocks", id, "richText"];
-    if (opening) A.splitBlock(draft, path, at, marker("paragraph"));
-    A.splitBlock(draft, path, at, marker("heading", [], { level: 2 }));
+    if (opening) splitBlockStored(draft, path, at, marker("paragraph"));
+    splitBlockStored(draft, path, at, marker("heading", [], { level: 2 }));
     A.splice(draft, path, at + 1, 0, "Title");
   });
 }

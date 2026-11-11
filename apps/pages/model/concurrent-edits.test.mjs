@@ -21,6 +21,7 @@ import { PAGE_ID, pageTreeArbitrary, toWordgardTree } from "../test/random-page-
 import { fuzzDepth, fuzzParameters as parameters } from "../test/fuzz-parameters.mjs";
 import { plainSpans } from "../test/plain-spans.mjs";
 import { freeing } from "../test/free-docs.mjs";
+import { readSpans } from "./richtext-format.mjs";
 
 // The protected paragraph shares no word with generated trees, and no edit
 // targets it, so its comment must stay attached through any merge.
@@ -186,10 +187,10 @@ test("concurrent targeted edits converge, read, and keep comment anchors", () =>
           const ab = keep(A.merge(A.clone(a.doc), b.doc));
           const ba = keep(A.merge(A.clone(b.doc), a.doc));
           assert.deepEqual(A.getHeads(ab).toSorted(), A.getHeads(ba).toSorted());
-          const spans = plainSpans(A.spans(ab, textPath(id)));
-          assert.deepEqual(plainSpans(A.spans(ba, textPath(id))), spans);
+          const spans = plainSpans(readSpans(ab, textPath(id)));
+          assert.deepEqual(plainSpans(readSpans(ba, textPath(id))), spans);
           const label = JSON.stringify({ a: a.applied, b: b.applied, spans });
-          assert.equal(decode(A.spans(ab, textPath(id))).lossy, false, label);
+          assert.equal(decode(readSpans(ab, textPath(id))).lossy, false, label);
           assert.equal(typeof blockMarkdown(ab.blocks[id], PAGE_ID), "string");
           const outline = projectReadContent(ab, {}).outline;
           const ids = outline.flatMap((entry) => (entry.node_id ? [entry.node_id] : []));
@@ -256,7 +257,7 @@ test("a semantically unchanged read-back write commutes with a peer's concurrent
         );
         keep(doc);
         const markdown = projectReadContent(doc, {}).blocks[0].markdown;
-        const beforeSpans = plainSpans(A.spans(doc, textPath(id)));
+        const beforeSpans = plainSpans(readSpans(doc, textPath(id)));
         const rewrite = A.change(A.clone(doc, { actor: ACTORS[0] }), (draft) =>
           applyPageOperation(draft, {
             operation: "edit_page",
@@ -276,7 +277,7 @@ test("a semantically unchanged read-back write commutes with a peer's concurrent
         keep(peer);
         const unchanged = isDeepStrictEqual(
           beforeSpans,
-          plainSpans(A.spans(rewrite, textPath(id))),
+          plainSpans(readSpans(rewrite, textPath(id))),
         );
         // Markdown cannot express every native mark boundary. A projection
         // that reparses differently remains a changed-content write, not a
@@ -288,11 +289,11 @@ test("a semantically unchanged read-back write commutes with a peer's concurrent
         const merged = keep(A.merge(A.clone(rewrite), peer));
         const reverse = keep(A.merge(A.clone(peer), rewrite));
         assert.deepEqual(A.getHeads(merged), A.getHeads(reverse));
-        assert.deepEqual(A.spans(merged, textPath(id)), A.spans(reverse, textPath(id)));
+        assert.deepEqual(readSpans(merged, textPath(id)), readSpans(reverse, textPath(id)));
         if (unchanged)
           assert.deepEqual(
-            plainSpans(A.spans(merged, textPath(id))),
-            plainSpans(A.spans(peer, textPath(id))),
+            plainSpans(readSpans(merged, textPath(id))),
+            plainSpans(readSpans(peer, textPath(id))),
             JSON.stringify({ markdown, unmark }),
           );
       }),
@@ -342,7 +343,7 @@ test("unchanged multi-span formatting writes no ops and preserves a peer's unmar
       keep(A.merge(A.clone(rewrite), peer)),
       keep(A.merge(A.clone(peer), rewrite)),
     ]) {
-      assert.deepEqual(A.spans(merged, textPath(id)), A.spans(peer, textPath(id)));
+      assert.deepEqual(readSpans(merged, textPath(id)), readSpans(peer, textPath(id)));
       assert.deepEqual(projectComments(merged, comments), projectComments(peer, comments));
       assert.deepEqual(projectComments(merged, comments), projectComments(doc, comments));
       assert.equal(

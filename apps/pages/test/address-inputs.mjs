@@ -12,7 +12,7 @@ import {
   initializePage,
   orderedBlockIds,
 } from "../model/page.mjs";
-import { textPath } from "../model/richtext-format.mjs";
+import { textPath, readSpans } from "../model/richtext-format.mjs";
 import { setRichMarkdown } from "../model/richtext-page.mjs";
 import { updateSpansConfig } from "../model/marks.mjs";
 import { stampFeatures, stampSpans } from "../model/schema-features.mjs";
@@ -48,7 +48,7 @@ function markdownSpans(markdown, literal) {
     draft.blocks[id].richText = "";
     setRichMarkdown(draft, id, markdown, { literal });
   });
-  return A.spans(doc, textPath(id));
+  return readSpans(doc, textPath(id));
 }
 
 const corpus = JSON.parse(
@@ -354,7 +354,7 @@ export const SHAPES = {
 export function shapeInputs() {
   return Object.entries(SHAPES).map(([name, spans]) => {
     const { doc, id } = pageWithSpans(spans);
-    return { name: `shape/${name}`, spans: A.spans(doc, textPath(id)) };
+    return { name: `shape/${name}`, spans: readSpans(doc, textPath(id)) };
   });
 }
 

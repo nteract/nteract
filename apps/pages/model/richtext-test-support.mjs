@@ -4,6 +4,7 @@ import { setRichMarkdown } from "./richtext-page.mjs";
 import { stampFeatures } from "./schema-features.mjs";
 import * as A from "@automerge/automerge/slim";
 import { encode } from "./wordgard-doc.mjs";
+import { readSpans, splitBlockStored } from "./richtext-format.mjs";
 
 /** Spans out of the editor's form, for refusal fixtures: one paragraph whose
  * newline is stored as text, where the editor writes a hard break. */
@@ -79,16 +80,16 @@ const stored = (spans) =>
 /** Inside an `A.change`: the first writer's edit for a MISSING_ANCESTOR_CASES
  * case on the text at `path`, which deletes everything before "After". */
 export function deleteContainer(doc, path) {
-  A.splice(doc, path, 0, stored(A.spans(doc, path)).indexOf("After") - 1);
+  A.splice(doc, path, 0, stored(readSpans(doc, path)).indexOf("After") - 1);
 }
 
 /** Inside an `A.change`: the second writer's edit, which adds `markers` and
  * "new" right after the last text before "After". */
 export function addInside(doc, path, markers) {
-  const text = stored(A.spans(doc, path));
+  const text = stored(readSpans(doc, path));
   const end = text.slice(0, text.indexOf("After") - 1).replace(/￼+$/, "").length;
   markers.forEach(([type, parents], index) =>
-    A.splitBlock(doc, path, end + index, {
+    splitBlockStored(doc, path, end + index, {
       type: new A.ImmutableString(type),
       parents: parents.map((parent) => new A.ImmutableString(parent)),
       attrs: {},

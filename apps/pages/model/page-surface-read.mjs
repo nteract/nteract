@@ -1,6 +1,6 @@
 import * as A from "@automerge/automerge/slim";
 import { nativeReadSpans } from "./native-read.mjs";
-import { codeTextUnmarked } from "./richtext-format.mjs";
+import { codeTextUnmarked, readSpans } from "./richtext-format.mjs";
 import { nodeType, TEXT_CONTAINERS } from "./node-registry.mjs";
 import { unknownNodeNotice } from "./richtext-notices.mjs";
 
@@ -18,7 +18,7 @@ const unknownWrapper = new A.ImmutableString("pages-preview-unknown");
  * Markdown projection does not apply. */
 export function surfaceRead(block) {
   if (block.richText.length > MAX_TEXT) throw Error("Surface text budget exceeded");
-  const input = codeTextUnmarked(A.spans(block, ["richText"]));
+  const input = codeTextUnmarked(readSpans(block, ["richText"]));
   if (input.length > MAX_SPANS) throw Error("Surface span budget exceeded");
   for (const span of input)
     if (span.type === "block" && span.value.parents?.length > MAX_PARENTS)

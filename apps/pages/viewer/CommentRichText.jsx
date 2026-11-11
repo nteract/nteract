@@ -1,5 +1,4 @@
 import { useContext, useEffect, useRef, useState } from "react";
-import * as A from "@automerge/automerge/slim";
 import { Wordgard, KeyBinding } from "wordgard/editor";
 import { GardState, Transaction } from "wordgard/state";
 import { Command, toggleMark, toggleList, listIsActive, canAddMarkInRange } from "wordgard/command";
@@ -67,6 +66,7 @@ import {
   commentSpansMeasure,
 } from "../model/comment-text.mjs";
 import "./wordgard.css";
+import { readSpans } from "../model/richtext-format.mjs";
 
 const permissions = (editable) => [
   GardState.readOnly.of(!editable),
@@ -517,7 +517,7 @@ export function CommentContent({ message, source }) {
     try {
       editor = Wordgard.create({
         parent: mount.current,
-        doc: decode(A.spans(source, ["richText"])).doc,
+        doc: decode(readSpans(source, ["richText"])).doc,
         config: [
           ...nativeConfig({
             currentPageId: () => current.current.pageId,

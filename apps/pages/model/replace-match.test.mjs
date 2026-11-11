@@ -12,6 +12,7 @@ import { projectComments } from "./comments.mjs";
 import { comment, newCommentsDoc } from "./comments-test-support.mjs";
 import { richDoc, textPath } from "./richtext.mjs";
 import { textSplices } from "./replace-match.mjs";
+import { readSpans } from "./richtext-format.mjs";
 
 function fixture(markdown) {
   let doc = A.from(createPageData({ pageId: "page_fixture", title: "Original" }));
@@ -41,7 +42,7 @@ test("visible text replacement crosses marks while preserving untouched marks, o
   );
   const object = A.getObjectId(doc.blocks[id], "richText");
   const cursor = A.getCursor(doc, textPath(id), doc.blocks[id].richText.indexOf("🌊"));
-  const markers = A.spans(doc.blocks[id], ["richText"]).filter((span) => span.type === "block");
+  const markers = readSpans(doc.blocks[id], ["richText"]).filter((span) => span.type === "block");
   const { after, result } = replace(doc, id, { match_text: "hello world", replacement: "friends" });
   const [{ warnings, ...edit }] = result.edits;
   assert.deepEqual(edit, { op: "replace_match", block_id: id, matched: 1 });
@@ -56,7 +57,7 @@ test("visible text replacement crosses marks while preserving untouched marks, o
     after.blocks[id].richText.indexOf("🌊"),
   );
   assert.deepEqual(
-    A.spans(after.blocks[id], ["richText"]).filter((span) => span.type === "block"),
+    readSpans(after.blocks[id], ["richText"]).filter((span) => span.type === "block"),
     markers,
   );
   assert.equal(projectComments(after, comments)[0].selectionContext.text, "🌊 passage");

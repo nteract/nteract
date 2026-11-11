@@ -14,6 +14,7 @@ import {
 } from "./richtext-test-support.mjs";
 import { decode } from "./wordgard-doc.mjs";
 import { BLOCKING } from "../sync/comments.mjs";
+import { readSpans } from "./richtext-format.mjs";
 
 const ALICE = "account:alice";
 const BOB = "account:bob";
@@ -526,7 +527,7 @@ test("two edits of one message that merge into unmarked text are both admitted",
     A.free(doc);
     doc = result.next;
   }
-  assert.equal(A.spans(doc, bobText)[0].type, "text");
+  assert.equal(readSpans(doc, bobText)[0].type, "text");
 });
 
 test("two edits of one message that merge into a container with no marker are both admitted", () => {
@@ -543,7 +544,7 @@ test("two edits of one message that merge into a container with no marker are bo
       A.free(doc);
       doc = result.next;
     }
-    const decoded = decode(A.spans(doc, bobText));
+    const decoded = decode(readSpans(doc, bobText));
     assert.equal(decoded.lossy, false, name);
     if (name !== "table row") assert.ok(decoded.rebuilt.length, name);
     A.free(doc);

@@ -8,6 +8,7 @@ import {
 } from "./comments-doc.mjs";
 import { COMMENTING_ROLES, commentDecision } from "./comment-rules.mjs";
 import { BUILD_FEATURES, documentFeatures } from "./schema-features.mjs";
+import { readSpans } from "./richtext-format.mjs";
 
 /** Per-author admission for a comments document (shape in comments-doc.mjs).
  *
@@ -189,7 +190,7 @@ function validateBody(message, where, { contentWritten = true } = {}) {
   // the browser apply before writing, so an honest write always passes here.
   let spans;
   try {
-    spans = A.spans(message, ["richText"]);
+    spans = readSpans(message, ["richText"]);
   } catch {
     reject(REJECTION.INVALID_VALUE, "richText must be rich text", where);
   }

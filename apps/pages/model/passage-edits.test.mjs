@@ -12,6 +12,7 @@ import { projectComments } from "./comments.mjs";
 import { comment, newCommentsDoc } from "./comments-test-support.mjs";
 import { textPath, richDoc } from "./richtext.mjs";
 import { guardPassageEdits } from "./passage-edits.mjs";
+import { readSpans, splitBlockStored } from "./richtext-format.mjs";
 
 function fixture(markdown = "First passage.\n\nKeep **target** unchanged.\n\nLast passage.") {
   let doc = A.from(createPageData({ pageId: "passage_test", title: "Passages" }));
@@ -120,7 +121,7 @@ test("native cursors map a scoped node past an inserted paragraph without select
   // A new first paragraph, as the editor writes one: its own marker and
   // text before the old first paragraph's marker.
   const current = A.change(A.clone(doc), (draft) => {
-    A.splitBlock(draft, textPath(id), 0, paragraph());
+    splitBlockStored(draft, textPath(id), 0, paragraph());
     A.splice(draft, textPath(id), 1, 0, "apple");
   });
   const { after, plan } = edit(current, heads, [
@@ -202,7 +203,7 @@ test("paragraph type conversion, embeds and deleted boundaries conflict with tar
   );
   rejects(converted, heads, [op(id)], "target_structure_changed");
   const split = A.change(A.clone(doc), (draft) =>
-    A.splitBlock(draft, textPath(id), draft.blocks[id].richText.indexOf("here"), paragraph()),
+    splitBlockStored(draft, textPath(id), draft.blocks[id].richText.indexOf("here"), paragraph()),
   );
   rejects(split, heads, [op(id)], "target_structure_changed");
 });
@@ -289,7 +290,7 @@ const fmt = (id, extra = {}) => ({
   ...extra,
 });
 const spansOf = (doc, id) =>
-  A.spans(doc.blocks[id], ["richText"])
+  readSpans(doc.blocks[id], ["richText"])
     .filter((span) => span.type === "text")
     .map((span) => [span.value, span.marks ?? {}]);
 

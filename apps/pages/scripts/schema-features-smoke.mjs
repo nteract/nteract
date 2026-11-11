@@ -23,6 +23,7 @@ import { textPath } from "../model/richtext.mjs";
 import { retryKey } from "../model/retry-key.mjs";
 import { chromium, expect } from "@playwright/test";
 import { eventually, plainPeer } from "./plain-peer.mjs";
+import { splitBlockStored } from "../model/richtext-format.mjs";
 
 const origin = process.env.PAGES_ORIGIN ?? "http://localhost:9894";
 assert.equal(new URL(origin).hostname, "localhost", "Generated fixture requires local OIDC");
@@ -291,7 +292,7 @@ try {
   const draftBlock = orderedBlockIds(draft)[0];
   // The `pages-opaque` marker a protocol 1 viewer could write.
   draft = A.change(draft, (doc) =>
-    A.splitBlock(doc, textPath(draftBlock), 0, {
+    splitBlockStored(doc, textPath(draftBlock), 0, {
       type: new A.ImmutableString("pages-opaque"),
       parents: [],
       attrs: { source: new A.ImmutableString("Keep ~~drop~~. The value is $x$.") },

@@ -1,5 +1,5 @@
 import * as A from "@automerge/automerge/slim";
-import { textPath } from "./richtext-format.mjs";
+import { textPath, readSpans } from "./richtext-format.mjs";
 import { readKind, readDescendants } from "./native-read.mjs";
 
 // Enumerate actual live embed characters. Resolving a deleted cursor by position
@@ -8,7 +8,7 @@ export function imageIds(doc, blockId) {
   const path = textPath(blockId),
     result = [];
   let at = 0;
-  for (const [index, span] of A.spans(doc, path).entries()) {
+  for (const [index, span] of readSpans(doc, path).entries()) {
     if (span.type === "block" && String(span.value.type) === "image" && span.value.isEmbed)
       result.push({ image_id: A.getCursor(doc, path, at), at, index });
     at += span.type === "text" ? span.value.length : 1;

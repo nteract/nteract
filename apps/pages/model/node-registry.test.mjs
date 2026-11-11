@@ -18,6 +18,7 @@ import {
 } from "./node-registry.mjs";
 import { PagesUnknownBlock, PagesUnknownEmbed, decode, encode } from "./wordgard-doc.mjs";
 import { insertedAssets } from "./page.mjs";
+import { readSpans } from "./richtext-format.mjs";
 
 test("every stored block type has exactly one registry entry", () => {
   const declared = NODE_TYPES.map((type) => type.block).sort();
@@ -116,10 +117,12 @@ test("the Wordgard model draws every block type as a known node", () => {
     // The editor's rewrite keeps the node, and a second rewrite writes
     // nothing.
     const rewrite = (doc) =>
-      A.change(A.clone(doc), (d) => A.updateSpans(d, ["t"], encode(decode(A.spans(d, ["t"])).doc)));
+      A.change(A.clone(doc), (d) =>
+        A.updateSpans(d, ["t"], encode(decode(readSpans(d, ["t"])).doc)),
+      );
     let doc = A.change(A.from({ t: "" }), (d) => A.updateSpans(d, ["t"], forms[type.block]));
     const once = rewrite(doc);
-    assert.ok(decode(A.spans(once, ["t"])).doc.eq(decoded.doc), `${type.block} rewrite`);
+    assert.ok(decode(readSpans(once, ["t"])).doc.eq(decoded.doc), `${type.block} rewrite`);
     const twice = rewrite(once);
     assert.deepEqual(
       A.diff(twice, A.getHeads(once), A.getHeads(twice)),

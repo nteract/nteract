@@ -22,6 +22,7 @@ import {
   PagesUnknownBlock,
   Strikethrough,
 } from "./wordgard-model.mjs";
+import { readSpans } from "../model/richtext-format.mjs";
 
 const hasOpaque = (doc) => {
   let found = false;
@@ -60,7 +61,7 @@ function paste(f, insert) {
     state.update({ changes: { from: end, insert, fit: true }, userEvent: "input.paste" }),
   );
   validateRich(f.replica.doc.blocks[f.id]);
-  const stored = decode(A.spans(f.replica.doc, textPath(f.id))).doc;
+  const stored = decode(readSpans(f.replica.doc, textPath(f.id))).doc;
   assert.ok(!hasOpaque(stored));
   return stored;
 }

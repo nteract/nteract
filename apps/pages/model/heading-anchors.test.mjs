@@ -15,6 +15,7 @@ import { exportMarkdown, parseMarkdown, setRichMarkdown } from "./richtext.mjs";
 import { PagesLink } from "./wordgard-doc.mjs";
 import { richFromSource } from "./richtext-test-support.mjs";
 import { linkDestination } from "../viewer/link-destination.mjs";
+import { readSpans } from "./richtext-format.mjs";
 
 test("slugs are lowercase words joined by hyphens, punctuation dropped", () => {
   const cases = [
@@ -153,7 +154,7 @@ test("Markdown heading links round trip as link marks", () => {
   }
   // Agent writes store them: a Page written with one keeps the href.
   const doc = page([{ id: "one", markdown: "| See |\n| --- |\n| [Plan](#plan) |\n\n## Plan" }]);
-  const spans = A.spans(doc.blocks.one, ["richText"]);
+  const spans = readSpans(doc.blocks.one, ["richText"]);
   assert.ok(
     spans.some((span) => span.marks?.link && JSON.stringify(span.marks.link).includes("#plan")),
   );

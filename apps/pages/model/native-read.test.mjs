@@ -22,6 +22,7 @@ import { projectReadChanges } from "./read-changes.mjs";
 import { build } from "esbuild";
 import { validateRich } from "./richtext-spans.mjs";
 import { setNode } from "./set-node.mjs";
+import { readSpans } from "./richtext-format.mjs";
 
 const block = (type, parents = [], attrs = {}, isEmbed = false) => ({
   type: "block",
@@ -138,7 +139,7 @@ test("rereview: inherited property names are private foreign marks", () => {
     const doc = page([text("a", marks)]);
     try {
       const bytes = A.save(doc),
-        spans = A.spans(doc.blocks.one, ["richText"]);
+        spans = readSpans(doc.blocks.one, ["richText"]);
       assert.ok(
         A.marks(doc.blocks.one, ["richText"]).some((mark) => mark.name === name),
         "native mark exists",

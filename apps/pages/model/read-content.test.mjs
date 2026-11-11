@@ -7,6 +7,7 @@ import { exportMarkdown, parseMarkdown, richDoc, setRichMarkdown } from "./richt
 import { richFromSource } from "./richtext-test-support.mjs";
 import { stampFeatures } from "./schema-features.mjs";
 import { nativeRead } from "./native-read.mjs";
+import { splitBlockStored } from "./richtext-format.mjs";
 
 function page(blocks) {
   return A.change(A.from({ page_id: "read-fixture", title: "A title", blocks: {} }), (doc) => {
@@ -479,7 +480,7 @@ test("outline fields bound per-item values, cover ragged tables and name unknown
     path = textPath(id);
   doc = A.change(doc, (draft) => {
     // A paragraph inside a container a newer build added.
-    A.splitBlock(draft, path, draft.blocks[id].richText.indexOf("After") - 1, {
+    splitBlockStored(draft, path, draft.blocks[id].richText.indexOf("After") - 1, {
       type: S("paragraph"),
       parents: [S("callout")],
       attrs: {},
@@ -487,7 +488,7 @@ test("outline fields bound per-item values, cover ragged tables and name unknown
     });
     // A ragged last row, as a concurrent structural edit can leave one.
     const end = draft.blocks[id].richText.length;
-    A.splitBlock(draft, path, end, {
+    splitBlockStored(draft, path, end, {
       type: S("table-cell"),
       parents: [S("table"), S("table-row")],
       attrs: {},
@@ -519,7 +520,7 @@ test("a stored pages-opaque marker an older build wrote reads as an unknown node
   );
   const id = orderedBlockIds(doc)[0];
   doc = A.change(doc, (draft) =>
-    A.splitBlock(draft, textPath(id), 0, {
+    splitBlockStored(draft, textPath(id), 0, {
       type: new A.ImmutableString("pages-opaque"),
       parents: [],
       attrs: { source: new A.ImmutableString("<div>kept</div>") },

@@ -19,6 +19,7 @@ import {
   wordgardCommentRanges,
   wordgardCommentSelection,
 } from "./wordgard-collaboration.mjs";
+import { readSpans } from "../model/richtext-format.mjs";
 
 // One document plays both roles here: it holds the blocks anchors resolve
 // against and the comments document's `threads`.
@@ -39,7 +40,7 @@ function fixture(source = "Same passage here and same passage again 😀.") {
   });
   return doc;
 }
-const current = (doc) => decode(A.spans(doc, textPath("first")));
+const current = (doc) => decode(readSpans(doc, textPath("first")));
 const entries = (set) => {
   const result = [];
   for (const cursor = set.cursor(); cursor.value; cursor.next())

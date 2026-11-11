@@ -6,10 +6,42 @@ export { safeUrl } from "./marks.mjs";
 
 export const textPath = (id) => ["blocks", id, "richText"];
 
+// A marker stores its parents as one immutable string: the container names,
+// outermost first, joined by "/" ("" for none). No block name holds a "/".
+// As one value, two writers that change one marker's parents at once leave
+// one writer's parents, never a mix of both. Code reads and writes parents as
+// a list of names; readSpans and the writers below convert at the store.
+export const PARENTS_SEPARATOR = "/";
+/** The stored form of a list of parent names. */
+export const parentsValue = (parents = []) =>
+  new A.ImmutableString(parents.map(String).join(PARENTS_SEPARATOR));
+const parentsList = (value) =>
+  String(value) === ""
+    ? []
+    : String(value)
+        .split(PARENTS_SEPARATOR)
+        .map((name) => new A.ImmutableString(name));
+const storedMarker = (value) =>
+  Array.isArray(value.parents) ? { ...value, parents: parentsValue(value.parents) } : value;
+/** `A.spans`, with each marker's stored parents read as a list of names. A
+ * value that isn't an immutable string is passed through as stored, and
+ * every reader draws it as no parents (lossy). Spike: a stored list is passed
+ * through too, so fixtures that store lists still read. */
+export function readSpans(doc, path) {
+  return A.spans(doc, path).map((span) =>
+    span.type === "block" && A.isImmutableString(span.value?.parents)
+      ? { ...span, value: { ...span.value, parents: parentsList(span.value.parents) } }
+      : span,
+  );
+}
+/** Inside a change: split a block marker in, with its parents stored. */
+export const splitBlockStored = (doc, path, at, value) =>
+  A.splitBlock(doc, path, at, storedMarker(value));
+
 const markerKey = (value) =>
   JSON.stringify([
     String(value.type),
-    (value.parents ?? []).map(String),
+    Array.isArray(value.parents) ? value.parents.map(String) : String(value.parents ?? ""),
     Object.entries(value.attrs ?? {})
       .map(([key, item]) => [key, A.isImmutableString(item) ? String(item) : item])
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
@@ -23,7 +55,10 @@ const markerKey = (value) =>
  * other than the one given (a table row's parents become `["table",
  * "table"]`). `A.updateBlock` replaces a marker's value and keeps the marker,
  * so its cursor, which is its node id, stays. */
-export function updateSpansExactly(doc, path, spans, config) {
+export function updateSpansExactly(doc, path, given, config) {
+  const spans = given.map((span) =>
+    span.type === "block" ? { ...span, value: storedMarker(span.value) } : span,
+  );
   A.updateSpans(doc, path, spans, config);
   const wanted = new Map();
   let at = 0;
@@ -72,7 +107,7 @@ const inlineParents = (parents = []) =>
  * a hard break followed by text in its paragraph (`\` at the line end). */
 export function isBlankBlock(block) {
   let breakPending = false;
-  for (const span of A.spans(block, ["richText"])) {
+  for (const span of readSpans(block, ["richText"])) {
     if (span.type === "text") {
       if (breakPending || span.value.trim()) return false;
       // In a blank block no mark is open before this run: only text, an

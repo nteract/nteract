@@ -19,7 +19,7 @@ import {
   PagesLink,
 } from "./wordgard-doc.mjs";
 import { parseAgentMarkdown, parseMarkdown } from "./markdown-import.mjs";
-import { textPath, updateSpansExactly } from "./richtext-format.mjs";
+import { textPath, updateSpansExactly, readSpans, splitBlockStored } from "./richtext-format.mjs";
 import { pageSpans, richDoc } from "./richtext-spans.mjs";
 import { nativeRead, readMarkdown, readKind } from "./native-read.mjs";
 import { dataframeLabel, unknownNodeNotice } from "./richtext-notices.mjs";
@@ -66,7 +66,7 @@ function writeMarkdownSpans(doc, id, spans) {
   // updateSpans can re-mark an unchanged multi-span mark, defeating a peer's
   // concurrent unmark. Only exact restored runs qualify: markers and their
   // attrs compare as stored.
-  if (runs(A.spans(doc, path)) === runs(spans)) return;
+  if (runs(readSpans(doc, path)) === runs(spans)) return;
   updateSpansExactly(doc, path, spans, updateSpansConfig);
   stampSpans(doc, spans);
 }
@@ -90,11 +90,11 @@ export function setRichMarkdown(doc, id, source, { literal = false } = {}) {
  * restoring its marker would only move its node id. Returns whether it wrote. */
 export function markUnmarkedText(doc, id) {
   const path = textPath(id);
-  const { unmarked, lossy } = decode(A.spans(doc, path));
+  const { unmarked, lossy } = decode(readSpans(doc, path));
   if (lossy || !unmarked.length) return false;
   for (const { at, markers } of [...unmarked].reverse())
     markers.forEach(({ type, parents }, i) =>
-      A.splitBlock(doc, path, at + i, {
+      splitBlockStored(doc, path, at + i, {
         type: new A.ImmutableString(type),
         parents: parents.map((parent) => new A.ImmutableString(parent)),
         attrs: {},
@@ -144,7 +144,7 @@ export function setRichNode(doc, id, { type, attrs }) {
  */
 export function setRichMarkdownKeepingNodes(doc, id, source) {
   const block = doc.blocks[id];
-  const images = A.spans(block, ["richText"]).filter(
+  const images = readSpans(block, ["richText"]).filter(
     (s) => s.type === "block" && String(s.value.type) === "image",
   );
   const refuseImage = () => {
@@ -191,7 +191,7 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
   // Every dataframe counts, readable or not: one whose attrs this build can't
   // read never matches a line, so the rewrite is refused rather than dropping
   // it.
-  const storedCount = A.spans(block, ["richText"]).filter(
+  const storedCount = readSpans(block, ["richText"]).filter(
     (span) => span.type === "block" && String(span.value.type) === "dataframe",
   ).length;
   if (existing.length !== storedCount)

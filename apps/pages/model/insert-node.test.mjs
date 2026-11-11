@@ -13,6 +13,7 @@ import { textPath, validateRich } from "./richtext.mjs";
 import { documentFeatures } from "./schema-features.mjs";
 import { decode, encode, PagesDataframe } from "./wordgard-doc.mjs";
 import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
+import { readSpans, splitBlockStored, updateSpansExactly } from "./richtext-format.mjs";
 
 const pageId = "33333333-3333-4333-8333-333333333333";
 const assetId = "d".repeat(64);
@@ -41,7 +42,7 @@ test("insert_node writes one dataframe marker in its own block and stamps the fe
       attrs: { asset_id: assetId, src, media_type: PARQUET_MEDIA_TYPE, title: "Usage by day" },
     },
   ]);
-  const spans = A.spans(doc, textPath(id));
+  const spans = readSpans(doc, textPath(id));
   assert.equal(spans.length, 1);
   assert.equal(String(spans[0].value.type), "dataframe");
   assert.equal(spans[0].value.isEmbed, false);
@@ -66,7 +67,7 @@ test("a dataframe reads back as a labeled link, never as a code block", () => {
 test("the editor decodes and re-encodes a dataframe to the same marker", () => {
   const { doc } = edit(fresh(), [dataframe()]);
   const [, id] = orderedBlockIds(doc);
-  const spans = A.spans(doc, textPath(id));
+  const spans = readSpans(doc, textPath(id));
   const decoded = decode(spans).doc;
   assert.equal(decoded.firstChild.type, PagesDataframe);
   assert.deepEqual(decoded.firstChild.param, {
@@ -79,7 +80,7 @@ test("the editor decodes and re-encodes a dataframe to the same marker", () => {
   assert.equal(String(reencoded[0].value.type), "dataframe");
   // Writing the editor's spans back changes nothing.
   const after = A.change(A.clone(doc), (draft) =>
-    A.updateSpans(draft, textPath(id), reencoded, { expand: "none" }),
+    updateSpansExactly(draft, textPath(id), reencoded, { expand: "none" }),
   );
   assert.deepEqual(A.getHeads(after), A.getHeads(doc));
 });
@@ -105,7 +106,7 @@ test("Markdown never creates a dataframe", () => {
   ]);
   const [, id] = orderedBlockIds(doc);
   assert.equal(
-    A.spans(doc, textPath(id)).some((span) => String(span.value?.type) === "dataframe"),
+    readSpans(doc, textPath(id)).some((span) => String(span.value?.type) === "dataframe"),
     false,
   );
   assert.equal(documentFeatures(doc).includes("dataframe"), false);
@@ -132,9 +133,9 @@ test("a stored dataframe with a foreign src fails validation", () => {
   const { doc } = edit(fresh(), [dataframe()]);
   const [, id] = orderedBlockIds(doc);
   const tampered = A.change(A.clone(doc), (draft) => {
-    const spans = A.spans(draft, textPath(id));
+    const spans = readSpans(draft, textPath(id));
     spans[0].value.attrs.src = new A.ImmutableString("https://example.com/x.parquet");
-    A.updateSpans(draft, textPath(id), spans, { expand: "none" });
+    updateSpansExactly(draft, textPath(id), spans, { expand: "none" });
   });
   assert.throws(() => validateRich(tampered.blocks[id]), /Page asset path/);
 });
@@ -158,7 +159,7 @@ const dataframeMarker = (extra = {}, parents = []) =>
 /** The text index of the block's first dataframe marker. */
 const dataframeIndex = (doc, id) => {
   let at = 0;
-  for (const span of A.spans(doc, textPath(id))) {
+  for (const span of readSpans(doc, textPath(id))) {
     if (span.type === "block" && String(span.value.type) === "dataframe") return at;
     at += span.type === "block" ? 1 : span.value.length;
   }
@@ -169,7 +170,7 @@ function mixed(spans = [dataframeMarker()]) {
   const doc = fresh();
   const [id] = orderedBlockIds(doc);
   const next = A.change(A.clone(doc), (draft) =>
-    A.updateSpans(
+    updateSpansExactly(
       draft,
       textPath(id),
       [
@@ -185,7 +186,7 @@ function mixed(spans = [dataframeMarker()]) {
   return { doc: next, id };
 }
 const dataframes = (doc, id) =>
-  A.spans(doc, textPath(id)).filter((span) => String(span.value?.type) === "dataframe");
+  readSpans(doc, textPath(id)).filter((span) => String(span.value?.type) === "dataframe");
 
 test("a lossy dataframe projection cannot authorize a Markdown rewrite", () => {
   for (const attrs of [{ media_type: 42 }, { future: { nested: true } }]) {
@@ -372,7 +373,7 @@ test("replace_block_markdown keeps a dataframe only as its own top-level line, o
   const before = dataframes(doc, id);
   const markerAt = (d) => {
     let at = 0;
-    for (const span of A.spans(d, textPath(id))) {
+    for (const span of readSpans(d, textPath(id))) {
       if (span.type === "block" && String(span.value.type) === "dataframe") return at;
       at += span.type === "block" ? 1 : span.value.length;
     }
@@ -426,13 +427,13 @@ test("a later build's dataframe attrs and media type decode, encode and survive 
   const future = dataframeMarker({ media_type: S("text/csv"), view_id: S("v1") });
   const { doc, id } = mixed([future]);
   validateRich(doc.blocks[id]);
-  const spans = A.spans(doc, textPath(id));
+  const spans = readSpans(doc, textPath(id));
   const decoded = decode(spans).doc;
   const leaf = decoded.content.find((node) => node.type === PagesDataframe);
   assert.equal(leaf.param.view_id, "v1");
   assert.equal(leaf.param.media_type, "text/csv");
   const written = A.change(A.clone(doc), (draft) =>
-    A.updateSpans(draft, textPath(id), encode(decoded), { expand: "none" }),
+    updateSpansExactly(draft, textPath(id), encode(decoded), { expand: "none" }),
   );
   // Encode writes every attr back, unknown ones included.
   const plain = (spans) =>
@@ -479,7 +480,7 @@ test("a peer-written dataframe inside a table cell projects a notice and refuses
   const [id] = orderedBlockIds(doc);
   const cell = ["table", "table-row", "table-cell"];
   const next = A.change(A.clone(doc), (draft) =>
-    A.updateSpans(
+    updateSpansExactly(
       draft,
       textPath(id),
       [
@@ -500,7 +501,7 @@ test("a peer-written dataframe inside a table cell projects a notice and refuses
     () => edit(next, [{ op: "replace_block_markdown", block_id: id, markdown: "x" }]),
     (error) => error.code === "markdownless_node",
   );
-  const decoded = decode(A.spans(next, textPath(id)));
+  const decoded = decode(readSpans(next, textPath(id)));
   assert.equal(decoded.lossy, true);
 });
 
@@ -539,7 +540,7 @@ test("an unreadable dataframe exposes none of its stored attrs in typed reads", 
   const otherPage = `/api/pages/44444444-4444-4444-8444-444444444444/assets/${assetId}`;
   for (const stored of ["https://evil.example/x.parquet", otherPage]) {
     const next = A.change(A.clone(base), (draft) =>
-      A.splitBlock(draft, textPath(id), draft.blocks[id].richText.length, {
+      splitBlockStored(draft, textPath(id), draft.blocks[id].richText.length, {
         type: new A.ImmutableString("dataframe"),
         parents: [],
         attrs: {
@@ -572,7 +573,7 @@ test("a peer-written dataframe's title reads back normalized and bounded", async
   const base = fresh();
   const id = orderedBlockIds(base)[0];
   const next = A.change(A.clone(base), (draft) =>
-    A.splitBlock(draft, textPath(id), draft.blocks[id].richText.length, {
+    splitBlockStored(draft, textPath(id), draft.blocks[id].richText.length, {
       type: new A.ImmutableString("dataframe"),
       parents: [],
       attrs: {

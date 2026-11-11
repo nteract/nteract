@@ -16,6 +16,7 @@ import {
   isParquetFile,
   titleFromFile,
 } from "../shared/dataset-assets.mjs";
+import { readSpans } from "../model/richtext-format.mjs";
 
 export const IMAGE_ACCEPT = IMAGE_MEDIA_TYPES.join(",");
 const pathFor = (id) => ["blocks", id, "richText"];
@@ -227,7 +228,7 @@ function imageInsertion(file, asset) {
   return {
     node: PagesImage.of({ src: asset.url, alt, title: null }),
     count: (replica, id) =>
-      A.spans(replica.doc, pathFor(id)).filter(
+      readSpans(replica.doc, pathFor(id)).filter(
         (span) =>
           span.type === "block" &&
           String(span.value.type) === "image" &&
@@ -248,7 +249,7 @@ function dataframeInsertion(file, asset) {
   return {
     node: PagesDataframe.of(attrs),
     count: (replica, id) =>
-      A.spans(replica.doc, pathFor(id)).filter(
+      readSpans(replica.doc, pathFor(id)).filter(
         (span) =>
           span.type === "block" &&
           String(span.value.type) === DATAFRAME_BLOCK &&

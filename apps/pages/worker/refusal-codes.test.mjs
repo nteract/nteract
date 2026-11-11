@@ -3,6 +3,7 @@ import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { fixture, trashArgs } from "./trash-fixture.mjs";
 import { proposeAccessUpdate } from "./access.mjs";
+import { splitBlockStored } from "../model/richtext-format.mjs";
 
 const staleHeads = ["0".repeat(64)];
 
@@ -369,7 +370,7 @@ test("a Page holding a node this build doesn't know reads, and refuses a Markdow
   const path = ["blocks", plain.blockId, "richText"];
   const page = A.change(A.load(A.save(plain.doc())), (draft) => {
     const at = draft.blocks[plain.blockId].richText.indexOf("Friday");
-    A.splitBlock(draft, path, at, {
+    splitBlockStored(draft, path, at, {
       type: new A.ImmutableString("future-chart"),
       parents: [],
       attrs: { title: new A.ImmutableString("Usage") },
@@ -443,7 +444,7 @@ test("delete_node goes through the host by the outline's node_id, and a gone id 
   // A future-chart node: no text, so delete_node is the only way to reach it.
   const page = A.change(A.load(A.save(plain.doc())), (draft) => {
     const at = draft.blocks[plain.blockId].richText.indexOf("Friday");
-    A.splitBlock(draft, path, at, {
+    splitBlockStored(draft, path, at, {
       type: new A.ImmutableString("future-chart"),
       parents: [],
       attrs: {},

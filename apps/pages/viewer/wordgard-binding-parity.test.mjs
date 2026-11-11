@@ -40,6 +40,7 @@ import { stampSpans } from "../model/schema-features.mjs";
 import { PAGE_ID, pageTreeArbitrary, toWordgardTree } from "../test/random-page-tree.mjs";
 import { fuzzDepth, fuzzParameters as parameters } from "../test/fuzz-parameters.mjs";
 import { freeing } from "../test/free-docs.mjs";
+import { readSpans } from "../model/richtext-format.mjs";
 
 const ACTORS = ["0c".repeat(16), "0d".repeat(16)];
 const MARKS = [
@@ -300,7 +301,7 @@ function local(editor, op) {
 function drawable(doc, path, free = true) {
   let ok = true;
   try {
-    decode(A.spans(doc, path));
+    decode(readSpans(doc, path));
   } catch {
     ok = false;
   }
@@ -384,7 +385,7 @@ const operation = fc.record({
 });
 
 function assertParity(binding, replica, id, label, editor) {
-  const fresh = decode(A.spans(replica.doc, textPath(id)));
+  const fresh = decode(readSpans(replica.doc, textPath(id)));
   const { current } = binding;
   assert.ok(current.doc.eq(fresh.doc), `${label}: binding tree\n${current.doc}\n${fresh.doc}`);
   assert.deepEqual(current.map.wgToAm, fresh.map.wgToAm, `${label}: editor-to-native map`);

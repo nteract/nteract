@@ -7,7 +7,7 @@ import { parseAgentMarkdown, parseMarkdown } from "./markdown-import.mjs";
 import { exportMarkdown } from "./markdown-serializer.mjs";
 import { projectReadChanges } from "./read-changes.mjs";
 import { projectReadContent } from "./read-content.mjs";
-import { textPath } from "./richtext-format.mjs";
+import { textPath, readSpans } from "./richtext-format.mjs";
 import { blockMarkdown } from "./richtext-page.mjs";
 import { readTree } from "./richtext-spans.mjs";
 import { updateSpansConfig } from "./marks.mjs";
@@ -97,7 +97,7 @@ test("foreign dataframe read isolation preserves its stored marker and future at
   assert.ok(!output.includes(foreign));
   assert.deepEqual(A.save(doc), before);
   assert.deepEqual(A.getHeads(doc), heads);
-  assert.equal(String(A.spans(doc, textPath(id))[0].value.attrs.future), "kept");
+  assert.equal(String(readSpans(doc, textPath(id))[0].value.attrs.future), "kept");
   A.free(doc);
 });
 

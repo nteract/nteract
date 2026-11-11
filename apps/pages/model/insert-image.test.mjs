@@ -13,6 +13,7 @@ import { PagesImage } from "./wordgard-doc.mjs";
 import { assertDocumentLimits } from "./limits.mjs";
 import { imageIds } from "./image-ids.mjs";
 import { documentFeatures } from "./schema-features.mjs";
+import { readSpans } from "./richtext-format.mjs";
 
 const asset_id = "a".repeat(64);
 const pageId = "33333333-3333-4333-8333-333333333333";
@@ -76,7 +77,7 @@ test("ordinary inserted images remain editable through Markdown", () => {
     { op: "insert_image", asset_id, alt: "Diagram", title: "Title" },
   ]);
   const { block_id, asset_url } = result.inserted_images[0];
-  const marker = A.spans(after, ["blocks", block_id, "richText"]).find(
+  const marker = readSpans(after, ["blocks", block_id, "richText"]).find(
     (span) => span.type === "block" && String(span.value.type) === "image",
   );
   assert.ok(!Object.hasOwn(marker.value.attrs, "dark_src"));

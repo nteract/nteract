@@ -1,9 +1,9 @@
 // Display-only readings of a comment thread for the comments UI: a title, who
 // wrote each message, when, and where the thread points in the Page. Nothing
 // here writes to a document; stored Markdown stays exactly as written.
-import * as A from "@automerge/automerge/slim";
 import { orderedBlockIds } from "../model/order.mjs";
 import { presenceColor } from "./presence-color.mjs";
+import { readSpans } from "../model/richtext-format.mjs";
 
 export const TITLE_MAX = 100;
 
@@ -160,7 +160,7 @@ function outline(doc) {
     let offset = 0,
       first = true,
       heading = null;
-    for (const span of A.spans(block, ["richText"])) {
+    for (const span of readSpans(block, ["richText"])) {
       if (span.type === "block") {
         const type = String(span.value?.type ?? "");
         const parents = (span.value?.parents ?? []).map(String);

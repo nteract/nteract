@@ -1,5 +1,5 @@
 import * as A from "@automerge/automerge/slim";
-import { textPath, updateSpansExactly } from "./richtext-format.mjs";
+import { textPath, updateSpansExactly, readSpans } from "./richtext-format.mjs";
 import { quotableNodeType } from "./richtext-notices.mjs";
 import { markdownlessNode } from "./richtext-spans.mjs";
 import { nativeRead, readKind } from "./native-read.mjs";
@@ -226,7 +226,7 @@ function applyEdit(doc, op, trace, context) {
   if (op.op === "set_image") {
     validateImageChange(op);
     const { index } = resolveImageId(doc, id, op.image_id);
-    const spans = A.spans(doc, textPath(id));
+    const spans = readSpans(doc, textPath(id));
     const attrs = { ...spans[index].value.attrs };
     if (op.asset_id !== undefined)
       attrs.src = new A.ImmutableString(imageAssetUrl(doc.page_id, op.asset_id));

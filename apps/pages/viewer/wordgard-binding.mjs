@@ -24,7 +24,7 @@ import {
   synced,
 } from "./wordgard-projection-state.mjs";
 import { MARK_NAMES, markExpand } from "../model/marks.mjs";
-import { updateSpansExactly } from "../model/richtext-format.mjs";
+import { updateSpansExactly, readSpans } from "../model/richtext-format.mjs";
 import { stampMarks, stampSpans } from "../model/schema-features.mjs";
 
 // Enter inserts LineBreak leaves, while Wordgard's code clipboard parser can
@@ -306,7 +306,7 @@ export function createWordgardBinding(
     listeners = new Set();
   const read = (doc) => {
     trace("read");
-    return decode(A.spans(doc, path));
+    return decode(readSpans(doc, path));
   };
   const touches = (at) =>
     Array.isArray(at) &&

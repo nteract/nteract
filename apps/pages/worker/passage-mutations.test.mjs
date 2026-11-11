@@ -4,6 +4,7 @@ import * as A from "@automerge/automerge";
 import { applyPageOperation, createPageData, initializePage, projectPage } from "../model/page.mjs";
 import { textPath } from "../model/richtext.mjs";
 import { documentMutation, recoverDocumentMutations } from "./mutations.mjs";
+import { splitBlockStored } from "../model/richtext-format.mjs";
 
 class Storage {
   values = new Map();
@@ -132,7 +133,7 @@ test("base node_index follows its native passage after an earlier paragraph is i
     ],
   });
   f.native((draft) => {
-    A.splitBlock(draft, textPath(f.id), 0, {
+    splitBlockStored(draft, textPath(f.id), 0, {
       type: new A.ImmutableString("paragraph"),
       parents: [],
       attrs: {},

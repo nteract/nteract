@@ -3,11 +3,12 @@ import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import { textPath, blockMarkdown, setRichMarkdownKeepingNodes } from "./richtext.mjs";
 import { richFromSource } from "./richtext-test-support.mjs";
+import { readSpans } from "./richtext-format.mjs";
 
 function fixture(markdown, extra = { future: "opaque", enabled: false, count: 2, empty: null }) {
   return A.change(A.from({ blocks: { one: { markdown } } }), (d) => {
     richFromSource(d, "one");
-    const spans = A.spans(d, textPath("one"));
+    const spans = readSpans(d, textPath("one"));
     for (const span of spans)
       if (span.type === "block" && String(span.value.type) === "image")
         Object.assign(span.value.attrs, extra);
@@ -15,7 +16,7 @@ function fixture(markdown, extra = { future: "opaque", enabled: false, count: 2,
   });
 }
 const attrs = (doc) =>
-  A.spans(doc, textPath("one"))
+  readSpans(doc, textPath("one"))
     .filter((s) => s.type === "block" && String(s.value.type) === "image")
     .map((s) => s.value.attrs);
 const image = '![Diagram](https://example.com/image.png "Title")';
@@ -28,7 +29,7 @@ test("opaque images do not turn ordinary dataframe-like links into dataframe nod
     assert.equal(blockMarkdown(changed.blocks.one), markdown);
     assert.deepEqual(attrs(changed), attrs(doc));
     assert.ok(
-      !A.spans(changed, textPath("one")).some(
+      !readSpans(changed, textPath("one")).some(
         (s) => s.type === "block" && String(s.value.type) === "dataframe",
       ),
     );

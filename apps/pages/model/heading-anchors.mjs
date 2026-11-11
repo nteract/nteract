@@ -8,8 +8,8 @@
 // pageHeadingAnchors, so the two can't disagree about which heading an
 // anchor names. A heading's text here is its visible text: characters, image
 // alt text and line breaks as spaces, like the outline's `heading` field.
-import * as A from "@automerge/automerge/slim";
 import { orderedBlockIds } from "./order.mjs";
+import { readSpans } from "./richtext-format.mjs";
 
 /** The longest slug, in code points, before de-duplication suffixes. */
 export const ANCHOR_SLUG_MAX = 100;
@@ -101,7 +101,7 @@ export function pageHeadingAnchors(doc) {
   const anchors = [];
   for (const blockId of orderedBlockIds(doc)) {
     const block = doc.blocks[blockId];
-    headingsInSpans(A.spans(block, ["richText"])).forEach(({ level, text }, index) =>
+    headingsInSpans(readSpans(block, ["richText"])).forEach(({ level, text }, index) =>
       anchors.push({ blockId, index, level, text, anchor: name(text) }),
     );
   }

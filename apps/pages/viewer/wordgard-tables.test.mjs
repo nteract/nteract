@@ -25,6 +25,7 @@ import {
   Strikethrough,
 } from "./wordgard-model.mjs";
 import { createWordgardBinding } from "./wordgard-binding.mjs";
+import { readSpans } from "../model/richtext-format.mjs";
 
 const path = textPath("one");
 const nativeTableSpans = (markdown) => encode(parseMarkdown(markdown));
@@ -76,7 +77,7 @@ test("Markdown tables project into native cells with alignment, marks and empty 
     "Prose\n\n| A |\n| --- |\n| 🌊 |\n\nTail",
   ]) {
     const replica = fixture(markdown),
-      spans = A.spans(replica.doc, path),
+      spans = readSpans(replica.doc, path),
       tree = decode(spans).doc;
     assert.ok(spans.some((s) => s.type === "block" && String(s.value.type) === "table-cell"));
     assert.ok(decode(encode(tree)).doc.eq(tree));
@@ -88,7 +89,7 @@ test("Markdown tables project into native cells with alignment, marks and empty 
       markdown,
     );
   }
-  const table = decode(A.spans(fixture(source).doc, path)).doc.content[0];
+  const table = decode(readSpans(fixture(source).doc, path)).doc.content[0];
   assert.equal(table.type, Table.type);
   assert.equal(table.content[0].content[0].type, HeaderCell.type);
   assert.equal(table.content[1].content[0].type, Cell.type);
@@ -140,7 +141,7 @@ test("typing into cells preserves the native text object and unrelated cell curs
 
 test("independent edits in different table cells merge without a source replacement", () => {
   const base = fixture(source).doc,
-    tree = decode(A.spans(base, path));
+    tree = decode(readSpans(base, path));
   const one = tree.map.wgToAm[textPosition(tree.doc, "Shared editing")];
   const two = tree.map.wgToAm[textPosition(tree.doc, "Select words")];
   const a = A.change(A.clone(base), (d) => A.splice(d, path, one, 0, "Live "));
@@ -149,7 +150,7 @@ test("independent edits in different table cells merge without a source replacem
   validateRich(merged.blocks.one);
   assert.ok(blockMarkdown(merged.blocks.one).includes("Live Shared editing"));
   assert.ok(merged.blocks.one.richText.includes("These Select words"));
-  assert.ok(decode(A.spans(merged, path)).doc.eq(decode(A.spans(A.merge(b, a), path)).doc));
+  assert.ok(decode(readSpans(merged, path)).doc.eq(decode(readSpans(A.merge(b, a), path)).doc));
 });
 
 test("native row and column operations keep untouched cell identities and text", () => {
@@ -179,7 +180,7 @@ test("native row and column operations keep untouched cell identities and text",
 
 test("a concurrent row insertion and cell edit retain the target cell", () => {
   const base = fixture(source).doc,
-    decoded = decode(A.spans(base, path));
+    decoded = decode(readSpans(base, path));
   const table = decoded.doc.content[0];
   const inserted = schema.doc([
     Table.create([
@@ -199,7 +200,7 @@ test("a concurrent row insertion and cell edit retain the target cell", () => {
   );
   const merged = A.merge(a, b);
   validateRich(merged.blocks.one);
-  assert.equal(decode(A.spans(merged, path)).doc.content[0].content.length, 4);
+  assert.equal(decode(readSpans(merged, path)).doc.content[0].content.length, 4);
   assert.ok(merged.blocks.one.richText.includes("These Select words"));
   assert.ok(merged.blocks.one.richText.includes("New row"));
 });
@@ -281,7 +282,7 @@ test("concurrent row insertion before the displayed header does not duplicate ce
     binding.destroy();
   }
   const merged = A.merge(peers[0].doc, peers[1].doc);
-  assert.equal(decode(A.spans(merged, path)).doc.content[0].content.length, 4);
+  assert.equal(decode(readSpans(merged, path)).doc.content[0].content.length, 4);
   assert.equal(merged.blocks.one.richText.match(/H/g)?.length, 1);
   assert.equal(merged.blocks.one.richText.match(/Value/g)?.length, 1);
   validateRich(merged.blocks.one);
@@ -301,7 +302,7 @@ test("concurrent header deletion retains surviving rows exactly once", () => {
     binding.destroy();
   }
   const merged = A.merge(peers[0].doc, peers[1].doc);
-  assert.equal(decode(A.spans(merged, path)).doc.content[0].content.length, 2);
+  assert.equal(decode(readSpans(merged, path)).doc.content[0].content.length, 2);
   assert.equal(merged.blocks.one.richText.match(/First/g)?.length, 1);
   assert.equal(merged.blocks.one.richText.match(/Second/g)?.length, 1);
   validateRich(merged.blocks.one);
