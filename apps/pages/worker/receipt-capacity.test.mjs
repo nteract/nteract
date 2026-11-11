@@ -3,8 +3,8 @@ import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { createAuthFixture } from "../auth-fixtures.mjs";
 import { Catalog } from "./index.mjs";
-import { documentMutation, operationKey } from "./mutations.mjs";
-import { readRevision, reserveOperation } from "./operation-journal.mjs";
+import { COMMENTS_DOC, documentMutation, operationKey } from "./mutations.mjs";
+import { HORIZON, readRevision, reserveOperation } from "./operation-journal.mjs";
 import { fixture, pageId } from "./trash-fixture.mjs";
 
 class Storage {
@@ -386,4 +386,96 @@ test("two admissions at capacity in one tick each evict one receipt; equal stamp
   const after = await storage.list({ prefix: "host/operation/" });
   assert.equal(after.has("host/operation/same-0002"), false);
   assert.ok(after.has("host/operation/first-new") && after.has("host/operation/second-new"));
+});
+
+const identity = { principal: "fixture:owner", driver: "test" };
+// One instant for every stamp: the receipts, the read and the writes.
+const FROZEN = Date.parse("2026-11-11T12:00:00.000Z");
+
+/** A Page host on a clock frozen at `at`, its journal full of 1,000
+ * completed receipts stamped `at`, its stored horizon below `at`. */
+function frozenAtCapacity(t, at) {
+  t.mock.timers.enable({ apis: ["Date"], now: at });
+  const storage = new Storage();
+  for (let n = 0; n < 1000; n++)
+    storage.values.set(`host/operation/old-${String(n).padStart(4, "0")}`, {
+      fingerprint: `fixture-${n}`,
+      pending: false,
+      createdAt: "2000-01-01T00:00:00.000Z",
+      receipt: { page_id: `deleted-${n}`, deleted: true },
+      recordedAt: at,
+    });
+  let page = A.from({ page_id: "fixture-page", text: "base" });
+  const edit = (args, text) =>
+    documentMutation({
+      storage,
+      handle: {
+        doc: () => page,
+        async update(fn) {
+          page = fn(page);
+        },
+      },
+      operation: "edit_page",
+      args,
+      identity,
+      apply(draft) {
+        draft.text = text;
+      },
+      flush: async () => {},
+    });
+  return { storage, page: () => page, edit };
+}
+
+test("at capacity on a frozen clock, an edit's receipt revision is good for the next edit", async (t) => {
+  const w = frozenAtCapacity(t, FROZEN);
+  const read = await readRevision(w.storage, "page", A.getHeads(w.page()));
+  assert.equal(await w.storage.get(HORIZON), undefined, "the stored horizon starts below the read");
+  // The reservation evicts a receipt stamped at the read's instant, so the
+  // horizon reaches the read's handle.
+  const first = await w.edit({ nonce: "first-edit", revision: read }, "first");
+  assert.equal(await w.storage.get(HORIZON), FROZEN);
+  assert.equal(Date.now(), FROZEN, "no time passed");
+  // The next write names the revision that receipt returned, with no read.
+  const second = await w.edit({ nonce: "second-edit", revision: first.revision }, "second");
+  assert.equal(w.page().text, "second");
+  assert.notEqual(second.revision, first.revision);
+});
+
+test("at capacity on a frozen clock, a passage comment's Page revision is good for the next edit", async (t) => {
+  const w = frozenAtCapacity(t, FROZEN);
+  let comments = A.from({ page_id: "fixture-page", threads: [] });
+  const read = await readRevision(w.storage, "page", A.getHeads(w.page()));
+  assert.equal(await w.storage.get(HORIZON), undefined, "the stored horizon starts below the read");
+  const comment = await documentMutation({
+    storage: w.storage,
+    handle: {
+      doc: () => comments,
+      async update(fn) {
+        comments = fn(comments);
+      },
+    },
+    doc: COMMENTS_DOC,
+    pageId: "fixture-page",
+    operation: "manage_page_comment",
+    args: { nonce: "passage-comment", action: "add", revision: read },
+    identity,
+    baseRevision: (input) => input.revision,
+    // A passage comment checks its own anchor; this one always holds.
+    guard: () => null,
+    // As the Page host does: the Page revision this write read.
+    receiptFields: async (plan) => ({
+      revision: await plan.handle("page", A.getHeads(w.page())),
+    }),
+    pageHeads: () => A.getHeads(w.page()),
+    apply(draft) {
+      draft.threads.push("a passage comment");
+    },
+    flush: async () => {},
+  });
+  assert.equal(await w.storage.get(HORIZON), FROZEN);
+  assert.match(comment.revision, /^r\d+$/);
+  // The comment left the Page where the read found it. An edit against the
+  // Page revision its receipt names, with no read between, applies.
+  await w.edit({ nonce: "after-comment", revision: comment.revision }, "after the comment");
+  assert.equal(w.page().text, "after the comment");
 });
