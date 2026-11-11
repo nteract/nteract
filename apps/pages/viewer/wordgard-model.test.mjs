@@ -115,22 +115,20 @@ test("native positions preserve paragraph ends and opaque leaf endpoints", () =>
   assert.deepEqual(table.map.wgToAm, [0, 1]);
   assert.deepEqual(table.map.amToWg, [0, 1]);
 });
-test("invalid marks and unsafe links fail explicitly; code blocks need no language mark", () => {
-  assert.throws(
-    () => decode([{ type: "text", value: "x", marks: { highlight: "red" } }]),
-    /Invalid/,
-  );
-  assert.throws(
-    () =>
-      decode([
-        {
-          type: "text",
-          value: "x",
-          marks: { link: JSON.stringify({ href: "javascript:alert(1)" }) },
-        },
-      ]),
-    /Invalid/,
-  );
+// A mark value this build can't read or must not render is a mark it doesn't
+// know: kept as stored, drawn as nothing, written back by encode.
+test("invalid marks and unsafe links are kept as stored; code blocks need no language mark", () => {
+  for (const marks of [
+    { highlight: "red" },
+    { link: JSON.stringify({ href: "javascript:alert(1)" }) },
+  ]) {
+    const spans = [opening(), { type: "text", value: "x", marks }];
+    const { doc } = decode(spans);
+    const text = doc.content[0].content[0];
+    assert.deepEqual(PagesForeignMarks.isInSet(text.marks).value, marks);
+    assert.ok(!PagesLink.isInSet(text.marks));
+    assert.deepEqual(encode(doc), spans);
+  }
   const code = schema.doc([CodeBlock.create([Leaf.text("x")])]);
   assert.ok(decode(encode(code)).doc.eq(code));
   const link = schema.doc([
@@ -201,8 +199,12 @@ test("highlights decode to palette or custom colors and round trip", () => {
     assert.equal(PagesHighlight.isInSet(doc.content[0].content[0].marks).value, color);
     assert.deepEqual(encode(doc), spans);
   }
-  for (const color of ["red", "#ABCDEF", "#abc", true])
-    assert.throws(() => decode([{ type: "text", value: "x", marks: { highlight: color } }]));
+  for (const color of ["red", "#ABCDEF", "#abc", true]) {
+    const { doc } = decode([{ type: "text", value: "x", marks: { highlight: color } }]);
+    const text = doc.content[0].content[0];
+    assert.ok(!PagesHighlight.isInSet(text.marks));
+    assert.deepEqual(PagesForeignMarks.isInSet(text.marks).value, { highlight: color });
+  }
 });
 
 test("pasted HTML links keep their destination and title; unsafe ones keep only text", () => {

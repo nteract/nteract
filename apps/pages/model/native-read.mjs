@@ -27,6 +27,7 @@ import {
   PagesUnknownEmbed,
   PagesUnknownBlock,
   PagesForeignMarks,
+  PagesLink,
   codeHolds,
   nestIn,
   attrMap,
@@ -137,7 +138,10 @@ function readMarks(marks = {}) {
   let result = Mark.none;
   const foreign = Object.create(null);
   for (const [name, value] of Object.entries(marks)) {
-    const mark = readMark(name, value);
+    let mark = readMark(name, value);
+    // The agent read spells a link with no title as an empty one.
+    if (mark?.type === PagesLink && mark.value.title == null)
+      mark = PagesLink.of({ ...mark.value, title: "" });
     if (mark) result = mark.addToSet(result);
     else foreign[name] = value;
   }
