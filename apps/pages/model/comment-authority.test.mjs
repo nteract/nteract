@@ -672,9 +672,15 @@ test("admission refuses a message holding a marker or mark value this build can'
 });
 
 const agentOf = (principal, agent) => ({ ...who(principal), agent });
-const rawReplyWith = (author) => (d, ids) => {
-  d.threads[ids.thread].messages.agentreply = { ...richMessage("reply", BOB), author };
+const stampAgent = (d) => {
+  d.schema = { features: ["comment-agent"] };
 };
+const rawReplyWith =
+  (author, stamped = true) =>
+  (d, ids) => {
+    if (stamped) stampAgent(d);
+    d.threads[ids.thread].messages.agentreply = { ...richMessage("reply", BOB), author };
+  };
 
 test("a well-formed author.agent is admitted on a browser-synced reply and a new thread", () => {
   const { doc, ids } = seed();
@@ -688,6 +694,7 @@ test("a well-formed author.agent is admitted on a browser-synced reply and a new
     );
     assert.equal(reply.ok, true, JSON.stringify(reply.reason));
     const thread = admit(doc, BOB, "commenter", (d) => {
+      stampAgent(d);
       d.threads.newthread = {
         target: { kind: "block", blockId: "b1" },
         author: agentOf(BOB, agent),
@@ -786,3 +793,29 @@ function documentAgent(doc, threadId) {
   const agent = doc.threads[threadId].messages[messageId].author.agent;
   return agent && { ...agent };
 }
+
+test("an agent-bearing author is refused unless the comments document carries the stamp", () => {
+  const { doc, ids } = seed();
+  const agent = { name: "Rev" };
+  const reply = admit(doc, BOB, "commenter", (d) =>
+    rawReplyWith(agentOf(BOB, agent), false)(d, { thread: ids.aliceThread }),
+  );
+  assert.equal(reply.ok, false);
+  assert.equal(reply.reason.code, REJECTION.INVALID_VALUE);
+  const thread = admit(doc, BOB, "commenter", (d) => {
+    d.threads.newthread = {
+      target: { kind: "block", blockId: "b1" },
+      author: agentOf(BOB, agent),
+      createdAt: now(),
+      status: { value: "open", at: now() },
+      messages: { m1: { ...richMessage("hello", BOB), author: agentOf(BOB, agent) } },
+    };
+  });
+  assert.equal(thread.reason.code, REJECTION.INVALID_VALUE);
+  // A stamp already in the document is enough; the change need not carry it.
+  const stamped = A.change(A.clone(doc, { actor: actor() }), stampAgent);
+  const later = admit(stamped, BOB, "commenter", (d) =>
+    rawReplyWith(agentOf(BOB, agent), false)(d, { thread: ids.aliceThread }),
+  );
+  assert.equal(later.ok, true, JSON.stringify(later.reason));
+});
