@@ -109,8 +109,20 @@ test(
   "a repeated non-fatal policy refusal ends each round without spinning or saving sync state",
   { timeout: 5000 },
   async (t) => {
+    // The round timeout never fires here, so each round ends on the host's
+    // refusal however slowly the frames travel. The set holds the timers a
+    // round left armed.
+    const timers = new Set();
+    const syncTimer = {
+      set: (fire) => {
+        const timer = { fire };
+        timers.add(timer);
+        return timer;
+      },
+      clear: (timer) => timers.delete(timer),
+    };
     const { h, id, client, handle } = await fixture(t, {
-      syncTimeoutMs: 50,
+      syncTimer,
       policy: {
         admit() {
           throw new Refusal("history_capacity", "History is full");
@@ -141,7 +153,8 @@ test(
       const sent = client.link.stats.framesAToB;
       assert.ok(sent - before <= 3, "one bounded handshake per explicit attempt");
       const received = client.link.stats.framesBToA;
-      // Longer than syncTimeoutMs: neither Repo nor the old frame timer retries.
+      // The refused round disarmed its timer, and nothing retries on its own.
+      assert.equal(timers.size, 0);
       await delay(150);
       assert.equal(client.link.stats.framesAToB, sent);
       assert.equal(client.link.stats.framesBToA, received);
