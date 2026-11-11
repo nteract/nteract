@@ -1,6 +1,6 @@
 import { selectionContext, threadsOf, validCommentId as validId } from "./comments.mjs";
 import { commentBodyProjection } from "./comment-content.mjs";
-import { addressIndex, blockAddress } from "./addresses.mjs";
+import { addressIndex, blockAddress, resolveAddressFor } from "./addresses.mjs";
 
 const fields = new Set(["state", "node_id", "thread_ids", "include_messages"]);
 const invalid = (message) => {
@@ -85,6 +85,20 @@ function message(id, value) {
   };
 }
 
+/** The key of the block the node_id filter names. A node's or an image's id
+ * is refused as the wrong kind; an id that names nothing is not a selector. */
+function filterBlock(doc, address) {
+  try {
+    return resolveAddressFor(addressIndex(doc), doc, address, {
+      op: "list_page_comments",
+      field: "node_id",
+      kinds: ["block"],
+    }).key;
+  } catch (error) {
+    if (error.code === "wrong_address_kind") throw error;
+    invalid("node_id doesn't name a block in this Page; read the Page again for current ids");
+  }
+}
 /** Compact read-only threads; message_count includes body-free deleted
  * tombstones. `doc` is the Page document, which anchors resolve against;
  * threads come from `commentsDoc` (model/comments.mjs threadsOf). A thread
@@ -93,9 +107,7 @@ function message(id, value) {
 export function projectReadComments(doc, options = {}, commentsDoc) {
   const filter = selectors(options),
     comments = threadsOf(doc, commentsDoc);
-  const blockKey = filter.block === undefined ? undefined : addressIndex(doc).block(filter.block);
-  if (filter.block !== undefined && blockKey === undefined)
-    invalid("node_id doesn't name a block in this Page; read the Page again for current ids");
+  const blockKey = filter.block === undefined ? undefined : filterBlock(doc, filter.block);
   if (filter.ids)
     for (const id of filter.ids)
       if (!Object.hasOwn(comments, id))

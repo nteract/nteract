@@ -113,11 +113,20 @@ test("state, block and thread selectors intersect without resolving unrelated th
     projectReadComments(doc, { state: "resolved", thread_ids: [ids.first.thread_id] }),
     [],
   );
-  // node_id takes a block's id: a block's key, an unknown id and a node's id
-  // are refused.
+  // node_id takes a block's id. A node's id is the wrong kind; a block's
+  // key or an id that names nothing is not a selector.
   const [nodeId] = nodeAddresses(doc, "first");
   assert.ok(nodeId);
-  for (const node_id of ["first", "999999@abcdef", nodeId])
+  assert.throws(
+    () => projectReadComments(doc, { node_id: nodeId }),
+    (error) => {
+      assert.equal(error.status, 400);
+      assert.equal(error.code, "wrong_address_kind");
+      assert.match(error.message, /list_page_comments takes a block's id/);
+      return true;
+    },
+  );
+  for (const node_id of ["first", "999999@abcdef"])
     assert.throws(() => projectReadComments(doc, { node_id }), {
       status: 400,
       code: "invalid_comment_selector",

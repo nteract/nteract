@@ -183,6 +183,8 @@ test("a scripted session names everything by node_id, and nothing by a block's k
     [[comment.result.thread_id, added.node_id]],
   );
   assert.deepEqual(Object.keys(listed.comments[0].selectionContext.start), ["offsetUtf16"]);
+  const byNode = await call("list_page_comments", { node_id: added.nodes[1] }, { ok: false });
+  assert.equal(byNode.code, "wrong_address_kind");
   const progress = await call("report_page_progress", {
     message: "Reviewing the plan",
     revision: read.revision,
