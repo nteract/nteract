@@ -2,6 +2,7 @@
 // lifecycle tests. Node tests only.
 
 import * as A from "@automerge/automerge";
+import { readRevision } from "./operation-journal.mjs";
 import { createAuthFixture } from "../auth-fixtures.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import { applyComment } from "../model/comments.mjs";
@@ -10,7 +11,7 @@ import { WRITTEN_FORMATS } from "../model/document-types.mjs";
 import { Catalog, Page } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { plainStub } from "./plain-stub.mjs";
-import { headsFor, revisionFor } from "./revisions.mjs";
+import { headsFor } from "./revisions.mjs";
 import { operationKey } from "./mutations.mjs";
 import { proposeAccessUpdate } from "./access.mjs";
 import { LOCATION_SHAPE_KEY, shapeRecord } from "./location-shape.mjs";
@@ -303,9 +304,9 @@ export async function fixture(
     },
     heads: () => A.getHeads(doc),
     /** A revision handle the Page host names `heads` by (default: now). */
-    revision: (heads = A.getHeads(doc)) => revisionFor(storage, "page", heads, Date.now()),
+    revision: (heads = A.getHeads(doc)) => readRevision(storage, "page", heads),
     /** The comments document's revision handle now. */
-    commentRevision: () => revisionFor(storage, "comments", A.getHeads(commentsDoc), Date.now()),
+    commentRevision: () => readRevision(storage, "comments", A.getHeads(commentsDoc)),
     /** The heads a Page or comments revision handle names. */
     headsOf: (revision) => headsFor(storage, "page", revision),
     commentHeadsOf: (revision) => headsFor(storage, "comments", revision),

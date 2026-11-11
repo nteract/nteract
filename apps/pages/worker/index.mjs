@@ -118,8 +118,13 @@ import {
   isHistoryCapacityError,
   logIncompleteHistory,
 } from "./history-admission.mjs";
-import { inspectOperation, journalTime, reserveOperation } from "./operation-journal.mjs";
-import { headsFor, revisionPlan, revisionsFor } from "./revisions.mjs";
+import {
+  inspectOperation,
+  readRevisions,
+  reserveOperation,
+  revisionClock,
+} from "./operation-journal.mjs";
+import { headsFor, revisionPlan } from "./revisions.mjs";
 import { STORAGE_KEYS_PER_CALL, guardContext } from "./storage-guard.mjs";
 import { pageRecordsCall } from "./page-records.mjs";
 export { PageRecords } from "./page-records.mjs";
@@ -5772,7 +5777,8 @@ export class Page {
             };
             // The receipt's revision is minted in the put that records the
             // intent, so every reply to this creation names the same one.
-            created = revisionPlan(this.ctx.storage, await journalTime(this.ctx.storage));
+            const clock = await revisionClock(this.ctx.storage);
+            created = revisionPlan(this.ctx.storage, clock.at, clock.horizon);
             metadata.createdReceipt.revision = await created.handle(PAGE_DOC, A.getHeads(doc));
             intent = { metadata, bytes: A.save(doc) };
             assertIntentSize("host/creation", [intent.bytes], { metadata });
@@ -6217,7 +6223,7 @@ export class Page {
    * resolves one. Runs in the Page's queue. */
   revisionTable() {
     const storage = this.ctx.storage;
-    const handles = async (requests) => revisionsFor(storage, requests, await journalTime(storage));
+    const handles = (requests) => readRevisions(storage, requests);
     return {
       handles,
       handle: async (doc, heads) => (await handles([[doc, heads]]))[0],

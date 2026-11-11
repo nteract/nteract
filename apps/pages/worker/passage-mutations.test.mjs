@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
+import { readRevision } from "./operation-journal.mjs";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { applyPageOperation, createPageData, initializePage, projectPage } from "../model/page.mjs";
 import { textPath } from "../model/richtext.mjs";
 import { documentMutation, operationKey, recoverDocumentMutations } from "./mutations.mjs";
-import { headsFor, revisionFor } from "./revisions.mjs";
+import { headsFor } from "./revisions.mjs";
 
 class Storage {
   values = new Map();
@@ -80,7 +81,7 @@ function fixture(t, markdown = "Alpha first.\n\nBeta second.\n\nKeep the tail.")
       assert.ok(start >= 0);
       A.splice(draft, textPath(id), start, match.length, replacement);
     });
-  const revision = (heads = A.getHeads(doc)) => revisionFor(storage, "page", heads, Date.now());
+  const revision = (heads = A.getHeads(doc)) => readRevision(storage, "page", heads);
   const args = async (overrides = {}) => ({
     nonce: `passage-${crypto.randomUUID()}`,
     revision: await revision(),

@@ -11,6 +11,7 @@ import {
   receiptHorizon,
   receiptKey,
   reserveOperation,
+  revisionClock,
   validNonce,
 } from "./operation-journal.mjs";
 import { fencedHeads, parseRevision, revisionPlan } from "./revisions.mjs";
@@ -186,7 +187,7 @@ export async function documentMutation({
             storage,
             PAGE_DOC,
             base,
-            await receiptHorizon(storage, await journalTime(storage)),
+            (await revisionClock(storage)).horizon,
           ).catch((error) => {
             const current_heads = error?.code === "resync_required" && pageHeads();
             if (current_heads) error.details = { current_heads };
@@ -257,7 +258,8 @@ export async function documentMutation({
       // written in the same put as the pending entry.
       // The observed revision comes first: it precedes the result. When the
       // Page didn't move, it is the base revision itself.
-      const plan = revisionPlan(storage, entry.recordedAt ?? (await journalTime(storage)));
+      const recordedAt = entry.recordedAt ?? (await journalTime(storage));
+      const plan = revisionPlan(storage, recordedAt, await receiptHorizon(storage, recordedAt));
       const observed =
         guarded && (guarded.rebased ? await plan.handle(PAGE_DOC, guarded.current_heads) : base);
       entry.receipt = {

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readRevision } from "./operation-journal.mjs";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { Repo, cbor, generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
@@ -12,7 +13,7 @@ import { framePipe } from "../sync/wire.mjs";
 import { Page } from "./index.mjs";
 import { HOST_SENDER_ID, PlainByteStore } from "./plain-sync.mjs";
 import { documentMutation, operationKey } from "./mutations.mjs";
-import { headsFor, revisionFor } from "./revisions.mjs";
+import { headsFor } from "./revisions.mjs";
 import { applyComment } from "../model/comments.mjs";
 
 class Storage {
@@ -43,7 +44,7 @@ class Storage {
 
 const pageId = "44444444-4444-4444-8444-444444444444";
 // The revision handle the Page host names `heads` by, minted in its storage.
-const revisionOf = (f, heads) => revisionFor(f.storage, "page", heads, Date.now());
+const revisionOf = (f, heads) => readRevision(f.storage, "page", heads);
 const headsOf = (f, revision, doc = "page") => headsFor(f.storage, doc, revision);
 // The fixture caller's edit receipt key for `nonce`.
 const receiptKeyOf = (nonce) =>

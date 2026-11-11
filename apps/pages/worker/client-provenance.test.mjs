@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readRevision } from "./operation-journal.mjs";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { createAuthFixture } from "../auth-fixtures.mjs";
@@ -9,7 +10,6 @@ import { clientProvenance, forwardClientProvenance, withMcpAgent } from "./clien
 import { mcpSessionId } from "./usage.mjs";
 import worker from "./index.mjs";
 import { documentMutation, fingerprint } from "./mutations.mjs";
-import { revisionFor } from "./revisions.mjs";
 import { Storage } from "./projects-fixture.mjs";
 
 const origin = "https://pages.invalid";
@@ -285,7 +285,7 @@ test("changed request assertions replay original mutation; no-op creates no CRDT
     operation: "edit_page",
     args: {
       nonce: "original-operation",
-      revision: await revisionFor(storage, "page", A.getHeads(doc), Date.now()),
+      revision: await readRevision(storage, "page", A.getHeads(doc)),
     },
     flush: async () => {},
     apply: (draft) => {

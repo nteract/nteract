@@ -11,11 +11,26 @@
  *   host/revision/<doc>/latest     { n, heads, at } of that number
  *   host/revision/<doc>/h/<n>      { heads, at }, n zero-padded to 16 digits
  *
- * A number is never reissued for other heads. Minting writes all three keys
- * in one multi-key put, and a handle reaches a caller only after a sync
- * barrier, so a crash before the barrier forgets only a number nobody holds.
- * A write's handles go into the put that records its pending journal entry
- * (revisionPlan), so the receipt and its handles exist together.
+ * A number is never reissued for other heads, but two numbers may name the
+ * same heads. Minting writes all three keys in one multi-key put, and a
+ * handle reaches a caller only after a sync barrier, so a crash before the
+ * barrier forgets only a number nobody holds. A write's handles go into the
+ * put that records its pending journal entry (revisionPlan), so the receipt
+ * and its handles exist together.
+ *
+ * The fence. A write that names handle h, and has no stored receipt, is
+ * refused with `resync_required` when h was minted at or before the
+ * journal's receipt horizon (fencedHeads). Any write that named h was
+ * recorded at or after h's `at`, because journal time never runs behind the
+ * latest handle; so when h is newer than the horizon, no receipt of a write
+ * against h has been forgotten, and a write against an older h can't be told
+ * from a retry. This holds for writes that don't move the document they
+ * name, such as a comment on a Page revision.
+ *
+ * So that a quiet document stays writable, a plan never hands out a handle
+ * at or before the horizon: it reuses the latest handle only when it names
+ * the same heads and is newer than the horizon, and mints at a time after
+ * the horizon even when the clock reads earlier.
  *
  * The table keeps the newest REVISION_LIMIT handles of a document; the
  * latest is never dropped. Callers serialize minting with the resource's
@@ -76,13 +91,18 @@ export function revisionRecord(storage, doc, n) {
 
 /**
  * Handles minted for one put. `handle(doc, heads)` reuses the latest handle
- * when it names the same heads and otherwise takes the next number; `writes`
- * collects the keys to put, alone or beside a journal entry. After that put,
- * `settle()` runs the barrier the handles need and prunes old records.
- * `at` is the host time the handles record.
+ * when it names the same heads and was minted after `horizon`, and otherwise
+ * takes the next number; `writes` collects the keys to put, alone or beside a
+ * journal entry. After that put, `settle()` runs the barrier the handles need
+ * and prunes old records. `at` is the host time the handles record, raised
+ * past `horizon`; `horizon` is the journal's receipt horizon
+ * (operation-journal.mjs revisionClock), so no handle a plan returns is one
+ * the fence refuses.
  */
-export function revisionPlan(storage, at) {
+export function revisionPlan(storage, at, horizon = 0) {
   if (!Number.isSafeInteger(at) || at < 0) throw new TypeError("Invalid revision time");
+  if (!Number.isSafeInteger(horizon)) throw new TypeError("Invalid receipt horizon");
+  at = Math.max(at, horizon + 1);
   const docs = new Map();
   const writes = {};
   return {
@@ -99,7 +119,7 @@ export function revisionPlan(storage, at) {
         state = { latest, counter, minted: false };
         docs.set(doc, state);
       }
-      if (state.latest && sameHeads(state.latest.heads, heads))
+      if (state.latest && state.latest.at > horizon && sameHeads(state.latest.heads, heads))
         return formatRevision(doc, state.latest.n);
       // The counter never moves back: a put that landed without a confirmed
       // barrier may already have spent a number.
@@ -150,10 +170,10 @@ async function prune(storage, doc, cutoff) {
 }
 
 /** The handles naming each `[doc, heads]` of `requests`, in order, minted
- * where the latest handle names other heads. New ones share one put and one
- * barrier. */
-export async function revisionsFor(storage, requests, at = Date.now()) {
-  const plan = revisionPlan(storage, at);
+ * where the latest handle names other heads or is no newer than `horizon`
+ * (revisionPlan). New ones share one put and one barrier. */
+export async function revisionsFor(storage, requests, at = Date.now(), horizon = 0) {
+  const plan = revisionPlan(storage, at, horizon);
   const handles = [];
   for (const [doc, heads] of requests) handles.push(await plan.handle(doc, heads));
   if (Object.keys(plan.writes).length) await storage.put(plan.writes);
@@ -163,8 +183,8 @@ export async function revisionsFor(storage, requests, at = Date.now()) {
 }
 
 /** The handle naming `heads` in `doc` (revisionsFor for one). */
-export async function revisionFor(storage, doc, heads, at = Date.now()) {
-  return (await revisionsFor(storage, [[doc, heads]], at))[0];
+export async function revisionFor(storage, doc, heads, at = Date.now(), horizon = 0) {
+  return (await revisionsFor(storage, [[doc, heads]], at, horizon))[0];
 }
 
 /** The heads a handle names, or a 409 `resync_required` when this host
@@ -183,22 +203,27 @@ export async function headsFor(storage, doc, handle, name = "revision") {
 
 /**
  * The fence for a new write against handle `handle` of `doc`, given the
- * journal's receipt horizon: a refusal unless the handle is the latest, or
- * the handle after it was minted after the horizon. Otherwise a receipt for
- * a write made against it may be gone, and a retry can't be told from a new
- * request. Returns the heads the handle names.
+ * journal's receipt horizon: `resync_required` when the handle is unknown,
+ * pruned, or was minted at or before the horizon, since then a receipt of a
+ * write against it may be gone and a retry can't be told from a new request.
+ * The caller consults it only for a request with no stored receipt. Returns
+ * the heads the handle names.
  */
 export async function fencedHeads(storage, doc, handle, horizon, name = "revision") {
-  const heads = await headsFor(storage, doc, handle, name);
+  if (!Number.isSafeInteger(horizon)) throw new TypeError("Invalid receipt horizon");
   const n = parseRevision(handle, doc, name);
-  const latest = await latestRevision(storage, doc);
-  if (latest?.n === n) return heads;
-  const next = await revisionRecord(storage, doc, n + 1);
-  if (!next || next.at <= horizon)
+  const record = await revisionRecord(storage, doc, n);
+  if (!record)
+    reject(
+      409,
+      "resync_required",
+      `${name} ${handle} is unknown or too old; read again and decide from what the document holds now`,
+    );
+  if (record.at <= horizon)
     reject(
       409,
       "resync_required",
       `${name} ${handle} is older than the receipts this Page keeps; read again and decide from what the document holds now`,
     );
-  return heads;
+  return [...record.heads];
 }

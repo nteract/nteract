@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readRevision } from "./operation-journal.mjs";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
@@ -9,7 +10,6 @@ import worker, { Page } from "./index.mjs";
 import { authenticate } from "./auth.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { plainStub } from "./plain-stub.mjs";
-import { revisionFor } from "./revisions.mjs";
 
 const pageId = "33333333-3333-4333-8333-333333333333";
 function request(token, path, body) {
@@ -157,7 +157,7 @@ test("change-feed gateway permits read scope and viewers but rechecks revoked Pa
     sync: async () => {},
   };
   f.page.cacheTitle = () => {};
-  const since = await revisionFor(f.page.ctx.storage, "page", heads, Date.now());
+  const since = await readRevision(f.page.ctx.storage, "page", heads);
   const read = await f.call(
     "read_page_changes",
     { since_revision: since },

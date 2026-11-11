@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readRevision } from "./operation-journal.mjs";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { createPageData, initializePage } from "../model/page.mjs";
@@ -7,7 +8,7 @@ import { commentsGenesis } from "../model/comments-doc.mjs";
 import { guardCommentIntent, passageComment } from "../model/comment-guard.mjs";
 import { textPath } from "../model/richtext.mjs";
 import { COMMENTS_DOC, documentMutation, PAGE_DOC } from "./mutations.mjs";
-import { headsFor, revisionFor } from "./revisions.mjs";
+import { headsFor } from "./revisions.mjs";
 
 // Comment intents as the Page host runs them: journaled on the comments
 // document, anchored in the Page document, and never writing the Page.
@@ -105,7 +106,7 @@ function fixture(t, markdown = "Alpha first.\n\nBeta second.\n\nKeep the tail.")
       });
   };
   // The Page revision handle of the Page as it is now.
-  const revision = () => revisionFor(storage, PAGE_DOC, A.getHeads(doc), Date.now());
+  const revision = () => readRevision(storage, PAGE_DOC, A.getHeads(doc));
   const args = async (overrides = {}) => ({
     nonce: `comment-${crypto.randomUUID()}`,
     revision: await revision(),

@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
+import { readRevision } from "./operation-journal.mjs";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { createAuthFixture } from "../auth-fixtures.mjs";
 import { Catalog, Page } from "./index.mjs";
 import { documentMutation, operationKey, recoverDocumentMutations } from "./mutations.mjs";
-import { headsFor, revisionFor } from "./revisions.mjs";
+import { headsFor } from "./revisions.mjs";
 import { plainStub } from "./plain-stub.mjs";
 import { WRITTEN_FORMATS } from "../model/document-types.mjs";
 
@@ -66,7 +67,7 @@ async function mutationContext(storage, handle, flush) {
     operation: "edit_page",
     args: {
       nonce: "recoverable-edit",
-      revision: await revisionFor(storage, "page", A.getHeads(handle.doc()), Date.now()),
+      revision: await readRevision(storage, "page", A.getHeads(handle.doc())),
     },
     identity: owner,
     apply: (draft) => {

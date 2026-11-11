@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readRevision } from "./operation-journal.mjs";
 import test from "node:test";
 import * as A from "@automerge/automerge";
 import {
@@ -9,7 +10,7 @@ import {
   projectPage,
 } from "../model/page.mjs";
 import { documentMutation, recoverDocumentMutations } from "./mutations.mjs";
-import { headsFor, revisionFor } from "./revisions.mjs";
+import { headsFor } from "./revisions.mjs";
 
 async function fixture() {
   let doc = A.from(createPageData({ pageId: "page_test", title: "Test" }));
@@ -40,7 +41,7 @@ async function fixture() {
   };
   const identity = { principal: "user:owner", driver: "Kilo Desktop" };
   const args = {
-    revision: await revisionFor(storage, "page", A.getHeads(doc), Date.now()),
+    revision: await readRevision(storage, "page", A.getHeads(doc)),
     nonce: "targeted-edit-123",
     operations: [
       {

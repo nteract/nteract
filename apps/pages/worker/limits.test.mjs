@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
+import { readRevision } from "./operation-journal.mjs";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { BACKEND_LIMITS, MAX_STORED_BYTES, assertIntentSize } from "../model/limits.mjs";
 import { documentMutation } from "./mutations.mjs";
-import { revisionFor } from "./revisions.mjs";
 
 class Storage {
   values = new Map();
@@ -49,7 +49,7 @@ test("oversized derived edits leave content and recovery intents unchanged", asy
       operation: "edit_page",
       args: {
         nonce: "oversized-edit",
-        revision: await revisionFor(storage, "page", heads, Date.now()),
+        revision: await readRevision(storage, "page", heads),
       },
       identity: { principal: "owner", driver: "test" },
       apply: (draft) => {

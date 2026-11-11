@@ -14,12 +14,13 @@
  * The horizon (`host/receipt-horizon`) is the largest `recordedAt` of any
  * receipt this journal deleted, and never less than the clock minus
  * RECEIPT_LIFETIME_MS (receiptHorizon). It is made durable before the
- * deletes it covers. A write against a revision superseded at or before the
- * horizon may have a forgotten receipt, so its host refuses it
- * (`resync_required`) rather than guess whether it is a retry.
+ * deletes it covers. A write that names a revision handle minted at or before
+ * the horizon may have a forgotten receipt, so its host refuses it
+ * (`resync_required`) rather than guess whether it is a retry; that holds
+ * whether or not the write moves the document it names (revisions.mjs).
  */
 import { validNonce } from "../model/nonce.mjs";
-import { latestRevision, REVISION_DOCS } from "./revisions.mjs";
+import { latestRevision, REVISION_DOCS, revisionsFor } from "./revisions.mjs";
 
 export const RECEIPT_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
 export const JOURNAL_LIMITS = Object.freeze({
@@ -121,6 +122,24 @@ export async function journalTime(storage, now = Date.now()) {
   for (const doc of Object.keys(REVISION_DOCS))
     current = Math.max(current, (await latestRevision(storage, doc))?.at ?? 0);
   return current;
+}
+/** The journal time and receipt horizon a revision plan or fence uses
+ * (revisions.mjs): handles are minted after `horizon`, and a write naming
+ * one minted at or before it is refused. */
+export async function revisionClock(storage, now = Date.now()) {
+  const at = await journalTime(storage, now);
+  return { at, horizon: await receiptHorizon(storage, at) };
+}
+/** The handles a read names for each `[doc, heads]` of `requests`, minted
+ * in one put when needed: never one at or before the receipt horizon, so the
+ * fence never refuses a write that names a handle a read just returned. */
+export async function readRevisions(storage, requests, now = Date.now()) {
+  const { at, horizon } = await revisionClock(storage, now);
+  return revisionsFor(storage, requests, at, horizon);
+}
+/** readRevisions for one document. */
+export async function readRevision(storage, doc, heads, now = Date.now()) {
+  return (await readRevisions(storage, [[doc, heads]], now))[0];
 }
 /** The time at or before which this journal may have forgotten a receipt:
  * the stored horizon, or `now` minus the receipt lifetime when later. */

@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
+import { readRevision } from "./operation-journal.mjs";
 import { createAuthFixture } from "../auth-fixtures.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import { proposeAccessUpdate, pageState } from "./access.mjs";
@@ -16,7 +17,6 @@ import { LOCATION_SHAPE_KEY, shapeRecord } from "./location-shape.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { plainStub } from "./plain-stub.mjs";
 import { operationKey } from "./mutations.mjs";
-import { revisionFor } from "./revisions.mjs";
 
 const auth = await createAuthFixture();
 const owner = `user:anaconda-fixture:${auth.subject}`;
@@ -149,7 +149,7 @@ async function world({ location } = {}) {
     call,
     heads: () => A.getHeads(doc),
     /** The Page's revision handle for `heads`, minted in its storage. */
-    revision: (heads) => revisionFor(pageStorage, "page", heads, Date.now()),
+    revision: (heads) => readRevision(pageStorage, "page", heads),
     /** Everything durable or cached on both sides, to start another run from. */
     snapshot: () => ({
       storage: structuredClone(storage.values),

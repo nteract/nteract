@@ -4,8 +4,7 @@ import * as A from "@automerge/automerge";
 import { createAuthFixture } from "../auth-fixtures.mjs";
 import { Catalog } from "./index.mjs";
 import { documentMutation, operationKey } from "./mutations.mjs";
-import { reserveOperation } from "./operation-journal.mjs";
-import { revisionFor } from "./revisions.mjs";
+import { readRevision, reserveOperation } from "./operation-journal.mjs";
 import { fixture, pageId } from "./trash-fixture.mjs";
 
 class Storage {
@@ -54,7 +53,7 @@ test("the 1001st document receipt evicts the oldest; exact retries and payload g
   fill(storage, 999, { at: recent() });
   let doc = A.from({ page_id: "fixture-page", text: "base" });
   const identity = { principal: "fixture:owner", driver: "test" };
-  const revision = () => revisionFor(storage, "page", A.getHeads(doc), Date.now());
+  const revision = () => readRevision(storage, "page", A.getHeads(doc));
   const keyOf = (nonce) => operationKey({ nonce }, identity, "page");
   let applications = 0;
   const context = {

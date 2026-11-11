@@ -3,13 +3,13 @@
 // never imports it.
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
+import { readRevision } from "./operation-journal.mjs";
 import { createAuthFixture } from "../auth-fixtures.mjs";
 import { sqliteD1 } from "../test/sqlite-d1.mjs";
 import worker, { Catalog, Page, Space } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { plainStub } from "./plain-stub.mjs";
 import { operationKey } from "./mutations.mjs";
-import { revisionFor } from "./revisions.mjs";
 import { LOCATION_SHAPE_KEY, shapeState } from "./location-shape.mjs";
 
 /** A response as a Durable Object stub returns it on Cloudflare Workers: its
@@ -248,7 +248,7 @@ export async function world(t, { index = "1", storage: newStorage = () => new St
     catalogStorage(principal).get(await receiptKey(nonce, principal));
   /** A revision handle of the Page as it is now, minted in its host. */
   const revision = (pageId) =>
-    revisionFor(pages.get(pageId).ctx.storage, "page", heads(pageId), Date.now());
+    readRevision(pages.get(pageId).ctx.storage, "page", heads(pageId));
   /** Run every held background job, including ones they start, to the end. */
   const settle = async () => {
     while (jobs.length) await Promise.allSettled(jobs.splice(0));

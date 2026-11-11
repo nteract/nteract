@@ -147,16 +147,47 @@ test("an unknown handle is resync_required and a malformed one invalid_revision"
   assert.equal(parseRevision("c42", "comments"), 42);
 });
 
-test("the fence passes the latest handle and one superseded after the horizon", async () => {
+test("the fence refuses a handle minted at or before the horizon, the latest included", async () => {
   const storage = new Storage();
-  await revisionFor(storage, "page", heads("a"), at);
-  assert.deepEqual(await fencedHeads(storage, "page", "r1", at + 100), heads("a"));
-  await revisionFor(storage, "page", heads("b"), at + 10);
-  // r2 superseded r1 at +10: after a horizon of +9, at or before one of +10.
-  assert.deepEqual(await fencedHeads(storage, "page", "r1", at + 9), heads("a"));
-  await assert.rejects(fencedHeads(storage, "page", "r1", at + 10), {
-    status: 409,
-    code: "resync_required",
-  });
-  assert.deepEqual(await fencedHeads(storage, "page", "r2", at + 1000), heads("b"));
+  await revisionFor(storage, "page", heads("a"), at, at - 1);
+  // r1 was minted at `at`: a horizon before it passes, one at it refuses.
+  assert.deepEqual(await fencedHeads(storage, "page", "r1", at - 1), heads("a"));
+  for (const horizon of [at, at + 100])
+    await assert.rejects(fencedHeads(storage, "page", "r1", horizon), {
+      status: 409,
+      code: "resync_required",
+    });
+  // Neither a later handle nor its time lets r1 through.
+  await revisionFor(storage, "page", heads("b"), at + 1000, at + 100);
+  await assert.rejects(fencedHeads(storage, "page", "r1", at + 100), { code: "resync_required" });
+  assert.deepEqual(await fencedHeads(storage, "page", "r2", at + 100), heads("b"));
+  // An unknown handle is resync_required too.
+  await assert.rejects(fencedHeads(storage, "page", "r9", at - 1), { code: "resync_required" });
+});
+
+test("a read never answers with a handle at or before the horizon", async () => {
+  const storage = new Storage();
+  assert.equal(await revisionFor(storage, "page", heads("a"), at, at - 1), "r1");
+  // The latest names the same heads but is too old: the same heads get the
+  // next number, and the old number still names them.
+  assert.equal(await revisionFor(storage, "page", heads("a"), at + 50, at), "r2");
+  assert.deepEqual(await headsFor(storage, "page", "r1"), heads("a"));
+  assert.deepEqual(await headsFor(storage, "page", "r2"), heads("a"));
+  assert.deepEqual(await fencedHeads(storage, "page", "r2", at), heads("a"));
+  // Newer than the horizon, it is reused.
+  assert.equal(await revisionFor(storage, "page", heads("a"), at + 60, at + 49), "r2");
+});
+
+test("a handle is minted after the horizon even when the clock reads earlier", async () => {
+  const storage = new Storage();
+  // The clock reads the horizon itself, then a time behind it.
+  for (const [now, horizon, expected] of [
+    [at, at, "r1"],
+    [at - 500, at + 10, "r2"],
+  ]) {
+    assert.equal(await revisionFor(storage, "page", heads(expected), now, horizon), expected);
+    const { at: minted } = await latestRevision(storage, "page");
+    assert.ok(minted > horizon, `${expected} at ${minted} is after ${horizon}`);
+    assert.deepEqual(await fencedHeads(storage, "page", expected, horizon), heads(expected));
+  }
 });

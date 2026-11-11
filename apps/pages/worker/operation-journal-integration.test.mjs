@@ -11,9 +11,10 @@ import {
   HORIZON,
   JOURNAL_LIMITS,
   RECEIPT_LIFETIME_MS,
+  readRevision,
   reserveOperation,
 } from "./operation-journal.mjs";
-import { headsFor, revisionFor } from "./revisions.mjs";
+import { headsFor } from "./revisions.mjs";
 import { plainStub } from "./plain-stub.mjs";
 import { WRITTEN_FORMATS } from "../model/document-types.mjs";
 
@@ -51,7 +52,7 @@ class Storage {
  * key for a request, and the heads a handle names. */
 function revisionHelpers(storage, handle, identity) {
   return {
-    revision: () => revisionFor(storage, "page", A.getHeads(handle.doc()), Date.now()),
+    revision: () => readRevision(storage, "page", A.getHeads(handle.doc())),
     key: (args) => operationKey(args, identity, "page"),
     heads: (revision) => headsFor(storage, "page", revision),
   };
@@ -503,19 +504,28 @@ test("a retry whose receipt a full journal evicted is refused at the fence", asy
   assert.equal(f.applications(), 2);
 });
 
-test("the latest revision passes the fence after every receipt is gone", async (t) => {
+test("a quiet Page's old latest handle is refused, and a fresh read names its heads anew", async (t) => {
   let now = start;
   t.mock.method(Date, "now", () => now);
   const f = fixture();
   await documentMutation({ ...f.context, args: await argsFor(f, "first-edit") });
-  const read = await f.revision();
+  const old = await f.revision();
   now += RECEIPT_LIFETIME_MS * 3;
   completedReceipts(f.storage, now - 1);
+  // The Page hasn't changed, but its latest handle is behind the horizon.
+  await assert.rejects(
+    documentMutation({ ...f.context, args: { nonce: "after-all", revision: old } }),
+    { status: 409, code: "resync_required" },
+  );
+  // A read names the same heads under a new number, and a write against it lands.
+  const fresh = await f.revision();
+  assert.notEqual(fresh, old);
+  assert.deepEqual(await f.heads(fresh), await f.heads(old));
   const receipt = await documentMutation({
     ...f.context,
-    args: { nonce: "after-all", revision: read },
+    args: { nonce: "after-all-fresh", revision: fresh },
   });
-  assert.notEqual(receipt.revision, read);
+  assert.notEqual(receipt.revision, fresh);
   assert.ok((await f.storage.get(HORIZON)) >= now - RECEIPT_LIFETIME_MS);
   assert.equal(f.applications(), 2);
 });
@@ -886,6 +896,98 @@ test("a passage comment and a reply each replay their receipt on an exact retry"
   assert.equal(await messages(), before + 2, "each wrote one message");
 });
 
+// A write against revision r whose receipt is forgotten (aged out, or
+// evicted by a full journal) is refused on retry, whether or not the Page has
+// moved since: neither a passage comment nor a target-scope edit runs twice.
+for (const write of ["passage comment", "target-scope edit"])
+  for (const forgotten of ["age", "capacity"])
+    for (const laterEdit of [false, true])
+      test(`a ${write} retried after its receipt is lost to ${forgotten}${laterEdit ? ", after a later edit," : ""} is refused`, async (t) => {
+        let now = start;
+        t.mock.method(Date, "now", () => now);
+        const f = await pageFixture(t, { readContent: true });
+        t.after(() => A.free(f.page.handle.doc()));
+        const call = async (operation, args) => {
+          const response = await f.request(operation, { page_id: pageId, ...args });
+          return { status: response.status, body: await response.json() };
+        };
+        const read = (await call("read_page", { comments: "all" })).body;
+        const [operation, args] =
+          write === "passage comment"
+            ? [
+                "manage_page_comment",
+                {
+                  nonce: "lost-write",
+                  action: "add",
+                  block_id: f.blockId,
+                  selected_text: "Original selected",
+                  revision: read.revision,
+                  body: "Once.",
+                },
+              ]
+            : [
+                "edit_page",
+                {
+                  nonce: "lost-write",
+                  revision: read.revision,
+                  conflict_scope: "target",
+                  operations: [
+                    {
+                      op: "replace_match",
+                      block_id: f.blockId,
+                      match_text: "selected",
+                      replacement: "selected and checked",
+                    },
+                  ],
+                },
+              ];
+        const state = async () => {
+          const page = (await call("read_page", { comments: "all" })).body;
+          return {
+            text: page.blocks.map((block) => block.markdown).join("\n"),
+            messages: page.comments.reduce((count, thread) => count + thread.messages.length, 0),
+          };
+        };
+        const first = await call(operation, args);
+        assert.equal(first.status, 200, JSON.stringify(first.body));
+        const once = await state();
+        // Forget the receipt with a write that doesn't move the Page.
+        now += 1000;
+        if (forgotten === "age") now += RECEIPT_LIFETIME_MS;
+        else completedReceipts(f.storage, now, JOURNAL_LIMITS.entries - 1);
+        const collector = await call("manage_page_comment", {
+          nonce: "collector",
+          action: "reply",
+          thread_id: f.threadId,
+          body: "Collects.",
+        });
+        assert.equal(collector.status, 200, JSON.stringify(collector.body));
+        assert.equal(await f.storage.get(await f.key({ nonce: "lost-write" })), undefined);
+        assert.equal(
+          await f.storage.get(
+            await operationKey({ nonce: "lost-write" }, { principal: f.principal }, "comments"),
+          ),
+          undefined,
+        );
+        if (laterEdit) {
+          now += 1000;
+          const current = (await call("read_page", { comments: "none" })).body;
+          const edited = await call("edit_page", {
+            nonce: "later-edit",
+            revision: current.revision,
+            operations: [{ op: "set_title", title: "Later title" }],
+          });
+          assert.equal(edited.status, 200, JSON.stringify(edited.body));
+        }
+        const before = await state();
+        assert.equal(before.messages, once.messages + 1, "only the collector's reply since");
+        const retry = await call(operation, args);
+        assert.equal(retry.status, 409, JSON.stringify(retry.body));
+        assert.equal(retry.body.code, "resync_required");
+        assert.match(retry.body.current_revision, /^r\d+$/);
+        assert.deepEqual(await state(), before, "nothing was written again");
+      });
+
 test("no agent body names Automerge heads: reads, receipts and every revision refusal", async (t) => {
   const f = await pageFixture(t, { readContent: true });
   t.after(() => A.free(f.page.handle.doc()));
@@ -1087,7 +1189,7 @@ test("actual Page rejects stale node ranges with a fresh outline instead of sele
   const current = A.getHeads(f.page.handle.doc());
   const response = await f.request("read_page", {
     node_range: { block_id: f.blockId, from: 0, to: 2 },
-    revision: await revisionFor(f.storage, "page", heads),
+    revision: await readRevision(f.storage, "page", heads),
     comments: "none",
   });
   assert.equal(response.status, 409);

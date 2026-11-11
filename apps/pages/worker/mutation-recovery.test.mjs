@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
+import { readRevision } from "./operation-journal.mjs";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { documentMutation, recoverDocumentMutations } from "./mutations.mjs";
-import { headsFor, revisionFor } from "./revisions.mjs";
+import { headsFor } from "./revisions.mjs";
 import { refreshCatalogTitle } from "./catalog.mjs";
 import { catalogSource } from "./catalog-index.mjs";
 
@@ -43,7 +44,7 @@ async function mutationFixture() {
   const identity = { principal: "user:owner", driver: "ChatGPT" };
   const args = {
     nonce: "test-operation",
-    revision: await revisionFor(storage, "page", A.getHeads(doc), Date.now()),
+    revision: await readRevision(storage, "page", A.getHeads(doc)),
   };
   const context = {
     storage,
