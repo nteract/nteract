@@ -6,6 +6,7 @@ import { createAuthFixture } from "../auth-fixtures.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import { applyComment } from "../model/comments.mjs";
 import { commentsGenesis } from "../model/comments-doc.mjs";
+import { WRITTEN_FORMATS } from "../model/document-types.mjs";
 import { Catalog, Page } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { plainStub } from "./plain-stub.mjs";
@@ -96,6 +97,7 @@ export async function fixture(
     tree: "a".repeat(32),
     comments_doc: commentsUuid,
     recordStorage: "automerge",
+    documentFormats: { ...WRITTEN_FORMATS },
   };
   const ownerIdentity = { principal: owner, canWrite: true, expiresAt: Date.now() + 60_000 };
   const acl = proposeAccessUpdate(base, ownerIdentity, {

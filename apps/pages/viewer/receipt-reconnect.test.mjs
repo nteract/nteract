@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import { generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
-import { PageSession, connectionFailureRetries } from "./session.mjs";
+import { PAGE_FORMAT_UNSUPPORTED, PageSession, connectionFailureRetries } from "./session.mjs";
 import {
   HANDSHAKE_TIMEOUT_MS,
   MAX_STEP_MS,
@@ -628,6 +628,36 @@ test("a socket the host closes as schema_unsupported shows the reload notice", a
   assert.equal(f.session.schemaGate.refused, true);
   assert.equal(f.session.schemaGate.editable, false);
   assert.equal(f.session.connectionProblem, "", "the schema notice is the only banner");
+  assert.equal(f.session.retryTimer, undefined);
+  await f.advance(60_000);
+  assert.equal(f.sockets.length, 1, "no automatic reconnect");
+});
+
+test("a Page the host doesn't open shows its stored-format message, not the reload notice", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  // The socket closes with the refusal.
+  const socket = f.sockets.at(-1);
+  hostClose(socket, 4427, "stored_form_unsupported");
+  f.session.socketDisconnected(socket);
+  assert.equal(f.session.connectionProblem, PAGE_FORMAT_UNSUPPORTED);
+  assert.equal(f.session.schemaGate.refused, false);
+  assert.equal(f.session.retryTimer, undefined);
+  // Discovery answers with it.
+  f.hooks.connect = () =>
+    Response.json(
+      {
+        error:
+          "This Page is stored in a format this version of Pages doesn't open. Its owner can delete it.",
+        code: "stored_form_unsupported",
+      },
+      { status: 409 },
+    );
+  await f.session.retryConnection();
+  assert.equal(f.session.connectionProblem, PAGE_FORMAT_UNSUPPORTED);
+  assert.doesNotMatch(f.session.connectionProblem, /reload/i);
+  assert.equal(f.session.schemaGate.refused, false);
+  assert.equal(f.session.schemaGate.editable, true);
   assert.equal(f.session.retryTimer, undefined);
   await f.advance(60_000);
   assert.equal(f.sockets.length, 1, "no automatic reconnect");

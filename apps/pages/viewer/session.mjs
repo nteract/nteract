@@ -130,9 +130,21 @@ export function classifyRefusal(error) {
   if (error.code === "signing_key_rejected") return undefined;
   return "denied";
 }
-// 409s that retrying can't fix: this build lacks a feature the Page uses, or
-// the host can't read a draft an earlier build saved.
+// 409s that retrying can't fix: this build lacks a feature the Page uses, the
+// host can't read a draft an earlier build saved, or the Page is stored in a
+// format the host doesn't open.
 const RELOAD_REQUIRED_CODES = new Set(["unsupported_schema_feature", "stored_form_unsupported"]);
+/** Shown when the host refuses to open a Page whose record names document
+ * formats it doesn't open. Reloading can't help, so it doesn't say to. */
+export const PAGE_FORMAT_UNSUPPORTED =
+  "This Page is stored in a format this version of Pages doesn't open. Its owner can delete it.";
+/** The connection problem a failed connection shows: the Page's stored
+ * format for a host that refused it as one, otherwise the error's message. */
+export function connectionProblemOf(error) {
+  return error?.status === 409 && error.code === "stored_form_unsupported"
+    ? PAGE_FORMAT_UNSUPPORTED
+    : error?.message;
+}
 /** Shown when the host refuses to register a draft an earlier version of
  * Pages saved in a form this build doesn't read. */
 export const DRAFT_FORM_UNSUPPORTED =
@@ -256,9 +268,14 @@ const receiptRetryDelay = (attempt, transient) =>
       : undefined
     : RECEIPT_RETRY_DELAYS[attempt];
 /** What a person can do about an admission `stop`. A build the host no longer
- * accepts reloads into one it does; any other stop is a refused tab key. */
+ * accepts reloads into one it does; a Page stored in a format the host
+ * doesn't open can only be deleted; any other stop is a refused tab key. */
 const stopMessage = (admission) =>
-  admission?.code === "schema_unsupported" ? schemaUnsupported([]).message : SIGNING_KEY_REFUSED;
+  admission?.code === "schema_unsupported"
+    ? schemaUnsupported([]).message
+    : admission?.code === "stored_form_unsupported"
+      ? PAGE_FORMAT_UNSUPPORTED
+      : SIGNING_KEY_REFUSED;
 // Not retryable by openPageWithRetry: this tab cannot succeed as it is.
 export const signingKeyRefused = (admission, cause) =>
   Object.assign(Error(stopMessage(admission), cause === undefined ? undefined : { cause }), {
@@ -1353,7 +1370,7 @@ export class PageSession {
       this.renderStatus();
       return;
     }
-    this.showConnectionProblem(SIGNING_KEY_REFUSED);
+    this.showConnectionProblem(stopMessage(admission));
   }
   /** Stop syncing while keeping the local draft. `denied` removes access,
    * `trashed` says the Page is in its owner's Trash, and otherwise the
@@ -2485,7 +2502,7 @@ export class PageSession {
           retryAfterMs: error.retryAfterMs,
         });
       } else {
-        this.showConnectionProblem(error.message);
+        this.showConnectionProblem(connectionProblemOf(error));
         // An admission close during the handshake is a refusal; the next
         // attempt's discovery still stops on a definitive answer.
         if (connectionFailureRetries(error))

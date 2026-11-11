@@ -37,9 +37,12 @@ export function publicTrash(metadata) {
 
 /** Collaborators who lose access when the Page is permanently deleted, and
  * the discussion deleted with it: `commentsDoc` is the Page's comments
- * document. */
-export function purgeImpact(metadata, doc, commentsDoc) {
-  const threads = Object.values(threadsOf(doc, commentsDoc));
+ * document. A Page whose documents the host doesn't open has `doc` null: it
+ * is described from its record and `title`, the title it last projected,
+ * and its comment counts are null because nothing read them. */
+export function purgeImpact(metadata, doc, commentsDoc, title) {
+  const threads = doc ? Object.values(threadsOf(doc, commentsDoc)) : null;
+  const shown = doc ? doc.title : title;
   const collaborators = Object.entries(metadata.acl?.members ?? {})
     .filter(([, member]) => ["viewer", "commenter", "editor"].includes(member?.role))
     .map(([principal, member]) => ({
@@ -51,14 +54,16 @@ export function purgeImpact(metadata, doc, commentsDoc) {
     .sort((a, b) => a.principal.localeCompare(b.principal));
   const now = Date.now();
   return {
-    title: typeof doc.title === "string" ? doc.title : "Untitled",
-    comment_threads: threads.length,
-    comment_count: threads.reduce(
-      (count, thread) =>
-        count +
-        Object.values(thread?.messages ?? {}).filter((message) => !message?.deletedAt).length,
-      0,
-    ),
+    title: typeof shown === "string" ? shown : "Untitled",
+    comment_threads: threads ? threads.length : null,
+    comment_count: threads
+      ? threads.reduce(
+          (count, thread) =>
+            count +
+            Object.values(thread?.messages ?? {}).filter((message) => !message?.deletedAt).length,
+          0,
+        )
+      : null,
     collaborators,
     pending_invitations: Object.values(metadata.acl?.invites ?? {}).filter(
       (invite) => invite?.expiresAt > now,
@@ -90,13 +95,15 @@ async function previewKey(storage) {
   ]);
 }
 
-/** Everything a preview describes. Any change to it invalidates the token. */
+/** Everything a preview describes. Any change to it invalidates the token.
+ * `doc` is null for a Page whose documents the host doesn't open: nothing
+ * can change them, so the record alone binds the preview. */
 async function previewBinding(metadata, doc, principal) {
   const bytes = encoder.encode(
     JSON.stringify({
       page: metadata.pageId,
       principal,
-      heads: [...A.getHeads(doc)].sort(),
+      heads: doc ? [...A.getHeads(doc)].sort() : null,
       acl: metadata.acl ?? null,
       trashed_at: metadata.trash.trashed_at,
       revision: metadata.lifecycleRevision ?? 0,

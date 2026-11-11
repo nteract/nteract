@@ -1835,14 +1835,40 @@ relayed change from a claimed actor is refused.
 Discovery and the socket carry `sync=automerge`; a build without it gets
 `schema_unsupported` ("Reload to update"). The socket also carries `formats`, the
 document formats the build reads, as sorted `type:format` pairs
-(`pages.comments:1,pages.page:2`). The host writes one format of each type, so
-a Page's documents are in the formats its build writes. A socket whose
-`formats` lacks one of them is closed as `schema_unsupported`, and the viewer
-shows "Reload to update". Every type is required, because a Page can gain its
-comments document while a socket is open. A socket with no `formats` is a
-400, as is a repeated or malformed `formats`. Discovery takes no `formats` and
-stays open to every reader. Presence ids are per tab
-(`sender`), stamped by the host on every relay.
+(`pages.comments:1,pages.page:2`). The Page's host record names its
+documents' formats (below). A socket whose `formats` lacks one of the
+record's is closed as `schema_unsupported`, and the viewer shows "Reload to
+update". Every type the record names is required, because a Page can gain
+its comments document while a socket is open. A socket with no `formats` is
+a 400, as is a repeated or malformed `formats`. Discovery takes no `formats`
+and stays open to every reader; its `documents` descriptors carry the
+record's formats. Presence ids are per tab (`sender`), stamped by the host
+on every relay.
+
+#### Document formats in the host record
+
+A Page's host record (`host/document`) stores the format of each of its
+document types as `documentFormats`, `{ "pages.page": 2, "pages.comments":
+1 }`. Creation, registration and a Project's content document all stamp the
+formats the build writes ([model/document-types.mjs](model/document-types.mjs)),
+the comments format included, since the comments document is created at
+boot. `recordDocumentFormats` is the one reader. A record without the field
+was written before records carried it and reads as `pages.page` 2 and
+`pages.comments` 1 (`UNSTAMPED_RECORD_FORMATS`); the build that changes
+either format deletes that rule.
+
+A record whose formats aren't exactly the ones the build writes opens
+neither document. Discovery, the socket (closed `4427`), `/api/saved`, every
+agent read and edit, comments, presence, image and card uploads answer `409
+stored_form_unsupported`, and the viewer shows "This Page is stored in a
+format this version of Pages doesn't open. Its owner can delete it." with no
+reload. The shared-Page check and sharing still answer from the record, so
+the Page keeps its listing title. Its owner can trash, restore and
+permanently delete it: receipts carry the title the host last projected
+(`host/title-projection`), a trash with `base_heads` is refused as invalid,
+and the purge preview describes the record with `heads`, `comment_threads`
+and `comment_count` null. Permanent deletion removes its stored documents
+by id, as for any Page.
 
 A browser may still hold a local copy saved beside a Subduction replica, from
 before every Page was plain. Its checkpoint is plain Automerge, so the tab

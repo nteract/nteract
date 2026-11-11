@@ -140,10 +140,11 @@ for (const fails of [true, false])
           "deployment/profiles.mjs",
         ])
           write(`scripts/${name}`, readFileSync(new URL(`./${name}`, import.meta.url), "utf8"));
-        write(
-          "model/document-types.mjs",
-          readFileSync(new URL("../model/document-types.mjs", import.meta.url), "utf8"),
-        );
+        for (const name of ["document-types.mjs", "stored-form.mjs"])
+          write(
+            `model/${name}`,
+            readFileSync(new URL(`../model/${name}`, import.meta.url), "utf8"),
+          );
         for (const name of ["favicon.mjs", "product.mjs", "schedule.mjs"])
           write(
             `shared/${name}`,
