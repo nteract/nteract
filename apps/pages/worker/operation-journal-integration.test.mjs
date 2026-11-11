@@ -7,7 +7,6 @@ import { DocumentPolicy } from "./policy.mjs";
 import { retryKey } from "../model/retry-key.mjs";
 import { applyPageOperation, createPageData, initializePage } from "../model/page.mjs";
 import { comment, newCommentsDoc } from "../model/comments-test-support.mjs";
-import { stampFeatures } from "../model/schema-features.mjs";
 import { documentMutation, recoverDocumentMutations } from "./mutations.mjs";
 import { issueRetryToken, JOURNAL_LIMITS, RETRY_LIFETIME_MS } from "./operation-journal.mjs";
 import { plainStub } from "./plain-stub.mjs";
@@ -710,7 +709,7 @@ async function pageFixture(t, { readContent = false } = {}) {
   const storage = new Storage();
   // A current Page: its comments already live in their own document.
   let doc = A.change(A.from(createPageData({ pageId, title: "Accepted content" })), (draft) =>
-    stampFeatures(draft, ["comments-doc"]),
+    initializePage(draft),
   );
   let comments = newCommentsDoc();
   let updates = 0;

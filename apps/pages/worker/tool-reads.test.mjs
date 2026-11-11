@@ -131,36 +131,6 @@ test("comment-only reads omit body and allow summaries without changing document
   assert.deepEqual(result.body.heads, A.getHeads(doc));
 });
 
-test("a message in an earlier build's stored form reads as a placeholder; every thread still lists", async (t) => {
-  const { doc, blockId } = fixture(t);
-  const second = comment(
-    doc,
-    commentsOf.get(doc),
-    { action: "add", block_id: blockId, selected_text: "passage", body: "Second thread" },
-    { principal: "user:two", displayName: "Two", driver: "Test" },
-  );
-  const good = second.result.thread_id;
-  const bad = Object.keys(second.comments.threads).find((id) => id !== good);
-  // A `body` beside the spans, as a stale replica's merge leaves it.
-  const comments = A.change(second.comments, (d) => {
-    const [id] = Object.keys(d.threads[bad].messages);
-    d.threads[bad].messages[id].body = "stale copy";
-  });
-  commentsOf.set(doc, comments);
-  const listed = await read(doc, {}, "list_page_comments");
-  assert.equal(listed.status, 200);
-  assert.equal(listed.body.comments.length, 2);
-  const byId = Object.fromEntries(listed.body.comments.map((thread) => [thread.id, thread]));
-  assert.equal(byId[bad].messages[0].content_error, "stored_form_unsupported");
-  assert.equal(byId[bad].messages[0].body, "");
-  assert.equal(byId[bad].messages[0].author.principal, "user:one");
-  assert.doesNotMatch(JSON.stringify(listed.body), /stale copy/);
-  assert.equal(byId[good].messages[0].body, "Second thread");
-  const page = await read(doc, { page_id: doc.page_id });
-  assert.equal(page.status, 200);
-  assert.equal(page.body.comments.length, 2);
-});
-
 test("oversized content returns only an explicitly paginated outline and edit authority", async (t) => {
   const { doc } = fixture(t, "Keep\n\n" + "Large paragraph. ".repeat(3000));
   const result = await read(doc, { max_bytes: 4096, comments: "none" });

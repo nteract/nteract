@@ -40,11 +40,13 @@ export function createPageData({ pageId, title = "Untitled" }) {
 }
 /** A new Page's first change: its first block, holding `markdown` (one empty
  * paragraph when that is empty), and the stamp that says its comments live
- * in their own document (model/comments-doc.mjs). `blockId` names the block;
- * a fixture passes one to keep its history the same on every run. */
+ * in their own document (model/comments-doc.mjs). On a Page that already has
+ * blocks, it rewrites the first one. `blockId` names a new block; a fixture
+ * passes one to keep its history the same on every run. */
 export function initializePage(doc, markdown = "", blockId = crypto.randomUUID()) {
-  doc.blocks[blockId] = block();
-  setRichMarkdown(doc, blockId, String(markdown));
+  let id = orderedBlockIds(doc)[0];
+  if (id === undefined) doc.blocks[(id = blockId)] = block();
+  setRichMarkdown(doc, id, String(markdown));
   stampFeatures(doc, [COMMENTS_FEATURE]);
 }
 /** `commentsDoc` is the Page's comments document, when it's available. */
