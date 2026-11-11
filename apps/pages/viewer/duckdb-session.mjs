@@ -9,9 +9,12 @@
 import { supportsQuery } from "@nteract/sift";
 import { quoteIdent } from "./duckdb-engine.mjs";
 
+// Whole DuckDB type names: a list such as INTEGER[] or a struct is not a
+// scalar and takes no pushdown.
 const NUMERIC =
-  /^(TINYINT|SMALLINT|INTEGER|BIGINT|HUGEINT|UTINYINT|USMALLINT|UINTEGER|UBIGINT|FLOAT|DOUBLE|DECIMAL)/;
-const TEMPORAL = /^(DATE|TIMESTAMP)/;
+  /^(TINYINT|SMALLINT|INTEGER|BIGINT|HUGEINT|UTINYINT|USMALLINT|UINTEGER|UBIGINT|UHUGEINT|FLOAT|DOUBLE|DECIMAL\(\d+,\d+\))$/;
+const TEMPORAL =
+  /^(DATE|TIMESTAMP|TIMESTAMP_S|TIMESTAMP_MS|TIMESTAMP_NS|TIMESTAMP WITH TIME ZONE)$/;
 const ORDERED = ["between", "gt", "gte", "lt", "lte", "is_null", "is_not_null"];
 
 /** Leaf ops a DuckDB column type answers. Other types accept no pushdown. */
@@ -50,13 +53,18 @@ export async function createDuckQuerySession(engine, relation) {
     const compile = (p) => {
       if (!("column" in p)) {
         if (p.op === "not") return `NOT (${compile(p.arg)})`;
+        // An empty conjunction holds for every row; an empty disjunction for none.
+        if (!p.args.length) return p.op === "and" ? "TRUE" : "FALSE";
         return `(${p.args.map(compile).join(p.op === "and" ? " AND " : " OR ")})`;
       }
       const type = typeOf.get(p.column);
-      // Sift sends timestamps as epoch milliseconds.
-      const col = TEMPORAL.test(type)
-        ? `epoch_ms(${quoteIdent(p.column)}::TIMESTAMP)`
-        : quoteIdent(p.column);
+      // Sift sends timestamps as epoch milliseconds. A zoned timestamp is
+      // already an instant; casting it would apply the session time zone.
+      const col = !TEMPORAL.test(type)
+        ? quoteIdent(p.column)
+        : type === "TIMESTAMP WITH TIME ZONE"
+          ? `epoch_ms(${quoteIdent(p.column)})`
+          : `epoch_ms(${quoteIdent(p.column)}::TIMESTAMP)`;
       const bind = (value) => (params.push(value), "?");
       switch (p.op) {
         case "between":

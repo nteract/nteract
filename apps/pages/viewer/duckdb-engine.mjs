@@ -92,10 +92,16 @@ export async function openPageEngine(bindings, { toArrowStream } = {}) {
   const ingest = toArrowStream
     ? async (assetId, bytes) => {
         const ipc = await toArrowStream(bytes);
-        await bindings.insertArrowFromIPCStream(conn, ipc, {
-          name: assetRelation(assetId),
-          create: true,
-        });
+        try {
+          await bindings.insertArrowFromIPCStream(conn, ipc, {
+            name: assetRelation(assetId),
+            create: true,
+          });
+        } catch (error) {
+          // A failed insert can leave a partial table; a retry creates it anew.
+          await raw(`DROP TABLE IF EXISTS ${quoteIdent(assetRelation(assetId))}`);
+          throw error;
+        }
       }
     : async (assetId, bytes) => {
         const file = `${SOURCE_DIR}${assetId}.parquet`;
@@ -106,11 +112,15 @@ export async function openPageEngine(bindings, { toArrowStream } = {}) {
       };
 
   const sources = new Map();
-  let closed = false;
+  // open → closing → closed. Only an open engine takes work; close() waits
+  // for work already queued, and every caller shares that one shutdown.
+  let state = "open";
+  let shutdown;
+  const refuse = () => Promise.reject(Error("Engine is closed"));
   return {
     /** Run one statement; resolves to one Arrow IPC stream. */
     run(sql, params = []) {
-      if (closed) return Promise.reject(Error("Engine is closed"));
+      if (state !== "open") return refuse();
       return serial(() => raw(sql, params));
     },
     /**
@@ -119,6 +129,7 @@ export async function openPageEngine(bindings, { toArrowStream } = {}) {
      * hands over the caller's bytes. Resolves to the relation name.
      */
     addSource(assetId, bytes) {
+      if (state !== "open") return refuse();
       if (!ASSET_ID.test(assetId)) return Promise.reject(Error("Invalid asset ID"));
       let pending = sources.get(assetId);
       if (!pending) {
@@ -136,11 +147,16 @@ export async function openPageEngine(bindings, { toArrowStream } = {}) {
       const ipc = await this.run(`DESCRIBE ${quoteIdent(relation)}`);
       return describeRows(ipc);
     },
-    async close() {
-      if (closed) return;
-      closed = true;
-      await tail;
-      await connection.close();
+    close() {
+      if (state === "open") {
+        state = "closing";
+        shutdown = (async () => {
+          await tail;
+          await connection.close();
+          state = "closed";
+        })();
+      }
+      return shutdown;
     },
   };
 }

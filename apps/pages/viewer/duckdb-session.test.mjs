@@ -173,6 +173,53 @@ test("a query outside the capabilities, an injected name or a closed session is 
   await assert.rejects(session.query(query(), ctx()), /closed/);
 });
 
+test("empty compounds hold for every row (and) or none (or)", async () => {
+  const session = await createDuckQuerySession(engine, await engine.addSource(ASSET, parquet));
+  const exact = async (filters) =>
+    session.count(query(filters), "exact", ctx()).then((c) => c.value);
+  assert.equal(await exact([{ op: "and", args: [] }]), 4);
+  assert.equal(await exact([{ op: "or", args: [] }]), 0);
+  assert.equal(await exact([{ op: "not", arg: { op: "or", args: [] } }]), 4);
+  const page = await session.query(query([{ op: "and", args: [] }], [], 1), ctx());
+  assert.deepEqual(page.matchedCount, { kind: "exact", value: 4 });
+});
+
+test("only scalar columns take pushdown; zoned and fine timestamps compare as instants", async () => {
+  await engine.run(`CREATE TABLE typed AS SELECT * FROM (VALUES
+    ([1, 2], [TIMESTAMP '2026-01-01'], 1.5::DECIMAL(4,1), TIMESTAMP_NS '2026-01-02 00:00:00',
+     TIMESTAMPTZ '2026-01-02 00:00:00+00'),
+    ([3], [], 2.5::DECIMAL(4,1), TIMESTAMP_NS '2026-01-03 00:00:00',
+     TIMESTAMPTZ '2026-01-03 00:00:00+00')
+  ) t(ints, days, amount, ns, zoned)`);
+  const session = await createDuckQuerySession(engine, "typed");
+  const { filters } = session.capabilities;
+  assert.equal(filters.ints, undefined, "INTEGER[] is not numeric");
+  assert.equal(filters.days, undefined, "TIMESTAMP[] is not temporal");
+  assert.ok(filters.amount.includes("gt"), "DECIMAL(p,s) is numeric");
+  const jan3 = Date.UTC(2026, 0, 3);
+  for (const filter of [
+    { column: "ns", op: "gte", value: jan3 },
+    { column: "zoned", op: "gte", value: jan3 },
+    { column: "zoned", op: "lt", value: jan3 },
+    { column: "amount", op: "gt", value: 2 },
+  ]) {
+    const page = await session.query(query([filter]), ctx());
+    assert.deepEqual(page.matchedCount, { kind: "exact", value: 1 }, JSON.stringify(filter));
+  }
+  await assert.rejects(session.query(query([{ column: "days", op: "is_null" }]), ctx()), /days/);
+});
+
+test("a closing engine takes no more work and shares one shutdown", async () => {
+  const closing = await openPageEngine(await database());
+  await closing.addSource(ASSET, parquet);
+  const first = closing.close();
+  assert.equal(closing.close(), first);
+  await assert.rejects(closing.addSource(ASSET, parquet), /closed/, "cached source");
+  await assert.rejects(closing.addSource("b".repeat(64), parquet), /closed/);
+  await assert.rejects(closing.run("SELECT 1"), /closed/);
+  await first;
+});
+
 test("an engine fed by Sift's Parquet decoder reads no files, not even registered Parquet", async () => {
   const arrowDb = await database();
   const decoded = [];
