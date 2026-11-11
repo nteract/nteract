@@ -6,6 +6,12 @@ export { safeUrl } from "./marks.mjs";
 
 export const textPath = (id) => ["blocks", id, "richText"];
 
+/** A stored marker's parents as names: its list, or none when a peer
+ * stored anything else there. Every reader of stored spans reads parents
+ * through this. */
+export const markerParents = (value) =>
+  Array.isArray(value?.parents) ? value.parents.map(String) : [];
+
 const markerKey = (value) =>
   JSON.stringify([
     String(value.type),

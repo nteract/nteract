@@ -194,10 +194,12 @@ records the node addresses agents use.
   admission checks and the Markdown and outline projections are the first
   candidates, because the host, the tools and a Rust client can then share
   one codec. Moving the editor's document into WASM is a larger step.
-- Whether marker `parents` becomes a scalar path, and how small blocks get.
-  As lists, two writers that change one marker's parents at once merge into
-  parents neither wrote. Every reader draws them by one rule, and the next
-  host write or editor edit to the block stores what they drew
+- How small blocks get. Marker `parents` stays a list: a scalar parents
+  value and one path scalar for type and parents each merged no better in a
+  census of concurrent writers. As lists, two writers that change one marker's parents at once merge into
+  parents neither wrote. Every reader draws any stored spans, whatever their
+  parents or values, and none throws; the next host write or editor edit to
+  a block whose only problem is its nesting stores what they drew
   ([model/merge-readers.test.mjs](model/merge-readers.test.mjs)). A merge
   can still pair one writer's type with another's parents, or drop a
-  structural edit; a scalar parents value alone doesn't prevent that.
+  structural edit.

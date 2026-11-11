@@ -150,4 +150,26 @@ export const ADJUSTED_NESTING_CASES = {
       );
     return A.spans(A.merge(indent("0a".repeat(16)), indent("0b".repeat(16))), ["text"]);
   },
+  // A rule is no container: as a parent it drops out.
+  "rule as parent": () => [
+    marker("paragraph", ["horizontal-rule"]),
+    { type: "text", value: "hello" },
+  ],
+  // Parents that aren't a list read as none, on a node and on an embed.
+  "parents not a list": () => [
+    { ...marker("paragraph", []), value: { ...marker("paragraph", []).value, parents: 3 } },
+    { type: "text", value: "a" },
+    {
+      type: "block",
+      value: { type: new A.ImmutableString("hard-break"), parents: 3, attrs: {}, isEmbed: true },
+    },
+    { type: "text", value: "b" },
+  ],
+};
+/** A word in each ADJUSTED_NESTING_CASES block that no bad marker governs. */
+export const ADJUSTED_NESTING_WORDS = {
+  "repeated table": "head",
+  "concurrent indent": "a",
+  "rule as parent": "hello",
+  "parents not a list": "b",
 };

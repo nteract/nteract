@@ -1,7 +1,7 @@
 // Comment reads have no writer or editor-schema dependency. Legacy tolerance
 // here projects stored content only; it never makes that content admissible.
 import * as A from "@automerge/automerge/slim";
-import { codeTextUnmarked } from "./richtext-format.mjs";
+import { codeTextUnmarked, markerParents } from "./richtext-format.mjs";
 import { PLAIN_FORMAT, plainCommentText } from "./comment-text.mjs";
 import { nativeReadSpans, readChildren, readKind, readMarkdown } from "./native-read.mjs";
 import { isKnownBlock, nodeType, TEXT_CONTAINERS } from "./node-registry.mjs";
@@ -39,7 +39,7 @@ function commentNoticeSpans(spans, all) {
       continue;
     }
     const type = String(span.value.type),
-      parents = (span.value.parents ?? []).map(String);
+      parents = markerParents(span.value);
     const unknown = !isKnownBlock(type) || dataframeInText(type, parents);
     if (unknown && (all || (span.value.isEmbed && parents.includes("code-block")))) {
       if (!span.value.isEmbed && !parents.some((parent) => TEXT_CONTAINERS.has(parent)))
@@ -201,7 +201,7 @@ export function commentBodyProjection(message) {
       for (const span of unmarked) {
         if (span.type !== "block") continue;
         const type = String(span.value.type),
-          parents = (span.value.parents ?? []).map(String);
+          parents = markerParents(span.value);
         unknown = dataframeInText(type, parents)
           ? "dataframe"
           : [type, ...parents].find((name) => !isKnownBlock(name));

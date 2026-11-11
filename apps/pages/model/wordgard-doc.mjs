@@ -45,7 +45,13 @@ import {
 } from "./marks.mjs";
 import { DATAFRAME_BLOCK, readDataframe } from "../shared/dataset-assets.mjs";
 import { imageAttrs } from "./image-attrs.mjs";
-import { TEXT_CONTAINERS, validAlignment, validHeadingLevel } from "./node-registry.mjs";
+import { markerParents } from "./richtext-format.mjs";
+import {
+  isKnownBlock,
+  TEXT_CONTAINERS,
+  validAlignment,
+  validHeadingLevel,
+} from "./node-registry.mjs";
 // The Pages table format stores physical alignment. Wordgard's stock mark
 // uses logical values and does not round-trip a physical `right` clipboard style.
 const validCellAlignment = validAlignment;
@@ -315,7 +321,7 @@ export const PagesUnknownEmbed = Leaf.Type.define("PagesUnknownEmbed", {
 function unknownValue(marker) {
   const immutable = [];
   const attrs = Object.fromEntries(
-    Object.entries(marker.attrs ?? {}).map(([key, value]) => {
+    Object.entries(attrMap(marker.attrs) ?? {}).map(([key, value]) => {
       if (!A.isImmutableString(value)) return [key, value];
       immutable.push(key);
       return [key, String(value)];
@@ -325,7 +331,7 @@ function unknownValue(marker) {
     type: String(marker.type),
     attrs,
     immutable,
-    parents: (marker.parents ?? []).map(String),
+    parents: storedParents(marker),
     isEmbed: !!marker.isEmbed,
   };
 }
@@ -502,8 +508,42 @@ export function toMarks(marks) {
 export const markNames = (mark) => Object.keys(toMarks([mark]));
 const strings = (attrs = {}) =>
   Object.fromEntries(
-    Object.entries(attrs).map(([k, v]) => [k, A.isImmutableString(v) ? String(v) : v]),
+    Object.entries(attrMap(attrs) ?? {}).map(([k, v]) => [
+      k,
+      A.isImmutableString(v) ? String(v) : v,
+    ]),
   );
+/** A marker's attrs when they are a map, or null. */
+export const attrMap = (attrs = {}) =>
+  attrs && typeof attrs === "object" && !Array.isArray(attrs) && !A.isImmutableString(attrs)
+    ? attrs
+    : null;
+
+/** Whether this build can't read a stored marker's own values, or must not
+ * render them: a value that isn't a map, attrs that aren't one, an image
+ * whose attributes PagesImage refuses (an unsafe or missing src), a heading
+ * level, table alignment or task state outside what this build writes.
+ * Every reader draws such a marker as the notice for a node this build
+ * doesn't know, and encode writes it back as stored. */
+export function unreadableMarker(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return true;
+  if (value.attrs != null && !attrMap(value.attrs)) return true;
+  const type = String(value.type),
+    attrs = strings(value.attrs);
+  try {
+    if (value.isEmbed) {
+      if (type === "image") {
+        if (!imageAttrs(value.attrs)) return true;
+        PagesImage.spec.validate(attrs);
+      }
+      return false;
+    }
+    descriptor(type, attrs);
+    return false;
+  } catch {
+    return true;
+  }
+}
 function descriptor(type, attrs = {}) {
   switch (type) {
     case "table":
@@ -551,8 +591,7 @@ function descriptor(type, attrs = {}) {
 }
 
 /** A marker's parents as stored names: a list, or none. */
-export const storedParents = (value) =>
-  Array.isArray(value?.parents) ? value.parents.map(String) : [];
+export const storedParents = markerParents;
 
 const typeOf = (tag) => tag.type ?? tag;
 /** Where a node of `tag` nests in `chain` (`[{ tag }]`, outermost first):
@@ -716,29 +755,36 @@ export function decode(spans) {
       });
       continue;
     }
-    if (span.type !== "block" || !span.value || typeof span.value !== "object")
-      throw Error("Invalid Pages rich span");
+    if (span.type !== "block") throw Error("Invalid Pages rich span");
+    // A marker whose value isn't a map reads as an inline notice; encode
+    // can't write it back as stored.
+    if (!span.value || typeof span.value !== "object" || Array.isArray(span.value)) {
+      ensureText();
+      newer = partial = true;
+      unknownInline({ type: String(span.value), isEmbed: true });
+      continue;
+    }
     // A marker's parents are a list of names. Anything else reads as no
     // parents: a node marker's nesting is then adjusted; an embed's parents
     // only say whether a code block holds it.
     const listed = Array.isArray(span.value.parents);
     const value = { ...span.value, parents: storedParents(span.value) },
       type = String(value.type),
-      attrs = strings(value.attrs);
+      attrs = strings(value.attrs),
+      unreadable = unreadableMarker(span.value);
+    // Attrs that aren't a map can't be written back as stored.
+    if (span.value.attrs != null && !attrMap(span.value.attrs)) newer = partial = true;
     if (value.isEmbed) {
       // An embed a code block can't hold opens a paragraph after it.
       if (inCode() && !codeHolds(type, value.parents)) close();
       ensureText();
       if (type === "hard-break") leaf(LineBreak);
       else if (type === "image") {
-        if (!safeUrl(attrs.src)) throw Error("Invalid Pages image");
-        if (!imageAttrs(value.attrs)) {
+        // An image this build can't read, or whose src it must not render.
+        if (unreadable) {
           newer = partial = true;
           unknownInline(value);
-        } else {
-          PagesImage.spec.validate(attrs);
-          leaf(PagesImage.of(attrs));
-        }
+        } else leaf(PagesImage.of(attrs));
       } else {
         newer = true;
         unknownInline(value);
@@ -757,10 +803,13 @@ export function decode(spans) {
     };
     for (const parent of value.parents) {
       // A container this build doesn't know draws nothing of its own; its
-      // content renders at the nearest known level.
+      // content renders at the nearest known level. A known name that
+      // holds no nodes (a rule, an image) is no parent: it drops out, and
+      // the marker's nesting is adjusted.
       const d = descriptor(String(parent));
       if (!d) {
-        newer = partial = true;
+        if (isKnownBlock(String(parent))) adjusted = true;
+        else newer = partial = true;
         continue;
       }
       const before = outer.length;
@@ -781,7 +830,7 @@ export function decode(spans) {
         ? attrs
         : null;
     const builtIn = type === "horizontal-rule" || !!dataframe;
-    let desc = builtIn ? null : descriptor(type, attrs);
+    let desc = builtIn || unreadable ? null : descriptor(type, attrs);
     // The node itself nests the same way. A table part no container in its
     // chain holds is drawn inside the table containers it needs
     // (TABLE_PART_OUTER), which have no marker of their own.

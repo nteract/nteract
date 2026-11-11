@@ -156,7 +156,7 @@ test("rereview: inherited property names are private foreign marks", () => {
   }
 });
 
-test("rereview: raw false zero and empty cell alignment remain in typed summaries", () => {
+test("rereview: raw false, zero and empty cell alignment read as notices in every reader", () => {
   for (const align of [false, 0, ""]) {
     const before = page([block("table-cell", ["table", "table-row"], { align }), text("x")]);
     const after = A.change(A.clone(before), (d) =>
@@ -166,7 +166,11 @@ test("rereview: raw false zero and empty cell alignment remain in typed summarie
       const bytes = A.save(after);
       assert.throws(() => validateRich(before.blocks.one));
       const result = projectReadContent(after);
-      assert.deepEqual(result.outline[0].summary.align, [align]);
+      // An alignment this build doesn't write reads as a notice.
+      assert.ok(
+        result.outline.some((entry) => entry.type === "unknown"),
+        String(align),
+      );
       assert.equal(
         result.blocks[0].markdown,
         readMarkdown(nativeRead(after.blocks.one, pageId).nodes),
@@ -175,7 +179,9 @@ test("rereview: raw false zero and empty cell alignment remain in typed summarie
         since_heads: A.getHeads(before),
         comments: "none",
       });
-      assert.equal(delta.changes[0].scope, "block");
+      // Every reader draws the cell as a notice, so the change is scoped to
+      // the node that holds it.
+      assert.equal(delta.changes[0].scope, "node");
       assert.deepEqual(A.save(after), bytes);
     } finally {
       A.free(before);
@@ -468,7 +474,8 @@ test("review: legacy scalar marks and attrs retain base read behavior", () => {
       if (spans[0].type === "block") {
         if (String(spans[0].value.type) === "code-block")
           assert.equal(result.outline[0].attrs.language, String(spans[0].value.attrs.params ?? ""));
-        else assert.equal(result.outline[0].attrs.level, spans[0].value.attrs.level);
+        // A heading level this build doesn't write reads as a notice.
+        else assert.equal(result.outline[0].type, "unknown");
       }
       assert.deepEqual(A.save(doc), bytes);
     } finally {

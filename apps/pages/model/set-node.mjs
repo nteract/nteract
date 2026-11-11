@@ -13,7 +13,7 @@
 // checked, language, heading_level or align is refused with the typed field
 // that replaces it.
 import * as A from "@automerge/automerge/slim";
-import { textPath, updateSpansExactly } from "./richtext-format.mjs";
+import { markerParents, textPath, updateSpansExactly } from "./richtext-format.mjs";
 import { richDoc } from "./richtext-spans.mjs";
 import { updateSpansConfig } from "./marks.mjs";
 import { locateRange } from "./replace-match.mjs";
@@ -114,7 +114,7 @@ function governingMarker(spans, at) {
 }
 
 const markerType = (span) => String(span.value.type);
-const parentsOf = (span) => (span.value.parents ?? []).map(String);
+const parentsOf = (span) => markerParents(span.value);
 
 /** The spans index of the marker set_node changes for text that marker
  * `index` governs: that marker, or the container whose first paragraph it

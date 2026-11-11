@@ -24,7 +24,11 @@ import { applyPageOperation, createPageData, initializePage, projectPage } from 
 import { orderedBlockIds } from "../model/order.mjs";
 import { Leaf, Slice } from "wordgard/doc";
 import { textPath, blockMarkdown } from "../model/richtext.mjs";
-import { ADJUSTED_NESTING_CASES, richFromSource } from "../model/richtext-test-support.mjs";
+import {
+  ADJUSTED_NESTING_CASES,
+  ADJUSTED_NESTING_WORDS,
+  richFromSource,
+} from "../model/richtext-test-support.mjs";
 import { updateSpansExactly } from "../model/richtext-format.mjs";
 import { repairBlockMarkers } from "../model/richtext-page.mjs";
 import {
@@ -1057,7 +1061,7 @@ test("a person can edit a block whose only problem is parents no writer wrote", 
     const before = blockMarkdown(replica.doc.blocks.one);
     const editor = editorFor(replica, "one");
     assert.equal(editor.binding.current.adjusted, true, name);
-    const word = name === "repeated table" ? "head" : "a";
+    const word = ADJUSTED_NESTING_WORDS[name];
     const at = editor.binding.current.map.amToWg[replica.doc.blocks.one.richText.indexOf(word)];
     editor.dispatch({ changes: { from: at, insert: [Leaf.text("z")] } });
     assertInSync(editor, replica, "one", name);
@@ -1066,7 +1070,7 @@ test("a person can edit a block whose only problem is parents no writer wrote", 
     assert.equal(decode(nativeSpans(replica, "one")).lossy, false, name);
     assert.equal(
       blockMarkdown(replica.doc.blocks.one),
-      before.replace(new RegExp(`\\| ${word} \\|`), `| z${word} |`),
+      before.replace(new RegExp(`\\b${word}\\b`), `z${word}`),
       name,
     );
     editor.binding.destroy();

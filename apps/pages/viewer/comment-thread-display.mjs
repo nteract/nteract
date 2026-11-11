@@ -3,6 +3,7 @@
 // here writes to a document; stored Markdown stays exactly as written.
 import * as A from "@automerge/automerge/slim";
 import { orderedBlockIds } from "../model/order.mjs";
+import { markerParents } from "../model/richtext-format.mjs";
 import { presenceColor } from "./presence-color.mjs";
 
 export const TITLE_MAX = 100;
@@ -163,7 +164,7 @@ function outline(doc) {
     for (const span of A.spans(block, ["richText"])) {
       if (span.type === "block") {
         const type = String(span.value?.type ?? "");
-        const parents = (span.value?.parents ?? []).map(String);
+        const parents = markerParents(span.value);
         if (first) entry.kind = kindOf(type, parents);
         first = false;
         heading = type === "heading" ? { level: Number(span.value?.attrs?.level) || 1 } : null;

@@ -35,8 +35,10 @@ import {
   PagesForeignMarks,
   codeHolds,
   nestIn,
+  attrMap,
   storedParents,
   TABLE_PART_OUTER,
+  unreadableMarker,
 } from "./wordgard-doc.mjs";
 import { treeMarkdown } from "./markdown-serializer.mjs";
 import { codeTextUnmarked } from "./richtext-format.mjs";
@@ -113,7 +115,7 @@ function serialNodes(node) {
 export const readMarkdown = (nodes) => treeMarkdown({ content: nodes.flatMap(serialNodes) });
 const strings = (attrs = {}) =>
   Object.fromEntries(
-    Object.entries(attrs).map(([key, value]) => [
+    Object.entries(attrMap(attrs) ?? {}).map(([key, value]) => [
       key,
       A.isImmutableString(value) ? String(value) : value,
     ]),
@@ -265,9 +267,14 @@ export function nativeReadSpans(input, pageId) {
       at += span.value.length;
       continue;
     }
-    const value = span.value,
+    // A marker this build can't read, or must not render (decode's
+    // unreadableMarker), reads as the notice for a node it doesn't know. A
+    // value that isn't a map reads as an inline one.
+    const stored = span.value && typeof span.value === "object" && !Array.isArray(span.value);
+    const value = stored ? span.value : { type: String(span.value), isEmbed: true },
       type = String(value.type),
-      attrs = strings(value.attrs);
+      attrs = strings(value.attrs),
+      unreadable = unreadableMarker(span.value);
     const parents = storedParents(value);
     if (value.isEmbed) {
       // An embed a code block can't hold opens a paragraph after it.
@@ -276,7 +283,7 @@ export function nativeReadSpans(input, pageId) {
       if (type === "hard-break") {
         if (code()) append(Leaf.text("\n", Mark.none));
         else append(LineBreak, at, attrs);
-      } else if (type === "image") append(PagesImage.of(attrs), at, attrs);
+      } else if (type === "image" && !unreadable) append(PagesImage.of(attrs), at, attrs);
       else if (code()) notice(type);
       else append(PagesUnknownEmbed.of({ type }), at, attrs);
       at++;
@@ -322,7 +329,7 @@ export function nativeReadSpans(input, pageId) {
       if (desc.tag.type === ReadUnknown && isKnownBlock(parent)) continue;
       if (!desc.outer || place({ tag: desc.outer })) place(desc);
     }
-    let desc = descriptor(type, attrs);
+    let desc = unreadable ? { tag: ReadUnknown.of(type) } : descriptor(type, attrs);
     // A table part no container holds is drawn inside the table containers
     // it needs, as decode draws it (TABLE_PART_OUTER).
     const wrapped = (tag) => {

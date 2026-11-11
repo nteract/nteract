@@ -1,6 +1,6 @@
 import * as A from "@automerge/automerge/slim";
 import { nativeReadSpans } from "./native-read.mjs";
-import { codeTextUnmarked } from "./richtext-format.mjs";
+import { codeTextUnmarked, markerParents } from "./richtext-format.mjs";
 import { nodeType, TEXT_CONTAINERS } from "./node-registry.mjs";
 import { unknownNodeNotice } from "./richtext-notices.mjs";
 
@@ -30,9 +30,9 @@ export function surfaceRead(block) {
       !input.some(
         ({ type, value }) =>
           type === "block" &&
-          ([value.type, ...(value.parents ?? [])].some((type) => !nodeType(type)) ||
+          ([value.type, ...markerParents(value)].some((type) => !nodeType(type)) ||
             (String(value.type) === "dataframe" &&
-              (value.parents ?? []).some((type) => TEXT_CONTAINERS.has(String(type))))),
+              markerParents(value).some((type) => TEXT_CONTAINERS.has(type)))),
       )
     )
       throw error;
@@ -88,7 +88,7 @@ function surfaceNodes(input, all) {
     if (span.type === "block") {
       const raw = span.value,
         name = String(raw.type),
-        parents = (raw.parents ?? []).map(String);
+        parents = markerParents(raw);
       if (
         !raw.isEmbed &&
         name !== "dataframe" &&
@@ -118,7 +118,7 @@ function surfaceNodes(input, all) {
       Array.isArray(value.parents) && value.parents.every((p) => p instanceof A.ImmutableString)
         ? value.parents
         : [];
-    if (all && (value.parents ?? []).some((parent) => !nodeType(parent)))
+    if (all && markerParents(value).some((parent) => !nodeType(parent)))
       parents = value.parents
         .filter((parent) => nodeType(parent))
         .map((parent) => new A.ImmutableString(String(parent)));
@@ -165,7 +165,7 @@ function surfaceNodes(input, all) {
       if (
         ((!def || name === "dataframe") && parents.some((p) => TEXT_CONTAINERS.has(String(p)))) ||
         (name === "dataframe" &&
-          (value.parents ?? []).some((p) => TEXT_CONTAINERS.has(String(p))) &&
+          markerParents(value).some((p) => TEXT_CONTAINERS.has(p)) &&
           input[index + 1] &&
           (input[index + 1].type === "text" || input[index + 1].value.isEmbed))
       )

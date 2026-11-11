@@ -20,6 +20,7 @@
 import * as A from "@automerge/automerge/slim";
 import featureFile from "./features.json" with { type: "json" };
 import { MARK_REGISTRY } from "./marks.mjs";
+import { markerParents } from "./richtext-format.mjs";
 
 export const FEATURE_ID = /^[a-z][a-z0-9-]{0,63}$/;
 /** Reported for a stamp entry that is not a string, or a stamp that is not
@@ -161,7 +162,7 @@ export function spanFeatures(spans, registry = active) {
         const feature = registry.attributes?.get(`${String(span.value.type)}:${name}`);
         if (feature && span.value.attrs[name] != null) needed.add(feature);
       }
-      for (const type of [span.value?.type, ...(span.value?.parents ?? [])]) {
+      for (const type of [span.value?.type, ...markerParents(span.value)]) {
         const feature = registry.blocks.get(String(type));
         if (feature) needed.add(feature);
       }

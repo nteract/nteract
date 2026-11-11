@@ -1,5 +1,6 @@
 // Comment limits and the text a comment's spans hold. No codec: the browser
 // composer imports this without loading markdown-it or ProseMirror.
+import { markerParents } from "./richtext-format.mjs";
 
 /** At most this many text characters (UTF-16 code units) in one message.
  * Block markers don't count, so a message's length doesn't depend on its
@@ -35,13 +36,13 @@ export function commentSpansMeasure(spans) {
 const plainBreak = (value) =>
   String(value?.type) === "hard-break" &&
   value.isEmbed === true &&
-  (value.parents ?? []).every((parent) => String(parent) === "paragraph") &&
-  (value.parents ?? []).length <= 1;
+  markerParents(value).every((parent) => parent === "paragraph") &&
+  markerParents(value).length <= 1;
 
 const plainParagraph = (value) =>
   String(value?.type) === "paragraph" &&
   value.isEmbed === false &&
-  !(value.parents ?? []).length &&
+  !markerParents(value).length &&
   !Object.keys(value.attrs ?? {}).length;
 
 /** The literal text of spans a plain write stores: one paragraph of text and

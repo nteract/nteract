@@ -55,11 +55,13 @@ export function blockAddresses(spans) {
   let placed = true;
   for (const span of plain) {
     if (span.type === "block") {
-      if (!span.value.isEmbed) opening.set(length, span.value);
+      // A value that isn't a map reads as an inline notice (decode).
+      const marker = span.value && typeof span.value === "object" && !Array.isArray(span.value);
+      if (marker && !span.value.isEmbed) opening.set(length, span.value);
       // decode draws an unknown inline node in a code block as plain text.
       else if (
         placed &&
-        String(span.value.type) !== "hard-break" &&
+        String(span.value?.type) !== "hard-break" &&
         tree.resolve(map.amToWg[length]).parent.node.type === CodeBlock.type
       )
         placed = false;

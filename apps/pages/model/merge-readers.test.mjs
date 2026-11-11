@@ -15,6 +15,7 @@ import { blockMarkdown, textPath } from "./richtext.mjs";
 import { repairBlockMarkers } from "./richtext-page.mjs";
 import {
   ADJUSTED_NESTING_CASES,
+  ADJUSTED_NESTING_WORDS,
   MISSING_ANCESTOR_CASES,
   addInside,
   deleteContainer,
@@ -22,7 +23,7 @@ import {
 } from "./richtext-test-support.mjs";
 import { updateSpansConfig } from "./marks.mjs";
 import { stampSpans } from "./schema-features.mjs";
-import { nativeRead } from "./native-read.mjs";
+import { nativeRead, nativeReadSpans } from "./native-read.mjs";
 import { blockAddresses, nodeIndexAt } from "./node-addresses.mjs";
 import { isKnownBlock, NODE_TYPES } from "./node-registry.mjs";
 import { visibleNodeRange } from "./replace-match.mjs";
@@ -37,6 +38,8 @@ import {
   HorizontalRule,
   ListItem,
   PagesImage,
+  PagesUnknownBlock,
+  PagesUnknownEmbed,
   Paragraph,
   schema,
 } from "./wordgard-doc.mjs";
@@ -317,14 +320,17 @@ function readEvery(doc, id, label, { lossy = false } = {}) {
     );
     return { decoded, markdown, ids: [] };
   }
-  // A container this build doesn't know holds nodes in the agent reader and
-  // none in decode; where that makes their nodes differ, the outline gives no
-  // ids and node_index refuses the block rather than address the wrong node.
-  const unknownNames = spans.some(
-    (span) =>
-      span.type === "block" &&
-      [span.value.type, ...storedParents(span.value)].some((name) => !isKnownBlock(name)),
-  );
+  // Content from a newer build (a container this build doesn't know, a
+  // marker value it can't read) can read as different nodes in the agent
+  // reader and decode; where it does, the outline gives no ids and
+  // node_index refuses the block rather than address the wrong node.
+  const unknownNames =
+    decoded.newer ||
+    spans.some(
+      (span) =>
+        span.type === "block" &&
+        [span.value?.type, ...storedParents(span.value)].some((name) => !isKnownBlock(name)),
+    );
   const ids = nodeIds(doc, id);
   if (
     unknownNames &&
@@ -343,7 +349,9 @@ function readEvery(doc, id, label, { lossy = false } = {}) {
     ids.map((entry) => entry.id),
     label,
   );
-  if (lossy) return { decoded, markdown, ids };
+  // Without newer content, the agent reader and decode draw the same
+  // top-level nodes, nesting adjusted or not.
+  if (decoded.newer) return { decoded, markdown, ids };
   const types = tree.content.map((node) => node.type.name);
   assert.deepEqual(
     native.map((node) => node.type.name),
@@ -357,9 +365,54 @@ function readEvery(doc, id, label, { lossy = false } = {}) {
   return { decoded, markdown, ids };
 }
 
+// Generated Pages, and short bullet lists (one item may hold a table), where
+// two writers' indents often meet on one item.
+const textNode = (value) => ({ kind: "text", value, marks: {} });
+const paragraphNode = (value) => ({ kind: "paragraph", children: [textNode(value)] });
+const TABLE_NODE = {
+  kind: "table",
+  children: [
+    { kind: "row", children: [{ kind: "header", align: null, children: [textNode("h")] }] },
+    { kind: "row", children: [{ kind: "cell", align: null, children: [textNode("c")] }] },
+  ],
+};
+const listPage = fc
+  .record({ items: fc.integer({ min: 2, max: 4 }), table: fc.nat({ max: 3 }) })
+  .map(({ items, table }) => ({
+    kind: "doc",
+    children: [
+      {
+        kind: "bullet",
+        children: Array.from({ length: items }, (_, i) => ({
+          kind: "item",
+          children: [paragraphNode(`item ${i}`), ...(i === table ? [TABLE_NODE] : [])],
+        })),
+      },
+      paragraphNode("after"),
+    ],
+  }));
+// On a list, both writers indent the same item first, then make any edits.
+const listWriters = fc
+  .tuple(
+    fc.nat({ max: 5 }),
+    fc.array(intent(KINDS), { maxLength: 2 }),
+    fc.array(intent(KINDS), { maxLength: 2 }),
+  )
+  .map(([variant, a, b]) => [
+    [{ kind: "indent", pick: 0, variant }, ...a],
+    [{ kind: "indent", pick: 0, variant }, ...b],
+  ]);
+const cases = fc.oneof(
+  fc.tuple(pageTreeArbitrary({ maxDepth: 2 }), writers),
+  fc.tuple(listPage, listWriters),
+);
+
 test("whatever a merge of writers leaves, every reader reads it and repair changes no Markdown", () => {
+  // How many merges reached each repair, so the test fails if the writers
+  // stop producing either.
+  const reached = { unmarked: 0, adjusted: 0 };
   fc.assert(
-    fc.property(pageTreeArbitrary({ maxDepth: 2 }), writers, (description, writers) =>
+    fc.property(cases, ([description, writers]) =>
       freeing((keep) => {
         const { doc, id } = pageWith(toWordgardTree(description));
         keep(doc);
@@ -382,6 +435,8 @@ test("whatever a merge of writers leaves, every reader reads it and repair chang
         // reader drew.
         const before = readAll(merged, id, label, { lossy: true });
         assert.equal(before.decoded.newer, false, label);
+        if (before.decoded.unmarked.length) reached.unmarked++;
+        if (before.decoded.adjusted) reached.adjusted++;
         const repaired = keep(
           A.change(A.clone(merged), (draft) => {
             assert.equal(
@@ -394,6 +449,9 @@ test("whatever a merge of writers leaves, every reader reads it and repair chang
         const after = readAll(repaired, id, label);
         assert.equal(after.decoded.adjusted, false, label);
         assert.deepEqual(after.decoded.unmarked, [], label);
+        // Repair stores what every reader drew: the editor's tree and the
+        // agent's Markdown are unchanged.
+        assert.ok(after.decoded.doc.eq(before.decoded.doc), label);
         assert.equal(after.markdown, before.markdown, label);
         assert.ok(
           after.ids.every((entry) => typeof entry.id === "string"),
@@ -409,6 +467,10 @@ test("whatever a merge of writers leaves, every reader reads it and repair chang
     ),
     parameters,
   );
+  if (process.env.PAGES_FUZZ_SEED === undefined && process.env.PAGES_FUZZ_RUNS === undefined) {
+    assert.ok(reached.unmarked > 0, JSON.stringify(reached));
+    assert.ok(reached.adjusted > 0, JSON.stringify(reached));
+  }
 });
 
 test("a container a merge leaves with no marker reads in every reader, and repair leaves it as it is", () => {
@@ -561,7 +623,7 @@ test("parents no writer wrote read in every reader, and the next host write repa
     // A replace_match to text unrelated to the bad markers repairs them in
     // the same change: the block reads as drawn, nothing is adjusted, and
     // every node keeps its id.
-    const word = name === "repeated table" ? "cell" : "b";
+    const word = ADJUSTED_NESTING_WORDS[name];
     const after = A.change(doc, (draft) =>
       applyPageOperation(draft, {
         operation: "patch_page",
@@ -600,6 +662,135 @@ test("a re-homed node keeps its node id when repair stores where it is drawn", (
   assert.equal(after.markdown, before.markdown);
 });
 
+// Marker values this build can't read or must not render, as a peer can
+// store them through sync.
+const UNREADABLE = {
+  "unsafe image src": [
+    marker("paragraph", []),
+    { type: "text", value: "a" },
+    {
+      type: "block",
+      value: {
+        type: S("image"),
+        parents: [S("paragraph")],
+        attrs: { src: S("javascript:alert(1)"), alt: S("x") },
+        isEmbed: true,
+      },
+    },
+  ],
+  "image with no attrs": [
+    marker("paragraph", []),
+    { type: "text", value: "a" },
+    {
+      type: "block",
+      value: { type: S("image"), parents: [S("paragraph")], attrs: {}, isEmbed: true },
+    },
+  ],
+  "heading level 9": [
+    {
+      type: "block",
+      value: { type: S("heading"), parents: [], attrs: { level: 9 }, isEmbed: false },
+    },
+    { type: "text", value: "h" },
+  ],
+  "table alignment diagonal": [
+    marker("table", []),
+    marker("table-row", ["table"]),
+    {
+      type: "block",
+      value: {
+        type: S("table-header"),
+        parents: [S("table"), S("table-row")],
+        attrs: { align: S("diagonal") },
+        isEmbed: false,
+      },
+    },
+    { type: "text", value: "c" },
+  ],
+};
+
+test("a marker this build can't read is a notice in every reader, and never a URL", () => {
+  for (const [name, spans] of Object.entries(UNREADABLE)) {
+    const { doc, id } = pageWithSpans(spans);
+    const read = readAll(doc, id, name, { lossy: true });
+    assert.equal(read.decoded.newer, true, name);
+    assert.match(read.markdown, /Unsupported node/, name);
+    assert.doesNotMatch(read.markdown, /javascript/, name);
+    // Encode writes the marker back as stored.
+    const unknown = [];
+    read.decoded.doc.iterate((node) => {
+      if (node.type === PagesUnknownBlock || node.type === PagesUnknownEmbed) unknown.push(node);
+    });
+    assert.ok(unknown.length, name);
+    // A value that isn't a map can't be stored through updateSpans, but a
+    // reader handed one draws a notice too.
+    assert.equal(decode([...spans, { type: "block", value: "oops" }]).newer, true, name);
+  }
+});
+
+test("an owner recovers a block with unreadable markers with an agent tool", () => {
+  for (const [name, spans] of Object.entries(UNREADABLE)) {
+    const { doc, id } = pageWithSpans(spans);
+    // Repair leaves it alone and doesn't throw, so the batch reaches the
+    // rewrite.
+    A.change(A.clone(doc), (draft) => assert.equal(repairBlockMarkers(draft, id), false, name));
+    const rewritten = A.change(A.clone(doc), (draft) =>
+      applyPageOperation(draft, {
+        operation: "edit_page",
+        arguments: {
+          operations: [{ op: "replace_block_markdown", block_id: id, markdown: "Fixed." }],
+        },
+      }),
+    );
+    assert.equal(blockMarkdown(rewritten.blocks[id], PAGE_ID), "Fixed.", name);
+    assert.equal(readAll(rewritten, id, name).decoded.lossy, false, name);
+    const deleted = A.change(A.clone(doc), (draft) =>
+      applyPageOperation(draft, {
+        operation: "edit_page",
+        arguments: {
+          operations: [
+            { op: "insert_markdown", markdown: "Second" },
+            { op: "delete_block", block_id: id },
+          ],
+        },
+      }),
+    );
+    assert.equal(Object.hasOwn(deleted.blocks, id), false, name);
+  }
+});
+
+test("two concurrent repairs of a stray cell can leave adjusted nesting the next repair clears", () => {
+  const { doc, id } = pageWithSpans([
+    marker("paragraph", []),
+    { type: "text", value: "one" },
+    marker("table-cell", ["blockquote"]),
+    { type: "text", value: "two" },
+  ]);
+  const before = readAll(doc, id, "stray cell", { lossy: true });
+  const repair = (actor) =>
+    A.change(A.clone(doc, { actor }), (draft) => assert.ok(repairBlockMarkers(draft, id)));
+  for (const [first, second] of [
+    [ACTORS[0], ACTORS[1]],
+    [ACTORS[1], ACTORS[0]],
+  ]) {
+    // Both repairs insert the same list elements, so the merged parents
+    // repeat them: nesting is adjusted again.
+    const merged = A.merge(repair(first), repair(second));
+    const read = readAll(merged, id, "merged repairs", { lossy: true });
+    assert.equal(read.decoded.adjusted, true);
+    assert.equal(read.markdown, before.markdown);
+    assert.deepEqual(
+      read.ids.map((entry) => entry.id),
+      before.ids.map((entry) => entry.id),
+    );
+    // The next repair writes, and leaves it clean.
+    const next = A.change(merged, (draft) => assert.ok(repairBlockMarkers(draft, id)));
+    const clean = readAll(next, id, "next repair");
+    assert.equal(clean.decoded.adjusted, false);
+    assert.equal(clean.markdown, before.markdown);
+  }
+});
+
 test("repair leaves a block with content from a newer build exactly as it is", () => {
   const spans = ADJUSTED_NESTING_CASES["repeated table"]();
   spans.splice(1, 0, marker("callout", []), { type: "text", value: "future" });
@@ -626,13 +817,12 @@ test("two writers that indent the same list item at once leave a block every rea
 });
 
 // Random marker values: names from the registry and junk, in any order and
-// any parents, as any client can store them through sync. Every reader
-// returns, and they agree on the block's nodes.
+// any parents, with attrs this build writes and ones it doesn't, as any
+// client can store them through sync. No reader throws on anything Automerge
+// stores, and the readers agree on the block's nodes.
 const NAMES = [
   // An aside has no Markdown form: read_page refuses it by design.
-  ...NODE_TYPES.map((type) => type.block).filter(
-    (name) => !["image", "dataframe", "aside"].includes(name),
-  ),
+  ...NODE_TYPES.map((type) => type.block).filter((name) => name !== "aside"),
   "pages-future",
   "",
   "table",
@@ -643,54 +833,114 @@ const parentsArb = fc.oneof(
   { weight: 6, arbitrary: fc.array(nameOf, { maxLength: 5 }) },
   { weight: 1, arbitrary: fc.constantFrom(null, "table", 3, { 0: "table" }) },
 );
+const IS = (value) => (typeof value === "string" ? new A.ImmutableString(value) : value);
+const ASSET = `/api/pages/${PAGE_ID}/assets/${"b".repeat(64)}`;
+const attrsArb = fc.oneof(
+  { weight: 4, arbitrary: fc.constant({}) },
+  {
+    weight: 2,
+    arbitrary: fc.constantFrom(0, 9, "2", null, 2).map((level) => ({ level: IS(level) })),
+  },
+  {
+    weight: 2,
+    arbitrary: fc.constantFrom("diagonal", "left", 0, null).map((align) => ({ align: IS(align) })),
+  },
+  {
+    weight: 2,
+    arbitrary: fc
+      .record(
+        {
+          src: fc.constantFrom("javascript:alert(1)", 3, null, ASSET, "https://example.org/i.png"),
+          alt: fc.constantFrom("x", 1),
+        },
+        { requiredKeys: [] },
+      )
+      .map(({ src, alt }) => ({
+        ...(src !== undefined && { src: IS(src) }),
+        ...(alt !== undefined && { alt: IS(alt) }),
+      })),
+  },
+  {
+    weight: 1,
+    arbitrary: fc.constantFrom(true, "true", 1, null).map((checked) => ({ checked: IS(checked) })),
+  },
+  { weight: 1, arbitrary: fc.constantFrom("attrs", 3, null, [1]) },
+);
 const spanArb = fc.oneof(
   {
     weight: 3,
     arbitrary: fc.constantFrom("x", "two words", "").map((value) => ({ type: "text", value })),
   },
   {
-    weight: 4,
+    weight: 5,
     arbitrary: fc
-      .record({ type: nameOf, parents: parentsArb, embed: fc.boolean() })
-      .map(({ type, parents, embed }) => ({
+      .record({
+        type: nameOf,
+        parents: parentsArb,
+        attrs: attrsArb,
+        embed: fc.boolean(),
+        typed: fc.nat({ max: 9 }),
+      })
+      .map(({ type, parents, attrs, embed, typed }) => ({
         type: "block",
         value: {
-          type: new A.ImmutableString(type),
+          // Now and then a marker has no type at all.
+          ...(typed > 0 && { type: new A.ImmutableString(type) }),
           parents: Array.isArray(parents)
             ? parents.map((parent) => new A.ImmutableString(parent))
             : parents,
-          attrs: type === "heading" ? { level: 2 } : {},
-          isEmbed: embed && type === "hard-break",
+          attrs,
+          isEmbed: embed,
         },
       })),
   },
+  {
+    weight: 1,
+    arbitrary: fc.constantFrom("oops", null, 3).map((value) => ({ type: "block", value })),
+  },
 );
 
-test("random marker parents and types read in every reader, which agree on the nodes", () => {
+// Automerge's own refusal of a value it can't store as a block.
+const automergeRefused = (error) => /Cannot updateSpans|not a valid block/.test(error.message);
+
+test("no reader throws on any marker values Automerge stores, and the readers agree", () => {
   fc.assert(
-    fc.property(fc.array(spanArb, { maxLength: 10 }), (spans) =>
+    fc.property(fc.array(spanArb, { maxLength: 10 }), (generated) =>
       freeing((keep) => {
-        let stored;
+        const spans = generated.filter((span) => span.type !== "text" || span.value);
+        const label = JSON.stringify(generated);
+        // Every reader of spans returns on anything, stored or not.
+        decode(spans);
+        nativeReadSpans(spans, PAGE_ID);
+        blockAddresses(spans);
+        let doc = A.change(A.from(createPageData({ pageId: PAGE_ID, title: "Spans" })), (draft) =>
+          initializePage(draft),
+        );
+        const id = orderedBlockIds(doc)[0];
         try {
-          stored = pageWithSpans(spans.filter((span) => span.type !== "text" || span.value));
-        } catch {
-          // Automerge refuses the value itself: nothing is stored.
+          doc = A.change(doc, (draft) =>
+            updateSpansExactly(draft, textPath(id), spans, updateSpansConfig),
+          );
+        } catch (error) {
+          keep(doc);
+          if (!automergeRefused(error)) throw error;
           return;
         }
-        keep(stored.doc);
-        const label = JSON.stringify(spans);
-        const before = readAll(stored.doc, stored.id, label, { lossy: true });
-        // With every name known, repair stores what every reader drew: the
-        // same Markdown, nothing adjusted, and a second repair writes nothing.
+        doc = keep(A.change(doc, (draft) => stampSpans(draft, spans)));
+        const before = readAll(doc, id, label, { lossy: true });
+        // A host write repairs every block it names first; repair returns
+        // false on a newer-and-lossy block, and never throws.
+        const repaired = keep(A.change(A.clone(doc), (draft) => repairBlockMarkers(draft, id)));
         if (before.decoded.newer) return;
-        const repaired = keep(
-          A.change(A.clone(stored.doc), (draft) => repairBlockMarkers(draft, stored.id)),
-        );
-        const after = readAll(repaired, stored.id, label, { lossy: true });
+        // With every name and value known, repair stores what every reader
+        // drew: the same tree and Markdown, nothing adjusted, and a second
+        // repair writes nothing.
+        const after = readAll(repaired, id, label, { lossy: true });
         assert.equal(after.decoded.adjusted, false, label);
+        assert.ok(after.decoded.doc.eq(before.decoded.doc), label);
         assert.equal(after.markdown, before.markdown, label);
         A.change(A.clone(repaired), (draft) =>
-          assert.equal(repairBlockMarkers(draft, stored.id), false, label),
+          assert.equal(repairBlockMarkers(draft, id), false, label),
         );
       }),
     ),

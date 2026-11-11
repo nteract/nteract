@@ -2384,29 +2384,38 @@ writer restores the container's marker, so its `node_id` doesn't move.
 
 ### Parents no writer wrote
 
-A marker's `parents` is a list, and two writers that change one marker's
-parents at once merge element by element into a list neither wrote: a
-container repeated (`["table", "table"]`), or one that can't hold what
-follows it. A client can store any value through sync, too. Every reader
-draws any `parents` by one rule (`nestIn` in
+Sync admission doesn't look inside `richText`, so a block stores any marker
+values a browser syncs. Every reader (decode, the agent read, node addresses
+and ids, the Markdown projection, repair) draws any stored span sequence,
+and none throws. A marker's `parents` is a list, and two writers that
+change one marker's parents at once merge element by element into a list
+neither wrote: a container repeated (`["table", "table"]`), or one that
+can't hold what follows it. Every reader draws any `parents` by one rule (`nestIn` in
 [model/wordgard-doc.mjs](model/wordgard-doc.mjs)): each parent, then the
 node, nests in the nearest container before it that can hold it. A parent
-nothing before it can hold is dropped, and so is a name that isn't a
-container (a rule, an image). A table row, cell or header nothing holds is
+nothing before it can hold is dropped, and so is a known name that isn't a
+container (a rule, an image, a paragraph). A table row, cell or header nothing holds is
 drawn inside the table (and row) it needs, which have no marker of their
 own. A node marker's parents that aren't a list read as none.
 
 `decode` reports two reasons a block can't be drawn as stored, apart:
 
 - `newer`: content from a newer build. A node, container or embed name this
-  build doesn't know, attributes it can't read, or a known node where this
-  build can't draw it (a dataframe in a table cell). An unknown container
+  build doesn't know, or a marker whose own values it can't read or must
+  not render (`unreadableMarker`): a value or attrs that aren't a map, an
+  image whose src is missing or unsafe, a heading level, table alignment or
+  task state outside what this build writes, a dataframe it can't show.
+  Every reader draws such a marker as the notice for a node it doesn't
+  know; an unsafe src is never rendered or written as a URL, and encode
+  writes the marker back as stored. Registration still refuses all of these
+  in a new Page. An unknown container
   draws nothing in the editor and a notice in the agent read; where that
   makes the agent read's top-level nodes differ from the stored ones,
   `read_page` gives those nodes no `node_id` and `node_index` refuses the
   block. Nothing rewrites such a block, and the editor refuses a person's
   edit to one it draws only in part ("This block holds content from a newer
-  version of Pages").
+  version of Pages"). An owner recovers it with `replace_block_markdown`,
+  which rewrites the block whole, or `delete_block`.
 - `adjusted`: every name is known, but `nestIn` re-homed a node or dropped
   or skipped a parent. Every reader draws one tree for the block, and
   `moved` lists each node marker whose drawn parents differ from its stored
@@ -2417,8 +2426,9 @@ the drawn tree loses nothing a reader showed. Every host tool write to a
 block runs `repairBlockMarkers`
 ([model/richtext-page.mjs](model/richtext-page.mjs)) first, in the same
 change: each moved marker gets the parents it is drawn with, then unmarked
-text gets its markers. The tree, the Markdown, `node_index` and every
-`node_id` stay as they were. In the editor, a person's edit to such a block
+text gets its markers. The tree, the Markdown and `node_index` stay as they
+were, and so does every `node_id` except a marker Automerge can't update in
+place (the `updateBlock` fallback below), whose `node_id` changes. In the editor, a person's edit to such a block
 is written through the encoder, which stores the tree the editor drew. A
 container drawn with no marker of its own (a table around a row nothing
 held, or a container a merge deleted) stays without one.
@@ -2433,6 +2443,11 @@ time, which, over markers already of the right types, edits each list in
 place and keeps every marker, so no `node_id` moves. A marker still wrong
 after that is replaced with `updateBlock`, which deletes it and inserts a new
 one: its `node_id` changes. No test or property run reaches that step.
+
+Known limit: two repairs of the same adjusted block from one snapshot can
+merge into adjusted nesting again (each inserts the same names into one
+marker's parents list, as with a stray table cell). Markdown and node ids
+stay as they were, and the next host write repairs it.
 
 Known limit: two writers that mark the same unmarked text from the same
 snapshot (a host write and a person's edit before either syncs) each insert

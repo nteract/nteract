@@ -19,7 +19,7 @@ import {
   PagesLink,
 } from "./wordgard-doc.mjs";
 import { parseAgentMarkdown, parseMarkdown } from "./markdown-import.mjs";
-import { textPath, updateSpansExactly } from "./richtext-format.mjs";
+import { markerParents, textPath, updateSpansExactly } from "./richtext-format.mjs";
 import { pageSpans, richDoc } from "./richtext-spans.mjs";
 import { nativeRead, readMarkdown, readKind } from "./native-read.mjs";
 import { dataframeLabel, unknownNodeNotice } from "./richtext-notices.mjs";
@@ -194,7 +194,7 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
   const keepImages = (spans) => {
     const key = (s) =>
       JSON.stringify([
-        s.value.parents.map(String),
+        markerParents(s.value),
         ...["src", "alt", "title"].map((k) => String(s.value.attrs[k] ?? "")),
       ]);
     for (const original of opaqueImages) {

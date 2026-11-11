@@ -109,7 +109,8 @@ test("native task state is a boolean, never a truthy string or number", () => {
     spans[0].value.attrs.checked = invalid;
     const bad = A.change(original, (doc) => A.updateSpans(doc, path, spans));
     assert.throws(() => validateRich(bad.blocks.one), /Invalid task checked state/);
-    assert.throws(() => decode(spans), /Invalid task checked state/);
+    // A stored one reads as a notice.
+    assert.equal(decode(spans).newer, true);
   }
 });
 

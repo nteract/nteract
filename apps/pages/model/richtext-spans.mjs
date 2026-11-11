@@ -11,7 +11,7 @@ import {
 import { DATAFRAME_BLOCK, parseAssetPath, readDataframe } from "../shared/dataset-assets.mjs";
 import { decode, encode, schema } from "./wordgard-doc.mjs";
 import { treeMarkdown } from "./markdown-serializer.mjs";
-import { codeTextUnmarked } from "./richtext-format.mjs";
+import { codeTextUnmarked, markerParents } from "./richtext-format.mjs";
 
 export const readTree = (block) => decode(codeTextUnmarked(A.spans(block, ["richText"]))).doc;
 export const richDoc = readTree;
@@ -22,7 +22,7 @@ export function markdownlessNode(block, pageId) {
   for (const span of A.spans(block, ["richText"])) {
     if (span.type !== "block") continue;
     const type = String(span.value.type),
-      parents = (span.value.parents ?? []).map(String);
+      parents = markerParents(span.value);
     if (
       type === DATAFRAME_BLOCK &&
       (parents.some((parent) => TEXT_CONTAINERS.has(parent)) ||
