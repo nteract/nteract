@@ -1200,6 +1200,14 @@ span.unknown-node {
 .unknown-node::before {
   content: attr(data-pages-notice);
 }
+.screen-error {
+  max-width: 36rem;
+  margin: 4rem auto;
+  padding: 0 1rem;
+}
+.screen-error h1 {
+  font-size: 1.25rem;
+}
 .opaque::before {
   content: attr(data-pages-notice);
   display: block;

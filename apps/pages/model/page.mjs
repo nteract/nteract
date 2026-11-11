@@ -49,6 +49,18 @@ export function initializePage(doc, markdown = "", blockId = crypto.randomUUID()
   setRichMarkdown(doc, id, String(markdown));
   stampFeatures(doc, [COMMENTS_FEATURE]);
 }
+/** The Page as the viewer draws it: blocks in order without their Markdown.
+ * The editor decodes each block's spans itself, so nothing here runs the
+ * Markdown codec. projectPage is the agent projection; call it on demand for
+ * export and Copy as Markdown. */
+export function projectPageView(doc, commentsDoc) {
+  return {
+    page_id: doc.page_id,
+    title: doc.title,
+    blocks: orderedBlockIds(doc).map((id) => ({ id, position: doc.blocks[id].position })),
+    comments: projectComments(doc, commentsDoc),
+  };
+}
 /** `commentsDoc` is the Page's comments document, when it's available. */
 export function projectPage(doc, commentsDoc) {
   return {

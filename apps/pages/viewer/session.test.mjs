@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
+import { createPageData, initializePage } from "../model/page.mjs";
 import { PageSession, pageSyncAddress } from "./session.mjs";
 
 const activityMessage = (revision = 1, epoch = "epoch-one") => ({
@@ -756,4 +757,46 @@ test("an in-flight save receipt cannot clear a subsequently expired sign-in stat
   await saving;
   assert.equal(session.status, "Sign in to sync");
   assert.equal(session.authRequired, true);
+});
+
+test("the viewer snapshot never decodes a block; Markdown waits for markdownProjection", () => {
+  let doc = A.from(createPageData({ pageId: "fixture", title: "Plan" }));
+  doc = A.change(doc, (draft) => initializePage(draft, "# Plan\n\nWe ship on **Friday**."));
+  // A block answers only `position`. Any other read, including the
+  // Automerge internals that A.spans uses to decode its text, throws: a
+  // stand-in for a block the Markdown codec can't serialize.
+  let reads = 0;
+  const guarded = new Proxy(doc, {
+    get(target, key) {
+      if (key !== "blocks") return Reflect.get(target, key);
+      return new Proxy(target.blocks, {
+        get(blocks, id) {
+          const block = Reflect.get(blocks, id);
+          if (!block || typeof block !== "object") return block;
+          return new Proxy(block, {
+            get(value, name) {
+              if (name === "position") return Reflect.get(value, name);
+              reads++;
+              throw Error("Token type aside not supported by Markdown renderer");
+            },
+          });
+        },
+      });
+    },
+  });
+  const session = new PageSession("fixture");
+  session.handle = { doc: () => guarded };
+  const view = session.snapshot();
+  assert.equal(reads, 0, "drawing reads only each block's position");
+  assert.equal(view.title, "Plan");
+  assert.deepEqual(
+    view.blocks.map((block) => Object.keys(block).sort()),
+    [["id", "position"]],
+    "a drawn block carries its id and order, no Markdown",
+  );
+  assert.throws(() => session.markdownProjection(), /Token type aside/);
+  assert.ok(reads > 0, "the Markdown projection reads the text it serializes");
+
+  session.handle = { doc: () => doc };
+  assert.equal(session.markdownProjection().blocks[0].markdown, "# Plan\n\nWe ship on **Friday**.");
 });

@@ -8,12 +8,13 @@ function emptyTrailingBlock(doc) {
   return block && isBlankBlock(block) ? id : null;
 }
 
-/** Whether a projected Page (projectPage) is still empty: one paragraph with
- * nothing in it, as a new Page starts. Such a Page opens with the caret in
- * that paragraph. */
-export function isEmptyPage(page) {
-  const blocks = page?.blocks ?? [];
-  return blocks.length === 1 && !String(blocks[0].markdown ?? "").trim();
+/** Whether a Page document is still empty: one block with nothing a reader
+ * would see, as a new Page starts. Such a Page opens with the caret in that
+ * block. Reads the stored spans, not the Markdown projection. */
+export function isEmptyPage(doc) {
+  if (!doc?.blocks) return false;
+  const ids = orderedBlockIds(doc);
+  return ids.length === 1 && isBlankBlock(doc.blocks[ids[0]]);
 }
 
 /** Continue from the current replica, reusing a blank paragraph after repeated activation. */
