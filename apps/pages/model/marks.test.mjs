@@ -133,7 +133,7 @@ test("unbalanced, nested and unknown-color mark tags stay literal text", () => {
 
 test("literal tag text is escaped on export so it reads back as text", () => {
   const { doc, id } = fixture("text");
-  const after = A.change(doc, (d) => A.splice(d, textPath(id), 0, 4, "use <mark> tags"));
+  const after = A.change(doc, (d) => A.splice(d, textPath(id), 1, 4, "use <mark> tags"));
   const markdown = blockMarkdown(after.blocks[id]);
   assert.equal(markdown, "use \\<mark> tags");
   assert.equal(
@@ -251,7 +251,7 @@ test("highlights inside table cells round trip", () => {
 test("a mark from a newer build reads as plain text and survives text edits", () => {
   const { doc, id } = fixture("future text");
   const marked = A.change(doc, (d) =>
-    A.mark(d, textPath(id), { start: 0, end: 6, expand: "none" }, "underline", true),
+    A.mark(d, textPath(id), { start: 1, end: 7, expand: "none" }, "underline", true),
   );
   assert.equal(blockMarkdown(marked.blocks[id]), "future text");
   assert.equal(markdownReproduces(marked.blocks[id]), false);

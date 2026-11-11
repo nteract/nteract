@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import fc from "fast-check";
 import { Leaf, Mark } from "wordgard/doc";
 import * as A from "@automerge/automerge";
-import { applyPageOperation, createPageData, orderedBlockIds } from "./page.mjs";
+import { applyPageOperation, createPageData, initializePage, orderedBlockIds } from "./page.mjs";
 import { projectReadContent } from "./read-content.mjs";
 import { textPath } from "./richtext.mjs";
 import { updateSpansConfig } from "./marks.mjs";
@@ -59,7 +59,9 @@ test("structural counterexamples shrink to plain data and replay by seed and pat
 });
 
 function pageWith(tree) {
-  let doc = A.from(createPageData({ pageId: PAGE_ID, title: "Structure" }));
+  let doc = A.change(A.from(createPageData({ pageId: PAGE_ID, title: "Structure" })), (draft) =>
+    initializePage(draft),
+  );
   const id = orderedBlockIds(doc)[0];
   const spans = encode(tree);
   doc = A.change(doc, (draft) => {
@@ -108,21 +110,9 @@ test("independent editor trees survive Automerge storage and have distinct outli
         assert.deepEqual(snapshot(decoded.doc), snapshot(expected));
         const read = projectReadContent(doc, {});
         assert.equal(read.outline.length, expected.content.length);
-        const ids = [];
-        for (const [index, entry] of read.outline.entries()) {
-          // Only the opening paragraph can omit its native marker. An empty
-          // opening paragraph before another node must retain its marker.
-          const node = expected.content[index];
-          const implicit =
-            index === 0 &&
-            node.type === Paragraph.type &&
-            (expected.content.length === 1 || node.content.length > 0);
-          if (implicit) assert.equal(entry.node_id, null);
-          else {
-            assert.equal(typeof entry.node_id, "string");
-            ids.push(entry.node_id);
-          }
-        }
+        // Every written node has its own marker, so its own id.
+        const ids = read.outline.map((entry) => entry.node_id);
+        for (const nodeId of ids) assert.equal(typeof nodeId, "string");
         assert.equal(new Set(ids).size, ids.length);
       }),
     ),

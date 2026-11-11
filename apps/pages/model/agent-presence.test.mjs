@@ -121,10 +121,10 @@ test("a replace_match caret covers the new text and follows a concurrent edit", 
   let range = resolve(after, targets[0]);
   assert.equal(range.quote, "Tuesday morning");
   // Someone types before the replacement; the selection moves with its text.
-  const moved = A.change(after, (d) => A.splice(d, textPath(id), 0, 0, "Plan: "));
+  const moved = A.change(after, (d) => A.splice(d, textPath(id), 1, 0, "Plan: "));
   range = resolve(moved, targets[0]);
   assert.equal(range.quote, "Tuesday morning");
-  assert.equal(range.start_utf16, "Plan: Ship on ".length);
+  assert.equal(range.start_utf16, "\ufffcPlan: Ship on ".length);
 });
 
 test("a deletion is a caret, format_match selects its range, block ops target the block", () => {

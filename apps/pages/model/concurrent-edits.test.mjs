@@ -8,7 +8,7 @@ import { isDeepStrictEqual } from "node:util";
 import fc from "fast-check";
 import { Leaf, Mark } from "wordgard/doc";
 import * as A from "@automerge/automerge";
-import { applyPageOperation, createPageData, orderedBlockIds } from "./page.mjs";
+import { applyPageOperation, createPageData, initializePage, orderedBlockIds } from "./page.mjs";
 import { projectReadContent } from "./read-content.mjs";
 import { blockMarkdown, parseAgentMarkdown, textPath } from "./richtext.mjs";
 import { updateSpansConfig } from "./marks.mjs";
@@ -28,7 +28,9 @@ const PROTECTED = "Protected passage";
 const ACTORS = ["0a".repeat(16), "0b".repeat(16)];
 
 function pageWith(tree) {
-  let doc = A.from(createPageData({ pageId: PAGE_ID, title: "Concurrent" }));
+  let doc = A.change(A.from(createPageData({ pageId: PAGE_ID, title: "Concurrent" })), (draft) =>
+    initializePage(draft),
+  );
   const id = orderedBlockIds(doc)[0];
   const spans = encode(tree);
   doc = A.change(doc, (draft) => {

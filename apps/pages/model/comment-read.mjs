@@ -1,8 +1,7 @@
 // Comment reads have no writer or editor-schema dependency. Legacy tolerance
 // here projects stored content only; it never makes that content admissible.
 import * as A from "@automerge/automerge/slim";
-import { codeTextUnmarked, isRich } from "./richtext-format.mjs";
-import { STORED_FORM_UNSUPPORTED } from "./stored-form.mjs";
+import { codeTextUnmarked } from "./richtext-format.mjs";
 import { PLAIN_FORMAT, plainCommentText } from "./comment-text.mjs";
 import { nativeReadSpans, readChildren, readKind, readMarkdown } from "./native-read.mjs";
 import { isKnownBlock, nodeType, TEXT_CONTAINERS } from "./node-registry.mjs";
@@ -178,11 +177,9 @@ export function commentMarkdown(message) {
 }
 
 /** Literal comments omit body_format until their spans contain formatting.
- * Unsupported stored forms and unreadable rich text fail per message, never
- * per thread or Page. No read repairs or overwrites shared content. */
+ * Unreadable rich text fails per message, never per thread or Page. No read
+ * repairs or overwrites shared content. */
 export function commentBodyProjection(message) {
-  if (isStoredFormMessage(message))
-    return { body: "", body_format: "plain", content_error: STORED_FORM_UNSUPPORTED };
   try {
     const spans = A.spans(message, ["richText"]);
     if (String(message.bodyFormat ?? "") === PLAIN_FORMAT) {
@@ -230,11 +227,6 @@ export function commentBodyProjection(message) {
       content_error: "rich_text_unavailable",
     };
   }
-}
-
-/** A bare body or a stale body copy is not a current stored message. */
-export function isStoredFormMessage(message) {
-  return !isRich(message) || message.body !== undefined;
 }
 
 // JSON values omit marks and table marker attributes; change feeds need spans.

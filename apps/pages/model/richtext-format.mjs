@@ -4,10 +4,7 @@ import * as A from "@automerge/automerge/slim";
 
 export { safeUrl } from "./marks.mjs";
 
-export const RICH_FORMAT = "automerge-rich-text-v1";
 export const textPath = (id) => ["blocks", id, "richText"];
-/** Whether a comment message stores rich text. Page blocks always do. */
-export const isRich = (message) => message?.format === RICH_FORMAT;
 // Code text is unformatted: ProseMirror's code_block allows no marks and a
 // Markdown fence can't express them. Marks a writer left on code text are not
 // read, so one stray mark can't make the whole Page unreadable.

@@ -6,7 +6,6 @@ import fc from "fast-check";
 import * as candidate from "./comment-content.mjs";
 import * as reader from "./comment-read.mjs";
 import { allInputs } from "../test/address-inputs.mjs";
-import { RICH_FORMAT } from "./richtext-format.mjs";
 import { updateSpansConfig } from "./marks.mjs";
 import { captureSelectionTarget } from "./comments.mjs";
 import { projectPage } from "./page.mjs";
@@ -30,7 +29,7 @@ const AT = "2026-11-07T18:00:00-08:00";
 const AUTHORITY = { retry_token: "read-fixture", retry_key_prefix: "fixture_", retry_until: AT };
 
 function richMessage(spans) {
-  let doc = A.from({ format: RICH_FORMAT, richText: "" });
+  let doc = A.from({ richText: "" });
   doc = A.change(doc, (draft) => A.updateSpans(draft, ["richText"], spans, updateSpansConfig));
   return doc;
 }
@@ -400,7 +399,6 @@ test("direct reader is the exported implementation and its full import graph exc
     "commentMarkdown",
     "commentMessageState",
     "commentThreadState",
-    "isStoredFormMessage",
   ])
     assert.equal(candidate[name], reader[name], `${name} is not a separate facade`);
   const result = await build({
@@ -483,14 +481,12 @@ test("read tolerance never changes writer limits or admits reader-only forms", (
   }
 });
 
-test("unsupported forms, literal bodies, old states and tombstones retain baseline semantics", () => {
+test("missing and corrupt rich text, literal bodies, old states and tombstones read consistently", () => {
   const messages = [
     {},
-    { body: "old text" },
-    { format: RICH_FORMAT, body: "old copy", richText: "source" },
-    { format: RICH_FORMAT, richText: ["corrupt"] },
-    { format: RICH_FORMAT, richText: "  literal **text**\n", bodyFormat: "plain" },
-    { format: RICH_FORMAT, richText: "stored", deletedAt: AT },
+    { richText: ["corrupt"] },
+    { richText: "  literal **text**\n", bodyFormat: "plain" },
+    { richText: "stored", deletedAt: AT },
     ...["open", "resolved", "deleted", ""].flatMap((status) => [
       { status },
       { status: { value: status, at: AT } },
@@ -527,7 +523,6 @@ function apiFixture() {
   const since = A.getHeads(comments);
   comments = A.change(comments, { time: 0 }, (draft) => {
     const message = (richText, extra = {}) => ({
-      format: RICH_FORMAT,
       richText,
       author: AUTHOR,
       createdAt: AT,
@@ -542,8 +537,6 @@ function apiFixture() {
       messages: {
         native: message(""),
         plain: message("  literal **text**\n", { bodyFormat: "plain" }),
-        old: { body: "not migrated", author: AUTHOR, createdAt: AT },
-        stale: message("native copy", { body: "outdated Markdown copy" }),
         bad: message(""),
         code: message(""),
         tombstone: message("deleted source", { deletedAt: AT }),
@@ -625,9 +618,7 @@ test("comment reads report each stored form's outcome and change neither documen
         bad: { body: "[original]()", body_format: "markdown" },
         code: { body: "one\ntwo", body_format: "plain", content_error: "rich_text_unavailable" },
         native: { body: "***marked***\n\n- [x] task", body_format: "markdown" },
-        old: { body: "", body_format: "plain", content_error: "stored_form_unsupported" },
         plain: { body: "  literal **text**\n" },
-        stale: { body: "", body_format: "plain", content_error: "stored_form_unsupported" },
         tombstone: {},
       },
     );

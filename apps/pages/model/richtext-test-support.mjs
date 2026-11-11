@@ -5,14 +5,19 @@ import { stampFeatures } from "./schema-features.mjs";
 import * as A from "@automerge/automerge/slim";
 import { encode } from "./wordgard-doc.mjs";
 
-/** Noncanonical opening paragraph for refusal and text-limit fixtures. */
-export const explicitOpeningSpans = (tree) => [
+/** Spans out of the editor's form, for refusal fixtures: one paragraph whose
+ * newline is stored as text, where the editor writes a hard break. */
+export const proseNewlineSpans = (text = "One\nTwo") => [
   {
     type: "block",
     value: { type: new A.ImmutableString("paragraph"), parents: [], attrs: {}, isEmbed: false },
   },
-  ...encode(tree),
+  { type: "text", value: text, marks: {} },
 ];
+
+/** `tree`'s spans with its opening marker left out: unmarked text, as a
+ * merge can leave it (decode in wordgard-doc.mjs). */
+export const unmarkedSpans = (tree) => encode(tree).slice(1);
 
 /** Inside an `A.change`: give block `id` rich text parsed from the Markdown
  * in its `markdown` seed field, math and HTML kept as text, and drop the seed.

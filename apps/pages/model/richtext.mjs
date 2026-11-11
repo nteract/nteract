@@ -10,7 +10,7 @@
 // - richtext-spans.mjs: projection reads, canonical Page spans, validation.
 // - richtext-page.mjs: Page block writers and Markdown projection.
 // - richtext-notices.mjs: notices and labels for nodes Markdown can't hold.
-export { safeUrl, RICH_FORMAT, textPath, isRich, codeTextUnmarked } from "./richtext-format.mjs";
+export { safeUrl, textPath, codeTextUnmarked } from "./richtext-format.mjs";
 export { richSize, isBlankBlock } from "./richtext-format.mjs";
 export { schema } from "./wordgard-doc.mjs";
 export { unknownNodeNotice, quotableNodeType, dataframeLabel } from "./richtext-notices.mjs";

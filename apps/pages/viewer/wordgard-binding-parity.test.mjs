@@ -32,7 +32,7 @@ import {
   wordgardHistory,
   wordgardListStarts,
 } from "./wordgard-binding.mjs";
-import { createPageData } from "../model/page.mjs";
+import { createPageData, initializePage } from "../model/page.mjs";
 import { orderedBlockIds } from "../model/order.mjs";
 import { textPath } from "../model/richtext.mjs";
 import { updateSpansConfig } from "../model/marks.mjs";
@@ -192,7 +192,10 @@ function editorFor(replica, id, { twin, trace, onRemote = () => {} } = {}) {
 }
 
 function pageWith(tree) {
-  let doc = A.from(createPageData({ pageId: PAGE_ID, title: "Parity" }), { actor: ACTORS[0] });
+  let doc = A.change(
+    A.from(createPageData({ pageId: PAGE_ID, title: "Parity" }), { actor: ACTORS[0] }),
+    (draft) => initializePage(draft),
+  );
   const id = orderedBlockIds(doc)[0];
   const spans = encode(tree);
   doc = A.change(doc, CHANGE, (draft) => {

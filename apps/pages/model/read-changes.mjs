@@ -95,7 +95,8 @@ function nativeNodes(doc, blockId, headings) {
     }
     const nodeId = ids[nodeIndex].id;
     entries.push({
-      key: `${objectId}:${nodeId}`,
+      // A paragraph of unmarked text has no id; its index stands in.
+      key: `${objectId}:${nodeId ?? `unmarked:${nodeIndex}`}`,
       node_index: nodeIndex,
       node_id: nodeId,
       type: readKind(node),

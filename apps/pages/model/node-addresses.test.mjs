@@ -18,6 +18,8 @@ import { projectReadContent } from "./read-content.mjs";
 import { visibleNodeRange, visibleRangeAddress } from "./replace-match.mjs";
 import { textPath } from "./richtext-format.mjs";
 import { nativeRead } from "./native-read.mjs";
+import { blockMarkdown, markUnmarkedText } from "./richtext-page.mjs";
+import { decode } from "./wordgard-doc.mjs";
 import { allInputs, pageWithSpans, spansToJSON } from "../test/address-inputs.mjs";
 
 const GOLDEN = new URL("./node-addresses.golden.json", import.meta.url);
@@ -200,8 +202,18 @@ test("text stored after an unknown block is that node's content", () => {
   assert.deepEqual(ancestryAt(addresses, 1), [{ type: "Paragraph", attrs: {} }]);
 });
 
-test("every top-level node has an id, the first paragraph's included", () => {
+const UNMARKED = [
+  "empty",
+  "unmarked-first",
+  "unmarked-after-rule",
+  "unmarked-in-quote",
+  "unmarked-in-list-item",
+  "unmarked-in-table",
+];
+
+test("every written node has an id, the first paragraph's included", () => {
   for (const { name, spans } of inputs) {
+    if (UNMARKED.some((shape) => name === `shape/${shape}`)) continue;
     const result = observe(spans);
     if (!result.observed || result.observed.placed === false) continue;
     assert.ok(
@@ -211,18 +223,27 @@ test("every top-level node has an id, the first paragraph's included", () => {
   }
 });
 
-test("content before its node's marker is refused by every reader", () => {
-  for (const shape of [
-    "empty",
-    "text-before-first-marker",
-    "quote-text-before-marker",
-    "list-item-text-before-marker",
-  ]) {
+test("every reader reads unmarked text, and marking it gives every node an id", () => {
+  for (const shape of UNMARKED) {
     const { spans } = inputs.find((input) => input.name === `shape/${shape}`);
     const { doc, id } = pageWithSpans(spans);
-    assert.throws(() => nativeRead(doc.blocks[id], doc.page_id), shape);
-    assert.throws(() => blockAddresses(A.spans(doc, textPath(id))), shape);
-    assert.throws(() => nodeIds(doc, id), shape);
+    const tree = nativeRead(doc.blocks[id], doc.page_id);
+    const ids = nodeIds(doc, id, tree);
+    assert.equal(blockAddresses(A.spans(doc, textPath(id))).nodes.length, ids.length, shape);
+    // A top-level paragraph of unmarked text has no id; unmarked text inside
+    // a container is inside a node that has one.
+    const topLevel = ["empty", "unmarked-first", "unmarked-after-rule"].includes(shape);
+    assert.equal(ids.filter((entry) => entry.id === null).length, topLevel ? 1 : 0, shape);
+    const marked = A.change(A.clone(doc), (draft) => assert.ok(markUnmarkedText(draft, id)));
+    assert.equal(decode(A.spans(marked, textPath(id))).unmarked.length, 0, shape);
+    assert.ok(
+      nodeIds(marked, id).every((entry) => typeof entry.id === "string"),
+      shape,
+    );
+    // Marking adds markers only: the Markdown reads the same.
+    assert.equal(blockMarkdown(marked.blocks[id]), blockMarkdown(doc.blocks[id]), shape);
+    // A second pass writes nothing.
+    A.change(A.clone(marked), (draft) => assert.equal(markUnmarkedText(draft, id), false));
   }
 });
 

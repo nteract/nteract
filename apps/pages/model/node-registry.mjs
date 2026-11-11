@@ -12,10 +12,11 @@
 //     container       holds blocks (quote, aside, list item, table, row)
 //     leaf            a block with no content (rule, dataframe)
 //     embed           an inline marker (image, hard break)
-// - `governsFirstParagraph`: set_node reaches the container through the text
-//   of its first paragraph, for an attribute the container holds and the
-//   paragraph doesn't (a task's checked; model/set-node.mjs). True for
-//   quotes, asides and list items.
+// - `governsFirstParagraph`: set_node on the text of the container's first
+//   paragraph changes the container, though that paragraph has a marker of
+//   its own (model/set-node.mjs): checking a task through its text, refusing
+//   to retype a list item. True for quotes, asides and list items; a list
+//   item's label already names the item, a quote's says "first paragraph".
 // - `feature`: the model/features.json feature that gates it, or null.
 // - `label` / `plural`: how a refusal names a node, or several, of this type.
 // - `retype`: set_node may change a node between types that share this group
@@ -76,12 +77,12 @@ export const NODE_TYPES = Object.freeze([
   entry("blockquote", {
     kind: "container",
     governsFirstParagraph: true,
-    label: "a quote",
+    label: "a quote's first paragraph",
   }),
   entry("aside", {
     kind: "container",
     governsFirstParagraph: true,
-    label: "an aside",
+    label: "an aside's first paragraph",
   }),
   entry("unordered-list-item", {
     governsFirstParagraph: true,

@@ -6,10 +6,8 @@ import { applyComment } from "./comments.mjs";
 import { commentDecision } from "./comment-rules.mjs";
 import { commentsGenesis } from "./comments-doc.mjs";
 import { editorCommentSpans, markdownCommentSpans } from "./comment-content.mjs";
-import { explicitOpeningSpans } from "./richtext-test-support.mjs";
+import { proseNewlineSpans } from "./richtext-test-support.mjs";
 import { BLOCKING } from "../sync/comments.mjs";
-import { parseMarkdown } from "./markdown-import.mjs";
-import { RICH_FORMAT } from "./richtext-format.mjs";
 
 const ALICE = "account:alice";
 const BOB = "account:bob";
@@ -65,9 +63,10 @@ function admit(doc, principal, role, fn) {
 }
 
 const now = () => new Date().toISOString();
-/** A message as this build writes it: rich text, no `body`. */
+/** A message map: its rich text, author and times. `text` is stored with no
+ * marker opening it: unmarked text, which admission accepts as a merge can
+ * leave it. */
 const richMessage = (text, principal) => ({
-  format: RICH_FORMAT,
   richText: text,
   author: who(principal),
   createdAt: now(),
@@ -290,31 +289,18 @@ test("empty or oversized content is refused; markers don't count toward the leng
   assert.equal(items.ok, true, JSON.stringify(items.reason));
 });
 
-test("a new message is rich text; a bare literal body is refused", () => {
+test("a new message holds only the fields this format stores", () => {
   const { doc, ids } = seed();
-  const bare = admit(doc, BOB, "commenter", (d) => {
-    d.threads[ids.aliceThread].messages.bare = {
-      body: "hello",
-      author: who(BOB),
-      createdAt: now(),
-      deletedAt: null,
-    };
-  });
-  assert.equal(bare.reason.code, REJECTION.OUTDATED_FORM);
-  assert.match(bare.reason.message, /body/);
-  // A message map without the rich format is an earlier build's too.
-  const formless = admit(doc, BOB, "commenter", (d) => {
-    const { format: _format, ...rest } = richMessage("hello", BOB);
-    d.threads[ids.aliceThread].messages.formless = rest;
-  });
-  assert.equal(formless.reason.code, REJECTION.OUTDATED_FORM);
-  assert.match(formless.reason.message, /rich text/);
-  // An earlier build's tab still writes a Markdown copy: refused.
-  const copy = admit(doc, BOB, "commenter", (d) => {
-    d.threads[ids.aliceThread].messages.copy = { ...richMessage("hello", BOB), body: "hello" };
-  });
-  assert.equal(copy.reason?.code, REJECTION.OUTDATED_FORM);
-  assert.match(copy.reason.message, /body/);
+  for (const [field, value] of [
+    ["body", "hello"],
+    ["format", "automerge-rich-text-v1"],
+  ]) {
+    const result = admit(doc, BOB, "commenter", (d) => {
+      d.threads[ids.aliceThread].messages.extra = { ...richMessage("hello", BOB), [field]: value };
+    });
+    assert.equal(result.reason?.code, REJECTION.UNKNOWN_PATH, field);
+    assert.equal(result.reason.details.field, field);
+  }
   for (const bodyFormat of ["markdown", "html"]) {
     const result = admit(doc, BOB, "commenter", (d) => {
       d.threads[ids.aliceThread].messages.format = { ...richMessage("hello", BOB), bodyFormat };
@@ -328,43 +314,11 @@ test("a new message is rich text; a bare literal body is refused", () => {
     };
   });
   assert.equal(plain.ok, true, JSON.stringify(plain.reason));
-});
-
-test("an existing literal-body message is refused, even for a soft delete", () => {
-  const { doc: seeded, ids } = seed();
-  // A message in the shape earlier builds stored, which the comments
-  // migration rewrote everywhere.
-  const doc = A.change(seeded, (d) => {
-    d.threads[ids.bobThread].messages[ids.bobMessage] = {
-      body: "Bob opens",
-      author: who(BOB),
-      createdAt: now(),
-      deletedAt: null,
-    };
+  // An existing message takes no other field either.
+  const edited = admit(doc, BOB, "commenter", (d) => {
+    d.threads[ids.bobThread].messages[ids.bobMessage].format = "automerge-rich-text-v1";
   });
-  const path = ["threads", ids.bobThread, "messages", ids.bobMessage];
-  const deleted = admit(doc, BOB, "commenter", (d) => {
-    d.threads[ids.bobThread].messages[ids.bobMessage].deletedAt = now();
-  });
-  assert.equal(deleted.reason?.code, REJECTION.OUTDATED_FORM);
-  const emptied = admit(doc, BOB, "commenter", (d) => {
-    A.updateText(d, [...path, "body"], " ");
-  });
-  assert.equal(emptied.reason?.code, REJECTION.OUTDATED_FORM);
-  // The tools refuse to rewrite it rather than guess at its form.
-  assert.throws(
-    () =>
-      changesOf(doc, (d) =>
-        applyComment(
-          d,
-          { action: "edit", thread_id: ids.bobThread, message_id: ids.bobMessage, body: "Now" },
-          who(BOB),
-          null,
-          { page, role: "commenter" },
-        ),
-      ),
-    { code: "stored_form_unsupported" },
-  );
+  assert.equal(edited.reason?.code, REJECTION.UNKNOWN_PATH);
 });
 
 test("a rich reply written by the tools passes native admission", () => {
@@ -534,9 +488,8 @@ test("entity sets keep (thread, id) pairs distinct", () => {
 
 test("every write leaves a message in the editor's span form", () => {
   const { doc: seeded, ids } = seed();
-  // Two paragraphs: the adapter's form opens with a paragraph marker the
-  // editor never writes.
-  const adapter = explicitOpeningSpans(parseMarkdown("One\n\nTwo"));
+  // A newline stored as text, where the editor writes a hard break.
+  const adapter = proseNewlineSpans();
   const created = admit(seeded, BOB, "commenter", (d) => {
     d.threads[ids.aliceThread].messages.adapter = richMessage("", BOB);
     A.updateSpans(d, ["threads", ids.aliceThread, "messages", "adapter", "richText"], adapter);
@@ -550,26 +503,24 @@ test("every write leaves a message in the editor's span form", () => {
     A.updateSpans(d, bobText, markdownCommentSpans("One\n\nTwo")),
   );
   assert.equal(editor.ok, true, JSON.stringify(editor.reason));
-  // A message an earlier build stored in the adapter's form with its copy:
-  // every write to it is refused, a soft delete included, because `body`
-  // doesn't depend on what the editor's encoder writes.
-  const adapterOnly = A.change(seeded, (d) => A.updateSpans(d, bobText, adapter));
-  const withCopy = A.change(adapterOnly, (d) => {
-    d.threads[ids.bobThread].messages[ids.bobMessage].body = "One\n\nTwo";
-  });
-  const deleted = admit(withCopy, BOB, "commenter", (d) => {
-    d.threads[ids.bobThread].messages[ids.bobMessage].deletedAt = now();
-  });
-  assert.equal(deleted.reason?.code, REJECTION.OUTDATED_FORM);
-  for (const write of [
-    (d) =>
-      A.updateText(d, ["threads", ids.bobThread, "messages", ids.bobMessage, "body"], "new copy"),
-    (d) => {
-      delete d.threads[ids.bobThread].messages[ids.bobMessage].body;
-      A.updateSpans(d, bobText, markdownCommentSpans("One\n\nTwo"));
-    },
-  ])
-    assert.equal(admit(withCopy, BOB, "commenter", write).reason?.code, REJECTION.OUTDATED_FORM);
+});
+
+test("two edits of one message that merge into unmarked text are both admitted", () => {
+  const { doc: seeded, ids } = seed();
+  const bobText = ["threads", ids.bobThread, "messages", ids.bobMessage, "richText"];
+  let doc = A.change(seeded, (d) => A.updateSpans(d, bobText, markdownCommentSpans("One\n\nTwo")));
+  // One of Bob's tabs deletes the first paragraph, marker and text; the other
+  // types into it. Each is in the editor's form; their merge leaves " typed"
+  // with no marker opening it.
+  const deleted = changesOf(doc, (d) => A.splice(d, bobText, 0, "One".length + 1));
+  const typed = changesOf(doc, (d) => A.splice(d, bobText, 4, 0, " typed"));
+  for (const changes of [deleted, typed]) {
+    const result = admitCommentChanges(doc, changes, BOB, { role: "commenter" });
+    assert.equal(result.ok, true, JSON.stringify(result.reason));
+    A.free(doc);
+    doc = result.next;
+  }
+  assert.equal(A.spans(doc, bobText)[0].type, "text");
 });
 
 test("an old form is refused without blocking the key: a stale tab isn't an attack", () => {
@@ -579,12 +530,12 @@ test("an old form is refused without blocking the key: a stale tab isn't an atta
 });
 
 test("a soft delete never checks the span form; a content write still does", () => {
-  // Spans out of the editor's current form, as an earlier encoder (or the
-  // ProseMirror adapter) wrote them. A later Wordgard release that encodes
-  // differently leaves every stored message like this.
+  // Spans out of the editor's current form, as an earlier encoder wrote
+  // them. A later Wordgard release that encodes differently leaves every
+  // stored message like this.
   const { doc: seeded, ids } = seed();
   const bobText = ["threads", ids.bobThread, "messages", ids.bobMessage, "richText"];
-  const adapter = explicitOpeningSpans(parseMarkdown("One\n\nTwo"));
+  const adapter = proseNewlineSpans();
   const doc = A.change(seeded, (d) => A.updateSpans(d, bobText, adapter));
   const deleted = admit(doc, BOB, "commenter", (d) => {
     d.threads[ids.bobThread].messages[ids.bobMessage].deletedAt = now();
@@ -592,15 +543,10 @@ test("a soft delete never checks the span form; a content write still does", () 
   assert.equal(deleted.ok, true, JSON.stringify(deleted.reason));
   const edited = admit(doc, BOB, "commenter", (d) => A.splice(d, bobText, 1, 0, "x"));
   assert.equal(edited.reason?.code, REJECTION.OUTDATED_FORM);
-  for (const write of [
-    (d) => {
-      d.threads[ids.bobThread].messages[ids.bobMessage].bodyFormat = "plain";
-    },
-    (d) => {
-      d.threads[ids.bobThread].messages[ids.bobMessage].format = "automerge-rich-text-v1";
-    },
-  ])
-    assert.equal(admit(doc, BOB, "commenter", write).reason?.code, REJECTION.OUTDATED_FORM);
+  const plain = admit(doc, BOB, "commenter", (d) => {
+    d.threads[ids.bobThread].messages[ids.bobMessage].bodyFormat = "plain";
+  });
+  assert.equal(plain.reason?.code, REJECTION.OUTDATED_FORM);
 });
 
 /** An empty paragraph between two others, in the editor's form. */

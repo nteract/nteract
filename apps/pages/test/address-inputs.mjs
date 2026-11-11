@@ -1,7 +1,7 @@
 // Stored rich-text shapes for node addressing tests (model/node-addresses.test.mjs):
 // the Markdown corpus written as rich text, random editor trees through the
 // editor encoder, and hand-written stored shapes, including ones only a peer
-// or a newer build writes and ones every reader refuses. Each input is
+// or a newer build writes, and unmarked text a merge leaves. Each input is
 // `{ name, spans }`, spans as stored.
 import * as A from "@automerge/automerge";
 import fc from "fast-check";
@@ -98,12 +98,15 @@ const image = (parents = ["paragraph"]) =>
 const P = (parents = [], attrs = {}) => block("paragraph", parents, attrs);
 
 /** Stored shapes the encoders never write but a peer or a newer build can,
- * and shapes every reader refuses: content before its node's marker. */
+ * and unmarked text: what a merge of concurrent edits can leave with no marker
+ * opening it (decode in model/wordgard-doc.mjs). */
 export const SHAPES = {
   empty: [],
-  "text-before-first-marker": [text("Intro"), P(), text("tail")],
-  "quote-text-before-marker": [block("blockquote"), text("q"), P(), text("r")],
-  "list-item-text-before-marker": [block("unordered-list-item"), text("x")],
+  "unmarked-first": [text("Intro"), P(), text("tail")],
+  "unmarked-after-rule": [P(), text("Intro"), block("horizontal-rule"), text("Kept")],
+  "unmarked-in-quote": [block("blockquote"), text("q"), P(), text("r")],
+  "unmarked-in-list-item": [block("unordered-list-item"), text("x")],
+  "unmarked-in-table": [P(), text("a"), block("table"), text("c")],
   "editor-form": [
     P(),
     text("Intro"),

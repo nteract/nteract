@@ -184,7 +184,10 @@ test("an editor rewrite of any block Pages wrote from Markdown writes nothing", 
     // stored source, for all of it.
     const writes = unsupportedMarkdown(markdown) ? [true] : [false, true];
     for (const literal of writes) {
-      let doc = A.from(createPageData({ pageId: "projection", title: "Projection" }));
+      let doc = A.change(
+        A.from(createPageData({ pageId: "projection", title: "Projection" })),
+        (draft) => initializePage(draft),
+      );
       const id = orderedBlockIds(doc)[0];
       try {
         doc = A.change(doc, (draft) => setRichMarkdown(draft, id, markdown, { literal }));
@@ -237,6 +240,15 @@ test("nested-only sibling items keep separate outer markers through the shared e
         isEmbed: false,
       },
     },
+    {
+      type: "block",
+      value: {
+        type: "paragraph",
+        parents: ["unordered-list-item", "unordered-list-item"],
+        attrs: {},
+        isEmbed: false,
+      },
+    },
     { type: "text", value: "a", marks: {} },
     {
       type: "block",
@@ -251,6 +263,15 @@ test("nested-only sibling items keep separate outer markers through the shared e
         isEmbed: false,
       },
     },
+    {
+      type: "block",
+      value: {
+        type: "paragraph",
+        parents: ["unordered-list-item", "unordered-list-item"],
+        attrs: {},
+        isEmbed: false,
+      },
+    },
     { type: "text", value: "b", marks: {} },
   ];
   assert.deepEqual(plainSpans(pageSpans(tree)), expected);
@@ -259,7 +280,10 @@ test("nested-only sibling items keep separate outer markers through the shared e
 test("an agent that writes back what it read writes nothing", () => {
   for (const { id: caseId, markdown } of markdownCorpus.cases)
     for (const literal of unsupportedMarkdown(markdown) ? [true] : [false, true]) {
-      let doc = A.from(createPageData({ pageId: "projection", title: "Projection" }));
+      let doc = A.change(
+        A.from(createPageData({ pageId: "projection", title: "Projection" })),
+        (draft) => initializePage(draft),
+      );
       const id = orderedBlockIds(doc)[0];
       try {
         doc = A.change(doc, (draft) => setRichMarkdown(draft, id, markdown, { literal }));
@@ -278,7 +302,10 @@ test("an agent that writes back what it read writes nothing", () => {
 });
 
 test("the no-op guard applies intended formatting changes and preserves strict source errors", () => {
-  let doc = A.from(createPageData({ pageId: "projection", title: "Projection" }));
+  let doc = A.change(
+    A.from(createPageData({ pageId: "projection", title: "Projection" })),
+    (draft) => initializePage(draft),
+  );
   const id = orderedBlockIds(doc)[0];
   doc = A.change(doc, (draft) => setRichMarkdown(draft, id, "**ab*cd***"));
   const changed = A.change(A.clone(doc), (draft) =>
@@ -286,7 +313,7 @@ test("the no-op guard applies intended formatting changes and preserves strict s
   );
   assert.notDeepEqual(A.getHeads(changed), A.getHeads(doc));
   assert.equal(exportMarkdown(richDoc(changed.blocks[id])), "ab*cd*");
-  assert.deepEqual(A.spans(changed, textPath(id))[0], { type: "text", value: "ab" });
+  assert.deepEqual(A.spans(changed, textPath(id))[1], { type: "text", value: "ab" });
   for (const invalid of ["<script>bad</script>", "$x$"])
     assert.throws(
       () => A.change(A.clone(doc), (draft) => setRichMarkdownKeepingNodes(draft, id, invalid)),
@@ -297,7 +324,9 @@ test("the no-op guard applies intended formatting changes and preserves strict s
 test("restored rich-only metadata is checked before identical Markdown can be a no-op", () => {
   const pageId = "55555555-5555-4555-8555-555555555555";
   const src = `/api/pages/${pageId}/assets/${"b".repeat(64)}`;
-  let doc = A.from(createPageData({ pageId, title: "Projection" }));
+  let doc = A.change(A.from(createPageData({ pageId, title: "Projection" })), (draft) =>
+    initializePage(draft),
+  );
   const id = orderedBlockIds(doc)[0];
   const spans = encode(
     wordgardSchema.doc([
@@ -337,7 +366,10 @@ test("a lossy Markdown mark boundary is not mistaken for an unchanged stored tar
     },
     { type: "text", value: " a", marks: { strong: true } },
   ];
-  let doc = A.from(createPageData({ pageId: "projection", title: "Projection" }));
+  let doc = A.change(
+    A.from(createPageData({ pageId: "projection", title: "Projection" })),
+    (draft) => initializePage(draft),
+  );
   const id = orderedBlockIds(doc)[0];
   doc = A.change(doc, (draft) => A.updateSpans(draft, textPath(id), spans, updateSpansConfig));
   const markdown = exportMarkdown(richDoc(doc.blocks[id]));
@@ -350,7 +382,10 @@ test("a lossy Markdown mark boundary is not mistaken for an unchanged stored tar
 
 // A block's content as an agent reads it, from its stored spans.
 const storedRead = (spans) => {
-  let doc = A.from(createPageData({ pageId: "projection", title: "Projection" }));
+  let doc = A.change(
+    A.from(createPageData({ pageId: "projection", title: "Projection" })),
+    (draft) => initializePage(draft),
+  );
   const id = orderedBlockIds(doc)[0];
   doc = A.change(doc, (draft) => A.updateSpans(draft, textPath(id), spans, updateSpansConfig));
   return exportMarkdown(richDoc(doc.blocks[id]));
@@ -392,7 +427,9 @@ test("a dataframe stays a standalone link before a nested block-first list", () 
         ]),
       ]),
     ]);
-    let doc = A.from(createPageData({ pageId, title: "Projection" }));
+    let doc = A.change(A.from(createPageData({ pageId, title: "Projection" })), (draft) =>
+      initializePage(draft),
+    );
     const id = orderedBlockIds(doc)[0];
     const spans = encode(tree);
     doc = A.change(doc, (draft) => {
@@ -427,7 +464,7 @@ test("a newline in a paragraph is stored as the hard break the editor writes", (
   const spans = pageSpans(parseAgentMarkdown("a&#10;b"));
   assert.deepEqual(
     plainSpans(spans).map((span) => (span.type === "text" ? span.value : span.value.type)),
-    ["a", "hard-break", "b"],
+    ["paragraph", "a", "hard-break", "b"],
   );
   // It reads back as a hard break, so a read written back keeps it.
   assert.equal(storedRead(spans), "a\\\nb");

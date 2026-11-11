@@ -199,8 +199,7 @@ export function nativeRead(block, pageId) {
   return nativeReadSpans(A.spans(block, ["richText"]), pageId);
 }
 
-/** A read-only projection of stored spans. Throws on content before its
- * node's marker, or on spans that hold no node. */
+/** A read-only projection of stored spans. */
 export function nativeReadSpans(input, pageId) {
   const spans = codeTextUnmarked(input);
   const nodes = [],
@@ -236,14 +235,14 @@ export function nativeReadSpans(input, pageId) {
     );
   };
   const inline = () => !!stack.at(-1)?.tag?.type.spec.inlineContent;
-  // Text and inline nodes sit inside a node that opened with its marker, or
-  // are the content a node this build doesn't know stores after its own
-  // marker, read as a paragraph inside it.
+  // Text continues the node before it in its scope. Unmarked text (no
+  // text-bearing node before it in its scope; only a merge leaves it, see
+  // decode in model/wordgard-doc.mjs) reads as a paragraph with no marker, as
+  // does what a node this build doesn't know stores after its own marker.
   const ensureText = () => {
-    if (inline()) return;
-    if (stack.at(-1)?.tag.type !== ReadUnknown)
-      throw Error("Invalid Pages rich text: content before its node's marker");
-    open({ tag: Paragraph });
+    if (stack.at(-1)?.tag.type === Table.type) open({ tag: TableRow });
+    if (stack.at(-1)?.tag.type === TableRow.type) open({ tag: Cell });
+    if (!inline()) open({ tag: Paragraph });
   };
   const code = () => stack.at(-1)?.tag?.type === CodeBlock.type;
   // A node this reader can't show reads as notice text where it is stored:
@@ -310,6 +309,7 @@ export function nativeReadSpans(input, pageId) {
     at++;
   }
   while (stack.length) close();
-  if (!nodes.length) throw Error("Invalid Pages rich text: a block holds no node");
+  // Empty text, which a merge can leave: one empty unmarked paragraph.
+  if (!nodes.length) nodes.push(Paragraph.create([]));
   return { nodes, source, metadata };
 }

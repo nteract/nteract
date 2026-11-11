@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import { Leaf } from "wordgard/doc";
 import { Blockquote, HorizontalRule, Paragraph } from "wordgard/types";
-import { encode, PagesDataframe, schema } from "./wordgard-doc.mjs";
+import { decode, encode, PagesDataframe, schema } from "./wordgard-doc.mjs";
+import { blockAddresses } from "./node-addresses.mjs";
 import { applyPageOperation, createPageData, initializePage, orderedBlockIds } from "./page.mjs";
 import { blockMarkdown, parseMarkdown, richDoc, textPath } from "./richtext.mjs";
 import { updateSpansConfig } from "./marks.mjs";
@@ -53,21 +54,21 @@ const outline = (doc, id) =>
 const idOf = (doc, id, type) => outline(doc, id).find((entry) => entry.type === type).node_id;
 const refuses = (doc, operations, check) => assert.throws(() => edit(doc, operations), check);
 
-test("the outline gives every top-level node an id but the block's opening paragraph", () => {
+test("the outline gives every top-level node an id, the block's opening paragraph included", () => {
   const { doc, id } = fixture();
   const entries = outline(doc, id);
   assert.deepEqual(
     entries.map((entry) => entry.type),
     ["paragraph", "heading", "bullet-list", "blockquote", "table", "horizontal-rule", "paragraph"],
   );
-  // The opening paragraph has no marker. The image inside it is a marker too,
-  // but an inline one, so it doesn't give the paragraph an id.
-  assert.equal(entries[0].node_id, null);
-  for (const entry of entries.slice(1)) assert.equal(typeof entry.node_id, "string");
+  // The opening paragraph has its own marker at 0. The image inside it is a
+  // marker too, but an inline one, which opens no node.
+  assert.equal(nodeIds(doc, id)[0].at, 0);
+  for (const entry of entries) assert.equal(typeof entry.node_id, "string");
   assert.equal(new Set(entries.map((entry) => entry.node_id)).size, entries.length);
   // The id is the cursor at the node's opening marker.
   const spans = A.spans(doc, textPath(id));
-  for (const { id: nodeId, at } of nodeIds(doc, id).slice(1)) {
+  for (const { id: nodeId, at } of nodeIds(doc, id)) {
     assert.equal(A.getCursor(doc, textPath(id), at), nodeId);
     let index = 0,
       span;
@@ -187,18 +188,52 @@ test("delete_node removes one node and leaves its neighbours and their ids alone
   );
 });
 
-test("deleting the node that opens a block leaves the next paragraph as the editor writes it", () => {
+test("deleting the node that opens a block leaves the next node, and its id, as they were", () => {
   const { doc, id } = fixture("## Heading\n\nFirst paragraph\n\nSecond");
   const heading = idOf(doc, id, "heading");
   const after = edit(doc, [{ op: "delete_node", block_id: id, node_id: heading }]).doc;
   assert.equal(blockMarkdown(after.blocks[id]), "First paragraph\n\nSecond");
-  // No plain paragraph marker at 0: the editor would delete it on the next
-  // structural edit and write history.
+  // "First paragraph" now opens the block with its own marker and id.
   const [first] = A.spans(after, textPath(id));
-  assert.equal(first.type, "text");
-  // "First paragraph" now opens the block, so it has no id; "Second" keeps its.
-  assert.equal(outline(after, id)[0].node_id, null);
+  assert.equal(String(first.value.type), "paragraph");
+  assert.equal(outline(after, id)[0].node_id, outline(doc, id)[1].node_id);
   assert.equal(outline(after, id)[1].node_id, outline(doc, id)[2].node_id);
+});
+
+test("delete_node on a block's only node, set_node on its first paragraph, and an insert before it", () => {
+  const { doc, id } = fixture("Only words");
+  const [only] = outline(doc, id);
+  assert.equal(typeof only.node_id, "string");
+  // A block always holds a node: the deleted one becomes one empty paragraph
+  // with a marker, and an id, of its own.
+  const emptied = edit(doc, [{ op: "delete_node", block_id: id, node_id: only.node_id }]).doc;
+  assert.equal(blockMarkdown(emptied.blocks[id]), "");
+  const [left] = outline(emptied, id);
+  assert.equal(left.type, "paragraph");
+  assert.equal(typeof left.node_id, "string");
+  assert.notEqual(left.node_id, only.node_id);
+  // set_node turns the first paragraph into a heading in place: same marker, same id.
+  const heading = patch(doc, [
+    { op: "set_node", block_id: id, match_text: "Only", type: "heading", attrs: { level: 2 } },
+  ]);
+  assert.deepEqual(
+    outline(heading, id).map((entry) => [entry.type, entry.node_id]),
+    [["heading", only.node_id]],
+  );
+  // A node a peer inserts before the first one leaves its id alone.
+  const inserted = A.change(A.clone(doc), (draft) => {
+    A.splitBlock(draft, textPath(id), 0, {
+      type: S("horizontal-rule"),
+      parents: [],
+      attrs: {},
+      isEmbed: false,
+    });
+  });
+  assert.deepEqual(
+    outline(inserted, id).map((entry) => entry.type),
+    ["horizontal-rule", "paragraph"],
+  );
+  assert.equal(outline(inserted, id)[1].node_id, only.node_id);
 });
 
 test("delete_node removes a dataframe and an unknown node, which have no text", () => {
@@ -211,7 +246,10 @@ test("delete_node removes a dataframe and an unknown node, which have no text", 
   assert.equal(frame.type, "dataframe");
   const emptied = edit(doc, [{ op: "delete_node", block_id: block, node_id: frame.node_id }]).doc;
   assert.equal(blockMarkdown(emptied.blocks[block]), "");
-  assert.deepEqual(A.spans(emptied, textPath(block)), []);
+  assert.deepEqual(
+    A.spans(emptied, textPath(block)).map((span) => String(span.value.type)),
+    ["paragraph"],
+  );
 
   const unknown = fixture("Before\n\nAfter");
   const withChart = A.change(unknown.doc, (draft) =>
@@ -411,11 +449,11 @@ test("every node kind gets an id at its own opening marker", () => {
     at += span.type === "text" ? span.value.length : 1;
   }
   assert.deepEqual(
-    entries.slice(1).map((entry) => entry.node_id),
+    entries.map((entry) => entry.node_id),
     opening.map((index) => A.getCursor(doc, textPath(id), index)),
   );
   // Each kind deletes cleanly, and only itself.
-  for (const entry of entries.slice(1)) {
+  for (const entry of entries) {
     const after = edit(doc, [{ op: "delete_node", block_id: id, node_id: entry.node_id }]).doc;
     assert.deepEqual(
       outline(after, id).map((rest) => rest.node_id),
@@ -437,33 +475,21 @@ test("a batch can delete the opening node and the paragraph after it", () => {
     ["heading", "paragraph"],
   );
   assert.equal(blockMarkdown(after.blocks[id]), "P2");
-  // P2 now opens the block: as the editor writes it, with no marker.
-  assert.equal(A.spans(after, textPath(id))[0].type, "text");
-  assert.equal(outline(after, id)[0].node_id, null);
+  // P2 now opens the block, with its own marker and id.
+  assert.deepEqual(
+    outline(after, id).map((entry) => entry.node_id),
+    [second],
+  );
   // In the other order too.
   const reversed = edit(doc, [
     { op: "delete_node", block_id: id, node_id: first },
     { op: "delete_node", block_id: id, node_id: heading },
   ]).doc;
   assert.equal(blockMarkdown(reversed.blocks[id]), "P2");
-  assert.notEqual(second, null);
-});
-
-test("an explicit opening paragraph keeps its marker when another node is deleted", () => {
-  const { doc: base, id } = fixture("Opening\n\n## Heading\n\nClosing");
-  // An adapter-written block opens with an explicit paragraph marker.
-  const doc = A.change(base, (draft) =>
-    A.splitBlock(draft, textPath(id), 0, {
-      type: S("paragraph"),
-      parents: [],
-      attrs: {},
-      isEmbed: false,
-    }),
+  assert.deepEqual(
+    outline(reversed, id).map((entry) => entry.node_id),
+    [second],
   );
-  const [opening, heading] = outline(doc, id).map((entry) => entry.node_id);
-  assert.equal(typeof opening, "string");
-  const after = edit(doc, [{ op: "delete_node", block_id: id, node_id: heading }]).doc;
-  assert.equal(outline(after, id)[0].node_id, opening);
 });
 
 test("delete_node refuses to join the lists on either side into one", () => {
@@ -553,7 +579,7 @@ test("a node range never runs past a next node with no marker", () => {
     { id: "b", at: 20 },
   ];
   assert.deepEqual(nodeRange(ids, 3, 30), { start: 20, end: 30 });
-  assert.throws(() => nodeRange(ids, 1, 30), /can't tell where this node ends/);
+  assert.throws(() => nodeRange(ids, 1, 30), /unmarked text/);
   assert.deepEqual(
     nodeRange(
       [
@@ -599,7 +625,9 @@ test("text a peer typed into a node deleted after a rule or dataframe reads as a
       `Intro\n\n> [Dataframe](${src})\n>\n> kept`,
     ],
   ]) {
-    let doc = A.from(createPageData({ pageId, title: "Node ids" }));
+    let doc = A.change(A.from(createPageData({ pageId, title: "Node ids" })), (draft) =>
+      initializePage(draft),
+    );
     const id = orderedBlockIds(doc)[0];
     const tree = schema.doc([Paragraph.create([Leaf.text("Intro")]), leaf, doomed()]);
     doc = A.change(doc, (draft) => {
@@ -614,14 +642,97 @@ test("text a peer typed into a node deleted after a rule or dataframe reads as a
       { op: "replace_match", block_id: id, match_text: "doomed", replacement: "kept" },
     ]);
     const merged = A.merge(A.clone(deleted), typed);
-    // The peer's characters follow the leaf directly. They read as a
-    // paragraph beside it, as the editor draws them.
+    // The peer's characters follow the leaf directly, with no marker opening
+    // them: unmarked text. They read as a paragraph beside it, as the editor
+    // draws them.
     assert.deepEqual(
       outline(merged, id).map((entry) => entry.type),
       types,
     );
     assert.equal(blockMarkdown(merged.blocks[id], pageId), markdown);
     richDoc(merged.blocks[id], pageId).schema.validate(richDoc(merged.blocks[id], pageId));
+    assert.equal(decode(A.spans(merged, textPath(id))).unmarked.length, 1);
+    expectMarkedByNextWrite(merged, id, markdown);
+  }
+});
+
+/** `doc`'s block `id` holds unmarked text. A top-level paragraph of it has a
+ * null node_id; the next host write to the block marks it, so every node has
+ * an id, and the block reads as `markdown` with the write's own edit. */
+function expectMarkedByNextWrite(doc, id, markdown) {
+  const entries = outline(doc, id);
+  const unmarkedTopLevel = blockAddresses(A.spans(doc, textPath(id))).nodes.some(
+    (node) => node.at === null,
+  );
+  assert.equal(
+    entries.some((entry) => entry.node_id === null),
+    unmarkedTopLevel,
+  );
+  const written = patch(doc, [
+    { op: "replace_match", block_id: id, match_text: "Intro", replacement: "Opening" },
+  ]);
+  assert.deepEqual(decode(A.spans(written, textPath(id))).unmarked, []);
+  for (const entry of outline(written, id)) assert.equal(typeof entry.node_id, "string");
+  // Ids the merged block had stay.
+  for (const entry of entries)
+    if (entry.node_id !== null)
+      assert.ok(outline(written, id).some((after) => after.node_id === entry.node_id));
+  assert.equal(blockMarkdown(written.blocks[id], pageId), markdown.replace("Intro", "Opening"));
+}
+
+test("text a merge leaves with no marker reads, has no id, and the next write marks it", () => {
+  // The block's first node deleted while a peer types into it.
+  {
+    const { doc, id } = fixture("Intro words\n\nSecond");
+    const deleted = edit(A.clone(doc, { actor: "0a".repeat(16) }), [
+      { op: "delete_node", block_id: id, node_id: outline(doc, id)[0].node_id },
+    ]).doc;
+    const typed = patch(A.clone(doc, { actor: "0b".repeat(16) }), [
+      { op: "replace_match", block_id: id, match_text: "words", replacement: "words typed" },
+    ]);
+    const merged = A.merge(A.clone(deleted), typed);
+    assert.equal(A.spans(merged, textPath(id))[0].type, "text");
+    assert.equal(blockMarkdown(merged.blocks[id], pageId), " typed\n\nSecond");
+    assert.deepEqual(
+      outline(merged, id).map((entry) => [entry.type, entry.node_id === null]),
+      [
+        ["paragraph", true],
+        ["paragraph", false],
+      ],
+    );
+    // A later write elsewhere in the block marks it.
+    const written = patch(merged, [
+      { op: "replace_match", block_id: id, match_text: "Second", replacement: "Last" },
+    ]);
+    assert.equal(blockMarkdown(written.blocks[id], pageId), " typed\n\nLast");
+    for (const entry of outline(written, id)) assert.equal(typeof entry.node_id, "string");
+  }
+  // The node after a rule deleted while a peer types into it.
+  {
+    const { doc, id } = fixture("Intro\n\n---\n\nDoomed words");
+    const deleted = edit(A.clone(doc, { actor: "0a".repeat(16) }), [
+      { op: "delete_node", block_id: id, node_id: outline(doc, id)[2].node_id },
+    ]).doc;
+    const typed = patch(A.clone(doc, { actor: "0b".repeat(16) }), [
+      { op: "replace_match", block_id: id, match_text: "Doomed", replacement: "Kept" },
+    ]);
+    const merged = A.merge(A.clone(deleted), typed);
+    assert.equal(blockMarkdown(merged.blocks[id], pageId), "Intro\n\n---\n\nKept");
+    expectMarkedByNextWrite(merged, id, "Intro\n\n---\n\nKept");
+  }
+  // The editor deletes a quote's first paragraph while a peer types into it.
+  {
+    const { doc, id } = fixture("Intro\n\n> first\n>\n> second");
+    const deleted = A.change(A.clone(doc, { actor: "0a".repeat(16) }), (draft) => {
+      const from = draft.blocks[id].richText.indexOf("first") - 1;
+      A.splice(draft, textPath(id), from, "first".length + 1);
+    });
+    const typed = A.change(A.clone(doc, { actor: "0b".repeat(16) }), (draft) => {
+      A.splice(draft, textPath(id), draft.blocks[id].richText.indexOf("first") + 5, 0, " typed");
+    });
+    const merged = A.merge(A.clone(deleted), typed);
+    assert.equal(blockMarkdown(merged.blocks[id], pageId), "Intro\n\n>  typed\n>\n> second");
+    expectMarkedByNextWrite(merged, id, "Intro\n\n>  typed\n>\n> second");
   }
 });
 
@@ -637,8 +748,8 @@ test("a list's id is its first item's marker, and goes when that marker does", (
   // peer would.
   const rewritten = A.change(A.clone(doc), (draft) => {
     const text = draft.blocks[id].richText;
-    const from = text.indexOf("one") - 1;
-    A.splice(draft, textPath(id), from, text.indexOf("two") - 1 - from);
+    const from = text.indexOf("one") - 2;
+    A.splice(draft, textPath(id), from, text.indexOf("two") - 2 - from);
   });
   assert.match(blockMarkdown(rewritten.blocks[id]), /^Intro\n\n- two\n- three/);
   const next = idOf(rewritten, id, "bullet-list");

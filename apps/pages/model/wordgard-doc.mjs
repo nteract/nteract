@@ -564,10 +564,14 @@ export function decode(spans) {
     wgToAm[wg] = am;
     amToWg[am] ??= wg;
   };
+  // Each unmarked run's start and the markers that would open it there.
+  const unmarked = [];
   const append = (node) => (stack.at(-1)?.children ?? blocks).push(node);
-  const open = (tag, native = false) => {
+  // `name` is the stored marker type a frame stands for (null for a list,
+  // which has no marker of its own).
+  const open = (tag, native = false, name = null) => {
     boundary();
-    stack.push({ tag, children: [] });
+    stack.push({ tag, children: [], name });
     wg++;
     if (native) am++;
     boundary();
@@ -586,17 +590,29 @@ export function decode(spans) {
     wgToAm[wg] = am;
     append(frame.tag.create(frame.children));
   };
-  // Text and inline nodes sit inside a node that opened with its marker. The
-  // one exception is what a node this build doesn't know stores right after
-  // its own marker: that is the unknown node's content, drawn as a paragraph
-  // of its own, and the block is lossy.
+  // Text continues the node before it in its scope. Unmarked text is text no
+  // marker opens where its scope has no text-bearing node before it: at the
+  // start of a block or a container, or after a leaf (a rule, a dataframe).
+  // Only a merge of concurrent edits leaves it (a peer typing into a node
+  // another writer deletes); no writer does. It reads as a paragraph (in a
+  // table, a row and cell) with no marker, so it has no node id, and
+  // `unmarked` records the markers a writer adds to mark it
+  // (markUnmarkedText in model/richtext-page.mjs). What a node this build
+  // doesn't know stores right after its own marker is that node's content
+  // instead: drawn as a paragraph of its own, and the block is lossy.
   const ensureText = () => {
     if (stack.at(-1)?.tag.type.spec.inlineContent) return;
-    if (!afterUnknown) throw Error("Invalid Pages rich text: content before its node's marker");
-    lossy = true;
-    if (stack.at(-1)?.tag.type === Table.type) open(TableRow);
-    if (stack.at(-1)?.tag.type === TableRow.type) open(Cell);
-    if (!stack.at(-1)?.tag.type.spec.inlineContent) open(Paragraph);
+    if (afterUnknown) lossy = true;
+    const markers = [];
+    const opening = (tag, name) => {
+      markers.push({ type: name, parents: stack.map((f) => f.name).filter(Boolean) });
+      open(tag, false, name);
+    };
+    const at = am;
+    if (stack.at(-1)?.tag.type === Table.type) opening(TableRow, "table-row");
+    if (stack.at(-1)?.tag.type === TableRow.type) opening(Cell, "table-cell");
+    if (!stack.at(-1)?.tag.type.spec.inlineContent) opening(Paragraph, "paragraph");
+    if (!afterUnknown) unmarked.push({ at, markers });
   };
   const leaf = (node, length = 1) => {
     boundary();
@@ -661,8 +677,8 @@ export function decode(spans) {
         lossy = true;
         continue;
       }
-      if (d.outer) outer.push(d.outer);
-      outer.push(d.tag);
+      if (d.outer) outer.push({ tag: d.outer, name: null });
+      outer.push({ tag: d.tag, name: String(parent) });
     }
     // Leaf blocks hold no content of their own.
     // A dataframe stored inside a text container (a table cell, a code
@@ -679,16 +695,16 @@ export function decode(spans) {
     const builtIn = type === "horizontal-rule" || !!dataframe;
     const desc = builtIn ? null : descriptor(type, attrs);
     const unknown = !builtIn && !desc;
-    if (desc?.outer) outer.push(desc.outer);
+    if (desc?.outer) outer.push({ tag: desc.outer, name: null });
     let common = 0;
     while (
       common < outer.length &&
       common < stack.length &&
-      stack[common].tag.type === outer[common].type
+      stack[common].tag.type === outer[common].tag.type
     )
       common++;
     while (stack.length > common) close();
-    for (let i = common; i < outer.length; i++) open(outer[i]);
+    for (let i = common; i < outer.length; i++) open(outer[i].tag, false, outer[i].name);
     if (unknown) {
       afterUnknown = true;
       if (stack.at(-1)?.tag.type.spec.inlineContent) {
@@ -698,13 +714,16 @@ export function decode(spans) {
       } else leaf(PagesUnknownBlock.of(unknownValue(value)));
     } else if (type === "horizontal-rule") leaf(HorizontalRule);
     else if (dataframe) leaf(PagesDataframe.of(dataframe));
-    else open(desc.tag, true);
+    else open(desc.tag, true, type);
   }
-  if (!blocks.length && !stack.length)
-    throw Error("Invalid Pages rich text: a block holds no node");
+  // Empty text, which a merge can leave too: one empty unmarked paragraph.
+  if (!blocks.length && !stack.length) {
+    unmarked.push({ at: am, markers: [{ type: "paragraph", parents: [] }] });
+    open(Paragraph);
+  }
   while (stack.length) close();
   boundary();
-  return { doc: schema.doc(blocks), map: { wgToAm, amToWg }, lossy };
+  return { doc: schema.doc(blocks), map: { wgToAm, amToWg }, lossy, unmarked };
 }
 
 export function encode(doc) {

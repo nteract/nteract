@@ -38,12 +38,20 @@ const plainBreak = (value) =>
   (value.parents ?? []).every((parent) => String(parent) === "paragraph") &&
   (value.parents ?? []).length <= 1;
 
-/** The literal text of spans a plain write stores: one paragraph of unmarked
- * text and hard breaks, each break a `\n`. Null when the spans hold anything
- * else, so a reader never presents formatted content as literal text. */
+const plainParagraph = (value) =>
+  String(value?.type) === "paragraph" &&
+  value.isEmbed === false &&
+  !(value.parents ?? []).length &&
+  !Object.keys(value.attrs ?? {}).length;
+
+/** The literal text of spans a plain write stores: one paragraph of text and
+ * hard breaks, each break a `\n`, opened by its marker (or unmarked, as a
+ * merge can leave it). Null when the spans hold anything else, so a reader
+ * never presents formatted content as literal text. */
 export function plainCommentText(spans) {
   let text = "";
-  for (const span of spans) {
+  for (const [index, span] of spans.entries()) {
+    if (index === 0 && span.type === "block" && plainParagraph(span.value)) continue;
     if (span.type === "text") {
       if (Object.keys(span.marks ?? {}).length) return null;
       text += span.value;

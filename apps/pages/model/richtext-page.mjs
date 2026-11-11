@@ -10,7 +10,14 @@ import {
   parseAssetPath,
   readDataframe,
 } from "../shared/dataset-assets.mjs";
-import { schema, Paragraph, PagesImage, PagesDataframe, PagesLink } from "./wordgard-doc.mjs";
+import {
+  decode,
+  schema,
+  Paragraph,
+  PagesImage,
+  PagesDataframe,
+  PagesLink,
+} from "./wordgard-doc.mjs";
 import { parseAgentMarkdown, parseMarkdown } from "./markdown-import.mjs";
 import { textPath } from "./richtext-format.mjs";
 import { pageSpans, richDoc } from "./richtext-spans.mjs";
@@ -71,6 +78,27 @@ export function setRichMarkdown(doc, id, source, { literal = false } = {}) {
   const spans = pageSpans(tree);
   A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
   stampSpans(doc, spans);
+}
+/** Give block `id`'s unmarked text the markers a writer writes, in place,
+ * inside the caller's change. Unmarked text is what a merge can leave with no
+ * marker opening it (decode in model/wordgard-doc.mjs); each new marker goes
+ * in before the text, which keeps its characters, marks and comment anchors.
+ * A block decode can't draw whole (`lossy`) is left alone: its scopes include
+ * containers this build doesn't know. Returns whether it wrote. */
+export function markUnmarkedText(doc, id) {
+  const path = textPath(id);
+  const { unmarked, lossy } = decode(A.spans(doc, path));
+  if (lossy || !unmarked.length) return false;
+  for (const { at, markers } of [...unmarked].reverse())
+    markers.forEach(({ type, parents }, i) =>
+      A.splitBlock(doc, path, at + i, {
+        type: new A.ImmutableString(type),
+        parents: parents.map((parent) => new A.ImmutableString(parent)),
+        attrs: {},
+        isEmbed: false,
+      }),
+    );
+  return true;
 }
 /** Write one empty paragraph, with its marker, as a block's whole content. */
 export function setRichEmpty(doc, id) {

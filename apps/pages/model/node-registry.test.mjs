@@ -134,7 +134,7 @@ test("helpers read the registry", () => {
   assert.deepEqual(ALIGNMENTS, ["left", "center", "right"]);
   assert.equal(isKnownBlock("dataframe"), true);
   assert.equal(isKnownBlock("callout"), false);
-  assert.equal(nodeLabel("blockquote"), "a quote");
+  assert.equal(nodeLabel("blockquote"), "a quote's first paragraph");
   assert.equal(nodeLabel("callout"), "a callout node");
   assert.equal(nodeType("heading").attrs.level.agent, undefined);
   assert.equal(nodeType("code-block").attrs.params.agent, "language");

@@ -58,7 +58,7 @@ test("the preview drops unsafe link targets the way the editor does", () => {
     A.mark(
       draft,
       ["blocks", id, "richText"],
-      { start: 0, end: 1, expand: "none" },
+      { start: 1, end: 2, expand: "none" },
       "link",
       JSON.stringify({ href: "javascript:alert(1)", title: null }),
     ),

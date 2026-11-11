@@ -10,9 +10,10 @@
 // - `start`, `end`: its text range `[start, end)`, from its opening marker up
 //   to the next node's opening marker, or the end of the text for the last
 //   node.
-// - `at`: the index of its opening marker, the same as `start`. A list's
-//   opening marker is its first item's; a quote stored without its own marker
-//   opens with its first child's.
+// - `at`: the index of its opening marker, the same as `start`, or null for
+//   a paragraph of unmarked text, which only a merge leaves. A list's opening
+//   marker is its first item's; a quote stored without its own marker opens
+//   with its first child's.
 //
 // `node_index` is a node's position in this list. node-ids.mjs names a node by
 // a cursor at `at`. nodeIndexAt and ancestryAt address a single character, as
@@ -84,9 +85,8 @@ export function blockAddresses(spans) {
       Object.assign(prior, { end, wgEnd: wg, text: from });
       continue;
     }
-    // decode refuses any other content before its node's marker.
-    if (!opening.has(start)) throw Error("A top-level node has no opening marker");
-    const entry = { start, end, at: start, wgStart: from, wgEnd: wg };
+    // Unmarked text (decode in wordgard-doc.mjs) opens with no marker.
+    const entry = { start, end, at: opening.has(start) ? start : null, wgStart: from, wgEnd: wg };
     if (node.type === PagesUnknownBlock) unknown.add(entry);
     nodes.push(entry);
   }
@@ -116,9 +116,10 @@ export function nodeIndexAt({ nodes, map }, am) {
 /** The containers holding text index `am`, outermost first, as plain data
  * per level: its type and the attrs of the stored marker that opens it, `{}`
  * for a container drawn without one (a list, a quote stored without its own
- * marker). Two ancestries compare equal when the character sits in the same
+ * marker, a paragraph of unmarked text). Two ancestries compare equal when the character sits in the same
  * structure with the same stored attributes, including attributes this
- * build doesn't know. */
+ * build doesn't know. Whether a container has its own marker isn't part of
+ * it: a writer marks unmarked text, and the passage hasn't moved. */
 export function ancestryAt(addresses, am) {
   const { tree, map, opening, nodes } = addresses;
   const chain = [];

@@ -96,7 +96,8 @@ export function nodeChange(input) {
 }
 
 /** The spans array index of the block marker governing native offset `at`.
- * Every node opens with a marker, so one governs every character. Inline
+ * The write marks a block's unmarked text before it runs (page.mjs), so a
+ * marker governs every character. Inline
  * embeds (a hard break, an image) take a position but govern nothing: text
  * after a line break still belongs to the node before it. */
 function governingMarker(spans, at) {
@@ -116,19 +117,13 @@ const markerType = (span) => String(span.value.type);
 const parentsOf = (span) => (span.value.parents ?? []).map(String);
 
 /** The spans index of the marker set_node changes for text that marker
- * `index` governs: that marker, or, for attributes only its container holds,
- * the container whose first paragraph it opens (a task's checked, through
- * the task's text). A retype always changes the node holding the text. */
-function targetMarker(spans, index, change) {
-  const names = Object.keys(change.attrs);
+ * `index` governs: that marker, or the container whose first paragraph it
+ * opens, for a container whose marker governs that paragraph
+ * (`governsFirstParagraph` in node-registry.mjs): a task is checked through
+ * its text, and a list item's first paragraph isn't retyped on its own. */
+function targetMarker(spans, index) {
   const marker = spans[index];
-  if (
-    change.type !== undefined ||
-    !names.length ||
-    markerType(marker) !== "paragraph" ||
-    names.every((name) => settableAttr("paragraph", name))
-  )
-    return index;
+  if (markerType(marker) !== "paragraph") return index;
   const container = spans[index - 1];
   if (container?.type !== "block" || container.value.isEmbed) return index;
   const type = markerType(container);
@@ -180,7 +175,7 @@ export function setNode(doc, id, input, trace, { anchor } = {}) {
   const change = nodeChange(input);
   const { path, start, end } = locateRange(doc, id, { ...input, op: "set_node" }, anchor);
   const spans = A.spans(doc, textPath(id));
-  const index = targetMarker(spans, governingMarker(spans, start), change);
+  const index = targetMarker(spans, governingMarker(spans, start));
   const result = { op: "set_node", block_id: id, matched: 1 };
   const names = Object.keys(change.attrs);
   const marker = spans[index];

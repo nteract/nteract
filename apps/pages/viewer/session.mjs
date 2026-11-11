@@ -41,7 +41,6 @@ export { listLocalPages, retireLocalPage } from "./local-pages.mjs";
 import { entryStanding, saveRecoveryCopy } from "./local-catalog.mjs";
 import { RecoveryCapture } from "./recovery-capture.mjs";
 import { CatchUp } from "./catch-up.mjs";
-import { unreadableMessageKeys } from "./comment-thread-display.mjs";
 import { CATCH_UP_LIMIT_MS } from "./catch-up-machine.mjs";
 import { BACKEND_LIMITS } from "../model/limits.mjs";
 import { BUILD_FORMATS } from "../model/document-types.mjs";
@@ -1145,22 +1144,7 @@ export class PageSession {
   }
   snapshot() {
     if (!this.doc || this.hidden) return null;
-    const page = projectPage(this.doc, this.commentsView);
-    this.#reportUnreadableComments(page.comments);
-    return page;
-  }
-  #unreadableReported = new Set();
-  /** Say once per message that this replica holds a comment in an earlier
-   * build's stored form. It renders as a placeholder (CommentContent). */
-  #reportUnreadableComments(threads) {
-    const fresh = unreadableMessageKeys(threads).filter(
-      (key) => !this.#unreadableReported.has(key),
-    );
-    if (!fresh.length) return;
-    for (const key of fresh) this.#unreadableReported.add(key);
-    console.warn(
-      `Pages: ${fresh.length} comment message(s) on this Page are stored in a form from an earlier version of Pages and show as a placeholder: ${fresh.join(", ")}`,
-    );
+    return projectPage(this.doc, this.commentsView);
   }
   requireSignIn(message = "Sign in again to sync this Page. Keep it open while you sign in.") {
     const { rejected } = this.dispatch({ type: "signIn", ok: false }, () => {
