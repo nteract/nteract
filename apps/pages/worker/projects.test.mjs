@@ -2081,4 +2081,5 @@ test("Page tools address Project content by project_id with the caller's own acc
     w.env,
   );
   assert.equal(assets.status, 404);
+  assert.equal(assets.headers.get("cache-control"), "private, no-store");
 });

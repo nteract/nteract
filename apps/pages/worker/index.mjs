@@ -1475,10 +1475,16 @@ const gateway = {
         // A Project's assets belong to its content document.
         let pageId = id;
         if (container === "projects") {
-          await requireProjectReader(request, env, id);
-          pageId = (
-            await resolveProjectContent(env, { project_id: id }, new AbortController().signal)
-          ).page_id;
+          try {
+            await requireProjectReader(request, env, id);
+            pageId = (
+              await resolveProjectContent(env, { project_id: id }, new AbortController().signal)
+            ).page_id;
+          } catch (error) {
+            return await withRefusalCode(
+              privateImageResponse(errorResponse(error, "image-assets")),
+            );
+          }
         }
         // API-key clients upload here too; their refusals get a code as on /api/tools.
         return await withRefusalCode(

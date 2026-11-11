@@ -133,13 +133,27 @@ export async function readImageBody(
   return bytes;
 }
 
-/** Mark a response as private. Refusals passed through from the Page host
- * arrive with immutable headers, so the result may be a copy. */
+const ASSET_HEADERS = [
+  ["X-Content-Type-Options", "nosniff"],
+  ["Cross-Origin-Resource-Policy", "same-origin"],
+];
+
+/** Mark a response as private and uncacheable: refusals, errors and upload
+ * results. Refusals passed through from the Page host arrive with immutable
+ * headers, so the result may be a copy. */
 export function privateImageResponse(response) {
+  return setResponseHeaders(response, [["Cache-Control", "private, no-store"], ...ASSET_HEADERS]);
+}
+
+/** Mark asset bytes the caller was just allowed to read. An asset URL names
+ * the SHA-256 of its bytes, so a browser may keep them without revalidating.
+ * Each request that reaches the Worker is still access-checked; bytes already
+ * in a reader's cache stay there after their access is revoked. Shared caches
+ * never store them. */
+export function servedAssetResponse(response) {
   return setResponseHeaders(response, [
-    ["Cache-Control", "private, no-store"],
-    ["X-Content-Type-Options", "nosniff"],
-    ["Cross-Origin-Resource-Policy", "same-origin"],
+    ["Cache-Control", "private, max-age=31536000, immutable"],
+    ...ASSET_HEADERS,
   ]);
 }
 
@@ -427,7 +441,7 @@ export async function handleImageAssets(request, env, { pageId, assetId, authori
     // navigating to it downloads the file.
     const disposition =
       contentType === PARQUET_MEDIA_TYPE ? `attachment; filename="${assetId}.parquet"` : "inline";
-    return privateImageResponse(
+    return servedAssetResponse(
       new Response(request.method === "HEAD" ? null : object.body, {
         headers: {
           "Content-Type": contentType,
