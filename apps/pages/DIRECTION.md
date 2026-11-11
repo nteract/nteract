@@ -89,9 +89,8 @@ Comments live in their own document and anchor to the Page with cursors.
    opening markers follow as format 3, their own change, because they move
    node ids, the golden node addresses and the editor's caret positions. A
    target is emptied again for format 3. Two host checks land before it:
-   - Plain sync admission checks the block shape, as registration does.
-     Today only registration does, and a reader throws on a block a writing
-     peer synced without `richText`.
+   - Plain sync admission checks the block shape, as registration does. This
+     one is in place.
    - A Page's host record stores the type and format of its documents, and
      the host refuses a record in a format the build does not write. Today
      the format a target holds is the operator's statement in

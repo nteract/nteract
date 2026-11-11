@@ -1420,3 +1420,53 @@ test("a refusal that lands after close counts into the connection's line, logged
     { reason: "closed", repeats: 1 },
   ]);
 });
+
+test("a browser change that leaves a block out of shape is refused, non-fatally, and nothing is stored", async (t) => {
+  const f = await fixture(t);
+  f.env.CATALOGS = { getByName: () => ({ fetch: async () => Response.json({ ok: true }) }) };
+  const host = f.page();
+  assert.ok((await f.register(host)).ok);
+  const identity = {
+    principal: "user:anaconda-fixture:fixture-user",
+    displayName: "Fixture",
+    driver: "Browser",
+    canWrite: true,
+    expiresAt: Date.now() + 3_600_000,
+  };
+  const doc = treeHex(f.args.document_id);
+  const writer = rawSocket(host, identity, { senderId: "b-writer" });
+  const reader = rawSocket(host, identity, { senderId: "b-reader" });
+  reader.client.send({ t: "sync", doc, m: helloWith([]), r: 1 });
+  await until(() => reader.frames.some((frame) => frame.t === "sync"));
+  const before = A.getHeads(host.handle.doc());
+  const durable = await host.plain.durableHeads(f.args.document_id);
+  const peer = (n) => A.clone(host.handle.doc(), { actor: n.toString(16).padStart(32, "0") });
+  const newBlock = "55555555-5555-4555-8555-555555555555";
+
+  const bad = A.change(peer(0xb1), (d) => {
+    d.blocks[newBlock] = { position: new A.RawString("a5") };
+  });
+  writer.client.send({ t: "sync", doc, m: helloWith(A.getChanges(host.handle.doc(), bad)), r: 1 });
+  await until(() => writer.frames.some((frame) => frame.t === "refused"));
+  const refused = writer.frames.find((frame) => frame.t === "refused");
+  assert.equal(refused.code, "invalid_block");
+  assert.equal(refused.fatal, false);
+  assert.equal(writer.client.closed, false);
+  assert.deepEqual(A.getHeads(host.handle.doc()), before);
+  assert.deepEqual(await host.plain.durableHeads(f.args.document_id), durable);
+  const read = await tool(f, host, "read_page", { comments: "none" });
+  assert.equal(read.status, 200, await read.clone().text());
+
+  // The same socket's next change in shape is admitted and reaches the reader.
+  const readerFrames = reader.frames.length;
+  const blockId = Object.keys(host.handle.doc().blocks)[0];
+  const good = A.change(peer(0xb2), (d) =>
+    A.splice(d, ["blocks", blockId, "richText"], 0, 0, "Hi "),
+  );
+  writer.client.send({ t: "sync", doc, m: helloWith(A.getChanges(host.handle.doc(), good)), r: 2 });
+  await until(() => writer.frames.some((frame) => frame.t === "sync" && frame.r === 2));
+  assert.equal(host.handle.doc().blocks[newBlock], undefined);
+  assert.ok(A.hasHeads(host.handle.doc(), A.getHeads(good)));
+  await until(() => reader.frames.length > readerFrames);
+  assert.ok(!reader.frames.some((frame) => frame.t === "refused"));
+});

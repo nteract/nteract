@@ -1,5 +1,6 @@
 import * as A from "@automerge/automerge";
 import { cbor } from "@automerge/automerge-repo";
+import { blockChangeRefusal } from "../model/block-shape.mjs";
 import { BACKEND_LIMITS, assertStoredSize } from "../model/limits.mjs";
 import {
   BUILD_FEATURES,
@@ -143,6 +144,17 @@ function refusalFrom(error, code = admissionCode(error)) {
   });
 }
 
+/**
+ * The block shape a browser's Page changes leave (model/block-shape.mjs).
+ * A refusal is not fatal: an out-of-shape block is a client bug, so the
+ * socket stays open and the principal is not blocked. Host writes produce
+ * valid blocks and skip this check.
+ */
+function guardBlocks(live, preview) {
+  const refused = blockChangeRefusal(live, preview);
+  if (refused) throw new Refusal(refused.code, refused.message);
+}
+
 export class PlainSync {
   /**
    * `policy` is the Page's DocumentPolicy. `pageFeatures()` is the Page's
@@ -192,6 +204,7 @@ export class PlainSync {
         canWrite: (conn, doc) => this.#canWrite(conn, doc),
         admit: async (conn, doc, live, fresh, preview, actorPrincipal) => {
           this.#gate(conn, doc, live, fresh);
+          if (doc.kind === "page") guardBlocks(live, preview);
           return guardComments(conn, doc, live, fresh, preview, actorPrincipal);
         },
         admitTrusted: (doc, live, fresh, preview, context, conn, origin) => {

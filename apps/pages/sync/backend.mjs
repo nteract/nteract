@@ -33,7 +33,14 @@ import { concat } from "./doc-store.mjs";
 // That mode exists for Repo's format-agnostic contract suite.
 
 const LOOSE_LIMIT = 256;
-const TERMINAL_REFUSALS = new Set(["actor_claimed", "history_capacity", "malformed_change"]);
+// Refusals that a resend of the same changes would meet again. Later rounds
+// acknowledge the host's history without advertising the refused heads.
+const TERMINAL_REFUSALS = new Set([
+  "actor_claimed",
+  "history_capacity",
+  "invalid_block",
+  "malformed_change",
+]);
 
 // One fresh handshake per attempt. Repetition requires an explicit new attempt;
 // it is not evidence that any local history may be discarded.
