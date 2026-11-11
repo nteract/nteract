@@ -974,9 +974,9 @@ test("set_node refuses a heading this build can't read, which replace_block_mark
         },
       }),
     );
-  // The heading can't be drawn, and the title after it is its content:
-  // decode draws the block only in part, so set_node refuses it whatever it
-  // would write. replace_block_markdown rewrites the block whole.
+  // The heading can't be drawn, and the title after it is its own text, so
+  // set_node refuses it whatever it would write. replace_block_markdown
+  // rewrites the block whole.
   for (const input of [{ type: "heading" }, { attrs: { level: 2 } }, { type: "paragraph" }])
     assert.throws(
       () => setNode(input),
@@ -1237,10 +1237,12 @@ test("no reader throws on any marker values Automerge stores, and the readers ag
       assert.ok(count > 0, `${check}: ${JSON.stringify(reached)}`);
 });
 
-// No host write edits in place a block decode draws only in part because it
-// holds content from a newer build. Removing it, moving it and writing other
-// blocks still work.
-test("host tools refuse to edit a block with newer content they can't draw whole", () => {
+// In a block decode draws only in part because it holds content from a
+// newer build, host tools edit text in the nodes this build reads, and
+// refuse text in a node it can't read (newer_content). Repair leaves such a
+// block alone, so an allowed edit matches against the stored markers,
+// unmarked text and stored nesting included, and writes none of them.
+test("host tools edit readable text in a block with newer content, and refuse the unreadable node's", () => {
   const image = {
     type: "block",
     value: {
@@ -1250,53 +1252,105 @@ test("host tools refuse to edit a block with newer content they can't draw whole
       isEmbed: true,
     },
   };
+  const replace = (match_text) => ({ op: "replace_match", match_text, replacement: "Bye" });
+  const format = (match_text) => ({ op: "format_match", match_text, add: { strong: true } });
+  const heading = (match_text) => ({
+    op: "set_node",
+    match_text,
+    type: "heading",
+    attrs: { level: 2 },
+  });
   const blocks = {
     // Text after a node this build doesn't know is that node's content.
-    "unknown node": [
-      marker("paragraph", []),
-      { type: "text", value: "Hello" },
-      image,
-      marker("pages-future", []),
-      { type: "text", value: "after" },
-    ],
-    // A parent that isn't a name, which set_node used to write back.
-    "parent a map": [
-      marker("paragraph", []),
-      { type: "text", value: "Hello" },
-      image,
-      { type: "block", value: { ...marker("paragraph", []).value, parents: [SHADOWED()] } },
-      { type: "text", value: "word" },
-    ],
+    "unknown node": {
+      spans: [
+        marker("paragraph", []),
+        { type: "text", value: "Hello" },
+        image,
+        marker("pages-future", []),
+        { type: "text", value: "after" },
+      ],
+      allowed: [replace("Hello"), format("Hello"), heading("Hello"), "set_image"],
+      refused: [replace("after"), format("after"), heading("after")],
+    },
+    // A parent that isn't a name: the paragraph reads, but set_node would
+    // write the parent back.
+    "parent a map": {
+      spans: [
+        marker("paragraph", []),
+        { type: "text", value: "Hello" },
+        image,
+        { type: "block", value: { ...marker("paragraph", []).value, parents: [SHADOWED()] } },
+        { type: "text", value: "word" },
+      ],
+      allowed: [replace("word"), format("word"), heading("Hello"), "set_image"],
+      refused: [heading("word")],
+    },
+    // Unmarked text at the start and a marker whose nesting decode adjusts
+    // stay as stored around an allowed edit.
+    "unmarked and adjusted": {
+      spans: [
+        { type: "text", value: "lead" },
+        marker("paragraph", ["horizontal-rule"]),
+        { type: "text", value: "moved" },
+        marker("pages-future", []),
+        { type: "text", value: "after" },
+      ],
+      allowed: [replace("lead"), format("moved"), replace("moved")],
+      refused: [replace("after"), format("after")],
+    },
   };
-  for (const [name, spans] of Object.entries(blocks)) {
+  const markers = (doc, id) =>
+    storedJSON(A.spans(doc, textPath(id)).filter((span) => span.type === "block"));
+  for (const [name, { spans, allowed, refused }] of Object.entries(blocks)) {
     freeing((keep) => {
       const { doc, id } = pageWithSpans(spans);
       keep(doc);
       const decoded = decode(A.spans(doc, textPath(id)));
       assert.ok(decoded.newer && decoded.lossy, name);
+      A.change(A.clone(doc), (draft) => assert.equal(repairBlockMarkers(draft, id), false, name));
       const stored = storedJSON(A.spans(doc, textPath(id)));
-      const refused = {
-        replace_match: { match_text: "Hello", replacement: "Bye" },
-        format_match: { match_text: "Hello", add: { strong: true } },
-        set_node: {
-          match_text: name === "unknown node" ? "Hello" : "word",
-          type: "heading",
-          attrs: { level: 2 },
-        },
-        set_image: { image_id: imageIds(doc, id)[0].image_id, alt: "y" },
-      };
-      for (const [op, input] of Object.entries(refused)) {
-        const operation = op === "set_image" ? "edit_page" : "patch_page";
+      for (const input of refused) {
+        const label = `${name}: ${input.op} ${input.match_text}`;
         assert.throws(
-          () => editPage(doc, [{ op, block_id: id, ...input }], operation),
-          (error) => error.code === "newer_content",
-          `${name}: ${op}`,
+          () => editPage(doc, [{ block_id: id, ...input }], "patch_page"),
+          (error) => error.code === "newer_content" && error.status === 409,
+          label,
         );
-        if (op !== "set_image")
-          assert.throws(
-            () => guardPassageEdits(doc, A.getHeads(doc), [{ op, block_id: id, ...input }]),
-            (error) => error.code === "newer_content",
-            `${name}: passage ${op}`,
+        assert.throws(
+          () => guardPassageEdits(doc, A.getHeads(doc), [{ block_id: id, ...input }]),
+          (error) => error.code === "newer_content",
+          `passage ${label}`,
+        );
+      }
+      for (const input of allowed) {
+        const op =
+          input === "set_image"
+            ? { op: "set_image", image_id: imageIds(doc, id)[0].image_id, alt: "y" }
+            : input;
+        const label = `${name}: ${op.op} ${op.match_text ?? ""}`;
+        const next = keep(
+          editPage(
+            doc,
+            [{ block_id: id, ...op }],
+            op.op === "set_image" ? "edit_page" : "patch_page",
+          ),
+        );
+        const after = A.spans(next, textPath(id));
+        if (op.op === "replace_match" || op.op === "format_match") {
+          // Text and marks only: every marker, the unmarked lead and the
+          // unreadable node's text are as stored.
+          assert.equal(markers(next, id), markers(doc, id), label);
+          assert.equal(after[0].type, spans[0].type, label);
+          if (doc.blocks[id].richText.endsWith("after"))
+            assert.ok(next.blocks[id].richText.endsWith("\ufffcafter"), label);
+        }
+        if (op.op === "replace_match") assert.match(next.blocks[id].richText, /Bye/, label);
+        assert.notEqual(storedJSON(after), stored, label);
+        if (op.op !== "set_image")
+          assert.doesNotThrow(
+            () => guardPassageEdits(doc, A.getHeads(doc), [{ block_id: id, ...op }]),
+            `passage ${label}`,
           );
       }
       // Moving the block and writing a new one leave its spans as stored.

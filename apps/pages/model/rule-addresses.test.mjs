@@ -234,13 +234,17 @@ test("node_index refuses a block whose stored and readable node counts disagree"
   ]);
   assert.throws(() => visibleNodeRange(doc, id, 2), /node_index can't address this block/);
   assert.throws(() => visibleNodeRange(doc, id, 0), /node_index can't address this block/);
-  // The block holds content this build can't draw whole, so no passage
-  // tool edits it, with node_index or without.
-  for (const input of [{ node_index: 1 }, {}])
-    assert.throws(
-      () => replace(doc, id, { match_text: "d", replacement: "e", ...input }),
-      (error) => error.code === "newer_content",
-    );
+  assert.throws(
+    () => replace(doc, id, { match_text: "a", replacement: "b", node_index: 0 }),
+    /node_index can't address this block/,
+  );
+  // Without node_index the passage still matches text this build reads.
+  assert.match(replace(doc, id, { match_text: "a", replacement: "b" }).blocks[id].richText, /^b/);
+  // "d" is the text of a node this build doesn't know.
+  assert.throws(
+    () => replace(doc, id, { match_text: "d", replacement: "e" }),
+    (error) => error.code === "newer_content",
+  );
 });
 
 test("a block holding only an image has a range that covers the image", () => {
