@@ -89,13 +89,14 @@ Comments live in their own document and anchor to the Page with cursors.
    opening markers follow as format 3, their own change, because they move
    node ids, the golden node addresses and the editor's caret positions. A
    target is emptied again for format 3. Two host checks land before it:
-   - Plain sync admission checks the block shape, as registration does.
-     Today only registration does, and a reader throws on a block a writing
-     peer synced without `richText`.
-   - A Page's host record stores the type and format of its documents, and
-     the host refuses a record in a format the build does not write. Today
-     the format a target holds is the operator's statement in
-     `TARGET_DOCUMENT_FORMATS`, and a missed reset is not detected.
+   - Plain sync admission checks the block shape, as registration does. This
+     one is in place.
+   - Landed: a Page's host record stores the format of each of its documents
+     (`documentFormats`), and the host refuses a record in a format the
+     build does not write while its owner can still delete the Page.
+     `TARGET_DOCUMENT_FORMATS` stays the release gate. A record from before
+     the stamp reads as format 2; the format 3 change deletes that rule, so
+     a missed reset is refused Page by Page.
 5. **Agent tools on format 2.**
 6. **A second document type**, once Pages runs on the type boundary.
 
@@ -105,7 +106,7 @@ Comments live in their own document and anchor to the Page with cursors.
 | --- | --- | --- |
 | Any time | A snapshot file with no regenerate command, or a test that compares against a fixed commit | It pins code that no longer exists and cannot follow an intended change |
 | After the format 1 tag | `PageRecords`, `recordStorage` stamps and guards, `stored-form.mjs` | They protect documents and open tabs on `pages.runtimed.run`. A new service has neither. The `PageRecords` Durable Object class stays declared, with an empty body, while a deployed target still binds it |
-| With format 3 | The `format` field each comment message stores, and `isRich` with it | Every message holds rich text. The field only told an earlier stored form apart |
+| With format 3 | The `format` field each comment message stores, and `isRich` with it. Plain sync admission's tolerance for block keys other than `position` and `richText` (`kept` in `model/block-shape.mjs`) | Every message holds rich text. The field only told an earlier stored form apart. The key tolerance exists for Pages stored before format 2 on targets that still hold them; a target is emptied for format 3, so then every block holds exactly its two keys |
 
 Keep tests that state behavior: concurrent edits, comment anchors, access
 decisions, receipts, persistence and recovery, and the property tests.
@@ -117,10 +118,10 @@ records the node addresses agents use.
 - **Before production, a target changes format by deleting its old
   documents.** It needs no reader for any earlier stored form and no
   migration from an existing target, and the host never converts a document
-  in place. Deleting means removing the old Pages: Trash and permanent
-  deletion cover a Page's content and comments documents. Sign-ins, grants
-  and the deployment's secrets stay. A Project has no delete yet, so a target
-  that holds Projects needs that first, or its storage cleared.
+  in place. Deleting means removing the old Pages, then their Projects: Trash
+  and permanent deletion cover a Page's content and comments documents, and
+  `delete_project` removes an emptied Project with its content. Sign-ins,
+  grants and the deployment's secrets stay.
   A format 2 build opens a format 1 Page, because it reads `position` and
   `richText` and ignores the fields format 2 dropped. Nothing relies on that.
   Format 3 moves node ids, so a format 2 Page must be gone before it.

@@ -1800,9 +1800,24 @@ stored:
 4. Actor claims. Each new change's actor is unclaimed or claimed by this
    principal. A claim is written in the same `saveMany` as the history it
    covers, and no other document can claim the actor meanwhile.
-5. The schema-feature gate and the 16 MiB history bound, then
-   `admitCommentChanges` for the comments document. A comment rule refusal blocks the principal's
-   comment writes (`host/comments-blocked/<principal>`) and closes the socket.
+5. The schema-feature gate and the 16 MiB history bound. Then, for the Page
+   document, the block shape
+   ([model/block-shape.mjs](model/block-shape.mjs)). The blocks the changes
+   write come from their decoded ops and each object's `objInfo` path (at the
+   change's own heads when the object is hidden). Every value at such a block
+   id must be a map, and every value of its `position` a raw-string fractional
+   index of at most 512 base-62 characters and of its `richText` text, so a
+   value that loses a conflict is judged at the frame that brings it, not when
+   a later delete reveals it. `blocks` must stay a map. The changes may not add another
+   key to a block; a key the same block already held is kept, so blocks with
+   the earlier format's extra keys stay editable. Deleting and moving blocks
+   pass. A refusal is `invalid_block`, not fatal: the socket stays open, the
+   principal isn't blocked, and the browser stops offering the refused heads
+   until it synchronizes again. The cost follows the change, not the number of
+   blocks. Trusted host writes skip this check.
+   For the comments document, `admitCommentChanges`. A comment rule refusal
+   blocks the principal's comment writes (`host/comments-blocked/<principal>`)
+   and closes the socket.
 6. Persist, publish who wrote the changes (`actor-profiles`, ahead of the
    changes), reply, then fan out.
 
@@ -1835,14 +1850,45 @@ relayed change from a claimed actor is refused.
 Discovery and the socket carry `sync=automerge`; a build without it gets
 `schema_unsupported` ("Reload to update"). The socket also carries `formats`, the
 document formats the build reads, as sorted `type:format` pairs
-(`pages.comments:1,pages.page:2`). The host writes one format of each type, so
-a Page's documents are in the formats its build writes. A socket whose
-`formats` lacks one of them is closed as `schema_unsupported`, and the viewer
-shows "Reload to update". Every type is required, because a Page can gain its
-comments document while a socket is open. A socket with no `formats` is a
-400, as is a repeated or malformed `formats`. Discovery takes no `formats` and
-stays open to every reader. Presence ids are per tab
-(`sender`), stamped by the host on every relay.
+(`pages.comments:1,pages.page:2`). The Page's host record names its
+documents' formats (below). A socket whose `formats` lacks one of the
+record's is closed as `schema_unsupported`, and the viewer shows "Reload to
+update". Every type the record names is required, because a Page can gain
+its comments document while a socket is open. A socket with no `formats` is
+a 400, as is a repeated or malformed `formats`. Discovery takes no `formats`
+and stays open to every reader; its `documents` descriptors carry the
+record's formats. Presence ids are per tab (`sender`), stamped by the host
+on every relay.
+
+#### Document formats in the host record
+
+A Page's host record (`host/document`) stores the format of each of its
+document types as `documentFormats`, `{ "pages.page": 2, "pages.comments":
+1 }`. Creation, registration and a Project's content document all stamp the
+formats the build writes ([model/document-types.mjs](model/document-types.mjs)),
+the comments format included, since the comments document is created at
+boot. `recordDocumentFormats` is the one reader. A record without the field
+was written before records carried it and reads as `pages.page` 2 and
+`pages.comments` 1 (`UNSTAMPED_RECORD_FORMATS`); the build that changes
+either format deletes that rule.
+
+A record whose formats aren't exactly the ones the build writes opens
+neither document. Discovery, the socket (closed `4427`), `/api/saved`, every
+agent read and edit, comments, presence, image uploads and card uploads
+answer `409 document_format_unsupported`, and the viewer shows "This Page is
+stored in a format this version of Pages doesn't open. Its owner can delete
+it." with no reload. A retained creation intent for such a record installs
+the record and imports no document. The shared-Page check and sharing still
+answer from the record, so the Page keeps its listing title. The JSON card
+and card image the host stored earlier are still served (`page_cards`, the
+card-image route): like the stored title, they are projections, and they
+show the owner what they are deleting. Its owner can trash, restore and
+permanently delete it: receipts carry the title the host last projected
+(`host/title-projection`), a trash with `base_heads` is refused as invalid,
+and the purge preview describes the record with `heads`, `comment_threads`
+and `comment_count` null. Permanent deletion removes its stored documents
+by id, as for any Page. `stored_form_unsupported` keeps its own meaning: a
+stored form inside a document or draft that this build doesn't read.
 
 A browser may still hold a local copy saved beside a Subduction replica, from
 before every Page was plain. Its checkpoint is plain Automerge, so the tab
@@ -2436,7 +2482,7 @@ guide lists the codes agents act on.
 Every tool declares all four MCP annotation hints, and `tool()` refuses one that
 doesn't, because clients read an absent hint as destructive and open-world.
 Reads are read-only. Keyed writes are idempotent and not destructive: edits stay
-in Automerge history. `delete_page` and `purge_page` are destructive; Trash is
+in Automerge history. `delete_page`, `purge_page` and `delete_project` are destructive; Trash is
 reversible, but it revokes every collaborator's access until restored.
 `import_page_image` is open-world because it downloads the client's file, and
 `report_page_progress` is not idempotent because each call without a lease starts
@@ -2596,8 +2642,12 @@ sync writes from everyone, so only a change accepted before Trash and applied
 late could differ. `action:"confirm"` with the unchanged token then runs the
 permanent deletion path:
 it tombstones the record and waits for it to be durable, then closes admission,
-deletes the document, and writes the catalog deletion tombstone. Private image bytes stay in object storage but are
-no longer served.
+deletes the document, and writes the catalog deletion tombstone. With the
+documents go the card objects and the uploaded images and datasets under
+`pages/<page_id>/assets/`: as many as sixteen listing pages find, under a 10 s
+deadline. That step is best-effort, like the card's: bytes it misses, or an
+upload authorized before Trash that lands later, stay unreferenced, and no
+deleted Page serves them.
 
 Trash has no automatic expiry. Pages stay there until the owner restores or
 purges them, up to 100 per account. Each trash record identifies its root Page.
@@ -2867,6 +2917,7 @@ draft that hasn't registered says to wait for it to sync.
 | `list_projects` | `cursor?`, `limit?` | Projects with the same fields as `get_project`, `next_cursor`, `retry_token` |
 | `get_project` | `project_id` | `project_id`, `title`, `description`, `revision`, `role`, `owner`, `url`, `document_id` |
 | `update_project` | `project_id`, `title?`, `description?`, `expected_revision`, `idempotency_key` | the updated Project, or `superseded` |
+| `delete_project` | `project_id`, `action` (`preview` or `confirm`), `preview_token` (confirm), `idempotency_key` (confirm), `retry_token?` | preview: `title`, `collaborators`, `pending_invitations`, `comment_count`, `heads`, `preview_token`; confirm: `{ project_id, deleted: true }` |
 | `create_page` | adds `project_id?`, `parent_id?` | adds `project_id`, `parent_id` (`null` at the top level) |
 | `list_pages` | adds `project_id?`, `parent_id?` (`null` = top level), `kind?` | owned rows add `project_id`, `parent_id`, `position`; never the content document |
 | `read_page` and every other tool taking `page_id` | `project_id` in place of `page_id` addresses the Project's content (exactly one; both is `invalid_arguments`) | adds `kind` (`page` or `project`), `project_id`, `parent_id`, `breadcrumbs`; content reads carry its `page_id` (= `document_id`) |
@@ -2882,7 +2933,7 @@ same Project. A retry without the token is best-effort. Until then `get_project`
 answers `project_pending` and `list_projects` omits it. The content holds
 orientation and guidance for people and agents. It is ordinary, untrusted
 document content, edited with the Page tools by `project_id`; it is not a Page in
-the tree, so `move_page`, `delete_page` and `purge_page` refuse it
+the tree, so `move_page`, `delete_page`, `restore_page` and `purge_page` refuse it
 (`project_content_protected`), and `list_pages` never lists it. A direct grant on
 the content document (by its `document_id`) opens it as a plain Page, `kind:
 "page"`, without revealing the Project.
@@ -3031,6 +3082,61 @@ journal intent before the Project sees the request, and every attempt carries it
 so a retry can never apply once the Project has moved past that revision, even
 after the Project evicted the key's receipt (it keeps the latest 64). Such a retry
 returns `superseded: true, applied: false` with the current Project.
+
+`delete_project` permanently deletes a Project its owner no longer needs.
+Anyone else is refused as for `update_project`: a member with `403`, everyone
+else with `project_not_found`. A Project that still holds a Page, active,
+being created or in Trash, is refused with `project_not_empty`; deleting a
+Project never deletes a Page. It follows `purge_page`'s two steps.
+`action:"preview"` reserves nothing and returns the Project's title,
+collaborators, pending invitations, its content's comment count and heads,
+and a `preview_token` the Space signs, valid for ten minutes. The token binds
+the owner, the Project's revision and ACL, and the heads of the content and of
+its comments document.
+`action:"confirm"` with that token runs one journal intent through the
+[space-deletion machine](worker/space-lifecycle.mjs), whose
+[table](test/fixtures/machines/space-deletion.json) is its contract. Each
+phase is persisted before the next effect, so an exact retry resumes it and,
+once done, replays `{ project_id, deleted: true }`:
+
+1. The Catalog checks again that the Project holds no Page and reads the
+   current heads of the content and its comments document. The Space checks
+   the token against its live record and those heads; a valid token records
+   the deletion in the same step. From then on the Space answers every route
+   like a missing Project, so members' inherited access, invitation claims
+   and Project reads stop. A refused token releases the key with
+   `purge_preview_invalid`.
+2. The Catalog trashes the content document with those heads as
+   `base_heads` and `base_comment_heads`, so the Page compares both in the
+   step that refuses further writes. Only this trash sends
+   `base_comment_heads`: the Catalog drops it from a caller's `delete_page`.
+   An edit or comment that landed after the preview (the owner still owns the
+   content, and members' leases last 15 s) reopens the Space and the request
+   is refused with `purge_preview_invalid`.
+3. The Catalog purges the content document through the Page's permanent
+   deletion path, at the revision the trash reported: its content and
+   comments documents, card objects and uploaded assets go.
+4. The Catalog writes the content's deletion tombstone, removes its `page/`
+   and `space/` entries and marks its D1 rows; the next `list_projects`
+   rewrites `pages_catalog_spaces`.
+5. The Space removes members' discovery hints and its
+   `pages_project_invitations` rows, then every key it stores. The receipt is
+   recorded after that.
+
+A Project whose content record is in a format this build doesn't write is
+deleted from that record, as Trash and purge delete such a Page: nothing
+opens or decodes its documents. Its preview reports `heads`,
+`comment_threads` and `comment_count` as `null`, and the token binds the
+content record's lifecycle revision in their place; through this build no
+one can change documents it doesn't open. The deletion's trash then applies
+only while the host still doesn't open them. A host that opens them by then
+(a build that writes their format) is a change since the preview, so the
+Space reopens and the request is refused with `purge_preview_invalid`. The
+token always binds that revision too.
+
+While a deletion is unfinished, the owner's listings and reads already treat
+the Project as missing, and a preview with a new key is `project_not_found`;
+only a retry of the same request finishes it.
 
 ### Card images
 

@@ -31,6 +31,7 @@ const MAPPED_RESULTS = new Set([
   "get_project_access",
   "manage_project_access",
   ...Object.values(RENAMED_TOOLS),
+  "delete_project",
   "create_page",
   "list_pages",
   "read_page",

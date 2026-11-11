@@ -119,7 +119,10 @@ const person = (collaborator) =>
 export function purgeSummary(preview) {
   const collaborators = Array.isArray(preview?.collaborators) ? preview.collaborators : [];
   const lines = [
-    `${plural(preview?.comment_count ?? 0, "comment")} will be deleted.`,
+    // Null when the host doesn't open the Page's documents to count them.
+    preview?.comment_count === null
+      ? "Its comments will be deleted."
+      : `${plural(preview?.comment_count ?? 0, "comment")} will be deleted.`,
     collaborators.length
       ? `${plural(collaborators.length, "collaborator")} will lose access: ${collaborators
           .map(person)

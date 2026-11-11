@@ -27,6 +27,9 @@ export const ADMISSION_REASONS = Object.freeze({
   // A receipt for edits SyncHost's schema gate refused: the tab's declared
   // build lacks a feature the Page is stamped with.
   schema_unsupported: "schema_unsupported",
+  // The Page's host record names document formats this build doesn't write
+  // (documentFormatsUnsupported in model/document-types.mjs).
+  document_format_unsupported: "document_format_unsupported",
   // Access changed under a live plain-sync connection.
   native_access_changed: "access_changed",
   // A newer plain-sync socket from the same tab (same principal, driver and

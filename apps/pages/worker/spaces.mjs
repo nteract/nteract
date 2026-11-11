@@ -26,6 +26,13 @@ import { serialQueue } from "./serial-queue.mjs";
 import { claimInvitation, proposeSharingMutation } from "./sharing.mjs";
 import { indexProjectInvitations, pruneProjectInvitations } from "./project-invitations.mjs";
 import { logAuthEvent } from "./auth-events.mjs";
+import {
+  bindingOf,
+  checkPreviewToken,
+  collaboratorsOf,
+  issuePreviewToken,
+  pendingInvitations,
+} from "./trash.mjs";
 
 export const SPACE_LIMIT = 50;
 export const SPACE_TITLE_LIMIT = 200;
@@ -99,6 +106,26 @@ export function validateSpaceInput(args, { creating }) {
       throw new HttpError(400, "expected_revision is required: pass revision from get_project");
   }
   return { title: title?.trim(), description };
+}
+
+/** delete_project's arguments: a preview reads; a confirm needs the
+ * preview's unchanged token. Deterministic input errors consume no key. */
+export function validateSpaceDeletion(args) {
+  if (!args || typeof args !== "object" || Array.isArray(args))
+    throw new HttpError(400, "Invalid Project arguments");
+  requireSpaceIdArgument(args.space_id);
+  const allowed = ["space_id", "action", "preview_token", "idempotency_key", "retry_token"];
+  if (Object.keys(args).some((key) => !allowed.includes(key)))
+    throw new HttpError(400, "Unsupported delete_project argument", "invalid_arguments");
+  if (!["preview", "confirm"].includes(args.action))
+    throw new HttpError(400, "action must be preview or confirm");
+  if (args.action === "confirm" && typeof args.preview_token !== "string")
+    throw new HttpError(
+      400,
+      "Call delete_project with action preview, then confirm with its unchanged preview_token",
+      "purge_preview_required",
+    );
+  return args.action;
 }
 
 /** Body of a new Project's content document. It is ordinary Page content:
@@ -192,6 +219,7 @@ export class Space {
         if (
           !record ||
           record.pending ||
+          record.deletion ||
           record.space_id !== args.space_id ||
           (this.ctx.id?.name && this.ctx.id.name !== args.space_id) ||
           !validPageId(record.document_id)
@@ -205,7 +233,12 @@ export class Space {
           throw spaceNotFound();
         const args = await readJson(request);
         const record = await this.ctx.storage.get(RECORD);
-        if (!record || record.space_id !== args.space_id || record.owner !== args.owner)
+        if (
+          !record ||
+          record.deletion ||
+          record.space_id !== args.space_id ||
+          record.owner !== args.owner
+        )
           throw spaceNotFound();
         await this.ctx.storage.sync();
         return json({
@@ -224,6 +257,10 @@ export class Space {
       // failed ACL write cannot expose or acknowledge an unconfirmed record.
       await this.ctx.storage.sync();
       if (path === "/internal/space/create") return await this.create(identity, args, record);
+      if (path === "/internal/space/delete") return await this.remove(identity, args, record);
+      // A Project whose deletion has started answers like a missing one on
+      // every other route, and its invitations can no longer be claimed.
+      if (record?.deletion) record = undefined;
       // A content-selector check (`claim: false`) only asks whether the
       // caller already reads the Project; it never claims an invitation.
       if (path === "/internal/space/read" && record && args.claim !== false) {
@@ -414,6 +451,138 @@ export class Space {
     await this.ctx.storage.put(RECORD, created);
     await this.ctx.storage.sync();
     return json(publicSpace(created), 201);
+  }
+
+  /**
+   * One step of delete_project, which the owner's Catalog drives
+   * (space-lifecycle.mjs `spaceDeletion`). `step` is:
+   *
+   * - preview: what deleting the Project removes, and a preview token bound
+   *   to this record's revision and ACL and to the `heads` and
+   *   `comment_heads` the Catalog read from the content.
+   * - close: check the token against the live record and the content and
+   *   comments heads the Catalog read now. A valid token records `deletion`
+   *   (the intent's `deletion_id` and both heads) in the same step; from then
+   *   on every other route answers like a missing Project.
+   * - reopen: drop that deletion again, after the content or its comments
+   *   changed.
+   * - delete: remove members' discovery hints and the Project's invitation
+   *   rows, then every key this object stores.
+   *
+   * A repeated close, reopen or delete for the same `deletion_id` answers as
+   * the first did, so the Catalog can resume after a lost response.
+   */
+  async remove(identity, args, record) {
+    requireWrite(identity);
+    const step = args.step;
+    if (!["preview", "close", "reopen", "delete"].includes(step))
+      throw new HttpError(400, "Invalid Project deletion step");
+    const ours = typeof args.deletion_id === "string" && record?.deletion?.id === args.deletion_id;
+    if (step === "delete" && !record) return json({ space_id: args.space_id, deleted: true });
+    if (step === "reopen" && !record?.deletion)
+      return json({ space_id: args.space_id, reopened: true });
+    if (!record || (record.deletion && !ours) || !can("read", record, identity))
+      throw spaceNotFound();
+    if (identity.principal !== record.owner)
+      throw new HttpError(403, "Only the Project owner can delete it");
+    const binding = ({ content_revision, heads, comment_heads }) =>
+      bindingOf({
+        project: record.space_id,
+        principal: identity.principal,
+        document_id: record.document_id,
+        content_revision,
+        heads: heads && [...heads].sort(),
+        comment_heads: comment_heads && [...comment_heads].sort(),
+        acl: record.acl ?? null,
+        revision: record.revision ?? 0,
+      });
+    // What the Catalog read from the content's Page host: its lifecycle
+    // revision, and the heads of the content and its comments document. Both
+    // heads are null for a record whose documents that host doesn't open;
+    // nothing can change those documents, so its revision binds the content.
+    const contentHeads = () => {
+      const heads = (name) =>
+        Array.isArray(args[name]) && args[name].every((head) => typeof head === "string");
+      const unopened = args.heads === null && args.comment_heads === null;
+      if (
+        !Number.isSafeInteger(args.content_revision) ||
+        args.content_revision < 0 ||
+        !(unopened || (heads("heads") && heads("comment_heads")))
+      )
+        throw new HttpError(400, "content_revision, heads and comment_heads describe the content");
+      return {
+        content_revision: args.content_revision,
+        heads: args.heads,
+        comment_heads: args.comment_heads,
+      };
+    };
+    if (step === "preview") {
+      if (record.deletion) throw spaceNotFound();
+      return json({
+        space_id: record.space_id,
+        title: record.title,
+        document_id: record.document_id,
+        revision: record.revision ?? 0,
+        collaborators: collaboratorsOf(record.acl),
+        pending_invitations: pendingInvitations(record.acl),
+        ...(await issuePreviewToken(this.ctx.storage, await binding(contentHeads()))),
+      });
+    }
+    if (step === "close") {
+      if (ours)
+        return json({
+          space_id: record.space_id,
+          closed: true,
+          heads: record.deletion.heads,
+          comment_heads: record.deletion.comment_heads,
+        });
+      const read = contentHeads();
+      const checked = await checkPreviewToken(
+        this.ctx.storage,
+        await binding(read),
+        args.preview_token,
+      );
+      if (checked !== "valid")
+        throw new HttpError(
+          409,
+          checked === "expired"
+            ? "preview_token expired; preview the deletion again"
+            : checked === "changed"
+              ? "The Project changed after its preview; preview the deletion again"
+              : "Invalid preview_token; preview the deletion again",
+          "purge_preview_invalid",
+        );
+      await this.ctx.storage.put(RECORD, {
+        ...record,
+        deletion: { id: args.deletion_id, ...read, at: new Date().toISOString() },
+      });
+      await this.ctx.storage.sync();
+      return json({ space_id: record.space_id, closed: true, ...read });
+    }
+    if (!ours) throw new HttpError(409, "A different deletion of this Project is in progress");
+    if (step === "reopen") {
+      const { deletion: _deletion, ...reopened } = record;
+      await this.ctx.storage.put(RECORD, reopened);
+      await this.ctx.storage.sync();
+      return json({ space_id: record.space_id, reopened: true });
+    }
+    // Hints and invitation rows go first: once the record is gone, nothing
+    // names the members whose hints a retry would still have to remove.
+    for (const principal of Object.keys(record.acl?.members ?? {})) {
+      const removed = await this.env.CATALOGS.getByName(principal).fetch(
+        new Request("https://pages.internal/internal/project-discovery", {
+          method: "POST",
+          body: JSON.stringify({ space_id: record.space_id, remove: true }),
+        }),
+      );
+      if (!removed.ok) throw new HttpError(503, "Project discovery unavailable; retry");
+    }
+    if (this.env.DB) await pruneProjectInvitations(this.env, { space_id: record.space_id });
+    for (const key of (await this.ctx.storage.list()).keys())
+      if (key !== RECORD) await this.ctx.storage.delete(key);
+    await this.ctx.storage.delete(RECORD);
+    await this.ctx.storage.sync();
+    return json({ space_id: record.space_id, deleted: true });
   }
 
   async update(identity, args, record) {

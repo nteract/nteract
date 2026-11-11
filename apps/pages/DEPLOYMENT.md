@@ -681,13 +681,23 @@ The controller checks out the commit it deploys and reads this table from it,
 so the first format 2 commit on `main` installs on page10 with no change on
 the host. The same check stops a revert to a format 1 build.
 
-The table is the operator's statement of what a target holds. Nothing reads
-the stored documents to confirm it. A Page record carries no format: discovery
-labels a Page's documents with the formats the running build writes. page10's
-Pages from before format 2 stay and open: a format 2 build reads their
-`position` and `richText` and ignores the other block fields. They are deleted
-before a format 3 build, which moves node ids
-([DIRECTION.md](DIRECTION.md#rules-for-the-work)). No command empties a target.
+The table is the operator's statement of what a target holds, and it gates
+the release only. The Page host checks each Page's own record: a record
+stores its documents' formats as `documentFormats`, from creation or
+registration on. Discovery reports those formats, the socket requires them,
+and a record in any format the running build doesn't write is refused with
+`409 document_format_unsupported` on every document route while its owner can
+still list, trash, restore and permanently delete it
+([REFERENCE.md](REFERENCE.md#document-formats-in-the-host-record)).
+
+A record written before the stamp reads as `pages.page` 2 and
+`pages.comments` 1, so this build opens every Page page10 holds. page10's
+Pages from before format 2 have such records: a format 2 build reads their
+`position` and `richText` and ignores the other block fields. The format 3
+build deletes the unstamped rule, so it refuses those records one by one
+instead of opening them; they are deleted before it, since format 3 moves node
+ids ([DIRECTION.md](DIRECTION.md#rules-for-the-work)). No command empties a
+target.
 
 ### Stored forms and rollback rules
 
