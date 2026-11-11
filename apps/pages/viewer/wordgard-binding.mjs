@@ -191,6 +191,51 @@ function rangeMarked(projection, from, to) {
   });
   return marked;
 }
+/** `spans` with the native ranges `[from, to)` (ascending, disjoint) cut out. */
+function withoutRanges(spans, ranges) {
+  const out = [];
+  let at = 0;
+  for (const span of spans) {
+    if (span.type === "text") {
+      let kept = "";
+      for (let i = 0; i < span.value.length; i++)
+        if (!ranges.some(([from, to]) => at + i >= from && at + i < to)) kept += span.value[i];
+      if (kept) out.push({ ...span, value: kept });
+      at += span.value.length;
+    } else {
+      if (!ranges.some(([from, to]) => at >= from && at < to)) out.push(span);
+      at++;
+    }
+  }
+  return out;
+}
+const plainValue = (value) =>
+  JSON.stringify(value, (_key, item) => {
+    if (A.isImmutableString(item)) return String(item);
+    if (item && typeof item === "object" && !Array.isArray(item))
+      return Object.fromEntries(
+        Object.entries(item).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+      );
+    return item;
+  });
+/** Whether two span lists store the same content: adjacent text runs with
+ * the same marks are one run. */
+function sameSpans(a, b) {
+  const runs = (spans) => {
+    const out = [];
+    for (const span of spans) {
+      if (span.type !== "text") out.push({ type: span.type, value: plainValue(span.value) });
+      else if (span.value) {
+        const marks = plainValue(span.marks ?? {});
+        const last = out.at(-1);
+        if (last?.type === "text" && last.marks === marks) last.value += span.value;
+        else out.push({ type: "text", value: span.value, marks });
+      }
+    }
+    return JSON.stringify(out);
+  };
+  return runs(a) === runs(b);
+}
 const nativeLength = (doc, id) => String(doc.blocks?.[id]?.richText ?? "").length;
 
 /** Position maps after replacing editor range `[from, to)` with `length`
@@ -470,9 +515,10 @@ export function createWordgardBinding(
           (range) =>
             !splitsPair(tr.startState.doc, range.from) &&
             !splitsPair(tr.startState.doc, range.to) &&
-            // An emptied paragraph of unmarked text has no marker
-            // to keep it, and decode draws no paragraph for it.
-            tr.newDoc.resolve(range.fromB).parent.node.content.length > 0 &&
+            // An emptied textblock stays as long as its own marker does;
+            // emptied unmarked text has none, and decode draws nothing for it.
+            (tr.newDoc.resolve(range.fromB).parent.node.content.length > 0 ||
+              ownMarker(original, range.from)) &&
             range.inserted.every((token) => {
               const text = String(token.param);
               if (!text.isWellFormed() || SPECIAL_TEXT.test(text)) return false;
@@ -506,7 +552,25 @@ export function createWordgardBinding(
           // stamp in the same change.
           if (structural) {
             const spans = encodeSpans(tr.newDoc);
-            updateSpansExactly(d, path, spans, expand);
+            // A deletion that removes whole nodes (Backspace in an empty
+            // paragraph, a selection across nodes) deletes exactly the
+            // native characters it covers when that leaves the encoded
+            // spans. Rewriting through updateSpans instead could delete a
+            // neighbour's marker with the same value and keep the removed
+            // node's: the neighbour's node id and anything anchored to the
+            // removed node would then move.
+            const deleted =
+              !formats.length &&
+              replacements.length > 0 &&
+              replacements.every((range) => range.toB === range.fromB)
+                ? replacements.map((range) => [
+                    original.map.wgToAm[range.from],
+                    original.map.wgToAm[range.to],
+                  ])
+                : null;
+            if (deleted && sameSpans(withoutRanges(A.spans(d, path), deleted), spans))
+              for (const [from, to] of [...deleted].reverse()) A.splice(d, path, from, to - from);
+            else updateSpansExactly(d, path, spans, expand);
             stampSpans(d, spans);
           } else {
             const written = new Set();

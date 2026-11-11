@@ -1012,6 +1012,44 @@ test("the binding refuses writes to a block decode couldn't draw as stored", () 
 // Every node opens with its marker, the block's first paragraph included: an
 // editor position inside the first paragraph maps one for one onto the
 // native text after that marker.
+test("deleting a whole node deletes its own marker, so its neighbours keep their ids", () => {
+  const paragraph = () => ({
+    type: "block",
+    value: { type: new A.ImmutableString("paragraph"), parents: [], attrs: {}, isEmbed: false },
+  });
+  const replica = fixture("x");
+  replica.change((d) =>
+    updateSpansExactly(d, textPath("one"), [
+      paragraph(),
+      paragraph(),
+      { type: "text", value: "Second" },
+    ]),
+  );
+  const path = textPath("one");
+  const second = A.getCursor(replica.doc, path, 1);
+  const editor = editorFor(replica, "one");
+  // Backspace in the empty first paragraph removes that paragraph.
+  editor.dispatch({ selection: { anchor: 1 } });
+  assert.equal(editor.run(deleteUnit, "backward"), true);
+  assertInSync(editor, replica, "one", "Backspace in an empty first paragraph");
+  assert.deepEqual(markerTypes(replica, "one"), ["paragraph"]);
+  assert.equal(A.getCursor(replica.doc, path, 0), second);
+  editor.binding.destroy();
+});
+
+test("emptying a paragraph that has its own marker keeps the marker", () => {
+  const replica = fixture("First\n\nSecond");
+  const path = textPath("one");
+  const first = A.getCursor(replica.doc, path, 0);
+  const editor = editorFor(replica, "one");
+  editor.dispatch({ selection: { anchor: 1, head: 6 } });
+  assert.equal(editor.run(deleteUnit, "backward"), true);
+  assertInSync(editor, replica, "one", "emptied paragraph");
+  assert.deepEqual(markerTypes(replica, "one"), ["paragraph", "paragraph"]);
+  assert.equal(A.getCursor(replica.doc, path, 0), first);
+  editor.binding.destroy();
+});
+
 test("a person can edit a block whose only problem is parents no writer wrote", () => {
   for (const [name, spansOf] of Object.entries(ADJUSTED_NESTING_CASES)) {
     const replica = fixture("x");
