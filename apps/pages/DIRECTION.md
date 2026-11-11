@@ -86,9 +86,13 @@ Comments live in their own document and anchor to the Page with cursors.
    later changes no request shape: agents see fewer refusals.
 5. **One address and one envelope for agents.** One contract change, with
    today's refusal rules:
-   - `node_id` replaces the mix of `block_id`, `node_id`, `node_index` and
-     `image_id`. A `node_id` is a cursor inside one block's text and does not
-     name its block, so the host needs a lookup from node to block.
+   - `node_id` is the one address for a block, a top-level node and an
+     image. Done: it is the Automerge op id of the block's map object, the
+     node's opening marker or the image's embed. Op ids are unique in the
+     document, so an id names its block too. The host still needs a lookup:
+     it resolves an id by comparing it against the ids minted from the live
+     document ([model/addresses.mjs](model/addresses.mjs)). Each field takes
+     the kinds it acts on and refuses another with `wrong_address_kind`.
    - `edit_page` and `patch_page` become one tool with one operation list. Done on `main`.
      Every operation stays: text and formatting edits, images, Parquet
      dataframes, node insert, delete and retype, and block moves. Uploads

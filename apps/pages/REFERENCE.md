@@ -1520,8 +1520,8 @@ change. The lifecycle overlay and the credential ceiling stay with nteract:
 An image has a default/light `src` and optional `dark_src`, with shared `alt`
 and `title`. The `image-theme-variants` feature is stamped only when a dark
 source is written and never removed. Baseline images remain baseline. Agents
-use `insert_image.dark_asset_id` or `edit_page` `set_image` with the actual live
-inline `image_id` reported in `summary.images`, at exact heads. Both assets are
+use `insert_image.dark_asset_id` or `edit_page` `set_image` with the image's
+`node_id` reported in `summary.images`, at exact heads. Both assets are
 preflighted as images belonging to the Page; deleted cursors never slide.
 Comments deliberately accept only baseline images.
 
@@ -1589,10 +1589,11 @@ For agents, importing bytes and inserting content are separate operations:
 
    A client with none of these asks the person to upload in the browser.
 2. Read the current Page, then call guarded `edit_page` with `insert_image`,
-   `asset_id`, alt text, and optional `after_block_id` (omitted appends; `null`
+   `asset_id`, alt text, and optional `after_node_id` (omitted appends; `null`
    prepends). The host verifies the asset belongs to this Page and creates a
-   dedicated image block. Its receipt returns the actual `block_id`, asset
-   reference, updated heads, and Page URL. Exact retries reuse that result.
+   dedicated image block. Its `result.edits` entry returns the new block's
+   `node_id`, its `nodes`, the image's id as `image`, and the asset reference;
+   the receipt adds updated heads and the Page URL. Exact retries reuse that result.
 3. Read back the block. Upload success alone is not insertion or proof of rendering.
 
 The MCP schema declares `_meta["openai/fileParams"]` for the client handoff. No
@@ -2331,8 +2332,18 @@ and `/project/<project_id>/meta.json` and `card.json`
 `/.well-known/oauth-authorization-server`; authorization, token exchange/refresh,
 and revocation use `/oauth/authorize`, `/oauth/token`, and `/oauth/revoke`.
 
-Reads capture content and heads together. Agents can select blocks, exact heading
-sections, literal hits with neighboring nodes, or revision-bound node ranges.
+Every address an agent reads or sends is a `node_id`: the Automerge op id,
+`<counter>@<actor hex>`, of a block's map object, a top-level node's opening
+marker, or an image's embed ([model/addresses.mjs](model/addresses.mjs)). Op
+ids are unique in the document, so an id names its block too. The host resolves
+one by comparing it against the ids minted from the live document; it never
+hands a caller's id to Automerge. Each operation field takes the kinds it acts
+on and refuses another with `wrong_address_kind` (400); an id that names
+nothing live is `node_not_found`. A block's key in `doc.blocks` stays internal
+to the browser, sync, presence wire and comments document.
+
+Reads capture content and heads together. Agents can select blocks or nodes by
+`node_ids`, exact heading sections, or literal hits with neighboring nodes.
 `include_content:false` provides a paginated outline; explicit read projections
 use bounded response budgets and never silently truncate content. Partial slices
 are suitable for literal edits, not whole-block replacement. `list_page_comments`
@@ -2358,7 +2369,8 @@ delete) take none. `delete_page` takes one as an optional guard. The default
 and `set_node`, without `all`:
 native identity maps
 historical literal ranges into current text, checking text, marks, and structure.
-Optional `node_index` narrows the match at the base revision. Unrelated edits,
+A node's `node_id` narrows the match to that node; a block's matches anywhere in
+it. Unrelated edits,
 even within the same block, survive. Deleted/reinserted text is a new target;
 overlapping batch targets are rejected. Structural/Markdown changes retain the
 exact-revision guard. Conflicts provide bounded addresses for focused rereading.
@@ -2404,7 +2416,7 @@ explicit, so no `marks_dropped` warning is reported. Leading and trailing
 spaces are kept outside the parse, since Markdown trims a paragraph.
 
 Every passage operation takes a one-based `occurrence`, counted among the
-matches context and `node_index` allow in the batch's starting snapshot.
+matches context and `node_id` allow in the batch's starting snapshot.
 [`applyOperation`](model/page.mjs) captures each one as cursors before any
 operation runs, and the target-scope dry run follows the same cursors, so both
 scopes agree. An occurrence an earlier operation changed is refused.
@@ -2502,13 +2514,14 @@ the readable mark brings nothing back.
   writes the marker back as stored. An unknown container
   draws nothing in the editor and a notice in the agent read; where that
   makes the agent read's top-level nodes differ from the stored ones,
-  `read_page` gives those nodes no `node_id` and `node_index` refuses the
-  block. Nothing rewrites such a block, and the editor refuses a person's
+  `read_page` gives those nodes no `node_id`, so only the block's id
+  addresses them. Nothing rewrites such a block, and the editor refuses a person's
   edit to one it draws only in part ("This block holds content from a newer
   version of Pages"). An owner removes such a node with `delete_node`
   when `read_page` gives it a `node_id`. When it reports none (an unknown
   node or unreadable dataframe followed by text that has no marker of its
-  own), `delete_block` removes the whole block; it works on any block. A
+  own), `delete_block` with the block's `node_id` removes the whole block;
+  it works on any block. A
   marker with values this build can't read on a known node with a Markdown
   form (a heading level, an image) is also recovered by
   `replace_block_markdown`, which rewrites the block whole. That tool
@@ -2573,8 +2586,8 @@ the drawn tree loses nothing a reader showed. Every host tool write to a
 block runs `repairBlockMarkers`
 ([model/richtext-page.mjs](model/richtext-page.mjs)) first, in the same
 change: each moved marker gets the parents it is drawn with, then unmarked
-text gets its markers. The tree, the Markdown and `node_index` stay as they
-were, and so does every `node_id` except a marker Automerge can't update in
+text gets its markers. The tree, the Markdown and the order of top-level
+nodes stay as they were, and so does every `node_id` except a marker Automerge can't update in
 place (the `updateBlock` fallback below), whose `node_id` changes. In the editor, a person's edit to such a block
 is written through the encoder, which stores the tree the editor drew. A
 container drawn with no marker of its own (a table around a row nothing
@@ -2748,7 +2761,7 @@ API agents get presence derived from the calls the host already authorized
 selection over the text a `replace_match` or `format_match` changed, which the
 browser fills for 600 ms before collapsing it to a caret, or a corner dot on a
 block an operation inserted, moved or replaced. A `read_page` by section, search,
-node range or block IDs shows a reading bar; a search with one to three hits also
+`node_ids` shows a reading bar; a search with one to three hits also
 fills each hit. Whole-page and outline reads show nothing.
 
 Targets are Automerge cursors captured inside the change, so they follow
@@ -2798,9 +2811,9 @@ targets follow the same rule with `revision`, failing with
 still replay the recorded receipt; these guards run only for new intents.
 
 `edit_page` supports structural operations including `insert_markdown`,
-`move_block`, and `insert_image`. Placement uses stable `after_block_id` values,
-`null` to prepend, or omission to append; fractional positions are internal.
-Content warnings, inserted image IDs, and other receipt results are captured at
+`move_block`, and `insert_image`. Placement uses a block's `node_id` as
+`after_node_id`, `null` to prepend, or omission to append; fractional positions
+are internal. Content warnings, the ids in `result.edits`, and other receipt results are captured at
 the operation's actual heads and are not recomputed during retry.
 
 ### Trash and permanent deletion
