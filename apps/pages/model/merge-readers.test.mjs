@@ -1366,6 +1366,40 @@ test("host tools edit readable text in a block with newer content, and refuse th
   }
 });
 
+// set_node writes a column's alignment to every cell in it. A cell whose
+// stored alignment this build can't read is refused before anything is
+// written, even when the matched cell reads.
+test("set_node refuses a column alignment that would overwrite a cell this build can't read", () => {
+  const cell = (type, attrs = {}) => ({
+    type: "block",
+    value: { type: S(type), parents: [S("table"), S("table-row")], attrs, isEmbed: false },
+  });
+  const spans = [
+    marker("table", []),
+    marker("table-row", ["table"]),
+    cell("table-header"),
+    { type: "text", value: "Head" },
+    marker("table-row", ["table"]),
+    cell("table-cell", { align: S("diagonal") }),
+    { type: "text", value: "body" },
+  ];
+  freeing((keep) => {
+    const { doc, id } = pageWithSpans(spans);
+    keep(doc);
+    const stored = storedJSON(A.spans(doc, textPath(id)));
+    const op = { op: "set_node", block_id: id, match_text: "Head", attrs: { align: "left" } };
+    assert.throws(
+      () => editPage(doc, [op], "patch_page"),
+      (error) => error.code === "newer_content" && error.status === 409,
+    );
+    assert.throws(
+      () => guardPassageEdits(doc, A.getHeads(doc), [op]),
+      (error) => error.code === "newer_content",
+    );
+    assert.equal(storedJSON(A.spans(doc, textPath(id))), stored);
+  });
+});
+
 // A readable mark a host tool writes replaces a stored value of the same name
 // this build can't read, as the editor's does; removing it brings nothing
 // back.
