@@ -498,9 +498,19 @@ const encodedRank = (mark) => {
 };
 export function toMarks(marks) {
   const result = {};
+  // A readable mark wins over a stored value of the same name in
+  // PagesForeignMarks, whatever their order (wordgardForeignMarks in
+  // viewer/wordgard-binding.mjs keeps the editor from holding both).
+  const readable = new Set(
+    [...marks]
+      .filter((mark) => mark.type !== PagesForeignMarks)
+      .map((mark) => markTypeName(mark))
+      .filter(Boolean),
+  );
   for (const mark of [...marks].sort((a, b) => encodedRank(a) - encodedRank(b))) {
     if (mark.type === PagesForeignMarks) {
-      Object.assign(result, mark.value);
+      for (const [name, value] of Object.entries(mark.value))
+        if (!readable.has(name)) result[name] = value;
       continue;
     }
     const name = Object.keys(markTypes).find(
@@ -516,6 +526,11 @@ export function toMarks(marks) {
   return result;
 }
 export const markNames = (mark) => Object.keys(toMarks([mark]));
+function markTypeName(mark) {
+  return Object.keys(markTypes).find(
+    (key) => markTypes[key].type === mark.type || markTypes[key].type.type === mark.type,
+  );
+}
 const strings = (attrs = {}) =>
   Object.fromEntries(
     Object.entries(attrMap(attrs) ?? {}).map(([k, v]) => [

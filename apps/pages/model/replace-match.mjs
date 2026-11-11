@@ -13,6 +13,7 @@ import {
   normalizeHighlight,
 } from "./marks.mjs";
 import { stampMarks } from "./schema-features.mjs";
+import { refuseNewerBlock } from "./richtext-spans.mjs";
 
 const MAX_TEXT_LENGTH = 262144;
 const MAX_MATCHES = 10000;
@@ -455,6 +456,7 @@ function marksDroppedWarning(partial, start, end) {
  * reported. */
 export function replaceMatch(doc, id, input, trace, { anchor, budget } = {}) {
   const { text: replacement, runs } = replacementOf(input);
+  refuseNewerBlock(doc, id, "replace_match");
   const { path, start, end } = locateRange(doc, id, input, anchor);
   if (runs && inCodeBlock(doc, path, start))
     throw Error(
@@ -629,6 +631,7 @@ export function formatChanges(input) {
  * `skipped_in_code`. */
 export function formatMatch(doc, id, input, trace, { anchor, budget } = {}) {
   const { add, remove } = formatChanges(input);
+  refuseNewerBlock(doc, id, "format_match");
   const located = { ...input, op: "format_match" };
   const path = textPath(id);
   let ranges,

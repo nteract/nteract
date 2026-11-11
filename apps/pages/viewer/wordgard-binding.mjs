@@ -15,6 +15,7 @@ import {
   CodeBlock,
   LineBreak,
   OrderedList,
+  PagesForeignMarks,
 } from "./wordgard-model.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
 import {
@@ -69,6 +70,33 @@ export const wordgardCodeNewlines = [
       : null,
   ),
 ];
+
+// A readable mark replaces a stored value of the same name this build can't
+// read (PagesForeignMarks): applying bold over a stored `strong: "yes"`
+// stores `strong: true`. The foreign mark loses that name's entry and keeps
+// its others; with none left it goes. Removing the readable mark later
+// brings nothing back. encode (toMarks) then never sees both for one name.
+// The stored names a mark writes, or none for a mark encode doesn't write
+// (a code block's language).
+const namesOf = (mark) => {
+  try {
+    return markNames(mark);
+  } catch {
+    return [];
+  }
+};
+export const wordgardForeignMarks = Correction.onMarks(Leaf.Text, (position) => {
+  const { marks } = position.node;
+  const foreign = marks.find((mark) => mark.type === PagesForeignMarks);
+  if (!foreign) return null;
+  const named = new Set(marks.filter((mark) => mark !== foreign).flatMap(namesOf));
+  const kept = Object.entries(foreign.value).filter(([name]) => !named.has(name));
+  if (kept.length === Object.keys(foreign.value).length) return null;
+  const range = { from: position.before, to: position.before + position.node.length };
+  return kept.length
+    ? { ...range, add: PagesForeignMarks.of(Object.fromEntries(kept)) }
+    : { ...range, remove: foreign };
+});
 
 // Shift+Enter. A hard break is a native block marker, which can't carry
 // marks, so insert an unmarked break and keep the active marks on the cursor
@@ -489,12 +517,27 @@ export function createWordgardBinding(
           // Formatting inside unmarked text, or a selection that reaches
           // into it, is written through encode too, which marks it.
           if (modifications?.length && !rangeMarked(original, fromA, toA)) structural = true;
+          // A readable mark that replaces a stored value of the same name
+          // (wordgardForeignMarks) removes the foreign mark in the same
+          // modification set: that name is written by the readable mark,
+          // so the foreign removal leaves it alone.
+          const added = new Set(
+            (modifications ?? []).flatMap((mod) =>
+              "add" in mod && mod.add.type !== PagesForeignMarks ? namesOf(mod.add) : [],
+            ),
+          );
           for (const mod of modifications ?? []) {
             try {
               formats.push(
                 "add" in mod
                   ? { from, to, add: toMarks([mod.add]) }
-                  : { from, to, remove: markNames(mod.remove) },
+                  : {
+                      from,
+                      to,
+                      remove: markNames(mod.remove).filter(
+                        (name) => mod.remove.type !== PagesForeignMarks || !added.has(name),
+                      ),
+                    },
               );
             } catch {
               structural = true;

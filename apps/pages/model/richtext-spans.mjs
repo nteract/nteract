@@ -12,7 +12,7 @@ import {
 import { DATAFRAME_BLOCK, parseAssetPath, readDataframe } from "../shared/dataset-assets.mjs";
 import { decode, encode, schema } from "./wordgard-doc.mjs";
 import { treeMarkdown } from "./markdown-serializer.mjs";
-import { UNREADABLE_NAME, codeTextUnmarked, markerParents } from "./richtext-format.mjs";
+import { UNREADABLE_NAME, codeTextUnmarked, markerParents, textPath } from "./richtext-format.mjs";
 
 export const readTree = (block) => decode(codeTextUnmarked(A.spans(block, ["richText"]))).doc;
 export const richDoc = readTree;
@@ -41,6 +41,22 @@ export function markdownlessNode(block, pageId) {
       if (!isKnownBlock(name) || MARKDOWNLESS.has(name)) return name;
   }
   return null;
+}
+
+/** Refuse a host write that would edit block `id` in place when decode
+ * draws it only in part because it holds content from a newer build
+ * (`newer` and `lossy`): no write may store over what this build can't
+ * read. delete_node and delete_block remove such content, and move_block
+ * moves the block whole; neither edits it. */
+export function refuseNewerBlock(doc, id, op) {
+  const decoded = decode(codeTextUnmarked(A.spans(doc, textPath(id))));
+  if (decoded.newer && decoded.lossy)
+    throw Object.assign(
+      Error(
+        `This block holds content from a newer version of Pages that this version can't draw whole, so ${op} can't edit it. Remove a node with delete_node, or the whole block with delete_block.`,
+      ),
+      { status: 409, code: "newer_content" },
+    );
 }
 
 export const validateRich = (block) => validateRichSpans(A.spans(block, ["richText"]));

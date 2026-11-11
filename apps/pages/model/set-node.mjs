@@ -15,10 +15,12 @@
 import * as A from "@automerge/automerge/slim";
 import { markerParents, textPath, updateSpansExactly } from "./richtext-format.mjs";
 import { unreadableMarker } from "./wordgard-doc.mjs";
+import { refuseNewerBlock } from "./richtext-spans.mjs";
 import { updateSpansConfig } from "./marks.mjs";
 import { locateRange } from "./replace-match.mjs";
 import {
   ALIGNMENTS,
+  markerName,
   markerType,
   SETTABLE_ATTRS,
   nodeLabel,
@@ -174,6 +176,7 @@ const withAttrs = (span, attrs, type = span.value.type) => ({
 /** Change the type or attributes of the node that holds match_text. */
 export function setNode(doc, id, input, trace, { anchor } = {}) {
   const change = nodeChange(input);
+  refuseNewerBlock(doc, id, "set_node");
   const { path, start, end } = locateRange(doc, id, { ...input, op: "set_node" }, anchor);
   const spans = A.spans(doc, textPath(id));
   const index = targetMarker(spans, governingMarker(spans, start));
@@ -233,7 +236,14 @@ export function setNode(doc, id, input, trace, { anchor } = {}) {
   // Every reader draws a marker it can't read as a notice, so nothing
   // downstream refuses one. A marker this write leaves unreadable (a stored
   // attribute a newer build wrote that this one can't read) is refused here.
-  if (written.some((i) => unreadableMarker(spans[i].value)))
+  // A type or parent that isn't a name, or parents that aren't a list, would
+  // be written back as stored: refused too.
+  const unwritable = (value) =>
+    unreadableMarker(value) ||
+    markerType(value) === null ||
+    !Array.isArray(value.parents) ||
+    value.parents.some((parent) => markerName(parent) === null);
+  if (written.some((i) => unwritable(spans[i].value)))
     throw Error(`set_node can't write ${nodeLabel(target)} with attributes this build can't read`);
   updateSpansExactly(doc, path, spans, updateSpansConfig);
   trace?.push({ type: "text", block_id: id, start, end });

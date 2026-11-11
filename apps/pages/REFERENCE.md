@@ -2411,7 +2411,12 @@ value this build can't read, or must not render (a link to an unsafe URL, a
 highlight outside the registry's colors), is a mark it doesn't know. The
 editor keeps it as stored in `PagesForeignMarks` and encode writes it back;
 every read draws it as nothing, so its value never reaches Markdown, an
-outline, a card or HTML.
+outline, a card or HTML. A readable mark replaces a stored value of the
+same name: bold applied over a stored `strong: "yes"` stores `strong:
+true`, in the editor (`wordgardForeignMarks` in
+[viewer/wordgard-binding.mjs](viewer/wordgard-binding.mjs)) and through
+`format_match`. The foreign mark keeps its other entries, and removing
+the readable mark brings nothing back.
 
 `decode` reports two reasons a block can't be drawn as stored, apart:
 
@@ -2449,7 +2454,12 @@ Reading is total; admission stays strict. Registration (`validateRich` in
 message whose decode is `newer` or lossy, and every mark value outside the
 registry, so nothing a reader would draw as a notice or as plain text is
 admitted. `set_node` refuses a write that would leave the marker it writes
-unreadable.
+unreadable. No host tool edits a block decode reports `newer` and lossy in
+place: `replace_match`, `format_match`, `set_node` and `set_image` refuse
+it with `newer_content`, in page scope and as passage targets.
+`delete_node`, `delete_block` and `move_block` still work, and so does
+`replace_block_markdown`, which replaces the block whole and refuses a
+block holding a node it can't keep.
 
 An aside (`PagesAside`) is a known container with no Markdown form. The
 editor makes one from pasted HTML (`<aside>`), and any synced client can

@@ -1,7 +1,7 @@
 import * as A from "@automerge/automerge/slim";
 import { textPath, updateSpansExactly } from "./richtext-format.mjs";
 import { quotableNodeType } from "./richtext-notices.mjs";
-import { markdownlessNode } from "./richtext-spans.mjs";
+import { markdownlessNode, refuseNewerBlock } from "./richtext-spans.mjs";
 import { nativeRead, readKind } from "./native-read.mjs";
 import {
   repairBlockMarkers,
@@ -225,6 +225,7 @@ function applyEdit(doc, op, trace, context) {
   if (!Object.hasOwn(doc.blocks, id)) throw Error("Block not found");
   if (op.op === "set_image") {
     validateImageChange(op);
+    refuseNewerBlock(doc, id, "set_image");
     const { index } = resolveImageId(doc, id, op.image_id);
     const spans = A.spans(doc, textPath(id));
     const attrs = { ...spans[index].value.attrs };

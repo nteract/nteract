@@ -50,6 +50,7 @@ import { codeHighlighting } from "./code-highlight.mjs";
 import {
   insertPlainLineBreak,
   wordgardCodeNewlines,
+  wordgardForeignMarks,
   wordgardListStarts,
 } from "./wordgard-binding.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
@@ -112,6 +113,7 @@ function nativeConfig({ currentPageId = () => null, currentProjectId = () => nul
     // A pasted URL becomes a bare link, as in Page blocks.
     bareLinkPaste(),
     wordgardCodeNewlines,
+    wordgardForeignMarks,
     wordgardListStarts,
     codeHighlighting,
     KeyBinding.of({ key: "Shift-Enter", run: insertPlainLineBreak }),

@@ -17,6 +17,10 @@ import {
   projectPage,
 } from "./page.mjs";
 import { projectReadChanges } from "./read-changes.mjs";
+import { guardPassageEdits } from "./passage-edits.mjs";
+import { surfaceRead } from "./page-surface-read.mjs";
+import { readMarkdown } from "./native-read.mjs";
+import { imageIds } from "./image-ids.mjs";
 import { commentBodyProjection } from "./comment-read.mjs";
 import { commentDraftsMarkdown, pageMarkdown } from "./markdown-export.mjs";
 import { blockPreview } from "./page-preview.mjs";
@@ -863,9 +867,9 @@ test("repair leaves a block with content from a newer build exactly as it is", (
   A.change(A.clone(doc), (draft) => assert.equal(repairBlockMarkers(draft, id), false));
 });
 
-const editPage = (doc, operations) =>
+const editPage = (doc, operations, operation = "edit_page") =>
   A.change(A.clone(doc), (draft) =>
-    applyPageOperation(draft, { operation: "edit_page", arguments: { operations } }),
+    applyPageOperation(draft, { operation, arguments: { operations } }),
   );
 // delete_block removes a block whatever it holds: the recovery when read_page
 // reports no node_id for a node a Markdown rewrite can't keep.
@@ -953,7 +957,7 @@ test("every reader draws a mark value this build can't read as plain text, and w
   }
 });
 
-test("set_node refuses to write a marker this build can't read", () => {
+test("set_node refuses a heading this build can't read, which replace_block_markdown rewrites", () => {
   const { doc, id } = pageWithSpans([
     {
       type: "block",
@@ -970,14 +974,17 @@ test("set_node refuses to write a marker this build can't read", () => {
         },
       }),
     );
-  // Keeping the heading keeps its level, which this build can't read.
-  assert.throws(() => setNode({ type: "heading" }), /can't read/);
-  // Setting the level, or retyping, leaves a marker it reads.
-  for (const input of [{ attrs: { level: 2 } }, { type: "paragraph" }]) {
-    const next = setNode(input);
-    assert.equal(readAll(next, id, JSON.stringify(input)).decoded.newer, false);
-    A.free(next);
-  }
+  // The heading can't be drawn, and the title after it is its content:
+  // decode draws the block only in part, so set_node refuses it whatever it
+  // would write. replace_block_markdown rewrites the block whole.
+  for (const input of [{ type: "heading" }, { attrs: { level: 2 } }, { type: "paragraph" }])
+    assert.throws(
+      () => setNode(input),
+      (error) => error.code === "newer_content",
+    );
+  const rewritten = rewriteOrRefuse(doc, id, "unreadable heading");
+  assert.equal(readAll(rewritten, id, "rewritten").decoded.newer, false);
+  A.free(rewritten);
   A.free(doc);
 });
 
@@ -1228,4 +1235,160 @@ test("no reader throws on any marker values Automerge stores, and the readers ag
   if (process.env.PAGES_FUZZ_SEED === undefined && process.env.PAGES_FUZZ_RUNS === undefined)
     for (const [check, count] of Object.entries(reached))
       assert.ok(count > 0, `${check}: ${JSON.stringify(reached)}`);
+});
+
+// No host write edits in place a block decode draws only in part because it
+// holds content from a newer build. Removing it, moving it and writing other
+// blocks still work.
+test("host tools refuse to edit a block with newer content they can't draw whole", () => {
+  const image = {
+    type: "block",
+    value: {
+      type: S("image"),
+      parents: [S("paragraph")],
+      attrs: { src: S(`/api/pages/${PAGE_ID}/assets/${"b".repeat(64)}`), alt: S("x") },
+      isEmbed: true,
+    },
+  };
+  const blocks = {
+    // Text after a node this build doesn't know is that node's content.
+    "unknown node": [
+      marker("paragraph", []),
+      { type: "text", value: "Hello" },
+      image,
+      marker("pages-future", []),
+      { type: "text", value: "after" },
+    ],
+    // A parent that isn't a name, which set_node used to write back.
+    "parent a map": [
+      marker("paragraph", []),
+      { type: "text", value: "Hello" },
+      image,
+      { type: "block", value: { ...marker("paragraph", []).value, parents: [SHADOWED()] } },
+      { type: "text", value: "word" },
+    ],
+  };
+  for (const [name, spans] of Object.entries(blocks)) {
+    freeing((keep) => {
+      const { doc, id } = pageWithSpans(spans);
+      keep(doc);
+      const decoded = decode(A.spans(doc, textPath(id)));
+      assert.ok(decoded.newer && decoded.lossy, name);
+      const stored = storedJSON(A.spans(doc, textPath(id)));
+      const refused = {
+        replace_match: { match_text: "Hello", replacement: "Bye" },
+        format_match: { match_text: "Hello", add: { strong: true } },
+        set_node: {
+          match_text: name === "unknown node" ? "Hello" : "word",
+          type: "heading",
+          attrs: { level: 2 },
+        },
+        set_image: { image_id: imageIds(doc, id)[0].image_id, alt: "y" },
+      };
+      for (const [op, input] of Object.entries(refused)) {
+        const operation = op === "set_image" ? "edit_page" : "patch_page";
+        assert.throws(
+          () => editPage(doc, [{ op, block_id: id, ...input }], operation),
+          (error) => error.code === "newer_content",
+          `${name}: ${op}`,
+        );
+        if (op !== "set_image")
+          assert.throws(
+            () => guardPassageEdits(doc, A.getHeads(doc), [{ op, block_id: id, ...input }]),
+            (error) => error.code === "newer_content",
+            `${name}: passage ${op}`,
+          );
+      }
+      // Moving the block and writing a new one leave its spans as stored.
+      for (const operations of [
+        [{ op: "move_block", block_id: id, after_block_id: null }],
+        [{ op: "insert_markdown", after_block_id: id, markdown: "new" }],
+      ]) {
+        const next = keep(editPage(doc, operations));
+        assert.equal(storedJSON(A.spans(next, textPath(id))), stored, name);
+      }
+      assert.equal(Object.hasOwn(keep(deleteBlock(doc, id)).blocks, id), false, name);
+    });
+  }
+});
+
+// A readable mark a host tool writes replaces a stored value of the same name
+// this build can't read, as the editor's does; removing it brings nothing
+// back.
+test("format_match over a stored mark value this build can't read replaces it", () => {
+  const link = JSON.stringify({ href: "https://example.org", title: null });
+  for (const [stored, input, written] of [
+    [{ strong: "yes", future: "x" }, { add: { strong: true } }, { strong: true, future: "x" }],
+    [{ strong: "yes" }, { remove: ["strong"] }, {}],
+    [{ highlight: "red" }, { add: { highlight: "yellow" } }, { highlight: "yellow" }],
+    [{ link: 7 }, { add: { link: { href: "https://example.org" } } }, { link }],
+  ]) {
+    const label = JSON.stringify([stored, input]);
+    freeing((keep) => {
+      const { doc, id } = pageWithSpans([
+        marker("paragraph", []),
+        { type: "text", value: "word", marks: stored },
+      ]);
+      keep(doc);
+      const next = keep(
+        editPage(
+          doc,
+          [{ op: "format_match", block_id: id, match_text: "word", ...input }],
+          "patch_page",
+        ),
+      );
+      assert.deepEqual(A.spans(next, textPath(id))[1].marks ?? {}, written, label);
+      readAll(next, id, label);
+    });
+  }
+});
+
+// The card, preview and title warning read through surfaceRead, which
+// refuses some shapes on purpose (budgets, a leaf nested where text follows)
+// and its callers fall back. A marker or mark value this build can't read is
+// not one of them: it reads as the agent read draws it, a notice between the
+// text around it, or plain text.
+test("surfaceRead draws a marker or mark value this build can't read as the agent read does", () => {
+  const surface = (doc, id) => readMarkdown(surfaceRead(doc.blocks[id]).nodes);
+  const unreadableDataframe = () => ({
+    type: S("dataframe"),
+    parents: [],
+    attrs: { src: S("nope") },
+    isEmbed: false,
+  });
+  for (const [name, value] of [
+    ...Object.entries(UNREADABLE_MARKERS),
+    ["dataframe it can't read", unreadableDataframe],
+  ]) {
+    freeing((keep) => {
+      const stored = value();
+      const { doc, id } = pageWithSpans([
+        marker("paragraph", []),
+        { type: "text", value: "a" },
+        { type: "block", value: stored },
+        ...(stored.isEmbed ? [] : [marker("paragraph", [])]),
+        { type: "text", value: "word" },
+      ]);
+      keep(doc);
+      const read = surface(doc, id);
+      // A name that isn't one is a node this build doesn't know, which the
+      // surface read names with its one generic wrapper.
+      const expected = blockMarkdown(doc.blocks[id], PAGE_ID).replace(
+        "[Unsupported node\\]",
+        "[Unsupported node: pages-preview-unknown\\]",
+      );
+      assert.equal(read, expected, name);
+      assert.match(read, /^a.*Unsupported node.*word$/s, name);
+    });
+  }
+  for (const [name, marks] of Object.entries(UNREADABLE_MARKS)) {
+    freeing((keep) => {
+      const { doc, id } = pageWithSpans([
+        marker("paragraph", []),
+        { type: "text", value: "click", marks },
+      ]);
+      keep(doc);
+      assert.equal(surface(doc, id), "click", name);
+    });
+  }
 });

@@ -110,15 +110,27 @@ function surfaceNodes(input, all) {
       spans.push(span);
       continue;
     }
-    // Mutable marker fields have a defined legacy read spelling. These copies
-    // are projection inputs only; no Automerge bytes or IDs are rewritten.
+    // Mutable marker fields have a defined legacy read spelling: a type
+    // stored as a mutable string reads as a paragraph, and parents with one
+    // among them as none. A type or parent that is no name at all (a map,
+    // nothing) reads as one this build doesn't know, as in the agent read.
+    // These copies are projection inputs only; no Automerge bytes or IDs are
+    // rewritten.
     const value = span.value;
+    const legacy = (raw) => typeof raw === "string";
     let type =
-      value.type instanceof A.ImmutableString ? value.type : new A.ImmutableString("paragraph");
-    let parents =
-      Array.isArray(value.parents) && value.parents.every((p) => p instanceof A.ImmutableString)
+      value.type instanceof A.ImmutableString
+        ? value.type
+        : legacy(value.type)
+          ? new A.ImmutableString("paragraph")
+          : unknownWrapper;
+    let parents = !Array.isArray(value.parents)
+      ? []
+      : value.parents.every((p) => p instanceof A.ImmutableString)
         ? value.parents
-        : [];
+        : value.parents.some((p) => !legacy(p) && !(p instanceof A.ImmutableString))
+          ? value.parents.map((p) => (p instanceof A.ImmutableString ? p : unknownWrapper))
+          : [];
     if (all && markerParents(value).some((parent) => !nodeType(parent)))
       parents = value.parents
         .filter((parent) => nodeType(parent))
@@ -128,9 +140,6 @@ function surfaceNodes(input, all) {
       name = String(type),
       def = nodeType(name);
     let isEmbed = !!value.isEmbed;
-    if (name === "image" && attrs.src === undefined) throw Error("Unreadable image attributes");
-    if (name === "dataframe" && (attrs?.src === undefined || attrs?.media_type === undefined))
-      throw Error("Unreadable dataframe attributes");
     if (isEmbed) {
       if (def && def.kind !== "embed") {
         if (!container(context.at(-1))) throw Error("Unreadable embedded block");

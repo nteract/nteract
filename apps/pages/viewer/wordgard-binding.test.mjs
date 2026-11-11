@@ -59,6 +59,7 @@ import {
   createWordgardBinding,
   remoteEditorPosition,
   wordgardCodeNewlines,
+  wordgardForeignMarks,
   wordgardHistory,
   wordgardListStarts,
 } from "./wordgard-binding.mjs";
@@ -588,6 +589,7 @@ function editorFor(replica, id) {
     config: [
       GardState.schemaElement.of(schema.elements),
       wordgardCodeNewlines,
+      wordgardForeignMarks,
       wordgardListStarts,
       undoHistory.extension,
     ],
@@ -1291,3 +1293,49 @@ function markedOnly() {
   assert.deepEqual(markerTypes(replica, "one"), ["paragraph"]);
   editor.binding.destroy();
 }
+
+// A readable mark replaces a stored value of the same name this build can't
+// read: the foreign mark loses that entry, keeps its others, and goes when it
+// has none left. Removing the readable mark brings nothing back.
+function foreignFixture(marks) {
+  const replica = fixture("x");
+  replica.change((d) =>
+    updateSpansExactly(d, textPath("one"), [
+      {
+        type: "block",
+        value: { type: new A.ImmutableString("paragraph"), parents: [], attrs: {}, isEmbed: false },
+      },
+      { type: "text", value: "word", marks },
+    ]),
+  );
+  return replica;
+}
+const storedMarks = (replica) => nativeSpans(replica, "one")[1].marks;
+
+test("a readable mark applied over a stored value of the same name replaces it", () => {
+  const link = { href: "https://example.org", title: null };
+  for (const [name, stored, mark, written] of [
+    ["bold", { strong: "yes", future: "x" }, Strong, { strong: true, future: "x" }],
+    ["highlight", { highlight: "red" }, PagesHighlight.of("yellow"), { highlight: "yellow" }],
+    ["link", { link: 7 }, PagesLink.of(link), { link: JSON.stringify(link) }],
+  ]) {
+    const replica = foreignFixture(stored),
+      editor = editorFor(replica, "one");
+    editor.dispatch({ selection: { anchor: 1, head: 5 } });
+    assert.equal(editor.run(toggleMark, mark), true, name);
+    assertInSync(editor, replica, "one", name);
+    assert.deepEqual(storedMarks(replica), written, name);
+    editor.binding.destroy();
+  }
+});
+
+test("removing bold from text whose stored strong this build couldn't read stores no strong", () => {
+  const replica = foreignFixture({ strong: "yes" }),
+    editor = editorFor(replica, "one");
+  editor.dispatch({ selection: { anchor: 1, head: 5 } });
+  assert.equal(editor.run(toggleMark, Strong), true);
+  assert.equal(editor.run(toggleMark, Strong), true);
+  assertInSync(editor, replica, "one", "bold off");
+  assert.deepEqual(storedMarks(replica) ?? {}, {});
+  editor.binding.destroy();
+});
