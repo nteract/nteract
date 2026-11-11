@@ -15,6 +15,8 @@ import {
   readableFormats,
   recordDocumentFormats,
   recordFormatsWritten,
+  MEMBER_FORMATS,
+  MEMBER_TYPES,
 } from "./document-types.mjs";
 
 test("the registry names Page format 3 and comments format 2", () => {
@@ -76,7 +78,29 @@ test("a record without documentFormats names no formats and isn't opened", () =>
   );
 });
 
-test("a record names exactly the registered types at their written formats", () => {
+test("new Pages are stamped with the member types, which are every type today", () => {
+  assert.deepEqual(MEMBER_TYPES, ["pages.page", "pages.comments"]);
+  assert.deepEqual(MEMBER_FORMATS, { "pages.page": 3, "pages.comments": 2 });
+  assert.deepEqual(MEMBER_FORMATS, WRITTEN_FORMATS);
+  assert.ok(Object.isFrozen(MEMBER_TYPES) && Object.isFrozen(MEMBER_FORMATS));
+});
+
+test("registering a type a Page may hold leaves existing records open", () => {
+  const written = { ...WRITTEN_FORMATS, "pages.chart": 1 };
+  const members = MEMBER_TYPES;
+  const existing = { documentFormats: { ...MEMBER_FORMATS } };
+  assert.equal(recordFormatsWritten(existing, written, members), true);
+  const holding = { documentFormats: { ...MEMBER_FORMATS, "pages.chart": 1 } };
+  assert.equal(recordFormatsWritten(holding, written, members), true);
+  // The optional type is still held to the format this build writes.
+  const stale = { documentFormats: { ...MEMBER_FORMATS, "pages.chart": 2 } };
+  assert.equal(recordFormatsWritten(stale, written, members), false);
+  // A member is never optional.
+  const noComments = { documentFormats: { "pages.page": 3, "pages.chart": 1 } };
+  assert.equal(recordFormatsWritten(noComments, written, members), false);
+});
+
+test("a record names every member and only registered types at their written formats", () => {
   for (const documentFormats of [
     { "pages.page": 3 },
     { "pages.comments": 2 },

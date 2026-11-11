@@ -34,7 +34,7 @@ import { applyComment, commentsMigrated } from "../model/comments.mjs";
 import { guardCommentIntent, passageComment } from "../model/comment-guard.mjs";
 import { commentsDocUuid, commentsDocumentId } from "./comments-store.mjs";
 import {
-  WRITTEN_FORMATS,
+  MEMBER_FORMATS,
   documentFormatsUnsupported,
   formatPairs,
   missingFormats,
@@ -5802,7 +5802,7 @@ export class Page {
               comments_doc: await commentsDocUuid(args.page_id),
               // The format of each document type the Page holds. The comments
               // document is created at boot, in the format named here.
-              documentFormats: { ...WRITTEN_FORMATS },
+              documentFormats: { ...MEMBER_FORMATS },
               deleted: false,
               // Location lives in the owner's Catalog; the receipt there adds it.
               // The first block's id and its nodes' ids, so the first edit
@@ -6974,7 +6974,7 @@ export class Page {
             documentId: args.document_id,
             comments_doc: await commentsDocUuid(args.page_id),
             // readRegistration admitted the draft in the format this build writes.
-            documentFormats: { ...WRITTEN_FORMATS },
+            documentFormats: { ...MEMBER_FORMATS },
             deleted: false,
             registration: digest,
             createdReceipt: {
