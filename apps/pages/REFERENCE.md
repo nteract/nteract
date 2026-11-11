@@ -295,7 +295,9 @@ catalog but never bypass Page permissions.
 
 Browser creation allocates the Page and history locally, persists them to
 IndexedDB, and opens the editor while authenticated registration proceeds.
-Retries reuse the same ID, immutable bootstrap, key, and server retry token.
+A registration whose Page another creation request already made is
+`409 creation_conflict`; the browser reconciles the Page and registers under a
+fresh nonce.
 Account-scoped checkpoints let other tabs recover pending work; each tab has its
 own native signing identity/database, protected by Web Locks. Checkpoints merge
 Automerge history, and local deletion tombstones prevent stale tabs from reviving
@@ -2792,7 +2794,17 @@ sends it as `expected_revision`; the Page applies the request only at that
 revision. A retry of an older request returns its stored receipt, or
 `{superseded: true, applied: false, state}` once that receipt has been pruned,
 and never applies again. A superseded result was not applied; callers read the
-current state before acting. The Page keeps its newest 256 receipts. A
+current state before acting. The Page keeps its newest 256 receipts, each
+stamped with the journal time; before it prunes older ones it raises the
+receipt horizon to the newest pruned time, so a `delete_page` that names a
+`revision` whose receipt is gone meets the fence. A guarded Trash whose
+revision the host doesn't hold, or holds at or before the horizon, is
+`409 resync_required`; one whose revision is known but not current is
+`409 stale_revision`. A browser's Move to Trash sends the Automerge heads it
+shows as `base_heads` in place of a revision, and a peer's edit since then
+is `409 stale_revision`. Only a browser session (cookie) may send
+`base_heads`; from any other credential it is `400 invalid_arguments`
+([tool-arguments.mjs](worker/tool-arguments.mjs)). A
 transition is committed with its receipt in one write and installed in memory
 only after `sync()`; if that barrier fails, the next request finishes the
 transition before doing anything else, so a receipt never replays for an
@@ -3452,7 +3464,10 @@ Each document's host keeps a counter, its latest handle and a table:
 
 `<doc>` is `page` or `comments`. Minting writes all three in one put, and a
 handle reaches a caller only after a sync barrier. Heads that equal the latest
-handle's reuse it. The table keeps the newest 2,000 handles per document and
+handle's reuse it while that handle is newer than the receipt horizon; otherwise
+the host mints the next number, so a read never hands out a handle the fence
+refuses. A new handle's `at` is the journal time and at least the horizon plus
+one. The table keeps the newest 2,000 handles per document and
 never drops the latest. A write mints its handles in the same put as its
 pending journal entry, so the receipt and its handles exist together. A read
 that meets heads with no handle mints one: `read_page`, `list_page_comments`
@@ -3478,20 +3493,22 @@ Forgetting a receipt is allowed; running an uncertain request again on the
 strength of a forgotten one is not. Before it deletes receipts, the journal
 raises the horizon (`host/receipt-horizon`) to the newest `recordedAt` among
 them and makes it durable. The horizon is never less than the clock minus seven
-days. A write that names a revision is fenced: unless that revision is the
-document's latest, the handle minted after it must be newer than the horizon.
-Otherwise a receipt for a write made against it may be gone, so the host
-refuses with `409 resync_required` rather than guess whether it is a retry.
+days. A write that names a revision is fenced: when no receipt answers it, a
+handle the host doesn't hold, or one minted at or before the horizon, is
+`409 resync_required`. A receipt for a write made against that handle may be
+gone, so the host refuses rather than guess whether it is a retry. Receipt
+replay comes first. The fence covers `edit_page` in both scopes, a passage
+comment and `delete_page` with `revision`; it has no exemption for the
+latest handle and doesn't look at the handle after it.
 
 A write that names no revision has no fence. `create_page`, `create_project`,
 `move_page`, `restore_page`, `delete_page` without its optional `revision`, and
 comment writes other than a passage comment run again as new requests once
 their receipt is gone. Writes that carry an `expected_revision` (sharing,
-`update_project`) still meet that check. A passage comment names a revision,
-but comments never move it: while the Page hasn't changed, that revision stays
-the latest and is exempt, so a late retry adds the comment again. A client
-that lost a response reads back and reconciles before it resends past the
-receipt's lifetime. Browser edits consume no receipts. Catalog deletion
+`update_project`) still meet that check. A retry returns its receipt while the
+host still holds it: up to seven days, and capacity can shorten that. A client
+that lost the response to a write without a revision reads, then decides
+whether to send it again. Browser edits consume no receipts. Catalog deletion
 tombstones remain permanent; Trash writes none. See the
 [operation journal](worker/operation-journal.mjs) and its tests
 ([unit](worker/operation-journal.test.mjs), [capacity](worker/receipt-capacity.test.mjs)).

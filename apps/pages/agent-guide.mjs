@@ -1078,14 +1078,15 @@ so another account's identical nonce is another request. Resend the same nonce
 and payload to retry; a different payload under a nonce you already used is
 nonce_conflict.
 
-A receipt is kept for at most seven days, and fewer on a Page with many writes.
-After that, a retry of a write that names a revision answers resync_required
-when the host can no longer tell it from a new request: read again and decide
-from what the Page holds. A write that names no revision has no fence: move_page,
+A retry returns its receipt while the host still holds it: up to seven days,
+and capacity can shorten that on a Page with many writes. Once a receipt may be
+gone, a write that names a revision answers resync_required: read again and
+decide from what the Page holds. That covers edit_page, a passage comment and
+delete_page with revision; a read never hands out a revision the host would
+refuse this way. A write that names no revision has no fence: move_page,
 restore_page, create_page, delete_page without revision, and comment actions
-without one run again as new requests once their receipt is gone. Comments never
-move the Page's revision, so a passage comment is fenced only once the Page
-itself has changed since its revision.
+without one run again as new requests once their receipt is gone. When such a
+write may or may not have landed, read, then decide.
 
 A targeted edit:
 
@@ -1250,13 +1251,15 @@ current_revision: reconsider the edit, then resend with that revision and a new
 nonce, or read again when you need the changed text. After a timeout or unknown
 outcome, retry the exact request body, nonce, account, and driver label.
 
-Receipts are kept for at most seven days, the newest 1,000 per Page or catalog.
-An exact retry inside that window replays its receipt. Past it, a write that
-names a revision the Page has since moved past answers resync_required and does
-not execute: read the current Page to reconcile its outcome. A write that names
-no revision has no fence, and its late retry is a new request. Pending admitted
-edits remain recoverable with their original request. Never answer an uncertain
-result by resending under a new nonce; read back and reconcile first.
+An exact retry returns its receipt while the host still holds it. Receipts
+are kept up to seven days, and capacity (the newest 1,000 per Page or catalog)
+can shorten that. Past it, a write that names a revision answers
+resync_required and does not execute: read the current Page to reconcile its
+outcome. A write that names no revision may or may not have landed, and its
+late retry is a new request: read, then decide whether to send it again.
+Pending admitted edits remain recoverable with their original request. Never
+answer an uncertain result by resending under a new nonce; read back and
+reconcile first.
 
 For insert_markdown, insert_image, and move_block, after_block_id is the preceding block's ID;
 null places the block first, and omission appends it. For a comment, use action

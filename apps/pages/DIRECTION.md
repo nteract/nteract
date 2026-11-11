@@ -103,8 +103,9 @@ Comments live in their own document and anchor to the Page with cursors.
    - A write carries a short nonce and no retry token. The host keeps the
      receipt under the account, the document and the nonce, and a retry of
      the same request returns that receipt. The handle's age bounds the retry
-     window: a write that names a handle older than the receipts the host
-     keeps is refused with `resync_required`. Done: one receipt lane kept for
+     window: a write that names a handle minted at or before the receipt
+     horizon is refused with `resync_required`, and a read never hands one
+     out. Done: one receipt lane kept for
      seven days, with a durable horizon behind the fence.
    - Writes with no revision (`create_page`, move, Trash, restore) carry the
      nonce alone. After its receipt is gone, a retried `create_page` can make
