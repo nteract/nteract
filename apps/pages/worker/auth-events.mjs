@@ -1,5 +1,6 @@
 /** Auth events: one structured JSON line per sign-in, sign-out, OAuth grant
- * step, API key acceptance and Project invitation change. Telemetry is the
+ * step, API key acceptance, Kilo agent token exchange and Project invitation
+ * change. Telemetry is the
  * durable record of who signed in or connected an agent; the auth tables only
  * hold live state, and expired or revoked rows are deleted.
  *
@@ -41,6 +42,8 @@ export const AUTH_ACTIONS = Object.freeze([
   "oauth.code_replayed",
   "oauth.refresh_reused",
   "api_key.accepted",
+  "kilo_token.accepted",
+  "kilo_token.refused",
   "invitation.created",
   "invitation.accepted",
   "invitation.revoked",
@@ -49,7 +52,7 @@ export const AUTH_ACTIONS = Object.freeze([
  * out everywhere in Pages; `rfc7009` is a client's revocation request;
  * `system` is a replay or reuse defence. */
 export const REVOKED_BY = Object.freeze(["user", "rfc7009", "system"]);
-const CREDENTIALS = ["oidc", "oauth", "api-key"];
+const CREDENTIALS = ["oidc", "oauth", "api-key", "kilo-token"];
 const GRANT_TYPES = ["authorization_code", "refresh_token"];
 const SCOPES = new Set(["pages:read", "pages:write", "pages:share", "offline_access"]);
 const API_KEY_SCOPES = ["editor", "viewer"];

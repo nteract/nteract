@@ -68,11 +68,17 @@ test("GET llms.txt is readable without authentication and explains the supported
     guide.indexOf("## Error codes"),
     guide.indexOf("## Connect your agent"),
   );
-  // api_keys_unsupported belongs to a deployment with no API keys; the
-  // Kilo guide's error list holds it (test/identity-provider.test.mjs).
+  // api_keys_unsupported and the Kilo agent token's refusals belong to a
+  // Kilo deployment; the Kilo guide's error list holds them.
+  const kiloOnly = [
+    "api_keys_unsupported",
+    "invalid_kilo_token",
+    "account_unavailable",
+    "sign_in_unavailable",
+  ];
   for (const code of new Set([
-    ...CLIENT_ERROR_CODES.filter((code) => code !== "api_keys_unsupported"),
-    ...RETRYABLE_SERVER_CODES,
+    ...CLIENT_ERROR_CODES.filter((code) => !kiloOnly.includes(code)),
+    ...RETRYABLE_SERVER_CODES.filter((code) => !kiloOnly.includes(code)),
     ...HOST_REFUSAL_CODES,
     ...Object.keys(MOVE_STATUS),
     ...MCP_ERROR_CODES,
@@ -481,7 +487,10 @@ test("the guide for a deployment with no API keys lists every client error code 
   );
   // invalid_api_key is the keyed provider's refusal; the Kilo list holds
   // api_keys_unsupported in its place.
-  for (const code of CLIENT_ERROR_CODES.filter((code) => code !== "invalid_api_key"))
+  for (const code of [
+    ...CLIENT_ERROR_CODES.filter((code) => code !== "invalid_api_key"),
+    "sign_in_unavailable",
+  ])
     assert.match(codeList, new RegExp(`\\b${code}\\b`), code);
   assert.doesNotMatch(codeList, /invalid_api_key/);
   // Every top-level section is in both variants, in the same order.

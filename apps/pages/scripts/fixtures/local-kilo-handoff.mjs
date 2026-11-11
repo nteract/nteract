@@ -1,9 +1,12 @@
 // Node-only loopback fake of the two Kilo routes Pages signs in through
-// (worker/kilo-exchange.mjs): the page a browser is sent to, and the code
-// exchange. It holds a list of Pages deployments by audience, issues codes
-// that expire and are good only for the audience and state they were issued
-// for, and checks the exchange secret. Like Kilo's, a code is not single use.
-import { randomBytes } from "node:crypto";
+// (worker/kilo-exchange.mjs): the page a browser is sent to, and the
+// exchange of a code or an agent token. It holds a list of Pages deployments
+// by audience, issues codes that expire and are good only for the audience
+// and state they were issued for, mints agent tokens signed with a key only it
+// holds, and checks the exchange secret. Like Kilo's, a code is not single
+// use, and the exchange body is strict: a code with its audience and state,
+// or a token with its audience.
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 
 const CODE_SECONDS = 60;
@@ -17,6 +20,23 @@ const send = (res, status, value) =>
 export async function startLocalKiloHandoff({ deployments, secret, port = 0, now = Date.now }) {
   const codes = new Map();
   const exchanges = [];
+  // Accounts Kilo can mint an agent token for, by id, and the key it signs
+  // them with. Pages never sees the key.
+  const accounts = new Map();
+  const signingKey = randomBytes(32);
+  const sign = (text) => createHmac("sha256", signingKey).update(text).digest("base64url");
+  const verifyToken = (token) => {
+    const parts = typeof token === "string" ? token.split(".") : [];
+    if (parts.length !== 3) return null;
+    const expected = Buffer.from(sign(`${parts[0]}.${parts[1]}`));
+    const given = Buffer.from(parts[2]);
+    if (expected.length !== given.length || !timingSafeEqual(expected, given)) return null;
+    try {
+      return JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+    } catch {
+      return null;
+    }
+  };
   let account = null;
   let override = null;
   const server = createServer(async (req, res) => {
@@ -43,18 +63,54 @@ export async function startLocalKiloHandoff({ deployments, secret, port = 0, now
       } catch {
         return send(res, 400, { error: "bad_json" });
       }
-      exchanges.push({
-        authorization: req.headers.authorization,
-        audience: body?.audience,
-        state: body?.state,
-      });
+      exchanges.push(
+        body && typeof body === "object" && "token" in body
+          ? {
+              authorization: req.headers.authorization,
+              fields: Object.keys(body).sort(),
+              audience: body.audience,
+              token: body.token,
+            }
+          : {
+              authorization: req.headers.authorization,
+              audience: body?.audience,
+              state: body?.state,
+            },
+      );
       if (override) {
         const answer = override;
         override = null;
         return answer(req, res);
       }
-      if (req.headers.authorization !== `Bearer ${secret}`)
+      if (
+        !body ||
+        typeof body !== "object" ||
+        typeof body.audience !== "string" ||
+        "token" in body === "code" in body ||
+        Object.keys(body).some(
+          (key) =>
+            !("token" in body ? ["token", "audience"] : ["code", "audience", "state"]).includes(
+              key,
+            ),
+        )
+      )
+        return send(res, 400, { error: "invalid_request" });
+      if (
+        req.headers.authorization !== `Bearer ${secret}` ||
+        !Object.hasOwn(deployments, body.audience)
+      )
         return send(res, 401, { error: "invalid_client" });
+      if ("token" in body) {
+        const claims = verifyToken(body.token);
+        if (!claims || claims.aud !== body.audience || claims.exp * 1000 <= now())
+          return send(res, 400, { error: "invalid_token" });
+        const holder = accounts.get(claims.kiloUserId);
+        if (!holder || holder.blocked) return send(res, 403, { error: "account_unavailable" });
+        return send(res, 200, {
+          user: { id: holder.id, name: holder.name, email: holder.email },
+          organizations: [],
+        });
+      }
       const issued = codes.get(body?.code);
       if (
         !issued ||
@@ -81,6 +137,31 @@ export async function startLocalKiloHandoff({ deployments, secret, port = 0, now
     origin: `http://127.0.0.1:${server.address().port}`,
     signIn(next) {
       account = next;
+    },
+    /** What Kilo's `POST /api/auth/resource-token` gives an agent of `holder`:
+     * an HS256 token for `audience`, live for `seconds`. `claims` overrides
+     * any claim. Later calls with the same id replace the account, so a test
+     * can block it. */
+    mintToken(holder, { audience, seconds = 300, claims = {} } = {}) {
+      accounts.set(holder.id, holder);
+      const issuedAt = Math.floor(now() / 1000);
+      const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
+      const unsigned = `${encode({ alg: "HS256", typ: "JWT" })}.${encode({
+        version: 1,
+        kiloUserId: holder.id,
+        env: "test",
+        aud: audience,
+        iat: issuedAt,
+        exp: issuedAt + seconds,
+        tokenPurpose: "delegated-workload",
+        credentialExchange: false,
+        ...claims,
+      })}`;
+      return `${unsigned}.${sign(unsigned)}`;
+    },
+    block(id) {
+      const holder = accounts.get(id);
+      if (holder) accounts.set(id, { ...holder, blocked: true });
     },
     respond(answer) {
       override = answer;

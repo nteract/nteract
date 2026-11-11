@@ -1030,6 +1030,41 @@ An OAuth client uploads a local image through `create_page_asset_upload`, whose
 Page-scoped capability names its grant and stops working when the grant is
 revoked (see [Upload capabilities](#upload-capabilities)).
 
+A Kilo deployment also accepts a Kilo agent token as a bearer, for Kilo's agent
+harness that has a Kilo session and no browser
+([worker/kilo-token.mjs](worker/kilo-token.mjs); the contract is in
+[DEPLOYMENT.md](DEPLOYMENT.md#kilo-agent-tokens)). A bearer is one when it is a
+JWT whose unverified `aud` is `PAGES_KILO_AUDIENCE` and whose `tokenPurpose` is
+`delegated-workload`; the prefixes Pages issues (`pages_`, `pu1.`) are tested
+first, a Kilo deployment has no API keys, and a deployment without Kilo sign-in
+never reads the claims. Pages trades the token at Kilo's
+`POST /api/pages-auth/exchange` with `{token, audience}` and the deployment's
+exchange secret, the call the browser sign-in makes with a code, so the person
+is the same principal either way. It needs no settings beyond the three
+`PAGES_KILO_*` ones. The token reaches `/mcp`, `/api/tools` and `GET /whoami`
+(and the internal hops they forward to) as the person, with `credentialKind`
+`kilo-token` and the driver an API key records; other routes refuse it with
+403 before Kilo is asked. Kilo's refusals become 401 `invalid_kilo_token`, 403
+`account_unavailable` or 503 `sign_in_unavailable` (`retryable: true`); the
+caller never sees Kilo's body. Each isolate leases an accepted token by its
+SHA-256 until the earliest of its `exp` less 30 seconds, its whole lifetime
+after the exchange was sent, and 15 minutes
+([worker/kilo-token-lease.mjs](worker/kilo-token-lease.mjs)). One token's
+exchanges run one at a time, so concurrent requests with a token that gets a
+lease share one exchange. A token Kilo accepts without a lease authorizes its
+own request for 30 seconds and is exchanged by each request. Only Kilo's
+explicit refusal of a token (`400 invalid_token`, `403 account_unavailable`)
+answers repeats of it, for five minutes or 30 seconds; every other answer is
+a 503 and is never kept. An isolate starts no exchange while 8 are in flight,
+counting each from its start until it answers (15 seconds at most), even
+after its request gave up, and keeps 1,000 tokens, never by dropping a live
+lease: past either bound a new token gets 503 without an exchange. An account
+Kilo blocks keeps working until its lease ends. A lease can outlast the token
+by the clock difference between Pages and Kilo, never by more than the
+token's whole lifetime. An upload capability issued under the token ends at
+the earlier of that identity's validity (the lease end, or 30 seconds for an
+unleased token) and the upload's own lifetime.
+
 The account menu's Connected agents dialog lists the account's live OAuth
 connections (`GET /api/auth/grants`: client name, scope, issue and expiry
 times, and an opaque per-grant handle) and disconnects one

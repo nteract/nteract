@@ -58,7 +58,7 @@ const PURPOSE = "pages-asset-upload-v1";
 const PREFIX = "pu1";
 /** Credentials that can issue a capability. A browser session uploads with
  * its own cookie, and a capability can't issue another. */
-const ISSUING_KINDS = new Set(["api-key", "oauth"]);
+const ISSUING_KINDS = new Set(["api-key", "oauth", "kilo-token"]);
 const ARGUMENTS = new Set(["page_id", "content_type", "size"]);
 const EXTENSIONS = {
   "image/png": "png",
@@ -218,7 +218,12 @@ export async function issueAssetUpload(
     throw new HttpError(403, "This credential can't issue upload URLs", "access_denied");
   if (kind === "oauth" && (typeof identity.grantId !== "string" || !identity.grantId))
     throw Error("An OAuth identity is missing its grant");
-  const expiresAt = now + ASSET_UPLOAD_TTL_MS;
+  // A Kilo agent token's capability ends with the token's lease, so it can't
+  // outlast the check Kilo made of the token.
+  const expiresAt =
+    kind === "kilo-token"
+      ? Math.min(now + ASSET_UPLOAD_TTL_MS, identity.expiresAt)
+      : now + ASSET_UPLOAD_TTL_MS;
   const token = await signCapability(storage, {
     purpose: PURPOSE,
     prefix: PREFIX,
