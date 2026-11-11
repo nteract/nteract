@@ -2353,7 +2353,11 @@ for cached clients.
 `read_page_changes({page_id,since_revision})` returns a complete net delta at one
 captured revision: changed native nodes, address-only deletions, title changes,
 and compact comment changes. Stable native identity avoids treating later
-paragraphs as changed when an earlier one is inserted. It is not an event/audit
+paragraphs as changed when an earlier one is inserted. Inserted and moved
+nodes and blocks carry `before_node_id`, the id of what follows them at the
+current revision, and a deleted node the one that followed it at the
+baseline (null when last, or when what follows has no id), so a caller
+rebuilds order from its baseline and the delta. It is not an event/audit
 log and does not supply historical person/client attribution or deleted message
 bodies. A revision the host no longer knows returns `resync_required`; oversized
 deltas return `changes_budget_exceeded`, never partial success. Advance a saved

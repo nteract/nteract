@@ -1034,10 +1034,14 @@ every current thread with comments_snapshot: true; replace what you hold instead
 of merging. A changed node has its node_id, its block's id as block, and
 scope:node. Updated/inserted nodes include current Markdown, heading_path and the
 same typed fields an outline entry carries. A deleted node has only its node_id,
-block, type and before_node_id (the node after it at the baseline, or null),
-never deleted body text. Use these current addresses for a focused read or replace_match.
+block and type, never deleted body text. Each entry's before_node_id places
+it: an inserted or moved node's is the node after it now, a deleted node's
+the node after it at the baseline; null means last, or that the node after it
+has no node_id. Use these current addresses for a focused read or replace_match.
 If a whole block is inserted, deleted, moved or cannot be indexed, its change
-has scope:block and the block's node_id; read its outline to choose a node.
+has scope:block and the block's node_id; an inserted or moved block also has
+before_node_id, the block after it now (null when last). Read its outline to
+choose a node.
 
 This is a complete net-state comparison, not an event or audit log. An edit that
 was undone can leave no net difference. Historical attribution is unavailable:
