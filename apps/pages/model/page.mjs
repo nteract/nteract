@@ -120,7 +120,7 @@ export function validateImageChange(op) {
     );
 }
 const NODE_INSERTION_USAGE =
-  'insert_node requires node: {type: "dataframe", attrs: {asset_id, title?, media_type?}} and optional after_block_id';
+  'insert_node requires node: {type: "dataframe", attrs: {asset_id, title?, media_type?, chart?}} and optional after_block_id';
 const only = (value, keys) =>
   !!value &&
   typeof value === "object" &&
@@ -134,7 +134,7 @@ export function validateNodeInsertion(op) {
     !only(op, ["op", "type", "node", "after_block_id"]) ||
     !only(node, ["type", "attrs"]) ||
     node.type !== DATAFRAME_BLOCK ||
-    !only(node.attrs, ["asset_id", "media_type", "title"]) ||
+    !only(node.attrs, ["asset_id", "media_type", "title", "chart"]) ||
     !validAssetId(node.attrs.asset_id) ||
     (op.after_block_id !== undefined &&
       op.after_block_id !== null &&

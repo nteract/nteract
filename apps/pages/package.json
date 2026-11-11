@@ -37,6 +37,9 @@
     "rxjs": "^7.8.2",
     "typescript": "6.0.3",
     "use-sync-external-store": "1.6.0",
+    "vega": "6.4.0",
+    "vega-interpreter": "2.3.2",
+    "vega-lite": "6.5.0",
     "wordgard": "0.6.2"
   },
   "devDependencies": {

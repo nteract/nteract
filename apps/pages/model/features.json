@@ -32,6 +32,11 @@
     {
       "id": "comment-agent",
       "description": "A comment message's author may carry agent: { name?, model? }, what the writing client said about itself. A build without this feature would not validate the field, so it opens the comments read-only."
+    },
+    {
+      "id": "dataframe-chart",
+      "description": "Local evaluation only: a dataframe node with a chart attr, a Vega-Lite spec as a JSON string. The viewer draws the node's dataset as that chart instead of a table.",
+      "attributes": [{ "block": "dataframe", "name": "chart" }]
     }
   ]
 }

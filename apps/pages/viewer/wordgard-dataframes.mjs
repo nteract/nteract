@@ -20,23 +20,29 @@ export const DATAFRAME_RENDERERS = Object.freeze({
   [PARQUET_MEDIA_TYPE]: () => import("./sift-table.jsx"),
 });
 
+/** The renderer for a dataframe that carries a chart spec: its dataset drawn
+ * as a Vega-Lite chart instead of a table. */
+export const CHART_RENDERER = () => import("./dataframe-chart.mjs");
+
 /**
  * The table's frame: a title row above the canvas. The title row and the
  * frame's edges belong to the node: a click there selects the table the way
  * a click selects an image (Wordgard's native atom selection). The canvas
  * belongs to Sift.
  */
-export function dataframeFrame({ title, media_type }) {
+export function dataframeFrame({ title, media_type, chart }) {
+  const noun = chart ? "Chart" : "Table";
   const dom = document.createElement("section");
   dom.className = "wordgard-widget wordgard-dataframe-table";
+  dom.classList.toggle("is-chart", !!chart);
   dom.dataset.mediaType = media_type;
-  dom.setAttribute("aria-label", title ?? "Table");
-  dom.setAttribute("aria-roledescription", "table");
+  dom.setAttribute("aria-label", title ?? noun);
+  dom.setAttribute("aria-roledescription", chart ? "chart" : "table");
   const header = dom.appendChild(document.createElement("div"));
   header.className = "wordgard-dataframe-header";
   const caption = header.appendChild(document.createElement("div"));
   caption.className = "wordgard-dataframe-title";
-  caption.textContent = title ?? "Table";
+  caption.textContent = title ?? noun;
   caption.classList.toggle("is-untitled", !title);
   // The status sits over the canvas, not above it, so hiding it when the
   // table draws doesn't move anything.
@@ -52,7 +58,8 @@ export function dataframeFrame({ title, media_type }) {
   const announce = dom.appendChild(document.createElement("p"));
   announce.className = "sr-only";
   announce.setAttribute("role", "status");
-  const load = DATAFRAME_RENDERERS[media_type];
+  const table = DATAFRAME_RENDERERS[media_type];
+  const load = table && chart ? CHART_RENDERER : table;
   status.textContent = load ? DATAFRAME_STATUS.waiting : `This build can't show ${media_type}.`;
   canvas.hidden = !load;
   return { dom, header, status, announce, canvas, load };
@@ -234,6 +241,7 @@ const dataframeTable = Widget.define({
     a.src === b.src &&
     a.media_type === b.media_type &&
     a.title === b.title &&
+    a.chart === b.chart &&
     a.pageId === b.pageId &&
     a.eager === b.eager,
   render(attrs, editor) {
@@ -245,7 +253,7 @@ const dataframeTable = Widget.define({
       frame.dom,
       dataframeLifecycle({
         ...frame,
-        attrs: { src: attrs.src, pageId: attrs.pageId },
+        attrs: { src: attrs.src, pageId: attrs.pageId, chart: attrs.chart },
         onUnavailable: reportRendererUnavailable,
         ...(attrs.eager && { observe: alwaysNear }),
       }),
@@ -276,8 +284,8 @@ export function wordgardDataframes({ pageId, eager = false } = {}) {
     Decoration.Tag.shape(
       PagesDataframe,
       (tag) => {
-        const { src, media_type, title } = readDataframe(tag.param);
-        return dataframeTable.of({ src, media_type, title, pageId, eager });
+        const { src, media_type, title, chart = null } = readDataframe(tag.param);
+        return dataframeTable.of({ src, media_type, title, chart, pageId, eager });
       },
       { atom: true },
     ),

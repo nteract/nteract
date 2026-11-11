@@ -693,6 +693,56 @@
     height: 320px;
   }
 }
+/* A dataframe drawn as a chart (viewer/vega-chart.mjs): the chart sizes its
+   own height, and fills the canvas width. */
+.wordgard-dataframe-table.is-chart .wordgard-dataframe-canvas {
+  height: auto;
+  min-height: 120px;
+  padding: 12px 12px 8px;
+}
+.pages-chart svg {
+  display: block;
+  max-width: 100%;
+}
+/* A chart's hover tooltip (chartTooltip). It sits on the body, above the
+   Page, and never takes the pointer. */
+.pages-chart-tooltip {
+  position: fixed;
+  z-index: 60;
+  display: grid;
+  gap: 2px;
+  max-width: 320px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--popover, var(--background));
+  color: var(--popover-foreground, var(--foreground));
+  box-shadow: 0 4px 16px rgb(0 0 0 / 12%);
+  font-size: 12px;
+  line-height: 1.4;
+  pointer-events: none;
+}
+.pages-chart-tooltip[hidden] {
+  display: none;
+}
+.pages-chart-tooltip-row {
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+.pages-chart-tooltip-key {
+  color: var(--muted-foreground);
+}
+.pages-chart-tooltip-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.pages-chart-message {
+  margin: 0;
+  color: var(--destructive);
+  font-size: 13px;
+}
 .wordgard-diagram-header,
 .wordgard-diagram-actions {
   -webkit-user-select: none;

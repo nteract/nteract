@@ -775,6 +775,12 @@ export const tools = [
                           const: "application/vnd.apache.parquet",
                           description: "Defaults to Parquet.",
                         },
+                        chart: {
+                          type: "string",
+                          maxLength: 65536,
+                          description:
+                            'Draw the dataset as this Vega-Lite spec (JSON string) instead of a table. Its data is {"name": "<any name>"}; the rows are this node\'s dataset. No URLs or inline values.',
+                        },
                       },
                       required: ["asset_id"],
                       additionalProperties: false,

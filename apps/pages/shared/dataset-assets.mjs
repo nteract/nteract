@@ -3,6 +3,7 @@
 // through a `dataframe` node, a block with no text whose attrs name the asset
 // and its media type. The viewer picks a renderer by media type; Parquet
 // renders as a Sift table.
+import { checkChartSpec } from "./chart-spec.mjs";
 import { imageAssetUrl, validAssetId } from "./image-assets.mjs";
 
 export const PARQUET_MEDIA_TYPE = "application/vnd.apache.parquet";
@@ -45,7 +46,9 @@ export function isParquetFile(file) {
 export function dataframeAttrs(value) {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw Error("Invalid dataframe node");
-  const extra = Object.keys(value).filter((key) => !["src", "media_type", "title"].includes(key));
+  const extra = Object.keys(value).filter(
+    (key) => !["src", "media_type", "title", "chart"].includes(key),
+  );
   if (extra.length) throw Error(`Unknown dataframe attributes: ${extra.join(", ")}`);
   if (!parseAssetPath(value.src)) throw Error("A dataframe's src must be a Page asset path");
   if (!DATAFRAME_MEDIA_TYPES.includes(value.media_type))
@@ -60,7 +63,26 @@ export function dataframeAttrs(value) {
     throw Error("A dataframe's title can't hold control characters");
   if (title && title.length > DATAFRAME_TITLE_MAX)
     throw Error(`A dataframe's title must be ${DATAFRAME_TITLE_MAX} characters or fewer`);
-  return { src: value.src, media_type: value.media_type, title };
+  const chart = value.chart == null ? null : chartAttr(value.chart);
+  return { src: value.src, media_type: value.media_type, title, ...(chart && { chart }) };
+}
+
+/**
+ * A dataframe's `chart` attr, checked and normalized: a Vega-Lite spec as a
+ * JSON string. Local evaluation only (the dataframe-chart feature); a chart
+ * is meant to become its own document. Throws with the spec's problems.
+ */
+export function chartAttr(value) {
+  if (typeof value !== "string") throw Error("A dataframe's chart must be a JSON string");
+  let spec;
+  try {
+    spec = JSON.parse(value);
+  } catch {
+    throw Error("A dataframe's chart must be valid JSON");
+  }
+  const { problems } = checkChartSpec(spec);
+  if (problems.length) throw Error(`A dataframe's chart can't be drawn: ${problems.join(" ")}`);
+  return JSON.stringify(spec);
 }
 
 /**
@@ -77,12 +99,14 @@ export function readDataframe(value) {
   if (!parseAssetPath(src) || typeof media_type !== "string" || !media_type) return null;
   if (value.title != null && typeof value.title !== "string") return null;
   const title = value.title?.trim() || null;
-  return { src, media_type, title };
+  return { src, media_type, title, ...(typeof value.chart === "string" && { chart: value.chart }) };
 }
 
 /** Node attrs for an asset on `pageId`. */
-export const dataframeFor = (pageId, { asset_id, media_type = PARQUET_MEDIA_TYPE, title = null }) =>
-  dataframeAttrs({ src: imageAssetUrl(pageId, asset_id), media_type, title });
+export const dataframeFor = (
+  pageId,
+  { asset_id, media_type = PARQUET_MEDIA_TYPE, title = null, chart = null },
+) => dataframeAttrs({ src: imageAssetUrl(pageId, asset_id), media_type, title, chart });
 
 /** A file name without its extension, as a default title. */
 export const titleFromFile = (file) =>

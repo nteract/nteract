@@ -82,6 +82,7 @@ test("today's registry: strikethrough, horizontal rules, dataframes and the pres
     "comment-agent",
     "comments-doc",
     "dataframe",
+    "dataframe-chart",
     "horizontal-rule",
     "image-theme-variants",
     "preserved-markdown-converted",
