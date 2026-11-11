@@ -1,0 +1,450 @@
+import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import { test } from "node:test";
+import * as A from "@automerge/automerge";
+import { createAuthFixture } from "../auth-fixtures.mjs";
+import { WRITTEN_FORMATS } from "../model/document-types.mjs";
+import { createPageData, initializePage } from "../model/page.mjs";
+import { startLocalKiloHandoff } from "../scripts/fixtures/local-kilo-handoff.mjs";
+import { authenticate } from "./auth.mjs";
+import worker, { Page } from "./index.mjs";
+import { kiloIdentity, kiloSignIn } from "./kilo-config.mjs";
+import { exchangeKiloToken, KILO_EXCHANGE_PATH } from "./kilo-exchange.mjs";
+import { kiloToken, MAX_KILO_TOKEN_LENGTH, unverifiedClaims } from "./kilo-token.mjs";
+import { plainStub } from "./plain-stub.mjs";
+import { DocumentPolicy } from "./policy.mjs";
+
+const origin = "https://pages.invalid";
+const audience = "pages-test";
+const secret = "kilo-exchange-fixture-secret-0123456789";
+const pageId = "33333333-3333-4333-8333-333333333333";
+const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
+// Unique per test: the lease outlives a test, and a token is its key.
+let people = 0;
+const person = () => ({ id: `person:${++people}`, name: "Example Person" });
+
+/** A Kilo deployment beside a fake Kilo. Every outbound request is recorded
+ * and every console line is captured. */
+async function fixture(t, extra = {}) {
+  const kilo = await startLocalKiloHandoff({ deployments: { [audience]: origin }, secret });
+  const env = {
+    NOTEBOOK_CLOUD_PUBLIC_ORIGIN: origin,
+    NOTEBOOK_CLOUD_LOCAL_OIDC: "true",
+    PAGES_KILO_APP_URL: kilo.origin,
+    PAGES_KILO_AUDIENCE: audience,
+    PAGES_KILO_EXCHANGE_SECRET: secret,
+    ...extra,
+  };
+  const outbound = [];
+  const send = globalThis.fetch;
+  t.mock.method(globalThis, "fetch", (input, init) => {
+    outbound.push(String(input?.url ?? input));
+    return send(input, init);
+  });
+  const lines = [];
+  for (const method of ["info", "warn", "error", "log"])
+    t.mock.method(console, method, (...args) =>
+      lines.push(
+        args.map((arg) => (typeof arg === "string" ? arg : JSON.stringify(arg))).join(" "),
+      ),
+    );
+  t.after(() => kilo.close());
+  return { env, kilo, outbound, lines };
+}
+
+const request = (token, { path = "/mcp", method = "POST", headers = {} } = {}) =>
+  new Request(`${origin}${path}`, {
+    method,
+    headers: { ...(token && { authorization: `Bearer ${token}` }), ...headers },
+  });
+const toolCall = (token, operation, args = {}) =>
+  new Request(`${origin}/api/tools`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ operation, arguments: args }),
+  });
+
+test("a Kilo-shaped bearer's claims are read without trusting it, and never throw", () => {
+  const claims = { aud: audience, tokenPurpose: "delegated-workload", exp: 1 };
+  assert.deepEqual(unverifiedClaims(`${encode({ alg: "HS256" })}.${encode(claims)}.sig`), claims);
+  for (const token of [
+    "kilo-cli-token",
+    "a.b.c",
+    "a.!!!.c",
+    "a..c",
+    "a.b.c.d",
+    `x.${Buffer.from("not json").toString("base64url")}.y`,
+    `x.${encode([claims])}.y`,
+    `x.${encode("text")}.y`,
+    `x.${Buffer.from([0xff, 0xfe]).toString("base64url")}.y`,
+    `x.${encode({ ...claims, pad: "p".repeat(MAX_KILO_TOKEN_LENGTH) })}.y`,
+    undefined,
+  ])
+    assert.equal(unverifiedClaims(token), null, String(token).slice(0, 40));
+});
+
+test("only a token for this deployment's audience and purpose goes to Kilo", async (t) => {
+  const { env, kilo, outbound } = await fixture(t);
+  const holder = person();
+  const mine = kilo.mintToken(holder, { audience });
+  assert.ok(kiloToken(env, request(mine), mine));
+  // A deployment without Kilo sign-in reads no claims at all.
+  assert.equal(kiloToken({ ...env, PAGES_KILO_APP_URL: undefined }, request(mine), mine), null);
+  for (const token of [
+    kilo.mintToken(holder, { audience: "pages-other" }),
+    kilo.mintToken(holder, { audience, claims: { tokenPurpose: "credential-exchange" } }),
+    kilo.mintToken(holder, { audience, claims: { tokenPurpose: undefined } }),
+    kilo.mintToken(holder, { audience, claims: { aud: [audience] } }),
+    `${kilo.mintToken(holder, { audience })}${"x".repeat(MAX_KILO_TOKEN_LENGTH)}`,
+  ]) {
+    assert.equal(kiloToken(env, request(token), token), null);
+    // Refused as any other bearer on this deployment is, with no outbound call.
+    await assert.rejects(authenticate(request(token), env), {
+      status: 401,
+      code: "api_keys_unsupported",
+    });
+  }
+  // Malformed bearers are a 401, never a 500.
+  for (const token of [
+    "a.!!!.c",
+    `x.${Buffer.from("{").toString("base64url")}.y`,
+    "z".repeat(5000),
+  ])
+    await assert.rejects(authenticate(request(token), env), { status: 401 });
+  // The prefixes Pages issues keep their own branches.
+  await assert.rejects(authenticate(request("pu1.capability"), env), {
+    status: 401,
+    code: "upload_capability_invalid",
+  });
+  await assert.rejects(authenticate(request("pages_not-a-grant", { path: "/api/tools" }), env), {
+    status: 403,
+  });
+  assert.deepEqual(outbound, []);
+  assert.deepEqual(kilo.exchanges(), []);
+});
+
+test("on a deployment without Kilo sign-in a Kilo token is an API key, as before", async (t) => {
+  const auth = await createAuthFixture();
+  const outbound = [];
+  t.mock.method(globalThis, "fetch", async (url) => {
+    outbound.push(String(url));
+    return Response.json({}, { status: 401 });
+  });
+  const kilo = await startLocalKiloHandoff({ deployments: { [audience]: origin }, secret });
+  t.after(() => kilo.close());
+  const token = kilo.mintToken(person(), { audience });
+  const env = { ...auth.env, PAGES_KILO_AUDIENCE: audience, PAGES_KILO_EXCHANGE_SECRET: secret };
+  await assert.rejects(authenticate(request(token), env), {
+    status: 401,
+    code: "invalid_api_key",
+  });
+  // Only the account service that verifies API keys was asked.
+  assert.deepEqual(outbound, [env.NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL]);
+  assert.deepEqual(kilo.exchanges(), []);
+});
+
+test("the exchange sends exactly the token and audience, with the deployment's secret", async () => {
+  const calls = [];
+  const fetcher = async (url, init) => {
+    calls.push({ url: String(url), init });
+    return Response.json({ user: { id: "person:1", name: " Example " }, organizations: [] });
+  };
+  const account = await exchangeKiloToken(fetcher, {
+    appUrl: "https://kilo.invalid",
+    secret,
+    token: "header.payload.signature",
+    audience,
+  });
+  assert.deepEqual(account, { id: "person:1", name: "Example" });
+  assert.equal(calls.length, 1);
+  const [{ url, init }] = calls;
+  assert.equal(url, `https://kilo.invalid${KILO_EXCHANGE_PATH}`);
+  assert.equal(url, "https://kilo.invalid/api/pages-auth/exchange");
+  assert.equal(init.method, "POST");
+  assert.deepEqual(init.headers, {
+    accept: "application/json",
+    authorization: `Bearer ${secret}`,
+    "content-type": "application/json",
+  });
+  assert.equal(init.body, JSON.stringify({ token: "header.payload.signature", audience }));
+  assert.deepEqual(Object.keys(JSON.parse(init.body)).sort(), ["audience", "token"]);
+  assert.equal(init.redirect, "manual");
+  assert.ok(init.signal instanceof AbortSignal);
+  for (const [status, refused] of [
+    [400, "token"],
+    [410, "token"],
+    [401, "client"],
+    [403, "account"],
+  ])
+    assert.deepEqual(
+      await exchangeKiloToken(async () => Response.json({}, { status }), {
+        appUrl: "https://kilo.invalid",
+        secret,
+        token: "t.t.t",
+        audience,
+      }),
+      { refused },
+    );
+});
+
+test("a token names the person the browser sign-in names", async (t) => {
+  const { env, kilo, outbound } = await fixture(t, {
+    PAGES_KILO_PRINCIPAL_NAMESPACE: "user:kilo-test",
+  });
+  const holder = person();
+  const token = kilo.mintToken(holder, { audience });
+  const identity = await authenticate(
+    request(token, { headers: { "x-pages-driver": "Browser" } }),
+    env,
+  );
+  const browser = kiloIdentity(kiloSignIn(env, request(token)), holder);
+  assert.equal(identity.principal, browser.principal);
+  assert.equal(identity.principal, `user:kilo-test:${encodeURIComponent(holder.id)}`);
+  assert.equal(identity.namespace, browser.metadata.principalNamespace);
+  assert.equal(identity.displayName, holder.name);
+  assert.equal(identity.accountDisplayName, holder.name);
+  assert.equal(identity.credentialKind, "kilo-token");
+  assert.equal(identity.canWrite, true);
+  // A bearer is a client acting for the account, never the browser.
+  assert.equal(identity.driver, "API");
+  assert.ok(identity.expiresAt > Date.now() && identity.expiresAt <= Date.now() + 300_000);
+  assert.deepEqual(kilo.exchanges(), [
+    { authorization: `Bearer ${secret}`, fields: ["audience", "token"], audience, token },
+  ]);
+  assert.deepEqual(outbound, [`${kilo.origin}/api/pages-auth/exchange`]);
+});
+
+test("a token reaches the tool routes and nothing else, and is refused before Kilo is asked", async (t) => {
+  const { env, kilo } = await fixture(t);
+  const token = kilo.mintToken(person(), { audience });
+  for (const [path, method] of [
+    ["/api/connect", "GET"],
+    ["/api/sync", "GET"],
+    ["/api/saved", "POST"],
+    ["/api/access", "GET"],
+    ["/api/pages/register", "POST"],
+    ["/api/auth/session", "GET"],
+    [`/api/pages/${pageId}/assets/abc`, "GET"],
+    ["/whoami", "POST"],
+  ])
+    await assert.rejects(
+      authenticate(request(token, { path, method }), env),
+      { status: 403, reason: "credential_scope" },
+      path,
+    );
+  assert.deepEqual(kilo.exchanges(), []);
+  for (const [path, method] of [
+    ["/mcp", "POST"],
+    ["/api/tools", "POST"],
+    ["/whoami", "GET"],
+    ["/internal/tool", "POST"],
+  ])
+    assert.ok((await authenticate(request(token, { path, method }), env)).principal, path);
+  assert.equal(kilo.exchanges().length, 1);
+});
+
+test("Kilo's refusals reach the caller as codes, and nothing of the token or Kilo's body", async (t) => {
+  const { env, kilo, lines } = await fixture(t);
+  const holder = person();
+  const json = (status, value) => (req, res) =>
+    res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(value));
+  const leak = "kilo-private-detail";
+  const mcp = { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "list_pages" } };
+  const call = (token) =>
+    worker.fetch(
+      new Request(`${origin}/mcp`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+        },
+        body: JSON.stringify(mcp),
+      }),
+      env,
+    );
+  for (const [answer, status, code] of [
+    [json(400, { error: "invalid_token", detail: leak }), 401, "invalid_kilo_token"],
+    [json(400, { error: "invalid_request", detail: leak }), 401, "invalid_kilo_token"],
+    [json(403, { error: "account_unavailable", detail: leak }), 403, "account_unavailable"],
+    [json(401, { error: "invalid_client", detail: leak }), 503, "sign_in_unavailable"],
+    [json(500, { detail: leak }), 503, "sign_in_unavailable"],
+    [json(429, { detail: leak }), 503, "sign_in_unavailable"],
+    [json(200, { user: { name: leak } }), 503, "sign_in_unavailable"],
+    [(req, res) => res.writeHead(200).end(leak), 503, "sign_in_unavailable"],
+    [
+      (req, res) => res.writeHead(302, { location: "https://elsewhere.invalid/" }).end(),
+      503,
+      "sign_in_unavailable",
+    ],
+  ]) {
+    const token = kilo.mintToken(holder, { audience, claims: { iat: people++ } });
+    kilo.respond(answer);
+    const response = await call(token);
+    assert.equal(response.status, status, code);
+    const text = await response.text();
+    const body = JSON.parse(text);
+    assert.equal(body.code, code);
+    if (status === 503) assert.equal(body.retryable, true);
+    if (status === 401) {
+      assert.match(body.error, /Mint a new Kilo token for this Pages deployment/);
+      assert.match(response.headers.get("www-authenticate") ?? "", /resource_metadata=/);
+    }
+    for (const hidden of [token, secret, leak, audience]) assert.ok(!text.includes(hidden), hidden);
+  }
+  // A refusal is not kept: the same token is asked about again.
+  const token = kilo.mintToken(holder, { audience, claims: { iat: people++ } });
+  kilo.respond(json(500, {}));
+  assert.equal((await call(token)).status, 503);
+  const before = kilo.exchanges().length;
+  assert.equal((await authenticate(request(token), env)).credentialKind, "kilo-token");
+  assert.equal(kilo.exchanges().length, before + 1);
+  // Kilo itself refuses a forged, expired or foreign token; Pages says so.
+  for (const forged of [
+    `${token.slice(0, token.lastIndexOf(".") + 1)}forged`,
+    kilo.mintToken(holder, { audience, seconds: -1 }),
+  ])
+    assert.equal(JSON.parse(await (await call(forged)).text()).code, "invalid_kilo_token");
+  const minted = kilo.mintToken(holder, { audience, claims: { iat: people++ } });
+  kilo.block(holder.id);
+  const blocked = await call(minted);
+  assert.equal(blocked.status, 403);
+  assert.equal(JSON.parse(await blocked.text()).code, "account_unavailable");
+  // An unreachable Kilo is unavailable, not a refusal.
+  await kilo.close();
+  const unreachable = await call(kilo.mintToken(holder, { audience, claims: { iat: people++ } }));
+  assert.equal(unreachable.status, 503);
+  // The operator gets one coded line per refusal, without the token or secret.
+  const refusals = lines
+    .filter((line) => line.includes('"pages.auth.v1"'))
+    .map((line) => JSON.parse(line))
+    .filter((event) => event.action === "kilo_token.refused");
+  assert.ok(refusals.length >= 9);
+  assert.ok(refusals.every((event) => event.credential === "kilo-token" && event.reason));
+  for (const line of lines) {
+    assert.ok(!line.includes(secret), line);
+    assert.ok(!/eyJ[\w-]+\.eyJ/.test(line), line);
+    assert.ok(!line.includes(leak), line);
+  }
+});
+
+class Storage {
+  values = new Map();
+  async get(key) {
+    return structuredClone(this.values.get(key));
+  }
+  async put(key, value) {
+    if (typeof key === "object") {
+      for (const [name, entry] of Object.entries(key)) await this.put(name, entry);
+      return;
+    }
+    this.values.set(key, structuredClone(value));
+  }
+  async delete(key) {
+    this.values.delete(key);
+  }
+  async list({ prefix = "", limit = Infinity, startAfter } = {}) {
+    return new Map(
+      [...this.values]
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .filter(([key]) => key.startsWith(prefix) && (!startAfter || key > startAfter))
+        .slice(0, limit),
+    );
+  }
+  async sync() {}
+}
+
+test("a Kilo agent reads and writes its person's Page over /mcp and /api/tools with one exchange", async (t) => {
+  const { env, kilo, lines } = await fixture(t);
+  const holder = person();
+  const token = kilo.mintToken(holder, { audience });
+  let doc = A.change(A.from(createPageData({ pageId, title: "Kilo Page" })), (draft) =>
+    initializePage(draft, "Ship on Monday."),
+  );
+  t.after(() => A.free(doc));
+  const handle = Object.assign(new EventEmitter(), {
+    doc: () => doc,
+    async update(fn) {
+      doc = fn(doc);
+    },
+    broadcast() {},
+  });
+  const page = Object.assign(Object.create(Page.prototype), {
+    plain: plainStub(),
+    env,
+    ready: Promise.resolve(),
+    tail: Promise.resolve(),
+    ctx: { storage: new Storage() },
+    metadata: {
+      pageId,
+      documentFormats: WRITTEN_FORMATS,
+      owner: kiloIdentity(kiloSignIn(env, request(token)), holder).principal,
+      deleted: false,
+      acl: { revision: 0, members: {}, invites: {} },
+    },
+    handle,
+    cacheTitle() {},
+    flush: async () => {},
+  });
+  page.policy = new DocumentPolicy({ metadata: () => page.metadata });
+  env.PAGES = { getByName: () => page };
+  const bodies = [];
+  const tools = async (operation, args) => {
+    const response = await worker.fetch(
+      toolCall(token, operation, { page_id: pageId, ...args }),
+      env,
+    );
+    const text = await response.text();
+    bodies.push(text);
+    assert.equal(response.status, 200, text);
+    return JSON.parse(text);
+  };
+  const mcp = async (operation, args) => {
+    const response = await worker.fetch(
+      new Request(`${origin}/mcp`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: operation, arguments: { page_id: pageId, ...args } },
+        }),
+      }),
+      env,
+    );
+    const text = await response.text();
+    bodies.push(text);
+    assert.equal(response.status, 200, text);
+    const body = JSON.parse(text);
+    assert.ok(!body.result?.isError, text);
+    return body.result.structuredContent;
+  };
+  const read = await mcp("read_page", {});
+  assert.match(JSON.stringify(read), /Ship on Monday/);
+  await mcp("edit_page", {
+    operations: [{ op: "set_title", title: "Kilo over MCP" }],
+    base_heads: read.heads,
+    retry_token: read.retry_token,
+    idempotency_key: crypto.randomUUID(),
+  });
+  assert.equal(doc.title, "Kilo over MCP");
+  const again = await tools("read_page", {});
+  await tools("edit_page", {
+    operations: [{ op: "set_title", title: "Kilo over HTTP" }],
+    base_heads: again.heads,
+    retry_token: again.retry_token,
+    idempotency_key: crypto.randomUUID(),
+  });
+  assert.equal(doc.title, "Kilo over HTTP");
+  // Every call, and every hop it forwarded, used the one exchange.
+  assert.equal(kilo.exchanges().length, 1);
+  for (const text of [...bodies, ...lines]) assert.ok(!text.includes(token));
+  const usage = lines.filter((line) => line.includes('"pages.usage.v1"'));
+  assert.ok(usage.length >= 4);
+  assert.ok(usage.every((line) => line.includes('"credential":"kilo-token"')));
+});

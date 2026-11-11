@@ -36,6 +36,7 @@ import {
 import { recordOidcEvent } from "./auth-events.mjs";
 import { migrateSchema } from "./catalog-index.mjs";
 import { isolateSetup } from "./isolate-setup.mjs";
+import { kiloIdentity, kiloSignIn } from "./kilo-config.mjs";
 import {
   exchangeKiloCode,
   KILO_CALLBACK_PATH,
@@ -51,12 +52,9 @@ const LOGIN_PATH = "/api/auth/login";
 const HANDOFF_SECONDS = 600;
 // How long a session lasts before the browser signs in again.
 const SESSION_SECONDS = 8 * 60 * 60;
-const MIN_SECRET_LENGTH = 32;
 const MAX_CODE_LENGTH = 2048;
 // The shape `randomSecret` gives a state and a binding.
 const SECRET = /^[A-Za-z0-9_-]{43}$/;
-// A name Kilo can hold for a deployment, such as `pages-dev`.
-const AUDIENCE = /^\S{1,200}$/;
 
 const MIGRATIONS = Object.freeze([
   Object.freeze({
@@ -75,68 +73,6 @@ const MIGRATIONS = Object.freeze([
 const ready = isolateSetup((db) =>
   migrateSchema(db, { table: "kilo_handoff_schema", migrations: MIGRATIONS }),
 );
-
-/** This deployment's Kilo sign-in settings, or null when it doesn't use Kilo.
- * `PAGES_KILO_APP_URL` turns it on and must be a bare `https:` origin; a
- * loopback `http:` origin is accepted only beside the local test issuer flag.
- * `PAGES_KILO_AUDIENCE` is the name Kilo holds this deployment under, and
- * `PAGES_KILO_EXCHANGE_SECRET` is what Kilo checks at the code exchange. A
- * set but unusable value, or a missing audience or secret, throws, so a
- * misconfigured deployment fails loudly and never falls back to another
- * sign-in. */
-export function kiloSignIn(env, request) {
-  const configured = env?.PAGES_KILO_APP_URL;
-  if (!configured) return null;
-  let app;
-  try {
-    app = new URL(String(configured));
-  } catch {
-    throw new Error("Kilo sign-in is misconfigured");
-  }
-  const loopback =
-    app.protocol === "http:" &&
-    ["localhost", "127.0.0.1", "[::1]"].includes(app.hostname) &&
-    env.NOTEBOOK_CLOUD_LOCAL_OIDC === "true";
-  const audience = env.PAGES_KILO_AUDIENCE;
-  const secret = env.PAGES_KILO_EXCHANGE_SECRET;
-  if (
-    (app.protocol !== "https:" && !loopback) ||
-    String(configured).replace(/\/$/, "") !== app.origin ||
-    app.username ||
-    app.password ||
-    typeof audience !== "string" ||
-    !AUDIENCE.test(audience) ||
-    typeof secret !== "string" ||
-    secret.length < MIN_SECRET_LENGTH
-  )
-    throw new Error("Kilo sign-in is misconfigured");
-  return {
-    appUrl: app.origin,
-    audience,
-    origin: new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin,
-    namespace: env.PAGES_KILO_PRINCIPAL_NAMESPACE?.trim() || "user:kilo",
-    secret,
-  };
-}
-
-/** The identity a Kilo account stands for: its id and, when it has one, its
- * name. */
-export function kiloIdentity(config, account) {
-  const principal = `${config.namespace}:${encodeURIComponent(account.id)}`;
-  return {
-    principal,
-    operator: "browser",
-    actorLabel: `${principal}/browser`,
-    scope: "owner",
-    metadata: {
-      // The session label every server session carries (app-session.ts).
-      provider: "oidc",
-      transport: "host-session-cookie",
-      principalNamespace: config.namespace,
-      ...(account.name ? { displayName: account.name } : {}),
-    },
-  };
-}
 
 /** The provider `serverOidcSessionStatus` needs for a deployment that signs
  * in with Kilo, or undefined when this one doesn't. A Kilo session can't be

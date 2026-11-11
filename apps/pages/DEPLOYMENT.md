@@ -1225,19 +1225,68 @@ without them:
   under, such as `pages-dev`. Pages sends it in place of its own address, and
   Kilo sends the browser back to the address it holds for that name.
 - `PAGES_KILO_EXCHANGE_SECRET`, a Worker secret of 32 characters or more: what
-  Kilo checks when Pages trades a sign-in code.
+  Kilo checks when Pages trades a sign-in code or an agent token.
 
 A Kilo deployment differs in three ways:
 
 - It has no API keys. The agent guide (`/llms.txt`) and the connect page
-  (`/connect`) describe OAuth only, and agents connect their MCP client by
-  OAuth.
+  (`/connect`) describe OAuth, and agents connect their MCP client by OAuth.
+  A Kilo agent without a browser sends a Kilo agent token instead (below).
 - A bearer that does not have the form of a credential Pages issues (an OAuth
-  access token or an upload capability) is refused with `api_keys_unsupported`
-  (401) before the Worker makes any outbound request. A Kilo credential is
-  never forwarded to another service.
+  access token or an upload capability) and is not a Kilo agent token for this
+  deployment is refused with `api_keys_unsupported` (401) before the Worker
+  makes any outbound request. A Kilo credential is never forwarded anywhere
+  but Kilo's own exchange.
 - Email invitations cannot be accepted, because Kilo accounts carry no
   verified email.
+
+### Kilo agent tokens
+
+Kilo's agent harness (a CLI or cloud agent with a Kilo session and no browser)
+gets a token from Kilo (`POST /api/auth/resource-token` with this deployment's
+audience) and sends it as `Authorization: Bearer <token>`. The token is an
+HS256 JWT that Kilo signs with a key Pages never holds. It lives five minutes,
+is at most 4,096 characters, and its claims are `version`, `kiloUserId`, `env`,
+`aud` (the deployment's audience), `iat`, `exp`,
+`tokenPurpose: "delegated-workload"` and `credentialExchange: false`.
+
+A deployment needs nothing new: the same three `PAGES_KILO_*` settings. Pages
+treats a bearer as a Kilo token when it is a three-part JWT whose unverified
+`aud` is `PAGES_KILO_AUDIENCE` and whose `tokenPurpose` is
+`delegated-workload` ([worker/kilo-token.mjs](worker/kilo-token.mjs)). Those
+claims only choose the check; they never become identity. Pages trades the
+token at Kilo's exchange, the same call the browser sign-in makes:
+
+```http
+POST <PAGES_KILO_APP_URL>/api/pages-auth/exchange
+Authorization: Bearer <PAGES_KILO_EXCHANGE_SECRET>
+Content-Type: application/json
+
+{"token": "<token>", "audience": "<PAGES_KILO_AUDIENCE>"}
+```
+
+Kilo answers `200 {"user": {"id", "name"}, "organizations": [...]}`, and the
+person is `<PAGES_KILO_PRINCIPAL_NAMESPACE or user:kilo>:<user.id>`, the
+principal the browser sign-in gives them. The call times out after 10 seconds.
+The token reaches `/mcp`, `/api/tools`, `GET /whoami` and the internal hops
+they forward to, with the reach an API key has there. Every other route
+refuses it with 403 before Kilo is asked.
+
+| Kilo's answer | Caller gets |
+| --- | --- |
+| `400 invalid_token` or any other 4xx but 401 and 403 | 401 `invalid_kilo_token`: mint a new token for this deployment |
+| `403 account_unavailable` | 403 `account_unavailable` |
+| `401 invalid_client` (wrong secret or audience), 429, 5xx, a timeout, or a body that isn't the documented shape | 503 `sign_in_unavailable`, `retryable: true` |
+
+The caller never sees Kilo's body. Each refusal logs one `kilo_token.refused`
+auth line with a coded `reason`, never the token or the secret.
+
+Each Worker isolate leases an accepted token, keyed by its SHA-256, until the
+token's `exp` and never more than 15 minutes after the exchange, so a token
+costs one exchange per isolate rather than one per call. Concurrent requests
+with one new token share one exchange; a refusal is never kept. The lease is
+the limit of this design: an account Kilo blocks keeps working here until its
+lease ends, at most the token's remaining life.
 
 ## Outbound requests
 
@@ -1341,6 +1390,8 @@ only with `PAGES_OAUTH_ANY_CLIENT_DOCUMENT` ([Outbound requests](#outbound-reque
 | `oauth.code_replayed` | An authorization code was presented twice. Its grant is revoked. | `grant` |
 | `oauth.refresh_reused` | A spent refresh token was presented again. Within 30 seconds of its first use, new tokens are issued and the grant stays; this is what overlapping refreshes from one client's processes look like. After that, the grant is revoked. | `grant`, `reason` (`within_window` when tokens were issued; absent when the grant was revoked) |
 | `api_key.accepted` | An Anaconda API key authenticated. One line per key per isolate per 60 s cache window, not per request. | `scope` (`editor` or `viewer`) |
+| `kilo_token.accepted` | Kilo accepted a Kilo agent token. One line per token per isolate lease, not per request. | |
+| `kilo_token.refused` | A Kilo agent token was refused or couldn't be checked. No principal. | `reason`: `exchange_refused_token`, `exchange_refused_account`, `exchange_refused_client`, `kilo_unavailable`, `kilo_protocol_error`, `exchange_failed` |
 | `invitation.created`, `invitation.revoked` | A Project owner invited an email or revoked an invitation. `principal` is the owner. | `project_id`, `invite`, `role` |
 | `invitation.accepted` | A verified recipient claimed a Project invitation. `principal` is the recipient. | `project_id`, `invite`, `role` |
 

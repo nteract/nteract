@@ -1908,10 +1908,18 @@ takes that name and those arguments.`,
   see ${origin}/connect.
 - api_keys_unsupported (401): the bearer is not a Pages OAuth access token. This
   deployment has no API keys. A ${provider.label} API token is not a Pages credential;
-  do not send it here. Connect the MCP client by OAuth.`,
+  do not send it here. Connect the MCP client by OAuth.
+- invalid_kilo_token (401): ${provider.label} did not accept the agent token: it is
+  forged, expired or minted for another deployment. Mint a new one for this
+  deployment and send it again.
+- account_unavailable (403): the ${provider.label} account is gone or blocked. Tell the
+  person.
+- sign_in_unavailable (503, retryable:true): ${provider.label} could not check the
+  agent token. Retry the same request with exponential backoff.`,
     connectRoutes: `MCP endpoint: ${origin}/mcp. Human setup: ${origin}/connect.
 This deployment signs people and agents in with ${provider.label} accounts and has
-no API keys. Every client connects by OAuth. The person signs in with their
+no API keys. Every client connects by OAuth, except a ${provider.label} agent
+token (below). The person signs in with their
 ${provider.label} account in the browser and approves. Choose the route by client:
 
 - Kilo Desktop and CLI: the configured client pages-kilo. See "Kilo Desktop / CLI
@@ -1924,8 +1932,14 @@ ${provider.label} account in the browser and approves. Choose the route by clien
   and the configured Kilo client. Dynamic client registration is not enabled;
   do not try unrelated login flows.
 
-A script or unattended job cannot get its first authorization without a person
-in a browser, and this deployment has no other credential to give it. Once a
+A ${provider.label} agent that runs with the person's ${provider.label} session
+and no browser asks ${provider.label} for a short-lived agent token for this
+deployment and sends it as Authorization: Bearer on ${origin}/mcp or
+${origin}/api/tools. Pages checks it with ${provider.label}, and it acts as that person
+on those routes and GET /whoami only.
+
+Any other script or unattended job cannot get its first authorization without
+a person in a browser, and this deployment has no other credential to give it. Once a
 person has approved a connection, the client can refresh it unattended for 30
 days. Do not send or search for any other credential. list_pages returns the
 account (principal, display_name). If the account is unexpected, check it with

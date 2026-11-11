@@ -4,7 +4,9 @@ import { test } from "node:test";
 import { readServerAppSession, SERVER_SESSION_COOKIE } from "@cloud/oidc-session-store.ts";
 import { ServerSessionGrantRejected } from "@cloud/server-oidc.ts";
 import { startLocalKiloHandoff } from "../scripts/fixtures/local-kilo-handoff.mjs";
-import { handleKiloSignIn, kiloSessionProvider, kiloSignIn } from "./kilo-handoff.mjs";
+import { authenticate } from "./auth.mjs";
+import { kiloSignIn } from "./kilo-config.mjs";
+import { handleKiloSignIn, kiloSessionProvider } from "./kilo-handoff.mjs";
 
 const origin = "http://127.0.0.1:9477";
 const audience = "pages-test";
@@ -361,6 +363,24 @@ test("a deployment without the setting has no Kilo routes, and a bad setting thr
     kiloSignIn({ ...env, PAGES_KILO_APP_URL: "https://kilo.example/" }, request("/")).appUrl,
     "https://kilo.example",
   );
+});
+
+test("an agent token names the person a browser sign-in names", async (t) => {
+  const { env, kilo } = await fixture(t);
+  const started = await begin(env);
+  const session = await sessionOf(
+    env,
+    await callback(env, await throughKilo(started.enter), started.cookie),
+  );
+  const token = kilo.mintToken(user, { audience });
+  const agent = await authenticate(
+    request("/mcp", { method: "POST", headers: { authorization: `Bearer ${token}` } }),
+    env,
+  );
+  assert.equal(agent.principal, session.principal);
+  assert.equal(agent.displayName, session.displayName);
+  assert.equal(agent.namespace, session.principalNamespace);
+  assert.equal(agent.credentialKind, "kilo-token");
 });
 
 test("a Kilo session is never renewed", async (t) => {

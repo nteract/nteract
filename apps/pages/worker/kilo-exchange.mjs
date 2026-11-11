@@ -1,6 +1,6 @@
 /** What Pages asks of Kilo's web app to sign a person in: one page to send the
  * browser to, and one server-to-server call that trades the code Kilo sends
- * back for the person it names.
+ * back, or a token Kilo minted for an agent, for the person it names.
  *
  * This file is the whole of that contract. Kilo keeps a fixed list of Pages
  * deployments, each under a name it calls an audience, and holds the address
@@ -105,10 +105,27 @@ const discard = async (response) => {
  * other 4xx, which means the code is forged, stale, or for another sign-in.
  * A refusal is its status, whatever its body holds. Throws `KiloUnavailable`
  * or `KiloProtocolError` otherwise. */
-export async function exchangeKiloCode(
+export function exchangeKiloCode(
   fetcher,
   { appUrl, secret, code, audience, state, timeoutMs = DEFAULT_TIMEOUT_MS },
 ) {
+  return exchange(fetcher, { appUrl, secret, body: { code, audience, state }, timeoutMs }, "code");
+}
+
+/** Trades a token Kilo minted for an agent for the person it names, at the
+ * same endpoint and with the same answers as `exchangeKiloCode`. Kilo signs
+ * the token with a key Pages doesn't hold and binds it to `audience`, so this
+ * call is the only check of it. A refusal other than `"client"` or
+ * `"account"` is `"token"`: the token is forged, expired, or for another
+ * deployment. */
+export function exchangeKiloToken(
+  fetcher,
+  { appUrl, secret, token, audience, timeoutMs = DEFAULT_TIMEOUT_MS },
+) {
+  return exchange(fetcher, { appUrl, secret, body: { token, audience }, timeoutMs }, "token");
+}
+
+async function exchange(fetcher, { appUrl, secret, body, timeoutMs }, credential) {
   let response;
   try {
     response = await fetcher(new URL(KILO_EXCHANGE_PATH, appUrl), {
@@ -118,7 +135,7 @@ export async function exchangeKiloCode(
         authorization: `Bearer ${secret}`,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ code, audience, state }),
+      body: JSON.stringify(body),
       // Inspected, never followed: the secret stays at the configured origin.
       redirect: "manual",
       signal: AbortSignal.timeout(timeoutMs),
@@ -133,7 +150,7 @@ export async function exchangeKiloCode(
   }
   if (status >= 400) {
     await discard(response);
-    return { refused: status === 401 ? "client" : status === 403 ? "account" : "code" };
+    return { refused: status === 401 ? "client" : status === 403 ? "account" : credential };
   }
   if (status !== 200) {
     await discard(response);

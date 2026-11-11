@@ -1030,6 +1030,28 @@ An OAuth client uploads a local image through `create_page_asset_upload`, whose
 Page-scoped capability names its grant and stops working when the grant is
 revoked (see [Upload capabilities](#upload-capabilities)).
 
+A Kilo deployment also accepts a Kilo agent token as a bearer, for Kilo's agent
+harness that has a Kilo session and no browser
+([worker/kilo-token.mjs](worker/kilo-token.mjs); the contract is in
+[DEPLOYMENT.md](DEPLOYMENT.md#kilo-agent-tokens)). A bearer is one when it is a
+JWT whose unverified `aud` is `PAGES_KILO_AUDIENCE` and whose `tokenPurpose` is
+`delegated-workload`; the prefixes Pages issues (`pages_`, `pu1.`) are tested
+first, a Kilo deployment has no API keys, and a deployment without Kilo sign-in
+never reads the claims. Pages trades the token at Kilo's
+`POST /api/pages-auth/exchange` with `{token, audience}` and the deployment's
+exchange secret, the call the browser sign-in makes with a code, so the person
+is the same principal either way. It needs no settings beyond the three
+`PAGES_KILO_*` ones. The token reaches `/mcp`, `/api/tools` and `GET /whoami`
+(and the internal hops they forward to) as the person, with `credentialKind`
+`kilo-token` and the driver an API key records; other routes refuse it with
+403 before Kilo is asked. Kilo's refusals become 401 `invalid_kilo_token`, 403
+`account_unavailable` or 503 `sign_in_unavailable` (`retryable: true`); the
+caller never sees Kilo's body. Each isolate leases an accepted token by its
+SHA-256 until its `exp`, at most 15 minutes, with one exchange for concurrent
+requests and no kept refusals ([worker/kilo-token-lease.mjs](worker/kilo-token-lease.mjs)).
+An account Kilo blocks keeps working until that lease ends, at most the token's
+remaining life, and an upload capability the token issues ends with the lease.
+
 The account menu's Connected agents dialog lists the account's live OAuth
 connections (`GET /api/auth/grants`: client name, scope, issue and expiry
 times, and an opaque per-grant handle) and disconnects one
