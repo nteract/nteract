@@ -118,8 +118,9 @@ ${part.authErrorItems}
 - unknown_tool (MCP): the tools/call names a tool Pages doesn't have. Refresh
   the tool list with tools/list and call a listed tool.
 - unknown_operation, invalid_arguments: the operation isn't one Pages has (the
-  error lists the valid ones), arguments isn't a JSON object, or a Page tool got
-  both page_id and project_id (give one).
+  error lists the valid ones), arguments isn't a JSON object, an argument isn't
+  one the operation takes (the error names it), or a Page tool got both page_id
+  and project_id (give one).
 - invalid_page_id, page_not_found: page_id isn't a Page ID (a bare UUID), or no
   Page this account can open has it. A Page tool given project_id answers with
   the Project's own refusal (project_not_found) when you can't open it.

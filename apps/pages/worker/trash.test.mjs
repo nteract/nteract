@@ -96,6 +96,29 @@ test("delete_page refuses an unknown or too-old revision with resync_required an
   assert.equal(pageState(f.page.metadata), "trashed");
 });
 
+test("a browser's Trash names the heads it shows: a peer's edit since refuses it, current heads trash", async (t) => {
+  // The gateway lets base_heads through only from a browser session
+  // (tool-arguments.test.mjs); here the Catalog forwards it to the Page.
+  const f = await fixture(t);
+  const shown = f.heads();
+  f.edit("A peer's edit");
+  const stale = await f.catalogCall("owner", "delete_page", {
+    page_id: pageId,
+    base_heads: shown,
+    nonce: "browser-stale-trash",
+  });
+  assert.equal(stale.status, 409, JSON.stringify(stale.body));
+  assert.equal(stale.body.code, "stale_revision");
+  assert.equal(pageState(f.page.metadata), "active");
+  const current = await f.catalogCall("owner", "delete_page", {
+    page_id: pageId,
+    base_heads: f.heads(),
+    nonce: "browser-current-trash",
+  });
+  assert.equal(current.status, 200, JSON.stringify(current.body));
+  assert.equal(pageState(f.page.metadata), "trashed");
+});
+
 test("a lifecycle receipt pruned from the Page raises the receipt horizon first", async (t) => {
   let now = Date.now();
   t.mock.method(Date, "now", () => now);

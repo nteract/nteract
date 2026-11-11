@@ -110,6 +110,7 @@ const bundle = await build({
             "export const WordgardEditor = pick('WordgardEditor', () => null);\n" +
             "export const orderedBlockIds = pick('orderedBlockIds', () => []);\n" +
             "export const isEmptyPage = pick('isEmptyPage', () => false);\n" +
+            "export const pageHeads = pick('pageHeads', () => []);\n" +
             "export const titleSnapshot = pick('titleSnapshot', () => null);\n" +
             "export const composingTitle = pick('composingTitle', () => false);",
           loader: "js",

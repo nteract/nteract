@@ -473,11 +473,14 @@ test("JSON tool refusals carry a code: rejected key, unknown operation, bad argu
   assert.deepEqual(await malformed.json(), { error: "Invalid JSON", code: "invalid_request" });
   const badImport = await call({
     operation: "import_page_image",
-    arguments: { page_id: crypto.randomUUID(), file: {}, extra: true },
+    arguments: { page_id: crypto.randomUUID(), file: {} },
   });
   assert.deepEqual(badImport, {
     status: 400,
-    body: { error: "Invalid image import arguments", code: "invalid_request" },
+    body: {
+      error: "Use a ChatGPT file attachment with download_url and file_id",
+      code: "invalid_request",
+    },
   });
 });
 

@@ -339,6 +339,7 @@ import { holdUntilSettled } from "./request-hold.mjs";
 import { boundedMap } from "./bounded-map.mjs";
 import { legibleEnv, overloadRetryAfterMs, withRepeatSafety } from "./host-busy.mjs";
 import { readTool } from "./tool-reads.mjs";
+import { checkArguments } from "./tool-arguments.mjs";
 import { readChangesTool } from "./tool-changes.mjs";
 import { PageActivity } from "./page-activity.mjs";
 import {
@@ -660,12 +661,12 @@ function commentHeadsCheck(commentsDoc, heads) {
 const publicIdentity = ({ principal, displayName, driver }) => ({ principal, displayName, driver });
 /** Lifecycle arguments as the caller sent them. The Catalog alone sets the
  * compare-and-set controls it forwards to a Page, and only delete_project's
- * own trash, a host-to-host call, sends heads (`base_heads`,
- * `base_comment_heads`); an agent names a `revision`. */
+ * own trash, a host-to-host call, sends `base_comment_heads`. A caller's
+ * trash names a `revision`, or, from a browser session only, the heads it
+ * shows as `base_heads` (BROWSER_TRASH_GUARD in tool-arguments.mjs). */
 const callerLifecycleArguments = ({
   expected_revision: _expected,
   replay_only: _replay,
-  base_heads: _heads,
   base_comment_heads: _commentHeads,
   ...requested
 }) => requested;
@@ -912,7 +913,11 @@ const safeToRepeat = (operation, args) => {
   return READ_OPERATIONS.includes(operation) || hasNonce(args);
 };
 
-async function invoke(request, env, operation, args = {}, seen) {
+/** Run one public tool call. `call` is the call as its caller sent it,
+ * `{ transport, operation, args }` in the API's names, checked against the
+ * arguments its operation takes (tool-arguments.mjs) once the credential may
+ * make the call: a credential that can't learns that first. */
+async function invoke(request, env, operation, args = {}, seen, call) {
   if (!operations.has(operation)) throw unknownOperation(operation, operations);
   if (!args || typeof args !== "object" || Array.isArray(args)) throw invalidArguments();
   const identity = await authenticate(request, env);
@@ -929,6 +934,7 @@ async function invoke(request, env, operation, args = {}, seen) {
       throw new HttpError(403, "Pages sharing permission is required", "oauth_insufficient_scope");
     const read = operation.startsWith("get_");
     if (!read) requireWrite(identity);
+    if (call) checkArguments(call, identity);
     if (operation.endsWith("project_access")) {
       requireSpaceIdArgument(args.space_id);
       return env.CATALOGS.getByName(identity.principal).fetch(
@@ -941,6 +947,7 @@ async function invoke(request, env, operation, args = {}, seen) {
     );
   }
   if (!READ_OPERATIONS.includes(operation)) requireWrite(identity);
+  if (call) checkArguments(call, identity);
   if (["get_space", "update_space", "delete_project"].includes(operation))
     requireSpaceIdArgument(args.space_id);
   if (operation === "page_cards") return await pageCards(request, env, identity, args);
@@ -1373,7 +1380,11 @@ const gateway = {
             try {
               response = await invokeProjectApi(
                 (internal, internalArgs) =>
-                  invoke(invocationRequest, env, internal, internalArgs, usage.seen),
+                  invoke(invocationRequest, env, internal, internalArgs, usage.seen, {
+                    transport: "mcp",
+                    operation,
+                    args,
+                  }),
                 operation,
                 args,
               );
@@ -1457,7 +1468,11 @@ const gateway = {
           const invocationRequest = withMcpAgent(request, bodyAgent(body));
           response = await invokeProjectApi(
             (internal, internalArgs) =>
-              invoke(invocationRequest, env, internal, internalArgs, usage.seen),
+              invoke(invocationRequest, env, internal, internalArgs, usage.seen, {
+                transport: "http-tools",
+                operation: body.operation,
+                args: body.arguments,
+              }),
             body.operation,
             body.arguments,
             { env },
@@ -6481,10 +6496,18 @@ export class Page {
     // A caller's trash may name a revision handle, resolved here through the
     // same fence as an edit, before the head guard: a malformed one is
     // invalid, and one that is unknown, pruned, or minted at or before the
-    // receipt horizon needs a fresh read. delete_project's own trash sends
-    // heads.
+    // receipt horizon needs a fresh read. A browser session names the heads it
+    // shows instead (BROWSER_TRASH_GUARD; the gateway refuses them from any
+    // other credential), never both. delete_project's own trash sends heads
+    // with base_comment_heads.
     let callerHeads;
-    if (type === "trash" && args.base_comment_heads === undefined && args.revision !== undefined)
+    if (type === "trash" && args.base_comment_heads === undefined && args.base_heads !== undefined)
+      callerHeads = args.revision === undefined ? args.base_heads : "invalid";
+    else if (
+      type === "trash" &&
+      args.base_comment_heads === undefined &&
+      args.revision !== undefined
+    )
       try {
         const { horizon } = await revisionClock(this.ctx.storage);
         callerHeads = await fencedHeads(this.ctx.storage, PAGE_DOC, args.revision, horizon);

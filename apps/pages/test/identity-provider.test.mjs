@@ -230,6 +230,7 @@ const NAMES_THE_PROVIDER = new Map([
   ["worker/usage.mjs", "a comment on why this operator may record principals"],
   ["viewer/ConnectedAgents.jsx", "viewer text; needs the provider in the session it loads"],
   ["worker/catalog-fixture.mjs", "a test namespace"],
+  ["worker/gateway-fixture.mjs", "a test namespace"],
   ["worker/projects-fixture.mjs", "a test namespace"],
   ["worker/trash-fixture.mjs", "a test namespace"],
 ]);

@@ -3,6 +3,7 @@
 // loads it with import() (editor-loader.mjs), at boot or on first use from an
 // index route, and renders the shell without it. Keep every Automerge import behind this module;
 // scripts/build.mjs fails the build if app.js can reach the runtime.
+import * as A from "@automerge/automerge";
 
 export { PageSession } from "./session.mjs";
 export { orderedBlockIds } from "../model/order.mjs";
@@ -26,3 +27,6 @@ export {
   titleSnapshot,
   writeTitle,
 } from "./title-selection.mjs";
+
+/** The heads a Trash move compares with the host's copy. */
+export const pageHeads = (doc) => A.getHeads(doc);

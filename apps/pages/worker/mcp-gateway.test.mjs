@@ -74,8 +74,12 @@ test("MCP gateway passes the configured public origin through a private HTTP tun
     assert.equal(response.status, 200, await response.clone().text());
     return response.json();
   };
-  for (const name of ["list_pages", "create_page", "read_page"]) {
-    const result = await rpc("tools/call", { name, arguments: { page_id: pageId } });
+  for (const [name, args] of [
+    ["list_pages", {}],
+    ["create_page", {}],
+    ["read_page", { page_id: pageId }],
+  ]) {
+    const result = await rpc("tools/call", { name, arguments: args });
     assert.equal(result.result.isError, undefined);
     const body = JSON.parse(result.result.content[0].text);
     assert.equal((body.pages?.[0] ?? body).url, pageUrl);
@@ -513,7 +517,10 @@ test("a stalled refusal body is cancelled at the tool deadline", async (t) => {
   const auth = await createAuthFixture();
   t.mock.method(globalThis, "fetch", auth.fetch);
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  for (const operation of ["manage_page_comment", "create_page"]) {
+  for (const [operation, args] of [
+    ["manage_page_comment", { page_id: pageId, action: "add", body: "Hi", nonce: "storage-test" }],
+    ["create_page", { title: "New", nonce: "storage-test" }],
+  ]) {
     const state = {};
     let reached;
     const reading = new Promise((resolve) => {
@@ -542,13 +549,7 @@ test("a stalled refusal body is cancelled at the tool deadline", async (t) => {
         headers: { Authorization: `Bearer ${auth.apiKey()}`, "Content-Type": "application/json" },
         body: JSON.stringify({
           operation,
-          arguments: {
-            page_id: pageId,
-            action: "add",
-            body: "Hi",
-            title: "New",
-            nonce: "storage-test",
-          },
+          arguments: args,
         }),
       }),
       { ...auth.env, PAGES: unavailable, CATALOGS: unavailable },
