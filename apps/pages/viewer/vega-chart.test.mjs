@@ -106,6 +106,23 @@ test("a chart reads a resolver's table, releases it, and leaves freeing it to th
     report.view.finalize();
   }));
 
+test("a render cancelled after its table arrives still releases it", () =>
+  withWindow(async (window) => {
+    const controller = new AbortController();
+    let released = 0;
+    const report = await drawChart(window.document.createElement("div"), {
+      spec: refusalRate,
+      theme,
+      signal: controller.signal,
+      resolveSource: async () => {
+        controller.abort();
+        return { table: usage, release: () => released++ };
+      },
+    });
+    assert.equal(report.status, "aborted");
+    assert.equal(released, 1);
+  }));
+
 test("mount redraws at a new width once a resize settles", () =>
   withWindow(async (window) => {
     let width = 600;

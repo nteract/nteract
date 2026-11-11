@@ -191,7 +191,10 @@ export async function drawChart(element, { spec, resolveSource, theme, signal, w
   try {
     for (const name of names) {
       const resolved = await resolveSource(name, { signal });
-      if (signal?.aborted) return { ...report, status: "aborted" };
+      if (signal?.aborted) {
+        resolved?.release?.();
+        return { ...report, status: "aborted" };
+      }
       // A resolver may return the table alone, or `{ table, release?,
       // ...version }` with the source_id, asset_id and source_revision it
       // resolved to. The resolver owns the table and may share it, so a
