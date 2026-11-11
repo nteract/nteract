@@ -9,6 +9,7 @@ import {
   resolvePeerSelection,
   validatePeerSelection,
 } from "./presence.mjs";
+import { blockAddress, nodeAddresses } from "./addresses.mjs";
 
 function fixture(markdown = "Before **🌊 passage** and after.") {
   return A.change(A.from({ blocks: {}, comments: {} }), (doc) => {
@@ -19,7 +20,11 @@ function fixture(markdown = "Before **🌊 passage** and after.") {
   });
 }
 const targets = (doc, match_text = "🌊 passage", extra = {}) =>
-  createProgressTargets(doc, [{ block_id: "one", match_text, ...extra }], A.getHeads(doc));
+  createProgressTargets(
+    doc,
+    [{ node_id: blockAddress(doc, "one"), match_text, ...extra }],
+    A.getHeads(doc),
+  );
 const expectedError = (status, code) => (error) => error.status === status && error.code === code;
 function selection(doc, text, { backward = false, caret = false, id = "one" } = {}) {
   const start = doc.blocks[id].richText.indexOf(text),
@@ -63,7 +68,11 @@ test("targets from an older known read attach after concurrent edits elsewhere",
   for (const char of "typed ")
     doc = A.change(doc, (draft) => A.splice(draft, textPath("one"), 0, 0, char));
   doc = A.change(doc, (draft) => A.splice(draft, textPath("two"), 0, 0, "Edited "));
-  const anchors = createProgressTargets(doc, [{ block_id: "one", match_text: "🌊 passage" }], read);
+  const anchors = createProgressTargets(
+    doc,
+    [{ node_id: blockAddress(doc, "one"), match_text: "🌊 passage" }],
+    read,
+  );
   const text = doc.blocks.one.richText;
   assert.deepEqual(resolveProgressTargets(doc, anchors), [
     {
@@ -81,7 +90,8 @@ test("targets resolve uniqueness at the read revision and reject passages gone s
   const read = A.getHeads(doc);
   // A second copy now would make the match ambiguous at the current revision.
   doc = A.change(doc, (draft) => A.splice(draft, textPath("one"), 0, 0, "Another apple. "));
-  const [anchor] = createProgressTargets(doc, [{ block_id: "one", match_text: "apple" }], read);
+  const one = blockAddress(doc, "one");
+  const [anchor] = createProgressTargets(doc, [{ node_id: one, match_text: "apple" }], read);
   assert.equal(
     resolveProgressTargets(doc, [anchor])[0].start_utf16,
     doc.blocks.one.richText.indexOf("apple here"),
@@ -91,7 +101,7 @@ test("targets resolve uniqueness at the read revision and reject passages gone s
     A.splice(draft, textPath("one"), at, "apple".length, "pear");
   });
   assert.throws(
-    () => createProgressTargets(doc, [{ block_id: "one", match_text: "apple" }], read),
+    () => createProgressTargets(doc, [{ node_id: one, match_text: "apple" }], read),
     expectedError(409, "presence_revision_changed"),
   );
   const base = fixture(),
@@ -102,7 +112,7 @@ test("targets resolve uniqueness at the read revision and reject passages gone s
     () =>
       createProgressTargets(
         deleted,
-        [{ block_id: "one", match_text: "🌊 passage" }],
+        [{ node_id: blockAddress(base, "one"), match_text: "🌊 passage" }],
         A.getHeads(base),
       ),
     expectedError(409, "presence_revision_changed"),
@@ -110,30 +120,36 @@ test("targets resolve uniqueness at the read revision and reject passages gone s
 });
 
 test("targets require known heads and bounded distinct passages", () => {
-  const doc = fixture();
+  const doc = fixture(),
+    one = blockAddress(doc, "one");
   assert.deepEqual(createProgressTargets(doc, undefined), []);
   assert.deepEqual(createProgressTargets(doc, []), []);
   for (const expected of [undefined, [], ["bad"], [...A.getHeads(doc), ...A.getHeads(doc)]])
     assert.throws(
-      () => createProgressTargets(doc, [{ block_id: "one", match_text: "Before" }], expected),
+      () => createProgressTargets(doc, [{ node_id: one, match_text: "Before" }], expected),
       expectedError(400, "invalid_presence_target"),
     );
   assert.throws(
-    () => createProgressTargets(doc, [{ block_id: "one", match_text: "Before" }], ["f".repeat(64)]),
+    () => createProgressTargets(doc, [{ node_id: one, match_text: "Before" }], ["f".repeat(64)]),
     expectedError(409, "presence_revision_changed"),
   );
   for (const input of [
     null,
     {},
-    new Array(4).fill({ block_id: "one", match_text: "Before" }),
-    [{ block_id: "one", match_text: "" }],
-    [{ block_id: "one", match_text: "x".repeat(1025) }],
-    [{ block_id: "one", match_text: "Before", context_before: "x".repeat(257) }],
-    [{ block_id: "one", match_text: "Before", principal: "forged" }],
-    [{ block_id: "one", match_text: "\ud83c" }],
+    new Array(4).fill({ node_id: one, match_text: "Before" }),
+    [{ node_id: one, match_text: "" }],
+    [{ node_id: one, match_text: "x".repeat(1025) }],
+    [{ node_id: one, match_text: "Before", context_before: "x".repeat(257) }],
+    [{ node_id: one, match_text: "Before", principal: "forged" }],
+    [{ node_id: one, block_id: "one", match_text: "Before" }],
+    [{ block_id: "one", match_text: "Before" }],
+    [{ node_id: 1, match_text: "Before" }],
+    // A block's key is not an id.
+    [{ node_id: "one", match_text: "Before" }],
+    [{ node_id: one, match_text: "\ud83c" }],
     [
-      { block_id: "one", match_text: "Before" },
-      { block_id: "one", match_text: "Before", context_after: "passage" },
+      { node_id: one, match_text: "Before" },
+      { node_id: one, match_text: "Before", context_after: "passage" },
     ],
   ])
     assert.throws(
@@ -141,8 +157,15 @@ test("targets require known heads and bounded distinct passages", () => {
       expectedError(400, "invalid_presence_target"),
     );
   assert.throws(
-    () => targets(doc, "Before", { block_id: "__proto__" }),
+    () => targets(doc, "Before", { node_id: "999999@abcdef" }),
     expectedError(404, "presence_target_not_found"),
+  );
+  // A target names a block; a node's id is the wrong kind.
+  const [node] = nodeAddresses(doc, "one");
+  assert.ok(node);
+  assert.throws(
+    () => targets(doc, "Before", { node_id: node }),
+    expectedError(400, "wrong_address_kind"),
   );
 });
 

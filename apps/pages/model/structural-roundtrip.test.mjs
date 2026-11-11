@@ -10,6 +10,7 @@ import * as A from "@automerge/automerge";
 import { applyPageOperation, createPageData, initializePage, orderedBlockIds } from "./page.mjs";
 import { projectReadContent } from "./read-content.mjs";
 import { textPath } from "./richtext.mjs";
+import { blockAddress } from "./addresses.mjs";
 import { updateSpansConfig } from "./marks.mjs";
 import { stampFeatures, stampSpans } from "./schema-features.mjs";
 import { projectComments } from "./comments.mjs";
@@ -133,7 +134,11 @@ test("agent read-back replacement preserves independently generated editor trees
           A.change(A.clone(doc), (draft) =>
             applyPageOperation(draft, {
               operation: "edit_page",
-              arguments: { operations: [{ op: "replace_block_markdown", block_id: id, markdown }] },
+              arguments: {
+                operations: [
+                  { op: "replace_block_markdown", node_id: blockAddress(doc, id), markdown },
+                ],
+              },
             }),
           ),
         );
@@ -180,7 +185,7 @@ test("targeted edits preserve unrelated node ids and comment anchors across gene
                 operations: [
                   {
                     op: "replace_match",
-                    block_id: id,
+                    node_id: blockAddress(doc, id),
                     match_text: target,
                     replacement: "Changed sentinel",
                   },

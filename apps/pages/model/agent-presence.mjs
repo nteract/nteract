@@ -3,7 +3,8 @@
 // part of page-activity. It is never stored in the document or a receipt.
 import * as A from "@automerge/automerge/slim";
 import { textPath } from "./richtext-format.mjs";
-import { textSegments, visibleNodeRange } from "./replace-match.mjs";
+import { textSegments } from "./replace-match.mjs";
+import { addressIndex, resolveAddress } from "./addresses.mjs";
 
 export const AGENT_PRESENCE = Object.freeze({
   // A targeted read shows for this long without another call.
@@ -113,15 +114,24 @@ export function writeTargets(doc, trace) {
 
 /**
  * Reading targets for a successful read_page. Whole-page and outline reads
- * return none. A search with 1–3 literal hits returns each hit; a section,
- * node range or block selection returns the passages it returned.
+ * return none. A search with 1–3 literal hits returns each hit; a section or
+ * a node_ids selection returns the passages it returned. The read names
+ * blocks and nodes by id; targets name blocks by key, as browsers do.
  */
 export function readTargets(doc, args = {}, body = {}) {
   if (!args || body?.include_content === false || args.include_content === false) return [];
-  const blocks = Array.isArray(body?.blocks) ? body.blocks : [];
-  const ids = [...new Set(blocks.map((block) => block?.id))].filter(
-    (id) => typeof id === "string" && Object.hasOwn(doc.blocks ?? {}, id),
-  );
+  const index = addressIndex(doc);
+  const range = (address) => {
+    try {
+      return typeof address === "string" ? resolveAddress(index, address) : null;
+    } catch {
+      return null;
+    }
+  };
+  const blocks = (Array.isArray(body?.blocks) ? body.blocks : [])
+    .map((block) => ({ block, key: range(block?.node_id)?.key }))
+    .filter(({ key }) => key !== undefined);
+  const ids = [...new Set(blocks.map(({ key }) => key))];
   if (Array.isArray(args.search) && args.search.length) {
     const terms = args.search.filter((term) => typeof term === "string" && term.length);
     const hits = [];
@@ -138,26 +148,29 @@ export function readTargets(doc, args = {}, body = {}) {
           }
     return hits.map(([id, start, end]) => textTarget(doc, "hit", id, start, end));
   }
-  if (args.section === undefined && args.node_range === undefined && args.block_ids === undefined)
-    return [];
+  if (args.section === undefined && args.node_ids === undefined) return [];
+  // Each passage: a whole block, the nodes of a partial one, or one node.
+  const passages = [
+    ...blocks.map(({ block, key }) => {
+      if (!block.partial) return { key, start: 0, end: doc.blocks[key].richText.length };
+      const nodes = (Array.isArray(block.nodes) ? block.nodes : [])
+        .map(range)
+        .filter((node) => node?.kind === "node" && node.key === key);
+      return nodes.length ? { key, start: nodes[0].start, end: nodes.at(-1).end } : null;
+    }),
+    ...(Array.isArray(body?.nodes) ? body.nodes : []).map((node) => {
+      const found = range(node?.node_id);
+      return found?.kind === "node" ? found : null;
+    }),
+  ].filter(Boolean);
   const targets = [];
-  for (const block of blocks) {
+  for (const { key, start: from, end } of passages) {
     if (targets.length >= AGENT_PRESENCE.maxTargets) break;
-    if (!ids.includes(block.id)) continue;
-    const range = block.node_range;
-    let start, end;
-    if (range && Number.isSafeInteger(range.from) && Number.isSafeInteger(range.to)) {
-      if (range.to <= range.from) continue;
-      start = visibleNodeRange(doc, block.id, range.from).start;
-      end = visibleNodeRange(doc, block.id, range.to - 1).end;
-    } else {
-      start = 0;
-      end = doc.blocks[block.id].richText.length;
-    }
-    // A node range starts on its native block marker, which an editor places at
+    let start = from;
+    // A node starts on its native block marker, which an editor places at
     // the end of the previous paragraph. Start on the node's first character.
-    while (start < end && doc.blocks[block.id].richText[start] === "\ufffc") start++;
-    if (end > start) targets.push(textTarget(doc, "passage", block.id, start, end));
+    while (start < end && doc.blocks[key].richText[start] === "\ufffc") start++;
+    if (end > start) targets.push(textTarget(doc, "passage", key, start, end));
   }
   return targets;
 }

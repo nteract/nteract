@@ -9,6 +9,7 @@ import { authenticate } from "./auth.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { applyPageOperation, createPageData, initializePage } from "../model/page.mjs";
 import { comment, newCommentsDoc } from "../model/comments-test-support.mjs";
+import { blockAddress } from "../model/addresses.mjs";
 import {
   exchangeAuthorizationCode,
   issueAuthorizationCode,
@@ -535,7 +536,11 @@ function readPageFixture(t, f, role) {
       operation: "edit_page",
       arguments: {
         operations: [
-          { op: "insert_markdown", after_block_id: blockId, markdown: "Unselected body sentinel." },
+          {
+            op: "insert_markdown",
+            after_node_id: blockAddress(draft, blockId),
+            markdown: "Unselected body sentinel.",
+          },
         ],
       },
     });
@@ -579,24 +584,24 @@ function readPageFixture(t, f, role) {
       return page;
     },
   };
-  return { page, doc, blockId, threadId };
+  return { page, doc, block: blockAddress(doc, blockId), threadId };
 }
 
 for (const scope of ["pages:read pages:write offline_access", "pages:read offline_access"]) {
   for (const role of ["owner", "editor", "viewer"]) {
     test(`selective and comment reads enforce current ${role} access with ${scope}`, async (t) => {
       const f = await fixture(t, scope);
-      const { page, doc, blockId, threadId } = readPageFixture(t, f, role);
+      const { page, doc, block, threadId } = readPageFixture(t, f, role);
       const heads = A.getHeads(doc);
       let authority;
       for (const [name, args, check] of [
         [
           "read_page",
-          { block_ids: [blockId], comments: "none" },
+          { node_ids: [block], comments: "none" },
           (body) => {
             assert.deepEqual(
-              body.blocks.map((block) => block.id),
-              [blockId],
+              body.blocks.map((entry) => entry.node_id),
+              [block],
             );
             assert.match(body.blocks[0].markdown, /Visible selected passage/);
             assert.doesNotMatch(
@@ -625,7 +630,7 @@ for (const scope of ["pages:read pages:write offline_access", "pages:read offlin
               body.comments.map((thread) => thread.id),
               [threadId],
             );
-            assert.equal(body.comments[0].block_id, blockId);
+            assert.equal(body.comments[0].node_id, block);
             assert.equal(body.comments[0].messages, undefined);
             assert.doesNotMatch(
               JSON.stringify(body),

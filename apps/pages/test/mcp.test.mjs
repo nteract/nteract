@@ -50,7 +50,7 @@ test("tool schemas use only the JSON Schema subset clients forward as written", 
 
 test("tool catalog has a deliberate size ceiling", () => {
   assert.ok(
-    JSON.stringify(tools).length <= 36000,
+    JSON.stringify(tools).length <= 35700,
     "Tool catalog grew; raise the ceiling on purpose when a tool grows",
   );
 });
@@ -427,9 +427,12 @@ test("MCP advertises typed image insertion and echoes its exact receipt as struc
     heads: ["b".repeat(64)],
     result: {
       page_id: pageId,
-      inserted_images: [
+      edits: [
         {
-          block_id: "image-block",
+          op: "insert_image",
+          node_id: "12@ab",
+          nodes: ["13@ab"],
+          image: "14@ab",
           asset_id,
           asset_url: `/api/pages/${pageId}/assets/${asset_id}`,
           alt: "A cat",
@@ -478,7 +481,7 @@ test("MCP change budgets count both representations, escaping and the JSON-RPC I
     const body = {
       page_id: pageId,
       revision: "r3",
-      changes: [{ block_id: "block", node_index: 0, markdown }],
+      changes: [{ node_id: "4@ab", block: "3@ab", scope: "node", change: "updated", markdown }],
     };
     const response = await handleMcp(
       request("tools/call", {
@@ -522,7 +525,8 @@ test("MCP exposes net changes and node-scoped target edits without changing exac
   const editTool = tools.find((tool) => tool.name === "edit_page");
   assert.deepEqual(editTool.inputSchema.properties.conflict_scope.enum, ["page", "target"]);
   const match = editTool.inputSchema.properties.operations.items;
-  assert.equal(match.properties.node_index.minimum, 0);
+  assert.equal(match.properties.node_id.type, "string");
+  assert.equal(match.properties.node_index, undefined);
   const args = {
     page_id: pageId,
     since_revision: "r2",
@@ -553,7 +557,7 @@ test("MCP exposes net changes and node-scoped target edits without changing exac
   const conflict = {
     code: "edit_conflict",
     current_heads: ["c".repeat(64)],
-    conflicts: [{ block_id: "block", node_index: 2, reason: "Target changed" }],
+    conflicts: [{ node_id: "7@ab", reason: "Target changed" }],
   };
   const failed = await handleMcp(
     request("tools/call", {
@@ -592,7 +596,7 @@ test("MCP initialization guides title authoring and successful receipts preserve
     warnings: [
       {
         code: "opening_heading_repeats_title",
-        block_id: "opening-block",
+        node_id: "2@ab",
         heading: "A document title",
         match_kind: "normalized_exact",
         suggested_action: "Read the current opening before correcting an accidental duplicate.",
@@ -802,7 +806,7 @@ test("MCP advertises visible-text replacement separately from Markdown replaceme
     operations: [
       {
         op: "replace_match",
-        block_id: "block-a",
+        node_id: "5@ab",
         match_text: "word",
         replacement: "phrase",
         context_before: "second",
@@ -817,7 +821,7 @@ test("MCP advertises visible-text replacement separately from Markdown replaceme
       return Response.json({
         page_id: pageId,
         result: {
-          edits: [{ op: "replace_match", block_id: "block-a", matched: 1 }],
+          edits: [{ op: "replace_match", node_id: "5@ab", matched: 1 }],
         },
       });
     },

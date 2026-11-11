@@ -168,7 +168,7 @@ try {
     ].join("\n\n"),
   });
   const pageId = target.page_id;
-  const first = (await tool(owner.page, "read_page", { page_id: pageId })).blocks[0].id;
+  const first = (await tool(owner.page, "read_page", { page_id: pageId })).blocks[0].node_id;
   // Block 2: an image a few lines above the target heading.
   const png = await owner.page.evaluate(() => {
     const canvas = document.createElement("canvas");
@@ -194,7 +194,7 @@ try {
     revision: read.revision,
     nonce: key(),
     operations: [
-      { op: "insert_image", after_block_id: first, asset_id: asset.asset_id, alt: IMAGE_ALT },
+      { op: "insert_image", after_node_id: first, asset_id: asset.asset_id, alt: IMAGE_ALT },
     ],
   });
   // Block 3: the target heading, the second "Notes", and the Unicode heading.
@@ -205,7 +205,7 @@ try {
     operations: [
       {
         op: "insert_markdown",
-        after_block_id: inserted.result.inserted_images[0].block_id,
+        after_node_id: inserted.result.edits[0].node_id,
         markdown: [
           "Just above the section.",
           `## ${TARGET}`,

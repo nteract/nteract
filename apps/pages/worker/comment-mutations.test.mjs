@@ -7,6 +7,7 @@ import { applyComment, projectComments } from "../model/comments.mjs";
 import { commentsGenesis } from "../model/comments-doc.mjs";
 import { guardCommentIntent, passageComment } from "../model/comment-guard.mjs";
 import { textPath } from "../model/richtext.mjs";
+import { blockAddress } from "../model/addresses.mjs";
 import { COMMENTS_DOC, documentMutation, PAGE_DOC } from "./mutations.mjs";
 import { headsFor } from "./revisions.mjs";
 
@@ -47,6 +48,7 @@ function fixture(t, markdown = "Alpha first.\n\nBeta second.\n\nKeep the tail.")
   );
   let comments = A.clone(commentsGenesis(crypto.randomUUID()));
   const id = Object.keys(doc.blocks)[0];
+  const block = blockAddress(doc, id);
   const identity = { principal: "user:comment-fixture", displayName: "Agent", driver: "Codex" };
   const handle = {
     doc: () => comments,
@@ -118,6 +120,7 @@ function fixture(t, markdown = "Alpha first.\n\nBeta second.\n\nKeep the tail.")
     handle,
     page: () => doc,
     id,
+    block,
     context,
     native,
     nativeComments: (fn) => {
@@ -141,7 +144,9 @@ const rejectsWith = (status, code) => (error) =>
 test("thread actions succeed after browser typing in the same block", async (t) => {
   const f = fixture(t);
   const added = await documentMutation(
-    f.context(await f.args({ action: "add", block_id: f.id, selected_text: "Beta", body: "Why?" })),
+    f.context(
+      await f.args({ action: "add", node_id: f.block, selected_text: "Beta", body: "Why?" }),
+    ),
   );
   const { thread_id, message_id } = added.result;
   const stale = await f.revision();
@@ -210,7 +215,12 @@ test("thread actions still validate threads, messages and supplied heads", async
 
 test("a passage comment from an older read anchors the passage the caller saw", async (t) => {
   const f = fixture(t);
-  const args = await f.args({ action: "add", block_id: f.id, selected_text: "Beta", body: "Look" });
+  const args = await f.args({
+    action: "add",
+    node_id: f.block,
+    selected_text: "Beta",
+    body: "Look",
+  });
   f.type("Alpha", " typed");
   f.native((draft) => A.splice(draft, textPath(f.id), 0, 0, "Intro. "));
   const receipt = await documentMutation(f.context(args));
@@ -230,7 +240,7 @@ test("occurrence counts copies at the read revision, not the current one", async
   const f = fixture(t, "apple one, apple two.");
   const args = await f.args({
     action: "add",
-    block_id: f.id,
+    node_id: f.block,
     selected_text: "apple",
     occurrence: 2,
     body: "This one",
@@ -244,7 +254,12 @@ test("occurrence counts copies at the read revision, not the current one", async
 
 test("a passage deleted after the read returns edit_conflict without recording", async (t) => {
   const f = fixture(t);
-  const args = await f.args({ action: "add", block_id: f.id, selected_text: "Beta", body: "Gone" });
+  const args = await f.args({
+    action: "add",
+    node_id: f.block,
+    selected_text: "Beta",
+    body: "Gone",
+  });
   f.native((draft) => {
     const at = draft.blocks[f.id].richText.indexOf("Beta");
     A.splice(draft, textPath(f.id), at, 4, "");
@@ -253,7 +268,7 @@ test("a passage deleted after the read returns edit_conflict without recording",
   await assert.rejects(documentMutation(f.context(args)), (error) => {
     assert.equal(error.status, 409);
     assert.equal(error.code, "edit_conflict");
-    assert.deepEqual(error.details.conflicts, [{ block_id: f.id, reason: "target_detached" }]);
+    assert.deepEqual(error.details.conflicts, [{ node_id: f.block, reason: "target_detached" }]);
     assert.deepEqual(error.details.current_heads, A.getHeads(f.page()));
     return true;
   });
@@ -264,7 +279,7 @@ test("a passage deleted after the read returns edit_conflict without recording",
 
 test("a passage comment rejects an unknown, missing or malformed revision", async (t) => {
   const f = fixture(t);
-  const add = { action: "add", block_id: f.id, selected_text: "Beta", body: "Hi" };
+  const add = { action: "add", node_id: f.block, selected_text: "Beta", body: "Hi" };
   await assert.rejects(
     documentMutation(f.context(await f.args({ ...add, revision: "r999" }))),
     rejectsWith(409, "resync_required"),
@@ -287,11 +302,13 @@ test("a block comment needs only its block to exist now", async (t) => {
   const stale = await f.revision();
   f.type("Alpha", " typed");
   await documentMutation(
-    f.context(await f.args({ action: "add", block_id: f.id, body: "Block note", revision: stale })),
+    f.context(
+      await f.args({ action: "add", node_id: f.block, body: "Block note", revision: stale }),
+    ),
   );
   // A block comment takes no revision at all.
   await documentMutation(
-    f.context({ nonce: `bare-${crypto.randomUUID()}`, block_id: f.id, body: "Bare" }),
+    f.context({ nonce: `bare-${crypto.randomUUID()}`, node_id: f.block, body: "Bare" }),
   );
   assert.deepEqual(f.comments()[0].target, { kind: "block", blockId: f.id });
   f.native((draft) => {
@@ -299,7 +316,7 @@ test("a block comment needs only its block to exist now", async (t) => {
   });
   await assert.rejects(
     documentMutation(
-      f.context(await f.args({ action: "add", block_id: f.id, body: "Late", revision: stale })),
+      f.context(await f.args({ action: "add", node_id: f.block, body: "Late", revision: stale })),
     ),
     rejectsWith(400),
   );
@@ -307,7 +324,12 @@ test("a block comment needs only its block to exist now", async (t) => {
 
 test("an exact retry replays its receipt after the passage is later deleted", async (t) => {
   const f = fixture(t);
-  const args = await f.args({ action: "add", block_id: f.id, selected_text: "Beta", body: "Once" });
+  const args = await f.args({
+    action: "add",
+    node_id: f.block,
+    selected_text: "Beta",
+    body: "Once",
+  });
   f.type("Alpha", " typed");
   const receipt = await documentMutation(f.context(args));
   f.native((draft) => {

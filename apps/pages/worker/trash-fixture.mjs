@@ -6,6 +6,7 @@ import { readRevision } from "./operation-journal.mjs";
 import { createAuthFixture } from "../auth-fixtures.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import { applyComment } from "../model/comments.mjs";
+import { blockAddress } from "../model/addresses.mjs";
 import { commentsGenesis } from "../model/comments-doc.mjs";
 import { WRITTEN_FORMATS } from "../model/document-types.mjs";
 import { Catalog, Page } from "./index.mjs";
@@ -92,6 +93,7 @@ export async function fixture(
     );
   }
   const blockId = Object.keys(doc.blocks)[0];
+  const block = blockAddress(doc, blockId);
   t.after(() => A.free(doc));
   const base = {
     pageId,
@@ -288,7 +290,10 @@ export async function fixture(
     },
     hooks,
     tasks,
+    /** The first block's key, as internal APIs (comments, the browser) name it. */
     blockId,
+    /** The first block's address, as agents name it. */
+    block,
     catalogOf,
     catalogCall,
     pageCall,

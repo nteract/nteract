@@ -9,6 +9,10 @@ import { stampFeatures } from "./schema-features.mjs";
 import { replaceMatch } from "./replace-match.mjs";
 import { applyComment as applyCommentTo } from "./comments.mjs";
 import { comment, newCommentsDoc } from "./comments-test-support.mjs";
+import { blockAddress, nodeAddresses } from "./addresses.mjs";
+import { nodeIds } from "./node-ids.mjs";
+import { applyPageOperation, createPageData, initializePage, orderedBlockIds } from "./page.mjs";
+import { pageWithSpans, SHAPES } from "../test/address-inputs.mjs";
 
 const author = { principal: "user", displayName: "Collaborator", driver: "Browser" };
 function page(markdown = "# Start\n\nFirst paragraph.\n\n## Later\n\nSecond paragraph.") {
@@ -111,11 +115,10 @@ test("one native paragraph edit returns only its current Markdown and revision-b
   const result = read(doc, before);
   assert.deepEqual(result.changes, [
     {
-      block_id: "one",
+      node_id: markerCursor(doc, 3),
+      block: blockAddress(doc, "one"),
       scope: "node",
       change: "updated",
-      node_index: 3,
-      node_id: markerCursor(doc, 3),
       type: "paragraph",
       heading_path: ["Start", "Later"],
       markdown: "Updated 🌊 paragraph.",
@@ -137,22 +140,25 @@ test("inserting an earlier native node does not report untouched shifted nodes a
   });
   assert.deepEqual(read(doc, before).changes, [
     {
-      block_id: "one",
+      node_id: markerCursor(doc, 0),
+      block: blockAddress(doc, "one"),
       scope: "node",
       change: "inserted",
-      node_index: 0,
-      node_id: markerCursor(doc, 0),
       type: "paragraph",
       heading_path: [],
+      // The node it now comes before.
+      before_node_id: markerCursor(doc, 1),
       markdown: "New opening.",
     },
   ]);
 });
 
-test("native deletion reports its old address without historical text", () => {
+test("native deletion reports its old id and the node it came before, without historical text", () => {
   let doc = page();
   const before = A.getHeads(doc);
-  const deletedId = markerCursor(doc, 1);
+  const deletedId = markerCursor(doc, 1),
+    nextId = markerCursor(doc, 2),
+    lastId = markerCursor(doc, 3);
   doc = A.change(doc, (draft) => {
     const path = textPath("one"),
       start = draft.blocks.one.richText.indexOf("First paragraph.") - 1;
@@ -161,15 +167,37 @@ test("native deletion reports its old address without historical text", () => {
   const result = read(doc, before);
   assert.deepEqual(result.changes, [
     {
-      block_id: "one",
+      node_id: deletedId,
+      block: blockAddress(doc, "one"),
       scope: "node",
       change: "deleted",
-      before_node_index: 1,
-      node_id: deletedId,
       type: "paragraph",
+      before_node_id: nextId,
     },
   ]);
   assert.doesNotMatch(JSON.stringify(result), /First paragraph/);
+  for (const change of result.changes) {
+    assert.equal("node_index" in change, false);
+    assert.equal("before_node_index" in change, false);
+    assert.equal("block_id" in change, false);
+  }
+  // The last node at the baseline came before nothing.
+  const beforeLast = A.getHeads(doc);
+  doc = A.change(doc, (draft) => {
+    const path = textPath("one"),
+      start = draft.blocks.one.richText.indexOf("Second paragraph.") - 1;
+    A.splice(draft, path, start, "Second paragraph.".length + 1, "");
+  });
+  assert.deepEqual(read(doc, beforeLast).changes, [
+    {
+      node_id: lastId,
+      block: blockAddress(doc, "one"),
+      scope: "node",
+      change: "deleted",
+      type: "paragraph",
+      before_node_id: null,
+    },
+  ]);
 });
 
 test("format-only updates preserve node identity and return the current formatting", () => {
@@ -182,7 +210,7 @@ test("format-only updates preserve node identity and return the current formatti
   const result = read(doc, before);
   assert.equal(result.changes.length, 1);
   assert.equal(result.changes[0].change, "updated");
-  assert.equal(result.changes[0].node_index, 1);
+  assert.equal(result.changes[0].node_id, markerCursor(doc, 1));
   assert.equal(result.changes[0].markdown, "**First** paragraph.");
 });
 
@@ -195,8 +223,8 @@ test("heading paths use current titles when both a section and its prose changed
   });
   const changes = read(doc, before).changes;
   assert.deepEqual(
-    changes.map((c) => c.node_index),
-    [2, 3],
+    changes.map((c) => c.node_id),
+    [markerCursor(doc, 2), markerCursor(doc, 3)],
   );
   assert.deepEqual(
     changes.map((c) => c.heading_path),
@@ -241,24 +269,29 @@ test("block insert, move and deletion stay explicit without raw extension fields
     draft.blocks.one.position = new A.RawString("a2");
   });
   const result = read(doc, before);
+  const one = blockAddress(doc, "one"),
+    two = blockAddress(doc, "two");
   assert.ok(
-    result.changes.some(
-      (c) => c.block_id === "two" && c.scope === "block" && c.change === "inserted",
-    ),
+    result.changes.some((c) => c.node_id === two && c.scope === "block" && c.change === "inserted"),
   );
   assert.ok(
     result.changes.some(
-      (c) => c.block_id === "two" && c.scope === "node" && c.markdown === "Added",
+      (c) =>
+        c.node_id === nodeAddresses(doc, "two")[0] &&
+        c.block === two &&
+        c.scope === "node" &&
+        c.markdown === "Added",
     ),
   );
-  assert.ok(result.changes.some((c) => c.block_id === "one" && c.change === "moved"));
+  assert.ok(
+    result.changes.some((c) => c.node_id === one && c.scope === "block" && c.change === "moved"),
+  );
   const next = A.getHeads(doc);
   doc = A.change(doc, (draft) => {
     delete draft.blocks.one;
   });
-  assert.deepEqual(read(doc, next).changes, [
-    { block_id: "one", scope: "block", change: "deleted" },
-  ]);
+  // A deleted block reports the id it had.
+  assert.deepEqual(read(doc, next).changes, [{ node_id: one, scope: "block", change: "deleted" }]);
 });
 
 test("a field a peer adds to a block is neither reported nor returned", () => {
@@ -279,12 +312,13 @@ test("lists and tables are whole top-level nodes while nearby prose stays out", 
     replaceMatch(draft, "one", { match_text: "Two", replacement: "Three" });
     replaceMatch(draft, "one", { match_text: "y", replacement: "z" });
   });
-  const changes = read(doc, before).changes;
+  const changes = read(doc, before).changes,
+    ids = nodeAddresses(doc, "one");
   assert.deepEqual(
-    changes.map((c) => [c.node_index, c.type, c.change]),
+    changes.map((c) => [c.node_id, c.type, c.change]),
     [
-      [1, "bullet-list", "updated"],
-      [2, "table", "updated"],
+      [ids[1], "bullet-list", "updated"],
+      [ids[2], "table", "updated"],
     ],
   );
   assert.match(changes[0].markdown, /Three/);
@@ -502,4 +536,154 @@ test("selectors reject unsupported modes and unbounded arguments", () => {
     { unexpected: true },
   ])
     assert.throws(() => read(doc, heads, args), errorCode(400, "invalid_change_selector"));
+});
+
+/** The order `baseline` (ids) becomes after the change feed's `entries` for
+ * that scope, from the feed alone: drop what was deleted or moved, then
+ * place each inserted or moved entry before its before_node_id (at the end
+ * for null), last entry first, so every entry's successor is already in
+ * place. */
+function reconstruct(baseline, entries) {
+  const placed = entries.filter(
+    (entry) => entry.change === "inserted" || entry.change === "moved" || entry.moved,
+  );
+  const gone = new Set(
+    entries.filter((entry) => entry.change === "deleted").map((entry) => entry.node_id),
+  );
+  for (const entry of placed) gone.add(entry.node_id);
+  const order = baseline.filter((id) => !gone.has(id));
+  for (const entry of [...placed].reverse()) {
+    assert.ok(Object.hasOwn(entry, "before_node_id"), JSON.stringify(entry));
+    const at = entry.before_node_id === null ? order.length : order.indexOf(entry.before_node_id);
+    assert.ok(at >= 0, `${entry.before_node_id} is placed`);
+    order.splice(at, 0, entry.node_id);
+  }
+  return order;
+}
+const marker = () => ({
+  type: new A.ImmutableString("paragraph"),
+  parents: [],
+  attrs: {},
+  isEmbed: false,
+});
+/** A new paragraph holding `text`, written as the editor writes one: its
+ * marker at text offset `at`, then its text. */
+function insertParagraph(doc, key, at, text) {
+  A.splitBlock(doc, textPath(key), at, marker());
+  A.splice(doc, textPath(key), at + 1, 0, text);
+}
+const markerAt = (doc, key, id) => nodeIds(doc, key).find((entry) => entry.id === id).at;
+
+test("inserted and moved entries carry before_node_id, so the feed rebuilds node order", () => {
+  let doc = A.from(createPageData({ pageId: "placement", title: "Placement" }));
+  doc = A.change(doc, (draft) => initializePage(draft, "Alpha\n\nBravo\n\nCharlie"));
+  const [key] = orderedBlockIds(doc);
+  const baseline = nodeAddresses(doc, key);
+  const heads = A.getHeads(doc);
+  const cases = {
+    "insert at the front": (draft) => insertParagraph(draft, key, 0, "Front"),
+    "insert between": (draft) =>
+      insertParagraph(draft, key, markerAt(draft, key, baseline[1]), "Between"),
+    "insert at the end": (draft) =>
+      insertParagraph(draft, key, draft.blocks[key].richText.length, "End"),
+    "insert next to a deletion": (draft) => {
+      const start = markerAt(draft, key, baseline[1]);
+      const end = markerAt(draft, key, baseline[2]);
+      A.splice(draft, textPath(key), start, end - start);
+      insertParagraph(draft, key, start, "Replacement");
+    },
+  };
+  for (const [name, edit] of Object.entries(cases)) {
+    const after = A.change(A.clone(doc), edit);
+    const feed = read(after, heads).changes.filter(
+      (entry) => entry.scope === "node" && entry.block === blockAddress(after, key),
+    );
+    assert.deepEqual(reconstruct(baseline, feed), nodeAddresses(after, key), name);
+    for (const entry of feed.filter((item) => item.change !== "deleted"))
+      assert.ok(Array.isArray(entry.heading_path), name);
+  }
+});
+
+test("before_node_id names the next node that has an id, past unmarked text", () => {
+  // A code block, then an image and text a merge left with no marker, then a
+  // paragraph: the middle node has no id.
+  const { doc, id: key } = pageWithSpans(SHAPES["image-after-code"]);
+  const baseline = nodeAddresses(doc, key);
+  assert.deepEqual(
+    baseline.map((id) => id !== null),
+    [true, false, true],
+  );
+  const heads = A.getHeads(doc);
+  const path = textPath(key);
+  const named = (ids) => ids.filter((id) => id !== null);
+  const nodeFeed = (after) =>
+    read(after, heads).changes.filter(
+      (entry) => entry.scope === "node" && entry.block === blockAddress(after, key),
+    );
+
+  // A rule holds nothing, so the unmarked text stays a node of its own after it.
+  const inserted = A.change(A.clone(doc), (draft) =>
+    A.splitBlock(draft, path, markerAt(draft, key, baseline[0]) + 2, {
+      ...marker(),
+      type: new A.ImmutableString("horizontal-rule"),
+    }),
+  );
+  const current = nodeAddresses(inserted, key);
+  assert.deepEqual(
+    current.map((id) => id !== null),
+    [true, true, false, true],
+  );
+  const rule = nodeFeed(inserted).find((entry) => entry.change === "inserted");
+  assert.equal(rule.node_id, current[1]);
+  assert.equal(rule.before_node_id, baseline[2]);
+  assert.deepEqual(
+    reconstruct(
+      named(baseline),
+      nodeFeed(inserted).filter((entry) => entry.node_id !== null),
+    ),
+    named(current),
+  );
+
+  // A deleted node's place is read at the baseline, by the same rule.
+  const deleted = A.change(A.clone(doc), (draft) => A.splice(draft, path, 0, 2));
+  const gone = nodeFeed(deleted).find((entry) => entry.change === "deleted");
+  assert.equal(gone.node_id, baseline[0]);
+  assert.equal(gone.before_node_id, baseline[2]);
+
+  // Null only when no node with an id follows.
+  const last = A.change(A.clone(doc), (draft) =>
+    insertParagraph(draft, key, draft.blocks[key].richText.length, "End"),
+  );
+  assert.equal(nodeFeed(last).find((entry) => entry.change === "inserted").before_node_id, null);
+});
+
+test("inserted and moved blocks carry before_node_id, so the feed rebuilds block order", () => {
+  let doc = A.from(createPageData({ pageId: "block-placement", title: "Placement" }));
+  doc = A.change(doc, (draft) => initializePage(draft, "One"));
+  const edit = (current, operations) =>
+    A.change(A.clone(current), (draft) =>
+      applyPageOperation(draft, { operation: "edit_page", arguments: { operations } }),
+    );
+  doc = edit(doc, [
+    { op: "insert_markdown", markdown: "Two" },
+    { op: "insert_markdown", markdown: "Three" },
+  ]);
+  const blocks = (current) => orderedBlockIds(current).map((key) => blockAddress(current, key));
+  const baseline = blocks(doc);
+  const heads = A.getHeads(doc);
+  const cases = {
+    "insert at the front": [{ op: "insert_markdown", markdown: "Front", after_node_id: null }],
+    "insert between": [{ op: "insert_markdown", markdown: "Between", after_node_id: baseline[0] }],
+    "insert at the end": [{ op: "insert_markdown", markdown: "End" }],
+    "a move": [{ op: "move_block", node_id: baseline[2], after_node_id: null }],
+    "insert next to a deletion": [
+      { op: "delete_block", node_id: baseline[1] },
+      { op: "insert_markdown", markdown: "Replacement", after_node_id: baseline[0] },
+    ],
+  };
+  for (const [name, operations] of Object.entries(cases)) {
+    const after = edit(doc, operations);
+    const feed = read(after, heads).changes.filter((entry) => entry.scope === "block");
+    assert.deepEqual(reconstruct(baseline, feed), blocks(after), name);
+  }
 });

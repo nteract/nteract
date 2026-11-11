@@ -247,7 +247,7 @@ try {
   const first = await mcp(a, "report_page_progress", {
     page_id: pageId,
     message: "Checking the shared passage",
-    targets: [{ block_id: baseline.blocks[0].id, match_text: anchorText }],
+    targets: [{ node_id: baseline.blocks[0].node_id, match_text: anchorText }],
     revision: baseline.revision,
   });
   assert.equal(typeof first.lease_token, "string");

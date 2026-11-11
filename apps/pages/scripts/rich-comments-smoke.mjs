@@ -157,14 +157,14 @@ try {
   const { result: legacy } = await mutate("manage_page_comment", {
     page_id: pageId,
     action: "add",
-    block_id: document.blocks[0].id,
+    node_id: document.blocks[0].node_id,
     body: "**Legacy literal** | value |",
     body_format: "plain",
   });
   const { result: added } = await mutate("manage_page_comment", {
     page_id: pageId,
     action: "add",
-    block_id: document.blocks[0].id,
+    node_id: document.blocks[0].node_id,
     selected_text: "passage",
     body: "**Native discussion**\n\n| Approach | Tradeoff |\n| --- | --- |\n| Rich text | **Editable cells** |\n| Markdown | `Agent friendly` |",
     body_format: "markdown",
@@ -492,7 +492,7 @@ try {
       {
         op: "insert_markdown",
         markdown: "A doomed paragraph sits here.",
-        after_block_id: blocksBefore[0].id,
+        after_node_id: blocksBefore[0].node_id,
       },
     ],
   });
@@ -501,10 +501,10 @@ try {
   await select(doomed, "doomed");
   await page.getByRole("button", { name: "Comment on selection", exact: true }).click();
   await inline.pressSequentially("About to lose my anchor");
-  const doomedId = (await call("read_page", { page_id: pageId })).blocks[1].id;
+  const doomedId = (await call("read_page", { page_id: pageId })).blocks[1].node_id;
   await mutate("edit_page", {
     page_id: pageId,
-    operations: [{ op: "delete_block", block_id: doomedId }],
+    operations: [{ op: "delete_block", node_id: doomedId }],
   });
   await expect(page.locator("article wg-content")).toHaveCount(1);
   await expect(popover).toBeVisible();

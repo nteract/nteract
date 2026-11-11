@@ -510,9 +510,7 @@ export async function readWholePage(client, address, options) {
         kind: block.kind,
       })),
       types: entries.map((entry) => entry.type),
-      image_occurrences: entries.flatMap((entry) =>
-        (entry.summary?.images ?? []).map((image) => ({ ...image, block_id: entry.block_id })),
-      ),
+      image_occurrences: entries.flatMap((entry) => entry.summary?.images ?? []),
       // Dataframes on this Page, from the outline's typed fields. One naming
       // another Page's asset reads as readable:false, with no attrs.
       dataframes: entries
@@ -1040,30 +1038,30 @@ export function bodyOperations(blocks, units) {
               ...(unit.dataframe.title !== undefined && { title: unit.dataframe.title }),
             },
           },
-          ...(after !== undefined && { after_block_id: after }),
+          ...(after !== undefined && { after_node_id: after }),
         }
       : {
           op: "insert_markdown",
           markdown: unit.markdown,
-          ...(after !== undefined && { after_block_id: after }),
+          ...(after !== undefined && { after_node_id: after }),
         };
   const first = units.findIndex((unit) => unit.markdown !== undefined);
   const target = blocks.find((block) => !HOLDS_DATAFRAME.test(block.markdown ?? ""));
   const operations = [];
   if (first === -1 || !target) {
     for (const unit of units) operations.push(write(unit));
-    for (const block of blocks) operations.push({ op: "delete_block", block_id: block.id });
+    for (const block of blocks) operations.push({ op: "delete_block", node_id: block.node_id });
     return operations;
   }
   // Each goes first, so the leading units go in reverse.
   for (const unit of units.slice(0, first).reverse()) operations.push(write(unit, null));
   operations.push({
     op: "replace_block_markdown",
-    block_id: target.id,
+    node_id: target.node_id,
     markdown: units[first].markdown,
   });
   for (const block of blocks)
-    if (block !== target) operations.push({ op: "delete_block", block_id: block.id });
+    if (block !== target) operations.push({ op: "delete_block", node_id: block.node_id });
   for (const unit of units.slice(first + 1)) operations.push(write(unit));
   return operations;
 }
@@ -1809,12 +1807,11 @@ export async function importBundle(
           const image = target.image_occurrences[variant.ordinal];
           const assetId = ASSET_SRC.exec(variant.src)?.[1];
           const expected = assetId ? imageAssetUrl(targetId, assetId) : variant.src;
-          if (!image?.image_id || image.src !== expected)
+          if (!image?.node_id || image.src !== expected)
             throw new TransferError("Target image occurrence does not match the installed body");
           return {
             op: "set_image",
-            block_id: image.block_id,
-            image_id: image.image_id,
+            node_id: image.node_id,
             dark_asset_id: variant.dark_asset_id,
           };
         });

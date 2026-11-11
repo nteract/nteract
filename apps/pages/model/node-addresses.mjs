@@ -15,13 +15,13 @@
 //   marker is its first item's; a quote stored without its own marker opens
 //   with its first child's.
 //
-// `node_index` is a node's position in this list. node-ids.mjs names a node by
+// A node's index is its position in this list. node-ids.mjs names a node by
 // a cursor at `at`. nodeIndexAt and ancestryAt address a single character, as
 // a target-scoped passage edit compares it across revisions.
 //
 // Text stored right after a marker this build doesn't know is that node's own
 // content. decode draws it as a separate paragraph; here it stays part of the
-// unknown node, so the node count and every later node_index match what the
+// unknown node, so the node count and every later node's index match what the
 // Markdown projection reads (one unknown node holding the text).
 import { markerType } from "./node-registry.mjs";
 import * as A from "@automerge/automerge/slim";
@@ -103,7 +103,7 @@ export function blockAddresses(spans) {
   };
 }
 
-/** The node_index of the node holding text index `am`. */
+/** The index of the node holding text index `am`. */
 export function nodeIndexAt({ nodes, map }, am) {
   const wg = map.amToWg[am];
   let low = 0;

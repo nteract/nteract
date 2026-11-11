@@ -99,7 +99,7 @@ async function addVia(f, send) {
     page_id: pageId,
     nonce: key(),
     action: "add",
-    block_id: f.blockId,
+    node_id: f.block,
     body: "From a tool",
   };
   const response = await worker.fetch(send(args), f.env);
@@ -184,7 +184,7 @@ test("an exact retry replays the original author; a changed label under the same
     page_id: pageId,
     nonce: key(),
     action: "add",
-    block_id: f.blockId,
+    node_id: f.block,
     body: "Retried",
   };
   const first = await worker.fetch(send(args, { name: "A", model: "m1" }), f.env);

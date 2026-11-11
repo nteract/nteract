@@ -297,27 +297,31 @@ try {
         op: "insert_image",
         asset_id: asset.asset_id,
         alt: "Imported private image",
-        after_block_id: read.blocks[0].id,
+        after_node_id: read.blocks[0].node_id,
       },
     ],
   };
   const inserted = await call(ownerGrant.client, "edit_page", insertion);
   assert.equal(inserted.url, origin + `/p/${pageId}`);
-  assert.equal(inserted.result.inserted_images.length, 1);
-  const insertedImage = inserted.result.inserted_images[0];
+  assert.equal(inserted.result.edits.length, 1);
+  const insertedImage = inserted.result.edits[0];
   assert.deepEqual(insertedImage, {
-    image_id: insertedImage.image_id,
-    block_id: insertedImage.block_id,
+    op: "insert_image",
+    node_id: insertedImage.node_id,
+    nodes: insertedImage.nodes,
+    image: insertedImage.image,
     asset_id: asset.asset_id,
     asset_url: asset.asset_url,
     alt: "Imported private image",
   });
-  assert.equal(typeof insertedImage.block_id, "string");
+  assert.equal(typeof insertedImage.node_id, "string");
+  assert.equal(typeof insertedImage.image, "string");
+  assert.ok(Array.isArray(insertedImage.nodes));
   assert.notDeepEqual(inserted.revision, read.revision);
   assert.deepEqual(await call(ownerGrant.client, "edit_page", insertion), inserted);
   const after = await call(ownerGrant.client, "read_page", { page_id: pageId });
   assert.equal(after.blocks.length, read.blocks.length + 1);
-  assert.equal(after.blocks[1].id, insertedImage.block_id);
+  assert.equal(after.blocks[1].node_id, insertedImage.node_id);
   assert.equal(after.blocks[1].markdown, `![Imported private image](${asset.asset_url})`);
   assert.deepEqual(after.revision, inserted.revision);
   assert.equal(JSON.stringify(after).includes("oaiusercontent"), false);

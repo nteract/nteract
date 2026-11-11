@@ -15,6 +15,7 @@ import { textPath } from "./richtext.mjs";
 import { readTool } from "../worker/tool-reads.mjs";
 import { revisionTable } from "../worker/revisions-fixture.mjs";
 import { resolvePeerSelection } from "./presence.mjs";
+import { blockAddress, nodeAddresses } from "./addresses.mjs";
 
 const target = [{ kind: "block", block_id: "b" }];
 const read = (at) => ({ type: "read", at, targets: target });
@@ -115,7 +116,12 @@ const resolve = (doc, t) =>
 test("a replace_match caret covers the new text and follows a concurrent edit", () => {
   const { doc, id } = fixture("Ship on Monday to five users.");
   const { after, targets } = edit(doc, [
-    { op: "replace_match", block_id: id, match_text: "Monday", replacement: "Tuesday morning" },
+    {
+      op: "replace_match",
+      node_id: blockAddress(doc, id),
+      match_text: "Monday",
+      replacement: "Tuesday morning",
+    },
   ]);
   assert.equal(targets.length, 1);
   assert.equal(targets[0].kind, "text");
@@ -130,21 +136,23 @@ test("a replace_match caret covers the new text and follows a concurrent edit", 
 
 test("a deletion is a caret, format_match selects its range, block ops target the block", () => {
   const { doc, id } = fixture("Keep this and drop that.");
+  const block = blockAddress(doc, id);
   let { after, targets } = edit(doc, [
-    { op: "replace_match", block_id: id, match_text: " and drop that", replacement: "" },
+    { op: "replace_match", node_id: block, match_text: " and drop that", replacement: "" },
   ]);
   assert.equal(resolve(after, targets[0]).kind, "caret");
   ({ after, targets } = edit(after, [
-    { op: "format_match", block_id: id, match_text: "Keep", add: { highlight: "green" } },
+    { op: "format_match", node_id: block, match_text: "Keep", add: { highlight: "green" } },
   ]));
   assert.equal(resolve(after, targets[0]).quote, "Keep");
   ({ after, targets } = edit(after, [{ op: "insert_markdown", markdown: "New block" }]));
   assert.equal(targets[0].kind, "block");
   assert.notEqual(targets[0].block_id, id);
   // The last operation of a batch wins; a trailing delete keeps nothing new.
+  // Targets name blocks by key, as browsers do.
   ({ targets } = edit(after, [
-    { op: "format_match", block_id: id, match_text: "this", add: { strong: true } },
-    { op: "delete_block", block_id: targets[0].block_id },
+    { op: "format_match", node_id: block, match_text: "this", add: { strong: true } },
+    { op: "delete_block", node_id: blockAddress(after, targets[0].block_id) },
   ]));
   assert.equal(targets[0].kind, "text");
 });
@@ -188,8 +196,18 @@ test("targeted reads produce passages or hits; broad reads produce none", async 
   const many = { search: ["e"] };
   assert.deepEqual(readTargets(doc, many, await readBody(doc, many)), []);
 
-  const blocks = { block_ids: [id] };
+  const blocks = { node_ids: [blockAddress(doc, id)] };
   const [whole] = readTargets(doc, blocks, await readBody(doc, blocks));
   assert.equal(whole.kind, "passage");
+  assert.equal(whole.block_id, id);
   assert.match(resolve(doc, whole).quote, /^Rollout/);
+  assert.match(resolve(doc, whole).quote, /Another fade here\.$/);
+
+  // A node's id reads that node; its passage covers only the node.
+  const nodes = { node_ids: [nodeAddresses(doc, id)[3]] };
+  const [one] = readTargets(doc, nodes, await readBody(doc, nodes));
+  assert.equal(one.kind, "passage");
+  assert.equal(one.block_id, id);
+  assert.equal(resolve(doc, one).quote, "Should carets fade out?");
+  assert.deepEqual(readTargets(doc, { ...nodes, include_content: false }, {}), []);
 });

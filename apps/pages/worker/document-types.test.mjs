@@ -377,7 +377,7 @@ test("every route that opens a record's documents refuses a format this build do
     ["report_page_progress", { status: "working" }],
     ["edit_page", { ...edit, operations: [{ op: "set_title", title: "New" }] }],
     ["edit_page", { ...edit, operations: [{ op: "set_title", title: "New" }] }],
-    ["manage_page_comment", { action: "add", block_id: "block-id", body: "Hi" }],
+    ["manage_page_comment", { action: "add", node_id: f.block, body: "Hi" }],
     ["reply_page_comment", { thread_id: "thread", body: "Hi" }],
     [ASSET_UPLOAD_OPERATION, { kind: "image", media_type: "image/png", byte_length: 1 }],
   ])

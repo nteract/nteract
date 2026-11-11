@@ -12,6 +12,7 @@ import {
   validateRichSpans,
 } from "./richtext.mjs";
 import { projectReadContent } from "./read-content.mjs";
+import { blockAddress } from "./addresses.mjs";
 import { pagePreview } from "./page-preview.mjs";
 
 const S = (value) => new A.ImmutableString(value);
@@ -85,12 +86,29 @@ test("replace_block_markdown refuses a block holding an unknown node; text edits
   const { doc, id } = futureChart();
   assert.equal(markdownlessNode(doc.blocks[id]), "future-chart");
   assert.throws(
-    () => apply(doc, [{ op: "replace_block_markdown", block_id: id, markdown: "Before\n\nAfter" }]),
+    () =>
+      apply(doc, [
+        {
+          op: "replace_block_markdown",
+          node_id: blockAddress(doc, id),
+          markdown: "Before\n\nAfter",
+        },
+      ]),
     (error) => error.code === "markdownless_node" && /holds a future-chart/.test(error.message),
   );
   const edited = apply(doc, [
-    { op: "replace_match", block_id: id, match_text: "After", replacement: "Later" },
-    { op: "format_match", block_id: id, match_text: "Before", add: { strong: true } },
+    {
+      op: "replace_match",
+      node_id: blockAddress(doc, id),
+      match_text: "After",
+      replacement: "Later",
+    },
+    {
+      op: "format_match",
+      node_id: blockAddress(doc, id),
+      match_text: "Before",
+      add: { strong: true },
+    },
   ]);
   const types = A.spans(edited, textPath(id))
     .filter((span) => span.type === "block")
@@ -118,7 +136,14 @@ test("markdownlessNode names unknown types and unknown parents, never known ones
   );
   assert.equal(markdownlessNode(nested.doc.blocks[nested.id]), "callout");
   assert.throws(
-    () => apply(nested.doc, [{ op: "replace_block_markdown", block_id: nested.id, markdown: "x" }]),
+    () =>
+      apply(nested.doc, [
+        {
+          op: "replace_block_markdown",
+          node_id: blockAddress(nested.doc, nested.id),
+          markdown: "x",
+        },
+      ]),
     (error) => error.code === "markdownless_node",
   );
 });
@@ -130,7 +155,10 @@ test("the refusal quotes only a short identifier", () => {
     (text) => text.indexOf("After") - 1,
   );
   assert.throws(
-    () => apply(odd.doc, [{ op: "replace_block_markdown", block_id: odd.id, markdown: "x" }]),
+    () =>
+      apply(odd.doc, [
+        { op: "replace_block_markdown", node_id: blockAddress(odd.doc, odd.id), markdown: "x" },
+      ]),
     (error) =>
       /a node this version of Pages doesn't know/.test(error.message) &&
       !error.message.includes("<b>"),

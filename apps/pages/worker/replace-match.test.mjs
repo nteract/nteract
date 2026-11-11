@@ -11,6 +11,7 @@ import {
 } from "../model/page.mjs";
 import { documentMutation, recoverDocumentMutations } from "./mutations.mjs";
 import { headsFor } from "./revisions.mjs";
+import { blockAddress } from "../model/addresses.mjs";
 
 async function fixture() {
   let doc = A.from(createPageData({ pageId: "page_test", title: "Test" }));
@@ -46,7 +47,7 @@ async function fixture() {
     operations: [
       {
         op: "replace_match",
-        block_id: id,
+        node_id: blockAddress(doc, id),
         match_text: "word",
         replacement: "phrase",
         context_after: "end",

@@ -6,6 +6,7 @@ import { setRichMarkdown, textPath } from "./richtext.mjs";
 import { richFromSource } from "./richtext-test-support.mjs";
 import { openingTitleWarning } from "./title-warning.mjs";
 import { stampFeatures } from "./schema-features.mjs";
+import { blockAddress, nodeAddresses } from "./addresses.mjs";
 
 function page(title, blocks) {
   return A.change(A.from({ title, blocks: {} }), (doc) => {
@@ -34,12 +35,13 @@ test("an opening native heading produces bounded plain feedback without changing
     result = openingTitleWarning(doc);
   assert.deepEqual(result, {
     code: "opening_heading_repeats_title",
-    block_id: "actual-block",
+    node_id: nodeAddresses(doc, "actual-block")[0],
     heading: "Shared document foundation",
     match_kind: "normalized_exact",
     suggested_action:
       "The Page already displays its title above the body. Consider removing or rewording this opening heading if the repetition is unintended; the content was preserved.",
   });
+  assert.match(result.node_id, /^[0-9]+@[0-9a-f]+$/);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), result);
   assert.deepEqual(A.save(doc), before);
   assert.deepEqual(A.getHeads(doc), heads);
@@ -122,13 +124,13 @@ test("only the first nonempty top-level text node can be a duplicate title", () 
   }
 });
 
-test("empty text nodes are skipped across native blocks using fractional order and stable IDs", () => {
+test("empty text nodes are skipped across native blocks using fractional order and stable ids", () => {
   const doc = page("Shared title", [
     { id: "last-in-view", markdown: "# Different heading", position: "a2" },
     { id: "second-in-view", markdown: "# Shared title", position: "a1" },
     { id: "first-in-view", markdown: "\n\n", position: "a0" },
   ]);
-  assert.equal(openingTitleWarning(doc).block_id, "second-in-view");
+  assert.equal(openingTitleWarning(doc).node_id, nodeAddresses(doc, "second-in-view")[0]);
   const tied = page("Shared title", [
     { id: "b", markdown: "# Shared title", position: "a0" },
     { id: "a", markdown: "Opening paragraph.", position: "a0" },
@@ -153,16 +155,18 @@ test("current post-batch title and block order determine the warning", () => {
       arguments: {
         operations: [
           { op: "set_title", title: "Current title" },
-          { op: "move_block", block_id: "heading", after_block_id: null },
+          { op: "move_block", node_id: blockAddress(draft, "heading"), after_node_id: null },
         ],
       },
     }),
   );
-  assert.equal(openingTitleWarning(doc).block_id, "heading");
+  assert.equal(openingTitleWarning(doc).node_id, nodeAddresses(doc, "heading")[0]);
   doc = A.change(doc, (draft) =>
     applyPageOperation(draft, {
       operation: "edit_page",
-      arguments: { operations: [{ op: "delete_block", block_id: "heading" }] },
+      arguments: {
+        operations: [{ op: "delete_block", node_id: blockAddress(draft, "heading") }],
+      },
     }),
   );
   assert.equal(openingTitleWarning(doc), null);

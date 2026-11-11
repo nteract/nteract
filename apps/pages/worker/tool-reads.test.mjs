@@ -3,6 +3,8 @@ import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { createPageData, initializePage, projectPage } from "../model/page.mjs";
 import { comment, newCommentsDoc } from "../model/comments-test-support.mjs";
+import { projectReadComments } from "../model/read-comments.mjs";
+import { blockAddress, nodeAddresses } from "../model/addresses.mjs";
 import { readTool } from "./tool-reads.mjs";
 import { revisionTable } from "./revisions-fixture.mjs";
 function fixture(t, markdown = "# First\n\nKeep this passage.\n\n# Second\n\nOther content.") {
@@ -75,20 +77,29 @@ test("presence is opt-in, captured before the revision is named, and counted in 
   assert.equal((await read(doc, { include_presence: false })).body.presence, undefined);
 });
 
-test("unfiltered reads preserve the old shape; explicit body reads exclude comments and keep the revision", async (t) => {
-  const { doc, revisions } = fixture(t);
+test("a read with only page_id returns every block and thread by id; explicit body reads exclude comments and keep the revision", async (t) => {
+  const { doc, blockId, revisions } = fixture(t);
   const before = A.getHeads(doc);
   const revision = await revisions.handle("page", before);
   const legacy = await read(doc, { page_id: doc.page_id });
   assert.equal(legacy.status, 200);
-  // Additive fields only: both revisions, and the stamp.
+  // Every block whole, under its id; every thread; both revisions; the stamp.
+  const page = projectPage(doc);
   assert.deepEqual(legacy.body, {
-    ...projectPage(doc, commentsOf.get(doc)),
+    page_id: page.page_id,
+    title: page.title,
+    blocks: page.blocks.map(({ id, position, markdown }) => ({
+      node_id: blockAddress(doc, id),
+      position,
+      markdown,
+    })),
+    comments: projectReadComments(doc, { state: "all" }, commentsOf.get(doc)),
     revision,
     comment_revision: await revisions.handle("comments", A.getHeads(commentsOf.get(doc))),
     schema_features: ["comments-doc"],
   });
-  assert.ok(legacy.body.comments[0].target.anchor.textObjectId);
+  assert.equal(legacy.body.comments[0].node_id, blockAddress(doc, blockId));
+  assert.doesNotMatch(JSON.stringify(legacy.body), new RegExp(blockId));
   const body = await read(doc, { comments: "none" });
   assert.equal(body.status, 200);
   assert.deepEqual(body.body.comments, []);
@@ -135,7 +146,7 @@ test("comment-only reads omit body and allow summaries without changing document
 });
 
 test("oversized content returns only an explicitly paginated outline and edit authority", async (t) => {
-  const { doc } = fixture(t, "Keep\n\n" + "Large paragraph. ".repeat(3000));
+  const { doc, blockId } = fixture(t, "# Keep\n\n" + "Large paragraph. ".repeat(3000));
   const result = await read(doc, { max_bytes: 4096, comments: "none" });
   assert.equal(result.status, 413);
   assert.equal(result.body.code, "read_budget_exceeded");
@@ -145,13 +156,14 @@ test("oversized content returns only an explicitly paginated outline and edit au
   assert.match(result.body.revision, /^r\d+$/);
   assert.ok(new TextEncoder().encode(JSON.stringify(result.body)).length <= 4096);
   const narrowed = await read(doc, {
-    node_range: { block_id: Object.keys(doc.blocks)[0], from: 0, to: 1 },
+    node_ids: [nodeAddresses(doc, blockId)[0]],
     revision: result.body.revision,
     comments: "none",
     max_bytes: 4096,
   });
-  assert.equal(narrowed.status, 200);
-  assert.equal(narrowed.body.blocks[0].markdown, "Keep");
+  assert.equal(narrowed.status, 200, JSON.stringify(narrowed.body));
+  assert.deepEqual(narrowed.body.blocks, []);
+  assert.equal(narrowed.body.nodes[0].markdown, "# Keep");
 });
 
 test("a large comment response can be narrowed to summaries", async (t) => {
@@ -200,15 +212,18 @@ test("HTTP-equivalent input validation rejects unknown options and invalid budge
   }
 });
 
-test("node ranges and outline continuation require the exact observed revision", async (t) => {
+test("a node read checks the revision it names; outline continuation requires one", async (t) => {
   const { doc, blockId, revisions, initial } = fixture(t);
   // A revision this host named before the Page moved on.
   const old = await revisions.handle("page", initial);
-  for (const args of [
-    { node_range: { block_id: blockId, from: 0, to: 1 } },
-    { include_content: false, outline_offset: 1 },
-  ]) {
-    assert.equal((await read(doc, args)).body.code, "invalid_read_selector");
+  // An id names the same node at every revision: a node read needs none.
+  const [heading] = nodeAddresses(doc, blockId);
+  const current = await read(doc, { node_ids: [heading] });
+  assert.equal(current.status, 200, JSON.stringify(current.body));
+  assert.match(current.body.nodes[0].markdown, /First/);
+  for (const args of [{ node_ids: [heading] }, { include_content: false, outline_offset: 1 }]) {
+    if (args.outline_offset)
+      assert.equal((await read(doc, args)).body.code, "invalid_read_selector");
     await assert.rejects(read(doc, { ...args, revision: "c1" }), { code: "invalid_revision" });
     await assert.rejects(read(doc, { ...args, revision: "r999" }), (error) => {
       assert.equal(error.code, "resync_required");
@@ -234,8 +249,8 @@ test("legacy reads above the opt-in budget keep their complete response", async 
   assert.equal((await read(doc, { comments: "none" })).body.code, "read_budget_exceeded");
 });
 
-test("a small node read pages down its outline before rejecting fitting content", async (t) => {
-  const { doc, blockId, revisions } = fixture(
+test("a small search read pages down its outline before rejecting fitting content", async (t) => {
+  const { doc, revisions } = fixture(
     t,
     "Keep\n\n" +
       Array.from(
@@ -244,12 +259,12 @@ test("a small node read pages down its outline before rejecting fitting content"
       ).join("\n\n"),
   );
   const result = await read(doc, {
-    node_range: { block_id: blockId, from: 75, to: 76 },
+    search: ["Paragraph 74 "],
     revision: await revisions.handle("page", A.getHeads(doc)),
     comments: "none",
     max_bytes: 4096,
   });
-  assert.equal(result.status, 200);
+  assert.equal(result.status, 200, JSON.stringify(result.body).slice(0, 500));
   assert.match(result.body.blocks[0].markdown, /Paragraph 74/);
   assert.ok(Buffer.byteLength(JSON.stringify(result.body)) + 512 <= 4096);
   assert.ok(result.body.outline.entries.length > 0 && result.body.outline.entries.length < 100);
@@ -261,7 +276,8 @@ test("a small node read pages down its outline before rejecting fitting content"
     max_bytes: 4096,
   });
   assert.equal(next.status, 200);
-  assert.equal(next.body.outline.entries[0].node_index, result.body.outline.next_offset);
+  assert.equal(next.body.outline.offset, result.body.outline.next_offset);
+  assert.notDeepEqual(next.body.outline.entries[0], result.body.outline.entries[0]);
 });
 
 test("ambiguous sections expose a flat candidate list with revision authority", async (t) => {

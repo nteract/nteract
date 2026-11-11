@@ -6,6 +6,7 @@ import { Catalog, Page } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { applyPageOperation, createPageData, initializePage } from "../model/page.mjs";
 import { comment, newCommentsDoc } from "../model/comments-test-support.mjs";
+import { blockAddress, nodeAddresses } from "../model/addresses.mjs";
 import { documentMutation, operationKey, recoverDocumentMutations } from "./mutations.mjs";
 import {
   HORIZON,
@@ -19,6 +20,9 @@ import { plainStub } from "./plain-stub.mjs";
 import { WRITTEN_FORMATS } from "../model/document-types.mjs";
 
 const start = Date.parse("2026-10-25T00:00:00Z");
+/** The key of the block `address` names in `doc`, or undefined. */
+const blockKey = (doc, address) =>
+  Object.keys(doc.blocks).find((key) => blockAddress(doc, key) === address);
 const pageId = "33333333-3333-4333-8333-333333333333";
 class Storage {
   values = new Map();
@@ -140,6 +144,7 @@ function richMutationFixture(t, markdown = "## Introduction\n\nOriginal body.") 
     handle,
     identity,
     blockId,
+    block: blockAddress(doc, blockId),
     context,
     applications: () => applications,
     ...revisionHelpers(storage, handle, identity),
@@ -152,7 +157,7 @@ test("opening title warnings describe receipt heads before concurrent native edi
     nonce: "opening-title-concurrent",
     revision: await f.revision(),
     operations: [
-      { op: "replace_block_markdown", block_id: f.blockId, markdown: "# Guide\n\nTool body." },
+      { op: "replace_block_markdown", node_id: f.block, markdown: "# Guide\n\nTool body." },
     ],
   };
   let flushes = 0;
@@ -171,7 +176,7 @@ test("opening title warnings describe receipt heads before concurrent native edi
   );
   assert.equal(receipt.warnings[0].code, "opening_heading_repeats_title");
   assert.equal(receipt.warnings[0].heading, "Guide");
-  assert.equal(receipt.warnings[0].block_id, f.blockId);
+  assert.equal(receipt.warnings[0].node_id, nodeAddresses(f.handle.doc(), f.blockId)[0]);
   assert.equal(A.view(f.handle.doc(), await f.heads(receipt.revision)).title, "Guide");
   assert.equal(f.handle.doc().title, "Later human title");
   assert.notDeepEqual(A.getHeads(f.handle.doc()), await f.heads(receipt.revision));
@@ -194,13 +199,13 @@ for (const recovery of ["retry", "startup"]) {
           ? [
               {
                 op: "replace_match",
-                block_id: f.blockId,
+                node_id: f.block,
                 match_text: "Introduction",
                 replacement: "Guide",
               },
               {
                 op: "replace_match",
-                block_id: f.blockId,
+                node_id: f.block,
                 match_text: "Original body.",
                 replacement: "Accepted body.",
               },
@@ -208,7 +213,7 @@ for (const recovery of ["retry", "startup"]) {
           : [
               {
                 op: "replace_block_markdown",
-                block_id: f.blockId,
+                node_id: f.block,
                 markdown: "# Guide\n\nAccepted body.",
               },
             ],
@@ -259,7 +264,7 @@ test("patch removal omits warnings and comment operations do not report existing
     operations: [
       {
         op: "replace_match",
-        block_id: f.blockId,
+        node_id: f.block,
         match_text: "Guide",
         replacement: "Different section",
       },
@@ -280,7 +285,7 @@ test("patch removal omits warnings and comment operations do not report existing
         {
           nonce: "opening-title-comment",
           revision: await f.revision(),
-          block_id: f.blockId,
+          node_id: f.block,
           body: "A comment on the existing content.",
         },
         "manage_page_comment",
@@ -302,21 +307,21 @@ test("a edit_page receipt names the marks a replace_match dropped, per edit and 
     operations: [
       {
         op: "replace_match",
-        block_id: f.blockId,
+        node_id: f.block,
         match_text: "Plain sentence",
         replacement: "Quiet sentence",
       },
       {
         // A word retyped inside a code span keeps it: nothing to report.
         op: "replace_match",
-        block_id: f.blockId,
+        node_id: f.block,
         match_text: "The rotate() helper is in worker/keys.mjs.",
         replacement: "The rotateKey() helper is in worker/signing-keys.mjs.",
       },
       {
         // Rewriting the sentence crosses both code spans: plain, and reported.
         op: "replace_match",
-        block_id: f.blockId,
+        node_id: f.block,
         match_text: "The rotateKey() helper is in worker/signing-keys.mjs.",
         replacement: "Rewritten entirely.",
       },
@@ -337,10 +342,14 @@ test("a edit_page receipt names the marks a replace_match dropped, per edit and 
   // The receipt's own list repeats it with the edit it came from, beside the
   // opening-title warning this document also raises.
   assert.deepEqual(
-    receipt.warnings.map(({ code, edit_index, block_id }) => ({ code, edit_index, block_id })),
+    receipt.warnings.map(({ code, edit_index, node_id }) => ({ code, edit_index, node_id })),
     [
-      { code: "opening_heading_repeats_title", edit_index: undefined, block_id: f.blockId },
-      { code: "marks_dropped", edit_index: 2, block_id: f.blockId },
+      {
+        code: "opening_heading_repeats_title",
+        edit_index: undefined,
+        node_id: nodeAddresses(f.handle.doc(), f.blockId)[0],
+      },
+      { code: "marks_dropped", edit_index: 2, node_id: f.block },
     ],
   );
   assert.deepEqual(receipt.warnings[1].ranges, dropped.ranges);
@@ -354,9 +363,7 @@ test("old receipts without warnings are replayed unchanged despite a currently d
   const args = {
     nonce: "opening-title-old-receipt",
     revision: await f.revision(),
-    operations: [
-      { op: "replace_block_markdown", block_id: f.blockId, markdown: "# Guide\n\nBody." },
-    ],
+    operations: [{ op: "replace_block_markdown", node_id: f.block, markdown: "# Guide\n\nBody." }],
   };
   await documentMutation(f.context(args));
   const key = await f.key(args);
@@ -754,7 +761,11 @@ async function pageFixture(t, { readContent = false } = {}) {
         operation: "edit_page",
         arguments: {
           operations: [
-            { op: "insert_markdown", after_block_id: blockId, markdown: "Other block." },
+            {
+              op: "insert_markdown",
+              after_node_id: blockAddress(draft, blockId),
+              markdown: "Other block.",
+            },
           ],
         },
       });
@@ -816,7 +827,17 @@ async function pageFixture(t, { readContent = false } = {}) {
     );
   // The receipt key edit_page writes for `args` from this caller.
   const key = (args) => operationKey(args, { principal }, "page");
-  return { page, request, storage, principal, blockId, threadId, key, updates: () => updates };
+  return {
+    page,
+    request,
+    storage,
+    principal,
+    blockId,
+    block: blockAddress(doc, blockId),
+    threadId,
+    key,
+    updates: () => updates,
+  };
 }
 
 test("actual Page read_page names the revision its edit uses; a retry past the horizon is refused", async (t) => {
@@ -876,7 +897,7 @@ test("a passage comment and a reply each replay their receipt on an exact retry"
   const passage = {
     nonce: "retry-passage",
     action: "add",
-    block_id: f.blockId,
+    node_id: f.block,
     selected_text: "Original selected",
     revision: read.revision,
     body: "On the passage.",
@@ -919,7 +940,7 @@ for (const write of ["passage comment", "target-scope edit"])
                 {
                   nonce: "lost-write",
                   action: "add",
-                  block_id: f.blockId,
+                  node_id: f.block,
                   selected_text: "Original selected",
                   revision: read.revision,
                   body: "Once.",
@@ -934,7 +955,7 @@ for (const write of ["passage comment", "target-scope edit"])
                   operations: [
                     {
                       op: "replace_match",
-                      block_id: f.blockId,
+                      node_id: f.block,
                       match_text: "selected",
                       replacement: "selected and checked",
                     },
@@ -1007,7 +1028,7 @@ test("no agent body names Automerge heads: reads, receipts and every revision re
   const passage = await call("manage_page_comment", {
     nonce: "hex-passage",
     action: "add",
-    block_id: f.blockId,
+    node_id: f.block,
     selected_text: "Original selected",
     revision: first,
     body: "On the passage.",
@@ -1026,7 +1047,7 @@ test("no agent body names Automerge heads: reads, receipts and every revision re
     operations: [
       {
         op: "replace_match",
-        block_id: f.blockId,
+        node_id: f.block,
         match_text: "Original selected content.",
         replacement: "Changed content.",
       },
@@ -1053,7 +1074,7 @@ test("no agent body names Automerge heads: reads, receipts and every revision re
     operations: [
       {
         op: "replace_match",
-        block_id: f.blockId,
+        node_id: f.block,
         match_text: "Original selected content.",
         replacement: "Again.",
       },
@@ -1083,7 +1104,7 @@ for (const operation of ["read_page", "list_page_comments"]) {
     const response = await f.request(
       operation,
       operation === "read_page"
-        ? { block_ids: [f.blockId], comments: "none" }
+        ? { node_ids: [f.block], comments: "none" }
         : { thread_ids: [f.threadId], include_messages: false },
     );
     assert.equal(response.status, 200);
@@ -1094,8 +1115,8 @@ for (const operation of ["read_page", "list_page_comments"]) {
     assert.match(before.revision, /^r\d+$/);
     if (operation === "read_page") {
       assert.deepEqual(
-        before.blocks.map((block) => block.id),
-        [f.blockId],
+        before.blocks.map((block) => block.node_id),
+        [f.block],
       );
       assert.doesNotMatch(JSON.stringify(before), /Other block|Original comment/);
     } else {
@@ -1141,7 +1162,7 @@ test(
       }
       return get(key);
     });
-    const pending = f.request("read_page", { block_ids: [f.blockId], comments: "all" });
+    const pending = f.request("read_page", { node_ids: [f.block], comments: "all" });
     await entered.promise;
     // Native synchronization bypasses the Page HTTP queue. Advance the handle
     // while revision storage is blocked, without queueing another HTTP mutation.
@@ -1174,10 +1195,11 @@ test(
   },
 );
 
-test("actual Page rejects stale node ranges with a fresh outline instead of selected content", async (t) => {
+test("actual Page rejects a stale node read with a fresh outline instead of selected content", async (t) => {
   const f = await pageFixture(t, { readContent: true });
   t.after(() => A.free(f.page.handle.doc()));
   const heads = A.getHeads(f.page.handle.doc());
+  const [heading] = nodeAddresses(f.page.handle.doc(), f.blockId);
   await f.page.handle.update((doc) =>
     A.change(doc, (draft) => {
       initializePage(
@@ -1188,7 +1210,7 @@ test("actual Page rejects stale node ranges with a fresh outline instead of sele
   );
   const current = A.getHeads(f.page.handle.doc());
   const response = await f.request("read_page", {
-    node_range: { block_id: f.blockId, from: 0, to: 2 },
+    node_ids: [heading],
     revision: await readRevision(f.storage, "page", heads),
     comments: "none",
   });
@@ -1202,7 +1224,7 @@ test("actual Page rejects stale node ranges with a fresh outline instead of sele
   assert.doesNotMatch(JSON.stringify(body), /Inserted first paragraph|Original selected content/);
   assert.equal(f.updates(), 1, "the rejected read performs no mutation");
   const fresh = await f.request("read_page", {
-    node_range: { block_id: f.blockId, from: 0, to: 1 },
+    node_ids: [f.block],
     revision: body.revision,
     comments: "none",
   });
@@ -1220,7 +1242,7 @@ test("actual Page returns a bounded UTF-8 budget error without truncated content
   );
   const heads = A.getHeads(f.page.handle.doc());
   const response = await f.request("read_page", {
-    block_ids: [f.blockId],
+    node_ids: [f.block],
     comments: "none",
     max_bytes: 4096,
   });
@@ -1265,20 +1287,22 @@ test("Page image insertion validates storage once and journals actual block iden
   const response = await f.request("edit_page", args);
   assert.equal(response.status, 200);
   const receipt = await response.json();
-  const [image] = receipt.result.inserted_images;
-  assert.ok(f.page.handle.doc().blocks[image.block_id]);
+  const [image] = receipt.result.edits;
+  const key = blockKey(f.page.handle.doc(), image.node_id);
+  assert.ok(key);
+  assert.equal(image.op, "insert_image");
   assert.equal(image.asset_id, assetId);
   assert.equal(heads, 1);
   // Receipt remains a record of the original operation, not a claim about the
   // latest document: a peer can remove the block before the requester retries.
   await f.page.handle.update((doc) =>
     A.change(doc, (draft) => {
-      delete draft.blocks[image.block_id];
+      delete draft.blocks[key];
     }),
   );
   f.page.env.PAGES_ASSETS.head = async () => assert.fail("Retry depends on blob storage");
   assert.deepEqual(await (await f.request("edit_page", args)).json(), receipt);
-  assert.equal(f.page.handle.doc().blocks[image.block_id], undefined);
+  assert.equal(f.page.handle.doc().blocks[key], undefined);
   assert.equal(
     (
       await f.request("edit_page", {
@@ -1327,7 +1351,7 @@ test("Page theme image set preflights both sources and keeps exact heads", async
       operations: [{ op: "insert_image", asset_id: assetId, alt: "Chart" }],
     })
   ).json();
-  const image = inserted.result.inserted_images[0];
+  const image = inserted.result.edits[0];
   for (const reason of ["type", "page", null]) {
     invalid = reason;
     const read = await (await f.request("read_page")).json();
@@ -1338,8 +1362,7 @@ test("Page theme image set preflights both sources and keeps exact heads", async
       operations: [
         {
           op: "set_image",
-          block_id: image.block_id,
-          image_id: image.image_id,
+          node_id: image.image,
           asset_id: assetId,
           dark_asset_id: dark,
         },
@@ -1352,9 +1375,7 @@ test("Page theme image set preflights both sources and keeps exact heads", async
     page_id: pageId,
     revision: before.revision,
     nonce: "theme-stale",
-    operations: [
-      { op: "set_image", block_id: image.block_id, image_id: image.image_id, alt: "No" },
-    ],
+    operations: [{ op: "set_image", node_id: image.image, alt: "No" }],
   });
   assert.equal(stale.status, 409);
 });
@@ -1430,9 +1451,10 @@ test("Page dataframe insertion checks storage once and replays without it", asyn
   const response = await f.request("edit_page", args);
   assert.equal(response.status, 200);
   const receipt = await response.json();
-  const [node] = receipt.result.inserted_nodes;
+  const [node] = receipt.result.edits;
+  assert.equal(node.op, "insert_node");
   assert.equal(node.attrs.src, `/api/pages/${pageId}/assets/${assetId}`);
-  assert.ok(f.page.handle.doc().blocks[node.block_id]);
+  assert.ok(blockKey(f.page.handle.doc(), node.node_id));
   assert.equal(heads, 1);
   f.page.env.PAGES_ASSETS.head = async () => assert.fail("Retry depends on blob storage");
   assert.deepEqual(await (await f.request("edit_page", args)).json(), receipt);

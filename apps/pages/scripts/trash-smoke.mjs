@@ -95,7 +95,7 @@ try {
     revision: read.revision,
     nonce: crypto.randomUUID(),
     action: "add",
-    block_id: read.blocks[0].id,
+    node_id: read.blocks[0].node_id,
     body: "Keep this comment",
   });
   assert.equal(commented.status, 200);
@@ -141,7 +141,7 @@ try {
       operations: [
         {
           op: "replace_match",
-          block_id: read.blocks[0].id,
+          node_id: read.blocks[0].node_id,
           match_text: "keeps",
           replacement: "lost",
         },

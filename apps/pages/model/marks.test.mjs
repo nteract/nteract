@@ -24,6 +24,7 @@ import {
   unsupportedMarkdown,
   validateRich,
 } from "./richtext.mjs";
+import { blockAddress } from "./addresses.mjs";
 import { expand, fromMarks, toMarks, Paragraph, PagesHighlight } from "./wordgard-doc.mjs";
 
 function fixture(markdown) {
@@ -198,7 +199,12 @@ test("strikethrough round trips through Markdown and native spans", () => {
   // format_match adds and removes it like any flag mark.
   const { doc, id } = fixture("plain words");
   const { after } = apply(doc, [
-    { op: "format_match", block_id: id, match_text: "words", add: { strike: true } },
+    {
+      op: "format_match",
+      node_id: blockAddress(doc, id),
+      match_text: "words",
+      add: { strike: true },
+    },
   ]);
   assert.equal(blockMarkdown(after.blocks[id]), "plain ~~words~~");
 });
@@ -258,7 +264,12 @@ test("a mark from a newer build reads as plain text and survives text edits", ()
   assert.throws(() => validateRich(marked.blocks[id]), /Unsupported rich mark/);
   // replace_match edits the text and keeps the foreign mark.
   const { after } = apply(marked, [
-    { op: "replace_match", block_id: id, match_text: "text", replacement: "words" },
+    {
+      op: "replace_match",
+      node_id: blockAddress(doc, id),
+      match_text: "text",
+      replacement: "words",
+    },
   ]);
   assert.deepEqual(textMarks(after, id), [
     ["future", { underline: true }],
@@ -272,12 +283,14 @@ test("format_match adds, recolors and removes marks without touching text", () =
   let { after, result } = apply(doc, [
     {
       op: "format_match",
-      block_id: id,
+      node_id: blockAddress(doc, id),
       match_text: "launch date",
       add: { highlight: "Green", strong: true },
     },
   ]);
-  assert.deepEqual(result.edits, [{ op: "format_match", block_id: id, matched: 1 }]);
+  assert.deepEqual(result.edits, [
+    { op: "format_match", node_id: blockAddress(doc, id), matched: 1 },
+  ]);
   assert.equal(A.getObjectId(after.blocks[id], "richText"), object);
   assert.equal(after.blocks[id].richText, doc.blocks[id].richText);
   assert.equal(
@@ -285,8 +298,18 @@ test("format_match adds, recolors and removes marks without touching text", () =
     'Highlight the **<mark data-color="green">launch date</mark>** here.',
   );
   ({ after } = apply(after, [
-    { op: "format_match", block_id: id, match_text: "launch", add: { highlight: "#FF8800" } },
-    { op: "format_match", block_id: id, match_text: "date", remove: ["strong", "highlight"] },
+    {
+      op: "format_match",
+      node_id: blockAddress(doc, id),
+      match_text: "launch",
+      add: { highlight: "#FF8800" },
+    },
+    {
+      op: "format_match",
+      node_id: blockAddress(doc, id),
+      match_text: "date",
+      remove: ["strong", "highlight"],
+    },
   ]));
   assert.deepEqual(textMarks(after, id), [
     ["Highlight the ", {}],
@@ -302,7 +325,7 @@ test("format_match links text and rejects unsafe or unknown marks", () => {
   const { after } = apply(doc, [
     {
       op: "format_match",
-      block_id: id,
+      node_id: blockAddress(doc, id),
       match_text: "docs",
       add: { link: { href: "https://example.com/docs" } },
     },
@@ -313,7 +336,7 @@ test("format_match links text and rejects unsafe or unknown marks", () => {
   );
   const fail = (op, pattern) =>
     assert.throws(
-      () => apply(A.clone(doc), [{ op: "format_match", block_id: id, ...op }]),
+      () => apply(A.clone(doc), [{ op: "format_match", node_id: blockAddress(doc, id), ...op }]),
       pattern,
     );
   fail({ match_text: "docs", add: { link: { href: "javascript:alert(1)" } } }, /Invalid link/);
@@ -330,7 +353,12 @@ test("format_match refuses code text, and stray code marks don't break reads", (
   assert.throws(
     () =>
       apply(A.clone(doc), [
-        { op: "format_match", block_id: id, match_text: "alpha", add: { highlight: "green" } },
+        {
+          op: "format_match",
+          node_id: blockAddress(doc, id),
+          match_text: "alpha",
+          add: { highlight: "green" },
+        },
       ]),
     /code block/,
   );

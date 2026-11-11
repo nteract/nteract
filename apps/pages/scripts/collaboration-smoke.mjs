@@ -495,7 +495,7 @@ try {
               operations: [
                 {
                   op: "replace_match",
-                  block_id: current.blocks[0].id,
+                  node_id: current.blocks[0].node_id,
                   match_text: from,
                   replacement: to,
                 },

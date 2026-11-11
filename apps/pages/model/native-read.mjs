@@ -281,7 +281,8 @@ export function nativeReadSpans(input, pageId) {
     // know, which decode skips, is kept here as a notice wherever a block
     // could go, and is transparent to that rule; inside a textblock it is
     // skipped too. Where it holds nodes, this reader's top-level nodes can
-    // differ from decode's, and node_index refuses the block (replace-match).
+    // differ from decode's, and readableNodeIds gives the block's nodes no
+    // ids (node-ids.mjs).
     const outer = [];
     const depthFor = (tag) => {
       const known = [];

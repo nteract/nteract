@@ -20,7 +20,8 @@
 // (images, line breaks) are markers too, but they sit inside a node and
 // never open one.
 //
-// An id is meaningful only with its block_id: cursors are per text object.
+// Ids are unique across the document; model/addresses.mjs resolves one to
+// its block by comparing it with the ids minted from the live document.
 import * as A from "@automerge/automerge/slim";
 import { textPath } from "./richtext-format.mjs";
 import { blockAddresses } from "./node-addresses.mjs";
@@ -29,30 +30,43 @@ import { blockAddresses } from "./node-addresses.mjs";
 // (worker/actor-authorship.mjs), 128 hex characters.
 export const MAX_NODE_ID = 192;
 
-/** For each top-level node of rich block `blockId`, in order: `{ id, at }`,
- * the cursor at its opening marker and that marker's index in the text, or
- * `{ id: null, at: null }` for a paragraph of unmarked text. Addresses come from the stored spans (model/node-addresses.mjs). `tree` is the block's
+/** For each top-level node of rich block `blockId`, in order: `{ id, at,
+ * end }`, the cursor at its opening marker, that marker's index in the text
+ * and where the node's text ends (the next node's start as the reader draws
+ * it, unmarked text included), or `{ id: null, at: null, end }` for a
+ * paragraph of unmarked text. Addresses come from the stored spans (model/node-addresses.mjs). `tree` is the block's
  * richDoc, when the caller pairs the ids with its nodes; the ids line up with
  * them, or this throws. Also throws when the block holds a node this build
  * can't place where it was stored. */
 export function nodeIds(doc, blockId, tree) {
   const path = textPath(blockId);
-  const { nodes, placed } = blockAddresses(A.spans(doc, path));
-  if (!placed) throw Error("This block holds a node this build can't place");
+  const ids = spanNodeIds(doc, path, A.spans(doc, path));
   // richDoc can read a node through notice text (a dataframe naming another
   // Page's asset), which changes its size but never the number of top-level
   // nodes.
-  if (tree && (tree.nodes?.length ?? tree.content.length) !== nodes.length)
+  if (tree && (tree.nodes?.length ?? tree.content.length) !== ids.length)
     throw Error("The stored and readable trees disagree on top-level nodes");
   if (
     tree?.source &&
     tree.nodes.some((node, index) => {
       const at = tree.source.get(node);
-      return at != null && at !== nodes[index].at;
+      return at != null && at !== ids[index].at;
     })
   )
     throw Error("The readable nodes do not correspond to the stored markers");
-  return nodes.map(({ at }) => ({ id: at === null ? null : A.getCursor(doc, path, at), at }));
+  return ids;
+}
+
+/** nodeIds for the text at `path`, from `spans` the caller already read
+ * from it, with no readable tree to check against. */
+export function spanNodeIds(doc, path, spans) {
+  const { nodes, placed } = blockAddresses(spans);
+  if (!placed) throw Error("This block holds a node this build can't place");
+  return nodes.map(({ at, end }) => ({
+    id: at === null ? null : A.getCursor(doc, path, at),
+    at,
+    end,
+  }));
 }
 
 /** nodeIds, or no ids (all null) when the block holds a node this build
@@ -68,45 +82,4 @@ export function readableNodeIds(doc, blockId, tree) {
       at: null,
     }));
   }
-}
-
-const notFound = (message) => Object.assign(Error(message), { code: "node_not_found" });
-
-/** The top-level node `nodeId` names in block `blockId`: its index among the
- * block's top-level nodes and its text range `[start, end)`, from its marker
- * to the next node's marker. Throws `node_not_found` when the id doesn't name
- * a live top-level node in this block. */
-export function resolveNodeId(doc, blockId, nodeId, tree) {
-  if (typeof nodeId !== "string" || !nodeId || nodeId.length > MAX_NODE_ID)
-    throw Error(`node_id must be a string of up to ${MAX_NODE_ID} characters from read_page`);
-  let ids;
-  try {
-    ids = nodeIds(doc, blockId, tree);
-  } catch {
-    throw notFound(
-      "This block holds a node this version of Pages can't place, so its nodes have no ids. Use delete_block. edit_page still edits text in the nodes this version reads; it answers newer_content for text in a node it can't read.",
-    );
-  }
-  const index = ids.findIndex((entry) => entry.id === nodeId);
-  if (index < 0)
-    throw notFound(
-      "node_id doesn't name a node in this block: it was deleted, or it came from another block. Read the outline again for current ids.",
-    );
-  const length = A.spans(doc, textPath(blockId)).reduce(
-    (total, span) => total + (span.type === "text" ? span.value.length : 1),
-    0,
-  );
-  return { index, ...nodeRange(ids, index, length) };
-}
-
-/** The text range `[start, end)` of node `index`: its marker up to the next
- * node's marker, or to the end of the text for the last node. A host write
- * marks a block's unmarked text before it resolves an id (page.mjs), so the
- * next node always has a marker; one without is refused rather than letting
- * the range run on over the nodes after it. */
-export function nodeRange(ids, index, length) {
-  const next = ids[index + 1];
-  if (next && next.at === null)
-    throw Error("This node's end is unmarked text; mark the block's unmarked text first");
-  return { start: ids[index].at, end: next ? next.at : length };
 }

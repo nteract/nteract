@@ -93,7 +93,7 @@ async function denyMcpWrite(token) {
       operations: [
         {
           op: "replace_match",
-          block_id: read.blocks[0].id,
+          node_id: read.blocks[0].node_id,
           match_text: "garden",
           replacement: "forbidden",
         },

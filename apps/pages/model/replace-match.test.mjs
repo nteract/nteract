@@ -12,6 +12,7 @@ import { projectComments } from "./comments.mjs";
 import { comment, newCommentsDoc } from "./comments-test-support.mjs";
 import { richDoc, textPath } from "./richtext.mjs";
 import { textSplices } from "./replace-match.mjs";
+import { blockAddress } from "./addresses.mjs";
 
 function fixture(markdown) {
   let doc = A.from(createPageData({ pageId: "page_fixture", title: "Original" }));
@@ -23,7 +24,9 @@ function replace(doc, id, input) {
   const after = A.change(doc, (draft) => {
     result = applyPageOperation(draft, {
       operation: "edit_page",
-      arguments: { operations: [{ op: "replace_match", block_id: id, ...input }] },
+      arguments: {
+        operations: [{ op: "replace_match", node_id: blockAddress(doc, id), ...input }],
+      },
     });
   });
   return { after, result };
@@ -44,7 +47,7 @@ test("visible text replacement crosses marks while preserving untouched marks, o
   const markers = A.spans(doc.blocks[id], ["richText"]).filter((span) => span.type === "block");
   const { after, result } = replace(doc, id, { match_text: "hello world", replacement: "friends" });
   const [{ warnings, ...edit }] = result.edits;
-  assert.deepEqual(edit, { op: "replace_match", block_id: id, matched: 1 });
+  assert.deepEqual(edit, { op: "replace_match", node_id: blockAddress(doc, id), matched: 1 });
   // Neither mark covered the whole match, so neither survives; the receipt says so.
   assert.deepEqual(
     warnings.map(({ code, marks }) => ({ code, marks })),
@@ -233,7 +236,14 @@ test("a match_text that cuts a character is refused, for replace_match and forma
           applyPageOperation(draft, {
             operation: "edit_page",
             arguments: {
-              operations: [{ op: "format_match", block_id: id, match_text, add: { strong: true } }],
+              operations: [
+                {
+                  op: "format_match",
+                  node_id: blockAddress(doc, id),
+                  match_text,
+                  add: { strong: true },
+                },
+              ],
             },
           }),
         ),
@@ -357,7 +367,7 @@ test("zero, ambiguous, overlapping and contextual misses reject the whole batch"
             arguments: {
               operations: [
                 { op: "set_title", title: "Must roll back" },
-                { op: "replace_match", block_id: id, ...input },
+                { op: "replace_match", node_id: blockAddress(doc, id), ...input },
               ],
             },
           }),
@@ -497,7 +507,11 @@ test("a marked word replaced whole keeps its mark, as retyping it would; neighbo
       replacement: "new phrase",
     });
     assert.equal(projectPage(after).blocks[0].markdown, expected, source);
-    assert.deepEqual(result.edits, [{ op: "replace_match", block_id: id, matched: 1 }], source);
+    assert.deepEqual(
+      result.edits,
+      [{ op: "replace_match", node_id: blockAddress(doc, id), matched: 1 }],
+      source,
+    );
     richDoc(after.blocks[id]).schema.validate(richDoc(after.blocks[id]));
   }
   // Rewritten as one run, the marks are crossed: the new text is plain and
@@ -531,7 +545,9 @@ test("text inserted inside a mark run continues it; the audit repro stays code w
     projectPage(after).blocks[0].markdown,
     "The `rotateKey()` helper is in `worker/signing-keys.mjs`.",
   );
-  assert.deepEqual(result.edits, [{ op: "replace_match", block_id: id, matched: 1 }]);
+  assert.deepEqual(result.edits, [
+    { op: "replace_match", node_id: blockAddress(doc, id), matched: 1 },
+  ]);
   richDoc(after.blocks[id]).schema.validate(richDoc(after.blocks[id]));
 
   // A word changed inside a link keeps the href; the link is partial to the match.

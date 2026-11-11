@@ -13,7 +13,7 @@ const comment = (f, who, args) => f.tool(who, "manage_page_comment", { nonce: ke
 test("comment writes never change the Page's heads", async (t) => {
   const f = await fixture(t);
   const heads = f.heads();
-  const added = await comment(f, "owner", { action: "add", block_id: f.blockId, body: "Block" });
+  const added = await comment(f, "owner", { action: "add", node_id: f.block, body: "Block" });
   assert.equal(added.status, 200, JSON.stringify(added.body));
   // No revision: a block comment doesn't read Page text.
   const threadId = added.body.result.thread_id;
@@ -56,7 +56,7 @@ test("a passage comment still resolves at the revision the agent read", async (t
   const read = await f.tool("owner", "read_page", { comments: "none" });
   const missing = await comment(f, "owner", {
     action: "add",
-    block_id: f.blockId,
+    node_id: f.block,
     selected_text: "Friday",
     body: "Which?",
   });
@@ -64,7 +64,7 @@ test("a passage comment still resolves at the revision the agent read", async (t
   assert.equal(missing.body.code, "invalid_revision");
   const added = await comment(f, "owner", {
     action: "add",
-    block_id: f.blockId,
+    node_id: f.block,
     selected_text: "Friday",
     body: "Which?",
     revision: read.body.revision,
@@ -107,9 +107,9 @@ test("a commenter comments but can't edit, and touches only its own messages", a
   const [ownerThread] = Object.keys(f.commentsDoc().threads);
   const ownersMessage = Object.keys(f.commentsDoc().threads[ownerThread].messages)[0];
   // The fixture's comment is the member's own; the owner adds one more.
-  const owner = await comment(f, "owner", { action: "add", block_id: f.blockId, body: "Owner" });
+  const owner = await comment(f, "owner", { action: "add", node_id: f.block, body: "Owner" });
   const ownerMessage = owner.body.result.message_id;
-  const added = await comment(f, "member", { action: "add", block_id: f.blockId, body: "Mine" });
+  const added = await comment(f, "member", { action: "add", node_id: f.block, body: "Mine" });
   assert.equal(added.status, 200, JSON.stringify(added.body));
   const reply = await comment(f, "member", {
     action: "reply",
@@ -165,7 +165,7 @@ test("a viewer can read comments but not write them", async (t) => {
   const f = await fixture(t, { memberRole: "viewer" });
   const read = await f.tool("member", "list_page_comments", {});
   assert.equal(read.status, 200);
-  const write = await comment(f, "member", { action: "add", block_id: f.blockId, body: "No" });
+  const write = await comment(f, "member", { action: "add", node_id: f.block, body: "No" });
   assert.equal(write.status, 403);
 });
 
@@ -186,7 +186,7 @@ test("uploads need edit access: a commenter comments in text", async (t) => {
 
 test("the purge preview counts the comments document's threads", async (t) => {
   const f = await fixture(t);
-  await comment(f, "owner", { action: "add", block_id: f.blockId, body: "Two" });
+  await comment(f, "owner", { action: "add", node_id: f.block, body: "Two" });
   assert.equal(Object.keys(f.commentsDoc().threads).length, 2);
   assert.ok(A.getHeads(f.commentsDoc()).length > 0);
 });
@@ -204,7 +204,7 @@ test("a comment receipt's revision is the Page revision it read, stable across r
   const args = {
     nonce: key(),
     action: "add",
-    block_id: f.blockId,
+    node_id: f.block,
     body: "Concurrent",
   };
   const first = await f.tool("owner", "manage_page_comment", args);

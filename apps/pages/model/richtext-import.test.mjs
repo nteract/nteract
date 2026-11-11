@@ -22,6 +22,7 @@ import {
   orderedBlockIds,
   projectPage,
 } from "./page.mjs";
+import { blockAddress } from "./addresses.mjs";
 import { currentForm } from "./richtext-test-support.mjs";
 
 // An agent comment that rendered as one opaque monospace block. Its prose
@@ -112,7 +113,11 @@ test("create_page and replace_block_markdown store the diagnosis as native rich 
   doc = A.change(doc, (d) =>
     applyPageOperation(d, {
       operation: "edit_page",
-      arguments: { operations: [{ op: "replace_block_markdown", block_id: id, markdown: BODY }] },
+      arguments: {
+        operations: [
+          { op: "replace_block_markdown", node_id: blockAddress(doc, id), markdown: BODY },
+        ],
+      },
     }),
   );
   assertDiagnosisStructure(richDoc(doc.blocks[id]));

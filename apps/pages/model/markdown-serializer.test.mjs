@@ -135,11 +135,12 @@ test("stored shapes and generated native trees have consistent whole and partial
       }
       const read = projectReadContent(doc, {});
       assert.equal(read.blocks[0].markdown, markdown, name);
+      // A node with no id (unmarked text, or any node of a block holding one
+      // this build can't place) can't be named; the whole-block read covers it.
       for (const entry of read.outline) {
-        const one = projectReadContent(doc, {
-          node_range: { block_id: id, from: entry.node_index, to: entry.node_index + 1 },
-        });
-        assert.equal(entry.markdown_bytes, Buffer.byteLength(one.blocks[0].markdown), name);
+        if (entry.node_id === null) continue;
+        const one = projectReadContent(doc, { node_ids: [entry.node_id] });
+        assert.equal(entry.markdown_bytes, Buffer.byteLength(one.nodes[0].markdown), name);
       }
       assert.deepEqual(A.save(doc), bytes, name);
       assert.deepEqual(A.getHeads(doc), heads, name);
@@ -183,11 +184,11 @@ test("read_page and read_page_changes read a hard break stored in a code block",
     read.outline.map((entry) => entry.type),
     ["code-block"],
   );
-  const slice = projectReadContent(doc, {
-    node_range: { block_id: id, from: 0, to: 1 },
+  const named = projectReadContent(doc, {
+    node_ids: [read.outline[0].node_id],
     expected_heads: A.getHeads(doc),
   });
-  assert.equal(slice.blocks[0].markdown, "```js\na\nb\n```");
+  assert.equal(named.nodes[0].markdown, "```js\na\nb\n```");
   const before = A.getHeads(doc);
   const after = A.change(A.clone(doc), (draft) =>
     A.updateSpans(draft, textPath(id), [...spans, text("c")], updateSpansConfig),

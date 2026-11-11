@@ -4,6 +4,7 @@ import * as A from "@automerge/automerge";
 import { applyComment as applyCommentTo } from "./comments.mjs";
 import { projectReadComments as projectReadCommentsOf } from "./read-comments.mjs";
 import { currentForm } from "./richtext-test-support.mjs";
+import { blockAddress, nodeAddresses } from "./addresses.mjs";
 
 // One document plays both roles here: it holds the blocks anchors resolve
 // against and the comments document's `threads`.
@@ -58,20 +59,21 @@ test("compact threads preserve Unicode quotes/coordinates and allowlist document
   const before = A.getHeads(doc);
   const [thread] = projectReadComments(doc, { thread_ids: [ids.first.thread_id] });
   assert.deepEqual(Object.keys(thread).sort(), [
-    "block_id",
     "createdAt",
     "id",
     "message_count",
     "messages",
+    "node_id",
     "selectionContext",
     "state",
   ]);
-  assert.equal(thread.block_id, "first");
+  assert.equal(thread.node_id, blockAddress(doc, "first"));
   assert.equal(thread.message_count, 2);
+  // The thread names its block, so the endpoints carry only their offsets.
   assert.deepEqual(thread.selectionContext, {
     status: "attached",
-    start: { blockId: "first", offsetUtf16: 8 },
-    end: { blockId: "first", offsetUtf16: 18 },
+    start: { offsetUtf16: 8 },
+    end: { offsetUtf16: 18 },
     text: "🌊 passage",
   });
   const message = thread.messages.find((value) => value.id === ids.first.message_id);
@@ -92,15 +94,43 @@ test("state, block and thread selectors intersect without resolving unrelated th
     projectReadComments(doc, { state: "resolved" }).map((value) => value.id),
     [ids.resolved.thread_id],
   );
+  const first = blockAddress(doc, "first");
   assert.deepEqual(
-    projectReadComments(doc, { state: "open", block_id: "first" }).map((value) => value.id),
+    projectReadComments(doc, { state: "open", node_id: first }).map((value) => value.id),
     [ids.first.thread_id],
+  );
+  assert.deepEqual(
+    projectReadComments(doc, { node_id: first }).map((value) => value.id),
+    [ids.first.thread_id, ids.resolved.thread_id],
+  );
+  assert.deepEqual(
+    projectReadComments(doc, { node_id: blockAddress(doc, "second") }).map(
+      (value) => value.node_id,
+    ),
+    [blockAddress(doc, "second")],
   );
   assert.deepEqual(
     projectReadComments(doc, { state: "resolved", thread_ids: [ids.first.thread_id] }),
     [],
   );
-  assert.deepEqual(projectReadComments(doc, { block_id: "missing" }), []);
+  // node_id takes a block's id. A node's id is the wrong kind; a block's
+  // key or an id that names nothing is not a selector.
+  const [nodeId] = nodeAddresses(doc, "first");
+  assert.ok(nodeId);
+  assert.throws(
+    () => projectReadComments(doc, { node_id: nodeId }),
+    (error) => {
+      assert.equal(error.status, 400);
+      assert.equal(error.code, "wrong_address_kind");
+      assert.match(error.message, /list_page_comments takes a block's id/);
+      return true;
+    },
+  );
+  for (const node_id of ["first", "999999@abcdef"])
+    assert.throws(() => projectReadComments(doc, { node_id }), {
+      status: 400,
+      code: "invalid_comment_selector",
+    });
 });
 
 test("summary reads count messages without reading their bodies", () => {
@@ -162,14 +192,20 @@ test("deleted messages are body-free tombstones and still count toward the threa
 
 test("deleted blocks remain addressable and removed selections report detached", () => {
   let { doc, ids } = fixture();
+  const second = blockAddress(doc, "second");
   doc = A.change(doc, (draft) => {
     delete draft.blocks.second;
     A.splice(draft, ["blocks", "first", "richText"], 8, 10, "");
   });
-  const [detachedBlock] = projectReadComments(doc, { block_id: "second" });
+  const [detachedBlock] = projectReadComments(doc, { thread_ids: [ids.second.thread_id] });
   assert.equal(detachedBlock.id, ids.second.thread_id);
-  assert.equal(detachedBlock.block_id, "second");
+  // A thread on a deleted block names no block.
+  assert.equal(detachedBlock.node_id, null);
   assert.deepEqual(detachedBlock.selectionContext, { status: "detached" });
+  assert.throws(() => projectReadComments(doc, { node_id: second }), {
+    status: 400,
+    code: "invalid_comment_selector",
+  });
   const [selection] = projectReadComments(doc, { thread_ids: [ids.first.thread_id] });
   assert.deepEqual(selection.selectionContext, { status: "detached" });
 });
@@ -184,12 +220,14 @@ test("all selectors are strict and bounded, including UTF-8 identifier bytes", (
     { state: "closed" },
     { state: null },
     { state: false },
-    { block_id: "" },
-    { block_id: "   " },
-    { block_id: "with\nline" },
-    { block_id: "x".repeat(257) },
-    { block_id: "🌊".repeat(65) },
-    { block_id: 3 },
+    { node_id: "" },
+    { node_id: "   " },
+    { node_id: "with\nline" },
+    { node_id: "x".repeat(257) },
+    { node_id: "🌊".repeat(65) },
+    { node_id: "🌊".repeat(64) },
+    { node_id: 3 },
+    { block_id: blockAddress(doc, "first") },
     { thread_ids: [] },
     { thread_ids: Array(1) },
     { thread_ids: "thread" },
@@ -208,7 +246,6 @@ test("all selectors are strict and bounded, including UTF-8 identifier bytes", (
       status: 400,
       code: "invalid_comment_selector",
     });
-  assert.deepEqual(projectReadComments(doc, { block_id: "🌊".repeat(64) }), []);
   assert.deepEqual(A.getHeads(doc), before);
 });
 
@@ -217,7 +254,7 @@ test("unknown requested threads fail explicitly before other filters can hide th
   for (const options of [
     { thread_ids: ["missing"] },
     { thread_ids: [ids.first.thread_id, "missing"], state: "resolved" },
-    { thread_ids: ["missing"], block_id: "missing" },
+    { thread_ids: ["missing"], node_id: blockAddress(doc, "second") },
     { thread_ids: ["__proto__"] },
   ])
     assert.throws(() => projectReadComments(doc, options), {
@@ -253,7 +290,7 @@ test("filters run before expensive anchor and message projection on many unrelat
     messages: {},
   };
   const doc = { schema: { features: ["comments-doc"] }, blocks: { wanted: {} }, threads: comments };
-  for (const options of [{ state: "open" }, { block_id: "wanted" }, { thread_ids: ["selected"] }])
+  for (const options of [{ state: "open" }, { thread_ids: ["selected"] }])
     assert.deepEqual(
       projectReadComments(doc, options).map((value) => value.id),
       ["selected"],

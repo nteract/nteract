@@ -4,6 +4,7 @@ import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { applyPageOperation, createPageData, initializePage, projectPage } from "../model/page.mjs";
 import { textPath } from "../model/richtext.mjs";
+import { blockAddress, nodeAddresses } from "../model/addresses.mjs";
 import { documentMutation, operationKey, recoverDocumentMutations } from "./mutations.mjs";
 import { headsFor } from "./revisions.mjs";
 
@@ -45,6 +46,7 @@ function fixture(t, markdown = "Alpha first.\n\nBeta second.\n\nKeep the tail.")
     (draft) => initializePage(draft, markdown),
   );
   const id = Object.keys(doc.blocks)[0];
+  const block = blockAddress(doc, id);
   const identity = { principal: "user:passage-fixture", driver: "Codex" };
   const handle = {
     doc: () => doc,
@@ -86,7 +88,7 @@ function fixture(t, markdown = "Alpha first.\n\nBeta second.\n\nKeep the tail.")
     nonce: `passage-${crypto.randomUUID()}`,
     revision: await revision(),
     conflict_scope: "target",
-    operations: [{ op: "replace_match", block_id: id, match_text: "Beta", replacement: "Agent" }],
+    operations: [{ op: "replace_match", node_id: block, match_text: "Beta", replacement: "Agent" }],
     ...overrides,
   });
   t.after(() => A.free(doc));
@@ -94,6 +96,7 @@ function fixture(t, markdown = "Alpha first.\n\nBeta second.\n\nKeep the tail.")
     storage,
     handle,
     id,
+    block,
     context,
     native,
     replace,
@@ -126,14 +129,15 @@ test("target-scoped stale edit preserves an unrelated native edit in the same ri
   assert.equal(f.applications(), 1);
 });
 
-test("base node_index follows its native passage after an earlier paragraph is inserted", async (t) => {
+test("a node id follows its native passage after an earlier paragraph is inserted", async (t) => {
   const f = fixture(t, "First apple.\n\nSecond apple.\n\nTail.");
+  const second = nodeAddresses(f.handle.doc(), f.id)[1];
+  assert.ok(second);
   const args = await f.args({
     operations: [
       {
         op: "replace_match",
-        block_id: f.id,
-        node_index: 1,
+        node_id: second,
         match_text: "apple",
         replacement: "pear",
       },
@@ -152,8 +156,8 @@ test("base node_index follows its native passage after an earlier paragraph is i
   assert.equal(f.markdown(), "New introduction.\n\nFirst apple.\n\nSecond apple.\n\nTail.");
   const receipt = await documentMutation(f.context(args));
   assert.equal(receipt.concurrency.rebased, true);
-  assert.equal(f.appliedArguments[0].operations[0].node_index, 2);
-  assert.equal(args.operations[0].node_index, 1, "the fingerprinted request must not be mutated");
+  // The id names the same node at any revision: the edit applies as sent.
+  assert.deepEqual(f.appliedArguments[0].operations, args.operations);
   assert.equal(f.markdown(), "New introduction.\n\nFirst apple.\n\nSecond pear.\n\nTail.");
 });
 
@@ -207,8 +211,8 @@ test("one changed passage rejects the complete target-scoped batch before either
   const f = fixture(t);
   const args = await f.args({
     operations: [
-      { op: "replace_match", block_id: f.id, match_text: "Beta", replacement: "Agent" },
-      { op: "replace_match", block_id: f.id, match_text: "tail", replacement: "ending" },
+      { op: "replace_match", node_id: f.block, match_text: "Beta", replacement: "Agent" },
+      { op: "replace_match", node_id: f.block, match_text: "tail", replacement: "ending" },
     ],
   });
   f.replace("tail", "human ending");

@@ -253,7 +253,7 @@ try {
     operations: [
       {
         op: "replace_match",
-        block_id: tableBlock.id,
+        node_id: tableBlock.node_id,
         match_text: "Reviewed B",
         replacement: "Agent reviewed",
       },
@@ -286,7 +286,7 @@ try {
   await saved(a);
   current = await call(a, "read_page", { page_id: fixture.page_id });
   assert.match(
-    current.blocks.find((block) => block.id === tableBlock.id).markdown,
+    current.blocks.find((block) => block.node_id === tableBlock.node_id).markdown,
     /together\.<br>A second line/,
   );
   checkpoint();
@@ -354,7 +354,7 @@ try {
     revision: current.revision,
     nonce: crypto.randomUUID(),
     operations: [
-      { op: "replace_block_markdown", block_id: tableBlock.id, markdown: "A place to write." },
+      { op: "replace_block_markdown", node_id: tableBlock.node_id, markdown: "A place to write." },
     ],
   });
   for (const page of [a, b]) {

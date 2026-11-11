@@ -173,7 +173,8 @@ test("GET llms.txt is readable without authentication and explains the supported
     "do not invent a download URL from its file ID",
     "only HTTPS files.oaiusercontent.com downloads",
     "insert_image",
-    "result.inserted_images",
+    "result.edits has an entry per insert_image",
+    "wrong_address_kind",
     "original receipt without another block",
     "asset must already exist in",
     "MCP structured",
@@ -442,10 +443,10 @@ test("the Images section teaches which path to use and the end-to-end workflow",
     /Revoking an API key doesn't end the URLs\s+it already issued; they stop at expires_at/,
     /dark_asset_id; that marks the Page with the\s+image-theme-variants schema feature/,
     /replace_block_markdown on the Page's only block \(a new Page from\s+create_page has one\), or its last block/,
-    /give every operation\s+that block's ID as after_block_id and list them in reverse order/,
+    /give every operation\s+that block's id as after_node_id and list them in reverse order/,
     /summary\.images/,
     /pass outline\.next_offset\s+as outline_offset, with that read's revision as revision/,
-    /"block_id": "<last block's id>"/,
+    /"node_id": "<last block's id>"/,
   ])
     assert.match(images, fact);
   assert.doesNotMatch(images, /first block's id/);

@@ -5,6 +5,7 @@ import featureFile from "./features.json" with { type: "json" };
 import { MARK_REGISTRY } from "./marks.mjs";
 import { applyPageOperation, createPageData, initializePage, orderedBlockIds } from "./page.mjs";
 import { applyComment } from "./comments.mjs";
+import { blockAddress } from "./addresses.mjs";
 import { newCommentsDoc } from "./comments-test-support.mjs";
 import {
   BUILD_FEATURES,
@@ -126,7 +127,7 @@ test("strikethrough and horizontal rules stamp their features in the same change
             operations: [
               {
                 op: "format_match",
-                block_id: orderedBlockIds(draft)[0],
+                node_id: blockAddress(draft, orderedBlockIds(draft)[0]),
                 match_text: "Friday",
                 add: { strike: true },
               },
@@ -266,7 +267,9 @@ test("baseline content never writes a stamp", (t) => {
   withFixture(t);
   let doc = page("Some **bold** and *em* text with [a link](https://example.org).");
   const id = orderedBlockIds(doc)[0];
-  doc = patch(doc, [{ op: "format_match", block_id: id, match_text: "text", add: { code: true } }]);
+  doc = patch(doc, [
+    { op: "format_match", node_id: blockAddress(doc, id), match_text: "text", add: { code: true } },
+  ]);
   const comments = A.change(
     newCommentsDoc(),
     commentOn(doc, {
@@ -310,7 +313,7 @@ test("a writer stamps a feature in the same change as the content needing it", (
             operations: [
               {
                 op: "format_match",
-                block_id: orderedBlockIds(draft)[0],
+                node_id: blockAddress(draft, orderedBlockIds(draft)[0]),
                 match_text: "Friday",
                 add: { highlight: "green" },
               },
@@ -353,7 +356,12 @@ test("replace_match carries a shared non-baseline mark and its stamp", (t) => {
   const id = orderedBlockIds(doc)[0];
   const heads = A.getHeads(doc);
   doc = patch(doc, [
-    { op: "replace_match", block_id: id, match_text: "flagged", replacement: "noted" },
+    {
+      op: "replace_match",
+      node_id: blockAddress(doc, id),
+      match_text: "flagged",
+      replacement: "noted",
+    },
   ]);
   assert.deepEqual(documentFeatures(doc), ["test-highlight"]);
   assert.deepEqual(
@@ -367,8 +375,9 @@ test("ids are never removed, even when the content that needed them is gone", (t
   let doc = page("A <mark>flagged</mark> idea.\n\n| a | b |\n| - | - |");
   assert.deepEqual(documentFeatures(doc), ["test-highlight", "test-tables"]);
   const id = orderedBlockIds(doc)[0];
-  doc = edit(doc, [{ op: "replace_block_markdown", block_id: id, markdown: "Plain now." }]);
-  doc = edit(doc, [{ op: "delete_block", block_id: id }]);
+  const node = blockAddress(doc, id);
+  doc = edit(doc, [{ op: "replace_block_markdown", node_id: node, markdown: "Plain now." }]);
+  doc = edit(doc, [{ op: "delete_block", node_id: node }]);
   assert.deepEqual(documentFeatures(doc), ["test-highlight", "test-tables"]);
 });
 

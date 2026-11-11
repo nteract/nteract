@@ -15,7 +15,7 @@ test("guarded writes refuse a stale or malformed revision with a code, not just 
       "edit_page",
       {
         operations: [
-          { op: "replace_match", block_id: f.blockId, match_text: "Friday", replacement: "Monday" },
+          { op: "replace_match", node_id: f.block, match_text: "Friday", replacement: "Monday" },
         ],
       },
     ],
@@ -77,7 +77,7 @@ test("an edit batch that cannot apply names the selector, and nothing is written
     const refused = await f.tool("owner", "edit_page", {
       revision: await f.revision(heads),
       nonce: `selector-${count}-matches`,
-      operations: [{ op: "replace_match", block_id: f.blockId, match_text, replacement: "x" }],
+      operations: [{ op: "replace_match", node_id: f.block, match_text, replacement: "x" }],
     });
     assert.equal(refused.status, 400);
     assert.equal(refused.body.code, "invalid_edit_selector");
@@ -86,10 +86,18 @@ test("an edit batch that cannot apply names the selector, and nothing is written
   const unknownBlock = await f.tool("owner", "edit_page", {
     revision: await f.revision(heads),
     nonce: "selector-unknown-block",
-    operations: [{ op: "delete_block", block_id: "no-such-block" }],
+    operations: [{ op: "delete_block", node_id: "no-such-block" }],
   });
   assert.equal(unknownBlock.status, 400);
   assert.equal(unknownBlock.body.code, "invalid_edit_selector");
+  // A well-formed id the Page never minted names nothing.
+  const unknownId = await f.tool("owner", "edit_page", {
+    revision: await f.revision(heads),
+    nonce: "selector-unknown-id",
+    operations: [{ op: "delete_block", node_id: "999999@abcdef" }],
+  });
+  assert.equal(unknownId.status, 400);
+  assert.equal(unknownId.body.code, "node_not_found", JSON.stringify(unknownId.body));
   const comment = await f.tool("owner", "manage_page_comment", {
     revision: await f.revision(heads),
     nonce: "comment-unknown-thread",
@@ -106,7 +114,7 @@ test("an edit batch that cannot apply names the selector, and nothing is written
     revision: await f.revision(),
     nonce: "selector-too-large",
     operations: [
-      { op: "replace_block_markdown", block_id: f.blockId, markdown: "w ".repeat(3000).trim() },
+      { op: "replace_block_markdown", node_id: f.block, markdown: "w ".repeat(3000).trim() },
     ],
   });
   assert.equal(tooLarge.status, 200, JSON.stringify(tooLarge.body));
@@ -116,7 +124,7 @@ test("an edit batch that cannot apply names the selector, and nothing is written
     operations: [
       {
         op: "replace_match",
-        block_id: f.blockId,
+        node_id: f.block,
         match_text: "w ".repeat(3000).trim(),
         replacement: "v ".repeat(3000).trim(),
       },
@@ -150,7 +158,7 @@ test("the host refuses every write to a Page stamped with a feature it lacks, an
       "edit_page",
       {
         operations: [
-          { op: "replace_match", block_id: f.blockId, match_text: "Friday", replacement: "Monday" },
+          { op: "replace_match", node_id: f.block, match_text: "Friday", replacement: "Monday" },
         ],
       },
     ],
@@ -159,11 +167,11 @@ test("the host refuses every write to a Page stamped with a feature it lacks, an
       {
         conflict_scope: "target",
         operations: [
-          { op: "format_match", block_id: f.blockId, match_text: "Friday", add: { strong: true } },
+          { op: "format_match", node_id: f.block, match_text: "Friday", add: { strong: true } },
         ],
       },
     ],
-    ["manage_page_comment", { action: "add", block_id: f.blockId, body: "Hello" }],
+    ["manage_page_comment", { action: "add", node_id: f.block, body: "Hello" }],
   ]) {
     const refused = await f.tool("owner", operation, {
       ...args,
@@ -271,7 +279,7 @@ test("rich edits go through the host: set_node, all and replacement_markdown, wi
   const edit = async (key, operations, heads = f.heads()) =>
     f.tool("owner", "edit_page", { revision: await f.revision(heads), nonce: key, operations });
   const wrongNode = await edit("rich-wrong-node", [
-    { op: "set_node", block_id: f.blockId, match_text: "Friday", attrs: { checked: true } },
+    { op: "set_node", node_id: f.block, match_text: "Friday", attrs: { checked: true } },
   ]);
   assert.equal(wrongNode.status, 400);
   assert.equal(wrongNode.body.code, "invalid_edit_selector");
@@ -280,27 +288,27 @@ test("rich edits go through the host: set_node, all and replacement_markdown, wi
     /checked applies to task list items; match_text is in a paragraph/,
   );
   const math = await edit("rich-math", [
-    { op: "replace_match", block_id: f.blockId, match_text: "Friday", replacement_markdown: "$x$" },
+    { op: "replace_match", node_id: f.block, match_text: "Friday", replacement_markdown: "$x$" },
   ]);
   assert.equal(math.status, 400);
   assert.equal(math.body.code, "unsupported_markdown");
   const applied = await edit("rich-applied", [
     {
       op: "set_node",
-      block_id: f.blockId,
+      node_id: f.block,
       match_text: "We ship",
       type: "heading",
       attrs: { level: 2 },
     },
     {
       op: "replace_match",
-      block_id: f.blockId,
+      node_id: f.block,
       match_text: "Friday",
       replacement_markdown: "**Monday**",
     },
     {
       op: "format_match",
-      block_id: f.blockId,
+      node_id: f.block,
       match_text: "e",
       all: true,
       add: { highlight: "blue" },
@@ -330,7 +338,7 @@ test("target-scope set_node goes through the host from older heads", async (t) =
     revision: await f.revision(base),
     nonce: "target-peer",
     operations: [
-      { op: "replace_match", block_id: f.blockId, match_text: "Friday", replacement: "Monday" },
+      { op: "replace_match", node_id: f.block, match_text: "Friday", replacement: "Monday" },
     ],
   });
   assert.equal(peer.status, 200, JSON.stringify(peer.body));
@@ -341,7 +349,7 @@ test("target-scope set_node goes through the host from older heads", async (t) =
     operations: [
       {
         op: "set_node",
-        block_id: f.blockId,
+        node_id: f.block,
         match_text: "We ship",
         type: "heading",
         attrs: { level: 2 },
@@ -349,9 +357,7 @@ test("target-scope set_node goes through the host from older heads", async (t) =
     ],
   });
   assert.equal(heading.status, 200, JSON.stringify(heading.body));
-  assert.deepEqual(heading.body.result.edits, [
-    { op: "set_node", block_id: f.blockId, matched: 1 },
-  ]);
+  assert.deepEqual(heading.body.result.edits, [{ op: "set_node", node_id: f.block, matched: 1 }]);
   const read = await f.tool("owner", "read_page", { page_id: f.pageId, comments: "none" });
   assert.equal(read.body.blocks[0].markdown, "## We ship on Monday.");
   // The same node changed since base: a conflict, not a silent overwrite.
@@ -362,7 +368,7 @@ test("target-scope set_node goes through the host from older heads", async (t) =
     operations: [
       {
         op: "set_node",
-        block_id: f.blockId,
+        node_id: f.block,
         match_text: "We ship",
         type: "heading",
         attrs: { level: 3 },
@@ -392,7 +398,7 @@ test("a Page holding a node this build doesn't know reads, and refuses a Markdow
   const rewrite = await f.tool("owner", "edit_page", {
     revision: await f.revision(),
     nonce: "unknown-rewrite",
-    operations: [{ op: "replace_block_markdown", block_id: f.blockId, markdown: "We ship." }],
+    operations: [{ op: "replace_block_markdown", node_id: f.block, markdown: "We ship." }],
   });
   assert.equal(rewrite.body.code, "markdownless_node", JSON.stringify(rewrite.body));
   assert.equal(rewrite.status, 400);
@@ -426,7 +432,7 @@ test("an edit to a node this build can't read answers 409 in both scopes; its re
         revision: await f.revision(),
         nonce: `newer-${scope}-${op.op}`,
         ...extra,
-        operations: [{ ...op, block_id: f.blockId }],
+        operations: [{ ...op, node_id: f.block }],
       });
       assert.equal(refused.status, 409, `${scope} ${op.op}: ${JSON.stringify(refused.body)}`);
       assert.equal(refused.body.code, "newer_content", `${scope} ${op.op}`);
@@ -437,7 +443,7 @@ test("an edit to a node this build can't read answers 409 in both scopes; its re
         operations: [
           {
             ...op,
-            block_id: f.blockId,
+            node_id: f.block,
             ...(op.op === "replace_match"
               ? scope === "page"
                 ? { match_text: "ship", replacement: "sail" }
@@ -453,7 +459,7 @@ test("an edit to a node this build can't read answers 409 in both scopes; its re
     revision: await f.revision(),
     nonce: "newer-missing-match",
     operations: [
-      { op: "replace_match", block_id: crypto.randomUUID(), match_text: "We", replacement: "x" },
+      { op: "replace_match", node_id: crypto.randomUUID(), match_text: "We", replacement: "x" },
     ],
   });
   assert.equal(missing.status, 400, JSON.stringify(missing.body));
@@ -468,7 +474,7 @@ test("set_node {type, attrs} goes through the host, and read_page reports the sa
     operations: [
       {
         op: "set_node",
-        block_id: f.blockId,
+        node_id: f.block,
         match_text: "We ship",
         type: "heading",
         attrs: { level: 3 },
@@ -483,7 +489,7 @@ test("set_node {type, attrs} goes through the host, and read_page reports the sa
     revision: await f.revision(),
     nonce: "typed-set-node-wrong",
     operations: [
-      { op: "set_node", block_id: f.blockId, match_text: "We ship", attrs: { checked: true } },
+      { op: "set_node", node_id: f.block, match_text: "We ship", attrs: { checked: true } },
     ],
   });
   assert.equal(wrong.status, 400);
@@ -495,9 +501,7 @@ test("set_node {type, attrs} goes through the host, and read_page reports the sa
       revision: await f.revision(),
       conflict_scope,
       nonce: `flat-set-node-${conflict_scope}`,
-      operations: [
-        { op: "set_node", block_id: f.blockId, match_text: "We ship", heading_level: 2 },
-      ],
+      operations: [{ op: "set_node", node_id: f.block, match_text: "We ship", heading_level: 2 }],
     });
     assert.equal(flat.status, 400, conflict_scope);
     assert.equal(flat.body.code, "invalid_edit_selector", conflict_scope);
@@ -525,14 +529,14 @@ test("delete_node goes through the host by the outline's node_id, and a gone id 
   const read = await f.tool("owner", "read_page", { page_id: f.pageId, comments: "none" });
   const chart = read.body.outline.entries.find((entry) => entry.type === "unknown");
   assert.equal(typeof chart.node_id, "string", JSON.stringify(read.body.outline));
-  const op = { op: "delete_node", block_id: f.blockId, node_id: chart.node_id };
+  const op = { op: "delete_node", node_id: chart.node_id };
   const deleted = await f.tool("owner", "edit_page", {
     revision: await f.revision(),
     nonce: "delete-node",
     operations: [op],
   });
   assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
-  assert.deepEqual(deleted.body.result.edits, [{ ...op, type: "unknown" }]);
+  assert.deepEqual(deleted.body.result.edits, [{ ...op, block: f.block, type: "unknown" }]);
   const after = await f.tool("owner", "read_page", { page_id: f.pageId, comments: "none" });
   assert.doesNotMatch(after.body.blocks[0].markdown, /Unsupported node/);
   const again = await f.tool("owner", "edit_page", {
@@ -549,16 +553,13 @@ test("delete_node that would join two lists is refused with nodes_would_join", a
   const edit = async (operations, key) =>
     f.tool("owner", "edit_page", { revision: await f.revision(), nonce: key, operations });
   const written = await edit(
-    [{ op: "replace_block_markdown", block_id: f.blockId, markdown: "Intro\n\n- a\n\n---\n\n- b" }],
+    [{ op: "replace_block_markdown", node_id: f.block, markdown: "Intro\n\n- a\n\n---\n\n- b" }],
     "join-setup",
   );
   assert.equal(written.status, 200, JSON.stringify(written.body));
   const read = await f.tool("owner", "read_page", { page_id: f.pageId, comments: "none" });
   const rule = read.body.outline.entries.find((entry) => /horizontal/.test(entry.type));
-  const refused = await edit(
-    [{ op: "delete_node", block_id: f.blockId, node_id: rule.node_id }],
-    "join-refused",
-  );
+  const refused = await edit([{ op: "delete_node", node_id: rule.node_id }], "join-refused");
   assert.equal(refused.status, 400);
   assert.equal(refused.body.code, "nodes_would_join", JSON.stringify(refused.body));
 });

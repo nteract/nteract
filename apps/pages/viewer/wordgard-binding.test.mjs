@@ -22,6 +22,7 @@ async function eventually(check, timeout = 4000) {
 }
 import { applyPageOperation, createPageData, initializePage, projectPage } from "../model/page.mjs";
 import { orderedBlockIds } from "../model/order.mjs";
+import { blockAddress } from "../model/addresses.mjs";
 import { Leaf, Slice } from "wordgard/doc";
 import { textPath, blockMarkdown } from "../model/richtext.mjs";
 import {
@@ -728,7 +729,10 @@ test("deleting an insert_image block by hand leaves an empty, exportable block",
         arguments: { operations: [{ op: "insert_image", asset_id: "a".repeat(64), alt: "cat" }] },
       });
     });
-    const id = result.inserted_images[0].block_id,
+    // The viewer names blocks by key; the result names the new block by id.
+    const id = orderedBlockIds(doc).find(
+        (key) => blockAddress(doc, key) === result.edits[0].node_id,
+      ),
       replica = {
         get doc() {
           return doc;

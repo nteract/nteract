@@ -134,7 +134,7 @@ try {
     operations: [
       {
         op: "insert_markdown",
-        after_block_id: null,
+        after_node_id: null,
         markdown:
           "## This week\n\nShip the hover card, then chits. " +
           `See [this Project](/project/${project.project_id}) and ` +
@@ -169,7 +169,7 @@ try {
   const { result: comment } = await tool(owner.page, "manage_page_comment", {
     page_id: source.page_id,
     action: "add",
-    block_id: sourceRead.blocks[0].id,
+    node_id: sourceRead.blocks[0].node_id,
     body: `See [the evening focus](/p/${target.page_id}) before standup.`,
     body_format: "markdown",
     nonce: key(),
@@ -538,7 +538,7 @@ try {
     const { result: chitComment } = await tool(owner.page, "manage_page_comment", {
       page_id: chits.page_id,
       action: "add",
-      block_id: chitsRead.blocks[0].id,
+      node_id: chitsRead.blocks[0].node_id,
       body: `Start from <${targetUrl}>.`,
       body_format: "markdown",
       nonce: key(),

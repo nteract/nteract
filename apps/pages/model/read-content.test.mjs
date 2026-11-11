@@ -7,6 +7,7 @@ import { exportMarkdown, parseMarkdown, richDoc, setRichMarkdown } from "./richt
 import { richFromSource } from "./richtext-test-support.mjs";
 import { stampFeatures } from "./schema-features.mjs";
 import { nativeRead } from "./native-read.mjs";
+import { blockAddress, nodeAddresses } from "./addresses.mjs";
 
 function page(blocks) {
   return A.change(A.from({ page_id: "read-fixture", title: "A title", blocks: {} }), (doc) => {
@@ -40,7 +41,7 @@ test("nested images have bounded typed occurrence metadata, not link or code mat
   assert.equal(fields.summary.images.length, 1);
   assert.equal(fields.summary.images_truncated, true);
   assert.deepEqual(fields.summary.images[0], {
-    image_id: null,
+    node_id: null,
     path: [0, 0],
     src,
     alt: "one",
@@ -69,7 +70,7 @@ const contentJSON = (value) =>
     ),
   );
 
-test("default and block-ID reads return id, position and markdown in document order", () => {
+test("default and block-id reads return node_id, position and markdown in document order", () => {
   let doc = page([
     { id: "later", markdown: "Later", position: "a2" },
     { id: "first", markdown: "Old import", position: "a0" },
@@ -80,16 +81,22 @@ test("default and block-ID reads return id, position and markdown in document or
     // A field a peer added is never returned.
     d.blocks.first.extension = { version: 2 };
   });
-  const expected = projectPage(doc).blocks;
+  const expected = projectPage(doc).blocks.map(({ id, position, markdown }) => ({
+    node_id: blockAddress(doc, id),
+    position,
+    markdown,
+  }));
   assert.deepEqual(read(doc).blocks, expected);
-  const selected = read(doc, { block_ids: ["later", "first"] });
+  const ids = [blockAddress(doc, "later"), blockAddress(doc, "first")];
+  const selected = read(doc, { node_ids: ids });
   assert.deepEqual(selected.blocks, [expected[0], expected[2]]);
   assert.equal(selected.blocks[0].markdown, "Current **rich** text 🌊");
   assert.equal(selected.blocks[0].richText, undefined);
   assert.equal(selected.blocks[0].partial, undefined);
+  assert.equal(selected.nodes, undefined);
   for (const block of read(doc).blocks)
-    assert.deepEqual(Object.keys(block).sort(), ["id", "markdown", "position"]);
-  assert.deepEqual(selected.selection, { type: "blocks", block_ids: ["first", "later"] });
+    assert.deepEqual(Object.keys(block).sort(), ["markdown", "node_id", "position"]);
+  assert.deepEqual(selected.selection, { type: "nodes", node_ids: ids });
 });
 
 test("a section inside one rich block includes its heading and children until a same-level heading", () => {
@@ -102,16 +109,16 @@ test("a section inside one rich block includes its heading and children until a 
   ]);
   const result = read(doc, { section: "Target 🌊" });
   assert.equal(result.blocks.length, 1);
-  assert.equal(result.blocks[0].id, "one");
+  assert.equal(result.blocks[0].node_id, blockAddress(doc, "one"));
   assert.equal(result.blocks[0].partial, true);
   assert.deepEqual(Object.keys(result.blocks[0]).sort(), [
-    "id",
     "markdown",
-    "node_range",
+    "node_id",
+    "nodes",
     "partial",
     "position",
   ]);
-  assert.deepEqual(result.blocks[0].node_range, { block_id: "one", from: 2, to: 6 });
+  assert.deepEqual(result.blocks[0].nodes, nodeAddresses(doc, "one").slice(2, 6));
   assert.equal(
     result.blocks[0].markdown,
     "## **Target** 🌊\n\nBody.\n\n### Child\n\n- First\n- Second",
@@ -134,14 +141,17 @@ test("sections span blocks and respect headings in excluded blocks as boundaries
   ]);
   const result = read(doc, { section: "Target" });
   assert.deepEqual(
-    result.blocks.map((block) => block.id),
-    ["start", "middle"],
+    result.blocks.map((block) => block.node_id),
+    [blockAddress(doc, "start"), blockAddress(doc, "middle")],
   );
-  assert.deepEqual(result.blocks[1].node_range, { block_id: "middle", from: 0, to: 3 });
+  assert.deepEqual(result.blocks[1].nodes, nodeAddresses(doc, "middle").slice(0, 3));
   assert.equal(result.blocks[1].markdown, "Second.\n\n## Child\n\nThird.");
   assert.deepEqual(
-    read(doc, { section: "Target", block_ids: ["start", "tail"] }).blocks.map((block) => block.id),
-    ["start"],
+    read(doc, {
+      section: "Target",
+      node_ids: [blockAddress(doc, "start"), blockAddress(doc, "tail")],
+    }).blocks.map((block) => block.node_id),
+    [blockAddress(doc, "start")],
   );
 });
 
@@ -152,7 +162,8 @@ test("repeated visible headings require an occurrence and report bounded locatio
       markdown: Array.from({ length: 25 }, (_, i) => `## Repeat\n\nBody ${i + 1}.`).join("\n\n"),
     },
   ]);
-  const heads = A.getHeads(doc);
+  const heads = A.getHeads(doc),
+    ids = nodeAddresses(doc, "one");
   assert.throws(
     () => projectReadContent(doc, { section: "Repeat" }),
     (error) => {
@@ -160,8 +171,8 @@ test("repeated visible headings require an occurrence and report bounded locatio
       assert.equal(error.code, "ambiguous_section");
       assert.equal(error.details.total, 25);
       assert.equal(error.details.candidates.length, 20);
-      assert.deepEqual(error.details.candidates[0], { block_id: "one", node_index: 0, level: 2 });
-      assert.deepEqual(error.details.candidates[19], { block_id: "one", node_index: 38, level: 2 });
+      assert.deepEqual(error.details.candidates[0], { node_id: ids[0], level: 2 });
+      assert.deepEqual(error.details.candidates[19], { node_id: ids[38], level: 2 });
       return true;
     },
   );
@@ -179,12 +190,13 @@ test("repeated visible headings require an occurrence and report bounded locatio
     { id: "two", markdown: "# Repeat\n\nTwo" },
   ]);
   assert.equal(
-    read(twoBlocks, { section: "Repeat", block_ids: ["two"] }).blocks[0].markdown,
+    read(twoBlocks, { section: "Repeat", node_ids: [blockAddress(twoBlocks, "two")] }).blocks[0]
+      .markdown,
     "# Repeat\n\nTwo",
   );
 });
 
-test("literal search matches visible marked text and keeps disjoint node ranges separate", () => {
+test("literal search matches visible marked text and keeps disjoint runs of nodes separate", () => {
   const doc = page([
     {
       id: "one",
@@ -192,40 +204,41 @@ test("literal search matches visible marked text and keeps disjoint node ranges 
         "Before\n\nA **marked** needle 🌊\n\nMiddle one\n\nMiddle two\n\nLiteral a.*b\n\nAfter",
     },
   ]);
+  const ids = nodeAddresses(doc, "one");
   const exact = read(doc, { search: ["marked needle", "a.*b"], context_nodes: 0 });
   assert.deepEqual(
-    exact.blocks.map((block) => block.node_range),
-    [
-      { block_id: "one", from: 1, to: 2 },
-      { block_id: "one", from: 4, to: 5 },
-    ],
+    exact.blocks.map((block) => block.nodes),
+    [[ids[1]], [ids[4]]],
   );
   assert.equal(exact.blocks[0].markdown, "A **marked** needle 🌊");
   assert.equal(exact.selection.matched_nodes, 2);
   const context = read(doc, { search: ["marked needle", "a.*b"] });
   assert.deepEqual(
-    context.blocks.map((block) => block.node_range),
-    [{ block_id: "one", from: 0, to: 6 }],
+    context.blocks.map((block) => block.nodes),
+    [ids.slice(0, 6)],
   );
   assert.deepEqual(read(doc, { search: ["a.+b"] }).blocks, []);
   assert.equal(read(doc, { search: ["a.+b"] }).selection.matched_nodes, 0);
 });
 
-test("search context crosses block edges but does not pull content outside block_ids", () => {
+test("search context crosses block edges but does not pull content outside node_ids", () => {
   const doc = page([
     { id: "before", markdown: "Before" },
     { id: "match", markdown: "Needle" },
     { id: "after", markdown: "After" },
   ]);
+  const block = (key) => blockAddress(doc, key);
   assert.deepEqual(
-    read(doc, { search: ["Needle"] }).blocks.map((block) => block.id),
-    ["before", "match", "after"],
+    read(doc, { search: ["Needle"] }).blocks.map((entry) => entry.node_id),
+    [block("before"), block("match"), block("after")],
   );
   assert.deepEqual(
-    read(doc, { search: ["Needle"], block_ids: ["match"] }).blocks.map((block) => block.id),
-    ["match"],
+    read(doc, { search: ["Needle"], node_ids: [block("match")] }).blocks.map(
+      (entry) => entry.node_id,
+    ),
+    [block("match")],
   );
-  assert.deepEqual(read(doc, { search: ["Needle"], block_ids: ["before"] }).blocks, []);
+  assert.deepEqual(read(doc, { search: ["Needle"], node_ids: [block("before")] }).blocks, []);
 });
 
 test("partial reads preserve whole nested lists, tasks, tables, links, code and Unicode", () => {
@@ -239,20 +252,20 @@ test("partial reads preserve whole nested lists, tasks, tables, links, code and 
   ].join("\n\n");
   const doc = page([{ id: "one", markdown: source }]),
     tree = richDoc(doc.blocks.one),
-    result = read(doc, { node_range: { block_id: "one", from: 1, to: 5 } });
+    ids = nodeAddresses(doc, "one"),
+    result = read(doc, { node_ids: ids.slice(1, 5) });
+  assert.deepEqual(result.blocks, []);
   assert.deepEqual(
-    contentJSON(parseMarkdown(result.blocks[0].markdown).toJSON().content),
+    contentJSON(result.nodes.flatMap((node) => parseMarkdown(node.markdown).toJSON().content)),
     contentJSON([1, 2, 3, 4].map((index) => tree.content[index].toJSON())),
   );
-  assert.match(result.blocks[0].markdown, /- \[x\] \*\*Done\*\* 🌊/);
-  assert.match(result.blocks[0].markdown, /```mermaid/);
-  assert.equal(result.outline[1].type, "task-list");
-  assert.equal(result.outline[3].type, "table");
-  for (const entry of result.outline) {
-    const single = read(doc, {
-      node_range: { block_id: "one", from: entry.node_index, to: entry.node_index + 1 },
-    });
-    assert.equal(entry.markdown_bytes, Buffer.byteLength(single.blocks[0].markdown, "utf8"));
+  assert.match(result.nodes[0].markdown, /- \[x\] \*\*Done\*\* 🌊/);
+  assert.match(result.nodes[3].markdown, /```mermaid/);
+  assert.equal(result.outline[0].type, "task-list");
+  assert.equal(result.outline[2].type, "table");
+  for (const entry of read(doc).outline) {
+    const single = read(doc, { node_ids: [entry.node_id] });
+    assert.equal(entry.markdown_bytes, Buffer.byteLength(single.nodes[0].markdown, "utf8"));
   }
 });
 
@@ -279,21 +292,37 @@ test("outline-only reads expose revision-bound node addresses and no content blo
     max_bytes: 1024,
   });
   assert.deepEqual(result.blocks, []);
+  const one = nodeAddresses(doc, "one"),
+    two = nodeAddresses(doc, "two");
+  // Only a block's first node names its block.
   assert.deepEqual(
-    result.outline.map(({ block_id, node_index, type, heading_path }) => ({
-      block_id,
-      node_index,
+    result.outline.map(({ node_id, block, type, heading_path }) => ({
+      node_id,
+      block,
       type,
       heading_path,
     })),
     [
-      { block_id: "one", node_index: 0, type: "heading", heading_path: ["A"] },
-      { block_id: "one", node_index: 1, type: "heading", heading_path: ["A", "B"] },
-      { block_id: "one", node_index: 2, type: "paragraph", heading_path: ["A", "B"] },
-      { block_id: "two", node_index: 0, type: "paragraph", heading_path: ["A", "B"] },
-      { block_id: "two", node_index: 1, type: "heading", heading_path: ["C"] },
+      { node_id: one[0], block: blockAddress(doc, "one"), type: "heading", heading_path: ["A"] },
+      { node_id: one[1], block: undefined, type: "heading", heading_path: ["A", "B"] },
+      { node_id: one[2], block: undefined, type: "paragraph", heading_path: ["A", "B"] },
+      {
+        node_id: two[0],
+        block: blockAddress(doc, "two"),
+        type: "paragraph",
+        heading_path: ["A", "B"],
+      },
+      { node_id: two[1], block: undefined, type: "heading", heading_path: ["C"] },
     ],
   );
+  assert.deepEqual(
+    result.outline.map((entry) => "block" in entry),
+    [true, false, false, true, false],
+  );
+  for (const entry of result.outline) {
+    assert.equal("block_id" in entry, false);
+    assert.equal("node_index" in entry, false);
+  }
   assert.equal(result.outline[2].markdown_bytes, Buffer.byteLength("こんにちは 🌊"));
   assert.ok(result.outline[2].markdown_bytes > "こんにちは 🌊".length);
   assert.deepEqual(read(doc, { include_content: false, search: ["More"] }).blocks, []);
@@ -307,15 +336,17 @@ test("outline headings carry the anchor that links to them", () => {
   const headings = read(doc, { include_content: false }).outline.filter(
     (entry) => entry.type === "heading",
   );
+  const one = nodeAddresses(doc, "one"),
+    two = nodeAddresses(doc, "two");
   // The quoted heading is inside a top-level quote, so it has no entry of its
   // own, but it still takes "plan-1" in document order.
   assert.deepEqual(
-    headings.map(({ block_id, heading, anchor }) => ({ block_id, heading, anchor })),
+    headings.map(({ node_id, heading, anchor }) => ({ node_id, heading, anchor })),
     [
-      { block_id: "one", heading: "Plan", anchor: "plan" },
-      { block_id: "one", heading: "Getting lean: Automerge", anchor: "getting-lean-automerge" },
-      { block_id: "two", heading: "Plan", anchor: "plan-2" },
-      { block_id: "two", heading: "✨", anchor: "section" },
+      { node_id: one[0], heading: "Plan", anchor: "plan" },
+      { node_id: one[3], heading: "Getting lean: Automerge", anchor: "getting-lean-automerge" },
+      { node_id: two[0], heading: "Plan", anchor: "plan-2" },
+      { node_id: two[1], heading: "✨", anchor: "section" },
     ],
   );
   const paragraph = read(doc, { include_content: false }).outline.find(
@@ -326,16 +357,24 @@ test("outline headings carry the anchor that links to them", () => {
 
 test("invalid selectors are typed and never mutate the captured document", () => {
   const doc = page([{ id: "one", markdown: "# Heading\n\nBody" }]),
-    heads = A.getHeads(doc);
+    heads = A.getHeads(doc),
+    block = blockAddress(doc, "one"),
+    [heading] = nodeAddresses(doc, "one");
   const invalid = [
     null,
     [],
     { include_content: "false" },
-    { block_ids: [] },
-    { block_ids: ["one", "one"] },
-    { block_ids: [null] },
-    { block_ids: ["a".repeat(129)] },
-    { block_ids: Array.from({ length: 101 }, (_, i) => `id-${i}`) },
+    { node_ids: [] },
+    { node_ids: block },
+    { node_ids: [block, block] },
+    { node_ids: [null] },
+    // A block's key is not an address.
+    { node_ids: ["one"] },
+    { node_ids: ["a".repeat(129)] },
+    { node_ids: Array.from({ length: 101 }, (_, i) => `${i}@ab`) },
+    // With section or search, node_ids scopes by block.
+    { section: "Heading", node_ids: [heading] },
+    { search: ["Body"], node_ids: [heading] },
     { section: "" },
     { section: "a".repeat(1025) },
     { section: 1 },
@@ -343,8 +382,6 @@ test("invalid selectors are typed and never mutate the captured document", () =>
     { section: "Heading", section_occurrence: 0 },
     { section: "Heading", section_occurrence: 1.5 },
     { section: "Heading", search: ["Body"] },
-    { section: "Heading", node_range: { block_id: "one", from: 0, to: 1 } },
-    { search: ["Body"], node_range: { block_id: "one", from: 0, to: 1 } },
     { search: [] },
     { search: "Body" },
     { search: [""] },
@@ -355,14 +392,6 @@ test("invalid selectors are typed and never mutate the captured document", () =>
     { search: ["Body"], context_nodes: -1 },
     { search: ["Body"], context_nodes: 3 },
     { search: ["Body"], context_nodes: 1.5 },
-    { node_range: null },
-    { node_range: [] },
-    { node_range: { block_id: "one", from: 0 } },
-    { node_range: { block_id: "one", from: 0, to: 0 } },
-    { node_range: { block_id: "one", from: -1, to: 1 } },
-    { node_range: { block_id: "one", from: 0.5, to: 1 } },
-    { node_range: { block_id: "one", from: 0, to: 1, extra: true } },
-    { block_ids: ["one"], node_range: { block_id: "one", from: 0, to: 1 } },
   ];
   for (const args of invalid)
     assert.throws(
@@ -371,10 +400,9 @@ test("invalid selectors are typed and never mutate the captured document", () =>
       JSON.stringify(args),
     );
   for (const args of [
-    { block_ids: ["missing"] },
+    { node_ids: ["999999@abcdef"] },
+    { node_ids: [block, "999999@abcdef"] },
     { section: "missing" },
-    { node_range: { block_id: "missing", from: 0, to: 1 } },
-    { node_range: { block_id: "one", from: 0, to: 3 } },
   ])
     assert.throws(() => projectReadContent(doc, args), expectedError(404, "read_target_not_found"));
   assert.deepEqual(A.getHeads(doc), heads);
@@ -383,9 +411,9 @@ test("invalid selectors are typed and never mutate the captured document", () =>
 test("a large selected node is returned intact for the wrapper to budget, never truncated", () => {
   const body = "🌊".repeat(10_000),
     doc = page([{ id: "one", markdown: `# Big\n\n${body}` }]);
-  const result = read(doc, { node_range: { block_id: "one", from: 1, to: 2 }, max_bytes: 1024 });
-  assert.equal(result.blocks[0].markdown, body);
-  assert.equal(result.outline[1].markdown_bytes, 40_000);
+  const result = read(doc, { node_ids: [nodeAddresses(doc, "one")[1]], max_bytes: 1024 });
+  assert.equal(result.nodes[0].markdown, body);
+  assert.equal(result.outline[0].markdown_bytes, 40_000);
 });
 
 test("outline entries and changed nodes carry attrs, summary and node_type", async () => {
@@ -419,7 +447,7 @@ test("outline entries and changed nodes carry attrs, summary and node_type", asy
   assert.equal(outline[0].level, 1);
   // The change feed reports the same fields, so set_node can be checked
   // without parsing Markdown, headings included.
-  const id = orderedBlockIds(doc)[0];
+  const id = blockAddress(doc, orderedBlockIds(doc)[0]);
   const heads = A.getHeads(doc);
   const next = A.change(A.clone(doc), (draft) =>
     applyPageOperation(draft, {
@@ -428,20 +456,20 @@ test("outline entries and changed nodes carry attrs, summary and node_type", asy
         operations: [
           {
             op: "set_node",
-            block_id: id,
+            node_id: id,
             match_text: "Head",
             type: "heading",
             attrs: { level: 2 },
           },
-          { op: "set_node", block_id: id, match_text: "open", attrs: { checked: true } },
+          { op: "set_node", node_id: id, match_text: "open", attrs: { checked: true } },
           {
             op: "set_node",
-            block_id: id,
+            node_id: id,
             match_text: "plain",
             occurrence: 1,
             attrs: { language: "mermaid" },
           },
-          { op: "set_node", block_id: id, match_text: "3", attrs: { align: "right" } },
+          { op: "set_node", node_id: id, match_text: "3", attrs: { align: "right" } },
         ],
       },
     }),
@@ -654,7 +682,9 @@ test("a list item that opens with a block other than a paragraph reads back and 
       applyPageOperation(draft, {
         operation: "edit_page",
         arguments: {
-          operations: [{ op: "replace_block_markdown", block_id: id, markdown: expected }],
+          operations: [
+            { op: "replace_block_markdown", node_id: blockAddress(doc, id), markdown: expected },
+          ],
         },
       }),
     );
@@ -667,4 +697,72 @@ test("a list item that opens with a block other than a paragraph reads back and 
     doc = A.change(doc, (draft) => initializePage(draft, markdown));
     assert.equal(projectReadContent(doc, {}).outline.length, 1, markdown);
   }
+});
+
+test("node_ids select a block whole or a node with its uncapped fields", async () => {
+  const { OUTLINE_MAX_ITEMS } = await import("./read-content.mjs");
+  const tasks = Array.from({ length: OUTLINE_MAX_ITEMS + 3 }, (_, i) => `- [x] t${i}`).join("\n");
+  const src = `/api/pages/read-fixture/assets/${"b".repeat(64)}`;
+  const doc = page([
+    { id: "one", markdown: `# Tasks\n\n${tasks}\n\nAfter` },
+    { id: "two", markdown: `Picture ![alt](${src})` },
+  ]);
+  const block = blockAddress(doc, "one"),
+    ids = nodeAddresses(doc, "one");
+
+  // A block's id selects the whole block in blocks, and no nodes.
+  const whole = read(doc, { node_ids: [block] });
+  assert.deepEqual(
+    whole.blocks.map((entry) => entry.node_id),
+    [block],
+  );
+  assert.equal(whole.blocks[0].partial, undefined);
+  assert.equal("nodes" in whole, false);
+
+  // A node's id selects that node in nodes, with every item listed.
+  const named = read(doc, { node_ids: [ids[1]] });
+  assert.deepEqual(named.blocks, []);
+  assert.deepEqual(named.selection, { type: "nodes", node_ids: [ids[1]] });
+  assert.equal(named.nodes.length, 1);
+  const [node] = named.nodes;
+  assert.equal(node.node_id, ids[1]);
+  assert.equal(node.block, block);
+  assert.equal(node.type, "task-list");
+  assert.deepEqual(node.heading_path, ["Tasks"]);
+  assert.equal(node.markdown, tasks);
+  assert.equal(node.summary.items, OUTLINE_MAX_ITEMS + 3);
+  assert.equal(node.summary.checked.length, OUTLINE_MAX_ITEMS + 3);
+  assert.equal(node.summary.checked_truncated, undefined);
+  // The outline entry for the same node stays capped.
+  assert.deepEqual(
+    named.outline.map((entry) => entry.node_id),
+    [ids[1]],
+  );
+  assert.equal(named.outline[0].summary.checked.length, OUTLINE_MAX_ITEMS);
+  assert.equal(named.outline[0].summary.checked_truncated, true);
+
+  // A block and a node from another block together.
+  const mixed = read(doc, { node_ids: [blockAddress(doc, "two"), ids[0]] });
+  assert.deepEqual(
+    mixed.blocks.map((entry) => entry.node_id),
+    [blockAddress(doc, "two")],
+  );
+  assert.deepEqual(
+    mixed.nodes.map((entry) => entry.node_id),
+    [ids[0]],
+  );
+
+  // include_content:false keeps the outline and empties nodes.
+  const outlineOnly = read(doc, { node_ids: [ids[1]], include_content: false });
+  assert.deepEqual(outlineOnly.blocks, []);
+  assert.deepEqual(outlineOnly.nodes, []);
+  assert.equal(outlineOnly.outline.length, 1);
+
+  // An image's id is not a read selector.
+  const [image] = read(doc).outline.find((entry) => entry.summary?.images).summary.images;
+  assert.match(image.node_id, /^[0-9]+@[0-9a-f]+$/);
+  assert.throws(
+    () => projectReadContent(doc, { node_ids: [image.node_id] }),
+    expectedError(400, "wrong_address_kind"),
+  );
 });

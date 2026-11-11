@@ -467,6 +467,7 @@ export const CLIENT_ERROR_CODES = Object.freeze([
   "markdownless_node",
   "newer_content",
   "node_not_found",
+  "wrong_address_kind",
   "nodes_would_join",
   "stored_form_unsupported",
   "document_format_unsupported",
@@ -598,9 +599,9 @@ export function errorResponse(error, stage = "request") {
       // the comments document's where the host knows it. Heads never leave.
       ...(["stale_revision", "edit_conflict", "resync_required"].includes(error?.code) && {
         ...(Array.isArray(error.details?.conflicts) && {
+          // The id the request named, never a block's key.
           conflicts: error.details.conflicts.slice(0, 10).map((conflict) => ({
-            block_id: String(conflict.block_id ?? "").slice(0, 128),
-            ...(Number.isSafeInteger(conflict.node_index) && { node_index: conflict.node_index }),
+            node_id: String(conflict.node_id ?? "").slice(0, 192),
             reason: String(conflict.reason ?? "Target changed").slice(0, 240),
           })),
         }),

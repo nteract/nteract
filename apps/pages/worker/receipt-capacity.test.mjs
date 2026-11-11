@@ -240,7 +240,7 @@ test("1,500 comment writes leave the Page writable, and recent receipts still re
     const added = await f.tool("owner", "manage_page_comment", {
       nonce: `comment-${String(n).padStart(4, "0")}`,
       action: "add",
-      block_id: f.blockId,
+      node_id: f.block,
       body: `Comment ${n}`,
     });
     assert.equal(added.status, 200, `comment ${n}: ${JSON.stringify(added.body)}`);
@@ -255,7 +255,7 @@ test("1,500 comment writes leave the Page writable, and recent receipts still re
     nonce: "edit-after-the-discussion",
     revision: await f.revision(),
     operations: [
-      { op: "replace_match", block_id: f.blockId, match_text: "Friday", replacement: "Monday" },
+      { op: "replace_match", node_id: f.block, match_text: "Friday", replacement: "Monday" },
     ],
   });
   assert.equal(edit.status, 200, JSON.stringify(edit.body));
@@ -265,7 +265,7 @@ test("1,500 comment writes leave the Page writable, and recent receipts still re
     nonce: "edit-after-the-discussion",
     revision: edit.body.revision,
     operations: [
-      { op: "replace_match", block_id: f.blockId, match_text: "Friday", replacement: "Monday" },
+      { op: "replace_match", node_id: f.block, match_text: "Friday", replacement: "Monday" },
     ],
   });
   assert.equal(again.status, 409, "a changed payload under the same key conflicts");
@@ -274,7 +274,7 @@ test("1,500 comment writes leave the Page writable, and recent receipts still re
   const recentComment = await f.tool("owner", "manage_page_comment", {
     nonce: "comment-1499",
     action: "add",
-    block_id: f.blockId,
+    node_id: f.block,
     body: "Comment 1499",
   });
   assert.equal(recentComment.status, 200);
@@ -309,7 +309,7 @@ test("after a lost response, an edit retry past its evicted receipt is refused, 
   const push = await f.tool("owner", "manage_page_comment", {
     nonce: "the-one-that-evicts",
     action: "add",
-    block_id: f.blockId,
+    node_id: f.block,
     body: "Pushes the oldest out",
   });
   assert.equal(push.status, 200, JSON.stringify(push.body));
@@ -339,7 +339,7 @@ test("eviction order comes from the stored stamp, so it survives a restart", asy
   const write = await f.tool("owner", "manage_page_comment", {
     nonce: "after-restart",
     action: "add",
-    block_id: f.blockId,
+    node_id: f.block,
     body: "After a restart",
   });
   assert.equal(write.status, 200, JSON.stringify(write.body));

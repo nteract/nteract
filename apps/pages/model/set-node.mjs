@@ -182,9 +182,9 @@ export function setNode(doc, id, input, trace, { anchor } = {}) {
   const index = targetMarker(spans, governingMarker(spans, start));
   if (!readableMarker(spans[index].value))
     throw newerContent(
-      "match_text is in a node from a newer version of Pages that this version can't read, so set_node can't change it. Remove the node with delete_node, or the block with delete_block.",
+      "match_text is in a node from a newer version of Pages that this version can't read, so set_node can't change it. Remove the node with delete_node, or the block with delete_block and the block's id.",
     );
-  const result = { op: "set_node", block_id: id, matched: 1 };
+  const result = { op: "set_node", matched: 1 };
   const names = Object.keys(change.attrs);
   const marker = spans[index];
   const current = spanType(marker);
@@ -229,7 +229,7 @@ export function setNode(doc, id, input, trace, { anchor } = {}) {
   const columnTargets = Object.keys(column).length ? columnCells(spans, index) : [];
   if (columnTargets.some((cell) => !readableMarker(spans[cell].value)))
     throw newerContent(
-      "This table column holds a cell from a newer version of Pages that this version can't read, so set_node can't align it. Rewrite the block with replace_block_markdown, or remove it with delete_block.",
+      "This table column holds a cell from a newer version of Pages that this version can't read, so set_node can't align it. Rewrite the block with replace_block_markdown, or remove it with delete_block; both take the block's id.",
     );
   const typeValue = target === current ? marker.value.type : new A.ImmutableString(target);
   spans[index] = withAttrs(marker, attrs, typeValue);
@@ -256,7 +256,7 @@ export function setNode(doc, id, input, trace, { anchor } = {}) {
     value.parents.some((parent) => markerName(parent) === null);
   if (written.some((i) => unwritable(spans[i].value)))
     throw newerContent(
-      `set_node can't write ${nodeLabel(target)} with attributes or parents this version of Pages can't read, which a newer version wrote. Rewrite the block with replace_block_markdown, or remove it with delete_block.`,
+      `set_node can't write ${nodeLabel(target)} with attributes or parents this version of Pages can't read, which a newer version wrote. Rewrite the block with replace_block_markdown, or remove it with delete_block; both take the block's id.`,
     );
   updateSpansExactly(doc, path, spans, updateSpansConfig);
   trace?.push({ type: "text", block_id: id, start, end });

@@ -3,6 +3,7 @@ import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { createAuthFixture } from "../auth-fixtures.mjs";
 import { initializePage } from "../model/page.mjs";
+import { blockAddress, nodeAddresses } from "../model/addresses.mjs";
 import { Page } from "./index.mjs";
 import { plainStub } from "./plain-stub.mjs";
 import { headsFor } from "./revisions.mjs";
@@ -80,6 +81,13 @@ for (const fault of ["metadata", "flush", "final-sync"]) {
     assert.equal(receipt.warnings.length, 1);
     assert.equal(receipt.warnings[0].code, "opening_heading_repeats_title");
     assert.equal(receipt.warnings[0].heading, "Test");
+    // The first block's id and its nodes' ids, so the first edit needs no
+    // read; the warning names the heading by its id.
+    const key = Object.keys(doc.blocks)[0];
+    assert.equal(receipt.node_id, blockAddress(doc, key));
+    assert.deepEqual(receipt.nodes, nodeAddresses(doc, key));
+    assert.equal(receipt.nodes.length, 2);
+    assert.equal(receipt.warnings[0].node_id, receipt.nodes[0]);
     const recordedCreation = await storage.get("host/creation");
     assert.deepEqual(
       recordedCreation?.metadata.createdReceipt ??

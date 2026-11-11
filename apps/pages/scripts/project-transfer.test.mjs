@@ -178,15 +178,15 @@ function fakePages(origin, { outlinePage = 100, token = KEY, insertNode = true }
   }
   const outline = (page) =>
     page.blocks.map((block) => ({
-      block_id: block.id,
-      node_index: 0,
+      node_id: block.id,
+      block: block.id,
       type: block.type ?? "paragraph",
       ...(block.attrs && { attrs: block.attrs }),
       ...(imageInventory([block.markdown ?? ""]).length && {
         summary: {
           images: imageInventory([block.markdown]).map((image, index) => ({
             ...image,
-            image_id: `${index}@${block.id}`,
+            node_id: `${index}@${block.id}`,
             ...block.variants?.[index],
           })),
         },
@@ -196,7 +196,7 @@ function fakePages(origin, { outlinePage = 100, token = KEY, insertNode = true }
   const entriesOf = (page) =>
     page.blocks.flatMap((block) =>
       block.outline
-        ? block.outline.map((entry) => ({ block_id: block.id, node_index: 0, ...entry }))
+        ? block.outline.map((entry) => ({ node_id: block.id, block: block.id, ...entry }))
         : [outline({ blocks: [block] })[0]],
     );
   const assetPath = (pageId, assetId) => `/api/pages/${pageId}/assets/${assetId}`;
@@ -307,7 +307,7 @@ function fakePages(origin, { outlinePage = 100, token = KEY, insertNode = true }
         revision: revisionOf(page),
       };
       const blocks = page.blocks.map(({ id, kind, markdown }) => ({
-        id,
+        node_id: id,
         ...(kind && { kind }),
         markdown,
       }));
@@ -346,9 +346,9 @@ function fakePages(origin, { outlinePage = 100, token = KEY, insertNode = true }
         if (error) return error;
         if (args.revision !== revisionOf(page)) return fail("edit_conflict");
         for (const op of args.operations) {
-          // after_block_id null puts a new block first; omitted appends.
+          // after_node_id null puts a new block first; omitted appends.
           const place = (block) =>
-            op.after_block_id === null ? page.blocks.unshift(block) : page.blocks.push(block);
+            op.after_node_id === null ? page.blocks.unshift(block) : page.blocks.push(block);
           if (op.op === "set_title") page.title = op.title;
           else if (op.op === "insert_markdown")
             place({ id: crypto.randomUUID(), markdown: op.markdown });
@@ -368,8 +368,20 @@ function fakePages(origin, { outlinePage = 100, token = KEY, insertNode = true }
             const { asset_id } = attrs;
             if (!assets.has(`${page.page_id}/${asset_id}`)) return fail("dataset_not_found");
             place(dataframeBlock(page.page_id, op.node.attrs));
+          } else if (op.op === "set_image") {
+            // An image's id is `<index>@<block id>`, as the outline reports it.
+            const [imageIndex, blockId] = op.node_id.split("@");
+            const block = page.blocks.find((candidate) => candidate.id === blockId);
+            if (!block || !imageInventory([block.markdown])[Number(imageIndex)])
+              return fail("node_not_found");
+            if (!assets.has(`${page.page_id}/${op.dark_asset_id}`)) return fail("image_not_found");
+            block.variants ??= {};
+            block.variants[Number(imageIndex)] = {
+              dark_src: assetPath(page.page_id, op.dark_asset_id),
+              dark_asset_id: op.dark_asset_id,
+            };
           } else {
-            const index = page.blocks.findIndex((block) => block.id === op.block_id);
+            const index = page.blocks.findIndex((block) => block.id === op.node_id);
             if (index < 0) return fail("block_not_found");
             if (op.op === "delete_block") page.blocks.splice(index, 1);
             else if (op.op === "replace_block_markdown") {
@@ -379,21 +391,6 @@ function fakePages(origin, { outlinePage = 100, token = KEY, insertNode = true }
               if (page.blocks[index].type === "dataframe" || page.blocks[index].outline)
                 return fail("markdownless_node");
               page.blocks[index].markdown = op.markdown;
-            } else if (op.op === "set_image") {
-              const block = page.blocks[index];
-              const imageIndex = Number(op.image_id.split("@")[0]);
-              if (
-                op.image_id !== `${imageIndex}@${block.id}` ||
-                !imageInventory([block.markdown])[imageIndex]
-              )
-                return fail("image_not_found");
-              if (!assets.has(`${page.page_id}/${op.dark_asset_id}`))
-                return fail("image_not_found");
-              block.variants ??= {};
-              block.variants[imageIndex] = {
-                dark_src: assetPath(page.page_id, op.dark_asset_id),
-                dark_asset_id: op.dark_asset_id,
-              };
             } else return fail("unsupported_operation");
           }
         }
@@ -578,9 +575,9 @@ test("export discovers dark assets from structured occurrences and refuses trunc
       type: "blockquote",
       summary: {
         images: [
-          { image_id: "cursor", path: [0, 0], src, asset_id: id, dark_src: src, dark_asset_id: id },
-          { image_id: "second", path: [1, 0], src, asset_id: id },
-          { image_id: "third", path: [2, 0], src, asset_id: id },
+          { node_id: "cursor", path: [0, 0], src, asset_id: id, dark_src: src, dark_asset_id: id },
+          { node_id: "second", path: [1, 0], src, asset_id: id },
+          { node_id: "third", path: [2, 0], src, asset_id: id },
         ],
       },
     },
@@ -1983,28 +1980,28 @@ test("bodyUnits takes a dataframe line only alone, outside fences, quotes and li
 });
 
 test("bodyOperations puts leading dataframes first and replaces the first block", () => {
-  const blocks = [{ id: "b1" }, { id: "b2" }];
+  const blocks = [{ node_id: "b1" }, { node_id: "b2" }];
   const frame = (asset_id) => ({ dataframe: { asset_id, src: "/x", media_type: PARQUET } });
   const node = (asset_id, after) => ({
     op: "insert_node",
     node: { type: "dataframe", attrs: { asset_id, media_type: PARQUET } },
-    ...(after !== undefined && { after_block_id: after }),
+    ...(after !== undefined && { after_node_id: after }),
   });
   assert.deepEqual(
     bodyOperations(blocks, [frame("f1"), frame("f2"), { markdown: "M" }, frame("f3")]),
     [
       node("f2", null),
       node("f1", null),
-      { op: "replace_block_markdown", block_id: "b1", markdown: "M" },
-      { op: "delete_block", block_id: "b2" },
+      { op: "replace_block_markdown", node_id: "b1", markdown: "M" },
+      { op: "delete_block", node_id: "b2" },
       node("f3"),
     ],
   );
   // Only dataframes: append them all, then delete every old block.
   assert.deepEqual(bodyOperations(blocks, [frame("f1")]), [
     node("f1"),
-    { op: "delete_block", block_id: "b1" },
-    { op: "delete_block", block_id: "b2" },
+    { op: "delete_block", node_id: "b1" },
+    { op: "delete_block", node_id: "b2" },
   ]);
 });
 

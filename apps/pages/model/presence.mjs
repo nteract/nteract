@@ -1,6 +1,7 @@
 import * as A from "@automerge/automerge/slim";
 import { selectionContext } from "./comments.mjs";
 import { findUniqueVisibleRange } from "./replace-match.mjs";
+import { addressIndex, resolveAddressFor } from "./addresses.mjs";
 
 const plain = (value) => value && typeof value === "object" && !Array.isArray(value);
 const bounded = (value, max) =>
@@ -71,33 +72,49 @@ export function createProgressTargets(doc, targets, expectedHeads) {
   }
 }
 
+/** The key of the block a progress target's node_id names. The stored
+ * target, like a browser's selection, names the block by its key. */
+function targetBlock(index, doc, address) {
+  try {
+    return resolveAddressFor(index, doc, address, {
+      op: "report_page_progress",
+      field: "node_id",
+      kinds: ["block"],
+    }).key;
+  } catch (error) {
+    if (error.code === "node_not_found")
+      fail(404, "presence_target_not_found", "Progress target block not found");
+    if (error.code) fail(error.status, error.code, error.message);
+    invalid(error.message);
+  }
+}
+
 function captureProgressTargets(doc, targets) {
   const seen = new Set();
+  const index = addressIndex(doc);
   return targets.map((input) => {
     if (
       !plain(input) ||
       Object.keys(input).some(
-        (key) => !["block_id", "match_text", "context_before", "context_after"].includes(key),
+        (key) => !["node_id", "match_text", "context_before", "context_after"].includes(key),
       ) ||
-      !bounded(input.block_id, 128) ||
+      typeof input.node_id !== "string" ||
       !bounded(input.match_text, 1024) ||
       [input.context_before, input.context_after].some(
         (context) => context !== undefined && (typeof context !== "string" || context.length > 256),
       )
     )
       invalid(
-        "Each target requires block_id and match_text (1–1024 UTF-16 units), with optional context up to 256 units",
+        "Each target requires a block's node_id and match_text (1–1024 UTF-16 units), with optional context up to 256 units",
       );
-    if (!Object.hasOwn(doc.blocks ?? {}, input.block_id))
-      fail(404, "presence_target_not_found", "Progress target block not found");
+    const id = targetBlock(index, doc, input.node_id);
     let range;
     try {
-      range = findUniqueVisibleRange(doc, input.block_id, input);
+      range = findUniqueVisibleRange(doc, id, input);
     } catch (error) {
       invalid(error.message.replaceAll("replace_match", "Progress target"));
     }
     const { path, start, end } = range,
-      id = input.block_id,
       textObjectId = A.getObjectId(doc.blocks[id], "richText"),
       key = JSON.stringify([id, textObjectId, start, end]);
     if (seen.has(key)) invalid("targets must identify distinct passages");
