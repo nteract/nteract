@@ -61,7 +61,7 @@ async function mcp(env, token, name, args) {
 async function createAndDelete(env, token) {
   const created = await mcp(env, token, "create_project", {
     title: "Retiring",
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(created.isError, false, JSON.stringify(created.body));
   const projectId = created.body.project_id;
@@ -74,7 +74,7 @@ async function createAndDelete(env, token) {
     project_id: projectId,
     action: "confirm",
     preview_token: previewed.body.preview_token,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(deleted.isError, false, JSON.stringify(deleted.body));
   assert.deepEqual(deleted.body, { project_id: projectId, deleted: true });
@@ -118,7 +118,7 @@ test("a Kilo agent token previews and confirms delete_project", async (t) => {
 async function memberCreates(env, { ownerToken, memberToken, member }) {
   const created = await mcp(env, ownerToken, "create_project", {
     title: "Shared",
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(created.isError, false, JSON.stringify(created.body));
   const projectId = created.body.project_id;
@@ -128,13 +128,13 @@ async function memberCreates(env, { ownerToken, memberToken, member }) {
     principal: member,
     role: "editor",
     expected_revision: 0,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(shared.isError, false, JSON.stringify(shared.body));
   const page = await mcp(env, memberToken, "create_page", {
     title: "From a member",
     project_id: projectId,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(page.isError, false, JSON.stringify(page.body));
 }

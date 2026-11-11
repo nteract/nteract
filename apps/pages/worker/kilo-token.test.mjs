@@ -11,6 +11,7 @@ import worker, { Page } from "./index.mjs";
 import { kiloIdentity, kiloSignIn } from "./kilo-config.mjs";
 import { exchangeKiloToken, KILO_EXCHANGE_PATH } from "./kilo-exchange.mjs";
 import { kiloToken, MAX_KILO_TOKEN_LENGTH, unverifiedClaims } from "./kilo-token.mjs";
+import { receiptKey } from "./operation-journal.mjs";
 import { plainStub } from "./plain-stub.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 
@@ -534,7 +535,7 @@ function pageWorld(t, { env, holder }) {
     assert.ok(!body.result?.isError, text);
     return body.result.structuredContent;
   };
-  return { tools, mcp, bodies, doc: () => doc };
+  return { tools, mcp, bodies, page, doc: () => doc };
 }
 
 test("a Kilo agent reads and writes its person's Page over /mcp and /api/tools with one exchange", async (t) => {
@@ -546,17 +547,15 @@ test("a Kilo agent reads and writes its person's Page over /mcp and /api/tools w
   assert.match(JSON.stringify(read), /Ship on Monday/);
   await w.mcp(token, "edit_page", {
     operations: [{ op: "set_title", title: "Kilo over MCP" }],
-    base_heads: read.heads,
-    retry_token: read.retry_token,
-    idempotency_key: crypto.randomUUID(),
+    revision: read.revision,
+    nonce: crypto.randomUUID(),
   });
   assert.equal(w.doc().title, "Kilo over MCP");
   const again = await w.tools(token, "read_page", {});
   await w.tools(token, "edit_page", {
     operations: [{ op: "set_title", title: "Kilo over HTTP" }],
-    base_heads: again.heads,
-    retry_token: again.retry_token,
-    idempotency_key: crypto.randomUUID(),
+    revision: again.revision,
+    nonce: crypto.randomUUID(),
   });
   assert.equal(w.doc().title, "Kilo over HTTP");
   // Every call, and every hop it forwarded, used the one exchange.
@@ -565,6 +564,49 @@ test("a Kilo agent reads and writes its person's Page over /mcp and /api/tools w
   const usage = lines.filter((line) => line.includes('"pages.usage.v1"'));
   assert.ok(usage.length >= 4);
   assert.ok(usage.every((line) => line.includes('"credential":"kilo-token"')));
+});
+
+test("a Kilo agent's write keys its receipt on the principal its person's browser has", async (t) => {
+  const { env, kilo } = await fixture(t);
+  const holder = person();
+  const token = kilo.mintToken(holder, { audience });
+  const w = pageWorld(t, { env, holder });
+  // The same principal a browser session of this person signs in as.
+  const browser = kiloIdentity(kiloSignIn(env, request("x")), holder).principal;
+  assert.match(browser, /^user:kilo:/);
+  const read = await w.mcp(token, "read_page", {});
+  const nonce = crypto.randomUUID();
+  const args = { operations: [{ op: "set_title", title: "Once" }], revision: read.revision, nonce };
+  await w.mcp(token, "edit_page", args);
+  const key = await receiptKey({ principal: browser, lane: "page", nonce });
+  assert.equal((await w.page.ctx.storage.get(key))?.pending, false, "the receipt sits under that key");
+  // An exact retry replays that receipt.
+  const replay = await w.tools(token, "edit_page", args);
+  assert.equal(replay.revision, (await w.page.ctx.storage.get(key)).receipt.revision);
+});
+
+test("a Kilo agent token is held to the argument check and can't send the browser's Trash guard", async (t) => {
+  const { env, kilo } = await fixture(t);
+  const holder = person();
+  const token = kilo.mintToken(holder, { audience });
+  const w = pageWorld(t, { env, holder });
+  const refused = async (operation, args) => {
+    const response = await worker.fetch(toolCall(token, operation, { page_id: pageId, ...args }), env);
+    assert.equal(response.status, 400);
+    return response.json();
+  };
+  assert.deepEqual(await refused("read_page", { since_heads: [] }), {
+    error: "read_page has no argument `since_heads`",
+    code: "invalid_arguments",
+  });
+  const trash = await refused("delete_page", {
+    base_heads: A.getHeads(w.doc()),
+    nonce: crypto.randomUUID(),
+  });
+  assert.equal(trash.code, "invalid_arguments");
+  assert.match(trash.error, /`base_heads`/);
+  assert.equal(w.page.metadata.deleted, false);
+  assert.equal(w.page.metadata.trash, undefined);
 });
 
 test("a token Kilo accepts but Pages doesn't lease still authorizes its request", async (t) => {

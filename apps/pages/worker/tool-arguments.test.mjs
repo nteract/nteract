@@ -116,6 +116,16 @@ test("delete_page with base_heads from an agent credential is refused and nothin
   assert.deepEqual(g.catalog[0].arguments.base_heads, args.base_heads);
 });
 
+test("only a browser session's delete_page takes base_heads", () => {
+  for (const credentialKind of ["api-key", "oauth", "kilo-token", undefined])
+    for (const transport of ["http-tools", "mcp"])
+      assert.ok(
+        !allowedArguments("delete_page", transport, { credentialKind }).has("base_heads"),
+        `${credentialKind} over ${transport}`,
+      );
+  assert.ok(allowedArguments("delete_page", "http-tools", { credentialKind: "oidc" }).has("base_heads"));
+});
+
 test("every /api/tools operation declares the arguments it takes", () => {
   const schemaless = Object.keys(API_ARGUMENTS).filter(
     (name) => !tools.some((tool) => tool.name === name),

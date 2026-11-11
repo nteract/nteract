@@ -1046,7 +1046,9 @@ is the same principal either way. It needs no settings beyond the three
 `PAGES_KILO_*` ones. The token reaches `/mcp`, `/api/tools` and `GET /whoami`
 (and the internal hops they forward to) as the person, with `credentialKind`
 `kilo-token` and the driver an API key records; other routes refuse it with
-403 before Kilo is asked. Kilo's refusals become 401 `invalid_kilo_token`, 403
+403 before Kilo is asked. Like an API key, it meets the argument check, can't
+send `delete_page`'s browser-only `base_heads`, and keys receipts on that
+principal, so a person's browser and agent share one receipt namespace. Kilo's refusals become 401 `invalid_kilo_token`, 403
 `account_unavailable` or 503 `sign_in_unavailable` (`retryable: true`); the
 caller never sees Kilo's body. Each isolate leases an accepted token by its
 SHA-256 until the earliest of its `exp` less 30 seconds, its whole lifetime
