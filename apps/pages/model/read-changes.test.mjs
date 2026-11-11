@@ -12,6 +12,7 @@ import { comment, newCommentsDoc } from "./comments-test-support.mjs";
 import { blockAddress, nodeAddresses } from "./addresses.mjs";
 import { nodeIds } from "./node-ids.mjs";
 import { applyPageOperation, createPageData, initializePage, orderedBlockIds } from "./page.mjs";
+import { pageWithSpans, SHAPES } from "../test/address-inputs.mjs";
 
 const author = { principal: "user", displayName: "Collaborator", driver: "Browser" };
 function page(markdown = "# Start\n\nFirst paragraph.\n\n## Later\n\nSecond paragraph.") {
@@ -601,6 +602,59 @@ test("inserted and moved entries carry before_node_id, so the feed rebuilds node
     for (const entry of feed.filter((item) => item.change !== "deleted"))
       assert.ok(Array.isArray(entry.heading_path), name);
   }
+});
+
+test("before_node_id names the next node that has an id, past unmarked text", () => {
+  // A code block, then an image and text a merge left with no marker, then a
+  // paragraph: the middle node has no id.
+  const { doc, id: key } = pageWithSpans(SHAPES["image-after-code"]);
+  const baseline = nodeAddresses(doc, key);
+  assert.deepEqual(
+    baseline.map((id) => id !== null),
+    [true, false, true],
+  );
+  const heads = A.getHeads(doc);
+  const path = textPath(key);
+  const named = (ids) => ids.filter((id) => id !== null);
+  const nodeFeed = (after) =>
+    read(after, heads).changes.filter(
+      (entry) => entry.scope === "node" && entry.block === blockAddress(after, key),
+    );
+
+  // A rule holds nothing, so the unmarked text stays a node of its own after it.
+  const inserted = A.change(A.clone(doc), (draft) =>
+    A.splitBlock(draft, path, markerAt(draft, key, baseline[0]) + 2, {
+      ...marker(),
+      type: new A.ImmutableString("horizontal-rule"),
+    }),
+  );
+  const current = nodeAddresses(inserted, key);
+  assert.deepEqual(
+    current.map((id) => id !== null),
+    [true, true, false, true],
+  );
+  const rule = nodeFeed(inserted).find((entry) => entry.change === "inserted");
+  assert.equal(rule.node_id, current[1]);
+  assert.equal(rule.before_node_id, baseline[2]);
+  assert.deepEqual(
+    reconstruct(
+      named(baseline),
+      nodeFeed(inserted).filter((entry) => entry.node_id !== null),
+    ),
+    named(current),
+  );
+
+  // A deleted node's place is read at the baseline, by the same rule.
+  const deleted = A.change(A.clone(doc), (draft) => A.splice(draft, path, 0, 2));
+  const gone = nodeFeed(deleted).find((entry) => entry.change === "deleted");
+  assert.equal(gone.node_id, baseline[0]);
+  assert.equal(gone.before_node_id, baseline[2]);
+
+  // Null only when no node with an id follows.
+  const last = A.change(A.clone(doc), (draft) =>
+    insertParagraph(draft, key, draft.blocks[key].richText.length, "End"),
+  );
+  assert.equal(nodeFeed(last).find((entry) => entry.change === "inserted").before_node_id, null);
 });
 
 test("inserted and moved blocks carry before_node_id, so the feed rebuilds block order", () => {

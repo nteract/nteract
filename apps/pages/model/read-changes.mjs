@@ -130,11 +130,13 @@ function index(doc) {
  * carries its heading path. A deleted node gets only its old address, never
  * its historical text or path.
  *
- * `before` is where the entry sits: the id of the node after it, at the
- * baseline for a deleted node and at this revision for an inserted or moved
- * one, null when it is last. A caller rebuilds the block's order from its
- * baseline and these. A node after it with no id (a paragraph of unmarked
- * text, or a node of a block this build can't place) also reads null. */
+ * `before` is where the entry sits: the id of the next node that has one
+ * (nextId), at the baseline for a deleted node and at this revision for an
+ * inserted or moved one, null when no node with an id follows. Two entries
+ * that have ids never name the same successor, so a caller rebuilds the
+ * order of the block's nodes that have ids from its baseline and these. A
+ * paragraph of unmarked text has no id to track: the feed doesn't place it
+ * among the others, and a caller reaches it through its block. */
 function address(block, entry, change, { before } = {}) {
   return {
     node_id: entry.node_id,
@@ -146,6 +148,11 @@ function address(block, entry, change, { before } = {}) {
     ...(before !== undefined && { before_node_id: before }),
   };
 }
+/** The id of the first node after `index` in `entries` that has one, or
+ * null. */
+const nextId = (entries, index) =>
+  entries.slice(index + 1).find((entry) => entry.node_id !== null)?.node_id ?? null;
+
 function nodeChanges(block, before, after) {
   const previous = new Map(before.map((entry) => [entry.key, entry])),
     current = new Map(after.map((entry) => [entry.key, entry])),
@@ -158,9 +165,7 @@ function nodeChanges(block, before, after) {
     changes = [];
   for (const [index, entry] of before.entries())
     if (!current.has(entry.key))
-      changes.push(
-        address(block, entry, "deleted", { before: before[index + 1]?.node_id ?? null }),
-      );
+      changes.push(address(block, entry, "deleted", { before: nextId(before, index) }));
   for (const [index, entry] of after.entries()) {
     const prior = previous.get(entry.key),
       moved = prior && oldOrder.get(entry.key) !== newOrder.get(entry.key);
@@ -170,7 +175,7 @@ function nodeChanges(block, before, after) {
           block,
           entry,
           !prior ? "inserted" : prior.fingerprint !== entry.fingerprint ? "updated" : "moved",
-          !prior || moved ? { before: after[index + 1]?.node_id ?? null } : {},
+          !prior || moved ? { before: nextId(after, index) } : {},
         ),
         markdown: entry.markdown,
         ...entry.fields,
