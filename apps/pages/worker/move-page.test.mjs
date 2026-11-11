@@ -121,7 +121,8 @@ async function stage(w, title = "Moves") {
   const moveArgs = (pageId, parentId, position, extra = {}) => ({
     page_id: pageId,
     ...(parentId === TOP ? { project_id: project.project_id } : { parent_id: parentId }),
-    ...(position !== undefined && { position }),
+    // A sibling selector is its own argument: {before: id} is `before: id`.
+    ...(typeof position === "object" ? position : position !== undefined && { position }),
     retry_token: authority.retry_token,
     idempotency_key: crypto.randomUUID(),
     ...extra,
@@ -548,6 +549,8 @@ test("each refusal carries its code and status, over HTTP and as MCP structured 
     ["project_content_protected", 409, s.moveArgs(other.document_id, TOP)],
     ["project_id_as_page_id", 400, s.moveArgs(a, s.project.project_id)],
     ["invalid_position", 400, s.moveArgs(a, TOP, "middle")],
+    ["invalid_position", 400, s.moveArgs(a, TOP, undefined, { position: { before: b } })],
+    ["invalid_position", 400, s.moveArgs(a, TOP, "first", { after: b })],
     ["invalid_position", 400, s.moveArgs(a, TOP, { before: a, after: a })],
     ["invalid_position", 400, s.moveArgs(a, TOP, { before: a })],
     ["position_sibling_unknown", 400, s.moveArgs(a, TOP, { after: c })],

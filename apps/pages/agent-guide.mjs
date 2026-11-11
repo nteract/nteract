@@ -219,8 +219,8 @@ ${part.authErrorItems}
   Trash or be purged), not_page_owner (only the owner places a Page),
   move_destination_required (neither parent_id nor project_id names a
   destination),
-  invalid_position (position isn't "first", "last", {"before": id} or
-  {"after": id}), position_sibling_unknown (that Page isn't a sibling there).
+  invalid_position (position isn't "first" or "last", before or after isn't a
+  page_id, or more than one of the three is given), position_sibling_unknown (that Page isn't a sibling there).
    move_unconfirmed (503, retryable:true): the move was written but its
    durability wasn't confirmed; retry the same key, token and payload.
    shared_project_move_unsupported: a cross-Project move involves current or
@@ -854,8 +854,8 @@ Project. Only the owner can move, trash or share Pages in its hierarchy.
 Sharing an individual Page does not grant access to its Project or sibling and
 descendant Pages.
 
-- move_page: page_id, a destination, optional position ("first", "last",
-  {"before": page_id} or {"after": page_id}), idempotency_key and the
+- move_page: page_id, a destination, at most one of position ("first" or
+  "last"), before (a sibling page_id) or after, idempotency_key and the
   list_pages retry_token. The destination is parent_id (a Page you own, in any
   Project or Your items), project_id (a Project you own: its top level), or
   project_id: null (a root in Your items); with both, the parent must be in

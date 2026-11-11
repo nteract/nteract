@@ -83,10 +83,7 @@ export function validateImageInsertion(op) {
       op.after_block_id !== null &&
       (typeof op.after_block_id !== "string" || !op.after_block_id)) ||
     Object.keys(op).some(
-      (key) =>
-        !["op", "type", "asset_id", "dark_asset_id", "alt", "title", "after_block_id"].includes(
-          key,
-        ),
+      (key) => !["op", "asset_id", "dark_asset_id", "alt", "title", "after_block_id"].includes(key),
     )
   )
     throw Error(
@@ -131,7 +128,7 @@ const only = (value, keys) =>
 export function validateNodeInsertion(op) {
   const node = op?.node;
   if (
-    !only(op, ["op", "type", "node", "after_block_id"]) ||
+    !only(op, ["op", "node", "after_block_id"]) ||
     !only(node, ["type", "attrs"]) ||
     node.type !== DATAFRAME_BLOCK ||
     !only(node.attrs, ["asset_id", "media_type", "title"]) ||
@@ -155,7 +152,7 @@ export function insertedAssets(operations, pageId) {
   const assets = [];
   const seen = new Set();
   for (const op of operations) {
-    const name = op?.op ?? op?.type;
+    const name = op?.op;
     if (name === "set_image") {
       validateImageChange(op);
       for (const assetId of [op.asset_id, op.dark_asset_id].filter(Boolean)) {
@@ -223,6 +220,7 @@ function validateEditFields(op) {
 function applyEdit(doc, op, trace, context) {
   const id = op.block_id ?? op.id;
   if (op.op === "set_title") {
+    if (typeof op.title !== "string") throw Error("set_title requires a title string");
     A.updateText(doc, ["title"], String(op.title).slice(0, 1024));
     return;
   }
@@ -359,7 +357,9 @@ function applyOperation(doc, { operation, arguments: args = {}, trace }) {
   if (operation !== "edit_page") throw Error("Unsupported Page operation");
   if (!Array.isArray(args.operations) || args.operations.length > 100)
     throw Error("Provide up to 100 operations");
-  const operations = args.operations.map((op) => ({ ...op, op: op.op ?? op.type }));
+  if (args.operations.some((op) => !op || typeof op !== "object" || Array.isArray(op)))
+    throw Error("Each operation is an object with an op");
+  const { operations } = args;
   const imageTargets = new Set();
   for (const op of operations) {
     validateEditFields(op);

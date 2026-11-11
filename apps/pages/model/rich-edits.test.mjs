@@ -46,6 +46,17 @@ test("edit_page rejects fields from another operation", () => {
     [{ op: "insert_markdown", markdown: "New", match_text: "Hello" }],
     /insert_markdown does not take match_text/,
   );
+  refuses(doc, [{ op: "set_title", title: null }], /set_title requires a title string/);
+  refuses(
+    doc,
+    [{ op: "insert_image", type: "heading", asset_id: "a".repeat(32), alt: "" }],
+    /insert_image requires/,
+  );
+  refuses(
+    doc,
+    [{ type: "insert_markdown", markdown: "New" }],
+    /Unsupported edit operation|Block not found/,
+  );
 });
 
 test("format_match occurrence picks one match in document order", () => {
