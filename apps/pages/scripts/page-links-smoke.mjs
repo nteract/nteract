@@ -86,7 +86,7 @@ try {
   stage = "create the Pages";
   const target = await tool(owner.page, "create_page", {
     title: TARGET_TITLE,
-    idempotency_key: key(),
+    nonce: key(),
     markdown: [
       "Tonight's list, with an owner for each item.",
       "## Where things landed",
@@ -102,18 +102,18 @@ try {
   });
   await tool(owner.page, "edit_page", {
     page_id: target.page_id,
-    base_heads: read.heads,
-    idempotency_key: key(),
+    revision: read.revision,
+    nonce: key(),
     operations: [{ op: "insert_markdown", markdown: "Two items need a decision before Friday." }],
   });
   const slow = await tool(owner.page, "create_page", {
     title: "Slow to load",
-    idempotency_key: key(),
+    nonce: key(),
     markdown: "Nothing to see.",
   });
   const secret = await tool(alice.page, "create_page", {
     title: "Alice's private notes",
-    idempotency_key: key(),
+    nonce: key(),
     markdown: "Not for dev.",
   });
   // dev's Project, whose content links to itself and to the target, and
@@ -121,7 +121,7 @@ try {
   const project = await tool(owner.page, "create_project", {
     title: PROJECT_TITLE,
     description: PROJECT_DESCRIPTION,
-    idempotency_key: key(),
+    nonce: key(),
   });
   const projectRead = await tool(owner.page, "read_page", {
     project_id: project.project_id,
@@ -129,8 +129,8 @@ try {
   });
   await tool(owner.page, "edit_page", {
     project_id: project.project_id,
-    base_heads: projectRead.heads,
-    idempotency_key: key(),
+    revision: projectRead.revision,
+    nonce: key(),
     operations: [
       {
         op: "insert_markdown",
@@ -144,11 +144,11 @@ try {
   });
   const secretProject = await tool(alice.page, "create_project", {
     title: "Alice's private Project",
-    idempotency_key: key(),
+    nonce: key(),
   });
   const source = await tool(owner.page, "create_page", {
     title: "Links elsewhere",
-    idempotency_key: key(),
+    nonce: key(),
     markdown: [
       `Tonight's list is in [the evening focus](/p/${target.page_id}), and ` +
         `[Alice's notes](/p/${secret.page_id}) have the rest. ` +
@@ -172,7 +172,7 @@ try {
     block_id: sourceRead.blocks[0].id,
     body: `See [the evening focus](/p/${target.page_id}) before standup.`,
     body_format: "markdown",
-    idempotency_key: key(),
+    nonce: key(),
   });
   assert.ok(comment?.thread_id, "the comment's thread");
   // The routes themselves: alice's Page is the same 404 as a missing one.
@@ -527,7 +527,7 @@ try {
     const targetUrl = `${origin}/p/${target.page_id}`;
     const chits = await tool(owner.page, "create_page", {
       title: "Chits",
-      idempotency_key: key(),
+      nonce: key(),
       markdown: [
         `See <${targetUrl}> for tonight's list; <${origin}/p/${secret.page_id}> is Alice's.`,
         `Plans: <${origin}/project/${project.project_id}>. Docs: <https://nteract.io>.`,
@@ -541,7 +541,7 @@ try {
       block_id: chitsRead.blocks[0].id,
       body: `Start from <${targetUrl}>.`,
       body_format: "markdown",
-      idempotency_key: key(),
+      nonce: key(),
     });
     const chitsUrl = `${origin}/p/${chits.page_id}`;
     const chit = (page, id) =>

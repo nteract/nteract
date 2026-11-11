@@ -84,7 +84,7 @@ try {
   const created = await tool(owner, "create_page", {
     title,
     markdown: "Trash keeps this sentence.",
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(created.status, 200);
   pageId = created.body.page_id;
@@ -92,8 +92,8 @@ try {
   const read = (await tool(owner, "read_page", { page_id: pageId })).body;
   const commented = await tool(owner, "manage_page_comment", {
     page_id: pageId,
-    base_heads: read.heads,
-    idempotency_key: crypto.randomUUID(),
+    revision: read.revision,
+    nonce: crypto.randomUUID(),
     action: "add",
     block_id: read.blocks[0].id,
     body: "Keep this comment",
@@ -105,7 +105,7 @@ try {
     email: "alice@localhost",
     role: "editor",
     expected_revision: current.body.access.revision,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(invite.status, 200);
   await editor.goto(`${origin}/p/${pageId}`);
@@ -136,8 +136,8 @@ try {
     assert.equal(ownerRead.body.trash.state, "trashed");
     const edit = await mcp("owner", "edit_page", {
       page_id: pageId,
-      base_heads: ownerRead.body.heads,
-      idempotency_key: crypto.randomUUID(),
+      revision: ownerRead.body.revision,
+      nonce: crypto.randomUUID(),
       operations: [
         {
           op: "replace_match",
@@ -221,9 +221,8 @@ try {
   const authority = (await tool(owner, "list_pages")).body;
   const trashedAgain = await tool(owner, "delete_page", {
     page_id: pageId,
-    base_heads: again.heads,
-    retry_token: authority.retry_token,
-    idempotency_key: crypto.randomUUID(),
+    revision: again.revision,
+    nonce: crypto.randomUUID(),
   });
   assert.equal(trashedAgain.status, 200);
   await owner.goto(origin + "/");

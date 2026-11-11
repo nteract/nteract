@@ -78,7 +78,7 @@ async function create(markdown, title) {
   const fixture = await call(a, "create_page", {
     title,
     markdown,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   report.fixtures.push(fixture.page_id);
   for (const page of [a, b]) {
@@ -248,8 +248,8 @@ try {
   assert.match(tableBlock.markdown, /Reviewed B/);
   await call(a, "edit_page", {
     page_id: fixture.page_id,
-    base_heads: current.heads,
-    idempotency_key: crypto.randomUUID(),
+    revision: current.revision,
+    nonce: crypto.randomUUID(),
     operations: [
       {
         op: "replace_match",
@@ -342,7 +342,7 @@ try {
   await reader.keyboard.type("must not edit");
   await expect(table(reader)).not.toContainText("must not edit");
   const after = await call(a, "read_page", { page_id: fixture.page_id });
-  assert.deepEqual(after.heads, before.heads);
+  assert.deepEqual(after.revision, before.revision);
   await readerContext.close();
   checkpoint();
 
@@ -351,8 +351,8 @@ try {
   current = await call(a, "read_page", { page_id: fixture.page_id });
   await call(a, "edit_page", {
     page_id: fixture.page_id,
-    base_heads: current.heads,
-    idempotency_key: crypto.randomUUID(),
+    revision: current.revision,
+    nonce: crypto.randomUUID(),
     operations: [
       { op: "replace_block_markdown", block_id: tableBlock.id, markdown: "A place to write." },
     ],
@@ -465,14 +465,14 @@ try {
       const current = await call(a, "read_page", { page_id });
       await call(a, "delete_page", {
         page_id,
-        base_heads: current.heads,
-        idempotency_key: crypto.randomUUID(),
+        revision: current.revision,
+        nonce: crypto.randomUUID(),
       });
       await purgeTrashedFixture(
         (operation, args) => call(a, operation, args),
         page_id,
         () => ({
-          idempotency_key: crypto.randomUUID(),
+          nonce: crypto.randomUUID(),
         }),
       );
     } catch (error) {

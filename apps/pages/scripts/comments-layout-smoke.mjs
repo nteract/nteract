@@ -68,12 +68,11 @@ async function mutate(operation, args = {}) {
   );
   return call(operation, {
     ...args,
-    base_heads:
+    revision:
       operation === "delete_page"
-        ? (await call("read_page", { page_id: args.page_id })).heads
-        : authority.heads,
-    retry_token: authority.retry_token,
-    idempotency_key: crypto.randomUUID(),
+        ? (await call("read_page", { page_id: args.page_id })).revision
+        : authority.revision,
+    nonce: crypto.randomUUID(),
   });
 }
 

@@ -54,8 +54,7 @@ const localFetch = (input, options = {}) => {
   });
 };
 const retry = (value) => ({
-  retry_token: value.retry_token,
-  idempotency_key: crypto.randomUUID(),
+  nonce: crypto.randomUUID(),
 });
 async function sessionApi(page, path, body) {
   return page.evaluate(
@@ -226,7 +225,7 @@ async function access(action) {
   const updated = await sessionApi(owner, `/api/access?page=${pageId}`, {
     ...action,
     expected_revision: current.body.access.revision,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(updated.status, 200, JSON.stringify(updated.body));
 }
@@ -291,7 +290,7 @@ try {
   const read = await call(ownerGrant.client, "read_page", { page_id: pageId });
   const insertion = {
     page_id: pageId,
-    base_heads: read.heads,
+    revision: read.revision,
     ...retry(read),
     operations: [
       {
@@ -314,13 +313,13 @@ try {
     alt: "Imported private image",
   });
   assert.equal(typeof insertedImage.block_id, "string");
-  assert.notDeepEqual(inserted.heads, read.heads);
+  assert.notDeepEqual(inserted.revision, read.revision);
   assert.deepEqual(await call(ownerGrant.client, "edit_page", insertion), inserted);
   const after = await call(ownerGrant.client, "read_page", { page_id: pageId });
   assert.equal(after.blocks.length, read.blocks.length + 1);
   assert.equal(after.blocks[1].id, insertedImage.block_id);
   assert.equal(after.blocks[1].markdown, `![Imported private image](${asset.asset_url})`);
-  assert.deepEqual(after.heads, inserted.heads);
+  assert.deepEqual(after.revision, inserted.revision);
   assert.equal(JSON.stringify(after).includes("oaiusercontent"), false);
   assert.equal(JSON.stringify(after).includes(imageFileId), false);
   assert.equal(JSON.stringify(after).includes("base64"), false);
@@ -330,14 +329,14 @@ try {
 
   const missing = {
     page_id: pageId,
-    base_heads: after.heads,
+    revision: after.revision,
     ...retry(after),
     operations: [{ op: "insert_image", asset_id: "0".repeat(64), alt: "Missing asset" }],
   };
   await call(ownerGrant.client, "edit_page", missing, false);
   assert.deepEqual(
-    (await call(ownerGrant.client, "read_page", { page_id: pageId })).heads,
-    after.heads,
+    (await call(ownerGrant.client, "read_page", { page_id: pageId })).revision,
+    after.revision,
   );
   const otherCatalog = await call(ownerGrant.client, "list_pages");
   const otherPage = await call(ownerGrant.client, "create_page", {
@@ -352,15 +351,15 @@ try {
     "edit_page",
     {
       page_id: otherPage.page_id,
-      base_heads: otherRead.heads,
+      revision: otherRead.revision,
       ...retry(otherRead),
       operations: [{ op: "insert_image", asset_id: asset.asset_id, alt: "Wrong Page" }],
     },
     false,
   );
   assert.deepEqual(
-    (await call(ownerGrant.client, "read_page", { page_id: otherPage.page_id })).heads,
-    otherRead.heads,
+    (await call(ownerGrant.client, "read_page", { page_id: otherPage.page_id })).revision,
+    otherRead.revision,
   );
   complete("Missing and cross-Page assets reject insertion without changing the document");
 
@@ -409,7 +408,7 @@ try {
     "edit_page",
     {
       page_id: pageId,
-      base_heads: scopeRead.heads,
+      revision: scopeRead.revision,
       ...retry(scopeRead),
       operations: [{ op: "insert_image", asset_id: asset.asset_id, alt: "Read-only grant" }],
     },
@@ -426,7 +425,7 @@ try {
   const editorRead = await call(editorGrant.client, "read_page", { page_id: pageId });
   const pendingEditorInsert = {
     page_id: pageId,
-    base_heads: editorRead.heads,
+    revision: editorRead.revision,
     ...retry(editorRead),
     operations: [{ op: "insert_image", asset_id: asset.asset_id, alt: "Revoked editor" }],
   };
@@ -513,7 +512,7 @@ try {
       const catalog = (await sessionTool("list_pages")).body;
       const deleted = await sessionTool("delete_page", {
         page_id: fixtureId,
-        base_heads: read.heads,
+        revision: read.revision,
         ...retry(catalog),
       });
       assert.equal(deleted.status, 200);

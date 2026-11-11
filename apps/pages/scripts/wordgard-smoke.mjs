@@ -36,33 +36,18 @@ function checkpoint(name) {
   report.completed.push(name);
   console.log("PASS " + name);
 }
-// Keep the exact token, key and payload for a fixture retry, including its driver.
-// No retry authority is silently regenerated after an uncertain mutation.
+// Keep the exact nonce and payload for a fixture retry, including its driver.
+// No nonce is silently regenerated after an uncertain mutation.
 const requestsByPage = new WeakMap();
 async function call(page, operation, args = {}) {
-  if (args.idempotency_key && !args.retry_token) {
+  if (args.nonce) {
     let requests = requestsByPage.get(page);
     if (!requests) requestsByPage.set(page, (requests = new Map()));
-    const requestKey = JSON.stringify([operation, args.idempotency_key]);
+    const requestKey = JSON.stringify([operation, args.nonce]);
     const fingerprint = JSON.stringify(args);
     let request = requests.get(requestKey);
     if (!request) {
-      const catalog = ["create_page", "delete_page", "purge_page"].includes(operation);
-      const authority = await rawCall(
-        page,
-        catalog ? "list_pages" : "read_page",
-        catalog ? {} : { page_id: args.page_id },
-      );
-      assert.equal(typeof authority.retry_token, "string");
-      assert.equal(authority.retry_key_prefix, undefined);
-      request = {
-        fingerprint,
-        args: structuredClone({
-          ...args,
-          retry_token: authority.retry_token,
-          idempotency_key: args.idempotency_key,
-        }),
-      };
+      request = { fingerprint, args: structuredClone(args) };
       requests.set(requestKey, request);
     }
     assert.equal(request.fingerprint, fingerprint, "fixture retry preserves its original payload");
@@ -553,7 +538,7 @@ async function create(markdown, title) {
   const result = await call(a, "create_page", {
     title,
     markdown,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   report.fixtures.push(result.page_id);
   for (const page of [a, b]) {
@@ -590,7 +575,7 @@ try {
   const selectionAfter = await call(a, "read_page", {
     page_id: proseFixture.page_id,
   });
-  assert.deepEqual(selectionAfter.heads.slice().sort(), selectionBefore.heads.slice().sort());
+  assert.deepEqual(selectionAfter.revision, selectionBefore.revision);
   checkpoint(stage);
 
   stage = "quiet editor and comments list without automatic composition";
@@ -1102,8 +1087,8 @@ try {
   await previewDiagram(a);
   const afterToggle = await call(a, "read_page", { page_id: code.page_id });
   assert.deepEqual(
-    afterToggle.heads,
-    beforeToggle.heads,
+    afterToggle.revision,
+    beforeToggle.revision,
     "preview toggles and copying code do not write the document",
   );
   assert.deepEqual(
@@ -1198,15 +1183,15 @@ try {
   await expect(maximize).toBeFocused();
   await expect(content(a).locator("pre:visible")).toHaveCount(0);
   const afterMaximize = await call(a, "read_page", { page_id: code.page_id });
-  assert.deepEqual(afterMaximize.heads, beforeMaximize.heads, "maximizing writes nothing");
+  assert.deepEqual(afterMaximize.revision, beforeMaximize.revision, "maximizing writes nothing");
   checkpoint(stage);
 
   stage = "empty-code clipboard paste, inactive Mermaid, and native table with strikethrough";
   let current = await call(a, "read_page", { page_id: code.page_id });
   await call(a, "edit_page", {
     page_id: code.page_id,
-    base_heads: current.heads,
-    idempotency_key: crypto.randomUUID(),
+    revision: current.revision,
+    nonce: crypto.randomUUID(),
     operations: [
       {
         op: "insert_markdown",
@@ -1304,7 +1289,7 @@ try {
   const afterPreviewFocus = await call(a, "read_page", {
     page_id: code.page_id,
   });
-  assert.deepEqual(afterPreviewFocus.heads, beforePreviewFocus.heads);
+  assert.deepEqual(afterPreviewFocus.revision, beforePreviewFocus.revision);
   assert.deepEqual(afterPreviewFocus.blocks, beforePreviewFocus.blocks);
   checkpoint(stage);
 
@@ -1332,8 +1317,8 @@ try {
     page_id: code.page_id,
   });
   assert.deepEqual(
-    afterMobileControls.heads,
-    beforeMobileControls.heads,
+    afterMobileControls.revision,
+    beforeMobileControls.revision,
     "mobile diagram controls do not edit the document",
   );
   await expect(nativeTable(a)).toBeVisible();
@@ -1355,8 +1340,8 @@ try {
   current = await call(a, "read_page", { page_id: code.page_id });
   await call(a, "edit_page", {
     page_id: code.page_id,
-    base_heads: current.heads,
-    idempotency_key: crypto.randomUUID(),
+    revision: current.revision,
+    nonce: crypto.randomUUID(),
     operations: [
       {
         op: "insert_markdown",
@@ -1378,8 +1363,8 @@ try {
   assert.ok(disposable);
   await call(a, "edit_page", {
     page_id: code.page_id,
-    base_heads: current.heads,
-    idempotency_key: crypto.randomUUID(),
+    revision: current.revision,
+    nonce: crypto.randomUUID(),
     operations: [{ op: "delete_block", block_id: disposable.id }],
   });
   await expect(content(a)).toHaveCount(3);
@@ -1460,8 +1445,8 @@ try {
   await expect.poll(() => textOf(reader)).not.toContain("must not edit");
   const afterRead = await call(a, "read_page", { page_id: code.page_id });
   assert.deepEqual(
-    afterRead.heads,
-    beforeRead.heads,
+    afterRead.revision,
+    beforeRead.revision,
     "read-only copy and typing create no changes",
   );
   await reader.screenshot({ path: output + "/read-only.png", fullPage: true });
@@ -1646,14 +1631,14 @@ try {
     const current = await call(a, "read_page", { page_id });
     await call(a, "delete_page", {
       page_id,
-      base_heads: current.heads,
-      idempotency_key: crypto.randomUUID(),
+      revision: current.revision,
+      nonce: crypto.randomUUID(),
     });
     await purgeTrashedFixture(
       (operation, args) => call(a, operation, args),
       page_id,
       () => ({
-        idempotency_key: crypto.randomUUID(),
+        nonce: crypto.randomUUID(),
       }),
     );
   }

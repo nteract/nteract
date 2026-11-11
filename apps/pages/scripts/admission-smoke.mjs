@@ -60,7 +60,7 @@ async function setRole(principal, role) {
     principal,
     role,
     expected_revision: current.body.access.revision,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(result.status, 200, JSON.stringify(result.body));
 }
@@ -139,7 +139,7 @@ try {
   const created = await tool(owner, "create_page", {
     title: `Admission fixture ${Date.now()}`,
     markdown: "Reconnect garden.",
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(created.status, 200);
   pageId = report.pageId = created.body.page_id;
@@ -340,8 +340,16 @@ try {
   await expect.poll(() => gatewayAnswers, { timeout: 15000 }).toBeGreaterThanOrEqual(3);
   await expect(owner.locator(".save-status")).toHaveText(/Saved locally|Not saved|Offline/);
   assert.deepEqual(await banners(owner), [], "a gateway 503 showed a red banner");
+  // The heads the owner's tab saves at, for the receipt sent after a restart.
+  let savedHeads;
+  const rememberSave = (request) => {
+    if (new URL(request.url()).pathname === "/api/saved")
+      savedHeads = request.postDataJSON()?.heads;
+  };
+  owner.on("request", rememberSave);
   await owner.unrouteAll({ behavior: "wait" });
   await expect(saved(owner)).toBeVisible({ timeout: 30000 });
+  owner.off("request", rememberSave);
   assert.deepEqual(await banners(owner), []);
   await expect(owner.getByRole("alert")).toHaveCount(0);
   report.completed.push(
@@ -350,7 +358,11 @@ try {
 
   // A fresh isolate sets up its D1 session schema once, and the first requests
   // after a restart arrive together. Each must answer on its own.
-  const { heads } = recovered.body;
+  const heads = savedHeads;
+  assert.ok(
+    Array.isArray(heads) && heads.length,
+    "the owner's tab saved after the gateway cleared",
+  );
   await restartCelld();
   report.firstRequests = await owner.evaluate(
     ({ pageId, heads }) => {
@@ -443,8 +455,8 @@ try {
       const r = await tool(owner, "read_page", { page_id: pageId });
       const d = await tool(owner, "delete_page", {
         page_id: pageId,
-        base_heads: r.body.heads,
-        idempotency_key: crypto.randomUUID(),
+        revision: r.body.revision,
+        nonce: crypto.randomUUID(),
       });
       report.cleaned = d.status === 200;
     } catch (error) {

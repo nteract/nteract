@@ -95,7 +95,7 @@ async function create(title) {
   const created = await mcp("create_page", {
     title,
     markdown: "We ship on Friday.",
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   const item = await listed(created.page_id);
   assert.ok(item, "the new Page is listed");
@@ -107,9 +107,8 @@ async function patch(pageId, from, to) {
   const read = await mcp("read_page", { page_id: pageId, comments: "none" });
   await mcp("edit_page", {
     page_id: pageId,
-    base_heads: read.heads,
-    retry_token: read.retry_token,
-    idempotency_key: crypto.randomUUID(),
+    revision: read.revision,
+    nonce: crypto.randomUUID(),
     operations: [
       { op: "replace_match", block_id: read.blocks[0].id, match_text: from, replacement: to },
     ],

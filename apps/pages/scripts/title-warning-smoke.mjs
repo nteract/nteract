@@ -28,8 +28,7 @@ let headers,
 function protect(value) {
   if (!value || typeof value !== "object") return value;
   for (const [key, entry] of Object.entries(value)) {
-    if (/token|key_prefix|idempotency_key/i.test(key) && typeof entry === "string")
-      secrets.add(entry);
+    if (/token|key_prefix|nonce/i.test(key) && typeof entry === "string") secrets.add(entry);
     else if (entry && typeof entry === "object") protect(entry);
   }
   return value;
@@ -153,12 +152,10 @@ async function mcp(name, args = {}) {
   if (result.structuredContent) assert.deepEqual(result.structuredContent, body);
   return body;
 }
-function retry(authority) {
-  assert.equal(typeof authority.retry_token, "string", "Fresh retry authority is required");
-  assert.equal(authority.retry_key_prefix, undefined);
+/** A new nonce for one write. */
+function retry() {
   return protect({
-    retry_token: authority.retry_token,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
 }
 function warning(receipt, blockId) {
@@ -203,7 +200,7 @@ try {
   createArgs = {
     title: fixtureTitle,
     markdown: openingMarkdown,
-    ...retry(await mcp("list_pages")),
+    ...retry(),
   };
   const created = await http("create_page", createArgs);
   assert.equal(typeof created.page_id, "string");
@@ -214,7 +211,7 @@ try {
   assert.equal(initial.blocks.length, 1);
   assert.equal(initial.blocks[0].markdown, openingMarkdown);
   warning(created, initial.blocks[0].id);
-  assert.deepEqual(initial.heads, created.heads);
+  assert.deepEqual(initial.revision, created.revision);
   complete(stage);
 
   stage = "exact create retry through MCP returns the original receipt";
@@ -224,8 +221,8 @@ try {
   stage = "an introduction and distinct heading need no warning";
   const edit = {
     page_id: pageId,
-    base_heads: initial.heads,
-    ...retry(initial),
+    revision: initial.revision,
+    ...retry(),
     operations: [
       { op: "replace_block_markdown", block_id: initial.blocks[0].id, markdown: introduction },
     ],
@@ -249,8 +246,8 @@ try {
   const current = await read();
   const insertArgs = {
     page_id: pageId,
-    base_heads: current.heads,
-    ...retry(current),
+    revision: current.revision,
+    ...retry(),
     operations: [{ op: "insert_markdown", after_block_id: null, markdown: `# ${fixtureTitle}` }],
   };
   const inserted = await mcp("edit_page", insertArgs);
@@ -263,8 +260,8 @@ try {
   stage = "an exact edit retry preserves its warning and heads after an unrelated patch";
   const patched = await http("edit_page", {
     page_id: pageId,
-    base_heads: withTitle.heads,
-    ...retry(withTitle),
+    revision: withTitle.revision,
+    ...retry(),
     operations: [
       {
         op: "replace_match",
@@ -275,10 +272,10 @@ try {
     ],
   });
   warning(patched, withTitle.blocks[0].id);
-  assert.notDeepEqual(patched.heads, inserted.heads);
+  assert.notDeepEqual(patched.revision, inserted.revision);
   assert.deepEqual(mutationReceipt(await http("edit_page", insertArgs)), mutationReceipt(inserted));
   const final = await read();
-  assert.deepEqual(final.heads, patched.heads);
+  assert.deepEqual(final.revision, patched.revision);
   assert.equal(final.blocks.length, 2, "Exact retry must not insert another heading");
   assert.equal(final.blocks[1].markdown, introduction.replace("Keep", "Preserve"));
   complete(stage);
@@ -297,9 +294,8 @@ try {
     if (pageId) {
       const current = await read();
       assert.equal(current.title, fixtureTitle, "Only this run's owned fixture may be deleted");
-      const catalog = await mcp("list_pages");
-      await mcp("delete_page", { page_id: pageId, base_heads: current.heads, ...retry(catalog) });
-      await purgeTrashedFixture(mcp, pageId, async () => retry(await mcp("list_pages")));
+      await mcp("delete_page", { page_id: pageId, revision: current.revision, ...retry() });
+      await purgeTrashedFixture(mcp, pageId, async () => retry());
       assert.equal((await httpRaw("read_page", { page_id: pageId })).status, 404);
       assert.equal(
         (await mcp("list_pages")).pages.some((page) => page.page_id === pageId),

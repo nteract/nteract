@@ -40,7 +40,7 @@ async function access(action) {
   const result = await api(owner, `/api/access?page=${pageId}`, {
     ...action,
     expected_revision: current.body.access.revision,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(result.status, 200, JSON.stringify(result.body));
   return result;
@@ -95,7 +95,7 @@ try {
   const created = await tool(owner, "create_page", {
     title,
     markdown: BODY,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(created.status, 200);
   pageId = created.body.page_id;
@@ -103,8 +103,8 @@ try {
   const read = (await tool(owner, "read_page", { page_id: pageId })).body;
   const commented = await tool(owner, "manage_page_comment", {
     page_id: pageId,
-    base_heads: read.heads,
-    idempotency_key: crypto.randomUUID(),
+    revision: read.revision,
+    nonce: crypto.randomUUID(),
     action: "add",
     block_id: read.blocks[0].id,
     body: COMMENT,
@@ -207,8 +207,8 @@ try {
       const read = await tool(owner, "read_page", { page_id: pageId });
       const deleted = await tool(owner, "delete_page", {
         page_id: pageId,
-        base_heads: read.body.heads,
-        idempotency_key: crypto.randomUUID(),
+        revision: read.body.revision,
+        nonce: crypto.randomUUID(),
       });
       report.cleaned = deleted.status === 200;
     } catch (error) {

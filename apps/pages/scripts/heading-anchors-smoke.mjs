@@ -154,7 +154,7 @@ try {
   // the fold, then the first "Notes".
   const target = await tool(owner.page, "create_page", {
     title: "Heading anchors " + Date.now(),
-    idempotency_key: key(),
+    nonce: key(),
     markdown: [
       "Intro.",
       "| Topic | Where |\n| --- | --- |\n" +
@@ -191,8 +191,8 @@ try {
   let read = await tool(owner.page, "read_page", { page_id: pageId, include_content: false });
   const inserted = await tool(owner.page, "edit_page", {
     page_id: pageId,
-    base_heads: read.heads,
-    idempotency_key: key(),
+    revision: read.revision,
+    nonce: key(),
     operations: [
       { op: "insert_image", after_block_id: first, asset_id: asset.asset_id, alt: IMAGE_ALT },
     ],
@@ -200,8 +200,8 @@ try {
   // Block 3: the target heading, the second "Notes", and the Unicode heading.
   await tool(owner.page, "edit_page", {
     page_id: pageId,
-    base_heads: inserted.heads,
-    idempotency_key: key(),
+    revision: inserted.revision,
+    nonce: key(),
     operations: [
       {
         op: "insert_markdown",
@@ -223,7 +223,7 @@ try {
   });
   const source = await tool(owner.page, "create_page", {
     title: "Links elsewhere " + Date.now(),
-    idempotency_key: key(),
+    nonce: key(),
     markdown: [
       filler("Before", 30),
       `Read [the Automerge section](/p/${pageId}#${TARGET_ANCHOR}).`,
@@ -239,7 +239,7 @@ try {
     email: "alice@localhost",
     role: "viewer",
     expected_revision: access.access.revision,
-    idempotency_key: key(),
+    nonce: key(),
   });
 
   stage = "read_page outline anchors";
@@ -249,9 +249,9 @@ try {
       page_id: pageId,
       include_content: false,
       outline_offset: offset,
-      ...(heads ? { expected_heads: heads } : {}),
+      ...(heads ? { revision: heads } : {}),
     });
-    heads = read.heads;
+    heads = read.revision;
     for (const entry of read.outline.entries)
       if (entry.type === "heading") outline.push(entry.anchor);
     offset = read.outline.next_offset ?? null;

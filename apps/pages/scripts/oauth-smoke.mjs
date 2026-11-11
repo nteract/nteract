@@ -22,11 +22,8 @@ export async function runOAuthSmoke({ origin, output, restart, ownerKey } = {}) 
     console.log(`[OAuth E2E] ${step}`);
   };
   const retry = (read) => {
-    assert.equal(typeof read.retry_token, "string");
-    assert.equal(read.retry_key_prefix, undefined);
     return {
-      retry_token: read.retry_token,
-      idempotency_key: crypto.randomUUID(),
+      nonce: crypto.randomUUID(),
     };
   };
   const clients = new Set();
@@ -289,7 +286,7 @@ export async function runOAuthSmoke({ origin, output, restart, ownerKey } = {}) 
       "edit_page",
       {
         page_id: pageId,
-        base_heads: read.heads,
+        revision: read.revision,
         ...retry(read),
         operations: [
           {
@@ -309,7 +306,7 @@ export async function runOAuthSmoke({ origin, output, restart, ownerKey } = {}) 
     const response = await sessionApi(owner, `/api/access?page=${pageId}`, {
       ...action,
       expected_revision: current.body.access.revision,
-      idempotency_key: crypto.randomUUID(),
+      nonce: crypto.randomUUID(),
     });
     assert.equal(response.status, 200, JSON.stringify(response.body));
   }
@@ -581,7 +578,7 @@ export async function runOAuthSmoke({ origin, output, restart, ownerKey } = {}) 
           operation: "delete_page",
           arguments: {
             page_id: pageId,
-            base_heads: read.body.heads,
+            revision: read.body.revision,
             ...retry(catalog.body),
           },
         }).catch(() => null);

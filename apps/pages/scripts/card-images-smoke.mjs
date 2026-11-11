@@ -105,7 +105,7 @@ try {
   const created = await tool(owner, "create_page", {
     title: TITLE,
     markdown: MARKDOWN,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(created.status, 200, JSON.stringify(created.body));
   const pageId = created.body.page_id;
@@ -126,9 +126,8 @@ try {
   const read = await tool(owner, "read_page", { page_id: pageId, comments: "none" });
   const edited = await tool(owner, "edit_page", {
     page_id: pageId,
-    base_heads: read.body.heads,
-    retry_token: read.body.retry_token,
-    idempotency_key: crypto.randomUUID(),
+    revision: read.body.revision,
+    nonce: crypto.randomUUID(),
     operations: [
       {
         op: "insert_node",
@@ -252,7 +251,7 @@ try {
     const result = await api(owner, `/api/access?page=${pageId}`, {
       ...action,
       expected_revision: current.body.access.revision,
-      idempotency_key: crypto.randomUUID(),
+      nonce: crypto.randomUUID(),
     });
     assert.equal(result.status, 200, JSON.stringify(result.body));
   };

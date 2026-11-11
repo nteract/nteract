@@ -148,7 +148,7 @@ async function seed(owner, reader) {
         { length: 12 },
         (_, p) => `Paragraph ${p + 1} of shared page ${n}. Enough text to make a real document.`,
       ).join("\n\n"),
-      idempotency_key: crypto.randomUUID(),
+      nonce: crypto.randomUUID(),
     });
     ids.push(page.page_id);
   }
@@ -159,7 +159,7 @@ async function seed(owner, reader) {
       email: reader.email,
       role: "viewer",
       expected_revision: access.revision,
-      idempotency_key: crypto.randomUUID(),
+      nonce: crypto.randomUUID(),
     });
   }
   // Reading a Page claims its invitation.

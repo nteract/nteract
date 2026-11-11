@@ -37,7 +37,7 @@ async function access(action) {
   return api(owner, `/api/access?page=${pageId}`, {
     ...action,
     expected_revision: current.body.access.revision,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
 }
 async function keyRequest(key, path, body) {
@@ -72,8 +72,8 @@ async function agentEdit(name, before, after, allowed = true) {
     "edit_page",
     {
       page_id: pageId,
-      base_heads: read.heads,
-      idempotency_key: crypto.randomUUID(),
+      revision: read.revision,
+      nonce: crypto.randomUUID(),
       operations: [
         {
           op: "replace_match",
@@ -112,7 +112,7 @@ try {
   const created = await tool(owner, "create_page", {
     title: "Sharing fixture " + Date.now(),
     markdown: "A shared garden.",
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   pageId = created.body.page_id;
   report.pageId = pageId;
@@ -194,7 +194,7 @@ try {
     principal: identities[2].body.identity.principal,
     role: "editor",
     expected_revision: viewerAccess.body.access.revision,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   };
   assert.equal((await api(editor, `/api/access?page=${pageId}`, denied)).status, 403);
   assert.equal((await api(viewer, `/api/access?page=${pageId}`, denied)).status, 403);
@@ -203,8 +203,8 @@ try {
     (
       await tool(viewer, "edit_page", {
         page_id: pageId,
-        base_heads: read.heads,
-        idempotency_key: crypto.randomUUID(),
+        revision: read.revision,
+        nonce: crypto.randomUUID(),
         operations: [],
       })
     ).status,
@@ -214,8 +214,8 @@ try {
     (
       await tool(editor, "delete_page", {
         page_id: pageId,
-        base_heads: read.heads,
-        idempotency_key: crypto.randomUUID(),
+        revision: read.revision,
+        nonce: crypto.randomUUID(),
       })
     ).status,
     403,
@@ -360,8 +360,8 @@ try {
       const r = await tool(owner, "read_page", { page_id: pageId });
       const d = await tool(owner, "delete_page", {
         page_id: pageId,
-        base_heads: r.body.heads,
-        idempotency_key: crypto.randomUUID(),
+        revision: r.body.revision,
+        nonce: crypto.randomUUID(),
       });
       report.cleaned = d.status === 200;
     } catch (error) {

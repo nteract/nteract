@@ -114,9 +114,8 @@ async function edit(page, pageId, [from, to]) {
   assert.equal(read.status, 200, JSON.stringify(read.body));
   const patched = await tool(page, "edit_page", {
     page_id: pageId,
-    base_heads: read.body.heads,
-    retry_token: read.body.retry_token,
-    idempotency_key: crypto.randomUUID(),
+    revision: read.body.revision,
+    nonce: crypto.randomUUID(),
     operations: [
       {
         op: "replace_match",
@@ -168,7 +167,7 @@ try {
     const result = await tool(owner, "create_page", {
       title: spec.title,
       markdown: spec.markdown,
-      idempotency_key: crypto.randomUUID(),
+      nonce: crypto.randomUUID(),
     });
     assert.equal(result.status, 200, JSON.stringify(result.body));
     created.push({ ...spec, pageId: result.body.page_id });
@@ -262,7 +261,7 @@ try {
     const result = await api(owner, `/api/access?page=${shared}`, {
       ...action,
       expected_revision: current.body.access.revision,
-      idempotency_key: crypto.randomUUID(),
+      nonce: crypto.randomUUID(),
     });
     assert.equal(result.status, 200, JSON.stringify(result.body));
   };
