@@ -16,11 +16,19 @@ function currentFormat(type) {
   return Math.max(...Object.keys(DOCUMENT_TYPES[type]).map(Number));
 }
 
-/** The format this build writes for each type, `{ type: format }`. A Page
- * host record stores it as `documentFormats` from the Page's creation or
- * registration on. */
+/** The format this build writes for each type, `{ type: format }`. */
 export const WRITTEN_FORMATS = Object.freeze(
   Object.fromEntries(Object.keys(DOCUMENT_TYPES).map((type) => [type, currentFormat(type)])),
+);
+
+/** The types every Page holds a document of. A type registered beside them
+ * is one a Page may hold, and a record without it is still opened. */
+export const MEMBER_TYPES = Object.freeze(["pages.page", "pages.comments"]);
+
+/** `documentFormats` for a new Page: each member type at its written format.
+ * A Page host record stores it from the Page's creation or registration on. */
+export const MEMBER_FORMATS = Object.freeze(
+  Object.fromEntries(MEMBER_TYPES.map((type) => [type, WRITTEN_FORMATS[type]])),
 );
 
 /** The formats a Page host record says its documents are in, `{ type:
@@ -31,16 +39,17 @@ export function recordDocumentFormats(record) {
 }
 
 /** Whether a host record's documents are in the formats this build writes:
- * every registered type at its written format, and no other type. The host
- * opens the documents of no other record. */
-export function recordFormatsWritten(record) {
+ * it names every member type, and every type it names is registered at its
+ * written format. The host opens the documents of no other record. Registering
+ * a new type therefore leaves existing records open. `written` and `members`
+ * default to this build's. */
+export function recordFormatsWritten(record, written = WRITTEN_FORMATS, members = MEMBER_TYPES) {
   const formats = recordDocumentFormats(record);
   if (!formats || typeof formats !== "object" || Array.isArray(formats)) return false;
-  const types = Object.keys(formats);
   return (
-    types.length === Object.keys(WRITTEN_FORMATS).length &&
-    types.every(
-      (type) => Object.hasOwn(WRITTEN_FORMATS, type) && formats[type] === WRITTEN_FORMATS[type],
+    members.every((type) => Object.hasOwn(formats, type)) &&
+    Object.keys(formats).every(
+      (type) => Object.hasOwn(written, type) && formats[type] === written[type],
     )
   );
 }
