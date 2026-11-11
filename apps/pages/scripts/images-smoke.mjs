@@ -25,6 +25,11 @@ const browser = await chromium.launch({
 // reports EPIPE instead of the status. Ask for 100-continue, stream the body in
 // chunks only after the server allows it, and stop writing once any response
 // arrives. A reset counts only after a status was received.
+// A reader's browser keeps asset bytes it was allowed to load: the URL names
+// their SHA-256. Refusals and upload results are never stored.
+const SERVED_CACHE = "private, max-age=31536000, immutable";
+const UNCACHED = "private, no-store";
+
 function postObservingEarlyResponse(url, headers, body, chunk = 64 * 1024) {
   return new Promise((resolve, reject) => {
     let status = null,
@@ -232,6 +237,7 @@ try {
     body: fixture,
   });
   assert.equal(uploaded.status, 201, await uploaded.clone().text());
+  assert.equal(uploaded.headers.get("cache-control"), UNCACHED);
   const asset = await uploaded.json();
   assetUrl = asset.url;
   assert.equal(asset.asset_id, createHash("sha256").update(fixture).digest("hex"));
@@ -246,6 +252,7 @@ try {
     body: fixture,
   });
   assert.equal(duplicate.status, 200);
+  assert.equal(duplicate.headers.get("cache-control"), UNCACHED);
   assert.deepEqual(await duplicate.json(), asset);
   for (const [body, mime, status] of [
     ['<svg xmlns="http://www.w3.org/2000/svg"></svg>', "image/svg+xml", 415],
@@ -266,23 +273,36 @@ try {
       body: fixture,
     });
     assert.equal(denied.status, 403);
+    assert.equal(denied.headers.get("cache-control"), UNCACHED);
   }
-  assert.equal((await fetch(origin + assetUrl)).status, 401);
+  const anonymous = await fetch(origin + assetUrl);
+  assert.equal(anonymous.status, 401);
+  assert.equal(anonymous.headers.get("cache-control"), UNCACHED);
   for (const page of [owner, editor, viewer]) {
     const response = await page.context().request.get(origin + assetUrl);
     assert.equal(response.status(), 200);
     assert.deepEqual(await response.body(), fixture);
-    assert.match(response.headers()["cache-control"], /private/);
-    assert.match(response.headers()["cache-control"], /no-store/);
+    assert.equal(response.headers()["cache-control"], SERVED_CACHE);
     assert.equal(response.headers()["x-content-type-options"], "nosniff");
-    assert.equal((await page.context().request.head(origin + assetUrl)).status(), 200);
+    const head = await page.context().request.head(origin + assetUrl);
+    assert.equal(head.status(), 200);
+    assert.equal(head.headers()["cache-control"], SERVED_CACHE);
   }
   const secondPage = await createPage("Separate private image scope");
   const guessed = assetUrl.replace(pageId, secondPage);
-  assert.equal((await owner.context().request.get(origin + guessed)).status(), 404);
-  assert.equal((await viewer.context().request.get(origin + guessed)).status(), 403);
+  for (const [page, status] of [
+    [owner, 404],
+    [viewer, 403],
+  ]) {
+    const refused = await page.context().request.get(origin + guessed);
+    assert.equal(refused.status(), status);
+    assert.equal(refused.headers()["cache-control"], UNCACHED);
+  }
   complete(
     "Real R2 bytes match SHA-256; read/write scopes, Page roles and Page-scoped hashes enforced",
+  );
+  complete(
+    "A reader's browser may keep served bytes; refusals and upload results are never stored",
   );
 
   // An image alone in a block's first paragraph, deleted by hand. Its empty
@@ -744,12 +764,13 @@ try {
   for (const method of ["GET", "HEAD"]) {
     const denied = await viewer.context().request.fetch(origin + assetUrl, { method });
     assert.equal(denied.status(), 403);
+    assert.equal(denied.headers()["cache-control"], UNCACHED);
   }
-  assert.equal(
-    (await fetch(origin + assetUrl, { headers: { Authorization: `Bearer ${keys.viewer}` } }))
-      .status,
-    403,
-  );
+  const revokedKey = await fetch(origin + assetUrl, {
+    headers: { Authorization: `Bearer ${keys.viewer}` },
+  });
+  assert.equal(revokedKey.status, 403);
+  assert.equal(revokedKey.headers.get("cache-control"), UNCACHED);
   complete(
     "Revocation denies fresh cookie/API-key image reads and HEAD after prior successful reads",
   );

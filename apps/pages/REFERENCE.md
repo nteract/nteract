@@ -1512,8 +1512,11 @@ lands and the selection hasn't moved since the paste, drop or pick, the caret
 moves to just after the image; otherwise the selection stays where the person
 put it. `GET`/`HEAD /api/pages/:pageId/assets/:sha256` check current
 read access before lookup, then return verified raster MIME, `nosniff`, and
-`Cache-Control: private, no-store`. No public bucket, persistent presigned URL,
-or cross-Page hash lookup is exposed.
+`Cache-Control: private, max-age=31536000, immutable`: the URL names the
+SHA-256 of the bytes, so a reader's browser keeps them. Refusals, errors and
+upload results are `private, no-store`. Bytes already in a reader's cache stay
+there after their access is revoked; the next request is still checked. No
+public bucket, persistent presigned URL, or cross-Page hash lookup is exposed.
 
 The same route stores Parquet datasets for dataframe nodes. The Worker checks
 only the container: `PAR1` at both ends, a footer length that fits, and no
@@ -2644,8 +2647,8 @@ target's ingress admits them, `/project/<id>` forms included
 Otherwise the edge answers an empty 404 without that code, and the hover card
 reads it as a failure: "Couldn't load a preview", retried with backoff.
 
-Every answer is `Cache-Control: private, no-store`, as Page assets are, so a
-title or first screen never stays in the browser's disk cache after sign-out.
+Every answer is `Cache-Control: private, no-store`, so a title or first
+screen never stays in the browser's disk cache after sign-out.
 There is no `ETag`: each look runs the access check again, and a revoked
 reader is refused at the next one. Answers also carry
 `Vary: Cookie, Authorization`, `Cross-Origin-Resource-Policy: same-origin`
