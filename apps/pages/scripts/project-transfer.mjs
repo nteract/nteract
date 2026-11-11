@@ -33,7 +33,12 @@ export const BUNDLE_FORMAT = "nteract-pages-project-bundle";
  */
 export const BUNDLE_VERSION = 5;
 export const STATE_FORMAT = "nteract-pages-project-import-state";
-export const STATE_VERSION = 1;
+/**
+ * Version 2 state holds idempotency keys that are the importer's own nonces,
+ * sent beside retry_token. Version 1 state holds keys built from a
+ * retry_key_prefix, which the target refuses, so it is never resumed.
+ */
+export const STATE_VERSION = 2;
 // Persisted theme-body lifecycle. A receipt advances exactly one saved batch;
 // neither restart nor retry may reconstruct an installed body or its image IDs.
 export function themeBodyTransition(state, event) {
@@ -1440,8 +1445,13 @@ export async function importBundle(
     throw new TransferError("The target is the bundle's source; import into a different target");
   const { content } = bundle.project;
   let state = (await store.load()) ?? freshState(bundle, client.origin);
-  if (state.format !== STATE_FORMAT || state.version !== STATE_VERSION)
+  if (state.format !== STATE_FORMAT)
     throw new TransferError("The state file is not an import state");
+  if (state.version !== STATE_VERSION)
+    throw new TransferError(
+      `The state file is version ${state.version}; this importer resumes only version ${STATE_VERSION}. ` +
+        "Start a new transfer with a new state file, or reconcile the target by hand against this one.",
+    );
   if (state.bundle_id !== bundle.bundle_id)
     throw new TransferError("The state file belongs to a different bundle");
   if (state.target_origin !== client.origin)

@@ -10,6 +10,7 @@ import { imageAssetUrl as assetPath } from "../shared/image-assets.mjs";
 import {
   BUNDLE_FORMAT,
   EDIT_BATCH,
+  STATE_VERSION,
   TransferError,
   bodyOperations,
   bodyUnits,
@@ -1332,7 +1333,7 @@ test("import refuses the bundle's own source and a state file from another bundl
   const target = fakePages(TARGET);
   const store = memoryStore({
     format: "nteract-pages-project-import-state",
-    version: 1,
+    version: STATE_VERSION,
     bundle_id: "another-bundle",
     target_origin: TARGET,
   });
@@ -1340,6 +1341,37 @@ test("import refuses the bundle's own source and a state file from another bundl
     importBundle(client(target, TARGET), bundle, { store, ...quick }),
     /different bundle/,
   );
+});
+
+test("import refuses a version 1 state file, whose keys carry a retry_key_prefix, before any write", async () => {
+  const { bundle } = linkBundle();
+  const target = fakePages(TARGET);
+  const pending = {
+    step: `page:${bundle.pages[0].source_page_id}`,
+    operation: "create_page",
+    args: {
+      title: bundle.pages[0].title,
+      retry_token: "retry-1.signature",
+      idempotency_key: `v1_${"a".repeat(64)}_${"b".repeat(40)}`,
+    },
+  };
+  const store = memoryStore({
+    format: "nteract-pages-project-import-state",
+    version: 1,
+    bundle_id: bundle.bundle_id,
+    target_origin: TARGET,
+    pending,
+  });
+  await assert.rejects(
+    importBundle(client(target, TARGET), bundle, { store, ...quick }),
+    (error) =>
+      error instanceof TransferError &&
+      /version 1; this importer resumes only version 2/.test(error.message) &&
+      /Start a new transfer/.test(error.message) &&
+      /reconcile the target by hand/.test(error.message),
+  );
+  assert.equal(target.calls.length, 0);
+  assert.deepEqual(store.peek().pending, pending, "the state file is left as it was");
 });
 
 test("targetPlacement maps the top level to project_id and nested Pages to their parent", () => {

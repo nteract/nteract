@@ -1754,7 +1754,10 @@ the catalog token, and the exact arguments of the request in flight before it
 is sent. A failed or interrupted import resumes when you rerun the same command:
 an uncertain request is resent with the identical token, key and payload, which
 replays its receipt rather than creating a second Page. A finished import sends
-no writes on rerun. Keep the state file until the import reports success. If it
+no writes on rerun. The importer resumes only a version 2 state file; it refuses
+a version 1 file, whose keys were built from a `retry_key_prefix`, before any
+write. Start a new transfer or reconcile that target by hand. Keep the state
+file until the import reports success. If it
 is lost, a fresh import refuses a target that already has a Project with the
 bundle's title; delete the partial Project or pass `--allow-existing-title`.
 Retry tokens last seven days. A create still uncertain after that answers

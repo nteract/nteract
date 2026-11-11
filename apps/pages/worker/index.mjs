@@ -3363,7 +3363,7 @@ export class Catalog {
     if (entry?.pending)
       throw new HttpError(
         409,
-        "This Project is still being created. Retry create_project with the same idempotency_key and payload.",
+        "This Project is still being created. Retry create_project with the same retry_token, idempotency_key and payload.",
         "project_pending",
       );
     const response = await this.env.PROJECTS.getByName(spaceId).fetch(

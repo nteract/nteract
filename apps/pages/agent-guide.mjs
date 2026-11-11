@@ -186,7 +186,7 @@ ${part.authErrorItems}
   or its Trash has. Both carry limit and count. Retrying won't help; tell the
   person.
 - Projects: project_not_found (404, also for a Project you can't open),
-  project_pending (retry create_project with the same key and payload),
+  project_pending (retry create_project with the same token, key and payload),
   project_capacity (the account's Project limit), project_revision_conflict
   (get_project again), project_id_as_page_id and page_id_as_project_id (the
   error names the right argument).
@@ -756,8 +756,10 @@ project_id_as_page_id or page_id_as_project_id, naming the right tool and argume
 
 - create_project: title, optional description and idempotency_key. Add the
   retry_token from list_projects or list_pages for a safe retry. It returns project_id, title, description, revision, role, owner, url
-  and document_id. Retrying the same key and payload after a failure finishes
-  the same Project; it never creates a second one.
+  and document_id. Retrying the same retry_token, key and payload within the
+  token's seven-day window finishes the same Project; it never creates a second
+  one. A retry without the token is best-effort: it is deduplicated only while
+  its receipt is kept, and can create a second Project.
 - get_project: project_id. Returns project_id, title, description, revision,
   role (owner, editor, commenter or viewer), owner, url and document_id, the ID
   of its content document.

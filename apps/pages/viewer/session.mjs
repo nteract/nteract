@@ -147,15 +147,12 @@ function draftUnreadable(error) {
     cause: error,
   });
 }
-/** The register request for a saved draft. A draft saved with a token may
- * hold its key as `v1_<SHA-256 hex of the token>_<nonce>`, the receipt key
- * the host derives from that token and nonce, so it sends the nonce. */
-export function registrationRequest(registration) {
-  const scoped = /^v1_[a-f0-9]{64}_([A-Za-z0-9_-]{8,60})$/.exec(registration.idempotency_key ?? "");
-  return scoped && typeof registration.retry_token === "string"
-    ? { ...registration, idempotency_key: scoped[1] }
-    : registration;
-}
+/** Whether the host can never answer this saved registration again: its
+ * retry window closed, or it refuses the saved key's form. Either way the
+ * draft reconciles the Page before it registers under a fresh key. */
+const registrationUnanswerable = (error) =>
+  (error.status === 410 && error.code === "retry_expired") ||
+  (error.status === 400 && error.code === "invalid_idempotency_key");
 /** Whether a failed connection attempt retries on the reconnect backoff. It
  * runs after attemptConnection has handled classifyRefusal, a 401, and the
  * admission's own stop, so it decides what remains.
@@ -2129,10 +2126,10 @@ export class PageSession {
       result = await this.requestWithRenewal("/api/pages/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(registrationRequest(this.localPage.registration)),
+        body: JSON.stringify(this.localPage.registration),
       });
     } catch (error) {
-      if (error.status === 410 && error.code === "retry_expired") {
+      if (registrationUnanswerable(error)) {
         try {
           result = await this.reconcileExpiredRegistration();
         } catch (renewed) {
@@ -2166,8 +2163,9 @@ export class PageSession {
       this.localPage?.document_id === registration.document_id;
     let connection;
     try {
-      // A lost registration response can outlive its retry receipt. Reconcile
-      // the exact Page/document identity before considering another request.
+      // A registration the host can no longer answer may still have been
+      // recorded before its response was lost. Reconcile the exact
+      // Page/document identity before considering another request.
       connection = await this.requestWithRenewal(connectUrl(this.pageId));
     } catch (error) {
       if (!current()) return;
@@ -2188,8 +2186,8 @@ export class PageSession {
         throw Error("Could not prepare Page registration");
       const key = crypto.randomUUID();
       if (!current()) return;
-      // The expired token cannot execute again. Keep the original bootstrap and
-      // UUID, and replace only its retry authority. IndexedDB compare-and-swap
+      // The saved key and token cannot execute again. Keep the original
+      // bootstrap and UUID, and replace only its retry authority. IndexedDB compare-and-swap
       // makes simultaneous tabs adopt the first replacement rather than race.
       await this.persistLocal({
         registrationSupersedes: registration.idempotency_key,
@@ -2207,7 +2205,7 @@ export class PageSession {
       return this.requestWithRenewal("/api/pages/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(registrationRequest(this.localPage.registration)),
+        body: JSON.stringify(this.localPage.registration),
       });
     }
     if (!current()) return;

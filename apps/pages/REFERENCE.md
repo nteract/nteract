@@ -2876,8 +2876,9 @@ Every Project and item operation goes through the caller's own Catalog, which
 calls the Project and Pages with the caller's credentials. A Project never calls a
 Catalog or a Page. `create_project` reserves a journal intent with the Project ID
 and content document ID first, then creates the Project record and the content
-document; both steps are idempotent, so retrying the same key and payload after
-a crash or lost response finishes the same Project. Until then `get_project`
+document; both steps are idempotent, so retrying the same token, key and
+payload after a crash or lost response, within the token's window, finishes the
+same Project. A retry without the token is best-effort. Until then `get_project`
 answers `project_pending` and `list_projects` omits it. The content holds
 orientation and guidance for people and agents. It is ordinary, untrusted
 document content, edited with the Page tools by `project_id`; it is not a Page in
@@ -3097,6 +3098,12 @@ new operation. With a token, the host keys the receipt by the token's SHA-256
 and the nonce (`v1_<hex>_<nonce>`), so the same nonce under another token is a
 different request. A key that starts with `v1_` is refused with
 `invalid_idempotency_key`: send only the nonce.
+
+Only the same token, key and payload replay. The same key sent without its
+token, or with a different valid token, is a separate request: it is checked
+and applied on its own, so it can create a Page or Project, or add a comment, a
+second time. A client that lost a response and holds an expired or replaced
+token reads back and reconciles instead of resending.
 
 Tokens last seven days. Expired completed requests return `410 retry_expired`
 without executing, even after receipt collection; reconcile the old outcome
