@@ -62,26 +62,46 @@ function storedForm(spans) {
   return JSON.stringify(out);
 }
 
-/** Whether `spans` are in the editor's form: exactly what `encode` writes
- * for the tree they decode to, with nothing the editor can't hold. Every
- * writer in this build stores that form, and admission refuses anything
- * else (comment-authority.mjs). Unmarked text, which only a merge leaves
- * (decode in wordgard-doc.mjs), is in the form: the comparison is with the
- * markers a writer gives it in place. */
+/** Whether `spans` are in the editor's form: what `encode` writes for the
+ * tree they decode to, or what a merge of such writes leaves. Admission
+ * refuses anything else (comment-authority.mjs).
+ *
+ * decode reads more than the editor writes, and quietly normalizes what it
+ * reads: a newline stored as text in prose (which the agent reader keeps as
+ * text and people see as a line break), marks on code text, attrs a marker
+ * doesn't use, a link with no title, the forms an earlier build wrote. So
+ * "decode reads it without loss" would let a client store a message that
+ * people and agents read differently, or that carries data no reader shows
+ * and the next edit drops. The check compares the spans with the editor's
+ * own encoding of what they read as.
+ *
+ * A merge of two valid edits can leave two shapes no single writer does,
+ * and both are in the form: unmarked text (a peer typed into a node another
+ * deleted), and a container whose marker is gone while a node a peer added
+ * inside it survives (decode's `rebuilt`). The comparison counts the
+ * markers a writer would store for those as present. */
 export function isEditorForm(spans) {
   try {
     const decoded = decode(spans);
-    return (
-      !decoded.lossy &&
-      storedForm(withMarkers(spans, decoded.unmarked)) === storedForm(encode(decoded.doc))
-    );
+    if (decoded.lossy) return false;
+    const missing = [
+      ...decoded.unmarked.map(({ at, markers }) => ({ at, markers })),
+      ...decoded.rebuilt.map(({ at, type, parents }) => ({
+        at,
+        markers: [{ type, parents, attrs: WRITTEN_ATTRS[type] ?? {} }],
+      })),
+    ].sort((a, b) => a.at - b.at);
+    return storedForm(withMarkers(spans, missing)) === storedForm(encode(decoded.doc));
   } catch {
     return false;
   }
 }
 
-/** `spans` with the markers decode's `unmarked` names inserted at their text
- * offsets, as markUnmarkedText (richtext-page.mjs) stores them. */
+// The attrs encode writes for a container that has none of its own.
+const WRITTEN_ATTRS = { "task-list-item": { checked: false } };
+
+/** `spans` with the markers `missing` names (`[{ at, markers }]`, sorted by
+ * `at`) inserted at their text offsets. */
 function withMarkers(spans, unmarked) {
   if (!unmarked.length) return spans;
   const out = [];
@@ -89,13 +109,13 @@ function withMarkers(spans, unmarked) {
     next = 0;
   const insert = () => {
     while (next < unmarked.length && unmarked[next].at === at) {
-      for (const { type, parents } of unmarked[next].markers)
+      for (const { type, parents, attrs = {} } of unmarked[next].markers)
         out.push({
           type: "block",
           value: {
             type: new A.ImmutableString(type),
             parents: parents.map((parent) => new A.ImmutableString(parent)),
-            attrs: {},
+            attrs,
             isEmbed: false,
           },
         });

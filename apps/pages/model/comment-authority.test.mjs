@@ -6,7 +6,13 @@ import { applyComment } from "./comments.mjs";
 import { commentDecision } from "./comment-rules.mjs";
 import { commentsGenesis } from "./comments-doc.mjs";
 import { editorCommentSpans, markdownCommentSpans } from "./comment-content.mjs";
-import { proseNewlineSpans } from "./richtext-test-support.mjs";
+import {
+  MISSING_ANCESTOR_CASES,
+  addInside,
+  deleteContainer,
+  proseNewlineSpans,
+} from "./richtext-test-support.mjs";
+import { decode } from "./wordgard-doc.mjs";
 import { BLOCKING } from "../sync/comments.mjs";
 
 const ALICE = "account:alice";
@@ -521,6 +527,27 @@ test("two edits of one message that merge into unmarked text are both admitted",
     doc = result.next;
   }
   assert.equal(A.spans(doc, bobText)[0].type, "text");
+});
+
+test("two edits of one message that merge into a container with no marker are both admitted", () => {
+  for (const [name, { markdown, markers }] of Object.entries(MISSING_ANCESTOR_CASES)) {
+    const { doc: seeded, ids } = seed();
+    const bobText = ["threads", ids.bobThread, "messages", ids.bobMessage, "richText"];
+    let doc = A.change(seeded, (d) => A.updateSpans(d, bobText, markdownCommentSpans(markdown)));
+    // One of Bob's tabs deletes the container; the other adds a node inside it.
+    const deleted = changesOf(doc, (d) => deleteContainer(d, bobText));
+    const added = changesOf(doc, (d) => addInside(d, bobText, markers));
+    for (const changes of [deleted, added]) {
+      const result = admitCommentChanges(doc, changes, BOB, { role: "commenter" });
+      assert.equal(result.ok, true, `${name}: ${JSON.stringify(result.reason)}`);
+      A.free(doc);
+      doc = result.next;
+    }
+    const decoded = decode(A.spans(doc, bobText));
+    assert.equal(decoded.lossy, false, name);
+    if (name !== "table row") assert.ok(decoded.rebuilt.length, name);
+    A.free(doc);
+  }
 });
 
 test("an old form is refused without blocking the key: a stale tab isn't an attack", () => {

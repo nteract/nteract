@@ -84,7 +84,10 @@ export function setRichMarkdown(doc, id, source, { literal = false } = {}) {
  * marker opening it (decode in model/wordgard-doc.mjs); each new marker goes
  * in before the text, which keeps its characters, marks and comment anchors.
  * A block decode can't draw whole (`lossy`) is left alone: its scopes include
- * containers this build doesn't know. Returns whether it wrote. */
+ * containers this build doesn't know. A container whose own marker a merge
+ * deleted (decode's `rebuilt`) is left as it is too: every reader draws it
+ * from its surviving child's parents and names it by that child's marker, so
+ * restoring its marker would only move its node id. Returns whether it wrote. */
 export function markUnmarkedText(doc, id) {
   const path = textPath(id);
   const { unmarked, lossy } = decode(A.spans(doc, path));

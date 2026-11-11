@@ -5,6 +5,12 @@ import * as A from "@automerge/automerge";
 import { generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
 import { createAuthFixture } from "../auth-fixtures.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
+import { setRichMarkdown } from "../model/richtext-page.mjs";
+import {
+  MISSING_ANCESTOR_CASES,
+  addInside,
+  deleteContainer,
+} from "../model/richtext-test-support.mjs";
 import worker, { Catalog, Page } from "./index.mjs";
 import { readRegistration } from "./registration.mjs";
 import { DEFAULT_PAGE_QUOTA } from "./page-quota.mjs";
@@ -315,7 +321,7 @@ test("registration rejects oversized transport and native history before creatin
   assert.equal(f.catalog().storage.values.size, 0);
 });
 
-test("a draft two tabs merged into unmarked text registers", async (t) => {
+test("a draft two tabs merged into unmarked text or a container with no marker registers", async (t) => {
   const f = await fixture(t),
     { args, doc } = registration();
   const path = ["blocks", Object.keys(doc.blocks)[0], "richText"];
@@ -334,6 +340,20 @@ test("a draft two tabs merged into unmarked text registers", async (t) => {
   };
   A.free(readRegistration(request).doc);
   assert.equal((await f.send(request)).status, 200);
+  // A container one tab deleted while the other added a node inside it.
+  for (const [name, { markdown, markers }] of Object.entries(MISSING_ANCESTOR_CASES)) {
+    const seeded = A.change(A.clone(doc), (d) => setRichMarkdown(d, path[1], markdown));
+    const merged = A.merge(
+      A.change(A.clone(seeded, { actor: "0c".repeat(16) }), (d) => deleteContainer(d, path)),
+      A.change(A.clone(seeded, { actor: "0d".repeat(16) }), (d) => addInside(d, path, markers)),
+    );
+    const read = readRegistration({
+      ...args,
+      initial_snapshot_base64: Buffer.from(A.save(merged)).toString("base64"),
+    });
+    assert.match(String(read.doc.blocks[path[1]].richText), /new/, name);
+    A.free(read.doc);
+  }
 });
 
 test("registration obeys account quota, same-origin and credential write gates", async (t) => {

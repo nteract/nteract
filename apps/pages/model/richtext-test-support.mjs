@@ -38,3 +38,62 @@ export function currentForm(doc) {
     if (typeof block.richText !== "string") richFromSource(doc, id);
   stampFeatures(doc, [COMMENTS_FEATURE]);
 }
+
+/** Merges that leave a container whose own marker is gone while a node a
+ * peer added inside it survives (decode's `rebuilt`). Each case is the
+ * Markdown both writers start from, and the markers the second writer adds,
+ * as Enter at the end of the container's last text writes them, before
+ * typing "new" there. The first writer deletes everything before "After". */
+export const MISSING_ANCESTOR_CASES = {
+  quote: { markdown: "> One\n\nAfter", markers: [["paragraph", ["blockquote"]]] },
+  "list middle level": {
+    markdown: "- a\n  - b\n\nAfter",
+    markers: [
+      ["unordered-list-item", ["unordered-list-item"]],
+      ["paragraph", ["unordered-list-item", "unordered-list-item"]],
+    ],
+  },
+  "task item": {
+    markdown: "- [x] a\n  - b\n\nAfter",
+    markers: [
+      ["unordered-list-item", ["task-list-item"]],
+      ["paragraph", ["task-list-item", "unordered-list-item"]],
+    ],
+  },
+  table: {
+    markdown: "| h |\n| --- |\n| c |\n\nAfter",
+    markers: [
+      ["table-row", ["table"]],
+      ["table-cell", ["table", "table-row"]],
+    ],
+  },
+  "table row": {
+    markdown: "| h |\n| --- |\n| c |\n\nAfter",
+    markers: [["table-cell", ["table", "table-row"]]],
+  },
+};
+
+const stored = (spans) =>
+  spans.reduce((out, span) => out + (span.type === "text" ? span.value : "￼"), "");
+
+/** Inside an `A.change`: the first writer's edit for a MISSING_ANCESTOR_CASES
+ * case on the text at `path`, which deletes everything before "After". */
+export function deleteContainer(doc, path) {
+  A.splice(doc, path, 0, stored(A.spans(doc, path)).indexOf("After") - 1);
+}
+
+/** Inside an `A.change`: the second writer's edit, which adds `markers` and
+ * "new" right after the last text before "After". */
+export function addInside(doc, path, markers) {
+  const text = stored(A.spans(doc, path));
+  const end = text.slice(0, text.indexOf("After") - 1).replace(/￼+$/, "").length;
+  markers.forEach(([type, parents], index) =>
+    A.splitBlock(doc, path, end + index, {
+      type: new A.ImmutableString(type),
+      parents: parents.map((parent) => new A.ImmutableString(parent)),
+      attrs: {},
+      isEmbed: false,
+    }),
+  );
+  A.splice(doc, path, end + markers.length, 0, "new");
+}
