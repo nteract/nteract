@@ -2056,7 +2056,7 @@ export class Catalog {
           ((await this.storage.get(`page/${args.page_id}`)) ||
             (await this.storage.get(`trash/${args.page_id}`)))
         )
-          throw new HttpError(409, "Page already has another creation request");
+          throw new HttpError(409, "Page already has another creation request", "creation_conflict");
         const { location, rekeyed } = await this.resolveLocation(request, registering ? {} : args);
         intent = {
           fingerprint: digest,
@@ -6935,7 +6935,7 @@ export class Page {
         // treats "Page was deleted" as permanent and forgets its local copy.
         if (pageState(metadata) === "deleted") throw new HttpError(409, "Page was deleted");
         if (metadata.registration !== digest)
-          throw new HttpError(409, "Page already has another creation request");
+          throw new HttpError(409, "Page already has another creation request", "creation_conflict");
       } else {
         const { doc, bytes } = readRegistration(args);
         try {

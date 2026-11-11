@@ -190,6 +190,8 @@ ${part.authErrorItems}
   purge_page it. Retrying doesn't help; tell the person.
 - nonce_conflict (409): your account already sent this nonce with a different
   request. Use a new nonce.
+- creation_conflict (409): a Page registration named a Page that another
+  creation request already made. The Page exists; read it instead.
 - operation_pending (409): an earlier request with this nonce is still being
   applied. Retry the same request shortly.
 - operation_receipt_capacity, pending_operation_capacity (429): the Page or

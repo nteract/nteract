@@ -164,7 +164,7 @@ function draftUnreadable(error) {
  * nonce's form. Either way the draft reconciles the Page before it registers
  * under a fresh nonce. */
 const registrationUnanswerable = (error) =>
-  (error.status === 409 && error.message === "Page already has another creation request") ||
+  (error.status === 409 && error.code === "creation_conflict") ||
   (error.status === 400 && error.code === "invalid_nonce");
 /** Whether a failed connection attempt retries on the reconnect backoff. It
  * runs after attemptConnection has handled classifyRefusal, a 401, and the

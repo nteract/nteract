@@ -357,6 +357,7 @@ export const CLIENT_ERROR_CODES = Object.freeze([
   "oauth_invalid_token",
   "oauth_insufficient_scope",
   "nonce_conflict",
+  "creation_conflict",
   "invalid_nonce",
   "invalid_revision",
   "operation_receipt_capacity",

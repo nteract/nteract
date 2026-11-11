@@ -194,9 +194,13 @@ async function expiredRegistrationFixture(t, saved = { nonce: crypto.randomUUID(
   return { auth, session, original: structuredClone(session.localPage.registration) };
 }
 /** The Catalog's answer once the registration's receipt is gone and the Page
- * is recorded: the nonce can't be answered again. */
+ * is recorded: the nonce can't be answered again. The message is reworded
+ * here because the viewer branches on the code alone. */
 const expiredRegistration = () =>
-  Response.json({ error: "Page already has another creation request" }, { status: 409 });
+  Response.json(
+    { error: "Another creation request made this Page", code: "creation_conflict" },
+    { status: 409 },
+  );
 const connectionFor = (session, auth) => ({
   page_id: session.pageId,
   documentId: session.localPage.document_id,

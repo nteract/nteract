@@ -655,6 +655,21 @@ test("a registration replays from the Catalog's receipt, or from the Page's", as
   assert.equal(f.page().page.metadata.recordStorage, "automerge");
 });
 
+test("a second creation request for a registered Page answers creation_conflict, at the Catalog and at the Page", async (t) => {
+  const f = await fixture(t),
+    { args } = registration();
+  assert.equal((await f.send(args)).status, 200);
+  // The Catalog holds the Page: another nonce is another creation request.
+  const atCatalog = await f.send({ ...args, nonce: "another-request" });
+  assert.equal(atCatalog.status, 409);
+  assert.equal((await atCatalog.json()).code, "creation_conflict");
+  // A Catalog that lost its record reaches the Page, which says the same.
+  await f.catalog().storage.delete(`page/${pageId}`);
+  const atPage = await f.send({ ...args, nonce: "a-third-request" });
+  assert.equal(atPage.status, 409);
+  assert.equal((await atPage.json()).code, "creation_conflict");
+});
+
 /** Usage lines written while `run` executes. */
 async function usageLines(t, run) {
   const lines = [];
