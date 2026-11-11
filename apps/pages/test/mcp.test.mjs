@@ -956,7 +956,6 @@ test("MCP lists create_page_asset_upload for any client with write scope, and po
     "content_type",
     "page_id",
     "project_id",
-    "sha256",
     "size",
   ]);
   assert.deepEqual(descriptor.inputSchema.properties.content_type.enum, [

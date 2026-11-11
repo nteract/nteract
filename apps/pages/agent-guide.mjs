@@ -239,7 +239,7 @@ ${part.authErrorItems}
   valid upload capability for this Page, it was used on an asset route for
   anything but a POST to its upload_url or sent as a Bearer token, or its OAuth
   connection was revoked; request a new one), upload_mismatch (400; the file's
-  type, size or SHA-256 differs from what the URL was issued for). On other
+  type or size differs from what the URL was issued for). On other
   routes a Pages-Upload header gets the ordinary credential refusal. Losing
   edit access after issue gives access_denied (403); a Page in Trash gives
   page_trashed (409).
@@ -737,7 +737,7 @@ page_quota_exceeded with limit and count; tell the person rather than retrying.
   reopen also take thread_ids to change up to 100 threads in one call. See Comments below.
 - import_page_image: page_id and a ChatGPT-supplied file descriptor; returns a
   private asset_id and asset_url for a subsequent insert_image edit. See Images above.
-- create_page_asset_upload: page_id and optional content_type, size and sha256;
+- create_page_asset_upload: page_id and optional content_type and size;
   returns a 10-minute upload_url, headers and a curl example for sending a local
   image or Parquet file. See Images above.
 - delete_page: page_id, idempotency_key and the list_pages retry_token move a Page
@@ -1720,7 +1720,7 @@ config.
      asset_id.
    - One URL takes several files until its expires_at, 10 minutes after you
      asked; then request another.
-   - Optional content_type, size and sha256 arguments bind the URL to one file.
+   - Optional content_type and size arguments bind the URL to one type and length.
    - The Pages-Upload header works only on that upload route. Never send your
      own API key there, and keep the token out of Page content and comments.
    - Access is checked again at upload: if your access is removed before you
@@ -1929,7 +1929,7 @@ or a permission grant.`,
      asset_id.
    - One URL takes several files until its expires_at, 10 minutes after you
      asked; then request another.
-   - Optional content_type, size and sha256 arguments bind the URL to one file.
+   - Optional content_type and size arguments bind the URL to one type and length.
    - The Pages-Upload header works only on that upload route. Never send your
      own OAuth token there, and keep the token out of Page content and comments.
    - Access is checked again at upload: if your access is removed before you

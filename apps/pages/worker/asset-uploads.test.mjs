@@ -233,7 +233,9 @@ test("uploadVerdict accepts a well-formed payload for this Page until its expiry
     [{ ...valid, kind: "oauth", grant: "g".repeat(43) }, now, "valid"],
     // A browser session never issues one, so its payload is not a capability.
     [{ ...valid, kind: "oidc" }, now, "invalid"],
-    [{ ...valid, content_type: "image/png", size: 10, sha256: "a".repeat(64) }, now, "valid"],
+    [{ ...valid, content_type: "image/png", size: 10 }, now, "valid"],
+    // A claim this build does not bind, such as a digest, is not checked.
+    [{ ...valid, sha256: "a".repeat(64) }, now, "valid"],
     [{ ...valid, page: crypto.randomUUID() }, now, "invalid"],
     [{ ...valid, page: undefined }, now, "invalid"],
     [{ ...valid, principal: "" }, now, "invalid"],
@@ -246,7 +248,6 @@ test("uploadVerdict accepts a well-formed payload for this Page until its expiry
     [{ ...valid, exp: now + ASSET_UPLOAD_TTL_MS + 1 }, now, "invalid"],
     [{ ...valid, content_type: "image/svg+xml" }, now, "invalid"],
     [{ ...valid, size: 0 }, now, "invalid"],
-    [{ ...valid, sha256: "A".repeat(64) }, now, "invalid"],
     [null, now, "invalid"],
     [[valid], now, "invalid"],
   ];
@@ -259,11 +260,8 @@ test("uploadBinding accepts only the documented arguments and normalizes them", 
   const pageId = crypto.randomUUID();
   assert.deepEqual(uploadBinding({ page_id: pageId }, pageId), {});
   assert.deepEqual(
-    uploadBinding(
-      { page_id: pageId, content_type: " Image/PNG ", size: 12, sha256: "AB".repeat(32) },
-      pageId,
-    ),
-    { content_type: "image/png", size: 12, sha256: "ab".repeat(32) },
+    uploadBinding({ page_id: pageId, content_type: " Image/PNG ", size: 12 }, pageId),
+    { content_type: "image/png", size: 12 },
   );
   for (const args of [
     null,
@@ -276,8 +274,8 @@ test("uploadBinding accepts only the documented arguments and normalizes them", 
     { page_id: pageId, size: 0 },
     { page_id: pageId, size: ASSET_UPLOAD_MAX_BYTES + 1 },
     { page_id: pageId, size: 1.5 },
-    { page_id: pageId, sha256: "a".repeat(63) },
-    { page_id: pageId, sha256: "g".repeat(64) },
+    // The asset id is the digest of the bytes; a caller does not supply one.
+    { page_id: pageId, sha256: "a".repeat(64) },
   ])
     assert.throws(() => uploadBinding(args, pageId), { status: 400, code: "invalid_arguments" });
 });
@@ -514,16 +512,10 @@ test("an API-key agent gets an upload URL and uploads with curl, never sending i
   assert.deepEqual(new Uint8Array(await served.arrayBuffer()), png);
 });
 
-test("a bound content type, size and SHA-256 refuse any other file before storage", async (t) => {
+test("a bound content type and size refuse any other file before storage", async (t) => {
   const { w, pageId, bucket } = await setup(t);
-  const digest = await sha256(png);
-  const grant = await issued(w, {
-    page_id: pageId,
-    content_type: "image/png",
-    size: png.length,
-    sha256: digest.toUpperCase(),
-  });
-  assert.deepEqual(grant.bound, { content_type: "image/png", size: png.length, sha256: digest });
+  const grant = await issued(w, { page_id: pageId, content_type: "image/png", size: png.length });
+  assert.deepEqual(grant.bound, { content_type: "image/png", size: png.length });
   assert.equal(grant.headers["Content-Type"], "image/png");
   assert.equal(grant.max_bytes, png.length);
   assert.match(grant.example, /--data-binary @path\/to\/file\.png -H 'Content-Type: image\/png'/);
@@ -533,11 +525,7 @@ test("a bound content type, size and SHA-256 refuse any other file before storag
   });
   assert.equal(mismatched.status, 400, JSON.stringify(mismatched.body));
   assert.equal(mismatched.body.code, "upload_mismatch");
-  for (const args of [
-    { size: png.length + 1 },
-    { sha256: await sha256(webp) },
-    { content_type: PARQUET_MEDIA_TYPE },
-  ]) {
+  for (const args of [{ size: png.length + 1 }, { content_type: PARQUET_MEDIA_TYPE }]) {
     const other = await issued(w, { page_id: pageId, ...args });
     const refused = await upload(w, other, { headers: { "Content-Type": "image/png" } });
     assert.equal(refused.status, 400, JSON.stringify(args));
@@ -547,7 +535,7 @@ test("a bound content type, size and SHA-256 refuse any other file before storag
   assert.equal(bucket.objects.size, 0);
   const stored = await upload(w, grant);
   assert.equal(stored.status, 201, JSON.stringify(stored.body));
-  assert.equal(stored.body.asset_id, digest);
+  assert.equal(stored.body.asset_id, await sha256(png));
   // A dataset upload binds the same way.
   const dataset = await issued(w, { page_id: pageId, content_type: PARQUET_MEDIA_TYPE });
   assert.match(dataset.example, /@path\/to\/file\.parquet/);

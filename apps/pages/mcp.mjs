@@ -634,11 +634,6 @@ export const tools = [
         maximum: ASSET_UPLOAD_MAX_BYTES,
         description: "Bind the upload to this byte count.",
       },
-      sha256: {
-        type: "string",
-        pattern: "^[A-Fa-f0-9]{64}$",
-        description: "Bind the upload to this hex SHA-256 (also its asset_id).",
-      },
     },
     ["page_id"],
     // Issues a capability and changes nothing; a repeat issues another one.

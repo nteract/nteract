@@ -10,8 +10,8 @@
  * (write scope and current edit access) and signs it with its retry key
  * under a distinct purpose (operation-journal.mjs signCapability). It names
  * the Page, the principal, the credential kind (and an OAuth grant), its
- * issue and expiry times, and optionally the file's content type, size and
- * SHA-256. The upload request carries it as `Authorization: Pages-Upload
+ * issue and expiry times, and optionally the file's content type and size.
+ * The upload request carries it as `Authorization: Pages-Upload
  * <token>`. The gateway never passes that header to authenticate(), so it is
  * not sent to the API-key verifier or read as an OAuth token anywhere.
  *
@@ -59,7 +59,7 @@ const PREFIX = "pu1";
 /** Credentials that can issue a capability. A browser session uploads with
  * its own cookie, and a capability can't issue another. */
 const ISSUING_KINDS = new Set(["api-key", "oauth"]);
-const ARGUMENTS = new Set(["page_id", "content_type", "size", "sha256"]);
+const ARGUMENTS = new Set(["page_id", "content_type", "size"]);
 const EXTENSIONS = {
   "image/png": "png",
   "image/jpeg": "jpg",
@@ -69,7 +69,7 @@ const EXTENSIONS = {
 
 const invalidArguments = (message) => new HttpError(400, message, "invalid_arguments");
 
-/** The optional content type, size and SHA-256 an upload must match. */
+/** The optional content type and size an upload must match. */
 export function uploadBinding(args, pageId) {
   if (
     !args ||
@@ -79,7 +79,7 @@ export function uploadBinding(args, pageId) {
     Object.keys(args).some((key) => !ARGUMENTS.has(key))
   )
     throw invalidArguments(
-      `${ASSET_UPLOAD_OPERATION} takes page_id (or project_id) and optional content_type, size and sha256`,
+      `${ASSET_UPLOAD_OPERATION} takes page_id (or project_id) and optional content_type and size`,
     );
   const binding = {};
   if (args.content_type !== undefined) {
@@ -94,11 +94,6 @@ export function uploadBinding(args, pageId) {
       throw invalidArguments(`size is the file's byte count, 1 to ${ASSET_UPLOAD_MAX_BYTES}`);
     binding.size = args.size;
   }
-  if (args.sha256 !== undefined) {
-    if (typeof args.sha256 !== "string" || !/^[A-Fa-f0-9]{64}$/.test(args.sha256))
-      throw invalidArguments("sha256 is the file's SHA-256 digest as 64 hex characters");
-    binding.sha256 = args.sha256.toLowerCase();
-  }
   return binding;
 }
 
@@ -112,10 +107,6 @@ function storedBinding(claims) {
   if (claims.size !== undefined) {
     if (!Number.isSafeInteger(claims.size) || claims.size < 1) return null;
     binding.size = claims.size;
-  }
-  if (claims.sha256 !== undefined) {
-    if (typeof claims.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(claims.sha256)) return null;
-    binding.sha256 = claims.sha256;
   }
   return binding;
 }
