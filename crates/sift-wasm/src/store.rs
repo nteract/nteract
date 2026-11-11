@@ -2251,14 +2251,14 @@ fn view_value_bytes(data: &arrow::array::ArrayData) -> u64 {
 /// A sliced list, map or struct keeps its whole child arrays, and casting it
 /// casts every child value. Taking the slice's rows first leaves only the
 /// values those rows reference, so a nested downgrade copies just those.
+/// Top-level view columns cast only their own rows and are left as they are.
 ///
-/// `take` keeps a dictionary's whole values array, so a top-level dictionary
-/// of views is rebuilt from its rows' values as a dictionary of plain values.
-/// A dictionary of views inside a list, map or struct still has every
-/// dictionary value cast. Top-level view columns cast only their own rows and
-/// are left as they are.
+/// `take` keeps a dictionary's whole values array, so a dictionary of views
+/// still has every dictionary value cast, however few rows the viewport has.
+/// That costs at most the dictionary's own size, which admission counted.
+/// Re-encoding only the rows' values would have to handle dictionaries of
+/// lists and structs, null values behind valid keys, and ordered dictionaries.
 fn compact_nested_views(batch: &RecordBatch) -> Result<RecordBatch, String> {
-    use arrow::datatypes::{Field, Schema};
     let nested = |t: &DataType| {
         !matches!(t, DataType::Utf8View | DataType::BinaryView) && &without_view_types(t) != t
     };
@@ -2267,33 +2267,19 @@ fn compact_nested_views(batch: &RecordBatch) -> Result<RecordBatch, String> {
         return Ok(batch.clone());
     }
     let rows = arrow::array::UInt32Array::from_iter_values(0..batch.num_rows() as u32);
-    let mut fields: Vec<Arc<Field>> = Vec::with_capacity(schema.fields().len());
-    let mut columns = Vec::with_capacity(batch.num_columns());
-    for (field, column) in schema.fields().iter().zip(batch.columns()) {
-        if !nested(field.data_type()) {
-            fields.push(field.clone());
-            columns.push(column.clone());
-            continue;
-        }
-        let err = |e: arrow::error::ArrowError| format!("compact {}: {}", field.name(), e);
-        let taken = arrow_select::take::take(column.as_ref(), &rows, None).map_err(err)?;
-        if let DataType::Dictionary(key, value) = field.data_type() {
-            // Unpack to the rows' own values (views, so no copy), copy those
-            // out as plain values, and encode them again.
-            let rows = arrow::array::AsArray::as_any_dictionary(taken.as_ref());
-            let values =
-                arrow_select::take::take(rows.values().as_ref(), rows.keys(), None).map_err(err)?;
-            let plain = without_view_types(value);
-            let values = arrow_cast::cast(values.as_ref(), &plain).map_err(err)?;
-            let target = DataType::Dictionary(key.clone(), Box::new(plain));
-            columns.push(arrow_cast::cast(values.as_ref(), &target).map_err(err)?);
-            fields.push(Arc::new(field.as_ref().clone().with_data_type(target)));
-        } else {
-            columns.push(taken);
-            fields.push(field.clone());
-        }
-    }
-    let schema = Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()));
+    let columns = schema
+        .fields()
+        .iter()
+        .zip(batch.columns())
+        .map(|(field, column)| {
+            if nested(field.data_type()) {
+                arrow_select::take::take(column.as_ref(), &rows, None)
+                    .map_err(|e| format!("take error on {}: {}", field.name(), e))
+            } else {
+                Ok(column.clone())
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     RecordBatch::try_new(schema, columns).map_err(|e| format!("rebatch: {}", e))
 }
 
@@ -4099,40 +4085,6 @@ mod tests {
             list.value(0).as_string::<i32>().value(0),
             "a-nested-tag-long-enough-for-a-buffer-1000"
         );
-    }
-
-    #[test]
-    fn viewport_reencodes_only_the_dictionary_values_its_rows_use() {
-        use arrow::array::{Array, AsArray, DictionaryArray, Int32Array, StringViewArray};
-        use arrow::datatypes::Int32Type;
-        let rows = 1000usize;
-        let values = StringViewArray::from_iter_values(
-            (0..rows).map(|i| format!("a-dictionary-value-long-enough-for-a-buffer-{i}")),
-        );
-        let keys = Int32Array::from_iter_values((0..rows as i32).rev());
-        let dict = DictionaryArray::<Int32Type>::try_new(keys, Arc::new(values)).unwrap();
-        let batch =
-            RecordBatch::try_from_iter(vec![("label", Arc::new(dict) as ArrayRef)]).unwrap();
-
-        let handle = store_batches(vec![batch.clone()], batch.schema()).unwrap();
-        let ipc = get_viewport(handle, 500, 501).unwrap();
-        free(handle);
-        let decoded: Vec<RecordBatch> = StreamReader::try_new(Cursor::new(ipc), None)
-            .unwrap()
-            .map(Result::unwrap)
-            .collect();
-        let column = decoded[0].column(0);
-        assert_eq!(
-            column.data_type(),
-            &DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8))
-        );
-        let dict = column.as_dictionary::<Int32Type>();
-        assert_eq!(dict.values().len(), 1);
-        let label = dict
-            .values()
-            .as_string::<i32>()
-            .value(dict.keys().value(0) as usize);
-        assert_eq!(label, "a-dictionary-value-long-enough-for-a-buffer-499");
     }
 
     #[test]
