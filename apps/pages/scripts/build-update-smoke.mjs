@@ -311,7 +311,7 @@ try {
   const comment = await tool(owner, "manage_page_comment", {
     page_id: pageId,
     action: "add",
-    block_id: authority.blocks[0].id,
+    node_id: authority.blocks[0].node_id,
     body: "Deploy thread",
     body_format: "plain",
     revision: authority.revision,

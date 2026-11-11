@@ -673,7 +673,9 @@ try {
       page_id: pageId,
       revision: read.revision,
       nonce: crypto.randomUUID(),
-      operations: [{ op: "replace_match", block_id: block.id, match_text: matchText, replacement }],
+      operations: [
+        { op: "replace_match", node_id: block.node_id, match_text: matchText, replacement },
+      ],
     });
     await expect(tab.locator("wg-content").first()).toContainText(replacement, {
       timeout: 30000,
@@ -950,7 +952,7 @@ try {
       operations: [
         {
           op: "replace_match",
-          block_id: block.id,
+          node_id: block.node_id,
           match_text: "Outside any Project.",
           replacement: "Outside any Project. Revisited.",
         },
@@ -1568,7 +1570,12 @@ try {
       revision: read.revision,
       nonce: crypto.randomUUID(),
       operations: [
-        { op: "replace_match", block_id: read.blocks[0].id, match_text: matchText, replacement },
+        {
+          op: "replace_match",
+          node_id: read.blocks[0].node_id,
+          match_text: matchText,
+          replacement,
+        },
       ],
     });
     for (const tab of [owner, glider])

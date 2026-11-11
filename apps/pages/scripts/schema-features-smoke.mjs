@@ -200,7 +200,7 @@ try {
     operations: [
       {
         op: "replace_match",
-        block_id: futureRead.body.blocks[0].id,
+        node_id: futureRead.body.blocks[0].node_id,
         match_text: "newer",
         replacement: "older",
       },

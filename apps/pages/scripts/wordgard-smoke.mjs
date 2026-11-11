@@ -1195,12 +1195,12 @@ try {
     operations: [
       {
         op: "insert_markdown",
-        after_block_id: current.blocks[0].id,
+        after_node_id: current.blocks[0].node_id,
         markdown: "",
       },
       {
         op: "insert_markdown",
-        after_block_id: current.blocks[0].id,
+        after_node_id: current.blocks[0].node_id,
         markdown: table,
       },
     ],
@@ -1345,7 +1345,7 @@ try {
     operations: [
       {
         op: "insert_markdown",
-        after_block_id: current.blocks.at(-1).id,
+        after_node_id: current.blocks.at(-1).node_id,
         markdown: "Disposable inactive block.",
       },
     ],
@@ -1365,7 +1365,7 @@ try {
     page_id: code.page_id,
     revision: current.revision,
     nonce: crypto.randomUUID(),
-    operations: [{ op: "delete_block", block_id: disposable.id }],
+    operations: [{ op: "delete_block", node_id: disposable.node_id }],
   });
   await expect(content(a)).toHaveCount(3);
   await expect(content(b)).toHaveCount(3);

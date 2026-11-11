@@ -308,7 +308,7 @@ try {
   await mutate("manage_page_comment", {
     page_id: pageId,
     action: "add",
-    block_id: document.blocks[0].id,
+    node_id: document.blocks[0].node_id,
     selected_text: "passage for discussion",
     body: "Does the panel cover this line?",
     body_format: "plain",

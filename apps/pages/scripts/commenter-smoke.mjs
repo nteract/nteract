@@ -163,11 +163,11 @@ try {
   checkpoint("the owner invites a commenter from the sharing panel");
 
   const read = (await tool(owner, "read_page", { page_id: pageId })).body;
-  const blockId = read.blocks[0].id;
+  const blockId = read.blocks[0].node_id;
   const ownerComment = await tool(owner, "manage_page_comment", {
     page_id: pageId,
     action: "add",
-    block_id: blockId,
+    node_id: blockId,
     body: "Owner's note",
     nonce: crypto.randomUUID(),
   });
@@ -360,7 +360,7 @@ try {
       operations: [
         {
           op: "replace_match",
-          block_id: blockId,
+          node_id: blockId,
           match_text: "passage",
           replacement: "x",
         },

@@ -148,7 +148,7 @@ try {
 
   const inserted = await editPage([dataframe(dataset.asset_id, "Usage by day")]);
   assert.equal(inserted.status, 200, JSON.stringify(inserted.body));
-  const [node] = inserted.body.result.inserted_nodes;
+  const [node] = inserted.body.result.edits;
   assert.deepEqual(node.attrs, {
     asset_id: dataset.asset_id,
     src: dataset.asset_url,
@@ -157,7 +157,7 @@ try {
   });
   const blocks = (await tool(owner, "read_page", { page_id: pageId })).body.blocks;
   assert.equal(
-    blocks.find((block) => block.id === node.block_id).markdown,
+    blocks.find((block) => block.node_id === node.node_id).markdown,
     `[Dataframe: Usage by day](${dataset.asset_url})`,
   );
   for (const page of [owner, viewer]) {
@@ -259,7 +259,7 @@ try {
   complete("A tap on a table's title row selects it on a phone");
 
   const rewrite = await editPage([
-    { op: "replace_block_markdown", block_id: node.block_id, markdown: "gone" },
+    { op: "replace_block_markdown", node_id: node.node_id, markdown: "gone" },
   ]);
   assert.equal(rewrite.status, 400);
   assert.equal(rewrite.body.code, "markdownless_node", JSON.stringify(rewrite.body));
@@ -268,7 +268,7 @@ try {
   assert.equal(missing.body.code, "dataset_not_found");
   const line = `[Dataframe: Usage by day](${dataset.asset_url})`;
   const kept = await editPage([
-    { op: "replace_block_markdown", block_id: node.block_id, markdown: `Intro\n\n${line}` },
+    { op: "replace_block_markdown", node_id: node.node_id, markdown: `Intro\n\n${line}` },
   ]);
   assert.equal(kept.status, 200, JSON.stringify(kept.body));
   await expect(tables(viewer)).toHaveCount(1, { timeout: 15000 });

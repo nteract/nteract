@@ -119,7 +119,7 @@ async function edit(page, pageId, [from, to]) {
     operations: [
       {
         op: "replace_match",
-        block_id: read.body.blocks[0].id,
+        node_id: read.body.blocks[0].node_id,
         match_text: from,
         replacement: to,
       },

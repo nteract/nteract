@@ -595,8 +595,7 @@ try {
     operations: [
       {
         op: "set_image",
-        block_id: occurrenceEntry.block_id,
-        image_id: occurrence.image_id,
+        node_id: occurrence.node_id,
         dark_asset_id: darkAsset.asset_id,
       },
     ],

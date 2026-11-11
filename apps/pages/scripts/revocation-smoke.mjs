@@ -106,7 +106,7 @@ try {
     revision: read.revision,
     nonce: crypto.randomUUID(),
     action: "add",
-    block_id: read.blocks[0].id,
+    node_id: read.blocks[0].node_id,
     body: COMMENT,
   });
   assert.equal(commented.status, 200);

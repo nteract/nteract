@@ -186,12 +186,14 @@ async function typeAndObserve(target, replacement, collapse = false) {
   }
   throw Error("Native browser edit did not reach the server within eight reads");
 }
+// The baseline outline's node ids, in order. A node keeps its id across edits.
+let nodeIds;
 function onlyNodes(delta, expected) {
   assert.equal(delta.title_changed, false);
   assert.equal(delta.attribution, "unavailable");
   assert.deepEqual(
-    delta.changes.map(({ scope, change, node_index }) => ({ scope, change, node_index })),
-    expected.map((node_index) => ({ scope: "node", change: "updated", node_index })),
+    delta.changes.map(({ scope, change, node_id }) => ({ scope, change, node_id })),
+    expected.map((index) => ({ scope: "node", change: "updated", node_id: nodeIds[index] })),
   );
 }
 
@@ -230,7 +232,9 @@ try {
   const baseline = await read();
   assert.equal(baseline.blocks.length, 1);
   assert.equal(baseline.outline.entries.length, 5);
-  const blockId = baseline.blocks[0].id;
+  const blockId = baseline.blocks[0].node_id;
+  nodeIds = baseline.outline.entries.map((entry) => entry.node_id);
+  assert.ok(nodeIds.every((id) => typeof id === "string"));
   complete(stage);
 
   stage = "stale agent passage edit preserves native browser typing in the same block";
@@ -241,8 +245,7 @@ try {
   const firstArgs = patchArgs(baseline, [
     {
       op: "replace_match",
-      block_id: blockId,
-      node_index: 1,
+      node_id: nodeIds[1],
       match_text: "Beta belongs to the agent.",
       replacement: "Beta was revised by the agent.",
     },
@@ -259,12 +262,11 @@ try {
   assert.equal(firstDelta.comments.length, 0);
   complete(stage);
 
-  stage = "revision-bound node index disambiguates repeated visible text";
+  stage = "a node id disambiguates repeated visible text";
   const repeatedArgs = patchArgs(firstDelta, [
     {
       op: "replace_match",
-      block_id: blockId,
-      node_index: 3,
+      node_id: nodeIds[3],
       match_text: "shared apple",
       replacement: "selected orange",
     },
@@ -285,8 +287,7 @@ try {
     patchArgs(beforeOverlap, [
       {
         op: "replace_match",
-        block_id: blockId,
-        node_index: 1,
+        node_id: nodeIds[1],
         match_text: "Beta was revised by the agent.",
         replacement: "This stale edit must not appear.",
       },
@@ -295,8 +296,8 @@ try {
   assert.equal(rejected.isError, true);
   assert.equal(rejected.data.code, "edit_conflict");
   assert.deepEqual(
-    rejected.data.conflicts.map(({ block_id, node_index }) => ({ block_id, node_index })),
-    [{ block_id: blockId, node_index: 1 }],
+    rejected.data.conflicts.map(({ node_id }) => ({ node_id })),
+    [{ node_id: nodeIds[1] }],
   );
   const caughtUp = await changes(beforeOverlap.revision);
   onlyNodes(caughtUp, [1]);
@@ -304,8 +305,7 @@ try {
   const freshArgs = patchArgs(caughtUp, [
     {
       op: "replace_match",
-      block_id: blockId,
-      node_index: 1,
+      node_id: nodeIds[1],
       match_text: "Beta was changed again by the human.",
       replacement: "Beta includes the human update and agent follow-up.",
     },
@@ -340,7 +340,7 @@ try {
     "manage_page_comment",
     commentArgs(afterRetry, {
       action: "add",
-      block_id: blockId,
+      node_id: blockId,
       selected_text: "selected orange",
       body: originalComment,
     }),

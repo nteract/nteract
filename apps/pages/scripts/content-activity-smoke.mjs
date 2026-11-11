@@ -110,7 +110,7 @@ async function patch(pageId, from, to) {
     revision: read.revision,
     nonce: crypto.randomUUID(),
     operations: [
-      { op: "replace_match", block_id: read.blocks[0].id, match_text: from, replacement: to },
+      { op: "replace_match", node_id: read.blocks[0].node_id, match_text: from, replacement: to },
     ],
   });
 }

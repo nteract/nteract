@@ -158,13 +158,14 @@ function retry() {
     nonce: crypto.randomUUID(),
   });
 }
-function warning(receipt, blockId) {
+function warning(receipt, headingId) {
   assert.equal(receipt.warnings?.length, 1, "Expected one duplicate-title advisory");
   assert.equal(receipt.warnings[0].code, "opening_heading_repeats_title");
+  assert.equal(typeof headingId, "string", "read_page's outline names the opening heading");
   assert.equal(
-    receipt.warnings[0].block_id,
-    blockId,
-    "Advisory must identify the actual opening block",
+    receipt.warnings[0].node_id,
+    headingId,
+    "Advisory must identify the actual opening heading",
   );
 }
 function mutationReceipt(value) {
@@ -176,6 +177,11 @@ function mutationReceipt(value) {
   return receipt;
 }
 const read = () => mcp("read_page", { page_id: pageId });
+/** The opening heading's node_id, from read_page's outline. */
+const openingHeading = async () =>
+  (await mcp("read_page", { page_id: pageId, comments: "none" })).outline.entries.find(
+    (entry) => entry.type === "heading",
+  )?.node_id;
 
 try {
   let authentication;
@@ -210,7 +216,7 @@ try {
   assert.equal(initial.title, fixtureTitle);
   assert.equal(initial.blocks.length, 1);
   assert.equal(initial.blocks[0].markdown, openingMarkdown);
-  warning(created, initial.blocks[0].id);
+  warning(created, await openingHeading());
   assert.deepEqual(initial.revision, created.revision);
   complete(stage);
 
@@ -224,7 +230,7 @@ try {
     revision: initial.revision,
     ...retry(),
     operations: [
-      { op: "replace_block_markdown", block_id: initial.blocks[0].id, markdown: introduction },
+      { op: "replace_block_markdown", node_id: initial.blocks[0].node_id, markdown: introduction },
     ],
   };
   const edited = await mcp("edit_page", edit);
@@ -248,13 +254,14 @@ try {
     page_id: pageId,
     revision: current.revision,
     ...retry(),
-    operations: [{ op: "insert_markdown", after_block_id: null, markdown: `# ${fixtureTitle}` }],
+    operations: [{ op: "insert_markdown", after_node_id: null, markdown: `# ${fixtureTitle}` }],
   };
   const inserted = await mcp("edit_page", insertArgs);
   const withTitle = await read();
-  assert.notEqual(withTitle.blocks[0].id, initial.blocks[0].id);
+  assert.notEqual(withTitle.blocks[0].node_id, initial.blocks[0].node_id);
   assert.equal(withTitle.blocks[0].markdown, `# ${fixtureTitle}`);
-  warning(inserted, withTitle.blocks[0].id);
+  const titleHeading = await openingHeading();
+  warning(inserted, titleHeading);
   complete(stage);
 
   stage = "an exact edit retry preserves its warning and heads after an unrelated patch";
@@ -265,13 +272,13 @@ try {
     operations: [
       {
         op: "replace_match",
-        block_id: initial.blocks[0].id,
+        node_id: initial.blocks[0].node_id,
         match_text: "Keep this text unchanged.",
         replacement: "Preserve this text unchanged.",
       },
     ],
   });
-  warning(patched, withTitle.blocks[0].id);
+  warning(patched, titleHeading);
   assert.notDeepEqual(patched.revision, inserted.revision);
   assert.deepEqual(mutationReceipt(await http("edit_page", insertArgs)), mutationReceipt(inserted));
   const final = await read();

@@ -250,7 +250,7 @@ for (const [n, base64] of pictures.entries()) {
         op: "insert_image",
         asset_id: asset.asset_id,
         alt: `Figure ${n + 1}`,
-        after_block_id: blocks[Math.floor(((n + 1) * blocks.length) / (IMAGES + 1))].id,
+        after_node_id: blocks[Math.floor(((n + 1) * blocks.length) / (IMAGES + 1))].node_id,
       },
     ],
   });
