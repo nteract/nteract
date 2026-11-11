@@ -15,9 +15,14 @@
  * sign-in, is left to the paths in auth.mjs.
  *
  * A token Kilo accepted is leased in this isolate (kilo-token-lease.mjs) until
- * its own `exp`, read only after Kilo accepted it, and never longer than
- * `MAX_LEASE_MS`. An account Kilo blocks keeps working here until its lease
- * ends.
+ * its own `exp` less a clock allowance, for no longer than its own lifetime
+ * from the exchange and never longer than `MAX_LEASE_MS`; `iat` and `exp`
+ * are read only after Kilo accepted it. An account Kilo blocks keeps working
+ * here until its lease ends. Kilo's refusal of a token is kept for repeats
+ * of it (`REMEMBER_REFUSAL_MS`); a Kilo that can't answer is never kept. A
+ * bounded number of exchanges run at once and a bounded number of tokens is
+ * kept, so tokens nobody has seen can't crowd out tokens in use: past either
+ * bound a new token gets 503 `sign_in_unavailable` without an exchange.
  *
  * The token is sent to Kilo's exchange and nowhere else. It is never logged,
  * stored or put in an error; the lease is keyed by its SHA-256. Errors carry
@@ -34,9 +39,21 @@ export const KILO_TOKEN_PURPOSE = "delegated-workload";
 export const MAX_KILO_TOKEN_LENGTH = 4096;
 const JWT = /^[A-Za-z0-9_-]+\.([A-Za-z0-9_-]+)\.[A-Za-z0-9_-]+$/;
 
+/** How long Kilo's refusal of a token answers repeats of it without an
+ * exchange: an invalid token can't become valid, and an account Kilo blocks
+ * is asked about again soon. Nothing else Kilo answers is kept. */
+export const REMEMBER_REFUSAL_MS = Object.freeze({
+  invalid_kilo_token: 5 * 60 * 1000,
+  account_unavailable: 30 * 1000,
+});
+
 // An exchange holds its token past the exchange's own 10 s timeout, so its
 // waiters see its answer before another request may start one.
-const lease = kiloTokenLease({ holdMs: 15_000 });
+const lease = kiloTokenLease({
+  holdMs: 15_000,
+  busy: (reason) => unavailable(reason),
+  rememberFor: (failure) => REMEMBER_REFUSAL_MS[failure?.code] ?? 0,
+});
 
 /** The claims of a JWT, read without checking its signature, or null for a
  * bearer that isn't a JWT with a JSON object payload. Never throws. */
@@ -103,6 +120,7 @@ async function digest(text) {
 export async function kiloTokenAccount({ config, claims }, token) {
   const key = await digest(`${config.appUrl}\u0000${config.audience}\u0000${token}`);
   return lease.resolve(key, async () => {
+    const sentAt = Date.now();
     let answer;
     try {
       answer = await exchangeKiloToken(fetch, {
@@ -131,17 +149,14 @@ export async function kiloTokenAccount({ config, claims }, token) {
         "Kilo did not accept this token. Mint a new Kilo token for this Pages deployment and send it as Authorization: Bearer",
         "exchange_refused_token",
       );
-    const now = Date.now();
-    const value = Object.freeze({
-      id: answer.id,
-      name: answer.name,
-      until: leaseEnd(claims.exp, now),
-    });
+    const settledAt = Date.now();
+    const until = leaseEnd(claims, { sentAt, settledAt });
+    const value = Object.freeze({ id: answer.id, name: answer.name, until: until ?? settledAt });
     void logAuthEvent({
       action: "kilo_token.accepted",
       credential: "kilo-token",
       principal: kiloIdentity(config, answer).principal,
     });
-    return { value, until: value.until };
+    return { value, until };
   });
 }

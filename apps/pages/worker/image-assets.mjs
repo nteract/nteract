@@ -356,7 +356,7 @@ async function grantedExpectation(access) {
  * browser always sends Origin on a POST, so a person whose session cookie
  * lapsed keeps the sign-in message. Other routes keep authenticate()'s own
  * message. */
-async function authenticateAssets(request, env, upload) {
+export async function authenticateAssets(request, env, upload) {
   try {
     return await authenticate(request, env);
   } catch (error) {

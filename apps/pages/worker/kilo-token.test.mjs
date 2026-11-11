@@ -22,6 +22,9 @@ const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url
 // Unique per test: the lease outlives a test, and a token is its key.
 let people = 0;
 const person = () => ({ id: `person:${++people}`, name: "Example Person" });
+// A distinct token for one holder: an earlier iat, a lifetime still in bounds.
+let minted = 0;
+const unique = () => ({ iat: Math.floor(Date.now() / 1000) - (++minted % 500) });
 
 /** A Kilo deployment beside a fake Kilo. Every outbound request is recorded
  * and every console line is captured. */
@@ -187,6 +190,29 @@ test("the exchange sends exactly the token and audience, with the deployment's s
     );
 });
 
+test("a Kilo that doesn't answer in time is a 503, and the token is asked about again", async (t) => {
+  const { env, kilo } = await fixture(t);
+  const timeout = AbortSignal.timeout.bind(AbortSignal);
+  const asked = t.mock.method(AbortSignal, "timeout", (ms) => {
+    assert.equal(ms, 10_000, "the code flow's timeout");
+    return timeout(50);
+  });
+  const token = kilo.mintToken(person(), { audience });
+  let hung;
+  kilo.respond((req, res) => {
+    hung = res;
+  });
+  await assert.rejects(authenticate(request(token), env), {
+    status: 503,
+    code: "sign_in_unavailable",
+    retryable: true,
+  });
+  assert.equal(asked.mock.callCount(), 1);
+  hung?.destroy();
+  assert.equal((await authenticate(request(token), env)).credentialKind, "kilo-token");
+  assert.equal(kilo.exchanges().length, 2);
+});
+
 test("a token names the person the browser sign-in names", async (t) => {
   const { env, kilo, outbound } = await fixture(t, {
     PAGES_KILO_PRINCIPAL_NAMESPACE: "user:kilo-test",
@@ -243,6 +269,34 @@ test("a token reaches the tool routes and nothing else, and is refused before Ki
   assert.equal(kilo.exchanges().length, 1);
 });
 
+test("an asset route refuses a Kilo token before any Project lookup or exchange", async (t) => {
+  const { env, kilo, outbound } = await fixture(t);
+  const token = kilo.mintToken(person(), { audience });
+  env.PROJECTS = env.PAGES = {
+    getByName: () => assert.fail("no host is asked before the route authenticates"),
+  };
+  const projectId = `prj_${crypto.randomUUID()}`;
+  for (const [path, method] of [
+    [`/api/projects/${projectId}/assets/${"a".repeat(64)}`, "GET"],
+    [`/api/projects/${projectId}/assets`, "POST"],
+    [`/api/pages/${pageId}/assets/${"a".repeat(64)}`, "GET"],
+    [`/api/pages/${pageId}/assets`, "POST"],
+    [`/api/pages/${pageId}/card-image`, "GET"],
+  ]) {
+    const response = await worker.fetch(
+      new Request(`${origin}${path}`, {
+        method,
+        headers: { authorization: `Bearer ${token}`, "content-type": "image/png" },
+        ...(method === "POST" && { body: new Uint8Array(4) }),
+      }),
+      env,
+    );
+    assert.equal(response.status, 403, `${method} ${path}: ${await response.clone().text()}`);
+  }
+  assert.deepEqual(outbound, []);
+  assert.deepEqual(kilo.exchanges(), []);
+});
+
 test("Kilo's refusals reach the caller as codes, and nothing of the token or Kilo's body", async (t) => {
   const { env, kilo, lines } = await fixture(t);
   const holder = person();
@@ -263,56 +317,89 @@ test("Kilo's refusals reach the caller as codes, and nothing of the token or Kil
       }),
       env,
     );
-  for (const [answer, status, code] of [
-    [json(400, { error: "invalid_token", detail: leak }), 401, "invalid_kilo_token"],
-    [json(400, { error: "invalid_request", detail: leak }), 401, "invalid_kilo_token"],
-    [json(403, { error: "account_unavailable", detail: leak }), 403, "account_unavailable"],
-    [json(401, { error: "invalid_client", detail: leak }), 503, "sign_in_unavailable"],
-    [json(500, { detail: leak }), 503, "sign_in_unavailable"],
-    [json(429, { detail: leak }), 503, "sign_in_unavailable"],
-    [json(200, { user: { name: leak } }), 503, "sign_in_unavailable"],
-    [(req, res) => res.writeHead(200).end(leak), 503, "sign_in_unavailable"],
+  for (const [label, answer, status, code] of [
     [
+      "invalid_token",
+      json(400, { error: "invalid_token", detail: leak }),
+      401,
+      "invalid_kilo_token",
+    ],
+    [
+      "invalid_request",
+      json(400, { error: "invalid_request", detail: leak }),
+      401,
+      "invalid_kilo_token",
+    ],
+    [
+      "account",
+      json(403, { error: "account_unavailable", detail: leak }),
+      403,
+      "account_unavailable",
+    ],
+    [
+      "invalid_client",
+      json(401, { error: "invalid_client", detail: leak }),
+      503,
+      "sign_in_unavailable",
+    ],
+    ["500", json(500, { detail: leak }), 503, "sign_in_unavailable"],
+    ["429", json(429, { detail: leak }), 503, "sign_in_unavailable"],
+    ["no id", json(200, { user: { name: leak } }), 503, "sign_in_unavailable"],
+    ["not json", (req, res) => res.writeHead(200).end(leak), 503, "sign_in_unavailable"],
+    [
+      "over the size limit",
+      json(200, { user: { id: "x", name: leak.repeat(1000) } }),
+      503,
+      "sign_in_unavailable",
+    ],
+    [
+      "3xx",
       (req, res) => res.writeHead(302, { location: "https://elsewhere.invalid/" }).end(),
       503,
       "sign_in_unavailable",
     ],
   ]) {
-    const token = kilo.mintToken(holder, { audience, claims: { iat: people++ } });
+    const token = kilo.mintToken(holder, { audience, claims: unique() });
     kilo.respond(answer);
     const response = await call(token);
-    assert.equal(response.status, status, code);
+    assert.equal(response.status, status, label);
     const text = await response.text();
     const body = JSON.parse(text);
-    assert.equal(body.code, code);
+    assert.equal(body.code, code, label);
     if (status === 503) assert.equal(body.retryable, true);
     if (status === 401) {
       assert.match(body.error, /Mint a new Kilo token for this Pages deployment/);
       assert.match(response.headers.get("www-authenticate") ?? "", /resource_metadata=/);
     }
     for (const hidden of [token, secret, leak, audience]) assert.ok(!text.includes(hidden), hidden);
+    // A refusal of the token answers its repeats without an exchange. A Kilo
+    // that couldn't answer is not remembered: the repeat is asked again, and
+    // this time the fake accepts it.
+    const before = kilo.exchanges().length;
+    if (status === 503) {
+      assert.equal((await authenticate(request(token), env)).credentialKind, "kilo-token", label);
+      assert.equal(kilo.exchanges().length, before + 1, label);
+    } else {
+      for (let repeat = 0; repeat < 3; repeat++)
+        await assert.rejects(authenticate(request(token), env), { status, code }, label);
+      assert.equal(kilo.exchanges().length, before, label);
+    }
   }
-  // A refusal is not kept: the same token is asked about again.
-  const token = kilo.mintToken(holder, { audience, claims: { iat: people++ } });
-  kilo.respond(json(500, {}));
-  assert.equal((await call(token)).status, 503);
-  const before = kilo.exchanges().length;
-  assert.equal((await authenticate(request(token), env)).credentialKind, "kilo-token");
-  assert.equal(kilo.exchanges().length, before + 1);
   // Kilo itself refuses a forged, expired or foreign token; Pages says so.
+  const token = kilo.mintToken(holder, { audience, claims: unique() });
   for (const forged of [
     `${token.slice(0, token.lastIndexOf(".") + 1)}forged`,
     kilo.mintToken(holder, { audience, seconds: -1 }),
   ])
     assert.equal(JSON.parse(await (await call(forged)).text()).code, "invalid_kilo_token");
-  const minted = kilo.mintToken(holder, { audience, claims: { iat: people++ } });
+  const minted = kilo.mintToken(holder, { audience, claims: unique() });
   kilo.block(holder.id);
   const blocked = await call(minted);
   assert.equal(blocked.status, 403);
   assert.equal(JSON.parse(await blocked.text()).code, "account_unavailable");
   // An unreachable Kilo is unavailable, not a refusal.
   await kilo.close();
-  const unreachable = await call(kilo.mintToken(holder, { audience, claims: { iat: people++ } }));
+  const unreachable = await call(kilo.mintToken(holder, { audience, claims: unique() }));
   assert.equal(unreachable.status, 503);
   // The operator gets one coded line per refusal, without the token or secret.
   const refusals = lines

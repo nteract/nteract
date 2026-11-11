@@ -1276,17 +1276,33 @@ refuses it with 403 before Kilo is asked.
 | --- | --- |
 | `400 invalid_token` or any other 4xx but 401 and 403 | 401 `invalid_kilo_token`: mint a new token for this deployment |
 | `403 account_unavailable` | 403 `account_unavailable` |
-| `401 invalid_client` (wrong secret or audience), 429, 5xx, a timeout, or a body that isn't the documented shape | 503 `sign_in_unavailable`, `retryable: true` |
+| `401 invalid_client` (wrong secret or audience), 429, 5xx, a 3xx, a timeout, a body over 16 KB, or a body that isn't the documented shape | 503 `sign_in_unavailable`, `retryable: true` |
 
 The caller never sees Kilo's body. Each refusal logs one `kilo_token.refused`
 auth line with a coded `reason`, never the token or the secret.
 
-Each Worker isolate leases an accepted token, keyed by its SHA-256, until the
-token's `exp` and never more than 15 minutes after the exchange, so a token
-costs one exchange per isolate rather than one per call. Concurrent requests
-with one new token share one exchange; a refusal is never kept. The lease is
-the limit of this design: an account Kilo blocks keeps working here until its
-lease ends, at most the token's remaining life.
+Each Worker isolate leases an accepted token, keyed by its SHA-256, so a
+token costs one exchange per isolate rather than one per call
+([worker/kilo-token-lease.mjs](worker/kilo-token-lease.mjs)). Pages can't
+read Kilo's clock, so the lease ends at the earliest of the token's `exp` by
+Pages' clock less 30 seconds, the token's whole lifetime (`exp - iat`) after
+the exchange was sent, and 15 minutes. A token whose `iat` and `exp` aren't
+whole seconds at most 15 minutes apart is accepted for its one request and
+not leased. Concurrent requests with one new token share one exchange.
+
+Kilo's refusal of the token itself is kept for repeats of that token:
+`invalid_kilo_token` for five minutes, since an invalid token can't become
+valid, and `account_unavailable` for 30 seconds. A 503 is never kept. Each
+isolate runs at most 8 exchanges at once and keeps at most 1,000 tokens.
+Kept refusals leave first, then entries whose time is over; a running
+exchange or a live lease never leaves early. Past either bound a new token
+gets 503 `sign_in_unavailable` without an exchange, and tokens already
+leased keep working.
+
+The lease is the limit of this design: an account Kilo blocks keeps working
+here until its lease ends. A lease can outlast the token by the clock
+difference between Pages and Kilo, and never by more than the token's whole
+lifetime.
 
 ## Outbound requests
 
@@ -1391,7 +1407,7 @@ only with `PAGES_OAUTH_ANY_CLIENT_DOCUMENT` ([Outbound requests](#outbound-reque
 | `oauth.refresh_reused` | A spent refresh token was presented again. Within 30 seconds of its first use, new tokens are issued and the grant stays; this is what overlapping refreshes from one client's processes look like. After that, the grant is revoked. | `grant`, `reason` (`within_window` when tokens were issued; absent when the grant was revoked) |
 | `api_key.accepted` | An Anaconda API key authenticated. One line per key per isolate per 60 s cache window, not per request. | `scope` (`editor` or `viewer`) |
 | `kilo_token.accepted` | Kilo accepted a Kilo agent token. One line per token per isolate lease, not per request. | |
-| `kilo_token.refused` | A Kilo agent token was refused or couldn't be checked. No principal. | `reason`: `exchange_refused_token`, `exchange_refused_account`, `exchange_refused_client`, `kilo_unavailable`, `kilo_protocol_error`, `exchange_failed` |
+| `kilo_token.refused` | A Kilo agent token was refused or couldn't be checked. No principal. | `reason`: `exchange_refused_token`, `exchange_refused_account`, `exchange_refused_client`, `kilo_unavailable`, `kilo_protocol_error`, `exchange_failed`, and for a 503 before any exchange `exchanges_in_flight`, `lease_capacity` or `wait_timeout` |
 | `invitation.created`, `invitation.revoked` | A Project owner invited an email or revoked an invitation. `principal` is the owner. | `project_id`, `invite`, `role` |
 | `invitation.accepted` | A verified recipient claimed a Project invitation. `principal` is the recipient. | `project_id`, `invite`, `role` |
 

@@ -1047,10 +1047,17 @@ is the same principal either way. It needs no settings beyond the three
 403 before Kilo is asked. Kilo's refusals become 401 `invalid_kilo_token`, 403
 `account_unavailable` or 503 `sign_in_unavailable` (`retryable: true`); the
 caller never sees Kilo's body. Each isolate leases an accepted token by its
-SHA-256 until its `exp`, at most 15 minutes, with one exchange for concurrent
-requests and no kept refusals ([worker/kilo-token-lease.mjs](worker/kilo-token-lease.mjs)).
-An account Kilo blocks keeps working until that lease ends, at most the token's
-remaining life, and an upload capability the token issues ends with the lease.
+SHA-256 until the earliest of its `exp` less 30 seconds, its whole lifetime
+after the exchange was sent, and 15 minutes, with one exchange for concurrent
+requests ([worker/kilo-token-lease.mjs](worker/kilo-token-lease.mjs)). Kilo's
+refusal of a token answers repeats of it for five minutes (`invalid_kilo_token`)
+or 30 seconds (`account_unavailable`); a 503 is never kept. At most 8
+exchanges run and 1,000 tokens are kept per isolate, never by dropping a live
+lease: past either bound a new token gets 503 without an exchange. An account
+Kilo blocks keeps working until its lease ends. A lease can outlast the token
+by the clock difference between Pages and Kilo, never by more than the
+token's whole lifetime. An upload capability the token issues ends with the
+lease.
 
 The account menu's Connected agents dialog lists the account's live OAuth
 connections (`GET /api/auth/grants`: client name, scope, issue and expiry

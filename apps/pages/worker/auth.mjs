@@ -151,13 +151,20 @@ const AGENT_ROUTES = Object.freeze([
   "/internal/catalog",
   "/internal/tool",
   "/internal/create",
+  // A Project member's create_page, forwarded to the owner's Catalog, which
+  // refuses the owner and checks the member's role.
+  "/internal/project-create",
   "/internal/trash",
   "/internal/restore",
   "/internal/purge",
   "/internal/assets/authorize",
+  // delete_project: the content document's impact, then the Space's removal.
+  // Both hosts check the caller owns the Project themselves.
+  "/internal/content-impact",
   "/internal/space/create",
   "/internal/space/read",
   "/internal/space/update",
+  "/internal/space/delete",
   "/internal/space/access",
   "/internal/access",
 ]);
