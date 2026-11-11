@@ -57,7 +57,7 @@ test("a flush writes the card when its first screen changed", async (t) => {
   await emitting(f.page).watchContent();
   const top = await f.tool("owner", "edit_page", {
     operations: [
-      { op: "insert_markdown", markdown: "## Launch\n\nThe plan, in brief.", after_block_id: null },
+      { op: "insert_markdown", markdown: "## Launch\n\nThe plan, in brief.", after_node_id: null },
     ],
     revision: await f.revision(),
     nonce: "card-top",
@@ -114,7 +114,7 @@ test("a failed card write never fails the edit or the flush, and the next flush 
   await emitting(f.page).watchContent();
   assets.fail = true;
   const edit = await f.tool("owner", "edit_page", {
-    operations: [{ op: "insert_markdown", markdown: "# New opening", after_block_id: null }],
+    operations: [{ op: "insert_markdown", markdown: "# New opening", after_node_id: null }],
     revision: await f.revision(),
     nonce: "card-fails",
   });
@@ -139,7 +139,7 @@ test("the host's card puts are conditional on the etag it saw, and retry once wh
   const f = await fixture(t, { env: { PAGES_ASSETS: assets } });
   await emitting(f.page).watchContent();
   const first = await f.tool("owner", "edit_page", {
-    operations: [{ op: "insert_markdown", markdown: "# First", after_block_id: null }],
+    operations: [{ op: "insert_markdown", markdown: "# First", after_node_id: null }],
     revision: await f.revision(),
     nonce: "fence-first",
   });
@@ -152,7 +152,7 @@ test("the host's card puts are conditional on the etag it saw, and retry once wh
   // This edit's own flush waits out the minute; the report below stands in.
   f.page.unwatchContent();
   const second = await f.tool("owner", "edit_page", {
-    operations: [{ op: "insert_markdown", markdown: "# Second", after_block_id: null }],
+    operations: [{ op: "insert_markdown", markdown: "# Second", after_node_id: null }],
     revision: await f.revision(),
     nonce: "fence-second",
   });
@@ -170,7 +170,7 @@ test("a refused put that finds a later content time in the object puts nothing m
   const f = await fixture(t, { env: { PAGES_ASSETS: assets } });
   await emitting(f.page).watchContent();
   const first = await f.tool("owner", "edit_page", {
-    operations: [{ op: "insert_markdown", markdown: "# First", after_block_id: null }],
+    operations: [{ op: "insert_markdown", markdown: "# First", after_node_id: null }],
     revision: await f.revision(),
     nonce: "later-first",
   });
@@ -190,7 +190,7 @@ test("a refused put that finds a later content time in the object puts nothing m
   assets.puts = 0;
   f.page.unwatchContent();
   const second = await f.tool("owner", "edit_page", {
-    operations: [{ op: "insert_markdown", markdown: "# Second", after_block_id: null }],
+    operations: [{ op: "insert_markdown", markdown: "# Second", after_node_id: null }],
     revision: await f.revision(),
     nonce: "later-second",
   });
@@ -216,7 +216,7 @@ test("a card left by a node 10 minutes ahead doesn't block this host's writes", 
   assets.puts = 0;
   await emitting(f.page).watchContent();
   const edit = await f.tool("owner", "edit_page", {
-    operations: [{ op: "insert_markdown", markdown: "# Fresh opening", after_block_id: null }],
+    operations: [{ op: "insert_markdown", markdown: "# Fresh opening", after_node_id: null }],
     revision: await f.revision(),
     nonce: "skew-fresh",
   });
@@ -240,7 +240,7 @@ test("a host's first put requires no object, so one that appears first is not ov
     await assets.seed(key, { v: 1, card_hash: "3".repeat(64), blocks: [] });
   };
   const edit = await f.tool("owner", "edit_page", {
-    operations: [{ op: "insert_markdown", markdown: "# Mine", after_block_id: null }],
+    operations: [{ op: "insert_markdown", markdown: "# Mine", after_node_id: null }],
     revision: await f.revision(),
     nonce: "fence-none",
   });
@@ -280,7 +280,7 @@ for (const mode of ["lands", "lands, then times out"])
       return landed;
     };
     const top = await f.tool("owner", "edit_page", {
-      operations: [{ op: "insert_markdown", markdown: "# Racing", after_block_id: null }],
+      operations: [{ op: "insert_markdown", markdown: "# Racing", after_node_id: null }],
       revision: await f.revision(),
       nonce: "race-top",
     });

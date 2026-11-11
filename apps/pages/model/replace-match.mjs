@@ -4,7 +4,6 @@ import { diffArrays } from "diff";
 import { textPath } from "./richtext-format.mjs";
 import { parseInlineMarkdown } from "./markdown-inline.mjs";
 import { ancestryAt, blockAddresses, nodeIndexAt } from "./node-addresses.mjs";
-import { nativeRead } from "./native-read.mjs";
 import {
   encodeMarkValue,
   isKnownMark,
@@ -32,36 +31,12 @@ export function replacementLiteral(value, name, optional = false) {
   return value;
 }
 
-/** The optional node index uses the same revision-bound, top-level address as
- * read_page outlines (model/node-addresses.mjs). Containers remain intact; a
- * match still cannot cross a native paragraph/embed marker inside a list or
- * table. Returns the node's text range `{ start, end }`.
- */
-export function visibleNodeRange(doc, id, nodeIndex) {
-  if (!Number.isSafeInteger(nodeIndex) || nodeIndex < 0)
-    throw Error("node_index must be a nonnegative integer from the read outline");
-  const block = doc.blocks[id];
-  const { nodes } = blockAddresses(A.spans(doc, textPath(id)));
-  // node_index names a node of the outline, which read_page builds from the
-  // readable tree. When the stored spans count differently (markers a peer
-  // wrote under parents no writer produces) or a readable node opens at
-  // another marker (one inside a container this build doesn't know), an index
-  // could name another node.
-  const tree = nativeRead(block, doc.page_id);
-  if (
-    nodes.length !== tree.nodes.length ||
-    tree.nodes.some((node, index) => {
-      const at = tree.source.get(node);
-      return at != null && at !== nodes[index].at;
-    })
-  )
-    throw Error(
-      "node_index can't address this block: it holds nodes this version of Pages reads differently from how they're stored. Match without node_index, or rewrite the block with replace_block_markdown.",
-    );
-  if (nodeIndex >= nodes.length) throw Error("node_index is outside this block");
-  const { start, end } = nodes[nodeIndex];
-  return { start, end };
-}
+/** The text range `{ start, end }` of the top-level node a passage
+ * operation's node_id names, resolved by the caller (model/addresses.mjs)
+ * against the document the operation runs on. Matching stays inside it; a
+ * match still cannot cross a paragraph or embed marker inside a list or
+ * table. A symbol, so no request body can carry one. */
+export const withinNode = Symbol("withinNode");
 
 /** The top-level node holding the visible range `[start, end)`, its text
  * range, and the containers around its first and last characters, which a
@@ -73,7 +48,7 @@ export function visibleRangeAddress(doc, id, start, end) {
   if (nodeIndex !== nodeIndexAt(addresses, last)) throw Error("Match crosses top-level nodes");
   const { start: nodeStart, end: nodeEnd } = addresses.nodes[nodeIndex];
   return {
-    node_index: nodeIndex,
+    index: nodeIndex,
     start: nodeStart,
     end: nodeEnd,
     ancestry: [ancestryAt(addresses, start), ancestryAt(addresses, last)],
@@ -138,14 +113,14 @@ export function occurrenceOf(input) {
 }
 
 /** Every visible occurrence of match_text in the block that its context and
- * node_index allow, in document order. Occurrences may overlap. Context is
+ * node scope (withinNode) allow, in document order. Occurrences may overlap. Context is
  * searched between occurrences and cannot cross a paragraph or embedded-node
  * boundary. */
 function visibleMatches(doc, id, input) {
   const match = replacementLiteral(input.match_text, "match_text");
   const before = replacementLiteral(input.context_before, "context_before", true);
   const after = replacementLiteral(input.context_after, "context_after", true);
-  const scope = input.node_index === undefined ? null : visibleNodeRange(doc, id, input.node_index);
+  const scope = input[withinNode] ?? null;
   if (!match) throw Error("match_text must not be empty");
   const matches = [];
   let candidates = 0;
@@ -188,7 +163,7 @@ function matchRange(id, input, { at: start, segment, local }) {
 }
 
 /** Resolve one visible range without changing the document: the only match,
- * or the one-based `occurrence` among the matches context and node_index
+ * or the one-based `occurrence` among the matches context and node scope
  * allow. */
 export function findUniqueVisibleRange(doc, id, input) {
   const occurrence = occurrenceOf(input);
@@ -540,7 +515,6 @@ export function replaceMatch(doc, id, input, trace, { anchor, budget } = {}) {
   const warn = !runs && partialMarks.length;
   return {
     op: "replace_match",
-    block_id: id,
     matched: 1,
     ...(warn ? { warnings: [marksDroppedWarning(partialMarks, start, end)] } : {}),
   };
@@ -644,7 +618,7 @@ export function formatMatch(doc, id, input, trace, { anchor, budget } = {}) {
     const found = findAllVisibleRanges(doc, id, located);
     if (found.length > MAX_ALL_RANGES)
       throw Error(
-        `format_match all found ${found.length} matches; at most ${MAX_ALL_RANGES} per operation. Narrow it with node_index, context or a longer match_text.`,
+        `format_match all found ${found.length} matches; at most ${MAX_ALL_RANGES} per operation. Narrow it with a node's node_id, context or a longer match_text.`,
       );
     ranges = found.filter((range) => !range.code);
     skipped = found.length - ranges.length;
@@ -664,7 +638,6 @@ export function formatMatch(doc, id, input, trace, { anchor, budget } = {}) {
   trace?.push({ type: "text", block_id: id, start, end });
   return {
     op: "format_match",
-    block_id: id,
     matched: ranges.length,
     ...(skipped ? { skipped_in_code: skipped } : {}),
   };

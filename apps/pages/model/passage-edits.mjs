@@ -2,6 +2,7 @@ import * as A from "@automerge/automerge/slim";
 import {
   findUniqueVisibleRange,
   locateRange,
+  withinNode,
   formatChanges,
   formatMatch,
   replacementOf,
@@ -10,20 +11,40 @@ import {
 } from "./replace-match.mjs";
 import { nodeChange, setNode } from "./set-node.mjs";
 import { repairBlockMarkers } from "./richtext-page.mjs";
+import { addressIndex, resolveAddressFor } from "./addresses.mjs";
+import { validateEditFields } from "./page.mjs";
 
 // Operations a target-scoped batch may contain. Each finds one literal range
 // the same way; replace_match changes its text, format_match its marks and
 // set_node the attributes of the node that holds it.
 export const PASSAGE_OPS = new Set(["replace_match", "format_match", "set_node"]);
-const applyPassage = (doc, input, context) =>
+const applyPassage = (doc, key, input, context) =>
   input.op === "format_match"
-    ? formatMatch(doc, input.block_id, input, undefined, context)
+    ? formatMatch(doc, key, input, undefined, context)
     : input.op === "set_node"
-      ? setNode(doc, input.block_id, input, undefined, context)
-      : replaceMatch(doc, input.block_id, input, undefined, context);
+      ? setNode(doc, key, input, undefined, context)
+      : replaceMatch(doc, key, input, undefined, context);
+/** Where passage operation `input` matches in `index`'s document: its
+ * block's key, and the input scoped to the node its node_id names, if any.
+ * Throws node_not_found or wrong_address_kind as page scope does. */
+function passageTarget(index, doc, input) {
+  const target = resolveAddressFor(index, doc, input.node_id, {
+    op: input.op,
+    field: "node_id",
+    kinds: ["block", "node"],
+  });
+  return {
+    key: target.key,
+    scoped:
+      target.kind === "node"
+        ? { ...input, [withinNode]: { start: target.start, end: target.end } }
+        : input,
+  };
+}
 // The same input checks each operation makes, raised before any guard work.
 // A target is one captured passage, so all (every match) is page-scoped only.
 function validatePassage(input) {
+  validateEditFields(input);
   if (input.all !== undefined)
     throw Error("all addresses every match, so it needs conflict_scope page");
   if (input.op === "format_match") formatChanges(input);
@@ -140,17 +161,10 @@ export function guardPassageEdits(current, baseHeads, operations) {
     !Array.isArray(operations) ||
     !operations.length ||
     operations.length > 100 ||
-    operations.some(
-      (op) =>
-        !op ||
-        !PASSAGE_OPS.has(op.op) ||
-        typeof op.block_id !== "string" ||
-        !op.block_id ||
-        op.block_id.length > 128,
-    )
+    operations.some((op) => !op || !PASSAGE_OPS.has(op.op) || typeof op.node_id !== "string")
   )
     invalid(
-      "Target-scoped edits require 1 to 100 replace_match, format_match or set_node operations with block_id",
+      "Target-scoped edits require 1 to 100 replace_match, format_match or set_node operations with node_id",
     );
   if (!A.hasHeads(current, baseHeads))
     throw Object.assign(Error("The base revision is unavailable; read the Page again"), {
@@ -164,9 +178,7 @@ export function guardPassageEdits(current, baseHeads, operations) {
       code: "edit_conflict",
       details: {
         current_heads: currentHeads,
-        conflicts: [
-          { block_id: target.input.block_id, node_index: target.address?.node_index, reason },
-        ],
+        conflicts: [{ node_id: target.input.node_id, reason }],
       },
     });
   };
@@ -179,22 +191,29 @@ export function guardPassageEdits(current, baseHeads, operations) {
   try {
     const patches = A.diff(current, baseHeads, currentHeads);
     if (patches.length > 10000) conflict({ input: operations[0] }, "change_set_too_large");
+    const baseIndex = addressIndex(base);
+    const currentIndex = addressIndex(current);
     const targets = operations.map((input) => {
-      const id = input.block_id;
+      let id;
       let range;
       let address;
       try {
         validatePassage(input);
-        range = findUniqueVisibleRange(base, id, input);
+        const found = passageTarget(baseIndex, base, input);
+        id = found.key;
+        range = findUniqueVisibleRange(base, id, found.scoped);
         address = visibleRangeAddress(base, id, range.start, range.end);
       } catch (error) {
         // A refusal with its own code (unsupported_markdown from
-        // replacement_markdown) keeps it, as in page scope.
+        // replacement_markdown, wrong_address_kind) keeps it, as in page
+        // scope; so does an id that names nothing at the base revision.
         if (error.status) throw error;
+        if (error.code === "node_not_found") throw Object.assign(error, { status: 400 });
         invalid(error.message);
       }
       const target = {
         input,
+        key: id,
         ...range,
         address,
         markers: markerOffsets(base, range.path),
@@ -228,18 +247,22 @@ export function guardPassageEdits(current, baseHeads, operations) {
         )
       )
         conflict(target, "target_formatting_changed");
-      const effective = {
-        ...input,
-        ...(input.node_index === undefined ? {} : { node_index: now.node_index }),
-      };
+      // The node_id names the same node at both revisions, so the operation
+      // goes on unchanged; its node scope resolves again where it applies.
+      let scope;
+      try {
+        scope = passageTarget(currentIndex, current, input);
+      } catch {
+        conflict(target, "target_structure_changed");
+      }
       let found;
       try {
-        found = findUniqueVisibleRange(current, id, effective);
+        found = findUniqueVisibleRange(current, id, scope.scoped);
       } catch {
         conflict(target, "target_no_longer_unique");
       }
       if (found.start !== start || found.end !== end) conflict(target, "target_changed_identity");
-      return { ...target, effective, currentStart: start, currentEnd: end };
+      return { ...target, currentStart: start, currentEnd: end };
     });
     // set_node changes no text, so it may share its passage with another
     // operation ("check this task and strike it"). The dry run below still
@@ -249,7 +272,7 @@ export function guardPassageEdits(current, baseHeads, operations) {
         if (
           targets[i].input.op !== "set_node" &&
           targets[j].input.op !== "set_node" &&
-          targets[i].input.block_id === targets[j].input.block_id &&
+          targets[i].key === targets[j].key &&
           targets[i].start < targets[j].end &&
           targets[j].start < targets[i].end
         )
@@ -263,18 +286,21 @@ export function guardPassageEdits(current, baseHeads, operations) {
     try {
       checked = A.change(clone, (draft) => {
         // As the write itself does (applyPageOperation in page.mjs).
-        for (const target of targets) repairBlockMarkers(draft, target.input.block_id);
+        for (const target of targets) repairBlockMarkers(draft, target.key);
+        const index = addressIndex(draft);
         const budget = { writes: 0 };
         for (const target of targets) {
           // An occurrence names a match in the batch's starting snapshot, as
           // in page scope: follow the captured characters, never recount.
           const anchor =
-            target.effective.occurrence === undefined
+            target.input.occurrence === undefined
               ? undefined
               : { path: target.path, first: target.first, last: target.last };
           let range;
+          let input;
           try {
-            range = locateRange(draft, target.input.block_id, target.effective, anchor);
+            input = passageTarget(index, draft, target.input).scoped;
+            range = locateRange(draft, target.key, input, anchor);
           } catch {
             conflict(target, "batch_changes_target_resolution");
           }
@@ -285,20 +311,21 @@ export function guardPassageEdits(current, baseHeads, operations) {
           )
             conflict(target, "batch_changes_target_resolution");
           try {
-            applyPassage(draft, target.effective, { anchor, budget });
+            applyPassage(draft, target.key, input, { anchor, budget });
           } catch (error) {
             // A rule the operation enforces on the text it found, such as
             // format_match refusing code text: the caller's request, not a race.
             if (error.status) throw error;
             invalid(error.message);
           }
+          index.forget(target.key);
         }
       });
     } finally {
       A.free(checked ?? clone);
     }
     return {
-      operations: targets.map((target) => target.effective),
+      operations: targets.map((target) => target.input),
       rebased: !equal([...baseHeads].sort(), [...currentHeads].sort()),
       base_heads: [...baseHeads],
       current_heads: currentHeads,

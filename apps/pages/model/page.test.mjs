@@ -11,6 +11,7 @@ import {
 import { projectComments } from "./comments.mjs";
 import { comment, newCommentsDoc } from "./comments-test-support.mjs";
 import { richDoc } from "./richtext.mjs";
+import { blockAddress } from "./addresses.mjs";
 import { PagesLink, PagesImage } from "./wordgard-doc.mjs";
 function page(markdown = "Hello 🌊 people") {
   let doc = A.from(createPageData({ pageId: "page_fixture", title: "Test" }));
@@ -25,7 +26,7 @@ test("a stored block holds exactly position and richText, and its key is its id"
       operation: "edit_page",
       arguments: {
         operations: [
-          { op: "insert_markdown", after_block_id: first, markdown: "Inserted." },
+          { op: "insert_markdown", after_node_id: blockAddress(doc, first), markdown: "Inserted." },
           { op: "insert_markdown", markdown: "Appended." },
         ],
       },
@@ -54,7 +55,12 @@ test("targeted text edits preserve unknown document fields and rich text identit
       operation: "edit_page",
       arguments: {
         operations: [
-          { op: "replace_match", block_id: id, match_text: "people", replacement: "collaborators" },
+          {
+            op: "replace_match",
+            node_id: blockAddress(doc, id),
+            match_text: "people",
+            replacement: "collaborators",
+          },
         ],
       },
     }),
@@ -75,7 +81,12 @@ test("ambiguous literal patch rejects atomically with no partially applied sibli
           arguments: {
             operations: [
               { op: "set_title", title: "Changed" },
-              { op: "replace_match", block_id: id, match_text: "one", replacement: "two" },
+              {
+                op: "replace_match",
+                node_id: blockAddress(doc, id),
+                match_text: "one",
+                replacement: "two",
+              },
             ],
           },
         }),
@@ -111,7 +122,12 @@ test("anchored Unicode comments follow concurrent text and detach after the sele
       operation: "edit_page",
       arguments: {
         operations: [
-          { op: "replace_match", block_id: id, match_text: "🌊 passage", replacement: "" },
+          {
+            op: "replace_match",
+            node_id: blockAddress(doc, id),
+            match_text: "🌊 passage",
+            replacement: "",
+          },
         ],
       },
     }),
@@ -157,7 +173,12 @@ test("Markdown export omits the blank line Markdown can't turn back into an empt
 test("replace_match keeps an empty paragraph Markdown can't represent", () => {
   const { doc, id } = leadingEmptyParagraph();
   const matched = edit(doc, [
-    { op: "replace_match", block_id: id, match_text: "edit", replacement: "change" },
+    {
+      op: "replace_match",
+      node_id: blockAddress(doc, id),
+      match_text: "edit",
+      replacement: "change",
+    },
   ]);
   assert.equal(richDoc(matched.blocks[id]).content.length, 2);
   assert.equal(projectPage(matched).blocks[0].markdown, "Hope you can change this.");
@@ -165,7 +186,11 @@ test("replace_match keeps an empty paragraph Markdown can't represent", () => {
 test("replace_block_markdown replaces the block with exactly the Markdown it is given", () => {
   const { doc, id } = leadingEmptyParagraph();
   const replaced = edit(doc, [
-    { op: "replace_block_markdown", block_id: id, markdown: projectPage(doc).blocks[0].markdown },
+    {
+      op: "replace_block_markdown",
+      node_id: blockAddress(doc, id),
+      markdown: projectPage(doc).blocks[0].markdown,
+    },
   ]);
   // Markdown has no empty paragraph, so the replacement has one paragraph.
   assert.equal(richDoc(replaced.blocks[id]).content.length, 1);

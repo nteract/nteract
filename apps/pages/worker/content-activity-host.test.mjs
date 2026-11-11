@@ -134,7 +134,7 @@ test("a tool edit on a real Page host records a time and reports it on its own r
     operations: [
       {
         op: "replace_match",
-        block_id: read.body.blocks[0].id,
+        node_id: read.body.blocks[0].node_id,
         match_text: "Friday",
         replacement: "Monday",
       },
@@ -157,7 +157,7 @@ test("a tool edit on a real Page host records a time and reports it on its own r
   // A comment is not content.
   const comment = await h.tool(page, "manage_page_comment", {
     action: "add",
-    block_id: read.body.blocks[0].id,
+    node_id: read.body.blocks[0].node_id,
     body: "Monday works",
     nonce: "content-activity-host-comment",
   });

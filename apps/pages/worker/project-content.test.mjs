@@ -3,6 +3,7 @@ import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import worker from "./index.mjs";
 import { newCommentsDoc } from "../model/comments-test-support.mjs";
+import { blockAddress } from "../model/addresses.mjs";
 import { stampFeatures } from "../model/schema-features.mjs";
 import { world } from "./projects-fixture.mjs";
 import { headsFor } from "./revisions.mjs";
@@ -155,10 +156,11 @@ for (const direct of [false, true])
         operations: [{ op: "set_title", title: "Edited" }],
       });
       assert.equal(edited.status, role === "editor" ? 200 : 403, JSON.stringify(edited.body));
+      const doc = w.page(project.document_id).handle.doc();
       const comment = await w.call("member", "manage_page_comment", {
         ...address,
         action: "add",
-        block_id: Object.keys(w.page(project.document_id).handle.doc().blocks)[0],
+        node_id: blockAddress(doc, Object.keys(doc.blocks)[0]),
         body: "Content comment",
         nonce: w.key(),
       });
@@ -314,7 +316,7 @@ test("patch, comment and presence tools resolve the same content and receipt sco
   writableContent(w, project);
   const before = (await w.call("owner", "read_page", { page_id: project.document_id })).body;
   const doc = w.page(project.document_id).handle.doc();
-  const blockId = Object.keys(doc.blocks)[0];
+  const block = blockAddress(doc, Object.keys(doc.blocks)[0]);
   const insert = await w.call("owner", "edit_page", {
     project_id: project.project_id,
     revision: before.revision,
@@ -331,7 +333,7 @@ test("patch, comment and presence tools resolve the same content and receipt sco
     operations: [
       {
         op: "replace_match",
-        block_id: inserted.id,
+        node_id: inserted.node_id,
         match_text: "Original",
         replacement: "Updated",
       },
@@ -350,7 +352,7 @@ test("patch, comment and presence tools resolve the same content and receipt sco
   const comment = {
     page_id: project.document_id,
     action: "add",
-    block_id: blockId,
+    node_id: block,
     body: "One comment",
     nonce: w.key(),
   };

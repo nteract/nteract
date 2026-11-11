@@ -55,7 +55,7 @@ test("content changes record a time; comments, presence and sharing don't", asyn
   const ownerEntry = () => f.catalogOf(f.owner).storage.get(`page/${pageId}`);
   const comment = await f.tool("member", "manage_page_comment", {
     action: "add",
-    block_id: f.blockId,
+    node_id: f.block,
     body: "One more thought",
     nonce: "content-activity-comment",
   });

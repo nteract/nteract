@@ -3,6 +3,7 @@ import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { createPageData, initializePage, applyPageOperation } from "../model/page.mjs";
 import { readChangesTool } from "./tool-changes.mjs";
+import { blockAddress, nodeAddresses } from "../model/addresses.mjs";
 import { revisionTable } from "./revisions-fixture.mjs";
 
 const read = (f, args, revisions = f.revisions, doc = f.doc) =>
@@ -20,7 +21,7 @@ async function fixture(t) {
         operations: [
           {
             op: "replace_match",
-            block_id: id,
+            node_id: blockAddress(d, id),
             match_text: "Edit this.",
             replacement: "Changed passage.",
           },
@@ -57,7 +58,12 @@ test("change reads capture delta and heads before the revision is named", async 
   assert.equal(result.body.retry_token, undefined);
   assert.equal(result.body.changes.length, 1);
   assert.equal(result.body.changes[0].markdown, "Changed passage.");
-  assert.equal(result.body.changes[0].node_index, 3);
+  // The fourth node of the block: the paragraph under "# Second".
+  const [change] = result.body.changes;
+  assert.ok(nodeAddresses(f.doc, f.id)[3]);
+  assert.equal(change.node_id, nodeAddresses(f.doc, f.id)[3]);
+  assert.equal(change.block, blockAddress(f.doc, f.id));
+  assert.equal(change.node_index, undefined);
   assert.equal(result.body.attribution, "unavailable");
   assert.doesNotMatch(JSON.stringify(result.body), /[a-f0-9]{64}/);
   assert.equal((await read(f, { since_revision: result.body.revision })).body.changes.length, 0);

@@ -15,6 +15,7 @@ import { HOST_SENDER_ID, PlainByteStore } from "./plain-sync.mjs";
 import { documentMutation, operationKey } from "./mutations.mjs";
 import { headsFor } from "./revisions.mjs";
 import { applyComment } from "../model/comments.mjs";
+import { blockAddress } from "../model/addresses.mjs";
 
 class Storage {
   values = new Map();
@@ -144,7 +145,7 @@ test("plain API edit write costs at 1, 10 and 100 consecutive edits", async (t) 
   assert.equal((await tool(f, host, "read_page", { comments: "none" })).status, 200);
   await host.flush();
   const initialClaims = (await f.storage.list({ prefix: "plain/actor/" })).size;
-  const blockId = Object.keys(host.handle.doc().blocks)[0];
+  const block = blockAddress(host.handle.doc(), Object.keys(host.handle.doc().blocks)[0]);
   const stats = countWrites(t, f.storage);
   const actors = new Set();
   let changeBytes = 0;
@@ -156,7 +157,7 @@ test("plain API edit write costs at 1, 10 and 100 consecutive edits", async (t) 
       operations: [
         {
           op: "replace_match",
-          block_id: blockId,
+          node_id: block,
           match_text: n % 2 ? "Original" : "Modified",
           replacement: n % 2 ? "Modified" : "Original",
         },
@@ -220,7 +221,7 @@ test("the host prefix survives restart and rejects unseen browser actors without
     const comment = await tool(f, host, "manage_page_comment", {
       nonce: `actor-comment-${n}`,
       action: "add",
-      block_id: Object.keys(host.handle.doc().blocks)[0],
+      node_id: blockAddress(host.handle.doc(), Object.keys(host.handle.doc().blocks)[0]),
       body: `Comment ${n}`,
     });
     assert.equal(comment.status, 200, await comment.clone().text());
@@ -905,7 +906,12 @@ test("browser usage writes follow durable admission, not read-only sync, retries
     revision: await revisionOf(f, A.getHeads(host.handle.doc())),
     nonce: "usage-agent-edit",
     operations: [
-      { op: "replace_match", block_id: block, match_text: "Original", replacement: "Agent" },
+      {
+        op: "replace_match",
+        node_id: blockAddress(host.handle.doc(), block),
+        match_text: "Original",
+        replacement: "Agent",
+      },
     ],
   });
   assert.ok(edited.ok, await edited.clone().text());
@@ -1025,7 +1031,7 @@ test("API edits on plain Pages name their principal independently of the host ac
     const commentResponse = await tool(f, host, "manage_page_comment", {
       nonce: "principal-comment",
       action: "add",
-      block_id: Object.keys(handle.doc().blocks)[0],
+      node_id: blockAddress(handle.doc(), Object.keys(handle.doc().blocks)[0]),
       body: "Named API comment",
     });
     assert.equal(commentResponse.status, 200, await commentResponse.clone().text());

@@ -9,6 +9,7 @@ import { stampFeatures } from "./schema-features.mjs";
 import { replaceMatch } from "./replace-match.mjs";
 import { applyComment as applyCommentTo } from "./comments.mjs";
 import { comment, newCommentsDoc } from "./comments-test-support.mjs";
+import { blockAddress, nodeAddresses } from "./addresses.mjs";
 
 const author = { principal: "user", displayName: "Collaborator", driver: "Browser" };
 function page(markdown = "# Start\n\nFirst paragraph.\n\n## Later\n\nSecond paragraph.") {
@@ -111,11 +112,10 @@ test("one native paragraph edit returns only its current Markdown and revision-b
   const result = read(doc, before);
   assert.deepEqual(result.changes, [
     {
-      block_id: "one",
+      node_id: markerCursor(doc, 3),
+      block: blockAddress(doc, "one"),
       scope: "node",
       change: "updated",
-      node_index: 3,
-      node_id: markerCursor(doc, 3),
       type: "paragraph",
       heading_path: ["Start", "Later"],
       markdown: "Updated 🌊 paragraph.",
@@ -137,11 +137,10 @@ test("inserting an earlier native node does not report untouched shifted nodes a
   });
   assert.deepEqual(read(doc, before).changes, [
     {
-      block_id: "one",
+      node_id: markerCursor(doc, 0),
+      block: blockAddress(doc, "one"),
       scope: "node",
       change: "inserted",
-      node_index: 0,
-      node_id: markerCursor(doc, 0),
       type: "paragraph",
       heading_path: [],
       markdown: "New opening.",
@@ -149,10 +148,12 @@ test("inserting an earlier native node does not report untouched shifted nodes a
   ]);
 });
 
-test("native deletion reports its old address without historical text", () => {
+test("native deletion reports its old id and the node it came before, without historical text", () => {
   let doc = page();
   const before = A.getHeads(doc);
-  const deletedId = markerCursor(doc, 1);
+  const deletedId = markerCursor(doc, 1),
+    nextId = markerCursor(doc, 2),
+    lastId = markerCursor(doc, 3);
   doc = A.change(doc, (draft) => {
     const path = textPath("one"),
       start = draft.blocks.one.richText.indexOf("First paragraph.") - 1;
@@ -161,15 +162,37 @@ test("native deletion reports its old address without historical text", () => {
   const result = read(doc, before);
   assert.deepEqual(result.changes, [
     {
-      block_id: "one",
+      node_id: deletedId,
+      block: blockAddress(doc, "one"),
       scope: "node",
       change: "deleted",
-      before_node_index: 1,
-      node_id: deletedId,
       type: "paragraph",
+      before_node_id: nextId,
     },
   ]);
   assert.doesNotMatch(JSON.stringify(result), /First paragraph/);
+  for (const change of result.changes) {
+    assert.equal("node_index" in change, false);
+    assert.equal("before_node_index" in change, false);
+    assert.equal("block_id" in change, false);
+  }
+  // The last node at the baseline came before nothing.
+  const beforeLast = A.getHeads(doc);
+  doc = A.change(doc, (draft) => {
+    const path = textPath("one"),
+      start = draft.blocks.one.richText.indexOf("Second paragraph.") - 1;
+    A.splice(draft, path, start, "Second paragraph.".length + 1, "");
+  });
+  assert.deepEqual(read(doc, beforeLast).changes, [
+    {
+      node_id: lastId,
+      block: blockAddress(doc, "one"),
+      scope: "node",
+      change: "deleted",
+      type: "paragraph",
+      before_node_id: null,
+    },
+  ]);
 });
 
 test("format-only updates preserve node identity and return the current formatting", () => {
@@ -182,7 +205,7 @@ test("format-only updates preserve node identity and return the current formatti
   const result = read(doc, before);
   assert.equal(result.changes.length, 1);
   assert.equal(result.changes[0].change, "updated");
-  assert.equal(result.changes[0].node_index, 1);
+  assert.equal(result.changes[0].node_id, markerCursor(doc, 1));
   assert.equal(result.changes[0].markdown, "**First** paragraph.");
 });
 
@@ -195,8 +218,8 @@ test("heading paths use current titles when both a section and its prose changed
   });
   const changes = read(doc, before).changes;
   assert.deepEqual(
-    changes.map((c) => c.node_index),
-    [2, 3],
+    changes.map((c) => c.node_id),
+    [markerCursor(doc, 2), markerCursor(doc, 3)],
   );
   assert.deepEqual(
     changes.map((c) => c.heading_path),
@@ -241,24 +264,29 @@ test("block insert, move and deletion stay explicit without raw extension fields
     draft.blocks.one.position = new A.RawString("a2");
   });
   const result = read(doc, before);
+  const one = blockAddress(doc, "one"),
+    two = blockAddress(doc, "two");
   assert.ok(
-    result.changes.some(
-      (c) => c.block_id === "two" && c.scope === "block" && c.change === "inserted",
-    ),
+    result.changes.some((c) => c.node_id === two && c.scope === "block" && c.change === "inserted"),
   );
   assert.ok(
     result.changes.some(
-      (c) => c.block_id === "two" && c.scope === "node" && c.markdown === "Added",
+      (c) =>
+        c.node_id === nodeAddresses(doc, "two")[0] &&
+        c.block === two &&
+        c.scope === "node" &&
+        c.markdown === "Added",
     ),
   );
-  assert.ok(result.changes.some((c) => c.block_id === "one" && c.change === "moved"));
+  assert.ok(
+    result.changes.some((c) => c.node_id === one && c.scope === "block" && c.change === "moved"),
+  );
   const next = A.getHeads(doc);
   doc = A.change(doc, (draft) => {
     delete draft.blocks.one;
   });
-  assert.deepEqual(read(doc, next).changes, [
-    { block_id: "one", scope: "block", change: "deleted" },
-  ]);
+  // A deleted block reports the id it had.
+  assert.deepEqual(read(doc, next).changes, [{ node_id: one, scope: "block", change: "deleted" }]);
 });
 
 test("a field a peer adds to a block is neither reported nor returned", () => {
@@ -279,12 +307,13 @@ test("lists and tables are whole top-level nodes while nearby prose stays out", 
     replaceMatch(draft, "one", { match_text: "Two", replacement: "Three" });
     replaceMatch(draft, "one", { match_text: "y", replacement: "z" });
   });
-  const changes = read(doc, before).changes;
+  const changes = read(doc, before).changes,
+    ids = nodeAddresses(doc, "one");
   assert.deepEqual(
-    changes.map((c) => [c.node_index, c.type, c.change]),
+    changes.map((c) => [c.node_id, c.type, c.change]),
     [
-      [1, "bullet-list", "updated"],
-      [2, "table", "updated"],
+      [ids[1], "bullet-list", "updated"],
+      [ids[2], "table", "updated"],
     ],
   );
   assert.match(changes[0].markdown, /Three/);

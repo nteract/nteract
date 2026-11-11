@@ -8,6 +8,8 @@ import { blockMarkdown, textPath } from "./richtext.mjs";
 import { guardPassageEdits } from "./passage-edits.mjs";
 import { documentFeatures } from "./schema-features.mjs";
 import { decode, encode } from "./wordgard-doc.mjs";
+import { blockAddress, nodeAddresses } from "./addresses.mjs";
+import { imageIds } from "./image-ids.mjs";
 
 function fixture(markdown) {
   let doc = A.from(createPageData({ pageId: "rich_edits", title: "Rich edits" }));
@@ -76,23 +78,47 @@ test("edit_page rejects fields from another operation", () => {
 test("format_match occurrence picks one match in document order", () => {
   const { doc, id } = fixture("Ship it. Ship it now. Ship it later.");
   const { after, result } = apply(doc, [
-    { op: "format_match", block_id: id, match_text: "Ship", occurrence: 2, add: { strong: true } },
+    {
+      op: "format_match",
+      node_id: blockAddress(doc, id),
+      match_text: "Ship",
+      occurrence: 2,
+      add: { strong: true },
+    },
   ]);
   assert.equal(md(after, id), "Ship it. **Ship** it now. Ship it later.");
-  assert.deepEqual(result.edits, [{ op: "format_match", block_id: id, matched: 1 }]);
+  assert.deepEqual(result.edits, [
+    { op: "format_match", node_id: blockAddress(doc, id), matched: 1 },
+  ]);
   refuses(
     doc,
-    [{ op: "format_match", block_id: id, match_text: "Ship", occurrence: 4, add: { em: true } }],
+    [
+      {
+        op: "format_match",
+        node_id: blockAddress(doc, id),
+        match_text: "Ship",
+        occurrence: 4,
+        add: { em: true },
+      },
+    ],
     /found 3 matches; occurrence 4/,
   );
   refuses(
     doc,
-    [{ op: "format_match", block_id: id, match_text: "Ship", occurrence: 0, add: { em: true } }],
+    [
+      {
+        op: "format_match",
+        node_id: blockAddress(doc, id),
+        match_text: "Ship",
+        occurrence: 0,
+        add: { em: true },
+      },
+    ],
     /occurrence must be an integer/,
   );
   refuses(
     doc,
-    [{ op: "format_match", block_id: id, match_text: "Ship", add: { em: true } }],
+    [{ op: "format_match", node_id: blockAddress(doc, id), match_text: "Ship", add: { em: true } }],
     /found 3 matches; exactly one is required. Use occurrence/,
   );
 });
@@ -104,14 +130,14 @@ test("format_match all highlights every match, skips code, and counts both", () 
   const { after, result } = apply(doc, [
     {
       op: "format_match",
-      block_id: id,
+      node_id: blockAddress(doc, id),
       match_text: "launch date",
       all: true,
       add: { highlight: "green" },
     },
   ]);
   assert.deepEqual(result.edits, [
-    { op: "format_match", block_id: id, matched: 3, skipped_in_code: 1 },
+    { op: "format_match", node_id: blockAddress(doc, id), matched: 3, skipped_in_code: 1 },
   ]);
   assert.equal(
     md(after, id),
@@ -123,7 +149,7 @@ test("format_match all highlights every match, skips code, and counts both", () 
   const cleared = apply(after, [
     {
       op: "format_match",
-      block_id: id,
+      node_id: blockAddress(doc, id),
       match_text: "launch date",
       all: true,
       remove: ["highlight"],
@@ -132,7 +158,15 @@ test("format_match all highlights every match, skips code, and counts both", () 
   assert.equal(md(cleared, id), md(doc, id));
   refuses(
     doc,
-    [{ op: "format_match", block_id: id, match_text: "absent", all: true, add: { em: true } }],
+    [
+      {
+        op: "format_match",
+        node_id: blockAddress(doc, id),
+        match_text: "absent",
+        all: true,
+        add: { em: true },
+      },
+    ],
     /found 0 matches/,
   );
   refuses(
@@ -140,7 +174,7 @@ test("format_match all highlights every match, skips code, and counts both", () 
     [
       {
         op: "format_match",
-        block_id: id,
+        node_id: blockAddress(doc, id),
         match_text: "launch",
         all: true,
         occurrence: 1,
@@ -151,24 +185,37 @@ test("format_match all highlights every match, skips code, and counts both", () 
   );
   refuses(
     doc,
-    [{ op: "format_match", block_id: id, match_text: "launch", all: false, add: { em: true } }],
+    [
+      {
+        op: "format_match",
+        node_id: blockAddress(doc, id),
+        match_text: "launch",
+        all: false,
+        add: { em: true },
+      },
+    ],
     /all takes the value true/,
   );
 });
 
-test("format_match all takes non-overlapping matches and honors node_index", () => {
+test("format_match all takes non-overlapping matches and stays inside the node its id names", () => {
   const { doc, id } = fixture("aaaa\n\naa");
   const whole = apply(doc, [
-    { op: "format_match", block_id: id, match_text: "aa", all: true, add: { strong: true } },
+    {
+      op: "format_match",
+      node_id: blockAddress(doc, id),
+      match_text: "aa",
+      all: true,
+      add: { strong: true },
+    },
   ]);
   assert.equal(whole.result.edits[0].matched, 3);
   const scoped = apply(doc, [
     {
       op: "format_match",
-      block_id: id,
+      node_id: nodeAddresses(doc, id)[1],
       match_text: "aa",
       all: true,
-      node_index: 1,
       add: { em: true },
     },
   ]);
@@ -178,7 +225,13 @@ test("format_match all takes non-overlapping matches and honors node_index", () 
 test("replace_match occurrence replaces one of several matches", () => {
   const { doc, id } = fixture("TODO first, TODO second");
   const { after } = apply(doc, [
-    { op: "replace_match", block_id: id, match_text: "TODO", occurrence: 2, replacement: "DONE" },
+    {
+      op: "replace_match",
+      node_id: blockAddress(doc, id),
+      match_text: "TODO",
+      occurrence: 2,
+      replacement: "DONE",
+    },
   ]);
   assert.equal(md(after, id), "TODO first, DONE second");
 });
@@ -191,7 +244,7 @@ test("replacement_markdown writes text and formatting while anchors on kept word
   const { after, result } = apply(doc, [
     {
       op: "replace_match",
-      block_id: id,
+      node_id: blockAddress(doc, id),
       match_text: "ship on Friday with QA",
       replacement_markdown:
         'ship on Monday with <mark data-color="green">QA</mark> and ~~no~~ *extra*',
@@ -202,7 +255,9 @@ test("replacement_markdown writes text and formatting while anchors on kept word
     'We ship on Monday with <mark data-color="green">QA</mark> and ~~no~~ *extra* review.',
   );
   // Formatting written in Markdown is explicit, so no marks_dropped warning.
-  assert.deepEqual(result.edits, [{ op: "replace_match", block_id: id, matched: 1 }]);
+  assert.deepEqual(result.edits, [
+    { op: "replace_match", node_id: blockAddress(doc, id), matched: 1 },
+  ]);
   assert.equal(
     after.blocks[id].richText.slice(A.getCursorPosition(after, path, cursor)).slice(0, 6),
     "review",
@@ -215,7 +270,7 @@ test("replacement_markdown keeps whole-match marks, outer spaces and foreign tex
   const { after } = apply(doc, [
     {
       op: "replace_match",
-      block_id: id,
+      node_id: blockAddress(doc, id),
       match_text: "release notes",
       replacement_markdown: " **new** release notes ",
     },
@@ -226,7 +281,7 @@ test("replacement_markdown keeps whole-match marks, outer spaces and foreign tex
 
 test("replacement_markdown refuses blocks, line breaks, code text and doubled replacements", () => {
   const { doc, id } = fixture("Plain words.\n\n```\ncode words\n```");
-  const base = { op: "replace_match", block_id: id, match_text: "Plain" };
+  const base = { op: "replace_match", node_id: blockAddress(doc, id), match_text: "Plain" };
   refuses(doc, [{ ...base, replacement_markdown: "# Heading" }], /inline Markdown on one line/);
   refuses(doc, [{ ...base, replacement_markdown: "- item" }], /inline Markdown on one line/);
   refuses(doc, [{ ...base, replacement_markdown: "a\nb" }], /inline Markdown on one line/);
@@ -239,7 +294,14 @@ test("replacement_markdown refuses blocks, line breaks, code text and doubled re
   refuses(doc, [{ ...base }], /replacement or replacement_markdown/);
   refuses(
     doc,
-    [{ op: "replace_match", block_id: id, match_text: "code", replacement_markdown: "**c**" }],
+    [
+      {
+        op: "replace_match",
+        node_id: blockAddress(doc, id),
+        match_text: "code",
+        replacement_markdown: "**c**",
+      },
+    ],
     /inside a code block/,
   );
   // An escaped leading marker stays text.
@@ -254,10 +316,15 @@ test("set_node checks a task without moving its marker or text", () => {
   const text = A.getCursor(doc, path, 1);
   const heads = A.getHeads(doc);
   const { after, result } = apply(doc, [
-    { op: "set_node", block_id: id, match_text: "Ship the beta", attrs: { checked: true } },
+    {
+      op: "set_node",
+      node_id: blockAddress(doc, id),
+      match_text: "Ship the beta",
+      attrs: { checked: true },
+    },
   ]);
   assert.equal(md(after, id), projected("- [x] Ship the beta\n- [ ] Write notes"));
-  assert.deepEqual(result.edits, [{ op: "set_node", block_id: id, matched: 1 }]);
+  assert.deepEqual(result.edits, [{ op: "set_node", node_id: blockAddress(doc, id), matched: 1 }]);
   assert.equal(A.getCursorPosition(after, path, marker), 0);
   assert.equal(A.getCursorPosition(after, path, text), 1);
   // One attribute write: no text splices, no marker replacement.
@@ -271,16 +338,33 @@ test("set_node checks a task without moving its marker or text", () => {
 test("set_node sets a code block's language, including mermaid", () => {
   const { doc, id } = fixture("```\ngraph TD\n  A --> B\n```");
   const { after } = apply(doc, [
-    { op: "set_node", block_id: id, match_text: "graph TD", attrs: { language: "mermaid" } },
+    {
+      op: "set_node",
+      node_id: blockAddress(doc, id),
+      match_text: "graph TD",
+      attrs: { language: "mermaid" },
+    },
   ]);
   assert.equal(md(after, id), "```mermaid\ngraph TD\n  A --> B\n```");
   const plain = apply(after, [
-    { op: "set_node", block_id: id, match_text: "graph TD", attrs: { language: "" } },
+    {
+      op: "set_node",
+      node_id: blockAddress(doc, id),
+      match_text: "graph TD",
+      attrs: { language: "" },
+    },
   ]).after;
   assert.equal(md(plain, id), "```\ngraph TD\n  A --> B\n```");
   refuses(
     doc,
-    [{ op: "set_node", block_id: id, match_text: "graph", attrs: { language: "a`b" } }],
+    [
+      {
+        op: "set_node",
+        node_id: blockAddress(doc, id),
+        match_text: "graph",
+        attrs: { language: "a`b" },
+      },
+    ],
     /without backticks/,
   );
 });
@@ -290,7 +374,7 @@ test("set_node changes heading levels and turns headings into paragraphs", () =>
   const heading = apply(doc, [
     {
       op: "set_node",
-      block_id: id,
+      node_id: blockAddress(doc, id),
       match_text: "Next steps",
       type: "heading",
       attrs: { level: 2 },
@@ -298,7 +382,7 @@ test("set_node changes heading levels and turns headings into paragraphs", () =>
   ]);
   assert.equal(md(heading.after, id), "## Next steps\n\n### Details");
   const paragraph = apply(heading.after, [
-    { op: "set_node", block_id: id, match_text: "Details", type: "paragraph" },
+    { op: "set_node", node_id: blockAddress(doc, id), match_text: "Details", type: "paragraph" },
   ]).after;
   assert.equal(md(paragraph, id), "## Next steps\n\nDetails");
   assert.deepEqual(markers(paragraph, id), [
@@ -321,7 +405,13 @@ test("set_node turns a block's first paragraph into a heading through its own ma
   const { doc, id } = fixture("Opening words");
   assert.deepEqual(markers(doc, id), [["paragraph", {}]]);
   const { after } = apply(doc, [
-    { op: "set_node", block_id: id, match_text: "Opening", type: "heading", attrs: { level: 1 } },
+    {
+      op: "set_node",
+      node_id: blockAddress(doc, id),
+      match_text: "Opening",
+      type: "heading",
+      attrs: { level: 1 },
+    },
   ]);
   assert.equal(md(after, id), "# Opening words");
   assert.deepEqual(markers(after, id), [["heading", { level: 1 }]]);
@@ -331,7 +421,7 @@ test("set_node turns a block's first paragraph into a heading through its own ma
   const marked = apply(unmarked.doc, [
     {
       op: "set_node",
-      block_id: unmarked.id,
+      node_id: blockAddress(unmarked.doc, unmarked.id),
       match_text: "Opening",
       type: "heading",
       attrs: { level: 1 },
@@ -344,7 +434,7 @@ test("set_node turns a block's first paragraph into a heading through its own ma
 test("set_node aligns a whole table column and clears it", () => {
   const { doc, id } = fixture("| Item | Total |\n| --- | --- |\n| Tea | 3 |\n| Cake | 12 |");
   const { after, result } = apply(doc, [
-    { op: "set_node", block_id: id, match_text: "12", attrs: { align: "right" } },
+    { op: "set_node", node_id: blockAddress(doc, id), match_text: "12", attrs: { align: "right" } },
   ]);
   assert.equal(result.edits[0].cells, 3);
   assert.equal(
@@ -358,14 +448,14 @@ test("set_node aligns a whole table column and clears it", () => {
     [null, "right", null, "right", null, "right"],
   );
   const cleared = apply(after, [
-    { op: "set_node", block_id: id, match_text: "Total", attrs: { align: null } },
+    { op: "set_node", node_id: blockAddress(doc, id), match_text: "Total", attrs: { align: null } },
   ]).after;
   assert.equal(md(cleared, id), md(doc, id));
 });
 
 test("set_node refuses the wrong node and malformed fields", () => {
   const { doc, id } = fixture("A paragraph.\n\n- [ ] A task");
-  const base = { op: "set_node", block_id: id };
+  const base = { op: "set_node", node_id: blockAddress(doc, id) };
   refuses(
     doc,
     [{ ...base, match_text: "paragraph", attrs: { checked: true } }],
@@ -413,13 +503,18 @@ test("target scope accepts set_node beside unrelated edits and conflicts on the 
   const heads = A.getHeads(doc);
   const op = {
     op: "set_node",
-    block_id: id,
+    node_id: blockAddress(doc, id),
     match_text: "Ship the beta",
     attrs: { checked: true },
   };
   // A peer edits elsewhere: the target is unchanged.
   const elsewhere = apply(doc, [
-    { op: "replace_match", block_id: id, match_text: "Other", replacement: "Different" },
+    {
+      op: "replace_match",
+      node_id: blockAddress(doc, id),
+      match_text: "Other",
+      replacement: "Different",
+    },
   ]).after;
   const plan = guardPassageEdits(elsewhere, heads, [op]);
   assert.equal(plan.rebased, true);
@@ -440,7 +535,13 @@ test("target scope accepts set_node beside unrelated edits and conflicts on the 
   assert.throws(
     () =>
       guardPassageEdits(doc, heads, [
-        { op: "format_match", block_id: id, match_text: "e", all: true, add: { em: true } },
+        {
+          op: "format_match",
+          node_id: blockAddress(doc, id),
+          match_text: "e",
+          all: true,
+          add: { em: true },
+        },
       ]),
     (error) => error.code === "invalid_edit_selector" && /conflict_scope page/.test(error.message),
   );
@@ -451,13 +552,17 @@ test("set_node looks past hard breaks to the node that holds the text", () => {
     "- [ ] Ship\\\nby Friday\n\n| a | b |\n| --- | --- |\n| x<br>y | 2 |",
   );
   const { after } = apply(doc, [
-    { op: "set_node", block_id: id, match_text: "by Friday", attrs: { checked: true } },
     {
       op: "set_node",
-      block_id: id,
+      node_id: blockAddress(doc, id),
+      match_text: "by Friday",
+      attrs: { checked: true },
+    },
+    {
+      op: "set_node",
+      node_id: nodeAddresses(doc, id)[1],
       match_text: "y",
       occurrence: 1,
-      node_index: 1,
       attrs: { align: "center" },
     },
   ]);
@@ -469,12 +574,26 @@ test("set_node names a container's first paragraph instead of a marker type", ()
   const { doc, id } = fixture("> quoted first\n>\n> second");
   refuses(
     doc,
-    [{ op: "set_node", block_id: id, match_text: "quoted", type: "heading", attrs: { level: 2 } }],
+    [
+      {
+        op: "set_node",
+        node_id: blockAddress(doc, id),
+        match_text: "quoted",
+        type: "heading",
+        attrs: { level: 2 },
+      },
+    ],
     /match_text is in a quote's first paragraph/,
   );
   // The quote's later paragraphs have their own markers.
   const { after } = apply(doc, [
-    { op: "set_node", block_id: id, match_text: "second", type: "heading", attrs: { level: 3 } },
+    {
+      op: "set_node",
+      node_id: blockAddress(doc, id),
+      match_text: "second",
+      type: "heading",
+      attrs: { level: 3 },
+    },
   ]);
   assert.match(md(after, id), /> ### second/);
 });
@@ -552,7 +671,7 @@ test("set_node updates markers in place and leaves every text mark alone", () =>
     const before = marks(marked);
     const beforePositions = positionMarks(marked);
     const markers = new Set(markerOffsets(marked).map(([at]) => at));
-    const next = apply(marked, [{ op: "set_node", block_id: id, ...op }]).after;
+    const next = apply(marked, [{ op: "set_node", node_id: blockAddress(doc, id), ...op }]).after;
     assert.equal(marks(next), before, JSON.stringify(op));
     // Only the expected markers' attributes and types change: no text
     // splices, no marker deleted and reinserted, no other marker touched.
@@ -586,13 +705,28 @@ test("target scope keeps unsupported_markdown and lets set_node share a passage"
   assert.throws(
     () =>
       guardPassageEdits(doc, heads, [
-        { op: "replace_match", block_id: id, match_text: "beta", replacement_markdown: "$x$" },
+        {
+          op: "replace_match",
+          node_id: blockAddress(doc, id),
+          match_text: "beta",
+          replacement_markdown: "$x$",
+        },
       ]),
     (error) => error.code === "unsupported_markdown" && !!error.details?.unsupported,
   );
   const operations = [
-    { op: "set_node", block_id: id, match_text: "Ship the beta", attrs: { checked: true } },
-    { op: "format_match", block_id: id, match_text: "Ship the beta", add: { strike: true } },
+    {
+      op: "set_node",
+      node_id: blockAddress(doc, id),
+      match_text: "Ship the beta",
+      attrs: { checked: true },
+    },
+    {
+      op: "format_match",
+      node_id: blockAddress(doc, id),
+      match_text: "Ship the beta",
+      add: { strike: true },
+    },
   ];
   const plan = guardPassageEdits(doc, heads, operations);
   assert.equal(md(apply(doc, plan.operations).after, id), projected("- [x] ~~Ship the beta~~"));
@@ -601,7 +735,13 @@ test("target scope keeps unsupported_markdown and lets set_node share a passage"
 test("format_match all skips a match that cuts a character", () => {
   const { doc, id } = fixture("cafe\u0301 and cafe");
   const { after, result } = apply(doc, [
-    { op: "format_match", block_id: id, match_text: "cafe", all: true, add: { strong: true } },
+    {
+      op: "format_match",
+      node_id: blockAddress(doc, id),
+      match_text: "cafe",
+      all: true,
+      add: { strong: true },
+    },
   ]);
   assert.equal(result.edits[0].matched, 1);
   assert.equal(md(after, id), "cafe\u0301 and **cafe**");
@@ -636,7 +776,7 @@ test("an editor rewrite after an import or a set_node writes nothing", () => {
     { match_text: "2", attrs: { align: null } },
   ]) {
     const { doc, id } = fixture(source);
-    const { after } = apply(doc, [{ op: "set_node", block_id: id, ...op }]);
+    const { after } = apply(doc, [{ op: "set_node", node_id: blockAddress(doc, id), ...op }]);
     assert.deepEqual(rewrite(after, id), [], key(op));
   }
   // Unmarked text a write marked: a heading marker the editor keeps. A
@@ -645,7 +785,7 @@ test("an editor rewrite after an import or a set_node writes nothing", () => {
   const heading = apply(unmarked.doc, [
     {
       op: "set_node",
-      block_id: unmarked.id,
+      node_id: blockAddress(unmarked.doc, unmarked.id),
       match_text: "Opening",
       type: "heading",
       attrs: { level: 2 },
@@ -654,17 +794,31 @@ test("an editor rewrite after an import or a set_node writes nothing", () => {
   assert.deepEqual(rewrite(heading.after, unmarked.id), []);
   const { doc, id } = fixture("Opening words");
   const same = apply(doc, [
-    { op: "set_node", block_id: id, match_text: "Opening", type: "paragraph" },
+    { op: "set_node", node_id: blockAddress(doc, id), match_text: "Opening", type: "paragraph" },
   ]);
   assert.deepEqual(A.getHeads(same.after), A.getHeads(doc));
-  assert.deepEqual(same.result.edits, [{ op: "set_node", block_id: id, matched: 1 }]);
+  assert.deepEqual(same.result.edits, [
+    { op: "set_node", node_id: blockAddress(doc, id), matched: 1 },
+  ]);
 });
 
 test("occurrence names a match in the batch's starting snapshot", () => {
   const { doc, id } = fixture("TODO a, TODO b, TODO c");
   const operations = [
-    { op: "replace_match", block_id: id, match_text: "TODO", occurrence: 1, replacement: "DONE" },
-    { op: "replace_match", block_id: id, match_text: "TODO", occurrence: 2, replacement: "DONE" },
+    {
+      op: "replace_match",
+      node_id: blockAddress(doc, id),
+      match_text: "TODO",
+      occurrence: 1,
+      replacement: "DONE",
+    },
+    {
+      op: "replace_match",
+      node_id: blockAddress(doc, id),
+      match_text: "TODO",
+      occurrence: 2,
+      replacement: "DONE",
+    },
   ];
   assert.equal(md(apply(doc, operations).after, id), "DONE a, DONE b, TODO c");
   // Target scope agrees with page scope.
@@ -674,10 +828,15 @@ test("occurrence names a match in the batch's starting snapshot", () => {
   refuses(
     doc,
     [
-      { op: "replace_match", block_id: id, match_text: "TODO b", replacement: "x" },
+      {
+        op: "replace_match",
+        node_id: blockAddress(doc, id),
+        match_text: "TODO b",
+        replacement: "x",
+      },
       {
         op: "format_match",
-        block_id: id,
+        node_id: blockAddress(doc, id),
         match_text: "TODO",
         occurrence: 2,
         add: { strong: true },
@@ -690,7 +849,7 @@ test("occurrence names a match in the batch's starting snapshot", () => {
   const second = apply(overlap.doc, [
     {
       op: "format_match",
-      block_id: overlap.id,
+      node_id: blockAddress(overlap.doc, overlap.id),
       match_text: "aa",
       occurrence: 2,
       add: { em: true },
@@ -703,11 +862,24 @@ test("formatting writes are capped per all and per batch", () => {
   const { doc, id } = fixture("x ".repeat(1001).trim());
   refuses(
     doc,
-    [{ op: "format_match", block_id: id, match_text: "x", all: true, add: { strong: true } }],
+    [
+      {
+        op: "format_match",
+        node_id: blockAddress(doc, id),
+        match_text: "x",
+        all: true,
+        add: { strong: true },
+      },
+    ],
     /found 1001 matches; at most 1000 per operation/,
   );
   const many = fixture("y ".repeat(700).trim());
-  const each = { op: "format_match", block_id: many.id, match_text: "y", all: true };
+  const each = {
+    op: "format_match",
+    node_id: blockAddress(many.doc, many.id),
+    match_text: "y",
+    all: true,
+  };
   refuses(
     many.doc,
     [
@@ -722,7 +894,7 @@ test("formatting writes are capped per all and per batch", () => {
     doc,
     Array.from({ length: 5 }, (_, index) => ({
       op: "replace_match",
-      block_id: id,
+      node_id: blockAddress(doc, id),
       match_text: "x",
       occurrence: index + 1,
       replacement_markdown: "**a** *b* ".repeat(201).trim(),
@@ -735,7 +907,12 @@ test("replacement_markdown keeps unsafe link destinations as literal text", () =
   const { doc, id } = fixture("Read here.");
   for (const markdown of ["[x](javascript:alert(1))", "[x](data:text/html,hi)"]) {
     const { after } = apply(doc, [
-      { op: "replace_match", block_id: id, match_text: "here", replacement_markdown: markdown },
+      {
+        op: "replace_match",
+        node_id: blockAddress(doc, id),
+        match_text: "here",
+        replacement_markdown: markdown,
+      },
     ]);
     assert.deepEqual(A.marks(after, textPath(id)), [], markdown);
     assert.ok(after.blocks[id].richText.includes(markdown), markdown);
@@ -751,7 +928,14 @@ test("set_node can't address an image block, which has no visible text", () => {
       result = applyPageOperation(draft, {
         operation: "edit_page",
         arguments: {
-          operations: [{ op: "insert_image", asset_id: assetId, alt: "Chart", after_block_id: id }],
+          operations: [
+            {
+              op: "insert_image",
+              asset_id: assetId,
+              alt: "Chart",
+              after_node_id: blockAddress(doc, id),
+            },
+          ],
         },
       });
     });
@@ -763,7 +947,7 @@ test("set_node can't address an image block, which has no visible text", () => {
     [
       {
         op: "set_node",
-        block_id: image,
+        node_id: blockAddress(after, image),
         match_text: "Chart",
         type: "heading",
         attrs: { level: 2 },
@@ -771,13 +955,17 @@ test("set_node can't address an image block, which has no visible text", () => {
     ],
     /found 0 matches/,
   );
+  // The image's own id names an image, which set_node doesn't take.
+  refuses(after, [{ op: "set_node", node_id: imageIds(after, image)[0].id, match_text: "Chart" }], {
+    code: "wrong_address_kind",
+  });
 });
 
 test("set_node takes {type, attrs} with the names read_page reports", () => {
   const { doc, id } = fixture(
     "Intro words\n\n- [ ] task\n\n```\ngraph TD\n```\n\n| a | b |\n| --- | --- |\n| 1 | 2 |",
   );
-  const run = (op) => apply(doc, [{ op: "set_node", block_id: id, ...op }]);
+  const run = (op) => apply(doc, [{ op: "set_node", node_id: blockAddress(doc, id), ...op }]);
   assert.match(
     md(run({ match_text: "Intro", type: "heading", attrs: { level: 2 } }).after, id),
     /^## Intro words/,
@@ -792,61 +980,106 @@ test("set_node takes {type, attrs} with the names read_page reports", () => {
   // Heading level changes, and back to a paragraph drops the level.
   const heading = run({ match_text: "Intro", type: "heading", attrs: { level: 2 } }).after;
   const deeper = apply(heading, [
-    { op: "set_node", block_id: id, match_text: "Intro", attrs: { level: 4 } },
+    { op: "set_node", node_id: blockAddress(doc, id), match_text: "Intro", attrs: { level: 4 } },
   ]).after;
   assert.match(md(deeper, id), /^#### Intro words/);
   const back = apply(deeper, [
-    { op: "set_node", block_id: id, match_text: "Intro", type: "paragraph" },
+    { op: "set_node", node_id: blockAddress(doc, id), match_text: "Intro", type: "paragraph" },
   ]).after;
   assert.match(md(back, id), /^Intro words/);
   assert.deepEqual(markers(back, id)[0], ["paragraph", {}]);
   // Refusals name the registry's types.
   refuses(
     doc,
-    [{ op: "set_node", block_id: id, match_text: "Intro", type: "heading" }],
+    [{ op: "set_node", node_id: blockAddress(doc, id), match_text: "Intro", type: "heading" }],
     /heading needs attrs\.level/,
   );
   refuses(
     doc,
-    [{ op: "set_node", block_id: id, match_text: "task", type: "heading", attrs: { level: 1 } }],
+    [
+      {
+        op: "set_node",
+        node_id: blockAddress(doc, id),
+        match_text: "task",
+        type: "heading",
+        attrs: { level: 1 },
+      },
+    ],
     /type applies to paragraphs and headings; match_text is in a task list item/,
   );
   refuses(
     doc,
-    [{ op: "set_node", block_id: id, match_text: "task", attrs: { level: 2 } }],
+    [{ op: "set_node", node_id: blockAddress(doc, id), match_text: "task", attrs: { level: 2 } }],
     /level applies to headings; match_text is in a task list item/,
   );
   refuses(
     doc,
-    [{ op: "set_node", block_id: id, match_text: "task", type: "code-block" }],
+    [{ op: "set_node", node_id: blockAddress(doc, id), match_text: "task", type: "code-block" }],
     /type takes paragraph or heading/,
   );
   refuses(
     doc,
-    [{ op: "set_node", block_id: id, match_text: "task", attrs: { color: "red" } }],
+    [
+      {
+        op: "set_node",
+        node_id: blockAddress(doc, id),
+        match_text: "task",
+        attrs: { color: "red" },
+      },
+    ],
     /attrs take level, language, checked, align; color isn't one/,
   );
   refuses(
     doc,
-    [{ op: "set_node", block_id: id, match_text: "Intro", type: "heading", attrs: { level: 7 } }],
+    [
+      {
+        op: "set_node",
+        node_id: blockAddress(doc, id),
+        match_text: "Intro",
+        type: "heading",
+        attrs: { level: 7 },
+      },
+    ],
     /level takes an integer from 1 to 6/,
   );
   // A retype refusal names the type the node would become.
   refuses(
     heading,
-    [{ op: "set_node", block_id: id, match_text: "Intro", type: "paragraph", attrs: { level: 2 } }],
+    [
+      {
+        op: "set_node",
+        node_id: blockAddress(doc, id),
+        match_text: "Intro",
+        type: "paragraph",
+        attrs: { level: 2 },
+      },
+    ],
     /type paragraph has no level; level applies to headings/,
   );
   // attrs can name several attributes, and each must apply to the node. No
   // type holds two settable attrs, so a second one is refused, never dropped.
   refuses(
     heading,
-    [{ op: "set_node", block_id: id, match_text: "Intro", attrs: { level: 3, checked: true } }],
+    [
+      {
+        op: "set_node",
+        node_id: blockAddress(doc, id),
+        match_text: "Intro",
+        attrs: { level: 3, checked: true },
+      },
+    ],
     /checked applies to task list items; match_text is in a heading/,
   );
   refuses(
     doc,
-    [{ op: "set_node", block_id: id, match_text: "2", attrs: { align: "left", language: "js" } }],
+    [
+      {
+        op: "set_node",
+        node_id: blockAddress(doc, id),
+        match_text: "2",
+        attrs: { align: "left", language: "js" },
+      },
+    ],
     /language applies to code blocks; match_text is in a table cell/,
   );
 });
@@ -868,14 +1101,20 @@ test("a retype drops only the old type's own attrs and keeps a newer build's", (
     ["paragraph", { anchor: "a1" }],
   ]);
   const heading = apply(extra, [
-    { op: "set_node", block_id: id, match_text: "Second", type: "heading", attrs: { level: 2 } },
+    {
+      op: "set_node",
+      node_id: blockAddress(plain, id),
+      match_text: "Second",
+      type: "heading",
+      attrs: { level: 2 },
+    },
   ]).after;
   assert.deepEqual(markers(heading, id), [
     ["paragraph", {}],
     ["heading", { anchor: "a1", level: 2 }],
   ]);
   const back = apply(heading, [
-    { op: "set_node", block_id: id, match_text: "Second", type: "paragraph" },
+    { op: "set_node", node_id: blockAddress(plain, id), match_text: "Second", type: "paragraph" },
   ]).after;
   assert.deepEqual(markers(back, id), [
     ["paragraph", {}],
@@ -902,5 +1141,9 @@ test("set_node refuses a top-level field and names the typed field to use", () =
     ["task", { checked: false, attrs: { checked: true } }, /not a top-level checked/],
   ];
   for (const [target, fields, message] of cases)
-    refuses(doc, [{ op: "set_node", block_id: id, match_text: target, ...fields }], message);
+    refuses(
+      doc,
+      [{ op: "set_node", node_id: blockAddress(doc, id), match_text: target, ...fields }],
+      message,
+    );
 });

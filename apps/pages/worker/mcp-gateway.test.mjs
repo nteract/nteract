@@ -180,7 +180,7 @@ test("a tool request whose host never answers times out with advice that fits th
       page_id: pageId,
       nonce: "timeout-comment",
       action: "add",
-      block_id: "b1",
+      node_id: "2@ab",
       body: "Hi",
     });
     assert.equal(comment.retryable, true);

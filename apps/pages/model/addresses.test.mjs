@@ -7,8 +7,8 @@ import * as A from "@automerge/automerge";
 import { applyPageOperation, createPageData, initializePage, orderedBlockIds } from "./page.mjs";
 import { textPath } from "./richtext.mjs";
 import { projectReadContent } from "./read-content.mjs";
-import { nodeIds, resolveNodeId } from "./node-ids.mjs";
-import { imageIds, resolveImageId } from "./image-ids.mjs";
+import { nodeIds, nodeRange } from "./node-ids.mjs";
+import { imageIds } from "./image-ids.mjs";
 import {
   ADDRESS_PATTERN,
   MAX_ADDRESS,
@@ -35,6 +35,16 @@ function edit(doc, operations) {
   return A.change(A.clone(doc), (draft) => {
     applyPageOperation(draft, { operation: "edit_page", arguments: { operations } });
   });
+}
+/** Node `nodeId`'s index and range in block `key`, read from its spans. */
+function rangeOf(doc, key, nodeId) {
+  const ids = nodeIds(doc, key);
+  const index = ids.findIndex((entry) => entry.id === nodeId);
+  const length = A.spans(doc, textPath(key)).reduce(
+    (total, span) => total + (span.type === "text" ? span.value.length : 1),
+    0,
+  );
+  return { index, ...nodeRange(ids, index, length) };
 }
 const nodesOf = (doc, key) => nodeIds(doc, key).map((entry) => entry.id);
 const typeOf = (doc, nodeId) =>
@@ -87,14 +97,13 @@ test("every kind of address resolves to the block that holds it", () => {
       assert.deepEqual(resolve(index, nodeId), {
         kind: "node",
         key,
-        ...resolveNodeId(doc, key, nodeId),
+        ...rangeOf(doc, key, nodeId),
       });
       assert.equal(resolve(index, nodeId).index, at);
     }
-    for (const { image_id } of imageIds(doc, key)) {
+    for (const { id, at, index: span } of imageIds(doc, key)) {
       images++;
-      const { at, index: span } = resolveImageId(doc, key, image_id);
-      assert.deepEqual(resolve(index, image_id), { kind: "image", key, at, index: span });
+      assert.deepEqual(resolve(index, id), { kind: "image", key, at, index: span });
     }
   }
   assert.deepEqual([...types].sort(), [
@@ -127,7 +136,7 @@ test("ids are distinct across blocks, texts, nodes and images, with two writers 
     named.push(["block", key, blockAddress(doc, key)]);
     named.push(["text", key, A.getObjectId(doc.blocks[key], "richText")]);
     for (const nodeId of nodesOf(doc, key)) named.push(["node", key, nodeId]);
-    for (const { image_id } of imageIds(doc, key)) named.push(["image", key, image_id]);
+    for (const { id } of imageIds(doc, key)) named.push(["image", key, id]);
   }
   const ids = named.map(([, , id]) => id);
   assert.equal(new Set(ids).size, ids.length);
@@ -156,21 +165,21 @@ test("a deleted node, a deleted block and its nodes, and a cursor off a marker n
   // another block.
   notFound(addressIndex(doc), A.getCursor(doc, textPath(third), 3));
 
-  const withoutNode = edit(doc, [{ op: "delete_node", block_id: first, node_id: heading }]);
+  const withoutNode = edit(doc, [{ op: "delete_node", node_id: heading }]);
   notFound(addressIndex(withoutNode), heading);
   assert.equal(resolve(addressIndex(withoutNode), nodesOf(doc, first)[0]).key, first);
 
-  const withoutBlock = edit(doc, [{ op: "delete_block", block_id: second }]);
+  const withoutBlock = edit(doc, [{ op: "delete_block", node_id: blockAddress(doc, second) }]);
   const index = addressIndex(withoutBlock);
   for (const id of [blockAddress(doc, second), ...nodesOf(doc, second)]) notFound(index, id);
   assert.equal(resolve(index, blockAddress(doc, third)).key, third);
 
   // One writer deletes the block while another edits a node in it.
   const deleted = edit(A.clone(doc, { actor: "0a".repeat(16) }), [
-    { op: "delete_block", block_id: second },
+    { op: "delete_block", node_id: blockAddress(doc, second) },
   ]);
   const typed = edit(A.clone(doc, { actor: "0b".repeat(16) }), [
-    { op: "replace_match", block_id: second, match_text: "quoted", replacement: "quoted more" },
+    { op: "replace_match", node_id: quote, match_text: "quoted", replacement: "quoted more" },
   ]);
   const merged = A.merge(A.clone(deleted), typed);
   assert.equal(Object.hasOwn(merged.blocks, second), false);
@@ -183,17 +192,22 @@ test("a block's id outlives a rewrite, a move, save and load, and a merge", () =
   const id = blockAddress(doc, second);
   const nodes = nodesOf(doc, second);
   const rewritten = edit(doc, [
-    { op: "replace_block_markdown", block_id: second, markdown: "Rewritten\n\n## Fresh" },
+    { op: "replace_block_markdown", node_id: id, markdown: "Rewritten\n\n## Fresh" },
   ]);
   assert.equal(blockAddress(rewritten, second), id);
   assert.deepEqual(resolve(addressIndex(rewritten), id), { kind: "block", key: second });
   assert.notDeepEqual(nodesOf(rewritten, second), nodes);
 
-  const moved = edit(doc, [{ op: "move_block", block_id: second, after_block_id: null }]);
+  const moved = edit(doc, [{ op: "move_block", node_id: id, after_node_id: null }]);
   assert.equal(orderedBlockIds(moved)[0], second);
   const loaded = A.load(A.save(moved));
   const peer = edit(A.clone(doc, { actor: "0c".repeat(16) }), [
-    { op: "replace_match", block_id: first, match_text: "Intro", replacement: "Opening" },
+    {
+      op: "replace_match",
+      node_id: blockAddress(doc, first),
+      match_text: "Intro",
+      replacement: "Opening",
+    },
   ]);
   const merged = A.merge(A.clone(moved), peer);
   for (const later of [moved, loaded, merged]) {
@@ -213,19 +227,31 @@ test("a node's id outlives edits inside and before it, a retype, a move, save an
   };
   const expected = (key, index) => ({ kind: "node", key, index });
   let later = edit(doc, [
-    { op: "replace_match", block_id: third, match_text: "Closing", replacement: "Final" },
-    { op: "replace_match", block_id: third, match_text: "1", replacement: "one hundred" },
-    { op: "replace_match", block_id: first, match_text: "Plan", replacement: "Plan for Q4" },
-    { op: "replace_match", block_id: first, match_text: "Intro", replacement: "Opening" },
+    { op: "replace_match", node_id: closing, match_text: "Closing", replacement: "Final" },
+    {
+      op: "replace_match",
+      node_id: blockAddress(doc, third),
+      match_text: "1",
+      replacement: "one hundred",
+    },
+    { op: "replace_match", node_id: plan, match_text: "Plan", replacement: "Plan for Q4" },
+    {
+      op: "replace_match",
+      node_id: blockAddress(doc, first),
+      match_text: "Intro",
+      replacement: "Opening",
+    },
   ]);
   assert.deepEqual(at(later, closing), expected(third, 2));
   assert.deepEqual(at(later, plan), expected(first, 1));
   later = edit(later, [
-    { op: "set_node", block_id: third, match_text: "Final", type: "heading", attrs: { level: 2 } },
+    { op: "set_node", node_id: closing, match_text: "Final", type: "heading", attrs: { level: 2 } },
   ]);
   assert.equal(typeOf(later, closing), "heading");
   assert.deepEqual(at(later, closing), expected(third, 2));
-  later = edit(later, [{ op: "move_block", block_id: third, after_block_id: null }]);
+  later = edit(later, [
+    { op: "move_block", node_id: blockAddress(doc, third), after_node_id: null },
+  ]);
   assert.equal(orderedBlockIds(later)[0], third);
   assert.deepEqual(at(later, closing), expected(third, 2));
   later = A.load(A.save(later));
@@ -255,7 +281,7 @@ test("an id that is not an address is refused, and one that names nothing is not
 test("no caller id reaches getCursorPosition, for a cursor from another block or a deleted marker", () => {
   const { doc, keys } = page();
   const heading = nodesOf(doc, keys[0])[1];
-  const gone = edit(doc, [{ op: "delete_node", block_id: keys[0], node_id: heading }]);
+  const gone = edit(doc, [{ op: "delete_node", node_id: heading }]);
   spied.getCursorPosition.length = 0;
   const index = addressIndex(gone);
   for (const id of [heading, A.getCursor(doc, textPath(keys[1]), 2), `5@${A.getActorId(doc)}`])
@@ -277,8 +303,12 @@ test("an index works on a draft, and after a write once the block is forgotten",
       operation: "edit_page",
       arguments: {
         operations: [
-          { op: "delete_node", block_id: first, node_id: heading },
-          { op: "insert_markdown", markdown: "## Added", after_block_id: first },
+          { op: "delete_node", node_id: heading },
+          {
+            op: "insert_markdown",
+            markdown: "## Added",
+            after_node_id: blockAddress(draft, first),
+          },
         ],
       },
     });
@@ -292,7 +322,7 @@ test("an index works on a draft, and after a write once the block is forgotten",
     assert.deepEqual(resolve(index, addedNode), {
       kind: "node",
       key: added,
-      ...resolveNodeId(draft, added, addedNode),
+      ...rangeOf(draft, added, addedNode),
     });
   });
 });
@@ -340,10 +370,15 @@ test("unmarked text and a node this build can't place index without throwing", (
   ]);
   const [plain, table] = keys;
   const deleted = edit(A.clone(base, { actor: "0a".repeat(16) }), [
-    { op: "delete_node", block_id: plain, node_id: nodesOf(base, plain)[0] },
+    { op: "delete_node", node_id: nodesOf(base, plain)[0] },
   ]);
   const typed = edit(A.clone(base, { actor: "0b".repeat(16) }), [
-    { op: "replace_match", block_id: plain, match_text: "words", replacement: "words typed" },
+    {
+      op: "replace_match",
+      node_id: nodesOf(base, plain)[0],
+      match_text: "words",
+      replacement: "words typed",
+    },
   ]);
   let doc = A.merge(A.clone(deleted), typed);
   assert.equal(A.spans(doc, textPath(plain))[0].type, "text");
@@ -371,9 +406,241 @@ test("unmarked text and a node this build can't place index without throwing", (
   assert.deepEqual(resolve(index, second), {
     kind: "node",
     key: plain,
-    ...resolveNodeId(doc, plain, second),
+    ...rangeOf(doc, plain, second),
   });
   // The table's marker is still stored, but a block holding a node this
   // build can't place gives its nodes no addresses.
   notFound(index, nodesOf(base, table)[0]);
+});
+
+/** applyPageOperation's result for one edit_page batch, and the document
+ * after it. */
+function editResult(doc, operations) {
+  let result;
+  const next = A.change(A.clone(doc), (draft) => {
+    result = applyPageOperation(draft, { operation: "edit_page", arguments: { operations } });
+  });
+  return { doc: next, result };
+}
+const refusedKind = (doc, operation, pattern) =>
+  assert.throws(
+    () => edit(doc, [operation]),
+    (error) =>
+      error.code === "wrong_address_kind" && error.status === 400 && pattern.test(error.message),
+    JSON.stringify(operation),
+  );
+
+test("every operation refuses an id of the wrong kind, naming what takes it", () => {
+  const { doc, keys } = page();
+  const block = blockAddress(doc, keys[0]);
+  const [paragraph, heading] = nodesOf(doc, keys[0]);
+  const [{ id: image }] = imageIds(doc, keys[0]);
+  for (const node of [paragraph, image]) {
+    for (const operation of [
+      { op: "replace_block_markdown", node_id: node, markdown: "x" },
+      { op: "delete_block", node_id: node },
+      { op: "move_block", node_id: node },
+      { op: "move_block", node_id: blockAddress(doc, keys[1]), after_node_id: node },
+      { op: "insert_markdown", markdown: "x", after_node_id: node },
+      { op: "insert_node", node: dataframe, after_node_id: node },
+      { op: "insert_image", asset_id: ASSET, alt: "", after_node_id: node },
+    ])
+      refusedKind(doc, operation, /takes a block's id/);
+  }
+  refusedKind(
+    doc,
+    { op: "delete_block", node_id: heading },
+    /^This id names a heading; delete_node removes it\. delete_block takes a block's id/,
+  );
+  refusedKind(
+    doc,
+    { op: "delete_node", node_id: block },
+    /names a block; .*delete_node takes a node's id/,
+  );
+  refusedKind(doc, { op: "delete_node", node_id: image }, /names an image; set_image changes it/);
+  for (const node_id of [block, paragraph])
+    refusedKind(doc, { op: "set_image", node_id, alt: "x" }, /set_image takes an image's id/);
+  for (const operation of [
+    { op: "replace_match", replacement: "x" },
+    { op: "format_match", add: { strong: true } },
+    { op: "set_node", type: "paragraph" },
+  ])
+    refusedKind(
+      doc,
+      { ...operation, node_id: image, match_text: "Intro" },
+      new RegExp(`${operation.op} takes a block's id.*, or a node's id`),
+    );
+  // A wrong kind anywhere refuses the batch before any operation runs.
+  assert.throws(
+    () =>
+      edit(doc, [
+        { op: "set_title", title: "Changed" },
+        { op: "delete_block", node_id: heading },
+      ]),
+    { code: "wrong_address_kind" },
+  );
+});
+const ASSET = "a".repeat(64);
+const dataframe = { type: "dataframe", attrs: { asset_id: "b".repeat(64) } };
+
+test("old address fields are refused like any field an operation doesn't take", () => {
+  const { doc, keys } = page();
+  const block = blockAddress(doc, keys[0]);
+  for (const operation of [
+    { op: "delete_block", block_id: keys[0] },
+    { op: "replace_match", node_id: block, node_index: 0, match_text: "Intro", replacement: "x" },
+    { op: "insert_markdown", markdown: "x", after_block_id: keys[0] },
+    { op: "set_image", node_id: imageIds(doc, keys[0])[0].id, image_id: "1@ab", alt: "x" },
+    { op: "insert_image", asset_id: ASSET, alt: "", after_block_id: null },
+    { op: "insert_node", node: dataframe, after_block_id: null },
+  ])
+    assert.throws(
+      () => edit(doc, [operation]),
+      /does not take|requires/,
+      JSON.stringify(operation),
+    );
+  // A block's key is not an address.
+  assert.throws(() => edit(doc, [{ op: "delete_block", node_id: keys[0] }]), /node_id must be/);
+});
+
+test("a node's id scopes a text operation to that node, a block's id to the whole block", () => {
+  const { doc, keys } = page(["Alpha one\n\nBeta one\n\nGamma one"]);
+  const block = blockAddress(doc, keys[0]);
+  const [, beta] = nodesOf(doc, keys[0]);
+  assert.throws(
+    () => edit(doc, [{ op: "replace_match", node_id: block, match_text: "one", replacement: "1" }]),
+    /found 3 matches/,
+  );
+  const { doc: after, result } = editResult(doc, [
+    { op: "replace_match", node_id: beta, match_text: "one", replacement: "two" },
+    { op: "format_match", node_id: block, match_text: "Gamma", add: { strong: true } },
+    { op: "set_node", node_id: beta, match_text: "two", type: "heading", attrs: { level: 2 } },
+  ]);
+  assert.deepEqual(result.edits, [
+    { op: "replace_match", node_id: beta, matched: 1 },
+    { op: "format_match", node_id: block, matched: 1 },
+    { op: "set_node", node_id: beta, matched: 1 },
+  ]);
+  assert.equal(
+    projectReadContent(after, {}).blocks[0].markdown,
+    "Alpha one\n\n## Beta two\n\n**Gamma** one",
+  );
+  // An occurrence counts matches inside the node.
+  const counted = edit(doc, [
+    { op: "replace_match", node_id: beta, match_text: "e", occurrence: 1, replacement: "E" },
+  ]);
+  assert.match(projectReadContent(counted, {}).blocks[0].markdown, /^Alpha one\n\nBEta one/);
+});
+
+test("results name what each operation addressed, by id", () => {
+  const { doc, keys } = page();
+  const [paragraph, heading] = nodesOf(doc, keys[0]);
+  const [{ id: image }] = imageIds(doc, keys[0]);
+  const block = blockAddress(doc, keys[0]);
+  const second = blockAddress(doc, keys[1]);
+  const { doc: after, result } = editResult(doc, [
+    { op: "delete_node", node_id: heading },
+    { op: "set_image", node_id: image, alt: "A chart" },
+    { op: "replace_block_markdown", node_id: second, markdown: "One\n\n## Two" },
+    { op: "move_block", node_id: second, after_node_id: null },
+    { op: "set_title", title: "Renamed" },
+  ]);
+  assert.deepEqual(result.edits, [
+    { op: "delete_node", node_id: heading, block, type: "heading" },
+    { op: "set_image", node_id: image, block },
+    { op: "replace_block_markdown", node_id: second, nodes: nodesOf(after, keys[1]) },
+  ]);
+  assert.equal(nodesOf(after, keys[1]).length, 2);
+  assert.equal(nodesOf(after, keys[0])[0], paragraph);
+  // No block key reaches a result.
+  const text = JSON.stringify(result);
+  for (const key of keys) assert.ok(!text.includes(key), key);
+});
+
+test("inserts return the new ids, and the next request uses them with no read", () => {
+  const { doc, keys } = page();
+  const { doc: first, result } = editResult(doc, [
+    {
+      op: "insert_markdown",
+      markdown: "## New\n\nBody text",
+      after_node_id: blockAddress(doc, keys[0]),
+    },
+    { op: "insert_image", asset_id: ASSET, alt: "Picture", after_node_id: null },
+    { op: "insert_node", node: dataframe },
+  ]);
+  const [markdown, picture, table] = result.edits;
+  const added = orderedBlockIds(first).filter((key) => !keys.includes(key));
+  const byAddress = new Map(added.map((key) => [blockAddress(first, key), key]));
+  assert.deepEqual(
+    result.edits.map(({ op, node_id, nodes }) => [
+      op,
+      nodesOf(first, byAddress.get(node_id)),
+      nodes,
+    ]),
+    [
+      ["insert_markdown", markdown.nodes, markdown.nodes],
+      ["insert_image", picture.nodes, picture.nodes],
+      ["insert_node", table.nodes, table.nodes],
+    ],
+  );
+  assert.equal(markdown.nodes.length, 2);
+  assert.equal(picture.image, imageIds(first, byAddress.get(picture.node_id))[0].id);
+  assert.equal(orderedBlockIds(first)[0], byAddress.get(picture.node_id));
+  assert.equal(orderedBlockIds(first)[2], byAddress.get(markdown.node_id));
+  assert.equal(orderedBlockIds(first).at(-1), byAddress.get(table.node_id));
+  for (const entry of result.edits) assert.match(entry.node_id, ADDRESS_PATTERN);
+  // The next request, built from the result alone.
+  const { doc: second, result: next } = editResult(first, [
+    { op: "replace_match", node_id: markdown.nodes[1], match_text: "Body", replacement: "Changed" },
+    { op: "set_image", node_id: picture.image, alt: "Retitled" },
+    { op: "move_block", node_id: table.node_id, after_node_id: null },
+    { op: "insert_markdown", markdown: "After the image", after_node_id: picture.node_id },
+  ]);
+  assert.equal(next.edits.length, 3);
+  assert.equal(orderedBlockIds(second)[0], byAddress.get(table.node_id));
+  assert.equal(
+    projectReadContent(second, {}).blocks.find((entry) => entry.node_id === markdown.node_id)
+      ?.markdown,
+    "## New\n\nChanged text",
+  );
+});
+
+test("ids resolve again after each operation, so a batch can address what moved", () => {
+  const { doc, keys } = page(["First\n\nSecond\n\nThird"]);
+  const [, second, third] = nodesOf(doc, keys[0]);
+  const after = edit(doc, [
+    {
+      op: "replace_match",
+      node_id: second,
+      match_text: "Second",
+      replacement: "A much longer second",
+    },
+    { op: "delete_node", node_id: second },
+    { op: "replace_match", node_id: third, match_text: "Third", replacement: "Last" },
+  ]);
+  assert.equal(projectReadContent(after, {}).blocks[0].markdown, "First\n\nLast");
+  assert.throws(
+    () =>
+      edit(doc, [
+        { op: "delete_block", node_id: blockAddress(doc, keys[0]) },
+        { op: "delete_node", node_id: third },
+      ]),
+    { code: "node_not_found" },
+  );
+});
+
+test("no caller id reaches getCursorPosition through an edit batch", () => {
+  const { doc, keys } = page();
+  const foreign = A.getCursor(doc, textPath(keys[1]), 2);
+  for (const node_id of [foreign, `5@${A.getActorId(doc)}`, "1@" + "a".repeat(190)]) {
+    spied.getCursorPosition.length = 0;
+    assert.throws(
+      () => edit(doc, [{ op: "replace_match", node_id, match_text: "Intro", replacement: "x" }]),
+      { code: "node_not_found" },
+    );
+    assert.equal(
+      spied.getCursorPosition.some((args) => args.includes(node_id)),
+      false,
+    );
+  }
 });

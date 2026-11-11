@@ -76,19 +76,23 @@ export function projectComments(page, commentsDoc) {
 export const resolvedCommentTarget = Symbol("resolvedCommentTarget");
 
 /** Capture cursors for the occurrence-th copy of `selected` in a block's raw
- * text. `doc` may be a historical view: cursors name characters, so the target
- * resolves in any later revision that still holds its final character.
+ * text, or only in its range `within` (`{ start, end }`, one top-level node's
+ * text) when given. `doc` may be a historical view: cursors name characters,
+ * so the target resolves in any later revision that still holds its final
+ * character.
  */
-export function captureSelectionTarget(doc, id, selected, occurrence = 1) {
+export function captureSelectionTarget(doc, id, selected, occurrence = 1, within) {
   const block = doc.blocks[id];
   if (!Object.hasOwn(doc.blocks, id) || !block) throw Error("Comment block not found");
   if (!Number.isSafeInteger(occurrence) || occurrence < 1 || occurrence > 10000)
     throw Error("Invalid selection occurrence");
   const name = "richText";
-  let start = -1;
+  const end = within ? within.end : block[name].length;
+  let start = within ? within.start - 1 : -1;
   for (let i = 0; i < occurrence; i++) {
     start = block[name].indexOf(selected, start + 1);
-    if (start < 0) throw Error("Selected passage changed; select it again");
+    if (start < 0 || start + selected.length > end)
+      throw Error("Selected passage changed; select it again");
   }
   const endpoint = (offset) => ({
     blockId: id,

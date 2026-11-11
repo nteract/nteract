@@ -13,6 +13,7 @@ import { textPath, validateRich } from "./richtext.mjs";
 import { documentFeatures } from "./schema-features.mjs";
 import { decode, encode, PagesDataframe } from "./wordgard-doc.mjs";
 import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
+import { blockAddress, nodeAddresses } from "./addresses.mjs";
 
 const pageId = "33333333-3333-4333-8333-333333333333";
 const assetId = "d".repeat(64);
@@ -34,9 +35,11 @@ const dataframe = (attrs = {}) => ({
 test("insert_node writes one dataframe marker in its own block and stamps the feature", () => {
   const { doc, result } = edit(fresh(), [dataframe()]);
   const [, id] = orderedBlockIds(doc);
-  assert.deepEqual(result.inserted_nodes, [
+  assert.deepEqual(result.edits, [
     {
-      block_id: id,
+      op: "insert_node",
+      node_id: blockAddress(doc, id),
+      nodes: nodeAddresses(doc, id),
       type: "dataframe",
       attrs: { asset_id: assetId, src, media_type: PARQUET_MEDIA_TYPE, title: "Usage by day" },
     },
@@ -88,11 +91,14 @@ test("replace_block_markdown refuses a block holding a dataframe", () => {
   const { doc } = edit(fresh(), [dataframe()]);
   const [, id] = orderedBlockIds(doc);
   assert.throws(
-    () => edit(doc, [{ op: "replace_block_markdown", block_id: id, markdown: "gone" }]),
+    () =>
+      edit(doc, [
+        { op: "replace_block_markdown", node_id: blockAddress(doc, id), markdown: "gone" },
+      ]),
     (error) => error.code === "markdownless_node" && /no Markdown form/.test(error.message),
   );
   // Deleting the block is still allowed.
-  const deleted = edit(doc, [{ op: "delete_block", block_id: id }]).doc;
+  const deleted = edit(doc, [{ op: "delete_block", node_id: blockAddress(doc, id) }]).doc;
   assert.equal(orderedBlockIds(deleted).length, 1);
 });
 
@@ -121,7 +127,8 @@ test("insert_node refuses malformed operations before touching the Page", () => 
     dataframe({ src: "https://example.com/x.parquet" }),
     dataframe({ title: "x".repeat(201) }),
     { ...dataframe(), extra: true },
-    { ...dataframe(), after_block_id: "" },
+    { ...dataframe(), after_node_id: 7 },
+    { ...dataframe(), after_block_id: null },
   ]) {
     assert.throws(() => validateNodeInsertion(op), JSON.stringify(op));
     assert.throws(() => edit(fresh(), [op]), JSON.stringify(op));
@@ -201,7 +208,7 @@ test("a lossy dataframe projection cannot authorize a Markdown rewrite", () => {
           edit(doc, [
             {
               op: "replace_block_markdown",
-              block_id: id,
+              node_id: blockAddress(doc, id),
               markdown: "hello\n\nworld",
             },
           ]),
@@ -215,7 +222,7 @@ test("a lossy dataframe projection cannot authorize a Markdown rewrite", () => {
       const { doc: after } = edit(doc, [
         {
           op: "replace_match",
-          block_id: id,
+          node_id: blockAddress(doc, id),
           match_text: "hello",
           replacement: "hi",
         },
@@ -233,7 +240,11 @@ test("replace_block_markdown keeps a dataframe whose read-back line is unchanged
   assert.equal(markdown, `hello\n\n[Dataframe: Usage by day](${src})\n\nworld`);
   const before = dataframes(doc, id);
   const { doc: after } = edit(doc, [
-    { op: "replace_block_markdown", block_id: id, markdown: markdown.replace("hello", "hi") },
+    {
+      op: "replace_block_markdown",
+      node_id: blockAddress(doc, id),
+      markdown: markdown.replace("hello", "hi"),
+    },
   ]);
   assert.deepEqual(dataframes(after, id), before);
   assert.equal(projectPage(after).blocks[0].markdown, markdown.replace("hello", "hi"));
@@ -247,7 +258,7 @@ test("replace_block_markdown refuses to drop or edit a dataframe's line", () => 
     `hello [Dataframe: Usage by day](${src}) world`,
   ])
     assert.throws(
-      () => edit(doc, [{ op: "replace_block_markdown", block_id: id, markdown }]),
+      () => edit(doc, [{ op: "replace_block_markdown", node_id: blockAddress(doc, id), markdown }]),
       (error) =>
         error.code === "markdownless_node" &&
         error.message.includes(`[Dataframe: Usage by day](${src})`),
@@ -272,7 +283,7 @@ test("a dataframe stored in a quote or list item echoes back there, and can't mo
     const cursor = A.getCursor(doc, textPath(id), dataframeIndex(doc, id));
     for (const rewrite of [markdown, markdown.replace("hello", "hi")]) {
       const { doc: after } = edit(doc, [
-        { op: "replace_block_markdown", block_id: id, markdown: rewrite },
+        { op: "replace_block_markdown", node_id: blockAddress(doc, id), markdown: rewrite },
       ]);
       assert.equal(projectPage(after).blocks[0].markdown, rewrite, label);
       assert.equal(A.getCursor(after, textPath(id), dataframeIndex(after, id)), cursor, label);
@@ -282,7 +293,7 @@ test("a dataframe stored in a quote or list item echoes back there, and can't mo
         edit(doc, [
           {
             op: "replace_block_markdown",
-            block_id: id,
+            node_id: blockAddress(doc, id),
             markdown: `hello\n\n${line}\n\nworld`,
           },
         ]),
@@ -299,7 +310,11 @@ test("a block holding two identical dataframes keeps one line for each", () => {
   const markdown = projectPage(doc).blocks[0].markdown;
   assert.equal(markdown, `hello\n\n${line}\n\n${line}\n\nworld`);
   const { doc: after } = edit(doc, [
-    { op: "replace_block_markdown", block_id: id, markdown: markdown.replace("hello", "hi") },
+    {
+      op: "replace_block_markdown",
+      node_id: blockAddress(doc, id),
+      markdown: markdown.replace("hello", "hi"),
+    },
   ]);
   assert.equal(dataframes(after, id).length, 2);
   // Dropping one names the line and says the block holds two.
@@ -308,7 +323,7 @@ test("a block holding two identical dataframes keeps one line for each", () => {
       edit(doc, [
         {
           op: "replace_block_markdown",
-          block_id: id,
+          node_id: blockAddress(doc, id),
           markdown: `hello\n\n${line}\n\nworld`,
         },
       ]),
@@ -321,7 +336,7 @@ test("a block holding two identical dataframes keeps one line for each", () => {
       edit(doc, [
         {
           op: "replace_block_markdown",
-          block_id: id,
+          node_id: blockAddress(doc, id),
           markdown: `hello\n\n${line}\n\n${line}\n\n${line}\n\nworld`,
         },
       ]),
@@ -340,7 +355,7 @@ test("duplicate dataframe lines with different hidden attrs refuse Markdown rewr
       edit(doc, [
         {
           op: "replace_block_markdown",
-          block_id: id,
+          node_id: blockAddress(doc, id),
           markdown: projectPage(doc).blocks[0].markdown,
         },
       ]),
@@ -355,7 +370,7 @@ test("replace_block_markdown keeps a dataframe only as its own top-level line, o
   const other = `[Dataframe: Other](/api/pages/${pageId}/assets/${"f".repeat(64)})`;
   const refused = (markdown, pattern) =>
     assert.throws(
-      () => edit(doc, [{ op: "replace_block_markdown", block_id: id, markdown }]),
+      () => edit(doc, [{ op: "replace_block_markdown", node_id: blockAddress(doc, id), markdown }]),
       (error) => error.code === "markdownless_node" && pattern.test(error.message),
       markdown,
     );
@@ -380,7 +395,11 @@ test("replace_block_markdown keeps a dataframe only as its own top-level line, o
   };
   const cursor = A.getCursor(doc, textPath(id), markerAt(doc));
   const { doc: after } = edit(doc, [
-    { op: "replace_block_markdown", block_id: id, markdown: `Intro\n\nhello\n\n${line}\n\nworld` },
+    {
+      op: "replace_block_markdown",
+      node_id: blockAddress(doc, id),
+      markdown: `Intro\n\nhello\n\n${line}\n\nworld`,
+    },
   ]);
   assert.deepEqual(dataframes(after, id), before);
   assert.equal(A.getCursor(after, textPath(id), markerAt(after)), cursor);
@@ -390,7 +409,11 @@ test("replace_block_markdown keeps a dataframe only as its own top-level line, o
   // Moving the line among its neighbours keeps the node and its attrs, but
   // updateSpans writes a new marker for it.
   const { doc: reordered } = edit(doc, [
-    { op: "replace_block_markdown", block_id: id, markdown: `hello\n\nworld\n\n${line}` },
+    {
+      op: "replace_block_markdown",
+      node_id: blockAddress(doc, id),
+      markdown: `hello\n\nworld\n\n${line}`,
+    },
   ]);
   assert.deepEqual(
     dataframes(reordered, id).map((span) => span.value),
@@ -401,7 +424,7 @@ test("replace_block_markdown keeps a dataframe only as its own top-level line, o
   const { doc: linked } = edit(doc, [
     {
       op: "replace_block_markdown",
-      block_id: id,
+      node_id: blockAddress(doc, id),
       markdown: `hello\n\n${line}\n\n[docs](https://example.com)`,
     },
   ]);
@@ -412,8 +435,14 @@ test("replace_match and set_node beside a dataframe leave it unchanged", () => {
   const { doc, id } = mixed();
   const before = dataframes(doc, id);
   const { doc: after } = edit(doc, [
-    { op: "replace_match", block_id: id, match_text: "hello", replacement: "hi" },
-    { op: "set_node", block_id: id, match_text: "world", type: "heading", attrs: { level: 2 } },
+    { op: "replace_match", node_id: blockAddress(doc, id), match_text: "hello", replacement: "hi" },
+    {
+      op: "set_node",
+      node_id: blockAddress(doc, id),
+      match_text: "world",
+      type: "heading",
+      attrs: { level: 2 },
+    },
   ]);
   assert.deepEqual(dataframes(after, id), before);
   assert.equal(
@@ -441,7 +470,9 @@ test("a later build's dataframe attrs and media type decode, encode and survive 
     );
   assert.deepEqual(plain(dataframes(written, id)), plain(dataframes(doc, id)));
   const markdown = projectPage(doc).blocks[0].markdown.replace("hello", "hi");
-  const { doc: after } = edit(doc, [{ op: "replace_block_markdown", block_id: id, markdown }]);
+  const { doc: after } = edit(doc, [
+    { op: "replace_block_markdown", node_id: blockAddress(doc, id), markdown },
+  ]);
   assert.deepEqual(dataframes(after, id), dataframes(doc, id));
 });
 
@@ -453,7 +484,7 @@ test("a stored dataframe this build can't read projects a notice and refuses a r
   assert.equal(markdown, "hello\n\n\\[Unsupported node: dataframe\\]\n\nworld");
   assert.doesNotMatch(markdown, /evil/);
   assert.throws(
-    () => edit(doc, [{ op: "replace_block_markdown", block_id: id, markdown }]),
+    () => edit(doc, [{ op: "replace_block_markdown", node_id: blockAddress(doc, id), markdown }]),
     (error) => error.code === "markdownless_node",
   );
 });
@@ -469,7 +500,11 @@ test("a stored title with a newline reads back on one line and still round-trips
   const markdown = projectPage(doc).blocks[0].markdown;
   assert.equal(markdown, `hello\n\n[Dataframe: Usage by day](${src})\n\nworld`);
   const { doc: after } = edit(doc, [
-    { op: "replace_block_markdown", block_id: id, markdown: markdown.replace("hello", "hi") },
+    {
+      op: "replace_block_markdown",
+      node_id: blockAddress(doc, id),
+      markdown: markdown.replace("hello", "hi"),
+    },
   ]);
   assert.deepEqual(dataframes(after, id), dataframes(doc, id));
 });
@@ -497,7 +532,10 @@ test("a peer-written dataframe inside a table cell projects a notice and refuses
   assert.match(markdown, /Unsupported node: dataframe/);
   assert.doesNotMatch(markdown, /assets/);
   assert.throws(
-    () => edit(next, [{ op: "replace_block_markdown", block_id: id, markdown: "x" }]),
+    () =>
+      edit(next, [
+        { op: "replace_block_markdown", node_id: blockAddress(next, id), markdown: "x" },
+      ]),
     (error) => error.code === "markdownless_node",
   );
   const decoded = decode(A.spans(next, textPath(id)));
@@ -513,12 +551,12 @@ test("a synced dataframe naming another Page's asset reads as a notice and refus
   assert.equal(markdown, "hello\n\n\\[Unsupported node: dataframe\\]\n\nworld");
   assert.doesNotMatch(markdown, /44444444/);
   assert.throws(
-    () => edit(doc, [{ op: "replace_block_markdown", block_id: id, markdown }]),
+    () => edit(doc, [{ op: "replace_block_markdown", node_id: blockAddress(doc, id), markdown }]),
     (error) => error.code === "markdownless_node",
   );
   // replace_match beside it still works, and leaves it alone.
   const { doc: after } = edit(doc, [
-    { op: "replace_match", block_id: id, match_text: "hello", replacement: "hi" },
+    { op: "replace_match", node_id: blockAddress(doc, id), match_text: "hello", replacement: "hi" },
   ]);
   assert.deepEqual(dataframes(after, id), dataframes(doc, id));
 });
@@ -527,7 +565,7 @@ test("a dataframe's outline entry carries its attrs in insert_node's receipt sha
   const { projectReadContent } = await import("./read-content.mjs");
   const { doc, result } = edit(fresh(), [dataframe()]);
   const entry = projectReadContent(doc, {}).outline.find((item) => item.type === "dataframe");
-  assert.deepEqual(entry.attrs, result.inserted_nodes[0].attrs);
+  assert.deepEqual(entry.attrs, result.edits[0].attrs);
 });
 
 test("an unreadable dataframe exposes none of its stored attrs in typed reads", async () => {

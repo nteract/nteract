@@ -46,7 +46,7 @@ import { stampSpans } from "./schema-features.mjs";
 import { nativeRead, nativeReadSpans } from "./native-read.mjs";
 import { blockAddresses, nodeIndexAt } from "./node-addresses.mjs";
 import { isKnownBlock, NODE_TYPES } from "./node-registry.mjs";
-import { visibleNodeRange } from "./replace-match.mjs";
+import { blockAddress } from "./addresses.mjs";
 import { updateSpansExactly } from "./richtext-format.mjs";
 import { nodeIds } from "./node-ids.mjs";
 import {
@@ -123,9 +123,19 @@ const tool = (doc, id, operation, op) =>
   A.change(doc, (draft) =>
     applyPageOperation(draft, {
       operation,
-      arguments: { operations: [{ ...op, block_id: id }] },
+      arguments: { operations: [{ node_id: blockAddress(doc, id), ...op }] },
     }),
   );
+
+/** The outline entries of the block whose id is `address`: its first
+ * entry names the block, and the entries after it up to the next one that
+ * names a block are its nodes. */
+function blockOutline(outline, address) {
+  const start = outline.findIndex((entry) => entry.block === address);
+  if (start < 0) return [];
+  const next = outline.findIndex((entry, index) => index > start && entry.block !== undefined);
+  return outline.slice(start, next < 0 ? undefined : next);
+}
 
 /** One writer's edit, chosen by `kind` with `pick` and `variant` as its
  * targets. Returns the new document, or null when it has no target. */
@@ -328,7 +338,7 @@ function readEvery(doc, id, label, { lossy = false } = {}) {
   const native = nativeRead(doc.blocks[id], PAGE_ID).nodes;
   const addresses = blockAddresses(spans);
   if (!lossy) assert.equal(addresses.placed, true, label);
-  const outline = projectReadContent(doc, {}).outline.filter((entry) => entry.block_id === id);
+  const outline = blockOutline(projectReadContent(doc, {}).outline, blockAddress(doc, id));
   const markdown = blockMarkdown(doc.blocks[id], PAGE_ID);
   assert.equal(typeof markdown, "string", label);
   // A block holding a node this build can't place gives no ids
@@ -342,8 +352,8 @@ function readEvery(doc, id, label, { lossy = false } = {}) {
   }
   // Content from a newer build (a container this build doesn't know, a
   // marker value it can't read) can read as different nodes in the agent
-  // reader and decode; where it does, the outline gives no ids and
-  // node_index refuses the block rather than address the wrong node.
+  // reader and decode; where it does, the outline gives no ids rather than
+  // address the wrong node.
   const unknownNames =
     decoded.newer ||
     spans.some(
@@ -357,7 +367,10 @@ function readEvery(doc, id, label, { lossy = false } = {}) {
     (outline.length !== addresses.nodes.length ||
       (outline.every((entry) => entry.node_id === null) && ids.some((entry) => entry.id !== null)))
   ) {
-    assert.throws(() => visibleNodeRange(doc, id, 0), /node_index can't address this block/, label);
+    assert.ok(
+      outline.every((entry) => entry.node_id === null),
+      label,
+    );
     return { decoded, markdown, ids: [] };
   }
   // Otherwise the agent outline and the node addresses agree on the nodes,
@@ -695,7 +708,14 @@ test("parents no writer wrote read in every reader, and the next host write repa
       applyPageOperation(draft, {
         operation: "edit_page",
         arguments: {
-          operations: [{ op: "replace_match", block_id: id, match_text: word, replacement: "z" }],
+          operations: [
+            {
+              op: "replace_match",
+              node_id: blockAddress(doc, id),
+              match_text: word,
+              replacement: "z",
+            },
+          ],
         },
       }),
     );
@@ -805,7 +825,9 @@ test("an owner recovers a block with unreadable markers with an agent tool", () 
       applyPageOperation(draft, {
         operation: "edit_page",
         arguments: {
-          operations: [{ op: "replace_block_markdown", block_id: id, markdown: "Fixed." }],
+          operations: [
+            { op: "replace_block_markdown", node_id: blockAddress(doc, id), markdown: "Fixed." },
+          ],
         },
       }),
     );
@@ -817,7 +839,7 @@ test("an owner recovers a block with unreadable markers with an agent tool", () 
         arguments: {
           operations: [
             { op: "insert_markdown", markdown: "Second" },
-            { op: "delete_block", block_id: id },
+            { op: "delete_block", node_id: blockAddress(doc, id) },
           ],
         },
       }),
@@ -876,14 +898,16 @@ const editPage = (doc, operations, operation = "edit_page") =>
 const deleteBlock = (doc, id) =>
   editPage(doc, [
     { op: "insert_markdown", markdown: "Second" },
-    { op: "delete_block", block_id: id },
+    { op: "delete_block", node_id: blockAddress(doc, id) },
   ]);
 /** replace_block_markdown with "Fixed.", or its refusal, which names the
  * recovery. */
 function rewriteOrRefuse(doc, id, label) {
   let rewritten;
   try {
-    rewritten = editPage(doc, [{ op: "replace_block_markdown", block_id: id, markdown: "Fixed." }]);
+    rewritten = editPage(doc, [
+      { op: "replace_block_markdown", node_id: blockAddress(doc, id), markdown: "Fixed." },
+    ]);
   } catch (error) {
     assert.match(error.message, /delete_block/, label);
     return null;
@@ -970,7 +994,9 @@ test("set_node refuses a heading this build can't read, which replace_block_mark
       applyPageOperation(draft, {
         operation: "edit_page",
         arguments: {
-          operations: [{ op: "set_node", block_id: id, match_text: "Title", ...input }],
+          operations: [
+            { op: "set_node", node_id: blockAddress(doc, id), match_text: "Title", ...input },
+          ],
         },
       }),
     );
@@ -1313,12 +1339,13 @@ test("host tools edit readable text in a block with newer content, and refuse th
       for (const input of refused) {
         const label = `${name}: ${input.op} ${input.match_text}`;
         assert.throws(
-          () => editPage(doc, [{ block_id: id, ...input }], "edit_page"),
+          () => editPage(doc, [{ node_id: blockAddress(doc, id), ...input }], "edit_page"),
           (error) => error.code === "newer_content" && error.status === 409,
           label,
         );
         assert.throws(
-          () => guardPassageEdits(doc, A.getHeads(doc), [{ block_id: id, ...input }]),
+          () =>
+            guardPassageEdits(doc, A.getHeads(doc), [{ node_id: blockAddress(doc, id), ...input }]),
           (error) => error.code === "newer_content",
           `passage ${label}`,
         );
@@ -1326,10 +1353,10 @@ test("host tools edit readable text in a block with newer content, and refuse th
       for (const input of allowed) {
         const op =
           input === "set_image"
-            ? { op: "set_image", image_id: imageIds(doc, id)[0].image_id, alt: "y" }
+            ? { op: "set_image", node_id: imageIds(doc, id)[0].id, alt: "y" }
             : input;
         const label = `${name}: ${op.op} ${op.match_text ?? ""}`;
-        const next = keep(editPage(doc, [{ block_id: id, ...op }], "edit_page"));
+        const next = keep(editPage(doc, [{ node_id: blockAddress(doc, id), ...op }], "edit_page"));
         const after = A.spans(next, textPath(id));
         if (op.op === "replace_match" || op.op === "format_match") {
           // Text and marks only: every marker, the unmarked lead and the
@@ -1343,14 +1370,15 @@ test("host tools edit readable text in a block with newer content, and refuse th
         assert.notEqual(storedJSON(after), stored, label);
         if (op.op !== "set_image")
           assert.doesNotThrow(
-            () => guardPassageEdits(doc, A.getHeads(doc), [{ block_id: id, ...op }]),
+            () =>
+              guardPassageEdits(doc, A.getHeads(doc), [{ node_id: blockAddress(doc, id), ...op }]),
             `passage ${label}`,
           );
       }
       // Moving the block and writing a new one leave its spans as stored.
       for (const operations of [
-        [{ op: "move_block", block_id: id, after_block_id: null }],
-        [{ op: "insert_markdown", after_block_id: id, markdown: "new" }],
+        [{ op: "move_block", node_id: blockAddress(doc, id), after_node_id: null }],
+        [{ op: "insert_markdown", after_node_id: blockAddress(doc, id), markdown: "new" }],
       ]) {
         const next = keep(editPage(doc, operations));
         assert.equal(storedJSON(A.spans(next, textPath(id))), stored, name);
@@ -1381,7 +1409,12 @@ test("set_node refuses a column alignment that would overwrite a cell this build
     const { doc, id } = pageWithSpans(spans);
     keep(doc);
     const stored = storedJSON(A.spans(doc, textPath(id)));
-    const op = { op: "set_node", block_id: id, match_text: "Head", attrs: { align: "left" } };
+    const op = {
+      op: "set_node",
+      node_id: blockAddress(doc, id),
+      match_text: "Head",
+      attrs: { align: "left" },
+    };
     assert.throws(
       () => editPage(doc, [op], "edit_page"),
       (error) => error.code === "newer_content" && error.status === 409,
@@ -1415,7 +1448,7 @@ test("format_match over a stored mark value this build can't read replaces it", 
       const next = keep(
         editPage(
           doc,
-          [{ op: "format_match", block_id: id, match_text: "word", ...input }],
+          [{ op: "format_match", node_id: blockAddress(doc, id), match_text: "word", ...input }],
           "edit_page",
         ),
       );

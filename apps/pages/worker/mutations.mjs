@@ -60,11 +60,11 @@ export async function fingerprint(operation, args, identity, agent) {
     .join("");
 }
 /** The warnings a batch's edits carry (`result.edits[i].warnings`), each with
- * the index and block of the edit that raised it. */
+ * the index of the edit that raised it and the id it named. */
 function editWarnings(result) {
   if (!Array.isArray(result?.edits)) return [];
   return result.edits.flatMap((edit, edit_index) =>
-    (edit?.warnings ?? []).map((warning) => ({ ...warning, edit_index, block_id: edit.block_id })),
+    (edit?.warnings ?? []).map((warning) => ({ ...warning, edit_index, node_id: edit.node_id })),
   );
 }
 /** Refuse unless `heads` are exactly `doc`'s heads. The refusal carries the

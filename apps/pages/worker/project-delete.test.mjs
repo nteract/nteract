@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { newCommentsDoc } from "../model/comments-test-support.mjs";
+import { blockAddress } from "../model/addresses.mjs";
 import { stampFeatures } from "../model/schema-features.mjs";
 import { commentsDocumentId } from "./comments-store.mjs";
 import { imageAssetKey } from "./image-assets.mjs";
@@ -462,10 +463,11 @@ test("a deletion interrupted before its receipt resumes from the Space removal",
 /** The owner comments on the Project's content by its document ID, which
  * still works while the Space is closed. */
 async function comment(w, project, body) {
+  const doc = w.page(project.document_id).handle.doc();
   const added = await w.call("owner", "manage_page_comment", {
     page_id: project.document_id,
     action: "add",
-    block_id: Object.keys(w.page(project.document_id).handle.doc().blocks)[0],
+    node_id: blockAddress(doc, Object.keys(doc.blocks)[0]),
     body,
     nonce: w.key(),
   });

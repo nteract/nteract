@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import * as A from "@automerge/automerge";
 import { projectReadContent } from "./read-content.mjs";
+import { blockAddress } from "./addresses.mjs";
 import { blockMarkdown } from "./richtext-page.mjs";
 import { nativeRead, readMarkdown, readKind, readText } from "./native-read.mjs";
 import fc from "fast-check";
@@ -244,11 +245,7 @@ test("rereview: 54-case stored scalar and legacy corpus matches the actual old p
       else {
         const current = projectReadContent(doc);
         assert.equal(current.blocks[0].markdown, expected);
-        assert.equal(
-          projectReadContent(doc, { node_range: { block_id: "one", from: 0, to: 1 } }).blocks[0]
-            .markdown,
-          expected,
-        );
+        assert.equal(namedBlockMarkdown(doc), expected);
       }
       assert.deepEqual(A.save(doc), bytes);
     } finally {
@@ -524,11 +521,7 @@ test("review: generated partial tables, unknown descendants, and legacy marks ma
           const bytes = A.save(doc),
             expected = readMarkdown(nativeRead(doc.blocks.one, pageId).nodes);
           assert.equal(projectReadContent(doc).blocks[0].markdown, expected);
-          assert.equal(
-            projectReadContent(doc, { node_range: { block_id: "one", from: 0, to: 1 } }).blocks[0]
-              .markdown,
-            expected,
-          );
+          assert.equal(namedBlockMarkdown(doc), expected);
           assert.deepEqual(A.save(doc), bytes);
         } finally {
           A.free(doc);
@@ -572,6 +565,16 @@ test("concurrent table joins and peer typing retain the surviving table identity
     for (const doc of [before, right, merged, loaded]) A.free(doc);
   }
 });
+/** The Markdown read_page gives for block "one" when node_ids names it. */
+const namedBlockMarkdown = (doc) =>
+  projectReadContent(doc, { node_ids: [blockAddress(doc, "one")] }).blocks[0].markdown;
+/** The Markdown read_page gives for top-level node `index` when node_ids
+ * names it by its outline id. */
+function nodeMarkdown(doc, index) {
+  const id = projectReadContent(doc).outline[index].node_id;
+  return projectReadContent(doc, { node_ids: [id] }).nodes[0].markdown;
+}
+
 function page(spans) {
   return A.change(
     A.from({
@@ -613,11 +616,8 @@ for (const [name, spans] of [
     try {
       const before = A.save(doc);
       const full = projectReadContent(doc);
-      const slice = projectReadContent(doc, {
-        node_range: { block_id: "one", from: 0, to: full.outline.length },
-      });
       assert.equal(full.blocks[0].markdown, blockMarkdown(doc.blocks.one, pageId));
-      assert.equal(slice.blocks[0].markdown, full.blocks[0].markdown);
+      assert.equal(namedBlockMarkdown(doc), full.blocks[0].markdown);
       const native = nativeRead(doc.blocks.one, pageId);
       assert.equal(readMarkdown(native.nodes), full.blocks[0].markdown);
       assert.deepEqual(
@@ -709,18 +709,11 @@ test("native snapshots and concurrent edits preserve legacy grouping and image m
       projectReadContent(base).outline.map((node) => node.node_id),
     );
     const images = current.outline[1].summary.images;
-    assert.equal(
-      images[0].image_id,
-      projectReadContent(base).outline[1].summary.images[0].image_id,
-    );
+    assert.equal(images[0].node_id, projectReadContent(base).outline[1].summary.images[0].node_id);
     const delta = projectReadChanges(loaded, { since_heads: heads, comments: "none" });
     assert.deepEqual(
       delta.changes.map((entry) => entry.markdown),
-      current.outline.map(
-        (_entry, i) =>
-          projectReadContent(loaded, { node_range: { block_id: "one", from: i, to: i + 1 } })
-            .blocks[0].markdown,
-      ),
+      current.outline.map((_entry, i) => nodeMarkdown(loaded, i)),
     );
     assert.deepEqual(A.save(loaded), bytes);
   } finally {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { createPageData, initializePage } from "../model/page.mjs";
+import { blockAddress } from "../model/addresses.mjs";
 import { PageActivity, ACTIVITY_LIMITS } from "./page-activity.mjs";
 import { pageAccess } from "./access.mjs";
 
@@ -41,6 +42,7 @@ function fixture(t, markdown = "A visible selected passage. Another useful passa
     options,
     doc,
     blockId: Object.keys(doc.blocks)[0],
+    block: blockAddress(doc, Object.keys(doc.blocks)[0]),
     profiles(value) {
       profiles = value;
     },
@@ -62,7 +64,7 @@ test("progress leases separate two agents on one account without changing docume
     heads = A.getHeads(f.doc);
   const one = report(
     f,
-    { targets: [{ block_id: f.blockId, match_text: "selected passage" }], revision: "r1" },
+    { targets: [{ node_id: f.block, match_text: "selected passage" }], revision: "r1" },
     identity(),
     heads,
   );
@@ -168,7 +170,7 @@ test("bounded progress count and aggregate UTF-8 budget reject before changing e
   for (let i = 0; i < ACTIVITY_LIMITS.perPrincipal; i++) report(f);
   assert.throws(() => report(f), { status: 429 });
   f.activity.close();
-  const targets = passages.map((match_text) => ({ block_id: f.blockId, match_text }));
+  const targets = passages.map((match_text) => ({ node_id: f.block, match_text }));
   let rejected = false;
   for (let i = 0; i < ACTIVITY_LIMITS.progress; i++) {
     const person = identity({ principal: `user:${i}` });

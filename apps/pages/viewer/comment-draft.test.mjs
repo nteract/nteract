@@ -8,6 +8,7 @@ import {
   orderedBlockIds,
 } from "../model/page.mjs";
 import { projectComments } from "../model/comments.mjs";
+import { blockAddress } from "../model/addresses.mjs";
 import { comment as addComment, newCommentsDoc } from "../model/comments-test-support.mjs";
 import { captureCommentDraft, resolveCommentDraft, sendCommentDraft } from "./comment-draft.mjs";
 
@@ -51,7 +52,13 @@ test("a draft belongs to its captured block after another block becomes the edit
     applyPageOperation(d, {
       operation: "edit_page",
       arguments: {
-        operations: [{ op: "insert_markdown", markdown: "same passage", after_block_id: first }],
+        operations: [
+          {
+            op: "insert_markdown",
+            markdown: "same passage",
+            after_node_id: blockAddress(d, first),
+          },
+        ],
       },
     }),
   );
@@ -61,7 +68,15 @@ test("a draft belongs to its captured block after another block becomes the edit
     A.splice(d, path(second), d.blocks[second].richText.length, 0, " edited elsewhere");
     applyPageOperation(d, {
       operation: "edit_page",
-      arguments: { operations: [{ op: "move_block", block_id: first, after_block_id: second }] },
+      arguments: {
+        operations: [
+          {
+            op: "move_block",
+            node_id: blockAddress(d, first),
+            after_node_id: blockAddress(d, second),
+          },
+        ],
+      },
     });
   });
   assert.deepEqual(resolveCommentDraft(doc, draft), {

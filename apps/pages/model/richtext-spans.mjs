@@ -81,7 +81,7 @@ export function refuseUnreadableText(spans, at, op) {
   const owner = textOwner(spans, at);
   if (owner >= 0 && !readableMarker(spans[owner].value))
     throw newerContent(
-      `match_text is in a node from a newer version of Pages that this version can't read, so ${op} can't edit it. Edit text in the nodes this version reads, remove the node with delete_node, or remove the block with delete_block.`,
+      `match_text is in a node from a newer version of Pages that this version can't read, so ${op} can't edit it. Edit text in the nodes this version reads, remove the node with delete_node, or remove the block with delete_block and the block's id.`,
     );
 }
 

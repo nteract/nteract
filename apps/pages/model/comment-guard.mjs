@@ -5,6 +5,7 @@ import {
   selectionContext,
   threadBatch,
 } from "./comments.mjs";
+import { addressIndex, resolveAddressFor } from "./addresses.mjs";
 
 const fail = (status, message, code, details) => {
   throw Object.assign(Error(message), {
@@ -25,9 +26,30 @@ const sameHeads = (a, b) => a.length === b.length && [...a].sort().join() === [.
 export const passageComment = (operation, args) =>
   operation !== "reply_page_comment" && (args?.action ?? "add") === "add" && !!args?.selected_text;
 
+/** Where a new comment's node_id points in `doc`: its block's key, and the
+ * node's text range when it names a node. A comment on a block names the
+ * block's id; a node's id scopes selected_text to that node. */
+function commentTarget(doc, args, kinds) {
+  try {
+    const target = resolveAddressFor(addressIndex(doc), doc, args.node_id, {
+      op: "manage_page_comment",
+      field: "node_id",
+      kinds,
+    });
+    return {
+      key: target.key,
+      within: target.kind === "node" ? { start: target.start, end: target.end } : undefined,
+    };
+  } catch (error) {
+    fail(400, error.message, error.code ?? "invalid_comment_selector");
+  }
+}
+
 /** Revision guard for a new comment intent against one captured snapshot of
- * the Page document. Comments live in their own document, so only a passage
- * comment depends on the Page text the caller read.
+ * the Page document, and the agent edge for its address: the intent it
+ * returns names the block by its key, as the comments document stores it.
+ * Comments live in their own document, so only a passage comment depends on
+ * the Page text the caller read.
  *
  * Replies, status changes, edits and deletions touch only the comments
  * document and name no revision; applyComment still requires the thread and
@@ -43,7 +65,10 @@ export function guardCommentIntent(current, operation, args, baseHeads) {
   const action = operation === "reply_page_comment" ? "reply" : (args.action ?? "add");
   // A malformed thread_ids batch fails before prepare or any thread lookup.
   threadBatch(args, action);
-  if (!passageComment(operation, args)) return args;
+  if (action !== "add") return args;
+  const { node_id: _address, ...intent } = args;
+  if (!passageComment(operation, args))
+    return { ...intent, block_id: commentTarget(current, args, ["block"]).key };
   if (!headsShape(baseHeads))
     fail(400, "revision from read_page is required for a passage comment", "invalid_revision");
   const currentHeads = A.getHeads(current);
@@ -57,13 +82,15 @@ export function guardCommentIntent(current, operation, args, baseHeads) {
   const owned = exact ? null : A.clone(A.view(current, baseHeads));
   try {
     const base = owned ? A.view(owned, A.getHeads(owned)) : current;
+    const { key, within } = commentTarget(base, args, ["block", "node"]);
     let target;
     try {
       target = captureSelectionTarget(
         base,
-        args.block_id,
+        key,
         String(args.selected_text),
         args.occurrence ?? 1,
+        within,
       );
     } catch (error) {
       fail(400, error.message, "invalid_comment_selector");
@@ -75,10 +102,10 @@ export function guardCommentIntent(current, operation, args, baseHeads) {
         "edit_conflict",
         {
           current_heads: currentHeads,
-          conflicts: [{ block_id: args.block_id, reason: "target_detached" }],
+          conflicts: [{ node_id: args.node_id, reason: "target_detached" }],
         },
       );
-    return { ...args, [resolvedCommentTarget]: target };
+    return { ...intent, block_id: key, [resolvedCommentTarget]: target };
   } finally {
     if (owned) A.free(owned);
   }

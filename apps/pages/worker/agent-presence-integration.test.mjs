@@ -5,6 +5,7 @@ import * as A from "@automerge/automerge";
 import { createAuthFixture } from "../auth-fixtures.mjs";
 import { createPageData, initializePage, orderedBlockIds } from "../model/page.mjs";
 import { resolvePeerSelection } from "../model/presence.mjs";
+import { blockAddress } from "../model/addresses.mjs";
 import worker, { Page } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { authenticate } from "./auth.mjs";
@@ -154,6 +155,7 @@ async function fixture(t, driver = "Kilo", agent) {
     broadcasts,
     doc: () => doc,
     blockId: () => orderedBlockIds(doc)[0],
+    block: () => blockAddress(doc, orderedBlockIds(doc)[0]),
     agents: () => broadcasts.filter((b) => b.kind === "page-activity").at(-1)?.agents ?? [],
   };
 }
@@ -161,10 +163,10 @@ async function fixture(t, driver = "Kilo", agent) {
 test("a committed edit_page publishes the agent's caret over its new text", async (t) => {
   const f = await fixture(t);
   const receipt = await f.patch([
-    { op: "replace_match", block_id: f.blockId(), match_text: "Monday", replacement: "Tuesday" },
+    { op: "replace_match", node_id: f.block(), match_text: "Monday", replacement: "Tuesday" },
   ]);
   assert.equal(receipt.result.edits[0].matched, 1);
-  assert.deepEqual(Object.keys(receipt.result.edits[0]).sort(), ["block_id", "matched", "op"]);
+  assert.deepEqual(Object.keys(receipt.result.edits[0]).sort(), ["matched", "node_id", "op"]);
   const [agent] = f.agents();
   assert.equal(agent.driver, "Kilo");
   assert.equal(agent.state, "active");
@@ -183,7 +185,7 @@ test("a retried patch replays its receipt without publishing a new caret", async
   const auth = await f.call("read_page", { include_content: false });
   const args = {
     operations: [
-      { op: "format_match", block_id: f.blockId(), match_text: "five", add: { strong: true } },
+      { op: "format_match", node_id: f.block(), match_text: "five", add: { strong: true } },
     ],
     revision: auth.revision,
     nonce: "retry-once",

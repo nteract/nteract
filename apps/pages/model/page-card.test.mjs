@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { applyPageOperation, createPageData, initializePage, orderedBlockIds } from "./page.mjs";
+import { blockAddress } from "./addresses.mjs";
 import {
   CARD_BLOCKS_MAX_BYTES,
   CARD_BUILDER_VERSION,
@@ -211,7 +212,7 @@ test("an edit below the fold leaves the hash alone; one above it changes the has
         operations: [
           {
             op: "replace_match",
-            block_id: orderedBlockIds(doc)[0],
+            node_id: blockAddress(doc, orderedBlockIds(doc)[0]),
             match_text: "Paragraph 119",
             replacement: "The last paragraph",
           },
@@ -224,7 +225,7 @@ test("an edit below the fold leaves the hash alone; one above it changes the has
   assert.equal(appended.card_hash, first.card_hash);
 
   const above = edit(A.clone(doc), [
-    { op: "insert_markdown", markdown: "## A new opening", after_block_id: null },
+    { op: "insert_markdown", markdown: "## A new opening", after_node_id: null },
   ]);
   const changed = await pageCard(above);
   assert.notEqual(changed.card_hash, first.card_hash);

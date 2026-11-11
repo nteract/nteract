@@ -1,6 +1,7 @@
 import { orderedBlockIds } from "./order.mjs";
 import { readChildren, readKind } from "./native-read.mjs";
 import { surfaceRead } from "./page-surface-read.mjs";
+import { nodeAddresses } from "./addresses.mjs";
 
 const MAX_HEADING = 1024;
 const MAX_COMPARE = 8192;
@@ -69,6 +70,10 @@ function plainText(node) {
  * changes content or promotes Markdown import provenance over native rich text.
  * Callers persist the returned plain JSON with the successful operation receipt.
  */
+function nodeIdAt(doc, blockId, count, index) {
+  const ids = nodeAddresses(doc, blockId);
+  return ids.length === count ? ids[index] : null;
+}
 export function openingTitleWarning(doc) {
   if (typeof doc?.title !== "string" || !doc.title.trim() || doc.title.length > MAX_COMPARE)
     return null;
@@ -78,7 +83,7 @@ export function openingTitleWarning(doc) {
       const block = doc.blocks[blockId];
       if (!block) return null;
       const { nodes } = surfaceRead(block);
-      for (const node of nodes) {
+      for (const [index, node] of nodes.entries()) {
         if (!["paragraph", "heading"].includes(readKind(node))) return null;
         const heading = plainText(node);
         if (heading === null) return null;
@@ -93,7 +98,8 @@ export function openingTitleWarning(doc) {
             : MAX_HEADING;
         return {
           code: "opening_heading_repeats_title",
-          block_id: blockId,
+          // The heading's id, when the stored markers line up with this read.
+          node_id: nodeIdAt(doc, blockId, nodes.length, index),
           heading: heading.slice(0, end),
           match_kind: kind,
           suggested_action:

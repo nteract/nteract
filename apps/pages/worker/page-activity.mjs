@@ -6,6 +6,7 @@ import {
   resolvePeerSelection,
 } from "../model/presence.mjs";
 import { HttpError } from "./auth.mjs";
+import { blockAddress } from "../model/addresses.mjs";
 import { AGENT_PRESENCE, expiry, idleAt, transition } from "../model/agent-presence.mjs";
 
 export const ACTIVITY_LIMITS = Object.freeze({
@@ -18,6 +19,15 @@ export const ACTIVITY_LIMITS = Object.freeze({
   readBytes: 128 * 1024,
 });
 const iso = (time) => new Date(time).toISOString();
+/** A resolved presence target or selection as an agent reads it: its block
+ * named by the block's id (model/addresses.mjs), null once the block is gone.
+ * Browsers and the stored records name the block by its key. */
+const agentView = (doc, { block_id, ...rest }) => ({
+  node_id: Object.hasOwn(doc.blocks ?? {}, block_id) ? blockAddress(doc, block_id) : null,
+  ...rest,
+});
+const agentTargets = (doc, targets) =>
+  resolveProgressTargets(doc, targets).map((target) => agentView(doc, target));
 const identityView = ({ principal, displayName, driver }) => ({ principal, displayName, driver });
 const publicProgress = ({ progress_id, identity, message, targets, updatedAt, expiresAt }) => ({
   progress_id,
@@ -366,7 +376,7 @@ export class PageActivity {
     return {
       page_id: this.pageId,
       ...publicProgress(record),
-      targets: resolveProgressTargets(doc, record.targets),
+      targets: agentTargets(doc, record.targets),
       ...(!previous && { lease_token: record.lease }),
     };
   }
@@ -403,7 +413,8 @@ export class PageActivity {
         .slice(0, ACTIVITY_LIMITS.peers)
         .map(([peer_id, profile]) => {
           const record = this.selections.get(peer_id);
-          const selection = record && resolvePeerSelection(doc, record.value);
+          const resolved = record && resolvePeerSelection(doc, record.value);
+          const selection = resolved && agentView(doc, resolved);
           return {
             peer_id,
             ...identityView(profile),
@@ -412,14 +423,14 @@ export class PageActivity {
         }),
       progress: [...this.progress.values()].map((record) => ({
         ...publicProgress(record),
-        targets: resolveProgressTargets(doc, record.targets),
+        targets: agentTargets(doc, record.targets),
       })),
       agents: [...this.agents.values()].map((entry) => ({
         ...publicAgent(entry),
         targets: entry.record.targets.map((target) =>
           target.kind === "block"
-            ? { kind: "block", block_id: target.block_id }
-            : { kind: target.kind, ...resolvePeerSelection(doc, target) },
+            ? { kind: "block", ...agentView(doc, { block_id: target.block_id }) }
+            : { kind: target.kind, ...agentView(doc, resolvePeerSelection(doc, target)) },
         ),
       })),
     };

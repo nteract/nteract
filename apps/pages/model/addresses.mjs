@@ -25,6 +25,8 @@ import { textPath } from "./richtext-format.mjs";
 import { orderedBlockIds } from "./order.mjs";
 import { MAX_NODE_ID, nodeRange, spanNodeIds } from "./node-ids.mjs";
 import { spanImageIds } from "./image-ids.mjs";
+import { blockAddresses } from "./node-addresses.mjs";
+import { nativeRead, readKind } from "./native-read.mjs";
 
 export const ADDRESS_PATTERN = /^[0-9]+@[0-9a-f]+$/;
 export const MAX_ADDRESS = MAX_NODE_ID;
@@ -50,8 +52,8 @@ function indexBlock(doc, key) {
   const byId = new Map();
   for (const [index, { id }] of nodes.entries())
     if (id !== null) byId.set(id, { kind: "node", index });
-  for (const { image_id, at, index } of spanImageIds(doc, path, spans))
-    byId.set(image_id, { kind: "image", at, index });
+  for (const { id, at, index } of spanImageIds(doc, path, spans))
+    byId.set(id, { kind: "image", at, index });
   const length = spans.reduce(
     (total, span) => total + (span.type === "text" ? span.value.length : 1),
     0,
@@ -104,15 +106,26 @@ export function addressIndex(doc) {
   };
 }
 
+/** The addresses of block `key`'s top-level nodes, in order: null for a
+ * paragraph of unmarked text, and for every node of a block holding one this
+ * build can't place. */
+export function nodeAddresses(doc, key) {
+  const path = textPath(key);
+  const spans = A.spans(doc, path);
+  try {
+    return spanNodeIds(doc, path, spans).map(({ id }) => id);
+  } catch {
+    return blockAddresses(spans).nodes.map(() => null);
+  }
+}
+
 const notFound = (message) => Object.assign(Error(message), { code: "node_not_found" });
 
-/** What `address` names in `index`'s document: `{ kind: "block", key }`,
- * `{ kind: "node", key, index, start, end }` with the node's index among its
- * block's top-level nodes and its range (nodeRange), or
- * `{ kind: "image", key, at, index }` with the embed's offset and span
- * index. Throws `node_not_found` when the address names nothing live, and
- * a plain Error when it isn't an address. */
-export function resolveAddress(index, address) {
+/** What kind of thing `address` names in `index`'s document, and the key
+ * of its block: `{ kind, key }`, without the node's range. A read uses this:
+ * it can name a node whose end is unmarked text, which an edit marks before
+ * it resolves the node's range. Throws as resolveAddress does. */
+export function addressKind(index, address) {
   if (typeof address !== "string" || address.length > MAX_ADDRESS || !ADDRESS_PATTERN.test(address))
     throw Error(
       `node_id must be an id from read_page: <counter>@<actor hex>, up to ${MAX_ADDRESS} characters`,
@@ -122,15 +135,63 @@ export function resolveAddress(index, address) {
   const found = index.find(address);
   if (!found)
     throw notFound(
-      "node_id doesn't name a block, node or image in this Page: it was deleted, or it is not an id read_page gave. Read the Page again for current ids.",
+      "node_id doesn't name a block, node or image in this Page: it was deleted, or it is not an id read_page gave. Read the Page again for current ids. A node read_page reports with node_id null is reached through its block's id.",
     );
+  return { kind: found.entry.kind, key: found.key, found };
+}
+
+/** What `address` names in `index`'s document: `{ kind: "block", key }`,
+ * `{ kind: "node", key, index, start, end }` with the node's index among its
+ * block's top-level nodes and its range (nodeRange), or
+ * `{ kind: "image", key, at, index }` with the embed's offset and span
+ * index. Throws `node_not_found` when the address names nothing live, and
+ * a plain Error when it isn't an address. */
+export function resolveAddress(index, address) {
+  const { kind, key, found } = addressKind(index, address);
+  if (kind === "block") return { kind, key };
   const { entry, nodes, length } = found;
-  if (entry.kind === "image")
-    return { kind: "image", key: found.key, at: entry.at, index: entry.index };
-  return {
-    kind: "node",
-    key: found.key,
-    index: entry.index,
-    ...nodeRange(nodes, entry.index, length),
-  };
+  if (kind === "image") return { kind, key, at: entry.at, index: entry.index };
+  return { kind, key, index: entry.index, ...nodeRange(nodes, entry.index, length) };
+}
+
+// What each kind of address is for, in a wrong_address_kind refusal.
+const KIND_USES = {
+  block: "delete_block, move_block and replace_block_markdown take it",
+  node: "delete_node removes it",
+  image: "set_image changes it",
+};
+const WANTED = {
+  block: "a block's id: the block field of the block's first outline entry",
+  node: "a node's id from the outline",
+  image: "an image's id from summary.images",
+};
+
+/** What `resolved` (resolveAddress) names, as a refusal says it: "a block",
+ * "an image", or the node's type with its article. */
+function addressLabel(doc, resolved) {
+  if (resolved.kind !== "node") return `${resolved.kind === "image" ? "an" : "a"} ${resolved.kind}`;
+  let type = "node";
+  try {
+    type =
+      readKind(nativeRead(doc.blocks[resolved.key], doc.page_id).nodes[resolved.index]) ?? type;
+  } catch {
+    // The label is advisory; the refusal stands without it.
+  }
+  return `${/^[aeiou]/.test(type) ? "an" : "a"} ${type}`;
+}
+
+/** resolveAddress for field `field` of operation `op`, which takes the
+ * address `kinds` listed. Any other kind is refused with 400
+ * `wrong_address_kind`, naming what the id names and what takes it. */
+export function resolveAddressFor(index, doc, address, { op, field, kinds }) {
+  const resolved = resolveAddress(index, address);
+  if (kinds.includes(resolved.kind)) return resolved;
+  throw Object.assign(
+    Error(
+      `This id names ${addressLabel(doc, resolved)}; ${KIND_USES[resolved.kind]}. ${op} takes ${kinds
+        .map((kind) => WANTED[kind])
+        .join(", or ")} as ${field}.`,
+    ),
+    { status: 400, code: "wrong_address_kind" },
+  );
 }

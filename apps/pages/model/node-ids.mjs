@@ -20,7 +20,8 @@
 // (images, line breaks) are markers too, but they sit inside a node and
 // never open one.
 //
-// An id is meaningful only with its block_id: cursors are per text object.
+// Ids are unique across the document; model/addresses.mjs resolves one to
+// its block by comparing it with the ids minted from the live document.
 import * as A from "@automerge/automerge/slim";
 import { textPath } from "./richtext-format.mjs";
 import { blockAddresses } from "./node-addresses.mjs";
@@ -75,35 +76,6 @@ export function readableNodeIds(doc, blockId, tree) {
       at: null,
     }));
   }
-}
-
-const notFound = (message) => Object.assign(Error(message), { code: "node_not_found" });
-
-/** The top-level node `nodeId` names in block `blockId`: its index among the
- * block's top-level nodes and its text range `[start, end)`, from its marker
- * to the next node's marker. Throws `node_not_found` when the id doesn't name
- * a live top-level node in this block. */
-export function resolveNodeId(doc, blockId, nodeId, tree) {
-  if (typeof nodeId !== "string" || !nodeId || nodeId.length > MAX_NODE_ID)
-    throw Error(`node_id must be a string of up to ${MAX_NODE_ID} characters from read_page`);
-  let ids;
-  try {
-    ids = nodeIds(doc, blockId, tree);
-  } catch {
-    throw notFound(
-      "This block holds a node this version of Pages can't place, so its nodes have no ids. Use delete_block. edit_page still edits text in the nodes this version reads; it answers newer_content for text in a node it can't read.",
-    );
-  }
-  const index = ids.findIndex((entry) => entry.id === nodeId);
-  if (index < 0)
-    throw notFound(
-      "node_id doesn't name a node in this block: it was deleted, or it came from another block. Read the outline again for current ids.",
-    );
-  const length = A.spans(doc, textPath(blockId)).reduce(
-    (total, span) => total + (span.type === "text" ? span.value.length : 1),
-    0,
-  );
-  return { index, ...nodeRange(ids, index, length) };
 }
 
 /** The text range `[start, end)` of node `index`: its marker up to the next

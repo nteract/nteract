@@ -147,7 +147,7 @@ async function heavyPage(t) {
       i % 2 === 0
         ? await f.tool("owner", "manage_page_comment", {
             action: "add",
-            block_id: f.blockId,
+            node_id: f.block,
             body: `Tool thread ${i}`,
             selected_text: "Friday",
             revision: read.body.revision,
@@ -180,7 +180,7 @@ const patch = (f, read, retry) =>
     revision: read.body.revision,
     ...retry(),
     operations: [
-      { op: "replace_match", block_id: f.blockId, match_text: "Friday", replacement: "Friday" },
+      { op: "replace_match", node_id: f.block, match_text: "Friday", replacement: "Friday" },
     ],
   });
 

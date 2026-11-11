@@ -826,7 +826,7 @@ test("the llms.txt image workflow: upload light and dark, interleave with text, 
     revision: read.revision,
     nonce: crypto.randomUUID(),
     operations: [
-      { op: "replace_block_markdown", block_id: first.id, markdown: "Intro paragraph." },
+      { op: "replace_block_markdown", node_id: first.node_id, markdown: "Intro paragraph." },
       { op: "insert_image", asset_id: light, dark_asset_id: dark, alt: "Home screen" },
       { op: "insert_markdown", markdown: "Between the images." },
       { op: "insert_image", asset_id: dark, alt: "Settings screen" },
@@ -836,11 +836,14 @@ test("the llms.txt image workflow: upload light and dark, interleave with text, 
   assert.equal(edit.status, 200, JSON.stringify(edit.body));
   const after = (await w.call("owner", "read_page", { page_id: pageId, comments: "none" })).body;
   assert.ok(after.schema_features.includes("image-theme-variants"));
-  // summary.images rides on each outline entry, in block order.
-  const imagesIn = (body, block) =>
-    body.outline.entries
-      .filter((entry) => entry.block_id === block.id)
+  // summary.images rides on each outline entry, in block order. A block's
+  // first entry names it; the entries after it belong to the same block.
+  const imagesIn = (body, block) => {
+    let current = null;
+    return body.outline.entries
+      .filter((entry) => (current = entry.block ?? current) === block.node_id)
       .flatMap((entry) => entry.summary?.images ?? []);
+  };
   const order = after.blocks.map((block) => {
     const images = imagesIn(after, block);
     return images.length
@@ -856,14 +859,14 @@ test("the llms.txt image workflow: upload light and dark, interleave with text, 
   ]);
   // Mid-Page, every operation names the same preceding block, so list them
   // in reverse: each lands directly after it, ahead of the one before.
-  const anchor = after.blocks[0].id;
+  const anchor = after.blocks[0].node_id;
   const middle = await w.call("owner", "edit_page", {
     page_id: pageId,
     revision: after.revision,
     nonce: crypto.randomUUID(),
     operations: [
-      { op: "insert_markdown", markdown: "Second inserted.", after_block_id: anchor },
-      { op: "insert_image", asset_id: light, alt: "First inserted", after_block_id: anchor },
+      { op: "insert_markdown", markdown: "Second inserted.", after_node_id: anchor },
+      { op: "insert_image", asset_id: light, alt: "First inserted", after_node_id: anchor },
     ],
   });
   assert.equal(middle.status, 200, JSON.stringify(middle.body));

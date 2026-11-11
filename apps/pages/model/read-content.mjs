@@ -13,7 +13,8 @@ import {
   readVisibleText,
 } from "./native-read.mjs";
 import { Alignment, CodeBlockLanguage, TaskChecked } from "./wordgard-doc.mjs";
-import { projectedBlock } from "./richtext-page.mjs";
+import { blockMarkdown } from "./richtext-page.mjs";
+import { addressIndex, addressKind, blockAddress } from "./addresses.mjs";
 
 const utf8 = new TextEncoder();
 const fail = (status, code, message, details) => {
@@ -29,19 +30,17 @@ function validateSelectors(doc, args) {
     invalid("Read arguments must be an object");
   if (args.include_content !== undefined && typeof args.include_content !== "boolean")
     invalid("include_content must be a boolean");
-  const modes = ["section", "search", "node_range"].filter((key) => args[key] !== undefined);
-  if (modes.length > 1) invalid("Use only one of section, search, or node_range");
-  if (args.block_ids !== undefined) {
-    if (
-      !Array.isArray(args.block_ids) ||
-      args.block_ids.length < 1 ||
-      args.block_ids.length > 100 ||
-      args.block_ids.some((id) => !boundedString(id, 128)) ||
-      new Set(args.block_ids).size !== args.block_ids.length
-    )
-      invalid("block_ids must contain 1 to 100 unique block IDs of up to 128 characters");
-    if (args.node_range !== undefined) invalid("node_range cannot be combined with block_ids");
-  }
+  if (args.section !== undefined && args.search !== undefined)
+    invalid("Use only one of section or search");
+  if (
+    args.node_ids !== undefined &&
+    (!Array.isArray(args.node_ids) ||
+      args.node_ids.length < 1 ||
+      args.node_ids.length > 100 ||
+      args.node_ids.some((id) => typeof id !== "string") ||
+      new Set(args.node_ids).size !== args.node_ids.length)
+  )
+    invalid("node_ids must contain 1 to 100 unique ids from read_page");
   if (args.section !== undefined && !boundedString(args.section, 1024))
     invalid("section must be a nonempty heading text of up to 1024 characters");
   if (
@@ -67,34 +66,47 @@ function validateSelectors(doc, args) {
       args.context_nodes > 2)
   )
     invalid("context_nodes requires search and an integer from 0 to 2");
-  if (args.node_range !== undefined) {
-    const range = args.node_range;
-    if (
-      !range ||
-      typeof range !== "object" ||
-      Array.isArray(range) ||
-      Object.keys(range).some((key) => !["block_id", "from", "to"].includes(key)) ||
-      !boundedString(range.block_id, 128) ||
-      !Number.isSafeInteger(range.from) ||
-      !Number.isSafeInteger(range.to) ||
-      range.from < 0 ||
-      range.to <= range.from
-    )
-      invalid("node_range requires block_id and zero-based integers 0 <= from < to");
+}
+
+/** What `node_ids` names: the keys of the blocks it names, and the
+ * addresses of the nodes it names. A block's id selects the block, a node's
+ * id the node. With section or search it names blocks only, which scope
+ * them. */
+function namedAddresses(doc, args) {
+  if (args.node_ids === undefined) return null;
+  const index = addressIndex(doc);
+  const blocks = new Set(),
+    nodes = new Set();
+  for (const id of args.node_ids) {
+    let resolved;
+    try {
+      resolved = addressKind(index, id);
+    } catch (error) {
+      if (error.code === "node_not_found") missing(`Nothing in this Page has node_id ${id}`);
+      invalid(error.message.replace("node_id must", "Each node_ids entry must"));
+    }
+    if (resolved.kind === "image")
+      fail(
+        400,
+        "wrong_address_kind",
+        `${id} names an image; read_page reports it in its node's summary.images. node_ids takes a block's or a node's id.`,
+      );
+    if (resolved.kind === "block") blocks.add(resolved.key);
+    else if (args.section !== undefined || args.search !== undefined)
+      invalid("With section or search, node_ids takes block ids only");
+    else nodes.add(id);
   }
-  for (const id of args.block_ids ?? [])
-    if (!Object.hasOwn(doc.blocks ?? {}, id)) missing(`Block not found: ${id}`);
-  if (args.node_range && !Object.hasOwn(doc.blocks ?? {}, args.node_range.block_id))
-    missing(`Block not found: ${args.node_range.block_id}`);
+  return { blocks, nodes };
 }
 
 const visibleText = readVisibleText;
 
 const markdownFor = readMarkdown;
 
-// node_index addresses a top-level rich-text node in this captured document
-// version; lists, tables and other containers stay intact. node_id
-// (model/node-ids.mjs) is the stable name for the same node, where it has one.
+// Every top-level rich-text node of this captured document version, in
+// order; lists, tables and other containers stay intact. node_id
+// (model/node-ids.mjs) is the node's stable name, where it has one, and
+// block its block's (model/addresses.mjs).
 function indexNodes(doc) {
   const nodes = [],
     trees = new Map(),
@@ -102,6 +114,7 @@ function indexNodes(doc) {
     anchorsByBlock = headingAnchorsByBlock(doc);
   for (const blockId of orderedBlockIds(doc)) {
     const tree = nativeRead(doc.blocks[blockId], doc.page_id),
+      block = blockAddress(doc, blockId),
       ids = readableNodeIds(doc, blockId, tree),
       imageIds = readableImageIds(doc, blockId, tree),
       anchors = blockAnchors(tree, anchorsByBlock.get(blockId) ?? []);
@@ -109,6 +122,7 @@ function indexNodes(doc) {
     tree.nodes.forEach((node, nodeIndex) => {
       const entry = {
         blockId,
+        block,
         nodeIndex,
         node,
         nodeId: ids[nodeIndex]?.id ?? null,
@@ -189,7 +203,7 @@ export function nodeFields(node, { pageId, maxItems = Infinity, imageIds, metada
         const darkAsset = parseAssetPath(dark_src);
         images.push({
           path,
-          image_id: imageIds?.get(child) ?? null,
+          node_id: imageIds?.get(child) ?? null,
           src: String(src ?? "").slice(0, 4096),
           alt: String(alt ?? "").slice(0, 2048),
           title: title == null ? null : String(title).slice(0, 2048),
@@ -276,12 +290,13 @@ function ownNodeFields(node, { pageId, maxItems, metadata }) {
 
 function outlineEntry(entry, pageId) {
   return {
-    block_id: entry.blockId,
-    node_index: entry.nodeIndex,
     // Stable across edits. Null for a paragraph of unmarked text, which a
     // merge can leave and the next write to the block marks, and in a block
     // holding a node this build can't place (readableNodeIds).
     node_id: entry.nodeId,
+    // A block's first node names the block; the entries after it, up to the
+    // next one that names a block, are in the same block.
+    ...(entry.nodeIndex === 0 && { block: entry.block }),
     // The agent-facing name set_node and insert_node take (node-registry.mjs).
     type: readKind(entry.node),
     heading_path: entry.headingPath,
@@ -304,7 +319,7 @@ function outlineEntry(entry, pageId) {
   };
 }
 
-function selectedNodes(nodes, trees, args, inScope) {
+function selectedNodes(nodes, args, inScope) {
   if (args.section !== undefined) {
     const candidates = nodes.filter((entry) => inScope(entry) && entry.heading === args.section);
     if (!candidates.length) missing("Section heading not found");
@@ -316,8 +331,7 @@ function selectedNodes(nodes, trees, args, inScope) {
         {
           total: candidates.length,
           candidates: candidates.slice(0, 20).map((entry) => ({
-            block_id: entry.blockId,
-            node_index: entry.nodeIndex,
+            node_id: entry.nodeId,
             level: entry.level,
           })),
         },
@@ -359,73 +373,81 @@ function selectedNodes(nodes, trees, args, inScope) {
       },
     };
   }
-  const range = args.node_range;
-  if (range) {
-    if (range.to > trees.get(range.block_id).nodes.length)
-      missing("node_range exceeds this block's top-level nodes");
-    return {
-      nodes: nodes.filter(
-        (entry) =>
-          entry.blockId === range.block_id &&
-          entry.nodeIndex >= range.from &&
-          entry.nodeIndex < range.to,
-      ),
-      selection: { type: "node_range", ...range },
-    };
-  }
   return { nodes: nodes.filter(inScope) };
 }
 
+/** A whole block as an agent reads it. */
+export const agentBlock = (doc, key) => ({
+  node_id: blockAddress(doc, key),
+  position: doc.blocks[key].position,
+  markdown: blockMarkdown(doc.blocks[key], doc.page_id),
+});
+
+/** Runs of consecutive selected nodes in one block, as partial blocks: the
+ * block's id, its position, the run's Markdown and the run's node ids (null
+ * for a node with no id). */
 function projectedSlices(doc, nodes) {
   const slices = [];
   for (const entry of nodes) {
     const prior = slices.at(-1);
     if (prior?.blockId === entry.blockId && prior.to === entry.nodeIndex) {
       prior.to++;
-      prior.nodes.push(entry.node);
-    } else
-      slices.push({
-        blockId: entry.blockId,
-        from: entry.nodeIndex,
-        to: entry.nodeIndex + 1,
-        nodes: [entry.node],
-      });
+      prior.entries.push(entry);
+    } else slices.push({ blockId: entry.blockId, to: entry.nodeIndex + 1, entries: [entry] });
   }
-  return slices.map(({ blockId, from, to, nodes: slice }) => {
-    return {
-      id: blockId,
-      position: doc.blocks[blockId].position,
-      markdown: markdownFor(slice),
-      partial: true,
-      node_range: { block_id: blockId, from, to },
-    };
-  });
+  return slices.map(({ blockId, entries }) => ({
+    node_id: entries[0].block,
+    position: doc.blocks[blockId].position,
+    markdown: markdownFor(entries.map((entry) => entry.node)),
+    partial: true,
+    nodes: entries.map((entry) => entry.nodeId),
+  }));
 }
+
+/** A node node_ids names, read whole: its Markdown and every typed field,
+ * with no per-item cap, as the change feed reports a node. */
+const namedNode = (entry, pageId) => ({
+  node_id: entry.nodeId,
+  block: entry.block,
+  type: readKind(entry.node),
+  heading_path: entry.headingPath,
+  markdown: markdownFor([entry.node]),
+  ...nodeFields(entry.node, { pageId, imageIds: entry.imageIds, metadata: entry.metadata }),
+});
 
 /** Pure projection of one captured Automerge document. The caller binds the
  * response to its heads and enforces response/outline budgets. No bytes are
  * silently omitted here. Wrapper-only options are deliberately ignored.
+ * `nodes` is present when node_ids names a node.
  */
 export function projectReadContent(doc, args = {}) {
   validateSelectors(doc, args);
-  const { nodes, trees } = indexNodes(doc),
-    ids = args.block_ids ? new Set(args.block_ids) : null,
-    inScope = (entry) => !ids || ids.has(entry.blockId),
-    chosen = selectedNodes(nodes, trees, args, inScope),
+  const named = namedAddresses(doc, args),
+    { nodes, trees } = indexNodes(doc),
+    inScope = (entry) => !named || named.blocks.has(entry.blockId) || named.nodes.has(entry.nodeId),
+    chosen = selectedNodes(nodes, args, inScope),
     outline = nodes.filter(inScope).map((entry) => outlineEntry(entry, doc.page_id)),
-    orderedIds = [...trees.keys()].filter((id) => !ids || ids.has(id));
+    content = args.include_content !== false,
+    selectedNodeEntries = named ? nodes.filter((entry) => named.nodes.has(entry.nodeId)) : [];
+  if (named && selectedNodeEntries.length !== named.nodes.size)
+    missing("A node in node_ids has no id in this build's reading of its block");
+  const blocks = !content
+    ? []
+    : chosen.selection
+      ? projectedSlices(doc, chosen.nodes)
+      : [...trees.keys()]
+          .filter((key) => !named || named.blocks.has(key))
+          .map((key) => agentBlock(doc, key));
   return {
-    blocks:
-      args.include_content === false
-        ? []
-        : chosen.selection
-          ? projectedSlices(doc, chosen.nodes)
-          : orderedIds.map((id) => projectedBlock(doc, id)),
+    blocks,
+    ...(named?.nodes.size && {
+      nodes: content ? selectedNodeEntries.map((entry) => namedNode(entry, doc.page_id)) : [],
+    }),
     outline,
     ...(chosen.selection
       ? { selection: chosen.selection }
-      : ids
-        ? { selection: { type: "blocks", block_ids: orderedIds } }
+      : named
+        ? { selection: { type: "nodes", node_ids: [...args.node_ids] } }
         : {}),
   };
 }

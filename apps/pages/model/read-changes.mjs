@@ -13,6 +13,7 @@ import {
   readFingerprint,
 } from "./native-read.mjs";
 import { blockMarkdown } from "./richtext-page.mjs";
+import { blockAddress } from "./addresses.mjs";
 
 export const CHANGE_READ_DEFAULT_BYTES = 128 * 1024;
 const encoder = new TextEncoder();
@@ -66,9 +67,9 @@ function options(args) {
   };
 }
 
-// node_index is a revision-bound position. A node's identity is its text
-// object plus its node_id (model/node-ids.mjs), which survives text and mark
-// changes and earlier insertions. Destroying a marker can produce
+// A node's identity is its text object plus its node_id
+// (model/node-ids.mjs), which survives text and mark changes and earlier
+// insertions. Destroying a marker can produce
 // delete+insert; this is a net projection, not an edit audit. A block whose
 // nodes have no ids (a marker the binding can't place) returns null and is
 // reported as a whole block: matching its nodes by index
@@ -97,7 +98,6 @@ function nativeNodes(doc, blockId, headings) {
     entries.push({
       // A paragraph of unmarked text has no id; its index stands in.
       key: `${objectId}:${nodeId ?? `unmarked:${nodeIndex}`}`,
-      node_index: nodeIndex,
       node_id: nodeId,
       type: readKind(node),
       heading_path: headings.map((heading) => heading.text),
@@ -118,24 +118,28 @@ function index(doc) {
   for (const id of orderedBlockIds(doc)) {
     const block = doc.blocks[id];
     const nodes = nativeNodes(doc, id, headings);
-    blocks.set(id, { block, pageId: doc.page_id, nodes });
+    blocks.set(id, { block, address: blockAddress(doc, id), pageId: doc.page_id, nodes });
     // A block without node ids can contain headings, but has no native
     // identity. Do not invent a heading path across that boundary.
     if (!nodes) headings.length = 0;
   }
   return blocks;
 }
-function address(entry, previous = false) {
+/** A changed node's address: its id (a deleted node's id, so a caller can
+ * drop what it held under it), its block's id, and its type. A deleted node
+ * gets only its old address and the id of the node it came before at the
+ * baseline (null for the last), never its historical text or path. */
+function address(block, entry, change, { before } = {}) {
   return {
-    [previous ? "before_node_index" : "node_index"]: entry.node_index,
-    // A deleted node's id, so a caller can drop what it held under it.
     node_id: entry.node_id,
+    block,
+    scope: "node",
+    change,
     type: entry.type,
-    // A deleted node gets only its old address, never its historical text/path.
-    ...(!previous && { heading_path: entry.heading_path }),
+    ...(before === undefined ? { heading_path: entry.heading_path } : { before_node_id: before }),
   };
 }
-function nodeChanges(blockId, before, after) {
+function nodeChanges(block, before, after) {
   const previous = new Map(before.map((entry) => [entry.key, entry])),
     current = new Map(after.map((entry) => [entry.key, entry])),
     oldOrder = new Map(
@@ -145,23 +149,21 @@ function nodeChanges(blockId, before, after) {
       after.filter((entry) => previous.has(entry.key)).map((entry, index) => [entry.key, index]),
     ),
     changes = [];
-  for (const entry of before)
+  for (const [index, entry] of before.entries())
     if (!current.has(entry.key))
-      changes.push({
-        block_id: blockId,
-        scope: "node",
-        change: "deleted",
-        ...address(entry, true),
-      });
+      changes.push(
+        address(block, entry, "deleted", { before: before[index + 1]?.node_id ?? null }),
+      );
   for (const entry of after) {
     const prior = previous.get(entry.key),
       moved = prior && oldOrder.get(entry.key) !== newOrder.get(entry.key);
     if (!prior || prior.fingerprint !== entry.fingerprint || moved)
       changes.push({
-        block_id: blockId,
-        scope: "node",
-        change: !prior ? "inserted" : prior.fingerprint !== entry.fingerprint ? "updated" : "moved",
-        ...address(entry),
+        ...address(
+          block,
+          entry,
+          !prior ? "inserted" : prior.fingerprint !== entry.fingerprint ? "updated" : "moved",
+        ),
         markdown: entry.markdown,
         ...entry.fields,
         ...(moved && prior.fingerprint !== entry.fingerprint ? { moved: true } : {}),
@@ -174,26 +176,30 @@ function contentChanges(before, after) {
   const previous = index(before),
     current = index(after),
     changes = [];
-  for (const id of previous.keys())
-    if (!current.has(id)) changes.push({ block_id: id, scope: "block", change: "deleted" });
+  // A block is named by its id; a deleted one by the id it had at the
+  // baseline, which is the id it always had.
+  for (const [id, prior] of previous)
+    if (!current.has(id))
+      changes.push({ node_id: prior.address, scope: "block", change: "deleted" });
   for (const [id, entry] of current) {
     const prior = previous.get(id);
     if (!prior) {
       changes.push({
-        block_id: id,
+        node_id: entry.address,
         scope: "block",
         change: "inserted",
         ...(entry.nodes ? {} : { markdown: blockMarkdown(entry.block, entry.pageId) }),
       });
-      if (entry.nodes) changes.push(...nodeChanges(id, [], entry.nodes));
+      if (entry.nodes) changes.push(...nodeChanges(entry.address, [], entry.nodes));
       continue;
     }
     if (String(prior.block.position ?? "") !== String(entry.block.position ?? ""))
-      changes.push({ block_id: id, scope: "block", change: "moved" });
-    if (prior.nodes && entry.nodes) changes.push(...nodeChanges(id, prior.nodes, entry.nodes));
+      changes.push({ node_id: entry.address, scope: "block", change: "moved" });
+    if (prior.nodes && entry.nodes)
+      changes.push(...nodeChanges(entry.address, prior.nodes, entry.nodes));
     else if (blockMarkdown(prior.block, prior.pageId) !== blockMarkdown(entry.block, entry.pageId))
       changes.push({
-        block_id: id,
+        node_id: entry.address,
         scope: "block",
         change: "updated",
         markdown: blockMarkdown(entry.block, entry.pageId),

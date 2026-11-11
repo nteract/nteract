@@ -6,6 +6,7 @@ import fc from "fast-check";
 import { build } from "esbuild";
 import { commentDraftsMarkdown, pageMarkdown, unsentCommentsMarkdown } from "./markdown-export.mjs";
 import { applyPageOperation, createPageData, initializePage, projectPage } from "./page.mjs";
+import { blockAddress } from "./addresses.mjs";
 import { nativeReadSpans, readMarkdown } from "./native-read.mjs";
 import { codeTextUnmarked } from "./richtext-format.mjs";
 import { parseAgentMarkdown } from "./markdown-import.mjs";
@@ -71,8 +72,13 @@ test("export uses live rich text and fractional block order from the Page projec
         arguments: {
           operations: [
             { op: "set_title", title: "Current title" },
-            { op: "replace_match", block_id: first, match_text: "Old", replacement: "Current" },
-            { op: "insert_markdown", after_block_id: null, markdown: "First section" },
+            {
+              op: "replace_match",
+              node_id: blockAddress(doc, first),
+              match_text: "Old",
+              replacement: "Current",
+            },
+            { op: "insert_markdown", after_node_id: null, markdown: "First section" },
           ],
         },
       }),

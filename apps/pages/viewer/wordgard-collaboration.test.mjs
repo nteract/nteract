@@ -7,6 +7,7 @@ import {
   projectComments as projectCommentsOf,
 } from "../model/comments.mjs";
 import { createProgressTargets } from "../model/presence.mjs";
+import { blockAddress } from "../model/addresses.mjs";
 import { textPath } from "../model/richtext.mjs";
 import { richFromSource } from "../model/richtext-test-support.mjs";
 import { stampFeatures } from "../model/schema-features.mjs";
@@ -372,7 +373,7 @@ test("agent progress decorates anchored Wordgard text without publishing a caret
   const h = harness(fixture("Hello **world** and goodbye."));
   const targets = createProgressTargets(
     h.replica.doc,
-    [{ block_id: "first", match_text: "world" }],
+    [{ node_id: blockAddress(h.replica.doc, "first"), match_text: "world" }],
     A.getHeads(h.replica.doc),
   );
   const progress = {

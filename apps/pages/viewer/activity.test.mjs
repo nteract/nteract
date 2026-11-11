@@ -9,6 +9,7 @@ import {
   pageActivity,
 } from "./activity.mjs";
 import { createProgressTargets } from "../model/presence.mjs";
+import { blockAddress } from "../model/addresses.mjs";
 import { textPath } from "../model/richtext.mjs";
 import { richFromSource } from "../model/richtext-test-support.mjs";
 
@@ -105,7 +106,7 @@ test("progress ranges follow edits, detach on deletion, and never mutate the doc
   doc = A.change(doc, (d) => richFromSource(d, "first"));
   const targets = createProgressTargets(
     doc,
-    [{ block_id: "first", match_text: "world" }],
+    [{ node_id: blockAddress(doc, "first"), match_text: "world" }],
     A.getHeads(doc),
   );
   const progress = { ...message().progress[0], targets, until: 2000 };

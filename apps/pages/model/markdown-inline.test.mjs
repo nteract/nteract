@@ -8,6 +8,7 @@ import { parseAgentMarkdown } from "./markdown-import.mjs";
 import { encode, Paragraph } from "./wordgard-doc.mjs";
 import { tokenizer } from "./markdown-tokenizer.mjs";
 import { createPageData, initializePage, applyPageOperation, projectPage } from "./page.mjs";
+import { blockAddress } from "./addresses.mjs";
 
 // Test-only previous inline contract over the retained PM-returning full parser.
 function previous(source) {
@@ -143,7 +144,7 @@ test("real replacement API writes mixed marks without replacing native text obje
         operations: [
           {
             op: "replace_match",
-            block_id: id,
+            node_id: blockAddress(doc, id),
             match_text: "target",
             replacement_markdown: "**bold** [link](https://example.org) 😀",
           },

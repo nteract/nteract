@@ -1,6 +1,6 @@
 import * as A from "@automerge/automerge";
-import { projectPage } from "../model/page.mjs";
-import { projectReadContent } from "../model/read-content.mjs";
+import { orderedBlockIds } from "../model/order.mjs";
+import { agentBlock, projectReadContent } from "../model/read-content.mjs";
 import { projectReadComments } from "../model/read-comments.mjs";
 import { documentFeatures } from "../model/schema-features.mjs";
 
@@ -8,12 +8,11 @@ export const DEFAULT_READ_BYTES = 128 * 1024;
 const encoder = new TextEncoder();
 const bytes = (value) => encoder.encode(JSON.stringify(value)).byteLength;
 const selectorKeys = [
-  "block_ids",
+  "node_ids",
   "section",
   "section_occurrence",
   "search",
   "context_nodes",
-  "node_range",
   "include_content",
   "include_presence",
   "comments",
@@ -22,14 +21,7 @@ const selectorKeys = [
   "max_bytes",
   "revision",
 ];
-const commentKeys = [
-  "state",
-  "block_id",
-  "thread_ids",
-  "include_messages",
-  "max_bytes",
-  "revision",
-];
+const commentKeys = ["state", "node_id", "thread_ids", "include_messages", "max_bytes", "revision"];
 /** Read refusals that reach the caller with their own code. */
 export const READ_ERROR_CODES = new Set([
   "invalid_read_selector",
@@ -38,6 +30,7 @@ export const READ_ERROR_CODES = new Set([
   "invalid_comment_selector",
   "comment_not_found",
   "read_revision_changed",
+  "wrong_address_kind",
 ]);
 function invalid(message) {
   throw Object.assign(new Error(message), { status: 400, code: "invalid_read_selector" });
@@ -67,8 +60,8 @@ function validate(operation, args) {
  * `resync_required`, a known one that isn't current `read_revision_changed`. */
 async function checkRevision(args, heads, offset, revisions) {
   const expected = args.revision;
-  if (expected === undefined && (args.node_range !== undefined || offset > 0))
-    invalid("revision from the outline read is required for node_range and outline pagination");
+  if (expected === undefined && offset > 0)
+    invalid("revision from the outline read is required for outline pagination");
   if (expected === undefined) return;
   let named;
   try {
@@ -79,10 +72,10 @@ async function checkRevision(args, heads, offset, revisions) {
     throw error;
   }
   if (JSON.stringify([...named].sort()) !== JSON.stringify([...heads].sort()))
-    throw Object.assign(
-      new Error("Page changed; read a fresh outline before using its node addresses."),
-      { status: 409, code: "read_revision_changed" },
-    );
+    throw Object.assign(new Error("Page changed; read a fresh outline before paging through it."), {
+      status: 409,
+      code: "read_revision_changed",
+    });
 }
 function outlinePage(entries, offset, limit) {
   const selected = entries.slice(offset, offset + limit);
@@ -130,9 +123,15 @@ export async function readTool(
         comments: projectReadComments(doc, { state: "open", ...filters }, commentsDoc),
       };
     } else if (Object.keys(args).every((key) => key === "page_id")) {
-      // Keep the existing default contract for clients with cached tool schemas.
+      // A read with no selector: every block whole and every thread with its
+      // messages, without an outline or a budget.
       legacy = true;
-      payload = projectPage(doc, commentsDoc);
+      payload = {
+        page_id: doc.page_id,
+        title: doc.title,
+        blocks: orderedBlockIds(doc).map((key) => agentBlock(doc, key)),
+        comments: projectReadComments(doc, { state: "all" }, commentsDoc),
+      };
     } else {
       content = projectReadContent(doc, args);
       const mode = args.comments ?? (args.include_content === false ? "none" : "summary");
@@ -140,6 +139,7 @@ export async function readTool(
         page_id: doc.page_id,
         title: doc.title,
         blocks: content.blocks,
+        ...(content.nodes && { nodes: content.nodes }),
         outline: outline(),
         comments_mode: mode,
         comments:
@@ -205,7 +205,7 @@ export async function readTool(
     body = {
       page_id: doc.page_id,
       error:
-        "Read exceeds max_bytes. Use the outline to select a section or node_range; reduce outline_limit, request comments:none or list_page_comments with thread_ids/include_messages:false.",
+        "Read exceeds max_bytes. Use the outline to select a section or node_ids; reduce outline_limit, request comments:none or list_page_comments with thread_ids/include_messages:false.",
       code: "read_budget_exceeded",
       max_bytes: settings.maxBytes,
       ...common,
@@ -218,7 +218,7 @@ export async function readTool(
     }
     if (!body.outline.entries.length && body.outline.total > body.outline.offset)
       body.hint =
-        "An outline entry exceeds this budget. Increase max_bytes or select a known block/node range.";
+        "An outline entry exceeds this budget. Increase max_bytes or select known blocks or nodes with node_ids.";
     if (!fits(body))
       body = {
         error: "Revision metadata exceeds max_bytes; retry with a larger budget.",

@@ -14,6 +14,7 @@ import { blockMarkdown, parseAgentMarkdown, textPath } from "./richtext.mjs";
 import { updateSpansConfig } from "./marks.mjs";
 import { stampSpans } from "./schema-features.mjs";
 import { textSegments } from "./replace-match.mjs";
+import { blockAddress } from "./addresses.mjs";
 import { projectComments } from "./comments.mjs";
 import { comment, newCommentsDoc } from "./comments-test-support.mjs";
 import { decode, encode, Paragraph, schema } from "../viewer/wordgard-model.mjs";
@@ -129,7 +130,8 @@ function edit(doc, id, list) {
   for (const entry of list) {
     const next = resolve(doc, id, entry);
     if (!next) continue;
-    const op = { ...next.op, block_id: id };
+    // A delete_node intent names its node; the others match anywhere in the block.
+    const op = { node_id: blockAddress(doc, id), ...next.op };
     try {
       doc = A.change(doc, (draft) =>
         applyPageOperation(draft, { operation: next.operation, arguments: { operations: [op] } }),
@@ -241,7 +243,7 @@ test("a semantically unchanged read-back write commutes with a peer's concurrent
               operations: [
                 {
                   op: "format_match",
-                  block_id: id,
+                  node_id: blockAddress(doc, id),
                   match_text: segment.text,
                   occurrence: occurrence(
                     textSegments(doc.blocks[id]),
@@ -260,12 +262,21 @@ test("a semantically unchanged read-back write commutes with a peer's concurrent
         const rewrite = A.change(A.clone(doc, { actor: ACTORS[0] }), (draft) =>
           applyPageOperation(draft, {
             operation: "edit_page",
-            arguments: { operations: [{ op: "replace_block_markdown", block_id: id, markdown }] },
+            arguments: {
+              operations: [
+                { op: "replace_block_markdown", node_id: blockAddress(doc, id), markdown },
+              ],
+            },
           }),
         );
         const targets = words(doc, id).filter((word) => word.segment.offset === segment.offset);
         const { word, occurrence: at } = targets[wordPick % targets.length];
-        const unmark = { op: "format_match", block_id: id, match_text: word, occurrence: at };
+        const unmark = {
+          op: "format_match",
+          node_id: blockAddress(doc, id),
+          match_text: word,
+          occurrence: at,
+        };
         const peer = A.change(A.clone(doc, { actor: ACTORS[1] }), (draft) =>
           applyPageOperation(draft, {
             operation: "edit_page",
@@ -318,7 +329,9 @@ test("unchanged multi-span formatting writes no ops and preserves a peer's unmar
         applyPageOperation(draft, {
           operation: "edit_page",
           arguments: {
-            operations: [{ op: "replace_block_markdown", block_id: id, markdown: source }],
+            operations: [
+              { op: "replace_block_markdown", node_id: blockAddress(doc, id), markdown: source },
+            ],
           },
         }),
       ),
@@ -332,7 +345,12 @@ test("unchanged multi-span formatting writes no ops and preserves a peer's unmar
           operation: "edit_page",
           arguments: {
             operations: [
-              { op: "format_match", block_id: id, match_text: "ab", remove: ["strong"] },
+              {
+                op: "format_match",
+                node_id: blockAddress(doc, id),
+                match_text: "ab",
+                remove: ["strong"],
+              },
             ],
           },
         }),

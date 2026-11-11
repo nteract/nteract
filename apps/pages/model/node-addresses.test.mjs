@@ -1,9 +1,9 @@
 // Node addressing against recorded expectations. model/node-addresses.golden.json
 // holds, for every input in test/address-inputs.mjs (hand-written stored
 // shapes, the Markdown corpus written as rich text, seeded random editor
-// trees), the node ids, outline node_index and types read_page reports, and
-// the node ranges and per-text node_index node-addresses.mjs computes. Agents
-// address nodes by these values, so a change here is a tool-contract change.
+// trees), the node ids and types read_page reports, and the node ranges and
+// per-text node index node-addresses.mjs computes. Agents address nodes by
+// these values, so a change here is a tool-contract change.
 //
 // Regenerate only when an input or an intended behavior changes:
 // PAGES_UPDATE_ADDRESSES=1 npm exec -- tsx --tsconfig tsconfig.json --test model/node-addresses.test.mjs
@@ -15,7 +15,8 @@ import * as A from "@automerge/automerge";
 import { ancestryAt, blockAddresses, nodeIndexAt } from "./node-addresses.mjs";
 import { nodeIds, readableNodeIds } from "./node-ids.mjs";
 import { projectReadContent } from "./read-content.mjs";
-import { visibleNodeRange, visibleRangeAddress } from "./replace-match.mjs";
+import { visibleRangeAddress } from "./replace-match.mjs";
+import { addressIndex, blockAddress, nodeAddresses, resolveAddress } from "./addresses.mjs";
 import { textPath } from "./richtext-format.mjs";
 import { nativeRead } from "./native-read.mjs";
 import { blockMarkdown, repairBlockMarkers } from "./richtext-page.mjs";
@@ -32,7 +33,7 @@ const hash = (spans) =>
     .digest("hex")
     .slice(0, 16);
 
-/** Each text span's first character's node_index, in span order. */
+/** Each text span's first character's top-level node index, in span order. */
 function textIndexes(addresses, spans) {
   const out = [];
   let at = 0;
@@ -99,7 +100,7 @@ test("frozen inputs are the ones the golden file was made from", () => {
   );
 });
 
-test("node ids, outline node_index and ranges match the frozen expectations", () => {
+test("node ids, outline entries and ranges match the frozen expectations", () => {
   const golden = new Map(
     JSON.parse(readFileSync(GOLDEN, "utf8")).map((entry) => [entry.name, entry]),
   );
@@ -114,11 +115,11 @@ test("node ids, outline node_index and ranges match the frozen expectations", ()
     const { name: _name, hash: _hash, ...frozen } = expected;
     assert.deepEqual(observed, frozen, name);
     if (!outline) continue;
-    // The outline's node_index counts top-level nodes, and its node_id is the
-    // cursor at the frozen marker.
+    // The outline has one entry per top-level node; the first names the
+    // block, and each node_id is the cursor at the frozen marker.
     assert.deepEqual(
-      outline.map((entry) => entry.node_index),
-      frozen.ids.map((_at, index) => index),
+      outline.map((entry) => entry.block),
+      frozen.ids.map((_at, index) => (index === 0 ? blockAddress(doc, id) : undefined)),
       name,
     );
     assert.deepEqual(
@@ -129,7 +130,7 @@ test("node ids, outline node_index and ranges match the frozen expectations", ()
   }
 });
 
-test("replace_match scopes node_index and addresses passages by the frozen ranges", () => {
+test("node ids resolve to the frozen ranges, and passages address the frozen nodes", () => {
   const golden = new Map(
     JSON.parse(readFileSync(GOLDEN, "utf8")).map((entry) => [entry.name, entry]),
   );
@@ -146,16 +147,31 @@ test("replace_match scopes node_index and addresses passages by the frozen range
     const step = Math.ceil(runs / 8) || 1;
     const sampled = expected.text.filter((_index, run) => run % step === 0);
     try {
-      for (let index = 0; index < expected.ranges.length; index++) {
-        const { start, end } = visibleNodeRange(doc, id, index);
-        observed.ranges.push([start, end]);
+      // A paragraph of unmarked text has no id, and a node before one has no
+      // marked end until a write marks the block (page.mjs), so it resolves
+      // to no range. The frozen range stands for each.
+      const index = addressIndex(doc);
+      const addresses = nodeAddresses(doc, id);
+      for (const [n, address] of addresses.entries()) {
+        if (address === null) {
+          observed.ranges.push(expected.ranges[n]);
+          continue;
+        }
+        if (addresses[n + 1] === null) {
+          assert.throws(() => resolveAddress(index, address), /unmarked text/);
+          observed.ranges.push(expected.ranges[n]);
+          continue;
+        }
+        const resolved = resolveAddress(index, address);
+        assert.equal(resolved.index, n);
+        observed.ranges.push([resolved.start, resolved.end]);
       }
       let at = 0;
       let run = 0;
       for (const span of A.spans(doc, path)) {
         if (span.type === "text" && run++ % step === 0) {
           const end = at + (/[\ud800-\udbff]/.test(text[at]) ? 2 : 1);
-          observed.text.push(visibleRangeAddress(doc, id, at, end).node_index);
+          observed.text.push(visibleRangeAddress(doc, id, at, end).index);
         }
         at += span.type === "text" ? span.value.length : 1;
       }
@@ -287,7 +303,14 @@ test("an inline node continues the node before it when that node can hold it, an
       applyPageOperation(draft, {
         operation: "edit_page",
         arguments: {
-          operations: [{ op: "replace_match", block_id: id, match_text: match, replacement: "w" }],
+          operations: [
+            {
+              op: "replace_match",
+              node_id: blockAddress(doc, id),
+              match_text: match,
+              replacement: "w",
+            },
+          ],
         },
       }),
     );

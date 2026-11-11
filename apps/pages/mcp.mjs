@@ -84,27 +84,31 @@ const revision = {
   pattern: "^[rc][1-9][0-9]{0,15}$",
   description: "revision from your last read or receipt. stale_revision carries current_revision.",
 };
+/** An id from a read or receipt: a block's, a node's or an image's. The host
+ * checks its shape (model/addresses.mjs). */
+const address = { type: "string", maxLength: 192 };
 const readRevision = {
   ...revision,
   description:
-    "Require this revision; needed for node_range or outline_offset > 0. Mismatch: read_revision_changed.",
+    "Require this revision; needed for outline_offset > 0. Mismatch: read_revision_changed.",
 };
 const readSelectors = {
   revision: readRevision,
-  block_ids: {
+  node_ids: {
     type: "array",
-    items: { type: "string", minLength: 1, maxLength: 128 },
+    items: address,
     minItems: 1,
     maxItems: 100,
     uniqueItems: true,
-    description: "Return these blocks, or narrow section/search to these blocks.",
+    description:
+      "Block ids return those blocks; node ids return those nodes in nodes, with every field. With section or search: block ids only, to narrow them.",
   },
   section: {
     type: "string",
     minLength: 1,
     maxLength: 1024,
     description:
-      "Exact heading text; returns through the next same-or-higher heading. Not with search or node_range.",
+      "Exact heading text; returns through the next same-or-higher heading. Not with search.",
   },
   section_occurrence: {
     type: "integer",
@@ -123,17 +127,6 @@ const readSelectors = {
     minimum: 0,
     maximum: 2,
     description: "Neighbors around each search hit (default 1).",
-  },
-  node_range: {
-    type: "object",
-    properties: {
-      block_id: string,
-      from: { type: "integer", minimum: 0 },
-      to: { type: "integer", minimum: 1 },
-    },
-    required: ["block_id", "from", "to"],
-    additionalProperties: false,
-    description: "Zero-based, half-open node range from this revision's outline.",
   },
   include_content: {
     type: "boolean",
@@ -198,18 +191,11 @@ const matchProperties = {
     description: "Literal text just after the match.",
   },
 };
-const nodeIndex = {
-  type: "integer",
-  minimum: 0,
-  description: "Restrict matching to this top-level node index at revision.",
-};
 const locator = {
-  block_id: string,
   match_text: matchProperties.match_text,
   context_before: matchProperties.context_before,
   context_after: matchProperties.context_after,
   occurrence: matchProperties.occurrence,
-  node_index: nodeIndex,
 };
 // set_node's attrs schema, from model/node-registry.mjs: one property per
 // settable attribute, under the name read_page reports.
@@ -253,9 +239,13 @@ const editOperation = {
         "set_node",
       ),
       description:
-        "set_title: title. replace_block_markdown: block_id, markdown. insert_markdown: markdown, after_block_id. move_block: block_id, after_block_id. delete_block: block_id. insert_image: asset_id, alt; optional dark_asset_id, title, after_block_id. set_image: block_id, image_id and the fields to change. insert_node: node, after_block_id. delete_node: block_id, node_id. replace_match: block_id, match_text, replacement or replacement_markdown. format_match: block_id, match_text, add or remove; optional all. set_node: block_id, match_text, type or attrs.",
+        "set_title: title. replace_block_markdown: node_id, markdown. insert_markdown: markdown, after_node_id. move_block: node_id, after_node_id. delete_block: node_id. insert_image: asset_id, alt; optional dark_asset_id, title, after_node_id. set_image: node_id and the fields to change. insert_node: node, after_node_id. delete_node: node_id. replace_match: node_id, match_text, replacement or replacement_markdown. format_match: node_id, match_text, add or remove; optional all. set_node: node_id, match_text, type or attrs.",
     },
-    block_id: string,
+    node_id: {
+      ...address,
+      description:
+        "Block ops: a block's id. delete_node: a node's. set_image: an image's. Match ops: a node's id matches in it, a block's in the whole block.",
+    },
     title: {
       type: ["string", "null"],
       maxLength: 2048,
@@ -263,9 +253,10 @@ const editOperation = {
         "set_title: the Page title, shown above the body. Image ops: the image's title; null clears it.",
     },
     markdown: markdownBody,
-    after_block_id: {
+    after_node_id: {
+      ...address,
       type: ["string", "null"],
-      description: "Inserts and move_block: after this block; null prepends, omitted appends.",
+      description: "Inserts and move_block: after this block's id; null prepends, omitted appends.",
     },
     asset_id: {
       ...assetId,
@@ -282,11 +273,6 @@ const editOperation = {
       type: "string",
       maxLength: 2048,
       description: "Image ops: alt text; empty for a decorative image.",
-    },
-    image_id: {
-      type: "string",
-      maxLength: 192,
-      description: "set_image: image_id from summary.images, not a node_id.",
     },
     node: {
       type: "object",
@@ -356,11 +342,6 @@ const editOperation = {
       ),
       additionalProperties: false,
       minProperties: 1,
-    },
-    node_id: {
-      type: "string",
-      maxLength: 192,
-      description: "delete_node: top-level node_id from the outline.",
     },
   },
   required: ["op"],
@@ -560,7 +541,7 @@ export const tools = [
   ),
   tool(
     "read_page",
-    "Read a Page's title, Markdown blocks, comments and revision. Use comments:none for body work, include_content:false for an outline, or section/search inside a large block. Partial slices are for replace_match, format_match and set_node, not replace_block_markdown. Outline entries carry node_id (stable across edits, unlike node_index), type, attrs and summary; see llms.txt. Comment author.agent {name, model} is what the client said about itself, not verified identity.",
+    "Read a Page's title, Markdown blocks, comments and revision. Use comments:none for body work, include_content:false for an outline, or section/search inside a large block. Partial slices are for replace_match, format_match and set_node, not replace_block_markdown. Every block, node and image has a node_id, stable across edits; outline entries carry it with type, attrs and summary, and a block's first node its block id; see llms.txt. Comment author.agent {name, model} is what the client said about itself, not verified identity.",
     { page_id: page, ...readSelectors },
     ["page_id"],
     READ,
@@ -595,10 +576,7 @@ export const tools = [
     {
       page_id: page,
       state: { ...choice("open", "resolved", "all") },
-      block_id: {
-        ...string,
-        description: "Filter by block ID.",
-      },
+      node_id: { ...address, description: "Only threads on this block id." },
       thread_ids: {
         type: "array",
         items: string,
@@ -648,7 +626,7 @@ export const tools = [
         items: {
           type: "object",
           properties: {
-            block_id: { ...string, minLength: 1, maxLength: 128 },
+            node_id: { ...address, description: "A block's id." },
             match_text: { ...matchProperties.match_text, maxLength: 1024 },
             context_before: {
               ...matchProperties.context_before,
@@ -656,7 +634,7 @@ export const tools = [
             },
             context_after: { ...matchProperties.context_after, maxLength: 256 },
           },
-          required: ["block_id", "match_text"],
+          required: ["node_id", "match_text"],
           additionalProperties: false,
         },
         description: "Passages from a read; needs revision. Omit to keep, [] to clear.",
@@ -733,7 +711,7 @@ export const tools = [
   ),
   tool(
     "manage_page_comment",
-    "Add, reply to, resolve, reopen, edit or delete a comment message. Comments never change the Page's revision. For a passage comment, give block_id, selected_text and revision. resolve and reopen take thread_id or thread_ids (up to 100); an unknown ID rejects the batch with not_found_thread_ids. Only a message's author can edit or delete it. body_format markdown allows rich text. A new message records the agent name and model you assert (_meta.agent on the tool call, or the X-Pages-Agent and X-Pages-Model headers); readers see them as client claims.",
+    "Add, reply to, resolve, reopen, edit or delete a comment message. Comments never change the Page's revision. add takes a block's node_id; for a passage comment also selected_text and revision, and a node's id finds selected_text in that node. resolve and reopen take thread_id or thread_ids (up to 100); an unknown ID rejects the batch with not_found_thread_ids. Only a message's author can edit or delete it. body_format markdown allows rich text. A new message records the agent name and model you assert (_meta.agent on the tool call, or the X-Pages-Agent and X-Pages-Model headers); readers see them as client claims.",
     {
       ...guard,
       revision: {
@@ -744,7 +722,7 @@ export const tools = [
         type: "string",
         enum: ["add", "reply", "resolve", "reopen", "edit", "delete_message"],
       },
-      block_id: string,
+      node_id: address,
       thread_id: {
         ...string,
         description: "Thread for reply, edit, delete_message, resolve or reopen.",

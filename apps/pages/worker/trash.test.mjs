@@ -262,7 +262,7 @@ test("the owner reads a trashed Page but cannot edit, comment, share or report p
   assert.equal((await f.tool("owner", "list_page_comments")).status, 200);
   for (const [operation, args] of [
     ["edit_page", { operations: [{ op: "set_title", title: "Changed" }] }],
-    ["manage_page_comment", { action: "add", block_id: f.blockId, body: "More" }],
+    ["manage_page_comment", { action: "add", node_id: f.block, body: "More" }],
     ["report_page_progress", { message: "Working" }],
   ]) {
     const denied = await f.tool("owner", operation, {

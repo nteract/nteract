@@ -12,8 +12,9 @@ import {
   setRichNode,
   projectedBlock,
 } from "./richtext-page.mjs";
-import { resolveNodeId } from "./node-ids.mjs";
-import { imageIds, resolveImageId } from "./image-ids.mjs";
+import { nodeIds } from "./node-ids.mjs";
+import { imageIds } from "./image-ids.mjs";
+import { addressIndex, blockAddress, nodeAddresses, resolveAddressFor } from "./addresses.mjs";
 import { updateSpansConfig } from "./marks.mjs";
 import { stampSpans } from "./schema-features.mjs";
 import { imageAssetUrl, validAssetId } from "../shared/image-assets.mjs";
@@ -21,7 +22,7 @@ import { DATAFRAME_BLOCK, dataframeFor } from "../shared/dataset-assets.mjs";
 import { projectComments } from "./comments.mjs";
 import { COMMENTS_FEATURE } from "./comments-doc.mjs";
 import { orderedBlockIds, positionForInsertion } from "./order.mjs";
-import { anchorOccurrence, formatMatch, replaceMatch } from "./replace-match.mjs";
+import { anchorOccurrence, formatMatch, replaceMatch, withinNode } from "./replace-match.mjs";
 import { setNode } from "./set-node.mjs";
 import { insertOperation } from "./node-registry.mjs";
 import { stampFeatures } from "./schema-features.mjs";
@@ -70,6 +71,9 @@ export function projectPage(doc, commentsDoc) {
     comments: projectComments(doc, commentsDoc),
   };
 }
+/** Whether `value` is a valid after_node_id: omitted (append), null
+ * (prepend) or an id. Its shape and kind are checked when it resolves. */
+const afterAnchor = (value) => value === undefined || value === null || typeof value === "string";
 export function validateImageInsertion(op) {
   if (
     !validAssetId(op.asset_id) ||
@@ -79,29 +83,22 @@ export function validateImageInsertion(op) {
       (typeof op.title !== "string" || op.title.length > 2048)) ||
     typeof op.alt !== "string" ||
     op.alt.length > 2048 ||
-    (op.after_block_id !== undefined &&
-      op.after_block_id !== null &&
-      (typeof op.after_block_id !== "string" || !op.after_block_id)) ||
+    !afterAnchor(op.after_node_id) ||
     Object.keys(op).some(
-      (key) => !["op", "asset_id", "dark_asset_id", "alt", "title", "after_block_id"].includes(key),
+      (key) => !["op", "asset_id", "dark_asset_id", "alt", "title", "after_node_id"].includes(key),
     )
   )
     throw Error(
-      "insert_image requires an uploaded asset_id, alt text (up to 2048 characters), and optional after_block_id",
+      "insert_image requires an uploaded asset_id, alt text (up to 2048 characters), and optional after_node_id",
     );
 }
 export function validateImageChange(op) {
   if (
     !op ||
     Object.keys(op).some(
-      (key) =>
-        !["op", "block_id", "image_id", "asset_id", "dark_asset_id", "alt", "title"].includes(key),
+      (key) => !["op", "node_id", "asset_id", "dark_asset_id", "alt", "title"].includes(key),
     ) ||
-    typeof op.block_id !== "string" ||
-    !op.block_id ||
-    typeof op.image_id !== "string" ||
-    !op.image_id ||
-    op.image_id.length > 192 ||
+    typeof op.node_id !== "string" ||
     !["asset_id", "dark_asset_id", "alt", "title"].some((key) => Object.hasOwn(op, key)) ||
     (op.asset_id !== undefined && !validAssetId(op.asset_id)) ||
     (op.dark_asset_id !== undefined &&
@@ -113,11 +110,11 @@ export function validateImageChange(op) {
       (typeof op.title !== "string" || op.title.length > 2048))
   )
     throw Error(
-      "set_image requires block_id, live image_id and asset_id, dark_asset_id (null removes), alt or title",
+      "set_image requires an image's node_id and asset_id, dark_asset_id (null removes), alt or title",
     );
 }
 const NODE_INSERTION_USAGE =
-  'insert_node requires node: {type: "dataframe", attrs: {asset_id, title?, media_type?}} and optional after_block_id';
+  'insert_node requires node: {type: "dataframe", attrs: {asset_id, title?, media_type?}} and optional after_node_id';
 const only = (value, keys) =>
   !!value &&
   typeof value === "object" &&
@@ -128,14 +125,12 @@ const only = (value, keys) =>
 export function validateNodeInsertion(op) {
   const node = op?.node;
   if (
-    !only(op, ["op", "node", "after_block_id"]) ||
+    !only(op, ["op", "node", "after_node_id"]) ||
     !only(node, ["type", "attrs"]) ||
     node.type !== DATAFRAME_BLOCK ||
     !only(node.attrs, ["asset_id", "media_type", "title"]) ||
     !validAssetId(node.attrs.asset_id) ||
-    (op.after_block_id !== undefined &&
-      op.after_block_id !== null &&
-      (typeof op.after_block_id !== "string" || !op.after_block_id))
+    !afterAnchor(op.after_node_id)
   )
     throw Error(NODE_INSERTION_USAGE);
   // Title and media type rules live with the node.
@@ -186,65 +181,109 @@ const PASSAGE_OPS = new Set(["replace_match", "format_match", "set_node"]);
 // The fields each operation takes, for the operations with no validator of
 // their own. The tool schema is one flat object for every operation, so it
 // can't refuse a field that belongs to another one; this does. The image and
-// node operations check their fields in model/image-edits.mjs and
-// model/node-registry.mjs. set_node lists the shorthand names it refuses so
-// model/set-node.mjs can answer with the attribute to use.
-const LOCATOR = [
-  "block_id",
-  "match_text",
-  "context_before",
-  "context_after",
-  "occurrence",
-  "node_index",
-];
+// node operations check their fields in validateImageInsertion,
+// validateImageChange and validateNodeInsertion. set_node lists the
+// shorthand names it refuses so model/set-node.mjs can answer with the
+// attribute to use.
+const LOCATOR = ["node_id", "match_text", "context_before", "context_after", "occurrence"];
 const EDIT_FIELDS = new Map([
   ["set_title", ["title"]],
-  ["replace_block_markdown", ["block_id", "markdown"]],
-  ["insert_markdown", ["markdown", "after_block_id"]],
-  ["move_block", ["block_id", "after_block_id"]],
-  ["delete_block", ["block_id"]],
-  ["delete_node", ["block_id", "node_id"]],
+  ["replace_block_markdown", ["node_id", "markdown"]],
+  ["insert_markdown", ["markdown", "after_node_id"]],
+  ["move_block", ["node_id", "after_node_id"]],
+  ["delete_block", ["node_id"]],
+  ["delete_node", ["node_id"]],
   ["replace_match", [...LOCATOR, "replacement", "replacement_markdown"]],
   ["format_match", [...LOCATOR, "all", "add", "remove"]],
   ["set_node", [...LOCATOR, "type", "attrs", "checked", "language", "heading_level", "align"]],
 ]);
-function validateEditFields(op) {
+/** Refuse a field operation `op` doesn't take. */
+export function validateEditFields(op) {
   const fields = EDIT_FIELDS.get(op.op);
   if (!fields) return;
-  // `id` is the block address a browser-built operation carries.
-  const unexpected = Object.keys(op).find((field) => !["op", "id", ...fields].includes(field));
+  const unexpected = Object.keys(op).find((field) => !["op", ...fields].includes(field));
   if (unexpected) throw Error(`${op.op} does not take ${unexpected}`);
 }
-// `trace` records where each operation landed, for agent presence. It never
-// enters the result, so stored receipts and retries are unchanged.
-function applyEdit(doc, op, trace, context) {
-  const id = op.block_id ?? op.id;
+// The addresses each operation names, by field, and the kinds each field
+// takes (model/addresses.mjs). Kinds are strict: no operation acts on the
+// block that holds a node it was given. after_node_id takes a block's id;
+// omitted appends and null prepends.
+const BLOCK = ["block"];
+const ADDRESSES = new Map([
+  ["replace_block_markdown", [["node_id", BLOCK]]],
+  ["delete_block", [["node_id", BLOCK]]],
+  [
+    "move_block",
+    [
+      ["node_id", BLOCK],
+      ["after_node_id", BLOCK],
+    ],
+  ],
+  ["insert_markdown", [["after_node_id", BLOCK]]],
+  ["insert_image", [["after_node_id", BLOCK]]],
+  ["insert_node", [["after_node_id", BLOCK]]],
+  ["delete_node", [["node_id", ["node"]]]],
+  ["set_image", [["node_id", ["image"]]]],
+  ...[...PASSAGE_OPS].map((name) => [name, [["node_id", ["block", "node"]]]]),
+]);
+const anchorField = (field, value) => field === "after_node_id" && (value ?? null) === null;
+/** The things `op` names, resolved in `index`'s document: `{ [field]:
+ * resolved }` (resolveAddress), with an omitted or null after_node_id kept as
+ * it is. Throws node_not_found or wrong_address_kind. */
+function resolveOperation(index, doc, op) {
+  const resolved = {};
+  for (const [field, kinds] of ADDRESSES.get(op.op) ?? [])
+    resolved[field] = anchorField(field, op[field])
+      ? op[field]
+      : resolveAddressFor(index, doc, op[field], { op: op.op, field, kinds });
+  return resolved;
+}
+/** A passage operation's input for the matcher: scoped to its node when its
+ * node_id names one, and to the whole block when it names a block. */
+const scoped = (op, target) =>
+  target.kind === "node" ? { ...op, [withinNode]: { start: target.start, end: target.end } } : op;
+const afterKey = (anchor) => (anchor && typeof anchor === "object" ? anchor.key : anchor);
+
+/** A new block's addresses, as an insert reports them so the next request
+ * can name the block and its nodes without a read. */
+const insertedBlock = (doc, op, key) => ({
+  op,
+  node_id: blockAddress(doc, key),
+  nodes: nodeAddresses(doc, key),
+});
+
+// `trace` records where each operation landed, for agent presence, by block
+// key. It never enters the result, so stored receipts and retries are
+// unchanged. `touched` collects the keys of the blocks an operation wrote,
+// added, moved or deleted, which the caller's address index forgets.
+function applyEdit(doc, op, at, { trace, touched, ...context }) {
   if (op.op === "set_title") {
     if (typeof op.title !== "string") throw Error("set_title requires a title string");
     A.updateText(doc, ["title"], String(op.title).slice(0, 1024));
     return;
   }
   if (op.op === "insert_markdown") {
-    const blockId = crypto.randomUUID();
-    doc.blocks[blockId] = block(positionForInsertion(doc, op.after_block_id));
-    setRichMarkdown(doc, blockId, String(op.markdown ?? ""));
-    trace?.push({ type: "block", block_id: blockId });
-    return;
+    const key = crypto.randomUUID();
+    doc.blocks[key] = block(positionForInsertion(doc, afterKey(at.after_node_id)));
+    setRichMarkdown(doc, key, String(op.markdown ?? ""));
+    touched.push(key);
+    trace?.push({ type: "block", block_id: key });
+    return insertedBlock(doc, "insert_markdown", key);
   }
   if (op.op === "insert_image") {
     validateImageInsertion(op);
-    const blockId = crypto.randomUUID();
+    const key = crypto.randomUUID();
     const asset_url = imageAssetUrl(doc.page_id, op.asset_id);
-    doc.blocks[blockId] = block(positionForInsertion(doc, op.after_block_id));
+    doc.blocks[key] = block(positionForInsertion(doc, afterKey(at.after_node_id)));
     const dark_src = op.dark_asset_id ? imageAssetUrl(doc.page_id, op.dark_asset_id) : null;
-    setRichImage(doc, blockId, { src: asset_url, dark_src, alt: op.alt, title: op.title });
-    trace?.push({ type: "block", block_id: blockId });
+    setRichImage(doc, key, { src: asset_url, dark_src, alt: op.alt, title: op.title });
+    touched.push(key);
+    trace?.push({ type: "block", block_id: key });
     return {
-      op: "insert_image",
-      block_id: blockId,
+      ...insertedBlock(doc, "insert_image", key),
+      image: imageIds(doc, key)[0].id,
       asset_id: op.asset_id,
       asset_url,
-      image_id: imageIds(doc, blockId)[0].image_id,
       ...(dark_src && { dark_asset_id: op.dark_asset_id, dark_src }),
       ...(op.title !== undefined && { title: op.title }),
       alt: op.alt,
@@ -252,26 +291,29 @@ function applyEdit(doc, op, trace, context) {
   }
   if (op.op === "insert_node") {
     const input = validateNodeInsertion(op);
-    const blockId = crypto.randomUUID();
+    const key = crypto.randomUUID();
     const attrs = dataframeFor(doc.page_id, input);
-    doc.blocks[blockId] = block(positionForInsertion(doc, op.after_block_id));
-    setRichNode(doc, blockId, { type: op.node.type, attrs });
-    trace?.push({ type: "block", block_id: blockId });
+    doc.blocks[key] = block(positionForInsertion(doc, afterKey(at.after_node_id)));
+    setRichNode(doc, key, { type: op.node.type, attrs });
+    touched.push(key);
+    trace?.push({ type: "block", block_id: key });
     return {
-      op: "insert_node",
-      block_id: blockId,
+      ...insertedBlock(doc, "insert_node", key),
       type: op.node.type,
       attrs: { asset_id: input.asset_id, ...attrs },
     };
   }
-  if (!Object.hasOwn(doc.blocks, id)) throw Error("Block not found");
+  const target = at.node_id;
+  if (!target) throw Error("Unsupported edit operation");
+  const id = target.key;
+  touched.push(id);
   if (op.op === "set_image") {
     validateImageChange(op);
-    const { index } = resolveImageId(doc, id, op.image_id);
     const spans = A.spans(doc, textPath(id));
+    const { index } = target;
     if (!readableMarker(spans[index].value))
       throw newerContent(
-        "This image holds values from a newer version of Pages that this version can't read, so set_image can't change it. Remove it with delete_node, or the block with delete_block.",
+        "This image holds values from a newer version of Pages that this version can't read, so set_image can't change it. Remove it with delete_node, or remove its block with delete_block and the block's id.",
       );
     const attrs = { ...spans[index].value.attrs };
     if (op.asset_id !== undefined)
@@ -286,23 +328,31 @@ function applyEdit(doc, op, trace, context) {
     updateSpansExactly(doc, textPath(id), spans, updateSpansConfig);
     stampSpans(doc, spans);
     trace?.push({ type: "block", block_id: id });
-    return { op: "set_image", block_id: id, image_id: op.image_id };
+    return { op: "set_image", node_id: op.node_id, block: blockAddress(doc, id) };
   }
   if (op.op === "move_block") {
-    if (op.after_block_id !== id)
-      doc.blocks[id].position = positionForInsertion(doc, op.after_block_id, id);
+    const after = afterKey(at.after_node_id);
+    if (after !== id) doc.blocks[id].position = positionForInsertion(doc, after, id);
     trace?.push({ type: "block", block_id: id });
     return;
   }
-  if (op.op === "replace_match") return replaceMatch(doc, id, op, trace, context);
-  if (op.op === "format_match") return formatMatch(doc, id, op, trace, context);
-  if (op.op === "set_node") return setNode(doc, id, op, trace, context);
+  if (PASSAGE_OPS.has(op.op)) {
+    const input = scoped(op, target);
+    const edit =
+      op.op === "replace_match"
+        ? replaceMatch(doc, id, input, trace, context)
+        : op.op === "format_match"
+          ? formatMatch(doc, id, input, trace, context)
+          : setNode(doc, id, input, trace, context);
+    const { op: name, ...rest } = edit;
+    return { op: name, node_id: op.node_id, ...rest };
+  }
   if (op.op === "replace_block_markdown") {
     const node = markdownlessNode(doc.blocks[id], doc.page_id);
     if (node)
       throw Object.assign(
         Error(
-          `This block holds ${quotableNodeType(node) ? `${/^[aeiou]/.test(node) ? "an" : "a"} ${node}` : "a node this version of Pages doesn't know"}, which has no Markdown form, so a Markdown rewrite would lose it. Remove it with delete_node, or with delete_block when read_page reports no node_id for it. edit_page still edits text in the nodes this version reads; it answers newer_content for text in the node itself.`,
+          `This block holds ${quotableNodeType(node) ? `${/^[aeiou]/.test(node) ? "an" : "a"} ${node}` : "a node this version of Pages doesn't know"}, which has no Markdown form, so a Markdown rewrite would lose it. Remove it with delete_node, or with delete_block and the block's id when read_page reports no node_id for it. edit_page still edits text in the nodes this version reads; it answers newer_content for text in the node itself.`,
         ),
         { code: "markdownless_node" },
       );
@@ -311,22 +361,36 @@ function applyEdit(doc, op, trace, context) {
     // falls through to a plain rewrite.
     setRichMarkdownKeepingNodes(doc, id, String(op.markdown ?? ""));
     trace?.push({ type: "block", block_id: id });
-  } else if (op.op === "delete_block") {
+    return { op: "replace_block_markdown", node_id: op.node_id, nodes: nodeAddresses(doc, id) };
+  }
+  if (op.op === "delete_block") {
     delete doc.blocks[id];
-  } else if (op.op === "delete_node") {
-    return deleteNode(doc, id, op, trace);
-  } else throw Error("Unsupported edit operation");
+    return;
+  }
+  if (op.op === "delete_node") return deleteNode(doc, op, target, trace);
+  throw Error("Unsupported edit operation");
 }
-/** Delete the top-level node `op.node_id` names: its marker through the next
+/** Delete the top-level node `target` names: its marker through the next
  * node's marker, so its text, marks and children go with it and its
  * neighbours keep their identity. Refused when the block ends up with fewer
  * than one node less: a list has no marker of its own to keep it apart, so
  * two alike on either side of the deleted node would join into one. (Deleting a
  * block's only node leaves the one empty paragraph a block always has, with
  * a marker of its own.) */
-function deleteNode(doc, id, op, trace) {
+function deleteNode(doc, op, { key: id, index, start, end }, trace) {
   const tree = nativeRead(doc.blocks[id], doc.page_id);
-  const { index, start, end } = resolveNodeId(doc, id, op.node_id, tree);
+  // The node's type comes from the readable tree, which must name the same
+  // nodes as the stored markers.
+  try {
+    nodeIds(doc, id, tree);
+  } catch {
+    throw Object.assign(
+      Error(
+        "This block holds nodes this version of Pages reads differently from how they're stored, so delete_node can't remove one. Use delete_block with the block's id, or rewrite the block with replace_block_markdown.",
+      ),
+      { code: "node_not_found" },
+    );
+  }
   const type = readKind(tree.nodes[index]);
   A.splice(doc, textPath(id), start, end - start);
   if (!doc.blocks[id].richText.length) setRichEmpty(doc, id);
@@ -344,7 +408,7 @@ function deleteNode(doc, id, op, trace) {
     );
   }
   trace?.push({ type: "block", block_id: id });
-  return { op: "delete_node", block_id: id, node_id: op.node_id, type };
+  return { op: "delete_node", node_id: op.node_id, block: blockAddress(doc, id), type };
 }
 export function applyPageOperation(doc, options) {
   const result = applyOperation(doc, options);
@@ -352,6 +416,11 @@ export function applyPageOperation(doc, options) {
   stampFeatures(doc);
   return result;
 }
+/** The block key an address names, or undefined, before any refusal: the
+ * block itself, or the block holding the node or image. */
+const blockOf = (index, address) =>
+  typeof address === "string" ? (index.block(address) ?? index.find(address)?.key) : undefined;
+
 function applyOperation(doc, { operation, arguments: args = {}, trace }) {
   // Comments are written to the comments document, never the Page.
   if (operation !== "edit_page") throw Error("Unsupported Page operation");
@@ -360,53 +429,51 @@ function applyOperation(doc, { operation, arguments: args = {}, trace }) {
   if (args.operations.some((op) => !op || typeof op !== "object" || Array.isArray(op)))
     throw Error("Each operation is an object with an op");
   const { operations } = args;
-  const imageTargets = new Set();
-  for (const op of operations) {
-    validateEditFields(op);
-    if (op.op !== "set_image") continue;
-    validateImageChange(op);
-    const target = JSON.stringify([op.block_id, op.image_id]);
-    if (imageTargets.has(target)) throw Error("A batch cannot set the same image twice");
-    imageTargets.add(target);
-    if (!Object.hasOwn(doc.blocks, op.block_id)) throw Error("Block not found");
-    resolveImageId(doc, op.block_id, op.image_id);
-  }
+  for (const op of operations) validateEditFields(op);
+  const index = addressIndex(doc);
   // Every block the batch edits has its markers repaired first, in this
   // change: nodes stored under parents no writer wrote get the parents they
   // are drawn with, and unmarked text gets its marker, so every node an
   // operation resolves has one. Repair changes no visible text or node, so
   // the matches and ids the caller read still hold.
   for (const op of operations) {
-    const id = op.block_id ?? op.id;
-    if (op.op !== "delete_block" && typeof id === "string" && Object.hasOwn(doc.blocks, id))
-      repairBlockMarkers(doc, id);
+    const key = op.op === "delete_block" ? undefined : blockOf(index, op.node_id);
+    if (key === undefined) continue;
+    repairBlockMarkers(doc, key);
+    index.forget(key);
   }
+  // Every address names something live, of the kind its operation takes,
+  // before any operation runs.
+  const imageTargets = new Set();
+  const starts = operations.map((op) => {
+    if (op.op === "set_image") {
+      validateImageChange(op);
+      if (imageTargets.has(op.node_id)) throw Error("A batch cannot set the same image twice");
+      imageTargets.add(op.node_id);
+    }
+    return resolveOperation(index, doc, op);
+  });
   // Every occurrence names a match in the batch's starting snapshot, the one
   // the caller read. Resolve them all before any operation runs.
-  const anchors = operations.map((op) => {
+  const anchors = operations.map((op, i) => {
     if (!PASSAGE_OPS.has(op.op) || op.occurrence === undefined) return undefined;
-    const id = op.block_id ?? op.id;
-    if (!Object.hasOwn(doc.blocks, id)) throw Error("Block not found");
-    return anchorOccurrence(doc, id, op);
+    const target = starts[i].node_id;
+    return anchorOccurrence(doc, target.key, scoped(op, target));
   });
   const budget = { writes: 0 };
-  const edits = [],
-    inserted_images = [],
-    inserted_nodes = [];
-  for (const [index, op] of operations.entries()) {
-    const edit = applyEdit(doc, op, trace, { anchor: anchors[index], budget });
-    if (edit?.op === "insert_image") {
-      const { op: _op, ...image } = edit;
-      inserted_images.push(image);
-    } else if (edit?.op === "insert_node") {
-      const { op: _op, ...node } = edit;
-      inserted_nodes.push(node);
-    } else if (edit) edits.push(edit);
+  const edits = [];
+  for (const [i, op] of operations.entries()) {
+    // Resolved again where the batch has reached: an earlier operation can
+    // move the node's range, or delete what this one names.
+    const touched = [];
+    const edit = applyEdit(doc, op, i ? resolveOperation(index, doc, op) : starts[i], {
+      trace,
+      touched,
+      anchor: anchors[i],
+      budget,
+    });
+    for (const key of touched) index.forget(key);
+    if (edit) edits.push(edit);
   }
-  return {
-    page_id: doc.page_id,
-    ...(edits.length ? { edits } : {}),
-    ...(inserted_images.length ? { inserted_images } : {}),
-    ...(inserted_nodes.length ? { inserted_nodes } : {}),
-  };
+  return { page_id: doc.page_id, ...(edits.length ? { edits } : {}) };
 }

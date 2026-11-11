@@ -18,6 +18,7 @@ import {
   initializePage,
   applyPageOperation,
   insertedAssets,
+  orderedBlockIds,
 } from "../model/page.mjs";
 import { insertOperation } from "../model/node-registry.mjs";
 import {
@@ -98,6 +99,7 @@ import { signInCallbackOptions } from "./sign-in-failure.mjs";
 import { localOidcStore } from "./local-oidc-store.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 import { openingTitleWarning } from "../model/title-warning.mjs";
+import { blockAddress, nodeAddresses } from "../model/addresses.mjs";
 import { pagePreview } from "../model/page-preview.mjs";
 import { cardKey, pageCard } from "../model/page-card.mjs";
 import {
@@ -660,6 +662,12 @@ function commentHeadsCheck(commentsDoc, heads) {
   return sameHeads(commentsDoc ? A.getHeads(commentsDoc) : [], heads) ? "match" : "mismatch";
 }
 const publicIdentity = ({ principal, displayName, driver }) => ({ principal, displayName, driver });
+/** A new Page's first block, as create_page reports it: the block's id and
+ * its nodes' ids (model/addresses.mjs). */
+const firstBlockAddresses = (doc) => {
+  const key = orderedBlockIds(doc)[0];
+  return { node_id: blockAddress(doc, key), nodes: nodeAddresses(doc, key) };
+};
 /** Lifecycle arguments as the caller sent them. The Catalog alone sets the
  * compare-and-set controls it forwards to a Page, and only delete_project's
  * own trash, a host-to-host call, sends `base_comment_heads`. A caller's
@@ -5797,10 +5805,13 @@ export class Page {
               documentFormats: { ...WRITTEN_FORMATS },
               deleted: false,
               // Location lives in the owner's Catalog; the receipt there adds it.
+              // The first block's id and its nodes' ids, so the first edit
+              // needs no read.
               createdReceipt: {
                 page_id: args.page_id,
                 title: doc.title,
                 heads: A.getHeads(doc),
+                ...firstBlockAddresses(doc),
                 ...(warning ? { warnings: [warning] } : {}),
               },
             };

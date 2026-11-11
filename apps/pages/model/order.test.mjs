@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { createPageData, initializePage, applyPageOperation, orderedBlockIds } from "./page.mjs";
+import { blockAddress } from "./addresses.mjs";
 
 function edit(doc, operations) {
   return A.change(doc, (draft) =>
@@ -34,10 +35,10 @@ function collidingInsertions() {
   const base = fixture(2),
     [anchor] = orderedBlockIds(base);
   const left = edit(A.clone(base), [
-    { op: "insert_markdown", after_block_id: anchor, markdown: "Left" },
+    { op: "insert_markdown", after_node_id: blockAddress(base, anchor), markdown: "Left" },
   ]);
   const right = edit(A.clone(base), [
-    { op: "insert_markdown", after_block_id: anchor, markdown: "Right" },
+    { op: "insert_markdown", after_node_id: blockAddress(base, anchor), markdown: "Right" },
   ]);
   const doc = assertConverged(left, right);
   return {
@@ -77,7 +78,11 @@ test("insertion inside a collided group repairs only that group and honors the a
   const before = orderedBlockIds(doc),
     originalPositions = positions(doc);
   const next = edit(doc, [
-    { op: "insert_markdown", after_block_id: inserted[0], markdown: "Between ties" },
+    {
+      op: "insert_markdown",
+      after_node_id: blockAddress(doc, inserted[0]),
+      markdown: "Between ties",
+    },
   ]);
   const newId = orderedBlockIds(next).find((id) => !Object.hasOwn(doc.blocks, id));
   assert.deepEqual(orderedBlockIds(next), [before[0], inserted[0], newId, inserted[1], before[3]]);
@@ -91,10 +96,18 @@ test("insertion inside a collided group repairs only that group and honors the a
 test("concurrent collision repairs retain every inserted block and still converge", () => {
   const { doc, inserted } = collidingInsertions();
   const left = edit(A.clone(doc), [
-    { op: "insert_markdown", after_block_id: inserted[0], markdown: "Left repair" },
+    {
+      op: "insert_markdown",
+      after_node_id: blockAddress(doc, inserted[0]),
+      markdown: "Left repair",
+    },
   ]);
   const right = edit(A.clone(doc), [
-    { op: "insert_markdown", after_block_id: inserted[0], markdown: "Right repair" },
+    {
+      op: "insert_markdown",
+      after_node_id: blockAddress(doc, inserted[0]),
+      markdown: "Right repair",
+    },
   ]);
   const merged = assertConverged(left, right);
   assert.equal(Object.keys(merged.blocks).length, 6);
@@ -109,7 +122,13 @@ test("moves preserve block/text identity and unknown fields without rewriting ot
     draft.blocks[first].extension = { keep: true };
   });
   const originalPositions = positions(doc);
-  const moved = edit(doc, [{ op: "move_block", block_id: first, after_block_id: third }]);
+  const moved = edit(doc, [
+    {
+      op: "move_block",
+      node_id: blockAddress(doc, first),
+      after_node_id: blockAddress(doc, third),
+    },
+  ]);
   assert.deepEqual(orderedBlockIds(moved), [second, third, first]);
   assert.equal(A.getObjectId(moved.blocks[first]), A.getObjectId(doc.blocks[first]));
   assert.equal(
@@ -119,15 +138,29 @@ test("moves preserve block/text identity and unknown fields without rewriting ot
   assert.equal(String(moved.blocks[second].position), originalPositions[second]);
   assert.equal(String(moved.blocks[third].position), originalPositions[third]);
   assert.equal(moved.extension.keep && moved.blocks[first].extension.keep, true);
-  const restored = edit(moved, [{ op: "move_block", block_id: first, after_block_id: null }]);
+  const restored = edit(moved, [
+    { op: "move_block", node_id: blockAddress(moved, first), after_node_id: null },
+  ]);
   assert.deepEqual(orderedBlockIds(restored), [first, second, third]);
 });
 
 test("concurrent moves of one block resolve to one scalar position rather than merged text", () => {
   const doc = fixture(),
     [first, second, third] = orderedBlockIds(doc);
-  const left = edit(A.clone(doc), [{ op: "move_block", block_id: first, after_block_id: third }]);
-  const right = edit(A.clone(doc), [{ op: "move_block", block_id: first, after_block_id: second }]);
+  const left = edit(A.clone(doc), [
+    {
+      op: "move_block",
+      node_id: blockAddress(doc, first),
+      after_node_id: blockAddress(doc, third),
+    },
+  ]);
+  const right = edit(A.clone(doc), [
+    {
+      op: "move_block",
+      node_id: blockAddress(doc, first),
+      after_node_id: blockAddress(doc, second),
+    },
+  ]);
   const merged = assertConverged(left, right);
   const choices = [String(left.blocks[first].position), String(right.blocks[first].position)];
   assert.ok(choices.includes(String(merged.blocks[first].position)));
@@ -148,18 +181,30 @@ test("concurrent moves of one block resolve to one scalar position rather than m
 test("concurrent moves of different blocks converge without duplicate membership", () => {
   const doc = fixture(4),
     [first, second, third, fourth] = orderedBlockIds(doc);
-  const left = edit(A.clone(doc), [{ op: "move_block", block_id: first, after_block_id: fourth }]);
-  const right = edit(A.clone(doc), [{ op: "move_block", block_id: third, after_block_id: null }]);
+  const left = edit(A.clone(doc), [
+    {
+      op: "move_block",
+      node_id: blockAddress(doc, first),
+      after_node_id: blockAddress(doc, fourth),
+    },
+  ]);
+  const right = edit(A.clone(doc), [
+    { op: "move_block", node_id: blockAddress(doc, third), after_node_id: null },
+  ]);
   assert.deepEqual(orderedBlockIds(assertConverged(left, right)), [third, second, fourth, first]);
 });
 
 test("delete wins over a concurrent move while inserts after the deleted anchor survive", () => {
   const doc = fixture(),
     [first, second, third] = orderedBlockIds(doc);
-  const removed = edit(A.clone(doc), [{ op: "delete_block", block_id: second }]);
+  const removed = edit(A.clone(doc), [{ op: "delete_block", node_id: blockAddress(doc, second) }]);
   const changed = edit(A.clone(doc), [
-    { op: "move_block", block_id: second, after_block_id: third },
-    { op: "insert_markdown", after_block_id: second, markdown: "Survives" },
+    {
+      op: "move_block",
+      node_id: blockAddress(doc, second),
+      after_node_id: blockAddress(doc, third),
+    },
+    { op: "insert_markdown", after_node_id: blockAddress(doc, second), markdown: "Survives" },
   ]);
   const merged = assertConverged(removed, changed);
   assert.equal(Object.hasOwn(merged.blocks, second), false);
@@ -172,7 +217,13 @@ test("move into a collided group repairs its gap without replacing the moved blo
   const { doc, inserted } = collidingInsertions();
   const original = orderedBlockIds(doc),
     movedId = original.at(-1);
-  const moved = edit(doc, [{ op: "move_block", block_id: movedId, after_block_id: inserted[0] }]);
+  const moved = edit(doc, [
+    {
+      op: "move_block",
+      node_id: blockAddress(doc, movedId),
+      after_node_id: blockAddress(doc, inserted[0]),
+    },
+  ]);
   assert.deepEqual(orderedBlockIds(moved), [original[0], inserted[0], movedId, inserted[1]]);
   assert.equal(A.getObjectId(moved.blocks[movedId]), A.getObjectId(doc.blocks[movedId]));
   assert.equal(
