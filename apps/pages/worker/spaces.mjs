@@ -458,13 +458,14 @@ export class Space {
    * (space-lifecycle.mjs `spaceDeletion`). `step` is:
    *
    * - preview: what deleting the Project removes, and a preview token bound
-   *   to this record's revision and ACL and to the content `heads` the
-   *   Catalog read.
-   * - close: check the token against the live record and the content heads
-   *   the Catalog read now. A valid token records `deletion` (the intent's
-   *   `deletion_id` and the heads) in the same step; from then on every
-   *   other route answers like a missing Project.
-   * - reopen: drop that deletion again, after the content changed.
+   *   to this record's revision and ACL and to the `heads` and
+   *   `comment_heads` the Catalog read from the content.
+   * - close: check the token against the live record and the content and
+   *   comments heads the Catalog read now. A valid token records `deletion`
+   *   (the intent's `deletion_id` and both heads) in the same step; from then
+   *   on every other route answers like a missing Project.
+   * - reopen: drop that deletion again, after the content or its comments
+   *   changed.
    * - delete: remove members' discovery hints and the Project's invitation
    *   rows, then every key this object stores.
    *
@@ -484,19 +485,23 @@ export class Space {
       throw spaceNotFound();
     if (identity.principal !== record.owner)
       throw new HttpError(403, "Only the Project owner can delete it");
-    const binding = (heads) =>
+    const binding = ({ heads, comment_heads }) =>
       bindingOf({
         project: record.space_id,
         principal: identity.principal,
         document_id: record.document_id,
         heads: [...heads].sort(),
+        comment_heads: [...comment_heads].sort(),
         acl: record.acl ?? null,
         revision: record.revision ?? 0,
       });
-    const heads = () => {
-      if (!Array.isArray(args.heads) || args.heads.some((head) => typeof head !== "string"))
-        throw new HttpError(400, "heads must be the content document's heads");
-      return args.heads;
+    // The content's heads and its comments document's heads, as the Catalog
+    // read them from the content's Page host.
+    const contentHeads = () => {
+      for (const name of ["heads", "comment_heads"])
+        if (!Array.isArray(args[name]) || args[name].some((head) => typeof head !== "string"))
+          throw new HttpError(400, `${name} must be the content's ${name}`);
+      return { heads: args.heads, comment_heads: args.comment_heads };
     };
     if (step === "preview") {
       if (record.deletion) throw spaceNotFound();
@@ -507,15 +512,21 @@ export class Space {
         revision: record.revision ?? 0,
         collaborators: collaboratorsOf(record.acl),
         pending_invitations: pendingInvitations(record.acl),
-        ...(await issuePreviewToken(this.ctx.storage, await binding(heads()))),
+        ...(await issuePreviewToken(this.ctx.storage, await binding(contentHeads()))),
       });
     }
     if (step === "close") {
       if (ours)
-        return json({ space_id: record.space_id, closed: true, heads: record.deletion.heads });
+        return json({
+          space_id: record.space_id,
+          closed: true,
+          heads: record.deletion.heads,
+          comment_heads: record.deletion.comment_heads,
+        });
+      const read = contentHeads();
       const checked = await checkPreviewToken(
         this.ctx.storage,
-        await binding(heads()),
+        await binding(read),
         args.preview_token,
       );
       if (checked !== "valid")
@@ -530,10 +541,10 @@ export class Space {
         );
       await this.ctx.storage.put(RECORD, {
         ...record,
-        deletion: { id: args.deletion_id, heads: args.heads, at: new Date().toISOString() },
+        deletion: { id: args.deletion_id, ...read, at: new Date().toISOString() },
       });
       await this.ctx.storage.sync();
-      return json({ space_id: record.space_id, closed: true, heads: args.heads });
+      return json({ space_id: record.space_id, closed: true, ...read });
     }
     if (!ours) throw new HttpError(409, "A different deletion of this Project is in progress");
     if (step === "reopen") {

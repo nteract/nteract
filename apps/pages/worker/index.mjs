@@ -627,12 +627,21 @@ function headsCheck(doc, heads) {
 }
 const sameHeads = (left, right) =>
   left.length === right.length && [...left].sort().join() === [...right].sort().join();
+/** A delete_project trash's `base_comment_heads` against the comments
+ * document (`[]` when the Page has none), judged like headsCheck. */
+function commentHeadsCheck(commentsDoc, heads) {
+  if (heads === undefined) return "absent";
+  if (!Array.isArray(heads) || heads.some((head) => typeof head !== "string")) return "invalid";
+  return sameHeads(commentsDoc ? A.getHeads(commentsDoc) : [], heads) ? "match" : "mismatch";
+}
 const publicIdentity = ({ principal, displayName, driver }) => ({ principal, displayName, driver });
 /** Lifecycle arguments as the caller sent them. The Catalog alone sets the
- * compare-and-set controls it forwards to a Page. */
+ * compare-and-set controls it forwards to a Page, and only delete_project's
+ * own trash sends `base_comment_heads`. */
 const callerLifecycleArguments = ({
   expected_revision: _expected,
   replay_only: _replay,
+  base_comment_heads: _commentHeads,
   ...requested
 }) => requested;
 
@@ -1890,6 +1899,17 @@ export class Catalog {
       )
         throw new HttpError(403, "Sign in with this Page's original account to change it");
       if (lifecycle) requirePageIdArgument(args.page_id);
+      // A Project's content leaves Trash or storage only through
+      // delete_project, which trashes and purges it itself.
+      if (
+        ["restore_page", "purge_page"].includes(body.operation) &&
+        (await this.storage.get(`page/${args.page_id}`))?.project_content
+      )
+        throw new HttpError(
+          409,
+          "This is a Project's content. It belongs to its Project and can't be restored or purged on its own; delete_project removes it",
+          "project_content_protected",
+        );
       if (body.operation === "purge_page") {
         if (!["preview", "confirm"].includes(args.action))
           throw new HttpError(400, "action must be preview or confirm");
@@ -3481,12 +3501,13 @@ export class Catalog {
   async previewSpaceDeletion(request, entry) {
     const content = await this.contentImpact(request, entry.document_id);
     if (!content.ok) return content;
-    const { heads, comment_threads, comment_count } = await content.json();
+    const { heads, comment_heads, comment_threads, comment_count } = await content.json();
     const response = await this.env.PROJECTS.getByName(entry.space_id).fetch(
       forwarded(request, "/internal/space/delete", {
         space_id: entry.space_id,
         step: "preview",
         heads,
+        comment_heads,
       }),
     );
     if (!response.ok) return response;
@@ -3548,8 +3569,13 @@ export class Catalog {
           run.reply = content;
           return { type: "closed", ok: false, refusal: "space" };
         }
-        const { heads } = await content.json();
-        const closed = await space({ step: "close", heads, preview_token: intent.previewToken });
+        const { heads, comment_heads } = await content.json();
+        const closed = await space({
+          step: "close",
+          heads,
+          comment_heads,
+          preview_token: intent.previewToken,
+        });
         if (!closed.ok) {
           await requireAnswer(closed);
           run.reply = closed;
@@ -3557,7 +3583,9 @@ export class Catalog {
         }
         // The heads the Space recorded when it closed, which a repeated close
         // answers too: the trash compares against exactly these.
-        intent.heads = (await closed.json()).heads;
+        const recorded = await closed.json();
+        intent.heads = recorded.heads;
+        intent.commentHeads = recorded.comment_heads;
         return { type: "closed", ok: true };
       }
       case "hide_project": {
@@ -3590,6 +3618,7 @@ export class Catalog {
             page_id: intent.documentId,
             idempotency_key: intent.trashKey,
             base_heads: intent.heads,
+            base_comment_heads: intent.commentHeads,
           }),
         );
         if (response.ok) {
@@ -5773,11 +5802,14 @@ export class Page {
           throw new HttpError(403, "Document access denied");
         if (pageState(this.metadata) !== "active")
           throw new HttpError(404, "Page not found", "page_not_found");
+        await this.loadComments();
         const doc = this.handle.doc();
+        const comments = this.commentsView();
         return json({
           page_id: this.metadata.pageId,
           heads: A.getHeads(doc),
-          ...discussionOf(doc, this.commentsView()),
+          comment_heads: comments ? A.getHeads(comments) : [],
+          ...discussionOf(doc, comments),
         });
       }
       const state = pageState(this.metadata);
@@ -6355,6 +6387,8 @@ export class Page {
       )
         event.deletion = summarizeReceipt(this.metadata.deletion.receipt);
     }
+    // A comments guard compares against the loaded comments document.
+    if (type === "trash" && args.base_comment_heads !== undefined) await this.loadComments();
     let state = this.lifecycleState();
     if (
       type === "purgeConfirm" &&
@@ -6383,8 +6417,17 @@ export class Page {
       state = this.lifecycleState();
     }
     // No await from the head guard to the policy-visible record.
-    if (type === "trash")
-      event.heads = this.handle ? headsCheck(this.handle.doc(), args.base_heads) : "invalid";
+    if (type === "trash") {
+      const checks = [
+        this.handle ? headsCheck(this.handle.doc(), args.base_heads) : "invalid",
+        commentHeadsCheck(this.commentsHandle?.doc(), args.base_comment_heads),
+      ];
+      event.heads = checks.includes("invalid")
+        ? "invalid"
+        : checks.includes("mismatch")
+          ? "mismatch"
+          : checks[0];
+    }
     const result = pageLifecycle.step(state, event);
     if (result.effects.length) {
       this.prepareLifecycle(type, state, context);

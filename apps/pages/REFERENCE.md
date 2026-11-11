@@ -2887,7 +2887,7 @@ a crash or lost response finishes the same Project. Until then `get_project`
 answers `project_pending` and `list_projects` omits it. The content holds
 orientation and guidance for people and agents. It is ordinary, untrusted
 document content, edited with the Page tools by `project_id`; it is not a Page in
-the tree, so `move_page`, `delete_page` and `purge_page` refuse it
+the tree, so `move_page`, `delete_page`, `restore_page` and `purge_page` refuse it
 (`project_content_protected`), and `list_pages` never lists it. A direct grant on
 the content document (by its `document_id`) opens it as a plain Page, `kind:
 "page"`, without revealing the Project.
@@ -3045,7 +3045,8 @@ Project never deletes a Page. It follows `purge_page`'s two steps.
 `action:"preview"` reserves nothing and returns the Project's title,
 collaborators, pending invitations, its content's comment count and heads,
 and a `preview_token` the Space signs, valid for ten minutes. The token binds
-the owner, the Project's revision and ACL, and the content's heads.
+the owner, the Project's revision and ACL, and the heads of the content and of
+its comments document.
 `action:"confirm"` with that token runs one journal intent through the
 [space-deletion machine](worker/space-lifecycle.mjs), whose
 [table](test/fixtures/machines/space-deletion.json) is its contract. Each
@@ -3053,14 +3054,17 @@ phase is persisted before the next effect, so an exact retry resumes it and,
 once done, replays `{ project_id, deleted: true }`:
 
 1. The Catalog checks again that the Project holds no Page and reads the
-   content's current heads. The Space checks the token against its live
-   record and those heads; a valid token records the deletion in the same
-   step. From then on the Space answers every route like a missing Project,
-   so members' inherited access, invitation claims and Project reads stop.
-   A refused token releases the key with `purge_preview_invalid`.
+   current heads of the content and its comments document. The Space checks
+   the token against its live record and those heads; a valid token records
+   the deletion in the same step. From then on the Space answers every route
+   like a missing Project, so members' inherited access, invitation claims
+   and Project reads stop. A refused token releases the key with
+   `purge_preview_invalid`.
 2. The Catalog trashes the content document with those heads as
-   `base_heads`, so the Page compares them in the step that refuses further
-   writes. A write that landed after the preview (the owner still owns the
+   `base_heads` and `base_comment_heads`, so the Page compares both in the
+   step that refuses further writes. Only this trash sends
+   `base_comment_heads`: the Catalog drops it from a caller's `delete_page`.
+   An edit or comment that landed after the preview (the owner still owns the
    content, and members' leases last 15 s) reopens the Space and the request
    is refused with `purge_preview_invalid`.
 3. The Catalog purges the content document through the Page's permanent

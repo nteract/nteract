@@ -547,7 +547,7 @@
         "response": {
           "status": 409,
           "body": {
-            "error": "The Project's content changed after its preview; preview the deletion again",
+            "error": "The Project's content or its comments changed after its preview; preview the deletion again",
             "code": "purge_preview_invalid"
           }
         }

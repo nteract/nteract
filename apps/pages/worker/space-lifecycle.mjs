@@ -67,15 +67,17 @@ export function spaceCreationTransition(state, event) {
  *            --removed--> deleted
  *
  * - reserved: the intent is stored; the Space is open. `close_space` checks
- *   that the Catalog holds no Page in the Project, reads the content's
- *   current heads, and asks the Space to check the preview token against its
- *   live record and those heads. A valid token closes the Space in the same
- *   step: it records the deletion and answers like a missing Project from
- *   then on. The Space's record revision and ACL are the fence.
+ *   that the Catalog holds no Page in the Project, reads the current heads of
+ *   the content and of its comments document, and asks the Space to check
+ *   the preview token against its live record and those heads. A valid token
+ *   closes the Space in the same step: it records the deletion and answers
+ *   like a missing Project from then on. The Space's record revision and ACL
+ *   are the fence.
  * - space_closed: `trash_content` trashes the content document with the
- *   closed heads as base_heads, so the Page host compares them in the step
- *   that refuses further writes. A newer head means the content changed
- *   after the preview: the Space reopens and the request is refused.
+ *   closed heads as base_heads and base_comment_heads, so the Page host
+ *   compares both in the step that refuses further writes. A newer head
+ *   means the content or its comments changed after the preview: the Space
+ *   reopens and the request is refused.
  * - content_trashed: `purge_content` deletes the content and comments
  *   documents through the Page's permanent-deletion path, at the revision
  *   the trash reported.
@@ -153,7 +155,7 @@ export const PROJECT_NOT_EMPTY = refusal(
 );
 const CHANGED = refusal(
   "purge_preview_invalid",
-  "The Project's content changed after its preview; preview the deletion again",
+  "The Project's content or its comments changed after its preview; preview the deletion again",
 );
 
 const check = (condition, message) => {

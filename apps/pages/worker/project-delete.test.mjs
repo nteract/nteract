@@ -105,9 +105,10 @@ async function confirm(w, projectId, token, key = w.key(), who = "owner") {
 test("the owner deletes an empty Project, and every read answers as for one that never existed", async (t) => {
   const { w, project } = await sharedProject(t);
   const { project_id: projectId, document_id: documentId } = project;
+  writableContent(w, project);
   const content = w.page(documentId);
-  // The fixture's host never loads its comments document; a booted host
-  // knows it from its record.
+  // The fixture's host never boots, so it doesn't learn its comments
+  // document from its record as a booted host does.
   content.commentsUuid ??= content.metadata.comments_doc;
   const deletedDocuments = [];
   content.repo.delete = async (id) => void deletedDocuments.push(id);
@@ -161,7 +162,10 @@ test("the owner deletes an empty Project, and every read answers as for one that
   assert.equal(await owned.get(`page/${documentId}`), undefined);
   assert.equal(await owned.get(`host/deleted/${documentId}`), true);
   assert.equal(await w.catalogStorage(w.member).get(`project-discovery/${projectId}`), undefined);
-  // D1 holds neither its invitation nor its listing row.
+  // D1 holds neither its invitation nor its listing row. The Space removed
+  // the invitation rows; the listing row went when the owner's list_projects
+  // above rewrote pages_catalog_spaces from the Catalog's entries, as the
+  // deletion marked them dirty.
   const rows = async (sql) => (await w.db.prepare(sql).bind(projectId).all()).results;
   assert.deepEqual(await rows("SELECT * FROM pages_project_invitations WHERE project_id = ?"), []);
   assert.deepEqual(await rows("SELECT * FROM pages_catalog_spaces WHERE space_id = ?"), []);
@@ -241,7 +245,11 @@ test("a Project with a live Page or only a trashed Page is refused with project_
   const refused = await confirm(w, later.project_id, token, key);
   assert.equal(refused.status, 409);
   assert.equal(refused.body.code, "project_not_empty");
-  assert.equal(await w.catalogStorage().get(key), undefined, "the key is free again");
+  assert.equal(
+    await w.catalogStorage().get(`host/operation/${key}`),
+    undefined,
+    "the key is free again",
+  );
   assert.equal(
     (await w.call("owner", "get_project", { project_id: later.project_id })).status,
     200,
@@ -358,9 +366,9 @@ test("a content write that lands after the Space closes reopens it and refuses t
   assert.ok(raced);
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
   assert.equal(refused.body.code, "purge_preview_invalid");
-  assert.match(refused.body.error, /content changed after its preview/);
+  assert.match(refused.body.error, /content or its comments changed after its preview/);
   // The Space reopened, the Catalog shows it again, and the key is free.
-  assert.equal(await w.catalogStorage().get(key), undefined);
+  assert.equal(await w.catalogStorage().get(`host/operation/${key}`), undefined);
   assert.equal(
     (await w.call("owner", "get_project", { project_id: project.project_id })).status,
     200,
@@ -456,6 +464,158 @@ test("a deletion interrupted before its receipt resumes from the Space removal",
   const done = await confirm(w, projectId, token, key);
   assert.equal(done.status, 200, JSON.stringify(done.body));
   assert.deepEqual(done.body, { project_id: projectId, deleted: true });
+});
+
+/** The owner comments on the Project's content by its document ID, which
+ * still works while the Space is closed. */
+async function comment(w, project, body) {
+  const added = await w.call("owner", "manage_page_comment", {
+    page_id: project.document_id,
+    action: "add",
+    block_id: Object.keys(w.page(project.document_id).handle.doc().blocks)[0],
+    body,
+    idempotency_key: w.key(),
+  });
+  assert.equal(added.status, 200, JSON.stringify(added.body));
+}
+
+test("a comment added after the preview refuses the confirm and changes nothing", async (t) => {
+  const w = await world(t);
+  t.mock.method(console, "info", () => {});
+  const project = await w.createProject("Discussed");
+  writableContent(w, project);
+  const before = (await preview(w, project.project_id)).body;
+  assert.equal(before.comment_count, 0);
+  await comment(w, project, "Wait, keep this");
+  const key = w.key();
+  const refused = await confirm(w, project.project_id, before.preview_token, key);
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.equal(refused.body.code, "purge_preview_invalid");
+  assert.equal(await w.catalogStorage().get(`host/operation/${key}`), undefined);
+  assert.equal(
+    (await w.call("owner", "get_project", { project_id: project.project_id })).status,
+    200,
+  );
+  const after = (await preview(w, project.project_id)).body;
+  assert.equal(after.comment_count, 1);
+  assert.equal((await confirm(w, project.project_id, after.preview_token)).status, 200);
+});
+
+test("a comment added after the Space closes reopens it and refuses the deletion", async (t) => {
+  const w = await world(t);
+  t.mock.method(console, "info", () => {});
+  const project = await w.createProject("Late comment");
+  writableContent(w, project);
+  const token = (await preview(w, project.project_id)).body.preview_token;
+  const projects = w.env.PROJECTS;
+  let raced = false;
+  w.env.PROJECTS = {
+    getByName(id) {
+      const host = projects.getByName(id);
+      return {
+        async fetch(request, init) {
+          const step =
+            new URL(request.url).pathname === "/internal/space/delete" &&
+            (await request.clone().json()).step;
+          const response = await host.fetch(request, init);
+          if (step === "close" && !raced) {
+            raced = true;
+            await comment(w, project, "Landed mid-deletion");
+          }
+          return response;
+        },
+      };
+    },
+  };
+  const key = w.key();
+  const refused = await confirm(w, project.project_id, token, key);
+  assert.ok(raced);
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.equal(refused.body.code, "purge_preview_invalid");
+  assert.match(refused.body.error, /content or its comments changed/);
+  assert.equal(await w.catalogStorage().get(`host/operation/${key}`), undefined);
+  assert.equal(
+    w.page(project.document_id).metadata.deleted,
+    false,
+    "the content stays out of Trash",
+  );
+  assert.equal(
+    (await w.call("owner", "get_project", { project_id: project.project_id })).status,
+    200,
+  );
+  const comments = await w.call("owner", "list_page_comments", { project_id: project.project_id });
+  assert.match(JSON.stringify(comments.body), /Landed mid-deletion/);
+});
+
+/** A deletion whose content Trash applied and whose answer was lost: the
+ * content is in Trash and the intent waits at space_closed. */
+async function interruptedAfterTrash(t, title) {
+  const w = await world(t);
+  t.mock.method(console, "info", () => {});
+  const project = await w.createProject(title);
+  const token = (await preview(w, project.project_id)).body.preview_token;
+  const pages = w.env.PAGES;
+  let lose = true;
+  w.env.PAGES = {
+    getByName(id) {
+      const host = pages.getByName(id);
+      return {
+        async fetch(request, init) {
+          const response = await host.fetch(request, init);
+          if (lose && new URL(request.url).pathname === "/internal/trash") {
+            lose = false;
+            return Response.json({ error: "Lost response" }, { status: 500 });
+          }
+          return response;
+        },
+      };
+    },
+  };
+  const key = w.key();
+  assert.equal((await confirm(w, project.project_id, token, key)).status, 503);
+  assert.equal(w.page(project.document_id).metadata.deleted, true, "the content is in Trash");
+  const listed = (await w.call("owner", "list_pages", {})).body;
+  const guarded = () => ({
+    retry_token: listed.retry_token,
+    idempotency_key: listed.retry_key_prefix + crypto.randomUUID(),
+  });
+  return { w, project, token, key, guarded };
+}
+
+test("restore_page can't take a Project's content back out of an interrupted deletion", async (t) => {
+  const { w, project, token, key, guarded } = await interruptedAfterTrash(t, "No restore");
+  const restored = await w.call("owner", "restore_page", {
+    page_id: project.document_id,
+    ...guarded(),
+  });
+  assert.equal(restored.status, 409, JSON.stringify(restored.body));
+  assert.equal(restored.body.code, "project_content_protected");
+  assert.equal(w.page(project.document_id).metadata.deleted, true, "still in Trash");
+  const done = await confirm(w, project.project_id, token, key);
+  assert.equal(done.status, 200, JSON.stringify(done.body));
+  assert.deepEqual(done.body, { project_id: project.project_id, deleted: true });
+});
+
+test("purge_page can't delete a Project's content outside its deletion", async (t) => {
+  const { w, project, token, key, guarded } = await interruptedAfterTrash(t, "No purge");
+  const previewed = await w.call("owner", "purge_page", {
+    page_id: project.document_id,
+    action: "preview",
+  });
+  assert.equal(previewed.status, 409, JSON.stringify(previewed.body));
+  assert.equal(previewed.body.code, "project_content_protected");
+  const purged = await w.call("owner", "purge_page", {
+    page_id: project.document_id,
+    action: "confirm",
+    preview_token: "pp1.any.token",
+    ...guarded(),
+  });
+  assert.equal(purged.status, 409, JSON.stringify(purged.body));
+  assert.equal(purged.body.code, "project_content_protected");
+  assert.equal(w.page(project.document_id).metadata.purged, undefined, "not purged");
+  const done = await confirm(w, project.project_id, token, key);
+  assert.equal(done.status, 200, JSON.stringify(done.body));
+  assert.ok(w.page(project.document_id).metadata.purged);
 });
 
 test("delete_project over MCP previews, confirms and maps project_id", async (t) => {

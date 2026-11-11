@@ -305,7 +305,7 @@ test("guide teaches project_id content addressing and document_id with no home c
   );
   assert.match(
     prose,
-    /move_page, delete_page and purge_page refuse it with project_content_protected/,
+    /move_page, delete_page, restore_page and purge_page refuse it with project_content_protected/,
   );
   assert.match(prose, /A direct Page grant applies only to that Page, never its descendants/);
   // The quick start shows the project_id form of read_page as valid JSON.
