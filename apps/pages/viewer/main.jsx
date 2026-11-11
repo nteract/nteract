@@ -45,7 +45,7 @@ import { PRODUCT_NAME, tabTitle } from "../shared/product.mjs";
 import { maintainBrowserSession } from "./browser-session.mjs";
 import { earlyConnectAnswer, requestSession } from "./early-session.mjs";
 import { PagePreview } from "./PagePreview.jsx";
-import { BlockBoundary } from "./BlockBoundary.jsx";
+import { PageBlocks, ScreenBoundary } from "./BlockBoundary.jsx";
 import { BootPreview, visiblePreview } from "./boot-preview.mjs";
 import { HeadingScroll } from "./heading-scroll.mjs";
 import { openPageWithRetry } from "./page-open.mjs";
@@ -548,7 +548,7 @@ function App() {
     const empty =
       focusEmpty &&
       next.canWrite &&
-      editor.module.isEmptyPage(next.snapshot()) &&
+      editor.module.isEmptyPage(next.doc) &&
       matchMedia("(pointer: fine)").matches;
     if (focus || empty) setFocusBlock(first);
     return true;
@@ -1956,40 +1956,32 @@ function App() {
                         ?.focus();
                   }}
                 />
-                {page.blocks.map((block) => (
-                  <section className="page-block" data-block-id={block.id} key={block.id}>
-                    <BlockBoundary
-                      onError={(error) =>
-                        console.error(
-                          `Pages block ${block.id} failed to draw:`,
-                          error?.stack ?? error,
-                        )
+                <PageBlocks
+                  blocks={page.blocks}
+                  renderBlock={(block) => (
+                    <WordgardEditor
+                      replica={session}
+                      id={block.id}
+                      editable={session.canWrite}
+                      commentable={session.canComment}
+                      onError={setError}
+                      onComment={(selected) => startComment(block.id, selected)}
+                      onRevealComment={selectComment}
+                      toolbarHost={active === block.id ? toolbar : null}
+                      toolbarOpen={toolbarOpen}
+                      onActivate={() => activateBlock(block.id)}
+                      threads={threads}
+                      commentTarget={target}
+                      commentDraft={
+                        composerState.composer?.draft.blockId === block.id &&
+                        (composerState.state.name === "open" ||
+                          composerState.state.name === "sending")
+                          ? composerState.composer.draft
+                          : null
                       }
-                    >
-                      <WordgardEditor
-                        replica={session}
-                        id={block.id}
-                        editable={session.canWrite}
-                        commentable={session.canComment}
-                        onError={setError}
-                        onComment={(selected) => startComment(block.id, selected)}
-                        onRevealComment={selectComment}
-                        toolbarHost={active === block.id ? toolbar : null}
-                        toolbarOpen={toolbarOpen}
-                        onActivate={() => activateBlock(block.id)}
-                        threads={threads}
-                        commentTarget={target}
-                        commentDraft={
-                          composerState.composer?.draft.blockId === block.id &&
-                          (composerState.state.name === "open" ||
-                            composerState.state.name === "sending")
-                            ? composerState.composer.draft
-                            : null
-                        }
-                      />
-                    </BlockBoundary>
-                  </section>
-                ))}
+                    />
+                  )}
+                />
                 {/* Blank space below the last block: a click there puts the
                     caret in an empty paragraph at the end. Its label shows
                     only under keyboard focus, when the editor has no caret,
@@ -2194,4 +2186,8 @@ function useDismissibleDisclosure() {
   return disclosure;
 }
 
-createRoot(document.getElementById("root")).render(<App />);
+createRoot(document.getElementById("root")).render(
+  <ScreenBoundary>
+    <App />
+  </ScreenBoundary>,
+);

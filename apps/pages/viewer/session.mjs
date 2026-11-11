@@ -19,7 +19,7 @@ import { IdbByteStore } from "../sync/idb-byte-store.mjs";
 import { socketTransport } from "../sync/wire.mjs";
 import { applyComment, commentsMigrated } from "../model/comments.mjs";
 import { commentThreads } from "../model/comments-doc.mjs";
-import { createPageData, initializePage, projectPage } from "../model/page.mjs";
+import { createPageData, initializePage, projectPage, projectPageView } from "../model/page.mjs";
 import { commentDraftsMarkdown, unsentCommentsMarkdown } from "../model/markdown-export.mjs";
 import {
   BUILD_FEATURES,
@@ -1160,7 +1160,16 @@ export class PageSession {
     }
     this.emit();
   }
+  /** What the viewer draws on every render: blocks without their Markdown
+   * (projectPageView). */
   snapshot() {
+    if (!this.doc || this.hidden) return null;
+    return projectPageView(this.doc, this.commentsView);
+  }
+  /** The Page as agents read it, each block with its Markdown. It runs the
+   * Markdown codec over every block, so call it on demand (Copy as Markdown),
+   * never while rendering. */
+  markdownProjection() {
     if (!this.doc || this.hidden) return null;
     return projectPage(this.doc, this.commentsView);
   }

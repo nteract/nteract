@@ -32,7 +32,12 @@ The interface keeps navigation and account actions outside the document, with
 contextual formatting, a searchable Pages list, and System/Light/Dark appearance
 using nteract's shared tokens. Theme preferences are browser-local. **Copy as
 Markdown** in Share exports the title and content, including private image
-references; it does not publish the Page or change asset access.
+references; it does not publish the Page or change asset access. It runs the
+Markdown projection when clicked (`session.markdownProjection()`). Drawing the
+Page never does: `session.snapshot()` carries each block's id and order, and
+the editor decodes the block's spans itself. A throw while drawing one block
+shows a notice in its place (`viewer/BlockBoundary.jsx`); a throw anywhere
+else replaces the screen with a Reload notice and leaves the Page unchanged.
 
 - **Comments:** select a passage and choose Comment, or press Cmd/Ctrl+Alt+M.
   Highlighted passages and thread quotes navigate between text and discussion.

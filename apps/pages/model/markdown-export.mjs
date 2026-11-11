@@ -24,7 +24,7 @@ const headingText = (title) =>
     .replace(/</g, "&lt;")
     .replace(/[\\`*_[\]{}()#+.!|>-]/g, "\\$&");
 
-/** Export a current projectPage/session.snapshot projection, never raw import provenance. */
+/** Export a current projectPage projection (session.markdownProjection), never raw import provenance. */
 export function pageMarkdown(page) {
   if (!page) throw Error("No Page to copy");
   const title = singleLine(page.title) || "Untitled";

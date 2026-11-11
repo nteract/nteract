@@ -78,14 +78,22 @@ test("readonly and closed sessions cannot continue writing, even after an earlie
 });
 
 test("only a Page with one empty paragraph is empty", () => {
-  const page = (markdown) => projectPage(session(markdown).doc);
+  const page = (markdown) => session(markdown).doc;
   assert.equal(isEmptyPage(page("")), true, "a new Page");
   assert.equal(isEmptyPage(page("  \n")), true, "whitespace only");
   assert.equal(isEmptyPage(page("Hello")), false);
   assert.equal(isEmptyPage(page("![Cat](/api/pages/continuation_fixture/assets/cat)")), false);
   assert.equal(isEmptyPage(null), false);
-  assert.equal(isEmptyPage({ blocks: [] }), false, "no paragraph to put the caret in");
+  assert.equal(isEmptyPage({ blocks: {} }), false, "no paragraph to put the caret in");
   const current = session("Before");
   writingContinuation(current);
-  assert.equal(isEmptyPage(projectPage(current.doc)), false, "content and a blank paragraph");
+  assert.equal(isEmptyPage(current.doc), false, "content and a blank paragraph");
+  for (const markdown of ["", "  \n", "Hello", "---", "# "]) {
+    const doc = page(markdown);
+    assert.equal(
+      isEmptyPage(doc),
+      !projectPage(doc).blocks[0].markdown.trim(),
+      `the stored read agrees with the Markdown for ${JSON.stringify(markdown)}`,
+    );
+  }
 });

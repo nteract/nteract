@@ -215,7 +215,7 @@ function PageSharing({
     setCopyMessage("");
     try {
       if (!session.access?.canRead || session.accessDenied) throw Error("Page access changed");
-      await navigator.clipboard.writeText(pageMarkdown(session.snapshot()));
+      await navigator.clipboard.writeText(pageMarkdown(session.markdownProjection()));
       if (revision === epoch.current) setCopyMessage("Markdown copied.");
     } catch {
       if (revision === epoch.current) setCopyMessage("Could not copy the Markdown. Try again.");
