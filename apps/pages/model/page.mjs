@@ -1,5 +1,5 @@
 import * as A from "@automerge/automerge/slim";
-import { textPath } from "./richtext-format.mjs";
+import { textPath, updateSpansExactly } from "./richtext-format.mjs";
 import { quotableNodeType } from "./richtext-notices.mjs";
 import { markdownlessNode } from "./richtext-spans.mjs";
 import { nativeRead, readKind } from "./native-read.mjs";
@@ -237,7 +237,7 @@ function applyEdit(doc, op, trace, context) {
       if (op[key] !== undefined)
         attrs[key] = op[key] === null ? null : new A.ImmutableString(op[key]);
     spans[index] = { ...spans[index], value: { ...spans[index].value, attrs } };
-    A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
+    updateSpansExactly(doc, textPath(id), spans, updateSpansConfig);
     stampSpans(doc, spans);
     trace?.push({ type: "block", block_id: id });
     return { op: "set_image", block_id: id, image_id: op.image_id };

@@ -24,6 +24,7 @@ import {
   synced,
 } from "./wordgard-projection-state.mjs";
 import { MARK_NAMES, markExpand } from "../model/marks.mjs";
+import { updateSpansExactly } from "../model/richtext-format.mjs";
 import { stampMarks, stampSpans } from "../model/schema-features.mjs";
 
 // Enter inserts LineBreak leaves, while Wordgard's code clipboard parser can
@@ -502,7 +503,7 @@ export function createWordgardBinding(
           // stamp in the same change.
           if (structural) {
             const spans = encodeSpans(tr.newDoc);
-            A.updateSpans(d, path, spans, expand);
+            updateSpansExactly(d, path, spans, expand);
             stampSpans(d, spans);
           } else {
             const written = new Set();

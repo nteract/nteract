@@ -19,7 +19,7 @@ import {
   PagesLink,
 } from "./wordgard-doc.mjs";
 import { parseAgentMarkdown, parseMarkdown } from "./markdown-import.mjs";
-import { textPath } from "./richtext-format.mjs";
+import { textPath, updateSpansExactly } from "./richtext-format.mjs";
 import { pageSpans, richDoc } from "./richtext-spans.mjs";
 import { nativeRead, readMarkdown, readKind } from "./native-read.mjs";
 import { dataframeLabel, unknownNodeNotice } from "./richtext-notices.mjs";
@@ -67,7 +67,7 @@ function writeMarkdownSpans(doc, id, spans) {
   // concurrent unmark. Only exact restored runs qualify: markers and their
   // attrs compare as stored.
   if (runs(A.spans(doc, path)) === runs(spans)) return;
-  A.updateSpans(doc, path, spans, updateSpansConfig);
+  updateSpansExactly(doc, path, spans, updateSpansConfig);
   stampSpans(doc, spans);
 }
 
@@ -76,7 +76,7 @@ function writeMarkdownSpans(doc, id, spans) {
 export function setRichMarkdown(doc, id, source, { literal = false } = {}) {
   const tree = literal ? parseMarkdown(source) : parseAgentMarkdown(source);
   const spans = pageSpans(tree);
-  A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
+  updateSpansExactly(doc, textPath(id), spans, updateSpansConfig);
   stampSpans(doc, spans);
 }
 /** Give block `id`'s unmarked text the markers a writer writes, in place,
@@ -106,14 +106,14 @@ export function markUnmarkedText(doc, id) {
 /** Write one empty paragraph, with its marker, as a block's whole content. */
 export function setRichEmpty(doc, id) {
   const spans = pageSpans(schema.doc([Paragraph.create([])]));
-  A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
+  updateSpansExactly(doc, textPath(id), spans, updateSpansConfig);
 }
 export function setRichImage(doc, id, { src, dark_src = null, alt, title = null }) {
   // Construct the embed directly: alt text is content, never Markdown syntax.
   const attrs = { src, alt, title, ...(dark_src == null ? {} : { dark_src }) };
   const tree = schema.doc([Paragraph.create([PagesImage.of(attrs)])]);
   const spans = pageSpans(tree);
-  A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
+  updateSpansExactly(doc, textPath(id), spans, updateSpansConfig);
   stampSpans(doc, spans);
 }
 /** Write one node with no Markdown form as a block's whole content. */
@@ -121,7 +121,7 @@ export function setRichNode(doc, id, { type, attrs }) {
   if (type !== DATAFRAME_BLOCK) throw Error(`Unsupported node type: ${type}`);
   const tree = schema.doc([PagesDataframe.of(dataframeAttrs(attrs))]);
   const spans = pageSpans(tree);
-  A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
+  updateSpansExactly(doc, textPath(id), spans, updateSpansConfig);
   stampSpans(doc, spans);
 }
 

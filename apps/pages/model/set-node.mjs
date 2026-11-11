@@ -13,7 +13,7 @@
 // checked, language, heading_level or align is refused with the typed field
 // that replaces it.
 import * as A from "@automerge/automerge/slim";
-import { textPath } from "./richtext-format.mjs";
+import { textPath, updateSpansExactly } from "./richtext-format.mjs";
 import { richDoc } from "./richtext-spans.mjs";
 import { updateSpansConfig } from "./marks.mjs";
 import { locateRange } from "./replace-match.mjs";
@@ -229,7 +229,7 @@ export function setNode(doc, id, input, trace, { anchor } = {}) {
       cells++;
     }
   }
-  A.updateSpans(doc, path, spans, updateSpansConfig);
+  updateSpansExactly(doc, path, spans, updateSpansConfig);
   // The schema accepts every change above; check the tree anyway, so a
   // malformed marker can never be committed.
   richDoc(doc.blocks[id]);

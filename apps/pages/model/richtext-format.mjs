@@ -5,6 +5,41 @@ import * as A from "@automerge/automerge/slim";
 export { safeUrl } from "./marks.mjs";
 
 export const textPath = (id) => ["blocks", id, "richText"];
+
+const markerKey = (value) =>
+  JSON.stringify([
+    String(value.type),
+    (value.parents ?? []).map(String),
+    Object.entries(value.attrs ?? {})
+      .map(([key, item]) => [key, A.isImmutableString(item) ? String(item) : item])
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+    !!value.isEmbed,
+  ]);
+
+/** Inside a change: store `spans` as the text at `path`, as `A.updateSpans`
+ * does, and then give every marker exactly the value `spans` gives it.
+ * Automerge 3.5's updateSpans diffs a marker's `parents` list in place, and
+ * when a rewrite changes the parents of several markers it can store a list
+ * other than the one given (a table row's parents become `["table",
+ * "table"]`). `A.updateBlock` replaces a marker's value and keeps the marker,
+ * so its cursor, which is its node id, stays. */
+export function updateSpansExactly(doc, path, spans, config) {
+  A.updateSpans(doc, path, spans, config);
+  const wanted = new Map();
+  let at = 0;
+  for (const span of spans) {
+    if (span.type === "block") wanted.set(at, span.value);
+    at += span.type === "text" ? span.value.length : 1;
+  }
+  at = 0;
+  for (const span of A.spans(doc, path)) {
+    if (span.type === "block") {
+      const value = wanted.get(at);
+      if (value && markerKey(value) !== markerKey(span.value)) A.updateBlock(doc, path, at, value);
+    }
+    at += span.type === "text" ? span.value.length : 1;
+  }
+}
 // Code text is unformatted: ProseMirror's code_block allows no marks and a
 // Markdown fence can't express them. Marks a writer left on code text are not
 // read, so one stray mark can't make the whole Page unreadable.

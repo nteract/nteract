@@ -1,6 +1,7 @@
 import * as A from "@automerge/automerge/slim";
 import { parseAgentMarkdown } from "./markdown-import.mjs";
 import { updateSpansConfig } from "./marks.mjs";
+import { updateSpansExactly } from "./richtext-format.mjs";
 import { pageSpans, validateRichSpans } from "./richtext-spans.mjs";
 import { Leaf } from "wordgard/doc";
 import { LineBreak, Paragraph, decode, encode, schema } from "./wordgard-doc.mjs";
@@ -260,7 +261,7 @@ export function setCommentContent(doc, path, input, nativeSpans) {
 export function writeCommentSpans(doc, path, spans, { plain = false } = {}) {
   const message = path.reduce((value, key) => value[key], doc);
   if (message.richText === undefined) message.richText = "";
-  A.updateSpans(doc, [...path, "richText"], spans, updateSpansConfig);
+  updateSpansExactly(doc, [...path, "richText"], spans, updateSpansConfig);
   if (plain) {
     if (message.bodyFormat !== PLAIN_FORMAT) message.bodyFormat = PLAIN_FORMAT;
   } else if (message.bodyFormat !== undefined) delete message.bodyFormat;
