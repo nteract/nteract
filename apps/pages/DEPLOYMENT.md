@@ -1216,8 +1216,18 @@ shows the new slot registering its connections before the old one logs
 A deployment signs people and agents in with Anaconda, unless
 `PAGES_KILO_APP_URL` is set. That setting turns on the Kilo redirect sign-in
 ([worker/kilo-handoff.mjs](worker/kilo-handoff.mjs)) and also selects Kilo as
-the identity provider ([identity-provider.mjs](identity-provider.mjs)). A Kilo
-deployment differs in three ways:
+the identity provider ([identity-provider.mjs](identity-provider.mjs)).
+
+A Kilo deployment needs two more settings, and refuses to sign anyone in
+without them:
+
+- `PAGES_KILO_AUDIENCE`, a plain variable: the name Kilo holds this deployment
+  under, such as `pages-dev`. Pages sends it in place of its own address, and
+  Kilo sends the browser back to the address it holds for that name.
+- `PAGES_KILO_EXCHANGE_SECRET`, a Worker secret of 32 characters or more: what
+  Kilo checks when Pages trades a sign-in code.
+
+A Kilo deployment differs in three ways:
 
 - It has no API keys. The agent guide (`/llms.txt`) and the connect page
   (`/connect`) describe OAuth only, and agents connect their MCP client by
