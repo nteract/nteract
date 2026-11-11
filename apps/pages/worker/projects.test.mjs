@@ -502,7 +502,11 @@ test("create_page places Pages in a Project, under a parent, and enforces depth 
   assert.equal(forged.status, 400);
   assert.equal(forged.body.code, "invalid_arguments");
   assert.match(forged.body.error, /`placement`/);
-  assert.equal((await w.catalogStorage().list({ prefix: "page/" })).size, before, "no Page was made");
+  assert.equal(
+    (await w.catalogStorage().list({ prefix: "page/" })).size,
+    before,
+    "no Page was made",
+  );
 });
 
 test("list_pages filters by Project and parent, verifies every row and hides the Project from grantees", async (t) => {

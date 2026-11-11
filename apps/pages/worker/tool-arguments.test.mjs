@@ -123,7 +123,9 @@ test("only a browser session's delete_page takes base_heads", () => {
         !allowedArguments("delete_page", transport, { credentialKind }).has("base_heads"),
         `${credentialKind} over ${transport}`,
       );
-  assert.ok(allowedArguments("delete_page", "http-tools", { credentialKind: "oidc" }).has("base_heads"));
+  assert.ok(
+    allowedArguments("delete_page", "http-tools", { credentialKind: "oidc" }).has("base_heads"),
+  );
 });
 
 test("every /api/tools operation declares the arguments it takes", () => {

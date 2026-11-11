@@ -579,7 +579,11 @@ test("a Kilo agent's write keys its receipt on the principal its person's browse
   const args = { operations: [{ op: "set_title", title: "Once" }], revision: read.revision, nonce };
   await w.mcp(token, "edit_page", args);
   const key = await receiptKey({ principal: browser, lane: "page", nonce });
-  assert.equal((await w.page.ctx.storage.get(key))?.pending, false, "the receipt sits under that key");
+  assert.equal(
+    (await w.page.ctx.storage.get(key))?.pending,
+    false,
+    "the receipt sits under that key",
+  );
   // An exact retry replays that receipt.
   const replay = await w.tools(token, "edit_page", args);
   assert.equal(replay.revision, (await w.page.ctx.storage.get(key)).receipt.revision);
@@ -591,7 +595,10 @@ test("a Kilo agent token is held to the argument check and can't send the browse
   const token = kilo.mintToken(holder, { audience });
   const w = pageWorld(t, { env, holder });
   const refused = async (operation, args) => {
-    const response = await worker.fetch(toolCall(token, operation, { page_id: pageId, ...args }), env);
+    const response = await worker.fetch(
+      toolCall(token, operation, { page_id: pageId, ...args }),
+      env,
+    );
     assert.equal(response.status, 400);
     return response.json();
   };
