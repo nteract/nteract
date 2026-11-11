@@ -2,7 +2,7 @@ import { randomSecret, secretHash } from "@cloud/oidc-session-store.ts";
 import { pagesPublicOrigin } from "../agent-guide.mjs";
 import { isolateSetup } from "./isolate-setup.mjs";
 import { logAuthEvent } from "./auth-events.mjs";
-import { OAUTH_REFRESH_SECONDS } from "../shared/oauth-grant.mjs";
+import { OAUTH_REFRESH_REUSE_SECONDS, OAUTH_REFRESH_SECONDS } from "../shared/oauth-grant.mjs";
 
 const CODE_SECONDS = 300;
 const CONSENT_SECONDS = 600;
@@ -38,9 +38,13 @@ const SCHEMA = [
     scope TEXT NOT NULL, expires_at INTEGER NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS pages_oauth_access_expiry ON pages_oauth_access_tokens(expires_at)`,
+  // `consumed_at` is when the token was spent. It is NULL in a row spent before
+  // the column existed (see ADDED_COLUMNS), which reads as outside the reuse
+  // window.
   `CREATE TABLE IF NOT EXISTS pages_oauth_refresh_tokens (
     token_hash TEXT PRIMARY KEY, grant_id TEXT NOT NULL,
-    scope TEXT NOT NULL, expires_at INTEGER NOT NULL, consumed_by TEXT
+    scope TEXT NOT NULL, expires_at INTEGER NOT NULL, consumed_by TEXT,
+    consumed_at INTEGER
   )`,
   `CREATE INDEX IF NOT EXISTS pages_oauth_refresh_expiry ON pages_oauth_refresh_tokens(expires_at)`,
   // Revoked-grant cleanup finds a grant's tokens and codes through these.
@@ -149,6 +153,7 @@ const ADDED_COLUMNS = [
   ["pages_oauth_codes", "allow_refresh", "INTEGER NOT NULL DEFAULT 0"],
   ["pages_oauth_grants", "principal", "TEXT"],
   ["pages_oauth_grants", "created_at", "INTEGER"],
+  ["pages_oauth_refresh_tokens", "consumed_at", "INTEGER"],
 ];
 // Created only once ADDED_COLUMNS exist, since an old table lacks them.
 const ADDED_INDEXES = [
@@ -561,40 +566,52 @@ export async function rotateRefreshToken(env, input, { now } = {}) {
   // Validate client/resource/scope before any consume or replay revocation.
   const scope = narrowedScope(input.scope, row.token_scope);
   const claim = randomSecret(),
-    tokens = await newTokens(true, now, row.expires_at);
+    tokens = await newTokens(true, now, row.expires_at),
+    // A token spent at or after this second is still inside the reuse window.
+    reusableSince = now - OAUTH_REFRESH_REUSE_SECONDS;
+  // The three outcomes, decided inside one transaction: a first use spends the
+  // token and issues; a use inside the reuse window issues beside the earlier
+  // one; a use after it revokes the grant, which also ends every descendant.
   const batch = [
     // Retained consumed hashes detect replay, including a race that lost after
-    // reading an unconsumed row. This revokes newly issued descendants too.
+    // reading an unconsumed row.
     statement(
       db,
       `UPDATE pages_oauth_grants SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL
-      AND EXISTS (SELECT 1 FROM pages_oauth_refresh_tokens WHERE token_hash = ? AND consumed_by IS NOT NULL)`,
+      AND EXISTS (SELECT 1 FROM pages_oauth_refresh_tokens WHERE token_hash = ?
+      AND consumed_by IS NOT NULL AND (consumed_at IS NULL OR consumed_at < ?))`,
       now,
       row.id,
       hash,
+      reusableSince,
     ),
     statement(
       db,
-      `UPDATE pages_oauth_refresh_tokens SET consumed_by = ? WHERE token_hash = ?
+      `UPDATE pages_oauth_refresh_tokens SET consumed_by = ?, consumed_at = ? WHERE token_hash = ?
       AND consumed_by IS NULL AND expires_at > ? AND EXISTS
       (SELECT 1 FROM pages_oauth_grants WHERE id = ? AND revoked_at IS NULL AND expires_at > ? AND context = ?)`,
       claim,
+      now,
       hash,
       now,
       row.id,
       now,
       context,
     ),
+    // Issues for the use that just spent the token, and for a use inside the
+    // window of an earlier one. A grant revoked above, or before this batch,
+    // issues nothing.
     statement(
       db,
       `INSERT INTO pages_oauth_access_tokens (token_hash, grant_id, scope, expires_at)
       SELECT ?, r.grant_id, ?, ? FROM pages_oauth_refresh_tokens r JOIN pages_oauth_grants g ON g.id = r.grant_id
-      WHERE r.token_hash = ? AND r.consumed_by = ? AND g.revoked_at IS NULL`,
+      WHERE r.token_hash = ? AND (r.consumed_by = ? OR r.consumed_at >= ?) AND g.revoked_at IS NULL`,
       tokens.accessHash,
       scope,
       tokens.expiresAt,
       hash,
       claim,
+      reusableSince,
     ),
   ];
   if (tokens.refreshToken)
@@ -603,21 +620,24 @@ export async function rotateRefreshToken(env, input, { now } = {}) {
         db,
         `INSERT INTO pages_oauth_refresh_tokens (token_hash, grant_id, scope, expires_at)
       SELECT ?, r.grant_id, ?, g.expires_at FROM pages_oauth_refresh_tokens r JOIN pages_oauth_grants g ON g.id = r.grant_id
-      WHERE r.token_hash = ? AND r.consumed_by = ? AND g.revoked_at IS NULL`,
+      WHERE r.token_hash = ? AND (r.consumed_by = ? OR r.consumed_at >= ?) AND g.revoked_at IS NULL`,
         tokens.refreshHash,
         scope,
         hash,
         claim,
+        reusableSince,
       ),
     );
-  const result = await db.batch(batch);
+  const [revoked, spent, issued] = (await db.batch(batch)).map(
+    (result) => result.meta?.changes === 1,
+  );
   const audit = {
     principal: snapshotPrincipal(row.identity_json),
     credential: "oauth",
     clientId: row.client_id,
     grantId: row.id,
   };
-  if (result[0].meta?.changes === 1) {
+  if (revoked) {
     await logAuthEvent({ action: "oauth.refresh_reused", ...audit });
     await logAuthEvent({
       action: "oauth.grant_revoked",
@@ -626,7 +646,9 @@ export async function rotateRefreshToken(env, input, { now } = {}) {
       reason: "refresh_reused",
     });
   }
-  if (result[1].meta?.changes !== 1) invalid();
+  if (!issued) invalid();
+  if (!spent)
+    await logAuthEvent({ action: "oauth.refresh_reused", ...audit, reason: "within_window" });
   await logAuthEvent({
     action: "oauth.token_issued",
     ...audit,

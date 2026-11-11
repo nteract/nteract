@@ -22,6 +22,7 @@ import {
   revokeOAuthToken,
   rotateRefreshToken,
 } from "./oauth-store.mjs";
+import { OAUTH_REFRESH_REUSE_SECONDS } from "../shared/oauth-grant.mjs";
 
 // Actual SQLite, with D1 batches executed as transactions. Failure injection
 // happens between statements so rollback protects more than a mocked call count.
@@ -540,29 +541,211 @@ test("refresh narrows scopes, preserves original proof, and cannot extend absolu
   );
 });
 
-test("refresh concurrency detects consumed replay and revokes all descendants", async (t) => {
+const spentAt = (f) =>
+  f.env.DB.sqlite
+    .prepare("SELECT consumed_at FROM pages_oauth_refresh_tokens WHERE consumed_by IS NOT NULL")
+    .all()
+    .map((row) => row.consumed_at);
+const revokedAt = (f) =>
+  f.env.DB.sqlite.prepare("SELECT revoked_at FROM pages_oauth_grants").get().revoked_at;
+
+test("overlapping refreshes of one token each get their own tokens and keep the grant", async (t) => {
   const f = fixture(t),
     g = await grant(f);
   const binding = { refreshToken: g.tokens.refresh_token, clientId: g.input.clientId, resource };
-  const results = await Promise.allSettled([
+  const capture = captureConsole(t);
+  const [one, two] = await Promise.all([
     rotateRefreshToken(f.env, binding, { now: start + 1 }),
     rotateRefreshToken(f.env, binding, { now: start + 1 }),
   ]);
-  const successful = results.filter((result) => result.status === "fulfilled");
-  assert.equal(successful.length, 1);
-  assert.equal(
-    await readAccessToken(f.env, successful[0].value.access_token, { now: start + 1 }),
-    null,
-  );
-  assert.equal(await readAccessToken(f.env, g.tokens.access_token, { now: start + 1 }), null);
-  await assert.rejects(
-    rotateRefreshToken(
+  assert.notEqual(one.access_token, two.access_token);
+  assert.notEqual(one.refresh_token, two.refresh_token);
+  assert.deepEqual(spentAt(f), [start + 1]);
+  assert.equal(revokedAt(f), null);
+  assert.deepEqual(capture.actions().sort(), [
+    "oauth.refresh_reused",
+    "oauth.token_issued",
+    "oauth.token_issued",
+  ]);
+  assert.equal(capture.find("oauth.refresh_reused")[0].reason, "within_window");
+  // The last second of the window still issues, and narrows scope like a first use.
+  const edge = start + 1 + OAUTH_REFRESH_REUSE_SECONDS;
+  const three = await rotateRefreshToken(f.env, { ...binding, scope: "pages:read" }, { now: edge });
+  assert.equal(three.scope, "pages:read");
+  // Each pair is a line of its own: every one reads and refreshes.
+  for (const tokens of [one, two, three]) {
+    assert.ok(await readAccessToken(f.env, tokens.access_token, { now: edge }));
+    const next = await rotateRefreshToken(
       f.env,
-      { ...binding, refreshToken: successful[0].value.refresh_token },
-      { now: start + 2 },
-    ),
-    invalidGrant,
+      { ...binding, refreshToken: tokens.refresh_token },
+      { now: edge },
+    );
+    assert.ok(await readAccessToken(f.env, next.access_token, { now: edge }));
+  }
+  assert.equal(revokedAt(f), null);
+});
+
+test("a refresh token reused after the window revokes the grant and every descendant", async (t) => {
+  const f = fixture(t),
+    g = await grant(f);
+  const binding = { refreshToken: g.tokens.refresh_token, clientId: g.input.clientId, resource };
+  const first = await rotateRefreshToken(f.env, binding, { now: start + 1 });
+  const beside = await rotateRefreshToken(f.env, binding, { now: start + 2 });
+  const late = start + 2 + OAUTH_REFRESH_REUSE_SECONDS;
+  const capture = captureConsole(t);
+  await assert.rejects(rotateRefreshToken(f.env, binding, { now: late }), invalidGrant);
+  assert.equal(revokedAt(f), late);
+  assert.deepEqual(capture.actions(), ["oauth.refresh_reused", "oauth.grant_revoked"]);
+  assert.equal(capture.find("oauth.refresh_reused")[0].reason, undefined);
+  for (const tokens of [g.tokens, first, beside]) {
+    assert.equal(await readAccessToken(f.env, tokens.access_token, { now: late }), null);
+    await assert.rejects(
+      rotateRefreshToken(f.env, { ...binding, refreshToken: tokens.refresh_token }, { now: late }),
+      invalidGrant,
+    );
+  }
+});
+
+test("a token spent with no recorded time is outside the window", async (t) => {
+  const f = fixture(t),
+    g = await grant(f);
+  const binding = { refreshToken: g.tokens.refresh_token, clientId: g.input.clientId, resource };
+  const first = await rotateRefreshToken(f.env, binding, { now: start + 1 });
+  // What a row spent before the column existed looks like.
+  f.env.DB.sqlite.exec("UPDATE pages_oauth_refresh_tokens SET consumed_at = NULL");
+  await assert.rejects(rotateRefreshToken(f.env, binding, { now: start + 1 }), invalidGrant);
+  assert.equal(revokedAt(f), start + 1);
+  assert.equal(await readAccessToken(f.env, first.access_token, { now: start + 1 }), null);
+});
+
+test("a revoked grant issues nothing inside the window", async (t) => {
+  const f = fixture(t),
+    g = await grant(f);
+  const binding = { refreshToken: g.tokens.refresh_token, clientId: g.input.clientId, resource };
+  const first = await rotateRefreshToken(f.env, binding, { now: start + 1 });
+  await revokeOAuthToken(
+    f.env,
+    { token: first.refresh_token, clientId: g.input.clientId },
+    { now: start + 2 },
   );
+  const issued = () =>
+    f.env.DB.sqlite
+      .prepare(
+        `SELECT (SELECT count(*) FROM pages_oauth_access_tokens) +
+      (SELECT count(*) FROM pages_oauth_refresh_tokens) AS n`,
+      )
+      .get().n;
+  const before = issued();
+  await assert.rejects(rotateRefreshToken(f.env, binding, { now: start + 2 }), invalidGrant);
+  assert.equal(issued(), before);
+});
+
+// Runs `between` after rotateRefreshToken has read the token's row and before
+// its batch, once. This is the stale read a concurrent request works from.
+function afterRefreshRead(t, f, between) {
+  const prepare = f.env.DB.prepare.bind(f.env.DB);
+  let pending = between;
+  t.mock.method(f.env.DB, "prepare", (sql) => {
+    const statement = prepare(sql);
+    if (!sql.startsWith("SELECT r.scope AS token_scope")) return statement;
+    return {
+      ...statement,
+      bind(...values) {
+        const bound = statement.bind(...values);
+        return {
+          ...bound,
+          async first() {
+            const row = await bound.first();
+            const run = pending;
+            pending = null;
+            if (run) await run(row);
+            return row;
+          },
+        };
+      },
+    };
+  });
+}
+const tokenRows = (f) =>
+  f.env.DB.sqlite
+    .prepare(
+      `SELECT (SELECT count(*) FROM pages_oauth_access_tokens) +
+      (SELECT count(*) FROM pages_oauth_refresh_tokens) AS n`,
+    )
+    .get().n;
+
+test("a grant revoked after the read of a reusable token issues nothing", async (t) => {
+  const f = fixture(t),
+    g = await grant(f);
+  const binding = { refreshToken: g.tokens.refresh_token, clientId: g.input.clientId, resource };
+  const first = await rotateRefreshToken(f.env, binding, { now: start + 1 });
+  let before;
+  afterRefreshRead(t, f, async (row) => {
+    assert.notEqual(row.consumed_by, null, "the read saw a spent token");
+    assert.equal(row.revoked_at, null, "and a live grant");
+    await revokeOAuthToken(
+      f.env,
+      { token: first.refresh_token, clientId: g.input.clientId },
+      { now: start + 2 },
+    );
+    before = tokenRows(f);
+  });
+  await assert.rejects(rotateRefreshToken(f.env, binding, { now: start + 2 }), invalidGrant);
+  assert.equal(tokenRows(f), before);
+});
+
+test("a late replay that lands between a reuse's read and its batch stops the reuse", async (t) => {
+  const f = fixture(t),
+    g = await grant(f);
+  const binding = { refreshToken: g.tokens.refresh_token, clientId: g.input.clientId, resource };
+  const first = await rotateRefreshToken(f.env, binding, { now: start + 1 });
+  const late = start + 2 + OAUTH_REFRESH_REUSE_SECONDS;
+  let before;
+  afterRefreshRead(t, f, async () => {
+    await assert.rejects(rotateRefreshToken(f.env, binding, { now: late }), invalidGrant);
+    before = tokenRows(f);
+  });
+  // This request is inside the window by its own clock, and read a live grant.
+  await assert.rejects(rotateRefreshToken(f.env, binding, { now: start + 2 }), invalidGrant);
+  assert.equal(tokenRows(f), before);
+  assert.equal(revokedAt(f), late);
+  assert.equal(await readAccessToken(f.env, first.access_token, { now: late }), null);
+});
+
+test("a row spent before consumed_at existed stays strict after the column is added", async (t) => {
+  const f = fixture(t),
+    g = await grant(f);
+  const binding = { refreshToken: g.tokens.refresh_token, clientId: g.input.clientId, resource };
+  await rotateRefreshToken(f.env, binding, { now: start + 1 });
+  // The table as it shipped before the column, with its rows.
+  f.env.DB.sqlite.exec(`
+    CREATE TABLE refresh_before (
+      token_hash TEXT PRIMARY KEY, grant_id TEXT NOT NULL,
+      scope TEXT NOT NULL, expires_at INTEGER NOT NULL, consumed_by TEXT
+    );
+    INSERT INTO refresh_before SELECT token_hash, grant_id, scope, expires_at, consumed_by
+      FROM pages_oauth_refresh_tokens;
+    DROP TABLE pages_oauth_refresh_tokens;
+    ALTER TABLE refresh_before RENAME TO pages_oauth_refresh_tokens;
+  `);
+  f.restart();
+  await assert.rejects(rotateRefreshToken(f.env, binding, { now: start + 1 }), invalidGrant);
+  assert.deepEqual(spentAt(f), [null]);
+  assert.equal(revokedAt(f), start + 1);
+});
+
+test("a refresh table created before consumed_at gains the column for new uses", async (t) => {
+  const f = fixture(t);
+  f.env.DB.sqlite.exec(`CREATE TABLE pages_oauth_refresh_tokens (
+    token_hash TEXT PRIMARY KEY, grant_id TEXT NOT NULL,
+    scope TEXT NOT NULL, expires_at INTEGER NOT NULL, consumed_by TEXT
+  )`);
+  const g = await grant(f);
+  const binding = { refreshToken: g.tokens.refresh_token, clientId: g.input.clientId, resource };
+  await rotateRefreshToken(f.env, binding, { now: start + 1 });
+  assert.deepEqual(spentAt(f), [start + 1]);
+  await rotateRefreshToken(f.env, binding, { now: start + 2 });
+  assert.equal(revokedAt(f), null);
 });
 
 test("refresh transaction failure preserves old token; explicit revocation cannot be undone", async (t) => {
@@ -639,8 +822,15 @@ test("wrong-client replay cannot revoke and readonly refresh cannot gain write",
     invalidGrant,
   );
   assert.ok(await readAccessToken(f.env, fresh.access_token, { now: start + 2 }));
-  await assert.rejects(rotateRefreshToken(f.env, binding, { now: start + 2 }), invalidGrant);
-  assert.equal(await readAccessToken(f.env, fresh.access_token, { now: start + 2 }), null);
+  // The client's own reuse after the window does revoke.
+  const late = start + 2 + OAUTH_REFRESH_REUSE_SECONDS;
+  await assert.rejects(
+    rotateRefreshToken(f.env, { ...binding, clientId: "attacker" }, { now: late }),
+    invalidGrant,
+  );
+  assert.ok(await readAccessToken(f.env, fresh.access_token, { now: late }));
+  await assert.rejects(rotateRefreshToken(f.env, binding, { now: late }), invalidGrant);
+  assert.equal(await readAccessToken(f.env, fresh.access_token, { now: late }), null);
 });
 
 test("revocation racing refresh never resurrects an active family", async (t) => {

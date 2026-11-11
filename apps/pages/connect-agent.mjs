@@ -1,5 +1,6 @@
 import { pagesPublicOrigin } from "./agent-guide.mjs";
 import { identityProvider } from "./identity-provider.mjs";
+import { OAUTH_REFRESH_REUSE_SECONDS } from "./shared/oauth-grant.mjs";
 import {
   checkAccountCommand,
   claudeCodeAddCommand,
@@ -160,11 +161,11 @@ function apiKeyContent(setup, provider) {
     <pre class="setup-value"><code id="oauth-endpoint">${escapeHtml(setup.endpoint)}</code></pre>
     <button type="button" class="setup-copy" data-copy="oauth-endpoint" data-copy-message="Server URL copied. Add it to your client's MCP connections and choose OAuth." hidden>Copy server URL</button>
     <p>Follow the client's sign-in link, check your Pages account and permissions, then approve access. You don't need to create or transfer an API key.</p>
-    <p>Access tokens last 10 minutes. Each refresh token works once and is replaced on use. The client refreshes on its next request, so nothing has to run in the background. The connection ends 30 days after you approve it, however often it refreshes. After that, authorize again.</p>
-    <p><strong>Don't share one OAuth connection between processes.</strong> If two processes hold the same stored tokens and both refresh, Pages treats the second refresh as a replayed token and revokes the whole connection. For several agents, worktrees, or CLI runs at once, use an API key.</p>
+    <p>Access tokens last 10 minutes. Each refresh token is replaced on use. The client refreshes on its next request, so nothing has to run in the background. The connection ends 30 days after you approve it, however often it refreshes. After that, authorize again.</p>
+    <p><strong>Several processes can share one OAuth connection.</strong> Kilo Desktop, the CLI, and your worktrees use the same stored tokens, and when two of them refresh in the same moment each gets its own. Don't copy the stored tokens to another machine. A refresh token used more than ${OAUTH_REFRESH_REUSE_SECONDS} seconds after another process spent it is treated as replayed, and Pages revokes the whole connection. For unattended work, use an API key: nothing has to refresh it.</p>
     <p class="setup-note">This deployment supports the ChatGPT OAuth client. Client metadata and permissions are discovered automatically. If your client asks for manual details or reports a different callback, follow the <a href="/llms.txt">agent guide</a>. Other OAuth clients need deployment support.</p>
-    <details class="setup-details" id="kilo-oauth"><summary>Kilo with OAuth (one Kilo process at a time)</summary>
-      <p>If several Kilo processes share one set of OAuth credentials, such as Kilo Desktop and the CLI, or several worktrees running at once, concurrent refreshes can revoke the connection. Use the API-key recipe above for that. OAuth fits a single Kilo process when you don't want to manage a key.</p>
+    <details class="setup-details" id="kilo-oauth"><summary>Kilo with OAuth</summary>
+      <p>OAuth fits Kilo when you don't want to manage a key. Kilo Desktop, the CLI, and your worktrees share one connection. It ends after 30 days and you authorize again; the API-key recipe above has no such limit.</p>
       <p>Merge into <code>~/.config/kilo/kilo.jsonc</code> (or your customized XDG config directory), preserving other settings.</p>
       <pre class="setup-value"><code id="kilo-config">${escapeHtml(kiloConfig(setup.origin))}</code></pre>
       <button type="button" class="setup-copy" data-copy="kilo-config" data-copy-message="Kilo OAuth config copied. Merge it into global config, then run kilo mcp auth pages." hidden>Copy Kilo config</button>
@@ -204,7 +205,7 @@ function oauthOnlyContent(setup, provider, env) {
       <p>Add a custom connector with the server URL above. Leave the client ID and secret empty. In the connector dialog the defaults are right: <strong>Sign in now</strong> and <strong>Use Claude's published identity</strong>.</p>
     </details>
     <details class="setup-details" id="claude-code"><summary>Claude Code</summary>
-      <p>Register the server. Claude Code connects one session at a time.</p>
+      <p>Register the server.</p>
       <pre class="setup-value"><code id="claude-code-add">${escapeHtml(claudeCodeOAuthCommand(setup.origin))}</code></pre>
       <button type="button" class="setup-copy" data-copy="claude-code-add" data-copy-message="Command copied. Run it in your terminal." hidden>Copy add command</button>
       <p>Then run <code>/mcp</code> in Claude Code, choose <code>pages</code>, and authenticate in the browser.</p>
@@ -225,8 +226,8 @@ function oauthOnlyContent(setup, provider, env) {
   </section>
   <section aria-labelledby="setup-authorize"><h2 id="setup-authorize"><span>2</span> Authorize in the browser</h2>
     <p>Follow the client's sign-in link. Kilo prints one when you run the login command. Sign in with your ${provider.label} account, check your Pages account and permissions, then approve access.</p>
-    <p>Access tokens last 10 minutes. Each refresh token works once and is replaced on use. The client refreshes on its next request, so nothing has to run in the background. The connection ends 30 days after you approve it, however often it refreshes. After that, authorize again.</p>
-    <p><strong>Don't share one OAuth connection between processes.</strong> If two processes hold the same stored tokens and both refresh, Pages treats the second refresh as a replayed token and revokes the whole connection. Run one Kilo process, or one Claude Code session, against this deployment at a time. If the connection is revoked, authorize again.</p>
+    <p>Access tokens last 10 minutes. Each refresh token is replaced on use. The client refreshes on its next request, so nothing has to run in the background. The connection ends 30 days after you approve it, however often it refreshes. After that, authorize again.</p>
+    <p><strong>Several processes can share one OAuth connection.</strong> Kilo Desktop, the CLI, and your worktrees use the same stored tokens, and when two of them refresh in the same moment each gets its own. Don't copy the stored tokens to another machine. A refresh token used more than ${OAUTH_REFRESH_REUSE_SECONDS} seconds after another process spent it is treated as replayed, and Pages revokes the whole connection. If that happens, authorize again.</p>
   </section>
   <section aria-labelledby="setup-try"><h2 id="setup-try"><span>3</span> Check the connection</h2>
     <p><strong>Reload MCP or start a new session, then call <code>list_pages</code> from that session.</strong> A successful response, even an empty list, means you're connected. A config file or a client status label alone doesn't verify access.</p>
