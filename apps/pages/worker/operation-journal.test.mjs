@@ -8,11 +8,13 @@ import {
   operationEntryBytes,
   RECEIPT_LIFETIME_MS,
   receiptHorizon,
+  readRevision,
   receiptKey,
   reserveOperation,
+  revisionClock,
   signCapability,
 } from "./operation-journal.mjs";
-import { revisionFor } from "./revisions.mjs";
+import { fencedHeads, revisionFor } from "./revisions.mjs";
 
 const start = Date.parse("2026-10-25T00:00:00Z");
 const alice = "user:issuer:alice";
@@ -178,6 +180,32 @@ test("clock rollback after collection lowers neither the horizon nor journal tim
   // base revision without it is refused anyway.
   const restored = await f.storage.get(f.args.key);
   assert.ok(restored.recordedAt <= (await f.storage.get(HORIZON)));
+});
+
+test("clock rollback after a durable delete cannot apply a write again", async () => {
+  const f = await fixture();
+  const heads = ["a".repeat(64)];
+  // The write named r1, read at the start, and its receipt recorded then.
+  const handle = await revisionFor(f.storage, "page", heads, start);
+  await record(f);
+  await reserveNext(f, start + RECEIPT_LIFETIME_MS);
+  await f.storage.sync();
+  f.storage.restart();
+  assert.equal(await f.storage.get(f.args.key), undefined, "the delete is durable");
+  // The wall clock steps back behind the receipt. The retry finds no receipt,
+  // and the fence refuses its revision, so it is not applied a second time.
+  const rolledBack = start - 1000;
+  assert.equal((await inspectOperation(f.storage, f.args)).entry, undefined);
+  const { horizon } = await revisionClock(f.storage, rolledBack);
+  assert.equal(horizon, start);
+  await assert.rejects(fencedHeads(f.storage, "page", handle, horizon), {
+    status: 409,
+    code: "resync_required",
+  });
+  // A fresh read of the same heads names a new handle the fence accepts.
+  const fresh = await readRevision(f.storage, "page", heads, rolledBack);
+  assert.notEqual(fresh, handle);
+  assert.deepEqual(await fencedHeads(f.storage, "page", fresh, horizon), heads);
 });
 
 test("journal time never runs back behind the latest revision handle", async () => {
