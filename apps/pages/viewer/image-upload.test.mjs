@@ -161,7 +161,7 @@ test("delayed image upload follows a native cursor through peer edits and remain
   });
   const completion = uploader.start([file], target);
   assert.equal(states.at(-1).pending, true);
-  f.replica.change((d) => A.splice(d, textPath("one"), 0, 0, "Peer "), true);
+  f.replica.change((d) => A.splice(d, textPath("one"), 1, 0, "Peer "), true);
   // The uploader must not move a caret that moved elsewhere while waiting.
   f.editor.dispatch({ selection: { anchor: 1 } });
   pending.resolve(asset);
@@ -224,7 +224,7 @@ test("typing during a slow upload stays after the image and keeps the caret", as
   type(f, "bc");
   assert.equal(blockMarkdown(f.replica.doc.blocks.one), "hello bcworld");
   // A peer edit before the paste point moves both anchors together.
-  f.replica.change((d) => A.splice(d, textPath("one"), 0, 0, "Peer "), true);
+  f.replica.change((d) => A.splice(d, textPath("one"), 1, 0, "Peer "), true);
   pending.resolve(asset);
   await completion;
   assert.equal(blockMarkdown(f.replica.doc.blocks.one), `Peer hello ${image}bcworld`);
@@ -266,7 +266,7 @@ test("an image pasted right after an astral character keeps the character whole"
     if (delayed) {
       type(f, "b");
       // A peer adds another astral character before the paste point.
-      f.replica.change((d) => A.splice(d, textPath("one"), 0, 0, "🎉"), true);
+      f.replica.change((d) => A.splice(d, textPath("one"), 1, 0, "🎉"), true);
       pending.resolve(asset);
     }
     await completion;
@@ -323,7 +323,7 @@ test("pending images never insert into a revoked, disposed, replaced, deleted or
     if (scenario === "page") f.replica.pageId = "other-page";
     if (scenario === "anchor removed")
       // The image is anchored to the character before the insertion point.
-      f.replica.change((d) => A.splice(d, textPath("one"), 5, 1, ""), true);
+      f.replica.change((d) => A.splice(d, textPath("one"), 6, 1, ""), true);
     const before = A.getHeads(f.replica.doc);
     pending.resolve(asset);
     await completion;

@@ -430,7 +430,7 @@ const textAt = (doc, kind, from, to) => ({ kind, ...presence(doc, from, to) });
 test("an agent write fills the changed text, then collapses to a labeled caret", () => {
   const doc = fixture("Ship on Tuesday morning.");
   const h = harness(doc);
-  const at = "Ship on ".length;
+  const at = 1 + "Ship on ".length;
   h.replica.agentPresence = new Map([
     ["agent-1", agent(doc, [textAt(doc, "text", at, at + "Tuesday morning".length)])],
   ]);
@@ -480,8 +480,8 @@ test("a target that attaches after the caret has faded gets no select beat", () 
   const late = () => {
     const doc = fixture("Ship on Tuesday morning.");
     const h = harness(doc);
-    const ahead = A.change(A.clone(doc), (d) => A.splice(d, textPath("first"), 0, 0, "Please "));
-    const at = "Please Ship on ".length;
+    const ahead = A.change(A.clone(doc), (d) => A.splice(d, textPath("first"), 1, 0, "Please "));
+    const at = 1 + "Please Ship on ".length;
     h.replica.agentPresence = new Map([
       [
         "agent-1",
@@ -516,14 +516,14 @@ test("a target that attaches after the caret has faded gets no select beat", () 
 test("an agent caret's anchor survives text shifts and idle, and changes with the next write", () => {
   const doc = fixture("Ship on Tuesday morning.");
   const h = harness(doc);
-  const at = "Ship on ".length;
+  const at = 1 + "Ship on ".length;
   h.replica.agentPresence = new Map([
     ["agent-1", agent(doc, [textAt(doc, "text", at, at + "Tuesday".length)])],
   ]);
   const [first] = h.collaboration.carets();
   assert.equal(typeof first.anchor, "string");
   // A person types before the caret: it moves, its anchor does not.
-  h.replica.doc = A.change(h.replica.doc, (d) => A.splice(d, textPath("first"), 0, 0, "Please "));
+  h.replica.doc = A.change(h.replica.doc, (d) => A.splice(d, textPath("first"), 1, 0, "Please "));
   const [shifted] = h.collaboration.carets();
   assert.equal(shifted.position, first.position + "Please ".length);
   assert.equal(shifted.anchor, first.anchor);
@@ -715,9 +715,9 @@ test("typing into text that just arrived takes those characters out of the earli
   h.actorProfiles.set(actor, { principal: "user:ana", displayName: "Ana", driver: "Browser" });
   h.attestedChanges.set(typed, actor);
   const found = marks(h);
-  // Editor positions sit one past Automerge text offsets in this block.
-  const text = " " + h.replica.doc.blocks.first.richText;
-  const insertion = { from: at + 1, to: at + 1 + " still here".length };
+  // Editor positions equal Automerge text offsets in the first paragraph.
+  const text = h.replica.doc.blocks.first.richText;
+  const insertion = { from: at, to: at + " still here".length };
   // Every character has one edit mark: no range overlaps another.
   for (const [i, mark] of found.entries())
     for (const other of found.slice(i + 1))

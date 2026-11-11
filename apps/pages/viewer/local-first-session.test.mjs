@@ -1014,13 +1014,13 @@ test("duplicated tabs open a shared checkpoint larger than an ordinary edit batc
     pageId = "0fbd48c2-6e1b-47e3-a42b-325abc946044";
   const documentId = interpretAsDocumentId(generateAutomergeUrl());
   const data = createPageData({ pageId, title: "Cached history" });
-  const block = Object.values(data.blocks)[0];
-  data.blocks = { "36f62da1-539d-4d43-9974-dd46e51997a1": block };
   // Fixed IDs and timestamps keep fragment aggregation stable across runs.
   let doc = A.change(A.init({ actor: "ab".repeat(16) }), { time: 0 }, (draft) =>
     Object.assign(draft, data),
   );
-  doc = A.change(doc, { time: 0 }, initializePage);
+  doc = A.change(doc, { time: 0 }, (draft) =>
+    initializePage(draft, "", "36f62da1-539d-4d43-9974-dd46e51997a1"),
+  );
   // Fragment boundaries follow change hashes, so the count that exceeds the
   // batch limit depends on the fixture's exact history.
   for (let i = 0; i < 1300; i++)
@@ -1056,12 +1056,12 @@ test("duplicated tabs open a shared checkpoint larger than an ordinary edit batc
  * the two orders peers can apply them. */
 function concurrentMergeFixture(pageId) {
   const data = createPageData({ pageId, title: "Shared history" });
-  const block = Object.values(data.blocks)[0];
-  data.blocks = { "7a3c0e52-9a59-4b6e-8f0a-2d6c5f4b1e90": block };
   let base = A.change(A.init({ actor: "ab".repeat(16) }), { time: 0 }, (draft) =>
     Object.assign(draft, data),
   );
-  base = A.change(base, { time: 0 }, initializePage);
+  base = A.change(base, { time: 0 }, (draft) =>
+    initializePage(draft, "", "7a3c0e52-9a59-4b6e-8f0a-2d6c5f4b1e90"),
+  );
   const concurrent = (actor, time, field) =>
     A.getChanges(
       base,
@@ -1175,7 +1175,7 @@ test("an offline comment survives a reload: both documents restore from the chec
   });
   const threads = Object.values(restored.commentsDoc.threads);
   assert.equal(threads.length, 1);
-  assert.equal(String(Object.values(threads[0].messages)[0].richText), "Typed offline");
+  assert.equal(String(Object.values(threads[0].messages)[0].richText), "\ufffcTyped offline");
   assert.match(restored.exportRecovery().markdown, /Typed offline/);
 });
 

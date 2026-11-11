@@ -22,19 +22,39 @@ import {
   PagesUnknownBlock,
   PagesUnknownEmbed,
 } from "./wordgard-model.mjs";
+// The marker a writer puts before a top-level paragraph.
+const opening = () => ({
+  type: "block",
+  value: { type: new A.ImmutableString("paragraph"), parents: [], attrs: {}, isEmbed: false },
+});
 function fixture(markdown) {
   return A.change(A.from({ blocks: { one: { markdown } } }), (d) => richFromSource(d, "one"));
 }
-test("Wordgard reads actual Pages spans with implicit paragraphs and UTF-16 positions", () => {
+test("Wordgard reads actual Pages spans with UTF-16 positions", () => {
   const doc = fixture("A🌊 **bold**"),
     spans = A.spans(doc, textPath("one"));
-  assert.equal(spans[0].type, "text");
+  // The first paragraph opens with its marker, so editor positions inside it
+  // equal native offsets.
+  assert.equal(spans[0].type, "block");
+  assert.equal(String(spans[0].value.type), "paragraph");
   const { doc: tree, map } = decode(spans);
-  assert.equal(map.wgToAm[1], 0);
-  assert.equal(map.wgToAm[2], 1);
-  assert.equal(map.wgToAm[4], 3);
-  assert.equal(map.amToWg[0], 1);
+  assert.equal(map.wgToAm[1], 1);
+  assert.equal(map.wgToAm[2], 2);
+  assert.equal(map.wgToAm[4], 4);
+  assert.equal(map.amToWg[1], 1);
   assert.ok(decode(encode(tree)).doc.eq(tree));
+});
+
+test("unmarked text a merge leaves reads as a paragraph and encodes with its marker", () => {
+  const spans = [{ type: "text", value: "Left by a merge", marks: {} }];
+  const decoded = decode(spans);
+  assert.equal(decoded.lossy, false);
+  assert.deepEqual(decoded.unmarked, [{ at: 0, markers: [{ type: "paragraph", parents: [] }] }]);
+  assert.equal(decoded.doc.content[0].type, Paragraph.type);
+  assert.equal(decoded.map.wgToAm[1], 0);
+  const encoded = encode(decoded.doc);
+  assert.equal(String(encoded[0].value.type), "paragraph");
+  assert.deepEqual(encoded.slice(1), spans);
 });
 test("Pages headings, nested lists, quotes, hard breaks, code params and links round trip", () => {
   for (const source of [
@@ -141,17 +161,24 @@ test("an empty first paragraph keeps its own native marker when content follows 
     assert.ok(decode(A.spans(doc, textPath("one"))).doc.eq(tree), String(tree));
     assert.doesNotThrow(() => blockMarkdown(doc.blocks.one));
   }
-  // A lone empty paragraph and a non-empty first paragraph stay implicit.
-  assert.deepEqual(encode(schema.doc([empty])), []);
-  assert.equal(encode(schema.doc([Paragraph.create([Leaf.text("Hope")])]))[0].type, "text");
+  // A lone empty paragraph and a non-empty first paragraph have their markers.
+  assert.deepEqual(
+    encode(schema.doc([empty])).map((span) => String(span.value.type)),
+    ["paragraph"],
+  );
+  assert.equal(
+    String(encode(schema.doc([Paragraph.create([Leaf.text("Hope")])]))[0].value.type),
+    "paragraph",
+  );
   assert.deepEqual(
     encode(schema.doc([Blockquote.create([empty])])).map((span) => String(span.value.type)),
-    ["blockquote"],
+    ["blockquote", "paragraph"],
   );
 });
 
 test("marks this build doesn't know decode as plain text and encode back unchanged", () => {
   const spans = [
+    opening(),
     { type: "text", value: "a", marks: {} },
     { type: "text", value: "future", marks: { strong: true, underline: true, color: "red" } },
   ];
@@ -169,7 +196,7 @@ test("marks this build doesn't know decode as plain text and encode back unchang
 
 test("highlights decode to palette or custom colors and round trip", () => {
   for (const color of ["yellow", "green", "blue", "pink", "#1f6feb"]) {
-    const spans = [{ type: "text", value: "lit", marks: { highlight: color } }];
+    const spans = [opening(), { type: "text", value: "lit", marks: { highlight: color } }];
     const { doc } = decode(spans);
     assert.equal(PagesHighlight.isInSet(doc.content[0].content[0].marks).value, color);
     assert.deepEqual(encode(doc), spans);
@@ -216,9 +243,8 @@ function withUnknown(source, marker, at) {
       parents: marker.parents.map(S),
     }),
   );
-  // Absorb the importer's explicit first-paragraph marker, which the editor
-  // leaves implicit, so the next rewrite measures only the unknown node. A
-  // lossy block is never rewritten, by the editor or here.
+  // Rewrite once in the editor's form, so the next rewrite measures only the
+  // unknown node. A lossy block is never rewritten, by the editor or here.
   const decoded = decode(A.spans(doc, path));
   if (decoded.lossy) return doc;
   return A.change(doc, (d) => A.updateSpans(d, path, encode(decoded.doc)));

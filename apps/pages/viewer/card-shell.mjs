@@ -64,7 +64,7 @@ html, body { margin: 0; background: var(--card); }
 export function firstScreenSpans(spans, budget = { nodes: MAX_NODES, text: MAX_TEXT }) {
   const kept = [];
   const topLevelBlock = (span) => span?.type === "block" && !(span.value?.parents?.length > 0);
-  // A block that opens with text has an implicit first paragraph.
+  // A block a merge left opening with unmarked text has a paragraph there.
   if (spans.length && !topLevelBlock(spans[0])) budget.nodes--;
   for (const span of spans) {
     const topLevel = topLevelBlock(span);

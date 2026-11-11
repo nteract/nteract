@@ -132,7 +132,7 @@ test("structural edits keep nested opaque image attrs; unsupported values refuse
     }
   }
 });
-test("typing and formatting retain native object identity and exact implicit offsets", () => {
+test("typing and formatting retain native object identity and exact offsets after the opening marker", () => {
   const replica = fixture(),
     binding = createWordgardBinding(replica, "one");
   const object = A.getObjectId(replica.doc.blocks.one, "richText"),
@@ -140,15 +140,15 @@ test("typing and formatting retain native object identity and exact implicit off
   binding.applyEditorTransaction(
     state(binding).update({ changes: { from: 1, insert: [Leaf.text("New ")] } }),
   );
-  assert.equal(replica.doc.blocks.one.richText, "New hello 🌊 world");
-  assert.equal(A.spans(replica.doc, textPath("one"))[0].type, "text");
+  assert.equal(replica.doc.blocks.one.richText, "\ufffcNew hello 🌊 world");
+  assert.equal(A.spans(replica.doc, textPath("one"))[0].type, "block");
   assert.equal(A.getObjectId(replica.doc.blocks.one, "richText"), object);
   assert.equal(A.getCursorPosition(replica.doc, textPath("one"), cursor), 13);
   const before = replica.doc;
   binding.applyEditorTransaction(
     state(binding).update({ changes: { from: 5, to: 10, add: Strong } }),
   );
-  assert.equal(A.marksAt(replica.doc, textPath("one"), 4).strong, true);
+  assert.equal(A.marksAt(replica.doc, textPath("one"), 5).strong, true);
   assert.ok(
     !A.diff(replica.doc, A.getHeads(before), A.getHeads(replica.doc)).some(
       (p) => p.action === "splice" || p.action === "spliceText",
@@ -161,7 +161,7 @@ test("typing and formatting retain native object identity and exact implicit off
 test("structural edits preserve surviving cursors and canonical Pages markers", () => {
   const replica = fixture("hello world"),
     binding = createWordgardBinding(replica, "one");
-  const cursor = A.getCursor(replica.doc, textPath("one"), 8);
+  const cursor = A.getCursor(replica.doc, textPath("one"), 9);
   const target = schema.doc([
     Heading.of(2).create([Leaf.text("hello")]),
     Paragraph.create([Leaf.text(" world")]),
@@ -182,8 +182,8 @@ test("incoming changes publish an incremental projection and actor metadata", ()
     events = [];
   binding.observe((event) => events.push(event));
   const remote = A.change(A.clone(replica.doc), (d) => {
-    A.splice(d, textPath("one"), 0, 3, "ONE");
-    A.mark(d, textPath("one"), { start: 4, end: 7, expand: "both" }, "em", true);
+    A.splice(d, textPath("one"), 1, 3, "ONE");
+    A.mark(d, textPath("one"), { start: 5, end: 8, expand: "both" }, "em", true);
   });
   replica.receive(remote);
   const event = events.at(-1);
@@ -199,7 +199,7 @@ test("stale editor transactions reject without changing shared state", () => {
   const replica = fixture(),
     binding = createWordgardBinding(replica, "one"),
     old = state(binding);
-  replica.change((d) => A.splice(d, textPath("one"), 0, 0, "Ahead "));
+  replica.change((d) => A.splice(d, textPath("one"), 1, 0, "Ahead "));
   const heads = A.getHeads(replica.doc);
   assert.throws(
     () =>
@@ -274,7 +274,7 @@ test("real Repo handles drive Wordgard changes while undo preserves a remote ins
   };
   localChange({ changes: { from: 1, insert: [Leaf.text("Local ")] } });
   await peers[1].repo.flush();
-  await eventually(() => assert.equal(first.doc().blocks[id].richText, "Local Original"));
+  await eventually(() => assert.equal(first.doc().blocks[id].richText, "\ufffcLocal Original"));
   await first.change((d) =>
     A.splice(d, ["blocks", id, "richText"], d.blocks[id].richText.length, 0, " Remote"),
   );
@@ -282,11 +282,11 @@ test("real Repo handles drive Wordgard changes while undo preserves a remote ins
   const undoSpec = undo({ state: editorState });
   assert.ok(undoSpec);
   localChange(undoSpec);
-  assert.equal(replica.doc.blocks[id].richText, "Original Remote");
+  assert.equal(replica.doc.blocks[id].richText, "\ufffcOriginal Remote");
   const redoSpec = redo({ state: editorState });
   assert.ok(redoSpec);
   localChange(redoSpec);
-  assert.equal(replica.doc.blocks[id].richText, "Local Original Remote");
+  assert.equal(replica.doc.blocks[id].richText, "\ufffcLocal Original Remote");
   await peers[1].repo.flush();
   // The text alone matches before the undo arrives; wait for the redo itself.
   await eventually(() =>
@@ -323,7 +323,7 @@ test("unrelated comments, titles and blocks do not redraw the Wordgard projectio
   replica.change((d) => A.updateText(d, ["blocks", "other", "richText"], "Another edit"));
   assert.equal(notified, 0);
   assert.equal(binding.current, original);
-  replica.change((d) => A.splice(d, textPath("one"), 0, 0, "Own "));
+  replica.change((d) => A.splice(d, textPath("one"), 1, 0, "Own "));
   assert.equal(notified, 1);
   binding.destroy();
 });
@@ -488,25 +488,26 @@ test("combined bold, italic and titled links retain canonical marks through undo
   assert.equal(Command.dispatch(editor, toggleMark, PagesLink.of(link)), true);
   const combined = editorState.doc;
   const spans = A.spans(replica.doc, textPath("one"));
-  assert.equal(spans[0].value, "alpha");
-  assert.deepEqual(spans[0].marks, { strong: true, em: true, link: JSON.stringify(link) });
-  assert.deepEqual(spans[1], { type: "text", value: " beta" });
-  assert.deepEqual(A.marksAt(replica.doc, textPath("one"), 0), spans[0].marks);
+  assert.equal(spans[1].value, "alpha");
+  assert.deepEqual(spans[1].marks, { strong: true, em: true, link: JSON.stringify(link) });
+  assert.deepEqual(spans[2], { type: "text", value: " beta" });
+  assert.deepEqual(A.marksAt(replica.doc, textPath("one"), 1), spans[1].marks);
   assert.ok(
     decode([
-      { ...spans[0], marks: { link: JSON.stringify(link), em: true, strong: true } },
-      spans[1],
+      spans[0],
+      { ...spans[1], marks: { link: JSON.stringify(link), em: true, strong: true } },
+      spans[2],
     ]).doc.eq(combined),
   );
   editor.dispatch(undo({ state: editorState }));
-  assert.deepEqual(A.marksAt(replica.doc, textPath("one"), 0), { strong: true, em: true });
+  assert.deepEqual(A.marksAt(replica.doc, textPath("one"), 1), { strong: true, em: true });
   editor.dispatch(undo({ state: editorState }));
-  assert.deepEqual(A.marksAt(replica.doc, textPath("one"), 0), { strong: true });
+  assert.deepEqual(A.marksAt(replica.doc, textPath("one"), 1), { strong: true });
   editor.dispatch(undo({ state: editorState }));
-  assert.deepEqual(A.marksAt(replica.doc, textPath("one"), 0), {});
+  assert.deepEqual(A.marksAt(replica.doc, textPath("one"), 1), {});
   for (let i = 0; i < 3; i++) editor.dispatch(redo({ state: editorState }));
   assert.ok(editorState.doc.eq(combined));
-  assert.equal(replica.doc.blocks.one.richText, "alpha beta");
+  assert.equal(replica.doc.blocks.one.richText, "\ufffcalpha beta");
   binding.destroy();
 });
 
@@ -778,7 +779,7 @@ test("a rejected local transaction restores the editor and drops its undo histor
   assert.equal(undo({ state: editor.state }), false);
   editor.dispatch({ changes: { from: 2, insert: [Leaf.text(" again")] } });
   assertInSync(editor, replica, "one", "later edits");
-  assert.equal(replica.doc.blocks.one.richText.length, " again".length + "Hope".length + 1);
+  assert.equal(replica.doc.blocks.one.richText.length, " again".length + "Hope".length + 2);
   editor.binding.destroy();
 });
 
@@ -800,7 +801,7 @@ test("pasting a lone surrogate leaves later Enter and formatting writable", () =
     } else {
       editor.dispatch({ changes: { from: 1, to: 3, add: Strong } });
       assertInSync(editor, replica, "one", "bold after the paste");
-      assert.equal(A.marksAt(replica.doc, textPath("one"), 0).strong, true);
+      assert.equal(A.marksAt(replica.doc, textPath("one"), 1).strong, true);
     }
     editor.binding.destroy();
   }
@@ -914,15 +915,15 @@ test("a caret keeps its side of a peer's insertion at the same spot", () => {
     const path = textPath("one");
     const base = A.clone(replica.doc, { actor: peerActor });
     // Local typing: "L" after "ab", caret after it at editor position 4.
-    replica.change((d) => A.splice(d, path, 2, 0, "L"));
+    replica.change((d) => A.splice(d, path, 3, 0, "L"));
     const caret = 4;
     // The peer typed "R" at the same spot without seeing "L".
-    replica.receive(A.change(base, (d) => A.splice(d, path, 2, 0, "R")));
+    replica.receive(A.change(base, (d) => A.splice(d, path, 3, 0, "R")));
     const event = events.at(-1);
     assert.equal(event.remote, true);
     const text = replica.doc.blocks.one.richText;
     const at = remoteEditorPosition(event, path, caret, { caret: true });
-    assert.equal(text.slice(0, at - 1), text.slice(0, text.indexOf("L") + 1), peerActor);
+    assert.equal(text.slice(0, at), text.slice(0, text.indexOf("L") + 1), peerActor);
     binding.destroy();
   }
 });
@@ -933,7 +934,7 @@ test("a caret at a peer's insertion point stays before the inserted text", () =>
     events = [];
   binding.observe((event) => events.push(event));
   const path = textPath("one");
-  replica.receive(A.change(A.clone(replica.doc), (d) => A.splice(d, path, 2, 0, "XY")));
+  replica.receive(A.change(A.clone(replica.doc), (d) => A.splice(d, path, 3, 0, "XY")));
   const event = events.at(-1);
   // Caret after "ab" (editor position 3) stays there; a selection end moves.
   assert.equal(remoteEditorPosition(event, path, 3, { caret: true }), 3);
@@ -949,12 +950,12 @@ test("a caret whose preceding character a peer deletes stays in place", () => {
     events = [];
   binding.observe((event) => events.push(event));
   const path = textPath("one");
-  replica.receive(A.change(A.clone(replica.doc), (d) => A.splice(d, path, 1, 1)));
+  replica.receive(A.change(A.clone(replica.doc), (d) => A.splice(d, path, 2, 1)));
   const event = events.at(-1);
-  assert.equal(replica.doc.blocks.one.richText, "a cd");
+  assert.equal(replica.doc.blocks.one.richText, "\ufffca cd");
   assert.equal(remoteEditorPosition(event, path, 3, { caret: true }), 2);
   // Deleting the whole run before the caret leaves it at the paragraph start.
-  replica.receive(A.change(A.clone(replica.doc), (d) => A.splice(d, path, 0, 1)));
+  replica.receive(A.change(A.clone(replica.doc), (d) => A.splice(d, path, 1, 1)));
   assert.equal(remoteEditorPosition(events.at(-1), path, 2, { caret: true }), 1);
   binding.destroy();
 });
@@ -976,7 +977,7 @@ test("a caret after an emoji keeps its side of a peer's insertion", () => {
   assert.equal(at, binding.current.map.amToWg[raw().indexOf("XY")]);
   // A peer's emoji typed before the caret moves it by one whole code point.
   const before = binding.current.map.amToWg[raw().indexOf("XY")];
-  replica.receive(A.change(A.clone(replica.doc), (d) => A.splice(d, path, 0, 0, "🌍")));
+  replica.receive(A.change(A.clone(replica.doc), (d) => A.splice(d, path, 1, 0, "🌍")));
   const moved = remoteEditorPosition(events.at(-1), path, before, { caret: true });
   assert.equal(moved, binding.current.map.amToWg[raw().indexOf("XY")]);
   binding.destroy();
@@ -1004,4 +1005,108 @@ test("the binding refuses writes to a block decode couldn't draw as stored", () 
     /newer version of Pages/,
   );
   assert.deepEqual(A.getHeads(replica.doc), heads);
+});
+
+// Every node opens with its marker, the block's first paragraph included: an
+// editor position inside the first paragraph maps one for one onto the
+// native text after that marker.
+const markerTypes = (replica, id) =>
+  nativeSpans(replica, id)
+    .filter((span) => span.type === "block")
+    .map((span) => String(span.value.type));
+
+test("typing at the start of a block writes after its opening marker", () => {
+  const replica = fixture("Hope"),
+    editor = editorFor(replica, "one");
+  editor.dispatch({ changes: { from: 1, insert: [Leaf.text("New ")] } });
+  assertInSync(editor, replica, "one", "typing at the start");
+  assert.equal(replica.doc.blocks.one.richText, "￼New Hope");
+  assert.deepEqual(markerTypes(replica, "one"), ["paragraph"]);
+  editor.binding.destroy();
+});
+
+test("Backspace at the start of a block's first node changes nothing but that node", () => {
+  // A paragraph: there is nothing before it in this block to join.
+  const replica = fixture("Hope"),
+    editor = editorFor(replica, "one");
+  const heads = A.getHeads(replica.doc);
+  editor.dispatch({ selection: { anchor: 1 } });
+  editor.run(deleteUnit, "backward");
+  assertInSync(editor, replica, "one", "Backspace on a paragraph");
+  assert.equal(replica.doc.blocks.one.richText, "￼Hope");
+  assert.deepEqual(A.getHeads(replica.doc), heads);
+  editor.binding.destroy();
+  // A heading keeps its marker, and so its node id, too.
+  const titled = fixture("## Title\n\nBody"),
+    second = editorFor(titled, "one");
+  const marker = A.getCursor(titled.doc, textPath("one"), 0);
+  second.dispatch({ selection: { anchor: 1 } });
+  second.run(deleteUnit, "backward");
+  assertInSync(second, titled, "one", "Backspace on a heading");
+  assert.equal(blockMarkdown(titled.doc.blocks.one), "## Title\n\nBody");
+  assert.equal(A.getCursorPosition(titled.doc, textPath("one"), marker), 0);
+  second.binding.destroy();
+});
+
+test("Enter in the middle of a block's first paragraph splits it under two markers", () => {
+  const replica = fixture("Hope floats"),
+    editor = editorFor(replica, "one");
+  const first = A.getCursor(replica.doc, textPath("one"), 0);
+  editor.dispatch({ selection: { anchor: 5 } });
+  assert.equal(editor.run(enter), true);
+  assertInSync(editor, replica, "one", "Enter mid-paragraph");
+  assert.deepEqual(markerTypes(replica, "one"), ["paragraph", "paragraph"]);
+  assert.equal(blockMarkdown(replica.doc.blocks.one), "Hope\n\n floats");
+  // The first paragraph keeps its marker, so its node id.
+  assert.equal(A.getCursorPosition(replica.doc, textPath("one"), first), 0);
+  editor.binding.destroy();
+});
+
+test("a selection across a block's nodes deletes through the markers between them", () => {
+  const replica = fixture("First line\n\n## Second\n\nThird"),
+    editor = editorFor(replica, "one");
+  // From inside the first paragraph to inside the heading.
+  editor.dispatch({ selection: { anchor: 6, head: editor.state.doc.content[0].length + 4 } });
+  assert.equal(editor.run(deleteUnit, "backward"), true);
+  assertInSync(editor, replica, "one", "deleting across nodes");
+  assert.equal(blockMarkdown(replica.doc.blocks.one), "Firstond\n\nThird");
+  assert.equal(nativeSpans(replica, "one")[0].type, "block");
+  editor.binding.destroy();
+});
+
+test("a caret after a peer's edit before it, in the first paragraph, keeps its text", () => {
+  const replica = fixture("ab cd"),
+    binding = createWordgardBinding(replica, "one"),
+    events = [];
+  binding.observe((event) => events.push(event));
+  const path = textPath("one");
+  // The peer types at the very start of the first paragraph, after its marker.
+  replica.receive(A.change(A.clone(replica.doc), (d) => A.splice(d, path, 1, 0, "XY")));
+  const at = remoteEditorPosition(events.at(-1), path, 4, { caret: true });
+  // Still right after "ab ", which now follows the peer's text.
+  assert.equal(replica.doc.blocks.one.richText.slice(at - 3, at), "ab ");
+  assert.equal(at, 6);
+  binding.destroy();
+});
+
+test("editing unmarked text a merge left gives it its marker", () => {
+  // The first node deleted while a peer typed into it: " typed" has no marker.
+  const replica = fixture("Intro words\n\nSecond");
+  const base = A.clone(replica.doc);
+  const deleted = A.change(A.clone(base, { actor: "0a".repeat(16) }), (d) =>
+    A.splice(d, textPath("one"), 0, d.blocks.one.richText.indexOf("Second") - 1),
+  );
+  const typed = A.change(A.clone(base, { actor: "0b".repeat(16) }), (d) =>
+    A.splice(d, textPath("one"), d.blocks.one.richText.indexOf(" words") + 6, 0, " typed"),
+  );
+  replica.receive(A.merge(deleted, typed));
+  assert.equal(nativeSpans(replica, "one")[0].type, "text");
+  const editor = editorFor(replica, "one");
+  assert.equal(editor.state.doc.content.length, 2);
+  // The person types inside it: the write marks it.
+  editor.dispatch({ changes: { from: 1, insert: [Leaf.text("Now")] } });
+  assertInSync(editor, replica, "one", "typing in unmarked text");
+  assert.deepEqual(markerTypes(replica, "one"), ["paragraph", "paragraph"]);
+  assert.equal(blockMarkdown(replica.doc.blocks.one), "Now typed\n\nSecond");
+  editor.binding.destroy();
 });

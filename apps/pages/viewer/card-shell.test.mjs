@@ -16,8 +16,8 @@ test("the shell renders the card's blocks, cut to the first screen's nodes", () 
   const doc = page(Array.from({ length: 60 }, (_, i) => `Paragraph ${i}`).join("\n\n"));
   const blocks = shellBlocks(doc);
   assert.equal(blocks.length, 1);
-  // The first paragraph has no marker: 23 markers are 24 nodes.
-  assert.equal(topLevel(blocks[0].spans), 23);
+  // Every node opens with its marker: 24 markers are 24 nodes.
+  assert.equal(topLevel(blocks[0].spans), 24);
   assert.match(String(blocks[0].spans.at(-1).value), /Paragraph 23/);
 });
 

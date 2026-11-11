@@ -97,9 +97,9 @@ test("in repeated text, the preview follows the native cursor, not the value dif
   // Upload between the second and third "a".
   const target = f.startUpload(1 + 2);
   assert.equal(f.preview(), f.landing(target));
-  // A peer types "a" at the very start. A value diff of "aaaa" -> "aaaaa" can't
+  // A peer types "a" at the very start, after the opening marker. A value diff of "aaaa" -> "aaaaa" can't
   // tell where it went; the Automerge cursor can.
-  f.remote((d) => A.splice(d, textPath("one"), 0, 0, "a"));
+  f.remote((d) => A.splice(d, textPath("one"), 1, 0, "a"));
   assert.equal(f.landing(target), 1 + 3);
   assert.equal(f.preview(), f.landing(target));
   // And again at the end.
@@ -124,7 +124,7 @@ test("when the anchor is deleted, the preview clears and the insert would fail",
   const target = f.startUpload(1 + "one two".length);
   assert.ok(f.preview() !== null);
   // A peer deletes the text around the insertion point.
-  f.remote((d) => A.splice(d, textPath("one"), "one ".length, "two three".length));
+  f.remote((d) => A.splice(d, textPath("one"), 1 + "one ".length, "two three".length));
   let landed;
   try {
     landed = f.landing(target);
@@ -147,7 +147,7 @@ test("a remote change that leaves the text equal still moves the preview with it
   // One peer change deletes the first "a" and appends one: the rendered text is
   // unchanged, so the projection is empty, but the native cursor moved left.
   f.remote((d) => {
-    A.splice(d, textPath("one"), 0, 1);
+    A.splice(d, textPath("one"), 1, 1);
     A.splice(d, textPath("one"), d.blocks.one.richText.length, 0, "a");
   });
   assert.equal(f.landing(target), 1 + 1);

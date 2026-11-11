@@ -173,6 +173,13 @@ const splitsPair = (doc, pos) => {
   const before = doc.resolve(pos).nodeBefore;
   return !!before?.isText && /[\uD800-\uDBFF]$/.test(String(before.param));
 };
+/** Whether the textblock holding editor position `pos` opens with a native
+ * marker of its own: false for unmarked text, which only a merge leaves. */
+function ownMarker({ doc, map }, pos) {
+  const level = doc.resolve(pos).parent;
+  if (!level?.parent || !level.node.type.spec.inlineContent) return true;
+  return map.wgToAm[level.before + 1] > map.wgToAm[level.before];
+}
 const nativeLength = (doc, id) => String(doc.blocks?.[id]?.richText ?? "").length;
 
 /** Position maps after replacing editor range `[from, to)` with `length`
@@ -195,7 +202,7 @@ export function spliceProjectionMap({ wgToAm, amToWg }, from, to, length) {
 
 // The editor position where decode would draw text inserted at native
 // `index`, or null when it would land outside a textblock (decode would
-// create a paragraph for it). Text inserted before a block marker, or at the
+// draw it as unmarked text). Text inserted before a block marker, or at the
 // end, joins the content before it: the first editor position sharing that
 // native index.
 function insertionPoint(doc, map, index) {
@@ -230,8 +237,8 @@ export function applyTextPatches(projection, patches, path) {
           return null;
         if (!textOnly(doc.slice(from, to))) return null;
         step = ChangeSet.create(doc, { from, to });
-        // An emptied textblock may have no native marker of its own, and
-        // decode draws no paragraph for it.
+        // An emptied paragraph of unmarked text has no marker to
+        // keep it, and decode draws no paragraph for it.
         if (!step.apply(doc).resolve(from).parent.node.content.length) return null;
         map = spliceProjectionMap(map, from, to, 0);
       } else if (patch.action === "splice") {
@@ -414,6 +421,9 @@ export function createWordgardBinding(
           const removed = tr.startState.doc.slice(from, to);
           if (!textOnly([...inserted, ...removed])) structural = true;
           if (to - from !== original.map.wgToAm[to] - original.map.wgToAm[from]) structural = true;
+          // An edit inside unmarked text (no marker opens its textblock; see
+          // decode) is written through encode, which gives it its marker.
+          if (!ownMarker(original, from)) structural = true;
           replacements.push({ from, to, fromB, toB, inserted });
         },
         (_a, _b, from, to, modifications) => {
@@ -443,8 +453,8 @@ export function createWordgardBinding(
           (range) =>
             !splitsPair(tr.startState.doc, range.from) &&
             !splitsPair(tr.startState.doc, range.to) &&
-            // An emptied textblock may have no native marker of its own, and
-            // decode draws no paragraph for it.
+            // An emptied paragraph of unmarked text has no marker
+            // to keep it, and decode draws no paragraph for it.
             tr.newDoc.resolve(range.fromB).parent.node.content.length > 0 &&
             range.inserted.every((token) => {
               const text = String(token.param);

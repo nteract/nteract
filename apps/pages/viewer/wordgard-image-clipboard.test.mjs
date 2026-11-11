@@ -74,7 +74,8 @@ test("unsupported native scalars block writes and oversized attrs still render",
   ]) {
     assert.throws(() => encode(tree({ ...value, future })), /Invalid Pages image/);
     const spans = encode(tree(value));
-    spans[0].value.attrs.future = future;
+    spans.find((s) => s.type === "block" && String(s.value.type) === "image").value.attrs.future =
+      future;
     assert.equal(decode(spans).lossy, true);
   }
   const dom = new JSDOM();
