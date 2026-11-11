@@ -18,8 +18,12 @@ import { updateSpansConfig } from "./marks.mjs";
 import { stampSpans } from "./schema-features.mjs";
 import { nativeRead } from "./native-read.mjs";
 import { blockAddresses, nodeIndexAt } from "./node-addresses.mjs";
+import { isKnownBlock, NODE_TYPES } from "./node-registry.mjs";
+import { visibleNodeRange } from "./replace-match.mjs";
+import { updateSpansExactly } from "./richtext-format.mjs";
 import { nodeIds } from "./node-ids.mjs";
 import {
+  storedParents,
   Blockquote,
   BulletList,
   decode,
@@ -77,16 +81,12 @@ function rewrite(doc, id, change) {
   const content = change([...tree.content]);
   if (!content) return null;
   const spans = encode(schema.doc(content.length ? content : [Paragraph.create([])]));
-  const next = A.change(A.clone(doc), (draft) => {
-    A.updateSpans(draft, textPath(id), spans, updateSpansConfig);
+  const next = A.change(doc, (draft) => {
+    updateSpansExactly(draft, textPath(id), spans, updateSpansConfig);
     stampSpans(draft, spans);
   });
-  // Automerge 3.5's updateSpans can store a marker's parents other than the
-  // ones it was given when a rewrite shifts the parents of several markers
-  // (see "updateSpans stores the parents it is given" below). That write is
-  // a writer's bug, not a merge result, so this property leaves it out.
-  if (canonical(plainSpans(A.spans(next, textPath(id)))) !== canonical(plainSpans(spans)))
-    return null;
+  // A writer stores exactly what it was given.
+  assert.equal(canonical(plainSpans(A.spans(next, textPath(id)))), canonical(plainSpans(spans)));
   return next;
 }
 
@@ -234,9 +234,10 @@ const intent = (kinds) =>
   });
 // A marker's parents are an Automerge list, and two writers that change the
 // same marker's parents at once (both indenting one list item) merge into
-// parents no writer wrote (["table", "table"]; the todo test "two writers
-// that indent the same list item" below). Until a marker's parents merge as
-// one value, only the first writer changes parents here.
+// parents no writer wrote (["table", "table"]). Readers draw such a block,
+// lossy ("two writers that indent the same list item" and the random-marker
+// property below); this property checks lossless merges, so only the first
+// writer changes parents here.
 const NESTING = new Set(["quote", "indent"]);
 const writers = fc
   .tuple(
@@ -286,32 +287,67 @@ const permutations = (items) =>
 
 /** What every reader says about block `id`: they must not throw, and they
  * must agree on the number of top-level nodes and their types. */
-function readAll(doc, id, label) {
+function readAll(doc, id, label, options) {
   try {
-    return readEvery(doc, id, label);
+    return readEvery(doc, id, label, options);
   } catch (error) {
     throw Object.assign(Error(`${error.message}\n${label}`), { cause: error });
   }
 }
-function readEvery(doc, id, label) {
+function readEvery(doc, id, label, { lossy = false } = {}) {
   const spans = A.spans(doc, textPath(id));
   const decoded = decode(spans);
-  assert.equal(decoded.lossy, false, label);
+  if (!lossy) assert.equal(decoded.lossy, false, label);
   const tree = decoded.doc;
   const native = nativeRead(doc.blocks[id], PAGE_ID).nodes;
   const addresses = blockAddresses(spans);
-  assert.equal(addresses.placed, true, label);
-  const ids = nodeIds(doc, id);
+  if (!lossy) assert.equal(addresses.placed, true, label);
   const outline = projectReadContent(doc, {}).outline.filter((entry) => entry.block_id === id);
   const markdown = blockMarkdown(doc.blocks[id], PAGE_ID);
+  assert.equal(typeof markdown, "string", label);
+  // A block holding a node this build can't place gives no ids
+  // (node-ids.mjs); its outline lists the agent reader's nodes.
+  if (!addresses.placed) {
+    assert.ok(
+      outline.every((entry) => entry.node_id === null),
+      label,
+    );
+    return { decoded, markdown, ids: [] };
+  }
+  // A container this build doesn't know holds nodes in the agent reader and
+  // none in decode; where that makes their nodes differ, the outline gives no
+  // ids and node_index refuses the block rather than address the wrong node.
+  const unknownNames = spans.some(
+    (span) =>
+      span.type === "block" &&
+      [span.value.type, ...storedParents(span.value)].some((name) => !isKnownBlock(name)),
+  );
+  const ids = nodeIds(doc, id);
+  if (
+    unknownNames &&
+    (outline.length !== addresses.nodes.length ||
+      (outline.every((entry) => entry.node_id === null) && ids.some((entry) => entry.id !== null)))
+  ) {
+    assert.throws(() => visibleNodeRange(doc, id, 0), /node_index can't address this block/, label);
+    return { decoded, markdown, ids: [] };
+  }
+  // Otherwise the agent outline and the node addresses agree on the nodes,
+  // in order.
+  assert.equal(outline.length, addresses.nodes.length, label);
+  assert.equal(ids.length, addresses.nodes.length, label);
+  assert.deepEqual(
+    outline.map((entry) => entry.node_id),
+    ids.map((entry) => entry.id),
+    label,
+  );
+  if (lossy) return { decoded, markdown, ids };
   const types = tree.content.map((node) => node.type.name);
   assert.deepEqual(
     native.map((node) => node.type.name),
     types,
     label,
   );
-  for (const count of [addresses.nodes.length, ids.length, outline.length])
-    assert.equal(count, types.length, label);
+  assert.equal(ids.length, types.length, label);
   // An id is null only for a paragraph of unmarked text.
   for (const [index, entry] of ids.entries())
     if (entry.id === null) assert.equal(types[index], "Paragraph", label);
@@ -479,37 +515,119 @@ const parentsOf = (doc) =>
     span.type === "block" ? [span.value.parents.map(String)] : [],
   );
 
-test(
-  "updateSpans stores the parents it is given",
+/** A Page whose one block stores `spans` exactly. */
+function pageWithSpans(spans) {
+  let doc = A.change(A.from(createPageData({ pageId: PAGE_ID, title: "Spans" })), (draft) =>
+    initializePage(draft),
+  );
+  const id = orderedBlockIds(doc)[0];
+  doc = A.change(doc, (draft) => {
+    updateSpansExactly(draft, textPath(id), spans, updateSpansConfig);
+    stampSpans(draft, spans);
+  });
+  return { doc, id };
+}
+
+test("a structural write stores the parents it is given, and a miswritten block still reads", () => {
+  // Automerge 3.5's updateSpans, on a rewrite that drops an outer container,
+  // stores a table row's parents as [table, table].
+  const before = nested(["blockquote", "ordered-list-item"]);
+  const after = nested(["ordered-list-item"]);
+  const given = after.flatMap((span) =>
+    span.type === "block" ? [span.value.parents.map(String)] : [],
+  );
+  let raw = A.change(A.from({ text: "" }), (d) => A.updateSpans(d, ["text"], before));
+  raw = A.change(raw, (d) => A.updateSpans(d, ["text"], after));
+  assert.notDeepEqual(parentsOf(raw), given);
+  // The writers' path gives every marker the value it was given.
+  let exact = A.change(A.from({ text: "" }), (d) => A.updateSpans(d, ["text"], before));
+  const row = A.getCursor(exact, ["text"], 7);
+  exact = A.change(exact, (d) => updateSpansExactly(d, ["text"], after));
+  assert.deepEqual(parentsOf(exact), given);
+  // The fix-up keeps the marker, so its cursor (its node id) still resolves.
+  assert.equal(A.spans(exact, ["text"]).filter((span) => span.type === "block").length, 6);
+  assert.equal(typeof A.getCursorPosition(exact, ["text"], row), "number");
+  // The miswritten spans read in every reader: the repeated table drops out.
+  const { doc, id } = pageWithSpans(A.spans(raw, ["text"]));
+  const read = readAll(doc, id, "miswritten", { lossy: true });
+  assert.equal(read.decoded.lossy, true);
+  assert.equal(String(read.decoded.doc.content[0].type.name), "OrderedList");
+});
+
+test("two writers that indent the same list item at once leave a block every reader reads", () => {
+  const base = A.change(A.from({ text: "" }), (d) =>
+    A.updateSpans(d, ["text"], nested(["unordered-list-item"])),
+  );
+  const indent = (actor) =>
+    A.change(A.clone(base, { actor }), (d) =>
+      updateSpansExactly(d, ["text"], nested(["unordered-list-item", "unordered-list-item"])),
+    );
+  const merged = A.merge(indent(ACTORS[0]), indent(ACTORS[1]));
+  // Marker parents merge element by element: the merge stores parents
+  // neither writer wrote.
+  assert.ok(parentsOf(merged).some((parents) => parents.filter((p) => p === "table").length > 1));
+  const { doc, id } = pageWithSpans(A.spans(merged, ["text"]));
+  const read = readAll(doc, id, "concurrent indent", { lossy: true });
+  assert.equal(read.decoded.lossy, true);
+  assert.match(read.markdown, /a/);
+});
+
+// Random marker values: names from the registry and junk, in any order and
+// any parents, as any client can store them through sync. Every reader
+// returns, and they agree on the block's nodes.
+const NAMES = [
+  // An aside has no Markdown form: read_page refuses it by design.
+  ...NODE_TYPES.map((type) => type.block).filter(
+    (name) => !["image", "dataframe", "aside"].includes(name),
+  ),
+  "pages-future",
+  "",
+  "table",
+  "table-row",
+];
+const nameOf = fc.oneof(fc.constantFrom(...NAMES), fc.string({ maxLength: 4 }));
+const parentsArb = fc.oneof(
+  { weight: 6, arbitrary: fc.array(nameOf, { maxLength: 5 }) },
+  { weight: 1, arbitrary: fc.constantFrom(null, "table", 3, { 0: "table" }) },
+);
+const spanArb = fc.oneof(
   {
-    todo: "Automerge 3.5 updateSpans: a rewrite that drops an outer container writes table-row parents [table, table]",
+    weight: 3,
+    arbitrary: fc.constantFrom("x", "two words", "").map((value) => ({ type: "text", value })),
   },
-  () => {
-    let doc = A.change(A.from({ text: "" }), (d) =>
-      A.updateSpans(d, ["text"], nested(["blockquote", "ordered-list-item"])),
-    );
-    doc = A.change(doc, (d) => A.updateSpans(d, ["text"], nested(["ordered-list-item"])));
-    assert.deepEqual(
-      parentsOf(doc),
-      nested(["ordered-list-item"]).flatMap((span) =>
-        span.type === "block" ? [span.value.parents.map(String)] : [],
-      ),
-    );
+  {
+    weight: 4,
+    arbitrary: fc
+      .record({ type: nameOf, parents: parentsArb, embed: fc.boolean() })
+      .map(({ type, parents, embed }) => ({
+        type: "block",
+        value: {
+          type: new A.ImmutableString(type),
+          parents: Array.isArray(parents)
+            ? parents.map((parent) => new A.ImmutableString(parent))
+            : parents,
+          attrs: type === "heading" ? { level: 2 } : {},
+          isEmbed: embed && type === "hard-break",
+        },
+      })),
   },
 );
 
-test(
-  "two writers that indent the same list item at once merge into parents one of them wrote",
-  { todo: "Marker parents merge element by element: both indents survive as [..., table, table]" },
-  () => {
-    const base = A.change(A.from({ text: "" }), (d) =>
-      A.updateSpans(d, ["text"], nested(["unordered-list-item"])),
-    );
-    const indent = (actor) =>
-      A.change(A.clone(base, { actor }), (d) =>
-        A.updateSpans(d, ["text"], nested(["unordered-list-item", "unordered-list-item"])),
-      );
-    const merged = A.merge(indent(ACTORS[0]), indent(ACTORS[1]));
-    assert.doesNotThrow(() => decode(A.spans(merged, ["text"])));
-  },
-);
+test("random marker parents and types read in every reader, which agree on the nodes", () => {
+  fc.assert(
+    fc.property(fc.array(spanArb, { maxLength: 10 }), (spans) =>
+      freeing((keep) => {
+        let stored;
+        try {
+          stored = pageWithSpans(spans.filter((span) => span.type !== "text" || span.value));
+        } catch {
+          // Automerge refuses the value itself: nothing is stored.
+          return;
+        }
+        keep(stored.doc);
+        readAll(stored.doc, stored.id, JSON.stringify(spans), { lossy: true });
+      }),
+    ),
+    { ...parameters, numRuns: Number(process.env.PAGES_FUZZ_RUNS ?? 200) },
+  );
+});

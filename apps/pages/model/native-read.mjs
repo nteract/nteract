@@ -34,12 +34,14 @@ import {
   PagesHighlight,
   PagesForeignMarks,
   codeHolds,
+  nestIn,
+  storedParents,
 } from "./wordgard-doc.mjs";
 import { treeMarkdown } from "./markdown-serializer.mjs";
 import { codeTextUnmarked } from "./richtext-format.mjs";
 import { unknownNodeNotice } from "./richtext-notices.mjs";
 import { parseAssetPath } from "../shared/dataset-assets.mjs";
-import { TEXT_CONTAINERS } from "./node-registry.mjs";
+import { isKnownBlock, TEXT_CONTAINERS } from "./node-registry.mjs";
 
 // Never installed in the editor schema: a stored unknown container is readable,
 // but constructing this projection does not make it editable or admissible.
@@ -265,7 +267,7 @@ export function nativeReadSpans(input, pageId) {
     const value = span.value,
       type = String(value.type),
       attrs = strings(value.attrs);
-    const parents = (value.parents ?? []).map(String);
+    const parents = storedParents(value);
     if (value.isEmbed) {
       // An embed a code block can't hold opens a paragraph after it.
       if (code() && !codeHolds(type, parents)) close();
@@ -279,14 +281,67 @@ export function nativeReadSpans(input, pageId) {
       at++;
       continue;
     }
+    // Parents and then the node nest by decode's rule (nestIn in
+    // model/wordgard-doc.mjs): each known container nests in the nearest
+    // container before it that can hold it. A container this build doesn't
+    // know, which decode skips, is kept here as a notice wherever a block
+    // could go, and is transparent to that rule; inside a textblock it is
+    // skipped too. Where it holds nodes, this reader's top-level nodes can
+    // differ from decode's, and node_index refuses the block (replace-match).
     const outer = [];
+    const depthFor = (tag) => {
+      const known = [];
+      outer.forEach((entry, index) => {
+        if (entry.tag.type !== ReadUnknown) known.push(index);
+      });
+      const depth = nestIn(
+        known.map((index) => outer[index]),
+        tag,
+      );
+      if (depth === null) return null;
+      if (depth === known.length) return outer.length;
+      return depth ? known[depth - 1] + 1 : 0;
+    };
+    const fits = (tag) => {
+      const depth = depthFor(tag);
+      if (depth === null) return false;
+      outer.length = depth;
+      return true;
+    };
+    const place = (entry) => {
+      if (entry.tag.type === ReadUnknown) {
+        if (depthFor(PagesUnknownBlock) !== outer.length) return false;
+      } else if (!fits(entry.tag)) return false;
+      outer.push(entry);
+      return true;
+    };
     for (const parent of parents) {
       const desc = descriptor(parent);
-      if (desc.outer) outer.push({ tag: desc.outer });
-      outer.push(desc);
+      // A known node that holds no nodes (a rule, an image) is no parent.
+      if (desc.tag.type === ReadUnknown && isKnownBlock(parent)) continue;
+      if (!desc.outer || place({ tag: desc.outer })) place(desc);
     }
-    const desc = descriptor(type, attrs);
-    if (desc.outer) outer.push({ tag: desc.outer });
+    let desc = descriptor(type, attrs);
+    const unknownNode = () => {
+      desc = { tag: ReadUnknown.of(type) };
+      if (!inlineAt()) fits(PagesUnknownBlock);
+    };
+    const inlineAt = () =>
+      !!outer.findLast((entry) => entry.tag.type !== ReadUnknown)?.tag.type.spec.inlineContent;
+    const foreign =
+      pageId !== undefined && parseAssetPath(String(attrs.src ?? ""))?.pageId !== pageId;
+    // A dataframe it can't show reads as a notice where it is stored.
+    const shown = !(parents.some((parent) => TEXT_CONTAINERS.has(parent)) || foreign);
+    let leafNode = type === "dataframe" || type === "horizontal-rule";
+    if (type === "dataframe" && !shown) {
+      if (!inlineAt()) fits(PagesUnknownBlock);
+    } else if (leafNode) {
+      if (!fits(type === "dataframe" ? PagesDataframe : HorizontalRule)) {
+        leafNode = false;
+        unknownNode();
+      }
+    } else if (desc.tag.type === ReadUnknown) unknownNode();
+    else if (desc.outer ? !place({ tag: desc.outer }) : !fits(desc.tag)) unknownNode();
     let common = 0;
     while (
       common < outer.length &&
@@ -298,12 +353,10 @@ export function nativeReadSpans(input, pageId) {
       common++;
     while (stack.length > common) close();
     for (let i = common; i < outer.length; i++) open(outer[i]);
-    const foreign =
-      pageId !== undefined && parseAssetPath(String(attrs.src ?? ""))?.pageId !== pageId;
-    if (type === "dataframe") {
-      if (parents.some((parent) => TEXT_CONTAINERS.has(parent)) || foreign) notice(type);
+    if (leafNode && type === "dataframe") {
+      if (!shown) notice(type);
       else append(PagesDataframe.of(attrs), at, attrs);
-    } else if (type === "horizontal-rule") append(HorizontalRule.type.of(null), at, attrs);
+    } else if (leafNode) append(HorizontalRule.type.of(null), at, attrs);
     else if (desc.tag.type === ReadUnknown && inline()) notice(type);
     else open(desc, at, attrs);
     at++;

@@ -402,6 +402,7 @@ export const elements = [
   ),
 ];
 export const schema = Schema.define(elements);
+const DOC_TYPE = schema.doc([Paragraph.create([])]).type;
 export {
   Paragraph,
   Heading,
@@ -549,6 +550,25 @@ function descriptor(type, attrs = {}) {
   }
 }
 
+/** A marker's parents as stored names: a list, or none. */
+export const storedParents = (value) =>
+  Array.isArray(value?.parents) ? value.parents.map(String) : [];
+
+const typeOf = (tag) => tag.type ?? tag;
+/** Where a node of `tag` nests in `chain` (`[{ tag }]`, outermost first):
+ * the length of the longest prefix whose last container can hold it, 0 for
+ * the top level, or null when nothing in the chain, nor the top level, can.
+ * Every reader nests a marker's parents and then the node by this rule:
+ * each nests in the nearest container before it that can hold it, so a
+ * repeated container, a parent that can't hold the next one, or a row
+ * outside a table drops out, and the block is lossy. */
+export function nestIn(chain, tag) {
+  const type = typeOf(tag);
+  for (let depth = chain.length; depth > 0; depth--)
+    if (schema.canContain(typeOf(chain[depth - 1].tag), type)) return depth;
+  return schema.canContain(DOC_TYPE, type) ? 0 : null;
+}
+
 /** Whether a code block holds an inline embed of `type` stored with
  * `parents`. A code block holds text and line breaks; every other textblock
  * holds every inline node. An embed of a type this build doesn't know that
@@ -667,9 +687,12 @@ export function decode(spans) {
       });
       continue;
     }
-    if (span.type !== "block" || !span.value || !Array.isArray(span.value.parents))
+    if (span.type !== "block" || !span.value || typeof span.value !== "object")
       throw Error("Invalid Pages rich span");
-    const value = span.value,
+    // A marker's parents are a list of names. Anything else reads as no
+    // parents, and the block is lossy.
+    if (!Array.isArray(span.value.parents)) lossy = true;
+    const value = { ...span.value, parents: storedParents(span.value) },
       type = String(value.type),
       attrs = strings(value.attrs);
     if (value.isEmbed) {
@@ -690,7 +713,15 @@ export function decode(spans) {
       continue;
     }
     afterUnknown = false;
+    // The containers the marker's parents name, nested by nestIn.
     const outer = [];
+    const place = (entry) => {
+      const depth = nestIn(outer, entry.tag);
+      if (depth === null) return false;
+      if (depth < outer.length) outer.length = depth;
+      outer.push(entry);
+      return true;
+    };
     for (const parent of value.parents) {
       // A container this build doesn't know draws nothing of its own; its
       // content renders at the nearest known level.
@@ -699,8 +730,10 @@ export function decode(spans) {
         lossy = true;
         continue;
       }
-      if (d.outer) outer.push({ tag: d.outer, name: null });
-      outer.push({ tag: d.tag, name: String(parent) });
+      const before = outer.length;
+      if (d.outer && !place({ tag: d.outer, name: null })) lossy = true;
+      else if (!place({ tag: d.tag, name: String(parent) })) lossy = true;
+      else if (outer.length !== before + (d.outer ? 2 : 1)) lossy = true;
     }
     // Leaf blocks hold no content of their own.
     // A dataframe stored inside a text container (a table cell, a code
@@ -715,9 +748,31 @@ export function decode(spans) {
         ? attrs
         : null;
     const builtIn = type === "horizontal-rule" || !!dataframe;
-    const desc = builtIn ? null : descriptor(type, attrs);
-    const unknown = !builtIn && !desc;
-    if (desc?.outer) outer.push({ tag: desc.outer, name: null });
+    let desc = builtIn ? null : descriptor(type, attrs);
+    // The node itself nests the same way. One no container can hold (a
+    // table row with no table) reads as a node this build doesn't know.
+    const own = type === "horizontal-rule" ? HorizontalRule : dataframe ? PagesDataframe : desc;
+    const fits = (tag) => {
+      const depth = nestIn(outer, tag);
+      if (depth === null) return false;
+      if (depth < outer.length) {
+        lossy = true;
+        outer.length = depth;
+      }
+      return true;
+    };
+    let unknown = !builtIn && !desc;
+    if (desc) {
+      if (desc.outer ? !place({ tag: desc.outer, name: null }) : !fits(desc.tag)) {
+        lossy = true;
+        desc = null;
+        unknown = true;
+      }
+    } else if (own && !fits(own)) {
+      lossy = true;
+      unknown = true;
+    }
+    if (unknown && !outer.at(-1)?.tag.type.spec.inlineContent) fits(PagesUnknownBlock);
     let common = 0;
     while (
       common < outer.length &&

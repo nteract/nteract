@@ -42,8 +42,17 @@ export function visibleNodeRange(doc, id, nodeIndex) {
   const { nodes } = blockAddresses(A.spans(doc, textPath(id)));
   // node_index names a node of the outline, which read_page builds from the
   // readable tree. When the stored spans count differently (markers a peer
-  // wrote under parents no writer produces), an index could name another node.
-  if (nodes.length !== nativeRead(block, doc.page_id).nodes.length)
+  // wrote under parents no writer produces) or a readable node opens at
+  // another marker (one inside a container this build doesn't know), an index
+  // could name another node.
+  const tree = nativeRead(block, doc.page_id);
+  if (
+    nodes.length !== tree.nodes.length ||
+    tree.nodes.some((node, index) => {
+      const at = tree.source.get(node);
+      return at != null && at !== nodes[index].at;
+    })
+  )
     throw Error(
       "node_index can't address this block: it holds nodes this version of Pages reads differently from how they're stored. Match without node_index, or rewrite the block with replace_block_markdown.",
     );

@@ -196,5 +196,6 @@ records the node addresses agents use.
   one codec. Moving the editor's document into WASM is a larger step.
 - Whether marker `parents` becomes a scalar path, and how small blocks get.
   As lists, two writers that change one marker's parents at once merge into
-  parents neither wrote, which no reader can draw
-  ([model/merge-readers.test.mjs](model/merge-readers.test.mjs), todo).
+  parents neither wrote. Every reader draws them, by dropping what can't
+  nest, but the block is lossy until something rewrites it
+  ([model/merge-readers.test.mjs](model/merge-readers.test.mjs)).

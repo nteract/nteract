@@ -2382,6 +2382,36 @@ or row) while a node a peer added inside it survives. Readers draw the
 container from that node's `parents` and name it by that node's marker. No
 writer restores the container's marker, so its `node_id` doesn't move.
 
+### Parents no writer wrote
+
+A marker's `parents` is a list, and two writers that change one marker's
+parents at once merge element by element into a list neither wrote: a
+container repeated (`["table", "table"]`), or one that can't hold what
+follows it. A client can store any value through sync, too. Every reader
+draws any `parents` by one rule (`nestIn` in
+[model/wordgard-doc.mjs](model/wordgard-doc.mjs)): each parent, then the
+node, nests in the nearest container before it that can hold it. A parent
+nothing before it can hold is dropped, and so is a name that isn't a
+container (a rule, an image). A node nothing can hold reads as an unknown
+node. Parents that aren't a list read as none. Any such adjustment makes the
+block lossy. A container name this build doesn't know is skipped by the
+editor and kept as a notice by the agent read. Where that makes the agent
+read's top-level nodes differ from the stored ones, `read_page` gives those
+nodes no `node_id` and `node_index` refuses the block.
+
+Nothing repairs a lossy block on its own. Host tool writes that edit text in
+place (`replace_match`, `format_match`) leave its markers as stored, and the
+block stays lossy; `replace_block_markdown` rewrites it whole. The editor
+refuses a person's edit to it. `markUnmarkedText` leaves it alone.
+
+Every writer stores a block's spans through `updateSpansExactly`
+([model/richtext-format.mjs](model/richtext-format.mjs)). Automerge 3.5's
+`updateSpans` diffs a marker's `parents` in place, and a rewrite that changes
+the parents of several markers can store a list other than the one given (a
+table row's parents become `["table", "table"]` when the list around the
+table loses its quote). `updateSpansExactly` then sets each marker that
+differs with `updateBlock`, which keeps the marker and so its `node_id`.
+
 Known limit: two writers that mark the same unmarked text from the same
 snapshot (a host write and a person's edit before either syncs) each insert
 a marker, and both survive. The first opens an empty paragraph beside the
