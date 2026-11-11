@@ -145,6 +145,7 @@ export const NODE_TYPES = Object.freeze([
       media_type: { type: "string" },
       title: { type: "string" },
       chart: { type: "string" },
+      source: { type: "string" },
     }),
     insert: Object.freeze({ op: "insert_node", asset: "dataset" }),
   }),

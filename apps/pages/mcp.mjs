@@ -790,7 +790,13 @@ export const tools = [
                         asset_id: {
                           type: "string",
                           pattern: "^[a-f0-9]{64}$",
-                          description: "Parquet asset uploaded to this Page.",
+                          description: "Parquet asset uploaded to this Page. Give this or source.",
+                        },
+                        source: {
+                          type: "string",
+                          pattern: "^[a-z][a-z0-9_-]{0,63}$",
+                          description:
+                            "A Page source ID (set_source) to follow instead of a fixed asset: the node shows the source's current version.",
                         },
                         title: {
                           type: "string",
@@ -805,10 +811,9 @@ export const tools = [
                           type: "string",
                           maxLength: 65536,
                           description:
-                            'Draw the dataset as this Vega-Lite spec (JSON string) instead of a table. Its data is {"name": "<any name>"}; the rows are this node\'s dataset. No URLs or inline values.',
+                            'Draw the dataset as this Vega-Lite spec (JSON string) instead of a table. Its data is {"name": "<name>"}: with asset_id, any name reads that asset; with source, each name is a Page source ID and source is one of them. No URLs or inline values.',
                         },
                       },
-                      required: ["asset_id"],
                       additionalProperties: false,
                     },
                   },

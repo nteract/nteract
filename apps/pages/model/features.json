@@ -41,6 +41,11 @@
       "id": "dataframe-chart",
       "description": "Local evaluation only: a dataframe node with a chart attr, a Vega-Lite spec as a JSON string. The viewer draws the node's dataset as that chart instead of a table.",
       "attributes": [{ "block": "dataframe", "name": "chart" }]
+    },
+    {
+      "id": "dataframe-source",
+      "description": "Local evaluation only: a dataframe node with a source attr, a Page source ID. The viewer follows that source's current asset; src keeps the asset it held when the node was written. On a chart, every data name is a source ID.",
+      "attributes": [{ "block": "dataframe", "name": "source" }]
     }
   ]
 }

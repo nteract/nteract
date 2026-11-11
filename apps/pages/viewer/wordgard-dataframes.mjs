@@ -14,7 +14,7 @@ import { asyncScheduler, timer as rxTimer } from "rxjs";
 import { dataframeTableMachine } from "./dataframe-table-machine.mjs";
 
 /** Media type -> lazily loaded renderer module with
- * `mount(container, { src, pageId })` returning `{ destroy }`. Each is its own
+ * `mount(container, { src, pageId, source?, sources? })` returning `{ destroy }`. Each is its own
  * chunk, loaded only when a Page shows that kind of dataframe. */
 export const DATAFRAME_RENDERERS = Object.freeze({
   [PARQUET_MEDIA_TYPE]: () => import("./sift-table.jsx"),
@@ -242,6 +242,8 @@ const dataframeTable = Widget.define({
     a.media_type === b.media_type &&
     a.title === b.title &&
     a.chart === b.chart &&
+    a.source === b.source &&
+    a.sources === b.sources &&
     a.pageId === b.pageId &&
     a.eager === b.eager,
   render(attrs, editor) {
@@ -253,7 +255,13 @@ const dataframeTable = Widget.define({
       frame.dom,
       dataframeLifecycle({
         ...frame,
-        attrs: { src: attrs.src, pageId: attrs.pageId, chart: attrs.chart },
+        attrs: {
+          src: attrs.src,
+          pageId: attrs.pageId,
+          chart: attrs.chart,
+          source: attrs.source,
+          sources: attrs.sources,
+        },
         onUnavailable: reportRendererUnavailable,
         ...(attrs.eager && { observe: alwaysNear }),
       }),
@@ -275,17 +283,19 @@ const dataframeTable = Widget.define({
  * a point decoration. Wordgard 0.6.2 throws "Moving past end of document"
  * when a shaped point decoration first appears at an insertion boundary at
  * the end of a document, which is where a dropped dataset usually lands.
- * `eager` loads each table at once rather than near the viewport.
+ * `eager` loads each table at once rather than near the viewport. `sources`
+ * is the Page's source store (page-source-store.mjs); a node with a `source`
+ * follows it there, and draws its `src` without one.
  */
-export function wordgardDataframes({ pageId, eager = false } = {}) {
+export function wordgardDataframes({ pageId, eager = false, sources = null } = {}) {
   if (typeof pageId !== "string" || !pageId)
     throw Error("wordgardDataframes needs the Page id it shows");
   return [
     Decoration.Tag.shape(
       PagesDataframe,
       (tag) => {
-        const { src, media_type, title, chart = null } = readDataframe(tag.param);
-        return dataframeTable.of({ src, media_type, title, chart, pageId, eager });
+        const { src, media_type, title, chart = null, source = null } = readDataframe(tag.param);
+        return dataframeTable.of({ src, media_type, title, chart, source, sources, pageId, eager });
       },
       { atom: true },
     ),

@@ -699,8 +699,15 @@ same Page, edit_page can register or refresh it:
 Use null only for creation; a refresh supplies the observed source_revision.
 The edit still needs exact base_heads and its retry key/token. The host checks
 asset access and generates the new revision. Sources cannot be edited through
-native peer writes. Chart/table bindings to these sources are being integrated;
-registering a source alone does not insert a visualization.
+native peer writes. Registering a source doesn't show it. To show one, give
+insert_node \`source\` instead of \`asset_id\`:
+
+\`\`\`json
+{"op":"insert_node","node":{"type":"dataframe","attrs":{"source":"daily","title":"Daily usage"}}}
+\`\`\`
+
+That table follows every refresh of the source. With a chart, each data name
+is a source ID and \`source\` is one of them.
 
 ${part.datasetUploadParagraph}
 

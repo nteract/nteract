@@ -17,7 +17,13 @@ import { imageIds, resolveImageId } from "./image-ids.mjs";
 import { updateSpansConfig } from "./marks.mjs";
 import { stampSpans } from "./schema-features.mjs";
 import { imageAssetUrl, validAssetId } from "../shared/image-assets.mjs";
-import { DATAFRAME_BLOCK, dataframeFor } from "../shared/dataset-assets.mjs";
+import {
+  DATAFRAME_BLOCK,
+  PARQUET_MEDIA_TYPE,
+  dataframeFor,
+  parseAssetPath,
+  validSourceId,
+} from "../shared/dataset-assets.mjs";
 import { projectComments } from "./comments.mjs";
 import { COMMENTS_FEATURE } from "./comments-doc.mjs";
 import { orderedBlockIds, positionForInsertion } from "./order.mjs";
@@ -25,8 +31,8 @@ import { anchorOccurrence, formatMatch, replaceMatch } from "./replace-match.mjs
 import { setNode } from "./set-node.mjs";
 import { insertOperation } from "./node-registry.mjs";
 import { stampFeatures } from "./schema-features.mjs";
-import { setPageSource, validateSourceWrite } from "./page-sources.mjs";
-import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
+import { readPageSource, setPageSource, validateSourceWrite } from "./page-sources.mjs";
+import { checkChartSpec } from "../shared/chart-spec.mjs";
 export { orderedBlockIds } from "./order.mjs";
 // A stored block holds its order and its text. Its id is its key in `blocks`.
 // Its text is written in the change that adds it, and always opens with a
@@ -122,7 +128,7 @@ export function validateImageChange(op) {
     );
 }
 const NODE_INSERTION_USAGE =
-  'insert_node requires node: {type: "dataframe", attrs: {asset_id, title?, media_type?, chart?}} and optional after_block_id';
+  'insert_node requires node: {type: "dataframe", attrs: {asset_id or source, title?, media_type?, chart?}} and optional after_block_id';
 const only = (value, keys) =>
   !!value &&
   typeof value === "object" &&
@@ -136,15 +142,21 @@ export function validateNodeInsertion(op) {
     !only(op, ["op", "type", "node", "after_block_id"]) ||
     !only(node, ["type", "attrs"]) ||
     node.type !== DATAFRAME_BLOCK ||
-    !only(node.attrs, ["asset_id", "media_type", "title", "chart"]) ||
-    !validAssetId(node.attrs.asset_id) ||
+    !only(node.attrs, ["asset_id", "source", "media_type", "title", "chart"]) ||
+    // A node pins one asset or follows one source, never both.
+    (node.attrs.source === undefined
+      ? !validAssetId(node.attrs.asset_id)
+      : node.attrs.asset_id !== undefined || !validSourceId(node.attrs.source)) ||
     (op.after_block_id !== undefined &&
       op.after_block_id !== null &&
       (typeof op.after_block_id !== "string" || !op.after_block_id))
   )
     throw Error(NODE_INSERTION_USAGE);
-  // Title and media type rules live with the node.
-  dataframeFor("00000000-0000-4000-8000-000000000000", node.attrs);
+  // Title, media type, chart and source rules live with the node.
+  dataframeFor("00000000-0000-4000-8000-000000000000", {
+    asset_id: "0".repeat(64),
+    ...node.attrs,
+  });
   return node.attrs;
 }
 /** The stored assets a batch's node-creating operations name, for the host
@@ -183,7 +195,10 @@ export function insertedAssets(operations, pageId) {
         assets.push({ asset: "image", assetId });
       }
     } else if (insert.asset === "dataset") {
-      const attrs = dataframeFor(pageId, validateNodeInsertion(op));
+      const input = validateNodeInsertion(op);
+      // A source's asset was checked when set_source wrote it.
+      if (input.source !== undefined) continue;
+      const attrs = dataframeFor(pageId, input);
       assets.push({
         asset: "dataset",
         assetId: op.node.attrs.asset_id,
@@ -192,6 +207,15 @@ export function insertedAssets(operations, pageId) {
     } else throw Error(`No asset check for ${insert.asset}`);
   }
   return assets;
+}
+/** The asset a new dataframe node stores as `src`: its pinned asset, or its
+ * source's current one. A chart that follows sources reads only sources the
+ * Page has. */
+function nodeAssetId(doc, { asset_id, source, chart }) {
+  if (source === undefined) return asset_id;
+  if (chart !== undefined)
+    for (const name of checkChartSpec(JSON.parse(chart)).sources) readPageSource(doc, name);
+  return readPageSource(doc, source).asset_id;
 }
 const PASSAGE_OPS = new Set(["replace_match", "format_match", "set_node"]);
 // `trace` records where each operation landed, for agent presence. It never
@@ -235,7 +259,7 @@ function applyEdit(doc, op, trace, context) {
   if (op.op === "insert_node") {
     const input = validateNodeInsertion(op);
     const blockId = crypto.randomUUID();
-    const attrs = dataframeFor(doc.page_id, input);
+    const attrs = dataframeFor(doc.page_id, { ...input, asset_id: nodeAssetId(doc, input) });
     doc.blocks[blockId] = block(positionForInsertion(doc, op.after_block_id));
     setRichNode(doc, blockId, { type: op.node.type, attrs });
     trace?.push({ type: "block", block_id: blockId });
@@ -243,7 +267,7 @@ function applyEdit(doc, op, trace, context) {
       op: "insert_node",
       block_id: blockId,
       type: op.node.type,
-      attrs: { asset_id: input.asset_id, ...attrs },
+      attrs: { asset_id: parseAssetPath(attrs.src).assetId, ...attrs },
     };
   }
   if (!Object.hasOwn(doc.blocks, id)) throw Error("Block not found");

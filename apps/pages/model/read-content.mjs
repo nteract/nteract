@@ -262,6 +262,9 @@ function ownNodeFields(node, { pageId, maxItems, metadata }) {
           media_type: value.media_type,
           // Writers cap a title; a peer-written one can be longer.
           title: value.title?.slice(0, DATAFRAME_TITLE_MAX) ?? null,
+          // The source the node follows; asset_id is the version it was
+          // written with. read_page {sources} gives the current one.
+          ...(value.source && { source: value.source }),
         },
       };
     }

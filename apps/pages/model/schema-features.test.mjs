@@ -83,6 +83,7 @@ test("today's registry: strikethrough, horizontal rules, dataframes and the pres
     "comments-doc",
     "dataframe",
     "dataframe-chart",
+    "dataframe-source",
     "horizontal-rule",
     "image-theme-variants",
     "page-sources",
