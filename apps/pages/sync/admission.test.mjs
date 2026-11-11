@@ -26,12 +26,16 @@ const changesOf = async (h, id, actor) =>
 async function commentsHost(options = {}) {
   const blocked = new Map();
   const log = [];
+  const admitComments = commentAdmission({
+    isBlocked: (conn) => blocked.has(conn.principal),
+  });
   const h = await host({
     ...options,
     policy: {
-      admit: commentAdmission({
-        isBlocked: (conn) => blocked.has(conn.principal),
-      }),
+      admit: (conn, doc, live, fresh, preview, actorPrincipal) =>
+        doc.kind === "comments"
+          ? admitComments(conn, doc, live, fresh, preview, actorPrincipal)
+          : preview,
       refused(conn, _doc, refusal) {
         log.push({ principal: conn.principal, code: refusal.code });
         if (refusal.fatal && refusal.code !== "comments_blocked" && refusal.code !== "expired")

@@ -18,8 +18,9 @@ import { RECEIVE_LIMITS, RECEIVE_OPEN, receiveStep } from "./receive-queue.mjs";
 //   4. actor claims: each new change's actor is unclaimed or claimed by this
 //      principal. New claims are reserved before anything awaits, so two
 //      documents can't claim one actor for two principals
-//   5. policy.admit (the Worker checks the block shape of the Page document
-//      and the comment rules of the comments document)
+//   5. policy.admit (the Worker asks the document's type module: the block
+//      shape of the Page document, the comment rules of the comments
+//      document; worker/document-modules.mjs)
 //   6. persist: chunk, new claims and manifest in one saveMany
 //   7. adopt the preview, reply (the ack), fan out to the other connections
 //   8. compact when the chunks outgrow the snapshot. The frame is already

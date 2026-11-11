@@ -15,15 +15,16 @@ export const BLOCKING = new Set(
 );
 
 /**
- * SyncHost `admit` hook for the comments document: the comment rules
- * (model/comment-authority.mjs), run on the changes a sync message would
- * add, before anything is stored. A blocking
- * refusal is fatal; the host's `refused` hook records the block. `isBlocked`
- * says whether a principal's comment writes are already blocked.
+ * Admission for a comments document, with SyncHost's `admit` signature: the
+ * comment rules (model/comment-authority.mjs), run on the changes a sync
+ * message would add, before anything is stored. The caller routes only
+ * comments documents here; the worker's comments type module does
+ * (worker/document-modules.mjs). A blocking refusal is fatal; the host's
+ * `refused` hook records the block. `isBlocked` says whether a principal's
+ * comment writes are already blocked.
  */
 export function commentAdmission({ isBlocked = () => false } = {}) {
-  return (conn, doc, live, fresh, preview, actorPrincipal) => {
-    if (doc.kind !== "comments") return preview;
+  return (conn, _doc, live, fresh, _preview, actorPrincipal) => {
     if (isBlocked(conn))
       throw new Refusal("comments_blocked", "Comment writes are blocked for this account", {
         fatal: true,

@@ -14,6 +14,7 @@ import {
   revisionClock,
   validNonce,
 } from "./operation-journal.mjs";
+import { PAGE_FAMILY } from "./document-modules.mjs";
 import { fencedHeads, parseRevision, revisionPlan } from "./revisions.mjs";
 
 /** The document a journal entry writes. */
@@ -102,8 +103,9 @@ const requiredRevision = (args) => {
  *
  * `doc` names the document `handle` holds (PAGE_DOC or COMMENTS_DOC); the
  * entry records it, so startup recovery replays each entry into its own
- * document, and its receipt names the after-revision as `revision` (Page) or
- * `comment_revision` (comments). `lane` scopes the nonce (defaults to
+ * document, and its receipt names the after-revision in the revision field
+ * of the document's type module: `revision` (Page) or `comment_revision`
+ * (comments). `lane` scopes the nonce (defaults to
  * `doc`). `baseRevision(args)` returns the Page revision handle the intent
  * depends on, or undefined for one that depends on none; edit_page requires
  * one. A named revision is fenced by the journal's horizon (fencedHeads),
@@ -261,7 +263,7 @@ export async function documentMutation({
         guarded && (guarded.rebased ? await plan.handle(PAGE_DOC, guarded.current_heads) : base);
       entry.receipt = {
         page_id: pageId,
-        [doc === PAGE_DOC ? "revision" : "comment_revision"]: await plan.handle(doc, heads),
+        [PAGE_FAMILY.get(doc).revisionField]: await plan.handle(doc, heads),
         result: result ?? null,
         ...(guarded && {
           concurrency: {
