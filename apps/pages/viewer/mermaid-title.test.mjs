@@ -55,10 +55,10 @@ test("frontmatter without a closing fence has no title", () => {
 });
 
 // Extraction runs synchronously while the editor renders. Hostile source must
-// not stall it through regex backtracking on long whitespace runs.
-test("long whitespace runs extract in linear time", () => {
-  const run = " ".repeat(100_000);
-  const cases = [
+// not stall it through regex backtracking on long whitespace runs. Each case is
+// a source and its expected title, built around the whitespace `run`.
+function longRuns(run) {
+  return [
     [`---\ntitle: A${run}B\n---\ngraph TD`, `A${run}B`],
     [`---\ntitle: A${run}# note\n---\ngraph TD`, "A"],
     [`---\ntitle: "A"${run}B\n---\ngraph TD`, `"A"${run}B`],
@@ -82,12 +82,34 @@ test("long whitespace runs extract in linear time", () => {
     [`---\ntitle${run}\u2028: A\n---\ngraph TD`, null],
     [`---${run}\u2028\ntitle: A\n---\ngraph TD`, "A"],
   ];
-  for (const [source, expected] of cases) {
+}
+
+test("long whitespace runs extract the expected title", () => {
+  for (const [source, expected] of longRuns(" ".repeat(100_000)))
+    assert.equal(mermaidTitle(source), expected);
+});
+
+// The fastest of several batches of calls. Load only adds time to a batch, so
+// the minimum is the closest to the parser's own cost.
+function fastest(source, batches = 7, calls = 4) {
+  let best = Infinity;
+  for (let batch = 0; batch < batches; batch++) {
     const started = performance.now();
-    const title = mermaidTitle(source);
-    const elapsed = performance.now() - started;
-    assert.equal(title, expected);
-    assert.ok(elapsed < 50, `${elapsed.toFixed(1)} ms for ${JSON.stringify(source.slice(0, 16))}`);
+    for (let call = 0; call < calls; call++) mermaidTitle(source);
+    best = Math.min(best, performance.now() - started);
+  }
+  return best;
+}
+
+// Linear time stated as scaling, not as a wall-clock bound: 16 times the run
+// costs about 16 times as much when extraction is linear and about 256 times
+// when it is quadratic. The bound of 64 leaves a factor of 4 either way.
+test("long whitespace runs extract in linear time", () => {
+  const small = longRuns(" ".repeat(4_000));
+  const large = longRuns(" ".repeat(4_000 * 16));
+  for (const [index, [source]] of small.entries()) {
+    const ratio = fastest(large[index][0]) / fastest(source);
+    assert.ok(ratio < 64, `${ratio.toFixed(1)}x for ${JSON.stringify(source.slice(0, 16))}`);
   }
 });
 
