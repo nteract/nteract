@@ -127,12 +127,20 @@ test("catching up says Syncing and never Saving", () => {
 
 test("a phase pause or a failed local save outranks the receipt", () => {
   const saving = { name: "saving", revision: 1, pending: true, link: "offline" };
-  const flags = ["deleted", "accessDenied", "accessReloadRequired", "authRequired", "localFailed"];
+  const flags = [
+    "deleted",
+    "accessDenied",
+    "accessReloadRequired",
+    "authRequired",
+    "formatUnsupported",
+    "localFailed",
+  ];
   const labels = [
     "Deleted",
     "Access removed",
     "Access changed",
     "Sign in to sync",
+    "Read-only",
     "Local save failed",
   ];
   for (let i = 0; i < flags.length; i++) {
@@ -161,6 +169,7 @@ const KEYS = {
   "Access removed": ["attention"],
   "Access changed": ["attention"],
   "Sign in to sync": ["attention"],
+  "Read-only": ["attention"],
   "Not saved": ["failed"],
   "Local save failed": ["failed"],
 };
@@ -208,6 +217,7 @@ const IDS = {
   "Access removed": ["access-removed"],
   "Access changed": ["access-changed"],
   "Sign in to sync": ["sign-in"],
+  "Read-only": ["read-only"],
   "Local save failed": ["local-failed"],
 };
 

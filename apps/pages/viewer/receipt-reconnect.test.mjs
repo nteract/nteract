@@ -658,6 +658,53 @@ test("a Page the host doesn't open shows its stored-format message, not the relo
   assert.equal(f.sockets.length, 1, "no automatic reconnect");
 });
 
+// A Page stored in a format the host doesn't open can never save: the
+// format gate holds content, title and comments read-only, the status shows
+// it without a Retry, and Trash and delete stay as they were.
+function assertFormatStopped(f, before) {
+  assert.equal(f.session.formatGate.name, "stopped");
+  assert.equal(f.session.canWrite, false);
+  assert.equal(f.session.canComment, false);
+  assert.equal(f.session.canDelete, before.canDelete);
+  assert.equal(f.session.canRestore, before.canRestore);
+  assert.equal(f.session.status, "Read-only");
+  assert.equal(f.session.statusRetry, false);
+  assert.equal(f.session.problem, PAGE_FORMAT_UNSUPPORTED);
+  const heads = A.getHeads(f.session.doc);
+  assert.throws(() => f.session.change((doc) => (doc.text = "QA")), /read only/);
+  assert.deepEqual(A.getHeads(f.session.doc), heads, "nothing written");
+}
+
+test("a Page the host doesn't open is read-only when its socket is refused", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  assert.equal(f.session.canWrite, true);
+  const before = { canDelete: f.session.canDelete, canRestore: f.session.canRestore };
+  const socket = f.sockets.at(-1);
+  hostClose(socket, 4427, "document_format_unsupported");
+  f.session.socketDisconnected(socket);
+  assertFormatStopped(f, before);
+  // An explicit retry that reaches the host again stays stopped.
+  const refusal = documentFormatsUnsupported();
+  f.hooks.connect = () =>
+    Response.json({ error: refusal.message, code: refusal.code }, { status: refusal.status });
+  await f.session.retryConnection({ retryReceipt: true });
+  assertFormatStopped(f, before);
+});
+
+test("a Page the host doesn't open is read-only when discovery refuses it", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  const before = { canDelete: f.session.canDelete, canRestore: f.session.canRestore };
+  const refusal = documentFormatsUnsupported();
+  f.hooks.connect = () =>
+    Response.json({ error: refusal.message, code: refusal.code }, { status: refusal.status });
+  hostClose(f.sockets.at(-1), 1006, "");
+  f.session.socketDisconnected(f.sockets.at(-1));
+  await f.session.retryConnection();
+  assertFormatStopped(f, before);
+});
+
 test("a refused signing key stops automatic reconnects until an explicit retry", async (t) => {
   const f = fixture(t);
   await f.start();

@@ -1886,7 +1886,11 @@ neither document. Discovery, the socket (closed `4427`), `/api/saved`, every
 agent read and edit, comments, presence, image uploads and card uploads
 answer `409 document_format_unsupported`, and the viewer shows "This Page is
 stored in a format this version of Pages doesn't open. Its owner can delete
-it." with no reload. A retained creation intent for such a record installs
+it." with no reload. A tab that holds a cached copy keeps showing it read-only
+(the format gate, [viewer/format-gate.mjs](viewer/format-gate.mjs)): no
+typing, formatting, paste, image, title or comment writes reach it, and the
+status reads "Read-only" with no Retry. A device with no cached copy shows
+the message and no Page. A retained creation intent for such a record installs
 the record and imports no document. The shared-Page check and sharing still
 answer from the record, so the Page keeps its listing title. The JSON card
 and card image the host stored earlier are still served (`page_cards`, the

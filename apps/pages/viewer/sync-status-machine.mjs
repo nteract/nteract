@@ -312,6 +312,7 @@ export const STATUS_IDS = Object.freeze([
   "access-removed",
   "access-changed",
   "sign-in",
+  "read-only",
   "local-failed",
 ]);
 // `retry` marks a stalled receipt that a manual reconnect and receipt retry
@@ -330,6 +331,8 @@ const OVERLAYS = Object.freeze({
   accessDenied: status("Access removed", "attention", "access-removed"),
   accessReloadRequired: status("Access changed", "attention", "access-changed"),
   authRequired: status("Sign in to sync", "attention", "sign-in"),
+  // The host doesn't open the Page's stored format: it can never save.
+  formatUnsupported: status("Read-only", "attention", "read-only"),
   localFailed: status("Local save failed", "failed", "local-failed"),
 });
 
