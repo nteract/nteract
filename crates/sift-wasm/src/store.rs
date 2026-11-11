@@ -1013,6 +1013,47 @@ pub fn load_parquet_bounded(
     store_batches(batches, schema).map_err(|e| JsValue::from_str(&e))
 }
 
+/// Decode a complete Parquet file into one uncompressed Arrow IPC stream,
+/// under the same admission limits as `load_parquet_bounded`. Registers no
+/// store, so there is nothing to free. View types are written as their plain
+/// equivalents, as `get_viewport` writes them; an empty file is a schema-only
+/// stream.
+#[wasm_bindgen]
+pub fn parquet_to_ipc_bounded(
+    parquet_bytes: &[u8],
+    max_rows: u32,
+    max_columns: u32,
+    max_decoded_bytes: u32,
+) -> Result<Vec<u8>, JsValue> {
+    parquet_to_ipc_from(
+        parquet_bytes,
+        FileLimits {
+            rows: max_rows,
+            columns: max_columns,
+            decoded_bytes: max_decoded_bytes,
+        },
+    )
+    .map_err(|e| JsValue::from_str(&e))
+}
+
+fn parquet_to_ipc_from(parquet_bytes: &[u8], limits: FileLimits) -> Result<Vec<u8>, String> {
+    let (schema, batches) = bounded_parquet_batches(parquet_bytes, limits)?;
+    let writer_schema = downgrade_view_types(&RecordBatch::new_empty(schema))?.schema();
+    let mut buf = Vec::new();
+    let mut writer = StreamWriter::try_new(&mut buf, &writer_schema)
+        .map_err(|e| format!("IPC writer error: {}", e))?;
+    for batch in &batches {
+        writer
+            .write(&downgrade_view_types(batch)?)
+            .map_err(|e| format!("IPC write error: {}", e))?;
+    }
+    writer
+        .finish()
+        .map_err(|e| format!("IPC finish error: {}", e))?;
+    drop(writer);
+    Ok(buf)
+}
+
 /// Load a complete, uncompressed Arrow IPC stream with admission limits.
 #[wasm_bindgen]
 pub fn load_ipc_bounded(
@@ -3740,6 +3781,35 @@ mod tests {
         let handle = load_parquet_row_group(&valid, 1, 0).unwrap();
         assert_eq!(num_rows(handle).unwrap(), 1);
         free(handle);
+    }
+
+    #[test]
+    fn parquet_to_ipc_writes_every_row_as_one_stream_under_the_limits() {
+        let batch = file_fixture();
+        let valid = parquet_fixture(&batch);
+        let ipc = parquet_to_ipc_from(&valid, file_limits()).unwrap();
+        let reader = StreamReader::try_new(Cursor::new(ipc), None).unwrap();
+        assert_eq!(reader.schema().fields().len(), batch.num_columns());
+        let decoded: Vec<RecordBatch> = reader.map(Result::unwrap).collect();
+        // The fixture's two row groups come back as one stream of three rows.
+        let all = arrow_select::concat::concat_batches(&decoded[0].schema(), &decoded).unwrap();
+        assert_eq!(all, batch);
+
+        let tight = FileLimits {
+            rows: 2,
+            ..file_limits()
+        };
+        assert!(parquet_to_ipc_from(&valid, tight).is_err());
+        assert_eq!(
+            parquet_to_ipc_from(&crate::test_footers::int96_file(13), file_limits()).unwrap_err(),
+            "Parquet footer has malformed INT96 statistics"
+        );
+
+        let empty = parquet_fixture(&batch.slice(0, 0));
+        let ipc = parquet_to_ipc_from(&empty, file_limits()).unwrap();
+        let reader = StreamReader::try_new(Cursor::new(ipc), None).unwrap();
+        assert_eq!(reader.schema(), batch.schema());
+        assert_eq!(reader.count(), 0);
     }
 
     #[test]

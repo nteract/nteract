@@ -2,10 +2,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fireEvent, render, waitFor } from "@testing-library/react";
-import { tableFromArrays, tableToIPC } from "apache-arrow";
+import { tableFromArrays, tableFromIPC, tableToIPC } from "apache-arrow";
 import { createElement, StrictMode } from "react";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
-import { loadTableFile } from "./file-data";
+import { loadTableFile, parquetToArrowStream } from "./file-data";
 import { _resetPredicateModuleForTests, _setWasmModuleLoaderForTests } from "./predicate";
 import { SiftTable, type SiftSource } from "./react";
 
@@ -95,6 +95,31 @@ describe.skipIf(!existsSync(wasmPath))("loadTableFile with real WASM", () => {
       reopened.dispose?.();
     },
   );
+
+  it("decodes Parquet to an Arrow IPC stream that Arrow and Sift both read", async () => {
+    const stream = await parquetToArrowStream(parquet);
+    const table = tableFromIPC(stream);
+    expect(table.numRows).toBe(3);
+    expect(table.schema.fields.map((field) => field.name)).toEqual([
+      "number",
+      "text",
+      "enabled",
+      "nested",
+    ]);
+    expect(table.getChild("text")?.toArray()).toEqual(["東京", "", null]);
+    const data = await loadTableFile(stream, { format: "arrow-ipc" });
+    try {
+      expect(data.getCell(0, 1)).toBe("東京");
+    } finally {
+      data.dispose?.();
+    }
+    await expect(parquetToArrowStream(parquet, { maxRows: 2 })).rejects.toBeInstanceOf(Error);
+    await expect(parquetToArrowStream(parquet, { maxBytes: 8 })).rejects.toThrow(
+      "exceeds input bytes limit",
+    );
+    await expect(parquetToArrowStream(new Uint8Array())).rejects.toThrow("empty");
+    await expect(parquetToArrowStream(ipc)).rejects.toBeInstanceOf(Error);
+  });
 
   it("rejects malformed files and IPC file format with clear errors", async () => {
     await expect(loadTableFile(new Uint8Array([80, 65, 82, 49]))).rejects.toBeInstanceOf(Error);

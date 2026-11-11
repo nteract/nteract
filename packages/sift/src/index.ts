@@ -19,7 +19,7 @@
 // CSV/TSV input lives in @nteract/sift-csv, which produces Arrow IPC bytes
 // for loadTableFile. Keeping the parser out of this package keeps its WASM
 // to Parquet and Arrow.
-export { loadTableFile } from "./file-data";
+export { loadTableFile, parquetToArrowStream } from "./file-data";
 export type { TableFileLimits, TableFileOptions, TableLimitOverflow } from "./file-data";
 // Byte-range Parquet: hosts implement ByteSource over a file, IPC call, or
 // Range-capable URL and pass it to loadTableFile or a `byte-source` SiftSource.

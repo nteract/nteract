@@ -102,6 +102,12 @@ export type PredicateModule = {
     max_columns: number,
     max_decoded_bytes: number,
   ): number;
+  parquet_to_ipc_bounded(
+    parquet_bytes: Uint8Array,
+    max_rows: number,
+    max_columns: number,
+    max_decoded_bytes: number,
+  ): Uint8Array;
   parquet_metadata(parquet_bytes: Uint8Array): Uint32Array;
   parquet_column_hints(parquet_bytes: Uint8Array): ParquetColumnHint[];
   arrow_ipc_column_hints(ipc_bytes: Uint8Array): ParquetColumnHint[];
