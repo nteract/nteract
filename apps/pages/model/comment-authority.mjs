@@ -454,10 +454,19 @@ function finalize(after, plan, ctx) {
   if (plan.schema) {
     // A stamp only names features this host's build knows: an unknown id
     // would make every reader's comments read-only.
-    const unknown = documentFeatures(after).filter((id) => !ctx.features.includes(id));
+    const stamp = documentFeatures(after);
+    const unknown = stamp.filter((id) => !ctx.features.includes(id));
     if (unknown.length)
       reject(REJECTION.UNSUPPORTED_FEATURE, "The schema stamp names an unknown feature", {
         features: unknown,
+      });
+    // A stamp only grows. A build that lacks a feature opens the comments
+    // read-only because of its id, so removing one would let that build edit
+    // content it can't read.
+    const removed = ctx.stamped().filter((id) => !stamp.includes(id));
+    if (removed.length)
+      reject(REJECTION.IMMUTABLE_FIELD, "A schema stamp's features can't be removed", {
+        features: removed,
       });
   }
 }
@@ -551,6 +560,7 @@ export function admitCommentChanges(admitted, changes, principal, options = {}) 
       principal,
       role: options.role,
       features: options.features ?? BUILD_FEATURES,
+      stamped: () => documentFeatures(admitted),
       read,
       thread: (threadId) => {
         if (!reads.has(threadId)) reads.set(threadId, read(admitted.threads, threadId));

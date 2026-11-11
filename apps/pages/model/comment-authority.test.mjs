@@ -819,3 +819,33 @@ test("an agent-bearing author is refused unless the comments document carries th
   );
   assert.equal(later.ok, true, JSON.stringify(later.reason));
 });
+
+// A feature stamp only grows. A build without a feature opens the comments
+// read-only because the stamp names it, so no change may take an id away.
+test("a change that removes a feature from the comments schema stamp is refused", () => {
+  const { doc } = seed();
+  const stamped = A.change(A.clone(doc, { actor: actor() }), (d) => {
+    d.schema = { features: ["strike"] };
+  });
+  for (const [label, remove] of [
+    ["the whole stamp", (d) => delete d.schema],
+    ["the features list", (d) => delete d.schema.features],
+    ["one id", (d) => d.schema.features.splice(0, 1)],
+    ["a stamp replaced by an empty one", (d) => (d.schema = { features: [] })],
+  ]) {
+    const result = admit(stamped, BOB, "commenter", (d) => void remove(d));
+    assert.equal(result.ok, false, label);
+    assert.equal(result.reason.code, REJECTION.IMMUTABLE_FIELD, label);
+    assert.deepEqual(result.reason.details.features, ["strike"], label);
+  }
+  // Adding an id the build knows beside the existing one is still admitted.
+  const grown = admit(stamped, BOB, "commenter", (d) => {
+    d.schema.features.push("comment-agent");
+  });
+  assert.equal(grown.ok, true, JSON.stringify(grown.reason));
+  // A write that leaves the stamp alone is unaffected.
+  const untouched = admit(stamped, BOB, "commenter", (d) => {
+    d.schema.features[0] = "strike";
+  });
+  assert.equal(untouched.ok, true, JSON.stringify(untouched.reason));
+});
