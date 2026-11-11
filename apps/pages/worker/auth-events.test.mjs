@@ -598,6 +598,7 @@ const AUTH_SUITES = [
   "worker/oauth-store.test.mjs",
   "worker/oauth-auth.test.mjs",
   "worker/auth.test.mjs",
+  "worker/kilo-token.test.mjs",
   "worker/project-membership.test.mjs",
   "worker/sign-in-failure.test.mjs",
 ];

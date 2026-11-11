@@ -145,7 +145,10 @@ export class PageActivity {
   agentEvent(identity, type, targets) {
     // Only API credentials get agent presence: a person's browser session
     // already shows their caret. Labels sit under the authenticated account.
-    if (!["oauth", "api-key"].includes(identity?.credentialKind) || !Array.isArray(targets))
+    if (
+      !["oauth", "api-key", "kilo-token"].includes(identity?.credentialKind) ||
+      !Array.isArray(targets)
+    )
       return false;
     for (const [value, max] of [
       [identity.principal, 512],

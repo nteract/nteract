@@ -400,6 +400,33 @@ test("an OAuth capability names its grant; a browser session is told to upload d
   );
 });
 
+test("a Kilo agent token's capability ends no later than the token's lease", async () => {
+  const storage = new Storage();
+  const pageId = crypto.randomUUID();
+  const now = 1_800_000_000_000;
+  for (const [leaseMs, lifeMs] of [
+    [60_000, 60_000],
+    [15 * 60_000, ASSET_UPLOAD_TTL_MS],
+  ]) {
+    const issued = await issueAssetUpload(storage, {
+      pageId,
+      identity: { principal: "p", credentialKind: "kilo-token", expiresAt: now + leaseMs },
+      args: { page_id: pageId },
+      origin,
+      now,
+    });
+    assert.equal(issued.expires_at, new Date(now + lifeMs).toISOString());
+    await assert.rejects(
+      verifyAssetUpload(storage, tokenOf(issued), {
+        pageId,
+        now: now + lifeMs,
+        grantActive: () => assert.fail("a Kilo capability names no grant"),
+      }),
+      { code: "upload_capability_expired" },
+    );
+  }
+});
+
 // Through the gateway and real Page hosts ------------------------------------
 
 test("an API-key agent gets an upload URL and uploads with curl, never sending its key", async (t) => {

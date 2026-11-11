@@ -9,6 +9,8 @@ import { identityProvider } from "../identity-provider.mjs";
 import { firstApiKeyUse, logAuthEvent } from "./auth-events.mjs";
 import { clientProvenance } from "./client-provenance.mjs";
 import { REVISION_PATTERN } from "./revisions.mjs";
+import { kiloIdentity } from "./kilo-config.mjs";
+import { kiloToken, kiloTokenAccount } from "./kilo-token.mjs";
 
 export class HttpError extends Error {
   constructor(status, message, code) {
@@ -32,8 +34,8 @@ export function driverLabel(request) {
 
 /** "Browser" means a person in the Pages web app, signed in with a cookie;
  * viewers show such a session by name alone (viewer/activity.mjs). A request
- * that carries a bearer credential (API key or Pages OAuth token) is a
- * client acting for the account, so a "Browser" label from it reads as "API".
+ * that carries a bearer credential (API key, Pages OAuth token or Kilo agent
+ * token) is a client acting for the account, so a "Browser" label from it reads as "API".
  * Other labels pass through. */
 export function bearerDriver(driver) {
   return driver.toLowerCase() === "browser" ? "API" : driver;
@@ -142,6 +144,40 @@ export function requireSameOrigin(request, env) {
   }
 }
 
+/** The routes a Pages OAuth token or a Kilo agent token may reach: the MCP
+ * endpoint, `GET /whoami`, `extra`, and the internal hops the tool routes
+ * forward to, which the gateway never exposes. */
+const AGENT_ROUTES = Object.freeze([
+  "/mcp",
+  "/internal/catalog",
+  "/internal/tool",
+  "/internal/create",
+  // A Project member's create_page, forwarded to the owner's Catalog, which
+  // refuses the owner and checks the member's role.
+  "/internal/project-create",
+  "/internal/trash",
+  "/internal/restore",
+  "/internal/purge",
+  "/internal/assets/authorize",
+  // delete_project: the content document's impact, then the Space's removal.
+  // Both hosts check the caller owns the Project themselves.
+  "/internal/content-impact",
+  "/internal/space/create",
+  "/internal/space/read",
+  "/internal/space/update",
+  "/internal/space/delete",
+  "/internal/space/access",
+  "/internal/access",
+]);
+function onAgentRoute(request, extra = []) {
+  const { pathname } = new URL(request.url);
+  return (
+    (pathname === "/whoami" && request.method === "GET") ||
+    AGENT_ROUTES.includes(pathname) ||
+    extra.includes(pathname)
+  );
+}
+
 async function withDomainAccess(identity, env) {
   const domainAccess = await domainAccessForIdentity(env, identity);
   return Object.freeze({ ...identity, ...(domainAccess && { domainAccess }) });
@@ -169,24 +205,7 @@ export async function authenticate(request, env) {
     if (token.startsWith("pages_")) {
       // Internal routes are only reachable through host namespace forwarding.
       // An MCP grant cannot be used to change ACLs or open a native sync socket.
-      if (
-        !(new URL(request.url).pathname === "/whoami" && request.method === "GET") &&
-        ![
-          "/mcp",
-          "/internal/catalog",
-          "/internal/tool",
-          "/internal/create",
-          "/internal/trash",
-          "/internal/restore",
-          "/internal/purge",
-          "/internal/assets/authorize",
-          "/internal/space/create",
-          "/internal/space/read",
-          "/internal/space/update",
-          "/internal/space/access",
-          "/internal/access",
-        ].includes(new URL(request.url).pathname)
-      )
+      if (!onAgentRoute(request))
         throw withAdmissionReason(
           new HttpError(403, "This credential is limited to Pages MCP"),
           "credential_scope",
@@ -232,6 +251,36 @@ export async function authenticate(request, env) {
           namespace: grant.identity.namespace,
           emailProof: grant.identity.emailProof,
           expiresAt: grant.expiresAt * 1000,
+        },
+        env,
+      );
+    }
+    // Tested after the prefixes Pages issues, which no JWT carries. A Kilo
+    // deployment has no API keys, so no bearer below is shadowed.
+    const kilo = kiloToken(env, request, token);
+    if (kilo) {
+      // The tool routes only, checked before Kilo is asked: no sync socket,
+      // browser route or raw asset read.
+      if (!onAgentRoute(request, ["/api/tools"]))
+        throw withAdmissionReason(
+          new HttpError(403, "This credential is limited to Pages agent tools"),
+          "credential_scope",
+        );
+      const account = await kiloTokenAccount(kilo, token);
+      const { principal, metadata } = kiloIdentity(kilo.config, account);
+      return withDomainAccess(
+        {
+          principal,
+          displayName: metadata.displayName || principal,
+          accountDisplayName: metadata.displayName || null,
+          driver: bearerDriver(driver),
+          ...(agent && { agent }),
+          ...requestAssertions,
+          ...(await mcpSession(request, principal)),
+          canWrite: true,
+          credentialKind: "kilo-token",
+          namespace: metadata.principalNamespace,
+          expiresAt: account.until,
         },
         env,
       );
@@ -350,6 +399,8 @@ export const CLIENT_ERROR_CODES = Object.freeze([
   "auth_required",
   "invalid_api_key",
   "api_keys_unsupported",
+  "invalid_kilo_token",
+  "account_unavailable",
   "unknown_operation",
   "invalid_arguments",
   "invalid_page_id",
@@ -428,6 +479,8 @@ export const RETRYABLE_SERVER_CODES = Object.freeze([
   "request_timeout",
   // A listing met a shared Page or owner Catalog that did not answer.
   "shared_page_unavailable",
+  // Kilo could not check an agent token (kilo-token.mjs).
+  "sign_in_unavailable",
 ]);
 
 const LOGGED_ERROR_TYPES = [

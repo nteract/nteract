@@ -1,6 +1,6 @@
 /** What Pages asks of Kilo's web app to sign a person in: one page to send the
  * browser to, and one server-to-server call that trades the code Kilo sends
- * back for the person it names.
+ * back, or a token Kilo minted for an agent, for the person it names.
  *
  * This file is the whole of that contract. Kilo keeps a fixed list of Pages
  * deployments, each under a name it calls an audience, and holds the address
@@ -105,10 +105,57 @@ const discard = async (response) => {
  * other 4xx, which means the code is forged, stale, or for another sign-in.
  * A refusal is its status, whatever its body holds. Throws `KiloUnavailable`
  * or `KiloProtocolError` otherwise. */
-export async function exchangeKiloCode(
+export function exchangeKiloCode(
   fetcher,
   { appUrl, secret, code, audience, state, timeoutMs = DEFAULT_TIMEOUT_MS },
 ) {
+  return exchange(fetcher, { appUrl, secret, body: { code, audience, state }, timeoutMs }, "code");
+}
+
+/** Trades a token Kilo minted for an agent for the person it names, at the
+ * same endpoint as `exchangeKiloCode`. Kilo signs the token with a key Pages
+ * doesn't hold and binds it to `audience`, so this call is the only check of
+ * it.
+ *
+ * Returns `{ id, name }` as the code exchange does, or `{ refused }` only for
+ * an answer that says what is wrong: `"token"` for a 400 whose `error` is
+ * `invalid_token` (forged, expired, or for another deployment), `"account"`
+ * for a 403 whose `error` is `account_unavailable`, and `"client"` for any
+ * 401. A refusal of the token is kept by the caller, so any other 4xx, such
+ * as `invalid_request` or a 404 while Kilo deploys, throws
+ * `KiloProtocolError` and is never read as one. Kilo's body is read, within
+ * the size limit, only to pick among these. */
+export function exchangeKiloToken(
+  fetcher,
+  { appUrl, secret, token, audience, timeoutMs = DEFAULT_TIMEOUT_MS },
+) {
+  return exchange(fetcher, { appUrl, secret, body: { token, audience }, timeoutMs }, "token");
+}
+
+/** The token exchange's 4xx: a refusal Kilo named, or `KiloProtocolError`. */
+async function tokenRefusal(response) {
+  const { status } = response;
+  if (status === 401) {
+    await discard(response);
+    return { refused: "client" };
+  }
+  if (status !== 400 && status !== 403) {
+    await discard(response);
+    throw new KiloProtocolError();
+  }
+  let error;
+  try {
+    error = JSON.parse(new TextDecoder().decode(await readLimited(response)))?.error;
+  } catch (failure) {
+    if (failure instanceof KiloUnavailable) throw failure;
+    throw new KiloProtocolError();
+  }
+  if (status === 400 && error === "invalid_token") return { refused: "token" };
+  if (status === 403 && error === "account_unavailable") return { refused: "account" };
+  throw new KiloProtocolError();
+}
+
+async function exchange(fetcher, { appUrl, secret, body, timeoutMs }, credential) {
   let response;
   try {
     response = await fetcher(new URL(KILO_EXCHANGE_PATH, appUrl), {
@@ -118,7 +165,7 @@ export async function exchangeKiloCode(
         authorization: `Bearer ${secret}`,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ code, audience, state }),
+      body: JSON.stringify(body),
       // Inspected, never followed: the secret stays at the configured origin.
       redirect: "manual",
       signal: AbortSignal.timeout(timeoutMs),
@@ -131,9 +178,10 @@ export async function exchangeKiloCode(
     await discard(response);
     throw new KiloUnavailable();
   }
+  if (status >= 400 && credential === "token") return tokenRefusal(response);
   if (status >= 400) {
     await discard(response);
-    return { refused: status === 401 ? "client" : status === 403 ? "account" : "code" };
+    return { refused: status === 401 ? "client" : status === 403 ? "account" : credential };
   }
   if (status !== 200) {
     await discard(response);

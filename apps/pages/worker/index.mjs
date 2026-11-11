@@ -246,6 +246,7 @@ import {
 } from "./catalog-index.mjs";
 import { readRegistration, requireRegistrationAccount, validPageId } from "./registration.mjs";
 import {
+  authenticateAssets,
   deleteUploadedAssets,
   handleImageAssets,
   privateImageResponse,
@@ -1509,6 +1510,13 @@ const gateway = {
         let pageId = id;
         if (container === "projects") {
           try {
+            // The route's own credential check comes before the Project
+            // lookup, which forwards the bearer to the Project host.
+            await authenticateAssets(
+              request,
+              env,
+              assetId === undefined && request.method === "POST",
+            );
             await requireProjectReader(request, env, id);
             pageId = (
               await resolveProjectContent(env, { project_id: id }, new AbortController().signal)

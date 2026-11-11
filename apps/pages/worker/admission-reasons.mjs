@@ -45,7 +45,7 @@ export const ADMISSION_CODES = ADMISSION_OUTCOMES;
 
 export const ADMISSION_ROUTES = Object.freeze(["/api/connect", "/api/sync", "/api/saved"]);
 
-const credentialKinds = new Set(["oidc", "api-key", "oauth"]);
+const credentialKinds = new Set(["oidc", "api-key", "oauth", "kilo-token"]);
 
 /** Attach a known reason (and optionally a stricter client code) to an error. */
 export function withAdmissionReason(error, reason, code) {
