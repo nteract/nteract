@@ -20,9 +20,29 @@ export function mount(container, { src, pageId, chart, onReport }) {
     spec = null;
   }
   const asset_id = parseAssetPath(src)?.assetId ?? null;
-  const resolveSource = async (_name, { signal } = {}) => ({
-    table: await loadTableFile(await fetchDataset(src, { pageId, signal }), DATAFRAME_LIMITS),
-    asset_id,
-  });
-  return mountChart(container, { spec, resolveSource, onReport });
+  // This resolver owns its one table: decoded once, kept for redraws, freed
+  // when the chart unmounts.
+  const controller = new AbortController();
+  let table = null;
+  const resolveSource = async (_name, { signal } = {}) => {
+    table ??= fetchDataset(src, { pageId, signal: controller.signal }).then((bytes) =>
+      loadTableFile(bytes, DATAFRAME_LIMITS),
+    );
+    table.catch(() => (table = null));
+    signal?.throwIfAborted();
+    return { table: await table, asset_id };
+  };
+  const mounted = mountChart(container, { spec, resolveSource, onReport });
+  return {
+    ...mounted,
+    destroy() {
+      mounted.destroy();
+      controller.abort();
+      table?.then(
+        (loaded) => loaded.dispose?.(),
+        () => {},
+      );
+      table = null;
+    },
+  };
 }

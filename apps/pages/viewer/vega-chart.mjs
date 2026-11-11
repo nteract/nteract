@@ -9,8 +9,8 @@
 import * as vega from "vega";
 import * as vl from "vega-lite";
 import { expressionInterpreter } from "vega-interpreter";
-import { BehaviorSubject, combineLatest, Observable, Subscription } from "rxjs";
-import { distinctUntilChanged, switchMap } from "rxjs/operators";
+import { BehaviorSubject, combineLatest, concat, Observable, Subscription } from "rxjs";
+import { debounceTime, distinctUntilChanged, skip, switchMap, take } from "rxjs/operators";
 import { checkChartSpec, checkFields } from "../shared/chart-spec.mjs";
 
 export const CHART_RENDERER = `vega-lite@${vl.version} vega@${vega.version}`;
@@ -194,9 +194,10 @@ export async function drawChart(element, { spec, resolveSource, theme, signal, w
       if (signal?.aborted) return { ...report, status: "aborted" };
       // A resolver may return the table alone, or `{ table, ...version }`
       // with the source_id, asset_id and source_revision it resolved to.
+      // The resolver owns the table: it may hand the same one to a Sift
+      // table and other charts, so a chart reads it and never frees it.
       const { table, ...version } = resolved?.table ? resolved : { table: resolved };
       const { columns, rows } = sourceRows(table);
-      table.dispose?.();
       sources[name] = { ...version, rows: rows.length, columns };
       data[name] = rows;
     }
@@ -255,12 +256,25 @@ function collectingLogger(warnings) {
   return logger;
 }
 
+/** Wait after the last width change before redrawing, so a drag-resize
+ * draws once at its end. */
+export const RESIZE_SETTLE_MS = 120;
+
+/** The width a chart may fill: the container's content box. */
+function contentWidth(element) {
+  const style = element.ownerDocument.defaultView?.getComputedStyle?.(element);
+  const padding =
+    (Number.parseFloat(style?.paddingLeft) || 0) + (Number.parseFloat(style?.paddingRight) || 0);
+  return Math.max(0, Math.round(element.clientWidth - padding));
+}
+
 /**
  * Mount a chart in `container`. `resolveSource(name, { signal })` returns a
- * source's table; `onReport(report)` hears each render's outcome without the
- * view. Returns `{ update(spec), destroy() }`. A new spec, or a Page theme
- * change, replaces the drawing; a render still in flight is abandoned, so a
- * slow earlier render never replaces a newer one.
+ * source's table, which the resolver owns; `onReport(report)` hears each
+ * render's outcome without the view. Returns `{ update(spec), destroy() }`.
+ * A new spec, a Page theme change or a new container width replaces the
+ * drawing, so text keeps its size at any width; a render still in flight is
+ * abandoned, so a slow earlier render never replaces a newer one.
  */
 export function mount(container, { spec, resolveSource, onReport }) {
   const doc = container.ownerDocument;
@@ -280,7 +294,16 @@ export function mount(container, { spec, resolveSource, onReport }) {
     }
   )(() => themes.next(pageTheme(container)));
   watchTheme.observe(doc.documentElement, { attributes: true, attributeFilter: ["class"] });
-  const draw = ([current, theme]) =>
+  const widths = new BehaviorSubject(contentWidth(container));
+  const Resize = doc.defaultView?.ResizeObserver;
+  const watchSize = Resize ? new Resize(() => widths.next(contentWidth(container))) : null;
+  watchSize?.observe(container);
+  // The first width draws at once; later ones wait for the resize to settle.
+  const settledWidths = concat(
+    widths.pipe(take(1)),
+    widths.pipe(skip(1), debounceTime(RESIZE_SETTLE_MS)),
+  ).pipe(distinctUntilChanged());
+  const draw = ([current, theme, width]) =>
     new Observable((subscriber) => {
       const controller = new AbortController();
       const target = doc.createElement("div");
@@ -289,7 +312,7 @@ export function mount(container, { spec, resolveSource, onReport }) {
         resolveSource,
         theme,
         signal: controller.signal,
-        width: container.clientWidth,
+        width,
         tooltip: tooltip.handler,
       }).then((result) => {
         if (result.status !== "aborted") subscriber.next({ result, target });
@@ -300,7 +323,11 @@ export function mount(container, { spec, resolveSource, onReport }) {
   let view = null;
   const subscription = new Subscription();
   subscription.add(
-    combineLatest([specs, themes.pipe(distinctUntilChanged((a, b) => a.dark === b.dark))])
+    combineLatest([
+      specs,
+      themes.pipe(distinctUntilChanged((a, b) => a.dark === b.dark)),
+      settledWidths,
+    ])
       .pipe(switchMap(draw))
       .subscribe(({ result, target }) => {
         view?.finalize();
@@ -323,6 +350,7 @@ export function mount(container, { spec, resolveSource, onReport }) {
     destroy() {
       subscription.unsubscribe();
       watchTheme.disconnect();
+      watchSize?.disconnect();
       tooltip.destroy();
       view?.finalize();
       view = null;

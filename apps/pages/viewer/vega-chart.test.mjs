@@ -4,8 +4,16 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { JSDOM } from "jsdom";
 
-const { drawChart, mount, sourceRows, sizedSpec, themeConfig, deniedLoader, chartTooltip } =
-  await import("./vega-chart.mjs");
+const {
+  drawChart,
+  mount,
+  sourceRows,
+  sizedSpec,
+  themeConfig,
+  deniedLoader,
+  chartTooltip,
+  RESIZE_SETTLE_MS,
+} = await import("./vega-chart.mjs");
 
 const theme = { dark: false, text: "#111", muted: "#555", line: "#ddd", font: "sans-serif" };
 const usage = {
@@ -75,6 +83,57 @@ test("the report carries the source version the resolver drew from", () =>
     });
     assert.deepEqual(report.sources.usage_by_tool, { ...version, rows: 4, columns: usage.columns });
     report.view.finalize();
+  }));
+
+test("a chart reads a resolver's table and leaves freeing it to the resolver", () =>
+  withWindow(async (window) => {
+    let freed = 0;
+    const table = {
+      columns: usage.columns.map((key) => ({ key })),
+      rowCount: usage.rows.length,
+      getCellRaw: (r, c) => usage.rows[r][usage.columns[c]],
+      dispose: () => freed++,
+    };
+    const report = await drawChart(window.document.createElement("div"), {
+      spec: refusalRate,
+      theme,
+      resolveSource: async () => ({ table, asset_id: "a".repeat(64) }),
+    });
+    assert.equal(report.status, "rendered", report.error);
+    assert.equal(freed, 0);
+    report.view.finalize();
+  }));
+
+test("mount redraws at a new width once a resize settles", () =>
+  withWindow(async (window) => {
+    let width = 600;
+    let notify;
+    window.ResizeObserver = class {
+      constructor(callback) {
+        notify = callback;
+      }
+      observe() {}
+      disconnect() {}
+    };
+    const container = window.document.body.appendChild(window.document.createElement("div"));
+    Object.defineProperty(container, "clientWidth", { get: () => width });
+    const reports = [];
+    const chart = mount(container, {
+      spec: refusalRate,
+      resolveSource: async () => usage,
+      onReport: (report) => reports.push(report),
+    });
+    const svgWidth = () => Number(container.querySelector("svg").getAttribute("width"));
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    const wide = svgWidth();
+    width = 340;
+    notify();
+    width = 320;
+    notify();
+    await new Promise((resolve) => setTimeout(resolve, RESIZE_SETTLE_MS + 120));
+    assert.equal(reports.length, 2);
+    assert.ok(svgWidth() < wide && svgWidth() <= 330, `${wide} -> ${svgWidth()}`);
+    chart.destroy();
   }));
 
 test("a misspelled field still draws, with a warning that names it", () =>
