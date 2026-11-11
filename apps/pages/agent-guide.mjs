@@ -174,6 +174,10 @@ ${part.authErrorItems}
 - stored_form_unsupported (409): part of this Page is stored in a form from an
   earlier version of Pages that this build doesn't read. Retrying doesn't
   help; tell the person, since the Page needs an operator.
+- document_format_unsupported (409): this Page is stored in a format this
+  version of Pages doesn't open, so it can't be read or edited. It still
+  appears in list_pages; its owner can delete_page, restore_page and
+  purge_page it. Retrying doesn't help; tell the person.
 - idempotency_conflict: the key was used for a different request. Use a new key.
 - operation_pending (409): an earlier request with this key is still being
   applied. Retry the same request shortly.

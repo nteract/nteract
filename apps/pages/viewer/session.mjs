@@ -130,9 +130,20 @@ export function classifyRefusal(error) {
   if (error.code === "signing_key_rejected") return undefined;
   return "denied";
 }
-// 409s that retrying can't fix: this build lacks a feature the Page uses, or
-// the host can't read a draft an earlier build saved.
-const RELOAD_REQUIRED_CODES = new Set(["unsupported_schema_feature", "stored_form_unsupported"]);
+// 409s that retrying can't fix: this build lacks a feature the Page uses, the
+// host can't read a draft an earlier build saved, or the Page is stored in a
+// format the host doesn't open.
+const UNRETRYABLE_CODES = new Set([
+  "unsupported_schema_feature",
+  "stored_form_unsupported",
+  "document_format_unsupported",
+]);
+/** Shown when the host closes a socket as document_format_unsupported, which
+ * carries no message: the Page's host record names document formats the
+ * host doesn't open. Reloading can't help, so it doesn't say to. Discovery's
+ * refusal carries the same text from the host. */
+export const PAGE_FORMAT_UNSUPPORTED =
+  "This Page is stored in a format this version of Pages doesn't open. Its owner can delete it.";
 /** Shown when the host refuses to register a draft an earlier version of
  * Pages saved in a form this build doesn't read. */
 export const DRAFT_FORM_UNSUPPORTED =
@@ -154,14 +165,14 @@ function draftUnreadable(error) {
  * Stops, until Retry, an `online` event, sign-in or a reload:
  * - a 401 or 403 (sign-in, or a refused signing key over HTTP),
  * - an admission close that says stop,
- * - a 409 in RELOAD_REQUIRED_CODES.
+ * - a 409 in UNRETRYABLE_CODES.
  * Everything else retries: no status, a 5xx, and any other 4xx. A 404
  * without page_deleted, 408, 409, 425 or 429 is a host that may answer
  * differently in a moment, a deploy cutover included. */
 export function connectionFailureRetries(error) {
   if (error?.status === 401 || error?.status === 403) return false;
   if (error?.code === "SIGNING_KEY_REFUSED") return false;
-  if (error?.status === 409 && RELOAD_REQUIRED_CODES.has(error.code)) return false;
+  if (error?.status === 409 && UNRETRYABLE_CODES.has(error.code)) return false;
   return true;
 }
 export const ACCESS_REVOKED = "You no longer have access to this Page.";
@@ -256,9 +267,14 @@ const receiptRetryDelay = (attempt, transient) =>
       : undefined
     : RECEIPT_RETRY_DELAYS[attempt];
 /** What a person can do about an admission `stop`. A build the host no longer
- * accepts reloads into one it does; any other stop is a refused tab key. */
+ * accepts reloads into one it does; a Page stored in a format the host
+ * doesn't open can only be deleted; any other stop is a refused tab key. */
 const stopMessage = (admission) =>
-  admission?.code === "schema_unsupported" ? schemaUnsupported([]).message : SIGNING_KEY_REFUSED;
+  admission?.code === "schema_unsupported"
+    ? schemaUnsupported([]).message
+    : admission?.code === "document_format_unsupported"
+      ? PAGE_FORMAT_UNSUPPORTED
+      : SIGNING_KEY_REFUSED;
 // Not retryable by openPageWithRetry: this tab cannot succeed as it is.
 export const signingKeyRefused = (admission, cause) =>
   Object.assign(Error(stopMessage(admission), cause === undefined ? undefined : { cause }), {
@@ -1353,7 +1369,7 @@ export class PageSession {
       this.renderStatus();
       return;
     }
-    this.showConnectionProblem(SIGNING_KEY_REFUSED);
+    this.showConnectionProblem(stopMessage(admission));
   }
   /** Stop syncing while keeping the local draft. `denied` removes access,
    * `trashed` says the Page is in its owner's Trash, and otherwise the

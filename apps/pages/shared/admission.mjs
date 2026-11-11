@@ -23,6 +23,9 @@ export const ADMISSION_OUTCOMES = Object.freeze({
   // The Page is stamped with a schema feature this client's build lacks. Its
   // edits are refused until it reloads into a build that has the feature.
   schema_unsupported: Object.freeze({ status: 409, close: 4426, retry: "stop" }),
+  // The Page's host record names document formats this build doesn't write.
+  // No client build fixes that; the owner can still delete the Page.
+  document_format_unsupported: Object.freeze({ status: 409, close: 4427, retry: "stop" }),
 });
 
 const byClose = new Map(
