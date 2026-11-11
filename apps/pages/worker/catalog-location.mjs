@@ -152,11 +152,19 @@ export function appendPosition(entries, parentId, excludeId, spaceId = null) {
   return { position: placed.position, rekeyed: placed.rekeyed };
 }
 
-/** Whether Project `spaceId` is live in this Catalog: recorded and not
- * still being created. */
+/** Whether Project `spaceId` is live in this Catalog: recorded, not still
+ * being created, and not being deleted. */
 export async function projectLive(storage, spaceId) {
   const space = await storage.get(`space/${spaceId}`);
-  return !!space && !space.pending;
+  return !!space && !space.pending && !space.deletion;
+}
+
+/** Whether any owned Page is in Project `spaceId`: active, still being
+ * created, or in Trash. The Project's content document is not a Page. */
+export async function projectHoldsPages(storage, spaceId) {
+  const { entries } = await locationScan(storage);
+  for (const pageId of entries.keys()) if (projectOf(entries, pageId) === spaceId) return true;
+  return false;
 }
 
 /** Whether an owned Page can hold children: created, not in Trash, and not

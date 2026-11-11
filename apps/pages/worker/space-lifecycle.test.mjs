@@ -1,11 +1,56 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { loadTable, runTable } from "../shared/machine-test.mjs";
 import {
   SPACE_CREATION_EVENTS,
   SPACE_CREATION_STATES,
   spaceCreationEffect,
   spaceCreationTransition,
+  spaceDeletion,
 } from "./space-lifecycle.mjs";
+
+const DELETION_TABLE = new URL("../test/fixtures/machines/space-deletion.json", import.meta.url);
+
+test("Space deletion: every phase and answer has one outcome", async () => {
+  await runTable(spaceDeletion, loadTable(DELETION_TABLE));
+});
+
+test("Space deletion resumes from any persisted phase and records its receipt last", () => {
+  const answers = {
+    close_space: { type: "closed", ok: true },
+    trash_content: { type: "trashed", outcome: "trashed" },
+    purge_content: { type: "purged" },
+    forget_catalog: { type: "forgotten" },
+    remove_space: { type: "removed" },
+  };
+  // Each phase runs the answer at the same index first.
+  const phases = [
+    "reserved",
+    "space_closed",
+    "content_trashed",
+    "content_deleted",
+    "catalog_forgotten",
+  ];
+  for (const start of phases) {
+    let state = { name: start };
+    let event = { type: "resume" };
+    const ran = [];
+    for (;;) {
+      const result = spaceDeletion.step(state, event);
+      const types = result.effects.map((effect) => effect.type);
+      ran.push(...types.filter((type) => Object.hasOwn(answers, type)));
+      if (result.response) {
+        assert.deepEqual(result.response, { reply: "receipt" });
+        assert.equal(result.state.name, "deleted");
+        assert.deepEqual(types, ["persist", "sync"], "the receipt is the last write");
+        break;
+      }
+      state = result.state;
+      event = answers[types.at(-1)];
+    }
+    assert.deepEqual(ran, Object.keys(answers).slice(phases.indexOf(start)), start);
+  }
+});
 
 test("Space creation: every state and event has exactly one outcome", () => {
   const expected = {

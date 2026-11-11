@@ -16,6 +16,24 @@ import {
 } from "../shared/inspect-image.mjs";
 
 export const imageAssetKey = (pageId, assetId) => `pages/${pageId}/assets/${assetId}`;
+/** Listing pages one deletion reads. R2 lists up to 1,000 keys a page. */
+const ASSET_DELETE_PAGES = 16;
+
+/** Delete a Page's uploaded images and datasets: every key under its asset
+ * prefix that at most ASSET_DELETE_PAGES listing pages find. A bucket that
+ * can't list deletes nothing. Bytes an upload stores after this runs stay
+ * unreferenced; no deleted Page serves them. */
+export async function deleteUploadedAssets(bucket, pageId) {
+  if (typeof bucket?.list !== "function") return;
+  let cursor;
+  for (let page = 0; page < ASSET_DELETE_PAGES; page++) {
+    const listed = await bucket.list({ prefix: imageAssetKey(pageId, ""), cursor });
+    const keys = (listed.objects ?? []).map((object) => object.key);
+    if (keys.length) await bucket.delete(keys);
+    if (!listed.truncated) return;
+    cursor = listed.cursor;
+  }
+}
 const ascii = (bytes, offset, length) =>
   String.fromCharCode(...bytes.subarray(offset, offset + length));
 

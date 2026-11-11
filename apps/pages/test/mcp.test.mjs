@@ -202,6 +202,7 @@ test("MCP tools declare every annotation hint, and each tool's hints are intende
     create_page_asset_upload: write,
     delete_page: destructive,
     purge_page: destructive,
+    delete_project: destructive,
   };
   const response = await handleMcp(request("tools/list"), async () => assert.fail());
   const listed = (await response.json()).result.tools;

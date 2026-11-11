@@ -2045,6 +2045,9 @@ const SPACES_SYNCED = "host/index/spaces-synced";
 /** Most `space/` entries one account reconcile reads. */
 const SPACE_RECONCILE_LIMIT = 200;
 
+/** A `space/` entry a listing shows: created and not being deleted. */
+const listedSpace = (entry) => validSpaceId(entry?.space_id) && !entry.pending && !entry.deletion;
+
 /** The owner's Space entries changed; the next Space listing rewrites them. */
 export async function markSpaceIndexDirty(storage) {
   await storage.put(SPACES_DIRTY, crypto.randomUUID());
@@ -2088,7 +2091,7 @@ export async function reconcileSpaceIndex({ db, storage, principal, epoch }) {
   if (dirty === undefined && (await storage.get(SPACES_SYNCED)) === epoch) return;
   const entries = [
     ...(await storage.list({ prefix: "space/", limit: SPACE_RECONCILE_LIMIT })).values(),
-  ].filter((entry) => validSpaceId(entry?.space_id) && !entry.pending);
+  ].filter((entry) => listedSpace(entry));
   await withTimeout(
     db.batch([
       ...entries.map((entry) => spaceUpsert(db, principal, entry)),
@@ -2146,7 +2149,7 @@ export async function spaceCatalogSource(storage) {
   const rows = [
     ...(await storage.list({ prefix: "space/", limit: SPACE_RECONCILE_LIMIT })).values(),
   ]
-    .filter((entry) => validSpaceId(entry?.space_id) && !entry.pending)
+    .filter((entry) => listedSpace(entry))
     .map((entry) => ({
       page_id: entry.space_id,
       updated_at: entry.updated_at ?? entry.created_at,
