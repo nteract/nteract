@@ -192,12 +192,18 @@ export async function drawChart(element, { spec, resolveSource, theme, signal, w
     for (const name of names) {
       const resolved = await resolveSource(name, { signal });
       if (signal?.aborted) return { ...report, status: "aborted" };
-      // A resolver may return the table alone, or `{ table, ...version }`
-      // with the source_id, asset_id and source_revision it resolved to.
-      // The resolver owns the table: it may hand the same one to a Sift
-      // table and other charts, so a chart reads it and never frees it.
-      const { table, ...version } = resolved?.table ? resolved : { table: resolved };
-      const { columns, rows } = sourceRows(table);
+      // A resolver may return the table alone, or `{ table, release?,
+      // ...version }` with the source_id, asset_id and source_revision it
+      // resolved to. The resolver owns the table and may share it, so a
+      // chart never frees it: it copies the rows out, then calls `release`
+      // to say it's done.
+      const { table, release, ...version } = resolved?.table ? resolved : { table: resolved };
+      let columns, rows;
+      try {
+        ({ columns, rows } = sourceRows(table));
+      } finally {
+        release?.();
+      }
       sources[name] = { ...version, rows: rows.length, columns };
       data[name] = rows;
     }

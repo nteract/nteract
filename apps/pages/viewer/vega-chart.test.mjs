@@ -85,9 +85,10 @@ test("the report carries the source version the resolver drew from", () =>
     report.view.finalize();
   }));
 
-test("a chart reads a resolver's table and leaves freeing it to the resolver", () =>
+test("a chart reads a resolver's table, releases it, and leaves freeing it to the resolver", () =>
   withWindow(async (window) => {
     let freed = 0;
+    let released = 0;
     const table = {
       columns: usage.columns.map((key) => ({ key })),
       rowCount: usage.rows.length,
@@ -97,10 +98,11 @@ test("a chart reads a resolver's table and leaves freeing it to the resolver", (
     const report = await drawChart(window.document.createElement("div"), {
       spec: refusalRate,
       theme,
-      resolveSource: async () => ({ table, asset_id: "a".repeat(64) }),
+      resolveSource: async () => ({ table, asset_id: "a".repeat(64), release: () => released++ }),
     });
     assert.equal(report.status, "rendered", report.error);
     assert.equal(freed, 0);
+    assert.equal(released, 1);
     report.view.finalize();
   }));
 
