@@ -7,7 +7,7 @@ import * as A from "@automerge/automerge";
 import { applyPageOperation, createPageData, initializePage, orderedBlockIds } from "./page.mjs";
 import { textPath } from "./richtext.mjs";
 import { projectReadContent } from "./read-content.mjs";
-import { nodeIds, nodeRange } from "./node-ids.mjs";
+import { nodeIds } from "./node-ids.mjs";
 import { imageIds } from "./image-ids.mjs";
 import {
   ADDRESS_PATTERN,
@@ -40,11 +40,7 @@ function edit(doc, operations) {
 function rangeOf(doc, key, nodeId) {
   const ids = nodeIds(doc, key);
   const index = ids.findIndex((entry) => entry.id === nodeId);
-  const length = A.spans(doc, textPath(key)).reduce(
-    (total, span) => total + (span.type === "text" ? span.value.length : 1),
-    0,
-  );
-  return { index, ...nodeRange(ids, index, length) };
+  return { index, start: ids[index].at, end: ids[index].end };
 }
 const nodesOf = (doc, key) => nodeIds(doc, key).map((entry) => entry.id);
 const typeOf = (doc, nodeId) =>

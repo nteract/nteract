@@ -12,8 +12,9 @@ import { blockMarkdown, parseMarkdown, richDoc, textPath } from "./richtext.mjs"
 import { updateSpansConfig } from "./marks.mjs";
 import { projectReadContent } from "./read-content.mjs";
 import { projectReadChanges } from "./read-changes.mjs";
-import { MAX_NODE_ID, nodeIds, nodeRange } from "./node-ids.mjs";
+import { MAX_NODE_ID, nodeIds } from "./node-ids.mjs";
 import { addressIndex, blockAddress, nodeAddresses, resolveAddress } from "./addresses.mjs";
+import { SHAPES, pageWithSpans } from "../test/address-inputs.mjs";
 
 const pageId = "44444444-4444-4444-8444-444444444444";
 const assetId = "e".repeat(64);
@@ -99,7 +100,11 @@ test("consecutive rules and an empty paragraph get their own stored marker ids",
       updateSpansConfig,
     ),
   );
-  const expected = [0, 1, 2].map((at) => ({ id: A.getCursor(doc, textPath(id), at), at }));
+  const expected = [0, 1, 2].map((at) => ({
+    id: A.getCursor(doc, textPath(id), at),
+    at,
+    end: at + 1,
+  }));
   assert.deepEqual(nodeIds(doc, id), expected);
   assert.deepEqual(
     outline(doc, id).map((entry) => [entry.type, entry.node_id]),
@@ -675,26 +680,21 @@ test("delete_node refuses to join the lists on either side into one", () => {
   assert.equal(blockMarkdown(both.blocks[id]), "Intro\n\n- b");
 });
 
-test("a node range never runs past a next node with no marker", () => {
-  const ids = [
-    { id: null, at: null },
-    { id: "a", at: 5 },
-    { id: null, at: null },
-    { id: "b", at: 20 },
-  ];
-  assert.deepEqual(nodeRange(ids, 3, 30), { start: 20, end: 30 });
-  assert.throws(() => nodeRange(ids, 1, 30), /unmarked text/);
+test("a node's range ends where the reader ends it, unmarked text after it included", () => {
+  // A code block with an image after it, as a merge leaves it: the image
+  // opens a paragraph of unmarked text.
+  const { doc, id } = pageWithSpans(SHAPES["image-after-code"]);
+  const ids = nodeIds(doc, id);
   assert.deepEqual(
-    nodeRange(
-      [
-        { id: "c", at: 0 },
-        { id: "d", at: 9 },
-      ],
-      0,
-      12,
-    ),
-    { start: 0, end: 9 },
+    ids.map(({ id: nodeId, at, end }) => [nodeId === null, at, end]),
+    [
+      [false, 0, 2],
+      [true, null, 4],
+      [false, 4, 6],
+    ],
   );
+  const code = resolveAddress(addressIndex(doc), ids[0].id);
+  assert.deepEqual([code.start, code.end], [0, 2]);
 });
 
 test("delete_node beside a peer typing into the same node merges into a valid tree", () => {

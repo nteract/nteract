@@ -23,7 +23,7 @@
 import * as A from "@automerge/automerge/slim";
 import { textPath } from "./richtext-format.mjs";
 import { orderedBlockIds } from "./order.mjs";
-import { MAX_NODE_ID, nodeRange, spanNodeIds } from "./node-ids.mjs";
+import { MAX_NODE_ID, spanNodeIds } from "./node-ids.mjs";
 import { spanImageIds } from "./image-ids.mjs";
 import { blockAddresses } from "./node-addresses.mjs";
 import { nativeRead, readKind } from "./native-read.mjs";
@@ -36,10 +36,10 @@ export function blockAddress(doc, key) {
   return A.getObjectId(doc.blocks[key]);
 }
 
-/** The node and image addresses in block `key`: `{ nodes, length, byId }`,
- * `nodes` as nodeIds gives them (none for a block with a node this build
- * can't place), `length` the text's length, and `byId` each address's
- * entry. Never throws for content a merge or a newer build left. */
+/** The node and image addresses in block `key`: `{ nodes, byId }`, `nodes`
+ * as nodeIds gives them (none for a block with a node this build can't
+ * place), and `byId` each address's entry. Never throws for content a merge
+ * or a newer build left. */
 function indexBlock(doc, key) {
   const path = textPath(key);
   const spans = A.spans(doc, path);
@@ -54,11 +54,7 @@ function indexBlock(doc, key) {
     if (id !== null) byId.set(id, { kind: "node", index });
   for (const { id, at, index } of spanImageIds(doc, path, spans))
     byId.set(id, { kind: "image", at, index });
-  const length = spans.reduce(
-    (total, span) => total + (span.type === "text" ? span.value.length : 1),
-    0,
-  );
-  return { nodes, length, byId };
+  return { nodes, byId };
 }
 
 /** A lookup from address to the thing it names, over one captured document
@@ -83,15 +79,15 @@ export function addressIndex(doc) {
       }
       return blocks.keys.get(address);
     },
-    /** The node or image `address` names, as `{ key, entry, nodes, length }`,
-     * or undefined. */
+    /** The node or image `address` names, as `{ key, entry, nodes }`, or
+     * undefined. */
     find(address) {
       this.block(address);
       for (const key of blocks.order) {
         if (!indexed.has(key)) indexed.set(key, indexBlock(doc, key));
-        const { byId, nodes, length } = indexed.get(key);
+        const { byId, nodes } = indexed.get(key);
         const entry = byId.get(address);
-        if (entry) return { key, entry, nodes, length };
+        if (entry) return { key, entry, nodes };
       }
     },
     /** Whether block `key`'s node and image addresses are read. */
@@ -122,9 +118,8 @@ export function nodeAddresses(doc, key) {
 const notFound = (message) => Object.assign(Error(message), { code: "node_not_found" });
 
 /** What kind of thing `address` names in `index`'s document, and the key
- * of its block: `{ kind, key }`, without the node's range. A read uses this:
- * it can name a node whose end is unmarked text, which an edit marks before
- * it resolves the node's range. Throws as resolveAddress does. */
+ * of its block: `{ kind, key }`, without a node's range or an image's
+ * offset. Throws as resolveAddress does. */
 export function addressKind(index, address) {
   if (typeof address !== "string" || address.length > MAX_ADDRESS || !ADDRESS_PATTERN.test(address))
     throw Error(
@@ -142,16 +137,18 @@ export function addressKind(index, address) {
 
 /** What `address` names in `index`'s document: `{ kind: "block", key }`,
  * `{ kind: "node", key, index, start, end }` with the node's index among its
- * block's top-level nodes and its range (nodeRange), or
+ * block's top-level nodes and its text range, from its marker to where the
+ * reader ends it (the next node's start, unmarked text included), or
  * `{ kind: "image", key, at, index }` with the embed's offset and span
  * index. Throws `node_not_found` when the address names nothing live, and
  * a plain Error when it isn't an address. */
 export function resolveAddress(index, address) {
   const { kind, key, found } = addressKind(index, address);
   if (kind === "block") return { kind, key };
-  const { entry, nodes, length } = found;
+  const { entry, nodes } = found;
   if (kind === "image") return { kind, key, at: entry.at, index: entry.index };
-  return { kind, key, index: entry.index, ...nodeRange(nodes, entry.index, length) };
+  const { at: start, end } = nodes[entry.index];
+  return { kind, key, index: entry.index, start, end };
 }
 
 // What each kind of address is for, in a wrong_address_kind refusal.

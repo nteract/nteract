@@ -13,6 +13,8 @@ import { comment, newCommentsDoc } from "./comments-test-support.mjs";
 import { textPath, richDoc } from "./richtext.mjs";
 import { guardPassageEdits } from "./passage-edits.mjs";
 import { blockAddress, nodeAddresses } from "./addresses.mjs";
+import { projectReadContent } from "./read-content.mjs";
+import { SHAPES, pageWithSpans } from "../test/address-inputs.mjs";
 
 function fixture(markdown = "First passage.\n\nKeep **target** unchanged.\n\nLast passage.") {
   let doc = A.from(createPageData({ pageId: "passage_test", title: "Passages" }));
@@ -347,4 +349,21 @@ test("invalid format_match input and code text are the caller's error, not a con
     () => guardPassageEdits(code.doc, code.heads, [fmt(code.block)]),
     (error) => error.status === 400 && /code block/.test(error.message),
   );
+});
+
+test("a node before unmarked text takes a target-scoped edit at the revision read", () => {
+  // A code block with an image after it, as a merge leaves it: the image
+  // opens a paragraph of unmarked text, which the write marks.
+  const { doc } = pageWithSpans(SHAPES["image-after-code"]);
+  const [code] = projectReadContent(doc, { include_content: false }).outline;
+  assert.equal(code.type, "code-block");
+  const heads = A.getHeads(doc);
+  const { after, plan } = edit(doc, heads, [
+    { op: "replace_match", node_id: code.node_id, match_text: "x", replacement: "z" },
+  ]);
+  assert.equal(plan.rebased, false);
+  assert.deepEqual(plan.operations[0].node_id, code.node_id);
+  assert.match(projectReadContent(after, { node_ids: [code.node_id] }).nodes[0].markdown, /\nz\n/);
+  // The live document changed only through the real change.
+  assert.deepEqual(A.getHeads(doc), heads);
 });

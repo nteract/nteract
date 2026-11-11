@@ -30,9 +30,11 @@ import { blockAddresses } from "./node-addresses.mjs";
 // (worker/actor-authorship.mjs), 128 hex characters.
 export const MAX_NODE_ID = 192;
 
-/** For each top-level node of rich block `blockId`, in order: `{ id, at }`,
- * the cursor at its opening marker and that marker's index in the text, or
- * `{ id: null, at: null }` for a paragraph of unmarked text. Addresses come from the stored spans (model/node-addresses.mjs). `tree` is the block's
+/** For each top-level node of rich block `blockId`, in order: `{ id, at,
+ * end }`, the cursor at its opening marker, that marker's index in the text
+ * and where the node's text ends (the next node's start as the reader draws
+ * it, unmarked text included), or `{ id: null, at: null, end }` for a
+ * paragraph of unmarked text. Addresses come from the stored spans (model/node-addresses.mjs). `tree` is the block's
  * richDoc, when the caller pairs the ids with its nodes; the ids line up with
  * them, or this throws. Also throws when the block holds a node this build
  * can't place where it was stored. */
@@ -60,7 +62,11 @@ export function nodeIds(doc, blockId, tree) {
 export function spanNodeIds(doc, path, spans) {
   const { nodes, placed } = blockAddresses(spans);
   if (!placed) throw Error("This block holds a node this build can't place");
-  return nodes.map(({ at }) => ({ id: at === null ? null : A.getCursor(doc, path, at), at }));
+  return nodes.map(({ at, end }) => ({
+    id: at === null ? null : A.getCursor(doc, path, at),
+    at,
+    end,
+  }));
 }
 
 /** nodeIds, or no ids (all null) when the block holds a node this build
@@ -76,16 +82,4 @@ export function readableNodeIds(doc, blockId, tree) {
       at: null,
     }));
   }
-}
-
-/** The text range `[start, end)` of node `index`: its marker up to the next
- * node's marker, or to the end of the text for the last node. A host write
- * marks a block's unmarked text before it resolves an id (page.mjs), so the
- * next node always has a marker; one without is refused rather than letting
- * the range run on over the nodes after it. */
-export function nodeRange(ids, index, length) {
-  const next = ids[index + 1];
-  if (next && next.at === null)
-    throw Error("This node's end is unmarked text; mark the block's unmarked text first");
-  return { start: ids[index].at, end: next ? next.at : length };
 }

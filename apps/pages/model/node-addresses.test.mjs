@@ -147,18 +147,12 @@ test("node ids resolve to the frozen ranges, and passages address the frozen nod
     const step = Math.ceil(runs / 8) || 1;
     const sampled = expected.text.filter((_index, run) => run % step === 0);
     try {
-      // A paragraph of unmarked text has no id, and a node before one has no
-      // marked end until a write marks the block (page.mjs), so it resolves
-      // to no range. The frozen range stands for each.
+      // A paragraph of unmarked text has no id, so it resolves to no range;
+      // the frozen range stands for it.
       const index = addressIndex(doc);
       const addresses = nodeAddresses(doc, id);
       for (const [n, address] of addresses.entries()) {
         if (address === null) {
-          observed.ranges.push(expected.ranges[n]);
-          continue;
-        }
-        if (addresses[n + 1] === null) {
-          assert.throws(() => resolveAddress(index, address), /unmarked text/);
           observed.ranges.push(expected.ranges[n]);
           continue;
         }
