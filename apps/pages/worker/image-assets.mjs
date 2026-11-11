@@ -227,25 +227,23 @@ const uploadMismatch = (what) =>
     "upload_mismatch",
   );
 
-/** The content type, size and SHA-256 an upload capability bound, checked
- * before anything is stored. */
-function checkExpected(expect, { mime_type, size, hash }) {
+/** The content type and size an upload capability bound, checked before
+ * anything is stored. */
+function checkExpected(expect, { mime_type, size }) {
   if (expect === undefined) return;
   if (!expect || typeof expect !== "object" || Array.isArray(expect))
     throw new Error("Invalid upload expectation");
   if (expect.content_type !== undefined && expect.content_type !== mime_type)
     throw uploadMismatch("content type");
   if (expect.size !== undefined && expect.size !== size) throw uploadMismatch("size");
-  if (hash !== undefined && expect.sha256 !== undefined && expect.sha256 !== hash)
-    throw uploadMismatch("SHA-256");
 }
 
 /**
  * Store only validated original bytes; authorization belongs to the caller.
  * `accept: "image"` admits rasters only (import_page_image, comment images);
  * `accept: "any"` also admits Parquet datasets (the Page asset route).
- * `expect` is an upload capability's binding ({content_type, size, sha256},
- * each optional); bytes that don't match it are refused before storage.
+ * `expect` is an upload capability's binding ({content_type, size}, each
+ * optional); bytes that don't match it are refused before storage.
  */
 export async function persistPageAsset(
   bucket,
@@ -269,7 +267,6 @@ export async function persistPageAsset(
   checkExpected(expect, { mime_type: inspected.mime_type, size: bytes.byteLength });
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
   const hash = Array.from(digest, (value) => value.toString(16).padStart(2, "0")).join("");
-  checkExpected(expect, { mime_type: inspected.mime_type, size: bytes.byteLength, hash });
   const key = imageAssetKey(pageId, hash);
   let stored = await bucket.head(key),
     duplicate = stored !== null;

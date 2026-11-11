@@ -1541,8 +1541,8 @@ cookie. The Page host answers with `upload_url` (the ordinary
 `POST /api/pages/:pageId/assets` route), `method`, `headers`, `expires_at`,
 `max_bytes`, `accepted_types` and `example`, a ready curl command built by
 `assetUploadCommand` ([agent-client-setup.mjs](agent-client-setup.mjs)), which
-also builds the `/llms.txt` line. Optional `content_type`, `size` and `sha256`
-arguments bind the capability to one file; the gateway checks the bytes against
+also builds the `/llms.txt` line. Optional `content_type` and `size`
+arguments bind the capability to one type and byte count; the gateway checks the bytes against
 them before storing anything (`upload_mismatch`), and a bound size refuses a
 different `Content-Length` before reading the body. A credential-less upload
 to the asset route is told to call `create_page_asset_upload`.
