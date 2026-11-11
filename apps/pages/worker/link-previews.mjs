@@ -60,8 +60,8 @@
 // why; the viewer shows only "Page unavailable" or "Project unavailable" and
 // asks again sooner than for an answer.
 //
-// Answers are `private, no-store`, as Page assets are: a title or a first
-// screen never stays in the browser's disk cache after sign-out.
+// Answers are `private, no-store`: a title or a first screen never stays in
+// the browser's disk cache after sign-out.
 //
 // Follow-up, before P2's viewport loading raises the request volume: both
 // checks run in their host's serial request queue (the Page's run(), the
