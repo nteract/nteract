@@ -20,7 +20,8 @@ import { textPath } from "./richtext-format.mjs";
 import { nativeRead } from "./native-read.mjs";
 import { blockMarkdown, markUnmarkedText } from "./richtext-page.mjs";
 import { decode } from "./wordgard-doc.mjs";
-import { allInputs, pageWithSpans, spansToJSON } from "../test/address-inputs.mjs";
+import { applyPageOperation } from "./page.mjs";
+import { allInputs, PAGE_ID, pageWithSpans, spansToJSON } from "../test/address-inputs.mjs";
 
 const GOLDEN = new URL("./node-addresses.golden.json", import.meta.url);
 const update = process.env.PAGES_UPDATE_ADDRESSES === "1";
@@ -202,18 +203,26 @@ test("text stored after an unknown block is that node's content", () => {
   assert.deepEqual(ancestryAt(addresses, 1), [{ type: "Paragraph", attrs: {} }]);
 });
 
-const UNMARKED = [
-  "empty",
-  "unmarked-first",
-  "unmarked-after-rule",
-  "unmarked-in-quote",
-  "unmarked-in-list-item",
-  "unmarked-in-table",
-];
+// Shapes with unmarked text, and whether it is a top-level paragraph
+// (which has no node id until a writer marks it).
+const UNMARKED = {
+  empty: true,
+  "unmarked-first": true,
+  "unmarked-after-rule": true,
+  "unmarked-in-quote": false,
+  "unmarked-in-list-item": false,
+  "unmarked-in-table": false,
+  "image-after-code": true,
+  "unknown-embed-after-code": true,
+  "image-after-rule": true,
+  "image-after-dataframe": true,
+  "image-after-quoted-code": false,
+  "image-in-code": true,
+};
 
 test("every written node has an id, the first paragraph's included", () => {
   for (const { name, spans } of inputs) {
-    if (UNMARKED.some((shape) => name === `shape/${shape}`)) continue;
+    if (Object.keys(UNMARKED).some((shape) => name === `shape/${shape}`)) continue;
     const result = observe(spans);
     if (!result.observed || result.observed.placed === false) continue;
     assert.ok(
@@ -224,7 +233,7 @@ test("every written node has an id, the first paragraph's included", () => {
 });
 
 test("every reader reads unmarked text, and marking it gives every node an id", () => {
-  for (const shape of UNMARKED) {
+  for (const [shape, topLevel] of Object.entries(UNMARKED)) {
     const { spans } = inputs.find((input) => input.name === `shape/${shape}`);
     const { doc, id } = pageWithSpans(spans);
     const tree = nativeRead(doc.blocks[id], doc.page_id);
@@ -232,7 +241,6 @@ test("every reader reads unmarked text, and marking it gives every node an id", 
     assert.equal(blockAddresses(A.spans(doc, textPath(id))).nodes.length, ids.length, shape);
     // A top-level paragraph of unmarked text has no id; unmarked text inside
     // a container is inside a node that has one.
-    const topLevel = ["empty", "unmarked-first", "unmarked-after-rule"].includes(shape);
     assert.equal(ids.filter((entry) => entry.id === null).length, topLevel ? 1 : 0, shape);
     const marked = A.change(A.clone(doc), (draft) => assert.ok(markUnmarkedText(draft, id)));
     assert.equal(decode(A.spans(marked, textPath(id))).unmarked.length, 0, shape);
@@ -244,6 +252,47 @@ test("every reader reads unmarked text, and marking it gives every node an id", 
     assert.equal(blockMarkdown(marked.blocks[id]), blockMarkdown(doc.blocks[id]), shape);
     // A second pass writes nothing.
     A.change(A.clone(marked), (draft) => assert.equal(markUnmarkedText(draft, id), false));
+  }
+});
+
+test("an inline node continues the node before it when that node can hold it, and opens unmarked text when it can't", () => {
+  // A code block holds text and line breaks; every other textblock holds
+  // every inline node; a leaf holds nothing.
+  for (const [shape, tree] of [
+    ["image-after-code", `Doc(CodeBlock("x"),Paragraph(PagesImage,"y"),Paragraph("z"))`],
+    ["image-in-code", `Doc(CodeBlock("x"),Paragraph(PagesImage,"y"),Paragraph("z"))`],
+    ["unknown-embed-after-code", `Doc(CodeBlock("x"),Paragraph(PagesUnknownEmbed,"y"))`],
+    ["break-after-code", `Doc(CodeBlock("x",LineBreak,"y"))`],
+    ["image-after-heading", `Doc(Heading("x",PagesImage,"y"))`],
+    ["image-after-rule", `Doc(Paragraph("x"),HorizontalRule,Paragraph(PagesImage,"y"))`],
+    ["image-after-dataframe", `Doc(Paragraph("x"),PagesDataframe,Paragraph(PagesImage,"y"))`],
+    ["image-in-cell-after-merge", `Doc(Table(TableRow(Cell("c",PagesImage,"d"))))`],
+    ["image-after-quoted-code", `Doc(Blockquote(CodeBlock("x"),Paragraph(PagesImage)))`],
+  ]) {
+    const { spans } = inputs.find((input) => input.name === `shape/${shape}`);
+    const { doc, id } = pageWithSpans(spans);
+    const decoded = decode(A.spans(doc, textPath(id)));
+    assert.equal(decoded.lossy, false, shape);
+    assert.equal(String(decoded.doc), tree, shape);
+    const native = nativeRead(doc.blocks[id], PAGE_ID).nodes;
+    assert.equal(
+      `Doc(${native.map(String).join(",")})`,
+      tree.replace(`"x",LineBreak,"y"`, `"x\\ny"`),
+      shape,
+    );
+    const markdown = blockMarkdown(doc.blocks[id], PAGE_ID);
+    // A tool write to the block reads it, marks it and edits it.
+    const match = shape === "image-in-cell-after-merge" ? "c" : "x";
+    const written = A.change(A.clone(doc), (draft) =>
+      applyPageOperation(draft, {
+        operation: "patch_page",
+        arguments: {
+          operations: [{ op: "replace_match", block_id: id, match_text: match, replacement: "w" }],
+        },
+      }),
+    );
+    assert.deepEqual(decode(A.spans(written, textPath(id))).unmarked, [], shape);
+    assert.equal(blockMarkdown(written.blocks[id], PAGE_ID), markdown.replace(match, "w"), shape);
   }
 });
 

@@ -107,6 +107,39 @@ export const SHAPES = {
   "unmarked-in-quote": [block("blockquote"), text("q"), P(), text("r")],
   "unmarked-in-list-item": [block("unordered-list-item"), text("x")],
   "unmarked-in-table": [P(), text("a"), block("table"), text("c")],
+  // An inline node a paragraph held, left after the node before it when a
+  // merge deletes the paragraph: it continues that node when it can hold the
+  // inline node, and opens unmarked text when it can't.
+  "image-after-code": [block("code-block"), text("x"), image(), text("y"), P(), text("z")],
+  "unknown-embed-after-code": [
+    block("code-block"),
+    text("x"),
+    block("future-mention", ["paragraph"], {}, true),
+    text("y"),
+  ],
+  "break-after-code": [
+    block("code-block"),
+    text("x"),
+    block("hard-break", ["paragraph"], {}, true),
+    text("y"),
+  ],
+  "image-after-heading": [block("heading", [], { level: 2 }), text("x"), image(), text("y")],
+  "image-after-rule": [P(), text("x"), block("horizontal-rule"), image(), text("y")],
+  "image-after-dataframe": [P(), text("x"), dataframe(ASSET), image(), text("y")],
+  "image-in-cell-after-merge": [
+    block("table"),
+    block("table-row", ["table"]),
+    block("table-cell", ["table", "table-row"]),
+    text("c"),
+    image(),
+    text("d"),
+  ],
+  "image-after-quoted-code": [
+    block("blockquote"),
+    block("code-block", ["blockquote"]),
+    text("x"),
+    image(["blockquote", "paragraph"]),
+  ],
   "editor-form": [
     P(),
     text("Intro"),

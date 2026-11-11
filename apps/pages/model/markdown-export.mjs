@@ -5,6 +5,7 @@ import {
   LineBreak,
   PagesUnknownBlock,
   PagesUnknownEmbed,
+  codeHolds,
   decode,
   fromMarks,
 } from "./wordgard-doc.mjs";
@@ -130,7 +131,14 @@ function draftTree(spans) {
         });
     parents = value.isEmbed ? next : [...next, value.type];
     if (!value.isEmbed) code = String(value.type) === "code-block";
-    if (code && value.isEmbed && !["hard-break", "image"].includes(String(value.type))) {
+    // An unknown embed stored in a code block reads as a notice there; one a
+    // code block can't hold opens a paragraph after it (decode).
+    if (
+      code &&
+      value.isEmbed &&
+      !["hard-break", "image"].includes(String(value.type)) &&
+      codeHolds(String(value.type), next)
+    ) {
       unsupported = true;
       readable.push({ type: "text", value: unknownNodeNotice(value.type), marks: {} });
     } else readable.push({ ...span, value: { ...value, parents: next.filter(isKnownBlock) } });

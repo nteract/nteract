@@ -549,8 +549,23 @@ function descriptor(type, attrs = {}) {
   }
 }
 
-/** The editor tree for a block's spans, the native/editor position maps, and
- * whether the tree had to leave out something it couldn't place (`lossy`). */
+/** Whether a code block holds an inline embed of `type` stored with
+ * `parents`. A code block holds text and line breaks; every other textblock
+ * holds every inline node. An embed of a type this build doesn't know that
+ * was stored in the code block (its parents end there) stays there, drawn as
+ * a notice. Anything else a merge leaves after a code block (an image, or an
+ * embed stored in a paragraph that was deleted) can't continue it. */
+export function codeHolds(type, parents) {
+  if (type === "hard-break") return true;
+  if (type === "image") return false;
+  return String(parents.at(-1) ?? "") === "code-block";
+}
+
+/** The editor tree for a block's spans, the native/editor position maps,
+ * whether the tree had to leave out something it couldn't place (`lossy`),
+ * the unmarked text it drew (`unmarked`) and the containers it drew with
+ * no marker of their own (`rebuilt`), each with the native offset where a
+ * writer's marker for it would go. */
 export function decode(spans) {
   const blocks = [],
     stack = [],
@@ -566,6 +581,9 @@ export function decode(spans) {
   };
   // Each unmarked run's start and the markers that would open it there.
   const unmarked = [];
+  // Each container drawn from a later marker's parents because its own
+  // marker is gone, and the marker a writer would have stored for it.
+  const rebuilt = [];
   const append = (node) => (stack.at(-1)?.children ?? blocks).push(node);
   // `name` is the stored marker type a frame stands for (null for a list,
   // which has no marker of its own).
@@ -590,11 +608,13 @@ export function decode(spans) {
     wgToAm[wg] = am;
     append(frame.tag.create(frame.children));
   };
-  // Text continues the node before it in its scope. Unmarked text is text no
-  // marker opens where its scope has no text-bearing node before it: at the
-  // start of a block or a container, or after a leaf (a rule, a dataframe).
-  // Only a merge of concurrent edits leaves it (a peer typing into a node
-  // another writer deletes); no writer does. It reads as a paragraph (in a
+  // Content continues the node before it in its scope when that node can
+  // hold it. Unmarked text is content no marker opens where its scope has
+  // no node before it that can hold it: at the start of a block or a
+  // container, after a leaf (a rule, a dataframe), or after a code block for
+  // an inline node the code block can't hold (codeHolds). Only a merge of
+  // concurrent edits leaves it (a peer typing into a node another writer
+  // deletes); no writer does. It reads as a paragraph (in a
   // table, a row and cell) with no marker, so it has no node id, and
   // `unmarked` records the markers a writer adds to mark it
   // (markUnmarkedText in model/richtext-page.mjs). What a node this build
@@ -653,6 +673,8 @@ export function decode(spans) {
       type = String(value.type),
       attrs = strings(value.attrs);
     if (value.isEmbed) {
+      // An embed a code block can't hold opens a paragraph after it.
+      if (inCode() && !codeHolds(type, value.parents)) close();
       ensureText();
       if (type === "hard-break") leaf(LineBreak);
       else if (type === "image") {
@@ -704,7 +726,18 @@ export function decode(spans) {
     )
       common++;
     while (stack.length > common) close();
-    for (let i = common; i < outer.length; i++) open(outer[i].tag, false, outer[i].name);
+    // A named container opened here has no marker of its own: a merge
+    // deleted it while a peer added a node inside it. Every reader draws it
+    // from the surviving node's parents, and no writer restores its marker.
+    for (let i = common; i < outer.length; i++) {
+      if (outer[i].name)
+        rebuilt.push({
+          at: am,
+          type: outer[i].name,
+          parents: stack.map((frame) => frame.name).filter(Boolean),
+        });
+      open(outer[i].tag, false, outer[i].name);
+    }
     if (unknown) {
       afterUnknown = true;
       if (stack.at(-1)?.tag.type.spec.inlineContent) {
@@ -723,7 +756,7 @@ export function decode(spans) {
   }
   while (stack.length) close();
   boundary();
-  return { doc: schema.doc(blocks), map: { wgToAm, amToWg }, lossy, unmarked };
+  return { doc: schema.doc(blocks), map: { wgToAm, amToWg }, lossy, unmarked, rebuilt };
 }
 
 export function encode(doc) {

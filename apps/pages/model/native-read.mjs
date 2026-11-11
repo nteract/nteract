@@ -33,6 +33,7 @@ import {
   PagesLink,
   PagesHighlight,
   PagesForeignMarks,
+  codeHolds,
 } from "./wordgard-doc.mjs";
 import { treeMarkdown } from "./markdown-serializer.mjs";
 import { codeTextUnmarked } from "./richtext-format.mjs";
@@ -235,10 +236,11 @@ export function nativeReadSpans(input, pageId) {
     );
   };
   const inline = () => !!stack.at(-1)?.tag?.type.spec.inlineContent;
-  // Text continues the node before it in its scope. Unmarked text (no
-  // text-bearing node before it in its scope; only a merge leaves it, see
-  // decode in model/wordgard-doc.mjs) reads as a paragraph with no marker, as
-  // does what a node this build doesn't know stores after its own marker.
+  // Content continues the node before it in its scope when that node can
+  // hold it (codeHolds). Unmarked text (nothing before it in its scope
+  // can hold it; only a merge leaves it, see decode in
+  // model/wordgard-doc.mjs) reads as a paragraph with no marker, as does
+  // what a node this build doesn't know stores after its own marker.
   const ensureText = () => {
     if (stack.at(-1)?.tag.type === Table.type) open({ tag: TableRow });
     if (stack.at(-1)?.tag.type === TableRow.type) open({ tag: Cell });
@@ -265,16 +267,14 @@ export function nativeReadSpans(input, pageId) {
       attrs = strings(value.attrs);
     const parents = (value.parents ?? []).map(String);
     if (value.isEmbed) {
+      // An embed a code block can't hold opens a paragraph after it.
+      if (code() && !codeHolds(type, parents)) close();
       ensureText();
       if (type === "hard-break") {
         if (code()) append(Leaf.text("\n", Mark.none));
         else append(LineBreak, at, attrs);
-      } else if (type === "image") {
-        // Images in code are not a readable legacy shape. Preserve refusal
-        // rather than dropping the asset while reporting a successful read.
-        if (code()) throw Error("Match cannot be null");
-        append(PagesImage.of(attrs), at, attrs);
-      } else if (code()) notice(type);
+      } else if (type === "image") append(PagesImage.of(attrs), at, attrs);
+      else if (code()) notice(type);
       else append(PagesUnknownEmbed.of({ type }), at, attrs);
       at++;
       continue;
