@@ -34,12 +34,23 @@ test("a document record loads as one chunk and keeps its heads", () => {
   assert.deepEqual(copy, { ...record, heads: [...record.heads].sort() });
 });
 
-test("a document record mixes with loose commits in one batch", () => {
+test("a document record mixes with the records for later changes in one batch", () => {
   const doc = sample();
   const next = A.change(A.clone(doc), (d) => (d.title = "Two"));
-  const loose = extractRecords(next).filter((r) => r.kind === "commit");
-  const loaded = applyRecords(A.init(), [documentRecord(doc), ...loose]);
+  // The new change is usually a loose commit. When its hash starts with a zero
+  // byte (about 1 in 256) it is a fragment head covering the whole history.
+  // Select by coverage so the batch carries the new change in either shape.
+  const later = extractRecords(
+    next,
+    (m) => !A.hasHeads(doc, [m.kind === "commit" ? m.id : m.head]),
+  );
+  assert.deepEqual(
+    later.map((r) => (r.kind === "commit" ? r.id : r.head)),
+    A.getHeads(next),
+  );
+  const loaded = applyRecords(A.init(), [documentRecord(doc), ...later]);
   assert.equal(loaded.title, "Two");
+  assert.deepEqual(A.getHeads(loaded), A.getHeads(next));
 });
 
 test("a document record whose heads aren't in its history is refused", () => {
