@@ -381,7 +381,6 @@ const operations = new Set([
   "import_page_image",
   ASSET_UPLOAD_OPERATION,
   "edit_page",
-  "patch_page",
   "manage_page_comment",
   "reply_page_comment",
   "delete_page",
@@ -673,6 +672,17 @@ function validateCreateInput(args) {
   if (unsupported) throw unsupportedMarkdownError(unsupported);
 }
 
+/** Resolve one flat sibling selector into the catalog's position value. */
+function requestedPosition(args) {
+  const named = ["position", "before", "after"].filter((key) => args[key] !== undefined);
+  const key = named[0];
+  const position =
+    key === undefined ? "last" : key === "position" ? args.position : { [key]: args[key] };
+  if (named.length > 1 || !validPosition(position))
+    throw new HttpError(400, "Give at most one of position, before or after", "invalid_position");
+  return position;
+}
+
 /**
  * move_page's arguments as the Catalog runs them: `{ pageId, parentId,
  * spaceId, position }`. Every refusal here is deterministic input, so it
@@ -709,13 +719,7 @@ function validateMoveInput(args) {
     : args.space_id === null
       ? null
       : requireSpaceIdArgument(args.space_id);
-  const position = args.position === undefined ? "last" : args.position;
-  if (!validPosition(position))
-    throw new HttpError(
-      400,
-      'position is "first", "last", {"before": page_id} or {"after": page_id}',
-      "invalid_position",
-    );
+  const position = requestedPosition(args);
   if (typeof args.retry_token !== "string")
     throw new HttpError(
       400,
@@ -6124,8 +6128,7 @@ export class Page {
               origin: pagesPublicOrigin(this.env),
             }),
           );
-        if (!["edit_page", "patch_page"].includes(body.operation))
-          throw new HttpError(400, "Unknown document operation");
+        if (body.operation !== "edit_page") throw new HttpError(400, "Unknown document operation");
         const ops = Array.isArray(body.arguments?.operations) ? body.arguments.operations : [];
         // Ops that create a node naming a stored asset (model/node-registry.mjs).
         const inserts = ops.filter(
@@ -6172,7 +6175,7 @@ export class Page {
                 identity: publicIdentity(identity),
                 trace,
               });
-              if (["edit_page", "patch_page"].includes(body.operation)) {
+              if (body.operation === "edit_page") {
                 try {
                   caret = writeTargets(doc, trace);
                 } catch (error) {

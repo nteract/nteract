@@ -261,7 +261,7 @@ test("1,500 tokenless comment writes leave the Page writable; the token lane kee
   assert.ok(retained.has("host/operation/comment-0500"));
   assert.equal(Object.keys(f.commentsDoc().threads).length, 501);
   // A tokenless edit still lands.
-  const edit = await f.tool("owner", "patch_page", {
+  const edit = await f.tool("owner", "edit_page", {
     idempotency_key: "edit-after-the-discussion",
     base_heads: f.heads(),
     operations: [
@@ -271,7 +271,7 @@ test("1,500 tokenless comment writes leave the Page writable; the token lane kee
   assert.equal(edit.status, 200, JSON.stringify(edit.body));
   assert.deepEqual(f.heads(), edit.body.heads);
   // Its receipt replays exactly and guards its payload.
-  const again = await f.tool("owner", "patch_page", {
+  const again = await f.tool("owner", "edit_page", {
     idempotency_key: "edit-after-the-discussion",
     base_heads: edit.body.heads,
     operations: [

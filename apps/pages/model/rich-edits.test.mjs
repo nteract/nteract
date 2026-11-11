@@ -17,7 +17,7 @@ function fixture(markdown) {
 function apply(doc, operations) {
   let result;
   const after = A.change(A.clone(doc), (draft) => {
-    result = applyPageOperation(draft, { operation: "patch_page", arguments: { operations } });
+    result = applyPageOperation(draft, { operation: "edit_page", arguments: { operations } });
   });
   return { after, result };
 }
@@ -33,6 +33,20 @@ const markers = (doc, id) =>
   A.spans(doc, textPath(id))
     .filter((span) => span.type === "block")
     .map((span) => [String(span.value.type), { ...span.value.attrs }]);
+
+test("edit_page rejects fields from another operation", () => {
+  const { doc } = fixture("Hello");
+  refuses(
+    doc,
+    [{ op: "set_title", title: "New", markdown: "wrong field" }],
+    /set_title does not take markdown/,
+  );
+  refuses(
+    doc,
+    [{ op: "insert_markdown", markdown: "New", match_text: "Hello" }],
+    /insert_markdown does not take match_text/,
+  );
+});
 
 test("format_match occurrence picks one match in document order", () => {
   const { doc, id } = fixture("Ship it. Ship it now. Ship it later.");

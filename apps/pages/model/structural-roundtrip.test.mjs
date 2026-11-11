@@ -175,7 +175,7 @@ test("targeted edits preserve unrelated node ids and comment anchors across gene
         const after = keep(
           A.change(A.clone(doc), (draft) =>
             applyPageOperation(draft, {
-              operation: "patch_page",
+              operation: "edit_page",
               arguments: {
                 operations: [
                   {

@@ -286,7 +286,7 @@ export async function runOAuthSmoke({ origin, output, restart, ownerKey } = {}) 
     const read = await call(client, "read_page", { page_id: pageId });
     return call(
       client,
-      "patch_page",
+      "edit_page",
       {
         page_id: pageId,
         base_heads: read.heads,
@@ -376,7 +376,7 @@ export async function runOAuthSmoke({ origin, output, restart, ownerKey } = {}) 
     ownerClient = await sdkConnection(ownerGrant);
     const inventory = await ownerClient.listTools();
     assert.ok(inventory.tools.some((tool) => tool.name === "read_page"));
-    assert.ok(inventory.tools.some((tool) => tool.name === "patch_page"));
+    assert.ok(inventory.tools.some((tool) => tool.name === "edit_page"));
     const catalog = await call(ownerClient, "list_pages");
     const created = await call(ownerClient, "create_page", {
       title: "Local OAuth garden",

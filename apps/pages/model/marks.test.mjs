@@ -34,7 +34,7 @@ function fixture(markdown) {
 function apply(doc, operations) {
   let result;
   const after = A.change(doc, (draft) => {
-    result = applyPageOperation(draft, { operation: "patch_page", arguments: { operations } });
+    result = applyPageOperation(draft, { operation: "edit_page", arguments: { operations } });
   });
   return { after, result };
 }

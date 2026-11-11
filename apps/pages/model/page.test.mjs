@@ -51,7 +51,7 @@ test("targeted text edits preserve unknown document fields and rich text identit
   const object = A.getObjectId(doc.blocks[id], "richText");
   doc = A.change(doc, (d) =>
     applyPageOperation(d, {
-      operation: "patch_page",
+      operation: "edit_page",
       arguments: {
         operations: [
           { op: "replace_match", block_id: id, match_text: "people", replacement: "collaborators" },
@@ -71,7 +71,7 @@ test("ambiguous literal patch rejects atomically with no partially applied sibli
     () =>
       A.change(doc, (d) =>
         applyPageOperation(d, {
-          operation: "patch_page",
+          operation: "edit_page",
           arguments: {
             operations: [
               { op: "set_title", title: "Changed" },
@@ -108,7 +108,7 @@ test("anchored Unicode comments follow concurrent text and detach after the sele
   assert.equal(projectComments(doc, comments)[0].selectionContext.text, "🌊 passage");
   doc = A.change(doc, (d) =>
     applyPageOperation(d, {
-      operation: "patch_page",
+      operation: "edit_page",
       arguments: {
         operations: [
           { op: "replace_match", block_id: id, match_text: "🌊 passage", replacement: "" },
@@ -147,7 +147,7 @@ function leadingEmptyParagraph() {
 }
 const edit = (doc, operations) =>
   A.change(A.clone(doc), (d) =>
-    applyPageOperation(d, { operation: "patch_page", arguments: { operations } }),
+    applyPageOperation(d, { operation: "edit_page", arguments: { operations } }),
   );
 test("Markdown export omits the blank line Markdown can't turn back into an empty paragraph", () => {
   const { doc, id } = leadingEmptyParagraph();

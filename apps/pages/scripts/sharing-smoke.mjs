@@ -69,7 +69,7 @@ async function agentEdit(name, before, after, allowed = true) {
   const read = (await tool(owner, "read_page", { page_id: pageId })).body;
   return mcp(
     name,
-    "patch_page",
+    "edit_page",
     {
       page_id: pageId,
       base_heads: read.heads,

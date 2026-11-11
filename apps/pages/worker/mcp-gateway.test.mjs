@@ -168,7 +168,7 @@ test("a tool request whose host never answers times out with advice that fits th
   for (const call of [http, mcp]) {
     // A tokenless write's receipt is kept best-effort, so a blind retry after
     // the host finished the work could apply it twice.
-    const plain = await call("patch_page", tokenless);
+    const plain = await call("edit_page", tokenless);
     assert.equal(plain.code, "request_timeout");
     assert.equal(plain.retryable, false);
     assert.match(plain.error, /may still have completed. Read back and reconcile before retrying/);
@@ -182,7 +182,7 @@ test("a tool request whose host never answers times out with advice that fits th
     });
     assert.equal(comment.retryable, false);
     // A tokened write replays its receipt; a read has nothing to repeat.
-    const keyed = await call("patch_page", tokened);
+    const keyed = await call("edit_page", tokened);
     assert.equal(keyed.code, "request_timeout");
     assert.equal(keyed.retryable, true);
     assert.match(keyed.error, /same idempotency_key and retry_token/);
@@ -489,7 +489,7 @@ test("a transient failure is retryable only for a request that is safe to repeat
     ["create_page", { title: "New" }, false, /Read back and reconcile/],
     // Page operations
     ["read_page", { page_id: pageId }, true, /receipt replays/],
-    ["patch_page", { page_id: pageId, operations: [] }, false, /Read back and reconcile/],
+    ["edit_page", { page_id: pageId, operations: [] }, false, /Read back and reconcile/],
     ["report_page_progress", { page_id: pageId, message: "x" }, false, /do not loop/],
   ];
   for (const [operation, args, retryable, advice] of cases) {

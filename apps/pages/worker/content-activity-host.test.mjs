@@ -128,7 +128,7 @@ test("a tool edit on a real Page host records a time and reports it on its own r
   assert.equal(h.contentReports().length, 0);
   const read = await h.tool(page, "read_page", { comments: "none" });
   const before = new Date().toISOString();
-  const edit = await h.tool(page, "patch_page", {
+  const edit = await h.tool(page, "edit_page", {
     base_heads: read.body.heads,
     idempotency_key: "content-activity-host-patch",
     operations: [

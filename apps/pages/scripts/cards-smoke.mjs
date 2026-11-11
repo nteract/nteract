@@ -112,7 +112,7 @@ const PAGES = [
 async function edit(page, pageId, [from, to]) {
   const read = await tool(page, "read_page", { page_id: pageId, comments: "none" });
   assert.equal(read.status, 200, JSON.stringify(read.body));
-  const patched = await tool(page, "patch_page", {
+  const patched = await tool(page, "edit_page", {
     page_id: pageId,
     base_heads: read.body.heads,
     retry_token: read.body.retry_token,

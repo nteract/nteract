@@ -22,7 +22,7 @@ function replace(doc, id, input) {
   let result;
   const after = A.change(doc, (draft) => {
     result = applyPageOperation(draft, {
-      operation: "patch_page",
+      operation: "edit_page",
       arguments: { operations: [{ op: "replace_match", block_id: id, ...input }] },
     });
   });
@@ -231,7 +231,7 @@ test("a match_text that cuts a character is refused, for replace_match and forma
       () =>
         A.change(doc, (draft) =>
           applyPageOperation(draft, {
-            operation: "patch_page",
+            operation: "edit_page",
             arguments: {
               operations: [{ op: "format_match", block_id: id, match_text, add: { strong: true } }],
             },
@@ -353,7 +353,7 @@ test("zero, ambiguous, overlapping and contextual misses reject the whole batch"
       () =>
         A.change(doc, (draft) =>
           applyPageOperation(draft, {
-            operation: "patch_page",
+            operation: "edit_page",
             arguments: {
               operations: [
                 { op: "set_title", title: "Must roll back" },

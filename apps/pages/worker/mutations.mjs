@@ -1,7 +1,7 @@
 import * as A from "@automerge/automerge";
 import { assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
 import { openingTitleWarning } from "../model/title-warning.mjs";
-import { guardPassageEdits } from "../model/passage-edits.mjs";
+import { guardPassageEdits, PASSAGE_OPS } from "../model/passage-edits.mjs";
 import { requireSupportedSchema } from "../model/schema-features.mjs";
 import {
   INTERNAL_PREFIX,
@@ -169,10 +169,15 @@ export async function documentMutation({
         status: 400,
         code: "invalid_edit_selector",
       });
-    if (targetScope && operation !== "patch_page")
+    if (
+      targetScope &&
+      (!Array.isArray(args.operations) ||
+        !args.operations.length ||
+        !args.operations.every((item) => PASSAGE_OPS.has(item?.op)))
+    )
       throw Object.assign(
         Error(
-          "Target conflict scope is available only for patch_page replace_match, format_match and set_node batches",
+          "Target conflict scope is available only for replace_match, format_match and set_node batches",
         ),
         {
           status: 400,
@@ -219,9 +224,10 @@ export async function documentMutation({
       // Capture them before the journal budget/barrier, never from the live handle.
       // Per-edit warnings (a replace_match that dropped partial marks) also
       // appear here, naming their edit, so a caller reads one list.
-      const warnings = ["edit_page", "patch_page"].includes(operation)
-        ? [openingTitleWarning(after), ...editWarnings(result)].filter(Boolean)
-        : [];
+      const warnings =
+        operation === "edit_page"
+          ? [openingTitleWarning(after), ...editWarnings(result)].filter(Boolean)
+          : [];
       entry = {
         fingerprint: digest,
         pending: true,

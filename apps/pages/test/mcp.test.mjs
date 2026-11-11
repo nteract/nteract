@@ -18,6 +18,43 @@ const request = (method, params = {}, id = 1) =>
     },
     body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
   });
+test("patch_page is an unknown tool", async () => {
+  const response = await handleMcp(
+    request("tools/call", { name: "patch_page", arguments: {} }),
+    async () => assert.fail("unknown tool must not run"),
+  );
+  const result = (await response.json()).result;
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /unknown/i);
+});
+
+test("tool schemas use only the JSON Schema subset clients forward as written", () => {
+  const refused = ["oneOf", "anyOf", "allOf", "not", "const", "$ref", "$defs", "definitions"];
+  const visit = (schema, path) => {
+    for (const keyword of refused)
+      assert.equal(Object.hasOwn(schema, keyword), false, `${path} uses ${keyword}`);
+    const types = [schema.type].flat();
+    assert.equal(typeof types[0], "string", `${path} states no type`);
+    assert.ok(
+      types[0] !== "null" && (types.length === 1 || (types.length === 2 && types[1] === "null")),
+      `${path} type`,
+    );
+    for (const [name, property] of Object.entries(schema.properties ?? {}))
+      visit(property, `${path}.${name}`);
+    if (schema.items) visit(schema.items, `${path}[]`);
+    if (typeof schema.additionalProperties === "object")
+      visit(schema.additionalProperties, `${path}.additionalProperties`);
+  };
+  for (const tool of tools) visit(tool.inputSchema, tool.name);
+});
+
+test("tool catalog has a deliberate size ceiling", () => {
+  assert.ok(
+    JSON.stringify(tools).length <= 38000,
+    "Tool catalog grew; raise the ceiling on purpose when a tool grows",
+  );
+});
+
 test("MCP forwards authorized operations and preserves stale-write failure", async () => {
   const calls = [];
   const response = await handleMcp(
@@ -73,7 +110,7 @@ test("MCP gives every refusal a stable code in text and structured content", asy
     current_heads: ["c".repeat(64)],
   };
   assert.deepEqual(
-    await call("patch_page", async () => Response.json(conflict, { status: 409 })),
+    await call("edit_page", async () => Response.json(conflict, { status: 409 })),
     conflict,
   );
   const selector = {
@@ -81,7 +118,7 @@ test("MCP gives every refusal a stable code in text and structured content", asy
     code: "invalid_edit_selector",
   };
   assert.deepEqual(
-    await call("patch_page", async () => Response.json(selector, { status: 400 })),
+    await call("edit_page", async () => Response.json(selector, { status: 400 })),
     selector,
   );
   // An uncoded refusal is named by its status, which MCP results don't carry.
@@ -183,7 +220,7 @@ test("MCP tools declare every annotation hint, and each tool's hints are intende
     get_project: read,
     create_page: write,
     edit_page: write,
-    patch_page: write,
+    edit_page: write,
     manage_page_comment: write,
     create_project: write,
     update_project: write,
@@ -231,7 +268,7 @@ test("every Page tool takes project_id in place of page_id for Project content",
     "import_page_image",
     "create_page_asset_upload",
     "edit_page",
-    "patch_page",
+    "edit_page",
     "manage_page_comment",
   ];
   for (const name of addressed) {
@@ -243,7 +280,7 @@ test("every Page tool takes project_id in place of page_id for Project content",
     // Exactly one of the two: neither is in required; oneOf says which.
     assert.ok(!inputSchema.required.includes("page_id"), name);
     assert.ok(!inputSchema.required.includes("project_id"), name);
-    assert.deepEqual(inputSchema.oneOf, [{ required: ["page_id"] }, { required: ["project_id"] }]);
+    assert.equal(inputSchema.oneOf, undefined);
   }
   // Catalog operations keep page_id required: the content document is not in the tree.
   for (const name of ["delete_page", "restore_page", "move_page", "purge_page"]) {
@@ -334,7 +371,7 @@ test("sharing tools preserve access guards and require separate OAuth consent", 
   }
   assert.deepEqual(
     tools.find((tool) => tool.name === "manage_project_access").inputSchema.properties.action,
-    { enum: ["invite", "set_role", "revoke_invite"] },
+    { type: "string", enum: ["invite", "set_role", "revoke_invite"] },
   );
 });
 
@@ -389,10 +426,9 @@ test("Project email invitations forward exact email without requiring principal 
 
 test("MCP advertises typed image insertion and echoes its exact receipt as structured content", async () => {
   const descriptor = tools.find((tool) => tool.name === "edit_page");
-  const schema = descriptor.inputSchema.properties.operations.items.oneOf.find(
-    (item) => item.properties.op.const === "insert_image",
-  );
-  assert.deepEqual(schema.required, ["op", "asset_id", "alt"]);
+  const schema = descriptor.inputSchema.properties.operations.items;
+  assert.ok(schema.properties.op.enum.includes("insert_image"));
+  assert.deepEqual(schema.required, ["op"]);
   assert.equal(schema.additionalProperties, false);
   const asset_id = "a".repeat(64);
   const receipt = {
@@ -493,11 +529,9 @@ test("MCP exposes net changes and node-scoped target edits without changing exac
   const changeTool = tools.find((tool) => tool.name === "read_page_changes");
   assert.deepEqual(changeTool.securitySchemes[0].scopes, ["pages:read"]);
   assert.equal(changeTool.annotations.readOnlyHint, true);
-  const patchTool = tools.find((tool) => tool.name === "patch_page");
-  assert.deepEqual(patchTool.inputSchema.properties.conflict_scope.enum, ["page", "target"]);
-  const match = patchTool.inputSchema.properties.operations.items.oneOf.find(
-    (op) => op.properties.op.const === "replace_match",
-  );
+  const editTool = tools.find((tool) => tool.name === "edit_page");
+  assert.deepEqual(editTool.inputSchema.properties.conflict_scope.enum, ["page", "target"]);
+  const match = editTool.inputSchema.properties.operations.items;
   assert.equal(match.properties.node_index.minimum, 0);
   const args = {
     page_id: pageId,
@@ -533,7 +567,7 @@ test("MCP exposes net changes and node-scoped target edits without changing exac
   };
   const failed = await handleMcp(
     request("tools/call", {
-      name: "patch_page",
+      name: "edit_page",
       arguments: { page_id: pageId, conflict_scope: "target" },
     }),
     async () => Response.json(conflict, { status: 409 }),
@@ -575,7 +609,7 @@ test("MCP initialization guides title authoring and successful receipts preserve
       },
     ],
   };
-  for (const name of ["create_page", "edit_page", "patch_page"]) {
+  for (const name of ["create_page", "edit_page"]) {
     const response = await handleMcp(request("tools/call", { name, arguments: {} }), async () =>
       Response.json(receipt),
     );
@@ -762,30 +796,16 @@ test("MCP reads canonical and legacy links while rejecting ambiguous resource UR
 });
 
 test("MCP advertises visible-text replacement separately from Markdown replacement", async () => {
-  const patch = tools.find((tool) => tool.name === "patch_page");
-  const variants = patch.inputSchema.properties.operations.items.oneOf;
-  assert.deepEqual(
-    variants.map((operation) => operation.properties.op.const),
-    ["replace_match", "format_match", "set_node"],
-  );
-  assert.deepEqual(variants[1].required, ["op", "block_id", "match_text"]);
-  assert.deepEqual(variants[1].properties.remove.items.enum, [
-    "link",
-    "em",
-    "strong",
-    "strike",
-    "highlight",
-    "code",
-  ]);
-  assert.equal(variants[1].properties.add.properties.strong.const, true);
-  assert.equal(variants[1].properties.add.properties.strike.const, true);
-  // replacement or replacement_markdown: exactly one, checked when the edit runs.
-  assert.deepEqual(variants[0].required, ["op", "block_id", "match_text"]);
-  assert.equal(variants[0].properties.replacement.type, "string");
-  assert.equal(variants[0].properties.replacement_markdown.type, "string");
-  assert.equal(variants[0].properties.context_before.type, "string");
-  assert.equal(variants[0].properties.context_after.type, "string");
-  assert.match(patch.description, /without streamed keystrokes/);
+  const edit = tools.find((tool) => tool.name === "edit_page");
+  const operation = edit.inputSchema.properties.operations.items;
+  assert.ok(operation.properties.op.enum.includes("replace_match"));
+  assert.deepEqual(operation.required, ["op"]);
+  assert.ok(operation.properties.remove.items.enum.includes("strong"));
+  assert.equal(operation.properties.add.properties.strong.type, "boolean");
+  assert.equal(operation.properties.replacement.type, "string");
+  assert.equal(operation.properties.replacement_markdown.type, "string");
+  assert.equal(operation.properties.context_before.type, "string");
+  assert.equal(operation.properties.context_after.type, "string");
   const args = {
     page_id: pageId,
     base_heads: ["a".repeat(64)],
@@ -801,9 +821,9 @@ test("MCP advertises visible-text replacement separately from Markdown replaceme
     ],
   };
   const response = await handleMcp(
-    request("tools/call", { name: "patch_page", arguments: args }),
+    request("tools/call", { name: "edit_page", arguments: args }),
     async (operation, received) => {
-      assert.equal(operation, "patch_page");
+      assert.equal(operation, "edit_page");
       assert.deepEqual(received, args);
       return Response.json({
         page_id: pageId,
@@ -900,10 +920,7 @@ test("MCP image import advertises ChatGPT's complete file descriptor and keeps t
   assert.deepEqual(fileSchema.required, ["download_url", "file_id"]);
   assert.equal(fileSchema.additionalProperties, false);
   assert.deepEqual(descriptor.inputSchema.required, ["file"]);
-  assert.deepEqual(descriptor.inputSchema.oneOf, [
-    { required: ["page_id"] },
-    { required: ["project_id"] },
-  ]);
+  assert.equal(descriptor.inputSchema.oneOf, undefined);
   assert.deepEqual(descriptor.securitySchemes[0].scopes, ["pages:read", "pages:write"]);
   assert.equal(descriptor.annotations.destructiveHint, false);
   assert.equal(descriptor.annotations.openWorldHint, true);
@@ -977,11 +994,8 @@ test("MCP lists create_page_asset_upload for any client with write scope, and po
     importer.description,
     /other clients with a local file use create_page_asset_upload/,
   );
-  const insertImage = all
-    .find((tool) => tool.name === "edit_page")
-    .inputSchema.properties.operations.items.oneOf.find(
-      (item) => item.properties.op.const === "insert_image",
-    );
+  const insertImage = all.find((tool) => tool.name === "edit_page").inputSchema.properties
+    .operations.items;
   assert.match(insertImage.properties.asset_id.description, /create_page_asset_upload/);
   const initialization = await handleMcp(
     request("initialize", {

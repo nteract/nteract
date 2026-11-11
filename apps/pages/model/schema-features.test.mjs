@@ -69,7 +69,7 @@ function edit(doc, operations) {
 }
 function patch(doc, operations) {
   return A.change(doc, (draft) =>
-    applyPageOperation(draft, { operation: "patch_page", arguments: { operations } }),
+    applyPageOperation(draft, { operation: "edit_page", arguments: { operations } }),
   );
 }
 const stamped = (features) =>
@@ -121,7 +121,7 @@ test("strikethrough and horizontal rules stamp their features in the same change
       "format_match",
       (draft) =>
         applyPageOperation(draft, {
-          operation: "patch_page",
+          operation: "edit_page",
           arguments: {
             operations: [
               {
@@ -305,7 +305,7 @@ test("a writer stamps a feature in the same change as the content needing it", (
       () => page(),
       (draft) =>
         applyPageOperation(draft, {
-          operation: "patch_page",
+          operation: "edit_page",
           arguments: {
             operations: [
               {

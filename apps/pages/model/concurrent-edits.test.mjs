@@ -115,7 +115,7 @@ function resolve(doc, id, { kind, pick, variant }) {
   if (kind === "replace_match") op.replacement = REPLACEMENTS[variant % REPLACEMENTS.length];
   if (kind === "format_match") Object.assign(op, FORMATS[variant % FORMATS.length]);
   if (kind === "set_node") Object.assign(op, NODES[variant % NODES.length]);
-  return { operation: "patch_page", op };
+  return { operation: "edit_page", op };
 }
 
 // Refusals an agent can get for a valid target: a retype the node holding
@@ -236,7 +236,7 @@ test("a semantically unchanged read-back write commutes with a peer's concurrent
         const segment = segments[pick % segments.length];
         doc = A.change(doc, (draft) =>
           applyPageOperation(draft, {
-            operation: "patch_page",
+            operation: "edit_page",
             arguments: {
               operations: [
                 {
@@ -268,7 +268,7 @@ test("a semantically unchanged read-back write commutes with a peer's concurrent
         const unmark = { op: "format_match", block_id: id, match_text: word, occurrence: at };
         const peer = A.change(A.clone(doc, { actor: ACTORS[1] }), (draft) =>
           applyPageOperation(draft, {
-            operation: "patch_page",
+            operation: "edit_page",
             arguments: { operations: [{ ...unmark, remove: ["strong"] }] },
           }),
         );
@@ -329,7 +329,7 @@ test("unchanged multi-span formatting writes no ops and preserves a peer's unmar
     const peer = keep(
       A.change(A.clone(doc, { actor: ACTORS[1] }), (draft) =>
         applyPageOperation(draft, {
-          operation: "patch_page",
+          operation: "edit_page",
           arguments: {
             operations: [
               { op: "format_match", block_id: id, match_text: "ab", remove: ["strong"] },

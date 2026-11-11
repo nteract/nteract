@@ -186,6 +186,38 @@ export function insertedAssets(operations, pageId) {
   return assets;
 }
 const PASSAGE_OPS = new Set(["replace_match", "format_match", "set_node"]);
+// The fields each operation takes, for the operations with no validator of
+// their own. The tool schema is one flat object for every operation, so it
+// can't refuse a field that belongs to another one; this does. The image and
+// node operations check their fields in model/image-edits.mjs and
+// model/node-registry.mjs. set_node lists the shorthand names it refuses so
+// model/set-node.mjs can answer with the attribute to use.
+const LOCATOR = [
+  "block_id",
+  "match_text",
+  "context_before",
+  "context_after",
+  "occurrence",
+  "node_index",
+];
+const EDIT_FIELDS = new Map([
+  ["set_title", ["title"]],
+  ["replace_block_markdown", ["block_id", "markdown"]],
+  ["insert_markdown", ["markdown", "after_block_id"]],
+  ["move_block", ["block_id", "after_block_id"]],
+  ["delete_block", ["block_id"]],
+  ["delete_node", ["block_id", "node_id"]],
+  ["replace_match", [...LOCATOR, "replacement", "replacement_markdown"]],
+  ["format_match", [...LOCATOR, "all", "add", "remove"]],
+  ["set_node", [...LOCATOR, "type", "attrs", "checked", "language", "heading_level", "align"]],
+]);
+function validateEditFields(op) {
+  const fields = EDIT_FIELDS.get(op.op);
+  if (!fields) return;
+  // `id` is the block address a browser-built operation carries.
+  const unexpected = Object.keys(op).find((field) => !["op", "id", ...fields].includes(field));
+  if (unexpected) throw Error(`${op.op} does not take ${unexpected}`);
+}
 // `trace` records where each operation landed, for agent presence. It never
 // enters the result, so stored receipts and retries are unchanged.
 function applyEdit(doc, op, trace, context) {
@@ -272,7 +304,7 @@ function applyEdit(doc, op, trace, context) {
     if (node)
       throw Object.assign(
         Error(
-          `This block holds ${quotableNodeType(node) ? `${/^[aeiou]/.test(node) ? "an" : "a"} ${node}` : "a node this version of Pages doesn't know"}, which has no Markdown form, so a Markdown rewrite would lose it. Remove it with delete_node, or with delete_block when read_page reports no node_id for it. patch_page still edits text in the nodes this version reads; it answers newer_content for text in the node itself.`,
+          `This block holds ${quotableNodeType(node) ? `${/^[aeiou]/.test(node) ? "an" : "a"} ${node}` : "a node this version of Pages doesn't know"}, which has no Markdown form, so a Markdown rewrite would lose it. Remove it with delete_node, or with delete_block when read_page reports no node_id for it. edit_page still edits text in the nodes this version reads; it answers newer_content for text in the node itself.`,
         ),
         { code: "markdownless_node" },
       );
@@ -324,13 +356,13 @@ export function applyPageOperation(doc, options) {
 }
 function applyOperation(doc, { operation, arguments: args = {}, trace }) {
   // Comments are written to the comments document, never the Page.
-  if (operation !== "edit_page" && operation !== "patch_page")
-    throw Error("Unsupported Page operation");
+  if (operation !== "edit_page") throw Error("Unsupported Page operation");
   if (!Array.isArray(args.operations) || args.operations.length > 100)
     throw Error("Provide up to 100 operations");
   const operations = args.operations.map((op) => ({ ...op, op: op.op ?? op.type }));
   const imageTargets = new Set();
   for (const op of operations) {
+    validateEditFields(op);
     if (op.op !== "set_image") continue;
     validateImageChange(op);
     const target = JSON.stringify([op.block_id, op.image_id]);

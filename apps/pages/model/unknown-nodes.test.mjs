@@ -42,7 +42,7 @@ const video = (source = "Before\n\nAfter", parents = ["paragraph"]) =>
   );
 const apply = (doc, operations) =>
   A.change(A.clone(doc), (draft) =>
-    applyPageOperation(draft, { operation: "patch_page", arguments: { operations } }),
+    applyPageOperation(draft, { operation: "edit_page", arguments: { operations } }),
   );
 
 test("a read shows an unknown block or embed as a notice instead of hiding it", () => {

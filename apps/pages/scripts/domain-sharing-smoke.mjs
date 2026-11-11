@@ -88,7 +88,7 @@ async function denyMcpWrite(token) {
   const read = await mcp(token, "read_page", { page_id: pageId });
   await mcp(
     token,
-    "patch_page",
+    "edit_page",
     {
       page_id: pageId,
       base_heads: read.heads,

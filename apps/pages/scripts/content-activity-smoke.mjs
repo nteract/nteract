@@ -105,7 +105,7 @@ async function create(title) {
 
 async function patch(pageId, from, to) {
   const read = await mcp("read_page", { page_id: pageId, comments: "none" });
-  await mcp("patch_page", {
+  await mcp("edit_page", {
     page_id: pageId,
     base_heads: read.heads,
     retry_token: read.retry_token,
@@ -121,13 +121,13 @@ async function patch(pageId, from, to) {
 async function agentEdits(pageId) {
   const before = new Date().toISOString();
   await patch(pageId, "Friday", "Monday");
-  const first = await contentTime("patch_page", pageId, before);
-  complete("patch_page records a content time list_pages returns");
+  const first = await contentTime("edit_page", pageId, before);
+  complete("edit_page records a content time list_pages returns");
   const again = new Date().toISOString();
   await patch(pageId, "Monday", "Tuesday");
   assert.equal((await listed(pageId)).content_updated_at, first, "the second edit waits");
-  const trailing = await contentTime("a second patch_page", pageId, again, TRAILING_MS);
-  complete("a second patch_page in the window flushes at the window's end");
+  const trailing = await contentTime("a second edit_page", pageId, again, TRAILING_MS);
+  complete("a second edit_page in the window flushes at the window's end");
   return trailing;
 }
 

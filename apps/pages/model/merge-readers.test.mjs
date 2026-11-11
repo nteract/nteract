@@ -176,7 +176,7 @@ function edit(doc, id, { kind, pick, variant }) {
         kind === "set-node"
           ? { op: "set_node", match_text, type: "heading", attrs: { level: 1 + (variant % 3) } }
           : { op: "format_match", match_text, add: { em: true } };
-      return tool(doc, id, "patch_page", op);
+      return tool(doc, id, "edit_page", op);
     }
     case "image":
       return rewrite(doc, id, (content) => {
@@ -605,7 +605,7 @@ test("two writers that mark the same unmarked text at once leave an empty paragr
     assert.equal(decode(A.spans(unmarked, path)).unmarked.length, 1);
     // A host write and a second writer\'s repair, each from the same snapshot.
     const host = keep(
-      tool(A.clone(unmarked, { actor: ACTORS[0] }), id, "patch_page", {
+      tool(A.clone(unmarked, { actor: ACTORS[0] }), id, "edit_page", {
         op: "format_match",
         match_text: "Second",
         add: { strong: true },
@@ -693,7 +693,7 @@ test("parents no writer wrote read in every reader, and the next host write repa
     const word = ADJUSTED_NESTING_WORDS[name];
     const after = A.change(doc, (draft) =>
       applyPageOperation(draft, {
-        operation: "patch_page",
+        operation: "edit_page",
         arguments: {
           operations: [{ op: "replace_match", block_id: id, match_text: word, replacement: "z" }],
         },
@@ -968,7 +968,7 @@ test("set_node refuses a heading this build can't read, which replace_block_mark
   const setNode = (input) =>
     A.change(A.clone(doc), (draft) =>
       applyPageOperation(draft, {
-        operation: "patch_page",
+        operation: "edit_page",
         arguments: {
           operations: [{ op: "set_node", block_id: id, match_text: "Title", ...input }],
         },
@@ -1313,7 +1313,7 @@ test("host tools edit readable text in a block with newer content, and refuse th
       for (const input of refused) {
         const label = `${name}: ${input.op} ${input.match_text}`;
         assert.throws(
-          () => editPage(doc, [{ block_id: id, ...input }], "patch_page"),
+          () => editPage(doc, [{ block_id: id, ...input }], "edit_page"),
           (error) => error.code === "newer_content" && error.status === 409,
           label,
         );
@@ -1329,13 +1329,7 @@ test("host tools edit readable text in a block with newer content, and refuse th
             ? { op: "set_image", image_id: imageIds(doc, id)[0].image_id, alt: "y" }
             : input;
         const label = `${name}: ${op.op} ${op.match_text ?? ""}`;
-        const next = keep(
-          editPage(
-            doc,
-            [{ block_id: id, ...op }],
-            op.op === "set_image" ? "edit_page" : "patch_page",
-          ),
-        );
+        const next = keep(editPage(doc, [{ block_id: id, ...op }], "edit_page"));
         const after = A.spans(next, textPath(id));
         if (op.op === "replace_match" || op.op === "format_match") {
           // Text and marks only: every marker, the unmarked lead and the
@@ -1389,7 +1383,7 @@ test("set_node refuses a column alignment that would overwrite a cell this build
     const stored = storedJSON(A.spans(doc, textPath(id)));
     const op = { op: "set_node", block_id: id, match_text: "Head", attrs: { align: "left" } };
     assert.throws(
-      () => editPage(doc, [op], "patch_page"),
+      () => editPage(doc, [op], "edit_page"),
       (error) => error.code === "newer_content" && error.status === 409,
     );
     assert.throws(
@@ -1422,7 +1416,7 @@ test("format_match over a stored mark value this build can't read replaces it", 
         editPage(
           doc,
           [{ op: "format_match", block_id: id, match_text: "word", ...input }],
-          "patch_page",
+          "edit_page",
         ),
       );
       assert.deepEqual(A.spans(next, textPath(id))[1].marks ?? {}, written, label);

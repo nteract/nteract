@@ -285,7 +285,7 @@ test("an inline node continues the node before it when that node can hold it, an
     const match = shape === "image-in-cell-after-merge" ? "c" : "x";
     const written = A.change(A.clone(doc), (draft) =>
       applyPageOperation(draft, {
-        operation: "patch_page",
+        operation: "edit_page",
         arguments: {
           operations: [{ op: "replace_match", block_id: id, match_text: match, replacement: "w" }],
         },

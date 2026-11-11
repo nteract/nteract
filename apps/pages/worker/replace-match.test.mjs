@@ -44,11 +44,11 @@ function fixture() {
   const context = (input = args) => ({
     storage,
     handle,
-    operation: "patch_page",
+    operation: "edit_page",
     args: input,
     identity,
     apply: (draft) =>
-      applyPageOperation(draft, { operation: "patch_page", arguments: input, identity }),
+      applyPageOperation(draft, { operation: "edit_page", arguments: input, identity }),
     flush: async () => {},
   });
   return { values, storage, handle, identity, args, context };

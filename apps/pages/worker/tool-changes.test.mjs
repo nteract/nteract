@@ -14,7 +14,7 @@ function fixture(t) {
     id = Object.keys(doc.blocks)[0];
   doc = A.change(doc, (d) =>
     applyPageOperation(d, {
-      operation: "patch_page",
+      operation: "edit_page",
       arguments: {
         operations: [
           {

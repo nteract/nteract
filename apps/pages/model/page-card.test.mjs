@@ -206,7 +206,7 @@ test("an edit below the fold leaves the hash alone; one above it changes the has
   let below = edit(A.clone(doc), [{ op: "insert_markdown", markdown: "A closing note." }]);
   below = A.change(below, (draft) =>
     applyPageOperation(draft, {
-      operation: "patch_page",
+      operation: "edit_page",
       arguments: {
         operations: [
           {

@@ -325,8 +325,10 @@ export function pagesClient({
     if (!Array.isArray(tools))
       throw new TransferError(`tools/list on ${base}: unreadable response`);
     const editPage = tools.find((tool) => tool?.name === "edit_page");
-    const variants = editPage?.inputSchema?.properties?.operations?.items?.oneOf ?? [];
-    return variants.some((variant) => variant?.properties?.op?.const === operation);
+    const items = editPage?.inputSchema?.properties?.operations?.items;
+    return [items, ...(items?.oneOf ?? [])].some((schema) =>
+      (schema?.properties?.op?.enum ?? [schema?.properties?.op?.const]).includes(operation),
+    );
   }
   return {
     origin: base,

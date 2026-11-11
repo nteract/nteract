@@ -182,7 +182,7 @@ test("tools/list and ping answer without a credential; other methods still chall
   );
   assert.equal(listed.status, 200, await listed.clone().text());
   const names = (await listed.json()).result.tools.map((tool) => tool.name);
-  for (const name of ["list_pages", "read_page", "patch_page", "delete_page", "restore_page"])
+  for (const name of ["list_pages", "read_page", "edit_page", "delete_page", "restore_page"])
     assert.ok(names.includes(name), name);
   const pinged = await worker.fetch(anonymous({ jsonrpc: "2.0", id: 2, method: "ping" }), env);
   assert.equal(pinged.status, 200);
@@ -336,7 +336,7 @@ test("read-only OAuth scope rejects every mutating MCP tool before forwarding", 
   for (const name of [
     "create_page",
     "edit_page",
-    "patch_page",
+    "edit_page",
     "manage_page_comment",
     "delete_page",
     "restore_page",

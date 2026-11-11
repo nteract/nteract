@@ -29,7 +29,7 @@ const ranges = (doc, id, count) =>
 function replace(doc, id, input) {
   return A.change(A.clone(doc), (draft) =>
     applyPageOperation(draft, {
-      operation: "patch_page",
+      operation: "edit_page",
       arguments: { operations: [{ op: "replace_match", block_id: id, ...input }] },
     }),
   );

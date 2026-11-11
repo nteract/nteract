@@ -84,7 +84,7 @@ export function resolveNodeId(doc, blockId, nodeId, tree) {
     ids = nodeIds(doc, blockId, tree);
   } catch {
     throw notFound(
-      "This block holds a node this version of Pages can't place, so its nodes have no ids. Use delete_block. patch_page still edits text in the nodes this version reads; it answers newer_content for text in a node it can't read.",
+      "This block holds a node this version of Pages can't place, so its nodes have no ids. Use delete_block. edit_page still edits text in the nodes this version reads; it answers newer_content for text in a node it can't read.",
     );
   }
   const index = ids.findIndex((entry) => entry.id === nodeId);

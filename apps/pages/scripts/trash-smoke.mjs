@@ -134,7 +134,7 @@ try {
     const ownerRead = await mcp("owner", "read_page", { page_id: pageId, comments: "none" });
     assert.equal(ownerRead.isError, false);
     assert.equal(ownerRead.body.trash.state, "trashed");
-    const edit = await mcp("owner", "patch_page", {
+    const edit = await mcp("owner", "edit_page", {
       page_id: pageId,
       base_heads: ownerRead.body.heads,
       idempotency_key: crypto.randomUUID(),

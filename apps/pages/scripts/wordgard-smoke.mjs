@@ -1203,7 +1203,7 @@ try {
 
   stage = "empty-code clipboard paste, inactive Mermaid, and native table with strikethrough";
   let current = await call(a, "read_page", { page_id: code.page_id });
-  await call(a, "patch_page", {
+  await call(a, "edit_page", {
     page_id: code.page_id,
     base_heads: current.heads,
     idempotency_key: crypto.randomUUID(),
@@ -1353,7 +1353,7 @@ try {
 
   stage = "deleting an inactive block retains active cursor presence";
   current = await call(a, "read_page", { page_id: code.page_id });
-  await call(a, "patch_page", {
+  await call(a, "edit_page", {
     page_id: code.page_id,
     base_heads: current.heads,
     idempotency_key: crypto.randomUUID(),
@@ -1376,7 +1376,7 @@ try {
     block.markdown.includes("Disposable inactive block."),
   );
   assert.ok(disposable);
-  await call(a, "patch_page", {
+  await call(a, "edit_page", {
     page_id: code.page_id,
     base_heads: current.heads,
     idempotency_key: crypto.randomUUID(),

@@ -345,7 +345,7 @@ try {
       idempotency_key: crypto.randomUUID(),
     });
     assert.equal(agent.error, false, JSON.stringify(agent.body));
-    const agentEdit = await mcp("editor", "patch_page", {
+    const agentEdit = await mcp("editor", "edit_page", {
       page_id: pageId,
       base_heads: read.heads,
       idempotency_key: crypto.randomUUID(),

@@ -89,10 +89,10 @@ const mutation = {
     { op: "replace_match", block_id: read.blocks[0].id, match_text: "fox", replacement: "otter" },
   ],
 };
-const edited = await tool(cookie, "patch_page", mutation);
-const replay = await tool(cookie, "patch_page", mutation);
+const edited = await tool(cookie, "edit_page", mutation);
+const replay = await tool(cookie, "edit_page", mutation);
 assert.deepEqual(replay, edited, "Mutation replay must return the same receipt");
-await tool(cookie, "patch_page", { ...mutation, idempotency_key: crypto.randomUUID() }, 409);
+await tool(cookie, "edit_page", { ...mutation, idempotency_key: crypto.randomUUID() }, 409);
 const current = await tool(cookie, "read_page", { page_id: page.page_id });
 assert.equal(current.blocks[0].markdown, "The **otter** crossed the garden.");
 const comment = await tool(cookie, "manage_page_comment", {

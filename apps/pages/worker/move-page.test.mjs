@@ -43,6 +43,8 @@ test("the move_page tool declares its keys and positions, and the guide its refu
   assert.deepEqual(tool.inputSchema.required, ["page_id", "idempotency_key", "retry_token"]);
   assert.equal(tool.inputSchema.additionalProperties, false);
   assert.deepEqual(Object.keys(tool.inputSchema.properties).sort(), [
+    "after",
+    "before",
     "idempotency_key",
     "page_id",
     "parent_id",

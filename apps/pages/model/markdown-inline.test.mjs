@@ -138,7 +138,7 @@ test("real replacement API writes mixed marks without replacing native text obje
     object = A.getObjectId(doc.blocks[id], "richText");
   doc = A.change(doc, (d) =>
     applyPageOperation(d, {
-      operation: "patch_page",
+      operation: "edit_page",
       arguments: {
         operations: [
           {

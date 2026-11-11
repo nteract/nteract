@@ -423,7 +423,7 @@ test("outline entries and changed nodes carry attrs, summary and node_type", asy
   const heads = A.getHeads(doc);
   const next = A.change(A.clone(doc), (draft) =>
     applyPageOperation(draft, {
-      operation: "patch_page",
+      operation: "edit_page",
       arguments: {
         operations: [
           {
