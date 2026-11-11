@@ -798,3 +798,29 @@ test("a draft from before the comments stamp replays once registered, and is ref
   assert.equal(fromPage.status, 200, await fromPage.clone().text());
   assert.equal((await fromPage.json()).document_id, args.document_id);
 });
+
+for (const sources of [
+  {},
+  { daily: { name: "Daily", current: { asset_id: "a".repeat(64), revision: "1" } } },
+]) {
+  test(`offline registration refuses a source registry before importing history (${Object.keys(sources).length} sources)`, async (t) => {
+    const f = await fixture(t);
+    const { args, doc } = registration();
+    const forged = A.change(A.clone(doc), (draft) => {
+      draft.sources = sources;
+    });
+    const response = await f.send({
+      ...args,
+      initial_snapshot_base64: Buffer.from(A.save(forged)).toString("base64"),
+    });
+    assert.equal(response.status, 400);
+    assert.equal(f.page().imports.length, 0);
+    assert.equal(f.page().handle.doc(), undefined);
+    assert.equal(f.page().page.metadata, undefined);
+    // Refusal does not reserve the Page ID: the original clean draft still registers.
+    assert.equal((await f.send(args)).status, 200);
+    assert.equal(f.page().handle.doc().sources, undefined);
+    A.free(forged);
+    A.free(doc);
+  });
+}

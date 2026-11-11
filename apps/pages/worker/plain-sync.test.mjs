@@ -1485,3 +1485,71 @@ test("a browser change that leaves a block out of shape is refused, non-fatally,
   assert.ok(readerDoc.blocks[blockId].richText.startsWith("Hi "));
   assert.ok(!reader.frames.some((frame) => frame.t === "refused"));
 });
+
+for (const existing of [false, true]) {
+  test(`native sync cannot write host-managed sources (${existing ? "nested refresh" : "new registry"})`, async (t) => {
+    const f = await fixture(t);
+    f.env.CATALOGS = { getByName: () => ({ fetch: async () => Response.json({ ok: true }) }) };
+    const host = f.page();
+    assert.ok((await f.register(host)).ok);
+    if (existing) {
+      // Seed through the trusted host path; the browser must not replace this asset.
+      await host.handle.change((draft) => {
+        draft.sources = {
+          daily: { name: "Daily", current: { asset_id: "a".repeat(64), revision: "1" } },
+        };
+      });
+      await host.flush();
+    }
+    const before = A.getHeads(host.handle.doc());
+    const durable = await host.plain.durableHeads(f.args.document_id);
+    const writer = rawSocket(
+      host,
+      {
+        principal: "user:anaconda-fixture:fixture-user",
+        driver: "Browser",
+        canWrite: true,
+        expiresAt: Date.now() + 3_600_000,
+      },
+      { senderId: "source-forger" },
+    );
+    const forged = A.change(A.clone(host.handle.doc()), (draft) => {
+      if (existing) draft.sources.daily.current.asset_id = "b".repeat(64);
+      else
+        draft.sources = {
+          daily: { name: "Daily", current: { asset_id: "b".repeat(64), revision: "1" } },
+        };
+    });
+    writer.client.send({
+      t: "sync",
+      doc: treeHex(f.args.document_id),
+      m: helloWith(A.getChanges(host.handle.doc(), forged)),
+      r: 1,
+    });
+    await until(() => writer.frames.some((frame) => frame.t === "refused"));
+    const refused = writer.frames.find((frame) => frame.t === "refused");
+    assert.equal(refused.code, "request_rejected");
+    assert.equal(refused.fatal, false);
+    assert.equal(writer.client.closed, false);
+    assert.deepEqual(A.getHeads(host.handle.doc()), before);
+    assert.deepEqual(await host.plain.durableHeads(f.args.document_id), durable);
+    assert.equal(
+      host.handle.doc().sources?.daily.current.asset_id,
+      existing ? "a".repeat(64) : undefined,
+    );
+    // A rejected source write must not poison this connection for ordinary edits.
+    const good = A.change(A.clone(host.handle.doc()), (draft) => {
+      draft.title = "Still editable";
+    });
+    writer.client.send({
+      t: "sync",
+      doc: treeHex(f.args.document_id),
+      m: helloWith(A.getChanges(host.handle.doc(), good)),
+      r: 2,
+    });
+    await until(() => writer.frames.some((frame) => frame.t === "sync" && frame.r === 2));
+    assert.equal(host.handle.doc().title, "Still editable");
+    A.free(forged);
+    A.free(good);
+  });
+}
