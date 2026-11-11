@@ -2473,6 +2473,16 @@ editor makes one from pasted HTML (`<aside>`), and any synced client can
 store one; no agent tool or Markdown import writes one. Its Markdown is the
 notice (`[Unsupported node: aside]`) followed by its content.
 
+The Markdown serializer
+([model/markdown-serializer.mjs](model/markdown-serializer.mjs)) never
+throws. A block node it has no renderer for reads like an aside: the
+notice, then its content. An inline leaf with no renderer reads as the
+notice inline, and a mark with no Markdown projection reads as its text,
+unmarked. Besides the stored markers above, `replace_block_markdown`
+refuses a block holding anything else the serializer draws as a notice
+(`noticeNode`, which renders the block), so a rewrite never turns a node
+into literal notice text.
+
 A block whose only problem is adjusted nesting is repaired, because storing
 the drawn tree loses nothing a reader showed. Every host tool write to a
 block runs `repairBlockMarkers`

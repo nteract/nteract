@@ -11,17 +11,18 @@ import {
 } from "./node-registry.mjs";
 import { DATAFRAME_BLOCK, parseAssetPath, readDataframe } from "../shared/dataset-assets.mjs";
 import { decode, encode, schema } from "./wordgard-doc.mjs";
-import { treeMarkdown } from "./markdown-serializer.mjs";
+import { noticeNode, treeMarkdown } from "./markdown-serializer.mjs";
 import { UNREADABLE_NAME, codeTextUnmarked, markerParents, textPath } from "./richtext-format.mjs";
 
 export const readTree = (block) => decode(codeTextUnmarked(A.spans(block, ["richText"]))).doc;
 export const richDoc = readTree;
 export const pageSpans = encode;
 
-// Known containers with no Markdown form: a read shows their notice.
-const MARKDOWNLESS = new Set(["aside"]);
-
-/** The first stored type a Markdown rewrite cannot reproduce. */
+/** The first stored type a Markdown rewrite cannot reproduce: a dataframe
+ * out of place, a type this build doesn't know, or anything else the
+ * serializer draws as a notice (noticeNode), which a rewrite would turn
+ * into literal notice text. A notice with no quotable name answers null
+ * from noticeNode and refuses as UNREADABLE_NAME. */
 export function markdownlessNode(block, pageId) {
   for (const span of A.spans(block, ["richText"])) {
     if (span.type !== "block") continue;
@@ -37,10 +38,10 @@ export function markdownlessNode(block, pageId) {
           )?.pageId !== pageId))
     )
       return DATAFRAME_BLOCK;
-    for (const name of [type, ...parents])
-      if (!isKnownBlock(name) || MARKDOWNLESS.has(name)) return name;
+    for (const name of [type, ...parents]) if (!isKnownBlock(name)) return name;
   }
-  return null;
+  const notice = noticeNode(readTree(block));
+  return notice === undefined ? null : (notice ?? UNREADABLE_NAME);
 }
 
 /** Refuse a host write that would edit block `id` in place when decode

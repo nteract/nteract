@@ -4,7 +4,10 @@ import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import markdownCorpus from "./markdown-corpus.json" with { type: "json" };
 import { parseAgentMarkdown, parseMarkdown } from "./markdown-import.mjs";
-import { exportMarkdown } from "./markdown-serializer.mjs";
+import fc from "fast-check";
+import { Leaf, Mark, Node, Plot } from "wordgard/doc";
+import { exportMarkdown, noticeNode } from "./markdown-serializer.mjs";
+import { pageTreeArbitrary, toWordgardTree } from "../test/random-page-tree.mjs";
 import { projectReadChanges } from "./read-changes.mjs";
 import { projectReadContent } from "./read-content.mjs";
 import { textPath } from "./richtext-format.mjs";
@@ -21,6 +24,9 @@ import {
   PagesLink,
   Strong,
   PagesHighlight,
+  Aside,
+  Blockquote,
+  Paragraph,
 } from "./wordgard-doc.mjs";
 import { PAGE_ID, pageWithSpans, randomInputs, shapeInputs } from "../test/address-inputs.mjs";
 const S = (value) => new A.ImmutableString(value);
@@ -188,4 +194,81 @@ test("read_page and read_page_changes read a hard break stored in a code block",
     changes.changes.map(({ scope, markdown }) => ({ scope, markdown })),
     [{ scope: "node", markdown: "```js\na\nbc\n```" }],
   );
+});
+
+// Node and mark types the serializer has no renderer or projection for, as a
+// newer editor build could hand it.
+const Box = Plot.define("TestBox", {
+  group: Node.Group.Content,
+  blockContent: Node.Group.Content,
+  shape: { element: "div" },
+});
+const Line = Plot.define("TestLine", {
+  group: Node.Group.Content,
+  inlineContent: true,
+  shape: { element: "p" },
+});
+const Chip = Leaf.Type.define("TestChip", { inline: true, shape: { element: "span" } });
+const Glow = Mark.Type.define("TestGlow", { shape: { element: "b" } });
+const para = (...content) => Paragraph.create(content);
+const NOTICE = "\\[Unsupported node\\]";
+
+test("a block node with no renderer reads as the notice, then its content", () => {
+  const content = [Box.create([para(Leaf.text("inside"))]), para(Leaf.text("after"))];
+  assert.equal(exportMarkdown({ content }), `${NOTICE}\n\ninside\n\nafter`);
+  assert.equal(noticeNode({ content }), "TestBox");
+  const line = [Line.create([Leaf.text("words")])];
+  assert.equal(exportMarkdown({ content: line }), `${NOTICE}\n\nwords`);
+  const quoted = [Blockquote.create([Box.create([para(Leaf.text("q"))])])];
+  assert.equal(exportMarkdown({ content: quoted }), `> ${NOTICE}\n>\n> q`);
+});
+
+test("an inline leaf with no renderer reads as the notice inline", () => {
+  const content = [para(Leaf.text("a"), Chip.of(null), Leaf.text("b"))];
+  assert.equal(exportMarkdown({ content }), `a${NOTICE}b`);
+  assert.equal(noticeNode({ content }), "TestChip");
+});
+
+test("a mark with no Markdown projection reads as its text, unmarked", () => {
+  const text = Leaf.text("glow", Glow.of(true).addToSet(Mark.none));
+  assert.equal(text.marks.length, 1);
+  const content = [para(Leaf.text("a "), text, Leaf.text(" b"))];
+  assert.equal(exportMarkdown({ content }), "a glow b");
+  assert.equal(noticeNode({ content }), undefined);
+});
+
+test("noticeNode names an aside, and nothing in a tree with no notice", () => {
+  assert.equal(noticeNode({ content: [Aside.create([para(Leaf.text("x"))])] }), "aside");
+  assert.equal(noticeNode({ content: [para(Leaf.text("x"))] }), undefined);
+});
+
+test("generated trees with a node, leaf or mark the serializer can't draw still serialize", () => {
+  const cases = fc.sample(
+    fc.tuple(
+      pageTreeArbitrary({ maxDepth: 2 }),
+      fc.constantFrom("box", "line", "chip", "glow"),
+      fc.nat(),
+    ),
+    { seed: 0x5eed, numRuns: 200 },
+  );
+  for (const [description, kind, at] of cases) {
+    const content = [...toWordgardTree(description).content];
+    const index = content.length ? at % content.length : 0;
+    if (kind === "box" && content.length) content[index] = Box.create([content[index]]);
+    else if (kind === "glow")
+      content.splice(index, 0, para(Leaf.text("glow", Glow.of(true).addToSet(Mark.none))));
+    else
+      content.splice(
+        index,
+        0,
+        kind === "chip" ? para(Leaf.text("a"), Chip.of(null)) : Line.create([Leaf.text("words")]),
+      );
+    const markdown = exportMarkdown({ content });
+    if (kind === "glow") {
+      assert.match(markdown, /glow/);
+      continue;
+    }
+    assert.ok(markdown.includes(NOTICE), markdown);
+    assert.notEqual(noticeNode({ content }), undefined);
+  }
 });

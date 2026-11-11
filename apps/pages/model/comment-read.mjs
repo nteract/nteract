@@ -209,10 +209,7 @@ export function commentBodyProjection(message) {
       }
       const incompatible =
         error?.code === "unreadable_comment_spans" ||
-        (error instanceof Error &&
-          /^(Match cannot be null|Token type `[^`]*` not supported by Markdown renderer)$/.test(
-            error.message,
-          ));
+        (error instanceof Error && error.message === "Match cannot be null");
       if (!unknown || !incompatible) throw error;
       body = read(true);
     }

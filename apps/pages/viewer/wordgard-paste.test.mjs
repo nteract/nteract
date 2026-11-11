@@ -10,6 +10,7 @@ import { GardState } from "wordgard/state";
 import { createPageData, initializePage, orderedBlockIds } from "../model/page.mjs";
 import { blockMarkdown, parseAgentMarkdown, textPath, validateRich } from "../model/richtext.mjs";
 import { markdownCommentSpans } from "../model/comment-content.mjs";
+import { markdownlessNode } from "../model/richtext-spans.mjs";
 import { createWordgardBinding } from "./wordgard-binding.mjs";
 import { pasteStrikethroughTags } from "./wordgard-shortcuts.mjs";
 import { Wordgard } from "wordgard/editor";
@@ -21,6 +22,7 @@ import {
   HorizontalRule,
   PagesUnknownBlock,
   Strikethrough,
+  Aside,
 } from "./wordgard-model.mjs";
 
 const hasOpaque = (doc) => {
@@ -100,6 +102,25 @@ test("pasted HTML keeps its text: strikethrough and rules are native, other tags
   assert.deepEqual(struck, ["gone", "s", "t", "u"]);
   assert.match(pasted.textContent(), /\$x\$ y c/);
   assert.ok(decode(encode(pasted)).doc.eq(pasted));
+});
+
+test("a pasted aside reads as the notice and its content, and refuses a Markdown rewrite", (t) => {
+  // The shape of an HTML reference page's aside example: an article
+  // paragraph with a side note between paragraphs.
+  const dom = new JSDOM();
+  t.after(() => dom.window.close());
+  dom.window.document.body.innerHTML =
+    "<article><p>Main text.</p><aside><p>A side note, set apart.</p></aside>" +
+    "<p>More main text.</p></article>";
+  const pasted = parse(schema, dom.window.document.body);
+  assert.ok(pasted.content.some((node) => node.type === Aside.type));
+  const f = fixture();
+  paste(f, Slice.of(pasted.content));
+  const markdown = f.markdown();
+  assert.match(markdown, /\\\[Unsupported node: aside\\\]\n\nA side note, set apart\./);
+  assert.match(markdown, /More main text\./);
+  assert.equal(markdownlessNode(f.replica.doc.blocks[f.id]), "aside");
+  f.binding.destroy();
 });
 
 test("comment Markdown from an agent refuses math and HTML, as a Page body's does", () => {
