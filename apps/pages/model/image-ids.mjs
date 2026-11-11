@@ -6,10 +6,16 @@ import { readKind, readDescendants } from "./native-read.mjs";
 // Enumerate actual live embed characters. Resolving a deleted cursor by position
 // alone is unsafe: Automerge deliberately slides it to a surviving neighbour.
 export function imageIds(doc, blockId) {
-  const path = textPath(blockId),
-    result = [];
+  const path = textPath(blockId);
+  return spanImageIds(doc, path, A.spans(doc, path));
+}
+
+/** imageIds for the text at `path`, from `spans` the caller already read
+ * from it. */
+export function spanImageIds(doc, path, spans) {
+  const result = [];
   let at = 0;
-  for (const [index, span] of A.spans(doc, path).entries()) {
+  for (const [index, span] of spans.entries()) {
     if (span.type === "block" && markerType(span.value) === "image" && span.value.isEmbed)
       result.push({ image_id: A.getCursor(doc, path, at), at, index });
     at += span.type === "text" ? span.value.length : 1;

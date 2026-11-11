@@ -37,21 +37,28 @@ export const MAX_NODE_ID = 192;
  * can't place where it was stored. */
 export function nodeIds(doc, blockId, tree) {
   const path = textPath(blockId);
-  const { nodes, placed } = blockAddresses(A.spans(doc, path));
-  if (!placed) throw Error("This block holds a node this build can't place");
+  const ids = spanNodeIds(doc, path, A.spans(doc, path));
   // richDoc can read a node through notice text (a dataframe naming another
   // Page's asset), which changes its size but never the number of top-level
   // nodes.
-  if (tree && (tree.nodes?.length ?? tree.content.length) !== nodes.length)
+  if (tree && (tree.nodes?.length ?? tree.content.length) !== ids.length)
     throw Error("The stored and readable trees disagree on top-level nodes");
   if (
     tree?.source &&
     tree.nodes.some((node, index) => {
       const at = tree.source.get(node);
-      return at != null && at !== nodes[index].at;
+      return at != null && at !== ids[index].at;
     })
   )
     throw Error("The readable nodes do not correspond to the stored markers");
+  return ids;
+}
+
+/** nodeIds for the text at `path`, from `spans` the caller already read
+ * from it, with no readable tree to check against. */
+export function spanNodeIds(doc, path, spans) {
+  const { nodes, placed } = blockAddresses(spans);
+  if (!placed) throw Error("This block holds a node this build can't place");
   return nodes.map(({ at }) => ({ id: at === null ? null : A.getCursor(doc, path, at), at }));
 }
 
