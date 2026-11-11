@@ -416,6 +416,7 @@ export const CLIENT_ERROR_CODES = Object.freeze([
   "node_not_found",
   "nodes_would_join",
   "stored_form_unsupported",
+  "document_format_unsupported",
   "comment_not_author",
   "comment_access_denied",
   "operation_pending",
