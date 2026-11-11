@@ -691,21 +691,23 @@ const NODES = {
 };
 
 /** The name the first notice in `doc`'s Markdown names, `null` for a
- * notice with no name, or undefined when it has none. It renders `doc`, so
- * anything the serializer draws as a notice (a node or leaf with no
- * renderer, an aside, a dataframe it can't read) counts, except a stored
- * marker this build can't read (see `notice`), and a new node type can't be drawable but silently lossy.
- * markdownlessNode (model/richtext-spans.mjs) refuses a Markdown rewrite of
- * such a block, which would turn the node into literal notice text. */
+ * notice with no quotable name, or undefined when the Markdown holds none.
+ * It renders `doc` and watches `notice`, so it counts every notice the
+ * serializer writes: a node or leaf with no renderer, an aside, a dataframe
+ * it can't read. A stored marker this build can't read is left out; see
+ * `notice`. markdownlessNode (model/richtext-spans.mjs) refuses a Markdown
+ * rewrite of a block this names, so a node type added without a renderer is
+ * refused rather than rewritten into literal notice text. */
 export function noticeNode(doc) {
   let found;
+  const outer = onNotice;
   onNotice = (name) => {
     found ??= name ?? null;
   };
   try {
     nodesMarkdown(doc.content);
   } finally {
-    onNotice = null;
+    onNotice = outer;
   }
   return found;
 }

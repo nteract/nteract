@@ -232,7 +232,9 @@ test("an inline leaf with no renderer reads as the notice inline", () => {
   assert.equal(noticeNode({ content }), "TestChip");
 });
 
-test("a mark with no Markdown projection reads as its text, unmarked", () => {
+// markName already drops a mark type this build doesn't know, so this pins
+// existing behaviour rather than the serializer's MARKS filter.
+test("a mark this build doesn't know reads as its text, unmarked (existing behaviour)", () => {
   const text = Leaf.text("glow", Glow.of(true).addToSet(Mark.none));
   assert.equal(text.marks.length, 1);
   const content = [para(Leaf.text("a "), text, Leaf.text(" b"))];
