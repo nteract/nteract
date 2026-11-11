@@ -438,11 +438,18 @@ async function gateway(t, { rules = [], env: extra = {} } = {}) {
 test("the gateway forwards the resolved limit beside the caller's arguments", async (t) => {
   // The fixture's whoami verifies fixture@example.invalid.
   const g = await gateway(t, { rules: [["domain", "example.invalid", 2]] });
-  // A caller-supplied limit or email is just an unknown argument.
-  const first = await g.create({ page_limit: 100_000, email: "rgbkrk@gmail.com" });
+  // A caller-supplied limit or email is an unknown argument, refused before
+  // anything is forwarded.
+  for (const args of [{ page_limit: 100_000 }, { email: "rgbkrk@gmail.com" }]) {
+    const forged = await g.create(args);
+    assert.equal(forged.status, 400, JSON.stringify(forged.body));
+    assert.equal(forged.body.code, "invalid_arguments");
+  }
+  assert.equal(g.forwarded.length, 0);
+  const first = await g.create();
   assert.equal(first.status, 200, JSON.stringify(first.body));
   assert.equal(g.forwarded.at(-1).page_limit, 2);
-  assert.equal(g.forwarded.at(-1).arguments.page_limit, 100_000);
+  assert.equal(g.forwarded.at(-1).arguments.page_limit, undefined);
   assert.equal((await g.create()).status, 200);
   const refused = await g.create();
   assert.equal(refused.status, 409);

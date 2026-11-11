@@ -486,7 +486,9 @@ test("create_page places Pages in a Project, under a parent, and enforces depth 
   });
   assert.deepEqual(unknownProject.body, foreignProject.body);
 
-  // A caller-supplied placement is ignored; only the resolved one is stored.
+  // A caller-supplied placement is refused at the boundary; only the
+  // resolved one is ever stored.
+  const before = (await w.catalogStorage().list({ prefix: "page/" })).size;
   const forged = await w.createPage({
     title: "Forged",
     placement: {
@@ -497,13 +499,10 @@ test("create_page places Pages in a Project, under a parent, and enforces depth 
       project_content: other.project_id,
     },
   });
-  assert.equal(forged.status, 200);
-  assert.equal(w.page(forged.body.page_id).metadata.placement, undefined);
-  assert.equal(forged.body.project_id, undefined);
-  const forgedEntry = await w.catalogStorage().get(`page/${forged.body.page_id}`);
-  assert.equal(forgedEntry.parent_id, null);
-  assert.equal(forgedEntry.space_id, undefined);
-  assert.equal(forgedEntry.project_content, undefined);
+  assert.equal(forged.status, 400);
+  assert.equal(forged.body.code, "invalid_arguments");
+  assert.match(forged.body.error, /`placement`/);
+  assert.equal((await w.catalogStorage().list({ prefix: "page/" })).size, before, "no Page was made");
 });
 
 test("list_pages filters by Project and parent, verifies every row and hides the Project from grantees", async (t) => {
