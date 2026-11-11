@@ -1271,14 +1271,22 @@ tools and the browser apply (`validateCommentSpans` in
 [model/comment-content.mjs](model/comment-content.mjs)): non-whitespace text or
 a valid embed, so an image-only comment is content, at most 16,000 text
 characters and 64 KiB of spans. Every message a change creates or touches,
-a soft delete included, must be rich text with no `body`. A new message, or
-a write to a message's `richText`, `format` or `bodyFormat`, must also leave
-its spans in the editor's form; a soft delete doesn't check it, so a Wordgard
-release that encodes differently never blocks deleting older messages.
-Earlier builds stored a bare literal `body`, or adapter-form spans beside a
-`body` copy; the comments migration rewrote them, and a change that writes
-either form is refused as `outdated_form`. Viewers before protocol 3 wrote
-those forms and must reload.
+a soft delete included, must be rich text with no field but `richText`,
+`bodyFormat`, `author`, `createdAt` and `deletedAt`. A new message, or a
+write to a message's `richText` or `bodyFormat`, must also leave its spans
+in the editor's form (`isEditorForm` in
+[model/comment-content.mjs](model/comment-content.mjs)): what the editor's
+encoder writes for what they read as, or what a merge of such writes leaves.
+The check stops a message that people and agents would read differently, or
+that carries data no reader shows: a newline stored as text in prose, marks
+on code text, attrs a marker doesn't use, forms an earlier build wrote.
+"Decode reads it without loss" isn't enough, because decode normalizes
+those quietly. Two merge results are in the form: unmarked text (a peer
+typed into a node another deleted), and a container whose marker a merge
+deleted while a node a peer added inside it survives (a quote, a list
+level, a table or row). A soft delete doesn't check the form, so a Wordgard
+release that encodes differently never blocks deleting older messages. A
+change that writes another form is refused as `outdated_form`.
 
 A refused change is never stored or delivered, and every other connection
 stays up. When the sender broke a rule, its principal is blocked from
@@ -1810,12 +1818,10 @@ stored:
    index of at most 512 base-62 characters and of its `richText` text, so a
    value that loses a conflict is judged at the frame that brings it, not when
    a later delete reveals it. `blocks` must stay a map. A block holds no key
-   but those two. A block object the changes make must open its text with a
-   top-level node's marker (not an embed and with no parents), as every
-   writer writes a new block. A block that already existed isn't held to
-   that: a merge of a delete and concurrent typing can leave text no marker
-   opens (unmarked text), which every reader reads as a paragraph. Deleting
-   and moving blocks pass. A refusal is `invalid_block`, not fatal: the socket stays open, the
+   but those two. Admission applies no marker rule to the text: a merge of
+   a delete and concurrent typing can leave content no marker opens
+   (unmarked text), and every reader reads it. Deleting and moving
+   blocks pass. A refusal is `invalid_block`, not fatal: the socket stays open, the
    principal isn't blocked, and the browser stops offering the refused heads
    until it synchronizes again. The cost follows the change, not the number of
    blocks. Trusted host writes skip this check.
@@ -2353,6 +2359,34 @@ addressed through the container's marker, so a type change there names the
 quote or list item and is refused. In target scope a concurrent
 change to the node's attributes is a `target_structure_changed` conflict, and a
 `set_node` may share its passage with another operation.
+
+### Unmarked text and node ids
+
+Every node a writer writes opens with its marker, so it has a `node_id`, the
+cursor on that marker. A merge can leave content no marker opens: one person
+deletes a paragraph while another types or puts an image into it. Every
+reader (the editor's decode, the agent read, node addresses and ids, the
+Markdown projection, comment reads) reads it by one rule: content continues
+the node before it in its scope when that node can hold it, and otherwise
+opens a paragraph (in a table, a row and cell) with no marker. A code block
+holds text and line breaks; every other textblock holds every inline node; a
+leaf holds nothing. An embed of a type this build doesn't know that was
+stored in a code block stays there as a notice. Such a paragraph reads with
+`node_id` null; text-matching operations reach it, `node_id` operations
+can't. Every host tool write to a block marks the block's unmarked text
+in the same change, and the editor writes a person's typing or formatting
+inside it through the encoder, which marks it.
+
+A merge can also delete a container's marker (a quote, a list item, a table
+or row) while a node a peer added inside it survives. Readers draw the
+container from that node's `parents` and name it by that node's marker. No
+writer restores the container's marker, so its `node_id` doesn't move.
+
+Known limit: two writers that mark the same unmarked text from the same
+snapshot (a host write and a person's edit before either syncs) each insert
+a marker, and both survive. The first opens an empty paragraph beside the
+marked one. Every reader reads it, and a person (Backspace) or an agent
+(`delete_node`) removes it.
 
 ### Link previews
 

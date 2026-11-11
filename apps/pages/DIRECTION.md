@@ -47,13 +47,19 @@ Comments live in their own document and anchor to the Page with cursors.
    its marker, a block's first paragraph included, so every written node has
    a `node_id`: the cursor on its marker. A comment message holds the same
    rich text and no `format` field.
-   A merge can leave text that no marker opens, for example when one person
-   deletes a paragraph while another types into it. That is unmarked text.
-   The stored format allows it and every reader reads it: it continues the
-   node before it in its scope, or reads as a paragraph where nothing in the
-   scope comes before it. Such a paragraph has `node_id` null. The next host
-   write to the block marks it, and the editor marks it when a person edits
-   inside it.
+   A merge can leave content that no marker opens, for example when one
+   person deletes a paragraph while another types or puts an image into it.
+   That is unmarked text, an image or line break included. The stored
+   format allows it and every reader reads it by one rule: content continues the node before it in its scope
+   when that node can hold it, and otherwise opens a paragraph (in a table,
+   a row and cell) with no marker. A code block holds text and line breaks;
+   every other textblock holds every inline node; a leaf (a rule, a
+   dataframe) holds nothing. Such a paragraph has `node_id` null. The next
+   host write to the block marks it, and the editor marks it when a person
+   types or formats inside it. A merge can also delete a container's marker
+   while a node a peer added inside it survives. Readers draw the container
+   from that node's `parents` and name it by that node's marker, and no
+   writer restores the container's marker.
 2. **Sync without `automerge-repo`.** Pages uses the Repo package for CBOR,
    document ID helpers, record sizing, the Sedimentree backend interface in
    [sync/backend.mjs](sync/backend.mjs), and one `Repo` in the browser
@@ -95,8 +101,8 @@ Comments live in their own document and anchor to the Page with cursors.
    markers move node ids, the golden node addresses and the editor's caret
    positions. The host checks that go with it:
    - Plain sync admission checks the block shape, as registration does: a
-     block holds exactly `position` and `richText`, and a block a change
-     creates opens with a top-level node's marker.
+     block holds exactly `position` and `richText`. Neither applies a
+     marker rule to the text, since every reader reads unmarked text.
    - A Page's host record stores the format of each of its documents
      (`documentFormats`), and the host refuses a record in a format the
      build does not write, or a record without the stamp, while its owner
@@ -189,3 +195,6 @@ records the node addresses agents use.
   candidates, because the host, the tools and a Rust client can then share
   one codec. Moving the editor's document into WASM is a larger step.
 - Whether marker `parents` becomes a scalar path, and how small blocks get.
+  As lists, two writers that change one marker's parents at once merge into
+  parents neither wrote, which no reader can draw
+  ([model/merge-readers.test.mjs](model/merge-readers.test.mjs), todo).
