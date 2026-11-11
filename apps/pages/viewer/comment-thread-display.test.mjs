@@ -11,6 +11,7 @@ import {
   initials,
   isLongBody,
   messageRuns,
+  modelLabel,
   modelNote,
   plainText,
   relativeTime,
@@ -278,4 +279,20 @@ test("an agent's own name leads the byline, with the harness after via", () => {
     attribution({ ...base, agent: { name: "A" } }).key,
     attribution({ ...base, agent: { name: "B" } }).key,
   );
+});
+
+test("the model shows as a byline label only when the client asserted one", () => {
+  const base = { principal: "a:2", displayName: "Kyle Kelley", driver: "Kilo" };
+  assert.equal(
+    modelLabel(attribution({ ...base, agent: { name: "Rev", model: "gpt-5" } })),
+    "gpt-5",
+  );
+  assert.equal(modelLabel(attribution({ ...base, agent: { name: "Rev" } })), null);
+  assert.equal(modelLabel(attribution(base)), null);
+  // A person's message never shows an asserted model.
+  const person = { principal: "a:1", displayName: "Ada", driver: "Browser", agent: { model: "m" } };
+  assert.equal(modelLabel(attribution(person)), null);
+  // The long value stays whole in data; CSS truncates it.
+  const long = "m".repeat(120);
+  assert.equal(modelLabel(attribution({ ...base, agent: { model: long } })), long);
 });

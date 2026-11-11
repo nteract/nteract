@@ -9,6 +9,7 @@ import {
   fullTime,
   isLongBody,
   messageRuns,
+  modelLabel,
   modelNote,
   relativeTime,
 } from "./comment-thread-display.mjs";
@@ -76,6 +77,7 @@ export function MessageAuthor({ message, now }) {
           for {who.onBehalfOf}
         </span>
       )}
+      {modelLabel(who) && <span className="muted comment-model">{modelLabel(who)}</span>}
       {message.createdAt && (
         <time className="muted comment-time" dateTime={message.createdAt}>
           {relativeTime(message.createdAt, now)}

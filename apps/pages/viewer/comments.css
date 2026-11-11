@@ -166,6 +166,14 @@ button.anchor-chip:hover {
   font-size: 0.7rem;
   line-height: 1.5;
 }
+.comment-model {
+  min-width: 0;
+  max-width: 12em;
+  overflow: hidden;
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .comment-time {
   font-size: 0.72rem;
 }

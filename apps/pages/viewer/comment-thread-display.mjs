@@ -110,6 +110,10 @@ export function bylineText(author) {
     .join(" ");
 }
 
+/** The model as the byline's muted label, or null. Drawn as text; CSS
+ * truncates a long one. */
+export const modelLabel = (who) => who.model ?? null;
+
 /** The model line for a tooltip, worded as the client's own report. */
 export const modelNote = (who) => (who.model ? `Model reported by the client: ${who.model}` : null);
 
