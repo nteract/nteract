@@ -144,8 +144,39 @@ export function cloudflareConfig(profile) {
   };
 }
 
+/** The part of cloudflareConfig that no deployment decides: the fields the
+ * Worker's code and this build fix, with no name, account, address, database,
+ * bucket or variable of a deployment in it. A deployment's own Wrangler file
+ * supplies those. The release package (release-package.mjs) ships exactly this
+ * object as its wrangler.json.
+ *
+ * Structural: main, no_bundle, compatibility_date, assets, durable_objects,
+ * migrations, triggers, preview_urls, observability, and the one shape var,
+ * NOTEBOOK_CLOUD_OIDC_FLOW. Profile-bound: name, account_id, workers_dev,
+ * routes, d1_databases, r2_buckets and every other var. */
+export function structuralConfig() {
+  const shape = workerShape();
+  return {
+    main: "worker/index.js",
+    ...shape,
+    preview_urls: false,
+    observability: { enabled: true },
+    vars: { ...shape.vars },
+  };
+}
+
+/** Binding names the Worker expects a deployment to supply, by kind. Their
+ * ids and bucket names are profile-bound; the names are fixed by the code. */
+export function expectedBindings() {
+  return { d1: [AUTH_D1.binding, USAGE_D1.binding], r2: [R2_BINDING] };
+}
+
 export function stageCloudflareFiles(dist, destination, profile) {
-  const config = cloudflareConfig(profile);
+  return stageWithConfig(dist, destination, cloudflareConfig(profile));
+}
+
+/** Stage the Worker/assets layout and write `config` as wrangler.json. */
+export function stageWithConfig(dist, destination, config) {
   stageArtifacts(dist, destination);
   mkdirSync(path.join(destination, "worker"));
   for (const file of ["index.js", "automerge.wasm"])
@@ -156,7 +187,9 @@ export function stageCloudflareFiles(dist, destination, profile) {
   return path.join(destination, "wrangler.json");
 }
 
-export function prepareCloudflare(destination, profile) {
+/** The dist directory of a clean, committed checkout whose build receipt
+ * matches HEAD and the source on disk; throws otherwise. */
+export function cleanBuildDist() {
   const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const git = (...args) => execFileSync("git", args, { cwd: app, encoding: "utf8" }).trim();
   if (git("status", "--porcelain")) throw Error("Commit the reviewed source before staging");
@@ -168,7 +201,11 @@ export function prepareCloudflare(destination, profile) {
     receipt.fingerprint?.sha256 !== sourceFingerprint(app).sha256
   )
     throw Error("Rebuild the clean committed source before staging");
-  return stageCloudflareFiles(dist, path.resolve(destination), profile);
+  return dist;
+}
+
+export function prepareCloudflare(destination, profile) {
+  return stageCloudflareFiles(cleanBuildDist(), path.resolve(destination), profile);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
