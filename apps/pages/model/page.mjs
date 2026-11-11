@@ -197,12 +197,22 @@ const EDIT_FIELDS = new Map([
   ["format_match", [...LOCATOR, "all", "add", "remove"]],
   ["set_node", [...LOCATOR, "type", "attrs", "checked", "language", "heading_level", "align"]],
 ]);
-/** Refuse a field operation `op` doesn't take. */
+/** Refuse a field operation `op` doesn't take, and a Markdown operation
+ * without Markdown. The flat schema marks no field required, so a request
+ * that leaves `markdown` out reaches here; written as an empty string it
+ * would erase the block replace_block_markdown names. Removing a block's
+ * content is delete_block's job, so an empty rewrite is refused too. */
 export function validateEditFields(op) {
   const fields = EDIT_FIELDS.get(op.op);
   if (!fields) return;
   const unexpected = Object.keys(op).find((field) => !["op", ...fields].includes(field));
   if (unexpected) throw Error(`${op.op} does not take ${unexpected}`);
+  if (!fields.includes("markdown")) return;
+  if (typeof op.markdown !== "string") throw Error(`${op.op} requires a markdown string`);
+  if (op.op === "replace_block_markdown" && !op.markdown.trim())
+    throw Error(
+      "replace_block_markdown requires Markdown to write: an empty rewrite would erase the block. Use delete_block to remove it.",
+    );
 }
 // The addresses each operation names, by field, and the kinds each field
 // takes (model/addresses.mjs). Kinds are strict: no operation acts on the
@@ -265,7 +275,7 @@ function applyEdit(doc, op, at, { trace, touched, ...context }) {
   if (op.op === "insert_markdown") {
     const key = crypto.randomUUID();
     doc.blocks[key] = block(positionForInsertion(doc, afterKey(at.after_node_id)));
-    setRichMarkdown(doc, key, String(op.markdown ?? ""));
+    setRichMarkdown(doc, key, op.markdown);
     touched.push(key);
     trace?.push({ type: "block", block_id: key });
     return insertedBlock(doc, "insert_markdown", key);
@@ -359,7 +369,7 @@ function applyEdit(doc, op, at, { trace, touched, ...context }) {
     // A dataframe's read-back line, left unchanged, keeps the node. Runs
     // after the unknown-node refusal: with no dataframe in the block it
     // falls through to a plain rewrite.
-    setRichMarkdownKeepingNodes(doc, id, String(op.markdown ?? ""));
+    setRichMarkdownKeepingNodes(doc, id, op.markdown);
     trace?.push({ type: "block", block_id: id });
     return { op: "replace_block_markdown", node_id: op.node_id, nodes: nodeAddresses(doc, id) };
   }

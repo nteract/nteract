@@ -75,6 +75,47 @@ test("edit_page rejects fields from another operation", () => {
   );
 });
 
+test("a Markdown operation without Markdown is refused", () => {
+  const { doc, id } = fixture("Keep this paragraph.\n\n- and this list");
+  const node_id = blockAddress(doc, id);
+  for (const markdown of [undefined, null, 7, ["text"]]) {
+    const field = markdown === undefined ? {} : { markdown };
+    refuses(
+      doc,
+      [{ op: "replace_block_markdown", node_id, ...field }],
+      /replace_block_markdown requires a markdown string/,
+    );
+    refuses(
+      doc,
+      [{ op: "insert_markdown", ...field }],
+      /insert_markdown requires a markdown string/,
+    );
+  }
+  // An empty rewrite would erase the block as surely as a missing field.
+  for (const markdown of ["", "  \n\t"])
+    refuses(
+      doc,
+      [{ op: "replace_block_markdown", node_id, markdown }],
+      /an empty rewrite would erase the block. Use delete_block/,
+    );
+  // One bad operation refuses the whole batch.
+  refuses(
+    doc,
+    [
+      { op: "set_title", title: "Changed" },
+      { op: "replace_block_markdown", node_id },
+    ],
+    /requires a markdown string/,
+  );
+  // A real rewrite and an empty insert still work.
+  const { after } = apply(doc, [
+    { op: "replace_block_markdown", node_id, markdown: "Rewritten." },
+    { op: "insert_markdown", markdown: "" },
+  ]);
+  assert.equal(md(after, id).trim(), "Rewritten.");
+  assert.equal(orderedBlockIds(after).length, 2);
+});
+
 test("format_match occurrence picks one match in document order", () => {
   const { doc, id } = fixture("Ship it. Ship it now. Ship it later.");
   const { after, result } = apply(doc, [
