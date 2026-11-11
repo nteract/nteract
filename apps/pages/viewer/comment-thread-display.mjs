@@ -62,30 +62,56 @@ export function initials(name) {
   return (words[0][0] + words.at(-1)[0]).toUpperCase();
 }
 
+/** A label the client asserted, as text for display, or null. Stored labels
+ * are untrusted: only a non-empty string survives, and callers render it as
+ * text, never as HTML or a link. */
+const label = (value) => (typeof value === "string" && value.trim() ? value.trim() : null);
+
 /**
  * Who wrote a message. A person writes from the Browser; any other driver is
  * an agent acting for the principal it signed in as. The color matches that
  * participant's live caret.
+ *
+ * When the agent said its own name (`author.agent.name`), that name leads and
+ * the driver follows as `via`. The model is shown as reported by the client.
  */
 export function attribution(author) {
   const person = author?.displayName?.trim() || "Collaborator";
   const driver = author?.driver?.trim() || "";
   const agent = Boolean(driver) && driver.toLowerCase() !== "browser";
-  const name = agent ? driver : person;
+  const agentName = agent ? label(author?.agent?.name) : null;
+  const model = agent ? label(author?.agent?.model) : null;
+  const name = agentName ?? (agent ? driver : person);
   const { background, foreground } = presenceColor(author?.principal, driver);
   return {
     agent,
     name,
     person,
     onBehalfOf: agent ? firstName(person) : null,
-    label: agent ? `${driver} on behalf of ${person}` : person,
+    via: agentName ? driver : null,
+    model,
+    label: agent
+      ? `${agentName ? `${agentName} via ${driver}` : driver} on behalf of ${person}`
+      : person,
     initials: initials(name),
     personInitials: initials(person),
     color: background,
     foreground,
-    key: `${author?.principal ?? ""}/${driver.toLowerCase()}/${agent ? "" : person}`,
+    key: `${author?.principal ?? ""}/${driver.toLowerCase()}/${agent ? "" : person}${agentName ? `/${agentName}` : ""}`,
   };
 }
+
+/** The byline as text: "Ada", "Kilo for Kyle", or "Reviewer via Kilo for
+ * Kyle" when the agent gave a name. */
+export function bylineText(author) {
+  const who = attribution(author);
+  return [who.name, who.via && `via ${who.via}`, who.agent && `for ${who.onBehalfOf}`]
+    .filter(Boolean)
+    .join(" ");
+}
+
+/** The model line for a tooltip, worded as the client's own report. */
+export const modelNote = (who) => (who.model ? `Model reported by the client: ${who.model}` : null);
 
 /** "now", "12m", "3h", "4d", then a short date. */
 export function relativeTime(iso, now = Date.now()) {
