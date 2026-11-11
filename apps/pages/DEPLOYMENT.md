@@ -677,15 +677,17 @@ rollback refuse a release whose build receipt does not list that format under
 | pages, pages2, page11 | 1 | 1 |
 
 A build of `main` reads `pages.page` format 2 only, so only page10 accepts it.
-page10 must be empty before a format 2 build is installed on it. No command
-empties a target: the operator clears its storage by hand, then installs.
+The controller checks out the commit it deploys and reads this table from it,
+so the first format 2 commit on `main` installs on page10 with no change on
+the host. The same check stops a revert to a format 1 build.
 
 The table is the operator's statement of what a target holds. Nothing reads
-the stored documents to confirm it, and the installer does not check that the
-storage is empty. A Page record carries no format: discovery labels a Page's
-documents with the formats the running build writes. A format 1 Page left on a
-target opens under a format 2 build, which reads its `position` and `richText`
-and ignores the other block fields.
+the stored documents to confirm it. A Page record carries no format: discovery
+labels a Page's documents with the formats the running build writes. page10's
+Pages from before format 2 stay and open: a format 2 build reads their
+`position` and `richText` and ignores the other block fields. They are deleted
+before a format 3 build, which moves node ids
+([DIRECTION.md](DIRECTION.md#rules-for-the-work)). No command empties a target.
 
 ### Stored forms and rollback rules
 
