@@ -513,12 +513,10 @@ test("moving a Page changes nothing D1 holds and leaves the account ready", asyn
   const w = await world(t);
   const parent = (await w.createPage({ title: "Parent" })).body.page_id;
   const child = (await w.createPage({ title: "Child" })).body.page_id;
-  const authority = (await w.call("owner", "list_pages")).body;
   const moved = await w.call("owner", "move_page", {
     page_id: child,
     parent_id: parent,
-    retry_token: authority.retry_token,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(moved.status, 200, JSON.stringify(moved.body));
   assert.equal(await w.catalogStorage().get(DIRTY), undefined);
@@ -536,7 +534,7 @@ test("Trash, restore and purge write the owner's D1 row after answering, so the 
   };
   const trashed = await w.call("owner", "delete_page", {
     page_id: pageId,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
   await w.settle();
@@ -550,7 +548,7 @@ test("Trash, restore and purge write the owner's D1 row after answering, so the 
   );
   const restored = await w.call("owner", "restore_page", {
     page_id: pageId,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(restored.status, 200, JSON.stringify(restored.body));
   await w.settle();
@@ -560,13 +558,13 @@ test("Trash, restore and purge write the owner's D1 row after answering, so the 
     (await list(w, { limit: 100 })).body.pages.map((page) => page.page_id).sort(),
     [pageId, kept].sort(),
   );
-  await w.call("owner", "delete_page", { page_id: pageId, idempotency_key: w.key() });
+  await w.call("owner", "delete_page", { page_id: pageId, nonce: w.key() });
   const preview = await w.call("owner", "purge_page", { page_id: pageId, action: "preview" });
   const purged = await w.call("owner", "purge_page", {
     page_id: pageId,
     action: "confirm",
     preview_token: preview.body.preview_token,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(purged.status, 200, JSON.stringify(purged.body));
   await w.settle();

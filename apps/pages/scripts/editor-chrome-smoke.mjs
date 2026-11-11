@@ -48,7 +48,7 @@ async function create(page, title, markdown) {
   const created = await tool(page, "create_page", {
     title: `${title} ${Date.now()}`,
     markdown,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   fixtures.push(created.page_id);
   return created.page_id;
@@ -244,7 +244,7 @@ try {
       assert.deepEqual(await blockTypes(a), ["Paragraph", finalType], `${kind}: no extra line`);
       // Opening the Page writes nothing.
       await a.waitForTimeout(300);
-      assert.deepEqual((await read(a, pageId)).heads, before.heads, `${kind}: open wrote`);
+      assert.deepEqual((await read(a, pageId)).revision, before.revision, `${kind}: open wrote`);
       await act();
       await expect.poll(() => blockTypes(a)).toEqual(["Paragraph", finalType, "Paragraph"]);
       await a.keyboard.insertText("After.");
@@ -281,7 +281,11 @@ try {
   await a.keyboard.press("ArrowDown");
   assert.deepEqual(await blockTypes(a), ["Paragraph", "Paragraph"]);
   await a.waitForTimeout(300);
-  assert.deepEqual((await read(a, figuresId)).heads, figuresBefore.heads, "moved, not written");
+  assert.deepEqual(
+    (await read(a, figuresId)).revision,
+    figuresBefore.revision,
+    "moved, not written",
+  );
   await a.keyboard.press("ArrowDown");
   await expect.poll(() => blockTypes(a)).toEqual(["Paragraph", "Paragraph", "Paragraph"]);
   await a.keyboard.insertText("Below the figures.");
@@ -462,13 +466,13 @@ try {
         const current = await read(a, pageId);
         await tool(a, "delete_page", {
           page_id: pageId,
-          base_heads: current.heads,
-          idempotency_key: crypto.randomUUID(),
+          revision: current.revision,
+          nonce: crypto.randomUUID(),
         });
         await purgeTrashedFixture(
           (operation, args) => tool(a, operation, args),
           pageId,
-          () => ({ idempotency_key: crypto.randomUUID() }),
+          () => ({ nonce: crypto.randomUUID() }),
         );
       } catch (error) {
         report.errors.push(`cleanup ${pageId}: ${String(error?.message ?? error).slice(0, 200)}`);

@@ -17,15 +17,13 @@ function recorder() {
   const calls = [];
   const tool = async (operation, args = {}) => {
     calls.push({ operation, args });
-    if (operation === "list_pages" && !args.in_trash)
-      return { pages: [], retry_token: "fixture-retry-token" };
     if (operation === "list_pages") return { pages: [{ page_id: pageId, state: "trashed" }] };
     return { page_id: pageId };
   };
   return { calls, tool };
 }
 
-test("Trash operations send owner-guarded requests with fresh catalog retry authority", async () => {
+test("Trash operations send owner-guarded requests, each with a new nonce", async () => {
   const { calls, tool } = recorder();
   assert.deepEqual(await listTrash(tool), [{ page_id: pageId, state: "trashed" }]);
   await restorePage(tool, pageId, "user:owner");
@@ -34,11 +32,8 @@ test("Trash operations send owner-guarded requests with fresh catalog retry auth
   const restore = calls.find((call) => call.operation === "restore_page").args;
   assert.equal(restore.page_id, pageId);
   assert.equal(restore.expected_principal, "user:owner");
-  assert.equal(restore.retry_token, "fixture-retry-token");
-  assert.match(
-    restore.idempotency_key,
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
-  );
+  assert.deepEqual(Object.keys(restore).sort(), ["expected_principal", "nonce", "page_id"]);
+  assert.match(restore.nonce, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
   const [preview, confirm] = calls.filter((call) => call.operation === "purge_page");
   assert.deepEqual(preview.args, {
     page_id: pageId,
@@ -47,7 +42,12 @@ test("Trash operations send owner-guarded requests with fresh catalog retry auth
   });
   assert.equal(confirm.args.action, "confirm");
   assert.equal(confirm.args.preview_token, "pp1.token");
-  assert.notEqual(confirm.args.idempotency_key, restore.idempotency_key);
+  assert.notEqual(confirm.args.nonce, restore.nonce);
+  assert.equal(
+    calls.filter((call) => call.operation === "list_pages").length,
+    1,
+    "only the Trash listing reads the catalog",
+  );
 });
 
 test("permanent deletion summary names comments, collaborators and invitations", () => {
@@ -76,7 +76,7 @@ test("permanent deletion summary names comments, collaborators and invitations",
 test("a superseded restore or purge is reported as not applied", async () => {
   const tool = async (operation) =>
     operation === "list_pages"
-      ? { pages: [], retry_token: "fixture-retry-token" }
+      ? { pages: [] }
       : { page_id: pageId, superseded: true, applied: false, state: "active" };
   await assert.rejects(restorePage(tool, pageId, "user:owner"), /changed/);
   await assert.rejects(
@@ -131,11 +131,11 @@ test("the viewer's largest limit matches the Worker's", () => {
 test("a peer's edit that beats Move to Trash gets a message a person can act on", () => {
   const stale = Object.assign(Error("Page changed; read_page again before editing"), {
     status: 409,
-    code: "stale_heads",
+    code: "stale_revision",
   });
   const mapped = moveToTrashError(stale);
   assert.equal(mapped.message, "Someone edited this Page while it was moving to Trash. Try again.");
-  assert.equal(mapped.code, "stale_heads");
+  assert.equal(mapped.code, "stale_revision");
   assert.equal(mapped.status, 409);
   const other = Object.assign(Error("Forbidden"), { status: 403, code: "forbidden" });
   assert.equal(moveToTrashError(other), other);

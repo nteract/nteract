@@ -13,6 +13,10 @@ class Storage {
     return new Map(this.values);
   }
   async put(key, value) {
+    if (typeof key === "object") {
+      for (const [name, entry] of Object.entries(key)) await this.put(name, entry);
+      return;
+    }
     this.values.set(key, value);
   }
   async delete(key) {

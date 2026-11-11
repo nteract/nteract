@@ -9,6 +9,7 @@ import worker, { Page } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { authenticate } from "./auth.mjs";
 import { plainStub } from "./plain-stub.mjs";
+import { headsFor } from "./revisions.mjs";
 import { WRITTEN_FORMATS } from "../model/document-types.mjs";
 
 const pageId = "33333333-3333-4333-8333-333333333333";
@@ -139,9 +140,8 @@ async function fixture(t, driver = "Kilo", agent) {
     const auth = await call("read_page", { include_content: false });
     return call("edit_page", {
       operations,
-      base_heads: auth.heads,
-      retry_token: auth.retry_token,
-      idempotency_key: key,
+      revision: auth.revision,
+      nonce: key,
     });
   };
   return {
@@ -170,7 +170,7 @@ test("a committed edit_page publishes the agent's caret over its new text", asyn
   assert.equal(agent.state, "active");
   const [target] = agent.targets;
   assert.equal(target.kind, "text");
-  assert.deepEqual(target.heads, receipt.heads);
+  assert.deepEqual(target.heads, await headsFor(f.storage, "page", receipt.revision));
   assert.equal(resolvePeerSelection(f.doc(), target).quote, "Tuesday");
   // Cursors live only in the broadcast, never in a stored journal entry.
   const stored = JSON.stringify([...f.storage.values.values()]);
@@ -185,9 +185,8 @@ test("a retried patch replays its receipt without publishing a new caret", async
     operations: [
       { op: "format_match", block_id: f.blockId(), match_text: "five", add: { strong: true } },
     ],
-    base_heads: auth.heads,
-    retry_token: auth.retry_token,
-    idempotency_key: "retry-once",
+    revision: auth.revision,
+    nonce: "retry-once",
   };
   const first = await f.call("edit_page", args);
   const seq = f.agents()[0].seq;
@@ -231,7 +230,7 @@ test("a session label travels from the header to the caret", async (t) => {
 test("reading markers name what the agent read, even if text lands during the read", async (t) => {
   const f = await fixture(t);
   const id = f.blockId();
-  // Suspend authority issuance, the await after the read snapshot is taken.
+  // Suspend the read at its first storage access, after its snapshot.
   let release, arrived;
   const held = new Promise((resolve) => (release = resolve));
   const reached = new Promise((resolve) => (arrived = resolve));
@@ -250,7 +249,7 @@ test("reading markers name what the agent read, even if text lands during the re
   const body = await reading;
   const [agent] = f.agents();
   assert.equal(agent.targets.length, 1, "only the hit the agent read");
-  assert.deepEqual(agent.targets[0].heads, body.heads);
+  assert.deepEqual(agent.targets[0].heads, await headsFor(f.storage, "page", body.revision));
   const range = resolvePeerSelection(f.doc(), agent.targets[0]);
   assert.equal(range.quote, "fade");
   assert.ok(range.start_utf16 > "A fade first. ".length, "the original hit, carried forward");

@@ -66,7 +66,7 @@ test(
         principal: w.member,
         role,
         expected_revision,
-        idempotency_key: w.key(),
+        nonce: w.key(),
       });
     assert.equal((await change("editor", 0)).status, 200);
     const env = w.env;

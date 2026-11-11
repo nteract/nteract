@@ -4,13 +4,11 @@ import * as A from "@automerge/automerge";
 import { createPageData, initializePage, projectPage } from "../model/page.mjs";
 import { comment, newCommentsDoc } from "../model/comments-test-support.mjs";
 import { readTool } from "./tool-reads.mjs";
-
-const authority = {
-  retry_token: "test-retry",
-  retry_until: "2026-11-01T00:00:00Z",
-};
+import { revisionTable } from "./revisions-fixture.mjs";
 function fixture(t, markdown = "# First\n\nKeep this passage.\n\n# Second\n\nOther content.") {
   let doc = A.from(createPageData({ pageId: "read-fixture", title: "Read fixture" }));
+  // The heads before the content: a revision the fixture Page has moved past.
+  const initial = A.getHeads(doc);
   doc = A.change(doc, (d) => initializePage(d, markdown));
   const blockId = Object.keys(doc.blocks)[0];
   const { comments } = comment(
@@ -21,18 +19,20 @@ function fixture(t, markdown = "# First\n\nKeep this passage.\n\n# Second\n\nOth
   );
   // Reads take the Page and its comments document together.
   commentsOf.set(doc, comments);
+  revisionsOf.set(doc, revisionTable());
   t.after(() => A.free(doc));
-  return { doc, blockId, comments };
+  return { doc, blockId, comments, revisions: revisionsOf.get(doc), initial };
 }
 const commentsOf = new WeakMap();
+const revisionsOf = new WeakMap();
 const read = (doc, args = {}, op = "read_page") =>
   readTool(doc, op, args, {
-    issueAuthority: async () => authority,
+    revisions: revisionsOf.get(doc),
     commentsDoc: commentsOf.get(doc),
   });
 
-test("presence is opt-in, captured before async authority, and counted in the read budget", async (t) => {
-  const { doc } = fixture(t);
+test("presence is opt-in, captured before the revision is named, and counted in the read budget", async (t) => {
+  const { doc, revisions } = fixture(t);
   const heads = A.getHeads(doc);
   const events = [];
   const presence = { heads, observed_at: 123, participants: [], progress: [] };
@@ -47,15 +47,18 @@ test("presence is opt-in, captured before async authority, and counted in the re
         assert.equal(captured, doc);
         return presence;
       },
-      async issueAuthority() {
-        events.push("authority");
-        return authority;
+      revisions: {
+        ...revisions,
+        handles(requests) {
+          events.push("revisions");
+          return revisions.handles(requests);
+        },
       },
     },
   );
-  assert.deepEqual(events, ["presence", "authority"]);
+  assert.deepEqual(events, ["presence", "revisions"]);
   assert.deepEqual(result.body.presence, presence);
-  assert.deepEqual(result.body.heads, heads);
+  assert.deepEqual(await revisions.heads("page", result.body.revision), heads);
   assert.deepEqual(A.getHeads(doc), heads);
   const tooBig = await readTool(
     doc,
@@ -63,7 +66,7 @@ test("presence is opt-in, captured before async authority, and counted in the re
     { include_content: false, include_presence: true, max_bytes: 4096 },
     {
       getPresence: () => ({ progress: [{ message: "x".repeat(10000) }] }),
-      issueAuthority: async () => authority,
+      revisions,
     },
   );
   assert.equal(tooBig.status, 413);
@@ -72,30 +75,30 @@ test("presence is opt-in, captured before async authority, and counted in the re
   assert.equal((await read(doc, { include_presence: false })).body.presence, undefined);
 });
 
-test("unfiltered reads preserve the old shape; explicit body reads exclude comments and preserve heads", async (t) => {
-  const { doc } = fixture(t);
+test("unfiltered reads preserve the old shape; explicit body reads exclude comments and keep the revision", async (t) => {
+  const { doc, revisions } = fixture(t);
   const before = A.getHeads(doc);
+  const revision = await revisions.handle("page", before);
   const legacy = await read(doc, { page_id: doc.page_id });
   assert.equal(legacy.status, 200);
-  // Additive fields only: the comments document's heads, and the stamp.
+  // Additive fields only: both revisions, and the stamp.
   assert.deepEqual(legacy.body, {
     ...projectPage(doc, commentsOf.get(doc)),
-    heads: before,
-    comment_heads: A.getHeads(commentsOf.get(doc)),
+    revision,
+    comment_revision: await revisions.handle("comments", A.getHeads(commentsOf.get(doc))),
     schema_features: ["comments-doc"],
-    ...authority,
   });
   assert.ok(legacy.body.comments[0].target.anchor.textObjectId);
   const body = await read(doc, { comments: "none" });
   assert.equal(body.status, 200);
   assert.deepEqual(body.body.comments, []);
   assert.equal(body.body.blocks[0].markdown, legacy.body.blocks[0].markdown);
-  assert.deepEqual(body.body.heads, before);
+  assert.equal(body.body.revision, revision);
   assert.deepEqual(body.body.schema_features, ["comments-doc"]);
   assert.deepEqual(A.getHeads(doc), before);
 });
 
-test("outline-only and selected reads keep retry authority and use compact comments", async (t) => {
+test("outline-only and selected reads name the revision and use compact comments", async (t) => {
   const { doc } = fixture(t);
   const outline = await read(doc, { include_content: false, outline_limit: 2 });
   assert.deepEqual(outline.body.blocks, []);
@@ -106,7 +109,7 @@ test("outline-only and selected reads keep retry authority and use compact comme
     include_content: false,
     outline_offset: 2,
     outline_limit: 2,
-    expected_heads: outline.body.heads,
+    revision: outline.body.revision,
   });
   assert.notDeepEqual(next.body.outline.entries, outline.body.outline.entries);
   const section = await read(doc, { section: "First" });
@@ -115,19 +118,20 @@ test("outline-only and selected reads keep retry authority and use compact comme
   assert.doesNotMatch(section.body.blocks[0].markdown, /Other content/);
   assert.equal(section.body.comments_mode, "summary");
   assert.equal(section.body.comments[0].messages, undefined);
-  assert.equal(section.body.retry_token, authority.retry_token);
+  assert.equal(section.body.revision, outline.body.revision);
+  assert.equal(section.body.retry_token, undefined);
   assert.doesNotMatch(JSON.stringify(section.body.comments), /relativePositionBase64|textObjectId/);
 });
 
 test("comment-only reads omit body and allow summaries without changing document heads", async (t) => {
-  const { doc } = fixture(t);
+  const { doc, revisions } = fixture(t);
   const result = await read(doc, { include_messages: false }, "list_page_comments");
   assert.equal(result.status, 200);
   assert.equal(result.body.blocks, undefined);
   assert.equal(result.body.comments[0].message_count, 1);
   assert.equal(result.body.comments[0].messages, undefined);
   assert.equal(result.body.comments[0].selectionContext.text, "Keep");
-  assert.deepEqual(result.body.heads, A.getHeads(doc));
+  assert.deepEqual(await revisions.heads("page", result.body.revision), A.getHeads(doc));
 });
 
 test("oversized content returns only an explicitly paginated outline and edit authority", async (t) => {
@@ -138,11 +142,11 @@ test("oversized content returns only an explicitly paginated outline and edit au
   assert.equal(result.body.blocks, undefined);
   assert.equal(result.body.comments, undefined);
   assert.ok(result.body.outline.entries.length);
-  assert.equal(result.body.retry_token, authority.retry_token);
+  assert.match(result.body.revision, /^r\d+$/);
   assert.ok(new TextEncoder().encode(JSON.stringify(result.body)).length <= 4096);
   const narrowed = await read(doc, {
     node_range: { block_id: Object.keys(doc.blocks)[0], from: 0, to: 1 },
-    expected_heads: result.body.heads,
+    revision: result.body.revision,
     comments: "none",
     max_bytes: 4096,
   });
@@ -161,6 +165,7 @@ test("a large comment response can be narrowed to summaries", async (t) => {
       body: "Long comment ".repeat(400),
     }).comments;
   commentsOf.set(expanded, more);
+  revisionsOf.set(expanded, revisionTable());
   t.after(() => A.free(expanded));
   const result = await read(expanded, { max_bytes: 4096 }, "list_page_comments");
   assert.equal(result.status, 413);
@@ -196,18 +201,27 @@ test("HTTP-equivalent input validation rejects unknown options and invalid budge
 });
 
 test("node ranges and outline continuation require the exact observed revision", async (t) => {
-  const { doc, blockId } = fixture(t);
+  const { doc, blockId, revisions, initial } = fixture(t);
+  // A revision this host named before the Page moved on.
+  const old = await revisions.handle("page", initial);
   for (const args of [
     { node_range: { block_id: blockId, from: 0, to: 1 } },
     { include_content: false, outline_offset: 1 },
   ]) {
     assert.equal((await read(doc, args)).body.code, "invalid_read_selector");
-    const stale = await read(doc, { ...args, expected_heads: ["a".repeat(64)] });
+    await assert.rejects(read(doc, { ...args, revision: "c1" }), { code: "invalid_revision" });
+    await assert.rejects(read(doc, { ...args, revision: "r999" }), (error) => {
+      assert.equal(error.code, "resync_required");
+      assert.deepEqual(error.details.current_heads, A.getHeads(doc));
+      return true;
+    });
+    const stale = await read(doc, { ...args, revision: old });
     assert.equal(stale.status, 409);
     assert.equal(stale.body.code, "read_revision_changed");
     assert.equal(stale.body.blocks, undefined);
     assert.ok(stale.body.outline.entries.length);
-    assert.deepEqual(stale.body.heads, A.getHeads(doc));
+    assert.deepEqual(await revisions.heads("page", stale.body.revision), A.getHeads(doc));
+    assert.notEqual(stale.body.revision, old);
   }
 });
 
@@ -221,7 +235,7 @@ test("legacy reads above the opt-in budget keep their complete response", async 
 });
 
 test("a small node read pages down its outline before rejecting fitting content", async (t) => {
-  const { doc, blockId } = fixture(
+  const { doc, blockId, revisions } = fixture(
     t,
     "Keep\n\n" +
       Array.from(
@@ -231,7 +245,7 @@ test("a small node read pages down its outline before rejecting fitting content"
   );
   const result = await read(doc, {
     node_range: { block_id: blockId, from: 75, to: 76 },
-    expected_heads: A.getHeads(doc),
+    revision: await revisions.handle("page", A.getHeads(doc)),
     comments: "none",
     max_bytes: 4096,
   });
@@ -243,7 +257,7 @@ test("a small node read pages down its outline before rejecting fitting content"
   const next = await read(doc, {
     include_content: false,
     outline_offset: result.body.outline.next_offset,
-    expected_heads: result.body.heads,
+    revision: result.body.revision,
     max_bytes: 4096,
   });
   assert.equal(next.status, 200);
@@ -251,11 +265,10 @@ test("a small node read pages down its outline before rejecting fitting content"
 });
 
 test("ambiguous sections expose a flat candidate list with revision authority", async (t) => {
-  const { doc } = fixture(t, "# Repeated\n\nKeep\n\n# Repeated\n\nOther");
+  const { doc, revisions } = fixture(t, "# Repeated\n\nKeep\n\n# Repeated\n\nOther");
   const result = await read(doc, { section: "Repeated" });
   assert.equal(result.status, 409);
   assert.equal(result.body.total, 2);
   assert.equal(result.body.candidates.length, 2);
-  assert.deepEqual(A.getHeads(doc), result.body.heads);
-  assert.equal(result.body.retry_token, authority.retry_token);
+  assert.deepEqual(A.getHeads(doc), await revisions.heads("page", result.body.revision));
 });

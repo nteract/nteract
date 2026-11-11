@@ -58,7 +58,7 @@ const key = crypto.randomUUID();
 const page = await tool(cookie, "create_page", {
   title: "Native Pages fixture",
   markdown: "The **fox** crossed the garden.",
-  idempotency_key: key,
+  nonce: key,
 });
 assert.ok(page.page_id);
 assert.equal(
@@ -77,14 +77,14 @@ await writeFile(
 const repeated = await tool(cookie, "create_page", {
   title: "Native Pages fixture",
   markdown: "The **fox** crossed the garden.",
-  idempotency_key: key,
+  nonce: key,
 });
 assert.equal(repeated.page_id, page.page_id, "Create replay must reuse the same Page");
-await tool(cookie, "create_page", { title: "Changed payload", idempotency_key: key }, 409);
+await tool(cookie, "create_page", { title: "Changed payload", nonce: key }, 409);
 const mutation = {
   page_id: page.page_id,
-  base_heads: read.heads,
-  idempotency_key: crypto.randomUUID(),
+  revision: read.revision,
+  nonce: crypto.randomUUID(),
   operations: [
     { op: "replace_match", block_id: read.blocks[0].id, match_text: "fox", replacement: "otter" },
   ],
@@ -92,13 +92,13 @@ const mutation = {
 const edited = await tool(cookie, "edit_page", mutation);
 const replay = await tool(cookie, "edit_page", mutation);
 assert.deepEqual(replay, edited, "Mutation replay must return the same receipt");
-await tool(cookie, "edit_page", { ...mutation, idempotency_key: crypto.randomUUID() }, 409);
+await tool(cookie, "edit_page", { ...mutation, nonce: crypto.randomUUID() }, 409);
 const current = await tool(cookie, "read_page", { page_id: page.page_id });
 assert.equal(current.blocks[0].markdown, "The **otter** crossed the garden.");
 const comment = await tool(cookie, "manage_page_comment", {
   page_id: page.page_id,
-  base_heads: current.heads,
-  idempotency_key: crypto.randomUUID(),
+  revision: current.revision,
+  nonce: crypto.randomUUID(),
   action: "add",
   block_id: current.blocks[0].id,
   selected_text: "otter",
@@ -126,8 +126,8 @@ assert.match(mcpResult.result.contents[0].text, /passage comment/);
 const beforeInsert = JSON.parse(mcpResult.result.contents[0].text);
 await tool(cookie, "edit_page", {
   page_id: page.page_id,
-  base_heads: beforeInsert.heads,
-  idempotency_key: crypto.randomUUID(),
+  revision: beforeInsert.revision,
+  nonce: crypto.randomUUID(),
   operations: [{ op: "insert_markdown", after_block_id: null, markdown: "A second block." }],
 });
 const beforeMove = await tool(cookie, "read_page", { page_id: page.page_id });
@@ -148,8 +148,8 @@ const moveResponse = await fetch(origin + "/mcp", {
       name: "edit_page",
       arguments: {
         page_id: page.page_id,
-        base_heads: beforeMove.heads,
-        idempotency_key: crypto.randomUUID(),
+        revision: beforeMove.revision,
+        nonce: crypto.randomUUID(),
         operations: [{ op: "move_block", block_id: current.blocks[0].id, after_block_id: null }],
       },
     },
@@ -176,27 +176,27 @@ console.log(
 const disposable = await tool(cookie, "create_page", {
   title: "Delete guard fixture",
   markdown: "Keep newer content",
-  idempotency_key: crypto.randomUUID(),
+  nonce: crypto.randomUUID(),
 });
 const initial = await tool(cookie, "read_page", { page_id: disposable.page_id });
 await tool(cookie, "edit_page", {
   page_id: disposable.page_id,
-  base_heads: initial.heads,
-  idempotency_key: crypto.randomUUID(),
+  revision: initial.revision,
+  nonce: crypto.randomUUID(),
   operations: [{ op: "set_title", title: "Newer content" }],
 });
 await tool(
   cookie,
   "delete_page",
-  { page_id: disposable.page_id, base_heads: initial.heads, idempotency_key: crypto.randomUUID() },
+  { page_id: disposable.page_id, revision: initial.revision, nonce: crypto.randomUUID() },
   409,
 );
 const surviving = await tool(cookie, "read_page", { page_id: disposable.page_id });
 assert.equal(surviving.title, "Newer content");
 const deletion = {
   page_id: disposable.page_id,
-  base_heads: surviving.heads,
-  idempotency_key: crypto.randomUUID(),
+  revision: surviving.revision,
+  nonce: crypto.randomUUID(),
 };
 const deleted = await tool(cookie, "delete_page", deletion);
 assert.equal(deleted.state, "trashed");
@@ -205,19 +205,19 @@ const trashed = await tool(cookie, "read_page", { page_id: disposable.page_id })
 assert.equal(trashed.trash.state, "trashed");
 const restored = await tool(cookie, "restore_page", {
   page_id: disposable.page_id,
-  idempotency_key: crypto.randomUUID(),
+  nonce: crypto.randomUUID(),
 });
 assert.equal(restored.state, "active");
 const restoredRead = await tool(cookie, "read_page", { page_id: disposable.page_id });
 await tool(cookie, "delete_page", {
   page_id: disposable.page_id,
-  base_heads: restoredRead.heads,
-  idempotency_key: crypto.randomUUID(),
+  revision: restoredRead.revision,
+  nonce: crypto.randomUUID(),
 });
 await purgeTrashedFixture(
   (operation, args) => tool(cookie, operation, args),
   disposable.page_id,
-  () => ({ idempotency_key: crypto.randomUUID() }),
+  () => ({ nonce: crypto.randomUUID() }),
 );
 await tool(cookie, "read_page", { page_id: disposable.page_id }, 404);
 console.log(

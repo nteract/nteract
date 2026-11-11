@@ -15,7 +15,7 @@
  * journal intents that name them.
  */
 import { markCatalogIndexDirty } from "./catalog-index.mjs";
-import { RETRY_LIFETIME_MS } from "./operation-journal.mjs";
+import { RECEIPT_LIFETIME_MS } from "./operation-journal.mjs";
 import { operationIntent } from "./operation-intent.mjs";
 import { locationEntries, projectOf, rekeyedEntries, restoreTarget } from "./catalog-location.mjs";
 
@@ -101,7 +101,7 @@ export function lifecycleSlot(operation, pageId, intentKey, now = Date.now(), pl
           pending: true,
           reservation: operation,
           intent: intentKey,
-          expires_at: now + RETRY_LIFETIME_MS,
+          expires_at: now + RECEIPT_LIFETIME_MS,
           ...(placement && { space_id: placement.space_id, parent_id: placement.parent_id }),
         },
       }

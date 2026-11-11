@@ -58,12 +58,11 @@ async function mutate(operation, args = {}) {
   );
   return call(operation, {
     ...args,
-    base_heads:
+    revision:
       operation === "delete_page"
-        ? (await call("read_page", { page_id: args.page_id })).heads
-        : authority.heads,
-    retry_token: authority.retry_token,
-    idempotency_key: crypto.randomUUID(),
+        ? (await call("read_page", { page_id: args.page_id })).revision
+        : authority.revision,
+    nonce: crypto.randomUUID(),
   });
 }
 /** Put a PNG on the clipboard, as "Copy image" does. */
@@ -580,8 +579,7 @@ try {
     page_id: pageId,
     action: "resolve",
     thread_ids: openIds,
-    retry_token: authority.retry_token,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   };
   const resolved = await call("manage_page_comment", batch);
   assert.deepEqual(
@@ -591,10 +589,11 @@ try {
       outcome: n === 0 ? "already_resolved" : "resolved",
     })),
   );
-  assert.equal(resolved.heads.length, 1);
+  // A comment never moves the Page revision; the batch is one comments revision.
+  assert.match(resolved.comment_revision, /^c\d+$/);
   assert.deepEqual(
-    (await call("read_page", { page_id: pageId, comments: "none" })).heads,
-    resolved.heads,
+    (await call("read_page", { page_id: pageId, comments: "none" })).revision,
+    resolved.revision,
   );
   assert.deepEqual(await call("manage_page_comment", batch), resolved, "an exact retry replays");
   assert.deepEqual(
@@ -606,7 +605,7 @@ try {
       ...batch,
       action: "reopen",
       thread_ids: [openIds[1], "no-such-thread"],
-      idempotency_key: crypto.randomUUID(),
+      nonce: crypto.randomUUID(),
     }),
     /tool error invalid_comment_selector/,
   );
@@ -633,8 +632,7 @@ try {
       await purgeTrashedFixture(call, pageId, async () => {
         const authority = await call("list_pages");
         return {
-          retry_token: authority.retry_token,
-          idempotency_key: crypto.randomUUID(),
+          nonce: crypto.randomUUID(),
         };
       });
       report.fixtureDeleted = true;

@@ -83,7 +83,7 @@
         "response": {
           "status": 409,
           "body": {
-            "error": "An earlier request with this idempotency_key is still being applied",
+            "error": "An earlier request with this nonce is still being applied",
             "code": "operation_pending"
           }
         }
@@ -95,13 +95,13 @@
       "state": { "name": "received" },
       "event": { "type": "inspected", "row": "conflict" },
       "expect": {
-        "state": { "name": "refused", "code": "idempotency_conflict" },
+        "state": { "name": "refused", "code": "nonce_conflict" },
         "effects": [],
         "response": {
           "status": 409,
           "body": {
-            "error": "idempotency_key was used for a different request",
-            "code": "idempotency_conflict"
+            "error": "This nonce was used for a different request",
+            "code": "nonce_conflict"
           }
         }
       }
@@ -251,7 +251,7 @@
         "response": {
           "status": 503,
           "body": {
-            "error": "The move was written but its durability could not be confirmed; retry the same key, token and payload",
+            "error": "The move was written but its durability could not be confirmed; retry with the same nonce and arguments",
             "code": "move_unconfirmed",
             "retryable": true
           }

@@ -13,13 +13,16 @@ const invalid = (message) => {
   throw Object.assign(Error(message), { status: 400, code: "invalid_change_selector" });
 };
 
-/** A captured revision supplies the complete net delta and its edit authority.
+/** A captured revision supplies the complete net delta. `since_revision`
+ * and `since_comment_revision` resolve through the host's handle table
+ * (`revisions`, as readTool takes it); a handle it no longer holds is
+ * `resync_required`. The result names the current revisions as handles.
  * Oversized results fail as a whole; current heads never imply a partial delta.
  */
 export async function readChangesTool(
   doc,
   args,
-  { issueAuthority, recovery, historyIncomplete, commentsDoc } = {},
+  { revisions, recovery, historyIncomplete, commentsDoc } = {},
 ) {
   const heads = A.getHeads(doc);
   let maxBytes = DEFAULT_BYTES,
@@ -31,7 +34,13 @@ export async function readChangesTool(
     if (
       Object.keys(args).some(
         (key) =>
-          !["page_id", "since_heads", "since_comment_heads", "comments", "max_bytes"].includes(key),
+          ![
+            "page_id",
+            "since_revision",
+            "since_comment_revision",
+            "comments",
+            "max_bytes",
+          ].includes(key),
       )
     )
       invalid("Unknown change-read argument");
@@ -41,18 +50,28 @@ export async function readChangesTool(
     )
       invalid("max_bytes must be an integer from 4096 to 262144");
     maxBytes = args.max_bytes ?? DEFAULT_BYTES;
-    payload = projectReadChanges(
+    if (args.since_revision === undefined) invalid("since_revision from a read is required");
+    const since = await revisions.heads("page", args.since_revision, "since_revision");
+    const sinceComments =
+      args.since_comment_revision === undefined
+        ? undefined
+        : await revisions.heads("comments", args.since_comment_revision, "since_comment_revision");
+    const {
+      since_heads: _since,
+      heads: _heads,
+      comment_heads: _commentHeads,
+      ...delta
+    } = projectReadChanges(
       doc,
       {
-        since_heads: args.since_heads,
-        ...(args.since_comment_heads !== undefined && {
-          since_comment_heads: args.since_comment_heads,
-        }),
+        since_heads: since,
+        ...(sinceComments !== undefined && { since_comment_heads: sinceComments }),
         comments: args.comments,
         max_bytes: maxBytes,
       },
       commentsDoc,
     );
+    payload = { ...delta, since_revision: args.since_revision };
   } catch (error) {
     if (!CHANGE_ERROR_CODES.has(error.code)) throw error;
     status = error.status;
@@ -66,11 +85,13 @@ export async function readChangesTool(
       }),
     };
   }
-  const authority = await issueAuthority();
+  const [revision, comment_revision] = await revisions.handles([
+    ["page", heads],
+    ...(commentsDoc ? [["comments", A.getHeads(commentsDoc)]] : []),
+  ]);
   const common = {
-    heads,
-    ...(commentsDoc && { comment_heads: A.getHeads(commentsDoc) }),
-    ...authority,
+    revision,
+    ...(comment_revision && { comment_revision }),
     ...(recovery && { recovery }),
     ...(historyIncomplete && { history_incomplete: historyIncomplete }),
   };

@@ -3,11 +3,13 @@
 // never imports it.
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
+import { readRevision } from "./operation-journal.mjs";
 import { createAuthFixture } from "../auth-fixtures.mjs";
 import { sqliteD1 } from "../test/sqlite-d1.mjs";
 import worker, { Catalog, Page, Space } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { plainStub } from "./plain-stub.mjs";
+import { operationKey } from "./mutations.mjs";
 import { LOCATION_SHAPE_KEY, shapeState } from "./location-shape.mjs";
 
 /** A response as a Durable Object stub returns it on Cloudflare Workers: its
@@ -127,7 +129,15 @@ export async function world(t, { index = "1", storage: newStorage = () => new St
     if (pages.has(id)) return pages.get(id);
     const storage = new Storage();
     let doc;
-    const handle = { doc: () => doc, broadcast() {}, on() {}, off() {} };
+    const handle = {
+      doc: () => doc,
+      async update(fn) {
+        doc = fn(doc);
+      },
+      broadcast() {},
+      on() {},
+      off() {},
+    };
     const page = Object.assign(Object.create(Page.prototype), {
       env,
       ready: Promise.resolve(),
@@ -215,7 +225,7 @@ export async function world(t, { index = "1", storage: newStorage = () => new St
     const created = await call("owner", "create_project", {
       title,
       ...(description !== undefined && { description }),
-      idempotency_key: key(),
+      nonce: key(),
     });
     assert.equal(created.status, 200, JSON.stringify(created.body));
     return created.body;
@@ -223,13 +233,21 @@ export async function world(t, { index = "1", storage: newStorage = () => new St
   const createPage = async (args, who = "owner") => {
     const created = await call(who, "create_page", {
       title: "Untitled",
-      idempotency_key: key(),
+      nonce: key(),
       ...args,
     });
     return created;
   };
   const heads = (pageId) => A.getHeads(pages.get(pageId).handle.doc());
   const catalogStorage = (principal = owner) => env.CATALOGS.getByName(principal).ctx.storage;
+  /** The storage key of `principal`'s receipt for `nonce` in `lane`. */
+  const receiptKey = (nonce, principal = owner, lane = "catalog") =>
+    operationKey({ nonce }, { principal }, lane);
+  /** `principal`'s Catalog receipt for `nonce`, or undefined. */
+  const receipt = async (nonce, principal = owner) =>
+    catalogStorage(principal).get(await receiptKey(nonce, principal));
+  /** A revision handle of the Page as it is now, minted in its host. */
+  const revision = (pageId) => readRevision(pages.get(pageId).ctx.storage, "page", heads(pageId));
   /** Run every held background job, including ones they start, to the end. */
   const settle = async () => {
     while (jobs.length) await Promise.allSettled(jobs.splice(0));
@@ -253,7 +271,10 @@ export async function world(t, { index = "1", storage: newStorage = () => new St
     createProject,
     createPage,
     heads,
+    revision,
     catalogStorage,
+    receiptKey,
+    receipt,
     page: (id) => pages.get(id),
     catalog: (principal = owner) => env.CATALOGS.getByName(principal),
   };

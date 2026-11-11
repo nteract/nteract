@@ -61,7 +61,7 @@ async function create(title, markdown) {
   const result = await tool("create_page", {
     title,
     markdown,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(result.status, 200, JSON.stringify(result.body));
   return result.body.page_id;
@@ -175,7 +175,7 @@ try {
     page_id: future,
     comments: "none",
   });
-  assert.deepEqual([...afterStale.body.heads].sort(), [...stampedRead.body.heads].sort());
+  assert.deepEqual(afterStale.body.revision, stampedRead.body.revision);
   checkpoint("a stale build's edit is refused and the Page is unchanged");
 
   stage = "the host accepts edits from a build with the feature";
@@ -189,14 +189,14 @@ try {
     page_id: future,
     comments: "none",
   });
-  assert.notDeepEqual([...futureRead.body.heads].sort(), [...stampedRead.body.heads].sort());
+  assert.notDeepEqual(futureRead.body.revision, stampedRead.body.revision);
   checkpoint("a current build's edit is accepted");
 
   stage = "the host refuses writes it can't express";
   const refused = await tool("edit_page", {
     page_id: future,
-    base_heads: futureRead.body.heads,
-    idempotency_key: crypto.randomUUID(),
+    revision: futureRead.body.revision,
+    nonce: crypto.randomUUID(),
     operations: [
       {
         op: "replace_match",
@@ -229,7 +229,7 @@ try {
   await page.keyboard.type(" renamed");
   await page.waitForTimeout(1500);
   const after = await tool("read_page", { page_id: future, comments: "none" });
-  assert.deepEqual([...after.body.heads].sort(), [...futureRead.body.heads].sort());
+  assert.deepEqual(after.body.revision, futureRead.body.revision);
   assert.equal(after.body.blocks[0].markdown, "Words from a newer build.");
   checkpoint("the viewer shows the notice and writes nothing");
 
@@ -269,7 +269,7 @@ try {
   const math = await tool("create_page", {
     title: "Math " + Date.now(),
     markdown: "Intro\n\nArea: $\\pi r^2$ and `$kept$`.",
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(math.status, 400, JSON.stringify(math.body));
   assert.equal(math.body.code, "unsupported_markdown");
@@ -317,8 +317,7 @@ try {
       document_id: interpretAsDocumentId(generateAutomergeUrl()),
       initial_snapshot_base64: Buffer.from(A.save(draft)).toString("base64"),
       title: draftTitle,
-      retry_token: prepared.body.retry_token,
-      idempotency_key: crypto.randomUUID(),
+      nonce: crypto.randomUUID(),
     },
   );
   assert.equal(registered.status, 400, JSON.stringify(registered.body));

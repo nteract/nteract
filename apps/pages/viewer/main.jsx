@@ -1293,15 +1293,15 @@ function App() {
     )
       return;
     try {
-      const prepared = await tool("list_pages");
       if (deleting.identity.principal !== authentication.current?.identity?.principal)
         throw Error("Sign in with this Page's original account to move it to Trash.");
+      // The heads this tab shows guard the move: a peer's edit that lands first
+      // refuses it (BROWSER_TRASH_GUARD in worker/tool-arguments.mjs).
       const trashed = await tool("delete_page", {
         page_id: deleting.pageId,
         expected_principal: deleting.identity.principal,
-        retry_token: prepared.retry_token,
         base_heads: editor.module.pageHeads(deleting.doc),
-        idempotency_key: crypto.randomUUID(),
+        nonce: crypto.randomUUID(),
       }).catch((error) => {
         throw moveToTrashError(error);
       });

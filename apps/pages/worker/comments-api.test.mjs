@@ -8,15 +8,14 @@ import { fixture } from "./trash-fixture.mjs";
 
 let keys = 0;
 const key = () => `contract-${String(++keys).padStart(4, "0")}-${crypto.randomUUID()}`;
-const comment = (f, who, args) =>
-  f.tool(who, "manage_page_comment", { idempotency_key: key(), ...args });
+const comment = (f, who, args) => f.tool(who, "manage_page_comment", { nonce: key(), ...args });
 
 test("comment writes never change the Page's heads", async (t) => {
   const f = await fixture(t);
   const heads = f.heads();
   const added = await comment(f, "owner", { action: "add", block_id: f.blockId, body: "Block" });
   assert.equal(added.status, 200, JSON.stringify(added.body));
-  // No base_heads: a block comment doesn't read Page text.
+  // No revision: a block comment doesn't read Page text.
   const threadId = added.body.result.thread_id;
   const steps = [
     { action: "reply", thread_id: threadId, body: "Reply" },
@@ -25,26 +24,34 @@ test("comment writes never change the Page's heads", async (t) => {
     { action: "edit", thread_id: threadId, message_id: added.body.result.message_id, body: "Ed" },
     { action: "delete_message", thread_id: threadId, message_id: added.body.result.message_id },
   ];
-  let commentHeads = added.body.comment_heads;
+  let commentHeads = await f.commentHeadsOf(added.body.comment_revision);
   for (const step of steps) {
     const result = await comment(f, "owner", step);
     assert.equal(result.status, 200, `${step.action}: ${JSON.stringify(result.body)}`);
-    assert.deepEqual(result.body.heads, heads, `${step.action} keeps the Page's heads`);
-    assert.notDeepEqual(result.body.comment_heads, commentHeads, `${step.action} moves comments`);
-    commentHeads = result.body.comment_heads;
+    assert.deepEqual(
+      await f.headsOf(result.body.revision),
+      heads,
+      `${step.action} keeps the Page's heads`,
+    );
+    assert.notDeepEqual(
+      await f.commentHeadsOf(result.body.comment_revision),
+      commentHeads,
+      `${step.action} moves comments`,
+    );
+    commentHeads = await f.commentHeadsOf(result.body.comment_revision);
   }
   assert.deepEqual(f.heads(), heads);
   assert.deepEqual(f.commentHeads(), commentHeads);
   // An edit from the revision read before all of that still applies exactly.
   const edit = await f.tool("owner", "edit_page", {
-    idempotency_key: key(),
-    base_heads: heads,
+    nonce: key(),
+    revision: await f.revision(heads),
     operations: [{ op: "set_title", title: "Still current" }],
   });
   assert.equal(edit.status, 200, JSON.stringify(edit.body));
 });
 
-test("a passage comment still resolves at the base_heads the agent read", async (t) => {
+test("a passage comment still resolves at the revision the agent read", async (t) => {
   const f = await fixture(t);
   const read = await f.tool("owner", "read_page", { comments: "none" });
   const missing = await comment(f, "owner", {
@@ -54,40 +61,42 @@ test("a passage comment still resolves at the base_heads the agent read", async 
     body: "Which?",
   });
   assert.equal(missing.status, 400);
-  assert.equal(missing.body.code, "invalid_edit_selector");
+  assert.equal(missing.body.code, "invalid_revision");
   const added = await comment(f, "owner", {
     action: "add",
     block_id: f.blockId,
     selected_text: "Friday",
     body: "Which?",
-    base_heads: read.body.heads,
+    revision: read.body.revision,
   });
   assert.equal(added.status, 200, JSON.stringify(added.body));
-  assert.deepEqual(added.body.heads, read.body.heads);
+  assert.equal(added.body.revision, read.body.revision);
 });
 
-test("reads carry comment_heads, and read_page_changes lists comment changes from them", async (t) => {
+test("reads carry comment_revision, and read_page_changes lists comment changes from it", async (t) => {
   const f = await fixture(t);
   const read = await f.tool("owner", "read_page", { comments: "summary" });
-  assert.deepEqual(read.body.comment_heads, f.commentHeads());
+  assert.deepEqual(await f.commentHeadsOf(read.body.comment_revision), f.commentHeads());
   const listed = await f.tool("owner", "list_page_comments", {});
-  assert.deepEqual(listed.body.comment_heads, f.commentHeads());
+  assert.deepEqual(await f.commentHeadsOf(listed.body.comment_revision), f.commentHeads());
   const [existing] = listed.body.comments;
   const resolved = await comment(f, "owner", { action: "resolve", thread_id: existing.id });
   assert.equal(resolved.status, 200, JSON.stringify(resolved.body));
   const changes = await f.tool("owner", "read_page_changes", {
-    since_heads: read.body.heads,
-    since_comment_heads: read.body.comment_heads,
+    since_revision: read.body.revision,
+    since_comment_revision: read.body.comment_revision,
   });
   assert.equal(changes.status, 200, JSON.stringify(changes.body));
   assert.deepEqual(changes.body.changes, [], "no content changed");
-  assert.deepEqual(changes.body.heads, read.body.heads);
-  assert.deepEqual(changes.body.comment_heads, f.commentHeads());
+  assert.equal(changes.body.revision, read.body.revision);
+  assert.deepEqual(await f.commentHeadsOf(changes.body.comment_revision), f.commentHeads());
   assert.equal(changes.body.comments.length, 1);
   assert.equal(changes.body.comments[0].thread_id, existing.id);
   assert.equal(changes.body.comments[0].state, "resolved");
   // Without a comments baseline: a snapshot of every current thread.
-  const unknown = await f.tool("owner", "read_page_changes", { since_heads: read.body.heads });
+  const unknown = await f.tool("owner", "read_page_changes", {
+    since_revision: read.body.revision,
+  });
   assert.equal(unknown.body.comments_snapshot, true);
   assert.equal(unknown.body.comments.length, listed.body.comments.length);
 });
@@ -144,8 +153,8 @@ test("a commenter comments but can't edit, and touches only its own messages", a
   );
   // Editing the Page is refused.
   const edit = await f.tool("member", "edit_page", {
-    idempotency_key: key(),
-    base_heads: heads,
+    nonce: key(),
+    revision: await f.revision(heads),
     operations: [{ op: "set_title", title: "Nope" }],
   });
   assert.equal(edit.status, 403);
@@ -182,7 +191,7 @@ test("the purge preview counts the comments document's threads", async (t) => {
   assert.ok(A.getHeads(f.commentsDoc()).length > 0);
 });
 
-test("a comment receipt's heads are the Page revision it read, stable across retries", async (t) => {
+test("a comment receipt's revision is the Page revision it read, stable across retries", async (t) => {
   const f = await fixture(t);
   const before = f.heads();
   // A browser edit lands while the comment is being journaled.
@@ -193,7 +202,7 @@ test("a comment receipt's heads are the Page revision it read, stable across ret
     f.edit("typed while commenting");
   };
   const args = {
-    idempotency_key: key(),
+    nonce: key(),
     action: "add",
     block_id: f.blockId,
     body: "Concurrent",
@@ -202,10 +211,12 @@ test("a comment receipt's heads are the Page revision it read, stable across ret
   f.hooks.flush = undefined;
   assert.equal(first.status, 200, JSON.stringify(first.body));
   assert.ok(typed);
-  assert.deepEqual(first.body.heads, before, "the baseline, not the live Page");
+  assert.deepEqual(await f.headsOf(first.body.revision), before, "the baseline, not the live Page");
   assert.notDeepEqual(f.heads(), before);
   // Polling from the receipt still returns the browser's edit.
-  const changes = await f.tool("owner", "read_page_changes", { since_heads: first.body.heads });
+  const changes = await f.tool("owner", "read_page_changes", {
+    since_revision: first.body.revision,
+  });
   assert.equal(changes.status, 200, JSON.stringify(changes.body));
   assert.equal(changes.body.title_changed, true);
   assert.equal(changes.body.title, "typed while commenting");
@@ -213,34 +224,4 @@ test("a comment receipt's heads are the Page revision it read, stable across ret
   f.edit(" and more");
   const retry = await f.tool("owner", "manage_page_comment", args);
   assert.deepEqual(retry.body, first.body);
-});
-
-test("receipts journaled before the comments document keep their Page heads", async (t) => {
-  const f = await fixture(t);
-  const args = { idempotency_key: key(), action: "add", block_id: f.blockId, body: "Old build" };
-  const fresh = await f.tool("owner", "manage_page_comment", args);
-  assert.equal(fresh.status, 200);
-  // Rewrite that entry as a build before the comments document stored it:
-  // journaled on the Page, its receipt's heads Page heads.
-  const path = `host/operation/${args.idempotency_key}`;
-  const entry = await f.storage.get(path);
-  const pageHeads = f.heads();
-  const legacy = {
-    fingerprint: entry.fingerprint,
-    pending: false,
-    receipt: { page_id: entry.receipt.page_id, heads: pageHeads, result: entry.receipt.result },
-  };
-  await f.storage.put(path, legacy);
-  const retried = await f.tool("owner", "manage_page_comment", args);
-  assert.equal(retried.status, 200, JSON.stringify(retried.body));
-  assert.equal(retried.body.legacy_receipt, true);
-  assert.deepEqual(retried.body.heads, pageHeads, "Page heads stay labeled as Page heads");
-  assert.equal(retried.body.comment_heads, undefined, "never relabeled as comment heads");
-  // A legacy entry still pending never replays into the comments document.
-  await f.storage.put(path, { ...legacy, pending: true, changes: [] });
-  const commentHeads = f.commentHeads();
-  const pending = await f.tool("owner", "manage_page_comment", args);
-  assert.equal(pending.status, 409, JSON.stringify(pending.body));
-  assert.equal(pending.body.code, "operation_pending");
-  assert.deepEqual(f.commentHeads(), commentHeads);
 });

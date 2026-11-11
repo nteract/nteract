@@ -13,6 +13,7 @@ import {
 import { createPageData, initializePage, applyPageOperation, orderedBlockIds } from "./page.mjs";
 import { textPath } from "./richtext.mjs";
 import { readTool } from "../worker/tool-reads.mjs";
+import { revisionTable } from "../worker/revisions-fixture.mjs";
 import { resolvePeerSelection } from "./presence.mjs";
 
 const target = [{ kind: "block", block_id: "b" }];
@@ -153,9 +154,7 @@ async function readBody(doc, args) {
     doc,
     "read_page",
     { page_id: "page_fixture", ...args },
-    {
-      issueAuthority: () => ({}),
-    },
+    { revisions: revisionTable() },
   );
   assert.equal(result.status, 200);
   return result.body;

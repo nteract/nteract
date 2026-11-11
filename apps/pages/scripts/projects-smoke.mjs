@@ -154,7 +154,7 @@ try {
   const project = await ok("owner", "create_project", {
     title,
     description: "Where the launch lives.",
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.match(project.project_id, /^prj_/);
   assert.equal(project.url, `${origin}/project/${project.project_id}`);
@@ -165,13 +165,13 @@ try {
     title: "Roadmap",
     markdown: "What ships when.",
     project_id: project.project_id,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   const plan = await ok("owner", "create_page", {
     title: "Q4 plan",
     markdown: "The fourth quarter.",
     parent_id: roadmap.page_id,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(plan.project_id, project.project_id);
   assert.equal(plan.parent_id, roadmap.page_id);
@@ -198,9 +198,8 @@ try {
   );
   const contentEdit = {
     project_id: project.project_id,
-    base_heads: content.heads,
-    retry_token: content.retry_token,
-    idempotency_key: crypto.randomUUID(),
+    revision: content.revision,
+    nonce: crypto.randomUUID(),
     operations: [{ op: "insert_markdown", markdown: "Content selector sentinel." }],
   };
   const contentReceipt = await ok("owner", "edit_page", contentEdit);
@@ -212,9 +211,9 @@ try {
     ),
   );
   const aliasReceipt = await ok("owner", "edit_page", aliasEdit);
-  assert.deepEqual(aliasReceipt.heads, contentReceipt.heads);
+  assert.deepEqual(aliasReceipt.revision, contentReceipt.revision);
   const contentReadback = await ok("owner", "read_page", { project_id: project.project_id });
-  assert.deepEqual(contentReadback.heads, contentReceipt.heads);
+  assert.deepEqual(contentReadback.revision, contentReceipt.revision);
   assert.equal(
     contentReadback.blocks.filter((block) => block.markdown.includes("Content selector sentinel."))
       .length,
@@ -271,14 +270,13 @@ try {
   assert.equal(fetched.revision, 0);
   // The content document is not in the tree: it can't move or go to Trash.
   for (const [operation, args] of [
-    ["delete_page", { page_id: project.document_id, idempotency_key: crypto.randomUUID() }],
+    ["delete_page", { page_id: project.document_id, nonce: crypto.randomUUID() }],
     [
       "move_page",
       {
         page_id: project.document_id,
         parent_id: roadmap.page_id,
-        retry_token: listed.retry_token,
-        idempotency_key: crypto.randomUUID(),
+        nonce: crypto.randomUUID(),
       },
     ],
   ]) {
@@ -428,7 +426,7 @@ try {
     title: "Architecture",
     markdown: "How the pieces fit.",
     parent_id: project.document_id,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(underContent.isError, true);
   assert.equal(underContent.body.code, "parent_unavailable");
@@ -436,7 +434,7 @@ try {
     title: "Architecture",
     markdown: "How the pieces fit.",
     project_id: project.project_id,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(topPage.parent_id, null);
   const topPageRead = await ok("owner", "read_page", {
@@ -673,8 +671,8 @@ try {
     assert.ok(block, `read_page finds "${matchText}"`);
     await ok("owner", "edit_page", {
       page_id: pageId,
-      base_heads: read.heads,
-      idempotency_key: crypto.randomUUID(),
+      revision: read.revision,
+      nonce: crypto.randomUUID(),
       operations: [{ op: "replace_match", block_id: block.id, match_text: matchText, replacement }],
     });
     await expect(tab.locator("wg-content").first()).toContainText(replacement, {
@@ -865,7 +863,7 @@ try {
       email: "alice@localhost",
       role: "editor",
       expected_revision: current.body.access.revision,
-      idempotency_key: crypto.randomUUID(),
+      nonce: crypto.randomUUID(),
     });
     assert.equal(invited.status, 200, JSON.stringify(invited.body));
   }
@@ -924,19 +922,19 @@ try {
   // groups, the address through reload and Back, and the list on a phone.
   const aliceProject = await ok("editor", "create_project", {
     title: "Field notes " + Date.now(),
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   const alpha = await ok("editor", "create_page", {
     title: "Alpha survey",
     markdown: "Sites to visit.",
     project_id: aliceProject.project_id,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(alpha.project_id, aliceProject.project_id);
   const zeta = await ok("editor", "create_page", {
     title: "Zeta loose note",
     markdown: "Outside any Project.",
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   // An edit after the catalog entry was written, so Zeta's content time
   // moves past its updated_at once the host reports it (at most one content
@@ -947,8 +945,8 @@ try {
     assert.ok(block, "read_page finds Zeta's paragraph");
     await ok("editor", "edit_page", {
       page_id: zeta.page_id,
-      base_heads: read.heads,
-      idempotency_key: crypto.randomUUID(),
+      revision: read.revision,
+      nonce: crypto.randomUUID(),
       operations: [
         {
           op: "replace_match",
@@ -1365,14 +1363,14 @@ try {
   const intoProject = await mcp("editor", "create_page", {
     title: "Not hers",
     project_id: project.project_id,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(intoProject.isError, true, "alice can't create at the Project's top level");
   assert.equal(intoProject.body.code, "project_not_found");
   const underRoadmap = await mcp("editor", "create_page", {
     title: "Not hers",
     parent_id: roadmap.page_id,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(underRoadmap.isError, true, "alice can't create under a Page she edits");
   assert.equal(underRoadmap.body.code, "parent_unavailable");
@@ -1386,7 +1384,7 @@ try {
   const team = await ok("owner", "create_project", {
     title: teamTitle,
     description: "Where the team writes.",
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   let teamRevision = 0;
   for (const [email, role] of [
@@ -1399,7 +1397,7 @@ try {
       email,
       role,
       expected_revision: teamRevision,
-      idempotency_key: crypto.randomUUID(),
+      nonce: crypto.randomUUID(),
     });
     teamRevision = invited.revision;
   }
@@ -1409,13 +1407,13 @@ try {
     title: "Alice's agenda",
     markdown: "Added by a Project editor.",
     project_id: team.project_id,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(aliceTop.project_id, team.project_id);
   const aliceChild = await ok("editor", "create_page", {
     title: "Alice's follow-ups",
     parent_id: aliceTop.page_id,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(aliceChild.parent_id, aliceTop.page_id);
   const teamPages = await ok("owner", "list_pages", { project_id: team.project_id });
@@ -1428,7 +1426,7 @@ try {
   const bobCreate = await mcp("viewer", "create_page", {
     title: "Not his",
     project_id: team.project_id,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(bobCreate.isError, true);
   assert.equal(bobCreate.body.code, "project_create_forbidden");
@@ -1551,7 +1549,7 @@ try {
       { length: 9 },
       (_, index) => `Paragraph ${index + 1}. Room for an agent caret to travel between writes.`,
     ).join("\n\n"),
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   const glider = await context.newPage();
   glider.on("pageerror", (error) => report.errors.push(error.message));
@@ -1567,8 +1565,8 @@ try {
     const read = await ok("owner", "read_page", { page_id: glidePage.page_id });
     await ok("owner", "edit_page", {
       page_id: glidePage.page_id,
-      base_heads: read.heads,
-      idempotency_key: crypto.randomUUID(),
+      revision: read.revision,
+      nonce: crypto.randomUUID(),
       operations: [
         { op: "replace_match", block_id: read.blocks[0].id, match_text: matchText, replacement },
       ],
@@ -1634,9 +1632,8 @@ try {
     ok("owner", "read_page", { page_id: pageId, include_content: false }).then((read) =>
       mcp("owner", "delete_page", {
         page_id: pageId,
-        base_heads: read.heads,
-        retry_token: authority.retry_token,
-        idempotency_key: crypto.randomUUID(),
+        revision: read.revision,
+        nonce: crypto.randomUUID(),
       }),
     );
   const blocked = await trashPage(roadmap.page_id);
@@ -1653,8 +1650,7 @@ try {
   const restoreKey = () => crypto.randomUUID();
   const planBack = await ok("owner", "restore_page", {
     page_id: plan.page_id,
-    retry_token: authority.retry_token,
-    idempotency_key: restoreKey(),
+    nonce: restoreKey(),
   });
   assert.equal(
     planBack.parent_id,
@@ -1664,8 +1660,7 @@ try {
   assert.equal(planBack.project_id, project.project_id);
   const roadmapBack = await ok("owner", "restore_page", {
     page_id: roadmap.page_id,
-    retry_token: authority.retry_token,
-    idempotency_key: restoreKey(),
+    nonce: restoreKey(),
   });
   assert.equal(roadmapBack.restored, true);
   const top = await ok("owner", "list_pages", { project_id: project.project_id, parent_id: null });
@@ -1680,14 +1675,13 @@ try {
   // don't change.
   const planHeads = (
     await ok("owner", "read_page", { page_id: plan.page_id, include_content: false })
-  ).heads;
+  ).revision;
   const moveKey = () => crypto.randomUUID();
   const moved = await ok("owner", "move_page", {
     page_id: plan.page_id,
     parent_id: roadmap.page_id,
     position: "first",
-    retry_token: authority.retry_token,
-    idempotency_key: moveKey(),
+    nonce: moveKey(),
   });
   assert.equal(moved.parent_id, roadmap.page_id);
   assert.equal(moved.project_id, project.project_id);
@@ -1702,7 +1696,7 @@ try {
     page_id: plan.page_id,
     include_content: false,
   });
-  assert.deepEqual(movedRead.heads, planHeads, "a move changes no Page heads");
+  assert.deepEqual(movedRead.revision, planHeads, "a move changes no Page revision");
   assert.deepEqual(
     movedRead.breadcrumbs.map((crumb) => [crumb.kind, crumb.title]),
     [
@@ -1713,16 +1707,14 @@ try {
   const contentMove = await mcp("owner", "move_page", {
     page_id: project.document_id,
     parent_id: roadmap.page_id,
-    retry_token: authority.retry_token,
-    idempotency_key: moveKey(),
+    nonce: moveKey(),
   });
   assert.equal(contentMove.isError, true);
   assert.equal(contentMove.body.code, "project_content_protected");
   const cycle = await mcp("owner", "move_page", {
     page_id: roadmap.page_id,
     parent_id: plan.page_id,
-    retry_token: authority.retry_token,
-    idempotency_key: moveKey(),
+    nonce: moveKey(),
   });
   assert.equal(cycle.body.code, "placement_cycle");
   complete("move_page nested a Page under another over MCP; listing and breadcrumbs follow");
@@ -1762,16 +1754,16 @@ try {
   const loose = await ok("owner", "create_page", {
     title: "Keynote",
     markdown: "Opening remarks.",
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   const looseChild = await ok("owner", "create_page", {
     title: "Keynote Q&A",
     parent_id: loose.page_id,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   const looseHeads = (
     await ok("owner", "read_page", { page_id: loose.page_id, include_content: false })
-  ).heads;
+  ).revision;
   const moverContext = await browser.newContext({
     viewport: { width: 390, height: 844 },
     deviceScaleFactor: 3,
@@ -1808,9 +1800,9 @@ try {
       "the Page and its sub-page are in the Project",
     );
   assert.deepEqual(
-    (await ok("owner", "read_page", { page_id: loose.page_id, include_content: false })).heads,
+    (await ok("owner", "read_page", { page_id: loose.page_id, include_content: false })).revision,
     looseHeads,
-    "a move changes no Page heads",
+    "a move changes no Page revision",
   );
   await moverContext.close();
   phones.delete("move");
@@ -1819,23 +1811,20 @@ try {
   const across = await ok("owner", "move_page", {
     page_id: loose.page_id,
     parent_id: roadmap.page_id,
-    retry_token: authority.retry_token,
-    idempotency_key: moveKey(),
+    nonce: moveKey(),
   });
   assert.equal(across.project_id, project.project_id, "Project to Project");
   const out = await ok("owner", "move_page", {
     page_id: loose.page_id,
     project_id: null,
-    retry_token: authority.retry_token,
-    idempotency_key: moveKey(),
+    nonce: moveKey(),
   });
   assert.equal(out.project_id, null, "Project to Your items");
   assert.equal(out.parent_id, null);
   assert.equal(out.descendants, 1);
   const missing = await mcp("owner", "move_page", {
     page_id: loose.page_id,
-    retry_token: authority.retry_token,
-    idempotency_key: moveKey(),
+    nonce: moveKey(),
   });
   assert.equal(missing.body.code, "move_destination_required");
   complete("move_page moved the Page between Projects and out to Your items over MCP");
@@ -1844,13 +1833,13 @@ try {
   // lease deadlines. Capture protocol facts only, never cookies or signer keys.
   const leaseProject = await ok("owner", "create_project", {
     title: "Inherited lease fixture",
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   const leasePage = await ok("owner", "create_page", {
     title: "Inherited lease Page",
     markdown: "Shared through the Project only.",
     project_id: leaseProject.project_id,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   const grant = await ok("owner", "get_project_access", { project_id: leaseProject.project_id });
   await ok("owner", "manage_project_access", {
@@ -1859,7 +1848,7 @@ try {
     email: "alice@localhost",
     role: "editor",
     expected_revision: grant.revision,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   const leaseContext = await browser.newContext();
   await leaseContext.addInitScript(() => {
@@ -1945,7 +1934,7 @@ try {
     principal: memberPrincipal,
     role: null,
     expected_revision: latestAccess.revision,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   await expect(member.getByRole("heading", { name: "You no longer have access" })).toBeVisible({
     timeout: 17000,

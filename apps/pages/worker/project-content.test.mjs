@@ -5,6 +5,7 @@ import worker from "./index.mjs";
 import { newCommentsDoc } from "../model/comments-test-support.mjs";
 import { stampFeatures } from "../model/schema-features.mjs";
 import { world } from "./projects-fixture.mjs";
+import { headsFor } from "./revisions.mjs";
 import { PROJECT_CONTENT_OPERATIONS } from "./project-content.mjs";
 import { tools } from "../mcp.mjs";
 
@@ -46,7 +47,7 @@ const grant = (w, project, role, direct = false, expected_revision = 0) =>
     principal: w.member,
     role,
     expected_revision,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
 
 test("content descriptors accept exactly one selector without changing placement tools", () => {
@@ -149,8 +150,8 @@ for (const direct of [false, true])
       assert.equal(read.body.project_id, direct ? undefined : project.project_id);
       const edited = await w.call("member", "edit_page", {
         ...address,
-        base_heads: read.body.heads,
-        idempotency_key: w.key(),
+        revision: read.body.revision,
+        nonce: w.key(),
         operations: [{ op: "set_title", title: "Edited" }],
       });
       assert.equal(edited.status, role === "editor" ? 200 : 403, JSON.stringify(edited.body));
@@ -159,7 +160,7 @@ for (const direct of [false, true])
         action: "add",
         block_id: Object.keys(w.page(project.document_id).handle.doc().blocks)[0],
         body: "Content comment",
-        idempotency_key: w.key(),
+        nonce: w.key(),
       });
       assert.equal(comment.status, role === "viewer" ? 403 : 200, JSON.stringify(comment.body));
       if (direct) {
@@ -196,7 +197,7 @@ test("Project lookup neither claims invitations nor creates discovery hints", as
         email: "fixture@example.invalid",
         role: "editor",
         expected_revision: 0,
-        idempotency_key: w.key(),
+        nonce: w.key(),
       })
     ).status,
     200,
@@ -222,16 +223,15 @@ test("Project lookup neither claims invitations nor creates discovery hints", as
   assert.deepEqual(await storage.get("space/record"), before);
 });
 
-test("alias edits replay the physical journal and retain stale-head and token fences", async (t) => {
+test("alias edits replay the physical journal and keep the stale-revision fence", async (t) => {
   const w = await world(t);
   const project = await w.createProject();
   writableContent(w, project);
   const read = (await w.call("owner", "read_page", { project_id: project.project_id })).body;
   const args = {
     page_id: project.document_id,
-    base_heads: read.heads,
-    retry_token: read.retry_token,
-    idempotency_key: crypto.randomUUID(),
+    revision: read.revision,
+    nonce: crypto.randomUUID(),
     operations: [{ op: "set_title", title: "Once" }],
   };
   const first = await w.call("owner", "edit_page", alias(args, project.project_id));
@@ -239,20 +239,22 @@ test("alias edits replay the physical journal and retain stale-head and token fe
   const second = await w.call("owner", "edit_page", args);
   const { project_id: _id, ...receipt } = first.body;
   assert.deepEqual(second.body, receipt);
-  assert.deepEqual(w.heads(project.document_id), first.body.heads);
+  assert.deepEqual(
+    w.heads(project.document_id),
+    await headsFor(w.page(project.document_id).ctx.storage, "page", first.body.revision),
+  );
   const stale = await w.call("owner", "edit_page", {
     ...alias(args, project.project_id),
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
-  assert.equal(stale.body.code, "stale_heads");
-  const catalog = (await w.call("owner", "list_projects")).body;
-  const wrongToken = await w.call("owner", "edit_page", {
+  assert.equal(stale.body.code, "stale_revision");
+  // A comments revision names the other document: refused before any work.
+  const wrongDocument = await w.call("owner", "edit_page", {
     ...alias(args, project.project_id),
-    base_heads: first.body.heads,
-    retry_token: catalog.retry_token,
-    idempotency_key: crypto.randomUUID(),
+    revision: "c1",
+    nonce: crypto.randomUUID(),
   });
-  assert.equal(wrongToken.body.code, "invalid_retry_token", JSON.stringify(wrongToken.body));
+  assert.equal(wrongDocument.body.code, "invalid_revision", JSON.stringify(wrongDocument.body));
 });
 
 for (const damage of [
@@ -298,12 +300,10 @@ test("creation and move placement keep their existing project_id meaning", async
     parent_id: parent.body.page_id,
   });
   assert.equal(child.status, 200, JSON.stringify(child.body));
-  const retry = (await w.call("owner", "list_pages")).body;
   const moved = await w.call("owner", "move_page", {
     page_id: child.body.page_id,
     project_id: project.project_id,
-    retry_token: retry.retry_token,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(moved.status, 200, JSON.stringify(moved.body));
 });
@@ -317,8 +317,8 @@ test("patch, comment and presence tools resolve the same content and receipt sco
   const blockId = Object.keys(doc.blocks)[0];
   const insert = await w.call("owner", "edit_page", {
     project_id: project.project_id,
-    base_heads: before.heads,
-    idempotency_key: w.key(),
+    revision: before.revision,
+    nonce: w.key(),
     operations: [{ op: "insert_markdown", markdown: "Original passage." }],
   });
   assert.equal(insert.status, 200, JSON.stringify(insert.body));
@@ -326,8 +326,8 @@ test("patch, comment and presence tools resolve the same content and receipt sco
   const inserted = after.blocks.find((block) => block.markdown.includes("Original passage."));
   const patch = {
     page_id: project.document_id,
-    base_heads: after.heads,
-    idempotency_key: w.key(),
+    revision: after.revision,
+    nonce: w.key(),
     operations: [
       {
         op: "replace_match",
@@ -343,7 +343,7 @@ test("patch, comment and presence tools resolve the same content and receipt sco
   assert.deepEqual(replay.body, { ...patched.body, project_id: project.project_id });
   const changes = await w.call("owner", "read_page_changes", {
     project_id: project.project_id,
-    since_heads: before.heads,
+    since_revision: before.revision,
   });
   assert.equal(changes.status, 200, JSON.stringify(changes.body));
   assert.equal(changes.body.project_id, project.project_id);
@@ -352,7 +352,7 @@ test("patch, comment and presence tools resolve the same content and receipt sco
     action: "add",
     block_id: blockId,
     body: "One comment",
-    idempotency_key: w.key(),
+    nonce: w.key(),
   };
   const commented = await w.call("owner", "manage_page_comment", comment);
   assert.equal(commented.status, 200, JSON.stringify(commented.body));
@@ -432,8 +432,8 @@ test("revocation during alias resolution is enforced by final Page admission", a
   });
   const result = await w.call("member", "edit_page", {
     project_id: project.project_id,
-    base_heads: w.heads(project.document_id),
-    idempotency_key: w.key(),
+    revision: await w.revision(project.document_id),
+    nonce: w.key(),
     operations: [{ op: "set_title", title: "Denied" }],
   });
   assert.equal(result.status, 403, JSON.stringify(result.body));
@@ -529,8 +529,8 @@ test("membership removal never removes an independent direct content grant", asy
     (
       await w.call("member", "edit_page", {
         page_id: project.document_id,
-        base_heads: result.body.heads,
-        idempotency_key: w.key(),
+        revision: result.body.revision,
+        nonce: w.key(),
         operations: [{ op: "set_title", title: "Denied" }],
       })
     ).status,
@@ -553,7 +553,7 @@ test("reading content by project_id never claims a member's pending invitation",
     email: "fixture@example.invalid",
     role: "editor",
     expected_revision: 1,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(invited.status, 200, JSON.stringify(invited.body));
   const storage = w.projects.get(project.project_id).ctx.storage;

@@ -65,6 +65,7 @@ import {
 import { commentsOpenMachine } from "./comments-open-machine.mjs";
 import { fullStatus, overlayStatus, viewerSyncStatusMachine } from "./sync-status-machine.mjs";
 import { FORMAT_GATE_INITIAL, formatGateStep } from "./format-gate.mjs";
+import { validNonce } from "../model/nonce.mjs";
 import {
   acknowledgedHeads,
   afterAcknowledgement,
@@ -158,12 +159,13 @@ function draftUnreadable(error) {
     cause: error,
   });
 }
-/** Whether the host can never answer this saved registration again: its
- * retry window closed, or it refuses the saved key's form. Either way the
- * draft reconciles the Page before it registers under a fresh key. */
+/** Whether the host can no longer answer this saved registration: its
+ * receipt is gone and the Page is already recorded, or it refuses the saved
+ * nonce's form. Either way the draft reconciles the Page before it registers
+ * under a fresh nonce. */
 const registrationUnanswerable = (error) =>
-  (error.status === 410 && error.code === "retry_expired") ||
-  (error.status === 400 && error.code === "invalid_idempotency_key");
+  (error.status === 409 && error.code === "creation_conflict") ||
+  (error.status === 400 && error.code === "invalid_nonce");
 /** Whether a failed connection attempt retries on the reconnect backoff. It
  * runs after attemptConnection has handled classifyRefusal, a 401, and the
  * admission's own stop, so it decides what remains.
@@ -1821,7 +1823,6 @@ export class PageSession {
         registered: false,
         pending: true,
         snapshot,
-        registrationProtocol: 1,
         // The bootstrap and everything after it are this browser's own edits.
         localEdits: withActor(
           withActor(emptyLocalEdits(), A.getActorId(doc), this.replicaId),
@@ -1835,7 +1836,7 @@ export class PageSession {
           initial_snapshot_base64: snapshot,
           title: this.doc.title,
           record_storage: "automerge",
-          idempotency_key: crypto.randomUUID(),
+          nonce: crypto.randomUUID(),
         },
       };
       await writeLocalPage(this.identity, this.localPage, {
@@ -2126,27 +2127,17 @@ export class PageSession {
     if (!this.localPage?.registration || this.localPage.registered) return;
     let result;
     try {
-      // New drafts prepare once in the background. Persist the token before
-      // sending registration, so a lost response/reload retries identical bytes.
-      // Old drafts stay on their original protocol: they may already be accepted.
-      if (this.localPage.registrationProtocol === 1 && !this.localPage.registration.retry_token) {
-        const prepared = await this.requestWithRenewal("/api/tools", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ operation: "list_pages", arguments: {} }),
-        });
-        if (!this.alive) return;
-        if (typeof prepared.retry_token !== "string")
-          throw Error("Could not prepare Page registration");
-        const key = crypto.randomUUID();
+      // A registration's nonce is stored before it is sent, so a lost
+      // response or a reload retries identical bytes. A draft an older build
+      // saved has none; it gets one here, and its retry_token is ignored.
+      if (!validNonce(this.localPage.registration.nonce)) {
+        const {
+          retry_token: _token,
+          idempotency_key: _key,
+          ...registration
+        } = this.localPage.registration;
         if (!this.alive || this.authRequired) return;
-        await this.persistLocal({
-          registration: {
-            ...this.localPage.registration,
-            retry_token: prepared.retry_token,
-            idempotency_key: key,
-          },
-        });
+        await this.persistLocal({ registration: { ...registration, nonce: crypto.randomUUID() } });
         if (!this.alive) return;
       }
       result = await this.requestWithRenewal("/api/pages/register", {
@@ -2202,26 +2193,13 @@ export class PageSession {
       // Missing and unreadable Pages share one response. Registration
       // independently checks ownership and deletion tombstones.
       if (!(error.status === 403 && error.code === "page_access_denied")) throw error;
-      const prepared = await this.requestWithRenewal("/api/tools", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ operation: "list_pages", arguments: {} }),
-      });
       if (!current()) return;
-      if (typeof prepared.retry_token !== "string")
-        throw Error("Could not prepare Page registration");
-      const key = crypto.randomUUID();
-      if (!current()) return;
-      // The saved key and token cannot execute again. Keep the original
-      // bootstrap and UUID, and replace only its retry authority. IndexedDB compare-and-swap
-      // makes simultaneous tabs adopt the first replacement rather than race.
+      // The saved nonce cannot be answered again. Keep the original bootstrap
+      // and UUID, and replace only its nonce. IndexedDB compare-and-swap makes
+      // simultaneous tabs adopt the first replacement rather than race.
       await this.persistLocal({
-        registrationSupersedes: registration.idempotency_key,
-        registration: {
-          ...registration,
-          retry_token: prepared.retry_token,
-          idempotency_key: key,
-        },
+        registrationSupersedes: registration.nonce,
+        registration: { ...registration, nonce: crypto.randomUUID() },
       });
       if (!current()) return;
       if (this.localPage.registered)

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { readRevision } from "./operation-journal.mjs";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { documentMutation, recoverDocumentMutations } from "./mutations.mjs";
+import { headsFor } from "./revisions.mjs";
 import { refreshCatalogTitle } from "./catalog.mjs";
 import { catalogSource } from "./catalog-index.mjs";
 
@@ -12,7 +14,8 @@ class Storage {
     return structuredClone(this.values.get(key));
   }
   async put(key, value) {
-    this.values.set(key, structuredClone(value));
+    for (const [name, entry] of Object.entries(typeof key === "object" ? key : { [key]: value }))
+      this.values.set(name, structuredClone(entry));
   }
   async delete(key) {
     return this.values.delete(key);
@@ -29,7 +32,7 @@ class Storage {
     );
   }
 }
-function mutationFixture() {
+async function mutationFixture() {
   const storage = new Storage();
   let doc = A.from({ page_id: "test", text: "hello" });
   const handle = {
@@ -39,7 +42,10 @@ function mutationFixture() {
     },
   };
   const identity = { principal: "user:owner", driver: "ChatGPT" };
-  const args = { idempotency_key: "test-operation", base_heads: A.getHeads(doc) };
+  const args = {
+    nonce: "test-operation",
+    revision: await readRevision(storage, "page", A.getHeads(doc)),
+  };
   const context = {
     storage,
     handle,
@@ -52,11 +58,11 @@ function mutationFixture() {
     },
     flush: async () => storage.sync(),
   };
-  return { storage, handle, context };
+  return { storage, handle, context, heads: (revision) => headsFor(storage, "page", revision) };
 }
 
-test("mutation receipt replay preserves change IDs and rejects stale heads or key conflicts", async () => {
-  const f = mutationFixture();
+test("mutation receipt replay preserves change IDs and rejects a stale revision or nonce conflicts", async () => {
+  const f = await mutationFixture();
   const first = await documentMutation(f.context);
   const heads = A.getHeads(f.handle.doc());
   assert.deepEqual(await documentMutation(f.context), first);
@@ -64,7 +70,7 @@ test("mutation receipt replay preserves change IDs and rejects stale heads or ke
   await assert.rejects(
     documentMutation({
       ...f.context,
-      args: { ...f.context.args, idempotency_key: "another-operation" },
+      args: { ...f.context.args, nonce: "another-operation" },
     }),
     /Page changed/,
   );
@@ -75,7 +81,7 @@ test("mutation receipt replay preserves change IDs and rejects stale heads or ke
 });
 
 test("pending incremental intent recovers after failure without repeating a semantic edit", async () => {
-  const f = mutationFixture();
+  const f = await mutationFixture();
   let flushes = 0;
   const broken = {
     ...f.context,
@@ -89,15 +95,16 @@ test("pending incremental intent recovers after failure without repeating a sema
   await recoverDocumentMutations(f.storage, f.handle, f.context.flush);
   assert.deepEqual(A.getHeads(f.handle.doc()), heads);
   assert.equal(f.handle.doc().text, "hello world");
-  assert.deepEqual((await documentMutation(f.context)).heads, heads);
+  assert.deepEqual(await f.heads((await documentMutation(f.context)).revision), heads);
 });
 
 test("recorded tool intent merges a human edit arriving while persistence yields", async () => {
-  const f = mutationFixture();
+  const f = await mutationFixture();
   const original = f.storage.put.bind(f.storage);
   f.storage.put = async (key, value) => {
     await original(key, value);
-    if (value.pending)
+    const written = typeof key === "object" ? Object.values(key) : [value];
+    if (written.some((entry) => entry?.pending))
       await f.handle.update((doc) =>
         A.change(doc, (draft) => {
           draft.humanNote = "typed concurrently";
@@ -110,7 +117,7 @@ test("recorded tool intent merges a human edit arriving while persistence yields
 });
 
 test("recovery resolves pending dependencies regardless of idempotency key order", async () => {
-  const f = mutationFixture();
+  const f = await mutationFixture();
   const before = f.handle.doc();
   const first = A.change(A.clone(before), (doc) => {
     doc.note = "first";
@@ -126,7 +133,8 @@ test("recovery resolves pending dependencies regardless of idempotency key order
       pending: true,
       fingerprint: key,
       changes: A.getChanges(parent, next),
-      receipt: { heads: A.getHeads(next) },
+      heads: A.getHeads(next),
+      receipt: {},
     });
   }
   await recoverDocumentMutations(f.storage, f.handle, f.context.flush);
@@ -139,7 +147,7 @@ test("recovery resolves pending dependencies regardless of idempotency key order
 });
 
 test("recovery keeps an intent pending when its dependencies are missing", async () => {
-  const f = mutationFixture();
+  const f = await mutationFixture();
   const first = A.change(A.clone(f.handle.doc()), (doc) => {
     doc.note = "first";
   });
@@ -150,7 +158,8 @@ test("recovery keeps an intent pending when its dependencies are missing", async
     pending: true,
     fingerprint: "missing",
     changes: A.getChanges(first, second),
-    receipt: { heads: A.getHeads(second) },
+    heads: A.getHeads(second),
+    receipt: {},
   });
   await assert.rejects(
     recoverDocumentMutations(f.storage, f.handle, f.context.flush),

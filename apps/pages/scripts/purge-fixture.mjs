@@ -3,10 +3,14 @@
  * account's Trash and keep fixture documents readable by their owner.
  *
  * `invoke(operation, args)` returns a successful result body and throws on
- * failure. `authority()` returns fresh catalog `retry_token` and
- * `idempotency_key` values, or an empty object for legacy keys.
+ * failure. `authority()` returns the confirm's arguments beyond the preview:
+ * its `nonce`.
  */
-export async function purgeTrashedFixture(invoke, pageId, authority = async () => ({})) {
+export async function purgeTrashedFixture(
+  invoke,
+  pageId,
+  authority = async () => ({ nonce: crypto.randomUUID() }),
+) {
   const preview = await invoke("purge_page", { page_id: pageId, action: "preview" });
   return invoke("purge_page", {
     page_id: pageId,

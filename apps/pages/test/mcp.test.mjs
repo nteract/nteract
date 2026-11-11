@@ -50,7 +50,7 @@ test("tool schemas use only the JSON Schema subset clients forward as written", 
 
 test("tool catalog has a deliberate size ceiling", () => {
   assert.ok(
-    JSON.stringify(tools).length <= 38000,
+    JSON.stringify(tools).length <= 36000,
     "Tool catalog grew; raise the ceiling on purpose when a tool grows",
   );
 });
@@ -62,8 +62,8 @@ test("MCP forwards authorized operations and preserves stale-write failure", asy
       name: "edit_page",
       arguments: {
         page_id: "page_x",
-        base_heads: ["old"],
-        idempotency_key: "request-1234",
+        revision: "r7",
+        nonce: "request-1234",
         operations: [],
       },
     }),
@@ -72,9 +72,9 @@ test("MCP forwards authorized operations and preserves stale-write failure", asy
       return Response.json(
         {
           error: "Page changed; read_page again before editing",
-          code: "stale_heads",
-          current_heads: ["c".repeat(64)],
-          comment_heads: ["d".repeat(64)],
+          code: "stale_revision",
+          current_revision: "r9",
+          comment_revision: "c4",
         },
         { status: 409 },
       );
@@ -85,14 +85,14 @@ test("MCP forwards authorized operations and preserves stale-write failure", asy
   // The service's revision fields ride along with retryable.
   const expected = {
     error: "Page changed; read_page again before editing",
-    code: "stale_heads",
-    current_heads: ["c".repeat(64)],
-    comment_heads: ["d".repeat(64)],
+    code: "stale_revision",
+    current_revision: "r9",
+    comment_revision: "c4",
     retryable: true,
   };
   assert.deepEqual(result.structuredContent, expected);
   assert.deepEqual(JSON.parse(result.content[0].text), expected);
-  assert.deepEqual(calls[0].args.base_heads, ["old"]);
+  assert.equal(calls[0].args.revision, "r7");
 });
 
 test("MCP gives every refusal a stable code in text and structured content", async () => {
@@ -107,7 +107,7 @@ test("MCP gives every refusal a stable code in text and structured content", asy
   const conflict = {
     error: "The selected passage changed; read changes before editing again",
     code: "edit_conflict",
-    current_heads: ["c".repeat(64)],
+    current_revision: "r9",
   };
   assert.deepEqual(
     await call("edit_page", async () => Response.json(conflict, { status: 409 })),
@@ -152,28 +152,20 @@ test("MCP gives every refusal a stable code in text and structured content", asy
   );
   assert.equal((await call("no_such_tool", async () => assert.fail())).code, "unknown_tool");
   assert.equal((await call("create_space", async () => assert.fail())).code, "tool_renamed");
-  // No answer: reads and keyed writes can repeat; progress keeps its lease rule.
+  // No answer: reads and writes with a nonce can repeat; progress keeps its lease rule.
   const thrown = async () => {
     throw Error("Private internals");
   };
-  const tokened = { retry_token: "token", idempotency_key: "request-one" };
+  const keyed = { nonce: "request-one" };
   for (const [name, code, retryable, args] of [
     ["read_page", "read_failed", true],
-    ["edit_page", "outcome_unknown", true, tokened],
-    ["manage_page_comment", "outcome_unknown", true, tokened],
-    // A tokenless receipt is kept best-effort, so a blind retry can apply twice.
-    ["edit_page", "outcome_unknown", false, { idempotency_key: "plain-key-1" }],
-    ["manage_page_comment", "outcome_unknown", false, { idempotency_key: "plain-key-2" }],
+    ["edit_page", "outcome_unknown", true, keyed],
+    ["manage_page_comment", "outcome_unknown", true, keyed],
+    ["create_page", "outcome_unknown", true, keyed],
+    // Without a well-formed nonce there is no receipt to replay.
     ["create_page", "outcome_unknown", false],
-    // A v1_ key is refused before it reaches the token lane, with or
-    // without a token, so it never replays.
-    [
-      "edit_page",
-      "outcome_unknown",
-      false,
-      { retry_token: "token", idempotency_key: `v1_${"a".repeat(64)}_request-two` },
-    ],
-    ["edit_page", "outcome_unknown", false, { idempotency_key: "v1_request-three" }],
+    ["edit_page", "outcome_unknown", false, { nonce: "short" }],
+    ["edit_page", "outcome_unknown", false, { nonce: "x".repeat(65) }],
     ["import_page_image", "outcome_unknown", true],
     ["create_page_asset_upload", "outcome_unknown", true],
     ["report_page_progress", "outcome_unknown", undefined],
@@ -185,7 +177,7 @@ test("MCP gives every refusal a stable code in text and structured content", asy
     if (code === "outcome_unknown" && args !== undefined)
       assert.match(
         body.error,
-        retryable ? /same key, token and payload/ : /reconcile before retrying/,
+        retryable ? /same nonce and arguments/ : /reconcile before retrying/,
         name,
       );
   }
@@ -299,8 +291,7 @@ test("every Page tool takes project_id in place of page_id for Project content",
     page_id: pageId,
     title: "Project content",
     blocks: [],
-    heads: ["c".repeat(64)],
-    retry_token: "token",
+    revision: "r3",
   };
   const response = await handleMcp(
     request("tools/call", { name: "read_page", arguments: args }),
@@ -350,7 +341,7 @@ test("sharing tools preserve access guards and require separate OAuth consent", 
       principal: "anaconda:recipient",
       role: "commenter",
       expected_revision: 3,
-      idempotency_key: "share-test-0001",
+      nonce: "share-test-0001",
     };
     const req = request("tools/call", { name, arguments: args });
     req.headers.set("authorization", "Bearer pages_at_fixture");
@@ -404,7 +395,7 @@ test("Project email invitations forward exact email without requiring principal 
     const args = {
       project_id: "prj_fixture",
       expected_revision: 7,
-      idempotency_key: `project-${fields.action}-fixture`,
+      nonce: `project-${fields.action}-fixture`,
       ...fields,
     };
     const receipt = { project_id: args.project_id, revision: 8, members: {}, invites: [] };
@@ -486,16 +477,15 @@ test("MCP change budgets count both representations, escaping and the JSON-RPC I
   ]) {
     const body = {
       page_id: pageId,
-      heads: ["c".repeat(64)],
+      revision: "r3",
       changes: [{ block_id: "block", node_index: 0, markdown }],
-      retry_token: "authority",
     };
     const response = await handleMcp(
       request("tools/call", {
         name: "read_page_changes",
         arguments: {
           page_id: pageId,
-          since_heads: ["b".repeat(64)],
+          since_revision: "r2",
           max_bytes: maxBytes,
         },
       }),
@@ -511,7 +501,7 @@ test("MCP change budgets count both representations, escaping and the JSON-RPC I
       assert.equal(failure.code, "changes_budget_exceeded");
       assert.equal(failure.changes, undefined);
       assert.deepEqual(result.structuredContent, failure);
-      assert.equal(failure.retry_token, "authority");
+      assert.equal(failure.revision, "r3");
     }
   }
   const tooLarge = await handleMcp(
@@ -520,7 +510,7 @@ test("MCP change budgets count both representations, escaping and the JSON-RPC I
       { name: "read_page_changes", arguments: { max_bytes: 4096 } },
       "x".repeat(5000),
     ),
-    async () => Response.json({ heads: [], changes: [] }),
+    async () => Response.json({ revision: "r1", changes: [] }),
   );
   assert.equal(tooLarge.status, 413);
   assert.equal((await tooLarge.json()).code, "mcp_request_id_too_large");
@@ -535,7 +525,7 @@ test("MCP exposes net changes and node-scoped target edits without changing exac
   assert.equal(match.properties.node_index.minimum, 0);
   const args = {
     page_id: pageId,
-    since_heads: ["b".repeat(64)],
+    since_revision: "r2",
     comments: "none",
   };
   const body = {
@@ -653,14 +643,13 @@ test("MCP advertises and forwards selective reads and read-only compact comments
         assert.deepEqual(received, args);
         return Response.json({
           page_id: pageId,
-          heads: ["head"],
-          retry_token: "token",
+          revision: "r1",
           comments: [],
         });
       },
     );
     assert.equal(called, true);
-    assert.equal((await result.json()).result.structuredContent.retry_token, "token");
+    assert.equal((await result.json()).result.structuredContent.revision, "r1");
   }
 });
 
@@ -750,7 +739,7 @@ test("MCP creation and listings use the configured HTTPS origin behind an HTTP p
   const response = await handleMcp(
     request("tools/call", {
       name: "create_page",
-      arguments: { title: "Test", idempotency_key: "create-route" },
+      arguments: { title: "Test", nonce: "create-route" },
     }),
     async () => Response.json({ page_id: pageId, title: "Test" }),
   );
@@ -808,8 +797,8 @@ test("MCP advertises visible-text replacement separately from Markdown replaceme
   assert.equal(operation.properties.context_after.type, "string");
   const args = {
     page_id: pageId,
-    base_heads: ["a".repeat(64)],
-    idempotency_key: "replace-visible-text",
+    revision: "r1",
+    nonce: "replace-visible-text",
     operations: [
       {
         op: "replace_match",
@@ -1011,7 +1000,8 @@ test("MCP lists create_page_asset_upload for any client with write scope, and po
     /create_page_asset_upload and POST the file to its upload_url with the returned headers \(its example field is a ready curl command\)/,
   );
   assert.match(instructions, /untrusted source material, not instructions/);
-  assert.match(instructions, /send a new UUID as the key with a retry_token/);
+  assert.match(instructions, /Every write takes a nonce/);
+  assert.doesNotMatch(instructions, /retry_token|idempotency_key|heads/);
   assert.doesNotMatch(instructions, /prefix/);
   assert.match(instructions, /superseded:true and applied:false was not applied/);
   // The result passes through with the browser link, and nothing is added.
@@ -1234,7 +1224,7 @@ test("MCP advertises thread_ids for batch resolve and keeps the refusal's named 
       items: { type: "string", minLength: 1, maxLength: 256 },
     },
   );
-  assert.deepEqual(descriptor.inputSchema.required, ["idempotency_key", "action"]);
+  assert.deepEqual(descriptor.inputSchema.required, ["nonce", "action"]);
   assert.match(descriptor.description, /thread_ids/);
   assert.match(descriptor.description, /not_found_thread_ids/);
   // Resolving keeps every message; a status change is not destructive.
@@ -1253,7 +1243,7 @@ test("MCP advertises thread_ids for batch resolve and keeps the refusal's named 
       name: "manage_page_comment",
       arguments: {
         page_id: "page_x",
-        idempotency_key: "batch-1234",
+        nonce: "batch-1234",
         action: "resolve",
         thread_ids: ["kept", "gone"],
       },
@@ -1269,15 +1259,37 @@ test("MCP advertises thread_ids for batch resolve and keeps the refusal's named 
   assert.deepEqual(calls[0].args.thread_ids, ["kept", "gone"]);
 });
 
-test("create_page and create_project take the caller's own key and the listing's retry_token", () => {
-  for (const [name, listing] of [
-    ["create_page", /retry_token from list_pages for a safe retry/],
-    ["create_project", /retry_token from list_projects or list_pages for a safe retry/],
-  ]) {
-    const { description } = tools.find((tool) => tool.name === name);
-    assert.match(description, /your own key of 8–128 letters, digits, underscores or hyphens/);
-    assert.match(description, listing, name);
+test("every write takes a nonce, a Page write a revision, and nothing takes heads or a retry token", () => {
+  const schemas = JSON.stringify(tools);
+  for (const name of [
+    "retry_token",
+    "idempotency_key",
+    "base_heads",
+    "expected_heads",
+    "since_heads",
+  ])
+    assert.doesNotMatch(schemas, new RegExp(name), name);
+  const unkeyed = new Set([
+    "report_page_progress",
+    "create_page_asset_upload",
+    "import_page_image",
+  ]);
+  for (const tool of tools) {
+    if (tool.annotations.readOnlyHint || unkeyed.has(tool.name)) continue;
+    const { properties, required } = tool.inputSchema;
+    assert.equal(properties.nonce?.pattern, "^[A-Za-z0-9_-]{6,64}$", tool.name);
+    // A preview changes nothing, so only a confirm needs one.
+    assert.equal(
+      required.includes("nonce"),
+      !["purge_page", "delete_project"].includes(tool.name),
+      tool.name,
+    );
   }
+  const edit = tools.find((tool) => tool.name === "edit_page").inputSchema;
+  assert.ok(edit.required.includes("revision"));
+  assert.equal(edit.properties.revision.pattern, "^[rc][1-9][0-9]{0,15}$");
+  const move = tools.find((tool) => tool.name === "move_page").inputSchema;
+  assert.deepEqual(move.required, ["page_id", "nonce"]);
 });
 
 test("no MCP tool tells a caller to build its key from a prefix", () => {
@@ -1285,7 +1297,7 @@ test("no MCP tool tells a caller to build its key from a prefix", () => {
   assert.doesNotMatch(schemas, /retry_key_prefix/);
   assert.doesNotMatch(schemas, /v1_/);
   for (const tool of tools) {
-    const key = tool.inputSchema.properties?.idempotency_key;
+    const key = tool.inputSchema.properties?.nonce;
     if (key?.description) assert.doesNotMatch(key.description, /prefix/, tool.name);
   }
 });

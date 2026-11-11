@@ -35,16 +35,16 @@ const lastOffset = (text, end) =>
 /** Pure, server-side passage capture. These private cursors are never document
  * changes and should only be sent to authenticated readers of the same Page.
  *
- * Passages are found at expectedHeads, the revision the caller read, and must
- * still resolve in `doc`. Unknown heads or a detached passage need a new read.
+ * Passages are found at expectedHeads, the revision the caller read (the host
+ * resolves its handle), and must still resolve in `doc`. Unknown heads or a
+ * detached passage need a new read.
  */
 export function createProgressTargets(doc, targets, expectedHeads) {
   if (targets === undefined) return [];
   if (!Array.isArray(targets) || targets.length > 3)
     invalid("targets must contain at most 3 unique passages");
   if (!targets.length) return [];
-  if (!headsValid(expectedHeads))
-    invalid("expected_heads from a Page read are required for targets");
+  if (!headsValid(expectedHeads)) invalid("revision from a Page read is required for targets");
   if (!A.hasHeads(doc, expectedHeads))
     fail(
       409,

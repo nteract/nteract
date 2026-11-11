@@ -141,7 +141,7 @@ try {
   const created = await tool(owner, "create_page", {
     title: "Commenter fixture " + Date.now(),
     markdown: "A passage worth discussing.",
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(created.status, 200, JSON.stringify(created.body));
   pageId = created.body.page_id;
@@ -169,10 +169,14 @@ try {
     action: "add",
     block_id: blockId,
     body: "Owner's note",
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(ownerComment.status, 200, JSON.stringify(ownerComment.body));
-  assert.deepEqual(ownerComment.body.heads, read.heads, "a comment never moves the Page's heads");
+  assert.deepEqual(
+    ownerComment.body.revision,
+    read.revision,
+    "a comment never moves the Page's revision",
+  );
 
   // Alice opens the Page: she can read and comment, not edit.
   await commenter.goto(`${origin}/p/${pageId}`);
@@ -209,10 +213,14 @@ try {
     )
     .toBe(true);
   const afterComment = (await tool(owner, "read_page", { page_id: pageId })).body;
-  assert.deepEqual(afterComment.heads, read.heads, "the commenter's comment moved no Page heads");
+  assert.deepEqual(
+    afterComment.revision,
+    read.revision,
+    "the commenter's comment moved no Page revision",
+  );
   const aliceThread = afterComment.comments.find((t) => t.messages[0]?.body === "Alice was here");
   assert.equal(aliceThread.selectionContext?.text ?? "passage", "passage");
-  checkpoint("a commenter comments on a selection; the Page's heads never move");
+  checkpoint("a commenter comments on a selection; the Page's revision never moves");
 
   // The owner sees it live in the thread list.
   await owner.getByRole("button", { name: /^Comments/ }).click();
@@ -224,14 +232,14 @@ try {
   await commenter.keyboard.type("should not land");
   await commenter.waitForTimeout(1500);
   const afterTyping = (await tool(owner, "read_page", { page_id: pageId })).body;
-  assert.deepEqual(afterTyping.heads, read.heads);
+  assert.deepEqual(afterTyping.revision, read.revision);
   assert.equal(afterTyping.blocks[0].markdown, "A passage worth discussing.");
 
   // The HTTP tools follow the same rules.
   const edit = await tool(commenter, "edit_page", {
     page_id: pageId,
-    base_heads: read.heads,
-    idempotency_key: crypto.randomUUID(),
+    revision: read.revision,
+    nonce: crypto.randomUUID(),
     operations: [{ op: "set_title", title: "Not allowed" }],
   });
   assert.equal(edit.status, 403);
@@ -239,7 +247,7 @@ try {
     page_id: pageId,
     action: "resolve",
     thread_id: ownerComment.body.result.thread_id,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(resolve.status, 200, JSON.stringify(resolve.body));
   const rewrite = await tool(commenter, "manage_page_comment", {
@@ -248,7 +256,7 @@ try {
     thread_id: ownerComment.body.result.thread_id,
     message_id: ownerComment.body.result.message_id,
     body: "Rewritten by alice",
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(rewrite.status, 403);
   assert.equal(rewrite.body.code, "comment_not_author");
@@ -292,7 +300,7 @@ try {
     // Alice's open thread: the owner's is resolved and collapsed by now.
     thread_id: aliceThread.id,
     body: "Reply after the refusal",
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(live.status, 200, JSON.stringify(live.body));
   // Both open tabs show the reply arrive (collapsed as "1 reply").
@@ -318,7 +326,7 @@ try {
     action: "reply",
     thread_id: aliceThread.id,
     body: "Alice still comments",
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(aliceReply.status, 200, JSON.stringify(aliceReply.body));
   await expect(aliceCard(owner)).toContainText("2 replies", { timeout: 10000 });
@@ -342,13 +350,13 @@ try {
       action: "reply",
       thread_id: aliceThread.id,
       body: "Agent reply as alice",
-      idempotency_key: crypto.randomUUID(),
+      nonce: crypto.randomUUID(),
     });
     assert.equal(agent.error, false, JSON.stringify(agent.body));
     const agentEdit = await mcp("editor", "edit_page", {
       page_id: pageId,
-      base_heads: read.heads,
-      idempotency_key: crypto.randomUUID(),
+      revision: read.revision,
+      nonce: crypto.randomUUID(),
       operations: [
         {
           op: "replace_match",
@@ -373,16 +381,26 @@ try {
     Array.isArray(b) &&
     a.length === b.length &&
     a.every((head) => b.includes(head));
-  const matchingReceipt = () =>
-    receipts.find((response) => {
+  // A save whose heads are the host's durable heads for both documents is
+  // caught up with the host; the frontier read before and after shows no
+  // write landed in between, so that is the latest frontier.
+  const matchingReceipt = async () => {
+    for (const response of receipts) {
       const request = response.request().postDataJSON();
-      return (
-        sameHeads(request.heads, frontier.heads) &&
-        sameHeads(request.comment_heads, frontier.comment_heads)
-      );
-    });
-  await expect.poll(() => !!matchingReceipt()).toBe(true);
-  assert.equal(await matchingReceipt().finished(), null);
+      const saved = await response.json().catch(() => null);
+      if (
+        saved &&
+        sameHeads(request.heads, saved.durableHeads) &&
+        sameHeads(request.comment_heads, saved.durableCommentHeads)
+      )
+        return response;
+    }
+  };
+  await expect.poll(async () => !!(await matchingReceipt())).toBe(true);
+  assert.equal(await (await matchingReceipt()).finished(), null);
+  const settled = (await tool(owner, "read_page", { page_id: pageId })).body;
+  assert.equal(settled.revision, frontier.revision);
+  assert.equal(settled.comment_revision, frontier.comment_revision);
   // The reply render queued Syncing before this response. Saved proves the
   // client applied its acknowledgement, rather than an in-flight HTTP answer.
   await expect(commenter.getByRole("status").filter({ hasText: /^Saved$/ })).toBeVisible();
@@ -397,7 +415,7 @@ try {
     principal: alice,
     role: "editor",
     expected_revision: current.body.access.revision,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(promoted.status, 200, JSON.stringify(promoted.body));
   await expect(content(commenter)).toHaveAttribute("contenteditable", "true", {
@@ -427,8 +445,8 @@ try {
       const r = await tool(owner, "read_page", { page_id: pageId });
       const d = await tool(owner, "delete_page", {
         page_id: pageId,
-        base_heads: r.body.heads,
-        idempotency_key: crypto.randomUUID(),
+        revision: r.body.revision,
+        nonce: crypto.randomUUID(),
       });
       report.cleaned = d.status === 200;
     } catch (error) {

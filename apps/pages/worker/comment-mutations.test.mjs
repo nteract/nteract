@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
+import { readRevision } from "./operation-journal.mjs";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { createPageData, initializePage } from "../model/page.mjs";
 import { applyComment, projectComments } from "../model/comments.mjs";
 import { commentsGenesis } from "../model/comments-doc.mjs";
-import { guardCommentIntent } from "../model/comment-guard.mjs";
+import { guardCommentIntent, passageComment } from "../model/comment-guard.mjs";
 import { textPath } from "../model/richtext.mjs";
-import { COMMENTS_DOC, documentMutation } from "./mutations.mjs";
+import { COMMENTS_DOC, documentMutation, PAGE_DOC } from "./mutations.mjs";
+import { headsFor } from "./revisions.mjs";
 
 // Comment intents as the Page host runs them: journaled on the comments
 // document, anchored in the Page document, and never writing the Page.
@@ -17,6 +19,10 @@ class Storage {
     return structuredClone(this.values.get(key));
   }
   async put(key, value) {
+    if (typeof key === "object") {
+      for (const [name, entry] of Object.entries(key)) await this.put(name, entry);
+      return;
+    }
     this.values.set(key, structuredClone(value));
   }
   async delete(key) {
@@ -59,10 +65,13 @@ function fixture(t, markdown = "Alpha first.\n\nBeta second.\n\nKeep the tail.")
       operation,
       args,
       identity,
-      guard: (input) => {
+      baseRevision: (input) => (passageComment(operation, input) ? input.revision : undefined),
+      guard: (input, baseHeads) => {
         page = doc;
-        return guardCommentIntent(page, operation, input);
+        return guardCommentIntent(page, operation, input, baseHeads);
       },
+      receiptFields: async (plan) => ({ revision: await plan.handle(PAGE_DOC, A.getHeads(page)) }),
+      pageHeads: () => A.getHeads(doc),
       apply(draft, effectiveArgs) {
         applications++;
         // The Page host reports model validation failures as 400s.
@@ -96,9 +105,11 @@ function fixture(t, markdown = "Alpha first.\n\nBeta second.\n\nKeep the tail.")
         after += char;
       });
   };
-  const args = (overrides = {}) => ({
-    idempotency_key: `comment-${crypto.randomUUID()}`,
-    base_heads: A.getHeads(doc),
+  // The Page revision handle of the Page as it is now.
+  const revision = () => readRevision(storage, PAGE_DOC, A.getHeads(doc));
+  const args = async (overrides = {}) => ({
+    nonce: `comment-${crypto.randomUUID()}`,
+    revision: await revision(),
     ...overrides,
   });
   t.after(() => A.free(doc));
@@ -114,6 +125,8 @@ function fixture(t, markdown = "Alpha first.\n\nBeta second.\n\nKeep the tail.")
     },
     type,
     args,
+    revision,
+    commentHeads: (handle) => headsFor(storage, COMMENTS_DOC, handle),
     applications: () => applications,
     comments: () => projectComments(doc, comments),
     text: () => doc.blocks[id].richText,
@@ -128,37 +141,39 @@ const rejectsWith = (status, code) => (error) =>
 test("thread actions succeed after browser typing in the same block", async (t) => {
   const f = fixture(t);
   const added = await documentMutation(
-    f.context(f.args({ action: "add", block_id: f.id, selected_text: "Beta", body: "Why?" })),
+    f.context(await f.args({ action: "add", block_id: f.id, selected_text: "Beta", body: "Why?" })),
   );
   const { thread_id, message_id } = added.result;
-  const stale = A.getHeads(f.page());
+  const stale = await f.revision();
   const pageAfterAdd = A.getHeads(f.page());
   f.type("Beta", " typed by a human");
   assert.notDeepEqual(A.getHeads(f.page()), stale);
 
   const reply = await documentMutation(
-    f.context(f.args({ action: "reply", thread_id, body: "Because.", base_heads: stale })),
+    f.context(await f.args({ action: "reply", thread_id, body: "Because.", revision: stale })),
   );
   assert.equal(reply.result.thread_id, thread_id);
   f.type("Alpha", " more");
   await documentMutation(
     f.context(
-      f.args({ action: "edit", thread_id, message_id, body: "Why not?", base_heads: stale }),
+      await f.args({ action: "edit", thread_id, message_id, body: "Why not?", revision: stale }),
     ),
   );
-  await documentMutation(f.context(f.args({ action: "resolve", thread_id, base_heads: stale })));
-  // base_heads is optional for thread actions.
   await documentMutation(
-    f.context({ idempotency_key: `reopen-${crypto.randomUUID()}`, action: "reopen", thread_id }),
+    f.context(await f.args({ action: "resolve", thread_id, revision: stale })),
+  );
+  // revision is optional for thread actions.
+  await documentMutation(
+    f.context({ nonce: `reopen-${crypto.randomUUID()}`, action: "reopen", thread_id }),
   );
   await documentMutation(
     f.context(
-      { idempotency_key: `legacy-${crypto.randomUUID()}`, thread_id, body: "Legacy reply" },
+      { nonce: `legacy-${crypto.randomUUID()}`, thread_id, body: "Legacy reply" },
       "reply_page_comment",
     ),
   );
   await documentMutation(
-    f.context(f.args({ action: "delete_message", thread_id, message_id, base_heads: stale })),
+    f.context(await f.args({ action: "delete_message", thread_id, message_id, revision: stale })),
   );
 
   const [thread] = f.comments();
@@ -184,10 +199,10 @@ test("thread actions still validate threads, messages and supplied heads", async
     [{ action: "reply", thread_id: "missing", body: "Hello" }, 400],
     [{ action: "edit", thread_id: "missing", message_id: "missing", body: "Hello" }, 400],
     [{ action: "resolve", thread_id: "missing" }, 400],
-    [{ action: "reply", thread_id: "missing", body: "Hello", base_heads: ["bad"] }, 400],
+    [{ action: "reply", thread_id: "missing", body: "Hello", revision: "bad" }, 400],
   ])
     await assert.rejects(
-      documentMutation(f.context({ idempotency_key: `bad-${crypto.randomUUID()}`, ...args })),
+      documentMutation(f.context({ nonce: `bad-${crypto.randomUUID()}`, ...args })),
       rejectsWith(status),
     );
   assert.equal(operationEntries(f).length, 0);
@@ -195,7 +210,7 @@ test("thread actions still validate threads, messages and supplied heads", async
 
 test("a passage comment from an older read anchors the passage the caller saw", async (t) => {
   const f = fixture(t);
-  const args = f.args({ action: "add", block_id: f.id, selected_text: "Beta", body: "Look" });
+  const args = await f.args({ action: "add", block_id: f.id, selected_text: "Beta", body: "Look" });
   f.type("Alpha", " typed");
   f.native((draft) => A.splice(draft, textPath(f.id), 0, 0, "Intro. "));
   const receipt = await documentMutation(f.context(args));
@@ -213,7 +228,7 @@ test("a passage comment from an older read anchors the passage the caller saw", 
 
 test("occurrence counts copies at the read revision, not the current one", async (t) => {
   const f = fixture(t, "apple one, apple two.");
-  const args = f.args({
+  const args = await f.args({
     action: "add",
     block_id: f.id,
     selected_text: "apple",
@@ -229,7 +244,7 @@ test("occurrence counts copies at the read revision, not the current one", async
 
 test("a passage deleted after the read returns edit_conflict without recording", async (t) => {
   const f = fixture(t);
-  const args = f.args({ action: "add", block_id: f.id, selected_text: "Beta", body: "Gone" });
+  const args = await f.args({ action: "add", block_id: f.id, selected_text: "Beta", body: "Gone" });
   f.native((draft) => {
     const at = draft.blocks[f.id].richText.indexOf("Beta");
     A.splice(draft, textPath(f.id), at, 4, "");
@@ -247,20 +262,20 @@ test("a passage deleted after the read returns edit_conflict without recording",
   assert.equal(operationEntries(f).length, 0);
 });
 
-test("a passage comment rejects unknown, missing or malformed base heads", async (t) => {
+test("a passage comment rejects an unknown, missing or malformed revision", async (t) => {
   const f = fixture(t);
   const add = { action: "add", block_id: f.id, selected_text: "Beta", body: "Hi" };
   await assert.rejects(
-    documentMutation(f.context(f.args({ ...add, base_heads: ["f".repeat(64)] }))),
+    documentMutation(f.context(await f.args({ ...add, revision: "r999" }))),
     rejectsWith(409, "resync_required"),
   );
-  for (const base_heads of [undefined, [], ["bad"]])
+  for (const revision of [undefined, "", "bad", "c1", ["r1"]])
     await assert.rejects(
-      documentMutation(f.context(f.args({ ...add, base_heads }))),
+      documentMutation(f.context(await f.args({ ...add, revision }))),
       rejectsWith(400),
     );
   await assert.rejects(
-    documentMutation(f.context(f.args({ ...add, selected_text: "Missing" }))),
+    documentMutation(f.context(await f.args({ ...add, selected_text: "Missing" }))),
     rejectsWith(400),
   );
   assert.equal(f.applications(), 0);
@@ -269,14 +284,14 @@ test("a passage comment rejects unknown, missing or malformed base heads", async
 
 test("a block comment needs only its block to exist now", async (t) => {
   const f = fixture(t);
-  const stale = A.getHeads(f.page());
+  const stale = await f.revision();
   f.type("Alpha", " typed");
   await documentMutation(
-    f.context(f.args({ action: "add", block_id: f.id, body: "Block note", base_heads: stale })),
+    f.context(await f.args({ action: "add", block_id: f.id, body: "Block note", revision: stale })),
   );
-  // A block comment takes no base_heads at all.
+  // A block comment takes no revision at all.
   await documentMutation(
-    f.context({ idempotency_key: `bare-${crypto.randomUUID()}`, block_id: f.id, body: "Bare" }),
+    f.context({ nonce: `bare-${crypto.randomUUID()}`, block_id: f.id, body: "Bare" }),
   );
   assert.deepEqual(f.comments()[0].target, { kind: "block", blockId: f.id });
   f.native((draft) => {
@@ -284,7 +299,7 @@ test("a block comment needs only its block to exist now", async (t) => {
   });
   await assert.rejects(
     documentMutation(
-      f.context(f.args({ action: "add", block_id: f.id, body: "Late", base_heads: stale })),
+      f.context(await f.args({ action: "add", block_id: f.id, body: "Late", revision: stale })),
     ),
     rejectsWith(400),
   );
@@ -292,21 +307,25 @@ test("a block comment needs only its block to exist now", async (t) => {
 
 test("an exact retry replays its receipt after the passage is later deleted", async (t) => {
   const f = fixture(t);
-  const args = f.args({ action: "add", block_id: f.id, selected_text: "Beta", body: "Once" });
+  const args = await f.args({ action: "add", block_id: f.id, selected_text: "Beta", body: "Once" });
   f.type("Alpha", " typed");
   const receipt = await documentMutation(f.context(args));
   f.native((draft) => {
     const at = draft.blocks[f.id].richText.indexOf("Beta");
     A.splice(draft, textPath(f.id), at, 4, "");
   });
+  // The retry returns the same receipt, both revisions included.
+  assert.match(receipt.revision, /^r\d+$/);
+  assert.match(receipt.comment_revision, /^c\d+$/);
   assert.deepEqual(await documentMutation(f.context(args)), receipt);
-  const reply = f.args({
+  const reply = await f.args({
     action: "reply",
     thread_id: receipt.result.thread_id,
     body: "Twice?",
   });
   const replied = await documentMutation(f.context(reply));
   f.type("Alpha typed", " again");
+  assert.match(replied.comment_revision, /^c\d+$/);
   assert.deepEqual(await documentMutation(f.context(reply)), replied);
   assert.equal(f.applications(), 2);
   assert.equal(f.comments().length, 1);
@@ -337,12 +356,14 @@ test("a thread_ids batch resolves every thread in one change and one receipt", a
   const f = fixture(t);
   const ids = openThreads(f, 13);
   const before = changeCount(f);
-  const receipt = await documentMutation(f.context(f.args({ action: "resolve", thread_ids: ids })));
+  const receipt = await documentMutation(
+    f.context(await f.args({ action: "resolve", thread_ids: ids })),
+  );
   assert.equal(changeCount(f) - before, 1, "one Automerge change for the whole batch");
   assert.equal(f.applications(), 1);
   assert.equal(operationEntries(f).length, 1, "one journal entry under one key");
-  assert.deepEqual(receipt.heads, A.getHeads(f.handle.doc()));
-  assert.equal(receipt.heads.length, 1);
+  assert.deepEqual(await f.commentHeads(receipt.comment_revision), A.getHeads(f.handle.doc()));
+  assert.equal((await f.commentHeads(receipt.comment_revision)).length, 1);
   assert.deepEqual(
     receipt.result.threads,
     ids.map((thread_id) => ({ thread_id, outcome: "resolved" })),
@@ -353,11 +374,11 @@ test("a thread_ids batch resolves every thread in one change and one receipt", a
 test("a batch skips threads already resolved and changes the rest", async (t) => {
   const f = fixture(t);
   const [open, done, other] = openThreads(f, 3);
-  await documentMutation(f.context(f.args({ action: "resolve", thread_id: done })));
+  await documentMutation(f.context(await f.args({ action: "resolve", thread_id: done })));
   const resolvedAt = f.handle.doc().threads[done].status.at;
   const before = changeCount(f);
   const receipt = await documentMutation(
-    f.context(f.args({ action: "resolve", thread_ids: [open, done, other] })),
+    f.context(await f.args({ action: "resolve", thread_ids: [open, done, other] })),
   );
   assert.equal(changeCount(f) - before, 1);
   assert.deepEqual(receipt.result.threads, [
@@ -373,8 +394,10 @@ test("a batch of threads all in the target state writes nothing and reports each
   const f = fixture(t);
   const ids = openThreads(f, 2);
   const heads = A.getHeads(f.handle.doc());
-  const receipt = await documentMutation(f.context(f.args({ action: "reopen", thread_ids: ids })));
-  assert.deepEqual(receipt.heads, heads);
+  const receipt = await documentMutation(
+    f.context(await f.args({ action: "reopen", thread_ids: ids })),
+  );
+  assert.deepEqual(await f.commentHeads(receipt.comment_revision), heads);
   assert.deepEqual(A.getHeads(f.handle.doc()), heads);
   assert.deepEqual(
     receipt.result.threads,
@@ -385,9 +408,13 @@ test("a batch of threads all in the target state writes nothing and reports each
 test("reopen works as a batch", async (t) => {
   const f = fixture(t);
   const ids = openThreads(f, 3);
-  await documentMutation(f.context(f.args({ action: "resolve", thread_ids: ids.slice(0, 2) })));
+  await documentMutation(
+    f.context(await f.args({ action: "resolve", thread_ids: ids.slice(0, 2) })),
+  );
   const before = changeCount(f);
-  const receipt = await documentMutation(f.context(f.args({ action: "reopen", thread_ids: ids })));
+  const receipt = await documentMutation(
+    f.context(await f.args({ action: "reopen", thread_ids: ids })),
+  );
   assert.equal(changeCount(f) - before, 1);
   assert.deepEqual(receipt.result.threads, [
     { thread_id: ids[0], outcome: "reopened" },
@@ -404,7 +431,7 @@ test("an unknown thread rejects the whole batch, names it, and changes nothing",
   await assert.rejects(
     documentMutation(
       f.context(
-        f.args({ action: "resolve", thread_ids: [ids[0], "missing-a", ids[1], "__proto__"] }),
+        await f.args({ action: "resolve", thread_ids: [ids[0], "missing-a", ids[1], "__proto__"] }),
       ),
     ),
     (error) => {
@@ -423,10 +450,10 @@ test("an unknown thread rejects the whole batch, names it, and changes nothing",
 test("a batch retried with its key and payload replays the original receipt", async (t) => {
   const f = fixture(t);
   const ids = openThreads(f, 3);
-  const args = f.args({ action: "resolve", thread_ids: ids });
+  const args = await f.args({ action: "resolve", thread_ids: ids });
   const receipt = await documentMutation(f.context(args));
   // Someone reopens a thread; the retry must not resolve it again.
-  await documentMutation(f.context(f.args({ action: "reopen", thread_id: ids[1] })));
+  await documentMutation(f.context(await f.args({ action: "reopen", thread_id: ids[1] })));
   const heads = A.getHeads(f.handle.doc());
   assert.deepEqual(await documentMutation(f.context(args)), receipt);
   assert.deepEqual(A.getHeads(f.handle.doc()), heads);
@@ -435,7 +462,7 @@ test("a batch retried with its key and payload replays the original receipt", as
   // The same key with a different payload is a conflict, not a second batch.
   await assert.rejects(
     documentMutation(f.context({ ...args, thread_ids: ids.slice(0, 2) })),
-    rejectsWith(409, "idempotency_conflict"),
+    rejectsWith(409, "nonce_conflict"),
   );
 });
 
@@ -457,7 +484,7 @@ test("thread_ids shape errors are refused before any thread is read", async (t) 
     ["another action", { action: "reply", thread_ids: [id], body: "Hi" }],
   ])
     await assert.rejects(
-      documentMutation(f.context(f.args(args))),
+      documentMutation(f.context(await f.args(args))),
       (error) => {
         assert.equal(error.status, 400, name);
         assert.equal(error.code, "invalid_comment_selector", name);
@@ -468,6 +495,8 @@ test("thread_ids shape errors are refused before any thread is read", async (t) 
   assert.equal(f.applications(), 0, "the guard refuses before the edit is built");
   assert.equal(operationEntries(f).length, 0);
   // The single-thread form keeps working beside the batch form.
-  const single = await documentMutation(f.context(f.args({ action: "resolve", thread_id: id })));
+  const single = await documentMutation(
+    f.context(await f.args({ action: "resolve", thread_id: id })),
+  );
   assert.deepEqual(single.result, { thread_id: id, message_id: null });
 });

@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
+import { readRevision } from "./operation-journal.mjs";
 import { createAuthFixture } from "../auth-fixtures.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import { proposeAccessUpdate, pageState } from "./access.mjs";
@@ -15,6 +16,7 @@ import { CrashStorage, describe, normalize, scrubbed } from "./operation-intent-
 import { LOCATION_SHAPE_KEY, shapeRecord } from "./location-shape.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { plainStub } from "./plain-stub.mjs";
+import { operationKey } from "./mutations.mjs";
 
 const auth = await createAuthFixture();
 const owner = `user:anaconda-fixture:${auth.subject}`;
@@ -24,6 +26,8 @@ const pageId = "33333333-3333-4333-8333-333333333333";
 const parentId = "22222222-2222-4222-8222-222222222222";
 const CREATED = "2026-10-01T00:00:00.000Z";
 const KEY = "sweep-key-0001";
+// The owner's Catalog receipt key for KEY.
+const RECEIPT = await operationKey({ nonce: KEY }, { principal: owner }, "catalog");
 const LIMIT = 100;
 // The cuts after the forwarded mark and before the retarget's write.
 const RETARGET_LOST = [2, 3, 4, 5, 6, 7];
@@ -144,6 +148,8 @@ async function world({ location } = {}) {
     catalog,
     call,
     heads: () => A.getHeads(doc),
+    /** The Page's revision handle for `heads`, minted in its storage. */
+    revision: (heads) => readRevision(pageStorage, "page", heads),
     /** Everything durable or cached on both sides, to start another run from. */
     snapshot: () => ({
       storage: structuredClone(storage.values),
@@ -172,10 +178,14 @@ async function world({ location } = {}) {
   };
 }
 
-const trash = (w, target, key, heads = w.heads()) =>
-  w.call(target, "delete_page", { page_id: pageId, base_heads: heads, idempotency_key: key });
-const restore = (w, target, key) =>
-  w.call(target, "restore_page", { page_id: pageId, idempotency_key: key });
+// A Trash guarded by `revision`, by default the Page's revision now.
+const trash = async (w, target, key, revision) =>
+  w.call(target, "delete_page", {
+    page_id: pageId,
+    revision: revision ?? (await w.revision(w.heads())),
+    nonce: key,
+  });
+const restore = (w, target, key) => w.call(target, "restore_page", { page_id: pageId, nonce: key });
 const expire = (w, key) => {
   const slot = w.storage.values.get(key);
   w.storage.values.set(key, { ...slot, expires_at: Date.now() - 1 });
@@ -345,7 +355,7 @@ test("a purge confirmation resumes from every cut", async (t) => {
         page_id: pageId,
         action: "confirm",
         preview_token: token,
-        idempotency_key: KEY,
+        nonce: KEY,
       }),
     check({ outcome, page, storage, capacity }) {
       assert.deepEqual(outcome.body, { page_id: pageId, deleted: true, purged: true });
@@ -377,19 +387,19 @@ test("a Trash request against a stale index retargets once from every cut", asyn
     },
   });
   assert.deepEqual(result.writes, [
-    "put host/count/active+host/count/trash+host/operation/sweep-key-0001+trash/<id>",
-    "put host/operation/sweep-key-0001",
+    `put host/count/active+host/count/trash+${RECEIPT}+trash/<id>`,
+    `put ${RECEIPT}`,
     "put host/index/dirty",
     "put page/<id>",
     "delete trash/<id>",
     "put host/count/active+host/count/trash",
     "put host/count/active+host/count/trash+trash/<id>",
-    "put host/operation/sweep-key-0001",
+    `put ${RECEIPT}`,
     "put host/index/dirty",
     "put trash/<id>",
     "delete page/<id>",
     "put host/count/active+host/count/trash",
-    "put host/operation/sweep-key-0001",
+    `put ${RECEIPT}`,
     "sync",
   ]);
   // Once forwarded, the request may have reached the Page, which can have
@@ -417,19 +427,19 @@ test("a Trash request against a stale index retargets once from every cut", asyn
 });
 
 test("a resumed Trash reruns the leaf guard before it retargets, from every cut", async (t) => {
-  let heads;
+  let revision;
   let childId;
   const result = await sweep(t, {
     name: "retarget with children",
     async setup(w) {
-      heads = w.heads();
+      revision = await w.revision(w.heads());
       // The parent's Trash is reserved at revision 0, and the Catalog
       // crashes at the forwarded mark.
       // Write 0 stores the key counts and write 1 reserves the request.
       w.arm(2);
-      assert.equal((await trash(w, w.catalog(), KEY)).status, 500);
+      assert.equal((await trash(w, w.catalog(), KEY, revision)).status, 500);
       w.disarm();
-      assert.equal(w.writes[2].label, `put host/operation/${KEY}`);
+      assert.equal(w.writes[2].label, `put ${RECEIPT}`);
       // The never-forwarded reservation expires, and counting releases it.
       expire(w, `trash/${pageId}`);
       assert.equal(await w.catalog().countEntries("trash/"), 0);
@@ -441,19 +451,19 @@ test("a resumed Trash reruns the leaf guard before it retargets, from every cut"
       const child = await w.call(catalog, "create_page", {
         title: "Child",
         parent_id: pageId,
-        idempotency_key: "setup-child",
+        nonce: "setup-child",
       });
       assert.equal(child.status, 200, JSON.stringify(child.body));
       childId = child.body.page_id;
     },
     // The original request resumes. The Page supersedes it at revision 0;
     // the guard runs before the retarget at revision 2 and finds the child.
-    act: (w, catalog) => trash(w, catalog, KEY, heads),
+    act: (w, catalog) => trash(w, catalog, KEY, revision),
     check({ outcome, page, storage, capacity }) {
       assert.equal(outcome.status, 409, JSON.stringify(outcome.body));
       assert.equal(outcome.body.code, "page_has_children");
       assert.deepEqual(page, { state: "active", revision: 2, placement: undefined, receipts: 2 });
-      assert.equal(storage[`host/operation/${KEY}`], undefined, "the request is released");
+      assert.equal(storage[RECEIPT], undefined, "the request is released");
       assert.equal(storage[`trash/${pageId}`], undefined);
       assert.equal(storage[`page/${pageId}`].lifecycle_revision, 2);
       assert.equal(storage[`page/${childId}`].parent_id, pageId);
@@ -462,12 +472,12 @@ test("a resumed Trash reruns the leaf guard before it retargets, from every cut"
   });
   assert.deepEqual(result.writes, [
     "put host/count/active+host/count/trash+trash/<id>",
-    "put host/operation/sweep-key-0001",
+    `put ${RECEIPT}`,
     "put host/index/dirty",
     "put page/<id>",
     "delete trash/<id>",
     "put host/count/active+host/count/trash",
-    "delete host/operation/sweep-key-0001",
+    `delete ${RECEIPT}`,
     "sync",
   ]);
   // A cut after the forwarded mark loses the retarget, as above: the retry
@@ -544,14 +554,14 @@ test("a Trash request refused before change releases from every cut", async (t) 
   const result = await sweep(t, {
     name: "refused",
     async setup(w) {
-      stale = w.heads();
+      stale = await w.revision(w.heads());
       w.edit("Launch plan, revised");
     },
     act: (w, catalog) => trash(w, catalog, KEY, stale),
     check({ outcome, page, storage }) {
       assert.equal(outcome.status, 409);
       assert.equal(page.revision, 0);
-      assert.equal(storage[`host/operation/${KEY}`], undefined);
+      assert.equal(storage[RECEIPT], undefined);
       assert.equal(storage[`trash/${pageId}`], undefined);
     },
   });

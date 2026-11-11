@@ -10,6 +10,7 @@ import { imageAssetUrl as assetPath } from "../shared/image-assets.mjs";
 import {
   BUNDLE_FORMAT,
   EDIT_BATCH,
+  RECEIPT_WINDOW_MS,
   STATE_VERSION,
   TransferError,
   bodyOperations,
@@ -32,17 +33,19 @@ const SOURCE = "https://source.example";
 const TARGET = "https://target.example";
 const KEY = "pages-test-key-0123456789";
 const quick = { sleep: async () => {}, now: () => Date.parse("2026-11-01T00:00:00Z") };
+// A rerun once the target may have collected the first run's receipts.
+const expired = { ...quick, now: () => quick.now() + RECEIPT_WINDOW_MS };
 const MUTATIONS = new Set(["create_project", "create_page", "edit_page"]);
 test("theme body lifecycle transition table persists batch progress and rejects invalid events", () => {
   const operations = Array(EDIT_BATCH + 1).fill({ op: "set_image" });
-  const installing = themeBodyTransition(null, { type: "plan", operations, heads: ["a"] });
-  const partial = themeBodyTransition(installing, { type: "receipt", heads: ["b"] });
+  const installing = themeBodyTransition(null, { type: "plan", operations, revision: "r1" });
+  const partial = themeBodyTransition(installing, { type: "receipt", revision: "r2" });
   assert.equal(partial.next, EDIT_BATCH);
-  const installed = themeBodyTransition(partial, { type: "receipt", heads: ["c"] });
+  const installed = themeBodyTransition(partial, { type: "receipt", revision: "r3" });
   const variants = themeBodyTransition(installed, { type: "discover", operations });
-  const remaining = themeBodyTransition(variants, { type: "receipt", heads: ["d"] });
-  const done = themeBodyTransition(remaining, { type: "receipt", heads: ["e"] });
-  assert.deepEqual(done, { phase: "done", heads: ["e"] });
+  const remaining = themeBodyTransition(variants, { type: "receipt", revision: "r4" });
+  const done = themeBodyTransition(remaining, { type: "receipt", revision: "r5" });
+  assert.deepEqual(done, { phase: "done", revision: "r5" });
   for (const state of [null, installing, installed, variants, done])
     for (const type of ["plan", "discover", "receipt", "unknown"]) {
       const allowed =
@@ -61,9 +64,8 @@ const PNG = Buffer.from(
 /**
  * An in-memory Pages target behind a fetch function that speaks the same
  * stateless JSON-RPC tools/call as /mcp. It enforces the retry contract the
- * importer depends on: a key is the caller's own nonce, scoped to its
- * retry_token when it has one, and replays its receipt only for the identical
- * payload. A Project's content
+ * importer depends on: a nonce is the caller's own, and replays its receipt
+ * only for the identical payload. A Project's content
  * is a document in `pages` flagged `content`: never listed, addressed by the
  * Page tools through project_id, named by get_project as document_id.
  */
@@ -74,7 +76,6 @@ function fakePages(origin, { outlinePage = 100, token = KEY, insertNode = true }
   const assetCalls = [];
   const projects = new Map();
   const receipts = new Map();
-  const tokens = new Map();
   const calls = [];
   const counts = new Map();
   // Pages whose explicit reads exceed the response budget.
@@ -84,7 +85,6 @@ function fakePages(origin, { outlinePage = 100, token = KEY, insertNode = true }
   // fixed clock (quick.now), so everything the fake makes is newer.
   let serverTime = Date.parse("2026-11-01T00:00:00Z");
   const createdAt = () => new Date((serverTime += 1000)).toISOString();
-  let tokenCount = 0;
   // dropResponse: apply, then lose the response. before: answer without
   // applying ("lost" loses the request; an object is the tool's result).
   const hooks = { dropResponse: null, before: null };
@@ -92,13 +92,8 @@ function fakePages(origin, { outlinePage = 100, token = KEY, insertNode = true }
   // Page trashed mid-export, say).
   let refuseAssets = false;
   const fail = (code, error = code) => ({ ok: false, body: { error, code } });
-  const head = (page) => page.revision.toString(16).padStart(64, "0");
-  async function authority() {
-    const token = `retry-${++tokenCount}.signature`;
-    const retry_until = new Date(Date.UTC(2026, 10, 8)).toISOString();
-    tokens.set(token, retry_until);
-    return { retry_token: token, retry_until };
-  }
+  // A Page's revision handle, as the host names it.
+  const revisionOf = (page) => `r${page.revision}`;
   const siblings = (projectId, parentId) =>
     [...pages.values()].filter(
       (page) => page.project_id === projectId && page.parent_id === parentId,
@@ -213,20 +208,19 @@ function fakePages(origin, { outlinePage = 100, token = KEY, insertNode = true }
     attrs: { asset_id, src: assetPath(pageId, asset_id), media_type, ...(title && { title }) },
   });
   async function idempotent(name, args, apply) {
-    const key = args.idempotency_key;
-    if (typeof key !== "string" || !/^[A-Za-z0-9_-]{8,128}$/.test(key))
-      return fail("invalid_idempotency_key", "idempotency_key must contain 8–128 characters");
-    if (key.startsWith("v1_"))
-      return fail("invalid_idempotency_key", "idempotency_key must not start with v1_");
-    if (args.retry_token !== undefined && !tokens.has(args.retry_token))
-      return fail("invalid_retry_token");
-    const receiptKey = args.retry_token === undefined ? key : `${args.retry_token}\n${key}`;
+    const key = args.nonce;
+    if (typeof key !== "string" || !/^[A-Za-z0-9_-]{6,64}$/.test(key))
+      return fail(
+        "invalid_nonce",
+        "nonce must contain 6–64 letters, digits, underscores or hyphens",
+      );
+    const receiptKey = key;
     const fingerprint = JSON.stringify([name, args]);
     const stored = receipts.get(receiptKey);
     if (stored)
       return stored.fingerprint === fingerprint
         ? { ok: true, body: stored.body, replayed: true }
-        : fail("idempotency_conflict");
+        : fail("nonce_conflict");
     const result = apply();
     if (result.ok) receipts.set(receiptKey, { fingerprint, body: result.body });
     return result;
@@ -248,7 +242,6 @@ function fakePages(origin, { outlinePage = 100, token = KEY, insertNode = true }
         body: {
           pages: slice.map(row),
           next_cursor: offset + limit < rows.length ? String(offset + limit) : null,
-          ...(await authority()),
         },
       };
     },
@@ -263,7 +256,6 @@ function fakePages(origin, { outlinePage = 100, token = KEY, insertNode = true }
             role: "owner",
           })),
           next_cursor: null,
-          ...(await authority()),
         },
       };
     },
@@ -308,7 +300,12 @@ function fakePages(origin, { outlinePage = 100, token = KEY, insertNode = true }
     async read_page(args) {
       const { page, rest, extra, error } = resolve(args);
       if (error) return error;
-      const common = { ...extra, page_id: page.page_id, title: page.title, heads: [head(page)] };
+      const common = {
+        ...extra,
+        page_id: page.page_id,
+        title: page.title,
+        revision: revisionOf(page),
+      };
       const blocks = page.blocks.map(({ id, kind, markdown }) => ({
         id,
         ...(kind && { kind }),
@@ -318,12 +315,11 @@ function fakePages(origin, { outlinePage = 100, token = KEY, insertNode = true }
       if (Object.keys(args).length === 0)
         return {
           ok: true,
-          body: { ...common, blocks, comments: page.comments, ...(await authority()) },
+          body: { ...common, blocks, comments: page.comments },
         };
       const offset = args.outline_offset ?? 0;
-      if (offset > 0 && !args.expected_heads) return fail("invalid_read_selector");
-      if (args.expected_heads && args.expected_heads[0] !== head(page))
-        return fail("read_revision_changed");
+      if (offset > 0 && !args.revision) return fail("invalid_read_selector");
+      if (args.revision && args.revision !== revisionOf(page)) return fail("read_revision_changed");
       if (args.include_content !== false && oversize.has(page.page_id))
         return fail("read_budget_exceeded");
       const entries = entriesOf(page);
@@ -341,7 +337,6 @@ function fakePages(origin, { outlinePage = 100, token = KEY, insertNode = true }
             next_offset: offset + slice.length < entries.length ? offset + slice.length : null,
           },
           comments: args.comments === "none" ? [] : page.comments.map(({ id }) => ({ id })),
-          ...(await authority()),
         },
       };
     },
@@ -349,8 +344,7 @@ function fakePages(origin, { outlinePage = 100, token = KEY, insertNode = true }
       idempotent("edit_page", args, () => {
         const { page, error } = resolve(args);
         if (error) return error;
-        if (JSON.stringify(args.base_heads) !== JSON.stringify([head(page)]))
-          return fail("edit_conflict");
+        if (args.revision !== revisionOf(page)) return fail("edit_conflict");
         for (const op of args.operations) {
           // after_block_id null puts a new block first; omitted appends.
           const place = (block) =>
@@ -405,7 +399,7 @@ function fakePages(origin, { outlinePage = 100, token = KEY, insertNode = true }
         }
         page.revision++;
         page.changed = ++clock;
-        return { ok: true, body: { page_id: page.page_id, heads: [head(page)] } };
+        return { ok: true, body: { page_id: page.page_id, revision: revisionOf(page) } };
       }),
   };
   async function assetRoute(url, init) {
@@ -1092,8 +1086,8 @@ test("import fills the content through project_id, puts the top level at parent 
     ["First section.", "\\$\\$x\\$\\$"],
   );
   for (const call of target.calls.filter((call) => MUTATIONS.has(call.name))) {
-    assert.match(call.args.idempotency_key, /^[a-f0-9]{40}$/);
-    assert.ok(call.args.retry_token);
+    assert.match(call.args.nonce, /^[a-f0-9]{40}$/);
+    assert.equal(call.args.retry_token, undefined);
   }
 
   assert.equal(report.verification.ok, true, report.verification.problems.join("\n"));
@@ -1291,7 +1285,7 @@ test("a body longer than one edit batch keeps its block order", async () => {
     (call) => call.name === "edit_page" && call.args.page_id === sibling.page_id,
   );
   assert.equal(edits.length, 2);
-  assert.notEqual(edits[0].args.idempotency_key, edits[1].args.idempotency_key);
+  assert.notEqual(edits[0].args.nonce, edits[1].args.nonce);
 });
 
 test("the state file is written atomically and readable only by its owner", async () => {
@@ -1299,9 +1293,9 @@ test("the state file is written atomically and readable only by its owner", asyn
   const file = path.join(dir, "bundle.json.state.json");
   const store = fileStore(file);
   assert.equal(await store.load(), null);
-  await store.save({ format: "x", pending: { args: { retry_token: "t" } } });
+  await store.save({ format: "x", pending: { args: { nonce: "t" } } });
   assert.equal((await stat(file)).mode & 0o777, 0o600);
-  assert.deepEqual((await store.load()).pending.args, { retry_token: "t" });
+  assert.deepEqual((await store.load()).pending.args, { nonce: "t" });
   assert.deepEqual(await readdir(dir), ["bundle.json.state.json"]);
 });
 
@@ -1351,8 +1345,7 @@ test("import refuses a version 1 state file, whose keys carry a retry_key_prefix
     operation: "create_page",
     args: {
       title: bundle.pages[0].title,
-      retry_token: "retry-1.signature",
-      idempotency_key: `v1_${"a".repeat(64)}_${"b".repeat(40)}`,
+      nonce: `v1_${"a".repeat(64)}_${"b".repeat(40)}`,
     },
   };
   const store = memoryStore({
@@ -1366,7 +1359,7 @@ test("import refuses a version 1 state file, whose keys carry a retry_key_prefix
     importBundle(client(target, TARGET), bundle, { store, ...quick }),
     (error) =>
       error instanceof TransferError &&
-      /version 1; this importer resumes only version 2/.test(error.message) &&
+      /version 1; this importer resumes only version 3/.test(error.message) &&
       /Start a new transfer/.test(error.message) &&
       /reconcile the target by hand/.test(error.message),
   );
@@ -1592,7 +1585,8 @@ test("rewriteLinks rewrites only complete source links", () => {
   assert.equal(rewrite(`see /p/${id}`), `see /p/${id}`, "only a link destination is relative");
 });
 
-/** The second create's window closes while its outcome is unknown. */
+/** The second create's outcome is unknown, and the rerun comes after the
+ * target may have collected its receipt. */
 async function expiredCreate({ applied }) {
   const { bundle } = linkBundle();
   const target = fakePages(TARGET);
@@ -1607,15 +1601,13 @@ async function expiredCreate({ applied }) {
     (error) => error.uncertain,
   );
   target.hooks.dropResponse = null;
-  target.hooks.before = (name) =>
-    name === "create_page"
-      ? { ok: false, body: { error: "Retry window expired", code: "retry_expired" } }
-      : undefined;
+  target.hooks.before = null;
+  const sent = target.calls.length;
   await assert.rejects(
-    importBundle(client(target, TARGET), bundle, { store, ...quick }),
+    importBundle(client(target, TARGET), bundle, { store, ...expired }),
     (error) => error.code === "reconciliation_required" && /--reconcile/.test(error.message),
   );
-  target.hooks.before = null;
+  assert.deepEqual(writes(target, sent), [], "the uncertain create is not sent again");
   const record = store.peek().reconciliation_required;
   return { bundle, target, store, record, sibling: bundle.pages[1] };
 }
@@ -1628,7 +1620,7 @@ test("an expired create blocks writes; --reconcile lists candidates and --adopt 
   assert.equal(record.operation, "create_page");
   assert.equal(record.args.title, "Sibling");
   assert.equal(record.requested_at, "2026-11-01T00:00:00.000Z", "kept from the first send");
-  assert.match(record.idempotency_key, /^[a-f0-9]{40}$/);
+  assert.match(record.nonce, /^[a-f0-9]{40}$/);
   assert.equal(store.peek().pending, null);
 
   let before = target.calls.length;
@@ -1763,15 +1755,10 @@ test("an expired Project create is adopted only by explicit ID", async () => {
     (error) => error.uncertain,
   );
   target.hooks.dropResponse = null;
-  target.hooks.before = (name) =>
-    name === "create_project"
-      ? { ok: false, body: { error: "Retry window expired", code: "retry_expired" } }
-      : undefined;
   await assert.rejects(
-    importBundle(client(target, TARGET), bundle, { store, ...quick }),
+    importBundle(client(target, TARGET), bundle, { store, ...expired }),
     /reconcile/,
   );
-  target.hooks.before = null;
   const unrelated = target.seedProject({ title: "Linked guide" });
   target.projects.get(unrelated.project_id).created_at = "2026-10-01T00:00:00.000Z";
   const listed = await importBundle(client(target, TARGET), bundle, {
@@ -1814,13 +1801,13 @@ test("an expired body batch is rewritten from a fresh read and converges", async
     );
     assert.equal(store.peek().pending.operation, "edit_page");
     target.hooks.dropResponse = null;
-    // The window belongs to the token: the same nonce with a fresh token is new.
-    const expired = store.peek().pending.args;
+    // The target no longer holds the batch's receipt, so the replay is
+    // refused. A batch from a fresh read names a new revision, and so a new
+    // nonce.
+    const lost = store.peek().pending.args;
     target.hooks.before = (name, args) =>
-      name === "edit_page" &&
-      args.idempotency_key === expired.idempotency_key &&
-      args.retry_token === expired.retry_token
-        ? { ok: false, body: { error: "Retry window expired", code: "retry_expired" } }
+      name === "edit_page" && args.nonce === lost.nonce
+        ? { ok: false, body: { error: "Revision too old to retry", code: "resync_required" } }
         : undefined;
     const report = await importBundle(client(target, TARGET), bundle, { store, ...quick });
     const page = target.pages.get(store.peek().pages[bundle.pages[1].source_page_id]);
@@ -2272,14 +2259,9 @@ test("an expired top-level create reconciles against the Project's top level, no
     (error) => error.uncertain,
   );
   target.hooks.dropResponse = null;
-  target.hooks.before = (name) =>
-    name === "create_page"
-      ? { ok: false, body: { error: "Retry window expired", code: "retry_expired" } }
-      : undefined;
-  await assert.rejects(importBundle(client(target, TARGET), bundle, { store, ...quick }), {
+  await assert.rejects(importBundle(client(target, TARGET), bundle, { store, ...expired }), {
     code: "reconciliation_required",
   });
-  target.hooks.before = null;
   const record = store.peek().reconciliation_required;
   const [project] = target.projects.values();
   assert.equal(record.args.parent_id, undefined);

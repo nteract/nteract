@@ -138,8 +138,7 @@ async function heavyPage(t) {
   const read = await f.tool("owner", "read_page", { comments: "none" });
   assert.equal(read.status, 200);
   const retry = () => ({
-    retry_token: read.body.retry_token,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   const latencies = [];
   for (let i = 0; i < toolWrites; i++) {
@@ -151,7 +150,7 @@ async function heavyPage(t) {
             block_id: f.blockId,
             body: `Tool thread ${i}`,
             selected_text: "Friday",
-            base_heads: read.body.heads,
+            revision: read.body.revision,
             ...retry(),
           })
         : await f.tool("owner", "manage_page_comment", {
@@ -178,7 +177,7 @@ async function heavyPage(t) {
 
 const patch = (f, read, retry) =>
   f.tool("owner", "edit_page", {
-    base_heads: read.body.heads,
+    revision: read.body.revision,
     ...retry(),
     operations: [
       { op: "replace_match", block_id: f.blockId, match_text: "Friday", replacement: "Friday" },
@@ -212,7 +211,7 @@ test(
     ]);
     for (const response of during)
       assert.equal(response.status, 200, JSON.stringify(response.body));
-    assert.deepEqual(during[0].body.heads, edit.body.heads);
+    assert.deepEqual(await f.headsOf(during[0].body.revision), await f.headsOf(edit.body.revision));
     assert.deepEqual(f.commentHeads(), before, "a Page edit never touches the comments document");
 
     // The write's background work settles quickly and holds no timer: the
@@ -266,8 +265,7 @@ test("the tracker sees a long timer that a request timer's callback sets", async
   const f = await fixture(t);
   const read = await f.tool("owner", "read_page", { comments: "none" });
   const retry = () => ({
-    retry_token: read.body.retry_token,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   const activity = f.page.activityState();
   const agentEvent = activity.agentEvent.bind(activity);

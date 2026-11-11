@@ -26,9 +26,9 @@ import { pageState } from "./access.mjs";
  * owner Catalog's tombstone, and `boot` (a cold start over durable storage).
  * `commitOk` requests another settlement attempt; `commitFailed` reports its
  * failure. Request events carry what the host observed: who asked
- * (`actor`), whether the idempotency key has a receipt (`key`, with its
- * summary in `recorded`), how `base_heads` compare when a trash sends them
- * (`heads`: match, mismatch, invalid, or absent when omitted), the Catalog's
+ * (`actor`), whether the nonce has a receipt (`key`, with its
+ * summary in `recorded`), how the base revision compares when a trash names one
+ * (`heads`: match, mismatch, invalid, unknown, or absent when omitted), the Catalog's
  * `expected` revision and `replayOnly` flag, the preview token's check, and a
  * deleted record's `deletion` receipt. `children` is the owner Catalog's leaf check, which runs before it
  * forwards a trash.
@@ -87,6 +87,7 @@ const cases = {
     "heads-absent",
     "non-owner",
     "heads-mismatch",
+    "heads-unknown",
     "stale-revision",
     "has-children",
     "recorded",
@@ -161,7 +162,8 @@ function request(allowed) {
     if ("recorded" in event) receiptSummary(event.recorded, "recorded");
     if ("expected" in event) count(event.expected, "expected");
     flag(event.replayOnly, "replayOnly");
-    if ("heads" in event) oneOf(event.heads, ["match", "mismatch", "invalid", "absent"], "heads");
+    if ("heads" in event)
+      oneOf(event.heads, ["match", "mismatch", "invalid", "unknown", "absent"], "heads");
     flag(event.children, "children");
     // The host checks a preview token only where the transition reads it.
     if ("preview" in event)
@@ -258,17 +260,22 @@ const refused = (status, error, code) => ({
   beforeChange: true,
 });
 const NOT_OWNER = refused(403, "Document access denied");
-const KEY_CONFLICT = refused(
-  409,
-  "idempotency_key was used for a different request",
-  "idempotency_conflict",
-);
+const KEY_CONFLICT = refused(409, "This nonce was used for a different request", "nonce_conflict");
 const HEADS_INVALID = refused(
   400,
-  "base_heads, when given, must be the heads from read_page",
-  "invalid_edit_selector",
+  "revision, when given, must be a revision from read_page",
+  "invalid_revision",
 );
-const HEADS_CHANGED = refused(409, "Page changed; read_page again before editing", "stale_heads");
+const HEADS_UNKNOWN = refused(
+  409,
+  "revision is unknown or older than the receipts this Page keeps; read the Page again",
+  "resync_required",
+);
+const HEADS_CHANGED = refused(
+  409,
+  "Page changed; read_page again before editing",
+  "stale_revision",
+);
 const NOT_IN_TRASH = refused(
   409,
   "Move this Page to Trash with delete_page before deleting it permanently",
@@ -402,8 +409,7 @@ function admit(state, event) {
   if (state.name === "trashed" && event.actor === "stranger")
     return reject(state, "page_not_found", { response: NOT_FOUND });
   if (event.actor !== "owner") return reject(state, "not_owner", { response: NOT_OWNER });
-  if (event.key === "conflict")
-    return reject(state, "idempotency_conflict", { response: KEY_CONFLICT });
+  if (event.key === "conflict") return reject(state, "nonce_conflict", { response: KEY_CONFLICT });
   return undefined;
 }
 
@@ -432,12 +438,17 @@ function trash(state, event) {
       effects: [put(true, false), effectOf("sync")],
       response: receiptReply("receipt", trashed, state),
     };
-  // Trash is reversible, so base_heads is an optional guard: the catalog
-  // retry_token alone authorizes it, as it does restore and purge. Heads the
-  // caller does send must match; malformed ones are refused.
-  if (event.heads === "mismatch") return reject(state, "stale_heads", { response: HEADS_CHANGED });
+  // Trash is reversible, so a revision is an optional guard: the nonce
+  // alone authorizes it, as it does restore and purge. A revision the caller
+  // does name must be current; a malformed one is refused, and one the host
+  // can't vouch for (unknown, pruned, or minted at or before the receipt
+  // horizon) needs a fresh read.
+  if (event.heads === "unknown")
+    return reject(state, "resync_required", { response: HEADS_UNKNOWN });
+  if (event.heads === "mismatch")
+    return reject(state, "stale_revision", { response: HEADS_CHANGED });
   if (event.heads !== "match" && event.heads !== "absent")
-    return reject(state, "invalid_edit_selector", { response: HEADS_INVALID });
+    return reject(state, "invalid_revision", { response: HEADS_INVALID });
   const next = keep(state, { name: "trashed", revision: state.revision + 1 });
   return {
     state: next,

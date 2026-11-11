@@ -13,7 +13,7 @@
  *
  * `legibleHostRefusal` turns that body into the JSON refusal shape every other
  * Pages error uses, with a stable code and a retry hint. A refused request did
- * no work, so a retry with the same idempotency_key and retry_token is safe.
+ * no work, so a retry with the same nonce and arguments is safe.
  *
  * Cloudflare reports the same conditions differently: the stub fetch throws.
  * An overloaded object throws an Error with `overloaded: true`, and a
@@ -36,7 +36,7 @@ const SUBJECTS = Object.freeze({
 const subjectOf = (binding) => SUBJECTS[binding] ?? "This Pages object";
 
 const busyMessage = (subject) =>
-  `${subject} is answering as many requests as it can right now; it did not run this one. Retry after retry_after_ms with the same idempotency_key and retry_token, and back off exponentially if it repeats.`;
+  `${subject} is answering as many requests as it can right now; it did not run this one. Retry after retry_after_ms with the same nonce and arguments, and back off exponentially if it repeats.`;
 
 export const PAGE_BUSY = Object.freeze({
   code: "page_busy",
@@ -59,17 +59,17 @@ export function overloadRetryAfterMs(random = Math.random) {
 
 /** How a request may be repeated after a lost answer, as `withinToolDeadline`
  * and `safeToRepeat` say it: `true` (a read, or a write whose receipt
- * replays), `false` (a tokenless write) or `"lease"` (a progress creation).
- * `undefined` is a request outside the tool API. */
+ * replays), `false` (a write without a valid nonce) or `"lease"` (a progress
+ * creation). `undefined` is a request outside the tool API. */
 const transientMessage = (subject, safe) => {
   const failed = `${subject} failed before it answered, for example while it restarted.`;
   if (safe === true)
-    return `${failed} It may have started this request: retry it with the same idempotency_key and retry_token, and its receipt replays.`;
+    return `${failed} It may have started this request: retry it with the same nonce and arguments, and its receipt replays.`;
   if (safe === false)
-    return `${failed} This write may have completed. Read back and reconcile before retrying: a write without retry_token is deduplicated only while its receipt is retained.`;
+    return `${failed} This write may have completed. Read back and reconcile before retrying.`;
   if (safe === "lease")
     return `${failed} The document was not edited. If you have its progress_id and lease_token, retry that session; do not loop creating sessions.`;
-  return `${failed} Retry with the same idempotency_key and retry_token. A write without a retry_token may have completed: read back and reconcile before retrying.`;
+  return `${failed} Retry a write with the same nonce and arguments, and its receipt replays; read back and reconcile before retrying anything else.`;
 };
 
 /** A transient failure between the gateway and an object. Unlike an
@@ -143,7 +143,7 @@ export function pageTransientFailureResponse({
 }
 
 /** `response`, or for a transient refusal, the same refusal stated for a
- * tool request's repeat safety (`safeToRepeat`): a tokenless write is told to
+ * tool request's repeat safety (`safeToRepeat`): a write without a nonce is told to
  * reconcile and is not retryable. `signal` is unused; the tool deadline
  * passes it. */
 export async function withRepeatSafety(response, safe, _signal) {

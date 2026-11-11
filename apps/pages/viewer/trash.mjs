@@ -1,16 +1,8 @@
 import { readLocalGrant, retireLocalPage } from "./local-catalog.mjs";
 
-/** Browser Trash operations. Each mutation prepares fresh catalog retry
- * authority from list_pages, like Page deletion and creation.
- */
-async function catalogAuthority(tool) {
-  const prepared = await tool("list_pages");
-  if (typeof prepared?.retry_token !== "string") throw Error("Could not prepare the request");
-  return {
-    retry_token: prepared.retry_token,
-    idempotency_key: crypto.randomUUID(),
-  };
-}
+/** Browser Trash operations. Each mutation carries a new nonce, like Page
+ * deletion and creation. */
+const freshNonce = () => ({ nonce: crypto.randomUUID() });
 
 /** Leave every session of a Page that just moved to Trash through the
  * session host's drain. The reload gate then waits for their checkpoints,
@@ -23,10 +15,10 @@ export function closeTrashedSessions(host, sessions, options) {
 }
 
 /** delete_page fences on the heads this tab has seen, so a peer's edit that
- * lands first refuses the move with stale_heads. The host's message is for
+ * lands first refuses the move with stale_revision. The host's message is for
  * agents ("read_page again"); a person gets one they can act on. */
 export function moveToTrashError(error) {
-  return error?.code === "stale_heads"
+  return error?.code === "stale_revision"
     ? Object.assign(Error("Someone edited this Page while it was moving to Trash. Try again."), {
         code: error.code,
         status: error.status,
@@ -74,7 +66,7 @@ export async function restorePage(tool, pageId, principal) {
     await tool("restore_page", {
       page_id: pageId,
       expected_principal: principal,
-      ...(await catalogAuthority(tool)),
+      ...freshNonce(),
     }),
   );
 }
@@ -104,7 +96,7 @@ export async function confirmPurge(tool, preview, principal) {
       action: "confirm",
       preview_token: preview.preview_token,
       expected_principal: principal,
-      ...(await catalogAuthority(tool)),
+      ...freshNonce(),
     }),
   );
 }

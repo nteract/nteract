@@ -80,7 +80,7 @@ test("a Project tree nests Pages by position, with missing parents at the top le
   );
 });
 
-test("Project listings follow cursors and a new Page uses the listing's retry token", async () => {
+test("Project listings follow cursors and a new Page sends only a nonce", async () => {
   const calls = [];
   const call = async (operation, args) => {
     calls.push([operation, args]);
@@ -88,7 +88,7 @@ test("Project listings follow cursors and a new Page uses the listing's retry to
       return args.cursor
         ? { pages: [{ page_id: page(2) }], next_cursor: null }
         : { pages: [{ page_id: page(1) }], next_cursor: "next" };
-    if (operation === "list_projects") return { projects: [], retry_token: "token" };
+    if (operation === "list_projects") return { projects: [] };
     return { page_id: page(3) };
   };
   assert.deepEqual(
@@ -100,7 +100,7 @@ test("Project listings follow cursors and a new Page uses the listing's retry to
   const created = await runPageCreation({
     placement: { project_id: projectId },
     call: async (operation, args) =>
-      operation === "list_pages" ? { pages: [], retry_token: "token" } : call(operation, args),
+      operation === "list_pages" ? { pages: [] } : call(operation, args),
     open: async (pageId) => opened.push(pageId),
     refresh: async () => {},
     current: () => true,
@@ -109,11 +109,8 @@ test("Project listings follow cursors and a new Page uses the listing's retry to
   assert.deepEqual(opened, [page(3)]);
   const [, args] = calls.at(-1);
   assert.equal(args.project_id, projectId);
-  assert.equal(args.retry_token, "token");
-  assert.match(
-    args.idempotency_key,
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
-  );
+  assert.equal(args.retry_token, undefined);
+  assert.match(args.nonce, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
 });
 
 const crumbTitles = (crumbs) =>

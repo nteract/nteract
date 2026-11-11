@@ -431,18 +431,25 @@ async function gateway(t, { rules = [], env: extra = {} } = {}) {
   };
   let keys = 0;
   const create = (args = {}) =>
-    call("create_page", { title: "Quota", idempotency_key: `quota-key-${++keys}`, ...args });
+    call("create_page", { title: "Quota", nonce: `quota-key-${++keys}`, ...args });
   return { auth, db, env, storage, catalog, forwarded, call, mcp, create };
 }
 
 test("the gateway forwards the resolved limit beside the caller's arguments", async (t) => {
   // The fixture's whoami verifies fixture@example.invalid.
   const g = await gateway(t, { rules: [["domain", "example.invalid", 2]] });
-  // A caller-supplied limit or email is just an unknown argument.
-  const first = await g.create({ page_limit: 100_000, email: "rgbkrk@gmail.com" });
+  // A caller-supplied limit or email is an unknown argument, refused before
+  // anything is forwarded.
+  for (const args of [{ page_limit: 100_000 }, { email: "rgbkrk@gmail.com" }]) {
+    const forged = await g.create(args);
+    assert.equal(forged.status, 400, JSON.stringify(forged.body));
+    assert.equal(forged.body.code, "invalid_arguments");
+  }
+  assert.equal(g.forwarded.length, 0);
+  const first = await g.create();
   assert.equal(first.status, 200, JSON.stringify(first.body));
   assert.equal(g.forwarded.at(-1).page_limit, 2);
-  assert.equal(g.forwarded.at(-1).arguments.page_limit, 100_000);
+  assert.equal(g.forwarded.at(-1).arguments.page_limit, undefined);
   assert.equal((await g.create()).status, 200);
   const refused = await g.create();
   assert.equal(refused.status, 409);
@@ -486,7 +493,7 @@ test("list_pages reports the caller's own quota", async (t) => {
 test("an MCP refusal at the limit carries the code in structuredContent", async (t) => {
   const g = await gateway(t, { rules: [["email", "fixture@example.invalid", 1]] });
   assert.equal((await g.create()).status, 200);
-  const result = await g.mcp("create_page", { title: "Over", idempotency_key: "mcp-over-limit" });
+  const result = await g.mcp("create_page", { title: "Over", nonce: "mcp-over-limit" });
   assert.equal(result.isError, true);
   const expected = {
     error: "This alpha release allows 1 Page per account.",

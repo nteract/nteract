@@ -94,8 +94,7 @@ async function mutate(operation, args) {
   );
   return tool(a, operation, {
     ...args,
-    retry_token: authority.retry_token,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
 }
 const read = () => tool(a, "read_page", { page_id: pageId });
@@ -490,10 +489,9 @@ try {
             a.keyboard.type(chunk, { delay: 40 }),
             tool(a, "edit_page", {
               page_id: page,
-              base_heads: current.heads,
+              revision: current.revision,
               conflict_scope: "target",
-              retry_token: current.retry_token,
-              idempotency_key: crypto.randomUUID(),
+              nonce: crypto.randomUUID(),
               operations: [
                 {
                   op: "replace_match",
@@ -514,9 +512,8 @@ try {
         const authority = await tool(a, "list_pages");
         await tool(a, "delete_page", {
           page_id: page,
-          base_heads: current.heads,
-          retry_token: authority.retry_token,
-          idempotency_key: crypto.randomUUID(),
+          revision: current.revision,
+          nonce: crypto.randomUUID(),
         });
         await purgeTrashedFixture(
           (name, args) => tool(a, name, args),
@@ -524,8 +521,7 @@ try {
           async () => {
             const fresh = await tool(a, "list_pages");
             return {
-              retry_token: fresh.retry_token,
-              idempotency_key: crypto.randomUUID(),
+              nonce: crypto.randomUUID(),
             };
           },
         );
@@ -554,15 +550,14 @@ try {
   if (a && pageId) {
     try {
       await a.unroute("**/api/tools").catch(() => {});
-      await mutate("delete_page", { page_id: pageId, base_heads: (await read()).heads });
+      await mutate("delete_page", { page_id: pageId, revision: (await read()).revision });
       await purgeTrashedFixture(
         (name, args) => tool(a, name, args),
         pageId,
         async () => {
           const authority = await tool(a, "list_pages");
           return {
-            retry_token: authority.retry_token,
-            idempotency_key: crypto.randomUUID(),
+            nonce: crypto.randomUUID(),
           };
         },
       );

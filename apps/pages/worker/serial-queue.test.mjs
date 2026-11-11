@@ -153,7 +153,7 @@ test("a Catalog stuck on a Page fetch resets, and listings queued behind it do n
       headers: { authorization: `Bearer ${token}` },
       body: JSON.stringify({ operation, arguments: args }),
     });
-  catalog.fetch(request("create_page", { title: "Stuck", idempotency_key: "stuck-create" }));
+  catalog.fetch(request("create_page", { title: "Stuck", nonce: "stuck-create" }));
   for (let i = 0; i < 200 && pageRequests === 0; i++) await turns(1);
   assert.equal(pageRequests, 1, "the create reached its Page fetch");
   let listed = false;

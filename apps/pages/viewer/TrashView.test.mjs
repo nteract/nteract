@@ -95,7 +95,9 @@ test("a permanent deletion from Trash moves this browser's copy to the recovery 
   const tool = async (name, args = {}) => {
     calls.push([name, args.action]);
     if (name === "list_pages")
-      return args.in_trash ? { pages: trashed, next_cursor: null } : { retry_token: "token" };
+      return args.in_trash
+        ? { pages: trashed, next_cursor: null }
+        : { pages: [], next_cursor: null };
     if (name === "purge_page" && args.action === "preview")
       return {
         page_id: pageId,

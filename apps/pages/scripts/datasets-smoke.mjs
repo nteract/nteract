@@ -31,8 +31,7 @@ const complete = (name) => {
   console.log(`[Datasets E2E] ${name}`);
 };
 const retry = (value) => ({
-  retry_token: value.retry_token,
-  idempotency_key: crypto.randomUUID(),
+  nonce: crypto.randomUUID(),
 });
 async function api(page, path, body) {
   return page.evaluate(
@@ -81,7 +80,7 @@ async function editPage(operations) {
   const read = (await tool(owner, "read_page", { page_id: pageId })).body;
   return tool(owner, "edit_page", {
     page_id: pageId,
-    base_heads: read.heads,
+    revision: read.revision,
     ...retry(read),
     operations,
   });
@@ -117,7 +116,7 @@ try {
     email: "bob@localhost",
     role: "viewer",
     expected_revision: current.body.access.revision,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(invited.status, 200, JSON.stringify(invited.body));
   complete("Owner and viewer sessions on a new Page");
@@ -208,7 +207,7 @@ try {
     const before = (await tool(owner, "read_page", { page_id: longId })).body;
     const placed = await tool(owner, "edit_page", {
       page_id: longId,
-      base_heads: before.heads,
+      revision: before.revision,
       ...retry(before),
       operations: [dataframe(asset.asset_id, "Far below")],
     });
@@ -477,7 +476,7 @@ try {
       const catalog = (await tool(owner, "list_pages")).body;
       const deleted = await tool(owner, "delete_page", {
         page_id: id,
-        base_heads: read.heads,
+        revision: read.revision,
         ...retry(catalog),
       });
       assert.equal(deleted.status, 200, JSON.stringify(deleted.body));

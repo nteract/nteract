@@ -61,7 +61,7 @@ test("GET llms.txt is readable without authentication and explains the supported
   assert.ok(guide.startsWith(`# ${PRODUCT_NAME}\n`));
   assert.ok(guide.startsWith("# Pages\n"));
   // A fetch that truncates the guide still gets the quick start and the codes.
-  for (const marker of ["## Quick start", "## Error codes", "auth_required", "invalid_retry_token"])
+  for (const marker of ["## Quick start", "## Error codes", "auth_required", "invalid_nonce"])
     assert.ok(guide.indexOf(marker) < 12_000, marker);
   // Every code a client can receive is in the error list, ahead of setup.
   const codeList = guide.slice(
@@ -152,12 +152,13 @@ test("GET llms.txt is readable without authentication and explains the supported
     "X-Pages-Driver",
     "cloud:read",
     "cloud:write",
-    "base_heads",
-    "idempotency_key",
+    "revision",
+    "comment_revision",
+    "nonce",
     "result.isError",
     "structuredContent",
     "Branch on code, not on the error message",
-    "stale_heads",
+    "stale_revision",
     "invalid_edit_selector",
     "replace_match",
     "context_before/context_after",
@@ -224,20 +225,25 @@ test("guide URLs use deployment configuration instead of request headers or cred
     assert.equal(guide.includes(value), false, value);
 });
 
-test("guide has callers send their own key with a retry_token, never a prefix", () => {
+test("guide has callers send their own nonce and name revisions, never heads or tokens", () => {
   const guide = agentGuide(env);
   const prose = guide.replace(/\s+/g, " ");
-  assert.doesNotMatch(guide, /retry_key_prefix/);
-  assert.match(prose, /Send a new UUID as idempotency_key for each new request/);
-  assert.match(prose, /never start with v1_/);
-  assert.match(prose, /the same key with another token is another request/);
-  assert.match(guide, /"idempotency_key": "<new UUID>"/);
+  assert.doesNotMatch(
+    guide,
+    /retry_key_prefix|retry_token|retry_until|retry_expired|idempotency_key|base_heads|expected_heads|since_heads|comment_heads|stale_heads|current_heads/,
+  );
+  assert.doesNotMatch(guide, /[a-f0-9]{64}/);
+  assert.match(prose, /Send a new UUID as nonce for each new request/);
+  assert.match(prose, /another account's identical nonce is another request/);
+  assert.match(guide, /"nonce": "<new UUID>"/);
+  assert.match(guide, /"revision": "<revision from read_page>"/);
   assert.match(
     prose,
-    /Retrying the same retry_token, key and payload within the token's seven-day window finishes the same Project/,
+    /Resending the same nonce and payload while its receipt is kept finishes the same Project/,
   );
-  assert.match(prose, /A retry without the token is best-effort/);
-  assert.doesNotMatch(prose, /same key and payload/);
+  // A write without a revision has no fence once its receipt is gone.
+  assert.match(prose, /A write that names no revision has no fence/);
+  assert.match(prose, /answers resync_required/);
 });
 
 test("guide documents account-safe onboarding and truthful listing metadata", () => {
@@ -367,7 +373,7 @@ test("guide distinguishes whole Project sharing from direct Page grants and edit
   assert.match(prose, /an old receipt is not a fresh roster/);
   assert.match(prose, /Project company-domain sharing is not supported/);
   assert.match(prose, /up to 15 seconds after revocation/);
-  assert.match(prose, /Sharing tools do not issue retry_token authority/);
+  assert.match(prose, /preserve the original nonce and payload rather than guessing success/);
   assert.doesNotMatch(
     prose,
     /Projects are owner-only|Only a Project's owner can open it|move changes no one's access/,
@@ -438,7 +444,7 @@ test("the Images section teaches which path to use and the end-to-end workflow",
     /replace_block_markdown on the Page's only block \(a new Page from\s+create_page has one\), or its last block/,
     /give every operation\s+that block's ID as after_block_id and list them in reverse order/,
     /summary\.images/,
-    /pass outline\.next_offset\s+as outline_offset, with that read's heads as expected_heads/,
+    /pass outline\.next_offset\s+as outline_offset, with that read's revision as revision/,
     /"block_id": "<last block's id>"/,
   ])
     assert.match(images, fact);
@@ -450,7 +456,10 @@ test("the guide's curl line and create_page_asset_upload's example send the same
   const values = new Map();
   const storage = {
     get: async (key) => values.get(key),
-    put: async (key, value) => void values.set(key, value),
+    put: async (key, value) =>
+      void (typeof key === "object"
+        ? Object.entries(key).forEach(([name, entry]) => values.set(name, entry))
+        : values.set(key, value)),
     sync: async () => {},
   };
   const issued = await issueAssetUpload(storage, {
@@ -479,7 +488,7 @@ test("the guide for a deployment with no API keys lists every client error code 
   };
   const keyed = { NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.example" };
   const guide = agentGuide(kilo);
-  for (const marker of ["## Quick start", "## Error codes", "auth_required", "invalid_retry_token"])
+  for (const marker of ["## Quick start", "## Error codes", "auth_required", "invalid_nonce"])
     assert.ok(guide.indexOf(marker) < 12_000, marker);
   const codeList = guide.slice(
     guide.indexOf("## Error codes"),

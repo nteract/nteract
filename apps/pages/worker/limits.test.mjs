@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readRevision } from "./operation-journal.mjs";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
@@ -11,6 +12,10 @@ class Storage {
     return structuredClone(this.values.get(key));
   }
   async put(key, value) {
+    if (typeof key === "object") {
+      for (const [name, entry] of Object.entries(key)) await this.put(name, entry);
+      return;
+    }
     this.values.set(key, structuredClone(value));
   }
   async delete(key) {
@@ -42,7 +47,10 @@ test("oversized derived edits leave content and recovery intents unchanged", asy
         },
       },
       operation: "edit_page",
-      args: { idempotency_key: "oversized-edit", base_heads: heads },
+      args: {
+        nonce: "oversized-edit",
+        revision: await readRevision(storage, "page", heads),
+      },
       identity: { principal: "owner", driver: "test" },
       apply: (draft) => {
         draft.payload = new Uint8Array(randomBytes(BACKEND_LIMITS.maxRecordBytes + 4096));
@@ -55,7 +63,10 @@ test("oversized derived edits leave content and recovery intents unchanged", asy
   );
   assert.deepEqual(A.getHeads(doc), heads);
   assert.equal(doc.payload, undefined);
-  assert.equal(storage.values.size, 0);
+  assert.deepEqual(
+    [...storage.values.keys()].filter((key) => !key.startsWith("host/revision/")),
+    [],
+  );
   assert.equal(flushes, 0);
 });
 

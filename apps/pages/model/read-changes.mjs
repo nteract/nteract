@@ -266,7 +266,7 @@ const sameHeads = (a, b) => canonical([...a].sort()) === canonical([...b].sort()
 function commentsDocChanges(page, commentsDoc, since, mode) {
   if (mode === "none") return { comments: [] };
   // No comments baseline: a client from before the comments document, or one
-  // that never kept comment_heads. Every current thread, flagged as a
+  // that never kept comment_revision. Every current thread, flagged as a
   // snapshot, so it keeps seeing comments and can tell it must replace what
   // it holds rather than merge a delta. Deleted threads can't be listed.
   if (!since)
@@ -282,7 +282,7 @@ function commentsDocChanges(page, commentsDoc, since, mode) {
     fail(
       409,
       "resync_required",
-      "The comments baseline is unavailable. Read the Page or list_page_comments to establish a new comment_heads baseline.",
+      "The comments baseline is unavailable. Read the Page or list_page_comments to establish a new comment_revision baseline.",
     );
   if (sameHeads(since, A.getHeads(commentsDoc))) return { comments: [] };
   const before = historical(commentsDoc, since);
@@ -290,7 +290,7 @@ function commentsDocChanges(page, commentsDoc, since, mode) {
     fail(
       409,
       "resync_required",
-      "The comments baseline cannot be opened. Read the Page or list_page_comments to establish a new comment_heads baseline.",
+      "The comments baseline cannot be opened. Read the Page or list_page_comments to establish a new comment_revision baseline.",
     );
   try {
     const project = (id, messages) =>
@@ -312,7 +312,7 @@ function commentsDocChanges(page, commentsDoc, since, mode) {
 
 /** Bounded net changes between one known historical view and one captured
  * current revision. No actor/display-name inference or historical body export.
- * The caller checks current access and adds retry authority to these same heads.
+ * The caller names these heads as revision handles.
  */
 export function projectReadChanges(doc, args, commentsDoc) {
   const settings = options(args),

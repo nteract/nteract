@@ -1,4 +1,4 @@
-import { isTokenedRequest } from "../model/retry-key.mjs";
+import { hasNonce } from "../model/nonce.mjs";
 import * as A from "@automerge/automerge";
 import { generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
 import {
@@ -30,7 +30,7 @@ import {
 import { unsupportedMarkdown, unsupportedMarkdownError } from "../model/markdown-scan.mjs";
 import { commentsGenesis } from "../model/comments-doc.mjs";
 import { applyComment, commentsMigrated } from "../model/comments.mjs";
-import { guardCommentIntent } from "../model/comment-guard.mjs";
+import { guardCommentIntent, passageComment } from "../model/comment-guard.mjs";
 import { commentsDocUuid, commentsDocumentId } from "./comments-store.mjs";
 import {
   WRITTEN_FORMATS,
@@ -118,7 +118,15 @@ import {
   isHistoryCapacityError,
   logIncompleteHistory,
 } from "./history-admission.mjs";
-import { issueRetryToken, inspectOperation, reserveOperation } from "./operation-journal.mjs";
+import {
+  inspectOperation,
+  journalTime,
+  raiseHorizon,
+  readRevisions,
+  reserveOperation,
+  revisionClock,
+} from "./operation-journal.mjs";
+import { fencedHeads, headsFor, revisionPlan } from "./revisions.mjs";
 import { STORAGE_KEYS_PER_CALL, guardContext } from "./storage-guard.mjs";
 import { pageRecordsCall } from "./page-records.mjs";
 export { PageRecords } from "./page-records.mjs";
@@ -150,8 +158,8 @@ import {
   PAGE_DOC,
   documentMutation,
   recoverDocumentMutations,
-  mutationKey,
   operationKey,
+  requireNonce,
   fingerprint,
   requireHeads,
 } from "./mutations.mjs";
@@ -332,6 +340,7 @@ import { holdUntilSettled } from "./request-hold.mjs";
 import { boundedMap } from "./bounded-map.mjs";
 import { legibleEnv, overloadRetryAfterMs, withRepeatSafety } from "./host-busy.mjs";
 import { readTool } from "./tool-reads.mjs";
+import { checkArguments } from "./tool-arguments.mjs";
 import { readChangesTool } from "./tool-changes.mjs";
 import { PageActivity } from "./page-activity.mjs";
 import {
@@ -456,7 +465,7 @@ async function refusalOf(response) {
 const slotPrefix = { delete_page: "trash/", restore_page: "page/" };
 /** delete_page moves a Page to Trash. Its journal fingerprint uses a distinct
  * name so a build that predates Trash cannot replay the receipt as a
- * permanent deletion: it reports an idempotency conflict instead.
+ * permanent deletion: it reports an nonce conflict instead.
  */
 const lifecycleFingerprint = {
   delete_page: "trash_page",
@@ -628,8 +637,8 @@ function logCountRepair(counts) {
 }
 /** Journal operation names for the Catalog's lifecycle routes. */
 const LIFECYCLE_OPERATIONS = { trash: "trash_page", restore: "restore_page", purge: "purge_page" };
-/** A request's base_heads as requireHeads judges them, or `absent` when the
- * request omitted them. The lifecycle machine decides what absence means. */
+/** A trash's base heads as requireHeads judges them, or `absent` when the
+ * request named none. The lifecycle machine decides what absence means. */
 function headsCheck(doc, heads) {
   if (heads === undefined) return "absent";
   try {
@@ -653,7 +662,9 @@ function commentHeadsCheck(commentsDoc, heads) {
 const publicIdentity = ({ principal, displayName, driver }) => ({ principal, displayName, driver });
 /** Lifecycle arguments as the caller sent them. The Catalog alone sets the
  * compare-and-set controls it forwards to a Page, and only delete_project's
- * own trash sends `base_comment_heads`. */
+ * own trash, a host-to-host call, sends `base_comment_heads`. A caller's
+ * trash names a `revision`, or, from a browser session only, the heads it
+ * shows as `base_heads` (BROWSER_TRASH_GUARD in tool-arguments.mjs). */
 const callerLifecycleArguments = ({
   expected_revision: _expected,
   replay_only: _replay,
@@ -703,8 +714,8 @@ function requestedPosition(args) {
  * - `space_id: null`: a root in Your items.
  * Both together must agree (`placement_mismatch`). Naming neither is
  * `move_destination_required`, the one destination this tool can't place.
- * `spaceId` is undefined when no Project was named. The retry_token is
- * required: a move's lost answer is reconciled by replaying its receipt.
+ * `spaceId` is undefined when no Project was named. The nonce is required:
+ * a move's lost answer is reconciled by replaying its receipt.
  */
 function validateMoveInput(args) {
   const pageId = requirePageIdArgument(args.page_id);
@@ -729,12 +740,7 @@ function validateMoveInput(args) {
       ? null
       : requireSpaceIdArgument(args.space_id);
   const position = requestedPosition(args);
-  if (typeof args.retry_token !== "string")
-    throw new HttpError(
-      400,
-      "move_page needs the retry_token from list_pages with your own idempotency_key",
-      "invalid_retry_token",
-    );
+  requireNonce(args);
   return { pageId, parentId, spaceId, position };
 }
 
@@ -894,9 +900,10 @@ const READ_OPERATIONS = [
 ];
 
 /** Whether repeating `operation` after a lost answer is safe: a read, a
- * progress renewal or clear (the lease names its session), or a write whose
- * retry_token holds its receipt. A progress creation is not: a repeat mints a
- * second session and the first one's lease is lost, so it gets lease advice. */
+ * progress renewal or clear (the lease names its session), or a write with a
+ * valid nonce, whose receipt a repeat with the same nonce and arguments
+ * returns. A progress creation is not: a repeat mints a second session and
+ * the first one's lease is lost, so it gets lease advice. */
 const safeToRepeat = (operation, args) => {
   // Issuing an upload URL changes nothing; a repeat issues another one.
   if (operation === ASSET_UPLOAD_OPERATION) return true;
@@ -904,10 +911,14 @@ const safeToRepeat = (operation, args) => {
     return typeof args?.progress_id === "string" && typeof args?.lease_token === "string"
       ? true
       : "lease";
-  return READ_OPERATIONS.includes(operation) || isTokenedRequest(args);
+  return READ_OPERATIONS.includes(operation) || hasNonce(args);
 };
 
-async function invoke(request, env, operation, args = {}, seen) {
+/** Run one public tool call. `call` is the call as its caller sent it,
+ * `{ transport, operation, args }` in the API's names, checked against the
+ * arguments its operation takes (tool-arguments.mjs) once the credential may
+ * make the call: a credential that can't learns that first. */
+async function invoke(request, env, operation, args = {}, seen, call) {
   if (!operations.has(operation)) throw unknownOperation(operation, operations);
   if (!args || typeof args !== "object" || Array.isArray(args)) throw invalidArguments();
   const identity = await authenticate(request, env);
@@ -924,6 +935,7 @@ async function invoke(request, env, operation, args = {}, seen) {
       throw new HttpError(403, "Pages sharing permission is required", "oauth_insufficient_scope");
     const read = operation.startsWith("get_");
     if (!read) requireWrite(identity);
+    if (call) checkArguments(call, identity);
     if (operation.endsWith("project_access")) {
       requireSpaceIdArgument(args.space_id);
       return env.CATALOGS.getByName(identity.principal).fetch(
@@ -936,6 +948,7 @@ async function invoke(request, env, operation, args = {}, seen) {
     );
   }
   if (!READ_OPERATIONS.includes(operation)) requireWrite(identity);
+  if (call) checkArguments(call, identity);
   if (["get_space", "update_space", "delete_project"].includes(operation))
     requireSpaceIdArgument(args.space_id);
   if (operation === "page_cards") return await pageCards(request, env, identity, args);
@@ -1368,7 +1381,11 @@ const gateway = {
             try {
               response = await invokeProjectApi(
                 (internal, internalArgs) =>
-                  invoke(invocationRequest, env, internal, internalArgs, usage.seen),
+                  invoke(invocationRequest, env, internal, internalArgs, usage.seen, {
+                    transport: "mcp",
+                    operation,
+                    args,
+                  }),
                 operation,
                 args,
               );
@@ -1452,7 +1469,11 @@ const gateway = {
           const invocationRequest = withMcpAgent(request, bodyAgent(body));
           response = await invokeProjectApi(
             (internal, internalArgs) =>
-              invoke(invocationRequest, env, internal, internalArgs, usage.seen),
+              invoke(invocationRequest, env, internal, internalArgs, usage.seen, {
+                transport: "http-tools",
+                operation: body.operation,
+                args: body.arguments,
+              }),
             body.operation,
             body.arguments,
             { env },
@@ -1990,7 +2011,7 @@ export class Catalog {
         // bytes the browser saved with the draft, which this build may no
         // longer accept fresh. Its receipt, or for a pending one the Page
         // host's record, answers it, so only a new request is validated.
-        const recorded = await this.storage.get(await operationKey(args));
+        const recorded = await this.storage.get(await operationKey(args, identity, "catalog"));
         const digest =
           recorded &&
           (await fingerprint(
@@ -2006,19 +2027,13 @@ export class Catalog {
       }
       // Input is sound: this write runs the shape pass first.
       await this.locationShape();
-      const key = await operationKey(args);
+      const key = await operationKey(args, identity, "catalog");
       const digest = await fingerprint(
         lifecycleFingerprint[body.operation] ?? body.operation,
         args,
         identity,
       );
-      const inspected = await inspectOperation(this.storage, {
-        key,
-        digest,
-        retryToken: args.retry_token,
-        scope: `catalog:${identity.principal}`,
-        principal: identity.principal,
-      });
+      const inspected = await inspectOperation(this.storage, { key, digest });
       if (lifecycle)
         return await this.runLifecycle(request, body.operation, args, {
           key,
@@ -2049,7 +2064,11 @@ export class Catalog {
           ((await this.storage.get(`page/${args.page_id}`)) ||
             (await this.storage.get(`trash/${args.page_id}`)))
         )
-          throw new HttpError(409, "Page already has another creation request");
+          throw new HttpError(
+            409,
+            "Page already has another creation request",
+            "creation_conflict",
+          );
         const { location, rekeyed } = await this.resolveLocation(request, registering ? {} : args);
         intent = {
           fingerprint: digest,
@@ -2057,11 +2076,7 @@ export class Catalog {
           pageId: body.operation === "create_page" ? crypto.randomUUID() : args.page_id,
           createdAt: new Date().toISOString(),
         };
-        intent = await reserveOperation(this.storage, {
-          key,
-          entry: intent,
-          retry: inspected.retry,
-        });
+        intent = await reserveOperation(this.storage, { key, entry: intent });
         // The intent and the pending entry, which alone records the new
         // Page's location, commit together. A retry reads the location back.
         await this.storage.put({
@@ -2263,7 +2278,7 @@ export class Catalog {
   /**
    * A Project member's create_page from this Catalog, driven by the
    * forwarding-record machine (project-create.mjs). The record lives under
-   * the caller's idempotency key and names the owner-side forward_id, so a
+   * the caller's nonce and names the owner-side forward_id, so a
    * retry resumes the creation the owner's Catalog reserved. The caller's
    * own Page limit is untouched; the owner's Catalog applies its owner's.
    */
@@ -2297,7 +2312,6 @@ export class Catalog {
         case "reserve":
           record = await reserveOperation(storage, {
             key,
-            retry: inspected.retry,
             entry: {
               fingerprint: digest,
               pending: true,
@@ -2411,11 +2425,7 @@ export class Catalog {
       );
       let intent = await storage.get(key);
       if (intent && intent.fingerprint !== digest)
-        throw new HttpError(
-          409,
-          "idempotency_key was used for a different request",
-          "idempotency_conflict",
-        );
+        throw new HttpError(409, "This nonce was used for a different request", "nonce_conflict");
       reserved = !!intent;
       if (intent && !intent.pending) {
         await storage.sync();
@@ -2509,7 +2519,6 @@ export class Catalog {
       pageId,
       key,
       digest,
-      retry: inspected.retry,
       limit,
       principal,
     };
@@ -2586,7 +2595,6 @@ export class Catalog {
         if (effect.state === "reserved") {
           run.row = await reserveOperation(storage, {
             key,
-            retry: run.retry,
             entry: {
               fingerprint: run.digest,
               pending: true,
@@ -3017,11 +3025,11 @@ export class Catalog {
       parentId,
       spaceId,
       position,
-      key: await operationKey(args),
+      key: await operationKey(args, identity, "catalog"),
       digest: await fingerprint("move_page", args, identity),
     };
     let state = { name: "received" };
-    let event = await this.inspectMove(run, args.retry_token);
+    let event = await this.inspectMove(run);
     for (;;) {
       const result = movePage.step(state, event);
       if (result.rejected !== undefined)
@@ -3035,24 +3043,15 @@ export class Catalog {
     }
   }
 
-  /** The journal's answer for this key as an `inspected` event. Only the
-   * two outcomes the machine decides are events; a malformed or expired
-   * token is a deterministic input error and throws as every write's does. */
-  async inspectMove(run, retryToken) {
+  /** The journal's answer for this key as an `inspected` event. */
+  async inspectMove(run) {
     let inspected;
     try {
-      inspected = await inspectOperation(this.storage, {
-        key: run.key,
-        digest: run.digest,
-        retryToken,
-        scope: `catalog:${run.identity.principal}`,
-        principal: run.identity.principal,
-      });
+      inspected = await inspectOperation(this.storage, { key: run.key, digest: run.digest });
     } catch (error) {
-      if (error.code === "idempotency_conflict") return { type: "inspected", row: "conflict" };
+      if (error.code === "nonce_conflict") return { type: "inspected", row: "conflict" };
       throw error;
     }
-    run.retry = inspected.retry;
     const row = inspected.entry;
     if (!row) return { type: "inspected", row: "absent" };
     if (row.pending) return { type: "inspected", row: "pending" };
@@ -3201,7 +3200,6 @@ export class Catalog {
     const { pageId, key, plan } = run;
     const row = await reserveOperation(storage, {
       key,
-      retry: run.retry,
       entry: {
         fingerprint: run.digest,
         pending: true,
@@ -3250,15 +3248,9 @@ export class Catalog {
     const { title, description } = validateSpaceInput(args, { creating: true });
     // Input is sound: the shape pass runs first, as for every queued write.
     await this.locationShape();
-    const key = await operationKey(args);
+    const key = await operationKey(args, identity, "catalog");
     const digest = await fingerprint("create_space", args, identity);
-    const inspected = await inspectOperation(storage, {
-      key,
-      digest,
-      retryToken: args.retry_token,
-      scope: `catalog:${identity.principal}`,
-      principal: identity.principal,
-    });
+    const inspected = await inspectOperation(storage, { key, digest });
     let intent = inspected.entry;
     if (intent && !intent.pending) {
       await storage.sync();
@@ -3276,7 +3268,6 @@ export class Catalog {
       const createdAt = new Date().toISOString();
       intent = await reserveOperation(storage, {
         key,
-        retry: inspected.retry,
         entry: {
           fingerprint: digest,
           pending: true,
@@ -3384,15 +3375,9 @@ export class Catalog {
     const storage = this.storage;
     validateSpaceInput(args, { creating: false });
     await this.locationShape();
-    const key = await operationKey(args);
+    const key = await operationKey(args, identity, "catalog");
     const digest = await fingerprint("update_space", args, identity);
-    const inspected = await inspectOperation(storage, {
-      key,
-      digest,
-      retryToken: args.retry_token,
-      scope: `catalog:${identity.principal}`,
-      principal: identity.principal,
-    });
+    const inspected = await inspectOperation(storage, { key, digest });
     let intent = inspected.entry;
     if (intent && !intent.pending) {
       await storage.sync();
@@ -3405,7 +3390,6 @@ export class Catalog {
     if (!intent) {
       intent = await reserveOperation(storage, {
         key,
-        retry: inspected.retry,
         entry: {
           fingerprint: digest,
           pending: true,
@@ -3418,9 +3402,8 @@ export class Catalog {
     const response = await this.env.PROJECTS.getByName(intent.spaceId).fetch(
       forwarded(request, "/internal/space/update", {
         space_id: intent.spaceId,
-        idempotency_key: args.idempotency_key,
-        // The Space keys its receipt as this Catalog does: by key and token.
-        ...(args.retry_token !== undefined && { retry_token: args.retry_token }),
+        // The Space keys its receipt as this Catalog does: by account and nonce.
+        nonce: args.nonce,
         expected_revision: intent.expectedRevision,
         ...(args.title !== undefined && { title: args.title }),
         ...(args.description !== undefined && { description: args.description }),
@@ -3483,15 +3466,9 @@ export class Catalog {
     let inspected;
     if (action === "confirm") {
       await this.locationShape();
-      key = await operationKey(args);
+      key = await operationKey(args, identity, "catalog");
       digest = await fingerprint("delete_project", args, identity);
-      inspected = await inspectOperation(storage, {
-        key,
-        digest,
-        retryToken: args.retry_token,
-        scope: `catalog:${identity.principal}`,
-        principal: identity.principal,
-      });
+      inspected = await inspectOperation(storage, { key, digest });
       const recorded = inspected.entry;
       if (recorded && !recorded.pending) {
         await storage.sync();
@@ -3504,7 +3481,7 @@ export class Catalog {
     if (entry.pending)
       throw new HttpError(
         409,
-        "This Project is still being created. Retry create_project with the same idempotency_key and payload.",
+        "This Project is still being created. Retry create_project with the same nonce and arguments.",
         "project_pending",
       );
     if (await projectHoldsPages(storage, spaceId)) {
@@ -3514,7 +3491,6 @@ export class Catalog {
     if (action === "preview") return await this.previewSpaceDeletion(request, entry);
     const intent = await reserveOperation(storage, {
       key,
-      retry: inspected.retry,
       entry: {
         fingerprint: digest,
         pending: true,
@@ -3569,11 +3545,11 @@ export class Catalog {
     );
     if (!response.ok) return response;
     const { preview_token, preview_expires_at, ...space } = await response.json();
+    // The preview token binds the content's heads; the agent needs none.
     return json({
       ...space,
       comment_threads,
       comment_count,
-      heads,
       preview_token,
       preview_expires_at,
     });
@@ -3674,7 +3650,7 @@ export class Catalog {
         const response = await page.fetch(
           forwarded(request, "/internal/trash", {
             page_id: intent.documentId,
-            idempotency_key: intent.trashKey,
+            nonce: intent.trashKey,
             // Null heads: the content's documents weren't opened, and the
             // trash applies only while that holds.
             ...(intent.heads && { base_heads: intent.heads }),
@@ -3688,7 +3664,7 @@ export class Catalog {
         }
         if (response.status === 404) return { type: "trashed", outcome: "missing" };
         const failure = await refusalOf(response);
-        if (failure.code === "stale_heads") return { type: "trashed", outcome: "changed" };
+        if (failure.code === "stale_revision") return { type: "trashed", outcome: "changed" };
         throw failure;
       }
       case "reopen_space": {
@@ -3720,7 +3696,7 @@ export class Catalog {
               page_id: intent.documentId,
               action: "confirm",
               preview_token: intent.purge.token,
-              idempotency_key: intent.purge.key,
+              nonce: intent.purge.key,
               expected_revision: intent.contentRevision,
             }),
           );
@@ -3775,7 +3751,7 @@ export class Catalog {
     if (entry?.pending)
       throw new HttpError(
         409,
-        "This Project is still being created. Retry create_project with the same retry_token, idempotency_key and payload.",
+        "This Project is still being created. Retry create_project with the same nonce and arguments.",
         "project_pending",
       );
     const response = await this.env.PROJECTS.getByName(spaceId).fetch(
@@ -3870,10 +3846,6 @@ export class Catalog {
               })
             : null,
         principal: identity.principal,
-        ...(await issueRetryToken(storage, {
-          scope: `catalog:${identity.principal}`,
-          principal: identity.principal,
-        })),
       });
     }
     if (!args || typeof args !== "object" || Array.isArray(args))
@@ -3968,10 +3940,6 @@ export class Catalog {
           })
         : null,
       principal: identity.principal,
-      ...(await issueRetryToken(storage, {
-        scope: `catalog:${identity.principal}`,
-        principal: identity.principal,
-      })),
     });
   }
 
@@ -4136,10 +4104,6 @@ export class Catalog {
         quota,
         principal: identity.principal,
         account: accountIdentity(identity),
-        ...(await issueRetryToken(storage, {
-          scope: `catalog:${identity.principal}`,
-          principal: identity.principal,
-        })),
       });
     // A position in this sort's shape (positionOf); the scan and the next
     // cursor keep that shape. `pinned` is the source that issued the cursor,
@@ -4251,10 +4215,6 @@ export class Catalog {
       quota,
       principal: identity.principal,
       account: accountIdentity(identity),
-      ...(await issueRetryToken(storage, {
-        scope: `catalog:${identity.principal}`,
-        principal: identity.principal,
-      })),
     });
     response.headers.set("x-pages-catalog-source", result.source);
     return response;
@@ -4322,10 +4282,6 @@ export class Catalog {
         ? await sealPosition(this.env, { ...context, source: "catalog" }, options.sort, result.next)
         : null,
       principal: identity.principal,
-      ...(await issueRetryToken(this.storage, {
-        scope: `catalog:${identity.principal}`,
-        principal: identity.principal,
-      })),
     });
   }
 
@@ -5804,6 +5760,7 @@ export class Page {
           ? await this.requireDelegatedCreation(args.owner, args.page_id, identity)
           : null;
         let intent = await this.ctx.storage.get("host/creation");
+        let created;
         if (intent) {
           // Catalog handles argument replay; this DO independently pins ownership.
           if (
@@ -5847,6 +5804,11 @@ export class Page {
                 ...(warning ? { warnings: [warning] } : {}),
               },
             };
+            // The receipt's revision is minted in the put that records the
+            // intent, so every reply to this creation names the same one.
+            const clock = await revisionClock(this.ctx.storage);
+            created = revisionPlan(this.ctx.storage, clock.at, clock.horizon);
+            metadata.createdReceipt.revision = await created.handle(PAGE_DOC, A.getHeads(doc));
             intent = { metadata, bytes: A.save(doc) };
             assertIntentSize("host/creation", [intent.bytes], { metadata });
           } catch (error) {
@@ -5860,7 +5822,8 @@ export class Page {
             response.headers.set("x-pages-create-rejected", "before-intent");
             return response;
           }
-          await this.ctx.storage.put("host/creation", intent);
+          await this.ctx.storage.put({ "host/creation": intent, ...created.writes });
+          await created.settle();
         }
         await this.initializeRepo(intent.metadata);
         await this.finishCreation(intent);
@@ -6082,6 +6045,8 @@ export class Page {
             Object.keys(args).some((key) => key !== "page_id")
           )
             throw new HttpError(400, "Invalid presence arguments");
+          // Who is on the Page, resolved against it now. It names no revision
+          // and writes nothing; read_page names the revision an edit uses.
           return json(this.activityState().read(this.handle.doc()));
         }
         if (["read_page", "read_page_changes", "list_page_comments"].includes(body.operation)) {
@@ -6091,14 +6056,7 @@ export class Page {
             historyIncomplete: incompleteHistory(this.handle.doc()),
             getPresence: (doc) => this.activityState().read(doc),
             commentsDoc: this.commentsView(),
-            // A trashed Page cannot be edited, so it issues no edit authority.
-            issueAuthority: () =>
-              state === "trashed"
-                ? {}
-                : issueRetryToken(this.ctx.storage, {
-                    scope: `page:${this.metadata.pageId}`,
-                    principal: identity.principal,
-                  }),
+            revisions: this.revisionTable(),
           };
           const result =
             body.operation === "read_page_changes"
@@ -6108,11 +6066,11 @@ export class Page {
             body.operation === "read_page" &&
             result.status === 200 &&
             state !== "trashed" &&
-            Array.isArray(result.body?.heads)
+            Array.isArray(result.heads)
           ) {
-            // Browser edits can land while authority is issued. Capture the
+            // Browser edits can land while the revision is named. Capture the
             // targets on the revision the agent read; cursors carry them forward.
-            const heads = result.body.heads;
+            const heads = result.heads;
             this.publishAgentPresence(
               identity,
               "read",
@@ -6131,8 +6089,17 @@ export class Page {
         if (["manage_page_comment", "reply_page_comment"].includes(body.operation))
           return json(await this.writeComment(request, identity, body));
         this.policy.account(identity, true);
-        if (body.operation === "report_page_progress")
-          return json(this.activityState().report(this.handle.doc(), identity, body.arguments));
+        if (body.operation === "report_page_progress") {
+          const revision = body.arguments?.revision;
+          // The targets' revision resolves before the snapshot it is checked in.
+          const heads =
+            revision === undefined
+              ? undefined
+              : await headsFor(this.ctx.storage, PAGE_DOC, revision);
+          return json(
+            this.activityState().report(this.handle.doc(), identity, body.arguments, heads),
+          );
+        }
         // An upload URL needs what an upload needs: write scope (checked by
         // the gateway) and current edit access (just above).
         if (body.operation === ASSET_UPLOAD_OPERATION)
@@ -6151,6 +6118,7 @@ export class Page {
         // Where this batch landed, captured inside the change so the cursors
         // name the characters it wrote. A replayed receipt has no caret.
         let caret = null;
+        let applied;
         const receipt = await documentMutation({
           storage: this.ctx.storage,
           hostActorPrefix: this.plain.hostActorPrefix,
@@ -6210,6 +6178,7 @@ export class Page {
             }
           },
           flush: () => this.flush(),
+          onHeads: (heads) => (applied = heads),
         });
         this.cacheTitle();
         this.handle.broadcast({
@@ -6219,19 +6188,19 @@ export class Page {
             ...(identity.agent && { agent: identity.agent }),
             ...(identity.session && { session: identity.session }),
           },
-          heads: receipt.heads,
+          heads: applied,
         });
         if (caret)
           this.publishAgentPresence(identity, "write", () =>
             caret.map((target) =>
-              target.kind === "block" ? target : { ...target, heads: receipt.heads },
+              target.kind === "block" ? target : { ...target, heads: applied },
             ),
           );
         return json(receipt);
       }
       throw new HttpError(404, "Not found");
     } catch (error) {
-      if (!admissionRoute) return errorResponse(this.withCommentHeads(error), "page");
+      if (!admissionRoute) return errorResponse(await this.agentRefusal(error), "page");
       if ((error.status ?? 500) >= 500) logFailure(error, "page");
       return admissionErrorResponse(error, { stage: "page", identity });
     } finally {
@@ -6243,11 +6212,6 @@ export class Page {
     }
   }
 
-  /** The create_page receipt with this Page's edit authority: the Page-scoped
-   * retry_token and retry_until that read_page would issue,
-   * so the first edit needs no read. The stored receipt stays as recorded;
-   * the token is minted per reply and journaled by the owner's Catalog with
-   * the rest of the receipt, so an exact retry returns the same one. */
   /**
    * A creation that names an owner other than its caller: a Project member
    * adding a Page to a Project another account owns (project-create.mjs).
@@ -6271,37 +6235,74 @@ export class Page {
     return creation;
   }
 
-  async createdReply(receipt, identity) {
+  /** The create_page receipt as an agent reads it: the created revision as a
+   * handle, so the first edit needs no read. The stored receipt keeps its
+   * heads beside the handle minted with the creation intent; every reply,
+   * and the owner's Catalog journal, names that handle. */
+  async createdReply({ heads, revision, ...receipt }) {
     return {
       ...receipt,
-      ...(await issueRetryToken(this.ctx.storage, {
-        scope: `page:${this.metadata.pageId}`,
-        principal: identity.principal,
-      })),
+      revision: revision ?? (await this.revisionTable().handle(PAGE_DOC, heads)),
     };
   }
 
-  /** A revision refusal (stale_heads, edit_conflict, resync_required) names
-   * the live Page revision in `details.current_heads`. Add the comments
-   * document's revision beside it, so the caller holds both baselines
-   * without a read. Other errors pass through unchanged. */
-  withCommentHeads(error) {
+  /** This Page's revision handles, as the agent-edge reads use them:
+   * `handles([[doc, heads], ...])` names revisions, minting in one put when
+   * needed, `handle(doc, heads)` names one, and `heads(doc, handle, name)`
+   * resolves one. Runs in the Page's queue. */
+  revisionTable() {
+    const storage = this.ctx.storage;
+    const handles = (requests) => readRevisions(storage, requests);
+    return {
+      handles,
+      handle: async (doc, heads) => (await handles([[doc, heads]]))[0],
+      heads: (doc, handle, name) => headsFor(storage, doc, handle, name),
+    };
+  }
+
+  /** `error` as an agent receives it. A revision refusal (stale_revision,
+   * edit_conflict, resync_required) carries the live Page heads in
+   * `details.current_heads`; they become `current_revision`, beside the
+   * comments document's `comment_revision`, so the caller holds both
+   * baselines without a read. Heads never leave the host: if a handle can't
+   * be minted, the refusal goes without one. Other errors pass through. */
+  async agentRefusal(error) {
     if (
-      !["stale_heads", "edit_conflict", "resync_required"].includes(error?.code) ||
-      !Array.isArray(error.details?.current_heads) ||
-      error.details.comment_heads !== undefined
+      !["stale_revision", "edit_conflict", "resync_required"].includes(error?.code) ||
+      !error.details ||
+      typeof error.details !== "object"
     )
       return error;
-    const comments = this.commentsView();
-    if (comments) error.details = { ...error.details, comment_heads: A.getHeads(comments) };
+    const { current_heads, comment_heads: _comments, ...details } = error.details;
+    try {
+      const comments = this.commentsView();
+      const [current_revision, comment_revision] = Array.isArray(current_heads)
+        ? await this.revisionTable().handles([
+            [PAGE_DOC, current_heads],
+            ...(comments ? [[COMMENTS_DOC, A.getHeads(comments)]] : []),
+          ])
+        : [];
+      error.details = {
+        ...details,
+        ...(current_revision && { current_revision }),
+        ...(comment_revision && { comment_revision }),
+      };
+    } catch (failure) {
+      logFailure(failure, "page-revision");
+      error.details = details;
+    }
     return error;
   }
 
   /**
    * One manage_page_comment or reply_page_comment call, written to the
    * comments document. It needs `comment`, never `edit`, and never changes
-   * the Page document or its heads. The receipt's `comment_heads` are the
-   * comments document's revision after the write.
+   * the Page document. The receipt's `comment_revision` names the comments
+   * document after the write, and `revision` the Page revision it was based
+   * on, journaled with it: a browser edit landing meanwhile stays after it,
+   * so read_page_changes from it still returns that edit, and an exact retry
+   * returns the same handles. Only a comment on selected text names a Page
+   * `revision` in its request, to find the text.
    */
   async writeComment(request, identity, body) {
     this.policy.account(identity, "comment");
@@ -6317,6 +6318,7 @@ export class Page {
     // The Page snapshot a new comment anchors in. The guard captures it and
     // the edit uses it, with no await between them.
     let page;
+    let applied;
     const receipt = await documentMutation({
       storage: this.ctx.storage,
       hostActorPrefix: this.plain.hostActorPrefix,
@@ -6327,20 +6329,23 @@ export class Page {
       args,
       identity,
       agent,
+      baseRevision: (input) => (passageComment(operation, input) ? input.revision : undefined),
       // Receipts carry no image prerequisites; this only re-checks access
       // after the journal inspection awaited storage.
       prepare: async () => {
         this.policy.account(await authenticate(request, this.env), "comment");
       },
-      guard: (input) => {
+      guard: (input, baseHeads) => {
         page = this.handle.doc();
         // The Page's stamp gates both documents, as SyncHost's gate does. A
         // recorded receipt still replays; this runs for new intents only.
         requireSupportedSchema(page);
-        return guardCommentIntent(page, operation, input);
+        return guardCommentIntent(page, operation, input, baseHeads);
       },
       // The Page revision this write read, journaled with its receipt.
-      receiptFields: () => ({ page_heads: A.getHeads(page) }),
+      receiptFields: async (plan) => ({ revision: await plan.handle(PAGE_DOC, A.getHeads(page)) }),
+      onHeads: (heads) => (applied = heads),
+      pageHeads: () => A.getHeads(this.handle.doc()),
       apply: (draft, effectiveArgs) => {
         try {
           return applyComment(
@@ -6365,25 +6370,6 @@ export class Page {
       },
       flush: () => this.flush(),
     });
-    return this.commentReceipt(receipt, identity);
-  }
-
-  /**
-   * The tool receipt for a comment write. `heads` are Page heads and
-   * `comment_heads` comments-document heads; neither ever holds the other's.
-   *
-   * - A receipt journaled on the comments document carries `page_heads`, the
-   *   Page revision its write was based on, recorded with it. `heads` is that
-   *   baseline, not the live Page: a browser edit landing meanwhile stays
-   *   after it, so `read_page_changes` from these heads still returns it, and
-   *   an exact retry returns the same heads.
-   * - A receipt a build before the comments document journaled on the Page
-   *   (`recorded_doc: "page"`) keeps its Page heads and has no comment heads;
-   *   `legacy_receipt` says so.
-   */
-  commentReceipt(receipt, identity) {
-    const { recorded_doc, page_heads, ...rest } = receipt;
-    if (recorded_doc === PAGE_DOC) return { ...rest, legacy_receipt: true };
     this.commentsHandle.broadcast({
       kind: "tool-edit",
       identity: {
@@ -6391,10 +6377,10 @@ export class Page {
         ...(identity.agent && { agent: identity.agent }),
         ...(identity.session && { session: identity.session }),
       },
-      heads: rest.heads,
+      heads: applied,
       comments: true,
     });
-    return { ...rest, heads: page_heads, comment_heads: rest.heads };
+    return receipt;
   }
 
   /** Owner or a valid viewer/editor grant on the deleted metadata. A role
@@ -6492,7 +6478,7 @@ export class Page {
     const event = { type, actor };
     const context = { args, identity };
     if (type !== "purgePreview") {
-      const key = await operationKey(args);
+      const key = await operationKey(args, identity, "lifecycle");
       // The Catalog adds compare-and-set controls; they never change identity.
       const { expected_revision: _expected, replay_only: _replay, ...requested } = args;
       const digest = await fingerprint(LIFECYCLE_OPERATIONS[route], requested, identity);
@@ -6519,6 +6505,35 @@ export class Page {
     // a record in a format this build doesn't write never opens.
     if (type === "trash" && Array.isArray(args.base_comment_heads) && !this.formatRefusal())
       await this.loadComments();
+    // A caller's trash may name a revision handle, resolved here through the
+    // same fence as an edit, before the head guard: a malformed one is
+    // invalid, and one that is unknown, pruned, or minted at or before the
+    // receipt horizon needs a fresh read. A browser session names the heads it
+    // shows instead (BROWSER_TRASH_GUARD; the gateway refuses them from any
+    // other credential), never both. delete_project's own trash sends heads
+    // with base_comment_heads.
+    let callerHeads;
+    if (type === "trash" && args.base_comment_heads === undefined && args.base_heads !== undefined)
+      callerHeads = args.revision === undefined ? args.base_heads : "invalid";
+    else if (
+      type === "trash" &&
+      args.base_comment_heads === undefined &&
+      args.revision !== undefined
+    )
+      try {
+        const { horizon } = await revisionClock(this.ctx.storage);
+        callerHeads = await fencedHeads(this.ctx.storage, PAGE_DOC, args.revision, horizon);
+      } catch (error) {
+        if (error.code === "invalid_revision") callerHeads = "invalid";
+        else if (error.code === "resync_required") callerHeads = "unknown";
+        else throw error;
+      }
+    const callerCheck = (doc) =>
+      callerHeads === "invalid"
+        ? "invalid"
+        : callerHeads === "unknown"
+          ? "unknown"
+          : headsCheck(doc, callerHeads);
     let state = this.lifecycleState();
     if (
       type === "purgeConfirm" &&
@@ -6552,17 +6567,17 @@ export class Page {
     if (type === "trash") {
       const unopened = Boolean(this.formatRefusal());
       // A caller's trash: a Page whose documents this host doesn't open has
-      // no heads to match, so a trash without base_heads proceeds and one
-      // with them is invalid. delete_project's own trash sends
-      // base_comment_heads, null when the deletion read a record whose
-      // documents this host doesn't open; it applies only while the host
-      // still opens exactly what the deletion read, at those heads.
+      // no revision to match, so a trash without one proceeds and one with
+      // it is invalid. delete_project's own trash sends base_comment_heads,
+      // null when the deletion read a record whose documents this host
+      // doesn't open; it applies only while the host still opens exactly
+      // what the deletion read, at those heads.
       const checks =
         args.base_comment_heads === undefined
           ? [
               this.handle
-                ? headsCheck(this.handle.doc(), args.base_heads)
-                : unopened && args.base_heads === undefined
+                ? callerCheck(this.handle.doc())
+                : unopened && callerHeads === undefined
                   ? "absent"
                   : "invalid",
             ]
@@ -6810,11 +6825,11 @@ export class Page {
     if (response.status >= 500) return json({ error: response.error }, response.status);
     if (response.status !== 200) {
       const error = new HttpError(response.status, response.error, response.code);
-      // A trash refused for stale base_heads names the live revision, as an
-      // edit refusal does.
-      if (response.code === "stale_heads" && this.handle)
+      // A trash refused for a stale or unknown revision names the live one, as
+      // an edit refusal does.
+      if (["stale_revision", "resync_required"].includes(response.code) && this.handle)
         error.details = { current_heads: A.getHeads(this.handle.doc()) };
-      const reply = errorResponse(this.withCommentHeads(error), "page-lifecycle");
+      const reply = errorResponse(await this.agentRefusal(error), "page-lifecycle");
       // Every refusal before the record changes lets the Catalog release its
       // reservation, as for a rejected creation.
       if (response.beforeChange) reply.headers.set("x-pages-lifecycle-rejected", "before-change");
@@ -6831,7 +6846,8 @@ export class Page {
         return this.supersededResponse();
       case "preview": {
         // A Page whose documents this host doesn't open is described from
-        // its record and the title it last projected, with no heads.
+        // its record and the title it last projected. The preview_token
+        // binds the content it describes; the preview names no revision.
         const doc = this.handle?.doc() ?? null;
         return json({
           page_id: this.metadata.pageId,
@@ -6839,7 +6855,6 @@ export class Page {
           ...(doc
             ? purgeImpact(this.metadata, doc, this.commentsView())
             : purgeImpact(this.metadata, null, undefined, this.pageTitle())),
-          heads: doc ? A.getHeads(doc) : null,
           ...(await issuePurgePreview(
             this.ctx.storage,
             this.metadata,
@@ -6879,20 +6894,25 @@ export class Page {
   }
 
   /** Persist a lifecycle receipt, optionally with the new record, in one
-   * multi-key write. Receipts are bounded: the Catalog's expected revision,
-   * not receipt retention, prevents an old request from applying again.
+   * multi-key write. Receipts are bounded: the Catalog's expected revision
+   * keeps an old request from applying again. A receipt is stamped with the
+   * journal time, and pruning raises the receipt horizon to the newest
+   * pruned stamp first, so a trash that names a revision handle meets the
+   * same fence as an edit once its receipt is gone.
    */
   async commitLifecycle(key, record, metadata) {
-    await this.ctx.storage.put({
-      [lifecycleReceiptKey(key)]: record,
+    const storage = this.ctx.storage;
+    await storage.put({
+      [lifecycleReceiptKey(key)]: { ...record, at: await journalTime(storage) },
       ...(metadata && { "host/document": metadata }),
     });
-    const records = await this.ctx.storage.list({ prefix: "host/lifecycle/" });
+    const records = await storage.list({ prefix: "host/lifecycle/" });
     if (records.size <= LIFECYCLE_RECEIPT_LIMIT) return;
     const oldest = [...records]
       .sort(([, a], [, b]) => a.at - b.at)
       .slice(0, records.size - LIFECYCLE_RECEIPT_LIMIT);
-    for (const [name] of oldest) await this.ctx.storage.delete(name);
+    await raiseHorizon(storage, Math.max(...oldest.map(([, value]) => value.at ?? 0)));
+    for (const [name] of oldest) await storage.delete(name);
   }
 
   supersededResponse() {
@@ -6916,7 +6936,7 @@ export class Page {
       requireRegistrationAccount(args, identity);
       if (!validPageId(args.page_id) || (this.ctx.id.name && args.page_id !== this.ctx.id.name))
         throw new HttpError(400, "Invalid page_id");
-      mutationKey(args);
+      requireNonce(args);
       const digest = await fingerprint("register_page", args, identity);
       intent = await this.ctx.storage.get("host/creation");
       const metadata = this.metadata ?? intent?.metadata;
@@ -6927,7 +6947,11 @@ export class Page {
         // treats "Page was deleted" as permanent and forgets its local copy.
         if (pageState(metadata) === "deleted") throw new HttpError(409, "Page was deleted");
         if (metadata.registration !== digest)
-          throw new HttpError(409, "Page already has another creation request");
+          throw new HttpError(
+            409,
+            "Page already has another creation request",
+            "creation_conflict",
+          );
       } else {
         const { doc, bytes } = readRegistration(args);
         try {

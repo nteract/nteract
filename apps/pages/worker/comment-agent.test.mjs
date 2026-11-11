@@ -97,7 +97,7 @@ const threadAuthors = async (f) => {
 async function addVia(f, send) {
   const args = {
     page_id: pageId,
-    idempotency_key: key(),
+    nonce: key(),
     action: "add",
     block_id: f.blockId,
     body: "From a tool",
@@ -182,7 +182,7 @@ test("an exact retry replays the original author; a changed label under the same
   const send = (args, agent) => http(f.tokens.owner, "manage_page_comment", args, agent);
   const args = {
     page_id: pageId,
-    idempotency_key: key(),
+    nonce: key(),
     action: "add",
     block_id: f.blockId,
     body: "Retried",
@@ -214,7 +214,7 @@ test("an edit keeps the author's original agent, whatever the editing request as
     send(
       {
         page_id: pageId,
-        idempotency_key: key(),
+        nonce: key(),
         action: "edit",
         thread_id,
         message_id,
@@ -227,7 +227,7 @@ test("an edit keeps the author's original agent, whatever the editing request as
   assert.equal(edit.status, 200, await edit.clone().text());
   const reply = await worker.fetch(
     send(
-      { page_id: pageId, idempotency_key: key(), action: "reply", thread_id, body: "Second" },
+      { page_id: pageId, nonce: key(), action: "reply", thread_id, body: "Second" },
       { name: "Z" },
     ),
     f.env,

@@ -93,7 +93,7 @@ test("a mutation replaces cached access and a late GET cannot overwrite it", asy
   await tick();
   const body = JSON.parse(calls[2].body);
   assert.equal(body.expected_revision, 1);
-  assert.ok(body.idempotency_key);
+  assert.ok(body.nonce);
   write.resolve(ledger(2));
   await mutation;
   stale.resolve(ledger(1));

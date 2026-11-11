@@ -4,10 +4,11 @@ import * as A from "@automerge/automerge";
 import { fixture, trashArgs } from "./trash-fixture.mjs";
 import { proposeAccessUpdate } from "./access.mjs";
 
-const staleHeads = ["0".repeat(64)];
-
 test("guarded writes refuse a stale or malformed revision with a code, not just a message", async (t) => {
   const f = await fixture(t);
+  // A revision this host named before the Page moved on.
+  const stale = await f.revision();
+  f.edit("Moved on");
   for (const [operation, args] of [
     ["edit_page", { operations: [{ op: "set_title", title: "Changed" }] }],
     [
@@ -19,43 +20,51 @@ test("guarded writes refuse a stale or malformed revision with a code, not just 
       },
     ],
   ]) {
-    const stale = await f.tool("owner", operation, {
+    const refused = await f.tool("owner", operation, {
       ...args,
-      base_heads: staleHeads,
-      idempotency_key: `stale-${operation}`,
+      revision: stale,
+      nonce: `stale-${operation}`,
     });
-    assert.equal(stale.status, 409, operation);
+    assert.equal(refused.status, 409, operation);
     // The refusal names both live revisions, so the next attempt needs no
     // read_page round trip.
-    assert.deepEqual(stale.body, {
+    assert.deepEqual(refused.body, {
       error: "Page changed; read_page again before editing",
-      code: "stale_heads",
-      current_heads: [...f.heads()].sort(),
-      comment_heads: f.commentHeads(),
+      code: "stale_revision",
+      current_revision: await f.revision(),
+      comment_revision: await f.commentRevision(),
     });
+    assert.deepEqual(await f.headsOf(refused.body.current_revision), f.heads());
     const missing = await f.tool("owner", operation, {
       ...args,
-      idempotency_key: `missing-${operation}`,
+      nonce: `missing-${operation}`,
     });
     assert.equal(missing.status, 400, operation);
-    assert.equal(missing.body.code, "invalid_edit_selector", operation);
+    assert.equal(missing.body.code, "invalid_revision", operation);
+    const malformed = await f.tool("owner", operation, {
+      ...args,
+      revision: f.heads(),
+      nonce: `malformed-${operation}`,
+    });
+    assert.equal(malformed.status, 400, operation);
+    assert.equal(malformed.body.code, "invalid_revision", operation);
   }
   const badKey = await f.tool("owner", "edit_page", {
-    base_heads: f.heads(),
-    idempotency_key: "short",
+    revision: await f.revision(),
+    nonce: "short",
     operations: [{ op: "set_title", title: "Changed" }],
   });
   assert.equal(badKey.status, 400);
-  assert.equal(badKey.body.code, "invalid_idempotency_key");
+  assert.equal(badKey.body.code, "invalid_nonce");
 
   const trash = await f.catalogCall("owner", "delete_page", {
     ...trashArgs(f, "stale-trash"),
-    base_heads: staleHeads,
+    revision: stale,
   });
   assert.equal(trash.status, 409);
-  assert.equal(trash.body.code, "stale_heads");
-  assert.deepEqual(trash.body.current_heads, f.heads());
-  assert.deepEqual(trash.body.comment_heads, f.commentHeads());
+  assert.equal(trash.body.code, "stale_revision");
+  assert.equal(trash.body.current_revision, await f.revision());
+  assert.equal(trash.body.comment_revision, await f.commentRevision());
 });
 
 test("an edit batch that cannot apply names the selector, and nothing is written", async (t) => {
@@ -66,8 +75,8 @@ test("an edit batch that cannot apply names the selector, and nothing is written
     ["i", 2],
   ]) {
     const refused = await f.tool("owner", "edit_page", {
-      base_heads: heads,
-      idempotency_key: `selector-${count}-matches`,
+      revision: await f.revision(heads),
+      nonce: `selector-${count}-matches`,
       operations: [{ op: "replace_match", block_id: f.blockId, match_text, replacement: "x" }],
     });
     assert.equal(refused.status, 400);
@@ -75,15 +84,15 @@ test("an edit batch that cannot apply names the selector, and nothing is written
     assert.match(refused.body.error, new RegExp(`found ${count} matches`));
   }
   const unknownBlock = await f.tool("owner", "edit_page", {
-    base_heads: heads,
-    idempotency_key: "selector-unknown-block",
+    revision: await f.revision(heads),
+    nonce: "selector-unknown-block",
     operations: [{ op: "delete_block", block_id: "no-such-block" }],
   });
   assert.equal(unknownBlock.status, 400);
   assert.equal(unknownBlock.body.code, "invalid_edit_selector");
   const comment = await f.tool("owner", "manage_page_comment", {
-    base_heads: heads,
-    idempotency_key: "comment-unknown-thread",
+    revision: await f.revision(heads),
+    nonce: "comment-unknown-thread",
     action: "reply",
     thread_id: "no-such-thread",
     body: "Hello",
@@ -94,16 +103,16 @@ test("an edit batch that cannot apply names the selector, and nothing is written
   // Past the diff budget with nothing unique to split on, replace_match refuses
   // with its own code rather than detach anchors on words it would keep.
   const tooLarge = await f.tool("owner", "edit_page", {
-    base_heads: f.heads(),
-    idempotency_key: "selector-too-large",
+    revision: await f.revision(),
+    nonce: "selector-too-large",
     operations: [
       { op: "replace_block_markdown", block_id: f.blockId, markdown: "w ".repeat(3000).trim() },
     ],
   });
   assert.equal(tooLarge.status, 200, JSON.stringify(tooLarge.body));
   const refusedLarge = await f.tool("owner", "edit_page", {
-    base_heads: tooLarge.body.heads,
-    idempotency_key: "selector-too-large-replace",
+    revision: tooLarge.body.revision,
+    nonce: "selector-too-large-replace",
     operations: [
       {
         op: "replace_match",
@@ -115,7 +124,7 @@ test("an edit batch that cannot apply names the selector, and nothing is written
   });
   assert.equal(refusedLarge.status, 400);
   assert.equal(refusedLarge.body.code, "replace_match_too_large");
-  assert.deepEqual(f.heads(), tooLarge.body.heads, "nothing was written");
+  assert.deepEqual(f.heads(), await f.headsOf(tooLarge.body.revision), "nothing was written");
 });
 
 test("the host refuses every write to a Page stamped with a feature it lacks, and reads report the stamp", async (t) => {
@@ -158,8 +167,8 @@ test("the host refuses every write to a Page stamped with a feature it lacks, an
   ]) {
     const refused = await f.tool("owner", operation, {
       ...args,
-      base_heads: heads,
-      idempotency_key: `schema-${operation}-${args.conflict_scope ?? "page"}`,
+      revision: await f.revision(heads),
+      nonce: `schema-${operation}-${args.conflict_scope ?? "page"}`,
     });
     assert.equal(refused.status, 409, operation);
     assert.equal(refused.body.code, "unsupported_schema_feature", operation);
@@ -197,7 +206,7 @@ test("a thread batch names unknown threads, refuses readers, and applies for edi
   const [threadId] = Object.keys(f.commentsDoc().threads);
   const heads = f.heads();
   const unknown = await f.tool("owner", "manage_page_comment", {
-    idempotency_key: "batch-unknown-thread",
+    nonce: "batch-unknown-thread",
     action: "resolve",
     thread_ids: [threadId, "no-such-thread"],
   });
@@ -205,7 +214,7 @@ test("a thread batch names unknown threads, refuses readers, and applies for edi
   assert.equal(unknown.body.code, "invalid_comment_selector");
   assert.deepEqual(unknown.body.not_found_thread_ids, ["no-such-thread"]);
   const shape = await f.tool("owner", "manage_page_comment", {
-    idempotency_key: "batch-both-fields",
+    nonce: "batch-both-fields",
     action: "resolve",
     thread_id: threadId,
     thread_ids: [threadId],
@@ -230,7 +239,7 @@ test("a thread batch names unknown threads, refuses readers, and applies for edi
   assert.equal((await f.tool("stranger", "list_page_comments")).status, 200);
   for (const args of [{ thread_id: threadId }, { thread_ids: [threadId] }]) {
     const denied = await f.tool("stranger", "manage_page_comment", {
-      idempotency_key: `batch-reader-${Object.keys(args)[0]}`,
+      nonce: `batch-reader-${Object.keys(args)[0]}`,
       action: "resolve",
       ...args,
     });
@@ -241,7 +250,7 @@ test("a thread batch names unknown threads, refuses readers, and applies for edi
 
   // An editor resolves a thread someone else opened, in one batch and one receipt.
   const resolved = await f.tool("member", "manage_page_comment", {
-    idempotency_key: "batch-editor-resolve",
+    nonce: "batch-editor-resolve",
     action: "resolve",
     thread_ids: [threadId],
   });
@@ -251,16 +260,16 @@ test("a thread batch names unknown threads, refuses readers, and applies for edi
   });
   // The Page is untouched: its heads hold, and the receipt names the
   // comments document's new revision.
-  assert.deepEqual(resolved.body.heads, heads);
+  assert.deepEqual(await f.headsOf(resolved.body.revision), heads);
   assert.deepEqual(f.heads(), heads);
-  assert.deepEqual(resolved.body.comment_heads, f.commentHeads());
+  assert.deepEqual(await f.commentHeadsOf(resolved.body.comment_revision), f.commentHeads());
   assert.equal(f.commentsDoc().threads[threadId].status.value, "resolved");
 });
 
 test("rich edits go through the host: set_node, all and replacement_markdown, with codes on refusal", async (t) => {
   const f = await fixture(t);
-  const edit = (key, operations, heads = f.heads()) =>
-    f.tool("owner", "edit_page", { base_heads: heads, idempotency_key: key, operations });
+  const edit = async (key, operations, heads = f.heads()) =>
+    f.tool("owner", "edit_page", { revision: await f.revision(heads), nonce: key, operations });
   const wrongNode = await edit("rich-wrong-node", [
     { op: "set_node", block_id: f.blockId, match_text: "Friday", attrs: { checked: true } },
   ]);
@@ -318,17 +327,17 @@ test("target-scope set_node goes through the host from older heads", async (t) =
   const base = f.heads();
   // A peer edits elsewhere first.
   const peer = await f.tool("owner", "edit_page", {
-    base_heads: base,
-    idempotency_key: "target-peer",
+    revision: await f.revision(base),
+    nonce: "target-peer",
     operations: [
       { op: "replace_match", block_id: f.blockId, match_text: "Friday", replacement: "Monday" },
     ],
   });
   assert.equal(peer.status, 200, JSON.stringify(peer.body));
   const heading = await f.tool("owner", "edit_page", {
-    base_heads: base,
+    revision: await f.revision(base),
     conflict_scope: "target",
-    idempotency_key: "target-set-node",
+    nonce: "target-set-node",
     operations: [
       {
         op: "set_node",
@@ -347,9 +356,9 @@ test("target-scope set_node goes through the host from older heads", async (t) =
   assert.equal(read.body.blocks[0].markdown, "## We ship on Monday.");
   // The same node changed since base: a conflict, not a silent overwrite.
   const stale = await f.tool("owner", "edit_page", {
-    base_heads: base,
+    revision: await f.revision(base),
     conflict_scope: "target",
-    idempotency_key: "target-set-node-stale",
+    nonce: "target-set-node-stale",
     operations: [
       {
         op: "set_node",
@@ -381,8 +390,8 @@ test("a Page holding a node this build doesn't know reads, and refuses a Markdow
   assert.equal(read.status, 200, JSON.stringify(read.body));
   assert.match(read.body.blocks[0].markdown, /\\\[Unsupported node: future-chart\\\]/);
   const rewrite = await f.tool("owner", "edit_page", {
-    base_heads: f.heads(),
-    idempotency_key: "unknown-rewrite",
+    revision: await f.revision(),
+    nonce: "unknown-rewrite",
     operations: [{ op: "replace_block_markdown", block_id: f.blockId, markdown: "We ship." }],
   });
   assert.equal(rewrite.body.code, "markdownless_node", JSON.stringify(rewrite.body));
@@ -414,16 +423,16 @@ test("an edit to a node this build can't read answers 409 in both scopes; its re
       { op: "set_node", match_text: "Friday", type: "heading", attrs: { level: 2 } },
     ]) {
       const refused = await f.tool("owner", "edit_page", {
-        base_heads: f.heads(),
-        idempotency_key: `newer-${scope}-${op.op}`,
+        revision: await f.revision(),
+        nonce: `newer-${scope}-${op.op}`,
         ...extra,
         operations: [{ ...op, block_id: f.blockId }],
       });
       assert.equal(refused.status, 409, `${scope} ${op.op}: ${JSON.stringify(refused.body)}`);
       assert.equal(refused.body.code, "newer_content", `${scope} ${op.op}`);
       const allowed = await f.tool("owner", "edit_page", {
-        base_heads: f.heads(),
-        idempotency_key: `readable-${scope}-${op.op}`,
+        revision: await f.revision(),
+        nonce: `readable-${scope}-${op.op}`,
         ...extra,
         operations: [
           {
@@ -441,8 +450,8 @@ test("an edit to a node this build can't read answers 409 in both scopes; its re
     }
   // Other refusals through the same path keep their status.
   const missing = await f.tool("owner", "edit_page", {
-    base_heads: f.heads(),
-    idempotency_key: "newer-missing-match",
+    revision: await f.revision(),
+    nonce: "newer-missing-match",
     operations: [
       { op: "replace_match", block_id: crypto.randomUUID(), match_text: "We", replacement: "x" },
     ],
@@ -454,8 +463,8 @@ test("an edit to a node this build can't read answers 409 in both scopes; its re
 test("set_node {type, attrs} goes through the host, and read_page reports the same names", async (t) => {
   const f = await fixture(t);
   const edit = await f.tool("owner", "edit_page", {
-    base_heads: f.heads(),
-    idempotency_key: "typed-set-node",
+    revision: await f.revision(),
+    nonce: "typed-set-node",
     operations: [
       {
         op: "set_node",
@@ -471,8 +480,8 @@ test("set_node {type, attrs} goes through the host, and read_page reports the sa
   const heading = read.body.outline.entries.find((entry) => entry.type === "heading");
   assert.deepEqual(heading.attrs, { level: 3 });
   const wrong = await f.tool("owner", "edit_page", {
-    base_heads: f.heads(),
-    idempotency_key: "typed-set-node-wrong",
+    revision: await f.revision(),
+    nonce: "typed-set-node-wrong",
     operations: [
       { op: "set_node", block_id: f.blockId, match_text: "We ship", attrs: { checked: true } },
     ],
@@ -483,9 +492,9 @@ test("set_node {type, attrs} goes through the host, and read_page reports the sa
   // A top-level field is refused with the typed field to use, in both scopes.
   for (const conflict_scope of ["page", "target"]) {
     const flat = await f.tool("owner", "edit_page", {
-      base_heads: f.heads(),
+      revision: await f.revision(),
       conflict_scope,
-      idempotency_key: `flat-set-node-${conflict_scope}`,
+      nonce: `flat-set-node-${conflict_scope}`,
       operations: [
         { op: "set_node", block_id: f.blockId, match_text: "We ship", heading_level: 2 },
       ],
@@ -518,8 +527,8 @@ test("delete_node goes through the host by the outline's node_id, and a gone id 
   assert.equal(typeof chart.node_id, "string", JSON.stringify(read.body.outline));
   const op = { op: "delete_node", block_id: f.blockId, node_id: chart.node_id };
   const deleted = await f.tool("owner", "edit_page", {
-    base_heads: f.heads(),
-    idempotency_key: "delete-node",
+    revision: await f.revision(),
+    nonce: "delete-node",
     operations: [op],
   });
   assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
@@ -527,8 +536,8 @@ test("delete_node goes through the host by the outline's node_id, and a gone id 
   const after = await f.tool("owner", "read_page", { page_id: f.pageId, comments: "none" });
   assert.doesNotMatch(after.body.blocks[0].markdown, /Unsupported node/);
   const again = await f.tool("owner", "edit_page", {
-    base_heads: f.heads(),
-    idempotency_key: "delete-node-again",
+    revision: await f.revision(),
+    nonce: "delete-node-again",
     operations: [op],
   });
   assert.equal(again.status, 400);
@@ -537,8 +546,8 @@ test("delete_node goes through the host by the outline's node_id, and a gone id 
 
 test("delete_node that would join two lists is refused with nodes_would_join", async (t) => {
   const f = await fixture(t);
-  const edit = (operations, key) =>
-    f.tool("owner", "edit_page", { base_heads: f.heads(), idempotency_key: key, operations });
+  const edit = async (operations, key) =>
+    f.tool("owner", "edit_page", { revision: await f.revision(), nonce: key, operations });
   const written = await edit(
     [{ op: "replace_block_markdown", block_id: f.blockId, markdown: "Intro\n\n- a\n\n---\n\n- b" }],
     "join-setup",

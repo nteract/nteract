@@ -129,8 +129,8 @@ test("a tool edit on a real Page host records a time and reports it on its own r
   const read = await h.tool(page, "read_page", { comments: "none" });
   const before = new Date().toISOString();
   const edit = await h.tool(page, "edit_page", {
-    base_heads: read.body.heads,
-    idempotency_key: "content-activity-host-patch",
+    revision: read.body.revision,
+    nonce: "content-activity-host-patch",
     operations: [
       {
         op: "replace_match",
@@ -159,7 +159,7 @@ test("a tool edit on a real Page host records a time and reports it on its own r
     action: "add",
     block_id: read.body.blocks[0].id,
     body: "Monday works",
-    idempotency_key: "content-activity-host-comment",
+    nonce: "content-activity-host-comment",
   });
   assert.equal(comment.status, 200, JSON.stringify(comment.body));
   await h.settle();
@@ -228,8 +228,8 @@ test("a Catalog from before the content route answers non-OK, and the flush retr
   const page = await created(h);
   const read = await h.tool(page, "read_page", { comments: "none" });
   await h.tool(page, "edit_page", {
-    base_heads: read.body.heads,
-    idempotency_key: "content-activity-host-mixed",
+    revision: read.body.revision,
+    nonce: "content-activity-host-mixed",
     operations: [{ op: "insert_markdown", markdown: "Mixed rollout." }],
   });
   await h.settle();
@@ -253,8 +253,8 @@ test("deleting a Page stops recording, detaches the listener and forgets the sto
   const page = await created(h);
   const read = await h.tool(page, "read_page", { comments: "none" });
   await h.tool(page, "edit_page", {
-    base_heads: read.body.heads,
-    idempotency_key: "content-activity-host-delete-edit",
+    revision: read.body.revision,
+    nonce: "content-activity-host-delete-edit",
     operations: [{ op: "insert_markdown", markdown: "Soon gone." }],
   });
   await h.settle();
@@ -280,21 +280,21 @@ test("Trash never stops the recorder, so a restored Page keeps recording", async
   const read = await h.tool(page, "read_page", { comments: "none" });
   const trashed = await h.call(page, "/internal/trash", {
     page_id: pageId,
-    base_heads: read.body.heads,
-    idempotency_key: "content-activity-host-trash",
+    revision: read.body.revision,
+    nonce: "content-activity-host-trash",
   });
   assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
   assert.notEqual(page.contentActivity.state.name, "stopped");
   const restored = await h.call(page, "/internal/restore", {
     page_id: pageId,
-    idempotency_key: "content-activity-host-restore",
+    nonce: "content-activity-host-restore",
   });
   assert.equal(restored.status, 200, JSON.stringify(restored.body));
   assert.notEqual(page.contentActivity.state.name, "stopped");
   const again = await h.tool(page, "read_page", { comments: "none" });
   const edit = await h.tool(page, "edit_page", {
-    base_heads: again.body.heads,
-    idempotency_key: "content-activity-host-after-restore",
+    revision: again.body.revision,
+    nonce: "content-activity-host-after-restore",
     operations: [{ op: "insert_markdown", markdown: "Back from Trash." }],
   });
   assert.equal(edit.status, 200, JSON.stringify(edit.body));
@@ -309,8 +309,8 @@ test("a tombstone forgets the stored time and title projection, as a purge does"
   const page = await created(h);
   const read = await h.tool(page, "read_page", { comments: "none" });
   await h.tool(page, "edit_page", {
-    base_heads: read.body.heads,
-    idempotency_key: "content-activity-host-tombstone-edit",
+    revision: read.body.revision,
+    nonce: "content-activity-host-tombstone-edit",
     operations: [{ op: "insert_markdown", markdown: "Soon gone." }],
   });
   await h.settle();
@@ -359,8 +359,8 @@ test("a restarted host projects an unchanged title with the time it first observ
   // A title change is a new observation.
   const read = await h.tool(page, "read_page", { comments: "none" });
   const renamed = await h.tool(page, "edit_page", {
-    base_heads: read.body.heads,
-    idempotency_key: "content-activity-host-rename",
+    revision: read.body.revision,
+    nonce: "content-activity-host-rename",
     operations: [{ op: "set_title", title: "Launch plan, renamed" }],
   });
   assert.equal(renamed.status, 200, JSON.stringify(renamed.body));
@@ -377,8 +377,8 @@ test("a restarted host answers checks from its record, then boots for an edit th
   const first = await created(h);
   const read = await h.tool(first, "read_page", { comments: "none" });
   const edit = await h.tool(first, "edit_page", {
-    base_heads: read.body.heads,
-    idempotency_key: "content-activity-host-lazy-edit",
+    revision: read.body.revision,
+    nonce: "content-activity-host-lazy-edit",
     operations: [{ op: "insert_markdown", markdown: "Before the restart." }],
   });
   assert.equal(edit.status, 200, JSON.stringify(edit.body));
@@ -411,8 +411,8 @@ test("a restarted host answers checks from its record, then boots for an edit th
   const again = await h.tool(page, "read_page", { comments: "none" });
   assert.equal(page.startup.name, "ready");
   const renamed = await h.tool(page, "edit_page", {
-    base_heads: again.body.heads,
-    idempotency_key: "content-activity-host-lazy-rename",
+    revision: again.body.revision,
+    nonce: "content-activity-host-lazy-rename",
     operations: [{ op: "set_title", title: "Launch plan, after restart" }],
   });
   assert.equal(renamed.status, 200, JSON.stringify(renamed.body));

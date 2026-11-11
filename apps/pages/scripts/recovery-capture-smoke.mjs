@@ -69,7 +69,7 @@ try {
   assert.ok(copy.document_id && copy.comments_document_id);
   const doc = A.load(Buffer.from(copy.snapshot, "base64"));
   const comments = A.load(Buffer.from(copy.comments_snapshot, "base64"));
-  assert.deepEqual(A.getHeads(doc), copy.heads);
+  assert.deepEqual(A.getHeads(doc), copy.revision);
   assert.deepEqual(A.getHeads(comments), copy.comment_heads);
   assert.equal(copy.comment_drafts.length, 1);
   assert.equal(copy.comment_drafts[0].body, "Unsent rich draft");

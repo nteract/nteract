@@ -187,7 +187,7 @@ try {
   const created = await tool(owner, "create_page", {
     title,
     markdown: "Deploy garden.",
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(created.status, 200);
   pageId = report.pageId = created.body.page_id;
@@ -314,9 +314,8 @@ try {
     block_id: authority.blocks[0].id,
     body: "Deploy thread",
     body_format: "plain",
-    base_heads: authority.heads,
-    retry_token: authority.retry_token,
-    idempotency_key: crypto.randomUUID(),
+    revision: authority.revision,
+    nonce: crypto.randomUUID(),
   });
   assert.equal(comment.status, 200, JSON.stringify(comment.body));
   await owner.getByRole("button", { name: /^Comments/ }).click();
@@ -496,7 +495,7 @@ try {
   const diagram = await tool(owner, "create_page", {
     title: `Diagram fixture ${Date.now()}`,
     markdown: "```mermaid\ngraph TD; A-->B\n```",
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(diagram.status, 200, JSON.stringify(diagram.body));
   diagramId = diagram.body.page_id;
@@ -535,8 +534,8 @@ try {
         const r = await tool(owner, "read_page", { page_id: id });
         const d = await tool(owner, "delete_page", {
           page_id: id,
-          base_heads: r.body.heads,
-          idempotency_key: crypto.randomUUID(),
+          revision: r.body.revision,
+          nonce: crypto.randomUUID(),
         });
         cleaned &&= d.status === 200;
       }

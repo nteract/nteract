@@ -1,6 +1,6 @@
 // The writes and listings behind the New Project and Move to… dialogs.
-// Each write takes the retry_token and a new idempotency_key nonce, so
-// a retry with the same `attempt` replays the receipt instead of writing again.
+// Each write takes a new nonce, so a retry with the same `attempt` replays
+// the receipt instead of writing again.
 import { listAllPages } from "./page-list.mjs";
 import { listProjectPages } from "./projects.mjs";
 
@@ -11,15 +11,12 @@ function attemptError(error, attempt) {
   return failure;
 }
 
-async function prepare(call, operation, attempt) {
-  if (attempt) return attempt;
-  const listed = await call(operation, { limit: 1 });
-  return { retry_token: listed.retry_token, idempotency_key: crypto.randomUUID() };
-}
+/** The attempt a write sends: the one being retried, or a new nonce. */
+const prepare = (attempt) => attempt ?? { nonce: crypto.randomUUID() };
 
 /** create_project, the same path agents use. Returns its receipt. */
 export async function createProject(call, { title, description }, attempt = null) {
-  const keyed = await prepare(call, "list_projects", attempt);
+  const keyed = prepare(attempt);
   try {
     return await call("create_project", {
       title: title.trim(),
@@ -40,7 +37,7 @@ export function moveArguments(pageId, { target, parent_id }) {
 
 /** move_page. Returns its receipt. */
 export async function movePage(call, pageId, form, attempt = null) {
-  const keyed = await prepare(call, "list_pages", attempt);
+  const keyed = prepare(attempt);
   try {
     return await call("move_page", { ...moveArguments(pageId, form), ...keyed });
   } catch (error) {

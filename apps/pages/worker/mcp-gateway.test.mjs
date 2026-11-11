@@ -74,8 +74,12 @@ test("MCP gateway passes the configured public origin through a private HTTP tun
     assert.equal(response.status, 200, await response.clone().text());
     return response.json();
   };
-  for (const name of ["list_pages", "create_page", "read_page"]) {
-    const result = await rpc("tools/call", { name, arguments: { page_id: pageId } });
+  for (const [name, args] of [
+    ["list_pages", {}],
+    ["create_page", {}],
+    ["read_page", { page_id: pageId }],
+  ]) {
+    const result = await rpc("tools/call", { name, arguments: args });
     assert.equal(result.result.isError, undefined);
     const body = JSON.parse(result.result.content[0].text);
     assert.equal((body.pages?.[0] ?? body).url, pageUrl);
@@ -157,40 +161,41 @@ test("a tool request whose host never answers times out with advice that fits th
     assert.deepEqual(JSON.parse(result.content[0].text), result.structuredContent, name);
     return result.structuredContent;
   };
-  const tokened = {
+  const keyed = {
     page_id: pageId,
-    retry_token: "token",
-    idempotency_key: "timeout-fixture",
-    base_heads: ["b".repeat(64)],
+    nonce: "timeout-fixture",
+    revision: "r1",
     operations: [],
   };
-  const tokenless = { ...tokened, retry_token: undefined, idempotency_key: "timeout-fixture" };
+  const { nonce: _nonce, ...unkeyed } = keyed;
   for (const call of [http, mcp]) {
-    // A tokenless write's receipt is kept best-effort, so a blind retry after
-    // the host finished the work could apply it twice.
-    const plain = await call("edit_page", tokenless);
+    // A write without a nonce has no receipt to replay, so a blind retry
+    // after the host finished the work could apply it twice.
+    const plain = await call("edit_page", unkeyed);
     assert.equal(plain.code, "request_timeout");
     assert.equal(plain.retryable, false);
     assert.match(plain.error, /may still have completed. Read back and reconcile before retrying/);
     assert.doesNotMatch(plain.error, /retry the same request/);
     const comment = await call("manage_page_comment", {
       page_id: pageId,
-      idempotency_key: "timeout-comment",
+      nonce: "timeout-comment",
       action: "add",
       block_id: "b1",
       body: "Hi",
     });
-    assert.equal(comment.retryable, false);
-    // A tokened write replays its receipt; a read has nothing to repeat.
-    const keyed = await call("edit_page", tokened);
-    assert.equal(keyed.code, "request_timeout");
-    assert.equal(keyed.retryable, true);
-    assert.match(keyed.error, /same idempotency_key and retry_token/);
+    assert.equal(comment.retryable, true);
+    // A write with a nonce replays its receipt; a read has nothing to repeat.
+    const replayed = await call("edit_page", keyed);
+    assert.equal(replayed.code, "request_timeout");
+    assert.equal(replayed.retryable, true);
+    assert.match(replayed.error, /same nonce and arguments/);
     const read = await call("read_page", { page_id: pageId });
     assert.equal(read.code, "request_timeout");
     assert.equal(read.retryable, true);
-    const created = await call("create_page", { title: "T", idempotency_key: "timeout-create" });
-    assert.equal(created.retryable, false, "a tokenless create_page could make a second Page");
+    const created = await call("create_page", { title: "T", nonce: "timeout-create" });
+    assert.equal(created.retryable, true, "a create_page with a nonce replays its receipt");
+    const unkeyedCreate = await call("create_page", { title: "T" });
+    assert.equal(unkeyedCreate.retryable, false, "one without could make a second Page");
     // A progress creation mints ids, so a repeat would start a second session;
     // a renewal or clear names its session and is safe.
     const creating = await call("report_page_progress", { page_id: pageId, message: "Working" });
@@ -468,7 +473,7 @@ test("a transient failure is retryable only for a request that is safe to repeat
     PAGES: answer(lost),
     CATALOGS: answer(lost),
   };
-  const token = { idempotency_key: "request-1", retry_token: "rt" };
+  const keyed = { nonce: "request-1" };
   const call = async (operation, args) => {
     const response = await worker.fetch(
       new Request("http://127.0.0.1:9477/api/tools", {
@@ -497,14 +502,13 @@ test("a transient failure is retryable only for a request that is safe to repeat
     assert.equal(body.retryable, retryable, operation);
     assert.match(body.error, advice, operation);
   }
-  // A write that carries its retry_token is safe to repeat.
-  const tokened = await call("create_page", { title: "New", ...token });
-  assert.equal(tokened.retryable, true);
-  // A key that starts with v1_ is refused, so it is never safe to repeat.
+  // A write that carries its nonce is safe to repeat.
+  const repeated = await call("create_page", { title: "New", ...keyed });
+  assert.equal(repeated.retryable, true);
+  // A nonce outside the pattern is refused, so it is never safe to repeat.
   const built = await call("create_page", {
     title: "New",
-    ...token,
-    idempotency_key: `v1_${"a".repeat(64)}_request-1`,
+    nonce: `v1_${"a".repeat(64)}_request-1`,
   });
   assert.equal(built.retryable, false);
 });
@@ -513,7 +517,10 @@ test("a stalled refusal body is cancelled at the tool deadline", async (t) => {
   const auth = await createAuthFixture();
   t.mock.method(globalThis, "fetch", auth.fetch);
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  for (const operation of ["manage_page_comment", "create_page"]) {
+  for (const [operation, args] of [
+    ["manage_page_comment", { page_id: pageId, action: "add", body: "Hi", nonce: "storage-test" }],
+    ["create_page", { title: "New", nonce: "storage-test" }],
+  ]) {
     const state = {};
     let reached;
     const reading = new Promise((resolve) => {
@@ -542,13 +549,7 @@ test("a stalled refusal body is cancelled at the tool deadline", async (t) => {
         headers: { Authorization: `Bearer ${auth.apiKey()}`, "Content-Type": "application/json" },
         body: JSON.stringify({
           operation,
-          arguments: {
-            page_id: pageId,
-            action: "add",
-            body: "Hi",
-            title: "New",
-            idempotency_key: "storage-test",
-          },
+          arguments: args,
         }),
       }),
       { ...auth.env, PAGES: unavailable, CATALOGS: unavailable },
@@ -559,7 +560,8 @@ test("a stalled refusal body is cancelled at the tool deadline", async (t) => {
     assert.equal(response.status, 504);
     const body = await response.json();
     assert.equal(body.code, "request_timeout");
-    assert.equal(body.retryable, false);
+    // Each write carries a nonce, so its receipt replays.
+    assert.equal(body.retryable, true);
     assert.equal(state.cancelled, true, operation);
   }
 });

@@ -135,7 +135,7 @@ export function guardPassageEdits(current, baseHeads, operations) {
     new Set(baseHeads).size !== baseHeads.length ||
     baseHeads.some((head) => typeof head !== "string" || !/^[a-f0-9]{64}$/.test(head))
   )
-    invalid("base_heads must contain 1 to 128 unique revision hashes from a Page read");
+    invalid("A revision from a Page read is required");
   if (
     !Array.isArray(operations) ||
     !operations.length ||

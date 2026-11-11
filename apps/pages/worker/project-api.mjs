@@ -9,7 +9,7 @@
  * call in and each result out.
  *
  * Callers that still use the old names are refused before anything runs, so
- * no idempotency key is consumed and a retry with the new names applies once.
+ * no nonce is consumed and a retry with the new names applies once.
  */
 import { pagesPublicOrigin } from "../agent-guide.mjs";
 import { pagePath, projectPath } from "../shared/routes.mjs";

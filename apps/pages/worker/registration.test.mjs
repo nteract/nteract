@@ -15,7 +15,7 @@ import worker, { Catalog, Page } from "./index.mjs";
 import { readRegistration } from "./registration.mjs";
 import { DEFAULT_PAGE_QUOTA } from "./page-quota.mjs";
 import { REPLAYED_RECEIPT_HEADER } from "./usage.mjs";
-import { fingerprint } from "./mutations.mjs";
+import { fingerprint, operationKey } from "./mutations.mjs";
 import { plainStub } from "./plain-stub.mjs";
 
 class Storage {
@@ -53,7 +53,7 @@ function registration(overrides = {}) {
     document_id: interpretAsDocumentId(generateAutomergeUrl()),
     initial_snapshot_base64: Buffer.from(A.save(doc)).toString("base64"),
     title: "Local Page",
-    idempotency_key: "register-fixture",
+    nonce: "register-fixture",
     ...overrides,
   };
   return { args, doc };
@@ -147,6 +147,9 @@ async function fixture(t) {
     pages,
     env,
     catalog: (user = auth.subject) => env.CATALOGS.getByName(`user:anaconda-fixture:${user}`),
+    /** The fixture caller's Catalog receipt key for `nonce`. */
+    receiptKey: (nonce) =>
+      operationKey({ nonce }, { principal: `user:anaconda-fixture:${auth.subject}` }, "catalog"),
     page: () => env.PAGES.getByName(pageId),
   };
 }
@@ -190,7 +193,10 @@ test("ambiguous registration retry keeps one Page and preserves subsequent local
   assert.equal(p.handle.doc().laterEdit, "Keep me");
   assert.equal(p.imports.length, 1);
   assert.equal((await f.catalog().storage.list({ prefix: "page/" })).size, 1);
-  assert.equal((await f.catalog().storage.get("host/operation/register-fixture")).pending, false);
+  assert.equal(
+    (await f.catalog().storage.get(await f.receiptKey("register-fixture"))).pending,
+    false,
+  );
 });
 
 for (const fault of ["host/document", "flush", "sync"]) {
@@ -235,7 +241,7 @@ test("altered ID, snapshot, title, or request key cannot overwrite an already re
   for (const changes of [
     { document_id: interpretAsDocumentId(generateAutomergeUrl()) },
     { initial_snapshot_base64: registration().args.initial_snapshot_base64 },
-    { idempotency_key: "different-request" },
+    { nonce: "different-request" },
   ])
     assert.equal((await f.send({ ...args, ...changes })).status, 409);
   assert.equal((await f.send({ ...args, title: "Wrong title" })).status, 400);
@@ -391,7 +397,7 @@ test("ordinary create_page is unchanged and registration is not exposed as an op
   );
   const body = {
     operation: "create_page",
-    arguments: { title: "API Page", markdown: "API text", idempotency_key: "ordinary-create" },
+    arguments: { title: "API Page", markdown: "API text", nonce: "ordinary-create" },
   };
   const response = await f.send(body, { path: "/api/tools" });
   assert.equal(response.status, 200);
@@ -454,19 +460,21 @@ test("deletion cancels a reserved registration that never reached its Page inten
   p.storage.fault = "host/creation";
   assert.equal((await f.send(args)).status, 500);
   assert.equal(await p.storage.get("host/creation"), undefined);
-  assert.equal((await f.catalog().storage.get("host/operation/register-fixture")).pending, true);
+  assert.equal(
+    (await f.catalog().storage.get(await f.receiptKey("register-fixture"))).pending,
+    true,
+  );
   const removal = {
     operation: "delete_page",
     arguments: {
       page_id: pageId,
-      base_heads: A.getHeads(doc),
-      idempotency_key: "cancel-local-create",
+      nonce: "cancel-local-create",
     },
   };
   assert.equal((await f.send(removal, { path: "/api/tools" })).status, 200);
   p.storage.fault = undefined;
   assert.equal((await f.send(args)).status, 409);
-  assert.equal((await f.send({ ...args, idempotency_key: "new-register-key" })).status, 409);
+  assert.equal((await f.send({ ...args, nonce: "new-register-key" })).status, 409);
   assert.equal(await f.catalog().storage.get(`page/${pageId}`), undefined);
   assert.equal(await f.catalog().storage.get(`host/deleted/${pageId}`), true);
   assert.equal(p.page.metadata, undefined);
@@ -480,8 +488,7 @@ test("Trash keeps completed registrations replayable and purge prevents revival"
     operation: "delete_page",
     arguments: {
       page_id: pageId,
-      base_heads: receipt.heads,
-      idempotency_key: "delete-registered",
+      nonce: "delete-registered",
     },
   };
   const trashed = await f.send(removal, { path: "/api/tools" });
@@ -492,7 +499,7 @@ test("Trash keeps completed registrations replayable and purge prevents revival"
   const replay = await f.send(args);
   assert.equal(replay.status, 200);
   assert.deepEqual(await replay.json(), receipt);
-  assert.equal((await f.send({ ...args, idempotency_key: "new-register-key" })).status, 409);
+  assert.equal((await f.send({ ...args, nonce: "new-register-key" })).status, 409);
   assert.equal((await f.send(removal, { path: "/api/tools" })).status, 200);
   assert.equal(await f.catalog().storage.get(`page/${pageId}`), undefined);
   assert.ok(await f.catalog().storage.get(`trash/${pageId}`));
@@ -512,13 +519,13 @@ test("Trash keeps completed registrations replayable and purge prevents revival"
         page_id: pageId,
         action: "confirm",
         preview_token: preview.preview_token,
-        idempotency_key: "purge-registered",
+        nonce: "purge-registered",
       },
     },
     { path: "/api/tools" },
   );
   assert.equal(purged.status, 200);
-  assert.equal((await f.send({ ...args, idempotency_key: "after-purge" })).status, 409);
+  assert.equal((await f.send({ ...args, nonce: "after-purge" })).status, 409);
   assert.equal(await f.catalog().storage.get(`trash/${pageId}`), undefined);
   assert.equal(await f.catalog().storage.get(`host/deleted/${pageId}`), true);
 });
@@ -564,8 +571,7 @@ test("a changed account cannot cancel an unknown local draft in the wrong catalo
     operation: "delete_page",
     arguments: {
       page_id: pageId,
-      base_heads: A.getHeads(doc),
-      idempotency_key: "delete-original-account",
+      nonce: "delete-original-account",
       expected_principal: args.expected_principal,
     },
   };
@@ -641,12 +647,27 @@ test("a registration replays from the Catalog's receipt, or from the Page's", as
   assert.equal(replayed.headers.get(REPLAYED_RECEIPT_HEADER), null, "the marker stays internal");
   assert.deepEqual(await replayed.json(), await first.json());
   // A Catalog that lost its receipt reaches the Page, which replays its own.
-  await f.catalog().storage.delete("host/operation/register-fixture");
+  await f.catalog().storage.delete(await f.receiptKey("register-fixture"));
   await f.catalog().storage.delete(`page/${pageId}`);
   const fromPage = await f.send(args);
   assert.equal(fromPage.status, 200, await fromPage.clone().text());
   assert.equal((await fromPage.json()).document_id, args.document_id);
   assert.equal(f.page().page.metadata.recordStorage, "automerge");
+});
+
+test("a second creation request for a registered Page answers creation_conflict, at the Catalog and at the Page", async (t) => {
+  const f = await fixture(t),
+    { args } = registration();
+  assert.equal((await f.send(args)).status, 200);
+  // The Catalog holds the Page: another nonce is another creation request.
+  const atCatalog = await f.send({ ...args, nonce: "another-request" });
+  assert.equal(atCatalog.status, 409);
+  assert.equal((await atCatalog.json()).code, "creation_conflict");
+  // A Catalog that lost its record reaches the Page, which says the same.
+  await f.catalog().storage.delete(`page/${pageId}`);
+  const atPage = await f.send({ ...args, nonce: "a-third-request" });
+  assert.equal(atPage.status, 409);
+  assert.equal((await atPage.json()).code, "creation_conflict");
 });
 
 /** Usage lines written while `run` executes. */
@@ -689,7 +710,7 @@ test("a replayed create_page on http-tools records the call but not a second pag
   const f = await fixture(t);
   const body = {
     operation: "create_page",
-    arguments: { title: "Agent Page", markdown: "Body text", idempotency_key: "usage-create" },
+    arguments: { title: "Agent Page", markdown: "Body text", nonce: "usage-create" },
   };
   let first, replay;
   const lines = await usageLines(t, async () => {
@@ -775,7 +796,7 @@ test("a draft from before the comments stamp replays once registered, and is ref
       { principal: value.principal, driver: value.driver },
     );
   const [catalogDigest, pageDigest] = await Promise.all(seen.slice(0, 2).map(rewrite));
-  const key = "host/operation/register-fixture";
+  const key = await f.receiptKey("register-fixture");
   const entry = await f.catalog().storage.get(key);
   await f.catalog().storage.put(key, { ...entry, fingerprint: catalogDigest });
   const record = await f.page().storage.get("host/document");

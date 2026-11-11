@@ -111,8 +111,7 @@ async function linksWorld(t) {
   const trash = async (id) => {
     const trashed = await w.call("owner", "delete_page", {
       page_id: id,
-      base_heads: w.heads(id),
-      idempotency_key: w.key(),
+      nonce: w.key(),
     });
     assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
   };
@@ -124,7 +123,7 @@ async function linksWorld(t) {
       page_id: id,
       action: "confirm",
       preview_token: preview.body.preview_token,
-      idempotency_key: w.key(),
+      nonce: w.key(),
     });
     assert.equal(purged.status, 200, JSON.stringify(purged.body));
     await settle();
@@ -139,7 +138,7 @@ async function linksWorld(t) {
       principal: principal(who),
       role,
       expected_revision: roster.body.revision,
-      idempotency_key: w.key(),
+      nonce: w.key(),
     });
     assert.equal(changed.status, 200, JSON.stringify(changed.body));
     await settle();
@@ -184,7 +183,7 @@ test("the owner, direct grants and a Project member read meta.json and card.json
     principal: l.principal("project"),
     role: "viewer",
     expected_revision: 0,
-    idempotency_key: l.w.key(),
+    nonce: l.w.key(),
   });
   assert.equal(shared.status, 200, JSON.stringify(shared.body));
   // Neither the direct grantees nor the Project member has a Catalog entry
@@ -522,7 +521,7 @@ test("card.json reads the stored card and the card image info page_cards attache
         principal: l.principal("project"),
         role: "viewer",
         expected_revision: 0,
-        idempotency_key: l.w.key(),
+        nonce: l.w.key(),
       })
     ).status,
     200,
@@ -850,7 +849,7 @@ test("a pending Project invitee is refused, the invitation stays pending, and no
     email,
     role: "editor",
     expected_revision: 0,
-    idempotency_key: p.w.key(),
+    nonce: p.w.key(),
   });
   assert.equal(invited.status, 200, JSON.stringify(invited.body));
   await p.settle();
@@ -1204,7 +1203,7 @@ test("a pending invitee is refused like a stranger, and the invitation stays pen
       email: "invitee@example.com",
       role: "viewer",
       expected_revision: 1,
-      idempotency_key: "preview-invite",
+      nonce: "preview-invite",
     },
     Date.now(),
   );

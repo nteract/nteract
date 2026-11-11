@@ -68,7 +68,7 @@ async function sharedProject(t) {
   const share = (args) =>
     w.call("owner", "manage_project_access", {
       project_id: project.project_id,
-      idempotency_key: w.key(),
+      nonce: w.key(),
       ...args,
     });
   assert.equal(
@@ -98,7 +98,7 @@ async function confirm(w, projectId, token, key = w.key(), who = "owner") {
     project_id: projectId,
     action: "confirm",
     preview_token: token,
-    idempotency_key: key,
+    nonce: key,
   });
 }
 
@@ -127,7 +127,8 @@ test("the owner deletes an empty Project, and every read answers as for one that
   );
   assert.equal(previewed.body.pending_invitations, 1);
   assert.equal(previewed.body.comment_count, 0);
-  assert.deepEqual(previewed.body.heads, w.heads(documentId));
+  // The preview names no content heads: its token binds the content it saw.
+  assert.equal(previewed.body.heads, undefined);
   assert.match(previewed.body.preview_token, /^pp1\./);
 
   const key = w.key();
@@ -193,7 +194,7 @@ test("only the owner may delete a Project; a member and a stranger are refused",
     const member = await w.call("member", "delete_project", {
       project_id: project.project_id,
       action,
-      ...(action === "confirm" && { preview_token: token, idempotency_key: w.key() }),
+      ...(action === "confirm" && { preview_token: token, nonce: w.key() }),
     });
     assert.equal(member.status, 403, JSON.stringify(member.body));
     assert.deepEqual(member.body, {
@@ -203,7 +204,7 @@ test("only the owner may delete a Project; a member and a stranger are refused",
     const stranger = await w.call("stranger", "delete_project", {
       project_id: project.project_id,
       action,
-      ...(action === "confirm" && { preview_token: token, idempotency_key: w.key() }),
+      ...(action === "confirm" && { preview_token: token, nonce: w.key() }),
     });
     assert.equal(stranger.status, 404);
     assert.deepEqual(stranger.body, { error: "Project not found", code: "project_not_found" });
@@ -223,11 +224,9 @@ test("a Project with a live Page or only a trashed Page is refused with project_
   await w.createPage({ title: "Nested", parent_id: top.page_id });
   const trashed = await w.createProject("Trashed");
   const only = (await w.createPage({ title: "Only", project_id: trashed.project_id })).body;
-  const list = await w.call("owner", "list_pages", {});
   const trash = await w.call("owner", "delete_page", {
     page_id: only.page_id,
-    retry_token: list.body.retry_token,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(trash.status, 200, JSON.stringify(trash.body));
   for (const project of [live, trashed]) {
@@ -245,11 +244,7 @@ test("a Project with a live Page or only a trashed Page is refused with project_
   const refused = await confirm(w, later.project_id, token, key);
   assert.equal(refused.status, 409);
   assert.equal(refused.body.code, "project_not_empty");
-  assert.equal(
-    await w.catalogStorage().get(`host/operation/${key}`),
-    undefined,
-    "the key is free again",
-  );
+  assert.equal(await w.receipt(key), undefined, "the key is free again");
   assert.equal(
     (await w.call("owner", "get_project", { project_id: later.project_id })).status,
     200,
@@ -287,7 +282,7 @@ test("confirm refuses a stale, edited, foreign or forged preview and changes not
     project_id: projectId,
     title: "Guarded v2",
     expected_revision: 0,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(updated.status, 200);
   await refusedWith(stale, /changed after its preview/);
@@ -297,9 +292,8 @@ test("confirm refuses a stale, edited, foreign or forged preview and changes not
   const read = (await w.call("owner", "read_page", { project_id: projectId })).body;
   const edited = await w.call("owner", "edit_page", {
     project_id: projectId,
-    base_heads: read.heads,
-    retry_token: read.retry_token,
-    idempotency_key: crypto.randomUUID(),
+    revision: read.revision,
+    nonce: crypto.randomUUID(),
     operations: [{ op: "insert_markdown", markdown: "A late note." }],
   });
   assert.equal(edited.status, 200, JSON.stringify(edited.body));
@@ -315,7 +309,7 @@ test("confirm refuses a stale, edited, foreign or forged preview and changes not
   const required = await w.call("owner", "delete_project", {
     project_id: projectId,
     action: "confirm",
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(required.status, 400);
   assert.equal(required.body.code, "purge_preview_required");
@@ -349,9 +343,8 @@ test("a content write that lands after the Space closes reopens it and refuses t
               .body;
             const edit = await w.call("owner", "edit_page", {
               page_id: project.document_id,
-              base_heads: read.heads,
-              retry_token: read.retry_token,
-              idempotency_key: crypto.randomUUID(),
+              revision: read.revision,
+              nonce: crypto.randomUUID(),
               operations: [{ op: "insert_markdown", markdown: "Written mid-deletion." }],
             });
             assert.equal(edit.status, 200, JSON.stringify(edit.body));
@@ -368,7 +361,7 @@ test("a content write that lands after the Space closes reopens it and refuses t
   assert.equal(refused.body.code, "purge_preview_invalid");
   assert.match(refused.body.error, /content or its comments changed after its preview/);
   // The Space reopened, the Catalog shows it again, and the key is free.
-  assert.equal(await w.catalogStorage().get(`host/operation/${key}`), undefined);
+  assert.equal(await w.receipt(key), undefined);
   assert.equal(
     (await w.call("owner", "get_project", { project_id: project.project_id })).status,
     200,
@@ -407,7 +400,7 @@ test("a deletion interrupted after the Space closes resumes on retry and replays
   const interrupted = await confirm(w, projectId, token, key);
   assert.equal(interrupted.status, 503, JSON.stringify(interrupted.body));
   // Nothing reports success, and the Project already reads as missing.
-  const intent = await w.catalogStorage().get(`host/operation/${key}`);
+  const intent = await w.receipt(key);
   assert.equal(intent.pending, true);
   assert.equal(intent.phase, "space_closed");
   assert.equal(w.page(project.document_id).metadata.deleted, true, "the content is in Trash");
@@ -425,7 +418,7 @@ test("a deletion interrupted after the Space closes resumes on retry and replays
   // The same key with another payload is a conflict, not a new deletion.
   const conflict = await confirm(w, projectId, `${token}x`, key);
   assert.equal(conflict.status, 409);
-  assert.equal(conflict.body.code, "idempotency_conflict");
+  assert.equal(conflict.body.code, "nonce_conflict");
 });
 
 test("a deletion interrupted before its receipt resumes from the Space removal", async (t) => {
@@ -438,7 +431,7 @@ test("a deletion interrupted before its receipt resumes from the Space removal",
   // The fault answers the first Space request: the close. Nothing changed.
   const key = w.key();
   assert.equal((await confirm(w, projectId, token, key)).status, 503);
-  assert.equal((await w.catalogStorage().get(`host/operation/${key}`)).phase, "reserved");
+  assert.equal((await w.receipt(key)).phase, "reserved");
   assert.equal((await w.call("owner", "get_project", { project_id: projectId })).status, 200);
   // The retry closes the Space; then the removal's answer is lost.
   const projects = w.env.PROJECTS;
@@ -460,7 +453,7 @@ test("a deletion interrupted before its receipt resumes from the Space removal",
     },
   };
   assert.equal((await confirm(w, projectId, token, key)).status, 503);
-  assert.equal((await w.catalogStorage().get(`host/operation/${key}`)).phase, "catalog_forgotten");
+  assert.equal((await w.receipt(key)).phase, "catalog_forgotten");
   const done = await confirm(w, projectId, token, key);
   assert.equal(done.status, 200, JSON.stringify(done.body));
   assert.deepEqual(done.body, { project_id: projectId, deleted: true });
@@ -474,7 +467,7 @@ async function comment(w, project, body) {
     action: "add",
     block_id: Object.keys(w.page(project.document_id).handle.doc().blocks)[0],
     body,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(added.status, 200, JSON.stringify(added.body));
 }
@@ -491,7 +484,7 @@ test("a comment added after the preview refuses the confirm and changes nothing"
   const refused = await confirm(w, project.project_id, before.preview_token, key);
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
   assert.equal(refused.body.code, "purge_preview_invalid");
-  assert.equal(await w.catalogStorage().get(`host/operation/${key}`), undefined);
+  assert.equal(await w.receipt(key), undefined);
   assert.equal(
     (await w.call("owner", "get_project", { project_id: project.project_id })).status,
     200,
@@ -533,7 +526,7 @@ test("a comment added after the Space closes reopens it and refuses the deletion
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
   assert.equal(refused.body.code, "purge_preview_invalid");
   assert.match(refused.body.error, /content or its comments changed/);
-  assert.equal(await w.catalogStorage().get(`host/operation/${key}`), undefined);
+  assert.equal(await w.receipt(key), undefined);
   assert.equal(
     w.page(project.document_id).metadata.deleted,
     false,
@@ -574,11 +567,7 @@ async function interruptedAfterTrash(t, title) {
   const key = w.key();
   assert.equal((await confirm(w, project.project_id, token, key)).status, 503);
   assert.equal(w.page(project.document_id).metadata.deleted, true, "the content is in Trash");
-  const listed = (await w.call("owner", "list_pages", {})).body;
-  const guarded = () => ({
-    retry_token: listed.retry_token,
-    idempotency_key: crypto.randomUUID(),
-  });
+  const guarded = () => ({ nonce: crypto.randomUUID() });
   return { w, project, token, key, guarded };
 }
 
@@ -663,8 +652,8 @@ async function deleteUnopened(t, documentFormats) {
 
   const previewed = await preview(w, project.project_id);
   assert.equal(previewed.status, 200, JSON.stringify(previewed.body));
-  // Nothing read the content, so the preview reports no heads or discussion.
-  assert.equal(previewed.body.heads, null);
+  // Nothing read the content, so the preview reports no discussion.
+  assert.equal(previewed.body.heads, undefined);
   assert.equal(previewed.body.comment_count, null);
   assert.equal(previewed.body.comment_threads, null);
   assert.match(previewed.body.preview_token, /^pp1\./);
@@ -724,7 +713,7 @@ test("a content record that opens after the preview refuses the deletion and reo
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
   assert.equal(refused.body.code, "purge_preview_invalid");
   assert.equal(host.metadata.deleted, false, "the content stays out of Trash");
-  assert.equal(await w.catalogStorage().get(`host/operation/${key}`), undefined);
+  assert.equal(await w.receipt(key), undefined);
   assert.equal(
     (await w.call("owner", "get_project", { project_id: project.project_id })).status,
     200,
@@ -746,38 +735,36 @@ test("delete_project over MCP previews, confirms and maps project_id", async (t)
     project_id: project.project_id,
     action: "confirm",
     preview_token: previewed.body.preview_token,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(deleted.isError, false, JSON.stringify(deleted.body));
   assert.deepEqual(deleted.body, { project_id: project.project_id, deleted: true });
 });
 
-test("delete_project keeps its receipt under the retry token's scope", async (t) => {
+test("delete_project keeps its receipt under the caller's account", async (t) => {
   const w = await world(t);
-  const project = await w.createProject("Tokened");
+  const project = await w.createProject("Keyed");
   const previewed = await preview(w, project.project_id);
-  const listed = (await w.call("owner", "list_projects")).body;
-  assert.equal(typeof listed.retry_token, "string");
   const nonce = crypto.randomUUID();
   const args = {
     project_id: project.project_id,
     action: "confirm",
     preview_token: previewed.body.preview_token,
-    retry_token: listed.retry_token,
-    idempotency_key: nonce,
+    nonce,
   };
   const deleted = await w.call("owner", "delete_project", args);
   assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
-  // The receipt sits under the token's scope, not under the bare nonce, and
-  // an exact retry of token, key and payload replays it.
+  // The receipt sits under the account's key, not under the bare nonce,
+  // and an exact retry replays it.
   const owned = w.catalogStorage();
   assert.equal(await owned.get(`host/operation/${nonce}`), undefined);
+  assert.equal((await w.receipt(nonce)).pending, false);
   assert.deepEqual(await w.call("owner", "delete_project", args), deleted);
-  // A caller never names a token scope itself.
-  const prefixed = await w.call("owner", "delete_project", {
+  // A nonce outside the pattern is refused before any work.
+  const malformed = await w.call("owner", "delete_project", {
     ...args,
-    idempotency_key: `v1_${"a".repeat(64)}_${nonce}`,
+    nonce: `v1_${"a".repeat(64)}_${nonce}`,
   });
-  assert.equal(prefixed.status, 400, JSON.stringify(prefixed.body));
-  assert.equal(prefixed.body.code, "invalid_idempotency_key");
+  assert.equal(malformed.status, 400, JSON.stringify(malformed.body));
+  assert.equal(malformed.body.code, "invalid_nonce");
 });

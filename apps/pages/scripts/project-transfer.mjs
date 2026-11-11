@@ -34,23 +34,31 @@ export const BUNDLE_FORMAT = "nteract-pages-project-bundle";
 export const BUNDLE_VERSION = 5;
 export const STATE_FORMAT = "nteract-pages-project-import-state";
 /**
- * Version 2 state holds idempotency keys that are the importer's own nonces,
- * sent beside retry_token. Version 1 state holds keys built from a
- * retry_key_prefix, which the target refuses, so it is never resumed.
+ * Version 3 state holds the importer's own nonces and revision handles.
+ * Earlier state holds retry tokens and heads, which the target refuses, so it
+ * is never resumed.
  */
-export const STATE_VERSION = 2;
+export const STATE_VERSION = 3;
+/** How long a target keeps a write's receipt (worker/operation-journal.mjs
+ * RECEIPT_LIFETIME_MS), less an hour for clock skew. An uncertain create
+ * first sent longer ago than this may have landed without a receipt left to
+ * replay. */
+export const RECEIPT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000 - 60 * 60 * 1000;
 // Persisted theme-body lifecycle. A receipt advances exactly one saved batch;
 // neither restart nor retry may reconstruct an installed body or its image IDs.
 export function themeBodyTransition(state, event) {
   if (event.type === "plan" && !state)
-    return { phase: "installing", operations: event.operations, next: 0, heads: event.heads };
+    return { phase: "installing", operations: event.operations, next: 0, revision: event.revision };
   if (event.type === "discover" && state?.phase === "installed")
-    return { phase: "variants", operations: event.operations, next: 0, heads: state.heads };
+    return { phase: "variants", operations: event.operations, next: 0, revision: state.revision };
   if (event.type === "receipt" && ["installing", "variants"].includes(state?.phase)) {
     const next = Math.min(state.next + EDIT_BATCH, state.operations.length);
     if (next === state.operations.length)
-      return { phase: state.phase === "installing" ? "installed" : "done", heads: event.heads };
-    return { ...state, next, heads: event.heads };
+      return {
+        phase: state.phase === "installing" ? "installed" : "done",
+        revision: event.revision,
+      };
+    return { ...state, next, revision: event.revision };
   }
   throw new TransferError("Invalid persisted theme-body transition");
 }
@@ -102,7 +110,7 @@ export class TransferError extends Error {
     // The HTTP status of an asset request that failed, when there was one.
     this.status = status;
     // An uncertain failure may have been applied; only the identical request
-    // (same retry_token, idempotency_key and payload) may be sent again.
+    // (same nonce and payload) may be sent again.
     this.uncertain = uncertain;
   }
 }
@@ -441,7 +449,7 @@ const describe = (address) =>
  * Every block's Markdown, the outline's node types and the comment count, all
  * at one revision. `address` is `{ page_id }` or `{ project_id }`. An oversized
  * explicit read falls back to the unbounded read_page(address); the outline
- * then comes from include_content:false pages pinned to that read's heads.
+ * then comes from include_content:false pages pinned to that read's revision.
  */
 export async function readWholePage(client, address, options) {
   const call = (args) => withRetries(() => client.call("read_page", args), options);
@@ -468,7 +476,7 @@ export async function readWholePage(client, address, options) {
           include_content: false,
           outline_offset: next,
           outline_limit: 100,
-          expected_heads: read.heads,
+          revision: read.revision,
           max_bytes: READ_BUDGET,
         });
         if (!more.outline?.entries?.length)
@@ -494,8 +502,7 @@ export async function readWholePage(client, address, options) {
     return {
       page_id: read.page_id,
       title: read.title,
-      heads: read.heads,
-      retry_token: read.retry_token,
+      revision: read.revision,
       // A format 1 source reports each block's `kind`; a format 2 source
       // reports none, and a block without one is Markdown.
       blocks: (blocks ?? []).map((block) => ({
@@ -1222,7 +1229,8 @@ export function rewriteLinks(
 // ---------------------------------------------------------------------------
 // Import
 
-/** A stable idempotency-key nonce for one step of one bundle. */
+/** A stable nonce for one step of one bundle. It is 40 hex characters, inside
+ * the 6–64 the target accepts. */
 async function nonce(bundleId, ...parts) {
   const digest = await crypto.subtle.digest(
     "SHA-256",
@@ -1297,8 +1305,8 @@ export const ADOPT_CLOCK_SKEW_MS = 2 * 60_000;
 
 function reconciliationMessage(record) {
   return (
-    `The retry window for ${record.operation} "${record.args.title}" (${record.step}, key ` +
-    `${record.idempotency_key}, first sent ${record.requested_at}) expired before its outcome ` +
+    `The target's receipt for ${record.operation} "${record.args.title}" (${record.step}, nonce ` +
+    `${record.nonce}, first sent ${record.requested_at}) may be gone before its outcome ` +
     "was known, so it may have been applied. No more writes until it is resolved. Rerun with " +
     "--reconcile to list candidates on the target, then --adopt ID to record the one it made, " +
     "or --accept-missing to create it again."
@@ -1511,7 +1519,7 @@ export async function importBundle(
     );
 
   // One request at a time. Its exact arguments are saved before sending, so a
-  // rerun after an uncertain failure replays the same token, key and payload.
+  // rerun after an uncertain failure replays the same nonce and payload.
   // requested_at is when the request was first sent; a replay keeps it.
   const send = async (
     step,
@@ -1520,32 +1528,36 @@ export async function importBundle(
     commit,
     requestedAt = new Date(now()).toISOString(),
   ) => {
+    // An uncertain create first sent longer ago than the target keeps
+    // receipts may have been applied, and its replay could create it again.
+    // Record it and refuse further writes until --reconcile finds it or
+    // --accept-missing sends it again. A body edit needs no record: the
+    // next run rereads the Page and writes the whole body again, which
+    // converges whether or not it applied.
+    if (
+      (step === "project" || step.startsWith("page:")) &&
+      now() - Date.parse(requestedAt) >= RECEIPT_WINDOW_MS
+    ) {
+      state.pending = null;
+      state.reconciliation_required = {
+        step,
+        operation,
+        nonce: args.nonce,
+        args,
+        requested_at: requestedAt,
+        recorded_at: new Date(now()).toISOString(),
+      };
+      await save();
+      throw new TransferError(reconciliationMessage(state.reconciliation_required), {
+        code: "reconciliation_required",
+      });
+    }
     state.pending = { step, operation, args, requested_at: requestedAt };
     await save();
     let result;
     try {
       result = await withRetries(() => client.call(operation, args), options);
     } catch (error) {
-      // The window of an uncertain create closed: the create may have been
-      // applied, and nothing can replay it now. Record it and refuse further
-      // writes until --reconcile finds it or --accept-missing sends it again.
-      // A body edit needs no record: the next run rereads the Page and writes
-      // the whole body again, which converges whether or not it applied.
-      if (error.code === "retry_expired" && (step === "project" || step.startsWith("page:"))) {
-        state.pending = null;
-        state.reconciliation_required = {
-          step,
-          operation,
-          idempotency_key: args.idempotency_key,
-          args,
-          requested_at: requestedAt,
-          recorded_at: new Date(now()).toISOString(),
-        };
-        await save();
-        throw new TransferError(reconciliationMessage(state.reconciliation_required), {
-          code: "reconciliation_required",
-        });
-      }
       if (!error.uncertain) {
         state.pending = null;
         await save();
@@ -1578,7 +1590,7 @@ export async function importBundle(
       const id = step.slice(7);
       state.bodies[id] = themeBodyTransition(state.bodies[id], {
         type: "receipt",
-        heads: result.heads,
+        revision: result.revision,
       });
       counts.edits++;
     }
@@ -1594,7 +1606,7 @@ export async function importBundle(
       // Listing only: the operator picks, or rejects, a candidate.
       return {
         reconciliation: {
-          record: { ...record, args: { ...record.args, retry_token: undefined } },
+          record,
           candidates: await reconciliationCandidates(client, state, record, options),
         },
       };
@@ -1618,23 +1630,12 @@ export async function importBundle(
     try {
       await send(step, operation, args, commitFor(step), requested_at);
     } catch (error) {
-      // An expired body edit: the body pass below rereads the Page and writes
-      // the whole body again, which converges whether or not it applied.
-      if (!(error.code === "retry_expired" && step.startsWith("body:"))) throw error;
-      log(`the retry window for ${step} expired; rewriting that body from a fresh read`);
+      // A body edit against a revision the target no longer keeps receipts
+      // for: the body pass below rereads the Page and writes the whole body
+      // again, which converges whether or not it applied.
+      if (!(error.code === "resync_required" && step.startsWith("body:"))) throw error;
+      log(`the revision behind ${step} is too old to retry; rewriting that body from a fresh read`);
     }
-  }
-
-  // Catalog retry authority for creates. Keys are a nonce from (bundle_id,
-  // source_page_id). A new window is safe once nothing is pending.
-  const unmapped = entriesOf(bundle).some((entry) => !state.pages[sourceKey(entry)]);
-  if (unmapped && (!state.catalog || Date.parse(state.catalog.retry_until) - 60_000 <= now())) {
-    const authority = await withRetries(() => client.call("list_pages", { limit: 1 }), options);
-    state.catalog = {
-      retry_token: authority.retry_token,
-      retry_until: authority.retry_until,
-    };
-    await save();
   }
 
   if (!state.project) {
@@ -1659,8 +1660,7 @@ export async function importBundle(
     const args = {
       title: bundle.project.title,
       ...(bundle.project.description && { description: bundle.project.description }),
-      idempotency_key: await nonce(bundle.bundle_id, "project"),
-      retry_token: state.catalog.retry_token,
+      nonce: await nonce(bundle.bundle_id, "project"),
     };
     await send("project", "create_project", args, commitFor("project"));
     log(`created Project ${state.project.project_id}`);
@@ -1677,8 +1677,7 @@ export async function importBundle(
       title: page.title,
       markdown: page.images?.length || page.image_variants?.length ? "" : pageBlocks(page)[0],
       ...placement,
-      idempotency_key: await nonce(bundle.bundle_id, "page", page.source_page_id),
-      retry_token: state.catalog.retry_token,
+      nonce: await nonce(bundle.bundle_id, "page", page.source_page_id),
     };
     const step = `page:${page.source_page_id}`;
     await send(step, "create_page", args, commitFor(step));
@@ -1781,10 +1780,7 @@ export async function importBundle(
       const read = whole
         ? await readWholePage(client, address, options)
         : await readForEdit(address);
-      if (
-        JSON.stringify([...read.heads].sort()) !==
-        JSON.stringify([...state.bodies[id].heads].sort())
-      )
+      if (read.revision !== state.bodies[id].revision)
         throw new TransferError(
           "Target changed during theme image import; refusing to rebase image identities",
           { code: "transfer_revision_changed" },
@@ -1797,7 +1793,11 @@ export async function importBundle(
         ...titleOperations(page, read),
         ...bodyOperations(read.blocks ?? [], units),
       ];
-      state.bodies[id] = themeBodyTransition(null, { type: "plan", operations, heads: read.heads });
+      state.bodies[id] = themeBodyTransition(null, {
+        type: "plan",
+        operations,
+        revision: read.revision,
+      });
       await save();
     }
     while (state.bodies[id].phase !== "done") {
@@ -1828,9 +1828,8 @@ export async function importBundle(
         "edit_page",
         {
           ...address,
-          base_heads: progress.heads,
-          retry_token: read.retry_token,
-          idempotency_key: await nonce(bundle.bundle_id, progress.phase, id, String(progress.next)),
+          revision: progress.revision,
+          nonce: await nonce(bundle.bundle_id, progress.phase, id, String(progress.next)),
           operations: progress.operations.slice(progress.next, progress.next + EDIT_BATCH),
         },
         commitFor(step),
@@ -1839,7 +1838,7 @@ export async function importBundle(
   }
 
   // Make the target Page hold exactly `units` (bodyOperations). Batches past
-  // EDIT_BATCH read again for fresh heads; deletes come before appends, so
+  // EDIT_BATCH read again for a fresh revision; deletes come before appends, so
   // order holds.
   async function writeBody(page, address, units) {
     let read = await readForEdit(address);
@@ -1851,9 +1850,10 @@ export async function importBundle(
       if (batch > 0) read = await readForEdit(address);
       const args = {
         ...address,
-        base_heads: read.heads,
-        idempotency_key: await nonce(bundle.bundle_id, "body", sourceKey(page), String(batch)),
-        retry_token: read.retry_token,
+        revision: read.revision,
+        // The revision is part of the nonce: a batch written from a fresh read
+        // is a new request, and the same batch from the same read replays.
+        nonce: await nonce(bundle.bundle_id, "body", sourceKey(page), String(batch), read.revision),
         operations: operations.slice(batch * EDIT_BATCH, (batch + 1) * EDIT_BATCH),
       };
       const step = `body:${sourceKey(page)}`;
@@ -1972,7 +1972,7 @@ export function fileStore(path) {
         throw error;
       }
     },
-    // Holds retry tokens: user-only.
+    // Holds the bundle's nonces and the target's IDs: user-only.
     save: (state) => writeAtomic(path, JSON.stringify(state, null, 2) + "\n", 0o600),
   };
 }

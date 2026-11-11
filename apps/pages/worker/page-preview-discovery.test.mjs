@@ -40,7 +40,7 @@ test("the preview follows the reader's access: granted, revoked, never granted",
     principal: f.member,
     role: null,
     expected_revision: 1,
-    idempotency_key: "revoke-member-preview",
+    nonce: "revoke-member-preview",
   });
   assert.equal(revoke.status, 200, JSON.stringify(revoke.body));
   const revoked = await discover(f, "member");

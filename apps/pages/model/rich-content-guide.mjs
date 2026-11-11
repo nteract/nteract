@@ -119,7 +119,7 @@ a second image uploaded to the same Page. summary.images includes bounded
 src, dark_src, asset_id, dark_asset_id, alt, title and live image_id facts;
 images_truncated or truncated explicitly signals omitted data. image_id names
 the inline marker in its block, not the top-level node_id. Use edit_page
-set_image at exact current heads to change a source or shared metadata;
+set_image at the current revision to change a source or shared metadata;
 dark_asset_id:null removes the alternate. Child-index paths remain revision-local.
 
 Pages stores native nodes, not Markdown. Each paragraph, heading, list item,

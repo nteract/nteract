@@ -2,7 +2,7 @@ import { normalizeInviteEmail } from "@cloud/sharing.ts";
 import { appSessionHasFreshVerifiedEmail } from "@cloud/app-session.ts";
 import { MEMBER_ROLES, pageAccess, proposeAccessUpdate } from "./access.mjs";
 import { HttpError } from "./auth.mjs";
-import { fingerprint, mutationKey } from "./mutations.mjs";
+import { fingerprint, operationKey } from "./mutations.mjs";
 import { companyDomainProof, companyViewDomains, configuredDomainView } from "./domain-access.mjs";
 
 const lifetime = 7 * 24 * 60 * 60 * 1000;
@@ -95,16 +95,12 @@ export async function claimInvitation(metadata, identity, env, now = Date.now())
 export async function proposeSharingMutation(metadata, identity, args, now = Date.now(), env = {}) {
   if (!pageAccess(metadata, identity, { now }).canManageAccess)
     throw new HttpError(403, "Only the owner can manage sharing");
-  const key = mutationKey(args).replace("host/operation/", "");
+  const key = (await operationKey(args, identity, "page-access")).replace("host/operation/", "");
   const digest = await fingerprint("page_access", args, identity);
   const previous = metadata.acl?.receipts?.[key];
   if (previous) {
     if (previous.fingerprint !== digest)
-      throw new HttpError(
-        409,
-        "idempotency_key was used for a different request",
-        "idempotency_conflict",
-      );
+      throw new HttpError(409, "This nonce was used for a different request", "nonce_conflict");
     return { metadata, receipt: previous.receipt, replay: true };
   }
   if (

@@ -57,7 +57,7 @@ export const MOVE_STATUS = Object.freeze({
   invalid_position: 400,
   position_sibling_unknown: 400,
   lifecycle_unsettled: 409,
-  idempotency_conflict: 409,
+  nonce_conflict: 409,
   operation_pending: 409,
   move_unconfirmed: 503,
 });
@@ -185,10 +185,10 @@ const refuse = (code, error, extra = {}) => ({
 export const MOVE_MESSAGES = Object.freeze({
   lifecycle_unsettled:
     "A Trash or restore of this Page or its new parent is still settling; retry the same request shortly",
-  idempotency_conflict: "idempotency_key was used for a different request",
-  operation_pending: "An earlier request with this idempotency_key is still being applied",
+  nonce_conflict: "This nonce was used for a different request",
+  operation_pending: "An earlier request with this nonce is still being applied",
   move_unconfirmed:
-    "The move was written but its durability could not be confirmed; retry the same key, token and payload",
+    "The move was written but its durability could not be confirmed; retry with the same nonce and arguments",
 });
 
 function transition(state, event) {
@@ -202,7 +202,7 @@ function transition(state, event) {
         return { state: { name: "writing", receipt: event.receipt }, effects: [effect("sync")] };
       if (event.row === "pending")
         return refuse("operation_pending", MOVE_MESSAGES.operation_pending);
-      return refuse("idempotency_conflict", MOVE_MESSAGES.idempotency_conflict);
+      return refuse("nonce_conflict", MOVE_MESSAGES.nonce_conflict);
     }
     case "settling":
       return event.ok

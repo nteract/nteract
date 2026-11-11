@@ -20,7 +20,7 @@ const selectorKeys = [
   "outline_offset",
   "outline_limit",
   "max_bytes",
-  "expected_heads",
+  "revision",
 ];
 const commentKeys = [
   "state",
@@ -28,7 +28,7 @@ const commentKeys = [
   "thread_ids",
   "include_messages",
   "max_bytes",
-  "expected_heads",
+  "revision",
 ];
 /** Read refusals that reach the caller with their own code. */
 export const READ_ERROR_CODES = new Set([
@@ -62,26 +62,27 @@ function validate(operation, args) {
     invalid("include_presence must be a boolean");
   return { maxBytes, offset, limit };
 }
-function checkRevision(args, heads, offset) {
-  const expected = args.expected_heads;
+/** A read's `revision` against the revision it reads. The handle resolves
+ * through the host's table (`revisions.heads`): an unknown handle is
+ * `resync_required`, a known one that isn't current `read_revision_changed`. */
+async function checkRevision(args, heads, offset, revisions) {
+  const expected = args.revision;
   if (expected === undefined && (args.node_range !== undefined || offset > 0))
-    invalid(
-      "expected_heads from the outline read are required for node_range and outline pagination",
-    );
-  if (expected !== undefined) {
-    if (
-      !Array.isArray(expected) ||
-      expected.length > 1024 ||
-      expected.some((head) => typeof head !== "string" || !/^[a-f0-9]{64}$/.test(head)) ||
-      new Set(expected).size !== expected.length
-    )
-      invalid("Invalid expected_heads");
-    if (JSON.stringify([...expected].sort()) !== JSON.stringify([...heads].sort()))
-      throw Object.assign(
-        new Error("Page changed; read a fresh outline before using its node addresses."),
-        { status: 409, code: "read_revision_changed" },
-      );
+    invalid("revision from the outline read is required for node_range and outline pagination");
+  if (expected === undefined) return;
+  let named;
+  try {
+    named = await revisions.heads("page", expected);
+  } catch (error) {
+    // The refusal names the revision to read instead.
+    if (error.code === "resync_required") error.details = { current_heads: heads };
+    throw error;
   }
+  if (JSON.stringify([...named].sort()) !== JSON.stringify([...heads].sort()))
+    throw Object.assign(
+      new Error("Page changed; read a fresh outline before using its node addresses."),
+      { status: 409, code: "read_revision_changed" },
+    );
 }
 function outlinePage(entries, offset, limit) {
   const selected = entries.slice(offset, offset + limit);
@@ -94,15 +95,18 @@ function outlinePage(entries, offset, limit) {
   };
 }
 
-/** One captured CRDT revision supplies content, comments and heads across
- * token issuance. `commentsDoc` is the Page's comments document; its own heads
- * come back as `comment_heads`, the baseline read_page_changes takes as
- * `since_comment_heads`. Comment writes never move `heads`. */
+/** One captured CRDT revision supplies content, comments and revisions.
+ * `revisions` is the host's handle table: `handles([[doc, heads], ...])`
+ * names revisions, minting handles when needed, and `heads(doc, handle)`
+ * resolves one. The result names the Page revision as `revision` and the comments
+ * document's as `comment_revision`, the baseline read_page_changes takes as
+ * `since_comment_revision`; comment writes never move `revision`. `heads`
+ * beside the body is the Page revision read, for the host's own use. */
 export async function readTool(
   doc,
   operation,
   args,
-  { issueAuthority, recovery, historyIncomplete, getPresence, commentsDoc } = {},
+  { revisions, recovery, historyIncomplete, getPresence, commentsDoc } = {},
 ) {
   const heads = A.getHeads(doc);
   const commentHeads = commentsDoc ? A.getHeads(commentsDoc) : undefined;
@@ -117,9 +121,9 @@ export async function readTool(
   };
   try {
     settings = validate(operation, args);
-    checkRevision(args, heads, settings.offset);
+    await checkRevision(args, heads, settings.offset, revisions);
     if (operation === "list_page_comments") {
-      const { page_id: _id, max_bytes: _bytes, expected_heads: _heads, ...filters } = args;
+      const { page_id: _id, max_bytes: _bytes, revision: _revision, ...filters } = args;
       payload = {
         page_id: doc.page_id,
         title: doc.title,
@@ -165,18 +169,20 @@ export async function readTool(
       ...(error.code === "read_revision_changed" && { outline: outline() }),
     };
   }
-  const authority = await issueAuthority();
+  const [revision, comment_revision] = await revisions.handles([
+    ["page", heads],
+    ...(commentHeads ? [["comments", commentHeads]] : []),
+  ]);
   const common = {
-    heads,
-    ...(commentHeads && { comment_heads: commentHeads }),
+    revision,
+    ...(comment_revision && { comment_revision }),
     // The Page's schema stamp; empty when it uses only the baseline.
     ...(operation === "read_page" && { schema_features: documentFeatures(doc) }),
-    ...authority,
     ...(recovery && { recovery }),
     ...(historyIncomplete && { history_incomplete: historyIncomplete }),
   };
   let body = { ...payload, ...common };
-  if (legacy) return { status, body };
+  if (legacy) return { status, body, heads };
   // Reserve room for the public URL added by the MCP transport.
   const fits = (value) => bytes(value) + 512 <= settings.maxBytes;
   // Requested content has priority over the optional outline page. Shorten
@@ -220,5 +226,5 @@ export async function readTool(
         max_bytes: settings.maxBytes,
       };
   }
-  return { status, body };
+  return { status, body, heads };
 }

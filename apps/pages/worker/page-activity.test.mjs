@@ -46,18 +46,26 @@ function fixture(t, markdown = "A visible selected passage. Another useful passa
     },
   };
 }
-const report = (f, args = {}, person = identity()) =>
-  f.activity.report(f.doc, person, { page_id: pageId, message: "Reviewing this passage", ...args });
+// A report as the host passes it: `heads` is what args.revision names.
+const report = (f, args = {}, person = identity(), heads = undefined) =>
+  f.activity.report(
+    f.doc,
+    person,
+    { page_id: pageId, message: "Reviewing this passage", ...args },
+    heads,
+  );
 const lease = ({ progress_id, lease_token }) => ({ progress_id, lease_token });
 
 test("progress leases separate two agents on one account without changing document history", (t) => {
   const f = fixture(t),
     before = A.save(f.doc),
     heads = A.getHeads(f.doc);
-  const one = report(f, {
-    targets: [{ block_id: f.blockId, match_text: "selected passage" }],
-    expected_heads: heads,
-  });
+  const one = report(
+    f,
+    { targets: [{ block_id: f.blockId, match_text: "selected passage" }], revision: "r1" },
+    identity(),
+    heads,
+  );
   const two = report(f);
   assert.notEqual(one.progress_id, two.progress_id);
   assert.notEqual(one.lease_token, two.lease_token);
@@ -103,7 +111,7 @@ test("lease ownership, scope and payload validation reject without replacing acc
     { lease_token: one.lease_token },
     { clear: true },
     { clear: "yes" },
-    { expected_heads: A.getHeads(f.doc) },
+    { revision: "r1" },
     { ...lease(one), clear: true, targets: [] },
     { targets: "bad" },
   ])
@@ -168,7 +176,7 @@ test("bounded progress count and aggregate UTF-8 budget reject before changing e
     const before = JSON.stringify(f.activity.snapshot()),
       broadcasts = f.broadcasts.length;
     try {
-      report(f, { targets, expected_heads: A.getHeads(f.doc) }, person);
+      report(f, { targets, revision: "r1" }, person, A.getHeads(f.doc));
     } catch (error) {
       assert.equal(error.status, 413);
       assert.equal(JSON.stringify(f.activity.snapshot()), before);

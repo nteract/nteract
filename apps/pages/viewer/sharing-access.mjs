@@ -113,7 +113,7 @@ export function createSharingAccess(
           body: JSON.stringify({
             ...action,
             expected_revision: snapshot.value.access.revision,
-            idempotency_key: crypto.randomUUID(),
+            nonce: crypto.randomUUID(),
           }),
         },
         { busy: key },

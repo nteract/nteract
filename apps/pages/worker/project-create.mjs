@@ -11,7 +11,7 @@
  *
  * - The caller's Catalog resolves the target (the Project and its owner),
  *   decides `create_items` against the Project's ACL, and keeps a forwarding
- *   record under the caller's own idempotency key. The record names a
+ *   record under the caller's own nonce. The record names a
  *   `forward_id` and the target, so a retry resumes the same creation in the
  *   owner's Catalog instead of starting a second one. Its states are below.
  * - The owner's Catalog receives the forward on PROJECT_CREATE_PATH. For a new

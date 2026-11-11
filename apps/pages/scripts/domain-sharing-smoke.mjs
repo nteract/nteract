@@ -26,11 +26,8 @@ const complete = (name) => {
   console.log(`[Domain E2E] ${name}`);
 };
 const retry = (read) => {
-  assert.equal(typeof read.retry_token, "string");
-  assert.equal(read.retry_key_prefix, undefined);
   return {
-    retry_token: read.retry_token,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   };
 };
 const content = (page) => page.locator("wg-content");
@@ -58,7 +55,7 @@ async function access(action) {
   const result = await api(owner, `/api/access?page=${pageId}`, {
     ...action,
     expected_revision: current.body.access.revision,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   return result;
 }
@@ -91,7 +88,7 @@ async function denyMcpWrite(token) {
     "edit_page",
     {
       page_id: pageId,
-      base_heads: read.heads,
+      revision: read.revision,
       ...retry(read),
       operations: [
         {
@@ -212,7 +209,7 @@ try {
     action: "set_domain_view",
     domain: "anaconda.com",
     expected_revision: outsiderAccess.access.revision,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(outsiderDenied.status, 403);
   assert.match(outsiderDenied.body.error, /verified anaconda\.com email/);
@@ -389,7 +386,7 @@ try {
     const catalog = (await tool(page, "list_pages")).body;
     const deleted = await tool(page, "delete_page", {
       page_id: id,
-      base_heads: read.heads,
+      revision: read.revision,
       ...retry(catalog),
     });
     if (deleted.status !== 200) return false;

@@ -21,11 +21,21 @@ test("search uses the same Untitled fallback shown in the list and handles a cle
   assert.deepEqual(matchingPages(pages, "   "), pages);
 });
 
-test("listing follows next_cursor, drops duplicates, and keeps the first retry authority", async () => {
+test("listing follows next_cursor, drops duplicates, and keeps the first response's fields", async () => {
   const calls = [];
   const responses = [
-    { pages: [{ page_id: "a" }, { page_id: "b" }], next_cursor: "c1_one", retry_token: "first" },
-    { pages: [{ page_id: "b" }, { page_id: "c" }], next_cursor: null, retry_token: "second" },
+    {
+      pages: [{ page_id: "a" }, { page_id: "b" }],
+      next_cursor: "c1_one",
+      principal: "alice",
+      total: 3,
+    },
+    {
+      pages: [{ page_id: "b" }, { page_id: "c" }],
+      next_cursor: null,
+      principal: "alice",
+      total: 4,
+    },
   ];
   const result = await listAllPages(async (operation, args) => {
     calls.push([operation, args]);
@@ -39,7 +49,8 @@ test("listing follows next_cursor, drops duplicates, and keeps the first retry a
     result.pages.map((page) => page.page_id),
     ["a", "b", "c"],
   );
-  assert.equal(result.retry_token, "first");
+  assert.equal(result.principal, "alice");
+  assert.equal(result.total, 3);
 });
 
 test("listing stops at the request bound even if the server keeps returning cursors", async () => {

@@ -66,7 +66,7 @@ const keys = new Set([
   "lease_token",
   "message",
   "targets",
-  "expected_heads",
+  "revision",
   "clear",
 ]);
 
@@ -266,7 +266,7 @@ export class PageActivity {
     return this.snapshotOf();
   }
 
-  report(doc, identity, args) {
+  report(doc, identity, args, revisionHeads) {
     if (
       !args ||
       typeof args !== "object" ||
@@ -286,10 +286,7 @@ export class PageActivity {
         !/^[\da-f-]{36}$/.test(args.lease_token))
     )
       throw new HttpError(400, "progress_id and lease_token are required together");
-    if (
-      args.clear &&
-      (!renewing || ["message", "targets", "expected_heads"].some((key) => key in args))
-    )
+    if (args.clear && (!renewing || ["message", "targets", "revision"].some((key) => key in args)))
       throw new HttpError(400, "Clear requires only progress_id and lease_token");
     if (
       args.message !== undefined &&
@@ -302,8 +299,8 @@ export class PageActivity {
       throw new HttpError(400, "message must be plain text between 1 and 240 characters");
     if (!renewing && args.message === undefined)
       throw new HttpError(400, "message is required to start progress");
-    if (args.expected_heads !== undefined && args.targets === undefined)
-      throw new HttpError(400, "expected_heads requires targets");
+    if (args.revision !== undefined && args.targets === undefined)
+      throw new HttpError(400, "revision requires targets");
     const access = this.access(identity);
     if (!access.canWrite) throw new HttpError(403, "Page is read-only");
     if (!Number.isFinite(identity.expiresAt) || identity.expiresAt <= this.now())
@@ -348,7 +345,7 @@ export class PageActivity {
     const targets =
       args.targets === undefined
         ? (previous?.targets ?? [])
-        : createProgressTargets(doc, args.targets, args.expected_heads);
+        : createProgressTargets(doc, args.targets, revisionHeads);
     const record = {
       progress_id: previous?.progress_id ?? crypto.randomUUID(),
       lease: previous?.lease ?? crypto.randomUUID(),
@@ -401,7 +398,6 @@ export class PageActivity {
     this.prune();
     const result = {
       page_id: this.pageId,
-      heads: A.getHeads(doc),
       observed_at: iso(this.now()),
       participants: Object.entries(this.profiles())
         .slice(0, ACTIVITY_LIMITS.peers)

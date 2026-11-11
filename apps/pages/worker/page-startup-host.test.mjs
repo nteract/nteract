@@ -296,7 +296,7 @@ test("an invitation the caller can't claim answers from the record; a claimable 
       email: "invitee@example.com",
       role: "viewer",
       expected_revision: 1,
-      idempotency_key: "startup-invite",
+      nonce: "startup-invite",
     },
     Date.now(),
   );
@@ -894,7 +894,7 @@ test("an abandoned object can't put back a member the new object revoked", async
       principal: h.f.member,
       role: null,
       expected_revision: 1,
-      idempotency_key: "abandoned-revoke",
+      nonce: "abandoned-revoke",
     }),
   );
   assert.equal(revoke.status, 200, JSON.stringify(await revoke.clone().json()));

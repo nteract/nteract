@@ -1857,25 +1857,26 @@ runs in this order:
    document is not listed as a Page, and that `get_project` still names the
    `document_id` the content was written to. Import exits 1 if not.
 
-Every write uses the repository's retry contract. Creates use the catalog
-`retry_token` from `list_pages` with a key that is a nonce hashed from
-`(bundle_id, source_page_id)`. Edits use the `read_page`
-token the same way. The state file (`<bundle>.state.json` by default, or
-`--state`, mode 0600) records the source-to-target ID map, finished steps,
-the catalog token, and the exact arguments of the request in flight before it
-is sent. A failed or interrupted import resumes when you rerun the same command:
-an uncertain request is resent with the identical token, key and payload, which
-replays its receipt rather than creating a second Page. A finished import sends
-no writes on rerun. The importer resumes only a version 2 state file; it refuses
-a version 1 file, whose keys were built from a `retry_key_prefix`, before any
-write. Start a new transfer or reconcile that target by hand. Keep the state
+Every write uses the repository's retry contract: a nonce the importer makes
+itself. A create's nonce is hashed from `(bundle_id, source_page_id)`. A body
+edit's is hashed from the bundle, the Page, the batch and the revision it was
+read at, and the edit names that revision. The state file (`<bundle>.state.json`
+by default, or `--state`, mode 0600) records the source-to-target ID map,
+finished steps, and the exact arguments of the request in flight before it is
+sent. A failed or interrupted import resumes when you rerun the same command: an
+uncertain request is resent with the identical nonce and payload, which replays
+its receipt rather than creating a second Page. A finished import sends no writes
+on rerun. The importer resumes only a version 3 state file; it refuses an earlier
+file, whose requests carry retry tokens or heads, before any write. Start a new
+transfer or reconcile that target by hand. Keep the state
 file until the import reports success. If it
 is lost, a fresh import refuses a target that already has a Project with the
 bundle's title; delete the partial Project or pass `--allow-existing-title`.
-Retry tokens last seven days. A create still uncertain after that answers
-`retry_expired`: it may have been applied, and nothing can replay it. The
-importer records it as `reconciliation_required` in the state file (operation,
-step, idempotency key, arguments, and `requested_at`, when the create was first
+The target keeps a receipt for at most seven days; a busy catalog can evict it
+sooner. A create still uncertain when its first send is older than seven days, less an hour for clock skew
+(`RECEIPT_WINDOW_MS`), may have been applied with no receipt left to replay it.
+The importer does not send it. It records it as `reconciliation_required` in the
+state file (operation, step, nonce, arguments, and `requested_at`, when the create was first
 sent) and refuses every further write until it is resolved. A same-title Page
 may be unrelated, so nothing is adopted automatically:
 
@@ -1888,9 +1889,10 @@ may be unrelated, so nothing is adopted automatically:
   title, already maps to a bundle document, or was created before
   `requested_at`, allowing two minutes of clock skew (`ADOPT_CLOCK_SKEW_MS`).
   An adopted Project must return a `document_id`.
-- `--accept-missing` sends the create again with a new key. Use it when the
-  target has no such Page.
+- `--accept-missing` sends the create again with the same nonce. Use it when
+  the target has no such Page. If the target still holds the create's
+  receipt, that answers with the Page it made.
 
-An expired body edit needs none of these: the run rereads the Page and writes
-its whole body again, which gives the same result whether or not the edit
+A body edit refused with `resync_required` needs none of these: the run rereads
+the Page and writes its whole body again, which gives the same result whether or not the edit
 applied.

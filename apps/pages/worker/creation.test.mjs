@@ -5,6 +5,7 @@ import { createAuthFixture } from "../auth-fixtures.mjs";
 import { initializePage } from "../model/page.mjs";
 import { Page } from "./index.mjs";
 import { plainStub } from "./plain-stub.mjs";
+import { headsFor } from "./revisions.mjs";
 
 class Storage {
   values = new Map();
@@ -14,6 +15,10 @@ class Storage {
     return structuredClone(this.values.get(key));
   }
   async put(key, value) {
+    if (typeof key === "object") {
+      for (const [name, entry] of Object.entries(key)) await this.put(name, entry);
+      return;
+    }
     if (this.fault === "metadata" && key === "host/document") throw Error("metadata failed");
     this.values.set(key, structuredClone(value));
   }
@@ -90,11 +95,11 @@ for (const fault of ["metadata", "flush", "final-sync"]) {
     storage.fault = undefined;
     const retry = await page.run(request());
     assert.equal(retry.status, 200);
-    // The recorded receipt is unchanged; edit authority rides beside it.
-    const { retry_token, retry_until, ...replayed } = await retry.json();
-    assert.deepEqual(replayed, receipt);
-    assert.equal(typeof retry_token, "string");
-    assert.ok(Number.isFinite(Date.parse(retry_until)));
+    // The reply is the recorded receipt, its heads named by the revision
+    // minted with the creation intent.
+    const { heads: _heads, ...expected } = receipt;
+    assert.deepEqual(await retry.json(), expected);
+    assert.deepEqual(await headsFor(storage, "page", receipt.revision), receipt.heads);
     assert.ok(A.hasHeads(doc, receipt.heads));
     assert.equal(doc.concurrentNote, "Keep this edit");
     assert.equal(doc.title, "Changed title");

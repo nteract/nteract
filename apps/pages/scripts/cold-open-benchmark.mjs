@@ -157,8 +157,7 @@ async function call(page, operation, args = {}) {
   return body;
 }
 const retry = (value) => ({
-  retry_token: value.retry_token,
-  idempotency_key: crypto.randomUUID(),
+  nonce: crypto.randomUUID(),
 });
 const sentence = (i) =>
   `Paragraph ${i + 1}. Shared documents keep their history so people and agents can pick up where the last edit left off; this one adds a little more prose for the sync to carry.`;
@@ -192,7 +191,7 @@ for (let next = 20; next < PARAGRAPHS - 1; next += 10) {
   ).join("\n\n");
   await call(ownerPage, "edit_page", {
     page_id: pageId,
-    base_heads: read.heads,
+    revision: read.revision,
     ...retry(read),
     operations: [{ op: "insert_markdown", markdown }],
   });
@@ -201,7 +200,7 @@ for (let next = 20; next < PARAGRAPHS - 1; next += 10) {
   const read = await call(ownerPage, "read_page", { page_id: pageId });
   await call(ownerPage, "edit_page", {
     page_id: pageId,
-    base_heads: read.heads,
+    revision: read.revision,
     ...retry(read),
     operations: [{ op: "insert_markdown", markdown: SENTINEL }],
   });
@@ -244,7 +243,7 @@ for (const [n, base64] of pictures.entries()) {
   const blocks = read.blocks;
   await call(ownerPage, "edit_page", {
     page_id: pageId,
-    base_heads: read.heads,
+    revision: read.revision,
     ...retry(read),
     operations: [
       {

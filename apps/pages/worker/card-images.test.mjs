@@ -298,8 +298,7 @@ test("a trashed Page takes no upload, and a purge deletes its card images", asyn
   await assets.put(`pages/${pageId}/card/${"e".repeat(64)}-light.webp`, bytes("webp"));
   const trashed = await w.call("owner", "delete_page", {
     page_id: pageId,
-    base_heads: w.heads(pageId),
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
   w.page(pageId).cardImageGuard = new CardImageGuard(0);
@@ -312,7 +311,7 @@ test("a trashed Page takes no upload, and a purge deletes its card images", asyn
     page_id: pageId,
     action: "confirm",
     preview_token: preview.body.preview_token,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(purged.status, 200, JSON.stringify(purged.body));
   while (w.jobs.length) await Promise.allSettled(w.jobs.splice(0));
@@ -595,8 +594,7 @@ test("a purge that lands between the host's check and the write deletes what the
     // The image is about to land: the owner trashes and purges the Page.
     const again = await w.call("owner", "delete_page", {
       page_id: pageId,
-      base_heads: w.heads(pageId),
-      idempotency_key: w.key(),
+      nonce: w.key(),
     });
     assert.equal(again.status, 200, JSON.stringify(again.body));
     const confirm = await w.call("owner", "purge_page", { page_id: pageId, action: "preview" });
@@ -604,7 +602,7 @@ test("a purge that lands between the host's check and the write deletes what the
       page_id: pageId,
       action: "confirm",
       preview_token: confirm.body.preview_token,
-      idempotency_key: w.key(),
+      nonce: w.key(),
     });
     while (w.jobs.length) await Promise.allSettled(w.jobs.splice(0));
   };

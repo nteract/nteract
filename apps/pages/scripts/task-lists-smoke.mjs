@@ -32,33 +32,18 @@ const checkpoint = (name) => {
   console.log("PASS " + name);
 };
 const markdown = (page) => page.blocks.map((block) => block.markdown).join("\n\n");
-// Keep the exact token, key and payload for a fixture retry, including its driver.
-// No retry authority is silently regenerated after an uncertain mutation.
+// Keep the exact nonce and payload for a fixture retry, including its driver.
+// No nonce is silently regenerated after an uncertain mutation.
 const requestsByPage = new WeakMap();
 async function call(page, operation, args = {}) {
-  if (args.idempotency_key && !args.retry_token) {
+  if (args.nonce) {
     let requests = requestsByPage.get(page);
     if (!requests) requestsByPage.set(page, (requests = new Map()));
-    const requestKey = JSON.stringify([operation, args.idempotency_key]);
+    const requestKey = JSON.stringify([operation, args.nonce]);
     const fingerprint = JSON.stringify(args);
     let request = requests.get(requestKey);
     if (!request) {
-      const catalog = ["create_page", "delete_page", "purge_page"].includes(operation);
-      const authority = await rawCall(
-        page,
-        catalog ? "list_pages" : "read_page",
-        catalog ? {} : { page_id: args.page_id },
-      );
-      assert.equal(typeof authority.retry_token, "string");
-      assert.equal(authority.retry_key_prefix, undefined);
-      request = {
-        fingerprint,
-        args: structuredClone({
-          ...args,
-          retry_token: authority.retry_token,
-          idempotency_key: args.idempotency_key,
-        }),
-      };
+      request = { fingerprint, args: structuredClone(args) };
       requests.set(requestKey, request);
     }
     assert.equal(request.fingerprint, fingerprint, "fixture retry preserves its original payload");
@@ -139,7 +124,7 @@ async function create(source, title) {
   const result = await call(a, "create_page", {
     title,
     markdown: source,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   report.fixtures.push(result.page_id);
   for (const page of [a, b]) {
@@ -443,7 +428,10 @@ try {
   const before = await call(a, "read_page", { page_id: imported.page_id });
   await content(reader).click();
   await reader.keyboard.type("Must not change a task");
-  assert.deepEqual((await call(a, "read_page", { page_id: imported.page_id })).heads, before.heads);
+  assert.deepEqual(
+    (await call(a, "read_page", { page_id: imported.page_id })).revision,
+    before.revision,
+  );
   await reader.screenshot({ path: output + "/task-lists-read-only.png", fullPage: true });
   await readerContext.close();
   checkpoint(stage);
@@ -469,14 +457,14 @@ try {
     const value = await call(a, "read_page", { page_id });
     await call(a, "delete_page", {
       page_id,
-      base_heads: value.heads,
-      idempotency_key: crypto.randomUUID(),
+      revision: value.revision,
+      nonce: crypto.randomUUID(),
     });
     await purgeTrashedFixture(
       (operation, args) => call(a, operation, args),
       page_id,
       () => ({
-        idempotency_key: crypto.randomUUID(),
+        nonce: crypto.randomUUID(),
       }),
     );
   }

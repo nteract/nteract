@@ -304,8 +304,7 @@ try {
   const created = await tool(writer.page, "create_page", {
     title: "Typing batch fixture",
     markdown: BASE,
-    retry_token: authority.retry_token,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   const pageId = created.page_id;
   for (const { page } of [writer, reader]) {

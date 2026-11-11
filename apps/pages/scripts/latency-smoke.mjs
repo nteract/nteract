@@ -40,33 +40,18 @@ const cleanText = (editor) =>
     ).forEach((n) => n.remove());
     return c.textContent;
   });
-// Resolve authority once per exact mutation request, and preserve it if a caller
-// retries after an uncertain response. Reads and receipt timings stay separate.
+// Keep each exact mutation request, so a caller that retries after an
+// uncertain response resends it. Reads and receipt timings stay separate.
 const requestsByPage = new WeakMap();
 async function call(page, operation, args = {}) {
-  if (args.idempotency_key && !args.retry_token) {
+  if (args.nonce) {
     let requests = requestsByPage.get(page);
     if (!requests) requestsByPage.set(page, (requests = new Map()));
-    const key = JSON.stringify([operation, args.idempotency_key]);
+    const key = JSON.stringify([operation, args.nonce]);
     const fingerprint = JSON.stringify(args);
     let request = requests.get(key);
     if (!request) {
-      const catalog = ["create_page", "delete_page"].includes(operation);
-      const authority = await rawCall(
-        page,
-        catalog ? "list_pages" : "read_page",
-        catalog ? {} : { page_id: args.page_id },
-      );
-      assert.equal(typeof authority.retry_token, "string");
-      assert.equal(authority.retry_key_prefix, undefined);
-      request = {
-        fingerprint,
-        args: structuredClone({
-          ...args,
-          retry_token: authority.retry_token,
-          idempotency_key: args.idempotency_key,
-        }),
-      };
+      request = { fingerprint, args: structuredClone(args) };
       requests.set(key, request);
     }
     assert.equal(request.fingerprint, fingerprint, "fixture retry must keep its original payload");
@@ -401,7 +386,7 @@ try {
   const created = await call(control, "create_page", {
     title: "Local latency fixture " + Date.now(),
     markdown: "Latency fixture.",
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   output.page_id = created.page_id;
   let [a, b] = await openPair(context, created.page_id, "Latency fixture.", "fresh");
@@ -416,9 +401,7 @@ try {
   context = await browser.newContext();
   control = await login(context);
   const authority = await call(control, "read_page", { page_id: created.page_id });
-  let heads = authority.heads;
-  assert.equal(typeof authority.retry_token, "string");
-  assert.equal(authority.retry_key_prefix, undefined);
+  let heads = authority.revision;
   const start = epoch(),
     timings = [];
   output.aging = {
@@ -432,13 +415,12 @@ try {
     const at = epoch();
     const receipt = await call(control, "edit_page", {
       page_id: created.page_id,
-      base_heads: heads,
-      retry_token: authority.retry_token,
-      idempotency_key: crypto.randomUUID(),
+      revision: heads,
+      nonce: crypto.randomUUID(),
       operations: [{ op: "set_title", title: "Latency history " + (i % 2 === 0 ? "A" : "B") }],
     });
-    assert.notDeepEqual(receipt.heads, heads, "each awaited mutation creates a distinct change");
-    heads = receipt.heads;
+    assert.notDeepEqual(receipt.revision, heads, "each awaited mutation creates a distinct change");
+    heads = receipt.revision;
     timings.push(epoch() - at);
     if (timings.length % 50 === 0)
       console.log(

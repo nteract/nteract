@@ -79,17 +79,9 @@ async function mcp(page, name, args = {}) {
 const read = () => mcp(a, "read_page", { page_id: pageId });
 const presence = () => mcp(a, "read_page_presence", { page_id: pageId });
 async function mutate(name, args) {
-  const authority = await mcp(
-    a,
-    ["create_page", "delete_page"].includes(name) ? "list_pages" : "read_page",
-    ["create_page", "delete_page"].includes(name) ? {} : { page_id: pageId },
-  );
-  assert.equal(typeof authority.retry_token, "string");
-  assert.equal(authority.retry_key_prefix, undefined);
   return mcp(a, name, {
     ...args,
-    retry_token: authority.retry_token,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
 }
 async function update(lease, fields) {
@@ -256,7 +248,7 @@ try {
     page_id: pageId,
     message: "Checking the shared passage",
     targets: [{ block_id: baseline.blocks[0].id, match_text: anchorText }],
-    expected_heads: baseline.heads,
+    revision: baseline.revision,
   });
   assert.equal(typeof first.lease_token, "string");
   leases.push(first);
@@ -299,10 +291,9 @@ try {
     !JSON.stringify(observed).includes(second.lease_token),
     "presence reads omit every lease secret",
   );
-  assert.deepEqual(observed.heads, baseline.heads);
   assert.deepEqual(
-    (await read()).heads,
-    baseline.heads,
+    (await read()).revision,
+    baseline.revision,
     "presence and progress do not create history",
   );
   complete(stage);
@@ -323,7 +314,7 @@ try {
     beforeReveal,
     "passage navigation preserves the user's insertion position",
   );
-  assert.deepEqual((await read()).heads, baseline.heads);
+  assert.deepEqual((await read()).revision, baseline.revision);
   complete(stage);
 
   stage = "progress anchor follows a real human edit before the passage";
@@ -352,7 +343,8 @@ try {
     .toBe(originalTarget.start_utf16 + insertion.length);
   let edited = await read();
   observed = await presence();
-  assert.deepEqual(observed.heads, edited.heads);
+  // Presence names no revision; it follows the Page as it is now.
+  assert.equal(observed.revision, undefined);
   assert.equal(
     observed.progress.find((entry) => entry.progress_id === first.progress_id).targets[0].quote,
     anchorText,
@@ -384,8 +376,8 @@ try {
     }
   }
   assert.deepEqual(
-    (await read()).heads,
-    edited.heads,
+    (await read()).revision,
+    edited.revision,
     "theme, navigation and renewal create no history",
   );
   complete(stage);
@@ -615,8 +607,8 @@ try {
   await expect.poll(async () => (await presence()).progress.length).toBe(0);
   for (const page of [a, b]) await expect(page.locator(".agent-progress-passage")).toHaveCount(0);
   assert.deepEqual(
-    (await read()).heads,
-    edited.heads,
+    (await read()).revision,
+    edited.revision,
     "clearing progress leaves document history intact",
   );
   assert.deepEqual(report.errors, [], "no unhandled browser errors");
@@ -642,15 +634,14 @@ try {
     for (const lease of leases) await update(lease, { clear: true }).catch(() => {});
     try {
       const current = await read();
-      await mutate("delete_page", { page_id: pageId, base_heads: current.heads });
+      await mutate("delete_page", { page_id: pageId, revision: current.revision });
       await purgeTrashedFixture(
         (name, args) => mcp(a, name, args),
         pageId,
         async () => {
           const authority = await mcp(a, "list_pages");
           return {
-            retry_token: authority.retry_token,
-            idempotency_key: crypto.randomUUID(),
+            nonce: crypto.randomUUID(),
           };
         },
       );
