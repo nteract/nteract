@@ -1435,9 +1435,23 @@ test("a browser change that leaves a block out of shape is refused, non-fatally,
   };
   const doc = treeHex(f.args.document_id);
   const writer = rawSocket(host, identity, { senderId: "b-writer" });
+  // The reader is a sync peer: it applies each host frame and answers it.
   const reader = rawSocket(host, identity, { senderId: "b-reader" });
-  reader.client.send({ t: "sync", doc, m: helloWith([]), r: 1 });
-  await until(() => reader.frames.some((frame) => frame.t === "sync"));
+  let readerDoc = A.init();
+  let readerState = A.initSyncState();
+  let readerRound = 0;
+  const answer = () => {
+    let message;
+    [readerState, message] = A.generateSyncMessage(readerDoc, readerState);
+    if (message) reader.client.send({ t: "sync", doc, m: message, r: ++readerRound });
+  };
+  reader.client.onMessage((frame) => {
+    if (frame.t !== "sync" || !frame.m) return;
+    [readerDoc, readerState] = A.receiveSyncMessage(readerDoc, readerState, frame.m);
+    answer();
+  });
+  answer();
+  await until(() => A.hasHeads(readerDoc, A.getHeads(host.handle.doc())));
   const before = A.getHeads(host.handle.doc());
   const durable = await host.plain.durableHeads(f.args.document_id);
   const peer = (n) => A.clone(host.handle.doc(), { actor: n.toString(16).padStart(32, "0") });
@@ -1458,7 +1472,6 @@ test("a browser change that leaves a block out of shape is refused, non-fatally,
   assert.equal(read.status, 200, await read.clone().text());
 
   // The same socket's next change in shape is admitted and reaches the reader.
-  const readerFrames = reader.frames.length;
   const blockId = Object.keys(host.handle.doc().blocks)[0];
   const good = A.change(peer(0xb2), (d) =>
     A.splice(d, ["blocks", blockId, "richText"], 0, 0, "Hi "),
@@ -1467,6 +1480,8 @@ test("a browser change that leaves a block out of shape is refused, non-fatally,
   await until(() => writer.frames.some((frame) => frame.t === "sync" && frame.r === 2));
   assert.equal(host.handle.doc().blocks[newBlock], undefined);
   assert.ok(A.hasHeads(host.handle.doc(), A.getHeads(good)));
-  await until(() => reader.frames.length > readerFrames);
+  await until(() => A.hasHeads(readerDoc, A.getHeads(good)));
+  assert.equal(readerDoc.blocks[newBlock], undefined);
+  assert.ok(readerDoc.blocks[blockId].richText.startsWith("Hi "));
   assert.ok(!reader.frames.some((frame) => frame.t === "refused"));
 });

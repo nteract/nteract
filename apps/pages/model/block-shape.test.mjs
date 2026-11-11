@@ -35,15 +35,14 @@ function page(count, { legacy = false } = {}) {
  * the admitted document and a clone with the peer's changes loaded. */
 function judge(before, edit, editor = actor(2)) {
   const peer = A.change(A.clone(before, { actor: editor }), { time: 0 }, edit);
-  const after = A.loadIncremental(A.clone(before), A.saveSince(peer, A.getHeads(before)));
-  return blockChangeRefusal(before, after);
+  return admit(before, peer);
 }
 
 /** Admission of `peer`'s changes into `live`, which may hold changes
  * concurrent with them. */
 function admit(live, peer) {
   const after = A.loadIncremental(A.clone(live), A.saveSince(peer, A.getHeads(live)));
-  return blockChangeRefusal(live, after);
+  return blockChangeRefusal(live, after, A.getChangesSince(after, A.getHeads(live)));
 }
 
 test("typing, creating, moving and deleting blocks in shape are admitted", () => {
@@ -229,6 +228,113 @@ test("a change that arrives after its block was deleted is admitted, and a concu
   assert.equal(admit(live, bad)?.code, INVALID_BLOCK);
 });
 
+test("a position with a character outside the base-62 digits is refused", () => {
+  const base = page(1);
+  for (const key of ["a!", "a0!", "a1!V", "!0", "a1 "]) {
+    const created = judge(base, (d) => {
+      d.blocks[id(5)] = { position: new A.RawString(key), richText: "" };
+    });
+    assert.equal(created?.code, INVALID_BLOCK, key);
+    const moved = judge(base, (d) => (d.blocks[id(0)].position = new A.RawString(key)));
+    assert.equal(moved?.code, INVALID_BLOCK, key);
+  }
+});
+
+/** Two peers that each put a block map at `blockId` without seeing the other.
+ * The higher actor wins the conflict. */
+function rivals(base, blockId, winner, loser) {
+  return {
+    winner: A.change(A.clone(base, { actor: actor(0xff) }), { time: 0 }, (d) => {
+      d.blocks[blockId] = winner;
+    }),
+    loser: A.change(A.clone(base, { actor: actor(0x02) }), { time: 0 }, (d) => {
+      d.blocks[blockId] = loser;
+    }),
+  };
+}
+
+const merged = (base, ...docs) =>
+  docs.reduce(
+    (live, doc) => A.loadIncremental(live, A.saveSince(doc, A.getHeads(base))),
+    A.clone(base),
+  );
+
+test("a value that loses a conflict is judged at its own frame, in either arrival order", () => {
+  const base = page(1);
+  const good = () => ({ position: new A.RawString("a5"), richText: "good" });
+  for (const bad of [
+    { position: new A.RawString("a5") },
+    { position: "a5", richText: "" },
+    { position: new A.RawString("a5"), richText: "", note: 1 },
+  ]) {
+    const { winner, loser } = rivals(base, id(5), good(), bad);
+    // The winner arrives first; the hidden loser is refused at its frame.
+    const withWinner = merged(base, winner);
+    assert.equal(admit(base, winner), null);
+    assert.equal(admit(withWinner, loser)?.code, INVALID_BLOCK);
+    // The loser arrives first, visible, and is refused; the winner is not.
+    assert.equal(admit(base, loser)?.code, INVALID_BLOCK);
+  }
+  // One level down: a losing position or richText put on an existing block.
+  for (const edit of [
+    (d) => (d.blocks[id(0)].position = "a5"),
+    (d) => (d.blocks[id(0)].richText = new A.RawString("raw")),
+  ]) {
+    const winner = A.change(A.clone(base, { actor: actor(0xff) }), { time: 0 }, (d) => {
+      d.blocks[id(0)].position = new A.RawString("a7");
+      d.blocks[id(0)].richText = "won";
+    });
+    const loser = A.change(A.clone(base, { actor: actor(0x02) }), { time: 0 }, edit);
+    assert.equal(admit(merged(base, winner), loser)?.code, INVALID_BLOCK);
+    assert.equal(admit(base, loser)?.code, INVALID_BLOCK);
+  }
+});
+
+test("two valid concurrent replacements are admitted, and a delete that saw one of them is too", () => {
+  const base = page(1);
+  const { winner, loser } = rivals(
+    base,
+    id(5),
+    { position: new A.RawString("a5"), richText: "winner" },
+    { position: new A.RawString("a6"), richText: "loser" },
+  );
+  for (const [first, second] of [
+    [winner, loser],
+    [loser, winner],
+  ]) {
+    assert.equal(admit(base, first), null);
+    const live = merged(base, first, second);
+    assert.equal(admit(merged(base, first), second), null);
+    // A client that saw only the winner deletes the block. The loser shows.
+    const deletes = A.change(A.clone(winner, { actor: actor(0x03) }), { time: 0 }, (d) => {
+      delete d.blocks[id(5)];
+    });
+    assert.equal(admit(live, deletes), null);
+    const after = merged(base, first, second, deletes);
+    assert.equal(after.blocks[id(5)].richText, "loser");
+  }
+});
+
+test("an edit to a block hidden behind a concurrent value is judged", () => {
+  const base = page(1);
+  const { winner, loser } = rivals(
+    base,
+    id(5),
+    { position: new A.RawString("a5"), richText: "winner" },
+    { position: new A.RawString("a6"), richText: "loser" },
+  );
+  const live = merged(base, winner, loser);
+  assert.equal(live.blocks[id(5)].richText, "winner");
+  // The loser's author, still without the winner, breaks and then edits its
+  // block. Neither is visible on the host; both are judged.
+  const broken = A.change(A.clone(loser), { time: 0 }, (d) => delete d.blocks[id(5)].richText);
+  assert.equal(admit(live, broken)?.code, INVALID_BLOCK);
+  const typed = A.change(A.clone(loser), { time: 0 }, (d) =>
+    A.splice(d, ["blocks", id(5), "richText"], 0, 0, "more "),
+  );
+  assert.equal(admit(live, typed), null);
+});
+
 /** Median microseconds of blockChangeRefusal per keystroke frame on a Page of
  * `count` blocks, over `frames` frames typed into its first block. */
 function keystrokeCost(count, frames = 200) {
@@ -239,8 +345,10 @@ function keystrokeCost(count, frames = 200) {
       A.splice(d, ["blocks", id(0), "richText"], 3, 0, "x"),
     );
     const after = A.loadIncremental(A.clone(live), A.saveSince(peer, A.getHeads(live)));
+    // The host has the fresh changes before admission runs.
+    const fresh = A.getChangesSince(after, A.getHeads(live));
     const started = performance.now();
-    assert.equal(blockChangeRefusal(live, after), null);
+    assert.equal(blockChangeRefusal(live, after, fresh), null);
     times.push(performance.now() - started);
     A.free(peer);
     A.free(live);
@@ -251,10 +359,11 @@ function keystrokeCost(count, frames = 200) {
   return times[times.length >> 1] * 1000;
 }
 
-test("the check's cost per keystroke follows the change, not the number of blocks", () => {
+test("the check's cost per keystroke follows the change, not the number of blocks", (t) => {
   keystrokeCost(3, 50);
   const small = keystrokeCost(3);
   const large = keystrokeCost(300);
+  t.diagnostic(`median per keystroke: 3 blocks ${small.toFixed(1)} µs, 300 ${large.toFixed(1)} µs`);
   // Walking every block would cost about 100 times as much on 300 blocks.
   assert.ok(
     large < small * 4 + 20,

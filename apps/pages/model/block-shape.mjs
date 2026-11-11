@@ -4,27 +4,23 @@ import { generateKeyBetween } from "fractional-indexing";
 // The shape of a stored Page block: exactly `{ position, richText }`, with its
 // id as its key in `doc.blocks`. `position` is a raw-string fractional index
 // and `richText` is an Automerge text object. Registration checks every block
-// of a draft (worker/registration.mjs); plain sync admission checks the blocks
-// a peer's changes touch (blockChangeRefusal). The spans inside `richText`
-// are checked elsewhere.
+// of a draft (worker/registration.mjs) and validates the spans inside each
+// `richText` (`validateRich`). Plain sync admission checks the shape of the
+// blocks a peer's changes touch (blockChangeRefusal), not the spans.
 
 export const BLOCK_KEYS = Object.freeze(["position", "richText"]);
 export const MAX_POSITION_LENGTH = 512;
 /** The refusal code for a change that leaves a block out of shape. */
 export const INVALID_BLOCK = "invalid_block";
 
-/** An Automerge map, not a list, text, or scalar. */
-const isMap = (value) =>
-  typeof value === "object" &&
-  value !== null &&
-  !Array.isArray(value) &&
-  !A.isRawString(value) &&
-  !!A.getObjectId(value);
+// fractional-indexing's default base-62 digits, after a head letter. Its
+// generator checks the head, the integer length and a trailing zero, not
+// every character, so a key with another character would sort out of order.
+const ORDER_KEY = /^[A-Za-z][0-9A-Za-z]*$/;
 
-function validPosition(position) {
-  if (!A.isRawString(position)) return false;
-  const key = String(position);
-  if (key.length > MAX_POSITION_LENGTH) return false;
+/** A fractional index key of at most 512 characters that the generator orders. */
+function validPositionKey(key) {
+  if (key.length > MAX_POSITION_LENGTH || !ORDER_KEY.test(key)) return false;
   try {
     generateKeyBetween(key, null);
     return true;
@@ -33,10 +29,12 @@ function validPosition(position) {
   }
 }
 
-/** A raw-string fractional `position` of at most 512 characters and a text
- * `richText`. Says nothing about other keys. */
+/** A raw-string fractional `position` and a text `richText`, on a
+ * materialized block. Says nothing about other keys. */
 export const validBlockFields = (block) =>
-  validPosition(block.position) && typeof block.richText === "string";
+  A.isRawString(block.position) &&
+  validPositionKey(String(block.position)) &&
+  typeof block.richText === "string";
 
 const refusal = (message, block) => ({
   code: INVALID_BLOCK,
@@ -44,52 +42,99 @@ const refusal = (message, block) => ({
   ...(block !== undefined && { block }),
 });
 
+const POSITION_MESSAGE = `A block's position must be a raw-string fractional index of at most ${MAX_POSITION_LENGTH} characters`;
+
+/** The keys of object `obj` in `backend`, or none when it has no such object. */
+function keysOf(backend, obj) {
+  try {
+    return backend.keys(obj);
+  } catch {
+    return [];
+  }
+}
+
 /**
- * The block shape after a peer's changes, judged on the blocks those changes
- * touched. `before` is the admitted document and `after` is it with the
- * changes applied. Returns null, or `{ code, message, block? }`.
- *
- * The touched blocks come from `A.diff` between the two documents' heads, so
- * the cost follows the size of the change, not the number of blocks. A change
- * whose effect is hidden by a concurrent one (an edit in a block another peer
- * deleted, a move that loses to a concurrent move) leaves no patch and needs
- * no check.
- *
- * Every touched block that still exists must be a map with a valid `position`
- * and a text `richText`. The changes may not add a key other than those two;
- * a key the same block already held before them is tolerated, so blocks that
- * carry the earlier format's extra keys stay editable. A block replaced by a
- * new map tolerates none. Deleting a block is allowed.
+ * The block ids that `fresh` writes: a key of a blocks map, or anything
+ * inside a block. An op names its object; the object's path comes from
+ * `objInfo` at the document's heads, or at its own change's heads when the
+ * object is hidden behind a concurrent value. Paths are looked up once per
+ * object, so the cost follows the change, not the number of blocks.
  */
-export function blockChangeRefusal(before, after) {
+function touchedBlocks(backend, fresh) {
   const touched = new Set();
-  let blocksTouched = false;
-  for (const { path } of A.diff(after, A.getHeads(before), A.getHeads(after))) {
-    if (path[0] !== "blocks") continue;
-    if (path.length === 1) blocksTouched = true;
-    else touched.add(String(path[1]));
+  const paths = new Map();
+  let blocks = false;
+  for (const bytes of fresh) {
+    const { hash, ops } = A.decodeChange(bytes);
+    for (const { obj, key } of ops) {
+      if (obj === "_root") {
+        if (key === "blocks") blocks = true;
+        continue;
+      }
+      let path = paths.get(obj);
+      if (path === undefined) {
+        path = backend.objInfo(obj).path ?? backend.objInfo(obj, [hash]).path ?? null;
+        paths.set(obj, path);
+      }
+      if (path?.[0] !== "blocks") continue;
+      blocks = true;
+      if (path.length === 1) {
+        if (typeof key === "string") touched.add(key);
+      } else touched.add(String(path[1]));
+    }
   }
-  if (!blocksTouched && !touched.size) return null;
-  if (!isMap(after.blocks)) return refusal("A Page's blocks must be a map");
-  const earlier = isMap(before.blocks) ? before.blocks : undefined;
-  for (const id of touched) {
-    const block = after.blocks[id];
-    if (block === undefined) continue;
-    if (!isMap(block)) return refusal("A block must be a map", id);
-    const previous = earlier?.[id];
-    const kept =
-      isMap(previous) && A.getObjectId(previous) === A.getObjectId(block)
-        ? new Set(Object.keys(previous))
-        : new Set();
-    for (const key of Object.keys(block))
-      if (!BLOCK_KEYS.includes(key) && !kept.has(key))
-        return refusal(`A block holds only position and richText, not ${key}`, id);
-    if (!validPosition(block.position))
-      return refusal(
-        `A block's position must be a raw-string fractional index of at most ${MAX_POSITION_LENGTH} characters`,
-        id,
-      );
-    if (typeof block.richText !== "string") return refusal("A block's richText must be text", id);
-  }
+  return { blocks, touched };
+}
+
+/** The refusal for block object `obj` stored at `id`, or null. `kept` are the
+ * keys the same object held before the changes. */
+function blockObjectRefusal(backend, obj, id, kept) {
+  for (const key of backend.keys(obj))
+    if (!BLOCK_KEYS.includes(key) && !kept.includes(key))
+      return refusal(`A block holds only position and richText, not ${key}`, id);
+  const positions = backend.getAll(obj, "position");
+  if (
+    !positions.length ||
+    positions.some(([type, value]) => type !== "str" || !validPositionKey(value))
+  )
+    return refusal(POSITION_MESSAGE, id);
+  const texts = backend.getAll(obj, "richText");
+  if (!texts.length || texts.some(([type]) => type !== "text"))
+    return refusal("A block's richText must be text", id);
+  return null;
+}
+
+/**
+ * The block shape after a peer's `fresh` changes, judged on the blocks they
+ * write. `before` is the admitted document and `after` is it with the changes
+ * applied. Returns null, or `{ code, message, block? }`.
+ *
+ * Every value is judged, not only the one a reader sees: a value that loses a
+ * concurrent conflict now can become visible later, when a peer that saw only
+ * the winner deletes it, and that peer's change must not be the one refused.
+ * So `blocks` must hold only maps, and every value stored at a touched block
+ * id must be a map whose every `position` is a raw-string fractional index and
+ * whose every `richText` is text.
+ *
+ * The changes may not add a key other than those two. A key the same block
+ * object already held is tolerated: Pages stored before format 2 still hold
+ * blocks with five more keys, and they stay editable. A block replaced by a
+ * new map tolerates none. Deleting and moving blocks are allowed.
+ */
+export function blockChangeRefusal(before, after, fresh) {
+  const backend = A.getBackend(after);
+  const { blocks, touched } = touchedBlocks(backend, fresh);
+  if (!blocks) return null;
+  const maps = backend.getAll("_root", "blocks");
+  if (!maps.length || maps.some(([type]) => type !== "map"))
+    return refusal("A Page's blocks must be a map");
+  const earlier = A.getBackend(before);
+  for (const id of touched)
+    for (const [, blocksObj] of maps)
+      for (const [type, obj] of backend.getAll(blocksObj, id)) {
+        if (type !== "map") return refusal("A block must be a map", id);
+        const refused = blockObjectRefusal(backend, obj, id, keysOf(earlier, obj));
+        if (refused) return refused;
+      }
   return null;
 }

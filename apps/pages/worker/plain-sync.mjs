@@ -150,8 +150,8 @@ function refusalFrom(error, code = admissionCode(error)) {
  * socket stays open and the principal is not blocked. Host writes produce
  * valid blocks and skip this check.
  */
-function guardBlocks(live, preview) {
-  const refused = blockChangeRefusal(live, preview);
+function guardBlocks(live, preview, fresh) {
+  const refused = blockChangeRefusal(live, preview, fresh);
   if (refused) throw new Refusal(refused.code, refused.message);
 }
 
@@ -204,7 +204,7 @@ export class PlainSync {
         canWrite: (conn, doc) => this.#canWrite(conn, doc),
         admit: async (conn, doc, live, fresh, preview, actorPrincipal) => {
           this.#gate(conn, doc, live, fresh);
-          if (doc.kind === "page") guardBlocks(live, preview);
+          if (doc.kind === "page") guardBlocks(live, preview, fresh);
           return guardComments(conn, doc, live, fresh, preview, actorPrincipal);
         },
         admitTrusted: (doc, live, fresh, preview, context, conn, origin) => {
