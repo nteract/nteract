@@ -47,11 +47,25 @@ test("edit_page rejects fields from another operation", () => {
     /insert_markdown does not take match_text/,
   );
   refuses(doc, [{ op: "set_title", title: null }], /set_title requires a title string/);
+  // Each is a valid insert apart from the top-level type.
   refuses(
     doc,
-    [{ op: "insert_image", type: "heading", asset_id: "a".repeat(32), alt: "" }],
+    [{ op: "insert_image", type: "heading", asset_id: "a".repeat(64), alt: "" }],
     /insert_image requires/,
   );
+  refuses(
+    doc,
+    [
+      {
+        op: "insert_node",
+        type: "heading",
+        node: { type: "dataframe", attrs: { asset_id: "a".repeat(64) } },
+      },
+    ],
+    /insert_node requires/,
+  );
+  refuses(doc, [null], /Each operation is an object with an op/);
+  refuses(doc, [[]], /Each operation is an object with an op/);
   refuses(
     doc,
     [{ type: "insert_markdown", markdown: "New" }],
