@@ -126,7 +126,6 @@ test("a pending Page survives reload and retries the exact original registration
   const requests = [];
   const previous = globalThis.fetch;
   globalThis.fetch = async (url, options) => {
-    if (url === "/api/tools") return Response.json({ retry_token: "fixture-retry-token" });
     if (url === "/api/pages/register") {
       requests.push(JSON.parse(options.body));
       if (requests.length === 1)
@@ -165,14 +164,20 @@ test("a pending Page survives reload and retries the exact original registration
   clearTimeout(restored.retryTimer);
   assert.equal(requests.length, 2);
   assert.deepEqual(requests[0], requests[1]);
-  assert.equal(requests[0].retry_token, "fixture-retry-token");
+  assert.match(requests[0].nonce, UUID);
+  assert.equal(requests[0].retry_token, undefined);
   assert.equal(restored.localPage.registered, true);
   assert.equal(restored.localPage.pending, true);
   assert.notEqual(restored.status, "Saved", "registration is not a receipt for later edits");
   assert.equal(A.load(decodeSnapshot(requests[0].initial_snapshot_base64)).title, "Original title");
 });
 
-async function expiredRegistrationFixture(t, idempotencyKey = crypto.randomUUID()) {
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** A draft whose registration the host can no longer answer. `saved`
+ * replaces the nonce a current build stores with the fields an older one
+ * saved. */
+async function expiredRegistrationFixture(t, saved = { nonce: crypto.randomUUID() }) {
   browser(t);
   t.mock.method(PageSession.prototype, "retryConnection", async () => {});
   const auth = authentication();
@@ -181,20 +186,17 @@ async function expiredRegistrationFixture(t, idempotencyKey = crypto.randomUUID(
     { authentication: auth, refreshSession: async () => auth },
   );
   t.after(() => session.close());
-  await session.persistLocal({
-    registration: {
-      ...session.localPage.registration,
-      retry_token: "expired-registration-token",
-      idempotency_key: idempotencyKey,
-    },
-  });
+  const { nonce: _nonce, ...registration } = session.localPage.registration;
+  await session.persistLocal({ registration: { ...registration, ...saved } });
   await session.change((doc) => A.updateText(doc, ["title"], "Kept offline edits"));
   clearTimeout(session.savedTimer);
   await session.persistLocal({ pending: true });
   return { auth, session, original: structuredClone(session.localPage.registration) };
 }
+/** The Catalog's answer once the registration's receipt is gone and the Page
+ * is recorded: the nonce can't be answered again. */
 const expiredRegistration = () =>
-  Response.json({ error: "Retry window expired", code: "retry_expired" }, { status: 410 });
+  Response.json({ error: "Page already has another creation request" }, { status: 409 });
 const connectionFor = (session, auth) => ({
   page_id: session.pageId,
   documentId: session.localPage.document_id,
@@ -230,7 +232,7 @@ test("an expired lost registration response reconciles the same authorized docum
   assert.equal(A.load(decodeSnapshot(stored.snapshot)).title, "Kept offline edits");
 });
 
-test("an expired never-registered draft renews only retry authority after an authenticated absence", async (t) => {
+test("an expired never-registered draft renews only its nonce after an authenticated absence", async (t) => {
   const { auth, session, original } = await expiredRegistrationFixture(t);
   const heads = A.getHeads(session.doc);
   const registrations = [];
@@ -240,14 +242,10 @@ test("an expired never-registered draft renews only retry authority after an aut
       const input = JSON.parse(options.body);
       registrations.push(input);
       if (registrations.length === 1) return expiredRegistration();
+      assert.equal(probes, 1, "the absence is checked before registering again");
       const persisted = await readLocalPage(auth.identity, session.pageId);
       assert.deepEqual(persisted.registration, input, "persist replacement before publishing");
       return Response.json({ page_id: input.page_id, document_id: input.document_id });
-    }
-    if (url === "/api/tools") {
-      assert.equal(probes, 1);
-      assert.deepEqual(JSON.parse(options.body), { operation: "list_pages", arguments: {} });
-      return Response.json({ retry_token: "replacement-token" });
     }
     assert.equal(url, `/api/connect?page=${session.pageId}&sync=automerge`);
     probes++;
@@ -260,18 +258,10 @@ test("an expired never-registered draft renews only retry authority after an aut
   assert.equal(registrations.length, 2);
   assert.deepEqual(registrations[0], original);
   const replacement = registrations[1];
-  assert.equal(replacement.retry_token, "replacement-token");
-  assert.match(
-    replacement.idempotency_key,
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
-  );
-  assert.notEqual(replacement.idempotency_key, original.idempotency_key);
+  assert.match(replacement.nonce, UUID);
+  assert.notEqual(replacement.nonce, original.nonce);
   assert.deepEqual(
-    {
-      ...replacement,
-      retry_token: original.retry_token,
-      idempotency_key: original.idempotency_key,
-    },
+    { ...replacement, nonce: original.nonce },
     original,
     "page ID, document ID, principal and original bootstrap remain identical",
   );
@@ -298,54 +288,43 @@ test("an expired registration whose Page was deleted marks the draft deleted", a
   assert.equal(session.deleted, true);
 });
 
-/** A draft saved by a viewer that built its key from a retry_key_prefix. */
-const OLD_FORM_KEY = `v1_${"a".repeat(64)}_${"5".repeat(36)}`;
-const oldFormRefusal = () =>
-  Response.json(
-    { error: "idempotency_key must not start with v1_", code: "invalid_idempotency_key" },
-    { status: 400 },
-  );
+/** A draft saved by a build that registered with a retry_token and an
+ * idempotency_key. It has no nonce. */
+const OLD_FORM = {
+  retry_token: "old-registration-token",
+  idempotency_key: `v1_${"a".repeat(64)}_${"5".repeat(36)}`,
+};
 
-test("an old-form draft the host never recorded registers once under a fresh key", async (t) => {
-  const { auth, session, original } = await expiredRegistrationFixture(t, OLD_FORM_KEY);
+test("an old-form draft the host never recorded registers once under a fresh nonce", async (t) => {
+  const { auth, session, original } = await expiredRegistrationFixture(t, OLD_FORM);
   const registrations = [];
   t.mock.method(globalThis, "fetch", async (url, options) => {
-    if (url === "/api/pages/register") {
-      const input = JSON.parse(options.body);
-      registrations.push(input);
-      if (registrations.length === 1) return oldFormRefusal();
-      return Response.json({ page_id: input.page_id, document_id: input.document_id });
-    }
-    if (url === "/api/tools") return Response.json({ retry_token: "replacement-token" });
-    assert.equal(url, `/api/connect?page=${session.pageId}&sync=automerge`);
-    return Response.json(
-      { error: "Page access denied", code: "page_access_denied" },
-      { status: 403 },
-    );
+    assert.equal(url, "/api/pages/register");
+    const input = JSON.parse(options.body);
+    registrations.push(input);
+    return Response.json({ page_id: input.page_id, document_id: input.document_id });
   });
   await session.registerDraft();
-  assert.equal(registrations.length, 2);
-  assert.equal(registrations[0].idempotency_key, OLD_FORM_KEY);
-  const fresh = registrations[1];
-  assert.equal(fresh.retry_token, "replacement-token");
-  assert.match(
-    fresh.idempotency_key,
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
-  );
+  assert.equal(registrations.length, 1);
+  const [fresh] = registrations;
+  assert.match(fresh.nonce, UUID);
+  const { retry_token: _token, idempotency_key: _key, ...kept } = original;
+  assert.deepEqual({ ...fresh, nonce: undefined }, { ...kept, nonce: undefined });
   assert.deepEqual(
-    { ...fresh, retry_token: original.retry_token, idempotency_key: original.idempotency_key },
-    original,
+    (await readLocalPage(auth.identity, session.pageId)).registration,
+    fresh,
+    "the nonce is stored before it is sent",
   );
   assert.equal(session.localPage.registered, true);
   assert.equal((await readLocalPage(auth.identity, session.pageId)).registered, true);
 });
 
 test("an old-form draft the host already recorded reconciles without registering again", async (t) => {
-  const { auth, session, original } = await expiredRegistrationFixture(t, OLD_FORM_KEY);
+  const { auth, session } = await expiredRegistrationFixture(t, OLD_FORM);
   const requests = [];
   t.mock.method(globalThis, "fetch", async (url) => {
     requests.push(url);
-    if (url === "/api/pages/register") return oldFormRefusal();
+    if (url === "/api/pages/register") return expiredRegistration();
     assert.equal(url, `/api/connect?page=${session.pageId}&sync=automerge`);
     return Response.json(connectionFor(session, auth));
   });
@@ -355,9 +334,10 @@ test("an old-form draft the host already recorded reconciles without registering
     `/api/connect?page=${session.pageId}&sync=automerge`,
   ]);
   assert.equal(session.localPage.registered, true);
-  assert.deepEqual(session.localPage.registration, original);
+  assert.match(session.localPage.registration.nonce, UUID);
+  assert.equal(session.localPage.registration.retry_token, undefined);
   assert.equal(session.doc.title, "Kept offline edits");
-  // Registered, it never sends the refused key again.
+  // Registered, it never sends the registration again.
   await session.registerDraft();
   assert.equal(requests.length, 2);
 });
@@ -370,7 +350,6 @@ test("a renewed registration refused as deleted marks the draft deleted", async 
       return ++registrations === 1
         ? expiredRegistration()
         : Response.json({ error: "Page was deleted" }, { status: 409 });
-    if (url === "/api/tools") return Response.json({ retry_token: "replacement-token" });
     return Response.json(
       { error: "Page access denied", code: "page_access_denied" },
       { status: 403 },
@@ -475,7 +454,7 @@ test("ambiguous or unauthorized expiry reconciliation preserves the draft and or
 });
 
 test("expiry reconciliation does not resume a closed or signed-out session", async (t) => {
-  for (const phase of ["connect", "prepare", "register"]) {
+  for (const phase of ["connect", "register"]) {
     for (const invalidation of ["close", "account"]) {
       await t.test(`${phase}: ${invalidation}`, async (t) => {
         const { auth, session } = await expiredRegistrationFixture(t);
@@ -499,13 +478,6 @@ test("expiry reconciliation does not resume a closed or signed-out session", asy
               page_id: session.pageId,
               document_id: session.localPage.document_id,
             });
-          }
-          if (url === "/api/tools") {
-            if (phase === "prepare") {
-              arrived();
-              await waiting;
-            }
-            return Response.json({ retry_token: "replacement-token" });
           }
           assert.equal(url, `/api/connect?page=${session.pageId}&sync=automerge`);
           if (phase === "connect") {
@@ -540,16 +512,13 @@ test("simultaneous expiry reconciliation adopts one persisted replacement reques
   });
   t.after(() => second.close());
   const replacements = [];
-  let preparations = 0;
   t.mock.method(globalThis, "fetch", async (url, options) => {
     if (url === "/api/pages/register") {
       const input = JSON.parse(options.body);
-      if (input.idempotency_key === original.idempotency_key) return expiredRegistration();
+      if (input.nonce === original.nonce) return expiredRegistration();
       replacements.push(input);
       return Response.json({ page_id: input.page_id, document_id: input.document_id });
     }
-    if (url === "/api/tools")
-      return Response.json({ retry_token: `replacement-token-${++preparations}` });
     assert.equal(url, `/api/connect?page=${first.pageId}&sync=automerge`);
     return Response.json(
       { error: "Page access denied", code: "page_access_denied" },
@@ -557,7 +526,6 @@ test("simultaneous expiry reconciliation adopts one persisted replacement reques
     );
   });
   await Promise.all([first.registerDraft(), second.registerDraft()]);
-  assert.ok(preparations >= 1);
   assert.ok(replacements.length >= 1);
   for (const replacement of replacements) assert.deepEqual(replacement, replacements[0]);
   assert.deepEqual(first.localPage.registration, second.localPage.registration);
@@ -998,7 +966,6 @@ test("authenticated deleted Pages and deleted registrations terminate local edit
         authenticate = resolve;
       });
       t.mock.method(globalThis, "fetch", async (url, options) => {
-        if (url === "/api/tools") return Response.json({ retry_token: "fixture-retry-token" });
         if (url === "/api/pages/register") {
           if (failure.startsWith("registration"))
             return Response.json(

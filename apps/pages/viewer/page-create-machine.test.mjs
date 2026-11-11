@@ -15,7 +15,7 @@ import {
 } from "./page-create-machine.mjs";
 
 const PRJ = "prj_one";
-const attempt = { retry_token: "token", idempotency_key: "nonce1234" };
+const attempt = { nonce: "nonce1234" };
 const receipt = { page_id: "new", project_id: PRJ };
 const placement = { project_id: PRJ };
 const at = (name, extra = {}) => ({ name, placement, attempt, ...extra });
@@ -89,7 +89,7 @@ test("every state × event lands where the table says", () => {
 });
 
 test("a failure the server won't replay spends the attempt and refreshes the list", () => {
-  for (const error of [httpError(410, "retry_expired"), httpError(409, "idempotency_conflict")])
+  for (const error of [httpError(409, "nonce_conflict")])
     for (const name of ["writing", "writingDetached"]) {
       const result = transition(at(name), { type: "failed", error });
       assert.equal(result.state.attempt, null, `${name} × ${error.code}`);
@@ -99,9 +99,9 @@ test("a failure the server won't replay spends the attempt and refreshes the lis
       );
       assert.equal(replayAttempt(result.state), null);
     }
-  assert.equal(attemptSpent(httpError(410, "retry_expired")), true);
+  assert.equal(attemptSpent(httpError(409, "operation_pending")), false);
   assert.equal(attemptSpent(httpError(410, "gone")), false);
-  assert.equal(attemptSpent(httpError(409, "idempotency_conflict")), true);
+  assert.equal(attemptSpent(httpError(409, "nonce_conflict")), true);
   assert.equal(attemptSpent(new TypeError("Failed to fetch")), false);
 });
 
@@ -139,7 +139,6 @@ function fake({ fail = {}, onCall } = {}) {
     await onCall?.(operation);
     const failure = typeof fail[operation] === "function" ? fail[operation]() : fail[operation];
     if (failure) throw failure instanceof Error ? failure : new Error(failure);
-    if (operation === "list_pages") return { retry_token: "token" };
     if (operation === "create_page") return { page_id: "new", project_id: args.project_id };
     throw new Error(operation);
   };
@@ -166,32 +165,23 @@ test("runPageCreation writes the placement once and opens the new Page", async (
   assert.equal(state.name, "done");
   assert.deepEqual(
     world.calls.map(([operation]) => operation),
-    ["list_pages", "create_page"],
+    ["create_page"],
   );
-  const args = world.calls[1][1];
+  const args = world.calls[0][1];
   assert.equal(args.project_id, PRJ);
-  assert.equal(args.retry_token, "token");
-  assert.match(
-    args.idempotency_key,
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
-  );
+  assert.equal(args.retry_token, undefined);
+  assert.match(args.nonce, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
   assert.deepEqual(world.opened, ["new"]);
   assert.equal(world.refreshed(), 1);
 });
 
 test("runPageCreation: a navigation before the write writes nothing", async () => {
-  let live = true;
-  const world = fake({
-    onCall: (operation) => {
-      if (operation === "list_pages") live = false;
-    },
-  });
-  const state = await runPageCreation({ placement, current: () => live, ...world });
+  // Live when the run starts, gone once the attempt is prepared.
+  let checks = 0;
+  const world = fake();
+  const state = await runPageCreation({ placement, current: () => ++checks < 2, ...world });
   assert.equal(state.name, "cancelled");
-  assert.deepEqual(
-    world.calls.map(([operation]) => operation),
-    ["list_pages"],
-  );
+  assert.deepEqual(world.calls, []);
   assert.deepEqual(world.opened, []);
 });
 
@@ -215,7 +205,7 @@ test("runPageCreation: a failed write keeps its attempt, and the retry replays i
   const failed = await runPageCreation({ placement, current: () => true, ...failing });
   assert.equal(failed.name, "failed");
   assert.equal(failed.cause.message, "offline");
-  assert.ok(failed.attempt.idempotency_key);
+  assert.ok(failed.attempt.nonce);
   const world = fake();
   const state = await runPageCreation({
     placement,
@@ -228,15 +218,7 @@ test("runPageCreation: a failed write keeps its attempt, and the retry replays i
     world.calls.map(([operation]) => operation),
     ["create_page"],
   );
-  assert.equal(world.calls[0][1].idempotency_key, failed.attempt.idempotency_key);
-  // A failed listing leaves no attempt to replay.
-  const unlisted = await runPageCreation({
-    placement,
-    current: () => true,
-    ...fake({ fail: { list_pages: "down" } }),
-  });
-  assert.equal(unlisted.name, "failed");
-  assert.equal(unlisted.attempt, null);
+  assert.equal(world.calls[0][1].nonce, failed.attempt.nonce);
   // A failed open keeps the attempt: the replay answers with the same Page.
   const unopened = await runPageCreation({
     placement: { parent_id: "p" },
@@ -283,8 +265,8 @@ test("runPageCreation: a write that fails after a cancel detached it is replayed
   });
   assert.equal(state.name, "done");
   assert.deepEqual(
-    retry.calls.map(([operation, args]) => [operation, args.idempotency_key]),
-    [["create_page", sent.idempotency_key]],
+    retry.calls.map(([operation, args]) => [operation, args.nonce]),
+    [["create_page", sent.nonce]],
     "the retry sends the lost request again, without a new listing",
   );
 });
@@ -294,21 +276,18 @@ test("runPageCreation: a write that fails after a cancel detached it is replayed
 function server() {
   const sent = [];
   const landed = new Map();
-  let listed = 0;
   let lose = 0;
   let refuse = null;
   const call = async (operation, args) => {
     await Promise.resolve();
-    if (operation === "list_pages") return { retry_token: `token-${++listed}` };
-    sent.push([placementKey(args), args.idempotency_key]);
+    sent.push([placementKey(args), args.nonce]);
     if (refuse) throw refuse;
-    if (!landed.has(args.idempotency_key))
-      landed.set(args.idempotency_key, `page-${landed.size + 1}`);
+    if (!landed.has(args.nonce)) landed.set(args.nonce, `page-${landed.size + 1}`);
     if (lose > 0) {
       lose--;
       throw new TypeError("Failed to fetch");
     }
-    return { page_id: landed.get(args.idempotency_key) };
+    return { page_id: landed.get(args.nonce) };
   };
   return {
     sent,
@@ -351,12 +330,12 @@ test("pageCreations: A, then B, then a retry of A replays A's key", async () => 
   const lost = await creations.create({ principal: "alice", placement: A, ...world.deps });
   assert.equal(lost.name, "failed");
   const [[, aKey]] = world.sent;
-  assert.equal(creations.attempt("alice", A).idempotency_key, aKey);
+  assert.equal(creations.attempt("alice", A).nonce, aKey);
   assert.equal(
     (await creations.create({ principal: "alice", placement: B, ...world.deps })).name,
     "done",
   );
-  assert.equal(creations.attempt("alice", A).idempotency_key, aKey, "B leaves A's attempt");
+  assert.equal(creations.attempt("alice", A).nonce, aKey, "B leaves A's attempt");
   assert.equal(creations.attempt("alice", B), null, "a done run keeps nothing");
   const retried = await creations.create({ principal: "alice", placement: A, ...world.deps });
   assert.equal(retried.name, "done");
@@ -403,7 +382,7 @@ test("pageCreations: an account change clears attempts", async () => {
   assert.equal(creations.attempt("alice", A), null);
 });
 
-test("pageCreations: a 410 drops the attempt and refreshes; the next try starts fresh", async () => {
+test("pageCreations: a nonce_conflict drops the attempt and refreshes; the next try starts fresh", async () => {
   const world = server();
   let refreshed = 0;
   const deps = { ...world.deps, refresh: async () => refreshed++ };
@@ -411,11 +390,11 @@ test("pageCreations: a 410 drops the attempt and refreshes; the next try starts 
   world.lose();
   await creations.create({ principal: "alice", placement: A, ...deps });
   const [[, lostKey]] = world.sent;
-  world.refuse(httpError(410, "retry_expired"));
+  world.refuse(httpError(409, "nonce_conflict"));
   const expired = await creations.create({ principal: "alice", placement: A, ...deps });
   await settle();
   assert.equal(expired.name, "failed");
-  assert.equal(expired.cause.code, "retry_expired");
+  assert.equal(expired.cause.code, "nonce_conflict");
   assert.deepEqual(world.sent.at(-1), ["parent:a", lostKey], "it replayed once");
   assert.equal(creations.attempt("alice", A), null, "and dropped the attempt");
   assert.equal(refreshed, 1, "the list refreshes to show a Page that landed");

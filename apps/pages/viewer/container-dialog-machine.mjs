@@ -10,10 +10,10 @@
 // the dialog stays until it answers. `done` is final; the component runs the
 // `finish` effect (navigate, refresh) and unmounts.
 //
-// A failed write keeps its `attempt` ({ retry_token, idempotency_key }) so
+// A failed write keeps its `attempt` ({ nonce }) so
 // Submit again with the same form replays the same request: a create or move
 // whose answer was lost lands once. Any edit drops the attempt, since a new
-// payload needs a new key.
+// payload needs a new nonce.
 //
 // The Move dialog also loads the possible parents of the chosen destination.
 // `parents` is `{ status: "loading" | "ready" | "failed", target, rows }`.

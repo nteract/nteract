@@ -21,34 +21,32 @@ function caller(answers) {
   return { call, calls };
 }
 
-test("createProject calls create_project with its own key and list_projects' token", async () => {
+test("createProject calls create_project with a new nonce and no listing first", async () => {
   const { call, calls } = caller({
-    list_projects: { retry_token: "token-1" },
     create_project: { project_id: "prj_new" },
   });
   const receipt = await createProject(call, { title: "  Conference  ", description: " " });
   assert.deepEqual(receipt, { project_id: "prj_new" });
   const [, args] = calls.at(-1);
-  assert.equal(calls.at(-1)[0], "create_project");
+  assert.deepEqual(
+    calls.map(([operation]) => operation),
+    ["create_project"],
+  );
   assert.equal(args.title, "Conference");
   assert.equal(args.description, undefined, "a blank description is omitted");
-  assert.equal(args.retry_token, "token-1");
-  assert.match(
-    args.idempotency_key,
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
-  );
+  assert.equal(args.retry_token, undefined);
+  assert.match(args.nonce, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
 });
 
-test("a failed write carries its attempt, and a retry replays it without a new token", async () => {
+test("a failed write carries its attempt, and a retry replays it under the same nonce", async () => {
   const failing = caller({
-    list_projects: { retry_token: "token-1" },
     create_project: new Error("offline"),
   });
   const error = await createProject(failing.call, { title: "A", description: "B" }).catch(
     (cause) => cause,
   );
   assert.equal(error.message, "offline");
-  assert.equal(error.attempt.retry_token, "token-1");
+  assert.deepEqual(error.attempt, { nonce: failing.calls[0][1].nonce });
   const retry = caller({ create_project: { project_id: "prj_new" } });
   await createProject(retry.call, { title: "A", description: "B" }, error.attempt);
   assert.deepEqual(retry.calls, [
@@ -71,16 +69,16 @@ test("moveArguments names a parent, a Project's top level, or Your items", () =>
   });
 });
 
-test("movePage sends move_page with list_pages' retry token", async () => {
+test("movePage sends move_page with a new nonce and no listing first", async () => {
   const { call, calls } = caller({
-    list_pages: { retry_token: "token-2" },
     move_page: (args) => ({ page_id: args.page_id, project_id: null }),
   });
   const receipt = await movePage(call, "p", { target: null, parent_id: null });
   assert.deepEqual(receipt, { page_id: "p", project_id: null });
-  assert.deepEqual(calls[0], ["list_pages", { limit: 1 }]);
-  assert.equal(calls[1][1].retry_token, "token-2");
-  assert.equal(calls[1][1].project_id, null);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], "move_page");
+  assert.match(calls[0][1].nonce, /^[0-9a-f-]{36}$/);
+  assert.equal(calls[0][1].project_id, null);
 });
 
 test("destinations list Your items first, then each Project", () => {

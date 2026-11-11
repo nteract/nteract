@@ -171,7 +171,7 @@ export function ProjectSharing({
       request: {
         ...change,
         expected_revision: state.value.revision,
-        idempotency_key: crypto.randomUUID(),
+        nonce: crypto.randomUUID(),
       },
     });
   };

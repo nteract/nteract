@@ -132,17 +132,17 @@ test("owner shares Project by email with revision fencing; members never fetch t
     );
     assert.equal(calls[1][0], "manage_project_access");
     assert.deepEqual(
-      { ...calls[1][1], idempotency_key: undefined },
+      { ...calls[1][1], nonce: undefined },
       {
         project_id: project.project_id,
         action: "set_role",
         principal: "account:member",
         role: null,
         expected_revision: 4,
-        idempotency_key: undefined,
+        nonce: undefined,
       },
     );
-    assert.ok(calls[1][1].idempotency_key);
+    assert.ok(calls[1][1].nonce);
     await act(async () =>
       document.querySelector('button[aria-label="Remove pending@example.com"]').click(),
     );

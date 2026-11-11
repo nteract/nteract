@@ -12,7 +12,7 @@ import {
   transition,
 } from "./container-dialog-machine.mjs";
 
-const attempt = { retry_token: "token", idempotency_key: "nonce1234" };
+const attempt = { nonce: "nonce1234" };
 const PRJ = "prj_one";
 const OTHER = "prj_two";
 

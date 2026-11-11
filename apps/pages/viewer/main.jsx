@@ -67,7 +67,7 @@ import { pageCreations } from "./page-create-machine.mjs";
 import { ProjectsIndex } from "./IndexViews.jsx";
 import { Library } from "./Library.jsx";
 import { listProjectPages, pageLocation, watchPageLocation } from "./projects.mjs";
-import { closeTrashedSessions, moveToTrashError, restorePage } from "./trash.mjs";
+import { closeTrashedSessions, restorePage } from "./trash.mjs";
 import { listAllPages } from "./page-list.mjs";
 import { listingCache } from "./listing-cache.mjs";
 import { PageRefs } from "./page-refs.mjs";
@@ -1293,17 +1293,14 @@ function App() {
     )
       return;
     try {
-      const prepared = await tool("list_pages");
       if (deleting.identity.principal !== authentication.current?.identity?.principal)
         throw Error("Sign in with this Page's original account to move it to Trash.");
+      // No revision guard: this tab's document is live, and a person's
+      // Trash is reversible.
       const trashed = await tool("delete_page", {
         page_id: deleting.pageId,
         expected_principal: deleting.identity.principal,
-        retry_token: prepared.retry_token,
-        base_heads: editor.module.pageHeads(deleting.doc),
-        idempotency_key: crypto.randomUUID(),
-      }).catch((error) => {
-        throw moveToTrashError(error);
+        nonce: crypto.randomUUID(),
       });
       if (trashed?.superseded)
         throw Error("This Page changed before it could move to Trash. Try again.");

@@ -193,11 +193,11 @@ export async function writeLocalPage(
           next = {
             ...page,
             registered: previous.registered || page.registered,
-            // Independent tabs may prepare different tokens concurrently. The
+            // Independent tabs may choose different nonces concurrently. The
             // first stored registration wins; every tab sends that exact body.
-            ...(previous.registration?.retry_token &&
+            ...(previous.registration?.nonce &&
               (previous.registered ||
-                page.registrationSupersedes !== previous.registration.idempotency_key) && {
+                page.registrationSupersedes !== previous.registration.nonce) && {
                 registration: previous.registration,
               }),
             recovery_sequence: previous.recovery_sequence ?? 0,

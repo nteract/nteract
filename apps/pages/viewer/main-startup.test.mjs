@@ -110,7 +110,6 @@ const bundle = await build({
             "export const WordgardEditor = pick('WordgardEditor', () => null);\n" +
             "export const orderedBlockIds = pick('orderedBlockIds', () => []);\n" +
             "export const isEmptyPage = pick('isEmptyPage', () => false);\n" +
-            "export const pageHeads = pick('pageHeads', () => []);\n" +
             "export const titleSnapshot = pick('titleSnapshot', () => null);\n" +
             "export const composingTitle = pick('composingTitle', () => false);",
           loader: "js",
@@ -432,7 +431,7 @@ const gatedCatalog = (
     if (args.limit && gate.promise) await gate.promise;
     if (args.limit && gate.refuse)
       return Response.json({ error: "Sign in required", code: "unauthenticated" }, { status: 401 });
-    return { pages, next_cursor: null, principal: who.current, retry_token: "catalog-token" };
+    return { pages, next_cursor: null, principal: who.current };
   },
 });
 const rows = () =>
@@ -1483,7 +1482,6 @@ test("clicking Trash on a local draft preserves it when the host refuses deletio
   history.replaceState(null, "", "/pages");
   const app = await boot(signedIn, {
     ...catalog,
-    list_pages: { ...catalog.list_pages, retry_token: "fixture-token" },
     read_page: () => Response.json({ code: "page_not_found" }, { status: 404 }),
     delete_page: () =>
       Response.json({ error: "Forbidden", code: "permission_denied" }, { status: 403 }),
