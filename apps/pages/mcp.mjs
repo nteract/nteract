@@ -939,6 +939,32 @@ export const tools = [
     WRITE,
   ),
   tool(
+    "delete_project",
+    "Permanently delete an empty Project you own, with its content, comments and sharing; this cannot be undone. Move its Pages out or purge them first (project_not_empty). Call action:preview first and show the person what it returns. Call action:confirm with the unchanged preview_token (valid ten minutes) only after they agree.",
+    {
+      project_id: project,
+      action: {
+        ...string,
+        enum: ["preview", "confirm"],
+        description: "preview changes nothing; confirm deletes.",
+      },
+      preview_token: {
+        ...string,
+        description: "From preview; required for confirm.",
+      },
+      retry_token: {
+        ...guard.retry_token,
+        description: "From list_projects or list_pages.",
+      },
+      idempotency_key: {
+        ...guard.idempotency_key,
+        description: "Required for confirm.",
+      },
+    },
+    ["project_id", "action"],
+    DESTRUCTIVE,
+  ),
+  tool(
     "delete_page",
     "Move a Page you own to Trash; restore_page brings it back. Collaborators lose access while it's there. No read first; base_heads is an optional guard. Trash sub-pages first (page_has_children). Project content can't be trashed (project_content_protected). purge_page deletes permanently.",
     {

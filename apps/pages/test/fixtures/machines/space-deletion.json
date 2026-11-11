@@ -1,0 +1,627 @@
+{
+  "machine": "space-deletion",
+  "description": "One delete_project confirm, driven by the owner's Catalog across the Space, the content document and the Catalog's own entries. The state is the journal intent's persisted phase.",
+  "states": [
+    "reserved",
+    "space_closed",
+    "reopening",
+    "content_trashed",
+    "content_deleted",
+    "catalog_forgotten",
+    "deleted",
+    "released"
+  ],
+  "events": [
+    "resume",
+    "closed",
+    "trashed",
+    "reopened",
+    "purged",
+    "forgotten",
+    "removed"
+  ],
+  "unreachable": [
+    [
+      "reserved",
+      "trashed",
+      "only space_closed runs the effect that trashed answers"
+    ],
+    [
+      "reserved",
+      "reopened",
+      "only reopening runs the effect that reopened answers"
+    ],
+    [
+      "reserved",
+      "purged",
+      "only content_trashed runs the effect that purged answers"
+    ],
+    [
+      "reserved",
+      "forgotten",
+      "only content_deleted runs the effect that forgotten answers"
+    ],
+    [
+      "reserved",
+      "removed",
+      "only catalog_forgotten runs the effect that removed answers"
+    ],
+    [
+      "space_closed",
+      "closed",
+      "only reserved runs the effect that closed answers"
+    ],
+    [
+      "space_closed",
+      "reopened",
+      "only reopening runs the effect that reopened answers"
+    ],
+    [
+      "space_closed",
+      "purged",
+      "only content_trashed runs the effect that purged answers"
+    ],
+    [
+      "space_closed",
+      "forgotten",
+      "only content_deleted runs the effect that forgotten answers"
+    ],
+    [
+      "space_closed",
+      "removed",
+      "only catalog_forgotten runs the effect that removed answers"
+    ],
+    [
+      "reopening",
+      "closed",
+      "only reserved runs the effect that closed answers"
+    ],
+    [
+      "reopening",
+      "trashed",
+      "only space_closed runs the effect that trashed answers"
+    ],
+    [
+      "reopening",
+      "purged",
+      "only content_trashed runs the effect that purged answers"
+    ],
+    [
+      "reopening",
+      "forgotten",
+      "only content_deleted runs the effect that forgotten answers"
+    ],
+    [
+      "reopening",
+      "removed",
+      "only catalog_forgotten runs the effect that removed answers"
+    ],
+    [
+      "content_trashed",
+      "closed",
+      "only reserved runs the effect that closed answers"
+    ],
+    [
+      "content_trashed",
+      "trashed",
+      "only space_closed runs the effect that trashed answers"
+    ],
+    [
+      "content_trashed",
+      "reopened",
+      "only reopening runs the effect that reopened answers"
+    ],
+    [
+      "content_trashed",
+      "forgotten",
+      "only content_deleted runs the effect that forgotten answers"
+    ],
+    [
+      "content_trashed",
+      "removed",
+      "only catalog_forgotten runs the effect that removed answers"
+    ],
+    [
+      "content_deleted",
+      "closed",
+      "only reserved runs the effect that closed answers"
+    ],
+    [
+      "content_deleted",
+      "trashed",
+      "only space_closed runs the effect that trashed answers"
+    ],
+    [
+      "content_deleted",
+      "reopened",
+      "only reopening runs the effect that reopened answers"
+    ],
+    [
+      "content_deleted",
+      "purged",
+      "only content_trashed runs the effect that purged answers"
+    ],
+    [
+      "content_deleted",
+      "removed",
+      "only catalog_forgotten runs the effect that removed answers"
+    ],
+    [
+      "catalog_forgotten",
+      "closed",
+      "only reserved runs the effect that closed answers"
+    ],
+    [
+      "catalog_forgotten",
+      "trashed",
+      "only space_closed runs the effect that trashed answers"
+    ],
+    [
+      "catalog_forgotten",
+      "reopened",
+      "only reopening runs the effect that reopened answers"
+    ],
+    [
+      "catalog_forgotten",
+      "purged",
+      "only content_trashed runs the effect that purged answers"
+    ],
+    [
+      "catalog_forgotten",
+      "forgotten",
+      "only content_deleted runs the effect that forgotten answers"
+    ],
+    [
+      "deleted",
+      "resume",
+      "a completed deletion replays its receipt before the machine runs"
+    ],
+    [
+      "deleted",
+      "closed",
+      "a completed deletion replays its receipt before the machine runs"
+    ],
+    [
+      "deleted",
+      "trashed",
+      "a completed deletion replays its receipt before the machine runs"
+    ],
+    [
+      "deleted",
+      "reopened",
+      "a completed deletion replays its receipt before the machine runs"
+    ],
+    [
+      "deleted",
+      "purged",
+      "a completed deletion replays its receipt before the machine runs"
+    ],
+    [
+      "deleted",
+      "forgotten",
+      "a completed deletion replays its receipt before the machine runs"
+    ],
+    [
+      "deleted",
+      "removed",
+      "a completed deletion replays its receipt before the machine runs"
+    ],
+    [
+      "released",
+      "resume",
+      "a released intent is deleted, so nothing resumes or answers it"
+    ],
+    [
+      "released",
+      "closed",
+      "a released intent is deleted, so nothing resumes or answers it"
+    ],
+    [
+      "released",
+      "trashed",
+      "a released intent is deleted, so nothing resumes or answers it"
+    ],
+    [
+      "released",
+      "reopened",
+      "a released intent is deleted, so nothing resumes or answers it"
+    ],
+    [
+      "released",
+      "purged",
+      "a released intent is deleted, so nothing resumes or answers it"
+    ],
+    [
+      "released",
+      "forgotten",
+      "a released intent is deleted, so nothing resumes or answers it"
+    ],
+    [
+      "released",
+      "removed",
+      "a released intent is deleted, so nothing resumes or answers it"
+    ]
+  ],
+  "cases": {
+    "reserved/closed": [
+      "closed",
+      "not-empty",
+      "refused"
+    ],
+    "space_closed/trashed": [
+      "trashed",
+      "missing",
+      "changed"
+    ]
+  },
+  "rows": [
+    {
+      "label": "a new or resumed request closes the Space",
+      "state": {
+        "name": "reserved"
+      },
+      "event": {
+        "type": "resume"
+      },
+      "expect": {
+        "state": {
+          "name": "reserved"
+        },
+        "effects": [
+          {
+            "type": "close_space"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a resumed request trashes the content",
+      "state": {
+        "name": "space_closed"
+      },
+      "event": {
+        "type": "resume"
+      },
+      "expect": {
+        "state": {
+          "name": "space_closed"
+        },
+        "effects": [
+          {
+            "type": "trash_content"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a resumed request reopens the Space",
+      "state": {
+        "name": "reopening"
+      },
+      "event": {
+        "type": "resume"
+      },
+      "expect": {
+        "state": {
+          "name": "reopening"
+        },
+        "effects": [
+          {
+            "type": "reopen_space"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a resumed request purges the content",
+      "state": {
+        "name": "content_trashed"
+      },
+      "event": {
+        "type": "resume"
+      },
+      "expect": {
+        "state": {
+          "name": "content_trashed"
+        },
+        "effects": [
+          {
+            "type": "purge_content"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a resumed request removes the Catalog entries",
+      "state": {
+        "name": "content_deleted"
+      },
+      "event": {
+        "type": "resume"
+      },
+      "expect": {
+        "state": {
+          "name": "content_deleted"
+        },
+        "effects": [
+          {
+            "type": "forget_catalog"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a resumed request removes the Space record",
+      "state": {
+        "name": "catalog_forgotten"
+      },
+      "event": {
+        "type": "resume"
+      },
+      "expect": {
+        "state": {
+          "name": "catalog_forgotten"
+        },
+        "effects": [
+          {
+            "type": "remove_space"
+          }
+        ]
+      }
+    },
+    {
+      "case": "closed",
+      "label": "a valid token closes the Space; the Catalog hides the entry before it persists the phase",
+      "state": {
+        "name": "reserved"
+      },
+      "event": {
+        "type": "closed",
+        "ok": true
+      },
+      "expect": {
+        "state": {
+          "name": "space_closed"
+        },
+        "effects": [
+          {
+            "type": "hide_project"
+          },
+          {
+            "type": "persist",
+            "state": "space_closed"
+          },
+          {
+            "type": "trash_content"
+          }
+        ]
+      }
+    },
+    {
+      "case": "not-empty",
+      "label": "a Project that holds a Page is refused and its key released",
+      "state": {
+        "name": "reserved"
+      },
+      "event": {
+        "type": "closed",
+        "ok": false,
+        "refusal": "not_empty"
+      },
+      "expect": {
+        "state": {
+          "name": "released"
+        },
+        "effects": [
+          {
+            "type": "release"
+          }
+        ],
+        "response": {
+          "status": 409,
+          "body": {
+            "error": "This Project still holds Pages. Move them out of the Project, or move them to Trash and delete them permanently, before deleting it.",
+            "code": "project_not_empty"
+          }
+        }
+      }
+    },
+    {
+      "case": "refused",
+      "label": "the Space or the content refused before anything changed; its answer passes through",
+      "state": {
+        "name": "reserved"
+      },
+      "event": {
+        "type": "closed",
+        "ok": false,
+        "refusal": "space"
+      },
+      "expect": {
+        "state": {
+          "name": "released"
+        },
+        "effects": [
+          {
+            "type": "release"
+          }
+        ],
+        "response": {
+          "reply": "refusal"
+        }
+      }
+    },
+    {
+      "case": "trashed",
+      "state": {
+        "name": "space_closed"
+      },
+      "event": {
+        "type": "trashed",
+        "outcome": "trashed"
+      },
+      "expect": {
+        "state": {
+          "name": "content_trashed"
+        },
+        "effects": [
+          {
+            "type": "persist",
+            "state": "content_trashed"
+          },
+          {
+            "type": "purge_content"
+          }
+        ]
+      }
+    },
+    {
+      "case": "missing",
+      "label": "content already deleted by an earlier attempt goes straight to the Catalog",
+      "state": {
+        "name": "space_closed"
+      },
+      "event": {
+        "type": "trashed",
+        "outcome": "missing"
+      },
+      "expect": {
+        "state": {
+          "name": "content_deleted"
+        },
+        "effects": [
+          {
+            "type": "persist",
+            "state": "content_deleted"
+          },
+          {
+            "type": "forget_catalog"
+          }
+        ]
+      }
+    },
+    {
+      "case": "changed",
+      "label": "content written after the preview reopens the Space",
+      "state": {
+        "name": "space_closed"
+      },
+      "event": {
+        "type": "trashed",
+        "outcome": "changed"
+      },
+      "expect": {
+        "state": {
+          "name": "reopening"
+        },
+        "effects": [
+          {
+            "type": "persist",
+            "state": "reopening"
+          },
+          {
+            "type": "reopen_space"
+          }
+        ]
+      }
+    },
+    {
+      "state": {
+        "name": "reopening"
+      },
+      "event": {
+        "type": "reopened"
+      },
+      "expect": {
+        "state": {
+          "name": "released"
+        },
+        "effects": [
+          {
+            "type": "show_project"
+          },
+          {
+            "type": "release"
+          }
+        ],
+        "response": {
+          "status": 409,
+          "body": {
+            "error": "The Project's content changed after its preview; preview the deletion again",
+            "code": "purge_preview_invalid"
+          }
+        }
+      }
+    },
+    {
+      "state": {
+        "name": "content_trashed"
+      },
+      "event": {
+        "type": "purged"
+      },
+      "expect": {
+        "state": {
+          "name": "content_deleted"
+        },
+        "effects": [
+          {
+            "type": "persist",
+            "state": "content_deleted"
+          },
+          {
+            "type": "forget_catalog"
+          }
+        ]
+      }
+    },
+    {
+      "state": {
+        "name": "content_deleted"
+      },
+      "event": {
+        "type": "forgotten"
+      },
+      "expect": {
+        "state": {
+          "name": "catalog_forgotten"
+        },
+        "effects": [
+          {
+            "type": "persist",
+            "state": "catalog_forgotten"
+          },
+          {
+            "type": "remove_space"
+          }
+        ]
+      }
+    },
+    {
+      "label": "the receipt is recorded only once the Space record is gone",
+      "state": {
+        "name": "catalog_forgotten"
+      },
+      "event": {
+        "type": "removed"
+      },
+      "expect": {
+        "state": {
+          "name": "deleted"
+        },
+        "effects": [
+          {
+            "type": "persist",
+            "state": "deleted"
+          },
+          {
+            "type": "sync"
+          }
+        ],
+        "response": {
+          "reply": "receipt"
+        }
+      }
+    }
+  ]
+}
