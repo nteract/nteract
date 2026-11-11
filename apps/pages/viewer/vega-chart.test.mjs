@@ -202,7 +202,30 @@ test("a misspelled field still draws, with a warning that names it", () =>
       report.warnings.some((w) => w.includes('"misspelled_field"')),
       report.warnings.join("\n"),
     );
+    assert.equal(
+      report.notice,
+      'No column matches "misspelled_field" (x). Columns: client, tool, calls, refused.',
+    );
     report.view.finalize();
+  }));
+
+test("a mounted chart shows the reader its unknown fields, and hides the note once fixed", () =>
+  withWindow(async (window) => {
+    const container = window.document.body.appendChild(window.document.createElement("div"));
+    Object.defineProperty(container, "clientWidth", { get: () => 400 });
+    const spec = structuredClone(refusalRate);
+    spec.encoding.x.field = "tooll";
+    const chart = mount(container, { spec, resolveSource: async () => usage });
+    const note = () => container.querySelector(".pages-chart-message");
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    assert.equal(container.dataset.chartStatus, "rendered");
+    assert.equal(note().hidden, false);
+    assert.ok(note().classList.contains("is-notice"));
+    assert.match(note().textContent, /"tooll" \(x\)/);
+    chart.update(refusalRate);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    assert.equal(note().hidden, true);
+    chart.destroy();
   }));
 
 test("a spec with a URL is refused before any source is read", () =>
@@ -283,6 +306,46 @@ test("sourceRows reads a Sift table in prefetched batches", () => {
   });
   assert.deepEqual(prefetched, [[0, 1, 2]]);
 });
+
+test("timestamp columns reach the chart as ISO dates, not epoch numbers", () =>
+  withWindow(async (window) => {
+    const day = Date.UTC(2026, 10, 3);
+    const table = {
+      columns: [
+        { key: "day", columnType: "timestamp" },
+        { key: "at", columnType: "timestamp" },
+        { key: "calls", columnType: "numeric" },
+      ],
+      rowCount: 2,
+      getCellRaw: (r, c) => [day + r * 86_400_000, day + 90_000, null][c] ?? r + 1,
+    };
+    const { rows } = sourceRows(table);
+    assert.deepEqual(rows[0], { day: "2026-11-03", at: "2026-11-03T00:01:30.000Z", calls: 1 });
+    assert.equal(rows[1].day, "2026-11-04");
+    for (const type of ["ordinal", "temporal"]) {
+      const container = window.document.createElement("div");
+      const report = await drawChart(container, {
+        spec: {
+          data: { name: "daily" },
+          mark: "bar",
+          encoding: { x: { field: "day", type }, y: { field: "calls", type: "quantitative" } },
+        },
+        theme,
+        width: 400,
+        resolveSource: async () => ({ table, asset_id: "a".repeat(64) }),
+      });
+      assert.equal(report.status, "rendered", type);
+      const labels = [...container.querySelectorAll(".role-axis-label text")].map(
+        (t) => t.textContent,
+      );
+      assert.ok(labels.length, type);
+      assert.ok(
+        labels.every((label) => !/^\d{10,}$/.test(label.replace(/,/g, ""))),
+        `${type}: ${labels.join(" | ")}`,
+      );
+      report.view.finalize();
+    }
+  }));
 
 test("a single view fills the width it's given; a composite sizes itself", () => {
   assert.deepEqual(sizedSpec({ mark: "bar" }, 500), {

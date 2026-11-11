@@ -743,6 +743,9 @@
   color: var(--destructive);
   font-size: 13px;
 }
+.pages-chart-message.is-notice {
+  color: var(--muted-foreground);
+}
 .wordgard-diagram-header,
 .wordgard-diagram-actions {
   -webkit-user-select: none;

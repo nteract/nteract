@@ -34,17 +34,29 @@ export function sourceRows(table) {
   if (Array.isArray(table?.rows) && Array.isArray(table.columns))
     return { columns: table.columns.map(String), rows: table.rows };
   const columns = table.columns.map((column) => column.key);
+  const cell = table.columns.map((column) =>
+    column.columnType === "timestamp" ? (value) => isoTime(value) : (value) => value,
+  );
   const rows = new Array(table.rowCount);
   for (let start = 0; start < table.rowCount; start += ROW_BATCH) {
     const end = Math.min(start + ROW_BATCH, table.rowCount);
     table.prefetchViewport?.(Array.from({ length: end - start }, (_, i) => start + i));
     for (let r = start; r < end; r++) {
       const row = {};
-      for (let c = 0; c < columns.length; c++) row[columns[c]] = table.getCellRaw(r, c);
+      for (let c = 0; c < columns.length; c++) row[columns[c]] = cell[c](table.getCellRaw(r, c));
       rows[r] = row;
     }
   }
   return { columns, rows };
+}
+
+/** A Sift timestamp (epoch milliseconds, UTC) as ISO 8601: the date alone at
+ * UTC midnight, else the full instant. Vega-Lite parses either for a
+ * temporal field, and either reads as a label on a nominal or ordinal axis. */
+export function isoTime(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return value;
+  const iso = new Date(value).toISOString();
+  return iso.endsWith("T00:00:00.000Z") ? iso.slice(0, 10) : iso;
 }
 
 /** The categorical palette, light and dark steps of the same eight hues
@@ -175,9 +187,18 @@ export function sizedSpec(spec, width) {
   };
 }
 
+/** What a reader sees under a chart with unknown fields, or null: each field
+ * with its channel, and the columns its sources do have. */
+export function fieldNotice(unknown, sources) {
+  if (!unknown.length) return null;
+  const missing = unknown.map(({ channel, field }) => `"${field}" (${channel})`).join(", ");
+  const columns = [...new Set(Object.values(sources).flatMap((s) => s.columns))];
+  return `No column matches ${missing}. Columns: ${columns.join(", ")}.`;
+}
+
 /**
  * Draw one spec into `element`. Resolves with the render report:
- * `{ status: "rendered", renderer, sources, warnings }`, or
+ * `{ status: "rendered", renderer, sources, warnings, notice }`, or
  * `{ status: "error", renderer, error, problems?, warnings }`. Never rejects;
  * an abort resolves with `status: "aborted"`.
  */
@@ -220,6 +241,9 @@ export async function drawChart(element, { spec, resolveSource, theme, signal, w
   );
   for (const { channel, field } of fields.unknown)
     report.warnings.push(`${channel}: no source column or transform supplies "${field}".`);
+  // Shown on the chart: a misspelled field otherwise draws a confident chart
+  // of empty values.
+  report.notice = fieldNotice(fields.unknown, sources);
   if (fields.unchecked)
     report.warnings.push("Some fields come from transforms this check can't follow.");
   let view;
@@ -342,11 +366,12 @@ export function mount(container, { spec, resolveSource, onReport }) {
         view?.finalize();
         view = result.view ?? null;
         frame.replaceChildren(...(result.status === "rendered" ? [target] : []));
-        message.hidden = result.status === "rendered";
-        message.textContent =
-          result.status === "rendered"
-            ? ""
-            : [result.error, ...(result.problems ?? [])].filter(Boolean).join(" ");
+        const rendered = result.status === "rendered";
+        message.hidden = rendered && !result.notice;
+        message.classList.toggle("is-notice", rendered);
+        message.textContent = rendered
+          ? (result.notice ?? "")
+          : [result.error, ...(result.problems ?? [])].filter(Boolean).join(" ");
         container.dataset.chartStatus = result.status;
         const { view: _view, ...report } = result;
         onReport?.(report);
