@@ -12,6 +12,7 @@ import {
   pagesAgentEnvrc,
   saveKeyCommand,
 } from "./agent-client-setup.mjs";
+import { OAUTH_REFRESH_REUSE_SECONDS } from "./shared/oauth-grant.mjs";
 import { PRODUCT_NAME } from "./shared/product.mjs";
 import { richContentGuide, typedReadFields } from "./model/rich-content-guide.mjs";
 
@@ -312,8 +313,8 @@ Choose by how the client runs before investigating authentication:
   can share it, and nothing has to refresh it.
 - ChatGPT and other interactive cloud clients using the ChatGPT OAuth client:
   add the endpoint and complete browser authorization. No API key is needed.
-- Kilo can also use OAuth, but only for one Kilo process at a time. See the
-  shared-token warning in the OAuth section.
+- Kilo can also use OAuth. Its processes share one stored connection; see the
+  Kilo OAuth recipe.
 - Other clients: use an ${key.name} if they support bearer headers. Pages
   accepts the ChatGPT and configured Kilo OAuth clients; arbitrary registration
   is not enabled. Ask for client support instead of trying unrelated login flows.
@@ -571,16 +572,19 @@ If the client shows a different callback or registration error, report it for
 deployment configuration rather than asking the human for an API key it can't use.
 
 How an OAuth connection lasts: access tokens expire after 10 minutes. Refresh
-tokens rotate: each one works once and is replaced on use. Newly approved
+tokens rotate: each one is replaced on use. Newly approved
 connections receive them, including clients that do not request offline_access.
 The grant expires 30 days after authorization, however often it refreshes.
 Nothing needs to run in the background: the client refreshes on its next use
 within those 30 days. After 30 days, authorize again.
 
-Do not share one OAuth token set between processes. If two processes store
-the same tokens and refresh concurrently, Pages treats the second use of the
-refresh token as replay and revokes the whole grant. Do not use OAuth for
-several concurrent agents or CLI runs; use an API key there.
+A client can keep one stored token set for several processes: Kilo Desktop
+beside the CLI, several worktrees, or several Claude Code sessions. When two of
+them refresh in the same moment, each gets its own tokens, because a refresh
+token can be used again for ${OAUTH_REFRESH_REUSE_SECONDS} seconds after its first use. Each process
+must read the stored tokens before it refreshes. A refresh token presented
+later than that is replay: Pages revokes the whole grant, and the person
+authorizes again. Do not copy a token set to another machine or another store.
 
 OAuth credentials work on /mcp and authenticated GET /whoami, not the JSON API,
 sharing API, or native sync. To add a local image, an OAuth client calls
@@ -589,12 +593,12 @@ Images below.
 After authorization, call list_pages from the actual connected chat. A
 configured plugin alone isn't proof.
 
-### Kilo Desktop / CLI (OAuth, one process at a time)
+### Kilo Desktop / CLI (OAuth)
 
-Use this for a single Kilo process. If several Kilo processes share one set of
-OAuth credentials (Kilo Desktop plus the CLI, or several worktrees running at
-once), concurrent refreshes can revoke the grant. Use the API-key recipe above
-for those setups.
+Use this when you don't want to manage a key. Kilo Desktop, the CLI and every
+worktree share one set of OAuth credentials, so one authorization serves all of
+them. The grant ends after 30 days and needs a person to renew it; the API-key
+recipe above does not.
 
 Ask the human early to complete browser authorization. Meanwhile, merge this
 non-secret configuration into GLOBAL ~/.config/kilo/kilo.jsonc (respect

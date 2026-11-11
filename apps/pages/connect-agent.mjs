@@ -16,6 +16,7 @@ import {
 import { FAVICON_LINK } from "./shared/favicon.mjs";
 import { PRODUCT_NAME, tabTitle } from "./shared/product.mjs";
 import { STYLESHEET, THEME_SCRIPT } from "./shared/shell-assets.mjs";
+import { OAUTH_REFRESH_REUSE_SECONDS } from "./shared/oauth-grant.mjs";
 
 const escapeHtml = (value) =>
   value.replace(
@@ -144,11 +145,11 @@ export function connectAgentResponse(request, env) {
     <pre class="setup-value"><code id="oauth-endpoint">${escapeHtml(setup.endpoint)}</code></pre>
     <button type="button" class="setup-copy" data-copy="oauth-endpoint" data-copy-message="Server URL copied. Add it to your client's MCP connections and choose OAuth." hidden>Copy server URL</button>
     <p>Follow the client's sign-in link, check your Pages account and permissions, then approve access. You don't need to create or transfer an API key.</p>
-    <p>Access tokens last 10 minutes. Each refresh token works once and is replaced on use. The client refreshes on its next request, so nothing has to run in the background. The connection ends 30 days after you approve it, however often it refreshes. After that, authorize again.</p>
-    <p><strong>Don't share one OAuth connection between processes.</strong> If two processes hold the same stored tokens and both refresh, Pages treats the second refresh as a replayed token and revokes the whole connection. For several agents, worktrees, or CLI runs at once, use an API key.</p>
+    <p>Access tokens last 10 minutes. Each refresh token is replaced on use. The client refreshes on its next request, so nothing has to run in the background. The connection ends 30 days after you approve it, however often it refreshes. After that, authorize again.</p>
+    <p><strong>Several processes can share one OAuth connection.</strong> Kilo Desktop, the CLI, and your worktrees use the same stored tokens, and when two of them refresh in the same moment each gets its own. Don't copy the stored tokens to another machine. A refresh token used more than ${OAUTH_REFRESH_REUSE_SECONDS} seconds after another process spent it is treated as replayed, and Pages revokes the whole connection. For unattended work, use an API key: nothing has to refresh it.</p>
     <p class="setup-note">This deployment supports the ChatGPT OAuth client. Client metadata and permissions are discovered automatically. If your client asks for manual details or reports a different callback, follow the <a href="/llms.txt">agent guide</a>. Other OAuth clients need deployment support.</p>
-    <details class="setup-details" id="kilo-oauth"><summary>Kilo with OAuth (one Kilo process at a time)</summary>
-      <p>If several Kilo processes share one set of OAuth credentials, such as Kilo Desktop and the CLI, or several worktrees running at once, concurrent refreshes can revoke the connection. Use the API-key recipe above for that. OAuth fits a single Kilo process when you don't want to manage a key.</p>
+    <details class="setup-details" id="kilo-oauth"><summary>Kilo with OAuth</summary>
+      <p>OAuth fits Kilo when you don't want to manage a key. Kilo Desktop, the CLI, and your worktrees share one connection. It ends after 30 days and you authorize again; the API-key recipe above has no such limit.</p>
       <p>Merge into <code>~/.config/kilo/kilo.jsonc</code> (or your customized XDG config directory), preserving other settings.</p>
       <pre class="setup-value"><code id="kilo-config">${escapeHtml(kiloConfig(setup.origin))}</code></pre>
       <button type="button" class="setup-copy" data-copy="kilo-config" data-copy-message="Kilo OAuth config copied. Merge it into global config, then run kilo mcp auth pages." hidden>Copy Kilo config</button>

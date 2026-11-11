@@ -1225,7 +1225,7 @@ are deleted. Each line has `action`, `timestamp`, and, where known,
 | `oauth.token_refused` | `/oauth/token` refused a request, including a 503. | `grant_type`, `reason` (OAuth error code) |
 | `oauth.grant_revoked` | A grant stopped working. | `grant`, `revoked_by` (`user` for a person in Pages, `rfc7009` for a client's revocation, `system` for replay or reuse), `reason` (`disconnected` or `sign_out_everywhere` for `user`) |
 | `oauth.code_replayed` | An authorization code was presented twice. Its grant is revoked. | `grant` |
-| `oauth.refresh_reused` | A spent refresh token was presented again. Its grant is revoked. | `grant` |
+| `oauth.refresh_reused` | A spent refresh token was presented again. Within 30 seconds of its first use, new tokens are issued and the grant stays; this is what overlapping refreshes from one client's processes look like. After that, the grant is revoked. | `grant`, `reason` (`within_window` when tokens were issued; absent when the grant was revoked) |
 | `api_key.accepted` | An Anaconda API key authenticated. One line per key per isolate per 60 s cache window, not per request. | `scope` (`editor` or `viewer`) |
 | `invitation.created`, `invitation.revoked` | A Project owner invited an email or revoked an invitation. `principal` is the owner. | `project_id`, `invite`, `role` |
 | `invitation.accepted` | A verified recipient claimed a Project invitation. `principal` is the recipient. | `project_id`, `invite`, `role` |
