@@ -170,6 +170,31 @@ test("a pasted aside from outside Pages unwraps to its blocks, in the body and t
     assert.equal(read(filtered).content[0].type, Aside.type);
 });
 
+// An aside's bare text keeps a block boundary when it unwraps: each run of
+// its text and inline children becomes a paragraph of its own.
+test("an unwrapped aside keeps its text apart from the blocks around it", (t) => {
+  const dom = new JSDOM();
+  t.after(() => dom.window.close());
+  const parser = new dom.window.DOMParser();
+  const read = (filtered) => {
+    const body = dom.window.document.createElement("body");
+    body.innerHTML = filtered;
+    return parse(schema, body).content.map((node) => [node.type, node.textContent()]);
+  };
+  const p = (text) => [Paragraph.type, text];
+  for (const [html, expected] of [
+    ["<aside>first</aside><aside>second</aside>", [p("first"), p("second")]],
+    ["<p>a</p><aside>note</aside><p>b</p>", [p("a"), p("note"), p("b")]],
+    ["<aside>lead <em>x</em><p>para</p>tail</aside>", [p("lead x"), p("para"), p("tail")]],
+    ["<aside><aside>inner</aside>outer</aside>", [p("inner"), p("outer")]],
+  ])
+    for (const [where, filtered] of [
+      ["body", pastedPageHTML(html, "page_fixture", parser)],
+      ["composer", pastedCommentHTML(html, parser)],
+    ])
+      assert.deepEqual(read(filtered), expected, `${where}: ${html}`);
+});
+
 test("comment Markdown from an agent refuses math and HTML, as a Page body's does", () => {
   const spans = markdownCommentSpans("Text and ~~gone~~");
   assert.ok(spans.some((span) => span.type === "text" && span.marks?.strike));
