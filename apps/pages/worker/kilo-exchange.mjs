@@ -2,10 +2,12 @@
  * browser to, and one server-to-server call that trades the code Kilo sends
  * back for the person it names.
  *
- * This file is the whole of that contract. Kilo allows a fixed list of Pages
- * origins and redirects only to `KILO_CALLBACK_PATH` on one of them, so it
- * never receives or trusts a path. Its code is signed, short lived and bound
- * to the origin and `state` it was minted for; it is not single use, so the
+ * This file is the whole of that contract. Kilo keeps a fixed list of Pages
+ * deployments, each under a name it calls an audience, and holds the address
+ * of each one. Pages sends its audience and Kilo redirects only to
+ * `KILO_CALLBACK_PATH` at the address it holds, so it never receives or trusts
+ * an address or a path. Its code is signed, short lived and bound to the
+ * audience and `state` it was minted for; it is not single use, so the
  * exchange sends both back. The answer is identity only: Pages is never given
  * a Kilo API token.
  *
@@ -14,7 +16,7 @@
 
 /** Where Pages sends a browser to sign in. Kilo checks its own session there. */
 export const KILO_ENTER_PATH = "/pages-auth";
-/** Where Kilo sends the browser back, on the Pages origin it was given. */
+/** Where Kilo sends the browser back, on the Pages site the audience names. */
 export const KILO_CALLBACK_PATH = "/api/auth/kilo/callback";
 /** Where Pages trades a code for the person it names. */
 export const KILO_EXCHANGE_PATH = "/api/pages-auth/exchange";
@@ -41,11 +43,12 @@ export class KiloProtocolError extends Error {
   }
 }
 
-/** The URL that starts a sign-in at Kilo. `origin` is this Pages site, which
- * Kilo checks against its list; `state` comes back unchanged on the callback. */
-export function kiloEnterUrl(appUrl, { origin, state }) {
+/** The URL that starts a sign-in at Kilo. `audience` is Kilo's name for this
+ * Pages deployment, which it checks against its list; `state` comes back
+ * unchanged on the callback. */
+export function kiloEnterUrl(appUrl, { audience, state }) {
   const url = new URL(KILO_ENTER_PATH, appUrl);
-  url.search = new URLSearchParams({ origin, state }).toString();
+  url.search = new URLSearchParams({ audience, state }).toString();
   return url.href;
 }
 
@@ -91,20 +94,20 @@ const discard = async (response) => {
 
 /** Trades a sign-in code for the person it names.
  *
- * `secret` proves the call comes from this Pages deployment. `origin` and
+ * `secret` proves the call comes from this Pages deployment. `audience` and
  * `state` must be the ones the sign-in started with: Kilo's code is good only
  * for them, which is what makes a code copied out of a browser useless.
  *
  * Returns `{ id, name }`, with `name` null when the account has none, or
  * `{ refused }` when Kilo turned the call down: `"client"` for a 401, which
- * means it didn't accept this deployment's secret or origin; `"account"` for
+ * means it didn't accept this deployment's secret or audience; `"account"` for
  * a 403, which means the account is gone or blocked; and `"code"` for any
  * other 4xx, which means the code is forged, stale, or for another sign-in.
  * A refusal is its status, whatever its body holds. Throws `KiloUnavailable`
  * or `KiloProtocolError` otherwise. */
 export async function exchangeKiloCode(
   fetcher,
-  { appUrl, secret, code, origin, state, timeoutMs = DEFAULT_TIMEOUT_MS },
+  { appUrl, secret, code, audience, state, timeoutMs = DEFAULT_TIMEOUT_MS },
 ) {
   let response;
   try {
@@ -115,7 +118,7 @@ export async function exchangeKiloCode(
         authorization: `Bearer ${secret}`,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ code, origin, state }),
+      body: JSON.stringify({ code, audience, state }),
       // Inspected, never followed: the secret stays at the configured origin.
       redirect: "manual",
       signal: AbortSignal.timeout(timeoutMs),

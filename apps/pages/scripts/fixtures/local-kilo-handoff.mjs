@@ -1,8 +1,8 @@
 // Node-only loopback fake of the two Kilo routes Pages signs in through
 // (worker/kilo-exchange.mjs): the page a browser is sent to, and the code
-// exchange. It allows a list of Pages origins, issues codes that expire and
-// are good only for the origin and state they were issued for, and checks the
-// exchange secret. Like Kilo's, a code is not single use.
+// exchange. It holds a list of Pages deployments by audience, issues codes
+// that expire and are good only for the audience and state they were issued
+// for, and checks the exchange secret. Like Kilo's, a code is not single use.
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 
@@ -10,11 +10,11 @@ const CODE_SECONDS = 60;
 const send = (res, status, value) =>
   res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(value));
 
-/** Starts the fake. `origins` are the Pages origins it redirects to and
- * `secret` is what the exchange requires. `signIn(account)` sets who the
- * browser is at Kilo, or nobody with `null`; `respond(fn)` replaces the next
- * exchange answer with `fn(req, res)`. */
-export async function startLocalKiloHandoff({ origins, secret, port = 0, now = Date.now }) {
+/** Starts the fake. `deployments` maps each audience to the Pages origin it
+ * redirects to and `secret` is what the exchange requires. `signIn(account)`
+ * sets who the browser is at Kilo, or nobody with `null`; `respond(fn)`
+ * replaces the next exchange answer with `fn(req, res)`. */
+export async function startLocalKiloHandoff({ deployments, secret, port = 0, now = Date.now }) {
   const codes = new Map();
   const exchanges = [];
   let account = null;
@@ -22,14 +22,15 @@ export async function startLocalKiloHandoff({ origins, secret, port = 0, now = D
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, "http://127.0.0.1");
     if (req.method === "GET" && url.pathname === "/pages-auth") {
-      const origin = url.searchParams.get("origin");
+      const audience = url.searchParams.get("audience");
       const state = url.searchParams.get("state");
-      if (!origins.includes(origin) || !state) return send(res, 400, { error: "bad_request" });
+      if (!audience || !Object.hasOwn(deployments, audience) || !state)
+        return send(res, 400, { error: "bad_request" });
       // The real page sends a browser without a session to sign in first.
       if (!account) return send(res, 401, { error: "signed_out" });
       const code = randomBytes(32).toString("base64url");
-      codes.set(code, { origin, state, account, expiresAt: now() + CODE_SECONDS * 1000 });
-      const callback = new URL("/api/auth/kilo/callback", origin);
+      codes.set(code, { audience, state, account, expiresAt: now() + CODE_SECONDS * 1000 });
+      const callback = new URL("/api/auth/kilo/callback", deployments[audience]);
       callback.search = new URLSearchParams({ code, state }).toString();
       return res.writeHead(302, { location: callback.href }).end();
     }
@@ -44,7 +45,7 @@ export async function startLocalKiloHandoff({ origins, secret, port = 0, now = D
       }
       exchanges.push({
         authorization: req.headers.authorization,
-        origin: body?.origin,
+        audience: body?.audience,
         state: body?.state,
       });
       if (override) {
@@ -57,7 +58,7 @@ export async function startLocalKiloHandoff({ origins, secret, port = 0, now = D
       const issued = codes.get(body?.code);
       if (
         !issued ||
-        issued.origin !== body.origin ||
+        issued.audience !== body.audience ||
         issued.state !== body.state ||
         issued.expiresAt <= now()
       )

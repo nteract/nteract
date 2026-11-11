@@ -7,6 +7,7 @@ import { startLocalKiloHandoff } from "../scripts/fixtures/local-kilo-handoff.mj
 import { handleKiloSignIn, kiloSessionProvider, kiloSignIn } from "./kilo-handoff.mjs";
 
 const origin = "http://127.0.0.1:9477";
+const audience = "pages-test";
 const secret = "kilo-exchange-fixture-secret-0123456789";
 const user = { id: "person:one", email: "person@example.test", name: "Example Person" };
 const BINDING = "__Host-pages_kilo_handoff";
@@ -42,7 +43,7 @@ class SqliteD1 {
 }
 
 async function fixture(t, extra = {}) {
-  const kilo = await startLocalKiloHandoff({ origins: [origin], secret });
+  const kilo = await startLocalKiloHandoff({ deployments: { [audience]: origin }, secret });
   kilo.signIn(user);
   const env = {
     DB: new SqliteD1(),
@@ -53,6 +54,7 @@ async function fixture(t, extra = {}) {
     NOTEBOOK_CLOUD_OIDC_CLIENT_ID: "pages",
     NOTEBOOK_CLOUD_APP_SESSION_SECRET: "kilo-session-fixture-secret-".repeat(3),
     PAGES_KILO_APP_URL: kilo.origin,
+    PAGES_KILO_AUDIENCE: audience,
     PAGES_KILO_EXCHANGE_SECRET: secret,
     ...extra,
   };
@@ -108,8 +110,8 @@ test("a sign-in that starts and ends in one browser makes a session without an e
   const started = await begin(env, { returnTo: "/p/abc?view=1#top" });
   const enter = new URL(started.enter);
   assert.equal(enter.origin + enter.pathname, `${kilo.origin}/pages-auth`);
-  assert.equal(enter.searchParams.get("origin"), origin);
-  assert.deepEqual([...enter.searchParams.keys()].sort(), ["origin", "state"]);
+  assert.equal(enter.searchParams.get("audience"), audience);
+  assert.deepEqual([...enter.searchParams.keys()].sort(), ["audience", "state"]);
   assert.match(started.cookie, /^__Host-pages_kilo_handoff=[A-Za-z0-9_-]{43}$/);
   const address = await throughKilo(started.enter);
   const response = await callback(env, address, started.cookie);
@@ -122,7 +124,7 @@ test("a sign-in that starts and ends in one browser makes a session without an e
   assert.equal(JSON.stringify(session).includes(user.email), false);
   assert.deepEqual(rows(env), []);
   const state = enter.searchParams.get("state");
-  assert.deepEqual(kilo.exchanges(), [{ authorization: `Bearer ${secret}`, origin, state }]);
+  assert.deepEqual(kilo.exchanges(), [{ authorization: `Bearer ${secret}`, audience, state }]);
   const logged = lines.join("\n");
   const code = new URL(address).searchParams.get("code");
   for (const value of [state, code, secret, user.email, started.cookie.split("=")[1]])
@@ -347,6 +349,9 @@ test("a deployment without the setting has no Kilo routes, and a bad setting thr
     { PAGES_KILO_APP_URL: "https://kilo.example/path" },
     { PAGES_KILO_APP_URL: "https://user@kilo.example" },
     { PAGES_KILO_APP_URL: "not a url" },
+    { PAGES_KILO_AUDIENCE: undefined },
+    { PAGES_KILO_AUDIENCE: "" },
+    { PAGES_KILO_AUDIENCE: "pages test" },
     { PAGES_KILO_EXCHANGE_SECRET: undefined },
     { PAGES_KILO_EXCHANGE_SECRET: "too-short" },
     { NOTEBOOK_CLOUD_LOCAL_OIDC: undefined },

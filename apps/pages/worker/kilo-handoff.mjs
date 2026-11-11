@@ -55,6 +55,8 @@ const MIN_SECRET_LENGTH = 32;
 const MAX_CODE_LENGTH = 2048;
 // The shape `randomSecret` gives a state and a binding.
 const SECRET = /^[A-Za-z0-9_-]{43}$/;
+// A name Kilo can hold for a deployment, such as `pages-dev`.
+const AUDIENCE = /^\S{1,200}$/;
 
 const MIGRATIONS = Object.freeze([
   Object.freeze({
@@ -77,9 +79,11 @@ const ready = isolateSetup((db) =>
 /** This deployment's Kilo sign-in settings, or null when it doesn't use Kilo.
  * `PAGES_KILO_APP_URL` turns it on and must be a bare `https:` origin; a
  * loopback `http:` origin is accepted only beside the local test issuer flag.
+ * `PAGES_KILO_AUDIENCE` is the name Kilo holds this deployment under, and
  * `PAGES_KILO_EXCHANGE_SECRET` is what Kilo checks at the code exchange. A
- * set but unusable value, or a missing secret, throws, so a misconfigured
- * deployment fails loudly and never falls back to another sign-in. */
+ * set but unusable value, or a missing audience or secret, throws, so a
+ * misconfigured deployment fails loudly and never falls back to another
+ * sign-in. */
 export function kiloSignIn(env, request) {
   const configured = env?.PAGES_KILO_APP_URL;
   if (!configured) return null;
@@ -93,18 +97,22 @@ export function kiloSignIn(env, request) {
     app.protocol === "http:" &&
     ["localhost", "127.0.0.1", "[::1]"].includes(app.hostname) &&
     env.NOTEBOOK_CLOUD_LOCAL_OIDC === "true";
+  const audience = env.PAGES_KILO_AUDIENCE;
   const secret = env.PAGES_KILO_EXCHANGE_SECRET;
   if (
     (app.protocol !== "https:" && !loopback) ||
     String(configured).replace(/\/$/, "") !== app.origin ||
     app.username ||
     app.password ||
+    typeof audience !== "string" ||
+    !AUDIENCE.test(audience) ||
     typeof secret !== "string" ||
     secret.length < MIN_SECRET_LENGTH
   )
     throw new Error("Kilo sign-in is misconfigured");
   return {
     appUrl: app.origin,
+    audience,
     origin: new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin,
     namespace: env.PAGES_KILO_PRINCIPAL_NAMESPACE?.trim() || "user:kilo",
     secret,
@@ -201,7 +209,7 @@ async function beginHandoff(request, env, config) {
     new Response(null, {
       status: 302,
       headers: {
-        Location: kiloEnterUrl(config.appUrl, { origin: config.origin, state }),
+        Location: kiloEnterUrl(config.appUrl, { audience: config.audience, state }),
         "Set-Cookie": `${BINDING_COOKIE}=${binding}; Path=/; Max-Age=${HANDOFF_SECONDS}; HttpOnly; Secure; SameSite=Lax`,
       },
     }),
@@ -273,7 +281,7 @@ async function completeHandoff(request, env, config) {
       appUrl: config.appUrl,
       secret: config.secret,
       code,
-      origin: config.origin,
+      audience: config.audience,
       state,
     });
   } catch (error) {
