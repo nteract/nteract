@@ -2480,9 +2480,14 @@ markers with adjusted nesting keep their stored parents. `delete_node`,
 `replace_block_markdown`, which replaces the block whole and refuses a
 block holding a node it can't keep.
 
-An aside (`PagesAside`) is a known container with no Markdown form. The
-editor makes one from pasted HTML (`<aside>`), and any synced client can
-store one; no agent tool or Markdown import writes one. Its Markdown is the
+An aside (`PagesAside`) is a known container with no Markdown form. Any
+synced client can store one; no agent tool or Markdown import writes one.
+Pasted HTML from outside Pages makes none: the Page editor and the comment
+composer replace each `<aside>` by its content (`unwrapPastedAsides` in
+[viewer/clipboard-html.mjs](viewer/clipboard-html.mjs)), so its paragraphs
+and lists land as ordinary blocks. An aside copied inside Pages carries
+`data-pages-aside` and pastes back as an aside. A stored aside reads and
+draws as before. Its Markdown is the
 notice (`[Unsupported node: aside]`) followed by its content.
 
 The Markdown serializer

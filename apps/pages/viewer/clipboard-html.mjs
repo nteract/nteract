@@ -24,3 +24,20 @@ export function normalizePastedHTML(html, parser = new DOMParser()) {
     }
   return changed ? doc.body.innerHTML : html;
 }
+
+/** The attribute an aside Pages copies carries. A pasted aside without it
+ * came from outside Pages. */
+export const PAGES_ASIDE_ATTR = "data-pages-aside";
+/** HTML from outside Pages pastes no aside: each one is replaced by its
+ * content, so its paragraphs and lists land as ordinary blocks in place.
+ * Pages has no Markdown form for an aside, and whether it should hold one
+ * is open (DIRECTION.md). An aside copied inside Pages keeps its attribute
+ * and pastes back as an aside. */
+export function unwrapPastedAsides(html, parser = new DOMParser()) {
+  if (!/<aside[\s>]/i.test(html)) return html;
+  const doc = parser.parseFromString(html, "text/html");
+  const outside = doc.body.querySelectorAll(`aside:not([${PAGES_ASIDE_ATTR}])`);
+  if (!outside.length) return html;
+  for (const aside of outside) aside.replaceWith(...aside.childNodes);
+  return doc.body.innerHTML;
+}

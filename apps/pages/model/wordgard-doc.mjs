@@ -348,10 +348,13 @@ function storedAttrs({ attrs, immutable }) {
     ]),
   );
 }
+// A copy carries data-pages-aside, so a paste tells an aside copied inside
+// Pages from one in outside HTML, which unwrapPastedAsides
+// (viewer/clipboard-html.mjs) replaces by its content.
 export const Aside = Plot.define("PagesAside", {
   group: Node.Group.Content,
   blockContent: Node.Group.Content,
-  shape: { element: "aside" },
+  shape: { element: "aside", attributes: { "data-pages-aside": "true" } },
 });
 export const TaskList = Plot.define("PagesTaskList", {
   blockContent: [ListItem],

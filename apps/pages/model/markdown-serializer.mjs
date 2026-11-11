@@ -681,8 +681,8 @@ const NODES = {
   // notice naming its type, so a read never hides it. replace_block_markdown
   // refuses the block (markdownlessNode).
   unknownBlock: unrendered,
-  // An aside (a container the editor makes from pasted HTML, and any synced
-  // client can write) has no Markdown form. It reads as the notice, then its
+  // An aside (a container any synced client can write; a paste from outside
+  // Pages makes none) has no Markdown form. It reads as the notice, then its
   // content; a Markdown rewrite refuses the block (markdownlessNode).
   aside: unrendered,
 };

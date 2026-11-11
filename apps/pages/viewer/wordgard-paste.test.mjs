@@ -23,6 +23,10 @@ import {
   PagesUnknownBlock,
   Strikethrough,
   Aside,
+  BulletList,
+  Paragraph,
+  pastedCommentHTML,
+  pastedPageHTML,
 } from "./wordgard-model.mjs";
 
 const hasOpaque = (doc) => {
@@ -121,6 +125,49 @@ test("a pasted aside reads as the notice and its content, and refuses a Markdown
   assert.match(markdown, /More main text\./);
   assert.equal(markdownlessNode(f.replica.doc.blocks[f.id]), "aside");
   f.binding.destroy();
+});
+
+// HTML from outside Pages pastes no aside, in a Page block and in the
+// comment composer: its paragraphs and lists land in place.
+test("a pasted aside from outside Pages unwraps to its blocks, in the body and the composer", (t) => {
+  const dom = new JSDOM();
+  t.after(() => dom.window.close());
+  const parser = new dom.window.DOMParser();
+  const html =
+    "<p>Before.</p><aside><p>A note.</p><ul><li>one</li><li>two</li></ul></aside><p>After.</p>";
+  const read = (filtered) => {
+    const body = dom.window.document.createElement("body");
+    body.innerHTML = filtered;
+    return parse(schema, body);
+  };
+  for (const [where, filtered] of [
+    ["body", pastedPageHTML(html, "page_fixture", parser)],
+    ["composer", pastedCommentHTML(html, parser)],
+  ]) {
+    const pasted = read(filtered);
+    let asides = 0;
+    pasted.iterate((node) => {
+      if (node.type === Aside.type) asides++;
+    });
+    assert.equal(asides, 0, where);
+    assert.deepEqual(
+      pasted.content.map((node) => node.type),
+      [Paragraph.type, Paragraph.type, BulletList.type, Paragraph.type],
+      where,
+    );
+    assert.equal(pasted.content[1].textContent(), "A note.", where);
+  }
+  // An aside copied inside Pages carries its attribute and pastes back.
+  const copied = serialize(
+    schema.doc([Aside.create([Paragraph.create([Leaf.text("kept")])])]),
+  ).toDOM(dom.window.document);
+  const own = copied.firstChild.outerHTML;
+  assert.match(own, /data-pages-aside/);
+  for (const filtered of [
+    pastedPageHTML(own, "page_fixture", parser),
+    pastedCommentHTML(own, parser),
+  ])
+    assert.equal(read(filtered).content[0].type, Aside.type);
 });
 
 test("comment Markdown from an agent refuses math and HTML, as a Page body's does", () => {
