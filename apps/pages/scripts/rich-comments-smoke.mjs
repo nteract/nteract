@@ -589,7 +589,8 @@ try {
       outcome: n === 0 ? "already_resolved" : "resolved",
     })),
   );
-  assert.equal(resolved.revision.length, 1);
+  // A comment never moves the Page revision; the batch is one comments revision.
+  assert.match(resolved.comment_revision, /^c\d+$/);
   assert.deepEqual(
     (await call("read_page", { page_id: pageId, comments: "none" })).revision,
     resolved.revision,

@@ -79,11 +79,6 @@ async function mcp(page, name, args = {}) {
 const read = () => mcp(a, "read_page", { page_id: pageId });
 const presence = () => mcp(a, "read_page_presence", { page_id: pageId });
 async function mutate(name, args) {
-  const authority = await mcp(
-    a,
-    ["create_page", "delete_page"].includes(name) ? "list_pages" : "read_page",
-    ["create_page", "delete_page"].includes(name) ? {} : { page_id: pageId },
-  );
   return mcp(a, name, {
     ...args,
     nonce: crypto.randomUUID(),
@@ -296,7 +291,6 @@ try {
     !JSON.stringify(observed).includes(second.lease_token),
     "presence reads omit every lease secret",
   );
-  assert.deepEqual(observed.revision, baseline.revision);
   assert.deepEqual(
     (await read()).revision,
     baseline.revision,
@@ -349,7 +343,8 @@ try {
     .toBe(originalTarget.start_utf16 + insertion.length);
   let edited = await read();
   observed = await presence();
-  assert.deepEqual(observed.revision, edited.revision);
+  // Presence names no revision; it follows the Page as it is now.
+  assert.equal(observed.revision, undefined);
   assert.equal(
     observed.progress.find((entry) => entry.progress_id === first.progress_id).targets[0].quote,
     anchorText,
