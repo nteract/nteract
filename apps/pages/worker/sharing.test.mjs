@@ -27,7 +27,7 @@ const inviteArgs = {
   email: " Editor@Example.com ",
   role: "editor",
   expected_revision: 0,
-  idempotency_key: "invite-test-1",
+  nonce: "invite-test-1",
 };
 
 test("invitation creates no principal grant and requires exact owner revision and scope", async () => {
@@ -41,12 +41,7 @@ test("invitation creates no principal grant and requires exact owner revision an
     /Only the owner/,
   );
   await assert.rejects(
-    proposeSharingMutation(
-      result.metadata,
-      owner,
-      { ...inviteArgs, idempotency_key: "invite-test-2" },
-      now,
-    ),
+    proposeSharingMutation(result.metadata, owner, { ...inviteArgs, nonce: "invite-test-2" }, now),
     /Sharing changed/,
   );
   assert.equal(
@@ -84,7 +79,7 @@ test("invitation requires verified email, trusted namespace, live expiry and bec
       principal: editor.principal,
       role: null,
       expected_revision: 2,
-      idempotency_key: "revoke-test-1",
+      nonce: "revoke-test-1",
     },
     now,
   );
@@ -138,7 +133,7 @@ test("a stale invite cannot override a newer explicit viewer grant or removal", 
         principal: editor.principal,
         role,
         expected_revision: 1,
-        idempotency_key: "override-test",
+        nonce: "override-test",
       },
       now,
     );
@@ -146,7 +141,7 @@ test("a stale invite cannot override a newer explicit viewer grant or removal", 
     const reinvited = await proposeSharingMutation(
       explicit.metadata,
       owner,
-      { ...inviteArgs, expected_revision: 2, idempotency_key: "reinvite-test" },
+      { ...inviteArgs, expected_revision: 2, nonce: "reinvite-test" },
       now,
     );
     assert.equal(
@@ -173,7 +168,7 @@ test("a pending host commit exposes only the intersection of old and new grants"
       principal: editor.principal,
       role: null,
       expected_revision: 2,
-      idempotency_key: "commit-removal",
+      nonce: "commit-removal",
     },
     now,
   );
@@ -195,7 +190,7 @@ test("a full sharing receipt window cannot block revocation or replay an evicted
     principal: editor.principal,
     role: "viewer",
     expected_revision: metadata.acl.revision,
-    idempotency_key: "window-first",
+    nonce: "window-first",
   };
   metadata = (await proposeSharingMutation(metadata, owner, first, now)).metadata;
   for (let i = 0; i < 256; i++)
@@ -208,7 +203,7 @@ test("a full sharing receipt window cannot block revocation or replay an evicted
           principal: editor.principal,
           role: i % 2 ? "viewer" : "editor",
           expected_revision: metadata.acl.revision,
-          idempotency_key: `window-change-${i}`,
+          nonce: `window-change-${i}`,
         },
         now,
       )
@@ -218,7 +213,7 @@ test("a full sharing receipt window cannot block revocation or replay an evicted
     principal: editor.principal,
     role: null,
     expected_revision: metadata.acl.revision,
-    idempotency_key: "window-remove",
+    nonce: "window-remove",
   };
   const removed = await proposeSharingMutation(metadata, owner, removal, now);
   assert.equal(removed.metadata.acl.members[editor.principal].role, "none");
@@ -277,7 +272,7 @@ test("receipt retention follows revisions even with numeric idempotency keys", a
     namespace: "anaconda",
     expiresAt: now - 1,
   };
-  const action = { ...inviteArgs, expected_revision: 300, idempotency_key: "12345678" };
+  const action = { ...inviteArgs, expected_revision: 300, nonce: "12345678" };
   const result = await proposeSharingMutation(metadata, owner, action, now);
   assert.equal(result.receipt.revision, 301, "even unchanged invite-to-member advances revision");
   assert.equal(result.metadata.acl.members[editor.principal].changedAtRevision, 301);

@@ -9,6 +9,7 @@ import { clientProvenance, forwardClientProvenance, withMcpAgent } from "./clien
 import { mcpSessionId } from "./usage.mjs";
 import worker from "./index.mjs";
 import { documentMutation, fingerprint } from "./mutations.mjs";
+import { revisionFor } from "./revisions.mjs";
 import { Storage } from "./projects-fixture.mjs";
 
 const origin = "https://pages.invalid";
@@ -254,7 +255,7 @@ test("gateway forwards request context to authenticated owner without public ide
 
 test("request-only context does not change existing fingerprints or pretend retries record attribution", async () => {
   const identity = { principal: "account", driver: "MCP" };
-  const args = { idempotency_key: "same-request", action: "resolve" };
+  const args = { nonce: "same-request", action: "resolve" };
   const original = await fingerprint("manage_page_comment", args, identity);
   for (const model of ["a", "b"]) {
     const request = withMcpAgent(new Request(`${origin}/mcp`), { id: "session", model });
@@ -282,7 +283,10 @@ test("changed request assertions replay original mutation; no-op creates no CRDT
     storage,
     handle,
     operation: "edit_page",
-    args: { idempotency_key: "original-operation", base_heads: A.getHeads(doc) },
+    args: {
+      nonce: "original-operation",
+      revision: await revisionFor(storage, "page", A.getHeads(doc), Date.now()),
+    },
     flush: async () => {},
     apply: (draft) => {
       applies++;
@@ -312,10 +316,10 @@ test("changed request assertions replay original mutation; no-op creates no CRDT
   const noOp = await documentMutation({
     ...context,
     identity: identity("no-op-assertion"),
-    args: { idempotency_key: "no-op-operation", base_heads: heads },
+    args: { nonce: "no-op-operation", revision: first.revision },
     apply: () => ({ unchanged: true }),
   });
-  assert.deepEqual(noOp.heads, heads);
+  assert.equal(noOp.revision, first.revision);
   assert.deepEqual(A.getHeads(doc), heads);
   assert.ok(!JSON.stringify([...storage.values]).includes("no-op-assertion"));
   A.free(doc);

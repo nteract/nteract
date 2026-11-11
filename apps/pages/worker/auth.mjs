@@ -8,6 +8,7 @@ import { verifyApiKey } from "./api-key-verifier.mjs";
 import { identityProvider } from "../identity-provider.mjs";
 import { firstApiKeyUse, logAuthEvent } from "./auth-events.mjs";
 import { clientProvenance } from "./client-provenance.mjs";
+import { REVISION_PATTERN } from "./revisions.mjs";
 
 export class HttpError extends Error {
   constructor(status, message, code) {
@@ -355,9 +356,9 @@ export const CLIENT_ERROR_CODES = Object.freeze([
   "page_not_found",
   "oauth_invalid_token",
   "oauth_insufficient_scope",
-  "retry_expired",
-  "invalid_retry_token",
-  "idempotency_conflict",
+  "nonce_conflict",
+  "invalid_nonce",
+  "invalid_revision",
   "operation_receipt_capacity",
   "pending_operation_capacity",
   "page_recovery_blocked",
@@ -367,11 +368,10 @@ export const CLIENT_ERROR_CODES = Object.freeze([
   "page_quota_exceeded",
   "purge_preview_required",
   "purge_preview_invalid",
-  "invalid_idempotency_key",
   "invalid_edit_selector",
   "replace_match_too_large",
   "invalid_comment_selector",
-  "stale_heads",
+  "stale_revision",
   "edit_conflict",
   "resync_required",
   "image_not_found",
@@ -540,9 +540,9 @@ export function errorResponse(error, stage = "request") {
             .map((id) => String(id).slice(0, 256)),
         }),
       // Revision refusals name the live revision so the caller can rebuild
-      // its request without another read: Page heads, and the comments
-      // document's where the host knows them.
-      ...(["stale_heads", "edit_conflict", "resync_required"].includes(error?.code) && {
+      // its request without another read: the Page's revision handle, and
+      // the comments document's where the host knows it. Heads never leave.
+      ...(["stale_revision", "edit_conflict", "resync_required"].includes(error?.code) && {
         ...(Array.isArray(error.details?.conflicts) && {
           conflicts: error.details.conflicts.slice(0, 10).map((conflict) => ({
             block_id: String(conflict.block_id ?? "").slice(0, 128),
@@ -550,11 +550,11 @@ export function errorResponse(error, stage = "request") {
             reason: String(conflict.reason ?? "Target changed").slice(0, 240),
           })),
         }),
-        ...(Array.isArray(error.details?.current_heads) && {
-          current_heads: error.details.current_heads.slice(0, 128),
+        ...(REVISION_PATTERN.test(error.details?.current_revision ?? "") && {
+          current_revision: error.details.current_revision,
         }),
-        ...(Array.isArray(error.details?.comment_heads) && {
-          comment_heads: error.details.comment_heads.slice(0, 128),
+        ...(REVISION_PATTERN.test(error.details?.comment_revision ?? "") && {
+          comment_revision: error.details.comment_revision,
         }),
       }),
     },

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createAuthFixture } from "../auth-fixtures.mjs";
 import { Catalog } from "./index.mjs";
+import { operationKey } from "./mutations.mjs";
 
 class Storage {
   values = new Map();
@@ -52,7 +53,7 @@ for (const operation of ["create_page", "delete_page"]) {
               pageRequests++;
               return Response.json(
                 operation === "create_page"
-                  ? { page_id: id, title: "Created", heads: ["a".repeat(64)] }
+                  ? { page_id: id, title: "Created", revision: "r1" }
                   : {
                       receipt: { page_id: id, state: "trashed", trashed: true },
                       current: { page_id: id, state: "trashed", revision: 1, title: "Before" },
@@ -70,11 +71,17 @@ for (const operation of ["create_page", "delete_page"]) {
         headers: { authorization: `Bearer ${token}`, "x-pages-driver": "ChatGPT" },
         body: JSON.stringify({
           operation,
-          arguments: { page_id: pageId, title: "Created", idempotency_key: "catalog-retry" },
+          arguments: { page_id: pageId, title: "Created", nonce: "catalog-retry" },
         }),
       });
     assert.equal((await catalog.fetch(request())).status, 500);
-    const recorded = await storage.get("host/operation/catalog-retry");
+    const recorded = await storage.get(
+      await operationKey(
+        { nonce: "catalog-retry" },
+        { principal: `user:anaconda-fixture:${auth.subject}` },
+        "catalog",
+      ),
+    );
     assert.equal(recorded.pending, false);
     assert.equal((await catalog.fetch(request())).status, 500);
     assert.equal(storage.syncs, 2);

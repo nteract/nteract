@@ -3,7 +3,8 @@ import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { applyPageOperation, createPageData, initializePage, projectPage } from "../model/page.mjs";
 import { textPath } from "../model/richtext.mjs";
-import { documentMutation, recoverDocumentMutations } from "./mutations.mjs";
+import { documentMutation, operationKey, recoverDocumentMutations } from "./mutations.mjs";
+import { headsFor, revisionFor } from "./revisions.mjs";
 
 class Storage {
   values = new Map();
@@ -13,6 +14,10 @@ class Storage {
     return structuredClone(this.values.get(key));
   }
   async put(key, value) {
+    if (typeof key === "object") {
+      for (const [name, entry] of Object.entries(key)) await this.put(name, entry);
+      return;
+    }
     this.values.set(key, structuredClone(value));
   }
   async delete(key) {
@@ -75,9 +80,10 @@ function fixture(t, markdown = "Alpha first.\n\nBeta second.\n\nKeep the tail.")
       assert.ok(start >= 0);
       A.splice(draft, textPath(id), start, match.length, replacement);
     });
-  const args = (overrides = {}) => ({
-    idempotency_key: `passage-${crypto.randomUUID()}`,
-    base_heads: A.getHeads(doc),
+  const revision = (heads = A.getHeads(doc)) => revisionFor(storage, "page", heads, Date.now());
+  const args = async (overrides = {}) => ({
+    nonce: `passage-${crypto.randomUUID()}`,
+    revision: await revision(),
     conflict_scope: "target",
     operations: [{ op: "replace_match", block_id: id, match_text: "Beta", replacement: "Agent" }],
     ...overrides,
@@ -91,6 +97,9 @@ function fixture(t, markdown = "Alpha first.\n\nBeta second.\n\nKeep the tail.")
     native,
     replace,
     args,
+    revision,
+    heads: (handle) => headsFor(storage, "page", handle),
+    key: (args) => operationKey(args, identity, "page"),
     appliedArguments,
     applications: () => applications,
     markdown: () => projectPage(doc).blocks[0].markdown,
@@ -102,25 +111,23 @@ const operationEntries = (f) =>
 
 test("target-scoped stale edit preserves an unrelated native edit in the same rich block", async (t) => {
   const f = fixture(t);
-  const args = f.args();
+  const args = await f.args();
   const object = A.getObjectId(f.handle.doc().blocks[f.id], "richText");
   f.replace("Alpha", "Human");
   const observed = A.getHeads(f.handle.doc());
   const receipt = await documentMutation(f.context(args));
   assert.equal(f.markdown(), "Human first.\n\nAgent second.\n\nKeep the tail.");
   assert.equal(A.getObjectId(f.handle.doc().blocks[f.id], "richText"), object);
-  assert.deepEqual(receipt.concurrency, {
-    rebased: true,
-    base_heads: args.base_heads,
-    observed_heads: observed,
-  });
-  assert.deepEqual(receipt.heads, A.getHeads(f.handle.doc()));
+  assert.equal(receipt.concurrency.rebased, true);
+  assert.equal(receipt.concurrency.base_revision, args.revision);
+  assert.deepEqual(await f.heads(receipt.concurrency.observed_revision), observed);
+  assert.deepEqual(await f.heads(receipt.revision), A.getHeads(f.handle.doc()));
   assert.equal(f.applications(), 1);
 });
 
 test("base node_index follows its native passage after an earlier paragraph is inserted", async (t) => {
   const f = fixture(t, "First apple.\n\nSecond apple.\n\nTail.");
-  const args = f.args({
+  const args = await f.args({
     operations: [
       {
         op: "replace_match",
@@ -158,7 +165,7 @@ for (const conflict of [
 ]) {
   test(`changed target (${conflict}) rejects before recording or applying an intent`, async (t) => {
     const f = fixture(t);
-    const args = f.args();
+    const args = await f.args();
     if (conflict === "deleted-block") {
       f.native((draft) => {
         delete draft.blocks[f.id];
@@ -187,7 +194,7 @@ for (const conflict of [
 
 test("legacy exact-head mode still rejects an unrelated stale revision", async (t) => {
   const f = fixture(t);
-  const args = f.args();
+  const args = await f.args();
   delete args.conflict_scope;
   f.replace("Alpha", "Human");
   await assert.rejects(documentMutation(f.context(args)), (error) => error.status === 409);
@@ -197,7 +204,7 @@ test("legacy exact-head mode still rejects an unrelated stale revision", async (
 
 test("one changed passage rejects the complete target-scoped batch before either edit", async (t) => {
   const f = fixture(t);
-  const args = f.args({
+  const args = await f.args({
     operations: [
       { op: "replace_match", block_id: f.id, match_text: "Beta", replacement: "Agent" },
       { op: "replace_match", block_id: f.id, match_text: "tail", replacement: "ending" },
@@ -217,12 +224,12 @@ test("one changed passage rejects the complete target-scoped batch before either
 
 test("target mode records a non-rebased receipt when its revision is current", async (t) => {
   const f = fixture(t);
-  const args = f.args();
+  const args = await f.args();
   const receipt = await documentMutation(f.context(args));
   assert.deepEqual(receipt.concurrency, {
     rebased: false,
-    base_heads: args.base_heads,
-    observed_heads: args.base_heads,
+    base_revision: args.revision,
+    observed_revision: args.revision,
   });
   const bytes = A.save(f.handle.doc());
   assert.deepEqual(await documentMutation(f.context(args)), receipt);
@@ -232,7 +239,7 @@ test("target mode records a non-rebased receipt when its revision is current", a
 
 test("a native target edit during external preparation is caught by the second guard", async (t) => {
   const f = fixture(t);
-  const args = f.args();
+  const args = await f.args();
   let prepared = 0;
   await assert.rejects(
     documentMutation(
@@ -253,7 +260,7 @@ test("a native target edit during external preparation is caught by the second g
 
 test("native overlap after synchronous capture merges normally and exact retry never reauthors", async (t) => {
   const f = fixture(t);
-  const args = f.args();
+  const args = await f.args();
   const observed = A.getHeads(f.handle.doc());
   let flushes = 0;
   const receipt = await documentMutation(
@@ -268,11 +275,11 @@ test("native overlap after synchronous capture merges normally and exact retry n
   assert.match(f.markdown(), /Agent/);
   assert.deepEqual(receipt.concurrency, {
     rebased: false,
-    base_heads: observed,
-    observed_heads: observed,
+    base_revision: args.revision,
+    observed_revision: args.revision,
   });
-  assert.ok(A.hasHeads(f.handle.doc(), receipt.heads));
-  assert.notDeepEqual(A.getHeads(f.handle.doc()), receipt.heads);
+  assert.ok(A.hasHeads(f.handle.doc(), await f.heads(receipt.revision)));
+  assert.notDeepEqual(A.getHeads(f.handle.doc()), await f.heads(receipt.revision));
   const bytes = A.save(f.handle.doc());
   const replay = f.context(args, {
     prepare: () => assert.fail("a retry must not repeat preparation"),
@@ -286,7 +293,7 @@ test("native overlap after synchronous capture merges normally and exact retry n
 for (const recovery of ["retry", "startup"]) {
   test(`pending target edit retains its bytes and receipt through ${recovery} after later edits`, async (t) => {
     const f = fixture(t);
-    const args = f.args();
+    const args = await f.args();
     f.replace("Alpha", "Human");
     let flushes = 0;
     await assert.rejects(
@@ -300,7 +307,7 @@ for (const recovery of ["retry", "startup"]) {
       ),
       /Interrupted passage durability/,
     );
-    const key = `host/operation/${args.idempotency_key}`;
+    const key = await f.key(args);
     const pending = await f.storage.get(key);
     assert.equal(pending.pending, true);
     assert.equal(pending.receipt.concurrency.rebased, true);
@@ -322,7 +329,7 @@ for (const recovery of ["retry", "startup"]) {
 
 test("crash after journaling but before apply replays the recorded passage against later native edits", async (t) => {
   const f = fixture(t);
-  const args = f.args();
+  const args = await f.args();
   f.replace("Alpha", "Human");
   let interrupted = false;
   f.storage.beforeSync = () => {
@@ -334,7 +341,7 @@ test("crash after journaling but before apply replays the recorded passage again
     }
   };
   await assert.rejects(documentMutation(f.context(args)), /Crash after passage intent put/);
-  const key = `host/operation/${args.idempotency_key}`;
+  const key = await f.key(args);
   const pending = await f.storage.get(key);
   assert.equal(pending.pending, true);
   assert.match(f.markdown(), /Beta second/);
@@ -343,7 +350,7 @@ test("crash after journaling but before apply replays the recorded passage again
   f.replace("Keep the tail", "Later human tail");
   await recoverDocumentMutations(f.storage, f.handle, () => f.storage.sync());
   assert.equal(f.markdown(), "Human first.\n\nAgent second.\n\nLater human tail.");
-  assert.ok(A.hasHeads(f.handle.doc(), pending.receipt.heads));
+  assert.ok(A.hasHeads(f.handle.doc(), await f.heads(pending.receipt.revision)));
   const replay = f.context(args, { apply: () => assert.fail("recovery must not reauthor") });
   assert.deepEqual(await documentMutation(replay), pending.receipt);
   assert.equal(f.applications(), 1);

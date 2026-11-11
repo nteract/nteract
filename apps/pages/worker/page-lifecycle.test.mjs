@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import { pageState } from "./access.mjs";
+import { operationKey } from "./mutations.mjs";
 import { runTable } from "../shared/machine-test.mjs";
 import { pageLifecycle, pageLifecycleSpec } from "./page-lifecycle.mjs";
 import { pageId } from "./trash-fixture.mjs";
@@ -155,12 +156,17 @@ const POST_COMMIT = {
  *   carries keep_time, so no listing's updated_at moves.
  * - projectionMark: a projection, or the title it sent, didn't land, so the
  *   mark stays and the next check boots to send it again. Only a mark the
- *   reference cleared may remain; a missing mark is never allowed. */
+ *   reference cleared may remain; a missing mark is never allowed.
+ * - revisionTable: a stale-revision refusal names the live revisions. Their
+ *   heads come from an edit with its own actor in each run, and a restart
+ *   can lose that edit, so the handle records differ; the lifecycle never
+ *   reads them. */
 function allowance(key, run, row, committed, reference) {
   const cutD1 = run.cut && run.mutations[run.cut.index]?.startsWith("d1 ");
   if (key.startsWith("index ") && cutD1) return "index";
   if (key === "page host/index/report-pending") return cutD1 ? "index" : undefined;
   if (key.startsWith("page host/lifecycle/seed-")) return "prune";
+  if (key.startsWith("page host/revision/")) return "revisionTable";
   if (key === "page host/title-projection/pending")
     return new Map(run.final.page).get("host/title-projection/pending") === true &&
       !new Map(reference.final.page).has("host/title-projection/pending")
@@ -256,15 +262,17 @@ test("every mutation the lifecycle makes can reject before or after it applies, 
       // active/trash heads-absent row runs the full trash commit again. A
       // rejected mark write leaves the title unstored (titleRecord), and one
       // that landed before it rejected stays, since the projection failed
-      // (projectionMark).
-      cuts: 202,
-      runs: 768,
+      // (projectionMark). A stale-revision trash names the live revisions in
+      // its refusal: their put and barrier are cut points (revisionTable).
+      cuts: 206,
+      runs: 784,
       indexRetirement: 15,
       titleProjection: 10,
       titleRecord: 12,
       prune: 22,
       index: 14,
       projectionMark: 16,
+      revisionTable: 8,
     },
   );
 });
@@ -313,13 +321,13 @@ async function restoreDiscovery(t, { interrupt }) {
   assert.equal(await listed(), true, "the member lists the active Page");
   const trashed = await f.catalogCall("owner", "delete_page", {
     page_id: pageId,
-    base_heads: f.heads(),
-    idempotency_key: "discovery-trash",
+    revision: await f.revision(),
+    nonce: "discovery-trash",
   });
   assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
   await settle(h);
   assert.equal(await listed(), false, "the member's listing drops the trashed Page");
-  const restore = { page_id: pageId, idempotency_key: "discovery-restore" };
+  const restore = { page_id: pageId, nonce: "discovery-restore" };
   if (interrupt) {
     h.trace.start({ crash: (effect) => effect.type === "refreshAccess" });
     const failed = await f.catalogCall("owner", "restore_page", restore);
@@ -327,7 +335,11 @@ async function restoreDiscovery(t, { interrupt }) {
     assert.ok(failed.status >= 500, JSON.stringify(failed.body));
     const record = await f.storage.get("host/document");
     assert.equal(pageState(record), "active", "the restored record is durable");
-    assert.ok(f.storage.values.has("host/lifecycle/discovery-restore"), "its receipt is durable");
+    const receipt = await operationKey(restore, { principal: f.owner }, "lifecycle");
+    assert.ok(
+      f.storage.values.has(`host/lifecycle/${receipt.slice("host/operation/".length)}`),
+      "its receipt is durable",
+    );
     await boot(h, { type: "boot" }, { check: false });
   }
   const restored = await f.catalogCall("owner", "restore_page", restore);

@@ -15,13 +15,7 @@ import {
   uploadVerdict,
   verifyAssetUpload,
 } from "./asset-uploads.mjs";
-import {
-  inspectOperation,
-  issueRetryToken,
-  openCapability,
-  retryKeyPrefix,
-  signCapability,
-} from "./operation-journal.mjs";
+import { openCapability, signCapability } from "./operation-journal.mjs";
 import {
   exchangeAuthorizationCode,
   issueAuthorizationCode,
@@ -293,11 +287,10 @@ test("only the Pages-Upload scheme yields a capability token", () => {
   assert.equal(uploadCapabilityToken(request("Pages-Upload a b")), "");
 });
 
-test("capabilities and retry tokens share a key but never verify as each other", async () => {
+test("a capability verifies only for its own purpose and its own Page's key", async () => {
   const storage = new Storage();
   const pageId = crypto.randomUUID();
   const principal = "user:anaconda:person";
-  const retry = await issueRetryToken(storage, { scope: `page:${pageId}`, principal });
   const identity = { principal, credentialKind: "api-key" };
   const grant = await issueAssetUpload(storage, {
     pageId,
@@ -306,43 +299,10 @@ test("capabilities and retry tokens share a key but never verify as each other",
     origin,
   });
   const capability = tokenOf(grant);
+  const [, capabilityPayload, capabilitySignature] = capability.split(".");
   const verify = (token) =>
     verifyAssetUpload(storage, token, { pageId, grantActive: () => assert.fail("not OAuth") });
   assert.equal((await verify(capability)).principal, principal);
-  // A retry token is not a capability: wrong shape, and its MAC input lacks the purpose.
-  assert.equal(
-    await openCapability(storage, retry.retry_token, {
-      purpose: "pages-asset-upload-v1",
-      prefix: "pu1",
-    }),
-    null,
-  );
-  const [payload, signature] = retry.retry_token.split(".");
-  assert.equal(
-    await openCapability(storage, `pu1.${payload}.${signature}`, {
-      purpose: "pages-asset-upload-v1",
-      prefix: "pu1",
-    }),
-    null,
-    "a retry token's signature does not cover a capability's MAC input",
-  );
-  await assert.rejects(verify(retry.retry_token), {
-    status: 401,
-    code: "upload_capability_invalid",
-  });
-  // A capability is not a retry token, even rebuilt as two parts.
-  const [, capabilityPayload, capabilitySignature] = capability.split(".");
-  for (const token of [capability, `${capabilityPayload}.${capabilitySignature}`])
-    await assert.rejects(
-      inspectOperation(storage, {
-        key: `host/operation/v1_${"a".repeat(64)}_request-one`,
-        digest: "digest",
-        retryToken: token,
-        scope: `page:${pageId}`,
-        principal,
-      }),
-      { status: 400, code: "invalid_retry_token" },
-    );
   // Another purpose with the same key is another capability.
   const other = await signCapability(storage, {
     purpose: "pages-something-else",
@@ -355,7 +315,7 @@ test("capabilities and retry tokens share a key but never verify as each other",
   );
   // Another Page's key, a changed byte, or no key at all.
   const elsewhere = new Storage();
-  await issueRetryToken(elsewhere, { scope: `page:${pageId}`, principal });
+  await signCapability(elsewhere, { purpose: "pages-something-else", prefix: "pu1", payload: {} });
   await assert.rejects(
     verifyAssetUpload(elsewhere, capability, { pageId, grantActive: () => true }),
     { code: "upload_capability_invalid" },
@@ -608,30 +568,16 @@ test("a capability works only on its own Page, and refusals don't tell Pages apa
   assert.equal(bucket.calls.length, 0);
 });
 
-test("a retry token is not an upload capability", async (t) => {
+test("a revision or a nonce is not an upload capability", async (t) => {
   const { w, pageId, bucket } = await setup(t);
   const read = await w.call("owner", "read_page", { page_id: pageId, comments: "none" });
   assert.equal(read.status, 200, JSON.stringify(read.body));
   const grant = await issued(w, { page_id: pageId });
-  for (const token of [
-    read.body.retry_token,
-    (await w.call("owner", "list_pages")).body.retry_token,
-  ]) {
+  for (const token of [read.body.revision, read.body.comment_revision, crypto.randomUUID()]) {
     const refused = await upload(w, withToken(grant, token));
     assert.equal(refused.status, 401);
     assert.equal(refused.body.code, "upload_capability_invalid");
   }
-  // And the capability is not this Page's retry token.
-  await assert.rejects(
-    inspectOperation(w.page(pageId).ctx.storage, {
-      key: `host/operation/${await retryKeyPrefix(read.body.retry_token)}reuse-capability`,
-      digest: "digest",
-      retryToken: tokenOf(grant),
-      scope: `page:${pageId}`,
-      principal: w.owner,
-    }),
-    { code: "invalid_retry_token" },
-  );
   assert.equal(bucket.calls.length, 0);
 });
 
@@ -645,7 +591,7 @@ test("access removed after issue refuses the upload, before or during the transf
       principal: w.member,
       role,
       expected_revision: revision,
-      idempotency_key: w.key(),
+      nonce: w.key(),
     });
     assert.equal(result.status, 200, JSON.stringify(result.body));
     revision = result.body.access?.revision ?? result.body.revision ?? revision + 1;
@@ -692,11 +638,9 @@ test("access removed after issue refuses the upload, before or during the transf
 test("a Page in Trash refuses the upload, as the byte route does", async (t) => {
   const { w, pageId, bucket } = await setup(t);
   const grant = await issued(w, { page_id: pageId });
-  const listed = (await w.call("owner", "list_pages")).body;
   const trashed = await w.call("owner", "delete_page", {
     page_id: pageId,
-    retry_token: listed.retry_token,
-    idempotency_key: crypto.randomUUID(),
+    nonce: crypto.randomUUID(),
   });
   assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
   const refused = await upload(w, grant);
@@ -852,9 +796,8 @@ test("the llms.txt image workflow: upload light and dark, interleave with text, 
   // The guide's batch: rewrite the first block, then append in order.
   const edit = await w.call("owner", "edit_page", {
     page_id: pageId,
-    base_heads: read.heads,
-    retry_token: read.retry_token,
-    idempotency_key: crypto.randomUUID(),
+    revision: read.revision,
+    nonce: crypto.randomUUID(),
     operations: [
       { op: "replace_block_markdown", block_id: first.id, markdown: "Intro paragraph." },
       { op: "insert_image", asset_id: light, dark_asset_id: dark, alt: "Home screen" },
@@ -889,9 +832,8 @@ test("the llms.txt image workflow: upload light and dark, interleave with text, 
   const anchor = after.blocks[0].id;
   const middle = await w.call("owner", "edit_page", {
     page_id: pageId,
-    base_heads: after.heads,
-    retry_token: after.retry_token,
-    idempotency_key: crypto.randomUUID(),
+    revision: after.revision,
+    nonce: crypto.randomUUID(),
     operations: [
       { op: "insert_markdown", markdown: "Second inserted.", after_block_id: anchor },
       { op: "insert_image", asset_id: light, alt: "First inserted", after_block_id: anchor },
@@ -1137,7 +1079,7 @@ test("an editor through Project membership issues and uploads with a capability"
     principal: w.member,
     role: "editor",
     expected_revision: 0,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(granted.status, 200, JSON.stringify(granted.body));
   const grant = await issued(w, { page_id: child.page_id }, "member");
@@ -1151,7 +1093,7 @@ test("an editor through Project membership issues and uploads with a capability"
     principal: w.member,
     role: null,
     expected_revision: 1,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(revoked.status, 200, JSON.stringify(revoked.body));
   const refused = await upload(w, grant, { body: webp });

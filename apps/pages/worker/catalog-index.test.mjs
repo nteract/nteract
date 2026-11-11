@@ -577,7 +577,7 @@ test("first listing backfills owned and shared entries, verifying shared Pages",
   assert.equal(limited.body.pages.length, 1);
   assert.ok(limited.body.next_cursor);
   assert.equal(shared.calls + flaky.calls, 2, "one page plus one verified look-ahead");
-  assert.equal(typeof limited.body.retry_token, "string");
+  assert.equal(limited.body.retry_token, undefined);
 });
 
 test("a denied matching row and a nonexistent row produce the same response", async (t) => {
@@ -781,9 +781,9 @@ test("index disabled: no D1 access and the bare call keeps the legacy fields", a
     { page_id: id(1), title: "Legacy", content_updated_at: null },
   ]);
   assert.equal(result.body.limit, 100);
-  for (const key of ["next_cursor", "retry_token", "retry_until"])
-    assert.ok(Object.hasOwn(result.body, key), key);
-  assert.equal(Object.hasOwn(result.body, "retry_key_prefix"), false);
+  assert.ok(Object.hasOwn(result.body, "next_cursor"));
+  for (const key of ["retry_token", "retry_until", "retry_key_prefix"])
+    assert.equal(Object.hasOwn(result.body, key), false, key);
 });
 
 test("owner rows need a live Catalog entry and are pruned on encounter", async (t) => {
@@ -896,8 +896,7 @@ test("a crash between trash barriers leaves the Page indexable; trash and purge 
     target.fetch(
       f.request(owner, "/internal/trash", {
         page_id: id(60),
-        base_heads: A.getHeads(target.handle.doc()),
-        idempotency_key: "trash-index-fixture",
+        nonce: "trash-index-fixture",
       }),
     );
   const put = page.ctx.storage.put.bind(page.ctx.storage);
@@ -932,7 +931,7 @@ test("a crash between trash barriers leaves the Page indexable; trash and purge 
       page_id: id(60),
       action: "confirm",
       preview_token: preview.preview_token,
-      idempotency_key: "purge-index-fixture",
+      nonce: "purge-index-fixture",
     }),
   );
   assert.equal(purged.status, 200);
@@ -1154,8 +1153,7 @@ test("an ACL commit and a restore move updated_at, including through a retried p
         if (operation === "restore") {
           const trashed = await call("delete_page", {
             page_id: id(83),
-            base_heads: A.getHeads(page.handle.doc()),
-            idempotency_key: "observe-trash",
+            nonce: "observe-trash",
           });
           assert.equal(trashed.state, "trashed", JSON.stringify(trashed));
           await f.settle();
@@ -1191,7 +1189,7 @@ test("an ACL commit and a restore move updated_at, including through a retried p
         else {
           const restored = await call("restore_page", {
             page_id: id(83),
-            idempotency_key: "observe-restore",
+            nonce: "observe-restore",
           });
           assert.equal(restored.restored, true, JSON.stringify(restored));
         }
@@ -1273,8 +1271,7 @@ test("Trash and restore through the Catalog move a Page between indexed listings
   for (let pass = 0; pass < 3; pass++) await f.list(owner);
   const trashed = await call("delete_page", {
     page_id: id(70),
-    base_heads: A.getHeads(page.handle.doc()),
-    idempotency_key: "index-trash-request",
+    nonce: "index-trash-request",
   });
   assert.equal(trashed.state, "trashed");
   assert.deepEqual(f.db.rows("SELECT state FROM pages_catalog_pages"), [{ state: "trashed" }]);
@@ -1286,7 +1283,7 @@ test("Trash and restore through the Catalog move a Page between indexed listings
   assert.equal(listed.body.pages[0].trashed_by, owner);
   const restored = await call("restore_page", {
     page_id: id(70),
-    idempotency_key: "index-restore-request",
+    nonce: "index-restore-request",
   });
   assert.equal(restored.restored, true);
   await f.settle();
@@ -2435,8 +2432,7 @@ test("restoring a Page and trashing it again moves it to the top of Trash", asyn
         await later();
         const result = await call("delete_page", {
           page_id: id(n),
-          base_heads: A.getHeads(hosts[n].handle.doc()),
-          idempotency_key: `trash-again-${n}-${requests++}`,
+          nonce: `trash-again-${n}-${requests++}`,
         });
         assert.equal(result.state, "trashed", JSON.stringify(result));
         await f.settle();
@@ -2457,7 +2453,7 @@ test("restoring a Page and trashing it again moves it to the top of Trash", asyn
       await later();
       const restored = await call("restore_page", {
         page_id: id(71),
-        idempotency_key: `restore-again-71-${requests++}`,
+        nonce: `restore-again-71-${requests++}`,
       });
       assert.equal(restored.restored, true, JSON.stringify(restored));
       await f.settle();

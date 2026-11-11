@@ -99,8 +99,7 @@ test("trashed, unknown, malformed and other accounts' Pages all answer null", as
   const trashed = await create("Trashed", "Trashed body");
   const deleted = await w.call("owner", "delete_page", {
     page_id: trashed,
-    base_heads: w.heads(trashed),
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
   assert.ok(assets.objects.has(cardKey(trashed)), "Trash keeps the card object");
@@ -185,8 +184,7 @@ test("a purge deletes the card object and the host's stored hash", async (t) => 
   assert.ok(assets.objects.has(cardKey(pageId)));
   const trashed = await w.call("owner", "delete_page", {
     page_id: pageId,
-    base_heads: w.heads(pageId),
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
   const preview = await w.call("owner", "purge_page", { page_id: pageId, action: "preview" });
@@ -195,7 +193,7 @@ test("a purge deletes the card object and the host's stored hash", async (t) => 
     page_id: pageId,
     action: "confirm",
     preview_token: preview.body.preview_token,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(purged.status, 200, JSON.stringify(purged.body));
   assert.equal(assets.objects.has(cardKey(pageId)), false);

@@ -9,8 +9,8 @@ import { createAuthFixture } from "../auth-fixtures.mjs";
 import { loadTable, runTable } from "../shared/machine-test.mjs";
 import { Catalog } from "./index.mjs";
 import { lifecycleSlot, lifecycleSlotKey } from "./catalog.mjs";
-import { fingerprint } from "./mutations.mjs";
-import { RETRY_LIFETIME_MS } from "./operation-journal.mjs";
+import { fingerprint, operationKey } from "./mutations.mjs";
+import { RECEIPT_LIFETIME_MS } from "./operation-journal.mjs";
 import { operationIntent, operationIntentAlphabet } from "./operation-intent.mjs";
 import { quotaRefusal } from "./page-quota.mjs";
 import { CrashStorage, assertProjected, describe, normalize } from "./operation-intent-fixture.mjs";
@@ -24,8 +24,10 @@ const identity = { principal: owner, driver: "ChatGPT" };
 const pageId = "33333333-3333-4333-8333-333333333333";
 const childId = "44444444-4444-4444-8444-444444444444";
 const idempotencyKey = "intent-key-0001";
-const key = `host/operation/${idempotencyKey}`;
-const otherKey = "host/operation/other-intent-0001";
+// The owner's Catalog receipt key for a nonce.
+const receiptOf = (nonce) => operationKey({ nonce }, identity, "catalog");
+const key = await receiptOf(idempotencyKey);
+const otherKey = await receiptOf("other-intent-0001");
 const CREATED = "2026-10-01T00:00:00.000Z";
 const TRASHED_AT = "2026-10-29T12:00:00.000Z";
 const LIMIT = 100;
@@ -44,13 +46,13 @@ const baseRevision = { delete_page: 0, restore_page: 1, purge_page: 1 };
 const destinationPrefix = { delete_page: "trash/", restore_page: "page/" };
 const sourcePrefix = { delete_page: "page/", restore_page: "trash/", purge_page: "trash/" };
 const argsFor = {
-  delete_page: { page_id: pageId, base_heads: ["a".repeat(64)], idempotency_key: idempotencyKey },
-  restore_page: { page_id: pageId, idempotency_key: idempotencyKey },
+  delete_page: { page_id: pageId, revision: "r1", nonce: idempotencyKey },
+  restore_page: { page_id: pageId, nonce: idempotencyKey },
   purge_page: {
     page_id: pageId,
     action: "confirm",
     preview_token: "preview-token",
-    idempotency_key: idempotencyKey,
+    nonce: idempotencyKey,
   },
 };
 const digests = Object.fromEntries(
@@ -63,7 +65,7 @@ const digests = Object.fromEntries(
 );
 const pageErrors = {
   404: { error: "Page not found" },
-  409: { error: "The Page changed since base_heads", code: "edit_conflict" },
+  409: { error: "The Page changed since revision", code: "edit_conflict" },
   503: { error: "Page is temporarily unavailable" },
 };
 
@@ -106,7 +108,7 @@ function persisted(values, operation) {
   };
 }
 
-const childKey = "host/operation/child-restore-0001";
+const childKey = await receiptOf("child-restore-0001");
 const childEntry = {
   page_id: childId,
   title: "Child",
@@ -304,7 +306,7 @@ class Drive {
       ((slot === "live" || slot === "reconciling") && !this.fresh) ||
       (stale && ["count", "settle"].includes(event.type))
     ) {
-      const now = expired ? Date.now() - RETRY_LIFETIME_MS - 60_000 : Date.now();
+      const now = expired ? Date.now() - RECEIPT_LIFETIME_MS - 60_000 : Date.now();
       for (const [name, value] of Object.entries(lifecycleSlot(operation, pageId, key, now)))
         set(name, value);
     }
@@ -717,7 +719,7 @@ test("a retargeted Trash keeps its slot, so its lost reply can't overfill Trash"
         headers: { authorization: `Bearer ${token}`, "x-pages-driver": "ChatGPT" },
         body: JSON.stringify({
           operation: "delete_page",
-          arguments: { page_id: id, base_heads: ["a".repeat(64)], idempotency_key: idempotency },
+          arguments: { page_id: id, revision: "r1", nonce: idempotency },
           page_limit: LIMIT,
         }),
       }),

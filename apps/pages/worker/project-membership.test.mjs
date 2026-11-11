@@ -17,7 +17,7 @@ for (const cleared of [false, true]) {
         principal: w.member,
         role,
         expected_revision,
-        idempotency_key: w.key(),
+        nonce: w.key(),
       });
     assert.equal((await change("editor", 0)).status, 200);
     assert.equal((await w.call("member", "read_page", { page_id: child.page_id })).status, 200);
@@ -78,12 +78,10 @@ test("a lower revision in a newly resolved Project replaces the old placement", 
   await oldStorage.put("space/record", { ...old, acl: { ...old.acl, revision: 20 } });
   await page.identify(request);
   assert.equal(page.projectAccess.revision, 20);
-  const retry = (await w.call("owner", "list_pages")).body;
   const moved = await w.call("owner", "move_page", {
     page_id: child.page_id,
     project_id: newer.project_id,
-    idempotency_key: crypto.randomUUID(),
-    retry_token: retry.retry_token,
+    nonce: crypto.randomUUID(),
   });
   assert.equal(moved.status, 200, JSON.stringify(moved.body));
   await page.identify(request);
@@ -101,7 +99,7 @@ test("membership discovery, inherited Pages, revocation, and owner-only sharing 
     principal: w.member,
     role: "editor",
     expected_revision: 0,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   };
   const granted = await w.call("owner", "manage_project_access", args);
   assert.equal(granted.status, 200, JSON.stringify(granted.body));
@@ -125,32 +123,29 @@ test("membership discovery, inherited Pages, revocation, and owner-only sharing 
     (
       await w.call("member", "manage_project_access", {
         ...args,
-        idempotency_key: w.key(),
+        nonce: w.key(),
         expected_revision: 1,
       })
     ).status,
     403,
   );
-  const retry = (await w.call("owner", "list_pages")).body;
   const deniedMove = await w.call("owner", "move_page", {
     page_id: child.page_id,
     project_id: null,
-    idempotency_key: crypto.randomUUID(),
-    retry_token: retry.retry_token,
+    nonce: crypto.randomUUID(),
   });
   assert.equal(deniedMove.body.code, "shared_project_move_unsupported");
   const within = await w.call("owner", "move_page", {
     page_id: nested.page_id,
     project_id: project.project_id,
-    idempotency_key: crypto.randomUUID(),
-    retry_token: retry.retry_token,
+    nonce: crypto.randomUUID(),
   });
   assert.equal(within.status, 200, JSON.stringify(within.body));
   const revoked = await w.call("owner", "manage_project_access", {
     ...args,
     role: null,
     expected_revision: 1,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(revoked.status, 200);
   assert.equal((await w.call("member", "read_page", { page_id: child.page_id })).status, 403);
@@ -178,7 +173,7 @@ test("failed membership durability is rechecked before policy reads and exact re
     principal: w.member,
     role: "editor",
     expected_revision: 0,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   };
   assert.equal((await w.call("owner", "manage_project_access", args)).status, 500);
   assert.equal((await w.call("owner", "manage_project_access", args)).status, 500);
@@ -204,7 +199,7 @@ test("stale discovery capacity is reclaimed before a new legitimate grant", asyn
     principal: w.member,
     role: "viewer",
     expected_revision: 0,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(grant.status, 200, JSON.stringify(grant.body));
   assert.equal((await storage.list({ prefix: "project-discovery/" })).size, 1);
@@ -222,7 +217,7 @@ for (const role of ["editor", "commenter", "viewer"])
       email: "fixture@example.invalid",
       role,
       expected_revision: 0,
-      idempotency_key: w.key(),
+      nonce: w.key(),
     };
     const invited = await w.call("owner", "manage_project_access", args);
     assert.equal(invited.status, 200, JSON.stringify(invited.body));
@@ -273,7 +268,7 @@ for (const role of ["editor", "commenter", "viewer"])
       ...args,
       role: "viewer",
       expected_revision: roster.revision,
-      idempotency_key: w.key(),
+      nonce: w.key(),
     });
     assert.equal(changed.status, 200);
     assert.equal(changed.body.members[w.member].role, "viewer");
@@ -284,7 +279,7 @@ for (const role of ["editor", "commenter", "viewer"])
       principal: w.member,
       role: null,
       expected_revision: changed.body.revision,
-      idempotency_key: w.key(),
+      nonce: w.key(),
     });
     assert.equal(removed.status, 200);
     assert.deepEqual((await w.call("member", "list_projects")).body.projects, []);
@@ -299,7 +294,7 @@ test("revoked and nonmatching exact-email invites never discover or authorize Pr
     email: "someone-else@example.invalid",
     role: "editor",
     expected_revision: 0,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   };
   const invited = await w.call("owner", "manage_project_access", args);
   assert.equal(invited.status, 200);
@@ -312,7 +307,7 @@ test("revoked and nonmatching exact-email invites never discover or authorize Pr
     ...args,
     email: "fixture@example.invalid",
     expected_revision: 1,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   const invite = pending.body.invites.find((row) => row.email === "fixture@example.invalid");
   const capture = captureConsole(t);
@@ -321,7 +316,7 @@ test("revoked and nonmatching exact-email invites never discover or authorize Pr
     action: "revoke_invite",
     invite_id: invite.id,
     expected_revision: pending.body.revision,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(revoked.status, 200);
   const [line] = capture.find("invitation.revoked");
@@ -351,7 +346,7 @@ test("expired Project invitations cannot be claimed from a known Project link", 
     email: "fixture@example.invalid",
     role: "editor",
     expected_revision: 0,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(invited.status, 200);
   const storage = w.projects.get(project.project_id).ctx.storage;
@@ -375,15 +370,13 @@ test("pending email invitations fence boundary moves before they are claimed", a
     email: "someone-else@example.invalid",
     role: "editor",
     expected_revision: 0,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(invited.status, 200);
-  const retry = (await w.call("owner", "list_pages")).body;
   const moved = await w.call("owner", "move_page", {
     page_id: child.page_id,
     project_id: null,
-    idempotency_key: crypto.randomUUID(),
-    retry_token: retry.retry_token,
+    nonce: crypto.randomUUID(),
   });
   assert.equal(moved.body.code, "shared_project_move_unsupported");
 });
@@ -404,7 +397,7 @@ test("a full Project invitation cannot block unrelated Project discovery or leak
       email: "fixture@example.invalid",
       role: "viewer",
       expected_revision: 0,
-      idempotency_key: w.key(),
+      nonce: w.key(),
     });
     assert.equal(response.status, 200);
   }
@@ -433,7 +426,7 @@ test("Project sharing output hides tombstones and internal ACL fields including 
     principal: w.member,
     role: "viewer",
     expected_revision: 0,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   };
   const added = await w.call("owner", "manage_project_access", args);
   assert.deepEqual(added.body.members[w.member], { role: "viewer" });
@@ -441,7 +434,7 @@ test("Project sharing output hides tombstones and internal ACL fields including 
     ...args,
     role: null,
     expected_revision: added.body.revision,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   };
   const removed = await w.call("owner", "manage_project_access", removal);
   assert.deepEqual(removed.body.members, {});
@@ -486,7 +479,7 @@ const inviteTo = (w, projectId, email, expected_revision) =>
     email,
     role: "editor",
     expected_revision,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
 
 test("revoking an invitation drops its index row and leaves other invitations", async (t) => {
@@ -504,7 +497,7 @@ test("revoking an invitation drops its index row and leaves other invitations", 
     action: "revoke_invite",
     invite_id: invite.id,
     expected_revision: pending.body.revision,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   };
   assert.equal((await w.call("owner", "manage_project_access", args)).status, 200);
   const remaining = pending.body.invites.find((row) => row.email === "other@example.invalid");
@@ -552,7 +545,7 @@ test("a revocation whose index removal fails finishes the removal on retry", asy
     action: "revoke_invite",
     invite_id: pending.body.invites[0].id,
     expected_revision: pending.body.revision,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   };
   assert.equal((await w.call("owner", "manage_project_access", args)).status, 500);
   // The ACL committed; only the hint is left behind.

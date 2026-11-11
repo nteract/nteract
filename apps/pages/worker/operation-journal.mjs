@@ -1,20 +1,27 @@
-/** Bounded, explicitly expiring retries. Expiration is authority to forget a
- * completed receipt, never authority to run an uncertain request again. Caller
- * serializes these helpers with its resource's mutation queue and persists the
- * returned entry before applying its side effect. Pending entries never expire.
+/** One receipt lane per journal, bounded by time and capacity. Forgetting a
+ * completed receipt is allowed; running an uncertain request again on the
+ * strength of a forgotten one is not, so the journal keeps a horizon. Caller
+ * serializes these helpers with its resource's mutation queue and persists
+ * the returned entry before applying its side effect. Pending entries are
+ * never collected.
  *
- * Receipts sit in two lanes, each bounded by JOURNAL_LIMITS. A call with a
- * retry token holds its receipt for the token's seven-day window: an exact
- * retry replays it, and a full lane refuses new work until collection frees
- * expired receipts. A call without a token has no window, so its receipt
- * can't expire; it serves only to replay an exact repeat of the same key,
- * normally a client retrying a lost response moments later. That lane keeps
- * the newest receipts instead: at capacity, reserving a new entry evicts the
- * oldest completed tokenless receipts to make room, so a Page that takes
- * thousands of tokenless comments never turns read-only. A key whose receipt
- * was evicted is a new request again.
+ * An entry moves absent → pending (persisted) → applied → completed; a retry
+ * or restart resumes from the persisted state. Every client receipt carries
+ * `recordedAt` from the host's journal time (journalTime). Collection deletes completed
+ * receipts older than RECEIPT_LIFETIME_MS, and at capacity reserving evicts
+ * the oldest completed receipts; only pending entries can make it refuse.
+ *
+ * The horizon (`host/receipt-horizon`) is the largest `recordedAt` of any
+ * receipt this journal deleted, and never less than the clock minus
+ * RECEIPT_LIFETIME_MS (receiptHorizon). It is made durable before the
+ * deletes it covers. A write against a revision superseded at or before the
+ * horizon may have a forgotten receipt, so its host refuses it
+ * (`resync_required`) rather than guess whether it is a retry.
  */
-export const RETRY_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
+import { validNonce } from "../model/nonce.mjs";
+import { latestRevision, REVISION_DOCS } from "./revisions.mjs";
+
+export const RECEIPT_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
 export const JOURNAL_LIMITS = Object.freeze({
   entries: 1000,
   bytes: 8 * 1024 * 1024,
@@ -22,14 +29,15 @@ export const JOURNAL_LIMITS = Object.freeze({
   pendingBytes: 4 * 1024 * 1024,
 });
 const PREFIX = "host/operation/";
-/** The host's own writes. A client key can't reach it: client keys hold only letters, digits, `_` and
- * `-`, never `:`. Its entries count against neither client lane nor the
- * client pending budget, so a full legacy receipt store can't block them. */
+/** The host's own writes. A client key can't reach it: client keys hold only
+ * letters, digits, `_` and `-`, never `:`. Its entries count against neither
+ * the client lane nor the client pending budget. */
 export const INTERNAL_PREFIX = `${PREFIX}internal:`;
 export const INTERNAL_LIMITS = Object.freeze({ pendingEntries: 4 });
 const isInternal = (key) => key.startsWith(INTERNAL_PREFIX);
 const SECRET = "host/retry-secret-v1";
-const CLOCK = "host/retry-clock-v1";
+export const HORIZON = "host/receipt-horizon";
+const LANE = /^[a-z][a-z0-9-]{0,31}$/;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 const durableSigningKeys = new WeakMap();
@@ -37,17 +45,29 @@ const durableSigningKeys = new WeakMap();
 function reject(status, code, message) {
   throw Object.assign(new Error(message), { status, code });
 }
-function validContext(scope, principal) {
-  if (
-    typeof scope !== "string" ||
-    !scope.length ||
-    scope.length > 1024 ||
-    typeof principal !== "string" ||
-    !principal.length ||
-    principal.length > 1024
-  )
-    throw new TypeError("A resource scope and authenticated principal are required");
+export { validNonce };
+
+/** The receipt key of a client write: `host/operation/n1_<first 32 hex of
+ * SHA-256 of the principal>_<lane>_<nonce>`. The host derives the account
+ * part from the authenticated request; a caller sends only its nonce. */
+export async function receiptKey({ principal, lane, nonce }, prefix = PREFIX) {
+  if (typeof principal !== "string" || !principal.length || principal.length > 1024)
+    throw new TypeError("An authenticated principal is required");
+  if (!LANE.test(lane ?? "")) throw new TypeError("Invalid receipt lane");
+  if (!validNonce(nonce))
+    reject(
+      400,
+      "invalid_nonce",
+      "nonce must be 6–64 letters, digits, underscores or hyphens, new for each request",
+    );
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(principal)));
+  const account = digest
+    .slice(0, 16)
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+  return `${prefix}n1_${account}_${lane}_${nonce}`;
 }
+
 function encode(bytes) {
   let text = "";
   for (const byte of bytes) text += String.fromCharCode(byte);
@@ -69,7 +89,7 @@ async function signingKey(storage, create) {
     await storage.put(SECRET, bytes);
   }
   if (!bytes && !create) return null;
-  if (!bytes || bytes.byteLength !== 32) throw Error("Retry signing key is unavailable");
+  if (!bytes || bytes.byteLength !== 32) throw Error("Capability signing key is unavailable");
   const cached = durableSigningKeys.get(storage);
   if (cached && cached.bytes.every((byte, index) => byte === bytes[index])) return cached.key;
   const key = await crypto.subtle.importKey(
@@ -80,92 +100,45 @@ async function signingKey(storage, create) {
     ["sign", "verify"],
   );
   if (create) {
-    // Cache only a confirmed barrier. A failed first issue retries this sync;
-    // warm pure reads need no metadata writes, journal scans, or sync calls.
+    // Cache only a confirmed barrier. A failed first signing retries this
+    // sync; warm verifications need no metadata writes or sync calls.
     await storage.sync();
     durableSigningKeys.set(storage, { bytes: new Uint8Array(bytes), key });
   }
   return key;
 }
-async function readClock(storage, now) {
-  if (!Number.isSafeInteger(now) || now < 0) throw new TypeError("Invalid retry clock");
-  const old = (await storage.get(CLOCK)) ?? 0;
-  if (!Number.isSafeInteger(old) || old < 0) throw Error("Invalid stored retry clock");
-  return { old, current: Math.max(old, now) };
-}
-async function clock(storage, now) {
-  const { old, current } = await readClock(storage, now);
-  if (current !== old) await storage.put(CLOCK, current);
-  // Repeat even when unchanged: a previous put may have succeeded before a
-  // failed sync. No terminal receipt is removed before this floor is durable.
-  await storage.sync();
+/** The host's journal time: the wall clock, never below the receipt horizon
+ * or the time of either document's latest revision handle. Those floors are
+ * durable, so the time a receipt or handle records never runs back behind
+ * one recorded before it, across a restart or a clock stepped backwards, and
+ * keeping the time writes nothing. Receipts and handles take their times
+ * from here. */
+export async function journalTime(storage, now = Date.now()) {
+  if (!Number.isSafeInteger(now) || now < 0) throw new TypeError("Invalid journal clock");
+  const horizon = (await storage.get(HORIZON)) ?? 0;
+  if (!Number.isSafeInteger(horizon)) throw Error("Invalid stored receipt horizon");
+  let current = Math.max(now, horizon);
+  for (const doc of Object.keys(REVISION_DOCS))
+    current = Math.max(current, (await latestRevision(storage, doc))?.at ?? 0);
   return current;
 }
-function retryMetadata(payload, keyPrefix) {
-  return {
-    version: 1,
-    scope: payload.scope,
-    principal: payload.principal,
-    issuedAt: payload.issuedAt,
-    expiresAt: payload.expiresAt,
-    keyPrefix,
-  };
+/** The time at or before which this journal may have forgotten a receipt:
+ * the stored horizon, or `now` minus the receipt lifetime when later. */
+export async function receiptHorizon(storage, now) {
+  const stored = (await storage.get(HORIZON)) ?? 0;
+  if (!Number.isSafeInteger(stored)) throw Error("Invalid stored receipt horizon");
+  return Math.max(stored, now - RECEIPT_LIFETIME_MS);
 }
-function isWindow(value) {
-  return (
-    value?.version === 1 &&
-    typeof value.scope === "string" &&
-    typeof value.principal === "string" &&
-    Number.isSafeInteger(value.issuedAt) &&
-    value.issuedAt >= 0 &&
-    Number.isSafeInteger(value.expiresAt) &&
-    value.expiresAt - value.issuedAt === RETRY_LIFETIME_MS
-  );
-}
-function isRetry(value) {
-  return (
-    isWindow(value) &&
-    typeof value.keyPrefix === "string" &&
-    /^v1_[a-f0-9]{64}_$/.test(value.keyPrefix)
-  );
-}
-const FRESH_TOKEN = "Use the retry_token from a fresh read_page or list_pages result";
-
-/** The `v1_<SHA-256 hex of the token>_` start of every receipt key a retry
- * token scopes. The host derives it; a caller sends only its own nonce. */
-export async function retryKeyPrefix(retryToken) {
-  if (typeof retryToken !== "string" || !retryToken.length || retryToken.length > 8192)
-    reject(400, "invalid_retry_token", FRESH_TOKEN);
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(retryToken)));
-  return `v1_${[...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("")}_`;
-}
-function checkRetryKey(key, retry) {
-  const prefix = `${PREFIX}${retry.keyPrefix}`;
-  if (!key.startsWith(prefix) || !/^[A-Za-z0-9_-]{8,128}$/.test(key.slice(prefix.length)))
-    throw new TypeError("A retry receipt key must be derived from its own retry_token");
+/** Delete completed receipts `entries`, raising the horizon to the newest of
+ * them first. The horizon is durable before any delete is. */
+async function forget(storage, entries, now) {
+  if (!entries.length) return;
+  const newest = Math.max(...entries.map(([, value]) => value.recordedAt ?? 0));
+  await storage.put(HORIZON, Math.max(await receiptHorizon(storage, now), newest));
+  await storage.sync();
+  for (const [key] of entries) await storage.delete(key);
 }
 
-async function verify(storage, token, scope, principal) {
-  validContext(scope, principal);
-  let bytes, signature, payload;
-  try {
-    if (typeof token !== "string" || token.length > 8192) throw Error("Invalid token size");
-    const parts = token.split(".");
-    if (parts.length !== 2) throw Error("Invalid token");
-    bytes = decode(parts[0]);
-    signature = decode(parts[1]);
-    payload = JSON.parse(decoder.decode(bytes));
-    if (!isWindow(payload) || payload.scope !== scope || payload.principal !== principal)
-      throw Error("Invalid retry scope or time");
-  } catch {
-    reject(400, "invalid_retry_token", FRESH_TOKEN);
-  }
-  // Storage failures are service failures, not malformed credentials.
-  const key = await signingKey(storage, false);
-  if (!key || !(await crypto.subtle.verify("HMAC", key, signature, bytes)))
-    reject(400, "invalid_retry_token", FRESH_TOKEN);
-  return retryMetadata(payload, await retryKeyPrefix(token));
-}
 export async function listOperationEntries(storage) {
   const result = new Map();
   let startAfter;
@@ -182,47 +155,27 @@ export async function listOperationEntries(storage) {
   } while (startAfter);
   return result;
 }
-async function collect(storage, floor) {
+/** Remove completed client receipts past their lifetime. A receipt without
+ * `recordedAt` counts as the oldest. */
+async function collect(storage, now) {
   const values = await listOperationEntries(storage);
-  for (const [key, value] of values) {
-    if (value.retry !== undefined && !isRetry(value.retry))
-      throw Error("Invalid operation retry metadata");
-    if (value.pending === false && value.retry && value.retry.expiresAt <= floor) {
-      await storage.delete(key);
-      values.delete(key);
-    }
-  }
+  const expired = [...values].filter(
+    ([key, value]) =>
+      !isInternal(key) &&
+      value.pending === false &&
+      (value.recordedAt ?? -1) <= now - RECEIPT_LIFETIME_MS,
+  );
+  await forget(storage, expired, now);
+  for (const [key] of expired) values.delete(key);
   return values;
 }
 
-export async function issueRetryToken(storage, { scope, principal, now = Date.now() }) {
-  validContext(scope, principal);
-  const key = await signingKey(storage, true);
-  const { current: floor } = await readClock(storage, now);
-  const payload = {
-    version: 1,
-    scope,
-    principal,
-    issuedAt: floor,
-    expiresAt: floor + RETRY_LIFETIME_MS,
-  };
-  const bytes = encoder.encode(JSON.stringify(payload));
-  const signature = new Uint8Array(await crypto.subtle.sign("HMAC", key, bytes));
-  const token = `${encode(bytes)}.${encode(signature)}`;
-  return {
-    retry_token: token,
-    retry_until: new Date(payload.expiresAt).toISOString(),
-  };
-}
-
 /**
- * A short-lived host capability, signed with the same per-resource key as
- * retry tokens: `<prefix>.<payload>.<signature>`, base64url like a retry
- * token. Its MAC covers `<purpose>\n<payload JSON>` and the payload repeats
- * `purpose`, so the two never stand in for each other. A retry token has two
- * parts and its MAC covers the bare payload, which starts with `{`; a
- * capability has three parts and its MAC input starts with the purpose.
- * Expiry and binding belong to the caller's own check.
+ * A short-lived host capability, signed with this resource's key:
+ * `<prefix>.<payload>.<signature>`, base64url. Its MAC covers
+ * `<purpose>\n<payload JSON>` and the payload repeats `purpose`, so two
+ * purposes never stand in for each other. Expiry and binding belong to the
+ * caller's own check.
  */
 export async function signCapability(storage, { purpose, prefix, payload }) {
   if (!validPurpose(purpose) || !/^[a-z0-9]{1,16}$/.test(prefix))
@@ -236,9 +189,9 @@ export async function signCapability(storage, { purpose, prefix, payload }) {
 }
 
 /** The payload of a capability this resource signed for `purpose`, or null
- * for anything else: another purpose or prefix, a retry token, a forged or
- * truncated token, or a resource that has never signed one. A storage
- * failure throws: it is a service failure, not a verdict on the token. */
+ * for anything else: another purpose or prefix, a forged or truncated token,
+ * or a resource that has never signed one. A storage failure throws: it is a
+ * service failure, not a verdict on the token. */
 export async function openCapability(storage, token, { purpose, prefix }) {
   if (!validPurpose(purpose)) throw new TypeError("A capability needs a purpose");
   let bytes, signature, payload;
@@ -275,13 +228,9 @@ function capabilityInput(purpose, bytes) {
   return input;
 }
 
-/** An expired, matching pending entry may still be resumed. Completed requests
- * past the durable deadline are always expired, even before their row is GC'd.
- */
-export async function inspectOperation(
-  storage,
-  { key, digest, retryToken, pendingEntry, scope, principal, now = Date.now() },
-) {
+/** The entry stored under `key`, checked against this request's digest: the
+ * same key with another digest is `nonce_conflict`. */
+export async function inspectOperation(storage, { key, digest, pendingEntry }) {
   const stored = await storage.get(key);
   // Only the internal admission owner may supply its exact retained pending
   // intent after a failed journal put. This is not a caller-controlled fallback.
@@ -289,31 +238,8 @@ export async function inspectOperation(
     throw new TypeError("Only a trusted pending admission may resume without a journal row");
   const entry = stored ?? pendingEntry;
   if (entry && entry.fingerprint !== digest)
-    reject(409, "idempotency_conflict", "idempotency_key was used for a different request");
-  if (retryToken === undefined) {
-    // Only a retry token's derived key starts with v1_; client keys never do.
-    if (key.startsWith(`${PREFIX}v1_`))
-      throw new TypeError("A retry receipt key needs its retry_token");
-    return { entry, retry: undefined };
-  }
-  const floor = await clock(storage, now);
-  const retry = await verify(storage, retryToken, scope, principal);
-  checkRetryKey(key, retry);
-  if (
-    entry &&
-    (!isRetry(entry.retry) ||
-      ["version", "scope", "principal", "issuedAt", "expiresAt", "keyPrefix"].some(
-        (field) => entry.retry[field] !== retry[field],
-      ))
-  )
-    reject(409, "idempotency_conflict", "idempotency_key was used for a different retry token");
-  if (retry.expiresAt <= floor && !entry?.pending)
-    reject(
-      410,
-      "retry_expired",
-      "Retry window expired; outcome may be unknown. Read the Page or catalog to reconcile before making a new request. Do not retry with a replacement token.",
-    );
-  return { entry, retry };
+    reject(409, "nonce_conflict", "This nonce was used for a different request");
+  return { entry };
 }
 
 /** Conservative structured-clone estimate; binary histories are charged by
@@ -336,32 +262,17 @@ export function operationEntryBytes(key, entry) {
   return size(key) + size(entry);
 }
 
-/** Checks headroom for an immutable intent; the caller durably installs the
- * returned entry under its serialized mutation queue before any side effect. */
-export async function reserveOperation(storage, { key, entry, retry, now = Date.now() }) {
+/** Checks headroom for an immutable intent and stamps its `recordedAt` with
+ * the journal clock. The caller durably installs the returned entry under
+ * its serialized mutation queue before any side effect. */
+export async function reserveOperation(storage, { key, entry, now = Date.now() }) {
   if (!key.startsWith(PREFIX) || entry.pending !== true)
     throw new TypeError("Only new pending operation entries can reserve capacity");
-  if (retry !== undefined && !isRetry(retry)) throw new TypeError("Invalid retry metadata");
-  if (retry) checkRetryKey(key, retry);
-  else if (key.startsWith(`${PREFIX}v1_`))
-    throw new TypeError("A retry receipt key needs its retry metadata");
-  // Existing legacy clients need no retirement barrier until this resource has
-  // issued versioned tokens. Floor zero retains every versioned entry even if
-  // anomalous storage contains one without a clock; it never authorizes GC.
-  const floor =
-    retry === undefined && (await storage.get(CLOCK)) === undefined ? 0 : await clock(storage, now);
-  if (retry && retry.expiresAt <= floor)
-    reject(
-      410,
-      "retry_expired",
-      "Retry window expired before admission; read again before making a new request",
-    );
-  const values = await collect(storage, floor);
+  const current = await journalTime(storage, now);
+  const values = await collect(storage, current);
   if (values.has(key))
     throw Error("Operation already exists; inspect it before reserving capacity");
-  const prepared = { ...entry, ...(retry && { retry }) };
   if (isInternal(key)) {
-    if (retry) throw new TypeError("Internal operations take no retry token");
     // A finished migration's receipt is never read again: its key names the
     // heads it converted, which the document has moved past. Drop them.
     for (const [name, value] of values)
@@ -371,17 +282,11 @@ export async function reserveOperation(storage, { key, entry, retry, now = Date.
     );
     if (pendingInternal.length >= INTERNAL_LIMITS.pendingEntries)
       reject(429, "pending_operation_capacity", "Pending host migrations need recovery first");
-    return prepared;
+    return { ...entry };
   }
-  // A tokenless receipt's age orders eviction; entries from builds before the
-  // stamp sort oldest.
-  if (!retry) prepared.recordedAt = now;
-  const lane = [...values].filter(
-    ([name, value]) => !isInternal(name) && Boolean(value.retry) === Boolean(retry),
-  );
-  const pending = [...values].filter(
-    ([name, value]) => !isInternal(name) && value.pending === true,
-  );
+  const prepared = { ...entry, recordedAt: current };
+  const lane = [...values].filter(([name]) => !isInternal(name));
+  const pending = lane.filter(([, value]) => value.pending === true);
   const bytes = operationEntryBytes(key, prepared);
   if (
     pending.length >= JOURNAL_LIMITS.pendingEntries ||
@@ -399,7 +304,7 @@ export async function reserveOperation(storage, { key, entry, retry, now = Date.
     laneBytes = bytes;
   for (const size of sizes.values()) laneBytes += size;
   const full = () => laneEntries >= JOURNAL_LIMITS.entries || laneBytes > JOURNAL_LIMITS.bytes;
-  if (!retry && full()) {
+  if (full()) {
     const evictable = lane
       .filter(([, value]) => value.pending === false)
       .sort(
@@ -407,20 +312,19 @@ export async function reserveOperation(storage, { key, entry, retry, now = Date.
           (left.recordedAt ?? -1) - (right.recordedAt ?? -1) ||
           (leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0),
       );
+    const evicted = [];
     for (let next = 0; full() && next < evictable.length; next++) {
-      const [name] = evictable[next];
-      await storage.delete(name);
+      evicted.push(evictable[next]);
       laneEntries--;
-      laneBytes -= sizes.get(name);
+      laneBytes -= sizes.get(evictable[next][0]);
     }
+    await forget(storage, evicted, current);
   }
   if (full())
     reject(
       429,
       "operation_receipt_capacity",
-      retry
-        ? "The active retry window is full; retry later with the same token, key and payload"
-        : "Pending operations fill the receipt journal; finish or recover them before new requests",
+      "Pending operations fill the receipt journal; finish or recover them before new requests",
     );
   return prepared;
 }

@@ -9,6 +9,7 @@ import worker, { Page } from "./index.mjs";
 import { authenticate } from "./auth.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { plainStub } from "./plain-stub.mjs";
+import { revisionFor } from "./revisions.mjs";
 
 const pageId = "33333333-3333-4333-8333-333333333333";
 function request(token, path, body) {
@@ -30,6 +31,10 @@ async function fixture(t, role = "owner") {
     broadcasts = [];
   const storage = {
     async put(key, value) {
+      if (typeof key === "object") {
+        for (const [name, entry] of Object.entries(key)) await this.put(name, entry);
+        return;
+      }
       writes.push([key, value]);
     },
     async sync() {
@@ -111,7 +116,9 @@ test("gateway progress and presence requests are authenticated, ephemeral and re
   assert.equal(read.status, 200);
   const projection = await read.json();
   assert.equal(projection.progress.length, 1);
-  assert.deepEqual(projection.heads, heads);
+  // Presence names no revision and writes nothing.
+  assert.equal(projection.heads, undefined);
+  assert.equal(projection.revision, undefined);
   assert.ok(!JSON.stringify(projection).includes(receipt.lease_token));
   assert.equal(
     (await f.call("report_page_progress", { message: "Not allowed" }, readToken)).status,
@@ -143,22 +150,26 @@ test("change-feed gateway permits read scope and viewers but rechecks revoked Pa
   const values = new Map();
   f.page.ctx.storage = {
     get: async (key) => values.get(key),
-    put: async (key, value) => values.set(key, value),
+    put: async (key, value) =>
+      typeof key === "object"
+        ? Object.entries(key).forEach(([name, entry]) => values.set(name, entry))
+        : values.set(key, value),
     sync: async () => {},
   };
   f.page.cacheTitle = () => {};
+  const since = await revisionFor(f.page.ctx.storage, "page", heads, Date.now());
   const read = await f.call(
     "read_page_changes",
-    { since_heads: heads },
+    { since_revision: since },
     f.apiKey({ scopes: ["cloud:read"] }),
   );
   assert.equal(read.status, 200, await read.clone().text());
   const body = await read.json();
-  assert.deepEqual(body.heads, heads);
+  assert.equal(body.revision, since);
   assert.deepEqual(body.changes, []);
-  assert.ok(body.retry_token);
+  assert.equal(body.retry_token, undefined);
   f.page.metadata.acl.members[f.identity.principal] = { role: "none", generation: 2 };
-  const denied = await f.call("read_page_changes", { since_heads: heads });
+  const denied = await f.call("read_page_changes", { since_revision: since });
   assert.equal(denied.status, 403);
   const refusal = await denied.json();
   assert.deepEqual(Object.keys(refusal), ["error", "code"]);

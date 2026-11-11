@@ -11,7 +11,8 @@ import { DocStore, MemoryByteStore } from "../sync/doc-store.mjs";
 import { framePipe } from "../sync/wire.mjs";
 import { Page } from "./index.mjs";
 import { HOST_SENDER_ID, PlainByteStore } from "./plain-sync.mjs";
-import { documentMutation } from "./mutations.mjs";
+import { documentMutation, operationKey } from "./mutations.mjs";
+import { headsFor, revisionFor } from "./revisions.mjs";
 import { applyComment } from "../model/comments.mjs";
 
 class Storage {
@@ -41,6 +42,15 @@ class Storage {
 }
 
 const pageId = "44444444-4444-4444-8444-444444444444";
+// The revision handle the Page host names `heads` by, minted in its storage.
+const revisionOf = (f, heads) => revisionFor(f.storage, "page", heads, Date.now());
+const headsOf = (f, revision, doc = "page") => headsFor(f.storage, doc, revision);
+// The fixture caller's edit receipt key for `nonce`.
+const receiptKeyOf = (nonce) =>
+  operationKey({ nonce }, { principal: "user:anaconda-fixture:fixture-user" }, "page");
+// The journal entry for `key` in a put, alone or in a multi-key put.
+const entryIn = (target, key, value) =>
+  typeof key === "object" ? key[target] : key === target ? value : undefined;
 
 async function fixture(t) {
   const auth = await createAuthFixture();
@@ -74,7 +84,7 @@ async function fixture(t) {
     document_id: interpretAsDocumentId(generateAutomergeUrl()),
     initial_snapshot_base64: Buffer.from(A.save(doc)).toString("base64"),
     title: "Plain Page",
-    idempotency_key: "register-plain",
+    nonce: "register-plain",
     record_storage: "automerge",
   };
   const register = (p) =>
@@ -140,8 +150,8 @@ test("plain API edit write costs at 1, 10 and 100 consecutive edits", async (t) 
   for (let n = 1; n <= 100; n++) {
     const heads = A.getHeads(host.handle.doc());
     const response = await tool(f, host, "edit_page", {
-      base_heads: heads,
-      idempotency_key: `write-cost-${String(n).padStart(3, "0")}`,
+      revision: await revisionOf(f, heads),
+      nonce: `write-cost-${String(n).padStart(3, "0")}`,
       operations: [
         {
           op: "replace_match",
@@ -190,8 +200,8 @@ test("the host prefix survives restart and rejects unseen browser actors without
   for (let n = 1; n <= 2; n++) {
     const initialClaims = new Set((await f.storage.list({ prefix: "plain/actor/" })).keys());
     const response = await tool(f, host, "edit_page", {
-      base_heads: A.getHeads(host.handle.doc()),
-      idempotency_key: `actor-restart-${n}`,
+      revision: await revisionOf(f, A.getHeads(host.handle.doc())),
+      nonce: `actor-restart-${n}`,
       operations: [{ op: "set_title", title: `Title ${n}` }],
     });
     assert.equal(response.status, 200, await response.clone().text());
@@ -207,7 +217,7 @@ test("the host prefix survives restart and rejects unseen browser actors without
       initialClaims,
     );
     const comment = await tool(f, host, "manage_page_comment", {
-      idempotency_key: `actor-comment-${n}`,
+      nonce: `actor-comment-${n}`,
       action: "add",
       block_id: Object.keys(host.handle.doc().blocks)[0],
       body: `Comment ${n}`,
@@ -270,8 +280,8 @@ for (const ambiguous of [false, true])
     await host.flush();
     const before = host.handle.doc();
     const args = {
-      base_heads: A.getHeads(before),
-      idempotency_key: "append-recovery",
+      revision: await revisionOf(f, A.getHeads(before)),
+      nonce: "append-recovery",
       operations: [{ op: "set_title", title: "API recovered" }],
     };
     let failures = 2;
@@ -296,7 +306,7 @@ for (const ambiguous of [false, true])
     if (!ambiguous) assert.deepEqual(host.handle.doc(), before);
     assert.equal(host.handle.doc().title, ambiguous ? "API recovered" : "Plain Page");
     assert.equal(events.length, ambiguous ? 1 : 0);
-    const pending = await f.storage.get("host/operation/append-recovery");
+    const pending = await f.storage.get(await receiptKeyOf("append-recovery"));
     assert.equal(pending.pending, !ambiguous);
     const read = await tool(f, host, "read_page", { comments: "none" });
     assert.equal(read.status, 200, await read.clone().text());
@@ -312,11 +322,14 @@ for (const ambiguous of [false, true])
       new Request("https://pages.invalid/api/saved", {
         method: "POST",
         headers: { authorization: `Bearer ${f.token}`, "x-pages-driver": "ChatGPT" },
-        body: JSON.stringify({ heads: receipt.heads, schema_features: BUILD_FEATURES }),
+        body: JSON.stringify({
+          heads: await headsOf(f, receipt.revision),
+          schema_features: BUILD_FEATURES,
+        }),
       }),
     );
     assert.equal(saved.status, 200, await saved.clone().text());
-    assert.deepEqual((await saved.json()).durableHeads, receipt.heads);
+    assert.deepEqual((await saved.json()).durableHeads, await headsOf(f, receipt.revision));
     assert.equal((await tool(f, host, "edit_page", args)).status, 200);
     assert.equal(A.getChanges(before, host.handle.doc()).length, 1);
     assert.equal(events.length, 1);
@@ -370,10 +383,10 @@ test("plain capacity refusal on restart preserves committed reads and the pendin
   assert.ok((await f.register(host)).ok);
   await host.flush();
   const tree = treeHex(f.args.document_id);
-  const key = "host/operation/capacity-recovery";
+  const key = await receiptKeyOf("capacity-recovery");
   const args = {
-    base_heads: A.getHeads(host.handle.doc()),
-    idempotency_key: "capacity-recovery",
+    revision: await revisionOf(f, A.getHeads(host.handle.doc())),
+    nonce: "capacity-recovery",
     operations: [{ op: "set_title", title: "Pending title " + "long ".repeat(100) }],
   };
   const browser = rawSocket(
@@ -405,9 +418,10 @@ test("plain capacity refusal on restart preserves committed reads and the pendin
   const put = f.storage.put.bind(f.storage);
   t.mock.method(f.storage, "put", async (name, value) => {
     await put(name, value);
-    if (name !== key || !value.pending || offset) return;
+    const entry = entryIn(key, name, value);
+    if (!entry?.pending || offset) return;
     const stored = manifest.call(host.plain.host.store, tree);
-    const pendingBytes = value.changes.reduce((n, bytes) => n + bytes.byteLength, 0);
+    const pendingBytes = entry.changes.reduce((n, bytes) => n + bytes.byteLength, 0);
     assert.ok(changes.reduce((n, bytes) => n + bytes.byteLength, 0) < pendingBytes);
     offset =
       16 * 1024 * 1024 -
@@ -443,12 +457,15 @@ test("plain capacity refusal on restart preserves committed reads and the pendin
   assert.equal(read.status, 200, await read.clone().text());
   const content = await read.json();
   assert.equal(content.title, "Plain Page");
-  assert.deepEqual(content.heads, committed);
+  assert.deepEqual(await headsOf(f, content.revision), committed);
   assert.equal(content.recovery.code, "page_recovery_blocked");
   assert.equal(content.recovery.pending, true);
   assert.equal(restarted.handle.doc().browser, true);
   assert.deepEqual(await f.storage.get(key), pending);
-  const edit = await tool(f, restarted, "edit_page", { ...args, base_heads: committed });
+  const edit = await tool(f, restarted, "edit_page", {
+    ...args,
+    revision: await revisionOf(f, committed),
+  });
   assert.equal(edit.status, 409);
   assert.equal((await edit.json()).code, "page_recovery_blocked");
   assert.deepEqual(await f.storage.get(key), pending);
@@ -461,26 +478,26 @@ test("an abandoned pending intent does not block another principal and replays o
   assert.ok((await f.register(host)).ok);
   const put = f.storage.put.bind(f.storage);
   const args = {
-    base_heads: A.getHeads(host.handle.doc()),
-    idempotency_key: "pending-actor-1",
+    revision: await revisionOf(f, A.getHeads(host.handle.doc())),
+    nonce: "pending-actor-1",
     operations: [{ op: "set_title", title: "Recovered" }],
   };
   let fail = true;
   t.mock.method(f.storage, "put", async (key, value) => {
     await put(key, value);
-    if (key === "host/operation/pending-actor-1" && value.pending && fail) {
+    if (entryIn(await receiptKeyOf("pending-actor-1"), key, value)?.pending && fail) {
       fail = false;
       throw Error("ambiguous intent put");
     }
   });
   assert.equal((await tool(f, host, "edit_page", args)).status, 500);
-  const pending = await f.storage.get("host/operation/pending-actor-1");
+  const pending = await f.storage.get(await receiptKeyOf("pending-actor-1"));
   await documentMutation({
     storage: f.storage,
     handle: host.handle,
     hostActorPrefix: host.plain.hostActorPrefix,
     operation: "edit_page",
-    args: { ...args, idempotency_key: "pending-actor-2" },
+    args: { ...args, nonce: "pending-actor-2" },
     identity: { principal: "user:other-editor", driver: "API" },
     apply: (d) => {
       d.otherEditor = true;
@@ -490,17 +507,17 @@ test("an abandoned pending intent does not block another principal and replays o
   assert.equal(host.handle.doc().otherEditor, true);
   const retry = await tool(f, host, "edit_page", args);
   assert.equal(retry.status, 200, await retry.clone().text());
-  assert.deepEqual((await retry.json()).heads, pending.receipt.heads);
+  assert.deepEqual((await retry.json()).revision, pending.receipt.revision);
   // Leave a second intent pending across a restart.
   const args2 = {
     ...args,
-    base_heads: A.getHeads(host.handle.doc()),
-    idempotency_key: "pending-actor-3",
+    revision: await revisionOf(f, A.getHeads(host.handle.doc())),
+    nonce: "pending-actor-3",
     operations: [{ op: "set_title", title: "Restart recovered" }],
   };
   t.mock.method(f.storage, "put", async (key, value) => {
     await put(key, value);
-    if (key === "host/operation/pending-actor-3" && value.pending)
+    if (entryIn(await receiptKeyOf("pending-actor-3"), key, value)?.pending)
       throw Error("crash after intent");
   });
   assert.equal((await tool(f, host, "edit_page", args2)).status, 500);
@@ -510,11 +527,11 @@ test("an abandoned pending intent does not block another principal and replays o
   await restarted.ready;
   await restarted.documentReady();
   assert.equal(restarted.handle.doc().title, "Restart recovered");
-  assert.equal((await f.storage.get("host/operation/pending-actor-3")).pending, false);
+  assert.equal((await f.storage.get(await receiptKeyOf("pending-actor-3"))).pending, false);
   const next = await tool(f, restarted, "edit_page", {
     ...args2,
-    base_heads: A.getHeads(restarted.handle.doc()),
-    idempotency_key: "pending-actor-4",
+    revision: await revisionOf(f, A.getHeads(restarted.handle.doc())),
+    nonce: "pending-actor-4",
     operations: [{ op: "set_title", title: "After recovery" }],
   });
   assert.equal(next.status, 200, await next.clone().text());
@@ -532,6 +549,7 @@ test("concurrent plain mutation candidates from the same heads use different act
   const host = f.page();
   assert.ok((await f.register(host)).ok);
   const heads = A.getHeads(host.handle.doc());
+  const revision = await revisionOf(f, heads);
   let release;
   const gate = new Promise((resolve) => {
     release = resolve;
@@ -543,7 +561,7 @@ test("concurrent plain mutation candidates from the same heads use different act
       handle: host.handle,
       hostActorPrefix: host.plain.hostActorPrefix,
       operation: "edit_page",
-      args: { base_heads: heads, idempotency_key: `concurrent-${field}` },
+      args: { revision, nonce: `concurrent-${field}` },
       identity: { principal: `service:${field}`, driver: "API" },
       apply: (doc) => {
         built.push(field);
@@ -883,8 +901,8 @@ test("browser usage writes follow durable admission, not read-only sync, retries
   await until(() => host.handle.doc().title === "Second edit");
   assert.equal(events.length, 1);
   const edited = await tool(f, host, "edit_page", {
-    base_heads: A.getHeads(host.handle.doc()),
-    idempotency_key: "usage-agent-edit",
+    revision: await revisionOf(f, A.getHeads(host.handle.doc())),
+    nonce: "usage-agent-edit",
     operations: [
       { op: "replace_match", block_id: block, match_text: "Original", replacement: "Agent" },
     ],
@@ -977,24 +995,25 @@ test("API edits on plain Pages name their principal independently of the host ac
     const messages = [];
     handle.on("ephemeral-message", (event) => messages.push(event));
     const response = await tool(f, host, "edit_page", {
-      base_heads: A.getHeads(handle.doc()),
-      idempotency_key: "principal-edit",
+      revision: await revisionOf(f, A.getHeads(handle.doc())),
+      nonce: "principal-edit",
       operations: [{ op: "set_title", title: "Named API edit" }],
     });
     assert.equal(response.status, 200, await response.clone().text());
     const receipt = await response.json();
+    const receiptHeads = await headsOf(f, receipt.revision);
     await until(() => messages.some((event) => event.message?.kind === "tool-edit"));
     const edit = messages.find((event) => event.message?.kind === "tool-edit");
     assert.equal(edit.senderId, HOST_SENDER_ID);
     assert.equal(edit.message.identity.principal, principal);
     assert.equal(edit.message.identity.driver, "ChatGPT");
-    assert.deepEqual(edit.message.heads, receipt.heads);
-    await until(() => A.hasHeads(handle.doc(), receipt.heads));
+    assert.deepEqual(edit.message.heads, receiptHeads);
+    await until(() => A.hasHeads(handle.doc(), receiptHeads));
     assert.equal(handle.doc().title, "Named API edit");
-    assert.equal(receipt.heads.length, 1);
+    assert.equal(receiptHeads.length, 1);
     const change = A.getAllChanges(handle.doc())
       .map(A.decodeChange)
-      .find((change) => change.hash === receipt.heads[0]);
+      .find((change) => change.hash === receiptHeads[0]);
     assert.ok(change);
     assert.ok(change.actor.startsWith(host.plain.hostActorPrefix));
     assert.equal(host.plain.host.actor(change.actor), undefined);
@@ -1003,20 +1022,21 @@ test("API edits on plain Pages name their principal independently of the host ac
     const commentMessages = [];
     comments.on("ephemeral-message", (event) => commentMessages.push(event));
     const commentResponse = await tool(f, host, "manage_page_comment", {
-      idempotency_key: "principal-comment",
+      nonce: "principal-comment",
       action: "add",
       block_id: Object.keys(handle.doc().blocks)[0],
       body: "Named API comment",
     });
     assert.equal(commentResponse.status, 200, await commentResponse.clone().text());
     const commentReceipt = await commentResponse.json();
+    const commentHeads = await headsOf(f, commentReceipt.comment_revision, "comments");
     await until(() => commentMessages.some((event) => event.message?.kind === "tool-edit"));
     const comment = commentMessages.find((event) => event.message?.kind === "tool-edit");
     assert.equal(comment.senderId, HOST_SENDER_ID);
     assert.equal(comment.message.identity.principal, principal);
     assert.equal(comment.message.comments, true);
-    assert.deepEqual(comment.message.heads, commentReceipt.comment_heads);
-    await until(() => A.hasHeads(comments.doc(), commentReceipt.comment_heads));
+    assert.deepEqual(comment.message.heads, commentHeads);
+    await until(() => A.hasHeads(comments.doc(), commentHeads));
   } finally {
     await browser.repo.shutdown();
   }

@@ -24,6 +24,7 @@ import { pageState } from "./access.mjs";
 import { PURGE_PREVIEW_TTL_MS } from "./trash.mjs";
 import { catalogIndexDatabase } from "./catalog-index.mjs";
 import { fixture, pageId } from "./trash-fixture.mjs";
+import { operationKey } from "./mutations.mjs";
 
 export const TABLE = new URL("../test/fixtures/machines/page-lifecycle.json", import.meta.url);
 const CHILD_ID = "66666666-6666-4666-8666-666666666666";
@@ -194,10 +195,17 @@ function watchMemory(page, trace) {
 /** Every put, delete and sync is a cut point. The effect trace names only the
  * lifecycle writes: records and receipts, the creation intent, and syncs. */
 function watchStorage(storage, trace, cuts) {
+  // What was written since the last sync: "none", only revision bookkeeping
+  // (worker/revisions.mjs), or "other". A barrier over bookkeeping alone is
+  // no lifecycle effect.
+  let pending = "none";
+  const bookkeeping = (name) => name.startsWith("host/revision/");
   storage.put = (key, value) => {
     const entries = typeof key === "object" ? Object.entries(key) : [[key, value]];
     return cuts.mutate("put", entries.map(([name]) => name).join(","), async () => {
       for (const [name, entry] of entries) storage.values.set(name, structuredClone(entry));
+      pending =
+        pending !== "other" && entries.every(([name]) => bookkeeping(name)) ? "revisions" : "other";
       const receipt = entries.some(([name]) => name.startsWith("host/lifecycle/"));
       const record = entries.some(([name]) => name === "host/document");
       if (receipt || record) trace.record({ type: "putRecord", receipt, record });
@@ -205,6 +213,7 @@ function watchStorage(storage, trace, cuts) {
   };
   storage.delete = (key) =>
     cuts.mutate("delete", key, async () => {
+      pending = pending !== "other" && bookkeeping(key) ? "revisions" : "other";
       const existed = storage.values.delete(key);
       if (key === "host/creation") trace.record({ type: "deleteCreation" });
       return existed;
@@ -212,7 +221,8 @@ function watchStorage(storage, trace, cuts) {
   // Rejected before it applies, a sync makes nothing new durable.
   storage.sync = () =>
     cuts.mutate("sync", "", async () => {
-      trace.record({ type: "sync" });
+      if (pending !== "revisions") trace.record({ type: "sync" });
+      pending = "none";
       storage.synced = structuredClone(storage.values);
     });
 }
@@ -379,6 +389,14 @@ async function step(h, crash, run) {
 
 const after = (type) => (effect) => effect.type === type;
 
+/** The name a lifecycle receipt for `nonce` from `actor` is stored under,
+ * after `host/lifecycle/`. */
+async function lifecycleName(f, actor, nonce) {
+  const principal = { owner: f.owner, member: f.member }[actor] ?? actor;
+  const key = await operationKey({ nonce }, { principal }, "lifecycle");
+  return key.slice("host/operation/".length);
+}
+
 /** A creation intent as `/internal/create` records it before importing. */
 export function creationIntent(h) {
   const metadata = structuredClone(h.f.initial);
@@ -387,15 +405,15 @@ export function creationIntent(h) {
   return { metadata, bytes: A.save(h.f.doc()) };
 }
 
-const trashBody = (h, revision, k) => ({
+const trashBody = async (h, revision, k) => ({
   page_id: pageId,
-  base_heads: h.f.heads(),
-  idempotency_key: `setup-trash-${k}`,
+  revision: await h.f.revision(),
+  nonce: `setup-trash-${k}`,
   expected_revision: revision,
 });
 const restoreBody = (revision, k) => ({
   page_id: pageId,
-  idempotency_key: `setup-restore-${k}`,
+  nonce: `setup-restore-${k}`,
   expected_revision: revision,
 });
 async function previewRequest(h) {
@@ -408,7 +426,7 @@ const purgeBody = async (h, revision) => ({
   page_id: pageId,
   action: "confirm",
   preview_token: await previewRequest(h),
-  idempotency_key: "setup-purge-1",
+  nonce: "setup-purge-1",
   expected_revision: revision,
 });
 
@@ -430,7 +448,7 @@ export async function walk(h, revision) {
     const k = Math.floor(current / 2) + 1;
     const response =
       current % 2 === 0
-        ? await call(h, "owner", "/internal/trash", trashBody(h, current, k))
+        ? await call(h, "owner", "/internal/trash", await trashBody(h, current, k))
         : await call(h, "owner", "/internal/restore", restoreBody(current, k));
     assert.equal(response.status, 200, JSON.stringify(response.body));
   }
@@ -458,16 +476,14 @@ export async function reach(h, state, event) {
     case "trashed":
       await walk(h, state.revision);
       break;
-    case "trashing":
+    case "trashing": {
       await walk(h, state.revision - 1);
+      const body = await trashBody(h, state.revision - 1, Math.floor(state.revision / 2) + 1);
       await step(h, after(written(state, event) ? "putRecord" : "restrictIndex"), () =>
-        setupRequest(
-          h,
-          "/internal/trash",
-          trashBody(h, state.revision - 1, Math.floor(state.revision / 2) + 1),
-        ),
+        setupRequest(h, "/internal/trash", body),
       );
       break;
+    }
     case "restoring":
       await walk(h, state.revision - 1);
       await step(h, after(written(state, event) ? "putRecord" : "begin"), () =>
@@ -559,14 +575,14 @@ async function requestBody(h, state, event) {
   const conflict = event.key === "conflict" ? { extra: true } : {};
   switch (event.type) {
     case "trash": {
-      let heads = f.heads();
+      let revision = await f.revision();
       if (event.heads === "mismatch") f.edit("A newer title");
-      if (event.heads === "invalid") heads = ["not-a-head"];
+      if (event.heads === "invalid") revision = "not-a-revision";
       return {
         page_id: pageId,
-        // An absent guard trashes on the catalog retry_token alone.
-        ...(event.heads !== "absent" && { base_heads: heads }),
-        idempotency_key: keyFor(event, "trash"),
+        // An absent guard trashes on the nonce alone.
+        ...(event.heads !== "absent" && { revision }),
+        nonce: keyFor(event, "trash"),
         ...expected,
         ...replay,
         ...conflict,
@@ -575,7 +591,7 @@ async function requestBody(h, state, event) {
     case "restore":
       return {
         page_id: pageId,
-        idempotency_key: keyFor(event, "restore"),
+        nonce: keyFor(event, "restore"),
         ...expected,
         ...replay,
         ...conflict,
@@ -590,7 +606,7 @@ async function requestBody(h, state, event) {
         page_id: pageId,
         action: "confirm",
         preview_token: token,
-        idempotency_key: keyFor(event, "purge"),
+        nonce: keyFor(event, "purge"),
         ...expected,
         ...replay,
         ...conflict,
@@ -834,7 +850,7 @@ export async function deliver(h, state, event, options = {}) {
   const settling = f.page.pendingLifecycle?.key.slice("host/operation/".length);
   const deletion = f.page.metadata?.deletion;
   const prepared = await prepare(h, state, event);
-  const key = prepared.body?.idempotency_key;
+  const key = prepared.body?.nonce && (await lifecycleName(f, event.actor, prepared.body.nonce));
   const recorded = key ? await f.storage.get(`host/lifecycle/${key}`) : undefined;
   // The event's observations match what the host holds.
   if (event.key === "recorded")

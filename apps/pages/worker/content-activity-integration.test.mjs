@@ -57,7 +57,7 @@ test("content changes record a time; comments, presence and sharing don't", asyn
     action: "add",
     block_id: f.blockId,
     body: "One more thought",
-    idempotency_key: "content-activity-comment",
+    nonce: "content-activity-comment",
   });
   assert.equal(comment.status, 200, JSON.stringify(comment.body));
   const progress = await f.tool("owner", "report_page_progress", { message: "Reading" });
@@ -67,7 +67,7 @@ test("content changes record a time; comments, presence and sharing don't", asyn
     principal: "user:anaconda-fixture:new",
     role: "viewer",
     expected_revision: 1,
-    idempotency_key: "content-activity-share",
+    nonce: "content-activity-share",
   });
   assert.equal(sharing.status, 200, JSON.stringify(sharing.body));
   await settle(f);
@@ -80,8 +80,8 @@ test("content changes record a time; comments, presence and sharing don't", asyn
   const before = new Date().toISOString();
   const edit = await f.tool("owner", "edit_page", {
     operations: [{ op: "insert_markdown", markdown: "A new paragraph." }],
-    base_heads: f.heads(),
-    idempotency_key: "content-activity-edit",
+    revision: await f.revision(),
+    nonce: "content-activity-edit",
   });
   assert.equal(edit.status, 200, JSON.stringify(edit.body));
   await settle(f);

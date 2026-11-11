@@ -20,7 +20,7 @@ async function sharedProject(w, role, title = "Shared") {
     principal: w.member,
     role,
     expected_revision: 0,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(granted.status, 200, JSON.stringify(granted.body));
   return project;
@@ -33,7 +33,7 @@ const setRole = (w, project, role, expected_revision) =>
     principal: w.member,
     role,
     expected_revision,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
 
 const pageCount = async (w, who) => (await w.call(who, "list_pages")).body.quota.count;
@@ -110,10 +110,10 @@ test("a Project editor creates Pages the Project owner owns, at the top level an
   // Quota: the owner's account pays, the editor's doesn't.
   assert.equal(await pageCount(w, "owner"), ownerBefore + 1);
   assert.equal(await pageCount(w, "member"), 0);
-  // The receipt carries edit authority for the editor, and the editor reads
-  // the Page through the Project.
-  assert.equal(typeof top.body.retry_token, "string");
-  assert.equal(top.body.retry_key_prefix, undefined);
+  // The receipt names the created revision for the editor's first edit,
+  // and the editor reads the Page through the Project.
+  assert.match(top.body.revision, /^r\d+$/);
+  assert.equal(top.body.retry_token, undefined);
   assert.equal((await w.call("member", "read_page", { page_id: top.body.page_id })).status, 200);
 
   // Under a Page the owner created, and under the Page the editor created.
@@ -200,7 +200,7 @@ test("a full owner quota refuses the editor with the owner's limit, not the edit
   const retried = await w.call("member", "create_page", {
     title: "Untitled",
     project_id: project.project_id,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(retried.status, 200, JSON.stringify(retried.body));
 });
@@ -216,12 +216,10 @@ test("a retried editor creation resumes the same Page, with or without a retry t
     lose = false;
     return Response.json({ error: "Lost response" }, { status: 500 });
   });
-  const listed = (await w.call("member", "list_pages")).body;
   const args = {
     title: "Once",
     project_id: project.project_id,
-    idempotency_key: crypto.randomUUID(),
-    retry_token: listed.retry_token,
+    nonce: crypto.randomUUID(),
   };
   const lost = await w.call("member", "create_page", args);
   assert.equal(lost.status, 500);
@@ -232,9 +230,9 @@ test("a retried editor creation resumes the same Page, with or without a retry t
   assert.equal(await pageCount(w, "owner"), ownerBefore + 1);
   // The same key with a different payload is a conflict, not a new Page.
   const conflict = await w.call("member", "create_page", { ...args, title: "Twice" });
-  assert.equal(conflict.body.code, "idempotency_conflict");
+  assert.equal(conflict.body.code, "nonce_conflict");
   // A tokenless key replays too.
-  const plain = { title: "Plain", project_id: project.project_id, idempotency_key: w.key() };
+  const plain = { title: "Plain", project_id: project.project_id, nonce: w.key() };
   const created = await w.call("member", "create_page", plain);
   assert.equal(created.status, 200);
   assert.deepEqual((await w.call("member", "create_page", plain)).body, created.body);
@@ -252,7 +250,7 @@ test("a retry after the editor is removed completes the reserved creation once",
     lose = false;
     return Response.json({ error: "Lost response" }, { status: 500 });
   });
-  const args = { title: "Reserved", project_id: project.project_id, idempotency_key: w.key() };
+  const args = { title: "Reserved", project_id: project.project_id, nonce: w.key() };
   assert.equal((await w.call("member", "create_page", args)).status, 500);
   assert.equal((await setRole(w, project, null, 1)).status, 200);
   const retried = await w.call("member", "create_page", args);
@@ -363,7 +361,7 @@ test("a lost Page host answer resumes through the owner's pending entry, after a
       return Response.json({ error: "Lost response" }, { status: 500 });
     },
   }));
-  const args = { title: "Resumed", project_id: project.project_id, idempotency_key: w.key() };
+  const args = { title: "Resumed", project_id: project.project_id, nonce: w.key() };
   assert.equal((await w.call("member", "create_page", args)).status, 500);
   // The Page exists, owned by the Project owner; its Catalog entry is pending.
   const pending = [...(await w.catalogStorage(w.owner).list({ prefix: "page/" })).values()].find(

@@ -180,7 +180,7 @@ test("a proxied cookie sharing write still requires and preserves the explicit p
         email: "reader@example.invalid",
         role: "viewer",
         expected_revision: 0,
-        idempotency_key: "gateway-invitation",
+        nonce: "gateway-invitation",
       },
     }),
     fixture.env,

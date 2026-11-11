@@ -17,6 +17,7 @@ import {
   rotateRefreshToken,
 } from "./oauth-store.mjs";
 import { plainStub } from "./plain-stub.mjs";
+import { headsFor } from "./revisions.mjs";
 import { WRITTEN_FORMATS } from "../model/document-types.mjs";
 
 const origin = "https://page10.example";
@@ -638,26 +639,25 @@ for (const scope of ["pages:read pages:write offline_access", "pages:read offlin
         const body = JSON.parse(result.content[0].text);
         authority = body;
         check(body);
-        assert.deepEqual(body.heads, heads);
-        assert.ok(body.retry_token);
+        assert.deepEqual(await headsFor(page.ctx.storage, "page", body.revision), heads);
+        assert.equal(body.retry_token, undefined);
         assert.deepEqual(A.getHeads(doc), heads, "read operations do not edit the document");
       }
 
       if (!scope.includes("pages:write") || role === "viewer") {
         const denied = await call(f, "edit_page", {
           page_id: pageId,
-          base_heads: authority.heads,
-          retry_token: authority.retry_token,
-          idempotency_key: "read-token-denied-write",
+          revision: authority.revision,
+          nonce: "read-token-denied-write",
           operations: [{ op: "set_title", title: "Must not write" }],
         });
         assert.equal(denied.isError, true);
         assert.match(denied.content[0].text, /read-only/);
-        assert.deepEqual(A.getHeads(doc), heads, "retry authority cannot grant Page write access");
+        assert.deepEqual(A.getHeads(doc), heads, "a read revision cannot grant Page write access");
         if (scope.includes("pages:write")) assert.equal(denied._meta, undefined);
       }
 
-      // An existing grant or retry token cannot outlive the Page's current ACL.
+      // An existing grant or read revision cannot outlive the Page's current ACL.
       page.metadata.owner = "user:anaconda:other-owner";
       page.metadata.acl.members[person.principal] = {
         role: "none",
@@ -903,16 +903,9 @@ test("OAuth MCP clients trash, restore, preview and confirm permanent deletion",
     assert.equal(result.isError, undefined, `${name}: ${result.content[0].text}`);
     return JSON.parse(result.content[0].text);
   };
-  const authority = async () => {
-    const listed = await parsed("list_pages");
-    return {
-      retry_token: listed.retry_token,
-      idempotency_key: crypto.randomUUID(),
-    };
-  };
+  const authority = async () => ({ nonce: crypto.randomUUID() });
   const trashed = await parsed("delete_page", {
     page_id: pageId,
-    base_heads: A.getHeads(doc),
     ...(await authority()),
   });
   assert.equal(trashed.state, "trashed");
@@ -921,7 +914,6 @@ test("OAuth MCP clients trash, restore, preview and confirm permanent deletion",
   assert.equal(restored.restored, true);
   await parsed("delete_page", {
     page_id: pageId,
-    base_heads: A.getHeads(doc),
     ...(await authority()),
   });
   const preview = await parsed("purge_page", { page_id: pageId, action: "preview" });

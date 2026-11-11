@@ -309,6 +309,10 @@ class Storage {
     return structuredClone(this.values.get(key));
   }
   async put(key, value) {
+    if (typeof key === "object") {
+      for (const [name, entry] of Object.entries(key)) await this.put(name, entry);
+      return;
+    }
     if (this.failPut) throw Error("injected storage failure");
     this.puts++;
     this.values.set(key, structuredClone(value));

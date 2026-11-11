@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { createAuthFixture } from "../auth-fixtures.mjs";
 import { Catalog, Page } from "./index.mjs";
 import { plainStub } from "./plain-stub.mjs";
+import { operationKey } from "./mutations.mjs";
 
 class Storage {
   values = new Map();
@@ -58,7 +59,7 @@ async function fixture(t) {
           fetch: async (request) => {
             calls.push({ id, args: await request.json() });
             return Response.json(
-              { page_id: id, title: "Created", heads: ["a".repeat(64)] },
+              { page_id: id, title: "Created", revision: "r1" },
               { status: responseStatus, headers: responseHeaders },
             );
           },
@@ -66,6 +67,9 @@ async function fixture(t) {
       },
     },
   );
+  // The caller's Catalog receipt key for `nonce`.
+  const receiptKey = (nonce) =>
+    operationKey({ nonce }, { principal: `user:anaconda-fixture:${auth.subject}` }, "catalog");
   const create = (args) =>
     catalog.fetch(request("/internal/catalog", { operation: "create_page", arguments: args }));
   return {
@@ -74,6 +78,7 @@ async function fixture(t) {
     storage,
     calls,
     create,
+    receiptKey,
     fail: () => {
       responseStatus = 500;
     },
@@ -90,13 +95,13 @@ async function fixture(t) {
 test("invalid creates reserve neither catalog capacity nor a request key", async (t) => {
   const f = await fixture(t);
   for (const input of invalidInputs) {
-    const response = await f.create({ ...input, idempotency_key: "reusable-request" });
+    const response = await f.create({ ...input, nonce: "reusable-request" });
     assert.equal(response.status, 400);
     assert.equal(f.storage.values.size, 0);
     assert.equal(f.calls.length, 0);
   }
   // The same key remains available because none of the rejected inputs ran.
-  const args = { title: "x".repeat(500), markdown: "", idempotency_key: "reusable-request" };
+  const args = { title: "x".repeat(500), markdown: "", nonce: "reusable-request" };
   const first = await f.create(args);
   assert.equal(first.status, 200);
   const receipt = await first.json();
@@ -107,10 +112,10 @@ test("invalid creates reserve neither catalog capacity nor a request key", async
 
 test("an uncertain valid create retains its pending reservation for the same retry", async (t) => {
   const f = await fixture(t);
-  const args = { title: "Created", markdown: "Content", idempotency_key: "uncertain-create" };
+  const args = { title: "Created", markdown: "Content", nonce: "uncertain-create" };
   f.fail();
   assert.equal((await f.create(args)).status, 500);
-  const pending = await f.storage.get("host/operation/uncertain-create");
+  const pending = await f.storage.get(await f.receiptKey("uncertain-create"));
   assert.equal(pending.pending, true);
   assert.equal((await f.storage.get(`page/${pending.pageId}`)).pending, true);
   f.recover();
@@ -120,7 +125,7 @@ test("an uncertain valid create retains its pending reservation for the same ret
   assert.equal(f.calls.length, 2);
   assert.deepEqual(f.calls[0], f.calls[1]);
   assert.equal((await f.storage.list({ prefix: "page/" })).size, 1);
-  assert.equal((await f.storage.get("host/operation/uncertain-create")).pending, false);
+  assert.equal((await f.storage.get(await f.receiptKey("uncertain-create"))).pending, false);
 });
 
 test("Page ingress independently rejects the same invalid create fields", async (t) => {
@@ -143,7 +148,7 @@ test("Page ingress independently rejects the same invalid create fields", async 
 test("a marked pre-intent size rejection frees the catalog reservation and retry key", async (t) => {
   const f = await fixture(t);
   f.rejectSize();
-  const args = { title: "Too large", idempotency_key: "oversized-create" };
+  const args = { title: "Too large", nonce: "oversized-create" };
   assert.equal((await f.create(args)).status, 413);
   // Only the key counts, back at zero, and the location shape record remain.
   assert.deepEqual(Object.fromEntries(f.storage.values), {
@@ -158,9 +163,9 @@ test("a marked pre-intent size rejection frees the catalog reservation and retry
 test("an unmarked size failure retains the pending create for safe retry", async (t) => {
   const f = await fixture(t);
   f.rejectSize(false);
-  const args = { title: "Uncertain", idempotency_key: "uncertain-size" };
+  const args = { title: "Uncertain", nonce: "uncertain-size" };
   assert.equal((await f.create(args)).status, 413);
-  const intent = await f.storage.get("host/operation/uncertain-size");
+  const intent = await f.storage.get(await f.receiptKey("uncertain-size"));
   assert.equal(intent.pending, true);
   assert.equal((await f.storage.get(`page/${intent.pageId}`)).pending, true);
 });

@@ -21,35 +21,32 @@ async function fill(storage, prefix, count) {
     });
 }
 
-test("delete_page needs no base_heads: the catalog retry_token alone trashes, and sent heads still guard", async (t) => {
+test("delete_page needs no revision: the nonce alone trashes, and a sent revision still guards", async (t) => {
   const f = await fixture(t);
-  const listed = await f.catalogCall("owner", "list_pages");
-  const { retry_token } = listed.body;
-  // Heads the caller does send are checked: malformed ones are refused and
-  // stale ones name the live revision, as for an edit.
+  // A revision the caller does send is checked: a malformed one is refused
+  // and a stale one names the live revision, as for an edit.
   const malformed = await f.catalogCall("owner", "delete_page", {
     page_id: pageId,
-    base_heads: ["not-a-head"],
-    retry_token,
-    idempotency_key: "malformed-heads",
+    revision: "not-a-revision",
+    nonce: "malformed-revision",
   });
   assert.equal(malformed.status, 400);
-  assert.equal(malformed.body.code, "invalid_edit_selector");
+  assert.equal(malformed.body.code, "invalid_revision");
+  const old = await f.revision();
+  f.edit("Moved on");
   const stale = await f.catalogCall("owner", "delete_page", {
     page_id: pageId,
-    base_heads: ["0".repeat(64)],
-    retry_token,
-    idempotency_key: "stale-heads-guard",
+    revision: old,
+    nonce: "stale-revision-guard",
   });
   assert.equal(stale.status, 409);
-  assert.equal(stale.body.code, "stale_heads");
-  assert.deepEqual(stale.body.current_heads, f.heads());
+  assert.equal(stale.body.code, "stale_revision");
+  assert.deepEqual(await f.headsOf(stale.body.current_revision), f.heads());
   assert.equal(pageState(f.page.metadata), "active");
-  // No read_page first: list, then trash.
+  // No read first: a nonce is all a trash needs.
   const trashed = await f.catalogCall("owner", "delete_page", {
     page_id: pageId,
-    retry_token,
-    idempotency_key: "token-only-trash",
+    nonce: "nonce-only-trash",
   });
   assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
   assert.equal(trashed.body.state, "trashed");
@@ -57,8 +54,7 @@ test("delete_page needs no base_heads: the catalog retry_token alone trashes, an
   // The same key replays the receipt.
   const replay = await f.catalogCall("owner", "delete_page", {
     page_id: pageId,
-    retry_token,
-    idempotency_key: "token-only-trash",
+    nonce: "nonce-only-trash",
   });
   assert.equal(replay.status, 200);
   assert.deepEqual(replay.body, trashed.body);
@@ -96,7 +92,7 @@ test("delete_page moves a Page to Trash and keeps its document, comments and ACL
     })),
     [{ page_id: pageId, title: "Launch plan", state: "trashed", trashed_by: f.owner }],
   );
-  assert.equal(typeof listed.body.retry_token, "string");
+  assert.equal(listed.body.retry_token, undefined);
   assert.equal((await f.catalogCall("owner", "list_pages", { in_trash: "yes" })).status, 400);
   // Trash holds only owned Pages: owned lists it, shared is refused.
   const ownedTrash = await f.catalogCall("owner", "list_pages", {
@@ -133,15 +129,18 @@ test("delete_page moves a Page to Trash and keeps its document, comments and ACL
   assert.equal(await owned.get(`page/${pageId}`), undefined);
 });
 
-test("trash rejects stale heads and releases the catalog reservation", async (t) => {
+test("trash rejects a stale revision and releases the catalog reservation", async (t) => {
   const f = await fixture(t);
-  const stale = trashArgs(f);
+  const stale = { ...trashArgs(f), revision: await f.revision() };
   f.edit("Newer title");
   const rejected = await f.catalogCall("owner", "delete_page", stale);
   assert.equal(rejected.status, 409);
   assert.equal(pageState(f.page.metadata), "active");
   assert.ok(await f.catalogOf(f.owner).storage.get(`page/${pageId}`));
-  assert.equal(await f.catalogOf(f.owner).storage.get("host/operation/trash-request"), undefined);
+  assert.equal(
+    await f.catalogOf(f.owner).storage.get(await f.receiptKey("trash-request")),
+    undefined,
+  );
   assert.equal((await f.catalogCall("owner", "delete_page", trashArgs(f))).status, 200);
 });
 
@@ -154,7 +153,7 @@ test("trash retries return the original receipt and reject a reused key", async 
   assert.deepEqual(again.body, first.body);
   const fresh = await f.pageCall("owner", "/internal/trash", {
     ...args,
-    idempotency_key: "another-trash-key",
+    nonce: "another-trash-key",
   });
   assert.deepEqual(fresh.body, first.body);
   const changed = await f.pageCall("owner", "/internal/trash", { ...args, extra: true });
@@ -162,12 +161,12 @@ test("trash retries return the original receipt and reject a reused key", async 
   // Catalog replay returns the receipt without forwarding again.
   const viaCatalog = await f.catalogCall("owner", "delete_page", {
     ...args,
-    idempotency_key: "catalog-trash",
+    nonce: "catalog-trash",
   });
   assert.equal(viaCatalog.status, 200);
   const replay = await f.catalogCall("owner", "delete_page", {
     ...args,
-    idempotency_key: "catalog-trash",
+    nonce: "catalog-trash",
   });
   assert.deepEqual(replay.body, viaCatalog.body);
 });
@@ -188,8 +187,8 @@ test("the owner reads a trashed Page but cannot edit, comment, share or report p
   ]) {
     const denied = await f.tool("owner", operation, {
       ...args,
-      base_heads: f.heads(),
-      idempotency_key: `denied-${operation}`,
+      revision: await f.revision(),
+      nonce: `denied-${operation}`,
     });
     assert.equal(denied.status, 409, operation);
     assert.equal(denied.body.code, "page_trashed", operation);
@@ -281,7 +280,7 @@ test("sync stops for members and is read-only for the owner while trashed", asyn
 
   const restored = await f.catalogCall("owner", "restore_page", {
     page_id: pageId,
-    idempotency_key: "restore-request",
+    nonce: "restore-request",
   });
   assert.equal(restored.status, 200);
   f.page.policy.account(f.identity(f.member), true);
@@ -296,7 +295,7 @@ test("restore brings back the same Page, comments, ACL and member listings", asy
   await f.catalogCall("owner", "delete_page", trashArgs(f));
   await f.catalogCall("member", "list_pages");
   assert.equal(await f.catalogOf(f.member).storage.get(`shared/${pageId}`), undefined);
-  const args = { page_id: pageId, idempotency_key: "restore-request" };
+  const args = { page_id: pageId, nonce: "restore-request" };
   const restored = await f.catalogCall("owner", "restore_page", args);
   assert.equal(restored.status, 200);
   assert.deepEqual(
@@ -331,7 +330,7 @@ test("restore brings back the same Page, comments, ACL and member listings", asy
   );
   assert.equal((await f.tool("member", "read_page")).status, 200);
   const edit = await f.tool("owner", "read_page", { comments: "none" });
-  assert.equal(typeof edit.body.retry_token, "string");
+  assert.match(edit.body.revision, /^r\d+$/);
 
   // Retries return the original receipt; a fresh key on an active Page is a no-op.
   assert.deepEqual((await f.catalogCall("owner", "restore_page", args)).body, restored.body);
@@ -341,14 +340,11 @@ test("restore brings back the same Page, comments, ACL and member listings", asy
   );
   const noop = await f.catalogCall("owner", "restore_page", {
     ...args,
-    idempotency_key: "restore-again",
+    nonce: "restore-again",
   });
   assert.equal(noop.body.restored, false);
   // Replaying the earlier trash receipt does not move the restored Page.
-  const replay = await f.catalogCall("owner", "delete_page", {
-    ...trashArgs(f),
-    base_heads: heads,
-  });
+  const replay = await f.catalogCall("owner", "delete_page", trashArgs(f));
   assert.equal(replay.body.state, "trashed");
   assert.equal(pageState(f.page.metadata), "active");
   assert.ok(await owned.get(`page/${pageId}`));
@@ -382,14 +378,14 @@ test("permanent deletion needs a current preview token and reuses the deletion b
       page_id: pageId,
       action: "confirm",
       preview_token: token,
-      idempotency_key: key,
+      nonce: key,
     });
   assert.equal(
     (
       await f.catalogCall("owner", "purge_page", {
         page_id: pageId,
         action: "confirm",
-        idempotency_key: "no-token",
+        nonce: "no-token",
       })
     ).body.code,
     "purge_preview_required",
@@ -401,7 +397,10 @@ test("permanent deletion needs a current preview token and reuses the deletion b
   const invalid = await confirm(forged, "forged-token");
   assert.equal(invalid.status, 409);
   assert.equal(invalid.body.code, "purge_preview_invalid");
-  assert.equal(await f.catalogOf(f.owner).storage.get("host/operation/forged-token"), undefined);
+  assert.equal(
+    await f.catalogOf(f.owner).storage.get(await f.receiptKey("forged-token")),
+    undefined,
+  );
 
   // Content, ACL, and time each invalidate the token.
   f.edit("Changed by an in-flight sync");
@@ -454,8 +453,7 @@ test("permanent deletion needs a current preview token and reuses the deletion b
   assert.equal(f.removed(), 1);
   assert.equal((await f.tool("owner", "read_page")).status, 404);
   assert.equal(
-    (await f.catalogCall("owner", "restore_page", { page_id: pageId, idempotency_key: "too-late" }))
-      .status,
+    (await f.catalogCall("owner", "restore_page", { page_id: pageId, nonce: "too-late" })).status,
     404,
   );
 });
@@ -468,7 +466,7 @@ test("only the owner can trash, restore or purge", async (t) => {
   await f.catalogCall("owner", "delete_page", trashArgs(f));
   const memberRestore = await f.catalogCall("member", "restore_page", {
     page_id: pageId,
-    idempotency_key: "member-restore",
+    nonce: "member-restore",
   });
   assert.equal(memberRestore.status, 403);
   const memberPurge = await f.catalogCall("member", "purge_page", {
@@ -498,17 +496,15 @@ test("trashed records stay unavailable to builds that predate Trash", async (t) 
   // so a retry of this key conflicts; a fresh key returns its usual receipt.
   const legacyDigest = await fingerprint("delete_page", args, ownerIdentity);
   assert.notEqual(record.deletion.fingerprint, legacyDigest);
-  assert.equal(record.deletion.key, "host/operation/legacy-compat");
+  assert.equal(record.deletion.key, await f.receiptKey("legacy-compat", f.owner, "lifecycle"));
   assert.deepEqual(record.deletion.receipt, { page_id: pageId, deleted: true });
   // An older Catalog replaying this key computes the legacy digest and
   // conflicts instead of writing a permanent host/deleted tombstone.
   const catalog = f.catalogOf(f.owner).storage;
   await assert.rejects(
     inspectOperation(catalog, {
-      key: "host/operation/legacy-compat",
+      key: await f.receiptKey("legacy-compat"),
       digest: legacyDigest,
-      scope: `catalog:${f.owner}`,
-      principal: f.owner,
     }),
     (error) => error.status === 409,
   );
@@ -534,7 +530,7 @@ test("a paused account (limit 0) can move a Page to Trash but can't restore it",
   assert.equal(pageState(f.page.metadata), "trashed");
   const refused = await f.catalogCall("owner", "restore_page", {
     page_id: pageId,
-    idempotency_key: "restore-paused",
+    nonce: "restore-paused",
   });
   assert.equal(refused.status, 409);
   assert.deepEqual(refused.body, {
@@ -564,7 +560,7 @@ test("Trash and restore respect their capacity limits", async (t) => {
   await fill(owned, "page/", LIMIT);
   const quota = await f.catalogCall("owner", "restore_page", {
     page_id: pageId,
-    idempotency_key: "restore-full",
+    nonce: "restore-full",
   });
   assert.equal(quota.status, 409);
   assert.deepEqual(quota.body, {
@@ -626,10 +622,10 @@ test("an interrupted trash retried after a restore returns its receipt without t
   f.network.lost = 1;
   assert.equal((await f.catalogCall("owner", "delete_page", trash)).status, 500);
   assert.equal(pageState(f.page.metadata), "trashed");
-  assert.equal((await owned.get("host/operation/lost-trash")).pending, true);
+  assert.equal((await owned.get(await f.receiptKey("lost-trash"))).pending, true);
   const restored = await f.catalogCall("owner", "restore_page", {
     page_id: pageId,
-    idempotency_key: "later-restore",
+    nonce: "later-restore",
   });
   assert.equal(restored.body.restored, true);
   await f.restart();
@@ -640,7 +636,7 @@ test("an interrupted trash retried after a restore returns its receipt without t
   assert.equal(pageState(f.page.metadata), "active");
   assert.ok(await owned.get(`page/${pageId}`));
   assert.equal(await owned.get(`trash/${pageId}`), undefined);
-  assert.equal((await owned.get("host/operation/lost-trash")).pending, false);
+  assert.equal((await owned.get(await f.receiptKey("lost-trash"))).pending, false);
   assert.equal((await f.tool("member", "read_page")).status, 200);
 });
 
@@ -648,7 +644,7 @@ test("an interrupted restore retried after a later trash returns its receipt wit
   const f = await fixture(t);
   const owned = f.catalogOf(f.owner).storage;
   await f.catalogCall("owner", "delete_page", trashArgs(f, "first-trash"));
-  const restore = { page_id: pageId, idempotency_key: "lost-restore" };
+  const restore = { page_id: pageId, nonce: "lost-restore" };
   f.network.lost = 1;
   assert.equal((await f.catalogCall("owner", "restore_page", restore)).status, 500);
   assert.equal(pageState(f.page.metadata), "active");
@@ -690,7 +686,7 @@ test("purge rechecks the live document after verifying its preview", async (t) =
     page_id: pageId,
     action: "confirm",
     preview_token: preview.body.preview_token,
-    idempotency_key: "late-write-purge",
+    nonce: "late-write-purge",
   });
   assert.equal(landed, true);
   assert.equal(confirm.status, 409);
@@ -708,7 +704,7 @@ test("pending trash and restore requests hold their destination slot", async (t)
   const owned = f.catalogOf(f.owner).storage;
   await f.catalogCall("owner", "delete_page", trashArgs(f));
   await fill(counted, "page/", LIMIT - 1);
-  const restore = { page_id: pageId, idempotency_key: "reserved-restore" };
+  const restore = { page_id: pageId, nonce: "reserved-restore" };
   const original = f.page.fetch.bind(f.page);
   f.page.fetch = async () => Response.json({ error: "Page unavailable" }, { status: 503 });
   assert.equal((await f.catalogCall("owner", "restore_page", restore)).status, 503);
@@ -718,7 +714,7 @@ test("pending trash and restore requests hold their destination slot", async (t)
   assert.equal(await countCapacity(owned, "page/"), 100);
   const competing = await f.catalogCall("owner", "create_page", {
     title: "Competing",
-    idempotency_key: "competing-create",
+    nonce: "competing-create",
   });
   assert.equal(competing.status, 409);
   f.page.fetch = original;
@@ -747,7 +743,7 @@ test("a permanent delete by a build without Trash leaves no phantom Trash entry"
     (
       await f.catalogCall("owner", "restore_page", {
         page_id: pageId,
-        idempotency_key: "phantom-restore",
+        nonce: "phantom-restore",
       })
     ).status,
     404,
@@ -812,7 +808,7 @@ test("a cold-started trashed Page serves Catalog lifecycle requests without a ca
   ]);
   assert.equal(preview.status, 200);
   const restored = await Promise.race([
-    f.catalogCall("owner", "restore_page", { page_id: pageId, idempotency_key: "cold-restore" }),
+    f.catalogCall("owner", "restore_page", { page_id: pageId, nonce: "cold-restore" }),
     timeout,
   ]);
   assert.equal(restored.body.restored, true);
@@ -829,7 +825,7 @@ test("a retried trash superseded by a restore never applies, even after its rece
     (
       await f.catalogCall("owner", "restore_page", {
         page_id: pageId,
-        idempotency_key: "restore-after-loss",
+        nonce: "restore-after-loss",
       })
     ).body.restored,
     true,
@@ -841,8 +837,8 @@ test("a retried trash superseded by a restore never applies, even after its rece
       (
         await f.pageCall("owner", "/internal/trash", {
           page_id: pageId,
-          base_heads: heads,
-          idempotency_key: `cycle-trash-${index}`,
+          revision: await f.revision(heads),
+          nonce: `cycle-trash-${index}`,
         })
       ).status,
       200,
@@ -851,13 +847,16 @@ test("a retried trash superseded by a restore never applies, even after its rece
       (
         await f.pageCall("owner", "/internal/restore", {
           page_id: pageId,
-          idempotency_key: `cycle-restore-${index}`,
+          nonce: `cycle-restore-${index}`,
         })
       ).status,
       200,
     );
   }
-  assert.equal(await f.storage.get("host/lifecycle/evicted-trash"), undefined);
+  const evicted = (await f.receiptKey("evicted-trash", f.owner, "lifecycle")).slice(
+    "host/operation/".length,
+  );
+  assert.equal(await f.storage.get(`host/lifecycle/${evicted}`), undefined);
   assert.ok((await f.storage.list({ prefix: "host/lifecycle/" })).size <= 256);
   const retry = await f.catalogCall("owner", "delete_page", trash);
   assert.equal(retry.status, 200);
@@ -879,11 +878,11 @@ test("a forwarded restore keeps its slot past expiry until the Page state reconc
   const owned = f.catalogOf(f.owner).storage;
   await f.catalogCall("owner", "delete_page", trashArgs(f));
   await fill(counted, "page/", LIMIT - 1);
-  const restore = { page_id: pageId, idempotency_key: "applied-restore" };
+  const restore = { page_id: pageId, nonce: "applied-restore" };
   f.network.lost = 1;
   assert.equal((await f.catalogCall("owner", "restore_page", restore)).status, 500);
   assert.equal(pageState(f.page.metadata), "active");
-  const intent = await owned.get("host/operation/applied-restore");
+  const intent = await owned.get(await f.receiptKey("applied-restore"));
   assert.deepEqual([intent.pending, intent.forwarded], [true, true]);
   // Past the retry lifetime the forwarded slot does not expire on its own.
   const now = Date.now();
@@ -893,13 +892,13 @@ test("a forwarded restore keeps its slot past expiry until the Page state reconc
   // slot becomes the real entry and a competing create is refused.
   const competing = await f.catalogCall("owner", "create_page", {
     title: "Competing",
-    idempotency_key: "competing-after-expiry",
+    nonce: "competing-after-expiry",
   });
   assert.equal(competing.status, 409);
   assert.equal((await owned.get(`page/${pageId}`)).reservation, undefined);
   const retry = await f.catalogCall("owner", "restore_page", restore);
   assert.equal(retry.body.restored, true);
-  assert.equal((await owned.get("host/operation/applied-restore")).pending, false);
+  assert.equal((await owned.get(await f.receiptKey("applied-restore"))).pending, false);
   assert.equal((await owned.list({ prefix: "page/" })).size, 100);
 });
 
@@ -911,12 +910,12 @@ test("only never-forwarded slots expire, and a resume without room only replays"
   await f.catalogCall("owner", "delete_page", trashArgs(f));
   await fill(counted, "page/", LIMIT - 1);
   // A crash after the intent and slot commit, before the forwarded mark.
-  const key = "host/operation/stranded-restore";
+  const key = await f.receiptKey("stranded-restore");
   await counted.put({
     [key]: {
       fingerprint: await fingerprint(
         "restore_page",
-        { page_id: pageId, idempotency_key: "stranded-restore" },
+        { page_id: pageId, nonce: "stranded-restore" },
         { principal: f.owner, driver: "ChatGPT" },
       ),
       pending: true,
@@ -934,7 +933,7 @@ test("only never-forwarded slots expire, and a resume without room only replays"
   await counted.put("page/fill-099", { page_id: "fill-099" });
   const resumed = await f.catalogCall("owner", "restore_page", {
     page_id: pageId,
-    idempotency_key: "stranded-restore",
+    nonce: "stranded-restore",
   });
   assert.equal(resumed.status, 200);
   assert.deepEqual(resumed.body, {
@@ -956,7 +955,7 @@ test("a restore whose durability barrier failed completes before its receipt rep
     if (failures-- > 0) throw Error("restore sync failed");
     return sync();
   };
-  const restore = { page_id: pageId, idempotency_key: "barrier-restore" };
+  const restore = { page_id: pageId, nonce: "barrier-restore" };
   assert.equal((await f.catalogCall("owner", "restore_page", restore)).status, 500);
   // Nothing was granted: memory still says trashed while the write is pending.
   assert.equal(pageState(f.page.metadata), "trashed");
@@ -1006,7 +1005,7 @@ test("a resumed lifecycle request checks the tombstone and completes as deleted"
   await f.catalogCall("owner", "delete_page", trashArgs(f));
   const original = f.page.fetch.bind(f.page);
   f.page.fetch = async () => Response.json({ error: "Page unavailable" }, { status: 503 });
-  const restore = { page_id: pageId, idempotency_key: "tombstoned-restore" };
+  const restore = { page_id: pageId, nonce: "tombstoned-restore" };
   assert.equal((await f.catalogCall("owner", "restore_page", restore)).status, 503);
   f.page.fetch = original;
   // A build without Trash deletes the Page permanently in the meantime.
@@ -1033,13 +1032,12 @@ test("an expired slot for a restore whose barrier failed never lets the quota pa
     if (failures-- > 0) throw Error("restore sync failed");
     return sync();
   };
-  const restore = { page_id: pageId, idempotency_key: "failed-barrier-restore" };
+  const restore = { page_id: pageId, nonce: "failed-barrier-restore" };
   assert.equal((await f.catalogCall("owner", "restore_page", restore)).status, 500);
   assert.equal(f.page.pendingLifecycle.operation, "restore_page");
   const now = Date.now();
   t.mock.method(Date, "now", () => now + 8 * 24 * 60 * 60 * 1000);
-  const create = (key) =>
-    f.catalogCall("owner", "create_page", { title: "Competing", idempotency_key: key });
+  const create = (key) => f.catalogCall("owner", "create_page", { title: "Competing", nonce: key });
   // The Page cannot settle yet, so it reports nothing and the slot counts.
   assert.equal((await create("competing-while-settling")).status, 409);
   assert.equal((await owned.get(`page/${pageId}`)).reservation, "restore_page");

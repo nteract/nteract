@@ -77,7 +77,7 @@ test("company sharing is disabled by default and rejects consumer or arbitrary c
           action: "set_domain_view",
           domain: domains,
           expected_revision: 1,
-          idempotency_key: "unsupported-domain",
+          nonce: "unsupported-domain",
         },
         now,
         unsupported,
@@ -95,13 +95,13 @@ const enableArgs = {
   action: "set_domain_view",
   domain: "anaconda.com",
   expected_revision: 1,
-  idempotency_key: "enable-domain",
+  nonce: "enable-domain",
 };
 const restrictArgs = {
   action: "set_domain_view",
   domain: null,
   expected_revision: 1,
-  idempotency_key: "restrict-domain",
+  nonce: "restrict-domain",
 };
 const restrictedPage = (principal = owner.principal) => {
   const value = metadata();
@@ -213,7 +213,7 @@ test("an owner with a verified company email (API key or browser proof) can shar
       proposeSharingMutation(
         enabled.metadata,
         identity,
-        { ...enableArgs, idempotency_key: "stale-enable" },
+        { ...enableArgs, nonce: "stale-enable" },
         now,
         env,
       ),
@@ -264,7 +264,7 @@ test("company proof that expires mid-session reports expired, refuses enabling, 
   const enabled = await proposeSharingMutation(
     page,
     fresh,
-    { ...enableArgs, idempotency_key: "after-sign-in" },
+    { ...enableArgs, nonce: "after-sign-in" },
     later,
     env,
   );
@@ -297,13 +297,7 @@ test("a company audience the owner cannot prove stays readable, is flagged, and 
   assert.equal(reader.canRead, true);
   assert.equal(reader.source, "domain");
   await rejectsWithStatus(
-    proposeSharingMutation(
-      legacy,
-      owner,
-      { ...enableArgs, idempotency_key: "reassert-legacy" },
-      now,
-      env,
-    ),
+    proposeSharingMutation(legacy, owner, { ...enableArgs, nonce: "reassert-legacy" }, now, env),
     403,
     ownerProofDenied,
   );

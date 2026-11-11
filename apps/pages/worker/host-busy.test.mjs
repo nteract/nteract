@@ -26,7 +26,7 @@ test("celld's plain-text refusal becomes a JSON page_busy refusal with Retry-Aft
   assert.equal(body.code, PAGE_BUSY.code);
   assert.equal(body.retryable, true);
   assert.equal(body.retry_after_ms, PAGE_BUSY.retryAfterMs);
-  assert.match(body.error, /same idempotency_key and retry_token/);
+  assert.match(body.error, /same nonce and arguments/);
 });
 
 test("every other response passes through with its body untouched", async () => {

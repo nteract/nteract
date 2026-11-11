@@ -13,7 +13,6 @@ import {
 import { validSpaceId } from "./spaces.mjs";
 import { MAX_DEPTH, deriveLocation } from "../model/location.mjs";
 import { locationEntries } from "./catalog-location.mjs";
-import { inspectOperation, retryKeyPrefix } from "./operation-journal.mjs";
 import { tools } from "../mcp.mjs";
 import { invokeProjectApi } from "./project-api.mjs";
 import { ids, locationOf, world } from "./projects-fixture.mjs";
@@ -62,7 +61,7 @@ test("a Project is created with its content document, then read, listed and upda
     listed.body.projects.map((entry) => entry.project_id),
     [project.project_id],
   );
-  assert.ok(listed.body.retry_token);
+  assert.equal(listed.body.retry_token, undefined);
   // Both listings name the account that answered, so a tab can tell an
   // answer for another account from its own.
   assert.equal(listed.body.principal, w.owner);
@@ -109,20 +108,20 @@ test("a Project is created with its content document, then read, listed and upda
   const update = { project_id: project.project_id, title: "Launch v2", expected_revision: 0 };
   const updated = await w.call("owner", "update_project", {
     ...update,
-    idempotency_key: updateKey,
+    nonce: updateKey,
   });
   assert.equal(updated.status, 200);
   assert.equal(updated.body.title, "Launch v2");
   assert.equal(updated.body.revision, 1);
-  const replay = await w.call("owner", "update_project", { ...update, idempotency_key: updateKey });
+  const replay = await w.call("owner", "update_project", { ...update, nonce: updateKey });
   assert.deepEqual(replay.body, updated.body);
   const conflict = await w.call("owner", "update_project", {
     ...update,
     title: "Other",
-    idempotency_key: updateKey,
+    nonce: updateKey,
   });
   assert.equal(conflict.status, 409);
-  const stale = await w.call("owner", "update_project", { ...update, idempotency_key: w.key() });
+  const stale = await w.call("owner", "update_project", { ...update, nonce: w.key() });
   assert.equal(stale.status, 409);
   assert.equal(stale.body.code, "project_revision_conflict");
   assert.equal(
@@ -139,14 +138,14 @@ test("a Project is created with its content document, then read, listed and upda
     assert.deepEqual(denied.body, { error: "Project not found", code: "project_not_found" });
   }
   assert.equal(
-    (await w.call("member", "update_project", { ...update, idempotency_key: w.key() })).status,
+    (await w.call("member", "update_project", { ...update, nonce: w.key() })).status,
     404,
   );
   assert.deepEqual((await w.call("member", "list_projects")).body.projects, []);
   // A read-only credential reads but cannot create or change a Project.
   assert.equal((await w.call("reader", "list_projects")).status, 200);
   assert.equal(
-    (await w.call("reader", "create_project", { title: "No", idempotency_key: w.key() })).status,
+    (await w.call("reader", "create_project", { title: "No", nonce: w.key() })).status,
     403,
   );
 });
@@ -190,13 +189,13 @@ test("every JSON result for a live Page carries its url, as MCP results do", asy
   // The owner can still open a trashed Page, so its receipt keeps the link.
   const trashed = await w.call("owner", "delete_page", {
     page_id: pageId,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
   assert.equal(trashed.body.url, link);
   const restored = await w.call("owner", "restore_page", {
     page_id: pageId,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(restored.status, 200, JSON.stringify(restored.body));
   assert.equal(restored.body.url, link);
@@ -216,7 +215,7 @@ test("the gateway links Page edit receipts, and leaves refusals and unlinked cal
   // MCP calls without env and adds its own links; a refusal never gets one.
   const plain = await invokeProjectApi(answer(200, receipt), "edit_page", {});
   assert.deepEqual(await plain.json(), receipt);
-  const refusal = { error: "Page changed", code: "stale_heads", page_id: pageId };
+  const refusal = { error: "Page changed", code: "stale_revision", page_id: pageId };
   const refused = await invokeProjectApi(answer(409, refusal), "edit_page", {}, { env });
   assert.deepEqual(await refused.json(), refusal);
   // An unusable origin leaves the receipt as it was.
@@ -229,83 +228,64 @@ test("the gateway links Page edit receipts, and leaves refusals and unlinked cal
   assert.deepEqual(await unconfigured.json(), receipt);
 });
 
-test("a create key that starts with v1_ is refused: the caller sends only its nonce", async (t) => {
+test("a nonce outside the pattern is refused before any write", async (t) => {
   const w = await world(t);
-  const listed = await w.call("owner", "list_pages");
-  const built = `v1_${"a".repeat(64)}_${crypto.randomUUID()}`;
   for (const [operation, args] of [
     ["create_page", { title: "Keyed" }],
     ["create_project", { title: "Keyed" }],
   ])
-    for (const token of [{ retry_token: listed.body.retry_token }, {}]) {
-      const refused = await w.call("owner", operation, {
-        ...args,
-        ...token,
-        idempotency_key: built,
-      });
+    for (const nonce of [`v1_${"a".repeat(64)}_${crypto.randomUUID()}`, "short", "with space"]) {
+      const refused = await w.call("owner", operation, { ...args, nonce });
       assert.equal(refused.status, 400, operation);
-      assert.equal(refused.body.code, "invalid_idempotency_key", operation);
-      assert.match(
-        refused.body.error,
-        /Send only your own nonce, such as a new UUID, with the retry_token/,
-        operation,
-      );
+      assert.equal(refused.body.code, "invalid_nonce", operation);
+      assert.match(refused.body.error, /nonce must be 6–64 letters/, operation);
     }
   assert.equal((await w.call("owner", "list_pages")).body.pages.length, 0);
 });
 
-test("a tokened create with a plain nonce replays exactly; without the token it is new", async (t) => {
+test("a create replays exactly for its account; another account's same nonce is its own", async (t) => {
   const w = await world(t);
-  const listed = await w.call("owner", "list_pages");
-  const nonce = crypto.randomUUID();
-  const tokened = { title: "Once", idempotency_key: nonce, retry_token: listed.body.retry_token };
-  const created = await w.call("owner", "create_page", tokened);
+  const args = { title: "Once", nonce: crypto.randomUUID() };
+  const created = await w.call("owner", "create_page", args);
   assert.equal(created.status, 200, JSON.stringify(created.body));
-  assert.deepEqual((await w.call("owner", "create_page", tokened)).body, created.body);
+  assert.deepEqual((await w.call("owner", "create_page", args)).body, created.body);
   assert.equal((await w.call("owner", "list_pages")).body.pages.length, 1);
-  const plain = await w.call("owner", "create_page", { title: "Once", idempotency_key: nonce });
-  assert.equal(plain.status, 200, JSON.stringify(plain.body));
-  assert.notEqual(plain.body.page_id, created.body.page_id);
-  assert.equal((await w.call("owner", "list_pages")).body.pages.length, 2);
+  const theirs = await w.call("member", "create_page", args);
+  assert.equal(theirs.status, 200, JSON.stringify(theirs.body));
+  assert.notEqual(theirs.body.page_id, created.body.page_id);
+  assert.equal((await w.call("owner", "list_pages")).body.pages.length, 1);
+  assert.equal((await w.call("member", "list_pages", { access: "owned" })).body.pages.length, 1);
 });
 
-test("create_page returns the new Page's edit authority, so the first edit needs no read", async (t) => {
+test("create_page names the new Page's revision, so the first edit needs no read", async (t) => {
   const w = await world(t);
   const createKey = w.key();
   const created = await w.call("owner", "create_page", {
     title: "Fresh",
     markdown: "Draft body.",
-    idempotency_key: createKey,
+    nonce: createKey,
   });
   assert.equal(created.status, 200, JSON.stringify(created.body));
-  const { page_id, retry_token, retry_until } = created.body;
-  assert.equal(typeof retry_token, "string");
-  assert.equal(created.body.retry_key_prefix, undefined);
-  assert.ok(Number.isFinite(Date.parse(retry_until)));
-  // The token is the Page's own, as read_page issues it: the Page's journal
-  // accepts it for an edit under page:<id>, and refuses the catalog's.
-  const pageStorage = w.page(page_id).ctx.storage;
-  const inspect = async (token) =>
-    inspectOperation(pageStorage, {
-      key: `host/operation/${await retryKeyPrefix(token)}${crypto.randomUUID()}`,
-      digest: "d".repeat(64),
-      retryToken: token,
-      scope: `page:${page_id}`,
-      principal: w.owner,
-    });
-  assert.deepEqual((await inspect(retry_token)).entry, undefined);
-  const listed = await w.call("owner", "list_pages");
-  assert.notEqual(listed.body.retry_token, retry_token);
-  await assert.rejects(inspect(listed.body.retry_token), {
-    code: "invalid_retry_token",
-  });
-  // An exact retry replays the recorded receipt, token included.
+  const { page_id, revision } = created.body;
+  assert.match(revision, /^r\d+$/);
+  for (const field of ["heads", "retry_token", "retry_until", "retry_key_prefix"])
+    assert.equal(created.body[field], undefined, field);
+  // An exact retry replays the recorded receipt, its revision included.
   const replay = await w.call("owner", "create_page", {
     title: "Fresh",
     markdown: "Draft body.",
-    idempotency_key: createKey,
+    nonce: createKey,
   });
   assert.deepEqual(replay.body, created.body);
+  // The revision is the Page's own: an edit takes it with no read first.
+  const edited = await w.call("owner", "edit_page", {
+    page_id,
+    revision,
+    nonce: w.key(),
+    operations: [{ op: "set_title", title: "Edited" }],
+  });
+  assert.equal(edited.status, 200, JSON.stringify(edited.body));
+  assert.notEqual(edited.body.revision, revision);
 });
 
 test("tools name the right argument when a Project ID and a Page ID are swapped", async (t) => {
@@ -317,7 +297,7 @@ test("tools name the right argument when a Project ID and a Page ID are swapped"
     ["edit_page", { page_id: project.project_id }, "project_id_as_page_id", /project_id/],
     [
       "delete_page",
-      { page_id: project.project_id, base_heads: [], idempotency_key: w.key() },
+      { page_id: project.project_id, nonce: w.key() },
       "project_id_as_page_id",
       /project_id/,
     ],
@@ -330,7 +310,7 @@ test("tools name the right argument when a Project ID and a Page ID are swapped"
     ["get_project", { project_id: pageId }, "page_id_as_project_id", /read_page/],
     [
       "update_project",
-      { project_id: pageId, title: "x", idempotency_key: w.key() },
+      { project_id: pageId, title: "x", nonce: w.key() },
       "page_id_as_project_id",
       /read_page/,
     ],
@@ -338,13 +318,13 @@ test("tools name the right argument when a Project ID and a Page ID are swapped"
     ["list_pages", { parent_id: project.project_id }, "project_id_as_page_id", /project_id/],
     [
       "create_page",
-      { title: "x", parent_id: project.project_id, idempotency_key: w.key() },
+      { title: "x", parent_id: project.project_id, nonce: w.key() },
       "project_id_as_page_id",
       /project_id/,
     ],
     [
       "create_page",
-      { title: "x", project_id: pageId, idempotency_key: w.key() },
+      { title: "x", project_id: pageId, nonce: w.key() },
       "page_id_as_project_id",
       /parent_id/,
     ],
@@ -365,7 +345,7 @@ test("tools name the right argument when a Project ID and a Page ID are swapped"
 
 test("an interrupted create_project resumes the same Project and content document on retry", async (t) => {
   const w = await world(t);
-  const args = { title: "Recovery", idempotency_key: "project-recovery-key" };
+  const args = { title: "Recovery", nonce: "project-recovery-key" };
   // The Project record commits, then the content document's creation fails.
   const originalPages = w.env.PAGES.getByName;
   let failContent = true;
@@ -384,7 +364,7 @@ test("an interrupted create_project resumes the same Project and content documen
   const first = await w.call("owner", "create_project", args);
   assert.equal(first.status, 500);
   const storage = w.catalogStorage();
-  const intent = await storage.get("host/operation/project-recovery-key");
+  const intent = await storage.get(await w.receiptKey("project-recovery-key"));
   assert.equal(intent.pending, true);
   assert.equal(intent.phase, "space_recorded", "the retry resumes after the Project record");
   assert.equal(w.projects.get(intent.spaceId) !== undefined, true, "the Project record exists");
@@ -400,7 +380,10 @@ test("an interrupted create_project resumes the same Project and content documen
   w.faults.set(intent.pageId, "lost");
   assert.equal((await w.call("owner", "create_project", args)).status, 500);
   assert.ok(w.page(intent.pageId).metadata, "the content document committed");
-  assert.equal((await storage.get("host/operation/project-recovery-key")).phase, "space_recorded");
+  assert.equal(
+    (await storage.get(await w.receiptKey("project-recovery-key"))).phase,
+    "space_recorded",
+  );
 
   const retry = await w.call("owner", "create_project", args);
   assert.equal(retry.status, 200);
@@ -409,7 +392,7 @@ test("an interrupted create_project resumes the same Project and content documen
   assert.equal(retry.body.home_page_title, undefined);
   assert.equal(w.page(intent.pageId).metadata.placement, undefined);
   assert.equal((await storage.get(`page/${intent.pageId}`)).project_content, intent.spaceId);
-  assert.equal((await storage.get("host/operation/project-recovery-key")).phase, "ready");
+  assert.equal((await storage.get(await w.receiptKey("project-recovery-key"))).phase, "ready");
   const again = await w.call("owner", "create_project", args);
   assert.deepEqual(again.body, retry.body);
   assert.equal(
@@ -702,14 +685,12 @@ test("Trash moves one Page at a time; restore returns a Page to its parent or th
   const b = (await w.createPage({ title: "B", parent_id: a })).body.page_id;
   const c = (await w.createPage({ title: "C", parent_id: b })).body.page_id;
   const storage = w.catalogStorage();
-  const trash = (pageId, idempotency_key = w.key()) =>
+  const trash = (pageId, nonce = w.key()) =>
     w.call("owner", "delete_page", {
       page_id: pageId,
-      base_heads: w.heads(pageId),
-      idempotency_key,
+      nonce,
     });
-  const restore = (pageId) =>
-    w.call("owner", "restore_page", { page_id: pageId, idempotency_key: w.key() });
+  const restore = (pageId) => w.call("owner", "restore_page", { page_id: pageId, nonce: w.key() });
 
   const refused = await trash(a, "parent-with-children");
   assert.equal(refused.status, 409);
@@ -717,7 +698,7 @@ test("Trash moves one Page at a time; restore returns a Page to its parent or th
   assert.match(refused.body.error, /sub-pages first/);
   assert.equal(pageState(w.page(a).metadata), "active");
   assert.equal(await storage.get(`trash/${a}`), undefined, "no trash slot was reserved");
-  assert.equal(await storage.get("host/operation/parent-with-children"), undefined);
+  assert.equal(await storage.get(await w.receiptKey("parent-with-children")), undefined);
 
   for (const pageId of [c, b, a]) {
     const trashed = await trash(pageId);
@@ -785,8 +766,7 @@ async function nested(w) {
   const trash = (pageId) =>
     w.call("owner", "delete_page", {
       page_id: pageId,
-      base_heads: w.heads(pageId),
-      idempotency_key: w.key(),
+      nonce: w.key(),
     });
   return { project, parent, child, trash };
 }
@@ -797,7 +777,7 @@ for (const variant of ["lost", "barrier"])
     const { parent, child, trash } = await nested(w);
     assert.equal((await trash(child)).status, 200);
     interrupt(w, child, variant);
-    const restore = { page_id: child, idempotency_key: `restore-${variant}` };
+    const restore = { page_id: child, nonce: `restore-${variant}` };
     assert.ok((await w.call("owner", "restore_page", restore)).status >= 500);
     const storage = w.catalogStorage();
     const slot = await storage.get(`page/${child}`);
@@ -854,7 +834,7 @@ async function unsettledChildren(w, count) {
     const child = (await w.createPage({ title: `Child ${index}`, parent_id: parent })).body.page_id;
     assert.equal((await trash(child)).status, 200);
     w.faults.set(child, "before");
-    await w.call("owner", "restore_page", { page_id: child, idempotency_key: w.key() });
+    await w.call("owner", "restore_page", { page_id: child, nonce: w.key() });
     children.push(child);
   }
   // nested() made one more child; settle it into Trash too.
@@ -981,11 +961,11 @@ test("a resumed parent trash that lost its slot runs the leaf guard again", asyn
   const { project, parent, child, trash } = await nested(w);
   assert.equal((await trash(child)).status, 200);
   const storage = w.catalogStorage();
-  const args = { page_id: parent, base_heads: w.heads(parent), idempotency_key: "resumed-trash" };
+  const args = { page_id: parent, nonce: "resumed-trash" };
   // Forwarded, but the request never reached the Page.
   w.faults.set(parent, "before");
   assert.ok((await w.call("owner", "delete_page", args)).status >= 500);
-  const intent = await storage.get("host/operation/resumed-trash");
+  const intent = await storage.get(await w.receiptKey("resumed-trash"));
   assert.equal(intent.forwarded, true);
   // The slot expires. Another Trash leaves it alone: a capacity check below
   // the limit reads the stored count, not the slots.
@@ -994,7 +974,7 @@ test("a resumed parent trash that lost its slot runs the leaf guard again", asyn
   const other = (await w.createPage({ title: "Other", project_id: project.project_id })).body
     .page_id;
   assert.equal((await trash(other)).status, 200);
-  assert.equal((await storage.get(`trash/${parent}`)).intent, "host/operation/resumed-trash");
+  assert.equal((await storage.get(`trash/${parent}`)).intent, await w.receiptKey("resumed-trash"));
   // A child under the parent counts the parent's slot, finds the Page
   // unchanged and releases it.
   const late = await w.createPage({ title: "Late child", parent_id: parent });
@@ -1005,14 +985,14 @@ test("a resumed parent trash that lost its slot runs the leaf guard again", asyn
   assert.equal(retried.status, 409);
   assert.equal(retried.body.code, "page_has_children");
   assert.equal(pageState(w.page(parent).metadata), "active");
-  assert.equal(await storage.get("host/operation/resumed-trash"), undefined, "released");
+  assert.equal(await storage.get(await w.receiptKey("resumed-trash")), undefined, "released");
   assert.equal(await storage.get(`trash/${parent}`), undefined);
 });
 
 test("a resumed trash that already applied still replays its receipt", async (t) => {
   const w = await world(t);
   const { child, trash } = await nested(w);
-  const args = { page_id: child, base_heads: w.heads(child), idempotency_key: "applied-trash" };
+  const args = { page_id: child, nonce: "applied-trash" };
   w.faults.set(child, "lost");
   assert.ok((await w.call("owner", "delete_page", args)).status >= 500);
   const storage = w.catalogStorage();
@@ -1030,7 +1010,7 @@ test("an unapplied restore does not hold its parent, and returns to the top leve
   const { project, parent, child, trash } = await nested(w);
   assert.equal((await trash(child)).status, 200);
   w.faults.set(child, "before");
-  const restore = { page_id: child, idempotency_key: "restore-never-arrived" };
+  const restore = { page_id: child, nonce: "restore-never-arrived" };
   assert.ok((await w.call("owner", "restore_page", restore)).status >= 500);
   assert.equal(pageState(w.page(child).metadata), "trashed");
   assert.equal((await trash(parent)).status, 200, "the settled child is still in Trash");
@@ -1055,7 +1035,7 @@ for (const variant of ["lost", "barrier"])
     assert.ok(await storage.get(`page/${parent}`), "the Catalog still lists the parent");
     const restored = await w.call("owner", "restore_page", {
       page_id: child,
-      idempotency_key: w.key(),
+      nonce: w.key(),
     });
     assert.equal(restored.status, 200, JSON.stringify(restored.body));
     assert.equal(restored.body.parent_id, null);
@@ -1087,14 +1067,13 @@ test("a pending child creation blocks its parent's Trash, and a resumed one rech
       },
     };
   };
-  const args = { title: "Child", parent_id: a, idempotency_key: "pending-child" };
+  const args = { title: "Child", parent_id: a, nonce: "pending-child" };
   assert.equal((await w.call("owner", "create_page", args)).status, 500);
   const storage = w.catalogStorage();
-  assert.equal((await storage.get("host/operation/pending-child")).pending, true);
+  assert.equal((await storage.get(await w.receiptKey("pending-child"))).pending, true);
   const blocked = await w.call("owner", "delete_page", {
     page_id: a,
-    base_heads: w.heads(a),
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(blocked.status, 409);
   assert.equal(blocked.body.code, "page_has_children");
@@ -1107,7 +1086,7 @@ test("a pending child creation blocks its parent's Trash, and a resumed one rech
   assert.equal(resumed.status, 409);
   assert.equal(resumed.body.code, "parent_unavailable");
   assert.equal(creates, 1, "the resumed creation did not reach a Page");
-  assert.equal((await storage.get("host/operation/pending-child")).pending, true);
+  assert.equal((await storage.get(await w.receiptKey("pending-child"))).pending, true);
 
   await storage.delete(`trash/${a}`);
   await storage.put(`page/${a}`, parent);
@@ -1122,7 +1101,7 @@ test("an update_project retry whose receipt was evicted is superseded and never 
   const missing = await w.call("owner", "update_project", {
     project_id: project.project_id,
     title: "No fence",
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(missing.status, 400);
   assert.match(missing.body.error, /expected_revision/);
@@ -1131,17 +1110,17 @@ test("an update_project retry whose receipt was evicted is superseded and never 
     project_id: project.project_id,
     title: "Lost",
     expected_revision: 0,
-    idempotency_key: "lost-update",
+    nonce: "lost-update",
   };
   w.faults.set(project.project_id, "lost");
   assert.equal((await w.call("owner", "update_project", lost)).status, 500);
-  assert.equal((await w.catalogStorage().get("host/operation/lost-update")).expectedRevision, 0);
+  assert.equal((await w.receipt("lost-update")).expectedRevision, 0);
   for (let revision = 1; revision <= 64; revision++) {
     const newer = await w.call("owner", "update_project", {
       project_id: project.project_id,
       title: `Title ${revision}`,
       expected_revision: revision,
-      idempotency_key: w.key(),
+      nonce: w.key(),
     });
     assert.equal(newer.status, 200, JSON.stringify(newer.body));
   }
@@ -1256,9 +1235,9 @@ test("intents a build from before the Project name left pending resume through t
 
   // create_space as the old gateway sent it, interrupted before its content.
   failNextPageCreate(w);
-  const spaceArgs = { title: "Old build", idempotency_key: "old-create-space" };
+  const spaceArgs = { title: "Old build", nonce: "old-create-space" };
   assert.equal((await w.oldGateway("owner", "create_space", spaceArgs)).status, 500);
-  const spaceIntent = await storage.get("host/operation/old-create-space");
+  const spaceIntent = await storage.get(await w.receiptKey("old-create-space"));
   assert.equal(spaceIntent.pending, true);
   assert.equal(spaceIntent.phase, "space_recorded");
   const resumed = await w.call("owner", "create_project", spaceArgs);
@@ -1272,9 +1251,9 @@ test("intents a build from before the Project name left pending resume through t
   // create_page with space_id, interrupted before the Page. The intent
   // names no Project: the pending Catalog entry alone records the location.
   failNextPageCreate(w);
-  const pageArgs = { title: "Queued", space_id: projectId, idempotency_key: "old-create-page" };
+  const pageArgs = { title: "Queued", space_id: projectId, nonce: "old-create-page" };
   assert.equal((await w.oldGateway("owner", "create_page", pageArgs)).status, 500);
-  const pageIntent = await storage.get("host/operation/old-create-page");
+  const pageIntent = await storage.get(await w.receiptKey("old-create-page"));
   assert.equal(pageIntent.pending, true);
   assert.equal(pageIntent.placement, undefined);
   const pendingEntry = await storage.get(`page/${pageIntent.pageId}`);
@@ -1283,7 +1262,7 @@ test("intents a build from before the Project name left pending resume through t
   assert.equal(pendingEntry.parent_id, null);
   // The same call with the new argument name. Fingerprints cover the
   // arguments in order, as they always have.
-  const apiArgs = { title: "Queued", project_id: projectId, idempotency_key: "old-create-page" };
+  const apiArgs = { title: "Queued", project_id: projectId, nonce: "old-create-page" };
   const page = await w.call("owner", "create_page", apiArgs);
   assert.equal(page.status, 200, JSON.stringify(page.body));
   assert.equal(page.body.page_id, pageIntent.pageId);
@@ -1301,7 +1280,7 @@ test("cached clients: old tool names and space_id are refused before anything ru
   const w = await world(t);
   const project = await w.createProject("Cached");
   const renamed = {
-    create_space: ["create_project", { title: "Old", idempotency_key: w.key() }],
+    create_space: ["create_project", { title: "Old", nonce: w.key() }],
     list_spaces: ["list_projects", {}],
     get_space: ["get_project", { space_id: project.project_id }],
     update_space: [
@@ -1310,7 +1289,7 @@ test("cached clients: old tool names and space_id are refused before anything ru
         space_id: project.project_id,
         title: "Old",
         expected_revision: 0,
-        idempotency_key: w.key(),
+        nonce: w.key(),
       },
     ],
   };
@@ -1335,7 +1314,7 @@ test("cached clients: old tool names and space_id are refused before anything ru
   // refusal consumes nothing: the same key then applies once with project_id.
   const pageKey = w.key();
   const refusals = [
-    ["create_page", { title: "Cached", space_id: project.project_id, idempotency_key: pageKey }],
+    ["create_page", { title: "Cached", space_id: project.project_id, nonce: pageKey }],
     ["list_pages", { space_id: project.project_id }],
   ];
   for (const [operation, args] of refusals) {
@@ -1347,11 +1326,11 @@ test("cached clients: old tool names and space_id are refused before anything ru
     assert.equal(viaMcp.isError, true, operation);
     assert.deepEqual(viaMcp.body, expected);
   }
-  assert.equal(await w.catalogStorage().get(`host/operation/${pageKey}`), undefined);
+  assert.equal(await w.receipt(pageKey), undefined);
   const created = await w.call("owner", "create_page", {
     title: "Cached",
     project_id: project.project_id,
-    idempotency_key: pageKey,
+    nonce: pageKey,
   });
   assert.equal(created.status, 200);
   assert.equal(created.body.project_id, project.project_id);
@@ -1458,7 +1437,7 @@ test("create under a parent records its location only in the owner's Catalog", a
   const child = await w.createPage({
     title: "Install",
     parent_id: top.page_id,
-    idempotency_key: childKey,
+    nonce: childKey,
   });
   assert.equal(child.status, 200);
   const grandchild = (await w.createPage({ title: "macOS", parent_id: child.body.page_id })).body;
@@ -1470,7 +1449,7 @@ test("create under a parent records its location only in the owner's Catalog", a
   for (const pageId of [top.page_id, child.body.page_id, grandchild.page_id])
     assert.equal(w.page(pageId).metadata.placement, undefined);
   // The intent names no location; the Catalog entry is the only record.
-  const intent = await w.catalogStorage().get(`host/operation/${childKey}`);
+  const intent = await w.receipt(childKey);
   for (const field of ["placement", "parent_id", "space_id", "parentId", "spaceId"])
     assert.equal(Object.hasOwn(intent, field), false, field);
   const storage = w.catalogStorage();
@@ -1733,11 +1712,11 @@ test("list_pages access and sort combine with Project and parent filters; shared
 test("an interrupted create under a parent keeps that parent on retry", async (t) => {
   const w = await world(t);
   const parent = (await w.createPage({ title: "Parent" })).body.page_id;
-  const args = { title: "Child", parent_id: parent, idempotency_key: "interrupted-child" };
+  const args = { title: "Child", parent_id: parent, nonce: "interrupted-child" };
   failNextPageCreate(w);
   assert.equal((await w.call("owner", "create_page", args)).status, 500);
   const storage = w.catalogStorage();
-  const intent = await storage.get("host/operation/interrupted-child");
+  const intent = await storage.get(await w.receiptKey("interrupted-child"));
   assert.equal(intent.pending, true);
   const pending = await storage.get(`page/${intent.pageId}`);
   assert.equal(pending.pending, true);
@@ -1768,8 +1747,7 @@ test("a restore whose parent was purged returns to the Project it was trashed fr
   for (const pageId of [b, a]) {
     const trashed = await w.call("owner", "delete_page", {
       page_id: pageId,
-      base_heads: w.heads(pageId),
-      idempotency_key: w.key(),
+      nonce: w.key(),
     });
     assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
   }
@@ -1785,11 +1763,11 @@ test("a restore whose parent was purged returns to the Project it was trashed fr
     page_id: a,
     action: "confirm",
     preview_token: preview.body.preview_token,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(purged.status, 200, JSON.stringify(purged.body));
 
-  const restored = await w.call("owner", "restore_page", { page_id: b, idempotency_key: w.key() });
+  const restored = await w.call("owner", "restore_page", { page_id: b, nonce: w.key() });
   assert.equal(restored.status, 200, JSON.stringify(restored.body));
   assert.equal(restored.body.project_id, project.project_id);
   assert.equal(restored.body.parent_id, null);
@@ -1877,8 +1855,7 @@ test("a shared parent's hidden children never show through pagination", async (t
   const list = async (parentId, args = {}) => {
     const listed = await w.call("member", "list_pages", { parent_id: parentId, limit: 1, ...args });
     assert.equal(listed.status, 200, JSON.stringify(listed.body));
-    const { retry_token: _token, retry_until: _until, ...visible } = listed.body;
-    return visible;
+    return listed.body;
   };
 
   // Every child denied: the same answer as a parent with no children.
@@ -1975,8 +1952,7 @@ test("MCP location refusals carry their stable codes in structuredContent", asyn
   // A Project's content can't move to Trash.
   const content = await w.mcp("owner", "delete_page", {
     page_id: project.document_id,
-    base_heads: w.heads(project.document_id),
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(content.isError, true);
   assert.equal(content.body.code, "project_content_protected");
@@ -1985,8 +1961,7 @@ test("MCP location refusals carry their stable codes in structuredContent", asyn
   const child = (await w.createPage({ title: "Child", parent_id: parent.page_id })).body;
   const busy = await w.mcp("owner", "delete_page", {
     page_id: parent.page_id,
-    base_heads: w.heads(parent.page_id),
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(busy.body.code, "page_has_children");
   // A parent in another Project, and a parent in Trash.
@@ -1995,19 +1970,18 @@ test("MCP location refusals carry their stable codes in structuredContent", asyn
     title: "Wrong",
     project_id: other.project_id,
     parent_id: child.page_id,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(mismatch.body.code, "placement_mismatch");
   const trashed = await w.call("owner", "delete_page", {
     page_id: child.page_id,
-    base_heads: w.heads(child.page_id),
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
   const underTrash = await w.mcp("owner", "create_page", {
     title: "Orphan",
     parent_id: child.page_id,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(underTrash.body.code, "parent_unavailable");
   // One level past the model's depth limit. The parent is a Project root, at
@@ -2018,7 +1992,7 @@ test("MCP location refusals carry their stable codes in structuredContent", asyn
   const tooDeep = await w.mcp("owner", "create_page", {
     title: "Too deep",
     parent_id: deepest,
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(tooDeep.isError, true);
   assert.equal(tooDeep.body.code, "nesting_depth_exceeded");
@@ -2046,8 +2020,8 @@ test("Page tools address Project content by project_id with the caller's own acc
   };
   await w.call("owner", "edit_page", {
     project_id: project.project_id,
-    base_heads: read.body.heads,
-    idempotency_key: w.key(),
+    revision: read.body.revision,
+    nonce: w.key(),
     operations: [],
   });
   w.env.PAGES.getByName = original;
@@ -2058,7 +2032,7 @@ test("Page tools address Project content by project_id with the caller's own acc
   assert.equal("project_id" in routed[0].body.arguments, false);
   const changes = await w.call("owner", "read_page_changes", {
     project_id: project.project_id,
-    since_heads: read.body.heads,
+    since_revision: read.body.revision,
   });
   assert.equal(changes.status, 200, JSON.stringify(changes.body));
   const comments = await w.call("owner", "list_page_comments", { project_id: project.project_id });

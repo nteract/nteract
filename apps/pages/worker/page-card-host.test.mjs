@@ -59,8 +59,8 @@ test("a flush writes the card when its first screen changed", async (t) => {
     operations: [
       { op: "insert_markdown", markdown: "## Launch\n\nThe plan, in brief.", after_block_id: null },
     ],
-    base_heads: f.heads(),
-    idempotency_key: "card-top",
+    revision: await f.revision(),
+    nonce: "card-top",
   });
   assert.equal(top.status, 200, JSON.stringify(top.body));
   await settle(f);
@@ -97,8 +97,8 @@ test("a flush after an edit below the fold puts nothing", async (t) => {
   await emitting(f.page).watchContent();
   const below = await f.tool("owner", "edit_page", {
     operations: [{ op: "insert_markdown", markdown: "A footnote." }],
-    base_heads: f.heads(),
-    idempotency_key: "card-below",
+    revision: await f.revision(),
+    nonce: "card-below",
   });
   assert.equal(below.status, 200, JSON.stringify(below.body));
   await settle(f);
@@ -115,8 +115,8 @@ test("a failed card write never fails the edit or the flush, and the next flush 
   assets.fail = true;
   const edit = await f.tool("owner", "edit_page", {
     operations: [{ op: "insert_markdown", markdown: "# New opening", after_block_id: null }],
-    base_heads: f.heads(),
-    idempotency_key: "card-fails",
+    revision: await f.revision(),
+    nonce: "card-fails",
   });
   assert.equal(edit.status, 200, JSON.stringify(edit.body));
   await settle(f);
@@ -140,8 +140,8 @@ test("the host's card puts are conditional on the etag it saw, and retry once wh
   await emitting(f.page).watchContent();
   const first = await f.tool("owner", "edit_page", {
     operations: [{ op: "insert_markdown", markdown: "# First", after_block_id: null }],
-    base_heads: f.heads(),
-    idempotency_key: "fence-first",
+    revision: await f.revision(),
+    nonce: "fence-first",
   });
   assert.equal(first.status, 200, JSON.stringify(first.body));
   await settle(f);
@@ -153,8 +153,8 @@ test("the host's card puts are conditional on the etag it saw, and retry once wh
   f.page.unwatchContent();
   const second = await f.tool("owner", "edit_page", {
     operations: [{ op: "insert_markdown", markdown: "# Second", after_block_id: null }],
-    base_heads: f.heads(),
-    idempotency_key: "fence-second",
+    revision: await f.revision(),
+    nonce: "fence-second",
   });
   assert.equal(second.status, 200, JSON.stringify(second.body));
   await f.page.contentActivity.report(new Date().toISOString());
@@ -171,8 +171,8 @@ test("a refused put that finds a later content time in the object puts nothing m
   await emitting(f.page).watchContent();
   const first = await f.tool("owner", "edit_page", {
     operations: [{ op: "insert_markdown", markdown: "# First", after_block_id: null }],
-    base_heads: f.heads(),
-    idempotency_key: "later-first",
+    revision: await f.revision(),
+    nonce: "later-first",
   });
   assert.equal(first.status, 200, JSON.stringify(first.body));
   await settle(f);
@@ -191,8 +191,8 @@ test("a refused put that finds a later content time in the object puts nothing m
   f.page.unwatchContent();
   const second = await f.tool("owner", "edit_page", {
     operations: [{ op: "insert_markdown", markdown: "# Second", after_block_id: null }],
-    base_heads: f.heads(),
-    idempotency_key: "later-second",
+    revision: await f.revision(),
+    nonce: "later-second",
   });
   assert.equal(second.status, 200, JSON.stringify(second.body));
   await f.page.contentActivity.report(new Date().toISOString());
@@ -217,8 +217,8 @@ test("a card left by a node 10 minutes ahead doesn't block this host's writes", 
   await emitting(f.page).watchContent();
   const edit = await f.tool("owner", "edit_page", {
     operations: [{ op: "insert_markdown", markdown: "# Fresh opening", after_block_id: null }],
-    base_heads: f.heads(),
-    idempotency_key: "skew-fresh",
+    revision: await f.revision(),
+    nonce: "skew-fresh",
   });
   assert.equal(edit.status, 200, JSON.stringify(edit.body));
   await settle(f);
@@ -241,8 +241,8 @@ test("a host's first put requires no object, so one that appears first is not ov
   };
   const edit = await f.tool("owner", "edit_page", {
     operations: [{ op: "insert_markdown", markdown: "# Mine", after_block_id: null }],
-    base_heads: f.heads(),
-    idempotency_key: "fence-none",
+    revision: await f.revision(),
+    nonce: "fence-none",
   });
   assert.equal(edit.status, 200, JSON.stringify(edit.body));
   await settle(f);
@@ -256,8 +256,8 @@ test("a host without a Page assets bucket has no card writer", async (t) => {
   assert.equal(f.page.pageCard, null);
   const edit = await f.tool("owner", "edit_page", {
     operations: [{ op: "insert_markdown", markdown: "More." }],
-    base_heads: f.heads(),
-    idempotency_key: "no-bucket",
+    revision: await f.revision(),
+    nonce: "no-bucket",
   });
   assert.equal(edit.status, 200, JSON.stringify(edit.body));
 });
@@ -281,8 +281,8 @@ for (const mode of ["lands", "lands, then times out"])
     };
     const top = await f.tool("owner", "edit_page", {
       operations: [{ op: "insert_markdown", markdown: "# Racing", after_block_id: null }],
-      base_heads: f.heads(),
-      idempotency_key: "race-top",
+      revision: await f.revision(),
+      nonce: "race-top",
     });
     assert.equal(top.status, 200, JSON.stringify(top.body));
     await putting;
@@ -295,7 +295,7 @@ for (const mode of ["lands", "lands, then times out"])
       page_id: pageId,
       action: "confirm",
       preview_token: preview.body.preview_token,
-      idempotency_key: "purge-request-1",
+      nonce: "purge-request-1",
     });
     assert.equal(purged.status, 200, JSON.stringify(purged.body));
     release();

@@ -368,7 +368,7 @@ test("every route that opens a record's documents refuses a format this build do
   refused(await f.pageCall("owner", `/api/connect?page=${pageId}`), "connect");
   refused(await f.pageCall("owner", `/api/connect?page=${pageId}&preview=1`), "preview");
   refused(await f.pageCall("owner", "/api/saved", { heads: [] }), "saved");
-  const edit = { base_heads: [], idempotency_key: "unopened-edit" };
+  const edit = { revision: "r1", nonce: "unopened-edit" };
   for (const [operation, args] of [
     ["read_page", {}],
     ["read_page_changes", {}],
@@ -421,19 +421,18 @@ test("the owner lists, trashes, restores and permanently deletes a Page in a for
   // Only the owner trashes it.
   const memberTrash = await f.catalogCall("member", "delete_page", {
     page_id: pageId,
-    idempotency_key: "member-trash",
+    nonce: "member-trash",
   });
   assert.notEqual(memberTrash.status, 200);
   assert.equal(pageState(page.metadata), "active");
   // A trash sent with heads can't be checked against an unopened document.
   const withHeads = await f.catalogCall("owner", "delete_page", {
     page_id: pageId,
-    base_heads: f.heads(),
-    idempotency_key: "trash-with-heads",
+    revision: await f.revision(),
+    nonce: "trash-with-heads",
   });
   assert.equal(withHeads.status, 400);
-  const trash = (key) =>
-    f.catalogCall("owner", "delete_page", { page_id: pageId, idempotency_key: key });
+  const trash = (key) => f.catalogCall("owner", "delete_page", { page_id: pageId, nonce: key });
   const trashed = await trash("trash-unopened");
   assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
   assert.equal(trashed.body.state, "trashed");
@@ -445,7 +444,7 @@ test("the owner lists, trashes, restores and permanently deletes a Page in a for
   );
   const restored = await f.catalogCall("owner", "restore_page", {
     page_id: pageId,
-    idempotency_key: "restore-unopened",
+    nonce: "restore-unopened",
   });
   assert.equal(restored.status, 200, JSON.stringify(restored.body));
   assert.equal(restored.body.restored, true);
@@ -461,14 +460,14 @@ test("the owner lists, trashes, restores and permanently deletes a Page in a for
   assert.equal(preview.body.title, "Launch plan");
   assert.equal(preview.body.comment_count, null);
   assert.equal(preview.body.comment_threads, null);
-  assert.equal(preview.body.heads, null);
+  assert.equal(preview.body.heads, undefined);
   assert.deepEqual(preview.body.collaborators, [{ principal: f.member, role: "editor" }]);
   const confirm = (who, key) =>
     f.catalogCall(who, "purge_page", {
       page_id: pageId,
       action: "confirm",
       preview_token: preview.body.preview_token,
-      idempotency_key: key,
+      nonce: key,
     });
   assert.notEqual((await confirm("member", "member-purge")).status, 200);
   const purged = await confirm("owner", "purge-unopened");
@@ -555,7 +554,7 @@ test("a registered draft's record is stamped, and in a format this build doesn't
     document_id: interpretAsDocumentId(generateAutomergeUrl()),
     initial_snapshot_base64: Buffer.from(A.save(doc)).toString("base64"),
     title: "Draft",
-    idempotency_key: "register-draft",
+    nonce: "register-draft",
     record_storage: "automerge",
   });
   assert.equal(registered.status, 201, await registered.clone().text());
@@ -576,7 +575,7 @@ test("a registered draft's record is stamped, and in a format this build doesn't
   assert.equal(host.handle, undefined);
   const trashed = await h.call(host, "/internal/trash", {
     page_id: pageId,
-    idempotency_key: "trash-draft",
+    nonce: "trash-draft",
   });
   assert.equal(trashed.status, 200, await trashed.clone().text());
   const preview = await h.call(host, "/internal/purge", { page_id: pageId, action: "preview" });
@@ -586,7 +585,7 @@ test("a registered draft's record is stamped, and in a format this build doesn't
     page_id: pageId,
     action: "confirm",
     preview_token,
-    idempotency_key: "purge-draft",
+    nonce: "purge-draft",
   });
   assert.equal(purged.status, 200, await purged.clone().text());
   assert.equal(pageState(await h.storage.get("host/document")), "deleted");
@@ -630,7 +629,7 @@ test("a retained creation intent in a format this build doesn't write installs i
   assert.equal((await read.json()).code, "document_format_unsupported");
   const trashed = await h.call(host, "/internal/trash", {
     page_id: pageId,
-    idempotency_key: "trash-intent",
+    nonce: "trash-intent",
   });
   assert.equal(trashed.status, 200, await trashed.clone().text());
   const preview = await h.call(host, "/internal/purge", { page_id: pageId, action: "preview" });
@@ -639,7 +638,7 @@ test("a retained creation intent in a format this build doesn't write installs i
     page_id: pageId,
     action: "confirm",
     preview_token: (await preview.json()).preview_token,
-    idempotency_key: "purge-intent",
+    nonce: "purge-intent",
   });
   assert.equal(purged.status, 200, await purged.clone().text());
   assert.equal(pageState(await h.storage.get("host/document")), "deleted");

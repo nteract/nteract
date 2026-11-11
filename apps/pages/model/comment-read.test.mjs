@@ -12,6 +12,7 @@ import { projectPage } from "./page.mjs";
 import { projectReadComments } from "./read-comments.mjs";
 import { projectReadChanges } from "./read-changes.mjs";
 import { readTool } from "../worker/tool-reads.mjs";
+import { revisionTable } from "../worker/revisions-fixture.mjs";
 import { readChangesTool } from "../worker/tool-changes.mjs";
 import { nativeRead, nativeReadSpans, readFingerprint, readMarkdown } from "./native-read.mjs";
 
@@ -26,7 +27,6 @@ const PAGE = "11111111-1111-4111-8111-111111111111";
 const BLOCK = "22222222-2222-4222-8222-222222222222";
 const AUTHOR = { principal: "user:reader", displayName: "Reader", driver: "Test client" };
 const AT = "2026-11-07T18:00:00-08:00";
-const AUTHORITY = { retry_token: "read-fixture", retry_until: AT };
 
 function richMessage(spans) {
   let doc = A.from({ richText: "" });
@@ -588,8 +588,13 @@ test("comment reads report each stored form's outcome and change neither documen
   try {
     const saved = [A.save(page), A.save(comments)];
     const heads = [A.getHeads(page), A.getHeads(comments)];
-    const options = { commentsDoc: comments, issueAuthority: async () => AUTHORITY };
+    const revisions = revisionTable();
+    const options = { commentsDoc: comments, revisions };
     const deltaArgs = { since_heads: heads[0], since_comment_heads: since };
+    const changeArgs = {
+      since_revision: await revisions.handle("page", heads[0]),
+      since_comment_revision: await revisions.handle("comments", since),
+    };
     projectPage(page, comments);
     const compact = projectReadComments(page, { state: "all" }, comments);
     projectReadComments(page, { state: "all", include_messages: false }, comments);
@@ -598,7 +603,7 @@ test("comment reads report each stored form's outcome and change neither documen
     await readTool(page, "read_page", { page_id: PAGE }, options);
     await readTool(page, "read_page", { comments: "all" }, options);
     const list = await readTool(page, "list_page_comments", { state: "all" }, options);
-    await readChangesTool(page, deltaArgs, options);
+    await readChangesTool(page, changeArgs, options);
     // The tool returns the model's projection, and each stored form has one
     // outcome: Markdown, the literal text, or an empty body with its reason.
     const threads = list.body.comments;

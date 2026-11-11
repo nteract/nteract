@@ -19,7 +19,7 @@
  * are not stored, so they use the Project name.
  */
 import { HttpError, authenticate, json, readJson, requireWrite, errorResponse } from "./auth.mjs";
-import { fingerprint, mutationKey, operationKey } from "./mutations.mjs";
+import { fingerprint, operationKey } from "./mutations.mjs";
 import { validPageId } from "./registration.mjs";
 import { NO_ACTOR_CHAIN, decide, heldRelation, principalOf, projectObject } from "./authz.mjs";
 import { serialQueue } from "./serial-queue.mjs";
@@ -114,7 +114,7 @@ export function validateSpaceDeletion(args) {
   if (!args || typeof args !== "object" || Array.isArray(args))
     throw new HttpError(400, "Invalid Project arguments");
   requireSpaceIdArgument(args.space_id);
-  const allowed = ["space_id", "action", "preview_token", "idempotency_key", "retry_token"];
+  const allowed = ["space_id", "action", "preview_token", "nonce"];
   if (Object.keys(args).some((key) => !allowed.includes(key)))
     throw new HttpError(400, "Unsupported delete_project argument", "invalid_arguments");
   if (!["preview", "confirm"].includes(args.action))
@@ -322,12 +322,12 @@ export class Space {
                   "invite_id",
                   "role",
                   "expected_revision",
-                  "idempotency_key",
+                  "nonce",
                 ].includes(key),
             )
           )
             throw new HttpError(400, "Unsupported Project sharing argument");
-          const key = mutationKey(args);
+          const key = await operationKey(args, identity, "project-access");
           const digest = await fingerprint(
             "project_access",
             {
@@ -346,8 +346,8 @@ export class Space {
             if (previous.fingerprint !== digest)
               throw new HttpError(
                 409,
-                "idempotency_key was used for a different request",
-                "idempotency_conflict",
+                "This nonce was used for a different request",
+                "nonce_conflict",
               );
             await this.ctx.storage.sync();
             // Repeats a hint removal that failed after the ACL committed.
@@ -590,7 +590,7 @@ export class Space {
     if (identity.principal !== record.owner)
       throw new HttpError(403, "Only the Project owner can update it");
     const { title, description } = validateSpaceInput(args, { creating: false });
-    const key = await operationKey(args);
+    const key = await operationKey(args, identity, "project");
     const digest = await fingerprint(
       "update_space",
       { space_id: args.space_id, title, description, expected_revision: args.expected_revision },
@@ -599,11 +599,7 @@ export class Space {
     const recorded = await this.ctx.storage.get(receiptKey(key));
     if (recorded) {
       if (recorded.fingerprint !== digest)
-        throw new HttpError(
-          409,
-          "idempotency_key was used for a different request",
-          "idempotency_conflict",
-        );
+        throw new HttpError(409, "This nonce was used for a different request", "nonce_conflict");
       return json(recorded.receipt);
     }
     // The fence: a request applies only at the revision its caller read.

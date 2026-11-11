@@ -598,6 +598,8 @@ test("passage-conflict transport exposes only bounded recovery addresses", async
     code: "edit_conflict",
     details: {
       current_heads: ["a".repeat(64)],
+      current_revision: "r3",
+      comment_revision: "c2; not a handle",
       conflicts: Array.from({ length: 20 }, () => ({
         block_id: "b".repeat(200),
         node_index: 2,
@@ -614,7 +616,10 @@ test("passage-conflict transport exposes only bounded recovery addresses", async
   assert.equal(body.conflicts.length, 10);
   assert.equal(body.conflicts[0].block_id.length, 128);
   assert.equal(body.conflicts[0].reason.length, 240);
-  assert.deepEqual(body.current_heads, error.details.current_heads);
+  // Revisions leave as handles, and only well-formed ones; heads never do.
+  assert.equal(body.current_revision, "r3");
+  assert.equal(body.comment_revision, undefined);
+  assert.equal(body.current_heads, undefined);
   assert.equal(body.conflicts[0].markdown, undefined);
   assert.equal(body.private, undefined);
 });

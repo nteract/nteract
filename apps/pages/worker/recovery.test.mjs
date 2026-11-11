@@ -3,7 +3,8 @@ import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { createAuthFixture } from "../auth-fixtures.mjs";
 import { Catalog, Page } from "./index.mjs";
-import { documentMutation, recoverDocumentMutations } from "./mutations.mjs";
+import { documentMutation, operationKey, recoverDocumentMutations } from "./mutations.mjs";
+import { headsFor, revisionFor } from "./revisions.mjs";
 import { plainStub } from "./plain-stub.mjs";
 import { WRITTEN_FORMATS } from "../model/document-types.mjs";
 
@@ -15,12 +16,10 @@ class Storage {
     return structuredClone(this.values.get(key));
   }
   async put(key, value) {
-    if (typeof key === "object") {
-      for (const [name, entry] of Object.entries(key)) await this.put(name, entry);
-      return;
+    for (const [name, entry] of Object.entries(typeof key === "object" ? key : { [key]: value })) {
+      this.writes.push(name);
+      this.values.set(name, structuredClone(entry));
     }
-    this.writes.push(key);
-    this.values.set(key, structuredClone(value));
   }
   async delete(key) {
     return this.values.delete(key);
@@ -50,14 +49,26 @@ const contextFor = (storage) => ({
   blockConcurrencyWhile: (fn) => fn(),
   waitUntil() {},
 });
-function mutationContext(storage, handle, flush) {
+const owner = { principal: "user:owner", driver: "ChatGPT" };
+// The receipt key of the edit mutationContext makes.
+const KEY = await operationKey({ nonce: "recoverable-edit" }, owner, "page");
+// Storage keys other than the revision table's.
+const stateKeys = (storage) =>
+  [...storage.values.keys()].filter((key) => !key.startsWith("host/revision/"));
+// The journal entry for KEY in a put, alone or in a multi-key put.
+const journalEntry = (key, value) =>
+  typeof key === "object" ? key[KEY] : key === KEY ? value : undefined;
+async function mutationContext(storage, handle, flush) {
   return {
     storage,
     handle,
     flush,
     operation: "edit_page",
-    args: { idempotency_key: "recoverable-edit", base_heads: A.getHeads(handle.doc()) },
-    identity: { principal: "user:owner", driver: "ChatGPT" },
+    args: {
+      nonce: "recoverable-edit",
+      revision: await revisionFor(storage, "page", A.getHeads(handle.doc()), Date.now()),
+    },
+    identity: owner,
     apply: (draft) => {
       draft.toolNote = "survives restart";
     },
@@ -89,11 +100,11 @@ test("Page restart recovers an intent based on an unflushed WebSocket edit", asy
   const put = storage.put.bind(storage);
   storage.put = async (key, value) => {
     await put(key, value);
-    if (key === "host/operation/recoverable-edit") throw Error("crash after intent write");
+    if (journalEntry(key, value)) throw Error("crash after intent write");
   };
   await assert.rejects(
     documentMutation(
-      mutationContext(storage, handle, async () => {
+      await mutationContext(storage, handle, async () => {
         await storage.put("fixture/document", A.save(doc));
         await storage.sync();
       }),
@@ -101,7 +112,7 @@ test("Page restart recovers an intent based on an unflushed WebSocket edit", asy
     /crash after intent write/,
   );
   assert.equal(doc.toolNote, undefined);
-  assert.equal((await storage.get("host/operation/recoverable-edit")).pending, true);
+  assert.equal((await storage.get(KEY)).pending, true);
   assert.ok(A.hasHeads(A.load(await storage.get("fixture/document")), base));
   storage.put = put;
   t.mock.method(Page.prototype, "initializeRepo", async function () {
@@ -129,9 +140,9 @@ test("Page restart recovers an intent based on an unflushed WebSocket edit", asy
   await restarted.documentReady();
   assert.equal(restarted.handle.doc().humanNote, "received over WebSocket");
   assert.equal(restarted.handle.doc().toolNote, "survives restart");
-  const receipt = await storage.get("host/operation/recoverable-edit");
+  const receipt = await storage.get(KEY);
   assert.equal(receipt.pending, false);
-  assert.ok(A.hasHeads(A.load(await storage.get("fixture/document")), receipt.receipt.heads));
+  assert.ok(A.hasHeads(A.load(await storage.get("fixture/document")), receipt.heads));
 });
 
 test("a failed base durability barrier records no mutation intent or tool changes", async () => {
@@ -146,13 +157,13 @@ test("a failed base durability barrier records no mutation intent or tool change
   const before = A.getHeads(doc);
   await assert.rejects(
     documentMutation(
-      mutationContext(storage, handle, async () => {
+      await mutationContext(storage, handle, async () => {
         throw Error("base durability failed");
       }),
     ),
     /base durability failed/,
   );
-  assert.equal(storage.values.size, 0);
+  assert.deepEqual(stateKeys(storage), []);
   assert.deepEqual(A.getHeads(doc), before);
   assert.equal(doc.toolNote, undefined);
 });
@@ -169,18 +180,19 @@ test("the base barrier precedes intent storage without dropping a concurrent edi
   const events = [];
   const put = storage.put.bind(storage);
   storage.put = async (key, value) => {
-    events.push(value.pending ? "intent" : "receipt");
+    const entry = journalEntry(key, value);
+    if (entry) events.push(entry.pending ? "intent" : "receipt");
     await put(key, value);
   };
   let flushes = 0;
   let persisted;
   const receipt = await documentMutation(
-    mutationContext(storage, handle, async () => {
+    await mutationContext(storage, handle, async () => {
       events.push("flush");
       persisted = A.save(doc);
       if (++flushes === 1) {
         assert.equal(doc.toolNote, undefined);
-        assert.equal(storage.values.size, 0);
+        assert.deepEqual(stateKeys(storage), []);
         doc = A.change(doc, (draft) => {
           draft.laterHumanNote = "arrived during base flush";
         });
@@ -189,7 +201,7 @@ test("the base barrier precedes intent storage without dropping a concurrent edi
   );
   assert.deepEqual(events, ["flush", "intent", "flush", "receipt"]);
   assert.equal(doc.laterHumanNote, "arrived during base flush");
-  assert.ok(A.hasHeads(A.load(persisted), receipt.heads));
+  assert.ok(A.hasHeads(A.load(persisted), await headsFor(storage, "page", receipt.revision)));
 });
 
 test("unknown Page lookups write no plain storage, repository, or host state", async (t) => {
@@ -315,23 +327,23 @@ test("a new purge key completes failed deletion barriers before clearing its cat
   );
   const call = (operation, args) =>
     catalog.fetch(requestFor(token, "/internal/catalog", { operation, arguments: args }));
-  const trashed = await call("delete_page", {
-    page_id: pageId,
-    base_heads: A.getHeads(doc),
-    idempotency_key: "trash-first",
-  });
+  const trashed = await call("delete_page", { page_id: pageId, nonce: "trash-first" });
   assert.equal(trashed.status, 200);
   assert.equal(deletions, 0);
   const preview = await (await call("purge_page", { page_id: pageId, action: "preview" })).json();
   const args = { page_id: pageId, action: "confirm", preview_token: preview.preview_token };
-  const purge = (key, extra = {}) =>
-    call("purge_page", { ...args, idempotency_key: key, ...extra });
+  const purge = (key, extra = {}) => call("purge_page", { ...args, nonce: key, ...extra });
   failing = true;
   const syncs = storage.syncs;
   assert.equal((await purge("original-purge")).status, 500);
   assert.equal((await purge("replacement-purge")).status, 500);
   assert.ok(await catalogStorage.get(`trash/${pageId}`));
-  assert.equal((await catalogStorage.get("host/operation/replacement-purge")).pending, true);
+  const purgeKey = await operationKey(
+    { nonce: "replacement-purge" },
+    { principal: page.metadata.owner },
+    "catalog",
+  );
+  assert.equal((await catalogStorage.get(purgeKey)).pending, true);
   // The purged record must be durable before document storage is deleted.
   assert.equal(deletions, 0);
   failing = false;
@@ -348,7 +360,7 @@ test("a new purge key completes failed deletion barriers before clearing its cat
       await page.run(
         requestFor(token, "/internal/purge", {
           ...args,
-          idempotency_key: "original-purge",
+          nonce: "original-purge",
           extra: true,
         }),
       )
@@ -377,13 +389,18 @@ test("deleting a missing Page durably removes only the caller's stale catalog en
   const response = await catalog.fetch(
     requestFor(auth.apiKey(), "/internal/catalog", {
       operation: "delete_page",
-      arguments: { page_id: pageId, idempotency_key: "missing-delete" },
+      arguments: { page_id: pageId, nonce: "missing-delete" },
     }),
   );
   assert.equal(response.status, 200);
   assert.equal(await storage.get(`page/${pageId}`), undefined);
   assert.ok(await storage.get("page/other"));
-  assert.equal((await storage.get("host/operation/missing-delete")).pending, false);
+  const deleteKey = await operationKey(
+    { nonce: "missing-delete" },
+    { principal: `user:anaconda-fixture:${auth.subject}` },
+    "catalog",
+  );
+  assert.equal((await storage.get(deleteKey)).pending, false);
   assert.equal(storage.syncs, 1);
 });
 
@@ -403,16 +420,16 @@ test("cached tool receipts retry a failed final durability barrier", async () =>
   let terminalSyncs = 0;
   storage.sync = async () => {
     storage.syncs++;
-    const entry = await storage.get("host/operation/recoverable-edit");
+    const entry = await storage.get(KEY);
     if (entry?.pending === false) {
       terminalSyncs++;
       if (failing) throw Error("receipt sync failed");
       durableReceipt = entry;
     }
   };
-  const context = mutationContext(storage, handle, async () => {});
+  const context = await mutationContext(storage, handle, async () => {});
   await assert.rejects(documentMutation(context), /receipt sync failed/);
-  const recorded = await storage.get("host/operation/recoverable-edit");
+  const recorded = await storage.get(KEY);
   assert.equal(recorded.pending, false);
   await assert.rejects(documentMutation(context), /receipt sync failed/);
   assert.equal(terminalSyncs, 2);
@@ -471,11 +488,11 @@ for (const fault of ["prefix-read", "prefix-write"]) {
       }),
     );
     assert.equal(retry.status, 201);
-    // The reply is the recorded receipt plus freshly issued edit authority.
-    const { retry_token, retry_until, ...recorded } = await retry.json();
-    assert.deepEqual(recorded, intent.metadata.createdReceipt);
-    assert.equal(typeof retry_token, "string");
-    assert.ok(Number.isFinite(Date.parse(retry_until)));
+    // The reply is the recorded receipt, its revision as the handle minted
+    // with the intent.
+    const { heads, ...expected } = intent.metadata.createdReceipt;
+    assert.deepEqual(await retry.json(), expected);
+    assert.deepEqual(await headsFor(storage, "page", expected.revision), heads);
     assert.equal(page.metadata.documentId, intent.metadata.documentId);
     assert.deepEqual(A.getHeads(page.handle.doc()), intent.metadata.createdReceipt.heads);
     assert.deepEqual(A.getAllChanges(page.handle.doc()), A.getAllChanges(A.load(intent.bytes)));
@@ -504,7 +521,8 @@ test("startup recovery finds pending edits beyond a full default storage page", 
     fingerprint: "pending",
     pending: true,
     changes: A.getChanges(doc, edited),
-    receipt: { page_id: pageId, heads: A.getHeads(edited) },
+    heads: A.getHeads(edited),
+    receipt: { page_id: pageId, revision: "r1" },
   };
   await storage.put("host/operation/z-pending", pending);
   await recoverDocumentMutations(
@@ -520,5 +538,5 @@ test("startup recovery finds pending edits beyond a full default storage page", 
   assert.equal(doc.text, "recovered");
   assert.equal(A.getObjectId(doc.stable), object);
   assert.equal((await storage.get("host/operation/z-pending")).pending, false);
-  assert.deepEqual(A.getHeads(doc), pending.receipt.heads);
+  assert.deepEqual(A.getHeads(doc), pending.heads);
 });

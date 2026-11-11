@@ -1,20 +1,21 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  HORIZON,
   inspectOperation,
-  issueRetryToken,
+  journalTime,
   JOURNAL_LIMITS,
   operationEntryBytes,
+  RECEIPT_LIFETIME_MS,
+  receiptHorizon,
+  receiptKey,
   reserveOperation,
-  RETRY_LIFETIME_MS,
-  retryKeyPrefix,
+  signCapability,
 } from "./operation-journal.mjs";
-
-/** The receipt key the host derives from a token and a caller's nonce. */
-const retryKey = async (token, nonce) => `${await retryKeyPrefix(token)}${nonce}`;
+import { revisionFor } from "./revisions.mjs";
 
 const start = Date.parse("2026-10-25T00:00:00Z");
-const context = { scope: "page:shared-page", principal: "user:issuer:alice", now: start };
+const alice = "user:issuer:alice";
 class Storage {
   values = new Map();
   durable = new Map();
@@ -25,6 +26,10 @@ class Storage {
     return structuredClone(this.values.get(key));
   }
   async put(key, value) {
+    if (typeof key === "object") {
+      for (const [name, entry] of Object.entries(key)) await this.put(name, entry);
+      return;
+    }
     this.values.set(key, structuredClone(value));
   }
   async delete(key) {
@@ -50,330 +55,272 @@ class Storage {
 }
 async function fixture() {
   const storage = new Storage();
-  const issued = await issueRetryToken(storage, context);
   return {
     storage,
-    issued,
     args: {
-      ...context,
-      key: `host/operation/${await retryKey(issued.retry_token, "request-1")}`,
+      key: await receiptKey({ principal: alice, lane: "page", nonce: "request-1" }),
       digest: "same-payload",
-      retryToken: issued.retry_token,
     },
   };
 }
-async function record(f, pending = false) {
-  const { retry } = await inspectOperation(f.storage, f.args);
+async function record(f, { pending = false, now = start } = {}) {
   const entry = await reserveOperation(f.storage, {
     key: f.args.key,
     entry: { fingerprint: f.args.digest, pending: true, receipt: { result: "once" } },
-    retry,
-    now: start,
+    now,
   });
   entry.pending = pending;
   await f.storage.put(f.args.key, entry);
   await f.storage.sync();
   return entry;
 }
+const reserveNext = (f, now, nonce = "collection-next") =>
+  receiptKey({ principal: alice, lane: "page", nonce }).then((key) =>
+    reserveOperation(f.storage, { key, entry: { fingerprint: "new", pending: true }, now }),
+  );
 
-async function collectExpired(f, now) {
-  const issued = await issueRetryToken(f.storage, { ...context, now });
-  const key = `host/operation/${await retryKey(issued.retry_token, "collection-next")}`;
-  const { retry } = await inspectOperation(f.storage, {
-    ...f.args,
-    key,
-    retryToken: issued.retry_token,
-    now,
-  });
-  return reserveOperation(f.storage, {
-    key,
-    entry: { fingerprint: "new", pending: true },
-    retry,
-    now,
-  });
-}
+test("a receipt key is the account digest, the lane and the nonce", async () => {
+  const key = await receiptKey({ principal: alice, lane: "comments", nonce: "abc_123" });
+  assert.match(key, /^host\/operation\/n1_[a-f0-9]{32}_comments_abc_123$/);
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(alice)),
+  );
+  assert.equal(key.slice(18, 50), Buffer.from(digest.slice(0, 16)).toString("hex"));
+  for (const nonce of [undefined, null, 7, "", "short", "x".repeat(65), "has space", "a:b"])
+    await assert.rejects(receiptKey({ principal: alice, lane: "page", nonce }), {
+      status: 400,
+      code: "invalid_nonce",
+    });
+});
 
-test("a scoped token is durable before issue and returns the same receipt within its window", async () => {
+test("two accounts using one nonce get separate receipts", async () => {
+  const storage = new Storage();
+  const keys = await Promise.all(
+    [alice, "user:issuer:bob"].map((principal) =>
+      receiptKey({ principal, lane: "page", nonce: "shared-nonce" }),
+    ),
+  );
+  assert.notEqual(keys[0], keys[1]);
+  for (const [index, key] of keys.entries()) {
+    const entry = await reserveOperation(storage, {
+      key,
+      entry: { fingerprint: `account-${index}`, pending: true },
+      now: start,
+    });
+    await storage.put(key, { ...entry, pending: false, receipt: { index } });
+  }
+  for (const [index, key] of keys.entries())
+    assert.equal(
+      (await inspectOperation(storage, { key, digest: `account-${index}` })).entry.receipt.index,
+      index,
+    );
+});
+
+test("an exact retry finds the receipt; another request under the nonce is nonce_conflict", async () => {
   const f = await fixture();
-  assert.equal(f.issued.retry_until, new Date(start + RETRY_LIFETIME_MS).toISOString());
-  f.storage.restart();
   const entry = await record(f);
-  const inspection = await inspectOperation(f.storage, { ...f.args, now: start + 1 });
-  assert.deepEqual(inspection.entry, entry);
-  assert.equal(inspection.retry.expiresAt, start + RETRY_LIFETIME_MS);
+  f.storage.restart();
+  assert.deepEqual((await inspectOperation(f.storage, f.args)).entry, entry);
+  assert.equal(entry.recordedAt, start);
   await assert.rejects(inspectOperation(f.storage, { ...f.args, digest: "changed-payload" }), {
     status: 409,
-    code: "idempotency_conflict",
+    code: "nonce_conflict",
+    message: "This nonce was used for a different request",
   });
 });
 
-test("tampered tokens and tokens for another principal/resource cannot admit operations", async () => {
+test("collection deletes receipts past their lifetime and raises the horizon first", async () => {
   const f = await fixture();
-  const tampered = `${f.issued.retry_token.slice(0, -5)}abcde`;
-  for (const args of [
-    { ...f.args, retryToken: tampered },
-    { ...f.args, principal: "user:issuer:bob" },
-    { ...f.args, scope: "page:other-page" },
-    { ...f.args, retryToken: "not-a-token" },
-    { ...f.args, retryToken: null },
-  ])
-    await assert.rejects(inspectOperation(f.storage, args), {
-      status: 400,
-      code: "invalid_retry_token",
-    });
-  assert.equal((await f.storage.list({ prefix: "host/operation/" })).size, 0);
-});
-
-test("expired completed or never-attempted requests never become new mutations", async () => {
-  const f = await fixture();
-  await record(f);
-  const now = start + RETRY_LIFETIME_MS;
-  await assert.rejects(inspectOperation(f.storage, { ...f.args, now }), {
-    status: 410,
-    code: "retry_expired",
-  });
-  await assert.rejects(
-    inspectOperation(f.storage, {
-      ...f.args,
-      key: `host/operation/${await retryKey(f.issued.retry_token, "not-attempted")}`,
-      now,
-    }),
-    { status: 410, code: "retry_expired" },
-  );
-  await collectExpired(f, now);
+  const entry = await record(f);
+  assert.equal(await receiptHorizon(f.storage, start), start - RECEIPT_LIFETIME_MS);
+  // One millisecond short of the lifetime keeps it.
+  await reserveNext(f, start + RECEIPT_LIFETIME_MS - 1, "early-next");
+  assert.deepEqual(await f.storage.get(f.args.key), entry);
+  await reserveNext(f, start + RECEIPT_LIFETIME_MS);
   assert.equal(await f.storage.get(f.args.key), undefined);
-  await assert.rejects(inspectOperation(f.storage, { ...f.args, now }), {
-    status: 410,
-    code: "retry_expired",
-  });
+  assert.equal(await f.storage.get(HORIZON), start);
+  // The forgotten key is a new request to the journal; the horizon is what
+  // tells its host it may be a retry.
+  assert.equal((await inspectOperation(f.storage, f.args)).entry, undefined);
 });
 
-test("expired pending operations retain their exact intent and can still be resumed", async () => {
+test("the horizon is never below the clock minus the receipt lifetime", async () => {
+  const storage = new Storage();
+  await storage.put(HORIZON, start);
+  assert.equal(await receiptHorizon(storage, start + 10), start);
+  assert.equal(
+    await receiptHorizon(storage, start + RECEIPT_LIFETIME_MS + 10),
+    start + 10,
+    "the lifetime floor overtakes a stored horizon",
+  );
+});
+
+test("pending operations are never collected by age", async () => {
   const f = await fixture();
-  const entry = await record(f, true);
-  const now = start + RETRY_LIFETIME_MS * 2;
-  await issueRetryToken(f.storage, { ...context, now });
-  const inspected = await inspectOperation(f.storage, { ...f.args, now });
-  assert.deepEqual(inspected.entry, entry);
-  assert.equal(f.storage.deletes, 0);
-  await assert.rejects(inspectOperation(f.storage, { ...f.args, digest: "wrong", now }), {
+  const entry = await record(f, { pending: true });
+  await reserveNext(f, start + RECEIPT_LIFETIME_MS * 2);
+  assert.deepEqual(await f.storage.get(f.args.key), entry);
+  await assert.rejects(inspectOperation(f.storage, { ...f.args, digest: "wrong" }), {
     status: 409,
+    code: "nonce_conflict",
   });
 });
 
-test("clock rollback after retirement cannot resurrect an evicted request", async () => {
+test("clock rollback after collection lowers neither the horizon nor journal time", async () => {
   const f = await fixture();
   await record(f);
-  await collectExpired(f, start + RETRY_LIFETIME_MS);
-  await f.storage.sync();
+  await reserveNext(f, start + RECEIPT_LIFETIME_MS);
   f.storage.restart();
-  await assert.rejects(inspectOperation(f.storage, f.args), { status: 410, code: "retry_expired" });
-  const fresh = await issueRetryToken(f.storage, context);
-  assert.equal(fresh.retry_until, new Date(start + RETRY_LIFETIME_MS * 2).toISOString());
+  const later = await reserveNext(f, start - 1000, "after-rollback");
+  // Journal time never runs back behind the horizon.
+  assert.equal(later.recordedAt, start);
+  assert.equal(await f.storage.get(HORIZON), start);
+  // The restart undid the unsynced delete. The receipt is still an exact
+  // answer to its retry, and it sits at the horizon, so a write against its
+  // base revision without it is refused anyway.
+  const restored = await f.storage.get(f.args.key);
+  assert.ok(restored.recordedAt <= (await f.storage.get(HORIZON)));
 });
 
-test("failed retirement barrier deletes nothing; retry redoes the barrier", async () => {
+test("journal time never runs back behind the latest revision handle", async () => {
+  const storage = new Storage();
+  assert.equal(await journalTime(storage, start), start);
+  await revisionFor(storage, "page", ["a".repeat(64)], start + 5000);
+  await revisionFor(storage, "comments", ["b".repeat(64)], start + 9000);
+  // The wall clock stepped back: receipts and handles still record later.
+  assert.equal(await journalTime(storage, start), start + 9000);
+  assert.equal(await journalTime(storage, start + 20_000), start + 20_000);
+  await assert.rejects(journalTime(storage, -1), TypeError);
+});
+
+test("a failed horizon barrier deletes nothing; a retry redoes it", async () => {
   const f = await fixture();
   await record(f);
   f.storage.failSync = true;
-  await assert.rejects(collectExpired(f, start + RETRY_LIFETIME_MS), /injected sync failure/);
+  await assert.rejects(reserveNext(f, start + RECEIPT_LIFETIME_MS), /injected sync failure/);
   assert.equal(f.storage.deletes, 0);
   f.storage.failSync = false;
-  // Simulate the process surviving a failed sync: in-memory floor is already new.
-  await collectExpired(f, start + RETRY_LIFETIME_MS);
+  await reserveNext(f, start + RECEIPT_LIFETIME_MS);
+  assert.equal(await f.storage.get(f.args.key), undefined);
   f.storage.restart();
-  await assert.rejects(inspectOperation(f.storage, f.args), { status: 410 });
+  assert.equal(await f.storage.get(HORIZON), start, "the horizon is durable before the delete");
 });
 
-test("failure during GC leaves old requests expired and retained rows collectible", async () => {
+test("a delete that fails after the horizon landed leaves the receipt collectible", async () => {
   const f = await fixture();
   await record(f);
   f.storage.failDelete = true;
-  const now = start + RETRY_LIFETIME_MS;
-  await assert.rejects(collectExpired(f, now), /injected delete failure/);
+  const now = start + RECEIPT_LIFETIME_MS;
+  await assert.rejects(reserveNext(f, now), /injected delete failure/);
   f.storage.restart();
   f.storage.failDelete = false;
-  await assert.rejects(inspectOperation(f.storage, f.args), { status: 410 });
-  await collectExpired(f, start);
+  assert.equal(await f.storage.get(HORIZON), start, "the horizon covers the receipt first");
+  await reserveNext(f, now);
   assert.equal(await f.storage.get(f.args.key), undefined);
 });
 
-test("a full tokenless lane evicts its oldest completed receipts and never touches the versioned lane", async () => {
+test("a full journal evicts its oldest completed receipts and raises the horizon to them", async () => {
   const f = await fixture();
   for (let i = 0; i < JOURNAL_LIMITS.entries; i++)
-    await f.storage.put(`host/operation/legacy-${String(i).padStart(5, "0")}`, {
-      fingerprint: `legacy-${i}`,
+    await f.storage.put(`host/operation/done-${String(i).padStart(5, "0")}`, {
+      fingerprint: `done-${i}`,
       pending: false,
       receipt: { ok: true },
       // Later keys are older by stamp: eviction follows age, not key order.
       recordedAt: start - i,
     });
-  const legacy = await inspectOperation(f.storage, {
-    key: "host/operation/legacy-00000",
-    digest: "legacy-0",
-  });
-  assert.equal(legacy.entry.receipt.ok, true);
   const admitted = await reserveOperation(f.storage, {
-    key: "host/operation/new-legacy",
+    key: "host/operation/new-request",
     entry: { fingerprint: "new", pending: true },
     now: start,
   });
   assert.deepEqual(admitted, { fingerprint: "new", pending: true, recordedAt: start });
-  const oldest = `host/operation/legacy-${String(JOURNAL_LIMITS.entries - 1).padStart(5, "0")}`;
+  const oldest = `host/operation/done-${String(JOURNAL_LIMITS.entries - 1).padStart(5, "0")}`;
   assert.equal(await f.storage.get(oldest), undefined, "the oldest receipt made room");
   assert.equal(
     (await f.storage.list({ prefix: "host/operation/" })).size,
     JOURNAL_LIMITS.entries - 1,
     "exactly one receipt was evicted for one new entry",
   );
-  // The newest tokenless receipt still replays and still guards its payload.
+  assert.equal(await f.storage.get(HORIZON), start - (JOURNAL_LIMITS.entries - 1));
+  // The newest receipt still replays and still guards its payload.
   assert.equal(
-    (await inspectOperation(f.storage, { key: "host/operation/legacy-00000", digest: "legacy-0" }))
+    (await inspectOperation(f.storage, { key: "host/operation/done-00000", digest: "done-0" }))
       .entry.receipt.ok,
     true,
   );
   await assert.rejects(
-    inspectOperation(f.storage, { key: "host/operation/legacy-00000", digest: "other" }),
-    { status: 409, code: "idempotency_conflict" },
+    inspectOperation(f.storage, { key: "host/operation/done-00000", digest: "other" }),
+    { status: 409, code: "nonce_conflict" },
   );
-  // An evicted key is a new request again.
-  assert.equal(
-    (await inspectOperation(f.storage, { key: oldest, digest: "anything" })).entry,
-    undefined,
-  );
-  // The versioned lane's budget was never involved.
-  const { retry } = await inspectOperation(f.storage, f.args);
-  const versioned = await reserveOperation(f.storage, {
-    key: f.args.key,
-    entry: { fingerprint: "new", pending: true },
-    retry,
-    now: start,
-  });
-  assert.equal(versioned.retry.version, 1);
-  assert.equal(versioned.recordedAt, undefined, "a token's window orders its receipt");
 });
 
-test("tokenless eviction frees bytes as well as entries and never evicts pending work", async () => {
+test("eviction frees bytes as well as entries and never evicts pending work", async () => {
   const f = await fixture();
   const big = "x".repeat(64 * 1024);
-  // 130 receipts of 64 KiB overflow the 8 MiB lane by a few entries.
+  // 130 receipts of 64 KiB overflow the 8 MiB journal by a few entries.
   for (let i = 0; i < 130; i++)
-    await f.storage.put(`host/operation/legacy-${String(i).padStart(3, "0")}`, {
-      fingerprint: `legacy-${i}`,
+    await f.storage.put(`host/operation/done-${String(i).padStart(3, "0")}`, {
+      fingerprint: `done-${i}`,
       pending: false,
       receipt: { body: big },
       recordedAt: start + i,
     });
-  await f.storage.put("host/operation/legacy-pending", {
+  await f.storage.put("host/operation/still-pending", {
     fingerprint: "pending",
     pending: true,
     receipt: { body: big },
     recordedAt: 0,
   });
   await reserveOperation(f.storage, {
-    key: "host/operation/new-legacy",
+    key: "host/operation/new-request",
     entry: { fingerprint: "new", pending: true, receipt: { body: big } },
     now: start,
   });
   const keys = [...(await f.storage.list({ prefix: "host/operation/" })).keys()];
-  assert.ok(keys.includes("host/operation/legacy-pending"), "pending entries are never evicted");
-  assert.ok(!keys.includes("host/operation/legacy-000"), "the oldest completed receipt went first");
-  assert.ok(keys.includes("host/operation/legacy-129"), "the newest completed receipt stays");
-  const retained = keys.filter((key) => /legacy-\d/.test(key)).length;
+  assert.ok(keys.includes("host/operation/still-pending"), "pending entries are never evicted");
+  assert.ok(!keys.includes("host/operation/done-000"), "the oldest completed receipt went first");
+  assert.ok(keys.includes("host/operation/done-129"), "the newest completed receipt stays");
+  const retained = keys.filter((key) => /done-\d/.test(key)).length;
   assert.ok(
     retained < 130 && retained > 120,
     `evicted only what the byte budget needed (${retained})`,
   );
 });
 
-test("active versioned receipt count is bounded, then reclaimed after the promised deadline", async () => {
+test("a journal full of completed receipts never refuses a new request", async () => {
   const f = await fixture();
-  const { retry } = await inspectOperation(f.storage, f.args);
+  // Same-age receipts: eviction falls back to key order.
   for (let i = 0; i < JOURNAL_LIMITS.entries; i++)
     await f.storage.put(`host/operation/done-${String(i).padStart(5, "0")}`, {
       fingerprint: `done-${i}`,
       pending: false,
-      retry,
       receipt: { ok: true },
+      recordedAt: start,
     });
-  const request = {
-    key: f.args.key,
-    entry: { fingerprint: "new", pending: true },
-    retry,
-    now: start,
-  };
-  await assert.rejects(reserveOperation(f.storage, request), {
-    status: 429,
-    code: "operation_receipt_capacity",
-  });
-  const now = start + RETRY_LIFETIME_MS;
-  const next = await issueRetryToken(f.storage, { ...context, now });
-  const inspected = await inspectOperation(f.storage, {
-    ...f.args,
-    retryToken: next.retry_token,
-    key: `host/operation/${await retryKey(next.retry_token, "next-request")}`,
-    now,
-  });
-  await reserveOperation(f.storage, {
-    ...request,
-    key: `host/operation/${await retryKey(next.retry_token, "next-request")}`,
-    retry: inspected.retry,
-    now,
-  });
-  assert.equal((await f.storage.list({ prefix: "host/operation/" })).size, 0);
-});
-
-test("terminal receipt byte budget is enforced before the count budget", async () => {
-  const f = await fixture();
-  const { retry } = await inspectOperation(f.storage, f.args);
-  for (let i = 0; i < 10; i++)
-    await f.storage.put(`host/operation/large-${i}`, {
-      fingerprint: "large",
-      pending: false,
-      retry,
-      receipt: { result: "x".repeat(850_000) },
-    });
-  await assert.rejects(
-    reserveOperation(f.storage, {
-      key: f.args.key,
-      entry: { fingerprint: "new", pending: true },
-      retry,
-      now: start,
-    }),
-    { status: 429, code: "operation_receipt_capacity" },
+  await reserveNext(f, start);
+  assert.equal(
+    (await f.storage.list({ prefix: "host/operation/" })).size,
+    JOURNAL_LIMITS.entries - 1,
   );
 });
 
 for (const budget of ["entries", "bytes"]) {
-  test(`pending ${budget} are bounded independently and never retired by age`, async () => {
+  test(`pending ${budget} are bounded and never retired by age`, async () => {
     const f = await fixture();
-    const { retry } = await inspectOperation(f.storage, f.args);
     const count = budget === "entries" ? JOURNAL_LIMITS.pendingEntries : 5;
     for (let i = 0; i < count; i++)
       await f.storage.put(`host/operation/pending-${i}`, {
         fingerprint: "pending",
         pending: true,
-        retry,
         changes: [new Uint8Array(budget === "bytes" ? 850_000 : 1)],
         receipt: {},
+        recordedAt: start,
       });
-    const now = start + RETRY_LIFETIME_MS * 2;
-    const next = await issueRetryToken(f.storage, { ...context, now });
-    const inspected = await inspectOperation(f.storage, {
-      ...f.args,
-      retryToken: next.retry_token,
-      key: `host/operation/${await retryKey(next.retry_token, "next-request")}`,
-      now,
+    await assert.rejects(reserveNext(f, start + RECEIPT_LIFETIME_MS * 2), {
+      status: 429,
+      code: "pending_operation_capacity",
     });
-    await assert.rejects(
-      reserveOperation(f.storage, {
-        key: `host/operation/${await retryKey(next.retry_token, "next-request")}`,
-        entry: { fingerprint: "new", pending: true },
-        retry: inspected.retry,
-        now,
-      }),
-      { status: 429, code: "pending_operation_capacity" },
-    );
     assert.equal((await f.storage.list({ prefix: "host/operation/" })).size, count);
   });
 }
@@ -386,214 +333,29 @@ test("binary intent sizing charges bytes rather than a JSON expansion", () => {
   assert.ok(bytes > 1000 && bytes < 2000);
 });
 
-test("an expired token cannot acquire capacity after a long candidate preparation", async () => {
-  const f = await fixture();
-  const { retry } = await inspectOperation(f.storage, f.args);
-  await assert.rejects(
-    reserveOperation(f.storage, {
-      key: f.args.key,
-      entry: { fingerprint: f.args.digest, pending: true },
-      retry,
-      now: start + RETRY_LIFETIME_MS,
-    }),
-    { status: 410, code: "retry_expired" },
-  );
-});
-
-test("a token-scoped receipt key is never inspected or reserved without its token", async () => {
-  const f = await fixture();
-  await record(f);
-  await collectExpired(f, start + RETRY_LIFETIME_MS);
-  await assert.rejects(
-    inspectOperation(f.storage, { ...f.args, retryToken: undefined }),
-    TypeError,
-  );
-  await assert.rejects(
-    inspectOperation(f.storage, { ...f.args, key: "host/operation/raw-key" }),
-    TypeError,
-  );
-  await assert.rejects(
-    reserveOperation(f.storage, {
-      key: f.args.key,
-      entry: { fingerprint: "new", pending: true },
-      now: start + RETRY_LIFETIME_MS,
-    }),
-    TypeError,
-  );
-});
-
-test("signing-secret storage errors are service failures instead of invalid-token responses", async () => {
-  const f = await fixture();
-  const get = f.storage.get.bind(f.storage);
-  f.storage.get = async (key) => {
-    if (key === "host/retry-secret-v1") throw Error("storage unavailable");
-    return get(key);
-  };
-  await assert.rejects(inspectOperation(f.storage, f.args), /storage unavailable/);
-});
-
-test("a legitimately signed token survives wall-clock rollback before retirement", async () => {
-  const f = await fixture();
-  const future = await issueRetryToken(f.storage, { ...context, now: start + 1000 });
-  const copy = new Storage();
-  await copy.put("host/retry-secret-v1", await f.storage.get("host/retry-secret-v1"));
-  const inspected = await inspectOperation(copy, {
-    ...f.args,
-    retryToken: future.retry_token,
-    key: `host/operation/${await retryKey(future.retry_token, "future-request")}`,
-  });
-  assert.equal(inspected.retry.issuedAt, start + 1000);
-  assert.equal(inspected.entry, undefined);
-});
-
-test("failure to persist the token secret prevents token issuance", async () => {
+test("failure to persist the signing secret prevents signing a capability", async () => {
   const storage = new Storage();
   storage.failSync = true;
-  await assert.rejects(issueRetryToken(storage, context), /injected sync failure/);
+  await assert.rejects(
+    signCapability(storage, { purpose: "asset-upload", prefix: "up", payload: {} }),
+    /injected sync failure/,
+  );
   storage.restart();
   assert.equal(await storage.get("host/retry-secret-v1"), undefined);
 });
 
-test("trusted admission fallback resumes the same expired pending intent after a failed journal put", async () => {
+test("trusted admission fallback resumes the same pending intent after a failed journal put", async () => {
   const f = await fixture();
-  const pending = await record(f, true);
+  const pending = await record(f, { pending: true });
   await f.storage.delete(f.args.key);
-  const now = start + RETRY_LIFETIME_MS;
-  const result = await inspectOperation(f.storage, { ...f.args, now, pendingEntry: pending });
+  const result = await inspectOperation(f.storage, { ...f.args, pendingEntry: pending });
   assert.deepEqual(result.entry, pending);
   await assert.rejects(
-    inspectOperation(f.storage, { ...f.args, digest: "wrong", now, pendingEntry: pending }),
-    { status: 409, code: "idempotency_conflict" },
+    inspectOperation(f.storage, { ...f.args, digest: "wrong", pendingEntry: pending }),
+    { status: 409, code: "nonce_conflict" },
   );
   await assert.rejects(
-    inspectOperation(f.storage, { ...f.args, now, pendingEntry: { ...pending, pending: false } }),
+    inspectOperation(f.storage, { ...f.args, pendingEntry: { ...pending, pending: false } }),
     /Only a trusted pending admission/,
-  );
-  await assert.rejects(inspectOperation(f.storage, { ...f.args, now }), {
-    status: 410,
-    code: "retry_expired",
-  });
-});
-
-test("legacy-only admission adds no retry metadata writes or durability barrier", async () => {
-  const storage = new Storage();
-  storage.failSync = true;
-  const entry = { fingerprint: "legacy", pending: true, receipt: { ok: true } };
-  const result = await reserveOperation(storage, {
-    key: "host/operation/legacy-request",
-    entry,
-    now: start,
-  });
-  assert.deepEqual(result, { ...entry, recordedAt: start });
-  assert.equal(storage.values.size, 0);
-});
-
-test("legacy admission still retires versioned receipts behind the existing clock barrier", async () => {
-  const f = await fixture();
-  await record(f);
-  const request = {
-    key: "host/operation/legacy-request",
-    entry: { fingerprint: "legacy", pending: true },
-    now: start + RETRY_LIFETIME_MS,
-  };
-  f.storage.failSync = true;
-  await assert.rejects(reserveOperation(f.storage, request), /injected sync failure/);
-  assert.equal(f.storage.deletes, 0);
-  f.storage.failSync = false;
-  await reserveOperation(f.storage, request);
-  assert.equal(await f.storage.get(f.args.key), undefined);
-  f.storage.restart();
-  await assert.rejects(inspectOperation(f.storage, f.args), { status: 410, code: "retry_expired" });
-});
-
-test("a missing clock never lets legacy admission GC anomalous versioned rows", async () => {
-  const f = await fixture();
-  const entry = await record(f);
-  await f.storage.delete("host/retry-clock-v1");
-  f.storage.failSync = true;
-  await reserveOperation(f.storage, {
-    key: "host/operation/legacy-request",
-    entry: { fingerprint: "legacy", pending: true },
-    now: start + RETRY_LIFETIME_MS,
-  });
-  assert.deepEqual(await f.storage.get(f.args.key), entry);
-  assert.equal(await f.storage.get("host/retry-clock-v1"), undefined);
-});
-
-test("a replacement token scopes the same nonce to a new receipt key", async () => {
-  const f = await fixture();
-  await record(f);
-  const now = start + RETRY_LIFETIME_MS;
-  await collectExpired(f, now);
-  assert.equal(await f.storage.get(f.args.key), undefined);
-  const next = await issueRetryToken(f.storage, { ...context, now });
-  // The retired key belongs to the old token; the host never pairs them.
-  await assert.rejects(
-    inspectOperation(f.storage, { ...f.args, retryToken: next.retry_token, now }),
-    TypeError,
-  );
-  const freshKey = `host/operation/${await retryKey(next.retry_token, "request-1")}`;
-  assert.notEqual(freshKey, f.args.key);
-  const inspected = await inspectOperation(f.storage, {
-    ...f.args,
-    key: freshKey,
-    retryToken: next.retry_token,
-    now,
-  });
-  assert.equal(inspected.entry, undefined);
-  await reserveOperation(f.storage, {
-    key: freshKey,
-    entry: { fingerprint: "new", pending: true },
-    retry: inspected.retry,
-    now,
-  });
-});
-
-test("warm token issuance has no journal scan, GC, metadata write, or sync dependency", async () => {
-  const f = await fixture();
-  await f.storage.put("host/operation/corrupt", { retry: { malformed: true }, pending: false });
-  const before = structuredClone(f.storage.values);
-  f.storage.failSync = true;
-  f.storage.failDelete = true;
-  f.storage.list = async () => {
-    throw Error("journal must not be read");
-  };
-  f.storage.put = async () => {
-    throw Error("read must not write");
-  };
-  const next = await issueRetryToken(f.storage, { ...context, now: start + RETRY_LIFETIME_MS * 2 });
-  assert.equal(typeof next.retry_token, "string");
-  assert.deepEqual(f.storage.values, before);
-  assert.equal(f.storage.deletes, 0);
-});
-
-test("a token's receipt key prefix is the full token hash, and is not issued", async () => {
-  const f = await fixture();
-  assert.deepEqual(Object.keys(f.issued).sort(), ["retry_token", "retry_until"]);
-  const prefix = await retryKeyPrefix(f.issued.retry_token);
-  assert.match(prefix, /^v1_[a-f0-9]{64}_$/);
-  assert.notEqual(await retryKeyPrefix(f.issued.retry_token + "x"), prefix);
-  for (const token of [undefined, null, 7, "", "x".repeat(8193)])
-    await assert.rejects(retryKeyPrefix(token), { status: 400, code: "invalid_retry_token" });
-  // A nonce of up to 128 characters fits under the token's prefix.
-  const long = `host/operation/${await retryKey(f.issued.retry_token, "n".repeat(128))}`;
-  const { retry } = await inspectOperation(f.storage, { ...f.args, key: long });
-  assert.equal(retry.keyPrefix, prefix);
-});
-
-test("changing a signed token to a future window without the secret is rejected", async () => {
-  const f = await fixture();
-  const [body, signature] = f.issued.retry_token.split(".");
-  const payload = JSON.parse(Buffer.from(body, "base64url").toString());
-  payload.issuedAt += RETRY_LIFETIME_MS;
-  payload.expiresAt += RETRY_LIFETIME_MS;
-  const forged = `${Buffer.from(JSON.stringify(payload)).toString("base64url")}.${signature}`;
-  await assert.rejects(
-    inspectOperation(f.storage, {
-      ...f.args,
-      retryToken: forged,
-      key: `host/operation/${await retryKey(forged, "forged-request")}`,
-    }),
-    { status: 400, code: "invalid_retry_token" },
   );
 });

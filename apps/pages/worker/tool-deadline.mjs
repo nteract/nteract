@@ -2,20 +2,20 @@ import { HttpError } from "./auth.mjs";
 
 /** Bound on one tool request to a Catalog or Page host, from the first fetch
  * through the last body byte and any gateway post-processing. A host keeps
- * running work it accepted. A read, or a write with a retry_token, is safe to
- * repeat: the same idempotency_key and retry_token return that work's
- * receipt. A tokenless write is deduplicated only while its receipt is
- * retained, so its timeout says to read back and reconcile instead. */
+ * running work it accepted. A read, or a write with a valid nonce, is safe to
+ * repeat: the same nonce and arguments return that work's receipt. A write
+ * without one has no receipt to return, so its timeout says to read back and
+ * reconcile instead. */
 export const TOOL_REQUEST_TIMEOUT_MS = 60_000;
 
 /** How a timed-out request may be followed up: `repeat` (a read, or a write
- * whose receipt replays), `reconcile` (a tokenless write), or `lease` (a
- * progress creation: a repeat would mint a second session). */
+ * whose receipt replays), `reconcile` (a write without a valid nonce), or
+ * `lease` (a progress creation: a repeat would mint a second session). */
 const TIMEOUT_ADVICE = {
   repeat:
-    "Pages did not answer this request in time. It may still complete: retry the same request, with the same idempotency_key and retry_token, to get its result.",
+    "Pages did not answer this request in time. It may still complete: retry the same request, with the same nonce and arguments, to get its result.",
   reconcile:
-    "Pages did not answer this request in time. It may still have completed. Read back and reconcile before retrying: a write without retry_token is deduplicated only while its receipt is retained.",
+    "Pages did not answer this request in time. It may still have completed. Read back and reconcile before retrying.",
   lease:
     "Pages did not answer this request in time. The document was not edited. If you have its progress_id and lease_token, retry that session. A lost creation response may leave a temporary indicator that expires within 60 seconds; do not loop creating sessions.",
 };

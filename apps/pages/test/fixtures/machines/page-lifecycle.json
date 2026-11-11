@@ -684,10 +684,10 @@
         "response": {
           "status": 409,
           "error": "Page changed; read_page again before editing",
-          "code": "stale_heads",
+          "code": "stale_revision",
           "beforeChange": true
         },
-        "rejected": "stale_heads"
+        "rejected": "stale_revision"
       }
     },
     {
@@ -809,11 +809,11 @@
         "effects": [],
         "response": {
           "status": 409,
-          "error": "idempotency_key was used for a different request",
-          "code": "idempotency_conflict",
+          "error": "This nonce was used for a different request",
+          "code": "nonce_conflict",
           "beforeChange": true
         },
-        "rejected": "idempotency_conflict"
+        "rejected": "nonce_conflict"
       }
     },
     {

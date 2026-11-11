@@ -431,7 +431,7 @@ async function gateway(t, { rules = [], env: extra = {} } = {}) {
   };
   let keys = 0;
   const create = (args = {}) =>
-    call("create_page", { title: "Quota", idempotency_key: `quota-key-${++keys}`, ...args });
+    call("create_page", { title: "Quota", nonce: `quota-key-${++keys}`, ...args });
   return { auth, db, env, storage, catalog, forwarded, call, mcp, create };
 }
 
@@ -486,7 +486,7 @@ test("list_pages reports the caller's own quota", async (t) => {
 test("an MCP refusal at the limit carries the code in structuredContent", async (t) => {
   const g = await gateway(t, { rules: [["email", "fixture@example.invalid", 1]] });
   assert.equal((await g.create()).status, 200);
-  const result = await g.mcp("create_page", { title: "Over", idempotency_key: "mcp-over-limit" });
+  const result = await g.mcp("create_page", { title: "Over", nonce: "mcp-over-limit" });
   assert.equal(result.isError, true);
   const expected = {
     error: "This alpha release allows 1 Page per account.",
