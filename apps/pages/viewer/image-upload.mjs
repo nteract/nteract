@@ -1,3 +1,4 @@
+import { markerType } from "../model/node-registry.mjs";
 import * as A from "@automerge/automerge/slim";
 import { history } from "wordgard/history";
 import { GardSelection } from "wordgard/state";
@@ -230,7 +231,7 @@ function imageInsertion(file, asset) {
       A.spans(replica.doc, pathFor(id)).filter(
         (span) =>
           span.type === "block" &&
-          String(span.value.type) === "image" &&
+          markerType(span.value) === "image" &&
           String(span.value.attrs.src) === asset.url,
       ).length,
   };
@@ -251,7 +252,7 @@ function dataframeInsertion(file, asset) {
       A.spans(replica.doc, pathFor(id)).filter(
         (span) =>
           span.type === "block" &&
-          String(span.value.type) === DATAFRAME_BLOCK &&
+          markerType(span.value) === DATAFRAME_BLOCK &&
           String(span.value.attrs.src) === asset.url,
       ).length,
   };

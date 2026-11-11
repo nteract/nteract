@@ -1,5 +1,6 @@
 // Comment limits and the text a comment's spans hold. No codec: the browser
 // composer imports this without loading markdown-it or ProseMirror.
+import { markerType } from "./node-registry.mjs";
 import { markerParents } from "./richtext-format.mjs";
 
 /** At most this many text characters (UTF-16 code units) in one message.
@@ -26,7 +27,7 @@ export function commentSpansMeasure(spans) {
     } else if (
       span?.type === "block" &&
       span.value?.isEmbed === true &&
-      String(span.value.type) !== "hard-break"
+      markerType(span.value) !== "hard-break"
     )
       content = true;
   }
@@ -34,13 +35,13 @@ export function commentSpansMeasure(spans) {
 }
 
 const plainBreak = (value) =>
-  String(value?.type) === "hard-break" &&
+  markerType(value) === "hard-break" &&
   value.isEmbed === true &&
   markerParents(value).every((parent) => parent === "paragraph") &&
   markerParents(value).length <= 1;
 
 const plainParagraph = (value) =>
-  String(value?.type) === "paragraph" &&
+  markerType(value) === "paragraph" &&
   value.isEmbed === false &&
   !markerParents(value).length &&
   !Object.keys(value.attrs ?? {}).length;
@@ -69,7 +70,7 @@ export function commentDraftText(spans) {
   for (const span of spans ?? []) {
     if (span.type === "text") text += span.value;
     else if (span.value?.isEmbed) {
-      if (String(span.value.type) === "image") text += String(span.value.attrs?.alt ?? "");
+      if (markerType(span.value) === "image") text += String(span.value.attrs?.alt ?? "");
       else text += "\n";
     } else if (text) text += "\n";
   }

@@ -1,5 +1,6 @@
 // Page block writers and readers: a block's Markdown projection, and the
 // writes that replace a block's rich text from Markdown, an image or a node.
+import { markerType } from "./node-registry.mjs";
 import * as A from "@automerge/automerge/slim";
 import { updateSpansConfig } from "./marks.mjs";
 import { stampSpans } from "./schema-features.mjs";
@@ -224,7 +225,7 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
   // read never matches a line, so the rewrite is refused rather than dropping
   // it.
   const storedCount = A.spans(block, ["richText"]).filter(
-    (span) => span.type === "block" && String(span.value.type) === "dataframe",
+    (span) => span.type === "block" && markerType(span.value) === "dataframe",
   ).length;
   if (existing.length !== storedCount)
     throw Object.assign(Error("A stored dataframe cannot be restored losslessly"), {

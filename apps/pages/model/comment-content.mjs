@@ -1,3 +1,4 @@
+import { markerType } from "./node-registry.mjs";
 import * as A from "@automerge/automerge/slim";
 import { parseAgentMarkdown } from "./markdown-import.mjs";
 import { updateSpansConfig } from "./marks.mjs";
@@ -30,7 +31,7 @@ export const COMMENT_MAX_SOURCE = COMMENT_MAX_BYTES;
  * editor can't hold whole, as pageSpans does. */
 export function editorCommentSpans(spans) {
   const decoded = decode(spans);
-  if (decoded.lossy)
+  if (decoded.lossy || decoded.newer)
     throw Object.assign(Error("This comment has content the Pages editor can't hold"), {
       code: "markdownless_node",
     });
@@ -84,7 +85,9 @@ function storedForm(spans) {
 export function isEditorForm(spans) {
   try {
     const decoded = decode(spans);
-    if (decoded.lossy) return false;
+    // decode draws what this build can't read as a notice instead of
+    // throwing; a notice is never the editor's form.
+    if (decoded.lossy || decoded.newer) return false;
     const missing = [
       ...decoded.unmarked.map(({ at, markers }) => ({ at, markers })),
       ...decoded.rebuilt.map(({ at, type, parents }) => ({
@@ -180,9 +183,7 @@ const LENGTH_MESSAGE = `Comment must contain 1–${COMMENT_MAX_LENGTH} character
  */
 const bytesOf = (value) => new TextEncoder().encode(JSON.stringify(value)).length;
 const isLineBreak = (span) =>
-  span?.type === "block" &&
-  span.value?.isEmbed === true &&
-  String(span.value.type) === "hard-break";
+  span?.type === "block" && span.value?.isEmbed === true && markerType(span.value) === "hard-break";
 
 /** How many lines `spans` hold: one more than their hard breaks. */
 export const commentLines = (spans) => spans.filter(isLineBreak).length + 1;
@@ -203,9 +204,9 @@ export function validateCommentSpans(spans) {
   }
   for (const span of spans)
     if (span?.type === "block") {
-      if (String(span.value?.type) === DATAFRAME_BLOCK)
+      if (markerType(span.value) === DATAFRAME_BLOCK)
         throw Error("Comments can't hold a dataframe");
-      if (String(span.value?.type) === "image" && span.value?.attrs?.dark_src != null)
+      if (markerType(span.value) === "image" && span.value?.attrs?.dark_src != null)
         throw Error("Comments can't hold theme image variants; use a Page image instead");
     }
   const { length, content } = commentSpansMeasure(spans);

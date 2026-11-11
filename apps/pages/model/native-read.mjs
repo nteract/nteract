@@ -26,12 +26,6 @@ import {
   PagesDataframe,
   PagesUnknownEmbed,
   PagesUnknownBlock,
-  Strong,
-  Emphasis,
-  Strikethrough,
-  Code,
-  PagesLink,
-  PagesHighlight,
   PagesForeignMarks,
   codeHolds,
   nestIn,
@@ -39,12 +33,13 @@ import {
   storedParents,
   TABLE_PART_OUTER,
   unreadableMarker,
+  readMark,
 } from "./wordgard-doc.mjs";
 import { treeMarkdown } from "./markdown-serializer.mjs";
 import { codeTextUnmarked } from "./richtext-format.mjs";
 import { unknownNodeNotice } from "./richtext-notices.mjs";
 import { parseAssetPath } from "../shared/dataset-assets.mjs";
-import { isKnownBlock, TEXT_CONTAINERS } from "./node-registry.mjs";
+import { isKnownBlock, TEXT_CONTAINERS, markerName, markerType } from "./node-registry.mjs";
 
 // Never installed in the editor schema: a stored unknown container is readable,
 // but constructing this projection does not make it editable or admissible.
@@ -135,30 +130,16 @@ function fingerprintAttrs(node, attrs = {}) {
   return result;
 }
 
-const READ_MARKS = new Map([
-  ["strong", Strong],
-  ["em", Emphasis],
-  ["strike", Strikethrough],
-  ["code", Code],
-]);
+// A mark whose name or value this build can't read, or must not render,
+// reads as a name it doesn't know (readMark): drawn as nothing, so an unsafe
+// link or highlight never reaches Markdown, an outline, a card or HTML.
 function readMarks(marks = {}) {
   let result = Mark.none;
   const foreign = Object.create(null);
   for (const [name, value] of Object.entries(marks)) {
-    let mark = READ_MARKS.get(name);
-    if (name === "link") {
-      let link;
-      if (typeof value === "string") {
-        try {
-          link = JSON.parse(value);
-        } catch {
-          /* Legacy malformed links read with empty fields. */
-        }
-      }
-      mark = PagesLink.of({ href: link?.href || "", title: link?.title || "" });
-    } else if (name === "highlight") mark = PagesHighlight.of(String(value));
-    else if (!mark) foreign[name] = value;
+    const mark = readMark(name, value);
     if (mark) result = mark.addToSet(result);
+    else foreign[name] = value;
   }
   if (Object.keys(foreign).length) result = PagesForeignMarks.of(foreign).addToSet(result);
   return result;
@@ -271,8 +252,9 @@ export function nativeReadSpans(input, pageId) {
     // unreadableMarker), reads as the notice for a node it doesn't know. A
     // value that isn't a map reads as an inline one.
     const stored = span.value && typeof span.value === "object" && !Array.isArray(span.value);
-    const value = stored ? span.value : { type: String(span.value), isEmbed: true },
-      type = String(value.type),
+    // A type that isn't a name reads as "", which no notice quotes.
+    const value = stored ? span.value : { type: markerName(span.value) ?? "", isEmbed: true },
+      type = markerType(value) ?? "",
       attrs = strings(value.attrs),
       unreadable = unreadableMarker(span.value);
     const parents = storedParents(value);
@@ -349,7 +331,8 @@ export function nativeReadSpans(input, pageId) {
     const inlineAt = () =>
       !!outer.findLast((entry) => entry.tag.type !== ReadUnknown)?.tag.type.spec.inlineContent;
     const foreign =
-      pageId !== undefined && parseAssetPath(String(attrs.src ?? ""))?.pageId !== pageId;
+      pageId !== undefined &&
+      parseAssetPath(typeof attrs.src === "string" ? attrs.src : "")?.pageId !== pageId;
     // A dataframe it can't show reads as a notice where it is stored.
     const shown = !(parents.some((parent) => TEXT_CONTAINERS.has(parent)) || foreign);
     let leafNode = type === "dataframe" || type === "horizontal-rule";

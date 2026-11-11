@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import { GardState, GardSelection, Transaction } from "wordgard/state";
 import { history, undo, redo } from "wordgard/history";
-import { Command, deleteUnit, enter, toggleMark } from "wordgard/command";
+import { Command, deleteUnit, enter, insertText, toggleMark } from "wordgard/command";
 import { codeBlock, codeBlockLanguage, orderedList } from "wordgard/schema";
 import { documentIdToBinary } from "@automerge/automerge-repo";
 import { browser, host } from "../sync/test-helpers.mjs";
@@ -1138,6 +1138,58 @@ test("a selection across a block's nodes deletes through the markers between the
   assertInSync(editor, replica, "one", "deleting across nodes");
   assert.equal(blockMarkdown(replica.doc.blocks.one), "Firstond\n\nThird");
   assert.equal(nativeSpans(replica, "one")[0].type, "block");
+  editor.binding.destroy();
+});
+
+/** Native offsets of the markers whose cursors `cursors` holds. */
+const markerOffsets = (replica, cursors) =>
+  cursors.map((cursor) => A.getCursorPosition(replica.doc, textPath("one"), cursor));
+
+test("typing over a selection from an empty paragraph into the next node keeps surviving ids", () => {
+  const paragraph = () => ({
+    type: "block",
+    value: { type: new A.ImmutableString("paragraph"), parents: [], attrs: {}, isEmbed: false },
+  });
+  const replica = fixture("x");
+  replica.change((d) =>
+    updateSpansExactly(d, textPath("one"), [
+      paragraph(),
+      paragraph(),
+      { type: "text", value: "Second" },
+      paragraph(),
+      { type: "text", value: "Third" },
+    ]),
+  );
+  const path = textPath("one");
+  const [first, third] = [A.getCursor(replica.doc, path, 0), A.getCursor(replica.doc, path, 8)];
+  const editor = editorFor(replica, "one");
+  // From inside the empty paragraph to after "Sec".
+  assert.equal(
+    editor.run(insertText, { from: 1, to: 6, insert: "X", userEvent: "input.type" }),
+    true,
+  );
+  assertInSync(editor, replica, "one", "typing over the selection");
+  assert.equal(blockMarkdown(replica.doc.blocks.one), "Xond\n\nThird");
+  assert.deepEqual(markerTypes(replica, "one"), ["paragraph", "paragraph"]);
+  // The paragraph the typing lands in and the one after keep their markers.
+  assert.deepEqual(markerOffsets(replica, [first, third]), [0, 5]);
+  editor.binding.destroy();
+});
+
+test("a cut across two nodes keeps the markers of the nodes that survive", () => {
+  const replica = fixture("First line\n\n## Second\n\nThird"),
+    path = textPath("one");
+  // Markers at 0 (First line), 11 (Second) and 18 (Third).
+  const [first, third] = [0, 18].map((at) => A.getCursor(replica.doc, path, at));
+  const editor = editorFor(replica, "one");
+  // As the editor cuts: delete the selection from inside "First line" to
+  // inside the heading, with content fitted to the schema.
+  const to = editor.state.doc.content[0].length + 4;
+  editor.dispatch({ changes: { from: 6, to, fit: true }, userEvent: "delete.cut" });
+  assertInSync(editor, replica, "one", "cut across nodes");
+  assert.equal(blockMarkdown(replica.doc.blocks.one), "Firstond\n\nThird");
+  // The first paragraph keeps its marker; the heading's goes with the cut.
+  assert.deepEqual(markerOffsets(replica, [first, third]), [0, 9]);
   editor.binding.destroy();
 });
 

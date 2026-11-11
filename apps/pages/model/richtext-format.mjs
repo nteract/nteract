@@ -1,21 +1,32 @@
 // The rich-text block format and span helpers that need no codec. The browser
 // imports these without loading markdown-it or ProseMirror.
 import * as A from "@automerge/automerge/slim";
+import { markerName, markerType } from "./node-registry.mjs";
 
 export { safeUrl } from "./marks.mjs";
 
 export const textPath = (id) => ["blocks", id, "richText"];
 
-/** A stored marker's parents as names: its list, or none when a peer
- * stored anything else there. Every reader of stored spans reads parents
- * through this. */
-export const markerParents = (value) =>
-  Array.isArray(value?.parents) ? value.parents.map(String) : [];
+/** What a stored type or parent that isn't a name reads as where a reader
+ * needs a name: one this build doesn't know, which no registry name or
+ * quotable notice matches. */
+export const UNREADABLE_NAME = "(unreadable name)";
 
+/** A stored marker's parents as names: its list, or none when a peer
+ * stored anything else there. A parent that isn't a name reads as
+ * UNREADABLE_NAME. Every reader of stored spans reads parents through
+ * this. */
+export const markerParents = (value) =>
+  Array.isArray(value?.parents)
+    ? value.parents.map((parent) => markerName(parent) ?? UNREADABLE_NAME)
+    : [];
+
+// A stored name that isn't one keys as its own JSON, so it never equals a name.
+const nameKey = (raw) => markerName(raw) ?? { raw };
 const markerKey = (value) =>
   JSON.stringify([
-    String(value.type),
-    Array.isArray(value.parents) ? value.parents.map(String) : [value.parents ?? null],
+    nameKey(value.type),
+    Array.isArray(value.parents) ? value.parents.map(nameKey) : [value.parents ?? null],
     Object.entries(value.attrs ?? {})
       .map(([key, item]) => [key, A.isImmutableString(item) ? String(item) : item])
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
@@ -64,7 +75,7 @@ export function updateSpansExactly(doc, path, spans, config) {
 export function codeTextUnmarked(spans) {
   let code = false;
   return spans.map((span) => {
-    if (span.type === "block") code = String(span.value?.type) === "code-block";
+    if (span.type === "block") code = markerType(span.value) === "code-block";
     return code && span.type === "text" && Object.keys(span.marks ?? {}).length
       ? { ...span, marks: {} }
       : span;
@@ -80,7 +91,7 @@ const WHITESPACE_VISIBLE_MARKS = ["code", "link", "highlight"];
 const WHITESPACE_EXPELLING_MARKS = ["strong", "em", "strike"];
 const hasMark = (marks, names) => names.some((name) => marks?.[name] != null);
 const inlineParents = (parents = []) =>
-  parents.length === 0 || (parents.length === 1 && String(parents[0]) === "paragraph");
+  parents.length === 0 || (parents.length === 1 && parents[0] === "paragraph");
 /** Whether a block holds nothing a reader would see: the same answer as
  * `!blockMarkdown(block).trim()`, read from the stored content without the
  * Markdown codec. A rich block is blank when it holds only top-level
@@ -103,9 +114,11 @@ export function isBlankBlock(block) {
       continue;
     }
     if (span.type !== "block") return false;
-    const { type, isEmbed, parents } = span.value;
-    if (isEmbed && String(type) === "hard-break" && inlineParents(parents)) breakPending = true;
-    else if (!isEmbed && String(type) === "paragraph" && !parents?.length) breakPending = false;
+    const type = markerType(span.value),
+      parents = markerParents(span.value),
+      isEmbed = span.value?.isEmbed;
+    if (isEmbed && type === "hard-break" && inlineParents(parents)) breakPending = true;
+    else if (!isEmbed && type === "paragraph" && !parents.length) breakPending = false;
     else return false;
   }
   return true;

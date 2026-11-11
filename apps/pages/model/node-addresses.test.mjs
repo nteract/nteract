@@ -55,7 +55,7 @@ function observe(spans) {
   try {
     outline = projectReadContent(doc, { include_content: false }).outline;
   } catch {
-    // read_page refuses a block its Markdown projection can't hold (an aside).
+    // A shape read_page refuses has no outline.
   }
   const ids = readableNodeIds(doc, id, tree);
   let addresses;

@@ -173,3 +173,76 @@ export const ADJUSTED_NESTING_WORDS = {
   "rule as parent": "hello",
   "parents not a list": "b",
 };
+
+// A map whose toString and valueOf aren't functions: String() on it throws.
+export const SHADOWED = () => ({ toString: null, valueOf: null });
+
+/** Marker values every reader draws (as a notice) and admission refuses: a
+ * value this build can't read, or must not render. Each opens a block of
+ * its own, so a case is the marker alone, or the marker and a word. */
+export const UNREADABLE_MARKERS = {
+  "heading level null": () => ({
+    type: new A.ImmutableString("heading"),
+    parents: [],
+    attrs: { level: null },
+    isEmbed: false,
+  }),
+  "heading level 9": () => ({
+    type: new A.ImmutableString("heading"),
+    parents: [],
+    attrs: { level: 9 },
+    isEmbed: false,
+  }),
+  "heading level as text": () => ({
+    type: new A.ImmutableString("heading"),
+    parents: [],
+    attrs: { level: new A.ImmutableString("2") },
+    isEmbed: false,
+  }),
+  "code language a map": () => ({
+    type: new A.ImmutableString("code-block"),
+    parents: [],
+    attrs: { params: SHADOWED() },
+    isEmbed: false,
+  }),
+  "task checked as text": () => ({
+    type: new A.ImmutableString("task-list-item"),
+    parents: [],
+    attrs: { checked: new A.ImmutableString("true") },
+    isEmbed: false,
+  }),
+  "image with no src": () => ({
+    type: new A.ImmutableString("image"),
+    parents: [new A.ImmutableString("paragraph")],
+    attrs: { alt: new A.ImmutableString("x") },
+    isEmbed: true,
+  }),
+  "image src javascript": () => ({
+    type: new A.ImmutableString("image"),
+    parents: [new A.ImmutableString("paragraph")],
+    attrs: { src: new A.ImmutableString("javascript:alert(1)") },
+    isEmbed: true,
+  }),
+  "attrs not a map": () => ({
+    type: new A.ImmutableString("paragraph"),
+    parents: [],
+    attrs: new A.ImmutableString("attrs"),
+    isEmbed: false,
+  }),
+  "type a map": () => ({ type: SHADOWED(), parents: [], attrs: {}, isEmbed: false }),
+  "type missing": () => ({ parents: [], attrs: {}, isEmbed: false }),
+  "parent a map": () => ({
+    type: new A.ImmutableString("paragraph"),
+    parents: [SHADOWED()],
+    attrs: {},
+    isEmbed: false,
+  }),
+};
+
+/** Text with mark values every reader draws as plain text and admission
+ * refuses. */
+export const UNREADABLE_MARKS = {
+  "link to javascript": { link: JSON.stringify({ href: "javascript:alert(1)" }) },
+  "link a number": { link: 7 },
+  "highlight a CSS url": { highlight: "url(javascript:1)" },
+};

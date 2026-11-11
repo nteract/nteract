@@ -1,7 +1,7 @@
 import * as A from "@automerge/automerge/slim";
 import { nativeReadSpans } from "./native-read.mjs";
 import { codeTextUnmarked, markerParents } from "./richtext-format.mjs";
-import { nodeType, TEXT_CONTAINERS } from "./node-registry.mjs";
+import { nodeType, TEXT_CONTAINERS, markerType } from "./node-registry.mjs";
 import { unknownNodeNotice } from "./richtext-notices.mjs";
 
 const MAX_SPANS = 65536;
@@ -21,7 +21,7 @@ export function surfaceRead(block) {
   const input = codeTextUnmarked(A.spans(block, ["richText"]));
   if (input.length > MAX_SPANS) throw Error("Surface span budget exceeded");
   for (const span of input)
-    if (span.type === "block" && span.value.parents?.length > MAX_PARENTS)
+    if (span.type === "block" && markerParents(span.value).length > MAX_PARENTS)
       throw Error("Surface depth budget exceeded");
   try {
     return surfaceNodes(input, false);
@@ -30,8 +30,8 @@ export function surfaceRead(block) {
       !input.some(
         ({ type, value }) =>
           type === "block" &&
-          ([value.type, ...markerParents(value)].some((type) => !nodeType(type)) ||
-            (String(value.type) === "dataframe" &&
+          ([markerType(value), ...markerParents(value)].some((type) => !nodeType(type)) ||
+            (markerType(value) === "dataframe" &&
               markerParents(value).some((type) => TEXT_CONTAINERS.has(type)))),
       )
     )
@@ -51,19 +51,20 @@ function surfaceNodes(input, all) {
       leaf &&
       !leaf.isEmbed &&
       nodeType(leaf.type)?.kind === "leaf" &&
-      String(leaf.type) !== "pages-opaque" &&
-      !(leaf.parents ?? []).some((p) => TEXT_CONTAINERS.has(String(p)))
+      markerType(leaf) !== "pages-opaque" &&
+      !markerParents(leaf).some((p) => TEXT_CONTAINERS.has(p))
     )
       readable.push(marker(new A.ImmutableString("paragraph"), leaf.parents));
     if (span.type !== "block") {
       readable.push(span);
       continue;
     }
-    const { type, parents = [], isEmbed } = span.value;
-    const name = String(type),
-      textOnly = parents.some((p) => TEXT_CONTAINERS.has(String(p)));
+    const { isEmbed } = span.value,
+      parents = markerParents(span.value);
+    const name = markerType(span.value) ?? "",
+      textOnly = parents.some((p) => TEXT_CONTAINERS.has(p));
     const unknown = !nodeType(name) || (name === "dataframe" && textOnly);
-    if (!unknown || !(all || (isEmbed && parents.some((p) => String(p) === "code-block")))) {
+    if (!unknown || !(all || (isEmbed && parents.includes("code-block")))) {
       readable.push(span);
       continue;
     }
@@ -72,7 +73,7 @@ function surfaceNodes(input, all) {
         ? [
             marker(
               new A.ImmutableString("paragraph"),
-              parents.filter((p) => nodeType(p)).map((p) => new A.ImmutableString(String(p))),
+              parents.filter((p) => nodeType(p)).map((p) => new A.ImmutableString(p)),
             ),
           ]
         : []),
@@ -87,7 +88,7 @@ function surfaceNodes(input, all) {
     const span = input[index];
     if (span.type === "block") {
       const raw = span.value,
-        name = String(raw.type),
+        name = markerType(raw),
         parents = markerParents(raw);
       if (
         !raw.isEmbed &&

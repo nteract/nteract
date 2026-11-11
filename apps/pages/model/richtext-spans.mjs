@@ -7,30 +7,38 @@ import {
   nodeType,
   validAlignment,
   validHeadingLevel,
+  markerType,
 } from "./node-registry.mjs";
 import { DATAFRAME_BLOCK, parseAssetPath, readDataframe } from "../shared/dataset-assets.mjs";
 import { decode, encode, schema } from "./wordgard-doc.mjs";
 import { treeMarkdown } from "./markdown-serializer.mjs";
-import { codeTextUnmarked, markerParents } from "./richtext-format.mjs";
+import { UNREADABLE_NAME, codeTextUnmarked, markerParents } from "./richtext-format.mjs";
 
 export const readTree = (block) => decode(codeTextUnmarked(A.spans(block, ["richText"]))).doc;
 export const richDoc = readTree;
 export const pageSpans = encode;
 
+// Known containers with no Markdown form: a read shows their notice.
+const MARKDOWNLESS = new Set(["aside"]);
+
 /** The first stored type a Markdown rewrite cannot reproduce. */
 export function markdownlessNode(block, pageId) {
   for (const span of A.spans(block, ["richText"])) {
     if (span.type !== "block") continue;
-    const type = String(span.value.type),
-      parents = markerParents(span.value);
+    const type = markerType(span.value) ?? UNREADABLE_NAME,
+      parents = markerParents(span.value),
+      src = span.value?.attrs?.src;
     if (
       type === DATAFRAME_BLOCK &&
       (parents.some((parent) => TEXT_CONTAINERS.has(parent)) ||
         (pageId !== undefined &&
-          parseAssetPath(String(span.value.attrs?.src ?? ""))?.pageId !== pageId))
+          parseAssetPath(
+            A.isImmutableString(src) ? String(src) : typeof src === "string" ? src : "",
+          )?.pageId !== pageId))
     )
       return DATAFRAME_BLOCK;
-    for (const name of [type, ...parents]) if (!isKnownBlock(name)) return name;
+    for (const name of [type, ...parents])
+      if (!isKnownBlock(name) || MARKDOWNLESS.has(name)) return name;
   }
   return null;
 }
@@ -65,7 +73,7 @@ export function validateRichSpans(spans, maxBytes = 262144) {
         throw Error("Unsupported rich block marker");
       for (const parent of value.parents)
         if (!isKnownBlock(parent)) throw Error("Unsupported rich parent");
-      const type = String(value.type),
+      const type = markerType(value),
         attrs = value.attrs ?? {};
       if (
         typeof value.isEmbed !== "boolean" ||
@@ -76,7 +84,7 @@ export function validateRichSpans(spans, maxBytes = 262144) {
         throw Error("Invalid rich block shape");
       if (type === "task-list-item" && typeof attrs.checked !== "boolean")
         throw Error("Invalid task checked state");
-      if (type === "heading" && !validHeadingLevel(attrs.level ?? 1))
+      if (type === "heading" && !validHeadingLevel(attrs.level === undefined ? 1 : attrs.level))
         throw Error("Invalid heading level");
       if (
         ["table-cell", "table-header"].includes(type) &&
@@ -102,6 +110,9 @@ export function validateRichSpans(spans, maxBytes = 262144) {
     } else throw Error("Unsupported rich span");
   }
   const decoded = decode(codeTextUnmarked(spans));
+  // decode reads what it can't draw as a notice; admission refuses it. A
+  // notice stored by this write would never read as what was written.
+  if (decoded.newer) throw Error("Rich text contains content this build can't read");
   if (decoded.lossy) throw Error("Rich text contains content the native schema cannot place");
   schema.validate(decoded.doc);
   treeMarkdown(decoded.doc);

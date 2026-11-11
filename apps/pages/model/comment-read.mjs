@@ -4,7 +4,7 @@ import * as A from "@automerge/automerge/slim";
 import { codeTextUnmarked, markerParents } from "./richtext-format.mjs";
 import { PLAIN_FORMAT, plainCommentText } from "./comment-text.mjs";
 import { nativeReadSpans, readChildren, readKind, readMarkdown } from "./native-read.mjs";
-import { isKnownBlock, nodeType, TEXT_CONTAINERS } from "./node-registry.mjs";
+import { isKnownBlock, nodeType, TEXT_CONTAINERS, markerType } from "./node-registry.mjs";
 import { unknownNodeNotice } from "./richtext-notices.mjs";
 
 const unreadable = () => {
@@ -30,15 +30,15 @@ function commentNoticeSpans(spans, all) {
       leaf &&
       !leaf.isEmbed &&
       nodeType(leaf.type)?.kind === "leaf" &&
-      String(leaf.type) !== "pages-opaque" &&
-      !leaf.parents.some((parent) => TEXT_CONTAINERS.has(String(parent)))
+      markerType(leaf) !== "pages-opaque" &&
+      !markerParents(leaf).some((parent) => TEXT_CONTAINERS.has(parent))
     )
       out.push(marker(new A.ImmutableString("paragraph"), leaf.parents));
     if (span.type !== "block") {
       out.push(span);
       continue;
     }
-    const type = String(span.value.type),
+    const type = markerType(span.value),
       parents = markerParents(span.value);
     const unknown = !isKnownBlock(type) || dataframeInText(type, parents);
     if (unknown && (all || (span.value.isEmbed && parents.includes("code-block")))) {
@@ -64,7 +64,7 @@ function commentReadSpans(spans) {
     const value = span.value;
     // Mutable marker names and parent lists have an established literal
     // reading. Normalize copies, never the Automerge source or its writers.
-    const type = A.isImmutableString(value.type) ? String(value.type) : "paragraph";
+    const type = A.isImmutableString(value.type) ? markerType(value) : "paragraph";
     let parents =
       Array.isArray(value.parents) && value.parents.every(A.isImmutableString)
         ? value.parents.map(String)
@@ -76,7 +76,7 @@ function commentReadSpans(spans) {
     const inlineNext = next && (next.type !== "block" || next.value?.isEmbed);
     const nextType =
       next?.type === "block" && A.isImmutableString(next.value.type)
-        ? String(next.value.type)
+        ? markerType(next.value)
         : "paragraph";
     const inlineContentNext =
       inlineNext &&
@@ -200,7 +200,7 @@ export function commentBodyProjection(message) {
       let unknown;
       for (const span of unmarked) {
         if (span.type !== "block") continue;
-        const type = String(span.value.type),
+        const type = markerType(span.value),
           parents = markerParents(span.value);
         unknown = dataframeInText(type, parents)
           ? "dataframe"

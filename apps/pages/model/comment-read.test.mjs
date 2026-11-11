@@ -615,7 +615,7 @@ test("comment reads report each stored form's outcome and change neither documen
     assert.deepEqual(
       Object.fromEntries(threads[0].messages.map((message) => [message.id, outcome(message)])),
       {
-        bad: { body: "[original]()", body_format: "markdown" },
+        bad: { body: "original", body_format: "markdown" },
         code: { body: "one\ntwo", body_format: "plain", content_error: "rich_text_unavailable" },
         native: { body: "***marked***\n\n- [x] task", body_format: "markdown" },
         plain: { body: "  literal **text**\n" },

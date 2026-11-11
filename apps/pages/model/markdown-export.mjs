@@ -10,8 +10,8 @@ import {
   fromMarks,
 } from "./wordgard-doc.mjs";
 import { treeMarkdown } from "./markdown-serializer.mjs";
-import { codeTextUnmarked } from "./richtext-format.mjs";
-import { isKnownBlock } from "./node-registry.mjs";
+import { codeTextUnmarked, markerParents } from "./richtext-format.mjs";
+import { isKnownBlock, markerType } from "./node-registry.mjs";
 import { unknownNodeNotice } from "./richtext-notices.mjs";
 
 const markdown = new MarkdownIt({ html: false });
@@ -114,7 +114,7 @@ function draftTree(spans) {
       (value.parents != null && !Array.isArray(value.parents))
     )
       throw Error("Invalid draft marker");
-    const next = (value.parents ?? []).map(String);
+    const next = markerParents(value);
     unsupported ||= !isKnownBlock(value.type) || next.some((parent) => !isKnownBlock(parent));
     let common = 0;
     while (common < parents.length && parents[common] === next[common]) common++;
@@ -130,14 +130,14 @@ function draftTree(spans) {
           },
         });
     parents = value.isEmbed ? next : [...next, value.type];
-    if (!value.isEmbed) code = String(value.type) === "code-block";
+    if (!value.isEmbed) code = markerType(value) === "code-block";
     // An unknown embed stored in a code block reads as a notice there; one a
     // code block can't hold opens a paragraph after it (decode).
     if (
       code &&
       value.isEmbed &&
-      !["hard-break", "image"].includes(String(value.type)) &&
-      codeHolds(String(value.type), next)
+      !["hard-break", "image"].includes(markerType(value)) &&
+      codeHolds(markerType(value), next)
     ) {
       unsupported = true;
       readable.push({ type: "text", value: unknownNodeNotice(value.type), marks: {} });
@@ -173,7 +173,7 @@ function draftTree(spans) {
       : node;
   };
   const tree = { content: decoded.doc.content.map((node) => visit(node)) };
-  return { tree, lossy: decoded.lossy || unsupported };
+  return { tree, lossy: decoded.lossy || decoded.newer || unsupported };
 }
 
 function draftSource(spans) {

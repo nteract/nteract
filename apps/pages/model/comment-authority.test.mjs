@@ -10,6 +10,8 @@ import {
   MISSING_ANCESTOR_CASES,
   addInside,
   deleteContainer,
+  UNREADABLE_MARKERS,
+  UNREADABLE_MARKS,
   proseNewlineSpans,
 } from "./richtext-test-support.mjs";
 import { decode } from "./wordgard-doc.mjs";
@@ -629,4 +631,42 @@ test("rich content passes admission through create, edit and soft delete", () =>
     step({ action: "delete_message", ...target });
     assert.ok(doc.threads[ids.aliceThread].messages[message_id].deletedAt, name);
   }
+});
+
+// Readers draw a marker value they can't read as a notice, and a mark value
+// as plain text. Admission still refuses both: a reply holding one, and an
+// edit that writes one into a message.
+test("admission refuses a message holding a marker or mark value this build can't read", () => {
+  const { doc: seeded, ids } = seed();
+  const S = (value) => new A.ImmutableString(value);
+  const paragraph = {
+    type: "block",
+    value: { type: S("paragraph"), parents: [], attrs: {}, isEmbed: false },
+  };
+  const word = { type: "text", value: "word", marks: {} };
+  const cases = [
+    ...Object.entries(UNREADABLE_MARKERS).map(([name, value]) => [
+      name,
+      [{ type: "block", value: value() }, word],
+    ]),
+    ...Object.entries(UNREADABLE_MARKS).map(([name, marks]) => [
+      name,
+      [paragraph, { type: "text", value: "word", marks }],
+    ]),
+  ];
+  const bobText = ["threads", ids.bobThread, "messages", ids.bobMessage, "richText"];
+  for (const [name, spans] of cases) {
+    const reply = admit(seeded, BOB, "commenter", (d) => {
+      d.threads[ids.aliceThread].messages.unreadable = richMessage("", BOB);
+      A.updateSpans(d, ["threads", ids.aliceThread, "messages", "unreadable", "richText"], spans);
+    });
+    assert.equal(reply.ok, false, name);
+    const edit = admit(seeded, BOB, "commenter", (d) => A.updateSpans(d, bobText, spans));
+    assert.equal(edit.ok, false, name);
+  }
+  // The same message with values this build reads is admitted.
+  const readable = admit(seeded, BOB, "commenter", (d) =>
+    A.updateSpans(d, bobText, [paragraph, word]),
+  );
+  assert.equal(readable.ok, true, JSON.stringify(readable.reason));
 });

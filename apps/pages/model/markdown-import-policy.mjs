@@ -1,4 +1,5 @@
 // Shared token scanning and preservation checks, independent of tree representation.
+import { markerType } from "./node-registry.mjs";
 import { imageAlt, tokenizer } from "./markdown-tokenizer.mjs";
 import {
   normalizeSource,
@@ -49,7 +50,7 @@ export function lostSpansContent(tokens, spans) {
     if (span.type === "text") {
       produced.text.push(span.value);
       if (span.marks?.link) produced.links.add(JSON.parse(String(span.marks.link)).href);
-    } else if (String(span.value.type) === "image") {
+    } else if (markerType(span.value) === "image") {
       const attrs = span.value.attrs ?? {};
       produced.images.push(JSON.stringify([String(attrs.src), String(attrs.alt ?? "")]));
     }

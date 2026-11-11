@@ -1,3 +1,4 @@
+import { markerType } from "./node-registry.mjs";
 import * as A from "@automerge/automerge/slim";
 import { diffArrays } from "diff";
 import { textPath } from "./richtext-format.mjs";
@@ -90,7 +91,7 @@ export function textSegments(block) {
   let code = false;
   for (const span of A.spans(block, ["richText"])) {
     if (span.type === "block") {
-      code = String(span.value?.type) === "code-block";
+      code = markerType(span.value) === "code-block";
       segment = undefined;
       offset++;
     } else {
@@ -673,7 +674,7 @@ export function inCodeBlock(doc, path, at) {
   for (const span of A.spans(doc, path)) {
     if (pos > at) break;
     if (span.type === "block") {
-      code = String(span.value?.type) === "code-block";
+      code = markerType(span.value) === "code-block";
       pos += 1;
     } else pos += span.value.length;
   }

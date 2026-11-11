@@ -1,3 +1,4 @@
+import { markerType } from "./node-registry.mjs";
 import * as A from "@automerge/automerge/slim";
 import { textPath } from "./richtext-format.mjs";
 import { readKind, readDescendants } from "./native-read.mjs";
@@ -9,7 +10,7 @@ export function imageIds(doc, blockId) {
     result = [];
   let at = 0;
   for (const [index, span] of A.spans(doc, path).entries()) {
-    if (span.type === "block" && String(span.value.type) === "image" && span.value.isEmbed)
+    if (span.type === "block" && markerType(span.value) === "image" && span.value.isEmbed)
       result.push({ image_id: A.getCursor(doc, path, at), at, index });
     at += span.type === "text" ? span.value.length : 1;
   }

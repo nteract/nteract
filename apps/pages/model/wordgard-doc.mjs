@@ -51,6 +51,8 @@ import {
   TEXT_CONTAINERS,
   validAlignment,
   validHeadingLevel,
+  markerName,
+  markerType,
 } from "./node-registry.mjs";
 // The Pages table format stores physical alignment. Wordgard's stock mark
 // uses logical values and does not round-trip a physical `right` clipboard style.
@@ -134,9 +136,11 @@ export const PagesHighlight = Mark.Type.define("PagesHighlight", {
     },
   },
 });
-// Marks a newer build wrote, keyed by name with their stored values. They
-// render as plain text and are written back unchanged, so this build can edit
-// a block that carries them without erasing them.
+// Marks a newer build wrote, keyed by name with their stored values: a name
+// this build doesn't know, or a known name whose value it can't read or must
+// not render (readMark). They render as plain text and are written back
+// unchanged, so this build can edit a block that carries them without
+// erasing them.
 export const PagesForeignMarks = Mark.Type.define("PagesForeignMarks", {
   // Non-inclusive: typing next to a foreign run must not extend a mark this
   // build can't show or remove.
@@ -146,7 +150,7 @@ export const PagesForeignMarks = Mark.Type.define("PagesForeignMarks", {
       !value ||
       typeof value !== "object" ||
       !Object.keys(value).length ||
-      Object.keys(value).some(isKnownMark)
+      Object.entries(value).some(([name, stored]) => readMark(name, stored))
     )
       throw Error("Invalid foreign Pages marks");
   },
@@ -328,7 +332,8 @@ function unknownValue(marker) {
     }),
   );
   return {
-    type: String(marker.type),
+    // A type that isn't a name is quoted as nothing: its notice names no node.
+    type: markerType(marker) ?? "",
     attrs,
     immutable,
     parents: storedParents(marker),
@@ -449,21 +454,26 @@ const markTypes = {
 };
 for (const name of MARK_NAMES)
   if (!markTypes[name]) throw Error(`The Wordgard schema has no type for mark ${name}`);
+/** The mark a stored name and value read as, or null when this build doesn't
+ * know the name, can't read the value or must not render it (a link to an
+ * unsafe URL, a highlight outside the registry's colors). Every reader treats
+ * a null mark the same way: kept as stored in PagesForeignMarks, drawn as
+ * nothing and written back by encode. */
+export function readMark(name, value) {
+  if (!isKnownMark(name)) return null;
+  try {
+    return markTypes[name].of(decodeMarkValue(name, value));
+  } catch {
+    return null;
+  }
+}
 export function fromMarks(marks = {}) {
   const set = [];
   const foreign = {};
   for (const [name, value] of Object.entries(marks)) {
-    if (!isKnownMark(name)) {
-      foreign[name] = value;
-      continue;
-    }
-    let decoded;
-    try {
-      decoded = decodeMarkValue(name, value);
-    } catch {
-      throw Error(name === "link" ? "Invalid Pages link" : `Invalid Pages ${name} mark`);
-    }
-    set.push(markTypes[name].of(decoded));
+    const mark = readMark(name, value);
+    if (mark) set.push(mark);
+    else foreign[name] = value;
   }
   if (Object.keys(foreign).length) set.push(PagesForeignMarks.of(foreign));
   return set.reduce((result, mark) => mark.addToSet(result), Mark.none);
@@ -528,8 +538,9 @@ export const attrMap = (attrs = {}) =>
 export function unreadableMarker(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return true;
   if (value.attrs != null && !attrMap(value.attrs)) return true;
-  const type = String(value.type),
+  const type = markerType(value),
     attrs = strings(value.attrs);
+  if (type === null) return true;
   try {
     if (value.isEmbed) {
       if (type === "image") {
@@ -626,7 +637,7 @@ export const TABLE_PART_OUTER = {
 export function codeHolds(type, parents) {
   if (type === "hard-break") return true;
   if (type === "image") return false;
-  return String(parents.at(-1) ?? "") === "code-block";
+  return markerName(parents.at(-1)) === "code-block";
 }
 
 /** The editor tree for a block's spans, the native/editor position maps,
@@ -761,7 +772,7 @@ export function decode(spans) {
     if (!span.value || typeof span.value !== "object" || Array.isArray(span.value)) {
       ensureText();
       newer = partial = true;
-      unknownInline({ type: String(span.value), isEmbed: true });
+      unknownInline({ type: markerName(span.value) ?? "", isEmbed: true });
       continue;
     }
     // A marker's parents are a list of names. Anything else reads as no
@@ -769,11 +780,14 @@ export function decode(spans) {
     // only say whether a code block holds it.
     const listed = Array.isArray(span.value.parents);
     const value = { ...span.value, parents: storedParents(span.value) },
-      type = String(value.type),
+      type = markerType(value),
       attrs = strings(value.attrs),
       unreadable = unreadableMarker(span.value);
-    // Attrs that aren't a map can't be written back as stored.
+    // Attrs that aren't a map, and a type or parent that isn't a name, can't
+    // be written back as stored.
     if (span.value.attrs != null && !attrMap(span.value.attrs)) newer = partial = true;
+    if (type === null || (listed && span.value.parents.some((p) => markerName(p) === null)))
+      newer = partial = true;
     if (value.isEmbed) {
       // An embed a code block can't hold opens a paragraph after it.
       if (inCode() && !codeHolds(type, value.parents)) close();
@@ -876,7 +890,8 @@ export function decode(spans) {
         adjusted = true;
         moved.push({ at: am, parents: drawn });
       }
-    }
+      // A notice can't write back parents that aren't a list.
+    } else if (!listed) newer = partial = true;
     if (unknown && !outer.at(-1)?.tag.type.spec.inlineContent) fits(PagesUnknownBlock);
     let common = 0;
     while (

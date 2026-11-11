@@ -111,14 +111,18 @@ test("native read matches supported independently generated stored trees", () =>
 const text = (value, marks = {}) => ({ type: "text", value, marks });
 const pageId = "00000000-0000-4000-8000-000000000001";
 
-test("rereview: malformed and incomplete legacy links use base defaults", () => {
+// A link value this build can't read is a mark it doesn't know: plain text,
+// as the editor draws it.
+test("rereview: malformed and incomplete legacy links read as plain text", () => {
   for (const [link, expected] of [
-    ["https://example.org", "[a]()"],
-    ["null", "[a]()"],
-    ["{}", "[a]()"],
-    ['""', "[a]()"],
-    [JSON.stringify({ href: null }), "[a]()"],
-    [JSON.stringify({ title: "tip" }), '[a]( "tip")'],
+    ["https://example.org", "a"],
+    ["null", "a"],
+    ["{}", "a"],
+    ['""', "a"],
+    [JSON.stringify({ href: null }), "a"],
+    [JSON.stringify({ title: "tip" }), "a"],
+    [JSON.stringify({ href: "javascript:alert(1)" }), "a"],
+    [7, "a"],
   ]) {
     const doc = page([text("a", { link })]);
     try {
@@ -345,14 +349,14 @@ test("malformed native frames expose explicit notices while retaining surroundin
   }
 });
 
-test("review: legacy link extras read safely but remain invalid for admission", () => {
+test("review: legacy link extras read as plain text and remain invalid for admission", () => {
   const doc = page([
     text("a", { link: JSON.stringify({ href: "https://example.org", future: "private" }) }),
   ]);
   try {
     assert.throws(() => validateRich(doc.blocks.one));
     const result = projectReadContent(doc);
-    assert.equal(result.blocks[0].markdown, "[a](https://example.org)");
+    assert.equal(result.blocks[0].markdown, "a");
     assert.ok(!JSON.stringify(result).includes("private"));
   } finally {
     A.free(doc);

@@ -23,6 +23,7 @@
 // content. decode draws it as a separate paragraph; here it stays part of the
 // unknown node, so the node count and every later node_index match what the
 // Markdown projection reads (one unknown node holding the text).
+import { markerType } from "./node-registry.mjs";
 import * as A from "@automerge/automerge/slim";
 import { codeTextUnmarked } from "./richtext-format.mjs";
 import {
@@ -61,7 +62,7 @@ export function blockAddresses(spans) {
       // decode draws an unknown inline node in a code block as plain text.
       else if (
         placed &&
-        String(span.value?.type) !== "hard-break" &&
+        markerType(span.value) !== "hard-break" &&
         tree.resolve(map.amToWg[length]).parent.node.type === CodeBlock.type
       )
         placed = false;

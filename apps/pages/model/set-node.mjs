@@ -14,11 +14,12 @@
 // that replaces it.
 import * as A from "@automerge/automerge/slim";
 import { markerParents, textPath, updateSpansExactly } from "./richtext-format.mjs";
-import { richDoc } from "./richtext-spans.mjs";
+import { unreadableMarker } from "./wordgard-doc.mjs";
 import { updateSpansConfig } from "./marks.mjs";
 import { locateRange } from "./replace-match.mjs";
 import {
   ALIGNMENTS,
+  markerType,
   SETTABLE_ATTRS,
   nodeLabel,
   nodeType,
@@ -113,7 +114,7 @@ function governingMarker(spans, at) {
   return index;
 }
 
-const markerType = (span) => String(span.value.type);
+const spanType = (span) => markerType(span.value);
 const parentsOf = (span) => markerParents(span.value);
 
 /** The spans index of the marker set_node changes for text that marker
@@ -123,10 +124,10 @@ const parentsOf = (span) => markerParents(span.value);
  * its text, and a list item's first paragraph isn't retyped on its own. */
 function targetMarker(spans, index) {
   const marker = spans[index];
-  if (markerType(marker) !== "paragraph") return index;
+  if (spanType(marker) !== "paragraph") return index;
   const container = spans[index - 1];
   if (container?.type !== "block" || container.value.isEmbed) return index;
-  const type = markerType(container);
+  const type = spanType(container);
   const own = parentsOf(container),
     parents = parentsOf(marker);
   const firstChild =
@@ -137,7 +138,7 @@ function targetMarker(spans, index) {
 }
 // Table cells are the markers a column-scoped attribute (align) sets.
 const COLUMN_BLOCKS = new Set(SETTABLE_ATTRS.align.blocks);
-const isCell = (span) => span?.type === "block" && COLUMN_BLOCKS.has(markerType(span));
+const isCell = (span) => span?.type === "block" && COLUMN_BLOCKS.has(spanType(span));
 
 /** Spans indexes of every cell marker in the same table column as the cell
  * marker at `index`. Rows and cells follow their table's marker in order;
@@ -148,7 +149,7 @@ function columnCells(spans, index) {
   for (let i = 0; i < spans.length; i++) {
     const span = spans[i];
     if (span.type !== "block") continue;
-    const type = markerType(span);
+    const type = spanType(span);
     if (type === "table") {
       tables.push([]);
       row = null;
@@ -179,7 +180,7 @@ export function setNode(doc, id, input, trace, { anchor } = {}) {
   const result = { op: "set_node", block_id: id, matched: 1 };
   const names = Object.keys(change.attrs);
   const marker = spans[index];
-  const current = markerType(marker);
+  const current = spanType(marker);
   const refuse = (label, blocks) => {
     throw Error(
       `${label} applies to ${pluralLabel(blocks)}; match_text is in ${nodeLabel(current)}`,
@@ -218,21 +219,24 @@ export function setNode(doc, id, input, trace, { anchor } = {}) {
       throw Error(`${target} needs attrs.${spec.agent ?? stored}`);
   const typeValue = target === current ? marker.value.type : new A.ImmutableString(target);
   spans[index] = withAttrs(marker, attrs, typeValue);
-  let cells = 0;
+  const written = [index];
   if (Object.keys(column).length) {
     for (const cell of columnCells(spans, index)) {
+      written.push(cell);
       const cellAttrs = { ...spans[cell].value.attrs };
       for (const [stored, value] of Object.entries(column))
         if (value === null) delete cellAttrs[stored];
         else cellAttrs[stored] = new A.ImmutableString(value);
       spans[cell] = withAttrs(spans[cell], cellAttrs);
-      cells++;
     }
   }
+  // Every reader draws a marker it can't read as a notice, so nothing
+  // downstream refuses one. A marker this write leaves unreadable (a stored
+  // attribute a newer build wrote that this one can't read) is refused here.
+  if (written.some((i) => unreadableMarker(spans[i].value)))
+    throw Error(`set_node can't write ${nodeLabel(target)} with attributes this build can't read`);
   updateSpansExactly(doc, path, spans, updateSpansConfig);
-  // The schema accepts every change above; check the tree anyway, so a
-  // malformed marker can never be committed.
-  richDoc(doc.blocks[id]);
   trace?.push({ type: "text", block_id: id, start, end });
+  const cells = written.length - 1;
   return { ...result, ...(cells ? { cells } : {}) };
 }

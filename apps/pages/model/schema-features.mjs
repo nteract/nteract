@@ -17,6 +17,7 @@
 // Automerge keeps both as a conflict and shows one, so readers take the union
 // of every conflicting value, and the next writer copies the union into the
 // visible list.
+import { markerType } from "./node-registry.mjs";
 import * as A from "@automerge/automerge/slim";
 import featureFile from "./features.json" with { type: "json" };
 import { MARK_REGISTRY } from "./marks.mjs";
@@ -159,11 +160,11 @@ export function spanFeatures(spans, registry = active) {
         if (registry.marks.has(name)) needed.add(registry.marks.get(name));
     } else if (span.type === "block") {
       for (const name of Object.keys(span.value?.attrs ?? {})) {
-        const feature = registry.attributes?.get(`${String(span.value.type)}:${name}`);
+        const feature = registry.attributes?.get(`${markerType(span.value)}:${name}`);
         if (feature && span.value.attrs[name] != null) needed.add(feature);
       }
-      for (const type of [span.value?.type, ...markerParents(span.value)]) {
-        const feature = registry.blocks.get(String(type));
+      for (const type of [markerType(span.value), ...markerParents(span.value)]) {
+        const feature = registry.blocks.get(type);
         if (feature) needed.add(feature);
       }
     }

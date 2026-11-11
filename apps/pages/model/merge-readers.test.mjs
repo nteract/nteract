@@ -9,7 +9,20 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fc from "fast-check";
 import * as A from "@automerge/automerge";
-import { applyPageOperation, createPageData, initializePage, orderedBlockIds } from "./page.mjs";
+import {
+  applyPageOperation,
+  createPageData,
+  initializePage,
+  orderedBlockIds,
+  projectPage,
+} from "./page.mjs";
+import { projectReadChanges } from "./read-changes.mjs";
+import { commentBodyProjection } from "./comment-read.mjs";
+import { commentDraftsMarkdown, pageMarkdown } from "./markdown-export.mjs";
+import { blockPreview } from "./page-preview.mjs";
+import { cardContent } from "./page-card.mjs";
+import { openingTitleWarning } from "./title-warning.mjs";
+import { shellBlocks } from "../viewer/card-shell.mjs";
 import { projectReadContent } from "./read-content.mjs";
 import { blockMarkdown, textPath } from "./richtext.mjs";
 import { repairBlockMarkers } from "./richtext-page.mjs";
@@ -17,6 +30,9 @@ import {
   ADJUSTED_NESTING_CASES,
   ADJUSTED_NESTING_WORDS,
   MISSING_ANCESTOR_CASES,
+  SHADOWED,
+  UNREADABLE_MARKERS,
+  UNREADABLE_MARKS,
   addInside,
   deleteContainer,
   nestedTable,
@@ -365,6 +381,52 @@ function readEvery(doc, id, label, { lossy = false } = {}) {
   return { decoded, markdown, ids };
 }
 
+/** The readers past the block: the change feed, the card and preview, the
+ * title warning, the Markdown export, a comment holding the same spans and an
+ * unsent draft of them. None may throw; returns what they show (all but the
+ * draft) as text, so a test can check no unsafe value reaches it. */
+function readOthers(doc, id, since) {
+  const out = [];
+  const show = (value) => out.push(JSON.stringify(value ?? null));
+  show(projectReadChanges(doc, { since_heads: since, comments: "none" }));
+  show(blockPreview(doc.blocks[id]));
+  show(cardContent(doc));
+  show(shellBlocks(doc).map((block) => block.spans.length));
+  show(openingTitleWarning(doc));
+  show(pageMarkdown(projectPage(doc)));
+  const spans = A.spans(doc, textPath(id));
+  // A draft the export can't read whole is kept as its spans' JSON, in a
+  // code fence: inert text, so it isn't part of what is shown.
+  commentDraftsMarkdown([
+    { kind: "comment", body: "draft", spans: JSON.parse(JSON.stringify(spans)) },
+  ]);
+  const message = A.change(A.from({ message: { richText: "" } }), (draft) =>
+    A.updateSpans(draft, ["message", "richText"], spans, updateSpansConfig),
+  );
+  try {
+    show(commentBodyProjection(message.message));
+  } finally {
+    A.free(message);
+  }
+  return out.join("\n");
+}
+
+/** Stored spans as comparable JSON: adjacent text runs with the same marks
+ * joined, marks always present, keys sorted. Names stay as stored, so a map
+ * stored as a name compares as that map. */
+function storedJSON(spans) {
+  const out = [];
+  for (const span of JSON.parse(JSON.stringify(spans))) {
+    const last = out.at(-1);
+    if (span.type !== "text") out.push(span);
+    else if (!span.value) continue;
+    else if (last?.type === "text" && canonical(last.marks) === canonical(span.marks ?? {}))
+      last.value += span.value;
+    else out.push({ type: "text", value: span.value, marks: span.marks ?? {} });
+  }
+  return canonical(out);
+}
+
 // Generated Pages, and short bullet lists (one item may hold a table), where
 // two writers' indents often meet on one item.
 const textNode = (value) => ({ kind: "text", value, marks: {} });
@@ -586,11 +648,12 @@ function pageWithSpans(spans) {
     initializePage(draft),
   );
   const id = orderedBlockIds(doc)[0];
+  const since = A.getHeads(doc);
   doc = A.change(doc, (draft) => {
     updateSpansExactly(draft, textPath(id), spans, updateSpansConfig);
     stampSpans(draft, spans);
   });
-  return { doc, id };
+  return { doc, id, since };
 }
 
 test("a structural write stores the parents it is given and keeps every marker", () => {
@@ -800,6 +863,124 @@ test("repair leaves a block with content from a newer build exactly as it is", (
   A.change(A.clone(doc), (draft) => assert.equal(repairBlockMarkers(draft, id), false));
 });
 
+const editPage = (doc, operations) =>
+  A.change(A.clone(doc), (draft) =>
+    applyPageOperation(draft, { operation: "edit_page", arguments: { operations } }),
+  );
+// delete_block removes a block whatever it holds: the recovery when read_page
+// reports no node_id for a node a Markdown rewrite can't keep.
+const deleteBlock = (doc, id) =>
+  editPage(doc, [
+    { op: "insert_markdown", markdown: "Second" },
+    { op: "delete_block", block_id: id },
+  ]);
+/** replace_block_markdown with "Fixed.", or its refusal, which names the
+ * recovery. */
+function rewriteOrRefuse(doc, id, label) {
+  let rewritten;
+  try {
+    rewritten = editPage(doc, [{ op: "replace_block_markdown", block_id: id, markdown: "Fixed." }]);
+  } catch (error) {
+    assert.match(error.message, /delete_block/, label);
+    return null;
+  }
+  assert.equal(blockMarkdown(rewritten.blocks[id], PAGE_ID), "Fixed.", label);
+  return rewritten;
+}
+
+test("every reader draws a marker value this build can't read as a notice, and delete_block removes it", () => {
+  for (const [name, value] of Object.entries(UNREADABLE_MARKERS)) {
+    freeing((keep) => {
+      // Text right after a node drawn as a notice is that node's content,
+      // which this build can't draw: a paragraph of its own opens the word.
+      const stored = value();
+      const spans = [
+        marker("paragraph", []),
+        { type: "text", value: "a" },
+        { type: "block", value: stored },
+        ...(stored.isEmbed ? [] : [marker("paragraph", [])]),
+        { type: "text", value: "word" },
+      ];
+      const { doc, id, since } = pageWithSpans(spans);
+      keep(doc);
+      const read = readAll(doc, id, name, { lossy: true });
+      assert.equal(read.decoded.newer, true, name);
+      // A container this build doesn't know draws nothing; a node, a notice.
+      if (name !== "parent a map") assert.match(read.markdown, /Unsupported node/, name);
+      assert.doesNotMatch(read.markdown, /javascript/, name);
+      assert.doesNotMatch(readOthers(doc, id, since), /javascript/, name);
+      // Encode writes a node it draws whole as a notice back as stored. A
+      // name that isn't one, attrs that aren't a map and an image this build
+      // can't read make the block lossy: the editor doesn't write it.
+      if (!read.decoded.lossy)
+        assert.equal(
+          storedJSON(encode(read.decoded.doc)),
+          storedJSON(A.spans(doc, textPath(id))),
+          name,
+        );
+      else assert.match(name, /a map|missing|not a map|image/, name);
+      A.change(A.clone(doc), (draft) => assert.equal(repairBlockMarkers(draft, id), false, name));
+      const rewritten = rewriteOrRefuse(doc, id, name);
+      if (rewritten) keep(rewritten);
+      const deleted = keep(deleteBlock(doc, id));
+      assert.equal(Object.hasOwn(deleted.blocks, id), false, name);
+    });
+  }
+});
+
+test("every reader draws a mark value this build can't read as plain text, and writes it back", () => {
+  for (const [name, marks] of Object.entries(UNREADABLE_MARKS)) {
+    freeing((keep) => {
+      const { doc, id, since } = pageWithSpans([
+        marker("paragraph", []),
+        { type: "text", value: "click", marks },
+      ]);
+      keep(doc);
+      const read = readAll(doc, id, name);
+      assert.equal(read.decoded.newer, false, name);
+      assert.equal(read.markdown, "click", name);
+      const others = readOthers(doc, id, since);
+      assert.doesNotMatch(others, /javascript:alert|url\(/, name);
+      // The editor keeps the mark as stored and writes it back.
+      assert.equal(
+        storedJSON(encode(read.decoded.doc)),
+        storedJSON(A.spans(doc, textPath(id))),
+        name,
+      );
+      A.change(A.clone(doc), (draft) => assert.equal(repairBlockMarkers(draft, id), false, name));
+      assert.ok(rewriteOrRefuse(doc, id, name) && true, name);
+    });
+  }
+});
+
+test("set_node refuses to write a marker this build can't read", () => {
+  const { doc, id } = pageWithSpans([
+    {
+      type: "block",
+      value: { type: S("heading"), parents: [], attrs: { level: S("2") }, isEmbed: false },
+    },
+    { type: "text", value: "Title" },
+  ]);
+  const setNode = (input) =>
+    A.change(A.clone(doc), (draft) =>
+      applyPageOperation(draft, {
+        operation: "patch_page",
+        arguments: {
+          operations: [{ op: "set_node", block_id: id, match_text: "Title", ...input }],
+        },
+      }),
+    );
+  // Keeping the heading keeps its level, which this build can't read.
+  assert.throws(() => setNode({ type: "heading" }), /can't read/);
+  // Setting the level, or retyping, leaves a marker it reads.
+  for (const input of [{ attrs: { level: 2 } }, { type: "paragraph" }]) {
+    const next = setNode(input);
+    assert.equal(readAll(next, id, JSON.stringify(input)).decoded.newer, false);
+    A.free(next);
+  }
+  A.free(doc);
+});
+
 test("two writers that indent the same list item at once leave a block every reader reads", () => {
   // Marker parents merge element by element: the merge stores parents
   // neither writer wrote.
@@ -816,21 +997,27 @@ test("two writers that indent the same list item at once leave a block every rea
   assert.match(read.markdown, /a/);
 });
 
-// Random marker values: names from the registry and junk, in any order and
-// any parents, with attrs this build writes and ones it doesn't, as any
-// client can store them through sync. No reader throws on anything Automerge
-// stores, and the readers agree on the block's nodes.
-const NAMES = [
-  // An aside has no Markdown form: read_page refuses it by design.
-  ...NODE_TYPES.map((type) => type.block).filter((name) => name !== "aside"),
-  "pages-future",
-  "",
-  "table",
-  "table-row",
-];
+// Random marker values: names from the registry and junk (maps among them),
+// in any order and any parents, with attrs and mark values this build writes
+// and ones it doesn't, as any client can store them through sync. No reader
+// throws on anything Automerge stores, and the readers agree on the block's
+// nodes.
+const NAMES = [...NODE_TYPES.map((type) => type.block), "pages-future", "", "table", "table-row"];
 const nameOf = fc.oneof(fc.constantFrom(...NAMES), fc.string({ maxLength: 4 }));
+// A stored name that isn't one: a map, some with toString or valueOf
+// shadowed, so String() on it throws.
+const mapName = fc.constantFrom(
+  SHADOWED,
+  () => ({ toString: "x" }),
+  () => ({ valueOf: 3 }),
+  () => ({}),
+);
+const storedName = fc.oneof(
+  { weight: 12, arbitrary: nameOf.map((name) => new A.ImmutableString(name)) },
+  { weight: 1, arbitrary: mapName.map((make) => make()) },
+);
 const parentsArb = fc.oneof(
-  { weight: 6, arbitrary: fc.array(nameOf, { maxLength: 5 }) },
+  { weight: 6, arbitrary: fc.array(storedName, { maxLength: 5 }) },
   { weight: 1, arbitrary: fc.constantFrom(null, "table", 3, { 0: "table" }) },
 );
 const IS = (value) => (typeof value === "string" ? new A.ImmutableString(value) : value);
@@ -865,17 +1052,41 @@ const attrsArb = fc.oneof(
     arbitrary: fc.constantFrom(true, "true", 1, null).map((checked) => ({ checked: IS(checked) })),
   },
   { weight: 1, arbitrary: fc.constantFrom("attrs", 3, null, [1]) },
+  {
+    weight: 1,
+    arbitrary: fc
+      .constantFrom("level", "params", "align", "src", "checked")
+      .map((key) => ({ [key]: SHADOWED() })),
+  },
+);
+const marksArb = fc.oneof(
+  { weight: 3, arbitrary: fc.constant({}) },
+  {
+    weight: 3,
+    arbitrary: fc.constantFrom(
+      { strong: true },
+      { em: true, code: true },
+      { link: JSON.stringify({ href: "https://example.org", title: null }) },
+      { highlight: "yellow" },
+      { future: "x" },
+      { strong: "yes" },
+      { link: JSON.stringify({ href: "https://example.org", future: 1 }) },
+      ...Object.values(UNREADABLE_MARKS),
+    ),
+  },
 );
 const spanArb = fc.oneof(
   {
     weight: 3,
-    arbitrary: fc.constantFrom("x", "two words", "").map((value) => ({ type: "text", value })),
+    arbitrary: fc
+      .record({ value: fc.constantFrom("x", "two words", ""), marks: marksArb })
+      .map(({ value, marks }) => ({ type: "text", value, marks })),
   },
   {
     weight: 5,
     arbitrary: fc
       .record({
-        type: nameOf,
+        type: storedName,
         parents: parentsArb,
         attrs: attrsArb,
         embed: fc.boolean(),
@@ -885,10 +1096,8 @@ const spanArb = fc.oneof(
         type: "block",
         value: {
           // Now and then a marker has no type at all.
-          ...(typed > 0 && { type: new A.ImmutableString(type) }),
-          parents: Array.isArray(parents)
-            ? parents.map((parent) => new A.ImmutableString(parent))
-            : parents,
+          ...(typed > 0 && { type }),
+          parents,
           attrs,
           isEmbed: embed,
         },
@@ -900,50 +1109,123 @@ const spanArb = fc.oneof(
   },
 );
 
+// Top-level nodes as a writer stores them, so most blocks read whole: text
+// with any mark values, and a node drawn as a notice (a name this build
+// doesn't know, a value it can't read) with nothing after it in its scope.
+const topLevelArb = fc
+  .array(
+    fc.oneof(
+      fc
+        .record({
+          type: fc.constantFrom("paragraph", "heading"),
+          marks: marksArb,
+        })
+        .map(({ type, marks }) => [
+          {
+            type: "block",
+            value: {
+              type: S(type),
+              parents: [],
+              attrs: type === "heading" ? { level: 2 } : {},
+              isEmbed: false,
+            },
+          },
+          { type: "text", value: "x", marks },
+        ]),
+      fc
+        .constantFrom(
+          { type: S("pages-future"), parents: [], attrs: { tone: S("warm") }, isEmbed: false },
+          ...Object.values(UNREADABLE_MARKERS)
+            .map((make) => make())
+            .filter((value) => !value.isEmbed),
+        )
+        .map((value) => [{ type: "block", value }]),
+      fc.constant([marker("horizontal-rule", [])]),
+    ),
+    { minLength: 1, maxLength: 5 },
+  )
+  .map((nodes) => nodes.flat());
+
 // Automerge's own refusal of a value it can't store as a block.
 const automergeRefused = (error) => /Cannot updateSpans|not a valid block/.test(error.message);
 
 test("no reader throws on any marker values Automerge stores, and the readers agree", () => {
+  // How many blocks reached each check, so the test fails if the generator
+  // stops reaching one.
+  const reached = { roundTrip: 0, notice: 0, foreignMark: 0 };
   fc.assert(
-    fc.property(fc.array(spanArb, { maxLength: 10 }), (generated) =>
-      freeing((keep) => {
-        const spans = generated.filter((span) => span.type !== "text" || span.value);
-        const label = JSON.stringify(generated);
-        // Every reader of spans returns on anything, stored or not.
-        decode(spans);
-        nativeReadSpans(spans, PAGE_ID);
-        blockAddresses(spans);
-        let doc = A.change(A.from(createPageData({ pageId: PAGE_ID, title: "Spans" })), (draft) =>
-          initializePage(draft),
-        );
-        const id = orderedBlockIds(doc)[0];
-        try {
-          doc = A.change(doc, (draft) =>
-            updateSpansExactly(draft, textPath(id), spans, updateSpansConfig),
+    fc.property(
+      fc.oneof(
+        {
+          weight: 3,
+          arbitrary: fc
+            .array(spanArb, { maxLength: 10 })
+            .map((generated) => ({ generated, writerForm: false })),
+        },
+        {
+          weight: 1,
+          arbitrary: topLevelArb.map((generated) => ({ generated, writerForm: true })),
+        },
+      ),
+      ({ generated, writerForm }) =>
+        freeing((keep) => {
+          const spans = generated.filter((span) => span.type !== "text" || span.value);
+          const label = JSON.stringify(generated);
+          // Every reader of spans returns on anything, stored or not.
+          decode(spans);
+          nativeReadSpans(spans, PAGE_ID);
+          blockAddresses(spans);
+          let doc = A.change(A.from(createPageData({ pageId: PAGE_ID, title: "Spans" })), (draft) =>
+            initializePage(draft),
           );
-        } catch (error) {
-          keep(doc);
-          if (!automergeRefused(error)) throw error;
-          return;
-        }
-        doc = keep(A.change(doc, (draft) => stampSpans(draft, spans)));
-        const before = readAll(doc, id, label, { lossy: true });
-        // A host write repairs every block it names first; repair returns
-        // false on a newer-and-lossy block, and never throws.
-        const repaired = keep(A.change(A.clone(doc), (draft) => repairBlockMarkers(draft, id)));
-        if (before.decoded.newer) return;
-        // With every name and value known, repair stores what every reader
-        // drew: the same tree and Markdown, nothing adjusted, and a second
-        // repair writes nothing.
-        const after = readAll(repaired, id, label, { lossy: true });
-        assert.equal(after.decoded.adjusted, false, label);
-        assert.ok(after.decoded.doc.eq(before.decoded.doc), label);
-        assert.equal(after.markdown, before.markdown, label);
-        A.change(A.clone(repaired), (draft) =>
-          assert.equal(repairBlockMarkers(draft, id), false, label),
-        );
-      }),
+          const id = orderedBlockIds(doc)[0];
+          const since = A.getHeads(doc);
+          try {
+            doc = A.change(doc, (draft) =>
+              updateSpansExactly(draft, textPath(id), spans, updateSpansConfig),
+            );
+          } catch (error) {
+            keep(doc);
+            if (!automergeRefused(error)) throw error;
+            return;
+          }
+          doc = keep(A.change(doc, (draft) => stampSpans(draft, spans)));
+          const before = readAll(doc, id, label, { lossy: true });
+          readOthers(doc, id, since);
+          // delete_block removes any block, whatever it holds.
+          assert.equal(Object.hasOwn(keep(deleteBlock(doc, id)).blocks, id), false, label);
+          // Encode writes back what decode read, where it draws it whole: the
+          // spans a writer stores, with notices and marks this build can't
+          // read among them. On anything else, what it writes reads the same.
+          const stored = A.spans(doc, textPath(id));
+          if (!before.decoded.lossy)
+            assert.ok(decode(encode(before.decoded.doc)).doc.eq(before.decoded.doc), label);
+          if (writerForm && !before.decoded.lossy) {
+            assert.equal(storedJSON(encode(before.decoded.doc)), storedJSON(stored), label);
+            reached.roundTrip++;
+            if (before.decoded.newer) reached.notice++;
+            if (stored.some((span) => span.type === "text" && span.marks?.link === 7))
+              reached.foreignMark++;
+          }
+          // A host write repairs every block it names first; repair returns
+          // false on a newer-and-lossy block, and never throws.
+          const repaired = keep(A.change(A.clone(doc), (draft) => repairBlockMarkers(draft, id)));
+          if (before.decoded.newer) return;
+          // With every name and value known, repair stores what every reader
+          // drew: the same tree and Markdown, nothing adjusted, and a second
+          // repair writes nothing.
+          const after = readAll(repaired, id, label, { lossy: true });
+          assert.equal(after.decoded.adjusted, false, label);
+          assert.ok(after.decoded.doc.eq(before.decoded.doc), label);
+          assert.equal(after.markdown, before.markdown, label);
+          A.change(A.clone(repaired), (draft) =>
+            assert.equal(repairBlockMarkers(draft, id), false, label),
+          );
+        }),
     ),
     { ...parameters, numRuns: Number(process.env.PAGES_FUZZ_RUNS ?? 200) },
   );
+  if (process.env.PAGES_FUZZ_SEED === undefined && process.env.PAGES_FUZZ_RUNS === undefined)
+    for (const [check, count] of Object.entries(reached))
+      assert.ok(count > 0, `${check}: ${JSON.stringify(reached)}`);
 });

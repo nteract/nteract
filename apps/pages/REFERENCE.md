@@ -2398,6 +2398,21 @@ container (a rule, an image, a paragraph). A table row, cell or header nothing h
 drawn inside the table (and row) it needs, which have no marker of their
 own. A node marker's parents that aren't a list read as none.
 
+Every reader converts a stored name, a type or a parent, through one total
+function (`markerName` in [model/node-registry.mjs](model/node-registry.mjs)):
+a string or ImmutableString is that name, and anything else (a map, whose
+`toString` a peer can shadow) is no name. A type that isn't a name reads
+as the notice with no name; a parent that isn't one reads as a container
+this build doesn't know.
+
+A mark is read the same way (`readMark` in
+[model/wordgard-doc.mjs](model/wordgard-doc.mjs)): a known mark whose stored
+value this build can't read, or must not render (a link to an unsafe URL, a
+highlight outside the registry's colors), is a mark it doesn't know. The
+editor keeps it as stored in `PagesForeignMarks` and encode writes it back;
+every read draws it as nothing, so its value never reaches Markdown, an
+outline, a card or HTML.
+
 `decode` reports two reasons a block can't be drawn as stored, apart:
 
 - `newer`: content from a newer build. A node, container or embed name this
@@ -2407,19 +2422,39 @@ own. A node marker's parents that aren't a list read as none.
   task state outside what this build writes, a dataframe it can't show.
   Every reader draws such a marker as the notice for a node it doesn't
   know; an unsafe src is never rendered or written as a URL, and encode
-  writes the marker back as stored. Registration still refuses all of these
-  in a new Page. An unknown container
+  writes the marker back as stored. An unknown container
   draws nothing in the editor and a notice in the agent read; where that
   makes the agent read's top-level nodes differ from the stored ones,
   `read_page` gives those nodes no `node_id` and `node_index` refuses the
   block. Nothing rewrites such a block, and the editor refuses a person's
   edit to one it draws only in part ("This block holds content from a newer
-  version of Pages"). An owner recovers it with `replace_block_markdown`,
-  which rewrites the block whole, or `delete_block`.
+  version of Pages"). An owner removes such a node with `delete_node`
+  when `read_page` gives it a `node_id`. When it reports none (an unknown
+  node or unreadable dataframe followed by text that has no marker of its
+  own), `delete_block` removes the whole block; it works on any block. A
+  marker with values this build can't read on a known node with a Markdown
+  form (a heading level, an image) is also recovered by
+  `replace_block_markdown`, which rewrites the block whole. That tool
+  refuses a block holding an unknown node, an aside or a dataframe it
+  can't keep, and its refusal names both recoveries.
 - `adjusted`: every name is known, but `nestIn` re-homed a node or dropped
   or skipped a parent. Every reader draws one tree for the block, and
   `moved` lists each node marker whose drawn parents differ from its stored
   ones.
+
+Reading is total; admission stays strict. Registration (`validateRich` in
+[model/richtext-spans.mjs](model/richtext-spans.mjs)) and comment admission
+(`validateRichSpans` and `isEditorForm` in
+[model/comment-content.mjs](model/comment-content.mjs)) refuse a block or
+message whose decode is `newer` or lossy, and every mark value outside the
+registry, so nothing a reader would draw as a notice or as plain text is
+admitted. `set_node` refuses a write that would leave the marker it writes
+unreadable.
+
+An aside (`PagesAside`) is a known container with no Markdown form. The
+editor makes one from pasted HTML (`<aside>`), and any synced client can
+store one; no agent tool or Markdown import writes one. Its Markdown is the
+notice (`[Unsupported node: aside]`) followed by its content.
 
 A block whose only problem is adjusted nesting is repaired, because storing
 the drawn tree loses nothing a reader showed. Every host tool write to a
