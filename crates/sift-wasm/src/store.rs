@@ -1043,7 +1043,7 @@ fn parquet_to_ipc_from(parquet_bytes: &[u8], limits: FileLimits) -> Result<Vec<u
     // Written as Utf8 or Binary, every value is copied out, so the stream gets
     // its own cap: no larger than the decoded-bytes limit. A batch is checked
     // before its views are expanded.
-    let budget = limits.decoded_bytes as usize;
+    let budget = limits.decoded_bytes as u64;
     let over = || {
         format!(
             "Arrow stream exceeds the decoded bytes limit ({budget} bytes); raise maxDecodedBytes"
@@ -1053,18 +1053,16 @@ fn parquet_to_ipc_from(parquet_bytes: &[u8], limits: FileLimits) -> Result<Vec<u
     let mut writer = StreamWriter::try_new(&mut buf, &writer_schema)
         .map_err(|e| format!("IPC writer error: {}", e))?;
     for batch in &batches {
-        let expanded: usize = batch
-            .columns()
-            .iter()
-            .map(|c| view_value_bytes(&c.to_data()))
-            .sum();
-        if writer.get_ref().len().saturating_add(expanded) > budget {
+        let expanded = batch.columns().iter().fold(0u64, |total, c| {
+            total.saturating_add(view_value_bytes(&c.to_data()))
+        });
+        if (writer.get_ref().len() as u64).saturating_add(expanded) > budget {
             return Err(over());
         }
         writer
             .write(&downgrade_view_types(batch)?)
             .map_err(|e| format!("IPC write error: {}", e))?;
-        if writer.get_ref().len() > budget {
+        if writer.get_ref().len() as u64 > budget {
             return Err(over());
         }
     }
@@ -1072,6 +1070,11 @@ fn parquet_to_ipc_from(parquet_bytes: &[u8], limits: FileLimits) -> Result<Vec<u
         .finish()
         .map_err(|e| format!("IPC finish error: {}", e))?;
     drop(writer);
+    // The schema message and end-of-stream marker count too, including for a
+    // file with no rows.
+    if buf.len() as u64 > budget {
+        return Err(over());
+    }
     Ok(buf)
 }
 
@@ -2229,20 +2232,20 @@ fn without_view_types(data_type: &DataType) -> DataType {
 /// Bytes the view values in `data` (at any depth) take once written as
 /// plain Utf8 or Binary. Views share their data buffers, so a decoded batch
 /// can be far smaller than its plain form.
-fn view_value_bytes(data: &arrow::array::ArrayData) -> usize {
+fn view_value_bytes(data: &arrow::array::ArrayData) -> u64 {
+    // u64 and saturating: on wasm32 a usize total of shared views wraps.
     let own = if matches!(data.data_type(), DataType::Utf8View | DataType::BinaryView) {
         data.buffer::<u128>(0)[..data.len()]
             .iter()
-            .map(|view| (*view as u32) as usize)
-            .sum::<usize>()
+            .fold(0u64, |total, view| {
+                total.saturating_add(*view as u32 as u64)
+            })
     } else {
         0
     };
-    own + data
-        .child_data()
-        .iter()
-        .map(view_value_bytes)
-        .sum::<usize>()
+    data.child_data().iter().fold(own, |total, child| {
+        total.saturating_add(view_value_bytes(child))
+    })
 }
 
 /// Downgrade Arrow view types (Utf8View, BinaryView), at any depth, to Utf8
@@ -2254,6 +2257,35 @@ fn view_value_bytes(data: &arrow::array::ArrayData) -> usize {
 /// Fast path: a batch with no view types is returned as `batch.clone()`.
 ///
 /// See nteract/nteract#1853.
+/// A sliced list, map or struct keeps its whole child arrays, and casting it
+/// casts every child value. Taking the slice's rows first leaves only the
+/// values those rows reference, so a nested downgrade copies just those.
+/// Top-level view columns cast only their own rows and are left as they are.
+fn compact_nested_views(batch: &RecordBatch) -> Result<RecordBatch, String> {
+    let nested = |t: &DataType| {
+        !matches!(t, DataType::Utf8View | DataType::BinaryView) && &without_view_types(t) != t
+    };
+    let schema = batch.schema();
+    if !schema.fields().iter().any(|f| nested(f.data_type())) {
+        return Ok(batch.clone());
+    }
+    let rows = arrow::array::UInt32Array::from_iter_values(0..batch.num_rows() as u32);
+    let columns = schema
+        .fields()
+        .iter()
+        .zip(batch.columns())
+        .map(|(field, column)| {
+            if nested(field.data_type()) {
+                arrow_select::take::take(column.as_ref(), &rows, None)
+                    .map_err(|e| format!("take error on {}: {}", field.name(), e))
+            } else {
+                Ok(column.clone())
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    RecordBatch::try_new(schema, columns).map_err(|e| format!("rebatch: {}", e))
+}
+
 fn downgrade_view_types(batch: &RecordBatch) -> Result<RecordBatch, String> {
     use arrow::datatypes::{Field, Schema};
     use std::sync::Arc;
@@ -2338,7 +2370,7 @@ pub fn get_viewport(handle: u32, start_row: u32, end_row: u32) -> Result<Vec<u8>
             };
 
             let slice = batch.slice(local_start, local_end - local_start);
-            slices.push(downgrade_view_types(&slice)?);
+            slices.push(downgrade_view_types(&compact_nested_views(&slice)?)?);
         }
 
         if slices.is_empty() {
@@ -3980,6 +4012,73 @@ mod tests {
             ..file_limits()
         };
         assert!(parquet_to_ipc_from(&file, roomy).unwrap().len() > rows * value.len());
+    }
+
+    #[test]
+    fn parquet_to_ipc_counts_the_schema_and_end_marker_against_the_cap() {
+        let batch = file_fixture();
+        let file = one_row_group_parquet(&batch);
+        let full = parquet_to_ipc_from(&file, file_limits()).unwrap().len() as u32;
+        let just_under = FileLimits {
+            decoded_bytes: full - 1,
+            ..file_limits()
+        };
+        bounded_parquet_batches(&file, just_under).expect("the decoded rows fit");
+        assert!(parquet_to_ipc_from(&file, just_under)
+            .unwrap_err()
+            .contains("decoded bytes limit"));
+        let exact = FileLimits {
+            decoded_bytes: full,
+            ..file_limits()
+        };
+        assert_eq!(
+            parquet_to_ipc_from(&file, exact).unwrap().len() as u32,
+            full
+        );
+
+        let empty = one_row_group_parquet(&batch.slice(0, 0));
+        let tiny = FileLimits {
+            decoded_bytes: 64,
+            ..file_limits()
+        };
+        bounded_parquet_batches(&empty, tiny).expect("no rows fit any budget");
+        assert!(parquet_to_ipc_from(&empty, tiny)
+            .unwrap_err()
+            .contains("decoded bytes limit"));
+    }
+
+    #[test]
+    fn viewport_downgrades_only_the_nested_values_its_rows_reference() {
+        use arrow::array::{Array, AsArray, ListArray, StringViewArray};
+        let rows = 1000usize;
+        let item = Arc::new(Field::new("item", DataType::Utf8View, true));
+        let tags = ListArray::new(
+            item,
+            arrow::buffer::OffsetBuffer::from_lengths(std::iter::repeat_n(2, rows)),
+            Arc::new(StringViewArray::from_iter_values(
+                (0..rows * 2).map(|i| format!("a-nested-tag-long-enough-for-a-buffer-{i}")),
+            )),
+            None,
+        );
+        let batch = RecordBatch::try_from_iter(vec![("tags", Arc::new(tags) as ArrayRef)]).unwrap();
+        let slice = batch.slice(500, 1);
+        // The slice alone still carries every child value.
+        assert_eq!(slice.column(0).as_list::<i32>().values().len(), rows * 2);
+
+        let handle = store_batches(vec![batch.clone()], batch.schema()).unwrap();
+        let ipc = get_viewport(handle, 500, 501).unwrap();
+        free(handle);
+        let decoded: Vec<RecordBatch> = StreamReader::try_new(Cursor::new(ipc), None)
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let list = decoded[0].column(0).as_list::<i32>();
+        assert_eq!(list.values().data_type(), &DataType::Utf8);
+        assert_eq!(list.values().len(), 2);
+        assert_eq!(
+            list.value(0).as_string::<i32>().value(0),
+            "a-nested-tag-long-enough-for-a-buffer-1000"
+        );
     }
 
     #[test]
