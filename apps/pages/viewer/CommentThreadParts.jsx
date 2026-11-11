@@ -9,6 +9,8 @@ import {
   fullTime,
   isLongBody,
   messageRuns,
+  modelLabel,
+  modelNote,
   relativeTime,
 } from "./comment-thread-display.mjs";
 
@@ -57,19 +59,25 @@ export function Avatar({ author, size = 24 }) {
   );
 }
 
-/** Name, "for Kyle" when an agent wrote it, and when. The full attribution
- * and exact time are the accessible name and tooltip. */
+/** Name, "via Kilo for Kyle" when an agent wrote it, and when. The full
+ * attribution, the model the client reported and the exact time are the
+ * tooltip. Agent and model are client assertions, drawn as text. */
 export function MessageAuthor({ message, now }) {
   const who = attribution(message.author);
   const time = message.createdAt ? fullTime(message.createdAt) : "";
+  const title = [time ? `${who.label} · ${time}` : who.label, modelNote(who)]
+    .filter(Boolean)
+    .join("\n");
   return (
-    <div className="message-author" title={time ? `${who.label} · ${time}` : who.label}>
+    <div className="message-author" title={title}>
       <strong>{who.name}</strong>
+      {who.via && <span className="comment-delegate">via {who.via}</span>}
       {who.agent && (
         <span className="comment-delegate" aria-label={`on behalf of ${who.person}`}>
           for {who.onBehalfOf}
         </span>
       )}
+      {modelLabel(who) && <span className="muted comment-model">{modelLabel(who)}</span>}
       {message.createdAt && (
         <time className="muted comment-time" dateTime={message.createdAt}>
           {relativeTime(message.createdAt, now)}

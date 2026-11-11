@@ -6,10 +6,13 @@ import { projectComments } from "../model/comments.mjs";
 import { comment, newCommentsDoc } from "../model/comments-test-support.mjs";
 import {
   attribution,
+  bylineText,
   byDocumentOrder,
   initials,
   isLongBody,
   messageRuns,
+  modelLabel,
+  modelNote,
   plainText,
   relativeTime,
   threadLocation,
@@ -244,4 +247,52 @@ test("replyAuthors lists distinct repliers, newest first", async () => {
     replyAuthors(msgs).map((x) => x.displayName),
     ["Kyle", "Ada"],
   );
+});
+
+test("an agent's own name leads the byline, with the harness after via", () => {
+  const base = { principal: "a:2", displayName: "Kyle Kelley", driver: "Kilo" };
+  assert.equal(bylineText(base), "Kilo for Kyle");
+  assert.equal(
+    bylineText({ ...base, agent: { name: "release agent" } }),
+    "release agent via Kilo for Kyle",
+  );
+  const both = attribution({ ...base, agent: { name: "release agent", model: "gpt-5" } });
+  assert.equal(
+    bylineText({ ...base, agent: { name: "release agent", model: "gpt-5" } }),
+    "release agent via Kilo for Kyle",
+  );
+  assert.equal(both.label, "release agent via Kilo on behalf of Kyle Kelley");
+  assert.equal(modelNote(both), "Model reported by the client: gpt-5");
+  assert.equal(modelNote(attribution(base)), null);
+  // A model alone changes only the tooltip.
+  const modelOnly = { ...base, agent: { model: "gpt-5" } };
+  assert.equal(bylineText(modelOnly), "Kilo for Kyle");
+  assert.equal(modelNote(attribution(modelOnly)), "Model reported by the client: gpt-5");
+  // A person's byline ignores any agent field; labels stay plain strings.
+  const person = { principal: "a:1", displayName: "Ada Lovelace", driver: "Browser" };
+  assert.equal(bylineText({ ...person, agent: { name: "x" } }), "Ada Lovelace");
+  assert.equal(bylineText({ ...base, agent: { name: 7, model: {} } }), "Kilo for Kyle");
+  const markup = attribution({ ...base, agent: { name: "<img src=x onerror=1>" } });
+  assert.equal(markup.name, "<img src=x onerror=1>");
+  // Different agent names under one account and harness are different authors.
+  assert.notEqual(
+    attribution({ ...base, agent: { name: "A" } }).key,
+    attribution({ ...base, agent: { name: "B" } }).key,
+  );
+});
+
+test("the model shows as a byline label only when the client asserted one", () => {
+  const base = { principal: "a:2", displayName: "Kyle Kelley", driver: "Kilo" };
+  assert.equal(
+    modelLabel(attribution({ ...base, agent: { name: "Rev", model: "gpt-5" } })),
+    "gpt-5",
+  );
+  assert.equal(modelLabel(attribution({ ...base, agent: { name: "Rev" } })), null);
+  assert.equal(modelLabel(attribution(base)), null);
+  // A person's message never shows an asserted model.
+  const person = { principal: "a:1", displayName: "Ada", driver: "Browser", agent: { model: "m" } };
+  assert.equal(modelLabel(attribution(person)), null);
+  // The long value stays whole in data; CSS truncates it.
+  const long = "m".repeat(120);
+  assert.equal(modelLabel(attribution({ ...base, agent: { model: long } })), long);
 });

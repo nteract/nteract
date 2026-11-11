@@ -297,3 +297,36 @@ test("a replica that hasn't synced yet projects no comments; legacy threads fail
   const legacy = A.from({ blocks: {}, comments: { t1: { messages: {} } } });
   assert.throws(() => threadsOf(legacy, undefined), { code: "stored_form_unsupported" });
 });
+
+test("author.agent reads back as name and model; an author without it has no agent field", () => {
+  let { doc, ids } = fixture();
+  doc = A.change(doc, (draft) => {
+    ids.named = applyCommentTo(
+      draft,
+      { action: "reply", thread_id: ids.first.thread_id, body: "From an agent" },
+      author,
+      undefined,
+      { page: draft, role: "editor", agent: { name: "release agent", model: "gpt-5" } },
+    );
+    ids.modelOnly = applyCommentTo(
+      draft,
+      { action: "reply", thread_id: ids.first.thread_id, body: "Model only" },
+      author,
+      undefined,
+      { page: draft, role: "editor", agent: { model: "m-1" } },
+    );
+  });
+  doc = A.change(doc, (draft) => {
+    // A key outside name and model never reaches a read.
+    draft.threads[ids.first.thread_id].messages[ids.named.message_id].author.agent.id = "s-1";
+  });
+  const [thread] = projectReadComments(doc, { thread_ids: [ids.first.thread_id] });
+  const byId = (id) => thread.messages.find((value) => value.id === id).author;
+  assert.deepEqual(byId(ids.named.message_id), {
+    ...author,
+    agent: { name: "release agent", model: "gpt-5" },
+  });
+  assert.deepEqual(byId(ids.modelOnly.message_id), { ...author, agent: { model: "m-1" } });
+  assert.deepEqual(byId(ids.first.message_id), author);
+  assert.equal(Object.hasOwn(byId(ids.first.message_id), "agent"), false);
+});

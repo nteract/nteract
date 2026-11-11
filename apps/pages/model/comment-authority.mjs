@@ -1,6 +1,7 @@
 import * as A from "@automerge/automerge/slim";
 import { PLAIN_FORMAT, isEditorForm, validateCommentSpans } from "./comment-content.mjs";
 import {
+  COMMENT_AGENT_FEATURE,
   MESSAGE_EDITABLE,
   MESSAGE_FIELDS,
   THREAD_FIELDS,
@@ -8,6 +9,7 @@ import {
 } from "./comments-doc.mjs";
 import { COMMENTING_ROLES, commentDecision } from "./comment-rules.mjs";
 import { BUILD_FEATURES, documentFeatures } from "./schema-features.mjs";
+import { normalizeAgentAssertions } from "../shared/client-provenance.mjs";
 
 /** Per-author admission for a comments document (shape in comments-doc.mjs).
  *
@@ -146,12 +148,50 @@ function validateAnchor(anchor) {
   return false;
 }
 
-function validateAuthor(author, principal, where) {
+/** `author.agent` is `{ name?, model? }` in the bounds of the request
+ * assertions it came from, with no other key and no untrimmed text. */
+function validateAgent(agent, where) {
+  const invalid = () =>
+    reject(REJECTION.INVALID_VALUE, "author.agent must be { name?, model? } within bounds", where);
+  if (!isMap(agent)) invalid();
+  const keys = Object.keys(agent);
+  if (!keys.length || keys.some((k) => !["name", "model"].includes(k))) invalid();
+  const plain = {};
+  for (const key of keys) {
+    const text = scalar(agent[key]);
+    if (text === undefined) invalid();
+    plain[key] = text;
+  }
+  let normalized;
+  try {
+    normalized = normalizeAgentAssertions(plain);
+  } catch {
+    invalid();
+  }
+  if (keys.some((key) => normalized?.[key] !== plain[key])) invalid();
+}
+
+function validateAuthor(author, principal, where, stamped) {
   if (
     !isMap(author) ||
-    Object.keys(author).some((k) => !["principal", "displayName", "driver"].includes(k))
+    Object.keys(author).some((k) => !["principal", "displayName", "driver", "agent"].includes(k))
   )
-    reject(REJECTION.INVALID_VALUE, "author must be { principal, displayName, driver }", where);
+    reject(
+      REJECTION.INVALID_VALUE,
+      "author must be { principal, displayName, driver, agent? }",
+      where,
+    );
+  if (own(author, "agent")) {
+    validateAgent(author.agent, where);
+    // A build without the feature gates on the stamp, so an agent never lands
+    // in a document that lacks it.
+    if (!stamped)
+      reject(
+        REJECTION.INVALID_VALUE,
+        `author.agent needs the ${COMMENT_AGENT_FEATURE} stamp`,
+        where,
+      );
+  }
   if (scalar(author.principal) !== principal)
     reject(REJECTION.AUTHOR_MISMATCH, "A new entry's author must be the acting principal", where);
   for (const key of ["displayName", "driver"])
@@ -211,12 +251,12 @@ function validateMessageEdits(message, where, options) {
     reject(REJECTION.INVALID_VALUE, "deletedAt must be null or a timestamp", where);
 }
 
-function validateNewMessage(message, principal, where) {
+function validateNewMessage(message, principal, where, stamped) {
   if (!isMap(message)) reject(REJECTION.INVALID_VALUE, "Message must be a map", where);
   for (const key of Object.keys(message))
     if (!MESSAGE_FIELDS.includes(key))
       reject(REJECTION.UNKNOWN_PATH, "Unknown message field", { ...where, field: key });
-  validateAuthor(message.author, principal, where);
+  validateAuthor(message.author, principal, where, stamped);
   if (!timestamp(message.createdAt))
     reject(REJECTION.INVALID_VALUE, "createdAt must be a timestamp", where);
   validateMessageEdits(message, where);
@@ -250,7 +290,7 @@ function singleCreate(container, key, where) {
     reject(REJECTION.CONFLICTING_CREATE, "A created entry must have exactly one value", where);
 }
 
-function validateNewThread(threads, threadId, principal) {
+function validateNewThread(threads, threadId, principal, stamped) {
   const where = { thread: threadId };
   singleCreate(threads, threadId, where);
   const thread = threads[threadId];
@@ -258,7 +298,7 @@ function validateNewThread(threads, threadId, principal) {
   for (const key of Object.keys(thread))
     if (!THREAD_FIELDS.includes(key))
       reject(REJECTION.UNKNOWN_PATH, "Unknown thread field", { ...where, field: key });
-  validateAuthor(thread.author, principal, where);
+  validateAuthor(thread.author, principal, where, stamped);
   if (!timestamp(thread.createdAt))
     reject(REJECTION.INVALID_VALUE, "createdAt must be a timestamp", where);
   if (!validateStatus(thread.status))
@@ -273,7 +313,7 @@ function validateNewThread(threads, threadId, principal) {
   for (const id of messageIds) {
     if (!safeId(id)) reject(REJECTION.INVALID_ID, "Invalid message ID", { ...where, message: id });
     singleCreate(thread.messages, id, { ...where, message: id });
-    validateNewMessage(thread.messages[id], principal, { ...where, message: id });
+    validateNewMessage(thread.messages[id], principal, { ...where, message: id }, stamped);
   }
 }
 
@@ -377,16 +417,17 @@ function checkMessageOperation(op, full, ctx, threadId, thread, isCreate, where)
 function finalize(after, plan, ctx) {
   const { principal } = ctx;
   const threads = after.threads;
+  const stamped = documentFeatures(after).includes(COMMENT_AGENT_FEATURE);
   if (!isMap(threads)) reject(REJECTION.INVALID_VALUE, "threads must be a map");
   for (const threadId of plan.newThreads)
-    if (own(threads, threadId)) validateNewThread(threads, threadId, principal);
+    if (own(threads, threadId)) validateNewThread(threads, threadId, principal, stamped);
   for (const [threadId, messageId] of plan.newMessages) {
     if (plan.newThreads.has(threadId) || !own(threads, threadId)) continue;
     const thread = threads[threadId];
     if (!own(thread.messages, messageId)) continue;
     const where = { thread: threadId, message: messageId };
     singleCreate(thread.messages, messageId, where);
-    validateNewMessage(thread.messages[messageId], principal, where);
+    validateNewMessage(thread.messages[messageId], principal, where, stamped);
   }
   for (const [threadId, messageId] of plan.editedMessages) {
     const thread = own(threads, threadId) ? threads[threadId] : undefined;

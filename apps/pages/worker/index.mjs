@@ -47,7 +47,12 @@ import { readTargets, writeTargets } from "../model/agent-presence.mjs";
 import { assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
 import { RECORD_STORAGE_MODES } from "../shared/record-storage.mjs";
 import { handleMcp } from "../mcp.mjs";
-import { forwardClientProvenance, withMcpAgent } from "./client-provenance.mjs";
+import {
+  agentFromProvenance,
+  forwardClientProvenance,
+  withMcpAgent,
+} from "./client-provenance.mjs";
+import { normalizeAgentAssertions } from "../shared/client-provenance.mjs";
 import {
   REPLAYED_RECEIPT_HEADER,
   declaredLabels,
@@ -718,6 +723,16 @@ function validateMoveInput(args) {
       "invalid_retry_token",
     );
   return { pageId, parentId, spaceId, position };
+}
+
+/** The `_meta.agent` assertions of an /api/tools body, in the bounds an MCP
+ * request's are. Other `_meta` keys are ignored. */
+function bodyAgent(body) {
+  const meta = body?._meta;
+  if (meta === undefined) return undefined;
+  if (!meta || typeof meta !== "object" || Array.isArray(meta))
+    throw new HttpError(400, "Invalid _meta", "invalid_arguments");
+  return normalizeAgentAssertions(meta.agent);
 }
 
 function forwarded(request, path, body) {
@@ -1421,8 +1436,10 @@ const gateway = {
         try {
           const body = await readJson(request);
           usage = toolUsage(request, "http-tools", body?.operation, body?.arguments, "tool", env);
+          const invocationRequest = withMcpAgent(request, bodyAgent(body));
           response = await invokeProjectApi(
-            (internal, internalArgs) => invoke(request, env, internal, internalArgs, usage.seen),
+            (internal, internalArgs) =>
+              invoke(invocationRequest, env, internal, internalArgs, usage.seen),
             body.operation,
             body.arguments,
             { env },
@@ -6269,6 +6286,11 @@ export class Page {
     const role = this.policy.account(identity).role;
     const operation = body.operation;
     const args = body.arguments ?? {};
+    // A new message keeps what the client said about itself; an edit, resolve
+    // or delete stores none, so a changed label never conflicts with one.
+    const creates =
+      operation === "reply_page_comment" || ["add", "reply"].includes(args.action ?? "add");
+    const agent = creates ? agentFromProvenance(identity.clientProvenance) : undefined;
     // The Page snapshot a new comment anchors in. The guard captures it and
     // the edit uses it, with no await between them.
     let page;
@@ -6281,6 +6303,7 @@ export class Page {
       operation,
       args,
       identity,
+      agent,
       // Receipts carry no image prerequisites; this only re-checks access
       // after the journal inspection awaited storage.
       prepare: async () => {
@@ -6304,7 +6327,7 @@ export class Page {
               : effectiveArgs,
             publicIdentity(identity),
             undefined,
-            { page, role },
+            { page, role, agent },
           );
         } catch (error) {
           throw Object.assign(

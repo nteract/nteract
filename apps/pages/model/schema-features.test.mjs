@@ -79,6 +79,7 @@ const stamped = (features) =>
 
 test("today's registry: strikethrough, horizontal rules, dataframes and the preserved-block conversion", () => {
   assert.deepEqual(BUILD_FEATURES, [
+    "comment-agent",
     "comments-doc",
     "dataframe",
     "horizontal-rule",

@@ -53,9 +53,18 @@ export async function operationKey(args) {
   if (args.retry_token === undefined) return key;
   return `host/operation/${await retryKeyPrefix(args.retry_token)}${args.idempotency_key}`;
 }
-export async function fingerprint(operation, args, identity) {
+/** `agent` is the client's resolved `{ name?, model? }` assertion, for a write
+ * that stores it. Without one the digest is what it was before assertions
+ * existed. */
+export async function fingerprint(operation, args, identity, agent) {
   const bytes = new TextEncoder().encode(
-    JSON.stringify({ operation, args, principal: identity.principal, driver: identity.driver }),
+    JSON.stringify({
+      operation,
+      args,
+      principal: identity.principal,
+      driver: identity.driver,
+      ...(agent && { agent }),
+    }),
   );
   return [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
     .map((byte) => byte.toString(16).padStart(2, "0"))
@@ -124,11 +133,12 @@ export async function documentMutation({
   scope = `page:${pageId}`,
   guard,
   receiptFields,
+  agent,
 }) {
   const key = internal
     ? `${INTERNAL_PREFIX}${mutationKey(args).slice("host/operation/".length)}`
     : await operationKey(args);
-  const digest = await fingerprint(operation, args, identity);
+  const digest = await fingerprint(operation, args, identity, agent);
   const inspected = await inspectOperation(storage, {
     key,
     digest,
