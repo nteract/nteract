@@ -177,6 +177,37 @@ export async function loadTableFile(
   }
 }
 
+/**
+ * Decode a complete Parquet file into one uncompressed Arrow IPC stream, for
+ * hosts that hand the rows to another Arrow consumer, such as a query engine
+ * or a worker. Nothing stays resident in Sift: there is no store to dispose.
+ *
+ * The limits are `loadTableFile`'s, with the same defaults, and a file over
+ * any of them is an error. `maxDecodedBytes` also caps the stream: view types
+ * (Utf8View, BinaryView), at any depth, are written as Utf8 and Binary, which
+ * copies out values the decoded views share. An empty file gives a
+ * schema-only stream.
+ */
+export async function parquetToArrowStream(
+  bytes: Uint8Array,
+  options: TableFileLimits & Pick<TableFileOptions, "maxBytes"> = {},
+): Promise<Uint8Array> {
+  const maxBytes = limit(options.maxBytes, 16 * 1024 * 1024, "maxBytes");
+  const { maxRows, maxColumns, maxDecodedBytes } = resolveTableFileLimits(options);
+  if (bytes.byteLength > maxBytes) {
+    throw new Error(`Table file exceeds input bytes limit (${bytes.byteLength} > ${maxBytes})`);
+  }
+  if (bytes.byteLength === 0) throw new Error("Table file is empty");
+  // Own a snapshot before the first await, as loadTableFile does.
+  const snapshot = new Uint8Array(bytes);
+  const mod = await ensureModule();
+  try {
+    return mod.parquet_to_ipc_bounded(snapshot, maxRows, maxColumns, maxDecodedBytes);
+  } catch (error) {
+    throw error instanceof Error ? error : new Error(String(error));
+  }
+}
+
 async function loadParquetFromByteSource(
   source: ByteSource,
   limits: ParquetFileLimits,

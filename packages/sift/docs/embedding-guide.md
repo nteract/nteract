@@ -112,6 +112,22 @@ prefix instead; see [Bounded previews](#bounded-previews).
 Lists, structs, and maps display as text. Known image structures have dedicated
 rendering.
 
+To hand Parquet rows to another Arrow consumer, such as an in-browser query
+engine behind a [query session](#query-sessions), decode them without keeping a
+table:
+
+```ts
+import { parquetToArrowStream } from '@nteract/sift'
+
+const ipc = await parquetToArrowStream(bytes) // one uncompressed IPC stream
+```
+
+It takes the same limits and defaults as `loadTableFile` and fails on any file
+over them. Nothing stays resident in Sift, so there is nothing to dispose.
+Utf8View and BinaryView types, including nested ones, are written as Utf8 and
+Binary. That copies out values the decoded views share, so `maxDecodedBytes`
+also caps the stream. An empty file gives a schema-only stream.
+
 ## Parquet by byte range
 
 For Parquet files you would rather not read into memory, give Sift a

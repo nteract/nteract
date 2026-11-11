@@ -1013,6 +1013,71 @@ pub fn load_parquet_bounded(
     store_batches(batches, schema).map_err(|e| JsValue::from_str(&e))
 }
 
+/// Decode a complete Parquet file into one uncompressed Arrow IPC stream,
+/// under the same admission limits as `load_parquet_bounded`. Registers no
+/// store, so there is nothing to free. View types, at any depth, are written
+/// as their plain equivalents, as `get_viewport` writes them, and the stream
+/// is capped at `max_decoded_bytes`. An empty file is a schema-only stream.
+#[wasm_bindgen]
+pub fn parquet_to_ipc_bounded(
+    parquet_bytes: &[u8],
+    max_rows: u32,
+    max_columns: u32,
+    max_decoded_bytes: u32,
+) -> Result<Vec<u8>, JsValue> {
+    parquet_to_ipc_from(
+        parquet_bytes,
+        FileLimits {
+            rows: max_rows,
+            columns: max_columns,
+            decoded_bytes: max_decoded_bytes,
+        },
+    )
+    .map_err(|e| JsValue::from_str(&e))
+}
+
+fn parquet_to_ipc_from(parquet_bytes: &[u8], limits: FileLimits) -> Result<Vec<u8>, String> {
+    let (schema, batches) = bounded_parquet_batches(parquet_bytes, limits)?;
+    let writer_schema = downgrade_view_types(&RecordBatch::new_empty(schema))?.schema();
+    // Admission counted decoded memory, where views share their data buffers.
+    // Written as Utf8 or Binary, every value is copied out, so the stream gets
+    // its own cap: no larger than the decoded-bytes limit. A batch is checked
+    // before its views are expanded.
+    let budget = limits.decoded_bytes as u64;
+    let over = || {
+        format!(
+            "Arrow stream exceeds the decoded bytes limit ({budget} bytes); raise maxDecodedBytes"
+        )
+    };
+    let mut buf = Vec::new();
+    let mut writer = StreamWriter::try_new(&mut buf, &writer_schema)
+        .map_err(|e| format!("IPC writer error: {}", e))?;
+    for batch in &batches {
+        let expanded = batch.columns().iter().fold(0u64, |total, c| {
+            total.saturating_add(view_value_bytes(&c.to_data()))
+        });
+        if (writer.get_ref().len() as u64).saturating_add(expanded) > budget {
+            return Err(over());
+        }
+        writer
+            .write(&downgrade_view_types(batch)?)
+            .map_err(|e| format!("IPC write error: {}", e))?;
+        if writer.get_ref().len() as u64 > budget {
+            return Err(over());
+        }
+    }
+    writer
+        .finish()
+        .map_err(|e| format!("IPC finish error: {}", e))?;
+    drop(writer);
+    // The schema message and end-of-stream marker count too, including for a
+    // file with no rows.
+    if buf.len() as u64 > budget {
+        return Err(over());
+    }
+    Ok(buf)
+}
+
 /// Load a complete, uncompressed Arrow IPC stream with admission limits.
 #[wasm_bindgen]
 pub fn load_ipc_bounded(
@@ -2137,19 +2202,94 @@ pub fn store_sort_indices(handle: u32, col: usize, ascending: bool) -> Result<Ve
     .map_err(|e: String| JsValue::from_str(&e))
 }
 
-/// Downgrade Arrow "view" types (Utf8View, BinaryView) to their non-view
-/// equivalents (Utf8, Binary) before emitting IPC to the JS consumer. The
-/// apache-arrow npm package used by the sift frontend (21.x at time of
-/// writing) throws `Unrecognized type: "undefined" (24)` when it hits a
-/// Utf8View field during schema decode, which silently empties the table
-/// body. Normalizing server-side keeps the JS side on types it understands.
+/// `data_type` with every Utf8View and BinaryView, at any depth, replaced by
+/// Utf8 and Binary. Nested field names, nullability and metadata are kept.
+fn without_view_types(data_type: &DataType) -> DataType {
+    use arrow::datatypes::Field;
+    use std::sync::Arc;
+    let field = |f: &Arc<Field>| {
+        Arc::new(
+            f.as_ref()
+                .clone()
+                .with_data_type(without_view_types(f.data_type())),
+        )
+    };
+    match data_type {
+        DataType::Utf8View => DataType::Utf8,
+        DataType::BinaryView => DataType::Binary,
+        DataType::List(f) => DataType::List(field(f)),
+        DataType::LargeList(f) => DataType::LargeList(field(f)),
+        DataType::FixedSizeList(f, n) => DataType::FixedSizeList(field(f), *n),
+        DataType::Map(f, sorted) => DataType::Map(field(f), *sorted),
+        DataType::Struct(fields) => DataType::Struct(fields.iter().map(field).collect()),
+        DataType::Dictionary(k, v) => {
+            DataType::Dictionary(k.clone(), Box::new(without_view_types(v)))
+        }
+        other => other.clone(),
+    }
+}
+
+/// Bytes the view values in `data` (at any depth) take once written as
+/// plain Utf8 or Binary. Views share their data buffers, so a decoded batch
+/// can be far smaller than its plain form.
+fn view_value_bytes(data: &arrow::array::ArrayData) -> u64 {
+    // u64 and saturating: on wasm32 a usize total of shared views wraps.
+    let own = if matches!(data.data_type(), DataType::Utf8View | DataType::BinaryView) {
+        data.buffer::<u128>(0)[..data.len()]
+            .iter()
+            .fold(0u64, |total, view| {
+                total.saturating_add(*view as u32 as u64)
+            })
+    } else {
+        0
+    };
+    data.child_data().iter().fold(own, |total, child| {
+        total.saturating_add(view_value_bytes(child))
+    })
+}
+
+/// A sliced list, map or struct keeps its whole child arrays, and casting it
+/// casts every child value. Taking the slice's rows first leaves only the
+/// values those rows reference, so a nested downgrade copies just those.
+/// Top-level view columns cast only their own rows and are left as they are.
 ///
-/// Currently handles the top-level column case (the actual repro path —
-/// polars' default string encoding is Utf8View). Nested occurrences
-/// (List<Utf8View>, Struct{s: Utf8View}) are left as-is; if they show up
-/// in practice we can walk the types recursively.
+/// `take` keeps a dictionary's whole values array, so a dictionary of views
+/// still has every dictionary value cast, however few rows the viewport has.
+/// That costs at most the dictionary's own size, which admission counted.
+/// Re-encoding only the rows' values would have to handle dictionaries of
+/// lists and structs, null values behind valid keys, and ordered dictionaries.
+fn compact_nested_views(batch: &RecordBatch) -> Result<RecordBatch, String> {
+    let nested = |t: &DataType| {
+        !matches!(t, DataType::Utf8View | DataType::BinaryView) && &without_view_types(t) != t
+    };
+    let schema = batch.schema();
+    if !schema.fields().iter().any(|f| nested(f.data_type())) {
+        return Ok(batch.clone());
+    }
+    let rows = arrow::array::UInt32Array::from_iter_values(0..batch.num_rows() as u32);
+    let columns = schema
+        .fields()
+        .iter()
+        .zip(batch.columns())
+        .map(|(field, column)| {
+            if nested(field.data_type()) {
+                arrow_select::take::take(column.as_ref(), &rows, None)
+                    .map_err(|e| format!("take error on {}: {}", field.name(), e))
+            } else {
+                Ok(column.clone())
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    RecordBatch::try_new(schema, columns).map_err(|e| format!("rebatch: {}", e))
+}
+
+/// Downgrade Arrow view types (Utf8View, BinaryView), at any depth, to Utf8
+/// and Binary before emitting IPC to a JS consumer. The apache-arrow npm
+/// package used by the sift frontend (21.x) throws `Unrecognized type:
+/// "undefined" (24)` when it decodes a view field, which empties the table
+/// body. Polars writes strings as Utf8View by default.
 ///
-/// Fast-path: if the batch has no view columns, returns `batch.clone()`.
+/// Fast path: a batch with no view types is returned as `batch.clone()`.
 ///
 /// See nteract/nteract#1853.
 fn downgrade_view_types(batch: &RecordBatch) -> Result<RecordBatch, String> {
@@ -2157,37 +2297,42 @@ fn downgrade_view_types(batch: &RecordBatch) -> Result<RecordBatch, String> {
     use std::sync::Arc;
 
     let schema = batch.schema();
-    let needs_cast = schema
+    let targets: Vec<DataType> = schema
         .fields()
         .iter()
-        .any(|f| matches!(f.data_type(), DataType::Utf8View | DataType::BinaryView));
-    if !needs_cast {
+        .map(|f| without_view_types(f.data_type()))
+        .collect();
+    if schema
+        .fields()
+        .iter()
+        .zip(&targets)
+        .all(|(f, target)| f.data_type() == target)
+    {
         return Ok(batch.clone());
     }
 
     let mut new_columns: Vec<arrow::array::ArrayRef> = Vec::with_capacity(batch.num_columns());
     let mut new_fields: Vec<Arc<Field>> = Vec::with_capacity(schema.fields().len());
 
-    for (i, field) in schema.fields().iter().enumerate() {
-        let col = batch.column(i);
-        let (new_col, new_field) = match field.data_type() {
-            DataType::Utf8View => (
-                arrow_cast::cast(col.as_ref(), &DataType::Utf8)
-                    .map_err(|e| format!("cast Utf8View→Utf8 on {}: {}", field.name(), e))?,
-                // Preserve field-level metadata (e.g. Arrow extension
-                // keys like `ARROW:extension:name`) by cloning the
-                // original and only swapping the data type.
-                Arc::new(field.as_ref().clone().with_data_type(DataType::Utf8)),
-            ),
-            DataType::BinaryView => (
-                arrow_cast::cast(col.as_ref(), &DataType::Binary)
-                    .map_err(|e| format!("cast BinaryView→Binary on {}: {}", field.name(), e))?,
-                Arc::new(field.as_ref().clone().with_data_type(DataType::Binary)),
-            ),
-            _ => (col.clone(), field.clone()),
-        };
-        new_columns.push(new_col);
-        new_fields.push(new_field);
+    for ((field, col), target) in schema.fields().iter().zip(batch.columns()).zip(targets) {
+        if field.data_type() == &target {
+            new_columns.push(col.clone());
+            new_fields.push(field.clone());
+            continue;
+        }
+        new_columns.push(arrow_cast::cast(col.as_ref(), &target).map_err(|e| {
+            format!(
+                "cast {} to {} on {}: {}",
+                field.data_type(),
+                target,
+                field.name(),
+                e
+            )
+        })?);
+        // Preserve field-level metadata (e.g. Arrow extension keys like
+        // `ARROW:extension:name`) by cloning the original and only swapping
+        // the data type.
+        new_fields.push(Arc::new(field.as_ref().clone().with_data_type(target)));
     }
 
     // Preserve schema-level metadata too.
@@ -2231,7 +2376,7 @@ pub fn get_viewport(handle: u32, start_row: u32, end_row: u32) -> Result<Vec<u8>
             };
 
             let slice = batch.slice(local_start, local_end - local_start);
-            slices.push(downgrade_view_types(&slice)?);
+            slices.push(downgrade_view_types(&compact_nested_views(&slice)?)?);
         }
 
         if slices.is_empty() {
@@ -3740,6 +3885,206 @@ mod tests {
         let handle = load_parquet_row_group(&valid, 1, 0).unwrap();
         assert_eq!(num_rows(handle).unwrap(), 1);
         free(handle);
+    }
+
+    #[test]
+    fn parquet_to_ipc_writes_every_row_as_one_stream_under_the_limits() {
+        let batch = file_fixture();
+        let valid = parquet_fixture(&batch);
+        let ipc = parquet_to_ipc_from(&valid, file_limits()).unwrap();
+        let reader = StreamReader::try_new(Cursor::new(ipc), None).unwrap();
+        assert_eq!(reader.schema().fields().len(), batch.num_columns());
+        let decoded: Vec<RecordBatch> = reader.map(Result::unwrap).collect();
+        // The fixture's two row groups come back as one stream of three rows.
+        let all = arrow_select::concat::concat_batches(&decoded[0].schema(), &decoded).unwrap();
+        assert_eq!(all, batch);
+
+        let tight = FileLimits {
+            rows: 2,
+            ..file_limits()
+        };
+        assert!(parquet_to_ipc_from(&valid, tight).is_err());
+        assert_eq!(
+            parquet_to_ipc_from(&crate::test_footers::int96_file(13), file_limits()).unwrap_err(),
+            "Parquet footer has malformed INT96 statistics"
+        );
+
+        let empty = parquet_fixture(&batch.slice(0, 0));
+        let ipc = parquet_to_ipc_from(&empty, file_limits()).unwrap();
+        let reader = StreamReader::try_new(Cursor::new(ipc), None).unwrap();
+        assert_eq!(reader.schema(), batch.schema());
+        assert_eq!(reader.count(), 0);
+    }
+
+    fn one_row_group_parquet(batch: &RecordBatch) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let mut writer =
+            parquet::arrow::ArrowWriter::try_new(&mut bytes, batch.schema(), None).unwrap();
+        writer.write(batch).unwrap();
+        writer.close().unwrap();
+        bytes
+    }
+
+    fn has_view_type(data_type: &DataType) -> bool {
+        match data_type {
+            DataType::Utf8View | DataType::BinaryView => true,
+            DataType::List(f) | DataType::LargeList(f) | DataType::FixedSizeList(f, _) => {
+                has_view_type(f.data_type())
+            }
+            DataType::Map(f, _) => has_view_type(f.data_type()),
+            DataType::Struct(fields) => fields.iter().any(|f| has_view_type(f.data_type())),
+            DataType::Dictionary(_, v) => has_view_type(v),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn parquet_to_ipc_writes_nested_view_types_as_plain_types() {
+        use arrow::array::{ListArray, StringViewArray};
+        let rows = 4usize;
+        let item = Arc::new(Field::new("item", DataType::Utf8View, true));
+        let tags = ListArray::new(
+            item,
+            arrow::buffer::OffsetBuffer::from_lengths(std::iter::repeat_n(2, rows)),
+            Arc::new(StringViewArray::from_iter(
+                (0..rows * 2).map(|i| (i != 3).then(|| format!("a-longer-nested-tag-{i}"))),
+            )),
+            None,
+        );
+        let inner = StructArray::from(vec![(
+            Arc::new(Field::new("label", DataType::Utf8View, true)),
+            Arc::new(StringViewArray::from_iter_values(
+                (0..rows).map(|i| format!("struct-view-label-{i}")),
+            )) as ArrayRef,
+        )]);
+        let batch = RecordBatch::try_from_iter(vec![
+            (
+                "text",
+                Arc::new(StringViewArray::from_iter_values(
+                    (0..rows).map(|i| format!("top-level-view-{i}")),
+                )) as ArrayRef,
+            ),
+            ("tags", Arc::new(tags) as ArrayRef),
+            ("inner", Arc::new(inner) as ArrayRef),
+        ])
+        .unwrap();
+        let file = one_row_group_parquet(&batch);
+        let (decoded_schema, _) = bounded_parquet_batches(&file, file_limits()).unwrap();
+        assert!(
+            decoded_schema
+                .fields()
+                .iter()
+                .all(|f| has_view_type(f.data_type())),
+            "the fixture decodes with view types at every level"
+        );
+
+        let ipc = parquet_to_ipc_from(&file, file_limits()).unwrap();
+        let reader = StreamReader::try_new(Cursor::new(ipc), None).unwrap();
+        let schema = reader.schema();
+        assert!(schema
+            .fields()
+            .iter()
+            .all(|f| !has_view_type(f.data_type())));
+        let decoded: Vec<RecordBatch> = reader.map(Result::unwrap).collect();
+        let all = arrow_select::concat::concat_batches(&schema, &decoded).unwrap();
+        assert_eq!(all, downgrade_view_types(&batch).unwrap());
+    }
+
+    #[test]
+    fn parquet_to_ipc_caps_the_stream_when_shared_views_expand() {
+        use arrow::array::StringViewArray;
+        // One long value repeated: Parquet dictionary-encodes it, and the
+        // decoded views share one copy. Written plain, each row carries it.
+        let value = "x".repeat(4096);
+        let rows = 2000usize;
+        let batch = RecordBatch::try_from_iter(vec![(
+            "text",
+            Arc::new(StringViewArray::from_iter_values(std::iter::repeat_n(
+                value.as_str(),
+                rows,
+            ))) as ArrayRef,
+        )])
+        .unwrap();
+        let file = one_row_group_parquet(&batch);
+        let limits = FileLimits {
+            decoded_bytes: 2 * 1024 * 1024,
+            ..file_limits()
+        };
+        bounded_parquet_batches(&file, limits).expect("shared views fit the decoded limit");
+        let error = parquet_to_ipc_from(&file, limits).unwrap_err();
+        assert!(error.contains("decoded bytes limit"), "{error}");
+        let roomy = FileLimits {
+            decoded_bytes: 16 * 1024 * 1024,
+            ..file_limits()
+        };
+        assert!(parquet_to_ipc_from(&file, roomy).unwrap().len() > rows * value.len());
+    }
+
+    #[test]
+    fn parquet_to_ipc_counts_the_schema_and_end_marker_against_the_cap() {
+        let batch = file_fixture();
+        let file = one_row_group_parquet(&batch);
+        let full = parquet_to_ipc_from(&file, file_limits()).unwrap().len() as u32;
+        let just_under = FileLimits {
+            decoded_bytes: full - 1,
+            ..file_limits()
+        };
+        bounded_parquet_batches(&file, just_under).expect("the decoded rows fit");
+        assert!(parquet_to_ipc_from(&file, just_under)
+            .unwrap_err()
+            .contains("decoded bytes limit"));
+        let exact = FileLimits {
+            decoded_bytes: full,
+            ..file_limits()
+        };
+        assert_eq!(
+            parquet_to_ipc_from(&file, exact).unwrap().len() as u32,
+            full
+        );
+
+        let empty = one_row_group_parquet(&batch.slice(0, 0));
+        let tiny = FileLimits {
+            decoded_bytes: 64,
+            ..file_limits()
+        };
+        bounded_parquet_batches(&empty, tiny).expect("no rows fit any budget");
+        assert!(parquet_to_ipc_from(&empty, tiny)
+            .unwrap_err()
+            .contains("decoded bytes limit"));
+    }
+
+    #[test]
+    fn viewport_downgrades_only_the_nested_values_its_rows_reference() {
+        use arrow::array::{Array, AsArray, ListArray, StringViewArray};
+        let rows = 1000usize;
+        let item = Arc::new(Field::new("item", DataType::Utf8View, true));
+        let tags = ListArray::new(
+            item,
+            arrow::buffer::OffsetBuffer::from_lengths(std::iter::repeat_n(2, rows)),
+            Arc::new(StringViewArray::from_iter_values(
+                (0..rows * 2).map(|i| format!("a-nested-tag-long-enough-for-a-buffer-{i}")),
+            )),
+            None,
+        );
+        let batch = RecordBatch::try_from_iter(vec![("tags", Arc::new(tags) as ArrayRef)]).unwrap();
+        let slice = batch.slice(500, 1);
+        // The slice alone still carries every child value.
+        assert_eq!(slice.column(0).as_list::<i32>().values().len(), rows * 2);
+
+        let handle = store_batches(vec![batch.clone()], batch.schema()).unwrap();
+        let ipc = get_viewport(handle, 500, 501).unwrap();
+        free(handle);
+        let decoded: Vec<RecordBatch> = StreamReader::try_new(Cursor::new(ipc), None)
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let list = decoded[0].column(0).as_list::<i32>();
+        assert_eq!(list.values().data_type(), &DataType::Utf8);
+        assert_eq!(list.values().len(), 2);
+        assert_eq!(
+            list.value(0).as_string::<i32>().value(0),
+            "a-nested-tag-long-enough-for-a-buffer-1000"
+        );
     }
 
     #[test]
