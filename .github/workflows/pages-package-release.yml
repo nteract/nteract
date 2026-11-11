@@ -116,6 +116,9 @@ jobs:
       GH_REPO: ${{ github.repository }}
       BUILD_ID: ${{ needs.build.outputs.build_id }}
       SOURCE_COMMIT: ${{ needs.build.outputs.source_commit }}
+      # Resolved here from the dispatch, not taken from build outputs: the
+      # build job's outputs come from repository code.
+      EXPECTED_COMMIT: ${{ inputs.commit || github.sha }}
     steps:
       - name: Download the package files
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -127,6 +130,7 @@ jobs:
         run: |
           [[ "$BUILD_ID" =~ ^[0-9a-f]{12}$ ]]
           [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          test "$SOURCE_COMMIT" = "$EXPECTED_COMMIT"
           test "$(find . -type f | sort | tr '\n' ' ')" = "./pages-package-$BUILD_ID.manifest.json ./pages-package-$BUILD_ID.tar.gz ./pages-package-$BUILD_ID.tar.gz.sha256 "
           sha256sum -c "pages-package-$BUILD_ID.tar.gz.sha256"
           digest="$(sha256sum "pages-package-$BUILD_ID.tar.gz" | cut -d' ' -f1)"
@@ -137,9 +141,35 @@ jobs:
           tar -tvzf "pages-package-$BUILD_ID.tar.gz" | grep -v '^-' && exit 1
           tar -tzf "pages-package-$BUILD_ID.tar.gz" | cut -d/ -f1 | sort -u | tr '\n' ' ' \
             | grep -qx 'build-receipt.json public worker wrangler.json '
+          # Every member path: the exact package layout, no dot components, no
+          # duplicates, the manifest's entry list.
+          archive="pages-package-$BUILD_ID.tar.gz"
+          manifest="pages-package-$BUILD_ID.manifest.json"
+          members="$RUNNER_TEMP/members"
+          tar -tzf "$archive" > "$members"
+          layout='^(build-receipt\.json|wrangler\.json|worker/[A-Za-z0-9_-][A-Za-z0-9._-]*|public/([A-Za-z0-9_-][A-Za-z0-9._-]*/)*[A-Za-z0-9_-][A-Za-z0-9._-]*)$'
+          if grep -vE "$layout" "$members"; then
+            echo "::error::The archive has a member outside the package layout"
+            exit 1
+          fi
+          if grep -E '(^|/)\.\.?(/|$)' "$members"; then
+            echo "::error::The archive has a member with a . or .. component"
+            exit 1
+          fi
+          test -z "$(sort "$members" | uniq -d)"
+          grep -qx 'worker/index.js' "$members"
+          diff <(sort "$members") <(jq -r '.entries[].path' "$manifest" | sort)
           echo "digest=$digest"
-      - name: Refuse a tag that exists
+      - name: Refuse a tag or release that exists
         run: |
+          # A bare tag with no release would pass `gh release view`, and
+          # `gh release create` would attach to it. matching-refs is a prefix
+          # match, hence the exact comparison; an API error fails the step.
+          refs="$(gh api "repos/$GH_REPO/git/matching-refs/tags/pages-$BUILD_ID" --jq '.[].ref')"
+          if grep -qx "refs/tags/pages-$BUILD_ID" <<< "$refs"; then
+            echo "::error::Tag pages-$BUILD_ID already exists. A build id is published once."
+            exit 1
+          fi
           if gh release view "pages-$BUILD_ID" >/dev/null 2>&1; then
             echo "::error::Release pages-$BUILD_ID already exists. A build id is published once."
             exit 1
