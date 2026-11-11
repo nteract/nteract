@@ -227,7 +227,7 @@ test("a Project with a live Page or only a trashed Page is refused with project_
   const trash = await w.call("owner", "delete_page", {
     page_id: only.page_id,
     retry_token: list.body.retry_token,
-    idempotency_key: list.body.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
   });
   assert.equal(trash.status, 200, JSON.stringify(trash.body));
   for (const project of [live, trashed]) {
@@ -299,7 +299,7 @@ test("confirm refuses a stale, edited, foreign or forged preview and changes not
     project_id: projectId,
     base_heads: read.heads,
     retry_token: read.retry_token,
-    idempotency_key: read.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
     operations: [{ op: "insert_markdown", markdown: "A late note." }],
   });
   assert.equal(edited.status, 200, JSON.stringify(edited.body));
@@ -351,7 +351,7 @@ test("a content write that lands after the Space closes reopens it and refuses t
               page_id: project.document_id,
               base_heads: read.heads,
               retry_token: read.retry_token,
-              idempotency_key: read.retry_key_prefix + crypto.randomUUID(),
+              idempotency_key: crypto.randomUUID(),
               operations: [{ op: "insert_markdown", markdown: "Written mid-deletion." }],
             });
             assert.equal(edit.status, 200, JSON.stringify(edit.body));
@@ -577,7 +577,7 @@ async function interruptedAfterTrash(t, title) {
   const listed = (await w.call("owner", "list_pages", {})).body;
   const guarded = () => ({
     retry_token: listed.retry_token,
-    idempotency_key: listed.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
   });
   return { w, project, token, key, guarded };
 }
@@ -755,4 +755,34 @@ test("delete_project over MCP previews, confirms and maps project_id", async (t)
   });
   assert.equal(deleted.isError, false, JSON.stringify(deleted.body));
   assert.deepEqual(deleted.body, { project_id: project.project_id, deleted: true });
+});
+
+test("delete_project keeps its receipt under the retry token's scope", async (t) => {
+  const w = await world(t);
+  const project = await w.createProject("Tokened");
+  const previewed = await preview(w, project.project_id);
+  const listed = (await w.call("owner", "list_projects")).body;
+  assert.equal(typeof listed.retry_token, "string");
+  const nonce = crypto.randomUUID();
+  const args = {
+    project_id: project.project_id,
+    action: "confirm",
+    preview_token: previewed.body.preview_token,
+    retry_token: listed.retry_token,
+    idempotency_key: nonce,
+  };
+  const deleted = await w.call("owner", "delete_project", args);
+  assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
+  // The receipt sits under the token's scope, not under the bare nonce, and
+  // an exact retry of token, key and payload replays it.
+  const owned = w.catalogStorage();
+  assert.equal(await owned.get(`host/operation/${nonce}`), undefined);
+  assert.deepEqual(await w.call("owner", "delete_project", args), deleted);
+  // A caller never names a token scope itself.
+  const prefixed = await w.call("owner", "delete_project", {
+    ...args,
+    idempotency_key: `v1_${"a".repeat(64)}_${nonce}`,
+  });
+  assert.equal(prefixed.status, 400, JSON.stringify(prefixed.body));
+  assert.equal(prefixed.body.code, "invalid_idempotency_key");
 });

@@ -218,6 +218,22 @@ test("guide URLs use deployment configuration instead of request headers or cred
     assert.equal(guide.includes(value), false, value);
 });
 
+test("guide has callers send their own key with a retry_token, never a prefix", () => {
+  const guide = agentGuide(env);
+  const prose = guide.replace(/\s+/g, " ");
+  assert.doesNotMatch(guide, /retry_key_prefix/);
+  assert.match(prose, /Send a new UUID as idempotency_key for each new request/);
+  assert.match(prose, /never start with v1_/);
+  assert.match(prose, /the same key with another token is another request/);
+  assert.match(guide, /"idempotency_key": "<new UUID>"/);
+  assert.match(
+    prose,
+    /Retrying the same retry_token, key and payload within the token's seven-day window finishes the same Project/,
+  );
+  assert.match(prose, /A retry without the token is best-effort/);
+  assert.doesNotMatch(prose, /same key and payload/);
+});
+
 test("guide documents account-safe onboarding and truthful listing metadata", () => {
   const prose = agentGuide(env).replace(/\s+/g, " ");
   for (const fact of [

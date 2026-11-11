@@ -465,10 +465,9 @@ for (const fault of ["prefix-read", "prefix-write"]) {
     );
     assert.equal(retry.status, 201);
     // The reply is the recorded receipt plus freshly issued edit authority.
-    const { retry_token, retry_key_prefix, retry_until, ...recorded } = await retry.json();
+    const { retry_token, retry_until, ...recorded } = await retry.json();
     assert.deepEqual(recorded, intent.metadata.createdReceipt);
     assert.equal(typeof retry_token, "string");
-    assert.match(retry_key_prefix, /^v1_[a-f0-9]{64}_$/);
     assert.ok(Number.isFinite(Date.parse(retry_until)));
     assert.equal(page.metadata.documentId, intent.metadata.documentId);
     assert.deepEqual(A.getHeads(page.handle.doc()), intent.metadata.createdReceipt.heads);

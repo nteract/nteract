@@ -54,13 +54,13 @@ async function call(page, operation, args = {}) {
         catalog ? {} : { page_id: args.page_id },
       );
       assert.equal(typeof authority.retry_token, "string");
-      assert.match(authority.retry_key_prefix, /^v1_[a-f0-9]{64}_$/);
+      assert.equal(authority.retry_key_prefix, undefined);
       request = {
         fingerprint,
         args: structuredClone({
           ...args,
           retry_token: authority.retry_token,
-          idempotency_key: authority.retry_key_prefix + args.idempotency_key,
+          idempotency_key: args.idempotency_key,
         }),
       };
       requests.set(requestKey, request);

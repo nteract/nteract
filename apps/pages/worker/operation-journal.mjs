@@ -1,5 +1,3 @@
-import { retryKeyPrefix } from "../model/retry-key.mjs";
-
 /** Bounded, explicitly expiring retries. Expiration is authority to forget a
  * completed receipt, never authority to run an uncertain request again. Caller
  * serializes these helpers with its resource's mutation queue and persists the
@@ -131,17 +129,20 @@ function isRetry(value) {
     /^v1_[a-f0-9]{64}_$/.test(value.keyPrefix)
   );
 }
-/** Where a caller gets the retry_token a v1_ key is built from. */
-const WHERE_TOKENS =
-  "send the retry_token from the same result as retry_key_prefix (read_page for edits; list_pages for create_page, delete, restore and purge; list_projects for create_project), or use a plain key of 8–128 characters without a token";
+const FRESH_TOKEN = "Use the retry_token from a fresh read_page or list_pages result";
+
+/** The `v1_<SHA-256 hex of the token>_` start of every receipt key a retry
+ * token scopes. The host derives it; a caller sends only its own nonce. */
+export async function retryKeyPrefix(retryToken) {
+  if (typeof retryToken !== "string" || !retryToken.length || retryToken.length > 8192)
+    reject(400, "invalid_retry_token", FRESH_TOKEN);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(retryToken)));
+  return `v1_${[...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("")}_`;
+}
 function checkRetryKey(key, retry) {
   const prefix = `${PREFIX}${retry.keyPrefix}`;
-  if (!key.startsWith(prefix) || !/^[A-Za-z0-9_-]{8,60}$/.test(key.slice(prefix.length)))
-    reject(
-      400,
-      "invalid_retry_token",
-      "Use retry_key_prefix plus a unique nonce; a replacement token cannot reuse an old idempotency_key",
-    );
+  if (!key.startsWith(prefix) || !/^[A-Za-z0-9_-]{8,128}$/.test(key.slice(prefix.length)))
+    throw new TypeError("A retry receipt key must be derived from its own retry_token");
 }
 
 async function verify(storage, token, scope, principal) {
@@ -157,20 +158,12 @@ async function verify(storage, token, scope, principal) {
     if (!isWindow(payload) || payload.scope !== scope || payload.principal !== principal)
       throw Error("Invalid retry scope or time");
   } catch {
-    reject(
-      400,
-      "invalid_retry_token",
-      "Use the retry_token from a fresh read_page or list_pages result",
-    );
+    reject(400, "invalid_retry_token", FRESH_TOKEN);
   }
   // Storage failures are service failures, not malformed credentials.
   const key = await signingKey(storage, false);
   if (!key || !(await crypto.subtle.verify("HMAC", key, signature, bytes)))
-    reject(
-      400,
-      "invalid_retry_token",
-      "Use the retry_token from a fresh read_page or list_pages result",
-    );
+    reject(400, "invalid_retry_token", FRESH_TOKEN);
   return retryMetadata(payload, await retryKeyPrefix(token));
 }
 export async function listOperationEntries(storage) {
@@ -218,7 +211,6 @@ export async function issueRetryToken(storage, { scope, principal, now = Date.no
   const token = `${encode(bytes)}.${encode(signature)}`;
   return {
     retry_token: token,
-    retry_key_prefix: await retryKeyPrefix(token),
     retry_until: new Date(payload.expiresAt).toISOString(),
   };
 }
@@ -298,23 +290,10 @@ export async function inspectOperation(
   const entry = stored ?? pendingEntry;
   if (entry && entry.fingerprint !== digest)
     reject(409, "idempotency_conflict", "idempotency_key was used for a different request");
-  const versionedKey = key.startsWith(`${PREFIX}v1_`);
-  if (retryToken !== undefined && !versionedKey)
-    reject(
-      400,
-      "invalid_retry_token",
-      "Requests with retry_token require a v1_ idempotency_key: append a new UUID to the retry_key_prefix returned with that token",
-    );
   if (retryToken === undefined) {
-    // A forgotten token must not turn an expired versioned request into a fresh
-    // legacy request. Existing pre-protocol v1_ receipts still replay exactly.
-    if (versionedKey && !entry)
-      reject(
-        400,
-        "invalid_retry_token",
-        `v1_ idempotency keys require the original retry_token: ${WHERE_TOKENS}`,
-      );
-    if (entry?.retry) reject(400, "invalid_retry_token", "Retry the same token, key and payload");
+    // Only a retry token's derived key starts with v1_; client keys never do.
+    if (key.startsWith(`${PREFIX}v1_`))
+      throw new TypeError("A retry receipt key needs its retry_token");
     return { entry, retry: undefined };
   }
   const floor = await clock(storage, now);
@@ -364,12 +343,8 @@ export async function reserveOperation(storage, { key, entry, retry, now = Date.
     throw new TypeError("Only new pending operation entries can reserve capacity");
   if (retry !== undefined && !isRetry(retry)) throw new TypeError("Invalid retry metadata");
   if (retry) checkRetryKey(key, retry);
-  if (key.startsWith(`${PREFIX}v1_`) !== Boolean(retry))
-    reject(
-      400,
-      "invalid_retry_token",
-      `A v1_ idempotency_key and retry_token must be used together: ${WHERE_TOKENS}`,
-    );
+  else if (key.startsWith(`${PREFIX}v1_`))
+    throw new TypeError("A retry receipt key needs its retry metadata");
   // Existing legacy clients need no retirement barrier until this resource has
   // issued versioned tokens. Floor zero retains every versioned entry even if
   // anomalous storage contains one without a clock; it never authorizes GC.

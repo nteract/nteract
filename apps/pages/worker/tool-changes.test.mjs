@@ -4,7 +4,7 @@ import * as A from "@automerge/automerge";
 import { createPageData, initializePage, applyPageOperation } from "../model/page.mjs";
 import { readChangesTool } from "./tool-changes.mjs";
 
-const authority = { retry_token: "token", retry_key_prefix: "prefix_", retry_until: "later" };
+const authority = { retry_token: "token", retry_until: "later" };
 const read = (doc, args, issueAuthority = async () => authority) =>
   readChangesTool(doc, args, { issueAuthority });
 function fixture(t) {

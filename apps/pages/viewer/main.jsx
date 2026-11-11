@@ -79,7 +79,6 @@ import { SignedOutRecovery } from "./signed-out-recovery.mjs";
 import { ProjectList } from "./project-list.mjs";
 import { quotaNotice } from "./quota.mjs";
 import { AppearanceControls } from "./AppearanceControls.jsx";
-import { retryKey } from "../model/retry-key.mjs";
 import "./style.css";
 import "./formatting-toolbar.css";
 import "./card-image.css";
@@ -1302,7 +1301,7 @@ function App() {
         expected_principal: deleting.identity.principal,
         retry_token: prepared.retry_token,
         base_heads: editor.module.pageHeads(deleting.doc),
-        idempotency_key: await retryKey(prepared.retry_token),
+        idempotency_key: crypto.randomUUID(),
       }).catch((error) => {
         throw moveToTrashError(error);
       });

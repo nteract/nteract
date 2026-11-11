@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { retryKey, retryKeyPrefix } from "../model/retry-key.mjs";
 import {
   inspectOperation,
   issueRetryToken,
@@ -8,7 +7,11 @@ import {
   operationEntryBytes,
   reserveOperation,
   RETRY_LIFETIME_MS,
+  retryKeyPrefix,
 } from "./operation-journal.mjs";
+
+/** The receipt key the host derives from a token and a caller's nonce. */
+const retryKey = async (token, nonce) => `${await retryKeyPrefix(token)}${nonce}`;
 
 const start = Date.parse("2026-10-25T00:00:00Z");
 const context = { scope: "page:shared-page", principal: "user:issuer:alice", now: start };
@@ -397,34 +400,26 @@ test("an expired token cannot acquire capacity after a long candidate preparatio
   );
 });
 
-test("stripping a token after receipt GC never admits the request as legacy", async () => {
+test("a token-scoped receipt key is never inspected or reserved without its token", async () => {
   const f = await fixture();
   await record(f);
   await collectExpired(f, start + RETRY_LIFETIME_MS);
-  await assert.rejects(inspectOperation(f.storage, { ...f.args, retryToken: undefined }), {
-    status: 400,
-    code: "invalid_retry_token",
-  });
-  await assert.rejects(inspectOperation(f.storage, { ...f.args, key: "host/operation/raw-key" }), {
-    status: 400,
-    code: "invalid_retry_token",
-  });
+  await assert.rejects(
+    inspectOperation(f.storage, { ...f.args, retryToken: undefined }),
+    TypeError,
+  );
+  await assert.rejects(
+    inspectOperation(f.storage, { ...f.args, key: "host/operation/raw-key" }),
+    TypeError,
+  );
   await assert.rejects(
     reserveOperation(f.storage, {
       key: f.args.key,
       entry: { fingerprint: "new", pending: true },
       now: start + RETRY_LIFETIME_MS,
     }),
-    { status: 400, code: "invalid_retry_token" },
+    TypeError,
   );
-});
-
-test("known legacy receipts using the newly reserved prefix can still replay", async () => {
-  const storage = new Storage();
-  const key = "host/operation/v1_old-legacy-key";
-  const entry = { fingerprint: "old", pending: false, receipt: { ok: true } };
-  await storage.put(key, entry);
-  assert.deepEqual((await inspectOperation(storage, { key, digest: "old" })).entry, entry);
 });
 
 test("signing-secret storage errors are service failures instead of invalid-token responses", async () => {
@@ -525,18 +520,20 @@ test("a missing clock never lets legacy admission GC anomalous versioned rows", 
   assert.equal(await f.storage.get("host/retry-clock-v1"), undefined);
 });
 
-test("a replacement token cannot reuse a retired operation key after GC", async () => {
+test("a replacement token scopes the same nonce to a new receipt key", async () => {
   const f = await fixture();
   await record(f);
   const now = start + RETRY_LIFETIME_MS;
   await collectExpired(f, now);
   assert.equal(await f.storage.get(f.args.key), undefined);
   const next = await issueRetryToken(f.storage, { ...context, now });
+  // The retired key belongs to the old token; the host never pairs them.
   await assert.rejects(
     inspectOperation(f.storage, { ...f.args, retryToken: next.retry_token, now }),
-    { status: 400, code: "invalid_retry_token" },
+    TypeError,
   );
-  const freshKey = `host/operation/${await retryKey(next.retry_token, "fresh-request")}`;
+  const freshKey = `host/operation/${await retryKey(next.retry_token, "request-1")}`;
+  assert.notEqual(freshKey, f.args.key);
   const inspected = await inspectOperation(f.storage, {
     ...f.args,
     key: freshKey,
@@ -570,16 +567,18 @@ test("warm token issuance has no journal scan, GC, metadata write, or sync depen
   assert.equal(f.storage.deletes, 0);
 });
 
-test("retry key helper publishes a full token hash prefix and stays within128 characters", async () => {
+test("a token's receipt key prefix is the full token hash, and is not issued", async () => {
   const f = await fixture();
+  assert.deepEqual(Object.keys(f.issued).sort(), ["retry_token", "retry_until"]);
   const prefix = await retryKeyPrefix(f.issued.retry_token);
-  assert.equal(f.issued.retry_key_prefix, prefix);
   assert.match(prefix, /^v1_[a-f0-9]{64}_$/);
-  assert.equal((await retryKey(f.issued.retry_token, "n".repeat(60))).length, 128);
-  assert.ok((await retryKey(f.issued.retry_token)).startsWith(prefix));
   assert.notEqual(await retryKeyPrefix(f.issued.retry_token + "x"), prefix);
-  await assert.rejects(retryKey(f.issued.retry_token, "short"), TypeError);
-  await assert.rejects(retryKey(f.issued.retry_token, "n".repeat(61)), TypeError);
+  for (const token of [undefined, null, 7, "", "x".repeat(8193)])
+    await assert.rejects(retryKeyPrefix(token), { status: 400, code: "invalid_retry_token" });
+  // A nonce of up to 128 characters fits under the token's prefix.
+  const long = `host/operation/${await retryKey(f.issued.retry_token, "n".repeat(128))}`;
+  const { retry } = await inspectOperation(f.storage, { ...f.args, key: long });
+  assert.equal(retry.keyPrefix, prefix);
 });
 
 test("changing a signed token to a future window without the secret is rejected", async () => {

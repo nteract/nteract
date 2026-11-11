@@ -155,10 +155,10 @@ async function mcp(name, args = {}) {
 }
 function retry(authority) {
   assert.equal(typeof authority.retry_token, "string", "Fresh retry authority is required");
-  assert.match(authority.retry_key_prefix, /^v1_[a-f0-9]{64}_$/);
+  assert.equal(authority.retry_key_prefix, undefined);
   return protect({
     retry_token: authority.retry_token,
-    idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
   });
 }
 function warning(receipt, blockId) {

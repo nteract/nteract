@@ -158,7 +158,7 @@ async function call(page, operation, args = {}) {
 }
 const retry = (value) => ({
   retry_token: value.retry_token,
-  idempotency_key: value.retry_key_prefix + crypto.randomUUID(),
+  idempotency_key: crypto.randomUUID(),
 });
 const sentence = (i) =>
   `Paragraph ${i + 1}. Shared documents keep their history so people and agents can pick up where the last edit left off; this one adds a little more prose for the sync to carry.`;

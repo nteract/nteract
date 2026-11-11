@@ -112,8 +112,8 @@ test("a Project editor creates Pages the Project owner owns, at the top level an
   assert.equal(await pageCount(w, "member"), 0);
   // The receipt carries edit authority for the editor, and the editor reads
   // the Page through the Project.
-  assert.match(top.body.retry_key_prefix, /^v1_[a-f0-9]{64}_$/);
   assert.equal(typeof top.body.retry_token, "string");
+  assert.equal(top.body.retry_key_prefix, undefined);
   assert.equal((await w.call("member", "read_page", { page_id: top.body.page_id })).status, 200);
 
   // Under a Page the owner created, and under the Page the editor created.
@@ -220,7 +220,7 @@ test("a retried editor creation resumes the same Page, with or without a retry t
   const args = {
     title: "Once",
     project_id: project.project_id,
-    idempotency_key: listed.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
     retry_token: listed.retry_token,
   };
   const lost = await w.call("member", "create_page", args);

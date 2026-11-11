@@ -73,7 +73,7 @@ async function mutate(operation, args = {}) {
         ? (await call("read_page", { page_id: args.page_id })).heads
         : authority.heads,
     retry_token: authority.retry_token,
-    idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
   });
 }
 

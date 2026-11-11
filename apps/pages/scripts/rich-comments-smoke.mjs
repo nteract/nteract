@@ -63,7 +63,7 @@ async function mutate(operation, args = {}) {
         ? (await call("read_page", { page_id: args.page_id })).heads
         : authority.heads,
     retry_token: authority.retry_token,
-    idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
   });
 }
 /** Put a PNG on the clipboard, as "Copy image" does. */
@@ -581,7 +581,7 @@ try {
     action: "resolve",
     thread_ids: openIds,
     retry_token: authority.retry_token,
-    idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
   };
   const resolved = await call("manage_page_comment", batch);
   assert.deepEqual(
@@ -606,7 +606,7 @@ try {
       ...batch,
       action: "reopen",
       thread_ids: [openIds[1], "no-such-thread"],
-      idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+      idempotency_key: crypto.randomUUID(),
     }),
     /tool error invalid_comment_selector/,
   );
@@ -634,7 +634,7 @@ try {
         const authority = await call("list_pages");
         return {
           retry_token: authority.retry_token,
-          idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+          idempotency_key: crypto.randomUUID(),
         };
       });
       report.fixtureDeleted = true;

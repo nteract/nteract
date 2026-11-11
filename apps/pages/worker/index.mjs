@@ -146,6 +146,7 @@ import {
   documentMutation,
   recoverDocumentMutations,
   mutationKey,
+  operationKey,
   fingerprint,
   requireHeads,
 } from "./mutations.mjs";
@@ -713,7 +714,7 @@ function validateMoveInput(args) {
   if (typeof args.retry_token !== "string")
     throw new HttpError(
       400,
-      "move_page needs the retry_token from list_pages and a v1_ idempotency_key built from its retry_key_prefix",
+      "move_page needs the retry_token from list_pages with your own idempotency_key",
       "invalid_retry_token",
     );
   return { pageId, parentId, spaceId, position };
@@ -1946,7 +1947,7 @@ export class Catalog {
         // bytes the browser saved with the draft, which this build may no
         // longer accept fresh. Its receipt, or for a pending one the Page
         // host's record, answers it, so only a new request is validated.
-        const recorded = await this.storage.get(mutationKey(args));
+        const recorded = await this.storage.get(await operationKey(args));
         const digest =
           recorded &&
           (await fingerprint(
@@ -1962,7 +1963,7 @@ export class Catalog {
       }
       // Input is sound: this write runs the shape pass first.
       await this.locationShape();
-      const key = mutationKey(args);
+      const key = await operationKey(args);
       const digest = await fingerprint(
         lifecycleFingerprint[body.operation] ?? body.operation,
         args,
@@ -2973,7 +2974,7 @@ export class Catalog {
       parentId,
       spaceId,
       position,
-      key: mutationKey(args),
+      key: await operationKey(args),
       digest: await fingerprint("move_page", args, identity),
     };
     let state = { name: "received" };
@@ -3206,7 +3207,7 @@ export class Catalog {
     const { title, description } = validateSpaceInput(args, { creating: true });
     // Input is sound: the shape pass runs first, as for every queued write.
     await this.locationShape();
-    const key = mutationKey(args);
+    const key = await operationKey(args);
     const digest = await fingerprint("create_space", args, identity);
     const inspected = await inspectOperation(storage, {
       key,
@@ -3340,7 +3341,7 @@ export class Catalog {
     const storage = this.storage;
     validateSpaceInput(args, { creating: false });
     await this.locationShape();
-    const key = mutationKey(args);
+    const key = await operationKey(args);
     const digest = await fingerprint("update_space", args, identity);
     const inspected = await inspectOperation(storage, {
       key,
@@ -3375,6 +3376,8 @@ export class Catalog {
       forwarded(request, "/internal/space/update", {
         space_id: intent.spaceId,
         idempotency_key: args.idempotency_key,
+        // The Space keys its receipt as this Catalog does: by key and token.
+        ...(args.retry_token !== undefined && { retry_token: args.retry_token }),
         expected_revision: intent.expectedRevision,
         ...(args.title !== undefined && { title: args.title }),
         ...(args.description !== undefined && { description: args.description }),
@@ -3437,7 +3440,7 @@ export class Catalog {
     let inspected;
     if (action === "confirm") {
       await this.locationShape();
-      key = mutationKey(args);
+      key = await operationKey(args);
       digest = await fingerprint("delete_project", args, identity);
       inspected = await inspectOperation(storage, {
         key,
@@ -3729,7 +3732,7 @@ export class Catalog {
     if (entry?.pending)
       throw new HttpError(
         409,
-        "This Project is still being created. Retry create_project with the same idempotency_key and payload.",
+        "This Project is still being created. Retry create_project with the same retry_token, idempotency_key and payload.",
         "project_pending",
       );
     const response = await this.env.PROJECTS.getByName(spaceId).fetch(
@@ -6198,7 +6201,7 @@ export class Page {
   }
 
   /** The create_page receipt with this Page's edit authority: the Page-scoped
-   * retry_token, retry_key_prefix and retry_until that read_page would issue,
+   * retry_token and retry_until that read_page would issue,
    * so the first edit needs no read. The stored receipt stays as recorded;
    * the token is minted per reply and journaled by the owner's Catalog with
    * the rest of the receipt, so an exact retry returns the same one. */
@@ -6440,7 +6443,7 @@ export class Page {
     const event = { type, actor };
     const context = { args, identity };
     if (type !== "purgePreview") {
-      const key = mutationKey(args);
+      const key = await operationKey(args);
       // The Catalog adds compare-and-set controls; they never change identity.
       const { expected_revision: _expected, replay_only: _replay, ...requested } = args;
       const digest = await fingerprint(LIFECYCLE_OPERATIONS[route], requested, identity);

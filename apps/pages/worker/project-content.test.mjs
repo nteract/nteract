@@ -234,7 +234,7 @@ test("alias edits replay the physical journal and retain stale-head and token fe
     page_id: project.document_id,
     base_heads: read.heads,
     retry_token: read.retry_token,
-    idempotency_key: read.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
     operations: [{ op: "set_title", title: "Once" }],
   };
   const first = await w.call("owner", "edit_page", alias(args, project.project_id));
@@ -245,7 +245,7 @@ test("alias edits replay the physical journal and retain stale-head and token fe
   assert.deepEqual(w.heads(project.document_id), first.body.heads);
   const stale = await w.call("owner", "edit_page", {
     ...alias(args, project.project_id),
-    idempotency_key: read.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
   });
   assert.equal(stale.body.code, "stale_heads");
   const catalog = (await w.call("owner", "list_projects")).body;
@@ -253,7 +253,7 @@ test("alias edits replay the physical journal and retain stale-head and token fe
     ...alias(args, project.project_id),
     base_heads: first.body.heads,
     retry_token: catalog.retry_token,
-    idempotency_key: catalog.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
   });
   assert.equal(wrongToken.body.code, "invalid_retry_token", JSON.stringify(wrongToken.body));
 });
@@ -306,7 +306,7 @@ test("creation and move placement keep their existing project_id meaning", async
     page_id: child.body.page_id,
     project_id: project.project_id,
     retry_token: retry.retry_token,
-    idempotency_key: retry.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
   });
   assert.equal(moved.status, 200, JSON.stringify(moved.body));
 });

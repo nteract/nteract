@@ -1,4 +1,3 @@
-import { retryKey } from "../model/retry-key.mjs";
 import { readLocalGrant, retireLocalPage } from "./local-catalog.mjs";
 
 /** Browser Trash operations. Each mutation prepares fresh catalog retry
@@ -9,7 +8,7 @@ async function catalogAuthority(tool) {
   if (typeof prepared?.retry_token !== "string") throw Error("Could not prepare the request");
   return {
     retry_token: prepared.retry_token,
-    idempotency_key: await retryKey(prepared.retry_token),
+    idempotency_key: crypto.randomUUID(),
   };
 }
 

@@ -19,6 +19,7 @@ import {
   inspectOperation,
   issueRetryToken,
   openCapability,
+  retryKeyPrefix,
   signCapability,
 } from "./operation-journal.mjs";
 import {
@@ -623,7 +624,7 @@ test("a retry token is not an upload capability", async (t) => {
   // And the capability is not this Page's retry token.
   await assert.rejects(
     inspectOperation(w.page(pageId).ctx.storage, {
-      key: `host/operation/${read.body.retry_key_prefix}reuse-capability`,
+      key: `host/operation/${await retryKeyPrefix(read.body.retry_token)}reuse-capability`,
       digest: "digest",
       retryToken: tokenOf(grant),
       scope: `page:${pageId}`,
@@ -695,7 +696,7 @@ test("a Page in Trash refuses the upload, as the byte route does", async (t) => 
   const trashed = await w.call("owner", "delete_page", {
     page_id: pageId,
     retry_token: listed.retry_token,
-    idempotency_key: listed.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
   });
   assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
   const refused = await upload(w, grant);
@@ -853,7 +854,7 @@ test("the llms.txt image workflow: upload light and dark, interleave with text, 
     page_id: pageId,
     base_heads: read.heads,
     retry_token: read.retry_token,
-    idempotency_key: read.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
     operations: [
       { op: "replace_block_markdown", block_id: first.id, markdown: "Intro paragraph." },
       { op: "insert_image", asset_id: light, dark_asset_id: dark, alt: "Home screen" },
@@ -890,7 +891,7 @@ test("the llms.txt image workflow: upload light and dark, interleave with text, 
     page_id: pageId,
     base_heads: after.heads,
     retry_token: after.retry_token,
-    idempotency_key: after.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
     operations: [
       { op: "insert_markdown", markdown: "Second inserted.", after_block_id: anchor },
       { op: "insert_image", asset_id: light, alt: "First inserted", after_block_id: anchor },

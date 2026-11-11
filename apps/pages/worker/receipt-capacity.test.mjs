@@ -4,7 +4,7 @@ import * as A from "@automerge/automerge";
 import { createAuthFixture } from "../auth-fixtures.mjs";
 import { Catalog } from "./index.mjs";
 import { documentMutation } from "./mutations.mjs";
-import { reserveOperation } from "./operation-journal.mjs";
+import { reserveOperation, retryKeyPrefix } from "./operation-journal.mjs";
 import { fixture, pageId } from "./trash-fixture.mjs";
 
 class Storage {
@@ -292,7 +292,7 @@ test("1,500 tokenless comment writes leave the Page writable; the token lane kee
   // The token lane is untouched by all of this and keeps its own window.
   const read = await f.tool("owner", "read_page", { include_content: false });
   const tokened = {
-    idempotency_key: `${read.body.retry_key_prefix}first-request`,
+    idempotency_key: "first-request",
     retry_token: read.body.retry_token,
     base_heads: read.body.heads,
     operations: [{ op: "set_title", title: "With a token" }],
@@ -306,21 +306,21 @@ test("1,500 tokenless comment writes leave the Page writable; the token lane kee
     operations: [{ op: "set_title", title: "Another title" }],
   });
   assert.equal(changed.body.code, "idempotency_conflict");
-  // A full retry window still refuses new tokened work, as before.
-  const stored = await f.storage.get(`host/operation/${tokened.idempotency_key}`);
+  // A full retry window refuses new tokened work.
+  // The host keys a tokened receipt by the token hash and the caller's nonce.
+  const prefix = await retryKeyPrefix(read.body.retry_token);
+  const stored = await f.storage.get(`host/operation/${prefix}${tokened.idempotency_key}`);
+  assert.equal(await f.storage.get(`host/operation/${tokened.idempotency_key}`), undefined);
   for (let n = 0; n < 999; n++)
-    await f.storage.put(
-      `host/operation/${read.body.retry_key_prefix}filler-${String(n).padStart(4, "0")}`,
-      {
-        fingerprint: `filler-${n}`,
-        pending: false,
-        retry: stored.retry,
-        receipt: {},
-      },
-    );
+    await f.storage.put(`host/operation/${prefix}filler-${String(n).padStart(4, "0")}`, {
+      fingerprint: `filler-${n}`,
+      pending: false,
+      retry: stored.retry,
+      receipt: {},
+    });
   const full = await f.tool("owner", "edit_page", {
     ...tokened,
-    idempotency_key: `${read.body.retry_key_prefix}second-request`,
+    idempotency_key: "second-request",
     base_heads: f.heads(),
   });
   assert.equal(full.status, 429, JSON.stringify(full.body));
@@ -354,7 +354,7 @@ test("after a lost response, a tokened retry replays through eviction; a tokenle
   const threads = () => Object.keys(f.commentsDoc().threads).length;
   const read = await f.tool("owner", "read_page", { include_content: false });
   const tokened = {
-    idempotency_key: `${read.body.retry_key_prefix}lost-response`,
+    idempotency_key: "lost-response",
     retry_token: read.body.retry_token,
     action: "add",
     block_id: f.blockId,
@@ -383,7 +383,9 @@ test("after a lost response, a tokened retry replays through eviction; a tokenle
   assert.equal(push.status, 200, JSON.stringify(push.body));
   assert.equal(await f.storage.get("host/operation/tokenless-lost-response"), undefined);
   assert.ok(
-    await f.storage.get(`host/operation/${tokened.idempotency_key}`),
+    await f.storage.get(
+      `host/operation/${await retryKeyPrefix(tokened.retry_token)}${tokened.idempotency_key}`,
+    ),
     "the token lane kept its receipt",
   );
   assert.equal(threads(), 4);
