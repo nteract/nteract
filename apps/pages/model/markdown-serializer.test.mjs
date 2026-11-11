@@ -4,7 +4,10 @@ import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import markdownCorpus from "./markdown-corpus.json" with { type: "json" };
 import { parseAgentMarkdown, parseMarkdown } from "./markdown-import.mjs";
-import { exportMarkdown } from "./markdown-serializer.mjs";
+import fc from "fast-check";
+import { Leaf, Mark, Node, Plot } from "wordgard/doc";
+import { exportMarkdown, noticeNode } from "./markdown-serializer.mjs";
+import { pageTreeArbitrary, toWordgardTree } from "../test/random-page-tree.mjs";
 import { projectReadChanges } from "./read-changes.mjs";
 import { projectReadContent } from "./read-content.mjs";
 import { textPath } from "./richtext-format.mjs";
@@ -21,6 +24,12 @@ import {
   PagesLink,
   Strong,
   PagesHighlight,
+  Aside,
+  Blockquote,
+  BulletList,
+  HorizontalRule,
+  ListItem,
+  Paragraph,
 } from "./wordgard-doc.mjs";
 import { PAGE_ID, pageWithSpans, randomInputs, shapeInputs } from "../test/address-inputs.mjs";
 const S = (value) => new A.ImmutableString(value);
@@ -188,4 +197,126 @@ test("read_page and read_page_changes read a hard break stored in a code block",
     changes.changes.map(({ scope, markdown }) => ({ scope, markdown })),
     [{ scope: "node", markdown: "```js\na\nbc\n```" }],
   );
+});
+
+// Node and mark types the serializer has no renderer or projection for, as a
+// newer editor build could hand it.
+const Box = Plot.define("TestBox", {
+  group: Node.Group.Content,
+  blockContent: Node.Group.Content,
+  shape: { element: "div" },
+});
+const Line = Plot.define("TestLine", {
+  group: Node.Group.Content,
+  inlineContent: true,
+  shape: { element: "p" },
+});
+const Chip = Leaf.Type.define("TestChip", { inline: true, shape: { element: "span" } });
+const Glow = Mark.Type.define("TestGlow", { shape: { element: "b" } });
+const para = (...content) => Paragraph.create(content);
+const NOTICE = "\\[Unsupported node\\]";
+
+test("a block node with no renderer reads as the notice, then its content", () => {
+  const content = [Box.create([para(Leaf.text("inside"))]), para(Leaf.text("after"))];
+  assert.equal(exportMarkdown({ content }), `${NOTICE}\n\ninside\n\nafter`);
+  assert.equal(noticeNode({ content }), "TestBox");
+  const line = [Line.create([Leaf.text("words")])];
+  assert.equal(exportMarkdown({ content: line }), `${NOTICE}\n\nwords`);
+  const quoted = [Blockquote.create([Box.create([para(Leaf.text("q"))])])];
+  assert.equal(exportMarkdown({ content: quoted }), `> ${NOTICE}\n>\n> q`);
+});
+
+test("an inline leaf with no renderer reads as the notice inline", () => {
+  const content = [para(Leaf.text("a"), Chip.of(null), Leaf.text("b"))];
+  assert.equal(exportMarkdown({ content }), `a${NOTICE}b`);
+  assert.equal(noticeNode({ content }), "TestChip");
+});
+
+// markName already drops a mark type this build doesn't know, so this pins
+// existing behaviour rather than the serializer's MARKS filter.
+test("a mark this build doesn't know reads as its text, unmarked (existing behaviour)", () => {
+  const text = Leaf.text("glow", Glow.of(true).addToSet(Mark.none));
+  assert.equal(text.marks.length, 1);
+  const content = [para(Leaf.text("a "), text, Leaf.text(" b"))];
+  assert.equal(exportMarkdown({ content }), "a glow b");
+  assert.equal(noticeNode({ content }), undefined);
+});
+
+test("noticeNode names an aside, and nothing in a tree with no notice", () => {
+  assert.equal(noticeNode({ content: [Aside.create([para(Leaf.text("x"))])] }), "aside");
+  assert.equal(noticeNode({ content: [para(Leaf.text("x"))] }), undefined);
+});
+
+test("generated trees with a node, leaf or mark the serializer can't draw still serialize", () => {
+  const cases = fc.sample(
+    fc.tuple(
+      pageTreeArbitrary({ maxDepth: 2 }),
+      fc.constantFrom("box", "line", "chip", "glow"),
+      fc.nat(),
+    ),
+    { seed: 0x5eed, numRuns: 200 },
+  );
+  for (const [description, kind, at] of cases) {
+    const content = [...toWordgardTree(description).content];
+    const index = content.length ? at % content.length : 0;
+    if (kind === "box" && content.length) content[index] = Box.create([content[index]]);
+    else if (kind === "glow")
+      content.splice(index, 0, para(Leaf.text("glow", Glow.of(true).addToSet(Mark.none))));
+    else
+      content.splice(
+        index,
+        0,
+        kind === "chip" ? para(Leaf.text("a"), Chip.of(null)) : Line.create([Leaf.text("words")]),
+      );
+    const markdown = exportMarkdown({ content });
+    if (kind === "glow") {
+      assert.match(markdown, /glow/);
+      continue;
+    }
+    assert.ok(markdown.includes(NOTICE), markdown);
+    assert.notEqual(noticeNode({ content }), undefined);
+  }
+});
+
+test("a notice separates from the block after it as a paragraph does", () => {
+  const headings = (markdown) => {
+    let count = 0;
+    parseMarkdown(markdown).iterate((node) => {
+      if (node.name === "Heading") count++;
+    });
+    return count;
+  };
+  const item = (value) => ListItem.create([value ? para(Leaf.text(value)) : para()]);
+  const inItem = (node) => ({ content: [BulletList.create([ListItem.create([node])])] });
+  for (const [wrap, shown] of [
+    [Aside, "\\[Unsupported node: aside\\]"],
+    [Box, NOTICE],
+  ]) {
+    // In a tight list item, a list whose empty first item can't interrupt a
+    // paragraph needs a blank line, or its `-` underlines the notice.
+    const nested = exportMarkdown(inItem(wrap.create([BulletList.create([item(""), item("b")])])));
+    assert.equal(nested, `- \n  ${shown}\n\n  - \n  - b`);
+    assert.equal(headings(nested), 0, nested);
+    for (const [child, expected] of [
+      [HorizontalRule, 0],
+      [Blockquote.create([para(Leaf.text("q"))]), 0],
+      [parseMarkdown("## h").content[0], 1],
+    ]) {
+      const out = exportMarkdown(inItem(wrap.create([child])));
+      assert.equal(headings(out), expected, out);
+    }
+  }
+  // A stored container this build doesn't know reads the same way.
+  const li = "unordered-list-item";
+  const { doc, id } = pageWithSpans([
+    block(li),
+    block("callout", [li]),
+    block(li, [li, "callout"]),
+    block(li, [li, "callout"]),
+    text("b"),
+  ]);
+  const stored = blockMarkdown(doc.blocks[id], doc.page_id);
+  assert.equal(stored, "- \n  \\[Unsupported node: callout\\]\n\n  - \n  - b");
+  assert.equal(headings(stored), 0, stored);
+  A.free(doc);
 });

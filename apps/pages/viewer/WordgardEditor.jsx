@@ -82,7 +82,7 @@ import {
   PagesLink,
   TaskList,
   elements,
-  filterPastedDataframes,
+  pastedPageHTML,
 } from "./wordgard-model.mjs";
 import { DATASET_ACCEPT } from "../shared/dataset-assets.mjs";
 import { markdownShortcuts } from "./wordgard-shortcuts.mjs";
@@ -106,7 +106,6 @@ import { registerEditor } from "./editor-focus.mjs";
 import { CurrentProject } from "./current-page.mjs";
 import { LinkPopover } from "./LinkPopover.jsx";
 import { collapseAtomOnLeave, selectedAtom, selectedImage } from "./image-selection.mjs";
-import { normalizePastedHTML } from "./clipboard-html.mjs";
 import { bareLinkPaste } from "./bare-links.mjs";
 import {
   IMAGE_ACCEPT,
@@ -396,9 +395,7 @@ export function WordgardEditor(props) {
         undoHistory.extension,
         // A block decode couldn't draw as stored opens read-only.
         permissions.current.of(editConfig(latest.current.editable && !bound.current.lossy)),
-        Wordgard.clipboardInputHTMLFilter.of((html) =>
-          filterPastedDataframes(normalizePastedHTML(html), replica.doc.page_id),
-        ),
+        Wordgard.clipboardInputHTMLFilter.of((html) => pastedPageHTML(html, replica.doc.page_id)),
         // A pasted URL becomes a bare link.
         bareLinkPaste(),
         Wordgard.domEventObserver("focusout", (event, wg) => {

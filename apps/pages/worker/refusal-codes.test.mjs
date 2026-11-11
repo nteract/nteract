@@ -389,11 +389,11 @@ test("a Page holding a node this build doesn't know reads, and refuses a Markdow
   assert.equal(rewrite.status, 400);
 });
 
-test("an edit into a block holding content this build can't draw whole answers 409 in both scopes", async (t) => {
+test("an edit to a node this build can't read answers 409 in both scopes; its readable neighbors stay editable", async (t) => {
   const plain = await fixture(t);
   const path = ["blocks", plain.blockId, "richText"];
-  // Text after a node this build doesn't know is that node's content: the
-  // block reads only in part.
+  // Text after a node this build doesn't know is that node's own text: the
+  // block reads only in part. "We ship on " stays in a paragraph it reads.
   const page = A.change(A.load(A.save(plain.doc())), (draft) => {
     const at = draft.blocks[plain.blockId].richText.indexOf("Friday");
     A.splitBlock(draft, path, at, {
@@ -404,28 +404,44 @@ test("an edit into a block holding content this build can't draw whole answers 4
     });
   });
   const f = await fixture(t, { auth: plain.auth, docBytes: A.save(page) });
-  const base = f.heads();
   for (const [scope, extra] of [
     ["page", {}],
     ["target", { conflict_scope: "target" }],
   ])
     for (const op of [
-      { op: "replace_match", match_text: "We ship", replacement: "We sail" },
-      { op: "format_match", match_text: "We ship", add: { strong: true } },
-      { op: "set_node", match_text: "We ship", type: "heading", attrs: { level: 2 } },
+      { op: "replace_match", match_text: "Friday", replacement: "Monday" },
+      { op: "format_match", match_text: "Friday", add: { strong: true } },
+      { op: "set_node", match_text: "Friday", type: "heading", attrs: { level: 2 } },
     ]) {
       const refused = await f.tool("owner", "patch_page", {
-        base_heads: base,
+        base_heads: f.heads(),
         idempotency_key: `newer-${scope}-${op.op}`,
         ...extra,
         operations: [{ ...op, block_id: f.blockId }],
       });
       assert.equal(refused.status, 409, `${scope} ${op.op}: ${JSON.stringify(refused.body)}`);
       assert.equal(refused.body.code, "newer_content", `${scope} ${op.op}`);
+      const allowed = await f.tool("owner", "patch_page", {
+        base_heads: f.heads(),
+        idempotency_key: `readable-${scope}-${op.op}`,
+        ...extra,
+        operations: [
+          {
+            ...op,
+            block_id: f.blockId,
+            ...(op.op === "replace_match"
+              ? scope === "page"
+                ? { match_text: "ship", replacement: "sail" }
+                : { match_text: "sail", replacement: "ship" }
+              : { match_text: "We" }),
+          },
+        ],
+      });
+      assert.equal(allowed.status, 200, `${scope} ${op.op}: ${JSON.stringify(allowed.body)}`);
     }
   // Other refusals through the same path keep their status.
   const missing = await f.tool("owner", "patch_page", {
-    base_heads: base,
+    base_heads: f.heads(),
     idempotency_key: "newer-missing-match",
     operations: [
       { op: "replace_match", block_id: crypto.randomUUID(), match_text: "We", replacement: "x" },

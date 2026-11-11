@@ -1,7 +1,7 @@
 import * as A from "@automerge/automerge/slim";
 import { textPath, updateSpansExactly } from "./richtext-format.mjs";
 import { quotableNodeType } from "./richtext-notices.mjs";
-import { markdownlessNode, refuseNewerBlock } from "./richtext-spans.mjs";
+import { markdownlessNode, newerContent, readableMarker } from "./richtext-spans.mjs";
 import { nativeRead, readKind } from "./native-read.mjs";
 import {
   repairBlockMarkers,
@@ -225,9 +225,12 @@ function applyEdit(doc, op, trace, context) {
   if (!Object.hasOwn(doc.blocks, id)) throw Error("Block not found");
   if (op.op === "set_image") {
     validateImageChange(op);
-    refuseNewerBlock(doc, id, "set_image");
     const { index } = resolveImageId(doc, id, op.image_id);
     const spans = A.spans(doc, textPath(id));
+    if (!readableMarker(spans[index].value))
+      throw newerContent(
+        "This image holds values from a newer version of Pages that this version can't read, so set_image can't change it. Remove it with delete_node, or the block with delete_block.",
+      );
     const attrs = { ...spans[index].value.attrs };
     if (op.asset_id !== undefined)
       attrs.src = new A.ImmutableString(imageAssetUrl(doc.page_id, op.asset_id));
@@ -257,7 +260,7 @@ function applyEdit(doc, op, trace, context) {
     if (node)
       throw Object.assign(
         Error(
-          `This block holds ${quotableNodeType(node) ? `${/^[aeiou]/.test(node) ? "an" : "a"} ${node}` : "a node this version of Pages doesn't know"}, which has no Markdown form, so a Markdown rewrite would lose it. Remove it with delete_node, or with delete_block when read_page reports no node_id for it. patch_page edits around it only while the block reads whole (nothing after the node is its content); otherwise patch_page answers newer_content.`,
+          `This block holds ${quotableNodeType(node) ? `${/^[aeiou]/.test(node) ? "an" : "a"} ${node}` : "a node this version of Pages doesn't know"}, which has no Markdown form, so a Markdown rewrite would lose it. Remove it with delete_node, or with delete_block when read_page reports no node_id for it. patch_page still edits text in the nodes this version reads; it answers newer_content for text in the node itself.`,
         ),
         { code: "markdownless_node" },
       );

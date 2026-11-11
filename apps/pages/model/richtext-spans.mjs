@@ -10,18 +10,19 @@ import {
   markerType,
 } from "./node-registry.mjs";
 import { DATAFRAME_BLOCK, parseAssetPath, readDataframe } from "../shared/dataset-assets.mjs";
-import { decode, encode, schema } from "./wordgard-doc.mjs";
-import { treeMarkdown } from "./markdown-serializer.mjs";
+import { PagesUnknownBlock, PagesUnknownEmbed, decode, encode, schema } from "./wordgard-doc.mjs";
+import { noticeNode, treeMarkdown } from "./markdown-serializer.mjs";
 import { UNREADABLE_NAME, codeTextUnmarked, markerParents, textPath } from "./richtext-format.mjs";
 
 export const readTree = (block) => decode(codeTextUnmarked(A.spans(block, ["richText"]))).doc;
 export const richDoc = readTree;
 export const pageSpans = encode;
 
-// Known containers with no Markdown form: a read shows their notice.
-const MARKDOWNLESS = new Set(["aside"]);
-
-/** The first stored type a Markdown rewrite cannot reproduce. */
+/** The first stored type a Markdown rewrite cannot reproduce: a dataframe
+ * out of place, a type this build doesn't know, or anything else the
+ * serializer draws as a notice (noticeNode), which a rewrite would turn
+ * into literal notice text. A notice with no quotable name answers null
+ * from noticeNode and refuses as UNREADABLE_NAME. */
 export function markdownlessNode(block, pageId) {
   for (const span of A.spans(block, ["richText"])) {
     if (span.type !== "block") continue;
@@ -37,25 +38,50 @@ export function markdownlessNode(block, pageId) {
           )?.pageId !== pageId))
     )
       return DATAFRAME_BLOCK;
-    for (const name of [type, ...parents])
-      if (!isKnownBlock(name) || MARKDOWNLESS.has(name)) return name;
+    for (const name of [type, ...parents]) if (!isKnownBlock(name)) return name;
   }
-  return null;
+  const notice = noticeNode(readTree(block));
+  return notice === undefined ? null : (notice ?? UNREADABLE_NAME);
 }
 
-/** Refuse a host write that would edit block `id` in place when decode
- * draws it only in part because it holds content from a newer build
- * (`newer` and `lossy`): no write may store over what this build can't
- * read. delete_node and delete_block remove such content, and move_block
- * moves the block whole; neither edits it. */
-export function refuseNewerBlock(doc, id, op) {
-  const decoded = decode(codeTextUnmarked(A.spans(doc, textPath(id))));
-  if (decoded.newer && decoded.lossy)
-    throw Object.assign(
-      Error(
-        `This block holds content from a newer version of Pages that this version can't draw whole, so ${op} can't edit it. Remove a node with delete_node, or the whole block with delete_block.`,
-      ),
-      { status: 409, code: "newer_content" },
+/** Whether decode draws the stored marker `value` as a node this build
+ * reads. How decode draws a marker depends only on the marker: its type,
+ * its attrs and its own parents. A known node under a container this build
+ * doesn't know still reads. */
+export function readableMarker(value) {
+  let readable = true;
+  decode([{ type: "block", value }]).doc.iterate((node) => {
+    if (node.type === PagesUnknownBlock || node.type === PagesUnknownEmbed) readable = false;
+  });
+  return readable;
+}
+/** The index in `spans` of the node marker whose text holds native offset
+ * `at`: the last marker before it that isn't an embed, or -1 for unmarked
+ * text at the start of the block, which reads as a paragraph. Text after a
+ * marker this build can't read is that node's own content. */
+export function textOwner(spans, at) {
+  let pos = 0,
+    index = -1;
+  for (let i = 0; i < spans.length && pos <= at; i++) {
+    if (spans[i].type === "block") {
+      if (!spans[i].value?.isEmbed) index = i;
+      pos += 1;
+    } else pos += spans[i].value.length;
+  }
+  return index;
+}
+export const newerContent = (message) =>
+  Object.assign(Error(message), { status: 409, code: "newer_content" });
+/** Refuse a host write to text that belongs to a node this build can't read:
+ * text after its marker, which decode draws only in part. A match never
+ * crosses a marker, so the text's owner decides. Text in the nodes this
+ * build reads stays editable in a block that also holds newer content: the
+ * write splices characters and marks and leaves every marker as stored. */
+export function refuseUnreadableText(spans, at, op) {
+  const owner = textOwner(spans, at);
+  if (owner >= 0 && !readableMarker(spans[owner].value))
+    throw newerContent(
+      `match_text is in a node from a newer version of Pages that this version can't read, so ${op} can't edit it. Edit text in the nodes this version reads, remove the node with delete_node, or remove the block with delete_block.`,
     );
 }
 

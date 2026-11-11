@@ -39,7 +39,7 @@ import {
   TaskList,
   PagesLink,
   PagesImage,
-  filterPastedDataframes,
+  pastedCommentHTML,
 } from "./wordgard-model.mjs";
 import { taskLists } from "./wordgard-task-lists.mjs";
 import { markdownShortcuts } from "./wordgard-shortcuts.mjs";
@@ -108,8 +108,9 @@ function nativeConfig({ currentPageId = () => null, currentProjectId = () => nul
     tablePresentation,
     tableKeys,
     GardState.schemaElement.of(elements),
-    // Comments can't hold a dataframe: a pasted one becomes its title.
-    Wordgard.clipboardInputHTMLFilter.of((html) => filterPastedDataframes(html, null)),
+    // Comments can't hold a dataframe: a pasted one becomes its title. An
+    // aside from outside Pages pastes as its content.
+    Wordgard.clipboardInputHTMLFilter.of((html) => pastedCommentHTML(html)),
     // A pasted URL becomes a bare link, as in Page blocks.
     bareLinkPaste(),
     wordgardCodeNewlines,

@@ -3,6 +3,7 @@
 // shares; this module re-exports them and adds the editor's DOM-only helpers.
 import { readDataframe } from "../shared/dataset-assets.mjs";
 import { DATAFRAME_ATTR, plainAttrs } from "../model/wordgard-doc.mjs";
+import { normalizePastedHTML, unwrapPastedAsides } from "./clipboard-html.mjs";
 
 export * from "../model/wordgard-doc.mjs";
 
@@ -26,3 +27,16 @@ export function filterPastedDataframes(html, pageId, parser = new DOMParser()) {
   }
   return changed ? doc.body.innerHTML : html;
 }
+
+/** Pasted or dropped HTML as a Page block reads it: <b> and <i> as bold and
+ * italic, no aside from outside Pages, and no dataframe from another Page. */
+export const pastedPageHTML = (html, pageId, parser = new DOMParser()) =>
+  filterPastedDataframes(
+    unwrapPastedAsides(normalizePastedHTML(html, parser), parser),
+    pageId,
+    parser,
+  );
+/** Pasted HTML as the comment composer reads it: no aside from outside
+ * Pages, and no dataframe. */
+export const pastedCommentHTML = (html, parser = new DOMParser()) =>
+  filterPastedDataframes(unwrapPastedAsides(html, parser), null, parser);

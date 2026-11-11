@@ -13,7 +13,7 @@ import {
   normalizeHighlight,
 } from "./marks.mjs";
 import { stampMarks } from "./schema-features.mjs";
-import { refuseNewerBlock } from "./richtext-spans.mjs";
+import { refuseUnreadableText } from "./richtext-spans.mjs";
 
 const MAX_TEXT_LENGTH = 262144;
 const MAX_MATCHES = 10000;
@@ -456,8 +456,8 @@ function marksDroppedWarning(partial, start, end) {
  * reported. */
 export function replaceMatch(doc, id, input, trace, { anchor, budget } = {}) {
   const { text: replacement, runs } = replacementOf(input);
-  refuseNewerBlock(doc, id, "replace_match");
   const { path, start, end } = locateRange(doc, id, input, anchor);
+  refuseUnreadableText(A.spans(doc, path), start, "replace_match");
   if (runs && inCodeBlock(doc, path, start))
     throw Error(
       "replacement_markdown can't format text inside a code block; code text is unformatted. Use replacement.",
@@ -631,7 +631,6 @@ export function formatChanges(input) {
  * `skipped_in_code`. */
 export function formatMatch(doc, id, input, trace, { anchor, budget } = {}) {
   const { add, remove } = formatChanges(input);
-  refuseNewerBlock(doc, id, "format_match");
   const located = { ...input, op: "format_match" };
   const path = textPath(id);
   let ranges,
@@ -652,6 +651,8 @@ export function formatMatch(doc, id, input, trace, { anchor, budget } = {}) {
     if (!ranges.length)
       throw Error("format_match found matches only inside code blocks; code text is unformatted.");
   }
+  const spans = A.spans(doc, path);
+  for (const range of ranges) refuseUnreadableText(spans, range.start, "format_match");
   spendMarkWrites(budget, ranges.length * (Object.keys(add).length + remove.length));
   for (const { start, end } of ranges) {
     for (const name of remove) A.unmark(doc, path, { start, end, expand: "both" }, name);

@@ -139,8 +139,19 @@ records the node addresses agents use.
   are in it, no target that holds them is emptied. A later stored change is
   additive under a schema feature, or it follows the structural rule below:
   a new format number and a new document for each Page, written from the old
-  one. The host record's format (order of work, step 4) is what lets a host
-  hold both while that runs.
+  one.
+- **From the format after 3, an older Page stays readable and its owner
+  upgrades it.** A Page in an older format opens read-only: people can read
+  and copy it, and nobody edits it in that format. Its owner upgrades it in
+  place with one action, which writes the new document from the old one
+  under the same Page. The service doesn't refuse an older Page outright,
+  and nobody has to delete it to keep using Pages. What exists: the host
+  record stamps each document's format (`documentFormats`, order of work,
+  step 4), and when the host refuses a Page's format the viewer keeps
+  its cached copy readable and copyable, read-only
+  ([viewer/format-gate.mjs](viewer/format-gate.mjs)). What's
+  missing: the host serving an older format for reading (today it refuses a
+  record in a format the build doesn't write), and the upgrade action.
 - **A Project moves by copy, through the agent edge.**
   `scripts/project-transfer.mjs` reads a Project from one target's `/mcp`
   and writes it to another's, so it needs no code in the host and works
@@ -183,6 +194,11 @@ records the node addresses agents use.
   owns the product, and no step in the order of work waits on it.
 - What a client keeps when the host refuses its offline edits, for example
   after access is revoked or the format changes.
+- Whether Pages supports an aside, and how: what people use one for, a
+  Markdown form agents can read and write, and the effort. This is open
+  research. Until it's settled, a paste from outside Pages unwraps an aside
+  into its content, and a stored aside reads as a notice followed by its
+  content.
 - How a Page shows notebook work: a static output in a report, or a live
   cell that runs. `runtimed` keeps kernels, execution and outputs either way.
 - Whether a document type's genesis is fixed the way the notebook's is.

@@ -75,8 +75,9 @@ const markName = (mark) => {
 function serialMarks(marks) {
   const out = [];
   for (const mark of marks) {
+    // A mark with no projection writes nothing: its text reads unmarked.
     const name = markName(mark);
-    if (name) out.push({ name, value: mark.value });
+    if (name && MARKS[name]) out.push({ name, value: mark.value });
   }
   return out.sort((a, b) => MARK_RANK.get(a.name) - MARK_RANK.get(b.name));
 }
@@ -187,6 +188,16 @@ function kind(node) {
       return node.name;
   }
 }
+/** What an inline leaf is, for the serializer. A leaf it has no renderer
+ * for reads as the notice (unknownLeaf). */
+const leafKind = (node) =>
+  node.type === LineBreak.type
+    ? "hard_break"
+    : node.type === PagesImage
+      ? "image"
+      : node.type === PagesUnknownEmbed
+        ? "unknownLeaf"
+        : node.name;
 /** A textblock's inline content: text runs with the same projected marks
  * joined (a mark this build doesn't know projects as nothing), and leaves.
  * Escaping reads a whole run at once, so a run must not be split. */
@@ -205,12 +216,7 @@ function inlineItems(content) {
       else items.push({ isText: true, kind: "text", text: String(node.param), marks });
       continue;
     }
-    const item = { isText: false, marks: serialMarks(node.marks), node };
-    if (node.type === LineBreak.type) item.kind = "hard_break";
-    else if (node.type === PagesImage) item.kind = "image";
-    else if (node.type === PagesUnknownEmbed) item.kind = "unknownLeaf";
-    else throw Error(`Token type \`${node.name}\` not supported by Markdown renderer`);
-    items.push(item);
+    items.push({ isText: false, marks: serialMarks(node.marks), node, kind: leafKind(node) });
   }
   return items;
 }
@@ -316,17 +322,13 @@ class State {
     return str.replace(this.escapeExtraCharacters, "\\$&");
   }
   render(node, parent, index) {
-    const render = this.nodes[kind(node)];
-    if (!render) throw Error(`Token type \`${kind(node)}\` not supported by Markdown renderer`);
-    render(this, node, parent, index);
+    (this.nodes[kind(node)] ?? unrendered)(this, node, parent, index);
   }
   renderContent(parent) {
     parent.content.forEach((node, i) => this.render(node, parent, i));
   }
   renderInlineItem(item, parent, index) {
-    const render = this.nodes[item.kind];
-    if (!render) throw Error(`Token type \`${item.kind}\` not supported by Markdown renderer`);
-    render(this, item, parent, index);
+    (this.nodes[item.kind] ?? unknownLeaf)(this, item, parent, index);
   }
   markString(mark, open, parent, index) {
     const value = open ? MARKS[mark.name].open : MARKS[mark.name].close;
@@ -457,8 +459,40 @@ const image = (state, item) => {
     })`,
   );
 };
-const unknownLeaf = (state, item) =>
-  state.write(state.esc(unknownNodeNotice(item.node.param?.type)));
+// The notice names a node this build doesn't know by its stored type, and
+// a node the serializer has no renderer for by its editor name, which no
+// notice quotes.
+const noticeName = (node) =>
+  node.type === PagesUnknownBlock || node.type === PagesUnknownEmbed
+    ? node.param?.type
+    : node.type === Aside.type
+      ? "aside"
+      : node.name;
+// Every notice goes through `notice`, so noticeNode sees what a render
+// writes as one. Set only while noticeNode renders. A stored marker this
+// build can't read (PagesUnknownBlock, PagesUnknownEmbed) is left to
+// markdownlessNode, which judges it by its stored name: a known type with
+// unreadable values is one a Markdown rewrite recovers.
+let onNotice = null;
+const notice = (state, node, name = noticeName(node)) => {
+  if (node.type !== PagesUnknownBlock && node.type !== PagesUnknownEmbed) onNotice?.(name);
+  state.write(state.esc(unknownNodeNotice(name)));
+};
+const unknownLeaf = (state, item) => notice(state, item.node);
+// A notice is a line of paragraph text. What follows it separates as from a
+// paragraph, so a list that can't interrupt one gets its blank line.
+const closeAsParagraph = (state) => (state.closed = { kind: "paragraph" });
+/** A block node with no renderer: the notice, then its content, as an
+ * aside reads. A textblock's inline content reads as a paragraph. */
+function unrendered(state, node) {
+  notice(state, node);
+  closeAsParagraph(state);
+  if (!node.isPlot || !node.content.length) return;
+  if (node.inlineContent) {
+    state.renderInline(inlineItems(node.content));
+    closeAsParagraph(state);
+  } else state.renderContent(node);
+}
 const paragraph = (state, node) => {
   state.renderInline(inlineItems(node.content));
   state.closeBlock(node);
@@ -642,27 +676,41 @@ const NODES = {
   // build can't read read as a notice, so a read never offers their src.
   dataframe(state, node) {
     const attrs = node.param;
-    if (!readDataframe(attrs)) state.write(state.esc(unknownNodeNotice("dataframe")));
+    if (!readDataframe(attrs)) notice(state, node, "dataframe");
     else state.write(`[${state.esc(dataframeLabel(attrs.title))}](${attrs.src})`);
     state.closeBlock(node);
   },
   // A node this build doesn't know, written by a newer build. It reads as a
   // notice naming its type, so a read never hides it. replace_block_markdown
   // refuses the block (markdownlessNode).
-  unknownBlock(state, node) {
-    state.write(state.esc(unknownNodeNotice(node.param?.type)));
-    state.closeBlock(node);
-  },
-  // An aside (a container the editor makes from pasted HTML, and any synced
-  // client can write) has no Markdown form. It reads as the notice, then its
-  // content, as a container this build doesn't know does; a Markdown
-  // rewrite refuses the block (markdownlessNode).
-  aside(state, node) {
-    state.write(state.esc(unknownNodeNotice("aside")));
-    state.closeBlock(node);
-    state.renderContent(node);
-  },
+  unknownBlock: unrendered,
+  // An aside (a container any synced client can write; a paste from outside
+  // Pages makes none) has no Markdown form. It reads as the notice, then its
+  // content; a Markdown rewrite refuses the block (markdownlessNode).
+  aside: unrendered,
 };
+
+/** The name the first notice in `doc`'s Markdown names, `null` for a
+ * notice with no quotable name, or undefined when the Markdown holds none.
+ * It renders `doc` and watches `notice`, so it counts every notice the
+ * serializer writes: a node or leaf with no renderer, an aside, a dataframe
+ * it can't read. A stored marker this build can't read is left out; see
+ * `notice`. markdownlessNode (model/richtext-spans.mjs) refuses a Markdown
+ * rewrite of a block this names, so a node type added without a renderer is
+ * refused rather than rewritten into literal notice text. */
+export function noticeNode(doc) {
+  let found;
+  const outer = onNotice;
+  onNotice = (name) => {
+    found ??= name ?? null;
+  };
+  try {
+    nodesMarkdown(doc.content);
+  } finally {
+    onNotice = outer;
+  }
+  return found;
+}
 
 /** Pages Markdown for top-level editor nodes. */
 function nodesMarkdown(nodes) {

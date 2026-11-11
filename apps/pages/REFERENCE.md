@@ -2445,10 +2445,9 @@ the readable mark brings nothing back.
   form (a heading level, an image) is also recovered by
   `replace_block_markdown`, which rewrites the block whole. That tool
   refuses a block holding an unknown node, an aside or a dataframe it
-  can't keep, and its refusal names both recoveries. Editing around such a
-  node with `replace_match`, `format_match` or `set_node` works only while
-  the block reads whole; when it is `newer` and lossy they answer
-  `newer_content`.
+  can't keep, and its refusal names both recoveries. Editing text around
+  such a node with `replace_match`, `format_match` or `set_node` works;
+  text in the node itself answers `newer_content`.
 - `adjusted`: every name is known, but `nestIn` re-homed a node or dropped
   or skipped a parent. Every reader draws one tree for the block, and
   `moved` lists each node marker whose drawn parents differ from its stored
@@ -2460,18 +2459,46 @@ Reading is total; admission stays strict. Registration (`validateRich` in
 [model/comment-content.mjs](model/comment-content.mjs)) refuse a block or
 message whose decode is `newer` or lossy, and every mark value outside the
 registry, so nothing a reader would draw as a notice or as plain text is
-admitted. `set_node` refuses a write that would leave the marker it writes
-unreadable. No host tool edits a block decode reports `newer` and lossy in
-place: `replace_match`, `format_match`, `set_node` and `set_image` refuse
-it with `newer_content`, in page scope and as passage targets.
-`delete_node`, `delete_block` and `move_block` still work, and so does
+admitted. No host tool writes into a node this build can't read, in page
+scope and as passage targets; each answers `newer_content` (409):
+
+- `replace_match` and `format_match` when the matched text is that
+  node's own text (the text after its marker). A match never crosses a
+  marker, and a notice is a marker, so the text's marker decides
+  (`refuseUnreadableText` in
+  [model/richtext-spans.mjs](model/richtext-spans.mjs)).
+- `set_node` when the node it would change is one, or when the marker it
+  would write has attributes or parents this build can't read.
+- `set_image` when the image is one.
+
+Text and marks in the nodes this build reads stay editable in a block that
+also holds newer content. Those edits splice characters and marks and write
+no marker. Repair leaves a `newer` and lossy block alone, so the match is
+found in the stored spans: unmarked text stays unmarked (no node id), and
+markers with adjusted nesting keep their stored parents. `delete_node`,
+`delete_block` and `move_block` still work, and so does
 `replace_block_markdown`, which replaces the block whole and refuses a
 block holding a node it can't keep.
 
-An aside (`PagesAside`) is a known container with no Markdown form. The
-editor makes one from pasted HTML (`<aside>`), and any synced client can
-store one; no agent tool or Markdown import writes one. Its Markdown is the
+An aside (`PagesAside`) is a known container with no Markdown form. Any
+synced client can store one; no agent tool or Markdown import writes one.
+Pasted HTML from outside Pages makes none: the Page editor and the comment
+composer replace each `<aside>` by its content (`unwrapPastedAsides` in
+[viewer/clipboard-html.mjs](viewer/clipboard-html.mjs)), so its paragraphs
+and lists land as ordinary blocks. An aside copied inside Pages carries
+`data-pages-aside` and pastes back as an aside. A stored aside reads and
+draws as before. Its Markdown is the
 notice (`[Unsupported node: aside]`) followed by its content.
+
+The Markdown serializer
+([model/markdown-serializer.mjs](model/markdown-serializer.mjs)) never
+throws. A block node it has no renderer for reads like an aside: the
+notice, then its content. An inline leaf with no renderer reads as the
+notice inline, and a mark with no Markdown projection reads as its text,
+unmarked. Besides the stored markers above, `replace_block_markdown`
+refuses a block holding anything else the serializer draws as a notice
+(`noticeNode`, which renders the block), so a rewrite never turns a node
+into literal notice text.
 
 A block whose only problem is adjusted nesting is repaired, because storing
 the drawn tree loses nothing a reader showed. Every host tool write to a

@@ -15,7 +15,7 @@
 import * as A from "@automerge/automerge/slim";
 import { markerParents, textPath, updateSpansExactly } from "./richtext-format.mjs";
 import { unreadableMarker } from "./wordgard-doc.mjs";
-import { refuseNewerBlock } from "./richtext-spans.mjs";
+import { newerContent, readableMarker, refuseUnreadableText } from "./richtext-spans.mjs";
 import { updateSpansConfig } from "./marks.mjs";
 import { locateRange } from "./replace-match.mjs";
 import {
@@ -176,10 +176,14 @@ const withAttrs = (span, attrs, type = span.value.type) => ({
 /** Change the type or attributes of the node that holds match_text. */
 export function setNode(doc, id, input, trace, { anchor } = {}) {
   const change = nodeChange(input);
-  refuseNewerBlock(doc, id, "set_node");
   const { path, start, end } = locateRange(doc, id, { ...input, op: "set_node" }, anchor);
   const spans = A.spans(doc, textPath(id));
+  refuseUnreadableText(spans, start, "set_node");
   const index = targetMarker(spans, governingMarker(spans, start));
+  if (!readableMarker(spans[index].value))
+    throw newerContent(
+      "match_text is in a node from a newer version of Pages that this version can't read, so set_node can't change it. Remove the node with delete_node, or the block with delete_block.",
+    );
   const result = { op: "set_node", block_id: id, matched: 1 };
   const names = Object.keys(change.attrs);
   const marker = spans[index];
@@ -220,11 +224,18 @@ export function setNode(doc, id, input, trace, { anchor } = {}) {
   for (const [stored, spec] of Object.entries(nodeType(target).attrs))
     if (spec.required && attrs[stored] === undefined)
       throw Error(`${target} needs attrs.${spec.agent ?? stored}`);
+  // Every marker this write touches must read as stored: a column
+  // alignment reaches cells the match isn't in.
+  const columnTargets = Object.keys(column).length ? columnCells(spans, index) : [];
+  if (columnTargets.some((cell) => !readableMarker(spans[cell].value)))
+    throw newerContent(
+      "This table column holds a cell from a newer version of Pages that this version can't read, so set_node can't align it. Rewrite the block with replace_block_markdown, or remove it with delete_block.",
+    );
   const typeValue = target === current ? marker.value.type : new A.ImmutableString(target);
   spans[index] = withAttrs(marker, attrs, typeValue);
   const written = [index];
-  if (Object.keys(column).length) {
-    for (const cell of columnCells(spans, index)) {
+  if (columnTargets.length) {
+    for (const cell of columnTargets) {
       written.push(cell);
       const cellAttrs = { ...spans[cell].value.attrs };
       for (const [stored, value] of Object.entries(column))
@@ -244,7 +255,9 @@ export function setNode(doc, id, input, trace, { anchor } = {}) {
     !Array.isArray(value.parents) ||
     value.parents.some((parent) => markerName(parent) === null);
   if (written.some((i) => unwritable(spans[i].value)))
-    throw Error(`set_node can't write ${nodeLabel(target)} with attributes this build can't read`);
+    throw newerContent(
+      `set_node can't write ${nodeLabel(target)} with attributes or parents this version of Pages can't read, which a newer version wrote. Rewrite the block with replace_block_markdown, or remove it with delete_block.`,
+    );
   updateSpansExactly(doc, path, spans, updateSpansConfig);
   trace?.push({ type: "text", block_id: id, start, end });
   const cells = written.length - 1;
