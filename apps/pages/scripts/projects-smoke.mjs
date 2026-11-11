@@ -200,7 +200,7 @@ try {
     project_id: project.project_id,
     base_heads: content.heads,
     retry_token: content.retry_token,
-    idempotency_key: content.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
     operations: [{ op: "insert_markdown", markdown: "Content selector sentinel." }],
   };
   const contentReceipt = await ok("owner", "edit_page", contentEdit);
@@ -278,7 +278,7 @@ try {
         page_id: project.document_id,
         parent_id: roadmap.page_id,
         retry_token: listed.retry_token,
-        idempotency_key: listed.retry_key_prefix + crypto.randomUUID(),
+        idempotency_key: crypto.randomUUID(),
       },
     ],
   ]) {
@@ -1636,7 +1636,7 @@ try {
         page_id: pageId,
         base_heads: read.heads,
         retry_token: authority.retry_token,
-        idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+        idempotency_key: crypto.randomUUID(),
       }),
     );
   const blocked = await trashPage(roadmap.page_id);
@@ -1650,7 +1650,7 @@ try {
   const protectedContent = await trashPage(project.document_id);
   assert.equal(protectedContent.isError, true);
   assert.equal(protectedContent.body.code, "project_content_protected");
-  const restoreKey = () => authority.retry_key_prefix + crypto.randomUUID();
+  const restoreKey = () => crypto.randomUUID();
   const planBack = await ok("owner", "restore_page", {
     page_id: plan.page_id,
     retry_token: authority.retry_token,
@@ -1681,7 +1681,7 @@ try {
   const planHeads = (
     await ok("owner", "read_page", { page_id: plan.page_id, include_content: false })
   ).heads;
-  const moveKey = () => authority.retry_key_prefix + crypto.randomUUID();
+  const moveKey = () => crypto.randomUUID();
   const moved = await ok("owner", "move_page", {
     page_id: plan.page_id,
     parent_id: roadmap.page_id,

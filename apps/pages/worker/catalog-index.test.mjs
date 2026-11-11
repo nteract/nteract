@@ -781,8 +781,9 @@ test("index disabled: no D1 access and the bare call keeps the legacy fields", a
     { page_id: id(1), title: "Legacy", content_updated_at: null },
   ]);
   assert.equal(result.body.limit, 100);
-  for (const key of ["next_cursor", "retry_token", "retry_key_prefix", "retry_until"])
+  for (const key of ["next_cursor", "retry_token", "retry_until"])
     assert.ok(Object.hasOwn(result.body, key), key);
+  assert.equal(Object.hasOwn(result.body, "retry_key_prefix"), false);
 });
 
 test("owner rows need a live Catalog entry and are pruned on encounter", async (t) => {

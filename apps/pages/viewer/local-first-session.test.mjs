@@ -8,6 +8,7 @@ import {
   PageSession,
   connectionFailureRetries,
   listLocalPages,
+  registrationRequest,
   retireLocalPage,
 } from "./session.mjs";
 import { readLocalPage, decodeSnapshot, writeLocalPage, encodeSnapshot } from "./local-pages.mjs";
@@ -21,7 +22,6 @@ import {
 import { readRegistration } from "../worker/registration.mjs";
 import { host as syncHost, until } from "../sync/test-helpers.mjs";
 import { framePipe } from "../sync/wire.mjs";
-import { retryKey, retryKeyPrefix } from "../model/retry-key.mjs";
 
 function browser(t) {
   const values = new Map();
@@ -186,7 +186,7 @@ async function expiredRegistrationFixture(t) {
     registration: {
       ...session.localPage.registration,
       retry_token: "expired-registration-token",
-      idempotency_key: await retryKey("expired-registration-token"),
+      idempotency_key: crypto.randomUUID(),
     },
   });
   await session.change((doc) => A.updateText(doc, ["title"], "Kept offline edits"));
@@ -262,7 +262,10 @@ test("an expired never-registered draft renews only retry authority after an aut
   assert.deepEqual(registrations[0], original);
   const replacement = registrations[1];
   assert.equal(replacement.retry_token, "replacement-token");
-  assert.ok(replacement.idempotency_key.startsWith(await retryKeyPrefix(replacement.retry_token)));
+  assert.match(
+    replacement.idempotency_key,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+  );
   assert.notEqual(replacement.idempotency_key, original.idempotency_key);
   assert.deepEqual(
     {
@@ -1205,6 +1208,21 @@ test("a local copy saved beside a Subduction replica restores into plain sync, a
       label: "the host has the offline edit",
     },
   );
+});
+
+test("a draft saved with a token-scoped key registers with its nonce and token", () => {
+  const nonce = crypto.randomUUID();
+  const saved = {
+    page_id: "page",
+    retry_token: "saved-token",
+    idempotency_key: `v1_${"a".repeat(64)}_${nonce}`,
+  };
+  assert.deepEqual(registrationRequest(saved), { ...saved, idempotency_key: nonce });
+  const current = { page_id: "page", retry_token: "saved-token", idempotency_key: nonce };
+  assert.equal(registrationRequest(current), current);
+  // A draft from before retry tokens keeps its plain key.
+  const tokenless = { page_id: "page", idempotency_key: "plain-key-1" };
+  assert.equal(registrationRequest(tokenless), tokenless);
 });
 
 test("a local copy with no readable checkpoint is discarded, and the Page opens from the host with a notice", async (t) => {

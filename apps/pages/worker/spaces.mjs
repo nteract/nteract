@@ -19,7 +19,7 @@
  * are not stored, so they use the Project name.
  */
 import { HttpError, authenticate, json, readJson, requireWrite, errorResponse } from "./auth.mjs";
-import { fingerprint, mutationKey } from "./mutations.mjs";
+import { fingerprint, mutationKey, operationKey } from "./mutations.mjs";
 import { validPageId } from "./registration.mjs";
 import { NO_ACTOR_CHAIN, decide, heldRelation, principalOf, projectObject } from "./authz.mjs";
 import { serialQueue } from "./serial-queue.mjs";
@@ -421,7 +421,7 @@ export class Space {
     if (identity.principal !== record.owner)
       throw new HttpError(403, "Only the Project owner can update it");
     const { title, description } = validateSpaceInput(args, { creating: false });
-    const key = mutationKey(args);
+    const key = await operationKey(args);
     const digest = await fingerprint(
       "update_space",
       { space_id: args.space_id, title, description, expected_revision: args.expected_revision },

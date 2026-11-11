@@ -1746,8 +1746,8 @@ runs in this order:
    `document_id` the content was written to. Import exits 1 if not.
 
 Every write uses the repository's retry contract. Creates use the catalog
-`retry_token` from `list_pages` with a key of its `retry_key_prefix` plus a
-nonce hashed from `(bundle_id, source_page_id)`. Edits use the `read_page`
+`retry_token` from `list_pages` with a key that is a nonce hashed from
+`(bundle_id, source_page_id)`. Edits use the `read_page`
 token the same way. The state file (`<bundle>.state.json` by default, or
 `--state`, mode 0600) records the source-to-target ID map, finished steps,
 the catalog token, and the exact arguments of the request in flight before it

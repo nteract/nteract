@@ -14,6 +14,7 @@ import {
 import { Catalog } from "./index.mjs";
 import { locationEntries } from "./catalog-location.mjs";
 import { projectLifecycle } from "./catalog.mjs";
+import { operationKey } from "./mutations.mjs";
 import { STORAGE_KEYS_PER_CALL } from "./storage-guard.mjs";
 import { LOCATION_REVISION_KEY, MOVE_STATUS, movePage, movePageSpec } from "./move-page.mjs";
 import { CrashStorage } from "./operation-intent-fixture.mjs";
@@ -120,7 +121,7 @@ async function stage(w, title = "Moves") {
     ...(parentId === TOP ? { project_id: project.project_id } : { parent_id: parentId }),
     ...(position !== undefined && { position }),
     retry_token: authority.retry_token,
-    idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
     ...extra,
   });
   const move = (pageId, parentId, position, extra) =>
@@ -570,13 +571,13 @@ test("each refusal carries its code and status, over HTTP and as MCP structured 
   for (const trace of traces) assert.ok(!trace.includes("write"), trace.join(","));
   await s.invariants();
   // Input refusals consume no key: the same key then moves.
-  const key = s.authority.retry_key_prefix + crypto.randomUUID();
+  const key = crypto.randomUUID();
   const refused = await s.move(a, TOP, "middle", { idempotency_key: key });
   assert.equal(refused.body.code, "invalid_position");
   const applied = await s.move(a, TOP, "first", { idempotency_key: key });
   assert.equal(applied.status, 200, JSON.stringify(applied.body));
   // A plan refusal consumes none either.
-  const cycleKey = s.authority.retry_key_prefix + crypto.randomUUID();
+  const cycleKey = crypto.randomUUID();
   assert.equal(
     (await s.move(a, c, undefined, { idempotency_key: cycleKey })).body.code,
     "placement_cycle",
@@ -640,7 +641,7 @@ test("a failed barrier is 503; the retry plans again over what is stored and rep
   assert.equal(failed.body.retryable, true);
   assert.deepEqual(traces.at(-1), ["settle", "plan", "write", "sync"]);
   assert.equal(await storage.get(LOCATION_REVISION_KEY), undefined, "nothing durable");
-  assert.equal(await storage.get(`host/operation/${args.idempotency_key}`), undefined);
+  assert.equal(await storage.get(await operationKey(args)), undefined);
   assert.deepEqual(s.top(await s.entries()), [a, b, c]);
   // B moves first, so the retry plans against a different sibling set.
   assert.equal((await s.move(b, TOP, "first")).status, 200);
@@ -1106,7 +1107,7 @@ test("move_page across accounts: another account's Project, parent or Page is re
     page_id: mine,
     project_id: theirProject.body.project_id,
     retry_token: authority.retry_token,
-    idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
   });
   assert.ok(
     ["page_not_found", "not_page_owner"].includes(byMember.body.code),

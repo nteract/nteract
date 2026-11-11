@@ -95,7 +95,7 @@ async function mutate(operation, args) {
   return tool(a, operation, {
     ...args,
     retry_token: authority.retry_token,
-    idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
   });
 }
 const read = () => tool(a, "read_page", { page_id: pageId });
@@ -493,7 +493,7 @@ try {
               base_heads: current.heads,
               conflict_scope: "target",
               retry_token: current.retry_token,
-              idempotency_key: current.retry_key_prefix + crypto.randomUUID(),
+              idempotency_key: crypto.randomUUID(),
               operations: [
                 {
                   op: "replace_match",
@@ -516,7 +516,7 @@ try {
           page_id: page,
           base_heads: current.heads,
           retry_token: authority.retry_token,
-          idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+          idempotency_key: crypto.randomUUID(),
         });
         await purgeTrashedFixture(
           (name, args) => tool(a, name, args),
@@ -525,7 +525,7 @@ try {
             const fresh = await tool(a, "list_pages");
             return {
               retry_token: fresh.retry_token,
-              idempotency_key: fresh.retry_key_prefix + crypto.randomUUID(),
+              idempotency_key: crypto.randomUUID(),
             };
           },
         );
@@ -562,7 +562,7 @@ try {
           const authority = await tool(a, "list_pages");
           return {
             retry_token: authority.retry_token,
-            idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+            idempotency_key: crypto.randomUUID(),
           };
         },
       );

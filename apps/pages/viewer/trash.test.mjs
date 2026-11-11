@@ -35,7 +35,10 @@ test("Trash operations send owner-guarded requests with fresh catalog retry auth
   assert.equal(restore.page_id, pageId);
   assert.equal(restore.expected_principal, "user:owner");
   assert.equal(restore.retry_token, "fixture-retry-token");
-  assert.match(restore.idempotency_key, /^v1_[a-f0-9]{64}_/);
+  assert.match(
+    restore.idempotency_key,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+  );
   const [preview, confirm] = calls.filter((call) => call.operation === "purge_page");
   assert.deepEqual(preview.args, {
     page_id: pageId,

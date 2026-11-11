@@ -82,7 +82,7 @@ test("a lower revision in a newly resolved Project replaces the old placement", 
   const moved = await w.call("owner", "move_page", {
     page_id: child.page_id,
     project_id: newer.project_id,
-    idempotency_key: retry.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
     retry_token: retry.retry_token,
   });
   assert.equal(moved.status, 200, JSON.stringify(moved.body));
@@ -135,14 +135,14 @@ test("membership discovery, inherited Pages, revocation, and owner-only sharing 
   const deniedMove = await w.call("owner", "move_page", {
     page_id: child.page_id,
     project_id: null,
-    idempotency_key: retry.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
     retry_token: retry.retry_token,
   });
   assert.equal(deniedMove.body.code, "shared_project_move_unsupported");
   const within = await w.call("owner", "move_page", {
     page_id: nested.page_id,
     project_id: project.project_id,
-    idempotency_key: retry.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
     retry_token: retry.retry_token,
   });
   assert.equal(within.status, 200, JSON.stringify(within.body));
@@ -382,7 +382,7 @@ test("pending email invitations fence boundary moves before they are claimed", a
   const moved = await w.call("owner", "move_page", {
     page_id: child.page_id,
     project_id: null,
-    idempotency_key: retry.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
     retry_token: retry.retry_token,
   });
   assert.equal(moved.body.code, "shared_project_move_unsupported");

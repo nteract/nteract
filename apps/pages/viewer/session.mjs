@@ -45,7 +45,6 @@ import { unreadableMessageKeys } from "./comment-thread-display.mjs";
 import { CATCH_UP_LIMIT_MS } from "./catch-up-machine.mjs";
 import { BACKEND_LIMITS } from "../model/limits.mjs";
 import { BUILD_FORMATS } from "../model/document-types.mjs";
-import { retryKey } from "../model/retry-key.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 import { admissionCloseOutcome } from "../shared/admission.mjs";
 import { isTransientFailure, request } from "./request.mjs";
@@ -147,6 +146,15 @@ function draftUnreadable(error) {
     code: error.code,
     cause: error,
   });
+}
+/** The register request for a saved draft. A draft saved with a token may
+ * hold its key as `v1_<SHA-256 hex of the token>_<nonce>`, the receipt key
+ * the host derives from that token and nonce, so it sends the nonce. */
+export function registrationRequest(registration) {
+  const scoped = /^v1_[a-f0-9]{64}_([A-Za-z0-9_-]{8,60})$/.exec(registration.idempotency_key ?? "");
+  return scoped && typeof registration.retry_token === "string"
+    ? { ...registration, idempotency_key: scoped[1] }
+    : registration;
 }
 /** Whether a failed connection attempt retries on the reconnect backoff. It
  * runs after attemptConnection has handled classifyRefusal, a 401, and the
@@ -1804,7 +1812,7 @@ export class PageSession {
           initial_snapshot_base64: snapshot,
           title: this.doc.title,
           record_storage: "automerge",
-          idempotency_key: `v1_${crypto.randomUUID()}`,
+          idempotency_key: crypto.randomUUID(),
         },
       };
       await writeLocalPage(this.identity, this.localPage, {
@@ -2107,7 +2115,7 @@ export class PageSession {
         if (!this.alive) return;
         if (typeof prepared.retry_token !== "string")
           throw Error("Could not prepare Page registration");
-        const key = await retryKey(prepared.retry_token);
+        const key = crypto.randomUUID();
         if (!this.alive || this.authRequired) return;
         await this.persistLocal({
           registration: {
@@ -2121,7 +2129,7 @@ export class PageSession {
       result = await this.requestWithRenewal("/api/pages/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(this.localPage.registration),
+        body: JSON.stringify(registrationRequest(this.localPage.registration)),
       });
     } catch (error) {
       if (error.status === 410 && error.code === "retry_expired") {
@@ -2178,7 +2186,7 @@ export class PageSession {
       if (!current()) return;
       if (typeof prepared.retry_token !== "string")
         throw Error("Could not prepare Page registration");
-      const key = await retryKey(prepared.retry_token);
+      const key = crypto.randomUUID();
       if (!current()) return;
       // The expired token cannot execute again. Keep the original bootstrap and
       // UUID, and replace only its retry authority. IndexedDB compare-and-swap
@@ -2199,7 +2207,7 @@ export class PageSession {
       return this.requestWithRenewal("/api/pages/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(this.localPage.registration),
+        body: JSON.stringify(registrationRequest(this.localPage.registration)),
       });
     }
     if (!current()) return;

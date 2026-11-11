@@ -316,7 +316,7 @@ try {
     body_format: "plain",
     base_heads: authority.heads,
     retry_token: authority.retry_token,
-    idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
   });
   assert.equal(comment.status, 200, JSON.stringify(comment.body));
   await owner.getByRole("button", { name: /^Comments/ }).click();

@@ -51,8 +51,6 @@
 // `pageCreations()` below holds what outlives one run: the one-at-a-time
 // guard and the attempts to replay, per placement, for one account.
 
-import { retryKey } from "../model/retry-key.mjs";
-
 export const STATES = Object.freeze([
   "preparing",
   "writing",
@@ -198,7 +196,7 @@ export async function runPageCreation({ placement, attempt = null, call, open, r
           const listed = await call("list_pages", { limit: 1 });
           prepared = {
             retry_token: listed.retry_token,
-            idempotency_key: await retryKey(listed.retry_token),
+            idempotency_key: crypto.randomUUID(),
           };
         }
         event = { type: "prepared", attempt: prepared };

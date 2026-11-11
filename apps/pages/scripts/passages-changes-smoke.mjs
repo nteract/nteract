@@ -55,14 +55,14 @@ function complete(name) {
   console.log("PASS " + name);
 }
 function rememberAuthority(result) {
-  for (const key of ["retry_token", "retry_key_prefix"])
+  for (const key of ["retry_token"])
     if (typeof result?.[key] === "string") secrets.add(result[key]);
   return result;
 }
 function guarded(authority, args) {
   assert.equal(typeof authority.retry_token, "string");
-  assert.match(authority.retry_key_prefix, /^v1_[a-f0-9]{64}_$/);
-  const key = authority.retry_key_prefix + crypto.randomUUID();
+  assert.equal(authority.retry_key_prefix, undefined);
+  const key = crypto.randomUUID();
   secrets.add(key);
   return {
     ...args,

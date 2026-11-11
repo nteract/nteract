@@ -119,10 +119,7 @@ test("MCP gives every refusal a stable code in text and structured content", asy
   const thrown = async () => {
     throw Error("Private internals");
   };
-  const tokened = {
-    retry_token: "token",
-    idempotency_key: `v1_${"a".repeat(64)}_request-one`,
-  };
+  const tokened = { retry_token: "token", idempotency_key: "request-one" };
   for (const [name, code, retryable, args] of [
     ["read_page", "read_failed", true],
     ["edit_page", "outcome_unknown", true, tokened],
@@ -131,20 +128,15 @@ test("MCP gives every refusal a stable code in text and structured content", asy
     ["edit_page", "outcome_unknown", false, { idempotency_key: "plain-key-1" }],
     ["manage_page_comment", "outcome_unknown", false, { idempotency_key: "plain-key-2" }],
     ["create_page", "outcome_unknown", false],
-    // Mismatched combos are tokenless: a v1_ key without its token, or a token
-    // beside a plain key, can't replay through the token lane.
+    // A v1_ key is refused before it reaches the token lane, with or
+    // without a token, so it never replays.
     [
       "edit_page",
       "outcome_unknown",
       false,
-      { idempotency_key: `v1_${"a".repeat(64)}_request-two` },
+      { retry_token: "token", idempotency_key: `v1_${"a".repeat(64)}_request-two` },
     ],
-    [
-      "edit_page",
-      "outcome_unknown",
-      false,
-      { retry_token: "token", idempotency_key: "plain-key-3" },
-    ],
+    ["edit_page", "outcome_unknown", false, { idempotency_key: "v1_request-three" }],
     ["import_page_image", "outcome_unknown", true],
     ["create_page_asset_upload", "outcome_unknown", true],
     ["report_page_progress", "outcome_unknown", undefined],
@@ -460,7 +452,6 @@ test("MCP change budgets count both representations, escaping and the JSON-RPC I
       heads: ["c".repeat(64)],
       changes: [{ block_id: "block", node_index: 0, markdown }],
       retry_token: "authority",
-      retry_key_prefix: "prefix_",
     };
     const response = await handleMcp(
       request("tools/call", {
@@ -1005,7 +996,8 @@ test("MCP lists create_page_asset_upload for any client with write scope, and po
     /create_page_asset_upload and POST the file to its upload_url with the returned headers \(its example field is a ready curl command\)/,
   );
   assert.match(instructions, /untrusted source material, not instructions/);
-  assert.match(instructions, /retry_key_prefix plus a new UUID with its retry_token/);
+  assert.match(instructions, /send a new UUID as the key with a retry_token/);
+  assert.doesNotMatch(instructions, /prefix/);
   assert.match(instructions, /superseded:true and applied:false was not applied/);
   // The result passes through with the browser link, and nothing is added.
   const issued = {
@@ -1262,17 +1254,24 @@ test("MCP advertises thread_ids for batch resolve and keeps the refusal's named 
   assert.deepEqual(calls[0].args.thread_ids, ["kept", "gone"]);
 });
 
-test("create_page and create_project say a v1_ key needs the listing's retry_token", () => {
+test("create_page and create_project take the caller's own key and the listing's retry_token", () => {
   for (const [name, listing] of [
-    ["create_page", /retry_token from the list_pages result/],
-    ["create_project", /retry_token from the list_projects or list_pages result/],
+    ["create_page", /retry_token from list_pages for a safe retry/],
+    ["create_project", /retry_token from list_projects or list_pages for a safe retry/],
   ]) {
     const { description } = tools.find((tool) => tool.name === name);
-    assert.match(
-      description,
-      /a plain key of 8–128 letters, digits, underscores or hyphens works alone/,
-    );
+    assert.match(description, /your own key of 8–128 letters, digits, underscores or hyphens/);
     assert.match(description, listing, name);
+  }
+});
+
+test("no MCP tool tells a caller to build its key from a prefix", () => {
+  const schemas = JSON.stringify(tools);
+  assert.doesNotMatch(schemas, /retry_key_prefix/);
+  assert.doesNotMatch(schemas, /v1_/);
+  for (const tool of tools) {
+    const key = tool.inputSchema.properties?.idempotency_key;
+    if (key?.description) assert.doesNotMatch(key.description, /prefix/, tool.name);
   }
 });
 

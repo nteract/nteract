@@ -15,7 +15,7 @@ import {
 } from "./page-create-machine.mjs";
 
 const PRJ = "prj_one";
-const attempt = { retry_token: "token", idempotency_key: "v1_abc_nonce1234" };
+const attempt = { retry_token: "token", idempotency_key: "nonce1234" };
 const receipt = { page_id: "new", project_id: PRJ };
 const placement = { project_id: PRJ };
 const at = (name, extra = {}) => ({ name, placement, attempt, ...extra });
@@ -171,7 +171,10 @@ test("runPageCreation writes the placement once and opens the new Page", async (
   const args = world.calls[1][1];
   assert.equal(args.project_id, PRJ);
   assert.equal(args.retry_token, "token");
-  assert.match(args.idempotency_key, /^v1_/);
+  assert.match(
+    args.idempotency_key,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+  );
   assert.deepEqual(world.opened, ["new"]);
   assert.equal(world.refreshed(), 1);
 });

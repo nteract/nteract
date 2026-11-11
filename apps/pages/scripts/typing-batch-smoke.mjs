@@ -305,7 +305,7 @@ try {
     title: "Typing batch fixture",
     markdown: BASE,
     retry_token: authority.retry_token,
-    idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
   });
   const pageId = created.page_id;
   for (const { page } of [writer, reader]) {

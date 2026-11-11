@@ -7,7 +7,6 @@ import { readTool } from "./tool-reads.mjs";
 
 const authority = {
   retry_token: "test-retry",
-  retry_key_prefix: "test-prefix_",
   retry_until: "2026-11-01T00:00:00Z",
 };
 function fixture(t, markdown = "# First\n\nKeep this passage.\n\n# Second\n\nOther content.") {

@@ -55,7 +55,7 @@ const localFetch = (input, options = {}) => {
 };
 const retry = (value) => ({
   retry_token: value.retry_token,
-  idempotency_key: value.retry_key_prefix + crypto.randomUUID(),
+  idempotency_key: crypto.randomUUID(),
 });
 async function sessionApi(page, path, body) {
   return page.evaluate(

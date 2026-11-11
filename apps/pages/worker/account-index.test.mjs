@@ -518,7 +518,7 @@ test("moving a Page changes nothing D1 holds and leaves the account ready", asyn
     page_id: child,
     parent_id: parent,
     retry_token: authority.retry_token,
-    idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
   });
   assert.equal(moved.status, 200, JSON.stringify(moved.body));
   assert.equal(await w.catalogStorage().get(DIRTY), undefined);

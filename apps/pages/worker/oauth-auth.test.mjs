@@ -9,7 +9,6 @@ import { authenticate } from "./auth.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { applyPageOperation, createPageData, initializePage } from "../model/page.mjs";
 import { comment, newCommentsDoc } from "../model/comments-test-support.mjs";
-import { retryKey } from "../model/retry-key.mjs";
 import {
   exchangeAuthorizationCode,
   issueAuthorizationCode,
@@ -647,7 +646,7 @@ for (const scope of ["pages:read pages:write offline_access", "pages:read offlin
           page_id: pageId,
           base_heads: authority.heads,
           retry_token: authority.retry_token,
-          idempotency_key: await retryKey(authority.retry_token, "read-token-denied-write"),
+          idempotency_key: "read-token-denied-write",
           operations: [{ op: "set_title", title: "Must not write" }],
         });
         assert.equal(denied.isError, true);
@@ -898,7 +897,7 @@ test("OAuth MCP clients trash, restore, preview and confirm permanent deletion",
     const listed = await parsed("list_pages");
     return {
       retry_token: listed.retry_token,
-      idempotency_key: listed.retry_key_prefix + crypto.randomUUID(),
+      idempotency_key: crypto.randomUUID(),
     };
   };
   const trashed = await parsed("delete_page", {

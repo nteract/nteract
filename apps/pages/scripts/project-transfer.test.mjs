@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { generateKeyBetween } from "fractional-indexing";
-import { retryKeyPrefix } from "../model/retry-key.mjs";
 import { inspectAsset } from "../worker/image-assets.mjs";
 import { createHash } from "node:crypto";
 import { imageAssetUrl as assetPath } from "../shared/image-assets.mjs";
@@ -61,8 +60,9 @@ const PNG = Buffer.from(
 /**
  * An in-memory Pages target behind a fetch function that speaks the same
  * stateless JSON-RPC tools/call as /mcp. It enforces the retry contract the
- * importer depends on: v1_ keys need their retry_token and its prefix, and a
- * key replays its receipt only for the identical payload. A Project's content
+ * importer depends on: a key is the caller's own nonce, scoped to its
+ * retry_token when it has one, and replays its receipt only for the identical
+ * payload. A Project's content
  * is a document in `pages` flagged `content`: never listed, addressed by the
  * Page tools through project_id, named by get_project as document_id.
  */
@@ -96,7 +96,7 @@ function fakePages(origin, { outlinePage = 100, token = KEY, insertNode = true }
     const token = `retry-${++tokenCount}.signature`;
     const retry_until = new Date(Date.UTC(2026, 10, 8)).toISOString();
     tokens.set(token, retry_until);
-    return { retry_token: token, retry_key_prefix: await retryKeyPrefix(token), retry_until };
+    return { retry_token: token, retry_until };
   }
   const siblings = (projectId, parentId) =>
     [...pages.values()].filter(
@@ -215,25 +215,19 @@ function fakePages(origin, { outlinePage = 100, token = KEY, insertNode = true }
     const key = args.idempotency_key;
     if (typeof key !== "string" || !/^[A-Za-z0-9_-]{8,128}$/.test(key))
       return fail("invalid_idempotency_key", "idempotency_key must contain 8–128 characters");
-    const versioned = key.startsWith("v1_");
-    if (versioned !== (args.retry_token !== undefined))
-      return fail(
-        "invalid_retry_token",
-        "A v1_ idempotency_key and retry_token must be used together",
-      );
-    if (versioned) {
-      if (!tokens.has(args.retry_token)) return fail("invalid_retry_token");
-      if (!key.startsWith(await retryKeyPrefix(args.retry_token)))
-        return fail("invalid_retry_token", "Use retry_key_prefix plus a unique nonce");
-    }
+    if (key.startsWith("v1_"))
+      return fail("invalid_idempotency_key", "idempotency_key must not start with v1_");
+    if (args.retry_token !== undefined && !tokens.has(args.retry_token))
+      return fail("invalid_retry_token");
+    const receiptKey = args.retry_token === undefined ? key : `${args.retry_token}\n${key}`;
     const fingerprint = JSON.stringify([name, args]);
-    const stored = receipts.get(key);
+    const stored = receipts.get(receiptKey);
     if (stored)
       return stored.fingerprint === fingerprint
         ? { ok: true, body: stored.body, replayed: true }
         : fail("idempotency_conflict");
     const result = apply();
-    if (result.ok) receipts.set(key, { fingerprint, body: result.body });
+    if (result.ok) receipts.set(receiptKey, { fingerprint, body: result.body });
     return result;
   }
   const tools = {
@@ -1097,7 +1091,7 @@ test("import fills the content through project_id, puts the top level at parent 
     ["First section.", "\\$\\$x\\$\\$"],
   );
   for (const call of target.calls.filter((call) => MUTATIONS.has(call.name))) {
-    assert.match(call.args.idempotency_key, /^v1_[a-f0-9]{64}_[a-f0-9]{40}$/);
+    assert.match(call.args.idempotency_key, /^[a-f0-9]{40}$/);
     assert.ok(call.args.retry_token);
   }
 
@@ -1602,7 +1596,7 @@ test("an expired create blocks writes; --reconcile lists candidates and --adopt 
   assert.equal(record.operation, "create_page");
   assert.equal(record.args.title, "Sibling");
   assert.equal(record.requested_at, "2026-11-01T00:00:00.000Z", "kept from the first send");
-  assert.match(record.idempotency_key, /^v1_/);
+  assert.match(record.idempotency_key, /^[a-f0-9]{40}$/);
   assert.equal(store.peek().pending, null);
 
   let before = target.calls.length;
@@ -1788,9 +1782,12 @@ test("an expired body batch is rewritten from a fresh read and converges", async
     );
     assert.equal(store.peek().pending.operation, "edit_page");
     target.hooks.dropResponse = null;
-    const expired = store.peek().pending.args.idempotency_key;
+    // The window belongs to the token: the same nonce with a fresh token is new.
+    const expired = store.peek().pending.args;
     target.hooks.before = (name, args) =>
-      name === "edit_page" && args.idempotency_key === expired
+      name === "edit_page" &&
+      args.idempotency_key === expired.idempotency_key &&
+      args.retry_token === expired.retry_token
         ? { ok: false, body: { error: "Retry window expired", code: "retry_expired" } }
         : undefined;
     const report = await importBundle(client(target, TARGET), bundle, { store, ...quick });

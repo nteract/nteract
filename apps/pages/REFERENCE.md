@@ -1690,7 +1690,7 @@ Tool requests to a Catalog or Page answer
 within 60 seconds; a slower one returns `504 request_timeout` while the host
 finishes the work it accepted. For a read, a progress renewal or clear
 (`progress_id` and `lease_token` name the session) or a write that carried a
-`retry_token` and its `v1_` key, the timeout is `retryable: true` and says to
+`retry_token`, the timeout is `retryable: true` and says to
 retry the same request; the receipt replays. For a tokenless write it is
 `retryable: false` and says to read back and reconcile, since the host may
 have completed the write and its tokenless receipt is kept only best-effort,
@@ -2428,8 +2428,7 @@ so on). It adds `retryable: true` to `stale_heads`, whose retry is a new request
 built from a fresh read. The HTTP API keeps `retryable` for transient failures
 only, because the browser treats those as an outage. A tool call that gets no
 answer returns `read_failed` or `outcome_unknown`. `outcome_unknown` is
-`retryable: true` only when the write carried a `retry_token` and the `v1_` key
-it scopes, whose receipt replays for the token's window; a tokenless write gets
+`retryable: true` only when the write carried a `retry_token`, whose receipt replays for the token's window; a tokenless write gets
 `retryable: false` and is told to read back and reconcile, since its receipt is
 kept best-effort and a repeat after eviction applies again. The `/llms.txt`
 guide lists the codes agents act on.
@@ -3092,8 +3091,12 @@ hash read and uploads nothing, and the grid keeps showing JSON cards.
 
 After a conflict, reread before constructing new work. For an uncertain outcome,
 retry the **identical token, key, and payload**. Page reads/deltas supply
-`retry_token` and `retry_key_prefix`; catalog listing supplies create/delete
-authority. Append a UUID to the returned prefix for a new operation.
+`retry_token` and `retry_until`; catalog listing supplies create/delete
+authority. The `idempotency_key` is the caller's own nonce, a new UUID for each
+new operation. With a token, the host keys the receipt by the token's SHA-256
+and the nonce (`v1_<hex>_<nonce>`), so the same nonce under another token is a
+different request. A key that starts with `v1_` is refused with
+`invalid_idempotency_key`: send only the nonce.
 
 Tokens last seven days. Expired completed requests return `410 retry_expired`
 without executing, even after receipt collection; reconcile the old outcome

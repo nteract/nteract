@@ -8,6 +8,7 @@ import {
   inspectOperation,
   reserveOperation,
   listOperationEntries,
+  retryKeyPrefix,
 } from "./operation-journal.mjs";
 
 /** The document a journal entry writes. Entries without `doc` predate the
@@ -23,6 +24,9 @@ function reject(status, message, code, details) {
   if (details) error.details = details;
   throw error;
 }
+/** The journal key of a write without a retry token: the caller's own
+ * idempotency_key. `v1_` starts only the keys a retry token scopes
+ * (operationKey), so a caller's key never does. */
 export function mutationKey(args) {
   if (
     typeof args.idempotency_key !== "string" ||
@@ -33,7 +37,21 @@ export function mutationKey(args) {
       "idempotency_key must contain 8–128 letters, digits, underscores or hyphens",
       "invalid_idempotency_key",
     );
+  if (args.idempotency_key.startsWith("v1_"))
+    reject(
+      400,
+      "idempotency_key must not start with v1_. Send only your own nonce, such as a new UUID, with the retry_token; Pages scopes the key to the token",
+      "invalid_idempotency_key",
+    );
   return `host/operation/${args.idempotency_key}`;
+}
+/** The journal key of a write. With a retry_token the receipt sits under
+ * `v1_<SHA-256 hex of the token>_<idempotency_key>`, so the same key with
+ * another token is another request. */
+export async function operationKey(args) {
+  const key = mutationKey(args);
+  if (args.retry_token === undefined) return key;
+  return `host/operation/${await retryKeyPrefix(args.retry_token)}${args.idempotency_key}`;
 }
 export async function fingerprint(operation, args, identity) {
   const bytes = new TextEncoder().encode(
@@ -109,7 +127,7 @@ export async function documentMutation({
 }) {
   const key = internal
     ? `${INTERNAL_PREFIX}${mutationKey(args).slice("host/operation/".length)}`
-    : mutationKey(args);
+    : await operationKey(args);
   const digest = await fingerprint(operation, args, identity);
   const inspected = await inspectOperation(storage, {
     key,
