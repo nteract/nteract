@@ -61,10 +61,10 @@ export async function receiptKey({ principal, lane, nonce }, prefix = PREFIX) {
       "nonce must be 6–64 letters, digits, underscores or hyphens, new for each request",
     );
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(principal)));
-  const account = digest
-    .slice(0, 16)
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
+  // Text, built byte by byte: a typed array's own map() would coerce each
+  // hex pair back into a byte.
+  let account = "";
+  for (const byte of digest.subarray(0, 16)) account += byte.toString(16).padStart(2, "0");
   return `${prefix}n1_${account}_${lane}_${nonce}`;
 }
 

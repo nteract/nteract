@@ -81,11 +81,9 @@ const reserveNext = (f, now, nonce = "collection-next") =>
 
 test("a receipt key is the account digest, the lane and the nonce", async () => {
   const key = await receiptKey({ principal: alice, lane: "comments", nonce: "abc_123" });
-  assert.match(key, /^host\/operation\/n1_[a-f0-9]{32}_comments_abc_123$/);
-  const digest = new Uint8Array(
-    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(alice)),
-  );
-  assert.equal(key.slice(18, 50), Buffer.from(digest.slice(0, 16)).toString("hex"));
+  // The first 16 bytes of SHA-256("user:issuer:alice"), as 32 hex characters
+  // (shasum -a 256).
+  assert.equal(key, "host/operation/n1_91a4f8f1f0a1a4066497cfe6d9841857_comments_abc_123");
   for (const nonce of [undefined, null, 7, "", "short", "x".repeat(65), "has space", "a:b"])
     await assert.rejects(receiptKey({ principal: alice, lane: "page", nonce }), {
       status: 400,
