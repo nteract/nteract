@@ -57,8 +57,8 @@ function writeMarkdownSpans(doc, id, spans) {
   };
   const path = textPath(id);
   // updateSpans can re-mark an unchanged multi-span mark, defeating a peer's
-  // concurrent unmark. Only exact restored runs qualify; an explicit opening
-  // paragraph is still a different stored shape from an implicit one.
+  // concurrent unmark. Only exact restored runs qualify: markers and their
+  // attrs compare as stored.
   if (runs(A.spans(doc, path)) === runs(spans)) return;
   A.updateSpans(doc, path, spans, updateSpansConfig);
   stampSpans(doc, spans);
@@ -71,6 +71,11 @@ export function setRichMarkdown(doc, id, source, { literal = false } = {}) {
   const spans = pageSpans(tree);
   A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
   stampSpans(doc, spans);
+}
+/** Write one empty paragraph, with its marker, as a block's whole content. */
+export function setRichEmpty(doc, id) {
+  const spans = pageSpans(schema.doc([Paragraph.create([])]));
+  A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
 }
 export function setRichImage(doc, id, { src, dark_src = null, alt, title = null }) {
   // Construct the embed directly: alt text is content, never Markdown syntax.

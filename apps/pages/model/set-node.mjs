@@ -95,10 +95,10 @@ export function nodeChange(input) {
   return { ...(type !== undefined && { type }), attrs: values };
 }
 
-/** The spans array index of the block marker governing native offset `at`,
- * or -1 when the text sits in the implicit first paragraph, which has none.
- * Inline embeds (a hard break, an image) take a position but govern nothing:
- * text after a line break still belongs to the node before it. */
+/** The spans array index of the block marker governing native offset `at`.
+ * Every node opens with a marker, so one governs every character. Inline
+ * embeds (a hard break, an image) take a position but govern nothing: text
+ * after a line break still belongs to the node before it. */
 function governingMarker(spans, at) {
   let pos = 0,
     index = -1;
@@ -108,10 +108,38 @@ function governingMarker(spans, at) {
       pos += 1;
     } else pos += spans[i].value.length;
   }
+  if (index < 0) throw Error("set_node found no marker for this text");
   return index;
 }
 
 const markerType = (span) => String(span.value.type);
+const parentsOf = (span) => (span.value.parents ?? []).map(String);
+
+/** The spans index of the marker set_node changes for text that marker
+ * `index` governs: that marker, or, for attributes only its container holds,
+ * the container whose first paragraph it opens (a task's checked, through
+ * the task's text). A retype always changes the node holding the text. */
+function targetMarker(spans, index, change) {
+  const names = Object.keys(change.attrs);
+  const marker = spans[index];
+  if (
+    change.type !== undefined ||
+    !names.length ||
+    markerType(marker) !== "paragraph" ||
+    names.every((name) => settableAttr("paragraph", name))
+  )
+    return index;
+  const container = spans[index - 1];
+  if (container?.type !== "block" || container.value.isEmbed) return index;
+  const type = markerType(container);
+  const own = parentsOf(container),
+    parents = parentsOf(marker);
+  const firstChild =
+    parents.length === own.length + 1 &&
+    parents.at(-1) === type &&
+    own.every((parent, i) => parent === parents[i]);
+  return firstChild && nodeType(type)?.governsFirstParagraph ? index - 1 : index;
+}
 // Table cells are the markers a column-scoped attribute (align) sets.
 const COLUMN_BLOCKS = new Set(SETTABLE_ATTRS.align.blocks);
 const isCell = (span) => span?.type === "block" && COLUMN_BLOCKS.has(markerType(span));
@@ -152,27 +180,9 @@ export function setNode(doc, id, input, trace, { anchor } = {}) {
   const change = nodeChange(input);
   const { path, start, end } = locateRange(doc, id, { ...input, op: "set_node" }, anchor);
   const spans = A.spans(doc, textPath(id));
-  let index = governingMarker(spans, start);
-  const implicit = index < 0;
+  const index = targetMarker(spans, governingMarker(spans, start), change);
   const result = { op: "set_node", block_id: id, matched: 1 };
   const names = Object.keys(change.attrs);
-  if (implicit && change.type === "paragraph" && !names.length) {
-    // Already a paragraph. An explicit marker would change nothing, and the
-    // editor drops it on the next keystroke.
-    trace?.push({ type: "text", block_id: id, start, end });
-    return result;
-  }
-  if (implicit) {
-    // The implicit first paragraph. Give it an explicit marker to change.
-    // That inserts a character at 0, as the editor does: two writers that
-    // convert it concurrently each insert one and leave an empty paragraph
-    // between them. Target scope refuses the second through its ancestry check.
-    spans.unshift({
-      type: "block",
-      value: { type: new A.ImmutableString("paragraph"), parents: [], attrs: {}, isEmbed: false },
-    });
-    index = 0;
-  }
   const marker = spans[index];
   const current = markerType(marker);
   const refuse = (label, blocks) => {
@@ -228,7 +238,6 @@ export function setNode(doc, id, input, trace, { anchor } = {}) {
   // The schema accepts every change above; check the tree anyway, so a
   // malformed marker can never be committed.
   richDoc(doc.blocks[id]);
-  const shift = implicit ? 1 : 0;
-  trace?.push({ type: "text", block_id: id, start: start + shift, end: end + shift });
+  trace?.push({ type: "text", block_id: id, start, end });
   return { ...result, ...(cells ? { cells } : {}) };
 }

@@ -278,7 +278,8 @@ function outlineEntry(entry, pageId) {
   return {
     block_id: entry.blockId,
     node_index: entry.nodeIndex,
-    // Stable across edits; null for a block's implicit first paragraph.
+    // Stable across edits. Null only in a block holding a node this build
+    // can't place (readableNodeIds).
     node_id: entry.nodeId,
     // The agent-facing name set_node and insert_node take (node-registry.mjs).
     type: readKind(entry.node),

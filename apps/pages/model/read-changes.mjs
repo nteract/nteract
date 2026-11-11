@@ -95,7 +95,7 @@ function nativeNodes(doc, blockId, headings) {
     }
     const nodeId = ids[nodeIndex].id;
     entries.push({
-      key: `${objectId}:${nodeId ?? `implicit:${nodeIndex}`}`,
+      key: `${objectId}:${nodeId}`,
       node_index: nodeIndex,
       node_id: nodeId,
       type: readKind(node),

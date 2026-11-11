@@ -586,7 +586,14 @@ export function decode(spans) {
     wgToAm[wg] = am;
     append(frame.tag.create(frame.children));
   };
+  // Text and inline nodes sit inside a node that opened with its marker. The
+  // one exception is what a node this build doesn't know stores right after
+  // its own marker: that is the unknown node's content, drawn as a paragraph
+  // of its own, and the block is lossy.
   const ensureText = () => {
+    if (stack.at(-1)?.tag.type.spec.inlineContent) return;
+    if (!afterUnknown) throw Error("Invalid Pages rich text: content before its node's marker");
+    lossy = true;
     if (stack.at(-1)?.tag.type === Table.type) open(TableRow);
     if (stack.at(-1)?.tag.type === TableRow.type) open(Cell);
     if (!stack.at(-1)?.tag.type.spec.inlineContent) open(Paragraph);
@@ -612,9 +619,6 @@ export function decode(spans) {
   };
   for (const span of spans) {
     if (span.type === "text") {
-      // Text right after an unknown block is that block's own content, which
-      // this build draws as a separate paragraph.
-      if (afterUnknown) lossy = true;
       ensureText();
       const marks = fromMarks(span.marks);
       // Wordgard uses a LineBreak leaf for newlines in code and prose. Code
@@ -632,7 +636,6 @@ export function decode(spans) {
     const value = span.value,
       type = String(value.type),
       attrs = strings(value.attrs);
-    afterUnknown = false;
     if (value.isEmbed) {
       ensureText();
       if (type === "hard-break") leaf(LineBreak);
@@ -648,6 +651,7 @@ export function decode(spans) {
       } else unknownInline(value);
       continue;
     }
+    afterUnknown = false;
     const outer = [];
     for (const parent of value.parents) {
       // A container this build doesn't know draws nothing of its own; its
@@ -696,7 +700,8 @@ export function decode(spans) {
     else if (dataframe) leaf(PagesDataframe.of(dataframe));
     else open(desc.tag, true);
   }
-  if (!blocks.length && !stack.length) open(Paragraph);
+  if (!blocks.length && !stack.length)
+    throw Error("Invalid Pages rich text: a block holds no node");
   while (stack.length) close();
   boundary();
   return { doc: schema.doc(blocks), map: { wgToAm, amToWg }, lossy };
@@ -744,12 +749,8 @@ export function encode(doc) {
     } else if (node.type === PagesUnknownEmbed) unknownMarker(node);
     else throw Error(`Unsupported Wordgard inline node: ${node.name}`);
   };
-  // A first paragraph can omit its marker when it has content or is the
-  // container's only child. Otherwise, emit a marker to preserve the empty
-  // paragraph.
-  const implicitAt = (siblings, i) =>
-    i === 0 && (siblings.length === 1 || siblings[0].content?.length > 0);
-  const block = (node, parents, implicit = false, listType = null) => {
+  // Every node writes its opening marker, so every node has one to name it.
+  const block = (node, parents, listType = null) => {
     if (node.type === PagesUnknownBlock) {
       unknownMarker(node);
       return;
@@ -772,7 +773,7 @@ export function encode(doc) {
           : node.type === BulletList.type
             ? "unordered-list-item"
             : "ordered-list-item";
-      for (const child of node.content) block(child, parents, false, itemType);
+      for (const child of node.content) block(child, parents, itemType);
       return;
     }
     let type,
@@ -803,14 +804,11 @@ export function encode(doc) {
         TaskChecked.spec.validate(attrs.checked);
       }
     } else throw Error(`Unsupported Wordgard block: ${node.name}`);
-    if (!(implicit && type === "paragraph")) marker(type, parents, attrs);
+    marker(type, parents, attrs);
     if (node.inlineContent)
       for (const child of node.content) inline(child, [...parents, type], type === "code-block");
-    else
-      node.content.forEach((child, i, siblings) =>
-        block(child, [...parents, type], implicitAt(siblings, i)),
-      );
+    else for (const child of node.content) block(child, [...parents, type]);
   };
-  doc.content.forEach((node, i, siblings) => block(node, [], implicitAt(siblings, i)));
+  for (const node of doc.content) block(node, []);
   return spans;
 }

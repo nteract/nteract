@@ -199,7 +199,8 @@ export function nativeRead(block, pageId) {
   return nativeReadSpans(A.spans(block, ["richText"]), pageId);
 }
 
-/** Read-only spans, including caller-normalized legacy projection forms. */
+/** A read-only projection of stored spans. Throws on content before its
+ * node's marker, or on spans that hold no node. */
 export function nativeReadSpans(input, pageId) {
   const spans = codeTextUnmarked(input);
   const nodes = [],
@@ -235,15 +236,23 @@ export function nativeReadSpans(input, pageId) {
     );
   };
   const inline = () => !!stack.at(-1)?.tag?.type.spec.inlineContent;
+  // Text and inline nodes sit inside a node that opened with its marker, or
+  // are the content a node this build doesn't know stores after its own
+  // marker, read as a paragraph inside it.
   const ensureText = () => {
-    if (stack.at(-1)?.tag.type === Table.type) open({ tag: TableRow });
-    if (stack.at(-1)?.tag.type === TableRow.type) open({ tag: Cell });
-    if (!inline()) open({ tag: Paragraph });
+    if (inline()) return;
+    if (stack.at(-1)?.tag.type !== ReadUnknown)
+      throw Error("Invalid Pages rich text: content before its node's marker");
+    open({ tag: Paragraph });
   };
   const code = () => stack.at(-1)?.tag?.type === CodeBlock.type;
+  // A node this reader can't show reads as notice text where it is stored:
+  // inline in a text container, or as a paragraph of its own.
   const notice = (type) => {
-    ensureText();
+    const own = !inline();
+    if (own) open({ tag: Paragraph });
     append(Leaf.text(unknownNodeNotice(type), Mark.none));
+    if (own) close();
   };
   for (const span of spans) {
     if (span.type === "text") {
@@ -301,6 +310,6 @@ export function nativeReadSpans(input, pageId) {
     at++;
   }
   while (stack.length) close();
-  if (!nodes.length) nodes.push(Paragraph.create([]));
+  if (!nodes.length) throw Error("Invalid Pages rich text: a block holds no node");
   return { nodes, source, metadata };
 }

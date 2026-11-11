@@ -188,16 +188,42 @@ test("text stored after an unknown block is that node's content", () => {
   assert.deepEqual(
     addresses.nodes.map(({ start, end, at }) => ({ start, end, at })),
     [
-      { start: 0, end: 1, at: null },
-      { start: 1, end: 14, at: 1 },
-      { start: 14, end: 16, at: 14 },
-      { start: 16, end: 18, at: 16 },
+      { start: 0, end: 2, at: 0 },
+      { start: 2, end: 15, at: 2 },
+      { start: 15, end: 17, at: 15 },
+      { start: 17, end: 19, at: 17 },
     ],
   );
   const inside = text.indexOf("callout");
   assert.equal(nodeIndexAt(addresses, inside), 1);
   assert.equal(ancestryAt(addresses, inside)[0].type, "PagesUnknownBlock");
-  assert.deepEqual(ancestryAt(addresses, 0), [{ type: "Paragraph", attrs: {} }]);
+  assert.deepEqual(ancestryAt(addresses, 1), [{ type: "Paragraph", attrs: {} }]);
+});
+
+test("every top-level node has an id, the first paragraph's included", () => {
+  for (const { name, spans } of inputs) {
+    const result = observe(spans);
+    if (!result.observed || result.observed.placed === false) continue;
+    assert.ok(
+      result.observed.ids.every((at) => Number.isInteger(at)),
+      `${name}: ${JSON.stringify(result.observed.ids)}`,
+    );
+  }
+});
+
+test("content before its node's marker is refused by every reader", () => {
+  for (const shape of [
+    "empty",
+    "text-before-first-marker",
+    "quote-text-before-marker",
+    "list-item-text-before-marker",
+  ]) {
+    const { spans } = inputs.find((input) => input.name === `shape/${shape}`);
+    const { doc, id } = pageWithSpans(spans);
+    assert.throws(() => nativeRead(doc.blocks[id], doc.page_id), shape);
+    assert.throws(() => blockAddresses(A.spans(doc, textPath(id))), shape);
+    assert.throws(() => nodeIds(doc, id), shape);
+  }
 });
 
 test("ancestry names each container and its stored attrs", () => {

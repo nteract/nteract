@@ -114,8 +114,7 @@ test("the Wordgard model draws every block type as a known node", () => {
     });
     assert.equal(unknown, false, type.block);
     // The editor's rewrite keeps the node, and a second rewrite writes
-    // nothing. (The first may drop an explicit first paragraph marker,
-    // which the editor leaves implicit.)
+    // nothing.
     const rewrite = (doc) =>
       A.change(A.clone(doc), (d) => A.updateSpans(d, ["t"], encode(decode(A.spans(d, ["t"])).doc)));
     let doc = A.change(A.from({ t: "" }), (d) => A.updateSpans(d, ["t"], forms[type.block]));
@@ -135,7 +134,7 @@ test("helpers read the registry", () => {
   assert.deepEqual(ALIGNMENTS, ["left", "center", "right"]);
   assert.equal(isKnownBlock("dataframe"), true);
   assert.equal(isKnownBlock("callout"), false);
-  assert.equal(nodeLabel("blockquote"), "a quote's first paragraph");
+  assert.equal(nodeLabel("blockquote"), "a quote");
   assert.equal(nodeLabel("callout"), "a callout node");
   assert.equal(nodeType("heading").attrs.level.agent, undefined);
   assert.equal(nodeType("code-block").attrs.params.agent, "language");

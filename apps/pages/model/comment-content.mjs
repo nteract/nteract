@@ -4,7 +4,8 @@ import { storedFormUnsupported } from "./stored-form.mjs";
 import { parseAgentMarkdown } from "./markdown-import.mjs";
 import { updateSpansConfig } from "./marks.mjs";
 import { pageSpans, validateRichSpans } from "./richtext-spans.mjs";
-import { decode, encode } from "./wordgard-doc.mjs";
+import { Leaf } from "wordgard/doc";
+import { LineBreak, Paragraph, decode, encode, schema } from "./wordgard-doc.mjs";
 import { stampSpans } from "./schema-features.mjs";
 import { DATAFRAME_BLOCK } from "../shared/dataset-assets.mjs";
 import {
@@ -88,7 +89,15 @@ export function isEditorForm(spans) {
 /** Literal text as a comment's spans: one paragraph, each newline a hard
  * break, no marks. `*` stays a `*`. */
 export const plainCommentSpans = (text) =>
-  editorCommentSpans([{ type: "text", value: String(text), marks: {} }]);
+  encode(
+    schema.doc([
+      Paragraph.create(
+        String(text)
+          .split("\n")
+          .flatMap((part, i) => [...(i ? [LineBreak] : []), ...(part ? [Leaf.text(part)] : [])]),
+      ),
+    ]),
+  );
 
 /** An agent's Markdown as a comment's spans, through the Page body's path
  * (pageSpans): math and HTML are refused with `unsupported_markdown`. */

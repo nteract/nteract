@@ -63,18 +63,3 @@ export function isBlankBlock(block) {
 export function richSize(block) {
   return new TextEncoder().encode(JSON.stringify(A.spans(block, ["richText"]))).length;
 }
-/** Whether `spans` open with a marker the editor wouldn't write: a plain
- * top-level paragraph marker before content, or as the only node (encode's
- * implicitAt in model/wordgard-doc.mjs). Writers drop it, so the editor's
- * next structural edit has nothing to delete. */
-export function redundantFirstMarker(spans) {
-  const [first, next] = spans;
-  const plainParagraph =
-    first?.type === "block" &&
-    String(first.value.type) === "paragraph" &&
-    !first.value.isEmbed &&
-    !first.value.parents?.length &&
-    !Object.keys(first.value.attrs ?? {}).length;
-  const content = !next || next.type === "text" || next.value?.isEmbed;
-  return plainParagraph && content;
-}
