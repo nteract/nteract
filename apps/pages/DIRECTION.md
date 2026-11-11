@@ -77,11 +77,36 @@ Comments live in their own document and anchor to the Page with cursors.
    the nodes the edit touched, so the agent sees what landed without another
    read. Whole-block Markdown rewrites are the exception: they are replaced by
    node-scoped writes, or stay fenced on current heads.
-5. **One address for agents.** `node_id` replaces the mix of `block_id`,
-   `node_id`, `node_index` and `image_id`. `edit_page` and `patch_page` become
-   one tool with one operation list. Only the addressing changes. Every
-   operation stays: text and formatting edits, images, Parquet dataframes,
-   node insert, delete and retype, and block moves. Uploads keep their flow.
+   This comes after the contract change in item 5, and it needs its own
+   design. Today the host applies every edit at current heads. Target scope
+   only proves a passage unchanged since the heads the agent read, and only
+   for `replace_match`, `format_match` and `set_node`. Nothing applies a
+   move, an insert, a delete or an image change at an older revision and
+   merges it. Because the request already names the revision, merging those
+   later changes no request shape: agents see fewer refusals.
+5. **One address and one envelope for agents.** One contract change, with
+   today's refusal rules:
+   - `node_id` replaces the mix of `block_id`, `node_id`, `node_index` and
+     `image_id`. A `node_id` is a cursor inside one block's text and does not
+     name its block, so the host needs a lookup from node to block.
+   - `edit_page` and `patch_page` become one tool with one operation list.
+     Every operation stays: text and formatting edits, images, Parquet
+     dataframes, node insert, delete and retype, and block moves. Uploads
+     keep their flow.
+   - Tool schemas stay in a portable subset: an operation is one object with
+     an `op` enum, and no schema uses `oneOf`, `anyOf`, `allOf`, `const` or
+     `$ref`. A test walks the schemas and enforces it.
+   - A read returns a short revision handle, such as `r1842`, in place of
+     64-hex heads. A write names the handle it read.
+   - A write carries a short nonce and no retry token. The host keeps the
+     receipt under the account, the document and the nonce, and a retry of
+     the same request returns that receipt. The handle's age bounds the retry
+     window: a write that names a handle older than the receipts the host
+     keeps is refused with `resync_required`.
+   - Writes with no revision (`create_page`, move, Trash, restore) carry the
+     nonce alone. After its receipt is gone, a retried `create_page` can make
+     a second Page. `purge_page` and `delete_project` keep their preview
+     token.
 
 ## Order of work
 
@@ -179,6 +204,21 @@ records the node addresses agents use.
   from [schema evolution and genesis](../../docs/adr/schema-evolution-and-genesis.md):
   additive writes on a fixed root, and a separate document for a structural
   change.
+- **A request carries nothing the host already knows.** The host has the
+  account, the document and the scope from the authenticated request, so a
+  client never sends a signed copy of them back. In a scripted seven-call
+  session, about 60% of the tokens were heads, idempotency keys and retry
+  tokens. Count a tool call's envelope as part of its cost.
+- **A retry of a write that landed returns its receipt.** An agent never
+  learns from a refusal that its own write landed.
+- **A revision handle belongs to a document, not to a Page.** Each
+  document's host issues its own handles and keeps the table from handle to
+  heads. A write names a document's handle only when it needs that
+  document's revision. A comment on selected text names the Page's handle,
+  to find that text; no other comment write names a revision, and none names
+  the comments document's. A second document type, or a document nested in
+  another, gets handles the same way. Handles are for the agent edge:
+  browsers sync with Automerge heads and never see one.
 - **No parity work.** No byte-for-byte comparison with an earlier encoder, no
   compatibility matrix, no readiness program. A demonstrated content-loss or
   access bug is a bug: fix it with a test that states the behavior.
