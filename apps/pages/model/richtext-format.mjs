@@ -6,41 +6,56 @@ export { safeUrl } from "./marks.mjs";
 
 export const textPath = (id) => ["blocks", id, "richText"];
 
-// A marker stores its parents as one immutable string: the container names,
-// outermost first, joined by "/" ("" for none). No block name holds a "/".
-// As one value, two writers that change one marker's parents at once leave
-// one writer's parents, never a mix of both. Code reads and writes parents as
-// a list of names; readSpans and the writers below convert at the store.
-export const PARENTS_SEPARATOR = "/";
-/** The stored form of a list of parent names. */
-export const parentsValue = (parents = []) =>
-  new A.ImmutableString(parents.map(String).join(PARENTS_SEPARATOR));
-const parentsList = (value) =>
-  String(value) === ""
-    ? []
-    : String(value)
-        .split(PARENTS_SEPARATOR)
-        .map((name) => new A.ImmutableString(name));
-const storedMarker = (value) =>
-  Array.isArray(value.parents) ? { ...value, parents: parentsValue(value.parents) } : value;
-/** `A.spans`, with each marker's stored parents read as a list of names. A
- * value that isn't an immutable string is passed through as stored, and
- * every reader draws it as no parents (lossy). Spike: a stored list is passed
- * through too, so fixtures that store lists still read. */
+// A marker stores its place as one immutable string, `path`: its parents'
+// names, outermost first, then its own type, joined by "/" (a top-level
+// paragraph is "paragraph"; a line break in a list item's paragraph is
+// "ordered-list-item/paragraph/hard-break"). No block name holds a "/". As
+// one value, a merge gives every marker one writer's type and parents
+// together, and whether it is an embed. `attrs` stay their own key. Code reads and writes
+// markers as { type, parents, attrs, isEmbed }; readSpans and the writers
+// below convert at the store.
+export const PATH_SEPARATOR = "/";
+/** The stored form of a marker given as { type, parents, attrs, isEmbed }. */
+export function storedMarker(value) {
+  if (!value || !("type" in value)) return value;
+  const { type, parents, isEmbed, ...rest } = value;
+  const names = [...(Array.isArray(parents) ? parents : []), type].map(String);
+  const path = names.join(PATH_SEPARATOR) + (isEmbed ? EMBED_SUFFIX : "");
+  return { ...rest, path: new A.ImmutableString(path) };
+}
+// An embed's path ends with this suffix: whether a marker is an embed goes
+// with its type, never from another writer.
+const EMBED_SUFFIX = "|embed";
+const readMarker = (value) => {
+  const stored = String(value.path);
+  const isEmbed = stored.endsWith(EMBED_SUFFIX);
+  const names = (isEmbed ? stored.slice(0, -EMBED_SUFFIX.length) : stored).split(PATH_SEPARATOR);
+  const { path: _path, ...rest } = value;
+  return {
+    ...rest,
+    type: new A.ImmutableString(names.at(-1)),
+    parents: names.slice(0, -1).map((name) => new A.ImmutableString(name)),
+    isEmbed,
+  };
+};
+/** `A.spans`, with each marker's stored path read as its type and parents.
+ * Spike: a marker stored in the list form (type and parents keys) is passed
+ * through, so fixtures that store it still read. */
 export function readSpans(doc, path) {
   return A.spans(doc, path).map((span) =>
-    span.type === "block" && A.isImmutableString(span.value?.parents)
-      ? { ...span, value: { ...span.value, parents: parentsList(span.value.parents) } }
+    span.type === "block" && A.isImmutableString(span.value?.path)
+      ? { ...span, value: readMarker(span.value) }
       : span,
   );
 }
-/** Inside a change: split a block marker in, with its parents stored. */
+/** Inside a change: split a block marker in, stored as a path. */
 export const splitBlockStored = (doc, path, at, value) =>
   A.splitBlock(doc, path, at, storedMarker(value));
 
 const markerKey = (value) =>
   JSON.stringify([
-    String(value.type),
+    "path" in value ? String(value.path) : null,
+    "type" in value ? String(value.type) : null,
     Array.isArray(value.parents) ? value.parents.map(String) : String(value.parents ?? ""),
     Object.entries(value.attrs ?? {})
       .map(([key, item]) => [key, A.isImmutableString(item) ? String(item) : item])
@@ -48,13 +63,11 @@ const markerKey = (value) =>
     !!value.isEmbed,
   ]);
 
-/** Inside a change: store `spans` as the text at `path`, as `A.updateSpans`
- * does, and then give every marker exactly the value `spans` gives it.
- * Automerge 3.5's updateSpans diffs a marker's `parents` list in place, and
- * when a rewrite changes the parents of several markers it can store a list
- * other than the one given (a table row's parents become `["table",
- * "table"]`). `A.updateBlock` replaces a marker's value and keeps the marker,
- * so its cursor, which is its node id, stays. */
+/** Inside a change: store `spans` as the text at `path`, each marker as a
+ * path, with `A.updateSpans`. With one scalar per marker, updateSpans
+ * stores what it is given (no model test or property run needs the check
+ * below). A marker still wrong is replaced with `A.updateBlock`, which
+ * deletes it and inserts a new one, so its node id changes. */
 export function updateSpansExactly(doc, path, given, config) {
   const spans = given.map((span) =>
     span.type === "block" ? { ...span, value: storedMarker(span.value) } : span,
@@ -70,7 +83,9 @@ export function updateSpansExactly(doc, path, given, config) {
   for (const span of A.spans(doc, path)) {
     if (span.type === "block") {
       const value = wanted.get(at);
-      if (value && markerKey(value) !== markerKey(span.value)) A.updateBlock(doc, path, at, value);
+      if (value && markerKey(value) !== markerKey(span.value)) {
+        A.updateBlock(doc, path, at, value);
+      }
     }
     at += span.type === "text" ? span.value.length : 1;
   }

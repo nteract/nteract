@@ -523,7 +523,7 @@ test("set_node updates markers in place and leaves every text mark alone", () =>
       if (patch.action === "mark") continue;
       const [, , , at, field] = patch.path;
       assert.ok(
-        ["attrs", "type"].includes(field),
+        ["attrs", "path"].includes(field),
         `${JSON.stringify(op)} wrote ${JSON.stringify(patch)}`,
       );
       touched.add(at);

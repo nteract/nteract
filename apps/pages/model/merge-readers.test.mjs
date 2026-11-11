@@ -20,7 +20,7 @@ import { nativeRead } from "./native-read.mjs";
 import { blockAddresses, nodeIndexAt } from "./node-addresses.mjs";
 import { isKnownBlock, NODE_TYPES } from "./node-registry.mjs";
 import { visibleNodeRange } from "./replace-match.mjs";
-import { parentsValue, readSpans, updateSpansExactly } from "./richtext-format.mjs";
+import { readSpans, storedMarker, updateSpansExactly } from "./richtext-format.mjs";
 import { nodeIds } from "./node-ids.mjs";
 import {
   storedParents,
@@ -528,16 +528,14 @@ function pageWithSpans(spans) {
   return { doc, id };
 }
 
-/** `spans` with each marker's parents in their stored form, one string. */
+/** `spans` with each marker in its stored form, one path. */
 const stored = (spans) =>
   spans.map((span) =>
-    span.type === "block"
-      ? { ...span, value: { ...span.value, parents: parentsValue(span.value.parents) } }
-      : span,
+    span.type === "block" ? { ...span, value: storedMarker(span.value) } : span,
   );
 const written = (spans) =>
   spans.flatMap((span) => (span.type === "block" ? [span.value.parents.map(String)] : []));
-const key = (parents) => parents.join("/");
+const placeOf = (span) => [...span.value.parents.map(String), String(span.value.type)].join("/");
 
 test("a structural write stores the parents it is given, and a miswritten block still reads", () => {
   // Automerge 3.5's updateSpans, on a rewrite that drops an outer container,
@@ -567,10 +565,11 @@ function concurrently(base, a, b) {
   const write = (actor, spans) =>
     A.change(A.clone(start, { actor }), (d) => updateSpansExactly(d, ["text"], spans));
   const merged = A.merge(write(ACTORS[0], a), write(ACTORS[1], b));
-  // A marker's parents merge as one value: each marker holds parents one
-  // writer gave some marker, never a mix of both.
-  const given = new Set([...written(a), ...written(b)].map(key));
-  for (const parents of parentsOf(merged)) assert.ok(given.has(key(parents)), key(parents));
+  // A marker's path merges as one value: each marker holds the type and
+  // parents one writer gave some marker, never a mix of two.
+  const given = new Set([...a, ...b].filter((span) => span.type === "block").map(placeOf));
+  for (const span of readSpans(merged, ["text"]))
+    if (span.type === "block") assert.ok(given.has(placeOf(span)), placeOf(span));
   return pageWithSpans(readSpans(merged, ["text"]));
 }
 
