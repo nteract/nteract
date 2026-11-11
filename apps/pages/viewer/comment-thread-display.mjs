@@ -2,26 +2,11 @@
 // wrote each message, when, and where the thread points in the Page. Nothing
 // here writes to a document; stored Markdown stays exactly as written.
 import * as A from "@automerge/automerge/slim";
-import { STORED_FORM_UNSUPPORTED } from "../model/stored-form.mjs";
 import { orderedBlockIds } from "../model/order.mjs";
+import { markerParents } from "../model/richtext-format.mjs";
 import { presenceColor } from "./presence-color.mjs";
 
 export const TITLE_MAX = 100;
-
-/** What a message an earlier build stored shows in place of its body. */
-export const UNREADABLE_COMMENT =
-  "This comment was saved by an earlier version of Pages and can't be shown.";
-
-/** `thread/message` keys of the projected messages (model/comments.mjs
- * projectComments) that are in an earlier build's stored form. */
-export function unreadableMessageKeys(threads) {
-  const keys = [];
-  for (const thread of threads ?? [])
-    for (const message of thread.messages ?? [])
-      if (message.content_error === STORED_FORM_UNSUPPORTED)
-        keys.push(`${thread.id}/${message.id}`);
-  return keys;
-}
 
 const ellipsis = (text, max) => (text.length > max ? text.slice(0, max - 1).trimEnd() + "…" : text);
 
@@ -179,7 +164,7 @@ function outline(doc) {
     for (const span of A.spans(block, ["richText"])) {
       if (span.type === "block") {
         const type = String(span.value?.type ?? "");
-        const parents = (span.value?.parents ?? []).map(String);
+        const parents = markerParents(span.value);
         if (first) entry.kind = kindOf(type, parents);
         first = false;
         heading = type === "heading" ? { level: Number(span.value?.attrs?.level) || 1 } : null;

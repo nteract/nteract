@@ -18,6 +18,7 @@ import {
 } from "./node-registry.mjs";
 import { PagesUnknownBlock, PagesUnknownEmbed, decode, encode } from "./wordgard-doc.mjs";
 import { insertedAssets } from "./page.mjs";
+import { validateRichSpans } from "./richtext-spans.mjs";
 
 test("every stored block type has exactly one registry entry", () => {
   const declared = NODE_TYPES.map((type) => type.block).sort();
@@ -114,8 +115,7 @@ test("the Wordgard model draws every block type as a known node", () => {
     });
     assert.equal(unknown, false, type.block);
     // The editor's rewrite keeps the node, and a second rewrite writes
-    // nothing. (The first may drop an explicit first paragraph marker,
-    // which the editor leaves implicit.)
+    // nothing.
     const rewrite = (doc) =>
       A.change(A.clone(doc), (d) => A.updateSpans(d, ["t"], encode(decode(A.spans(d, ["t"])).doc)));
     let doc = A.change(A.from({ t: "" }), (d) => A.updateSpans(d, ["t"], forms[type.block]));
@@ -201,6 +201,15 @@ test("the editor and registration agree on heading levels", () => {
   ];
   assert.equal(decode(heading({})).lossy, false);
   assert.equal(decode(heading({ level: 6 })).lossy, false);
-  for (const level of [null, "3", S("3"), 0, 7, 2.5])
-    assert.throws(() => decode(heading({ level })), /heading level/, String(level));
+  // Registration refuses any other level; a stored one reads as a notice.
+  for (const level of [null, "3", S("3"), 0, 7, 2.5]) {
+    assert.throws(
+      () => validateRichSpans(heading({ level })),
+      /heading level|cannot place/,
+      String(level),
+    );
+    const read = decode(heading({ level }));
+    assert.equal(read.newer, true, String(level));
+    assert.equal(read.doc.content[0].type, PagesUnknownBlock, String(level));
+  }
 });

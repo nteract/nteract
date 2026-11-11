@@ -105,7 +105,7 @@ installs Playwright's Chromium with system dependencies, runs `npm run e2e` with
 one retry and a flaky budget of one, and always uploads `test-results/`.
 Promotion to `pages.runtimed.run` is manual
 ([Promote production from the CI artifact](DEPLOYMENT.md#promote-production-from-the-ci-artifact)).
-A build of `main` reads format 2 and is refused there. A format 1 fix is built
+A build of `main` reads format 3 and is refused there. A format 1 fix is built
 from the maintenance branch cut from the `pages-format-1` tag. Before promoting,
 confirm both workflows are green for the exact source SHA. On a
 fresh Linux runner, install browser system dependencies with

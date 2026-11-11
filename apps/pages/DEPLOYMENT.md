@@ -6,8 +6,8 @@ own host, lab2) and **Page11** (`page11.runtimed.run`, also on lab2).
 [profiles.mjs](scripts/deployment/profiles.mjs) lists the profiles, and the
 deployment helpers reject any other target name.
 
-A build of `main` reads `pages.page` format 2, and only Page10 takes it
-([Document formats](#document-formats)). Pages, Pages2 and Page11 hold format 1
+A build of `main` reads `pages.page` format 3 and `pages.comments` format 2,
+and only Page10 takes it ([Document formats](#document-formats)). Pages, Pages2 and Page11 hold format 1
 documents. They take a build of the maintenance branch cut from the
 `pages-format-1` tag.
 
@@ -21,7 +21,7 @@ carrying compatibility code. Deployment never copies data between targets.
 
 The procedures below promote a format 1 release to `pages`. Run them from a
 checkout of the maintenance branch. They are not
-permission to reset it or to deploy format 2 work to it; that work uses a
+permission to reset it or to deploy later formats to it; that work uses a
 separate target. Confirm
 application state, auth/catalog storage, deployment pointers, and routes are
 isolated. Project transfer alone is not a complete archive of loose Pages,
@@ -79,7 +79,7 @@ Cloudflare by hand, after checking nothing serves from it, then rerun.
 
 ### Promote production from the CI artifact
 
-The gate's artifact is a build of `main`, which reads `pages.page` format 2.
+The gate's artifact is a build of `main`, which reads `pages.page` format 3.
 `install` refuses it for `pages`, which holds format 1
 ([Document formats](#document-formats)). A format 1 fix is built locally from
 the maintenance branch with the commands above. This section describes the
@@ -673,13 +673,14 @@ rollback refuse a release whose build receipt does not list that format under
 
 | Target | `pages.page` | `pages.comments` |
 | --- | --- | --- |
-| page10 | 2 | 1 |
+| page10 | 3 | 2 |
 | pages, pages2, page11 | 1 | 1 |
 
-A build of `main` reads `pages.page` format 2 only, so only page10 accepts it.
-The controller checks out the commit it deploys and reads this table from it,
-so the first format 2 commit on `main` installs on page10 with no change on
-the host. The same check stops a revert to a format 1 build.
+A build of `main` reads `pages.page` format 3 and `pages.comments` format 2
+only, so only page10 accepts it. The controller checks out the commit it
+deploys and reads this table from it, so a commit that changes page10's
+formats installs on page10 with no change on the host. The same check stops a
+revert to a build that reads earlier formats.
 
 The table is the operator's statement of what a target holds, and it gates
 the release only. The Page host checks each Page's own record: a record
@@ -690,13 +691,11 @@ and a record in any format the running build doesn't write is refused with
 still list, trash, restore and permanently delete it
 ([REFERENCE.md](REFERENCE.md#document-formats-in-the-host-record)).
 
-A record written before the stamp reads as `pages.page` 2 and
-`pages.comments` 1, so this build opens every Page page10 holds. page10's
-Pages from before format 2 have such records: a format 2 build reads their
-`position` and `richText` and ignores the other block fields. The format 3
-build deletes the unstamped rule, so it refuses those records one by one
-instead of opening them; they are deleted before it, since format 3 moves node
-ids ([DIRECTION.md](DIRECTION.md#rules-for-the-work)). No command empties a
+A record without the stamp, or stamped with `pages.page` 2 and
+`pages.comments` 1, is refused the same way. page10 is emptied for format 3,
+since format 3 moves node ids ([DIRECTION.md](DIRECTION.md#rules-for-the-work)):
+its owners delete its earlier Pages through the product, and a Page that
+remains is refused one by one rather than opened. No command empties a
 target.
 
 ### Stored forms and rollback rules

@@ -6,7 +6,8 @@ import { generateKeyBetween } from "fractional-indexing";
 // and `richText` is an Automerge text object. Registration checks every block
 // of a draft (worker/registration.mjs) and validates the spans inside each
 // `richText` (`validateRich`). Plain sync admission checks the shape of the
-// blocks a peer's changes touch (blockChangeRefusal), not the spans.
+// blocks a peer's changes touch (blockChangeRefusal), not the spans: no
+// marker rule applies at admission, since every reader reads any text.
 
 export const BLOCK_KEYS = Object.freeze(["position", "richText"]);
 export const MAX_POSITION_LENGTH = 512;
@@ -44,15 +45,6 @@ const refusal = (message, block) => ({
 
 const POSITION_MESSAGE = `A block's position must be a raw-string fractional index of at most ${MAX_POSITION_LENGTH} characters`;
 
-/** The keys of object `obj` in `backend`, or none when it has no such object. */
-function keysOf(backend, obj) {
-  try {
-    return backend.keys(obj);
-  } catch {
-    return [];
-  }
-}
-
 /**
  * The block ids that `fresh` writes: a key of a blocks map, or anything
  * inside a block. An op names its object; the object's path comes from
@@ -86,11 +78,10 @@ function touchedBlocks(backend, fresh) {
   return { blocks, touched };
 }
 
-/** The refusal for block object `obj` stored at `id`, or null. `kept` are the
- * keys the same object held before the changes. */
-function blockObjectRefusal(backend, obj, id, kept) {
+/** The refusal for block object `obj` stored at `id`, or null. */
+function blockObjectRefusal(backend, obj, id) {
   for (const key of backend.keys(obj))
-    if (!BLOCK_KEYS.includes(key) && !kept.includes(key))
+    if (!BLOCK_KEYS.includes(key))
       return refusal(`A block holds only position and richText, not ${key}`, id);
   const positions = backend.getAll(obj, "position");
   if (
@@ -106,7 +97,7 @@ function blockObjectRefusal(backend, obj, id, kept) {
 
 /**
  * The block shape after a peer's `fresh` changes, judged on the blocks they
- * write. `before` is the admitted document and `after` is it with the changes
+ * write. `after` is the admitted document with the changes
  * applied. Returns null, or `{ code, message, block? }`.
  *
  * Every value is judged, not only the one a reader sees: a value that loses a
@@ -116,24 +107,23 @@ function blockObjectRefusal(backend, obj, id, kept) {
  * id must be a map whose every `position` is a raw-string fractional index and
  * whose every `richText` is text.
  *
- * The changes may not add a key other than those two. A key the same block
- * object already held is tolerated: Pages stored before format 2 still hold
- * blocks with five more keys, and they stay editable. A block replaced by a
- * new map tolerates none. Deleting and moving blocks are allowed.
+ * A block holds no key other than those two. The spans inside `richText` are
+ * not judged: a merge can leave text no marker opens, and every reader reads
+ * it (decode in model/wordgard-doc.mjs). Deleting and moving blocks are
+ * allowed.
  */
-export function blockChangeRefusal(before, after, fresh) {
+export function blockChangeRefusal(after, fresh) {
   const backend = A.getBackend(after);
   const { blocks, touched } = touchedBlocks(backend, fresh);
   if (!blocks) return null;
   const maps = backend.getAll("_root", "blocks");
   if (!maps.length || maps.some(([type]) => type !== "map"))
     return refusal("A Page's blocks must be a map");
-  const earlier = A.getBackend(before);
   for (const id of touched)
     for (const [, blocksObj] of maps)
       for (const [type, obj] of backend.getAll(blocksObj, id)) {
         if (type !== "map") return refusal("A block must be a map", id);
-        const refused = blockObjectRefusal(backend, obj, id, keysOf(earlier, obj));
+        const refused = blockObjectRefusal(backend, obj, id);
         if (refused) return refused;
       }
   return null;

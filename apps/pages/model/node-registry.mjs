@@ -12,10 +12,11 @@
 //     container       holds blocks (quote, aside, list item, table, row)
 //     leaf            a block with no content (rule, dataframe)
 //     embed           an inline marker (image, hard break)
-// - `governsFirstParagraph`: the container's own marker governs its first
-//   paragraph, which has no marker of its own (model/set-node.mjs). True for
-//   quotes, asides and list items; a list item's label already names the item,
-//   a quote's says "first paragraph".
+// - `governsFirstParagraph`: set_node on the text of the container's first
+//   paragraph changes the container, though that paragraph has a marker of
+//   its own (model/set-node.mjs): checking a task through its text, refusing
+//   to retype a list item. True for quotes, asides and list items; a list
+//   item's label already names the item, a quote's says "first paragraph".
 // - `feature`: the model/features.json feature that gates it, or null.
 // - `label` / `plural`: how a refusal names a node, or several, of this type.
 // - `retype`: set_node may change a node between types that share this group
@@ -35,6 +36,7 @@
 // node-registry.test.mjs checks the entries against features.json and the
 // Wordgard model, so a new type can't be added in one
 // place only.
+import { isImmutableString } from "@automerge/automerge/slim";
 
 export const ALIGNMENTS = Object.freeze(["left", "center", "right"]);
 export const HEADING_LEVELS = Object.freeze({ min: 1, max: 6 });
@@ -149,11 +151,25 @@ export const NODE_TYPES = Object.freeze([
 
 const BY_BLOCK = new Map(NODE_TYPES.map((type) => [type.block, type]));
 
+/** A stored marker name (a type or a parent) as a string, or null when it is
+ * neither a string nor an ImmutableString. A peer can store any value there,
+ * and String() on a map can throw (a map whose toString isn't a function), so
+ * every reader converts stored names through this. */
+export function markerName(raw) {
+  if (typeof raw === "string") return raw;
+  if (isImmutableString(raw) && typeof raw.val === "string") return raw.val;
+  return null;
+}
+
+/** A stored marker value's type as a string, or null when it has none. */
+export const markerType = (value) =>
+  value && typeof value === "object" ? markerName(value.type) : null;
+
 /** The registry entry for a stored block marker type, or undefined. */
-export const nodeType = (block) => BY_BLOCK.get(String(block));
+export const nodeType = (block) => BY_BLOCK.get(markerName(block));
 
 /** Whether this build knows a stored block marker type. */
-export const isKnownBlock = (block) => BY_BLOCK.has(String(block));
+export const isKnownBlock = (block) => BY_BLOCK.has(markerName(block));
 
 /** Marker types whose content is only text and line breaks. */
 export const TEXT_CONTAINERS = Object.freeze(

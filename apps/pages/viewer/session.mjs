@@ -41,7 +41,6 @@ export { listLocalPages, retireLocalPage } from "./local-pages.mjs";
 import { entryStanding, saveRecoveryCopy } from "./local-catalog.mjs";
 import { RecoveryCapture } from "./recovery-capture.mjs";
 import { CatchUp } from "./catch-up.mjs";
-import { unreadableMessageKeys } from "./comment-thread-display.mjs";
 import { CATCH_UP_LIMIT_MS } from "./catch-up-machine.mjs";
 import { BACKEND_LIMITS } from "../model/limits.mjs";
 import { BUILD_FORMATS } from "../model/document-types.mjs";
@@ -65,6 +64,7 @@ import {
 } from "./reconnect-machine.mjs";
 import { commentsOpenMachine } from "./comments-open-machine.mjs";
 import { fullStatus, overlayStatus, viewerSyncStatusMachine } from "./sync-status-machine.mjs";
+import { FORMAT_GATE_INITIAL, formatGateStep } from "./format-gate.mjs";
 import {
   acknowledgedHeads,
   afterAcknowledgement,
@@ -433,6 +433,11 @@ export class PageSession {
    * then read-only while sync continues; access and Trash actions are
    * unaffected. Stamps only grow, so it never reopens. */
   schemaGate = SCHEMA_GATE_INITIAL;
+  /** The format gate (format-gate.mjs): `stopped` once the host refuses the
+   * Page's stored document format. The Page can never save from this build,
+   * so content, title and comments are read-only; Trash and delete, which
+   * run from the host record, are unaffected. */
+  formatGate = FORMAT_GATE_INITIAL;
   /** The session's phase (see session-machine.mjs). Every lifecycle flag
    * below derives from it, and effects run from its transitions. */
   phase$ = new Store(viewerSessionMachine.initial);
@@ -1122,6 +1127,13 @@ export class PageSession {
     if (gate.editable !== editable) this.updateCapabilities();
     this.emit();
   }
+  stepFormat(event) {
+    const { gate } = formatGateStep(this.formatGate, event);
+    if (gate === this.formatGate) return;
+    this.formatGate = gate;
+    this.updateCapabilities();
+    this.renderStatus();
+  }
   receiveChange(event) {
     if (!this.alive) return;
     this.observeSchema();
@@ -1150,22 +1162,7 @@ export class PageSession {
   }
   snapshot() {
     if (!this.doc || this.hidden) return null;
-    const page = projectPage(this.doc, this.commentsView);
-    this.#reportUnreadableComments(page.comments);
-    return page;
-  }
-  #unreadableReported = new Set();
-  /** Say once per message that this replica holds a comment in an earlier
-   * build's stored form. It renders as a placeholder (CommentContent). */
-  #reportUnreadableComments(threads) {
-    const fresh = unreadableMessageKeys(threads).filter(
-      (key) => !this.#unreadableReported.has(key),
-    );
-    if (!fresh.length) return;
-    for (const key of fresh) this.#unreadableReported.add(key);
-    console.warn(
-      `Pages: ${fresh.length} comment message(s) on this Page are stored in a form from an earlier version of Pages and show as a placeholder: ${fresh.join(", ")}`,
-    );
+    return projectPage(this.doc, this.commentsView);
   }
   requireSignIn(message = "Sign in again to sync this Page. Keep it open while you sign in.") {
     const { rejected } = this.dispatch({ type: "signIn", ok: false }, () => {
@@ -1220,7 +1217,10 @@ export class PageSession {
   updateCapabilities() {
     const enabled = !this.accessDenied && !this.accessReloadRequired && !this.editsPaused;
     // Content and comments are document writes; the schema gate holds both.
-    const content = enabled && this.schemaGate.editable;
+    const content =
+      enabled &&
+      this.schemaGate.editable &&
+      formatGateStep(this.formatGate, { type: "edit" }).allowed;
     this.canWrite = content && !!this.credentialCanWrite && !!this.access?.canWrite;
     // Comments are written to the comments document, so they wait for it and
     // for the Page's stamp saying the comments moved there.
@@ -1374,6 +1374,7 @@ export class PageSession {
       this.renderStatus();
       return;
     }
+    this.stepFormat({ type: "refused", code: admission.code });
     this.showConnectionProblem(stopMessage(admission));
   }
   /** Stop syncing while keeping the local draft. `denied` removes access,
@@ -2490,6 +2491,8 @@ export class PageSession {
         this.refuseNative(error.admission);
         return;
       }
+      // Discovery's 409 for a Page stored in a format the host doesn't open.
+      if (error.status === 409) this.stepFormat({ type: "refused", code: error.code });
       // Discovery classified its own answer. Only page_deleted marks a
       // deletion, so a 404 from another request (registration, tools) doesn't.
       const refusal = classifyRefusal(error);
@@ -3162,6 +3165,7 @@ export class PageSession {
         accessDenied: this.accessDenied,
         accessReloadRequired: this.accessReloadRequired,
         authRequired: this.authRequired,
+        formatUnsupported: this.formatGate.name === "stopped",
         localFailed: !!this.localProblem,
         localCopy: !!this.localPage,
         catchingUp: this.catchUp.showing,

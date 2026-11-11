@@ -21,7 +21,8 @@ function previous(source) {
   if (middle) {
     const tree = parseAgentMarkdown(middle);
     if (tree.content.length !== 1 || tree.firstChild.type !== Paragraph.type) throw invalid();
-    for (const span of encode(tree)) {
+    // The paragraph's own marker opens the spans; its content follows.
+    for (const span of encode(tree).slice(1)) {
       if (span.type !== "text") throw invalid();
       runs.push({ text: span.value, marks: { ...span.marks } });
     }

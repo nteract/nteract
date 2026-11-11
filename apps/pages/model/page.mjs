@@ -1,9 +1,11 @@
 import * as A from "@automerge/automerge/slim";
-import { redundantFirstMarker, textPath } from "./richtext-format.mjs";
+import { textPath, updateSpansExactly } from "./richtext-format.mjs";
 import { quotableNodeType } from "./richtext-notices.mjs";
-import { markdownlessNode } from "./richtext-spans.mjs";
+import { markdownlessNode, refuseNewerBlock } from "./richtext-spans.mjs";
 import { nativeRead, readKind } from "./native-read.mjs";
 import {
+  repairBlockMarkers,
+  setRichEmpty,
   setRichMarkdown,
   setRichMarkdownKeepingNodes,
   setRichImage,
@@ -25,18 +27,26 @@ import { insertOperation } from "./node-registry.mjs";
 import { stampFeatures } from "./schema-features.mjs";
 export { orderedBlockIds } from "./order.mjs";
 // A stored block holds its order and its text. Its id is its key in `blocks`.
+// Its text is written in the change that adds it, and always opens with a
+// node's marker: every writer below follows `block` with setRich*.
 const block = (position = positionForInsertion()) => ({ position, richText: "" });
+/** A new Page's root, with no blocks. initializePage adds the first one. */
 export function createPageData({ pageId, title = "Untitled" }) {
   return {
     page_id: pageId,
     title: String(title).slice(0, 1024),
-    blocks: { [crypto.randomUUID()]: block() },
+    blocks: {},
   };
 }
-/** A new Page's first change: its first block's Markdown, and the stamp that
- * says its comments live in their own document (model/comments-doc.mjs). */
-export function initializePage(doc, markdown = "") {
-  setRichMarkdown(doc, orderedBlockIds(doc)[0], String(markdown));
+/** A new Page's first change: its first block, holding `markdown` (one empty
+ * paragraph when that is empty), and the stamp that says its comments live
+ * in their own document (model/comments-doc.mjs). On a Page that already has
+ * blocks, it rewrites the first one. `blockId` names a new block; a fixture
+ * passes one to keep its history the same on every run. */
+export function initializePage(doc, markdown = "", blockId = crypto.randomUUID()) {
+  let id = orderedBlockIds(doc)[0];
+  if (id === undefined) doc.blocks[(id = blockId)] = block();
+  setRichMarkdown(doc, id, String(markdown));
   stampFeatures(doc, [COMMENTS_FEATURE]);
 }
 /** `commentsDoc` is the Page's comments document, when it's available. */
@@ -215,6 +225,7 @@ function applyEdit(doc, op, trace, context) {
   if (!Object.hasOwn(doc.blocks, id)) throw Error("Block not found");
   if (op.op === "set_image") {
     validateImageChange(op);
+    refuseNewerBlock(doc, id, "set_image");
     const { index } = resolveImageId(doc, id, op.image_id);
     const spans = A.spans(doc, textPath(id));
     const attrs = { ...spans[index].value.attrs };
@@ -227,7 +238,7 @@ function applyEdit(doc, op, trace, context) {
       if (op[key] !== undefined)
         attrs[key] = op[key] === null ? null : new A.ImmutableString(op[key]);
     spans[index] = { ...spans[index], value: { ...spans[index].value, attrs } };
-    A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
+    updateSpansExactly(doc, textPath(id), spans, updateSpansConfig);
     stampSpans(doc, spans);
     trace?.push({ type: "block", block_id: id });
     return { op: "set_image", block_id: id, image_id: op.image_id };
@@ -246,7 +257,7 @@ function applyEdit(doc, op, trace, context) {
     if (node)
       throw Object.assign(
         Error(
-          `This block holds ${quotableNodeType(node) ? `a ${node}` : "a node this version of Pages doesn't know"}, which has no Markdown form, so a Markdown rewrite would lose it. Remove it with delete_node, or edit around it with patch_page.`,
+          `This block holds ${quotableNodeType(node) ? `${/^[aeiou]/.test(node) ? "an" : "a"} ${node}` : "a node this version of Pages doesn't know"}, which has no Markdown form, so a Markdown rewrite would lose it. Remove it with delete_node, or with delete_block when read_page reports no node_id for it. patch_page edits around it only while the block reads whole (nothing after the node is its content); otherwise patch_page answers newer_content.`,
         ),
         { code: "markdownless_node" },
       );
@@ -258,7 +269,7 @@ function applyEdit(doc, op, trace, context) {
   } else if (op.op === "delete_block") {
     delete doc.blocks[id];
   } else if (op.op === "delete_node") {
-    return deleteNode(doc, id, op, trace, context.opened);
+    return deleteNode(doc, id, op, trace);
   } else throw Error("Unsupported edit operation");
 }
 /** Delete the top-level node `op.node_id` names: its marker through the next
@@ -266,15 +277,14 @@ function applyEdit(doc, op, trace, context) {
  * neighbours keep their identity. Refused when the block ends up with fewer
  * than one node less: a list has no marker of its own to keep it apart, so
  * two alike on either side of the deleted node would join into one. (Deleting a
- * block's only node leaves the one empty paragraph a block always has.)
- * A delete of the node that opens the block is recorded in `opened`; the
- * batch drops the next node's plain paragraph marker once it's done
- * (dropOpeningMarkers), so later deletes in the batch still find their ids. */
-function deleteNode(doc, id, op, trace, opened) {
+ * block's only node leaves the one empty paragraph a block always has, with
+ * a marker of its own.) */
+function deleteNode(doc, id, op, trace) {
   const tree = nativeRead(doc.blocks[id], doc.page_id);
   const { index, start, end } = resolveNodeId(doc, id, op.node_id, tree);
   const type = readKind(tree.nodes[index]);
   A.splice(doc, textPath(id), start, end - start);
+  if (!doc.blocks[id].richText.length) setRichEmpty(doc, id);
   // Removing whole top-level nodes keeps the tree valid; check it anyway, so
   // a malformed result can never be committed.
   const result = nativeRead(doc.blocks[id], doc.page_id);
@@ -288,18 +298,8 @@ function deleteNode(doc, id, op, trace, opened) {
       { code: "nodes_would_join" },
     );
   }
-  if (start === 0) opened.add(id);
   trace?.push({ type: "block", block_id: id });
   return { op: "delete_node", block_id: id, node_id: op.node_id, type };
-}
-/** A block whose opening node a delete removed loses the plain paragraph
- * marker it may now open with, as the editor would on its next edit. */
-function dropOpeningMarkers(doc, opened) {
-  for (const id of opened) {
-    if (!Object.hasOwn(doc.blocks, id)) continue;
-    const path = textPath(id);
-    if (redundantFirstMarker(A.spans(doc, path))) A.splice(doc, path, 0, 1);
-  }
 }
 export function applyPageOperation(doc, options) {
   const result = applyOperation(doc, options);
@@ -324,6 +324,16 @@ function applyOperation(doc, { operation, arguments: args = {}, trace }) {
     if (!Object.hasOwn(doc.blocks, op.block_id)) throw Error("Block not found");
     resolveImageId(doc, op.block_id, op.image_id);
   }
+  // Every block the batch edits has its markers repaired first, in this
+  // change: nodes stored under parents no writer wrote get the parents they
+  // are drawn with, and unmarked text gets its marker, so every node an
+  // operation resolves has one. Repair changes no visible text or node, so
+  // the matches and ids the caller read still hold.
+  for (const op of operations) {
+    const id = op.block_id ?? op.id;
+    if (op.op !== "delete_block" && typeof id === "string" && Object.hasOwn(doc.blocks, id))
+      repairBlockMarkers(doc, id);
+  }
   // Every occurrence names a match in the batch's starting snapshot, the one
   // the caller read. Resolve them all before any operation runs.
   const anchors = operations.map((op) => {
@@ -333,12 +343,11 @@ function applyOperation(doc, { operation, arguments: args = {}, trace }) {
     return anchorOccurrence(doc, id, op);
   });
   const budget = { writes: 0 };
-  const opened = new Set();
   const edits = [],
     inserted_images = [],
     inserted_nodes = [];
   for (const [index, op] of operations.entries()) {
-    const edit = applyEdit(doc, op, trace, { anchor: anchors[index], budget, opened });
+    const edit = applyEdit(doc, op, trace, { anchor: anchors[index], budget });
     if (edit?.op === "insert_image") {
       const { op: _op, ...image } = edit;
       inserted_images.push(image);
@@ -347,7 +356,6 @@ function applyOperation(doc, { operation, arguments: args = {}, trace }) {
       inserted_nodes.push(node);
     } else if (edit) edits.push(edit);
   }
-  dropOpeningMarkers(doc, opened);
   return {
     page_id: doc.page_id,
     ...(edits.length ? { edits } : {}),

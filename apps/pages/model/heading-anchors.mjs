@@ -8,6 +8,7 @@
 // pageHeadingAnchors, so the two can't disagree about which heading an
 // anchor names. A heading's text here is its visible text: characters, image
 // alt text and line breaks as spaces, like the outline's `heading` field.
+import { markerType } from "./node-registry.mjs";
 import * as A from "@automerge/automerge/slim";
 import { orderedBlockIds } from "./order.mjs";
 
@@ -77,7 +78,7 @@ export function headingsInSpans(spans) {
       continue;
     }
     current = null;
-    if (String(value.type) === "heading") {
+    if (markerType(value) === "heading") {
       current = { level: Number(value.attrs?.level) || 1, text: "" };
       headings.push(current);
     }

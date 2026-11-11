@@ -619,11 +619,13 @@ test("purge_page can't delete a Project's content outside its deletion", async (
 });
 
 /** The content host as a host booted on a record whose documents this build
- * doesn't write: it holds the record and opens neither document. Returns
- * the documents the host opens from then on. */
+ * doesn't write: it holds the record and opens neither document. A null
+ * `documentFormats` is a record with no stamp. Returns the documents the
+ * host opens from then on. */
 async function unopenedContent(w, project, documentFormats) {
   const host = w.page(project.document_id);
-  host.metadata = { ...host.metadata, documentFormats };
+  const { documentFormats: _stamp, ...unstamped } = host.metadata;
+  host.metadata = documentFormats === null ? unstamped : { ...unstamped, documentFormats };
   await host.ctx.storage.put("host/document", host.metadata);
   host.handle = undefined;
   host.commentsHandle = undefined;
@@ -636,14 +638,25 @@ async function unopenedContent(w, project, documentFormats) {
   return { host, opened };
 }
 
-test("the owner deletes a Project whose content is in a format this build doesn't write, from its record", async (t) => {
+// A record in a format this build doesn't write: a newer one, the format
+// before this build's, or one written before records carried a stamp. The
+// last two are how page10's Projects from before format 3 are cleared.
+const UNOPENED_FORMATS = {
+  "a newer format": { "pages.page": 99, "pages.comments": 1 },
+  "pages.page 2": { "pages.page": 2, "pages.comments": 1 },
+  "no stamp": null,
+};
+
+for (const [name, documentFormats] of Object.entries(UNOPENED_FORMATS))
+  test(`the owner deletes a Project whose content record has ${name}, from its record`, async (t) => {
+    await deleteUnopened(t, documentFormats);
+  });
+
+async function deleteUnopened(t, documentFormats) {
   const w = await world(t);
   t.mock.method(console, "info", () => {});
   const project = await w.createProject("Old format");
-  const { host, opened } = await unopenedContent(w, project, {
-    "pages.page": 99,
-    "pages.comments": 1,
-  });
+  const { host, opened } = await unopenedContent(w, project, documentFormats);
   const read = await w.call("owner", "read_page", { project_id: project.project_id });
   assert.equal(read.status, 409);
   assert.equal(read.body.code, "document_format_unsupported");
@@ -671,7 +684,7 @@ test("the owner deletes a Project whose content is in a format this build doesn'
     await confirm(w, project.project_id, previewed.body.preview_token, key),
     deleted,
   );
-});
+}
 
 test("a content record that opens after the preview refuses the deletion and reopens", async (t) => {
   const w = await world(t);
@@ -716,24 +729,6 @@ test("a content record that opens after the preview refuses the deletion and reo
     (await w.call("owner", "get_project", { project_id: project.project_id })).status,
     200,
   );
-});
-
-test("a content record without a format stamp reads as this build's formats and deletes by its heads", async (t) => {
-  const w = await world(t);
-  t.mock.method(console, "info", () => {});
-  const project = await w.createProject("Unstamped");
-  writableContent(w, project);
-  const host = w.page(project.document_id);
-  const { documentFormats: _stamp, ...unstamped } = host.metadata;
-  host.metadata = unstamped;
-  await host.ctx.storage.put("host/document", unstamped);
-  const previewed = await preview(w, project.project_id);
-  assert.equal(previewed.status, 200, JSON.stringify(previewed.body));
-  assert.deepEqual(previewed.body.heads, A.getHeads(host.handle.doc()));
-  assert.equal(previewed.body.comment_count, 0);
-  const deleted = await confirm(w, project.project_id, previewed.body.preview_token);
-  assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
-  assert.ok(host.metadata.purged);
 });
 
 test("delete_project over MCP previews, confirms and maps project_id", async (t) => {

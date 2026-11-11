@@ -160,8 +160,16 @@ ${part.authErrorItems}
     edited. Keep that line unchanged to keep the node; the error lists the
     lines. To remove a dataframe, delete_node it by its node_id.
   - The block holds a node a newer version of Pages added (it reads as
-    [Unsupported node: <type>]). Edit around it with replace_match,
-    format_match or set_node, or remove it with delete_node.
+    [Unsupported node: <type>]). While the block reads whole (no text
+    follows the node as its content, and nothing else in the block is
+    dropped), edit around it with replace_match, format_match or set_node.
+    Otherwise those answer newer_content: remove the node with delete_node,
+    or the block with delete_block when read_page gives it no node_id.
+- newer_content (409): the block holds content from a newer version of Pages
+  that this version can't draw whole, so replace_match, format_match,
+  set_node and set_image refuse to edit it. Remove a node with delete_node, or
+  the whole block with delete_block (when read_page gives no node_id).
+  Retrying unchanged fails again.
 - node_not_found: delete_node's node_id doesn't name a node in that block. The
   node was deleted, or the id came from another block: read the outline again.
   It's also returned for a block holding a node this version can't place,

@@ -22,7 +22,11 @@ import { tablePresentation } from "./wordgard-tables.mjs";
 import { PagesLink, elements } from "./wordgard-model.mjs";
 import { taskLists } from "./wordgard-task-lists.mjs";
 import { displaySymbols } from "./wordgard-symbols.mjs";
-import { wordgardCodeNewlines, wordgardListStarts } from "./wordgard-binding.mjs";
+import {
+  wordgardCodeNewlines,
+  wordgardForeignMarks,
+  wordgardListStarts,
+} from "./wordgard-binding.mjs";
 import { wordgardWidgets } from "./wordgard-widgets.mjs";
 import { wordgardDataframes } from "./wordgard-dataframes.mjs";
 import { wordgardImages } from "./wordgard-images.mjs";
@@ -62,6 +66,7 @@ export function readOnlyPageConfig({ pageId, eagerDataframes = false }) {
     wordgardDataframes({ pageId, eager: eagerDataframes }),
     wordgardImages(),
     wordgardCodeNewlines,
+    wordgardForeignMarks,
     wordgardListStarts,
     codeHighlighting,
     displaySymbols,

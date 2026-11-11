@@ -1,11 +1,10 @@
 // Comment reads have no writer or editor-schema dependency. Legacy tolerance
 // here projects stored content only; it never makes that content admissible.
 import * as A from "@automerge/automerge/slim";
-import { codeTextUnmarked, isRich } from "./richtext-format.mjs";
-import { STORED_FORM_UNSUPPORTED } from "./stored-form.mjs";
+import { codeTextUnmarked, markerParents } from "./richtext-format.mjs";
 import { PLAIN_FORMAT, plainCommentText } from "./comment-text.mjs";
 import { nativeReadSpans, readChildren, readKind, readMarkdown } from "./native-read.mjs";
-import { isKnownBlock, nodeType, TEXT_CONTAINERS } from "./node-registry.mjs";
+import { isKnownBlock, nodeType, TEXT_CONTAINERS, markerType } from "./node-registry.mjs";
 import { unknownNodeNotice } from "./richtext-notices.mjs";
 
 const unreadable = () => {
@@ -31,16 +30,16 @@ function commentNoticeSpans(spans, all) {
       leaf &&
       !leaf.isEmbed &&
       nodeType(leaf.type)?.kind === "leaf" &&
-      String(leaf.type) !== "pages-opaque" &&
-      !leaf.parents.some((parent) => TEXT_CONTAINERS.has(String(parent)))
+      markerType(leaf) !== "pages-opaque" &&
+      !markerParents(leaf).some((parent) => TEXT_CONTAINERS.has(parent))
     )
       out.push(marker(new A.ImmutableString("paragraph"), leaf.parents));
     if (span.type !== "block") {
       out.push(span);
       continue;
     }
-    const type = String(span.value.type),
-      parents = (span.value.parents ?? []).map(String);
+    const type = markerType(span.value),
+      parents = markerParents(span.value);
     const unknown = !isKnownBlock(type) || dataframeInText(type, parents);
     if (unknown && (all || (span.value.isEmbed && parents.includes("code-block")))) {
       if (!span.value.isEmbed && !parents.some((parent) => TEXT_CONTAINERS.has(parent)))
@@ -65,7 +64,7 @@ function commentReadSpans(spans) {
     const value = span.value;
     // Mutable marker names and parent lists have an established literal
     // reading. Normalize copies, never the Automerge source or its writers.
-    const type = A.isImmutableString(value.type) ? String(value.type) : "paragraph";
+    const type = A.isImmutableString(value.type) ? markerType(value) : "paragraph";
     let parents =
       Array.isArray(value.parents) && value.parents.every(A.isImmutableString)
         ? value.parents.map(String)
@@ -77,7 +76,7 @@ function commentReadSpans(spans) {
     const inlineNext = next && (next.type !== "block" || next.value?.isEmbed);
     const nextType =
       next?.type === "block" && A.isImmutableString(next.value.type)
-        ? String(next.value.type)
+        ? markerType(next.value)
         : "paragraph";
     const inlineContentNext =
       inlineNext &&
@@ -178,11 +177,9 @@ export function commentMarkdown(message) {
 }
 
 /** Literal comments omit body_format until their spans contain formatting.
- * Unsupported stored forms and unreadable rich text fail per message, never
- * per thread or Page. No read repairs or overwrites shared content. */
+ * Unreadable rich text fails per message, never per thread or Page. No read
+ * repairs or overwrites shared content. */
 export function commentBodyProjection(message) {
-  if (isStoredFormMessage(message))
-    return { body: "", body_format: "plain", content_error: STORED_FORM_UNSUPPORTED };
   try {
     const spans = A.spans(message, ["richText"]);
     if (String(message.bodyFormat ?? "") === PLAIN_FORMAT) {
@@ -203,8 +200,8 @@ export function commentBodyProjection(message) {
       let unknown;
       for (const span of unmarked) {
         if (span.type !== "block") continue;
-        const type = String(span.value.type),
-          parents = (span.value.parents ?? []).map(String);
+        const type = markerType(span.value),
+          parents = markerParents(span.value);
         unknown = dataframeInText(type, parents)
           ? "dataframe"
           : [type, ...parents].find((name) => !isKnownBlock(name));
@@ -230,11 +227,6 @@ export function commentBodyProjection(message) {
       content_error: "rich_text_unavailable",
     };
   }
-}
-
-/** A bare body or a stale body copy is not a current stored message. */
-export function isStoredFormMessage(message) {
-  return !isRich(message) || message.body !== undefined;
 }
 
 // JSON values omit marks and table marker attributes; change feeds need spans.

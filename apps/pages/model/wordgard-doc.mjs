@@ -45,7 +45,15 @@ import {
 } from "./marks.mjs";
 import { DATAFRAME_BLOCK, readDataframe } from "../shared/dataset-assets.mjs";
 import { imageAttrs } from "./image-attrs.mjs";
-import { TEXT_CONTAINERS, validAlignment, validHeadingLevel } from "./node-registry.mjs";
+import { markerParents } from "./richtext-format.mjs";
+import {
+  isKnownBlock,
+  TEXT_CONTAINERS,
+  validAlignment,
+  validHeadingLevel,
+  markerName,
+  markerType,
+} from "./node-registry.mjs";
 // The Pages table format stores physical alignment. Wordgard's stock mark
 // uses logical values and does not round-trip a physical `right` clipboard style.
 const validCellAlignment = validAlignment;
@@ -128,9 +136,11 @@ export const PagesHighlight = Mark.Type.define("PagesHighlight", {
     },
   },
 });
-// Marks a newer build wrote, keyed by name with their stored values. They
-// render as plain text and are written back unchanged, so this build can edit
-// a block that carries them without erasing them.
+// Marks a newer build wrote, keyed by name with their stored values: a name
+// this build doesn't know, or a known name whose value it can't read or must
+// not render (readMark). They render as plain text and are written back
+// unchanged, so this build can edit a block that carries them without
+// erasing them.
 export const PagesForeignMarks = Mark.Type.define("PagesForeignMarks", {
   // Non-inclusive: typing next to a foreign run must not extend a mark this
   // build can't show or remove.
@@ -140,7 +150,7 @@ export const PagesForeignMarks = Mark.Type.define("PagesForeignMarks", {
       !value ||
       typeof value !== "object" ||
       !Object.keys(value).length ||
-      Object.keys(value).some(isKnownMark)
+      Object.entries(value).some(([name, stored]) => readMark(name, stored))
     )
       throw Error("Invalid foreign Pages marks");
   },
@@ -271,9 +281,9 @@ export const PagesDataframe = Leaf.Type.define("PagesDataframe", {
 // makes the Page read-only here (schemaGateStep in viewer/session.mjs), so it
 // is drawn as a notice. Its value is the stored marker: type, attrs, parents
 // and isEmbed, and encode writes exactly that marker back. decode reports
-// `lossy` when it can't place a node where it was stored, or when it skips a
-// container this build doesn't know; the binding refuses writes then, so an
-// unstamped Page can't flatten what it can't draw.
+// `newer` content and `lossy` when it skips a container this build doesn't
+// know; the binding refuses writes then, so an unstamped Page can't flatten
+// what it can't draw.
 export const UNKNOWN_NODE_NOTICE = "Added by a newer version of Pages. Reload to see it.";
 function validateUnknown(value) {
   if (
@@ -315,17 +325,18 @@ export const PagesUnknownEmbed = Leaf.Type.define("PagesUnknownEmbed", {
 function unknownValue(marker) {
   const immutable = [];
   const attrs = Object.fromEntries(
-    Object.entries(marker.attrs ?? {}).map(([key, value]) => {
+    Object.entries(attrMap(marker.attrs) ?? {}).map(([key, value]) => {
       if (!A.isImmutableString(value)) return [key, value];
       immutable.push(key);
       return [key, String(value)];
     }),
   );
   return {
-    type: String(marker.type),
+    // A type that isn't a name is quoted as nothing: its notice names no node.
+    type: markerType(marker) ?? "",
     attrs,
     immutable,
-    parents: (marker.parents ?? []).map(String),
+    parents: storedParents(marker),
     isEmbed: !!marker.isEmbed,
   };
 }
@@ -402,6 +413,7 @@ export const elements = [
   ),
 ];
 export const schema = Schema.define(elements);
+const DOC_TYPE = schema.doc([Paragraph.create([])]).type;
 export {
   Paragraph,
   Heading,
@@ -442,21 +454,26 @@ const markTypes = {
 };
 for (const name of MARK_NAMES)
   if (!markTypes[name]) throw Error(`The Wordgard schema has no type for mark ${name}`);
+/** The mark a stored name and value read as, or null when this build doesn't
+ * know the name, can't read the value or must not render it (a link to an
+ * unsafe URL, a highlight outside the registry's colors). Every reader treats
+ * a null mark the same way: kept as stored in PagesForeignMarks, drawn as
+ * nothing and written back by encode. */
+export function readMark(name, value) {
+  if (!isKnownMark(name)) return null;
+  try {
+    return markTypes[name].of(decodeMarkValue(name, value));
+  } catch {
+    return null;
+  }
+}
 export function fromMarks(marks = {}) {
   const set = [];
   const foreign = {};
   for (const [name, value] of Object.entries(marks)) {
-    if (!isKnownMark(name)) {
-      foreign[name] = value;
-      continue;
-    }
-    let decoded;
-    try {
-      decoded = decodeMarkValue(name, value);
-    } catch {
-      throw Error(name === "link" ? "Invalid Pages link" : `Invalid Pages ${name} mark`);
-    }
-    set.push(markTypes[name].of(decoded));
+    const mark = readMark(name, value);
+    if (mark) set.push(mark);
+    else foreign[name] = value;
   }
   if (Object.keys(foreign).length) set.push(PagesForeignMarks.of(foreign));
   return set.reduce((result, mark) => mark.addToSet(result), Mark.none);
@@ -481,9 +498,19 @@ const encodedRank = (mark) => {
 };
 export function toMarks(marks) {
   const result = {};
+  // A readable mark wins over a stored value of the same name in
+  // PagesForeignMarks, whatever their order (wordgardForeignMarks in
+  // viewer/wordgard-binding.mjs keeps the editor from holding both).
+  const readable = new Set(
+    [...marks]
+      .filter((mark) => mark.type !== PagesForeignMarks)
+      .map((mark) => markTypeName(mark))
+      .filter(Boolean),
+  );
   for (const mark of [...marks].sort((a, b) => encodedRank(a) - encodedRank(b))) {
     if (mark.type === PagesForeignMarks) {
-      Object.assign(result, mark.value);
+      for (const [name, value] of Object.entries(mark.value))
+        if (!readable.has(name)) result[name] = value;
       continue;
     }
     const name = Object.keys(markTypes).find(
@@ -499,10 +526,50 @@ export function toMarks(marks) {
   return result;
 }
 export const markNames = (mark) => Object.keys(toMarks([mark]));
+function markTypeName(mark) {
+  return Object.keys(markTypes).find(
+    (key) => markTypes[key].type === mark.type || markTypes[key].type.type === mark.type,
+  );
+}
 const strings = (attrs = {}) =>
   Object.fromEntries(
-    Object.entries(attrs).map(([k, v]) => [k, A.isImmutableString(v) ? String(v) : v]),
+    Object.entries(attrMap(attrs) ?? {}).map(([k, v]) => [
+      k,
+      A.isImmutableString(v) ? String(v) : v,
+    ]),
   );
+/** A marker's attrs when they are a map, or null. */
+export const attrMap = (attrs = {}) =>
+  attrs && typeof attrs === "object" && !Array.isArray(attrs) && !A.isImmutableString(attrs)
+    ? attrs
+    : null;
+
+/** Whether this build can't read a stored marker's own values, or must not
+ * render them: a value that isn't a map, attrs that aren't one, an image
+ * whose attributes PagesImage refuses (an unsafe or missing src), a heading
+ * level, table alignment or task state outside what this build writes.
+ * Every reader draws such a marker as the notice for a node this build
+ * doesn't know, and encode writes it back as stored. */
+export function unreadableMarker(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return true;
+  if (value.attrs != null && !attrMap(value.attrs)) return true;
+  const type = markerType(value),
+    attrs = strings(value.attrs);
+  if (type === null) return true;
+  try {
+    if (value.isEmbed) {
+      if (type === "image") {
+        if (!imageAttrs(value.attrs)) return true;
+        PagesImage.spec.validate(attrs);
+      }
+      return false;
+    }
+    descriptor(type, attrs);
+    return false;
+  } catch {
+    return true;
+  }
+}
 function descriptor(type, attrs = {}) {
   switch (type) {
     case "table":
@@ -549,8 +616,64 @@ function descriptor(type, attrs = {}) {
   }
 }
 
-/** The editor tree for a block's spans, the native/editor position maps, and
- * whether the tree had to leave out something it couldn't place (`lossy`). */
+/** A marker's parents as stored names: a list, or none. */
+export const storedParents = markerParents;
+
+const typeOf = (tag) => tag.type ?? tag;
+/** Where a node of `tag` nests in `chain` (`[{ tag }]`, outermost first):
+ * the length of the longest prefix whose last container can hold it, 0 for
+ * the top level, or null when nothing in the chain, nor the top level, can.
+ * Every reader nests a marker's parents and then the node by this rule:
+ * each nests in the nearest container before it that can hold it, so a
+ * repeated container or a parent that can't hold the next one drops out,
+ * and decode reports the block's nesting `adjusted`. */
+export function nestIn(chain, tag) {
+  const type = typeOf(tag);
+  for (let depth = chain.length; depth > 0; depth--)
+    if (schema.canContain(typeOf(chain[depth - 1].tag), type)) return depth;
+  return schema.canContain(DOC_TYPE, type) ? 0 : null;
+}
+
+/** The containers a table part needs around it, outermost first. Where no
+ * container in its chain holds one, a reader draws these around it, as
+ * containers with no marker of their own. */
+export const TABLE_PART_OUTER = {
+  "table-row": ["table"],
+  "table-cell": ["table", "table-row"],
+  "table-header": ["table", "table-row"],
+};
+
+/** Whether a code block holds an inline embed of `type` stored with
+ * `parents`. A code block holds text and line breaks; every other textblock
+ * holds every inline node. An embed of a type this build doesn't know that
+ * was stored in the code block (its parents end there) stays there, drawn as
+ * a notice. Anything else a merge leaves after a code block (an image, or an
+ * embed stored in a paragraph that was deleted) can't continue it. */
+export function codeHolds(type, parents) {
+  if (type === "hard-break") return true;
+  if (type === "image") return false;
+  return markerName(parents.at(-1)) === "code-block";
+}
+
+/** The editor tree for a block's spans, the native/editor position maps,
+ * the unmarked text it drew (`unmarked`) and the containers it drew with
+ * no marker of their own (`rebuilt`), each with the native offset where a
+ * writer's marker for it would go.
+ *
+ * Two reasons a block can't be drawn as stored are reported apart:
+ * - `newer`: it holds content from a newer build: a node, container or embed
+ *   name this build doesn't know, attributes it can't read, or a known node
+ *   stored where this build can't draw it (a dataframe in a table cell).
+ *   A node or embed drawn whole as a notice round-trips; a container that
+ *   draws nothing, text after an unknown node or unreadable attributes
+ *   don't, and make the block lossy. No repair rewrites a newer block.
+ * - `adjusted`: every name is known, but nestIn re-homed a node or dropped
+ *   or skipped one of its parents (parents no writer wrote, which a merge
+ *   of two writers' parents can leave). `moved` lists each such node
+ *   marker's offset and the parents it is drawn with; storing those parents
+ *   (repairBlockMarkers in model/richtext-page.mjs) leaves the same tree
+ *   with nothing adjusted.
+ * `lossy` is either one that makes the tree differ from what is stored. */
 export function decode(spans) {
   const blocks = [],
     stack = [],
@@ -558,16 +681,29 @@ export function decode(spans) {
     amToWg = [];
   let wg = 0,
     am = 0,
-    lossy = false,
+    newer = false,
+    // Newer content this build draws only in part: a notice in place of a
+    // container, text or attributes.
+    partial = false,
+    adjusted = false,
     afterUnknown = false;
+  // Each node marker drawn with parents other than its stored ones.
+  const moved = [];
   const boundary = () => {
     wgToAm[wg] = am;
     amToWg[am] ??= wg;
   };
+  // Each unmarked run's start and the markers that would open it there.
+  const unmarked = [];
+  // Each container drawn from a later marker's parents because its own
+  // marker is gone, and the marker a writer would have stored for it.
+  const rebuilt = [];
   const append = (node) => (stack.at(-1)?.children ?? blocks).push(node);
-  const open = (tag, native = false) => {
+  // `name` is the stored marker type a frame stands for (null for a list,
+  // which has no marker of its own).
+  const open = (tag, native = false, name = null) => {
     boundary();
-    stack.push({ tag, children: [] });
+    stack.push({ tag, children: [], name });
     wg++;
     if (native) am++;
     boundary();
@@ -586,10 +722,31 @@ export function decode(spans) {
     wgToAm[wg] = am;
     append(frame.tag.create(frame.children));
   };
+  // Content continues the node before it in its scope when that node can
+  // hold it. Unmarked text is content no marker opens where its scope has
+  // no node before it that can hold it: at the start of a block or a
+  // container, after a leaf (a rule, a dataframe), or after a code block for
+  // an inline node the code block can't hold (codeHolds). Only a merge of
+  // concurrent edits leaves it (a peer typing into a node another writer
+  // deletes); no writer does. It reads as a paragraph (in a
+  // table, a row and cell) with no marker, so it has no node id, and
+  // `unmarked` records the markers a writer adds to mark it
+  // (repairBlockMarkers in model/richtext-page.mjs). What a node this build
+  // doesn't know stores right after its own marker is that node's content
+  // instead: drawn as a paragraph of its own, and the block is lossy.
   const ensureText = () => {
-    if (stack.at(-1)?.tag.type === Table.type) open(TableRow);
-    if (stack.at(-1)?.tag.type === TableRow.type) open(Cell);
-    if (!stack.at(-1)?.tag.type.spec.inlineContent) open(Paragraph);
+    if (stack.at(-1)?.tag.type.spec.inlineContent) return;
+    if (afterUnknown) newer = partial = true;
+    const markers = [];
+    const opening = (tag, name) => {
+      markers.push({ type: name, parents: stack.map((f) => f.name).filter(Boolean) });
+      open(tag, false, name);
+    };
+    const at = am;
+    if (stack.at(-1)?.tag.type === Table.type) opening(TableRow, "table-row");
+    if (stack.at(-1)?.tag.type === TableRow.type) opening(Cell, "table-cell");
+    if (!stack.at(-1)?.tag.type.spec.inlineContent) opening(Paragraph, "paragraph");
+    if (!afterUnknown) unmarked.push({ at, markers });
   };
   const leaf = (node, length = 1) => {
     boundary();
@@ -606,15 +763,12 @@ export function decode(spans) {
   // (a table cell) show the inline notice.
   const unknownInline = (value) => {
     if (inCode()) {
-      lossy = true;
+      newer = partial = true;
       leaf(Leaf.text("\uFFFC", Mark.none));
     } else leaf(PagesUnknownEmbed.of(unknownValue(value)));
   };
   for (const span of spans) {
     if (span.type === "text") {
-      // Text right after an unknown block is that block's own content, which
-      // this build draws as a separate paragraph.
-      if (afterUnknown) lossy = true;
       ensureText();
       const marks = fromMarks(span.marks);
       // Wordgard uses a LineBreak leaf for newlines in code and prose. Code
@@ -627,38 +781,70 @@ export function decode(spans) {
       });
       continue;
     }
-    if (span.type !== "block" || !span.value || !Array.isArray(span.value.parents))
-      throw Error("Invalid Pages rich span");
-    const value = span.value,
-      type = String(value.type),
-      attrs = strings(value.attrs);
-    afterUnknown = false;
+    if (span.type !== "block") throw Error("Invalid Pages rich span");
+    // A marker whose value isn't a map reads as an inline notice; encode
+    // can't write it back as stored.
+    if (!span.value || typeof span.value !== "object" || Array.isArray(span.value)) {
+      ensureText();
+      newer = partial = true;
+      unknownInline({ type: markerName(span.value) ?? "", isEmbed: true });
+      continue;
+    }
+    // A marker's parents are a list of names. Anything else reads as no
+    // parents: a node marker's nesting is then adjusted; an embed's parents
+    // only say whether a code block holds it.
+    const listed = Array.isArray(span.value.parents);
+    const value = { ...span.value, parents: storedParents(span.value) },
+      type = markerType(value),
+      attrs = strings(value.attrs),
+      unreadable = unreadableMarker(span.value);
+    // Attrs that aren't a map, and a type or parent that isn't a name, can't
+    // be written back as stored.
+    if (span.value.attrs != null && !attrMap(span.value.attrs)) newer = partial = true;
+    if (type === null || (listed && span.value.parents.some((p) => markerName(p) === null)))
+      newer = partial = true;
     if (value.isEmbed) {
+      // An embed a code block can't hold opens a paragraph after it.
+      if (inCode() && !codeHolds(type, value.parents)) close();
       ensureText();
       if (type === "hard-break") leaf(LineBreak);
       else if (type === "image") {
-        if (!safeUrl(attrs.src)) throw Error("Invalid Pages image");
-        if (!imageAttrs(value.attrs)) {
-          lossy = true;
+        // An image this build can't read, or whose src it must not render.
+        if (unreadable) {
+          newer = partial = true;
           unknownInline(value);
-        } else {
-          PagesImage.spec.validate(attrs);
-          leaf(PagesImage.of(attrs));
-        }
-      } else unknownInline(value);
+        } else leaf(PagesImage.of(attrs));
+      } else {
+        newer = true;
+        unknownInline(value);
+      }
       continue;
     }
+    afterUnknown = false;
+    // The containers the marker's parents name, nested by nestIn.
     const outer = [];
+    const place = (entry) => {
+      const depth = nestIn(outer, entry.tag);
+      if (depth === null) return false;
+      if (depth < outer.length) outer.length = depth;
+      outer.push(entry);
+      return true;
+    };
     for (const parent of value.parents) {
       // A container this build doesn't know draws nothing of its own; its
-      // content renders at the nearest known level.
+      // content renders at the nearest known level. A known name that
+      // holds no nodes (a rule, an image) is no parent: it drops out, and
+      // the marker's nesting is adjusted.
       const d = descriptor(String(parent));
       if (!d) {
-        lossy = true;
+        if (isKnownBlock(String(parent))) adjusted = true;
+        else newer = partial = true;
         continue;
       }
-      if (d.outer) outer.push(d.outer);
-      outer.push(d.tag);
+      const before = outer.length;
+      if (d.outer && !place({ tag: d.outer, name: null })) adjusted = true;
+      else if (!place({ tag: d.tag, name: String(parent) })) adjusted = true;
+      else if (outer.length !== before + (d.outer ? 2 : 1)) adjusted = true;
     }
     // Leaf blocks hold no content of their own.
     // A dataframe stored inside a text container (a table cell, a code
@@ -673,33 +859,103 @@ export function decode(spans) {
         ? attrs
         : null;
     const builtIn = type === "horizontal-rule" || !!dataframe;
-    const desc = builtIn ? null : descriptor(type, attrs);
-    const unknown = !builtIn && !desc;
-    if (desc?.outer) outer.push(desc.outer);
+    let desc = builtIn || unreadable ? null : descriptor(type, attrs);
+    // The node itself nests the same way. A table part no container in its
+    // chain holds is drawn inside the table containers it needs
+    // (TABLE_PART_OUTER), which have no marker of their own.
+    const own = type === "horizontal-rule" ? HorizontalRule : dataframe ? PagesDataframe : desc;
+    const fits = (tag) => {
+      const depth = nestIn(outer, tag);
+      if (depth === null) return false;
+      if (depth < outer.length) {
+        adjusted = true;
+        outer.length = depth;
+      }
+      return true;
+    };
+    const wrapped = (tag) => {
+      const names = TABLE_PART_OUTER[type];
+      if (!names) return false;
+      for (let from = names.length - 1; from >= 0; from--) {
+        const first = descriptor(names[from]).tag;
+        if (nestIn(outer, first) === null) continue;
+        for (const name of names.slice(from)) place({ tag: descriptor(name).tag, name });
+        adjusted = true;
+        return fits(tag);
+      }
+      return false;
+    };
+    let unknown = !builtIn && !desc;
+    if (unknown) newer = true;
+    if (desc) {
+      if (
+        desc.outer ? !place({ tag: desc.outer, name: null }) : !fits(desc.tag) && !wrapped(desc.tag)
+      ) {
+        adjusted = true;
+        desc = null;
+        unknown = true;
+      }
+    } else if (own && !fits(own)) {
+      adjusted = true;
+      unknown = true;
+    }
+    if (!unknown) {
+      const drawn = outer.map((entry) => entry.name).filter(Boolean);
+      if (!listed || drawn.join("\u0000") !== value.parents.join("\u0000")) {
+        adjusted = true;
+        moved.push({ at: am, parents: drawn });
+      }
+      // A notice can't write back parents that aren't a list.
+    } else if (!listed) newer = partial = true;
+    if (unknown && !outer.at(-1)?.tag.type.spec.inlineContent) fits(PagesUnknownBlock);
     let common = 0;
     while (
       common < outer.length &&
       common < stack.length &&
-      stack[common].tag.type === outer[common].type
+      stack[common].tag.type === outer[common].tag.type
     )
       common++;
     while (stack.length > common) close();
-    for (let i = common; i < outer.length; i++) open(outer[i]);
+    // A named container opened here has no marker of its own: a merge
+    // deleted it while a peer added a node inside it. Every reader draws it
+    // from the surviving node's parents, and no writer restores its marker.
+    for (let i = common; i < outer.length; i++) {
+      if (outer[i].name)
+        rebuilt.push({
+          at: am,
+          type: outer[i].name,
+          parents: stack.map((frame) => frame.name).filter(Boolean),
+        });
+      open(outer[i].tag, false, outer[i].name);
+    }
     if (unknown) {
       afterUnknown = true;
       if (stack.at(-1)?.tag.type.spec.inlineContent) {
         // Stored inside a text container (a table cell): drawn inline.
-        lossy = true;
+        newer = partial = true;
         unknownInline(value);
       } else leaf(PagesUnknownBlock.of(unknownValue(value)));
     } else if (type === "horizontal-rule") leaf(HorizontalRule);
     else if (dataframe) leaf(PagesDataframe.of(dataframe));
-    else open(desc.tag, true);
+    else open(desc.tag, true, type);
   }
-  if (!blocks.length && !stack.length) open(Paragraph);
+  // Empty text, which a merge can leave too: one empty unmarked paragraph.
+  if (!blocks.length && !stack.length) {
+    unmarked.push({ at: am, markers: [{ type: "paragraph", parents: [] }] });
+    open(Paragraph);
+  }
   while (stack.length) close();
   boundary();
-  return { doc: schema.doc(blocks), map: { wgToAm, amToWg }, lossy };
+  return {
+    doc: schema.doc(blocks),
+    map: { wgToAm, amToWg },
+    lossy: partial || adjusted,
+    newer,
+    adjusted,
+    moved: newer ? [] : moved,
+    unmarked,
+    rebuilt,
+  };
 }
 
 export function encode(doc) {
@@ -744,12 +1000,8 @@ export function encode(doc) {
     } else if (node.type === PagesUnknownEmbed) unknownMarker(node);
     else throw Error(`Unsupported Wordgard inline node: ${node.name}`);
   };
-  // A first paragraph can omit its marker when it has content or is the
-  // container's only child. Otherwise, emit a marker to preserve the empty
-  // paragraph.
-  const implicitAt = (siblings, i) =>
-    i === 0 && (siblings.length === 1 || siblings[0].content?.length > 0);
-  const block = (node, parents, implicit = false, listType = null) => {
+  // Every node writes its opening marker, so every node has one to name it.
+  const block = (node, parents, listType = null) => {
     if (node.type === PagesUnknownBlock) {
       unknownMarker(node);
       return;
@@ -772,7 +1024,7 @@ export function encode(doc) {
           : node.type === BulletList.type
             ? "unordered-list-item"
             : "ordered-list-item";
-      for (const child of node.content) block(child, parents, false, itemType);
+      for (const child of node.content) block(child, parents, itemType);
       return;
     }
     let type,
@@ -803,14 +1055,11 @@ export function encode(doc) {
         TaskChecked.spec.validate(attrs.checked);
       }
     } else throw Error(`Unsupported Wordgard block: ${node.name}`);
-    if (!(implicit && type === "paragraph")) marker(type, parents, attrs);
+    marker(type, parents, attrs);
     if (node.inlineContent)
       for (const child of node.content) inline(child, [...parents, type], type === "code-block");
-    else
-      node.content.forEach((child, i, siblings) =>
-        block(child, [...parents, type], implicitAt(siblings, i)),
-      );
+    else for (const child of node.content) block(child, [...parents, type]);
   };
-  doc.content.forEach((node, i, siblings) => block(node, [], implicitAt(siblings, i)));
+  for (const node of doc.content) block(node, []);
   return spans;
 }

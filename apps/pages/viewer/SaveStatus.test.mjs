@@ -106,6 +106,7 @@ const DRAWN = {
     dot: true,
     pulse: false,
   },
+  "Read-only (attention)": { kind: "attention", icon: true, text: true, dot: true, pulse: false },
   "Not saved (failed)": { kind: "error", icon: true, text: true, dot: true, pulse: false },
   "Local save failed (failed)": { kind: "error", icon: true, text: true, dot: true, pulse: false },
 };

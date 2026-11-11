@@ -50,11 +50,12 @@ references; it does not publish the Page or change asset access.
   with no marks, each newline a hard break, and records `bodyFormat: "plain"`,
   so reads return the text literally without a format marker, as plain reads
   always have. Omitting the format when editing retains the message's current
-  kind. Thread/message IDs and passage anchors stay unchanged. No Markdown copy
-  (`body`) is stored. A message an earlier build stored with only a `body`, or
-  with a `body` copy beside its spans, reads with an empty body and
-  `content_error: "stored_form_unsupported"`, shows as a placeholder in the
-  viewer, and refuses edits with `409 stored_form_unsupported`. If native content
+  kind. Thread/message IDs and passage anchors stay unchanged. A message
+  (`pages.comments` format 2) holds `richText`, `author`, `createdAt`,
+  `deletedAt` and, for plain input, `bodyFormat`. Its rich text is in the same
+  form as a block's: every node opens with its marker. No Markdown copy and no
+  per-message `format` field is stored, and the comments document's admission
+  refuses a message with any other field. If native content
   cannot be decoded, reads return its bare text with
   `content_error: "rich_text_unavailable"` rather than failing the entire Page.
   A message holds at most 16,000 text characters (block markers don't count,
@@ -1270,14 +1271,22 @@ tools and the browser apply (`validateCommentSpans` in
 [model/comment-content.mjs](model/comment-content.mjs)): non-whitespace text or
 a valid embed, so an image-only comment is content, at most 16,000 text
 characters and 64 KiB of spans. Every message a change creates or touches,
-a soft delete included, must be rich text with no `body`. A new message, or
-a write to a message's `richText`, `format` or `bodyFormat`, must also leave
-its spans in the editor's form; a soft delete doesn't check it, so a Wordgard
-release that encodes differently never blocks deleting older messages.
-Earlier builds stored a bare literal `body`, or adapter-form spans beside a
-`body` copy; the comments migration rewrote them, and a change that writes
-either form is refused as `outdated_form`. Viewers before protocol 3 wrote
-those forms and must reload.
+a soft delete included, must be rich text with no field but `richText`,
+`bodyFormat`, `author`, `createdAt` and `deletedAt`. A new message, or a
+write to a message's `richText` or `bodyFormat`, must also leave its spans
+in the editor's form (`isEditorForm` in
+[model/comment-content.mjs](model/comment-content.mjs)): what the editor's
+encoder writes for what they read as, or what a merge of such writes leaves.
+The check stops a message that people and agents would read differently, or
+that carries data no reader shows: a newline stored as text in prose, marks
+on code text, attrs a marker doesn't use, forms an earlier build wrote.
+"Decode reads it without loss" isn't enough, because decode normalizes
+those quietly. Two merge results are in the form: unmarked text (a peer
+typed into a node another deleted), and a container whose marker a merge
+deleted while a node a peer added inside it survives (a quote, a list
+level, a table or row). A soft delete doesn't check the form, so a Wordgard
+release that encodes differently never blocks deleting older messages. A
+change that writes another form is refused as `outdated_form`.
 
 A refused change is never stored or delivered, and every other connection
 stays up. When the sender broke a rule, its principal is blocked from
@@ -1808,10 +1817,11 @@ stored:
    id must be a map, and every value of its `position` a raw-string fractional
    index of at most 512 base-62 characters and of its `richText` text, so a
    value that loses a conflict is judged at the frame that brings it, not when
-   a later delete reveals it. `blocks` must stay a map. The changes may not add another
-   key to a block; a key the same block already held is kept, so blocks with
-   the earlier format's extra keys stay editable. Deleting and moving blocks
-   pass. A refusal is `invalid_block`, not fatal: the socket stays open, the
+   a later delete reveals it. `blocks` must stay a map. A block holds no key
+   but those two. Admission applies no marker rule to the text: a merge of
+   a delete and concurrent typing can leave content no marker opens
+   (unmarked text), and every reader reads it. Deleting and moving
+   blocks pass. A refusal is `invalid_block`, not fatal: the socket stays open, the
    principal isn't blocked, and the browser stops offering the refused heads
    until it synchronizes again. The cost follows the change, not the number of
    blocks. Trusted host writes skip this check.
@@ -1863,21 +1873,24 @@ on every relay.
 #### Document formats in the host record
 
 A Page's host record (`host/document`) stores the format of each of its
-document types as `documentFormats`, `{ "pages.page": 2, "pages.comments":
-1 }`. Creation, registration and a Project's content document all stamp the
+document types as `documentFormats`, `{ "pages.page": 3, "pages.comments":
+2 }`. Creation, registration and a Project's content document all stamp the
 formats the build writes ([model/document-types.mjs](model/document-types.mjs)),
 the comments format included, since the comments document is created at
-boot. `recordDocumentFormats` is the one reader. A record without the field
-was written before records carried it and reads as `pages.page` 2 and
-`pages.comments` 1 (`UNSTAMPED_RECORD_FORMATS`); the build that changes
-either format deletes that rule.
+boot. `recordDocumentFormats` is the one reader; it reads a record without
+the field as naming no formats.
 
-A record whose formats aren't exactly the ones the build writes opens
+A record without the field, or whose formats aren't exactly the ones the
+build writes, opens
 neither document. Discovery, the socket (closed `4427`), `/api/saved`, every
 agent read and edit, comments, presence, image uploads and card uploads
 answer `409 document_format_unsupported`, and the viewer shows "This Page is
 stored in a format this version of Pages doesn't open. Its owner can delete
-it." with no reload. A retained creation intent for such a record installs
+it." with no reload. A tab that holds a cached copy keeps showing it read-only
+(the format gate, [viewer/format-gate.mjs](viewer/format-gate.mjs)): no
+typing, formatting, paste, image, title or comment writes reach it, and the
+status reads "Read-only" with no Retry. A device with no cached copy shows
+the message and no Page. A retained creation intent for such a record installs
 the record and imports no document. The shared-Page check and sharing still
 answer from the record, so the Page keeps its listing title. The JSON card
 and card image the host stored earlier are still served (`page_cards`, the
@@ -2344,14 +2357,155 @@ rewrites the governing block marker through `updateSpans`, which updates the
 marker's attributes in place, as the editor does: the marker, its text and
 its comment anchors keep their identity. Marks on text characters are unchanged;
 marks on marker characters, which format nothing, are dropped, as every editor
-keystroke in the block already does. The implicit first paragraph gets an
-explicit marker first, as the editor does; two writers converting it at once
-each insert one and leave an empty paragraph, which target scope refuses
-through its ancestry check. Inline embeds (hard breaks, images) govern no text.
-A container's first paragraph has no marker of its own, so a type change there
-names the quote or list item and is refused. In target scope a concurrent
+keystroke in the block already does. Inline embeds (hard breaks, images)
+govern no text. In agent tools a quote's or list item's first paragraph is
+addressed through the container's marker, so a type change there names the
+quote or list item and is refused. In target scope a concurrent
 change to the node's attributes is a `target_structure_changed` conflict, and a
 `set_node` may share its passage with another operation.
+
+### Unmarked text and node ids
+
+Every node a writer writes opens with its marker, so it has a `node_id`, the
+cursor on that marker. A merge can leave content no marker opens: one person
+deletes a paragraph while another types or puts an image into it. Every
+reader (the editor's decode, the agent read, node addresses and ids, the
+Markdown projection, comment reads) reads it by one rule: content continues
+the node before it in its scope when that node can hold it, and otherwise
+opens a paragraph (in a table, a row and cell) with no marker. A code block
+holds text and line breaks; every other textblock holds every inline node; a
+leaf holds nothing. An embed of a type this build doesn't know that was
+stored in a code block stays there as a notice. Such a paragraph reads with
+`node_id` null; text-matching operations reach it, `node_id` operations
+can't. Every host tool write to a block marks the block's unmarked text
+in the same change, and the editor writes a person's typing or formatting
+inside it through the encoder, which marks it.
+
+A merge can also delete a container's marker (a quote, a list item, a table
+or row) while a node a peer added inside it survives. Readers draw the
+container from that node's `parents` and name it by that node's marker. No
+writer restores the container's marker, so its `node_id` doesn't move.
+
+### Parents no writer wrote
+
+Sync admission doesn't look inside `richText`, so a block stores any marker
+values a browser syncs. Every reader (decode, the agent read, node addresses
+and ids, the Markdown projection, repair) draws any stored span sequence,
+and none throws. A marker's `parents` is a list, and two writers that
+change one marker's parents at once merge element by element into a list
+neither wrote: a container repeated (`["table", "table"]`), or one that
+can't hold what follows it. Every reader draws any `parents` by one rule (`nestIn` in
+[model/wordgard-doc.mjs](model/wordgard-doc.mjs)): each parent, then the
+node, nests in the nearest container before it that can hold it. A parent
+nothing before it can hold is dropped, and so is a known name that isn't a
+container (a rule, an image, a paragraph). A table row, cell or header nothing holds is
+drawn inside the table (and row) it needs, which have no marker of their
+own. A node marker's parents that aren't a list read as none.
+
+Every reader converts a stored name, a type or a parent, through one total
+function (`markerName` in [model/node-registry.mjs](model/node-registry.mjs)):
+a string or ImmutableString is that name, and anything else (a map, whose
+`toString` a peer can shadow) is no name. A type that isn't a name reads
+as the notice with no name; a parent that isn't one reads as a container
+this build doesn't know.
+
+A mark is read the same way (`readMark` in
+[model/wordgard-doc.mjs](model/wordgard-doc.mjs)): a known mark whose stored
+value this build can't read, or must not render (a link to an unsafe URL, a
+highlight outside the registry's colors), is a mark it doesn't know. The
+editor keeps it as stored in `PagesForeignMarks` and encode writes it back;
+every read draws it as nothing, so its value never reaches Markdown, an
+outline, a card or HTML. A readable mark replaces a stored value of the
+same name: bold applied over a stored `strong: "yes"` stores `strong:
+true`, in the editor (`wordgardForeignMarks` in
+[viewer/wordgard-binding.mjs](viewer/wordgard-binding.mjs)) and through
+`format_match`. The foreign mark keeps its other entries, and removing
+the readable mark brings nothing back.
+
+`decode` reports two reasons a block can't be drawn as stored, apart:
+
+- `newer`: content from a newer build. A node, container or embed name this
+  build doesn't know, or a marker whose own values it can't read or must
+  not render (`unreadableMarker`): a value or attrs that aren't a map, an
+  image whose src is missing or unsafe, a heading level, table alignment or
+  task state outside what this build writes, a dataframe it can't show.
+  Every reader draws such a marker as the notice for a node it doesn't
+  know; an unsafe src is never rendered or written as a URL, and encode
+  writes the marker back as stored. An unknown container
+  draws nothing in the editor and a notice in the agent read; where that
+  makes the agent read's top-level nodes differ from the stored ones,
+  `read_page` gives those nodes no `node_id` and `node_index` refuses the
+  block. Nothing rewrites such a block, and the editor refuses a person's
+  edit to one it draws only in part ("This block holds content from a newer
+  version of Pages"). An owner removes such a node with `delete_node`
+  when `read_page` gives it a `node_id`. When it reports none (an unknown
+  node or unreadable dataframe followed by text that has no marker of its
+  own), `delete_block` removes the whole block; it works on any block. A
+  marker with values this build can't read on a known node with a Markdown
+  form (a heading level, an image) is also recovered by
+  `replace_block_markdown`, which rewrites the block whole. That tool
+  refuses a block holding an unknown node, an aside or a dataframe it
+  can't keep, and its refusal names both recoveries. Editing around such a
+  node with `replace_match`, `format_match` or `set_node` works only while
+  the block reads whole; when it is `newer` and lossy they answer
+  `newer_content`.
+- `adjusted`: every name is known, but `nestIn` re-homed a node or dropped
+  or skipped a parent. Every reader draws one tree for the block, and
+  `moved` lists each node marker whose drawn parents differ from its stored
+  ones.
+
+Reading is total; admission stays strict. Registration (`validateRich` in
+[model/richtext-spans.mjs](model/richtext-spans.mjs)) and comment admission
+(`validateRichSpans` and `isEditorForm` in
+[model/comment-content.mjs](model/comment-content.mjs)) refuse a block or
+message whose decode is `newer` or lossy, and every mark value outside the
+registry, so nothing a reader would draw as a notice or as plain text is
+admitted. `set_node` refuses a write that would leave the marker it writes
+unreadable. No host tool edits a block decode reports `newer` and lossy in
+place: `replace_match`, `format_match`, `set_node` and `set_image` refuse
+it with `newer_content`, in page scope and as passage targets.
+`delete_node`, `delete_block` and `move_block` still work, and so does
+`replace_block_markdown`, which replaces the block whole and refuses a
+block holding a node it can't keep.
+
+An aside (`PagesAside`) is a known container with no Markdown form. The
+editor makes one from pasted HTML (`<aside>`), and any synced client can
+store one; no agent tool or Markdown import writes one. Its Markdown is the
+notice (`[Unsupported node: aside]`) followed by its content.
+
+A block whose only problem is adjusted nesting is repaired, because storing
+the drawn tree loses nothing a reader showed. Every host tool write to a
+block runs `repairBlockMarkers`
+([model/richtext-page.mjs](model/richtext-page.mjs)) first, in the same
+change: each moved marker gets the parents it is drawn with, then unmarked
+text gets its markers. The tree, the Markdown and `node_index` stay as they
+were, and so does every `node_id` except a marker Automerge can't update in
+place (the `updateBlock` fallback below), whose `node_id` changes. In the editor, a person's edit to such a block
+is written through the encoder, which stores the tree the editor drew. A
+container drawn with no marker of its own (a table around a row nothing
+held, or a container a merge deleted) stays without one.
+
+Every writer stores a block's spans through `updateSpansExactly`
+([model/richtext-format.mjs](model/richtext-format.mjs)). Automerge 3.5's
+`updateSpans` diffs a marker's `parents` in place, and a rewrite that changes
+the parents of several markers can store a list other than the one given (a
+table row's parents become `["table", "table"]` when the list around the
+table loses its quote). `updateSpansExactly` runs `updateSpans` a second
+time, which, over markers already of the right types, edits each list in
+place and keeps every marker, so no `node_id` moves. A marker still wrong
+after that is replaced with `updateBlock`, which deletes it and inserts a new
+one: its `node_id` changes. No test or property run reaches that step.
+
+Known limit: two repairs of the same adjusted block from one snapshot can
+merge into adjusted nesting again (each inserts the same names into one
+marker's parents list, as with a stray table cell). Markdown and node ids
+stay as they were, and the next host write repairs it.
+
+Known limit: two writers that mark the same unmarked text from the same
+snapshot (a host write and a person's edit before either syncs) each insert
+a marker, and both survive. The first opens an empty paragraph beside the
+marked one. Every reader reads it, and a person (Backspace) or an agent
+(`delete_node`) removes it.
 
 ### Link previews
 
@@ -3123,7 +3277,8 @@ once done, replays `{ project_id, deleted: true }`:
    `pages_project_invitations` rows, then every key it stores. The receipt is
    recorded after that.
 
-A Project whose content record is in a format this build doesn't write is
+A Project whose content record is in a format this build doesn't write
+(including `pages.page` 2, and a record with no `documentFormats` stamp) is
 deleted from that record, as Trash and purge delete such a Page: nothing
 opens or decodes its documents. Its preview reports `heads`,
 `comment_threads` and `comment_count` as `null`, and the token binds the

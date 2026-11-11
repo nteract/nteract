@@ -1,3 +1,4 @@
+import { markerType } from "./node-registry.mjs";
 import * as A from "@automerge/automerge/slim";
 import { diffArrays } from "diff";
 import { textPath } from "./richtext-format.mjs";
@@ -12,6 +13,7 @@ import {
   normalizeHighlight,
 } from "./marks.mjs";
 import { stampMarks } from "./schema-features.mjs";
+import { refuseNewerBlock } from "./richtext-spans.mjs";
 
 const MAX_TEXT_LENGTH = 262144;
 const MAX_MATCHES = 10000;
@@ -42,8 +44,17 @@ export function visibleNodeRange(doc, id, nodeIndex) {
   const { nodes } = blockAddresses(A.spans(doc, textPath(id)));
   // node_index names a node of the outline, which read_page builds from the
   // readable tree. When the stored spans count differently (markers a peer
-  // wrote under parents no writer produces), an index could name another node.
-  if (nodes.length !== nativeRead(block, doc.page_id).nodes.length)
+  // wrote under parents no writer produces) or a readable node opens at
+  // another marker (one inside a container this build doesn't know), an index
+  // could name another node.
+  const tree = nativeRead(block, doc.page_id);
+  if (
+    nodes.length !== tree.nodes.length ||
+    tree.nodes.some((node, index) => {
+      const at = tree.source.get(node);
+      return at != null && at !== nodes[index].at;
+    })
+  )
     throw Error(
       "node_index can't address this block: it holds nodes this version of Pages reads differently from how they're stored. Match without node_index, or rewrite the block with replace_block_markdown.",
     );
@@ -81,7 +92,7 @@ export function textSegments(block) {
   let code = false;
   for (const span of A.spans(block, ["richText"])) {
     if (span.type === "block") {
-      code = String(span.value?.type) === "code-block";
+      code = markerType(span.value) === "code-block";
       segment = undefined;
       offset++;
     } else {
@@ -445,6 +456,7 @@ function marksDroppedWarning(partial, start, end) {
  * reported. */
 export function replaceMatch(doc, id, input, trace, { anchor, budget } = {}) {
   const { text: replacement, runs } = replacementOf(input);
+  refuseNewerBlock(doc, id, "replace_match");
   const { path, start, end } = locateRange(doc, id, input, anchor);
   if (runs && inCodeBlock(doc, path, start))
     throw Error(
@@ -619,6 +631,7 @@ export function formatChanges(input) {
  * `skipped_in_code`. */
 export function formatMatch(doc, id, input, trace, { anchor, budget } = {}) {
   const { add, remove } = formatChanges(input);
+  refuseNewerBlock(doc, id, "format_match");
   const located = { ...input, op: "format_match" };
   const path = textPath(id);
   let ranges,
@@ -664,7 +677,7 @@ export function inCodeBlock(doc, path, at) {
   for (const span of A.spans(doc, path)) {
     if (pos > at) break;
     if (span.type === "block") {
-      code = String(span.value?.type) === "code-block";
+      code = markerType(span.value) === "code-block";
       pos += 1;
     } else pos += span.value.length;
   }

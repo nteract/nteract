@@ -10,6 +10,7 @@ import {
   parseAgentMarkdown,
   parseMarkdown,
   richDoc,
+  setRichMarkdown,
   unsupportedMarkdown,
 } from "./richtext.mjs";
 import { comment } from "./comments-test-support.mjs";
@@ -107,7 +108,7 @@ test("create_page and replace_block_markdown store the diagnosis as native rich 
   );
   const id = orderedBlockIds(doc)[0];
   assertDiagnosisStructure(richDoc(doc.blocks[id]));
-  doc = A.change(doc, (d) => initializePage(d, "Placeholder"));
+  doc = A.change(doc, (d) => setRichMarkdown(d, id, "Placeholder"));
   doc = A.change(doc, (d) =>
     applyPageOperation(d, {
       operation: "patch_page",

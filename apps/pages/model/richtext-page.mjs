@@ -1,5 +1,6 @@
 // Page block writers and readers: a block's Markdown projection, and the
 // writes that replace a block's rich text from Markdown, an image or a node.
+import { markerType } from "./node-registry.mjs";
 import * as A from "@automerge/automerge/slim";
 import { updateSpansConfig } from "./marks.mjs";
 import { stampSpans } from "./schema-features.mjs";
@@ -10,9 +11,16 @@ import {
   parseAssetPath,
   readDataframe,
 } from "../shared/dataset-assets.mjs";
-import { schema, Paragraph, PagesImage, PagesDataframe, PagesLink } from "./wordgard-doc.mjs";
+import {
+  decode,
+  schema,
+  Paragraph,
+  PagesImage,
+  PagesDataframe,
+  PagesLink,
+} from "./wordgard-doc.mjs";
 import { parseAgentMarkdown, parseMarkdown } from "./markdown-import.mjs";
-import { textPath } from "./richtext-format.mjs";
+import { markerParents, textPath, updateSpansExactly } from "./richtext-format.mjs";
 import { pageSpans, richDoc } from "./richtext-spans.mjs";
 import { nativeRead, readMarkdown, readKind } from "./native-read.mjs";
 import { dataframeLabel, unknownNodeNotice } from "./richtext-notices.mjs";
@@ -57,10 +65,10 @@ function writeMarkdownSpans(doc, id, spans) {
   };
   const path = textPath(id);
   // updateSpans can re-mark an unchanged multi-span mark, defeating a peer's
-  // concurrent unmark. Only exact restored runs qualify; an explicit opening
-  // paragraph is still a different stored shape from an implicit one.
+  // concurrent unmark. Only exact restored runs qualify: markers and their
+  // attrs compare as stored.
   if (runs(A.spans(doc, path)) === runs(spans)) return;
-  A.updateSpans(doc, path, spans, updateSpansConfig);
+  updateSpansExactly(doc, path, spans, updateSpansConfig);
   stampSpans(doc, spans);
 }
 
@@ -69,15 +77,76 @@ function writeMarkdownSpans(doc, id, spans) {
 export function setRichMarkdown(doc, id, source, { literal = false } = {}) {
   const tree = literal ? parseMarkdown(source) : parseAgentMarkdown(source);
   const spans = pageSpans(tree);
-  A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
+  updateSpansExactly(doc, textPath(id), spans, updateSpansConfig);
   stampSpans(doc, spans);
+}
+/** Repair block `id`'s markers in place, inside the caller's change, so
+ * the block stores what every reader draws. Two repairs, in one pass:
+ *
+ * - Adjusted nesting: a node marker whose parents no writer wrote (decode
+ *   in model/wordgard-doc.mjs re-homed it, or dropped or skipped a parent)
+ *   gets the parents it is drawn with. The tree every reader draws doesn't
+ *   change. The markers keep their identity, so their node ids stay, unless
+ *   Automerge can't store a marker's parents in place (updateSpansExactly):
+ *   that marker is replaced, and its node id changes.
+ * - Unmarked text, which a merge can leave with no marker opening it, gets
+ *   the markers a writer writes. Each goes in before the text, which keeps
+ *   its characters, marks and comment anchors.
+ *
+ * A block decode draws only in part because it holds content from a newer
+ * build (`newer` and `lossy`) is left alone. A container whose own marker a
+ * merge deleted (decode's `rebuilt`) is left as it is too: every reader
+ * draws it from its surviving child's parents and names it by that child's
+ * marker, so restoring its marker would only move its node id. Returns
+ * whether it wrote. */
+export function repairBlockMarkers(doc, id) {
+  const path = textPath(id);
+  let spans = A.spans(doc, path);
+  let decoded = decode(spans);
+  if (decoded.lossy && decoded.newer) return false;
+  let wrote = false;
+  if (decoded.moved.length) {
+    const drawn = new Map(decoded.moved.map(({ at, parents }) => [at, parents]));
+    let at = 0;
+    const repaired = spans.map((span) => {
+      const parents = span.type === "block" ? drawn.get(at) : undefined;
+      at += span.type === "text" ? span.value.length : 1;
+      return parents
+        ? {
+            ...span,
+            value: { ...span.value, parents: parents.map((name) => new A.ImmutableString(name)) },
+          }
+        : span;
+    });
+    updateSpansExactly(doc, path, repaired, updateSpansConfig);
+    stampSpans(doc, repaired);
+    wrote = true;
+    spans = A.spans(doc, path);
+    decoded = decode(spans);
+    if (decoded.lossy) return wrote;
+  }
+  for (const { at, markers } of [...decoded.unmarked].reverse())
+    markers.forEach(({ type, parents }, i) =>
+      A.splitBlock(doc, path, at + i, {
+        type: new A.ImmutableString(type),
+        parents: parents.map((parent) => new A.ImmutableString(parent)),
+        attrs: {},
+        isEmbed: false,
+      }),
+    );
+  return wrote || decoded.unmarked.length > 0;
+}
+/** Write one empty paragraph, with its marker, as a block's whole content. */
+export function setRichEmpty(doc, id) {
+  const spans = pageSpans(schema.doc([Paragraph.create([])]));
+  updateSpansExactly(doc, textPath(id), spans, updateSpansConfig);
 }
 export function setRichImage(doc, id, { src, dark_src = null, alt, title = null }) {
   // Construct the embed directly: alt text is content, never Markdown syntax.
   const attrs = { src, alt, title, ...(dark_src == null ? {} : { dark_src }) };
   const tree = schema.doc([Paragraph.create([PagesImage.of(attrs)])]);
   const spans = pageSpans(tree);
-  A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
+  updateSpansExactly(doc, textPath(id), spans, updateSpansConfig);
   stampSpans(doc, spans);
 }
 /** Write one node with no Markdown form as a block's whole content. */
@@ -85,7 +154,7 @@ export function setRichNode(doc, id, { type, attrs }) {
   if (type !== DATAFRAME_BLOCK) throw Error(`Unsupported node type: ${type}`);
   const tree = schema.doc([PagesDataframe.of(dataframeAttrs(attrs))]);
   const spans = pageSpans(tree);
-  A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
+  updateSpansExactly(doc, textPath(id), spans, updateSpansConfig);
   stampSpans(doc, spans);
 }
 
@@ -126,7 +195,7 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
   const keepImages = (spans) => {
     const key = (s) =>
       JSON.stringify([
-        s.value.parents.map(String),
+        markerParents(s.value),
         ...["src", "alt", "title"].map((k) => String(s.value.attrs[k] ?? "")),
       ]);
     for (const original of opaqueImages) {
@@ -156,7 +225,7 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
   // read never matches a line, so the rewrite is refused rather than dropping
   // it.
   const storedCount = A.spans(block, ["richText"]).filter(
-    (span) => span.type === "block" && String(span.value.type) === "dataframe",
+    (span) => span.type === "block" && markerType(span.value) === "dataframe",
   ).length;
   if (existing.length !== storedCount)
     throw Object.assign(Error("A stored dataframe cannot be restored losslessly"), {

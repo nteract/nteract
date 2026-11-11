@@ -7,12 +7,13 @@
 // paragraph, heading, code block, list, quote, table, rule, dataframe or a
 // node this build doesn't know. Each has:
 //
-// - `start`, `end`: its text range `[start, end)`, from its opening marker
-//   (0 for the implicit first paragraph) up to the next node's opening marker,
-//   or the end of the text for the last node.
-// - `at`: the index of its opening marker, or null when it opens without one
-//   (the implicit first paragraph). A list's opening marker is its first
-//   item's; a quote stored without its own marker opens with its first child's.
+// - `start`, `end`: its text range `[start, end)`, from its opening marker up
+//   to the next node's opening marker, or the end of the text for the last
+//   node.
+// - `at`: the index of its opening marker, the same as `start`, or null for
+//   a paragraph of unmarked text, which only a merge leaves. A list's opening
+//   marker is its first item's; a quote stored without its own marker opens
+//   with its first child's.
 //
 // `node_index` is a node's position in this list. node-ids.mjs names a node by
 // a cursor at `at`. nodeIndexAt and ancestryAt address a single character, as
@@ -22,6 +23,7 @@
 // content. decode draws it as a separate paragraph; here it stays part of the
 // unknown node, so the node count and every later node_index match what the
 // Markdown projection reads (one unknown node holding the text).
+import { markerType } from "./node-registry.mjs";
 import * as A from "@automerge/automerge/slim";
 import { codeTextUnmarked } from "./richtext-format.mjs";
 import {
@@ -54,11 +56,13 @@ export function blockAddresses(spans) {
   let placed = true;
   for (const span of plain) {
     if (span.type === "block") {
-      if (!span.value.isEmbed) opening.set(length, span.value);
+      // A value that isn't a map reads as an inline notice (decode).
+      const marker = span.value && typeof span.value === "object" && !Array.isArray(span.value);
+      if (marker && !span.value.isEmbed) opening.set(length, span.value);
       // decode draws an unknown inline node in a code block as plain text.
       else if (
         placed &&
-        String(span.value.type) !== "hard-break" &&
+        markerType(span.value) !== "hard-break" &&
         tree.resolve(map.amToWg[length]).parent.node.type === CodeBlock.type
       )
         placed = false;
@@ -84,6 +88,7 @@ export function blockAddresses(spans) {
       Object.assign(prior, { end, wgEnd: wg, text: from });
       continue;
     }
+    // Unmarked text (decode in wordgard-doc.mjs) opens with no marker.
     const entry = { start, end, at: opening.has(start) ? start : null, wgStart: from, wgEnd: wg };
     if (node.type === PagesUnknownBlock) unknown.add(entry);
     nodes.push(entry);
@@ -113,12 +118,11 @@ export function nodeIndexAt({ nodes, map }, am) {
 
 /** The containers holding text index `am`, outermost first, as plain data
  * per level: its type and the attrs of the stored marker that opens it, `{}`
- * for a container drawn without one (a list, the implicit first paragraph, a
- * quote stored without its own marker). Two ancestries compare equal when the
- * character sits in the same structure with the same stored attributes,
- * including attributes this build doesn't know. Whether a container has its
- * own marker isn't part of it: a writer adds one to an implicit paragraph
- * when it inserts a node above, and the passage hasn't moved. */
+ * for a container drawn without one (a list, a quote stored without its own
+ * marker, a paragraph of unmarked text). Two ancestries compare equal when the character sits in the same
+ * structure with the same stored attributes, including attributes this
+ * build doesn't know. Whether a container has its own marker isn't part of
+ * it: a writer marks unmarked text, and the passage hasn't moved. */
 export function ancestryAt(addresses, am) {
   const { tree, map, opening, nodes } = addresses;
   const chain = [];

@@ -1,11 +1,17 @@
 // Stored rich-text shapes for node addressing tests (model/node-addresses.test.mjs):
 // the Markdown corpus written as rich text, random editor trees through the
 // editor encoder, and hand-written stored shapes, including ones only a peer
-// or an older build writes. Each input is `{ name, spans }`, spans as stored.
+// or a newer build writes, and unmarked text a merge leaves. Each input is
+// `{ name, spans }`, spans as stored.
 import * as A from "@automerge/automerge";
 import fc from "fast-check";
 import { readFileSync } from "node:fs";
-import { applyPageOperation, createPageData, orderedBlockIds } from "../model/page.mjs";
+import {
+  applyPageOperation,
+  createPageData,
+  initializePage,
+  orderedBlockIds,
+} from "../model/page.mjs";
 import { textPath } from "../model/richtext-format.mjs";
 import { setRichMarkdown } from "../model/richtext-page.mjs";
 import { updateSpansConfig } from "../model/marks.mjs";
@@ -20,6 +26,7 @@ const S = (value) => new A.ImmutableString(value);
 
 function emptyPage() {
   let doc = A.from(createPageData({ pageId: PAGE_ID, title: "Addresses" }), { actor: ACTOR });
+  doc = A.change(doc, (draft) => initializePage(draft));
   return { doc, id: orderedBlockIds(doc)[0] };
 }
 
@@ -88,50 +95,86 @@ const dataframe = (src, parents = []) =>
 const image = (parents = ["paragraph"]) =>
   block("image", parents, { src: S("https://example.org/i.png"), alt: S("alt") }, true);
 
-/** Stored shapes the encoders never write but a peer, an older build or a
- * newer build can. */
+const P = (parents = [], attrs = {}) => block("paragraph", parents, attrs);
+
+/** Stored shapes the encoders never write but a peer or a newer build can,
+ * and unmarked text: what a merge of concurrent edits can leave with no marker
+ * opening it (decode in model/wordgard-doc.mjs). */
 export const SHAPES = {
   empty: [],
+  "unmarked-first": [text("Intro"), P(), text("tail")],
+  "unmarked-after-rule": [P(), text("Intro"), block("horizontal-rule"), text("Kept")],
+  "unmarked-in-quote": [block("blockquote"), text("q"), P(), text("r")],
+  "unmarked-in-list-item": [block("unordered-list-item"), text("x")],
+  "unmarked-in-table": [P(), text("a"), block("table"), text("c")],
+  // An inline node a paragraph held, left after the node before it when a
+  // merge deletes the paragraph: it continues that node when it can hold the
+  // inline node, and opens unmarked text when it can't.
+  "image-after-code": [block("code-block"), text("x"), image(), text("y"), P(), text("z")],
+  "unknown-embed-after-code": [
+    block("code-block"),
+    text("x"),
+    block("future-mention", ["paragraph"], {}, true),
+    text("y"),
+  ],
+  "break-after-code": [
+    block("code-block"),
+    text("x"),
+    block("hard-break", ["paragraph"], {}, true),
+    text("y"),
+  ],
+  "image-after-heading": [block("heading", [], { level: 2 }), text("x"), image(), text("y")],
+  "image-after-rule": [P(), text("x"), block("horizontal-rule"), image(), text("y")],
+  "image-after-dataframe": [P(), text("x"), dataframe(ASSET), image(), text("y")],
+  "image-in-cell-after-merge": [
+    block("table"),
+    block("table-row", ["table"]),
+    block("table-cell", ["table", "table-row"]),
+    text("c"),
+    image(),
+    text("d"),
+  ],
+  "image-after-quoted-code": [
+    block("blockquote"),
+    block("code-block", ["blockquote"]),
+    text("x"),
+    image(["blockquote", "paragraph"]),
+  ],
   "editor-form": [
+    P(),
     text("Intro"),
     block("heading", [], { level: 2 }),
     text("H"),
-    block("paragraph"),
+    P(),
     text("tail"),
   ],
-  "adapter-form-first-marker": [
-    block("paragraph"),
-    text("one"),
-    block("heading", [], { level: 1 }),
+  "empty-first-paragraph": [P(), block("heading", [], { level: 1 }), text("H")],
+  "image-first": [P(), image(), text(" after"), P(), text("next")],
+  "hard-break-first": [
+    P(),
+    block("hard-break", ["paragraph"], {}, true),
+    text("x"),
+    P(),
+    text("y"),
   ],
-  "empty-explicit-first-paragraph": [
-    block("paragraph"),
-    block("heading", [], { level: 1 }),
-    text("H"),
-  ],
-  "image-first": [image([]), text(" after"), block("paragraph"), text("next")],
-  "hard-break-first": [block("hard-break", [], {}, true), text("x"), block("paragraph"), text("y")],
-  "newline-in-text": [text("a\nb"), image([]), block("paragraph"), text("c\nd")],
+  "newline-in-text": [P(), text("a\nb"), image([]), P(), text("c\nd")],
   "quote-own-marker": [
+    P(),
     text("p"),
     block("blockquote"),
-    block("paragraph", ["blockquote"]),
+    P(["blockquote"]),
     text("q"),
-    block("paragraph"),
+    P(),
     text("r"),
   ],
-  "quote-no-marker": [
-    text("p"),
-    block("paragraph", ["blockquote"]),
-    text("q"),
-    block("paragraph"),
-    text("r"),
-  ],
+  "quote-no-marker": [P(), text("p"), P(["blockquote"]), text("q"), P(), text("r")],
   "quote-no-marker-list": [
+    P(),
     text("p"),
     block("unordered-list-item", ["blockquote"]),
+    P(["blockquote", "unordered-list-item"]),
     text("item"),
-    block("paragraph"),
+    P(),
     text("r"),
   ],
   "list-item-opens-with-heading": [
@@ -139,26 +182,34 @@ export const SHAPES = {
     block("heading", ["unordered-list-item"], { level: 2 }),
     text("Head"),
     block("unordered-list-item"),
+    P(["unordered-list-item"]),
     text("two"),
-    block("paragraph"),
+    P(),
     text("after"),
   ],
   "nested-lists": [
     block("ordered-list-item"),
+    P(["ordered-list-item"]),
     text("one"),
     block("unordered-list-item", ["ordered-list-item"]),
+    P(["ordered-list-item", "unordered-list-item"]),
     text("inner"),
     block("task-list-item", ["ordered-list-item", "unordered-list-item"], { checked: true }),
+    P(["ordered-list-item", "unordered-list-item", "task-list-item"]),
     text("task"),
     block("ordered-list-item"),
+    P(["ordered-list-item"]),
     text("two"),
   ],
   "adjacent-list-kinds": [
     block("unordered-list-item"),
+    P(["unordered-list-item"]),
     text("a"),
     block("ordered-list-item"),
+    P(["ordered-list-item"]),
     text("b"),
     block("task-list-item", [], { checked: false }),
+    P(["task-list-item"]),
     text("c"),
   ],
   "ragged-table": [
@@ -171,67 +222,66 @@ export const SHAPES = {
     block("table-row", ["table"]),
     block("table-cell", ["table", "table-row"]),
     text("c1"),
-    block("paragraph"),
+    P(),
     text("after"),
   ],
-  "rule-first": [block("horizontal-rule"), block("paragraph"), text("x"), block("horizontal-rule")],
+  "rule-first": [block("horizontal-rule"), P(), text("x"), block("horizontal-rule")],
   "code-with-newlines": [
+    P(),
     text("p"),
     block("code-block", [], { params: S("js") }),
     text("let a\nlet b", { strong: true }),
-    block("paragraph"),
+    P(),
     text("q"),
   ],
-  dataframe: [text("before"), dataframe(ASSET), block("paragraph"), text("after")],
-  "dataframe-last": [text("before"), dataframe(ASSET)],
-  "foreign-dataframe": [text("before"), dataframe(FOREIGN), block("paragraph"), text("after")],
+  dataframe: [P(), text("before"), dataframe(ASSET), P(), text("after")],
+  "dataframe-last": [P(), text("before"), dataframe(ASSET)],
+  "foreign-dataframe": [P(), text("before"), dataframe(FOREIGN), P(), text("after")],
   "dataframe-in-cell": [
     block("table"),
     block("table-row", ["table"]),
     block("table-cell", ["table", "table-row"]),
     text("c"),
     dataframe(ASSET, ["table", "table-row", "table-cell"]),
-    block("paragraph"),
+    P(),
     text("after"),
   ],
-  "unknown-block": [
-    text("a"),
-    block("future-chart", [], { spec: S("x") }),
-    block("paragraph"),
-    text("b"),
-  ],
+  "unknown-block": [P(), text("a"), block("future-chart", [], { spec: S("x") }), P(), text("b")],
   "unknown-block-then-text": [
+    P(),
     text("a"),
     block("future-callout", [], { tone: S("info") }),
     text("callout text"),
     block("heading", [], { level: 2 }),
     text("H"),
-    block("paragraph"),
+    P(),
     text("c"),
   ],
   "unknown-block-then-image": [
+    P(),
     text("a"),
     block("future-callout"),
     image([]),
     text("x"),
-    block("paragraph"),
+    P(),
     text("c"),
   ],
-  "unknown-block-last-with-text": [text("a"), block("future-callout"), text("tail")],
+  "unknown-block-last-with-text": [P(), text("a"), block("future-callout"), text("tail")],
   "pages-opaque-then-text": [
+    P(),
     text("a"),
     block("pages-opaque", [], { source: S("<div>x</div>"), importId: S("i"), kind: S("markdown") }),
     text("b"),
-    block("paragraph"),
+    P(),
     text("c"),
   ],
-  "unknown-embed": [text("a"), block("future-mention", ["paragraph"], {}, true), text("b")],
+  "unknown-embed": [P(), text("a"), block("future-mention", ["paragraph"], {}, true), text("b")],
   "unknown-embed-in-code": [
     block("code-block"),
     text("x"),
     block("future-mention", ["code-block"], {}, true),
     text("y"),
-    block("paragraph"),
+    P(),
     text("z"),
   ],
   "unknown-in-cell": [
@@ -240,60 +290,44 @@ export const SHAPES = {
     block("table-cell", ["table", "table-row"]),
     text("c"),
     block("future-chart", ["table", "table-row", "table-cell"]),
-    block("paragraph"),
+    P(),
     text("after"),
   ],
-  "unknown-parent": [
-    text("a"),
-    block("paragraph", ["future-aside"]),
-    text("inside"),
-    block("paragraph"),
-    text("b"),
-  ],
-  "unknown-mark": [
-    text("a"),
-    text("marked", { "future-mark": "v" }),
-    block("paragraph"),
-    text("b"),
-  ],
-  aside: [
-    text("a"),
-    block("aside"),
-    block("paragraph", ["aside"]),
-    text("in"),
-    block("paragraph"),
-    text("b"),
-  ],
+  "unknown-parent": [P(), text("a"), P(["future-aside"]), text("inside"), P(), text("b")],
+  "unknown-mark": [P(), text("a"), text("marked", { "future-mark": "v" }), P(), text("b")],
+  aside: [P(), text("a"), block("aside"), P(["aside"]), text("in"), P(), text("b")],
   "image-unknown-attrs": [
+    P(),
     text("a"),
     block("image", [], { src: S("https://example.org/i.png"), alt: S(""), width: 3 }, true),
-    block("paragraph"),
+    P(),
     text("b"),
   ],
   "rule-in-list": [
     block("unordered-list-item"),
     block("horizontal-rule", ["unordered-list-item"]),
     block("unordered-list-item"),
+    P(["unordered-list-item"]),
     text("a"),
-    block("paragraph"),
+    P(),
     text("b"),
   ],
   "dataframe-in-quote": [
     block("blockquote"),
     dataframe(ASSET, ["blockquote"]),
-    block("paragraph", ["blockquote"]),
+    P(["blockquote"]),
     text("q"),
-    block("paragraph"),
+    P(),
     text("b"),
   ],
-  "image-last": [text("a"), image([])],
+  "image-last": [P(), text("a"), image([])],
   "image-in-cell": [
     block("table"),
     block("table-row", ["table"]),
     block("table-cell", ["table", "table-row"]),
     text("c"),
     image(["table", "table-row", "table-cell"]),
-    block("paragraph"),
+    P(),
     text("after"),
   ],
   "image-in-code": [
@@ -301,7 +335,7 @@ export const SHAPES = {
     text("x"),
     image(["code-block"]),
     text("y"),
-    block("paragraph"),
+    P(),
     text("z"),
   ],
   "unknown-embed-in-cell": [
@@ -310,11 +344,11 @@ export const SHAPES = {
     block("table-cell", ["table", "table-row"]),
     text("c"),
     block("future-mention", ["table", "table-row", "table-cell"], {}, true),
-    block("paragraph"),
+    P(),
     text("after"),
   ],
-  "paragraph-attrs": [text("a"), block("paragraph", [], { future: S("x") }), text("b")],
-  "astral-text": [text("😀 a 👩‍💻"), block("paragraph"), text("東京 e\u0301")],
+  "paragraph-attrs": [P(), text("a"), P([], { future: S("x") }), text("b")],
+  "astral-text": [P(), text("😀 a 👩‍💻"), P(), text("東京 é")],
 };
 
 export function shapeInputs() {

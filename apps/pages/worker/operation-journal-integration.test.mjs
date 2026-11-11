@@ -6,10 +6,10 @@ import { Catalog, Page } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { applyPageOperation, createPageData, initializePage } from "../model/page.mjs";
 import { comment, newCommentsDoc } from "../model/comments-test-support.mjs";
-import { stampFeatures } from "../model/schema-features.mjs";
 import { documentMutation, operationKey, recoverDocumentMutations } from "./mutations.mjs";
 import { issueRetryToken, JOURNAL_LIMITS, RETRY_LIFETIME_MS } from "./operation-journal.mjs";
 import { plainStub } from "./plain-stub.mjs";
+import { WRITTEN_FORMATS } from "../model/document-types.mjs";
 
 const start = Date.parse("2026-10-25T00:00:00Z");
 const pageId = "33333333-3333-4333-8333-333333333333";
@@ -742,7 +742,7 @@ async function pageFixture(t, { readContent = false } = {}) {
   const storage = new Storage();
   // A current Page: its comments already live in their own document.
   let doc = A.change(A.from(createPageData({ pageId, title: "Accepted content" })), (draft) =>
-    stampFeatures(draft, ["comments-doc"]),
+    initializePage(draft),
   );
   let comments = newCommentsDoc();
   let updates = 0;
@@ -778,6 +778,7 @@ async function pageFixture(t, { readContent = false } = {}) {
     ctx: { storage, id: { name: pageId } },
     metadata: {
       pageId,
+      documentFormats: WRITTEN_FORMATS,
       documentId: "test",
       tree: "c".repeat(32),
       owner: principal,

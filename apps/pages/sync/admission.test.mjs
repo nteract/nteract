@@ -3,6 +3,7 @@ import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { applyComment } from "../model/comments.mjs";
 import { commentsGenesis } from "../model/comments-doc.mjs";
+import { proseNewlineSpans } from "../model/richtext-test-support.mjs";
 import { commentAdmission } from "./comments.mjs";
 import { Refusal, defaultPolicy } from "./host.mjs";
 import { browser, host, idle, newId, raw, until, urlOf } from "./test-helpers.mjs";
@@ -102,7 +103,10 @@ test("a forged edit of another author's message is refused before it's stored, a
     assert.equal(h.store.manifest(id).seq, before, "nothing stored");
     assert.equal((await changesOf(h, id, bobActor)).length, 1, "only Bob's reply is stored");
     await idle();
-    assert.equal(ha.doc().threads[ids.thread_id].messages[ids.message_id].richText, "Alice opens");
+    assert.equal(
+      ha.doc().threads[ids.thread_id].messages[ids.message_id].richText,
+      "\ufffcAlice opens",
+    );
 
     // A fresh browser (new session, new actor) is still blocked.
     bob2 = await browser(h, { principal: BOB, role: "commenter" });
@@ -123,20 +127,20 @@ test("a forged edit of another author's message is refused before it's stored, a
       A.updateText(
         d,
         ["threads", ids.thread_id, "messages", ids.message_id, "richText"],
-        "Alice opens, edited",
+        "\ufffcAlice opens, edited",
       ),
     );
     await until(
       async () =>
         (await h.document(id)).threads[ids.thread_id].messages[ids.message_id].richText ===
-        "Alice opens, edited",
+        "\ufffcAlice opens, edited",
     );
   } finally {
     for (const c of [alice, bob, bob2].filter(Boolean)) await c.repo.shutdown();
   }
 });
 
-test("a stale tab's old-form comment is refused over plain sync without blocking its principal", async () => {
+test("a comment out of the editor's form is refused over plain sync without blocking its principal", async () => {
   const { h, blocked, log } = await commentsHost();
   const id = newId();
   await h.seed(id, "comments", commentsGenesis("1a2b3c4d-ab47-48e4-a0e2-facc277a3efe"));
@@ -154,17 +158,21 @@ test("a stale tab's old-form comment is refused over plain sync without blocking
       label: "Alice's thread",
     });
     const before = h.store.manifest(id).seq;
-    // An earlier build's reply: a Markdown body beside its spans.
+    // A reply whose newline is stored as text, where the editor writes a
+    // hard break.
     ha.change((d) => {
       const message = d.threads[ids.thread_id].messages[ids.message_id];
       d.threads[ids.thread_id].messages.stale = {
-        body: "Old tab",
-        format: message.format,
-        richText: "Old tab",
+        richText: "",
         author: { ...message.author },
         createdAt: new Date().toISOString(),
         deletedAt: null,
       };
+      A.updateSpans(
+        d,
+        ["threads", ids.thread_id, "messages", "stale", "richText"],
+        proseNewlineSpans("Old\ntab"),
+      );
     });
     await until(() => log.some((e) => e.principal === ALICE), { label: "refusal" });
     assert.deepEqual(log.at(-1), { principal: ALICE, code: "outdated_form" });

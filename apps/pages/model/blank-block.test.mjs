@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fc from "fast-check";
 import * as A from "@automerge/automerge";
-import { createPageData, orderedBlockIds } from "./page.mjs";
+import { createPageData, initializePage, orderedBlockIds } from "./page.mjs";
 import { blockMarkdown, isBlankBlock, textPath } from "./richtext.mjs";
 import { MARK_NAMES, updateSpansConfig } from "./marks.mjs";
 import { stampSpans } from "./schema-features.mjs";
@@ -17,7 +17,9 @@ const parameters = {
 };
 
 function storedBlock(spans) {
-  let doc = A.from(createPageData({ pageId: PAGE_ID, title: "Blank" }));
+  let doc = A.change(A.from(createPageData({ pageId: PAGE_ID, title: "Blank" })), (draft) =>
+    initializePage(draft),
+  );
   const id = orderedBlockIds(doc)[0];
   doc = A.change(doc, (draft) => {
     draft.blocks[id].richText = "";

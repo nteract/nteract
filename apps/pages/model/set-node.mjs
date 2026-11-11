@@ -13,12 +13,15 @@
 // checked, language, heading_level or align is refused with the typed field
 // that replaces it.
 import * as A from "@automerge/automerge/slim";
-import { textPath } from "./richtext-format.mjs";
-import { richDoc } from "./richtext-spans.mjs";
+import { markerParents, textPath, updateSpansExactly } from "./richtext-format.mjs";
+import { unreadableMarker } from "./wordgard-doc.mjs";
+import { refuseNewerBlock } from "./richtext-spans.mjs";
 import { updateSpansConfig } from "./marks.mjs";
 import { locateRange } from "./replace-match.mjs";
 import {
   ALIGNMENTS,
+  markerName,
+  markerType,
   SETTABLE_ATTRS,
   nodeLabel,
   nodeType,
@@ -95,10 +98,11 @@ export function nodeChange(input) {
   return { ...(type !== undefined && { type }), attrs: values };
 }
 
-/** The spans array index of the block marker governing native offset `at`,
- * or -1 when the text sits in the implicit first paragraph, which has none.
- * Inline embeds (a hard break, an image) take a position but govern nothing:
- * text after a line break still belongs to the node before it. */
+/** The spans array index of the block marker governing native offset `at`.
+ * The write marks a block's unmarked text before it runs (page.mjs), so a
+ * marker governs every character. Inline
+ * embeds (a hard break, an image) take a position but govern nothing: text
+ * after a line break still belongs to the node before it. */
 function governingMarker(spans, at) {
   let pos = 0,
     index = -1;
@@ -108,13 +112,35 @@ function governingMarker(spans, at) {
       pos += 1;
     } else pos += spans[i].value.length;
   }
+  if (index < 0) throw Error("set_node found no marker for this text");
   return index;
 }
 
-const markerType = (span) => String(span.value.type);
+const spanType = (span) => markerType(span.value);
+const parentsOf = (span) => markerParents(span.value);
+
+/** The spans index of the marker set_node changes for text that marker
+ * `index` governs: that marker, or the container whose first paragraph it
+ * opens, for a container whose marker governs that paragraph
+ * (`governsFirstParagraph` in node-registry.mjs): a task is checked through
+ * its text, and a list item's first paragraph isn't retyped on its own. */
+function targetMarker(spans, index) {
+  const marker = spans[index];
+  if (spanType(marker) !== "paragraph") return index;
+  const container = spans[index - 1];
+  if (container?.type !== "block" || container.value.isEmbed) return index;
+  const type = spanType(container);
+  const own = parentsOf(container),
+    parents = parentsOf(marker);
+  const firstChild =
+    parents.length === own.length + 1 &&
+    parents.at(-1) === type &&
+    own.every((parent, i) => parent === parents[i]);
+  return firstChild && nodeType(type)?.governsFirstParagraph ? index - 1 : index;
+}
 // Table cells are the markers a column-scoped attribute (align) sets.
 const COLUMN_BLOCKS = new Set(SETTABLE_ATTRS.align.blocks);
-const isCell = (span) => span?.type === "block" && COLUMN_BLOCKS.has(markerType(span));
+const isCell = (span) => span?.type === "block" && COLUMN_BLOCKS.has(spanType(span));
 
 /** Spans indexes of every cell marker in the same table column as the cell
  * marker at `index`. Rows and cells follow their table's marker in order;
@@ -125,7 +151,7 @@ function columnCells(spans, index) {
   for (let i = 0; i < spans.length; i++) {
     const span = spans[i];
     if (span.type !== "block") continue;
-    const type = markerType(span);
+    const type = spanType(span);
     if (type === "table") {
       tables.push([]);
       row = null;
@@ -150,31 +176,14 @@ const withAttrs = (span, attrs, type = span.value.type) => ({
 /** Change the type or attributes of the node that holds match_text. */
 export function setNode(doc, id, input, trace, { anchor } = {}) {
   const change = nodeChange(input);
+  refuseNewerBlock(doc, id, "set_node");
   const { path, start, end } = locateRange(doc, id, { ...input, op: "set_node" }, anchor);
   const spans = A.spans(doc, textPath(id));
-  let index = governingMarker(spans, start);
-  const implicit = index < 0;
+  const index = targetMarker(spans, governingMarker(spans, start));
   const result = { op: "set_node", block_id: id, matched: 1 };
   const names = Object.keys(change.attrs);
-  if (implicit && change.type === "paragraph" && !names.length) {
-    // Already a paragraph. An explicit marker would change nothing, and the
-    // editor drops it on the next keystroke.
-    trace?.push({ type: "text", block_id: id, start, end });
-    return result;
-  }
-  if (implicit) {
-    // The implicit first paragraph. Give it an explicit marker to change.
-    // That inserts a character at 0, as the editor does: two writers that
-    // convert it concurrently each insert one and leave an empty paragraph
-    // between them. Target scope refuses the second through its ancestry check.
-    spans.unshift({
-      type: "block",
-      value: { type: new A.ImmutableString("paragraph"), parents: [], attrs: {}, isEmbed: false },
-    });
-    index = 0;
-  }
   const marker = spans[index];
-  const current = markerType(marker);
+  const current = spanType(marker);
   const refuse = (label, blocks) => {
     throw Error(
       `${label} applies to ${pluralLabel(blocks)}; match_text is in ${nodeLabel(current)}`,
@@ -213,22 +222,31 @@ export function setNode(doc, id, input, trace, { anchor } = {}) {
       throw Error(`${target} needs attrs.${spec.agent ?? stored}`);
   const typeValue = target === current ? marker.value.type : new A.ImmutableString(target);
   spans[index] = withAttrs(marker, attrs, typeValue);
-  let cells = 0;
+  const written = [index];
   if (Object.keys(column).length) {
     for (const cell of columnCells(spans, index)) {
+      written.push(cell);
       const cellAttrs = { ...spans[cell].value.attrs };
       for (const [stored, value] of Object.entries(column))
         if (value === null) delete cellAttrs[stored];
         else cellAttrs[stored] = new A.ImmutableString(value);
       spans[cell] = withAttrs(spans[cell], cellAttrs);
-      cells++;
     }
   }
-  A.updateSpans(doc, path, spans, updateSpansConfig);
-  // The schema accepts every change above; check the tree anyway, so a
-  // malformed marker can never be committed.
-  richDoc(doc.blocks[id]);
-  const shift = implicit ? 1 : 0;
-  trace?.push({ type: "text", block_id: id, start: start + shift, end: end + shift });
+  // Every reader draws a marker it can't read as a notice, so nothing
+  // downstream refuses one. A marker this write leaves unreadable (a stored
+  // attribute a newer build wrote that this one can't read) is refused here.
+  // A type or parent that isn't a name, or parents that aren't a list, would
+  // be written back as stored: refused too.
+  const unwritable = (value) =>
+    unreadableMarker(value) ||
+    markerType(value) === null ||
+    !Array.isArray(value.parents) ||
+    value.parents.some((parent) => markerName(parent) === null);
+  if (written.some((i) => unwritable(spans[i].value)))
+    throw Error(`set_node can't write ${nodeLabel(target)} with attributes this build can't read`);
+  updateSpansExactly(doc, path, spans, updateSpansConfig);
+  trace?.push({ type: "text", block_id: id, start, end });
+  const cells = written.length - 1;
   return { ...result, ...(cells ? { cells } : {}) };
 }

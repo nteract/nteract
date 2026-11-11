@@ -564,7 +564,10 @@ test("a list item that opens with a block other than a paragraph reads back and 
       [marker(ul), marker("code-block", [ul], { params: S("") }), text("x")],
     ],
     ["- \n  ## H", [marker(ul), marker("heading", [ul], { level: 2 }), text("H")]],
-    ["1. \n   > q", [marker(ol), marker("blockquote", [ol]), text("q")]],
+    [
+      "1. \n   > q",
+      [marker(ol), marker("blockquote", [ol]), marker("paragraph", [ol, "blockquote"]), text("q")],
+    ],
     ["- \n  ---", [marker(ul), marker("horizontal-rule", [ul])]],
     [
       "- \n  | A |\n  | --- |",
@@ -578,7 +581,7 @@ test("a list item that opens with a block other than a paragraph reads back and 
     ],
     [
       "- a\n- \n  [Dataframe: Usage](" + src + ")",
-      [marker(ul), text("a"), marker(ul), dataframe([ul])],
+      [marker(ul), marker("paragraph", [ul]), text("a"), marker(ul), dataframe([ul])],
     ],
     [
       "- [x] \n\n  [Dataframe: Usage](" + src + ")",
@@ -590,13 +593,22 @@ test("a list item that opens with a block other than a paragraph reads back and 
     ],
     [
       "- [ ] \n\n  - [x] a",
-      [marker(task, [], { checked: false }), marker(task, [task], { checked: true }), text("a")],
+      [
+        marker(task, [], { checked: false }),
+        marker(task, [task], { checked: true }),
+        marker("paragraph", [task, task]),
+        text("a"),
+      ],
     ],
-    ["- \n  - \n    - ", [marker(ul), marker(ul, [ul]), marker(ul, [ul, ul])]],
+    [
+      "- \n  - \n    - ",
+      [marker(ul), marker(ul, [ul]), marker(ul, [ul, ul]), marker("paragraph", [ul, ul, ul])],
+    ],
     [
       "- outer\n\n  - \n    ## H",
       [
         marker(ul),
+        marker("paragraph", [ul]),
         text("outer"),
         marker(ul, [ul]),
         marker("heading", [ul, ul], { level: 2 }),
@@ -605,12 +617,19 @@ test("a list item that opens with a block other than a paragraph reads back and 
     ],
     [
       "- outer\n\n  - \n    ---",
-      [marker(ul), text("outer"), marker(ul, [ul]), marker("horizontal-rule", [ul, ul])],
+      [
+        marker(ul),
+        marker("paragraph", [ul]),
+        text("outer"),
+        marker(ul, [ul]),
+        marker("horizontal-rule", [ul, ul]),
+      ],
     ],
     [
       "- outer\n\n  1. \n     ```\n     x\n     ```",
       [
         marker(ul),
+        marker("paragraph", [ul]),
         text("outer"),
         marker(ol, [ul]),
         marker("code-block", [ul, ol], { params: S("") }),

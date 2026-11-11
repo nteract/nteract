@@ -653,6 +653,15 @@ const NODES = {
     state.write(state.esc(unknownNodeNotice(node.param?.type)));
     state.closeBlock(node);
   },
+  // An aside (a container the editor makes from pasted HTML, and any synced
+  // client can write) has no Markdown form. It reads as the notice, then its
+  // content, as a container this build doesn't know does; a Markdown
+  // rewrite refuses the block (markdownlessNode).
+  aside(state, node) {
+    state.write(state.esc(unknownNodeNotice("aside")));
+    state.closeBlock(node);
+    state.renderContent(node);
+  },
 };
 
 /** Pages Markdown for top-level editor nodes. */

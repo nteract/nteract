@@ -1,5 +1,6 @@
 // Text a read shows in place of a node Markdown can't hold: an unknown node's
 // notice and a dataframe's read-back label.
+import { markerName } from "./node-registry.mjs";
 
 /** What a read shows for a node this build doesn't know. The type is stored
  * data, so only a short identifier is quoted. */
@@ -9,7 +10,7 @@ export function unknownNodeNotice(type) {
 }
 /** A stored node type safe to quote: a short identifier, or null. */
 export function quotableNodeType(type) {
-  const name = String(type ?? "");
+  const name = markerName(type) ?? "";
   return /^[a-z][a-z0-9-]{0,63}$/.test(name) ? name : null;
 }
 /** The read-back line of a dataframe: `[Dataframe: <title>](<src>)`. */

@@ -146,7 +146,7 @@ test("two sources share metadata, preserve marker identity and stamp monotonical
     /same image twice/,
   );
   const deleted = A.change(A.clone(changed), (doc) =>
-    A.splice(doc, ["blocks", block_id, "richText"], 0, 1),
+    A.splice(doc, ["blocks", block_id, "richText"], 1, 1),
   );
   assert.throws(() => apply(deleted, [{ op: "set_image", block_id, image_id, alt: "Gone" }]), {
     code: "image_not_found",

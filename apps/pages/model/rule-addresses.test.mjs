@@ -76,9 +76,9 @@ test("the corpus rule variants address every node, the quote's rule included", (
   assert.deepEqual(ranges(doc, id, 5), [
     [0, 1],
     [1, 2],
-    [2, 8],
-    [8, 10],
-    [10, 24],
+    [2, 9],
+    [9, 11],
+    [11, 25],
   ]);
   const { plan, after } = guarded(doc, id, {
     match_text: "closing",
@@ -154,8 +154,8 @@ test("a nested dataframe and rule don't throw off a later target-scoped edit", (
 
 const marker = (type, parents = [], attrs = {}) => ({ type, parents, attrs });
 /** `doc` with a heading inserted before index `at` of block `id`. With
- * `opening`, the text from `at` onward was the implicit first paragraph and
- * now opens with its own paragraph marker, as the editor writes it. */
+ * `opening`, the text from `at` onward was unmarked text (what a merge can
+ * leave) and now opens with its own paragraph marker, as a writer marks it. */
 function headingAbove(doc, id, at, opening = false) {
   return A.change(A.clone(doc), (draft) => {
     const path = ["blocks", id, "richText"];
@@ -171,7 +171,7 @@ function targetScoped(base, current, id, extra = {}) {
   return { plan, after: replace(current, id, plan.operations[0]) };
 }
 
-test("a heading inserted before the opening paragraph leaves a target-scoped edit valid", () => {
+test("a heading inserted before unmarked text leaves a target-scoped edit valid", () => {
   const { doc: base, id } = pageWithSpans([text("the target here"), block("paragraph"), text("x")]);
   const current = headingAbove(base, id, 0, true);
   const { plan, after } = targetScoped(base, current, id, { node_index: 0 });
@@ -197,8 +197,8 @@ test("a heading inserted above a list or a quote leaves a target-scoped edit val
 });
 
 test("a paragraph gaining its own marker inside a list item or quote keeps its ancestry", () => {
-  // The item's or quote's first paragraph has no marker; one written later
-  // (a paragraph split off above it) names the same structure.
+  // The item's or quote's first paragraph is unmarked text, which a merge can
+  // leave; the marker a writer gives it names the same structure.
   for (const container of ["unordered-list-item", "blockquote"]) {
     const spans = (own) => [
       block(container),
@@ -234,35 +234,36 @@ test("node_index refuses a block whose stored and readable node counts disagree"
   ]);
   assert.throws(() => visibleNodeRange(doc, id, 2), /node_index can't address this block/);
   assert.throws(() => visibleNodeRange(doc, id, 0), /node_index can't address this block/);
-  assert.throws(
-    () => replace(doc, id, { match_text: "d", replacement: "e", node_index: 1 }),
-    /node_index can't address this block/,
-  );
-  // Without node_index the passage still matches.
-  assert.match(replace(doc, id, { match_text: "d", replacement: "e" }).blocks[id].richText, /e$/);
+  // The block holds content this build can't draw whole, so no passage
+  // tool edits it, with node_index or without.
+  for (const input of [{ node_index: 1 }, {}])
+    assert.throws(
+      () => replace(doc, id, { match_text: "d", replacement: "e", ...input }),
+      (error) => error.code === "newer_content",
+    );
 });
 
 test("a block holding only an image has a range that covers the image", () => {
-  // The image is the implicit first paragraph's only character. It has no
-  // visible text, so no match can land in it; the range still has to hold it,
-  // as every other node's range holds a trailing image.
+  // The image is the first paragraph's only character after its marker. It
+  // has no visible text, so no match can land in it; the range still has to
+  // hold it, as every other node's range holds a trailing image.
   const page = (markdown) => {
     let doc = A.from(createPageData({ pageId: PAGE_ID, title: "Images" }));
     doc = A.change(doc, (draft) => initializePage(draft, markdown));
     return { doc, id: orderedBlockIds(doc)[0] };
   };
   const only = page("![chart](https://example.org/a.png)");
-  assert.deepEqual(ranges(only.doc, only.id, 1), [[0, 1]]);
-  // Unchanged: text before a trailing image, and an image-only paragraph
-  // after another node.
+  assert.deepEqual(ranges(only.doc, only.id, 1), [[0, 2]]);
+  // Text before a trailing image, and an image-only paragraph after another
+  // node.
   const caption = page("Caption words ![chart](https://example.org/a.png)");
-  assert.deepEqual(ranges(caption.doc, caption.id, 1), [[0, 15]]);
+  assert.deepEqual(ranges(caption.doc, caption.id, 1), [[0, 16]]);
   const after = replace(caption.doc, caption.id, {
     match_text: "words",
     replacement: "text",
     node_index: 0,
   });
-  assert.equal(after.blocks[caption.id].richText, "Caption text \ufffc");
+  assert.equal(after.blocks[caption.id].richText, "\ufffcCaption text \ufffc");
   const titled = page("# Title\n\n![chart](https://example.org/a.png)");
   assert.deepEqual(ranges(titled.doc, titled.id, 2), [
     [0, 6],

@@ -58,8 +58,11 @@ function setup(markdown) {
       assert.ok(decode(A.spans(replica.doc, textPath("one"))).doc.eq(state.doc));
     },
   };
+  // The paragraph's text and marks, after its own opening marker.
   const spans = () =>
-    A.spans(replica.doc, textPath("one")).map((span) => [span.value, span.marks ?? {}]);
+    A.spans(replica.doc, textPath("one"))
+      .slice(1)
+      .map((span) => [span.value, span.marks ?? {}]);
   return { replica, binding, editor, spans };
 }
 

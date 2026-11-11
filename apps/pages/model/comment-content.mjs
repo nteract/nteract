@@ -1,10 +1,11 @@
+import { markerType } from "./node-registry.mjs";
 import * as A from "@automerge/automerge/slim";
-import { RICH_FORMAT, isRich } from "./richtext-format.mjs";
-import { storedFormUnsupported } from "./stored-form.mjs";
 import { parseAgentMarkdown } from "./markdown-import.mjs";
 import { updateSpansConfig } from "./marks.mjs";
+import { updateSpansExactly } from "./richtext-format.mjs";
 import { pageSpans, validateRichSpans } from "./richtext-spans.mjs";
-import { decode, encode } from "./wordgard-doc.mjs";
+import { Leaf } from "wordgard/doc";
+import { LineBreak, Paragraph, decode, encode, schema } from "./wordgard-doc.mjs";
 import { stampSpans } from "./schema-features.mjs";
 import { DATAFRAME_BLOCK } from "../shared/dataset-assets.mjs";
 import {
@@ -13,13 +14,11 @@ import {
   PLAIN_FORMAT,
   commentSpansMeasure,
 } from "./comment-text.mjs";
-import { isStoredFormMessage } from "./comment-read.mjs";
 
 export { COMMENT_MAX_BYTES, COMMENT_MAX_LENGTH, PLAIN_FORMAT } from "./comment-text.mjs";
 export {
   commentMarkdown,
   commentBodyProjection,
-  isStoredFormMessage,
   commentMessageState,
   commentThreadState,
 } from "./comment-read.mjs";
@@ -27,17 +26,12 @@ export {
  * content rule still applies to what it parses to. */
 export const COMMENT_MAX_SOURCE = COMMENT_MAX_BYTES;
 
-/** Refuse to write over a message in an earlier build's form. */
-function requireStoredMessage(message) {
-  if (isStoredFormMessage(message)) throw storedFormUnsupported("a comment on this Page");
-}
-
 /** `spans` in the editor's form: what Wordgard's `encode` writes for the
  * tree they decode to, the form every Page body is in. Refuses spans the
  * editor can't hold whole, as pageSpans does. */
 export function editorCommentSpans(spans) {
   const decoded = decode(spans);
-  if (decoded.lossy)
+  if (decoded.lossy || decoded.newer)
     throw Object.assign(Error("This comment has content the Pages editor can't hold"), {
       code: "markdownless_node",
     });
@@ -70,25 +64,103 @@ function storedForm(spans) {
   return JSON.stringify(out);
 }
 
-/** Whether `spans` are in the editor's form: exactly what `encode` writes
- * for the tree they decode to, with nothing the editor can't hold. Every
- * writer in this build stores that form, and admission refuses anything
- * else (comment-authority.mjs). The ProseMirror adapter's form isn't: it
- * opens with a paragraph marker, leaves out a quote's marker, or keeps a
- * prose newline as text. */
+/** Whether `spans` are in the editor's form: what `encode` writes for the
+ * tree they decode to, or what a merge of such writes leaves. Admission
+ * refuses anything else (comment-authority.mjs).
+ *
+ * decode reads more than the editor writes, and quietly normalizes what it
+ * reads: a newline stored as text in prose (which the agent reader keeps as
+ * text and people see as a line break), marks on code text, attrs a marker
+ * doesn't use, a link with no title, the forms an earlier build wrote. So
+ * "decode reads it without loss" would let a client store a message that
+ * people and agents read differently, or that carries data no reader shows
+ * and the next edit drops. The check compares the spans with the editor's
+ * own encoding of what they read as.
+ *
+ * A merge of two valid edits can leave two shapes no single writer does,
+ * and both are in the form: unmarked text (a peer typed into a node another
+ * deleted), and a container whose marker is gone while a node a peer added
+ * inside it survives (decode's `rebuilt`). The comparison counts the
+ * markers a writer would store for those as present. */
 export function isEditorForm(spans) {
   try {
     const decoded = decode(spans);
-    return !decoded.lossy && storedForm(spans) === storedForm(encode(decoded.doc));
+    // decode draws what this build can't read as a notice instead of
+    // throwing; a notice is never the editor's form.
+    if (decoded.lossy || decoded.newer) return false;
+    const missing = [
+      ...decoded.unmarked.map(({ at, markers }) => ({ at, markers })),
+      ...decoded.rebuilt.map(({ at, type, parents }) => ({
+        at,
+        markers: [{ type, parents, attrs: WRITTEN_ATTRS[type] ?? {} }],
+      })),
+    ].sort((a, b) => a.at - b.at);
+    return storedForm(withMarkers(spans, missing)) === storedForm(encode(decoded.doc));
   } catch {
     return false;
   }
 }
 
+// The attrs encode writes for a container that has none of its own.
+const WRITTEN_ATTRS = { "task-list-item": { checked: false } };
+
+/** `spans` with the markers `missing` names (`[{ at, markers }]`, sorted by
+ * `at`) inserted at their text offsets. */
+function withMarkers(spans, unmarked) {
+  if (!unmarked.length) return spans;
+  const out = [];
+  let at = 0,
+    next = 0;
+  const insert = () => {
+    while (next < unmarked.length && unmarked[next].at === at) {
+      for (const { type, parents, attrs = {} } of unmarked[next].markers)
+        out.push({
+          type: "block",
+          value: {
+            type: new A.ImmutableString(type),
+            parents: parents.map((parent) => new A.ImmutableString(parent)),
+            attrs,
+            isEmbed: false,
+          },
+        });
+      next++;
+    }
+  };
+  for (const span of spans) {
+    if (span.type !== "text") {
+      insert();
+      out.push(span);
+      at++;
+      continue;
+    }
+    let value = span.value;
+    while (next < unmarked.length && unmarked[next].at < at + value.length) {
+      const cut = unmarked[next].at - at;
+      if (cut > 0) out.push({ ...span, value: value.slice(0, cut) });
+      value = value.slice(cut);
+      at += cut;
+      insert();
+    }
+    insert();
+    if (value) out.push({ ...span, value });
+    at += value.length;
+  }
+  insert();
+  return out;
+}
+
 /** Literal text as a comment's spans: one paragraph, each newline a hard
  * break, no marks. `*` stays a `*`. */
 export const plainCommentSpans = (text) =>
-  editorCommentSpans([{ type: "text", value: String(text), marks: {} }]);
+  encode(
+    schema.doc([
+      Paragraph.create(
+        String(text)
+          .split("\n")
+          .flatMap((part, i) => [...(i ? [LineBreak] : []), ...(part ? [Leaf.text(part)] : [])]),
+      ),
+    ]),
+  );
 
 /** An agent's Markdown as a comment's spans, through the Page body's path
  * (pageSpans): math and HTML are refused with `unsupported_markdown`. */
@@ -111,9 +183,7 @@ const LENGTH_MESSAGE = `Comment must contain 1–${COMMENT_MAX_LENGTH} character
  */
 const bytesOf = (value) => new TextEncoder().encode(JSON.stringify(value)).length;
 const isLineBreak = (span) =>
-  span?.type === "block" &&
-  span.value?.isEmbed === true &&
-  String(span.value.type) === "hard-break";
+  span?.type === "block" && span.value?.isEmbed === true && markerType(span.value) === "hard-break";
 
 /** How many lines `spans` hold: one more than their hard breaks. */
 export const commentLines = (spans) => spans.filter(isLineBreak).length + 1;
@@ -134,9 +204,9 @@ export function validateCommentSpans(spans) {
   }
   for (const span of spans)
     if (span?.type === "block") {
-      if (String(span.value?.type) === DATAFRAME_BLOCK)
+      if (markerType(span.value) === DATAFRAME_BLOCK)
         throw Error("Comments can't hold a dataframe");
-      if (String(span.value?.type) === "image" && span.value?.attrs?.dark_src != null)
+      if (markerType(span.value) === "image" && span.value?.attrs?.dark_src != null)
         throw Error("Comments can't hold theme image variants; use a Page image instead");
     }
   const { length, content } = commentSpansMeasure(spans);
@@ -148,7 +218,7 @@ export function validateCommentSpans(spans) {
 /** The format a write without `body_format` keeps: plain for a message
  * written as plain text or not written yet, Markdown otherwise. */
 const currentFormat = (message) =>
-  message && isRich(message) && String(message.bodyFormat ?? "") !== PLAIN_FORMAT
+  message?.richText !== undefined && String(message.bodyFormat ?? "") !== PLAIN_FORMAT
     ? "markdown"
     : PLAIN_FORMAT;
 
@@ -188,14 +258,11 @@ export function setCommentContent(doc, path, input, nativeSpans) {
 /** Store editor-form `spans` as the message at `path`, inside the caller's
  * change, keeping the message's identity: its id, author and timestamps,
  * and the unchanged characters of its text. A new message (no content yet)
- * gets its rich text here; a message in an earlier build's form is refused. */
+ * gets its rich text here. */
 export function writeCommentSpans(doc, path, spans, { plain = false } = {}) {
   const message = path.reduce((value, key) => value[key], doc);
-  if (message.format === undefined && message.body === undefined) {
-    message.format = RICH_FORMAT;
-    message.richText = "";
-  } else requireStoredMessage(message);
-  A.updateSpans(doc, [...path, "richText"], spans, updateSpansConfig);
+  if (message.richText === undefined) message.richText = "";
+  updateSpansExactly(doc, [...path, "richText"], spans, updateSpansConfig);
   if (plain) {
     if (message.bodyFormat !== PLAIN_FORMAT) message.bodyFormat = PLAIN_FORMAT;
   } else if (message.bodyFormat !== undefined) delete message.bodyFormat;

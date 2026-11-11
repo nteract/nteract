@@ -1,5 +1,7 @@
 // Comment limits and the text a comment's spans hold. No codec: the browser
 // composer imports this without loading markdown-it or ProseMirror.
+import { markerType } from "./node-registry.mjs";
+import { markerParents } from "./richtext-format.mjs";
 
 /** At most this many text characters (UTF-16 code units) in one message.
  * Block markers don't count, so a message's length doesn't depend on its
@@ -25,7 +27,7 @@ export function commentSpansMeasure(spans) {
     } else if (
       span?.type === "block" &&
       span.value?.isEmbed === true &&
-      String(span.value.type) !== "hard-break"
+      markerType(span.value) !== "hard-break"
     )
       content = true;
   }
@@ -33,17 +35,25 @@ export function commentSpansMeasure(spans) {
 }
 
 const plainBreak = (value) =>
-  String(value?.type) === "hard-break" &&
+  markerType(value) === "hard-break" &&
   value.isEmbed === true &&
-  (value.parents ?? []).every((parent) => String(parent) === "paragraph") &&
-  (value.parents ?? []).length <= 1;
+  markerParents(value).every((parent) => parent === "paragraph") &&
+  markerParents(value).length <= 1;
 
-/** The literal text of spans a plain write stores: one paragraph of unmarked
- * text and hard breaks, each break a `\n`. Null when the spans hold anything
- * else, so a reader never presents formatted content as literal text. */
+const plainParagraph = (value) =>
+  markerType(value) === "paragraph" &&
+  value.isEmbed === false &&
+  !markerParents(value).length &&
+  !Object.keys(value.attrs ?? {}).length;
+
+/** The literal text of spans a plain write stores: one paragraph of text and
+ * hard breaks, each break a `\n`, opened by its marker (or unmarked, as a
+ * merge can leave it). Null when the spans hold anything else, so a reader
+ * never presents formatted content as literal text. */
 export function plainCommentText(spans) {
   let text = "";
-  for (const span of spans) {
+  for (const [index, span] of spans.entries()) {
+    if (index === 0 && span.type === "block" && plainParagraph(span.value)) continue;
     if (span.type === "text") {
       if (Object.keys(span.marks ?? {}).length) return null;
       text += span.value;
@@ -60,7 +70,7 @@ export function commentDraftText(spans) {
   for (const span of spans ?? []) {
     if (span.type === "text") text += span.value;
     else if (span.value?.isEmbed) {
-      if (String(span.value.type) === "image") text += String(span.value.attrs?.alt ?? "");
+      if (markerType(span.value) === "image") text += String(span.value.attrs?.alt ?? "");
       else text += "\n";
     } else if (text) text += "\n";
   }

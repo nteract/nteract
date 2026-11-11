@@ -18,7 +18,10 @@ import { projectReadContent } from "./read-content.mjs";
 import { visibleNodeRange, visibleRangeAddress } from "./replace-match.mjs";
 import { textPath } from "./richtext-format.mjs";
 import { nativeRead } from "./native-read.mjs";
-import { allInputs, pageWithSpans, spansToJSON } from "../test/address-inputs.mjs";
+import { blockMarkdown, repairBlockMarkers } from "./richtext-page.mjs";
+import { decode } from "./wordgard-doc.mjs";
+import { applyPageOperation } from "./page.mjs";
+import { allInputs, PAGE_ID, pageWithSpans, spansToJSON } from "../test/address-inputs.mjs";
 
 const GOLDEN = new URL("./node-addresses.golden.json", import.meta.url);
 const update = process.env.PAGES_UPDATE_ADDRESSES === "1";
@@ -52,7 +55,7 @@ function observe(spans) {
   try {
     outline = projectReadContent(doc, { include_content: false }).outline;
   } catch {
-    // read_page refuses a block its Markdown projection can't hold (an aside).
+    // A shape read_page refuses has no outline.
   }
   const ids = readableNodeIds(doc, id, tree);
   let addresses;
@@ -188,16 +191,109 @@ test("text stored after an unknown block is that node's content", () => {
   assert.deepEqual(
     addresses.nodes.map(({ start, end, at }) => ({ start, end, at })),
     [
-      { start: 0, end: 1, at: null },
-      { start: 1, end: 14, at: 1 },
-      { start: 14, end: 16, at: 14 },
-      { start: 16, end: 18, at: 16 },
+      { start: 0, end: 2, at: 0 },
+      { start: 2, end: 15, at: 2 },
+      { start: 15, end: 17, at: 15 },
+      { start: 17, end: 19, at: 17 },
     ],
   );
   const inside = text.indexOf("callout");
   assert.equal(nodeIndexAt(addresses, inside), 1);
   assert.equal(ancestryAt(addresses, inside)[0].type, "PagesUnknownBlock");
-  assert.deepEqual(ancestryAt(addresses, 0), [{ type: "Paragraph", attrs: {} }]);
+  assert.deepEqual(ancestryAt(addresses, 1), [{ type: "Paragraph", attrs: {} }]);
+});
+
+// Shapes with unmarked text, and whether it is a top-level paragraph
+// (which has no node id until a writer marks it).
+const UNMARKED = {
+  empty: true,
+  "unmarked-first": true,
+  "unmarked-after-rule": true,
+  "unmarked-in-quote": false,
+  "unmarked-in-list-item": false,
+  "unmarked-in-table": false,
+  "image-after-code": true,
+  "unknown-embed-after-code": true,
+  "image-after-rule": true,
+  "image-after-dataframe": true,
+  "image-after-quoted-code": false,
+  "image-in-code": true,
+};
+
+test("every written node has an id, the first paragraph's included", () => {
+  for (const { name, spans } of inputs) {
+    if (Object.keys(UNMARKED).some((shape) => name === `shape/${shape}`)) continue;
+    const result = observe(spans);
+    if (!result.observed || result.observed.placed === false) continue;
+    assert.ok(
+      result.observed.ids.every((at) => Number.isInteger(at)),
+      `${name}: ${JSON.stringify(result.observed.ids)}`,
+    );
+  }
+});
+
+test("every reader reads unmarked text, and marking it gives every node an id", () => {
+  for (const [shape, topLevel] of Object.entries(UNMARKED)) {
+    const { spans } = inputs.find((input) => input.name === `shape/${shape}`);
+    const { doc, id } = pageWithSpans(spans);
+    const tree = nativeRead(doc.blocks[id], doc.page_id);
+    const ids = nodeIds(doc, id, tree);
+    assert.equal(blockAddresses(A.spans(doc, textPath(id))).nodes.length, ids.length, shape);
+    // A top-level paragraph of unmarked text has no id; unmarked text inside
+    // a container is inside a node that has one.
+    assert.equal(ids.filter((entry) => entry.id === null).length, topLevel ? 1 : 0, shape);
+    const marked = A.change(A.clone(doc), (draft) => assert.ok(repairBlockMarkers(draft, id)));
+    assert.equal(decode(A.spans(marked, textPath(id))).unmarked.length, 0, shape);
+    assert.ok(
+      nodeIds(marked, id).every((entry) => typeof entry.id === "string"),
+      shape,
+    );
+    // Marking adds markers only: the Markdown reads the same.
+    assert.equal(blockMarkdown(marked.blocks[id]), blockMarkdown(doc.blocks[id]), shape);
+    // A second pass writes nothing.
+    A.change(A.clone(marked), (draft) => assert.equal(repairBlockMarkers(draft, id), false));
+  }
+});
+
+test("an inline node continues the node before it when that node can hold it, and opens unmarked text when it can't", () => {
+  // A code block holds text and line breaks; every other textblock holds
+  // every inline node; a leaf holds nothing.
+  for (const [shape, tree] of [
+    ["image-after-code", `Doc(CodeBlock("x"),Paragraph(PagesImage,"y"),Paragraph("z"))`],
+    ["image-in-code", `Doc(CodeBlock("x"),Paragraph(PagesImage,"y"),Paragraph("z"))`],
+    ["unknown-embed-after-code", `Doc(CodeBlock("x"),Paragraph(PagesUnknownEmbed,"y"))`],
+    ["break-after-code", `Doc(CodeBlock("x",LineBreak,"y"))`],
+    ["image-after-heading", `Doc(Heading("x",PagesImage,"y"))`],
+    ["image-after-rule", `Doc(Paragraph("x"),HorizontalRule,Paragraph(PagesImage,"y"))`],
+    ["image-after-dataframe", `Doc(Paragraph("x"),PagesDataframe,Paragraph(PagesImage,"y"))`],
+    ["image-in-cell-after-merge", `Doc(Table(TableRow(Cell("c",PagesImage,"d"))))`],
+    ["image-after-quoted-code", `Doc(Blockquote(CodeBlock("x"),Paragraph(PagesImage)))`],
+  ]) {
+    const { spans } = inputs.find((input) => input.name === `shape/${shape}`);
+    const { doc, id } = pageWithSpans(spans);
+    const decoded = decode(A.spans(doc, textPath(id)));
+    assert.equal(decoded.lossy, false, shape);
+    assert.equal(String(decoded.doc), tree, shape);
+    const native = nativeRead(doc.blocks[id], PAGE_ID).nodes;
+    assert.equal(
+      `Doc(${native.map(String).join(",")})`,
+      tree.replace(`"x",LineBreak,"y"`, `"x\\ny"`),
+      shape,
+    );
+    const markdown = blockMarkdown(doc.blocks[id], PAGE_ID);
+    // A tool write to the block reads it, marks it and edits it.
+    const match = shape === "image-in-cell-after-merge" ? "c" : "x";
+    const written = A.change(A.clone(doc), (draft) =>
+      applyPageOperation(draft, {
+        operation: "patch_page",
+        arguments: {
+          operations: [{ op: "replace_match", block_id: id, match_text: match, replacement: "w" }],
+        },
+      }),
+    );
+    assert.deepEqual(decode(A.spans(written, textPath(id))).unmarked, [], shape);
+    assert.equal(blockMarkdown(written.blocks[id], PAGE_ID), markdown.replace(match, "w"), shape);
+  }
 });
 
 test("ancestry names each container and its stored attrs", () => {

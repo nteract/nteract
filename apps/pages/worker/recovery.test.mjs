@@ -5,6 +5,7 @@ import { createAuthFixture } from "../auth-fixtures.mjs";
 import { Catalog, Page } from "./index.mjs";
 import { documentMutation, recoverDocumentMutations } from "./mutations.mjs";
 import { plainStub } from "./plain-stub.mjs";
+import { WRITTEN_FORMATS } from "../model/document-types.mjs";
 
 class Storage {
   values = new Map();
@@ -69,7 +70,12 @@ test("Page restart recovers an intent based on an unflushed WebSocket edit", asy
   const storage = new Storage();
   let doc = A.from({ page_id: pageId, text: "original" });
   await storage.put("fixture/document", A.save(doc));
-  await storage.put("host/document", { pageId, documentId: "fixture", deleted: false });
+  await storage.put("host/document", {
+    pageId,
+    documentFormats: WRITTEN_FORMATS,
+    documentId: "fixture",
+    deleted: false,
+  });
   doc = A.change(doc, (draft) => {
     draft.humanNote = "received over WebSocket";
   });
@@ -281,6 +287,7 @@ test("a new purge key completes failed deletion barriers before clearing its cat
     ctx: contextFor(storage),
     metadata: {
       pageId,
+      documentFormats: WRITTEN_FORMATS,
       documentId: "fixture",
       owner: `user:anaconda-fixture:${auth.subject}`,
       deleted: false,

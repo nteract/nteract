@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
-import { validateRichSpans } from "./richtext-spans.mjs";
+import { validateRich, validateRichSpans } from "./richtext-spans.mjs";
+import { UNREADABLE_MARKERS, UNREADABLE_MARKS } from "./richtext-test-support.mjs";
+import { updateSpansConfig } from "./marks.mjs";
+import { isEditorForm, editorCommentSpans } from "./comment-content.mjs";
 import { decode, encode, Blockquote, Paragraph, Table, PagesLink } from "./wordgard-doc.mjs";
 import { parseAgentMarkdown } from "./markdown-import.mjs";
 import { exportMarkdown } from "./markdown-serializer.mjs";
@@ -60,4 +63,49 @@ test("native Markdown keeps link titles and crossed mark ranges", () => {
   const link = doc.firstChild.content.find((node) => node.isText && node.mark(PagesLink));
   assert.deepEqual(link.mark(PagesLink), { href: "/x", title: "title" });
   assert.equal(exportMarkdown(parseAgentMarkdown(exportMarkdown(doc))), exportMarkdown(doc));
+});
+
+// Every reader draws a marker it can't read as a notice, and a mark it can't
+// read as plain text. Neither reaches storage through admission: a Page
+// registers through validateRich, and a comment through validateRichSpans
+// and isEditorForm.
+test("admission refuses a stored marker or mark value this build can't read", () => {
+  const stored = (spans) => {
+    const doc = A.change(A.from({ richText: "" }), (d) =>
+      A.updateSpans(d, ["richText"], spans, updateSpansConfig),
+    );
+    return { block: doc, spans: A.spans(doc, ["richText"]) };
+  };
+  const cases = [
+    ...Object.entries(UNREADABLE_MARKERS).map(([name, value]) => [
+      name,
+      [{ type: "block", value: value() }],
+      true,
+    ]),
+    // A mark value is read as a mark this build doesn't know: the editor
+    // writes it back as stored, so it is in the editor's form, and the
+    // shared content rule (validateRichSpans) refuses it.
+    ...Object.entries(UNREADABLE_MARKS).map(([name, marks]) => [
+      name,
+      [marker("paragraph"), text("x", marks)],
+      false,
+    ]),
+  ];
+  for (const [name, spans, notice] of cases) {
+    const { block, spans: read } = stored(spans);
+    try {
+      assert.throws(() => validateRich(block), name);
+      assert.throws(() => validateRichSpans(read), name);
+      if (notice) {
+        assert.equal(isEditorForm(read), false, name);
+        assert.throws(() => editorCommentSpans(read), name);
+      }
+    } finally {
+      A.free(block);
+    }
+  }
+  // The same block with a value this build reads is admitted.
+  const { block } = stored([marker("heading", [], { level: 2 }), text("x")]);
+  validateRich(block);
+  A.free(block);
 });

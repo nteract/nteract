@@ -6,28 +6,36 @@ import { INVALID_BLOCK, blockChangeRefusal } from "./block-shape.mjs";
 
 const actor = (n) => n.toString(16).padStart(32, "0");
 const id = (n) => `00000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
-const LEGACY_KEYS = ["id", "kind", "format", "markdown", "metadata"];
+const marker = (type, { parents = [], isEmbed = false } = {}) => ({
+  type: "block",
+  value: {
+    type: new A.ImmutableString(type),
+    parents: parents.map((parent) => new A.ImmutableString(parent)),
+    attrs: {},
+    isEmbed,
+  },
+});
 
-/** A Page with `count` blocks in shape. `legacy` adds the earlier format's
- * five extra keys to each. */
-function page(count, { legacy = false } = {}) {
+/** Inside a change: a block at `blockId` whose text is `text` in one
+ * paragraph under its marker, as every writer writes a new block. */
+function putBlock(d, blockId, key, text = "") {
+  d.blocks[blockId] = { position: new A.RawString(key), richText: "" };
+  A.updateSpans(
+    d,
+    ["blocks", blockId, "richText"],
+    [marker("paragraph"), ...(text ? [{ type: "text", value: text }] : [])],
+  );
+}
+
+/** A Page with `count` blocks in shape. */
+function page(count) {
   const keys = generateNKeysBetween(null, null, count);
   return A.change(A.init({ actor: actor(1) }), { time: 0 }, (d) => {
     d.page_id = "p";
     d.title = "Page";
     d.blocks = {};
     for (let n = 0; n < count; n++)
-      d.blocks[id(n)] = {
-        position: new A.RawString(keys[n]),
-        richText: "Lorem ipsum dolor sit amet. ".repeat(4),
-        ...(legacy && {
-          id: id(n),
-          kind: "markdown",
-          format: "rich",
-          markdown: "",
-          metadata: {},
-        }),
-      };
+      putBlock(d, id(n), keys[n], "Lorem ipsum dolor sit amet. ".repeat(4));
   });
 }
 
@@ -42,7 +50,7 @@ function judge(before, edit, editor = actor(2)) {
  * concurrent with them. */
 function admit(live, peer) {
   const after = A.loadIncremental(A.clone(live), A.saveSince(peer, A.getHeads(live)));
-  return blockChangeRefusal(live, after, A.getChangesSince(after, A.getHeads(live)));
+  return blockChangeRefusal(after, A.getChangesSince(after, A.getHeads(live)));
 }
 
 test("typing, creating, moving and deleting blocks in shape are admitted", () => {
@@ -52,9 +60,7 @@ test("typing, creating, moving and deleting blocks in shape are admitted", () =>
     null,
   );
   assert.equal(
-    judge(base, (d) => {
-      d.blocks[id(9)] = { position: new A.RawString("a0V"), richText: "" };
-    }),
+    judge(base, (d) => putBlock(d, id(9), "a0V")),
     null,
   );
   assert.equal(
@@ -126,7 +132,8 @@ test("blocks must stay a map", () => {
   // block in a new map is checked.
   assert.equal(
     judge(base, (d) => {
-      d.blocks = { [id(7)]: { position: new A.RawString("a0"), richText: "" } };
+      d.blocks = {};
+      putBlock(d, id(7), "a0");
     }),
     null,
   );
@@ -138,36 +145,32 @@ test("blocks must stay a map", () => {
   );
 });
 
-test("an earlier format's extra keys are tolerated on the block that held them", () => {
-  const base = page(2, { legacy: true });
-  assert.deepEqual(Object.keys(base.blocks[id(0)]).sort(), [
-    ...[...LEGACY_KEYS, "position", "richText"].sort(),
-  ]);
+test("admission judges no marker: any text in a block in shape is admitted", () => {
+  // A merge can leave text no marker opens, and every reader reads it. A
+  // block's creation and a later merge that unmarks its start can arrive in
+  // one frame.
+  const base = page(1);
+  const text = (value) => ({ type: "text", value });
+  for (const [name, spans] of [
+    ["no text", []],
+    ["text before any marker", [text("x"), marker("paragraph")]],
+    ["an embed", [marker("image", { parents: ["paragraph"], isEmbed: true })]],
+    ["a nested marker", [marker("paragraph", { parents: ["blockquote"] }), text("x")]],
+  ])
+    assert.equal(
+      judge(base, (d) => {
+        d.blocks[id(5)] = { position: new A.RawString("a5"), richText: "" };
+        A.updateSpans(d, ["blocks", id(5), "richText"], spans);
+      }),
+      null,
+      name,
+    );
   for (const [name, edit] of [
-    ["typing", (d) => A.splice(d, ["blocks", id(0), "richText"], 0, 0, "x")],
-    ["moving", (d) => (d.blocks[id(0)].position = new A.RawString("Zz"))],
-    ["editing an old key", (d) => (d.blocks[id(0)].metadata.width = 3)],
-    ["rewriting an old key", (d) => (d.blocks[id(0)].kind = "markdown")],
-    ["dropping an old key", (d) => delete d.blocks[id(0)].markdown],
-    ["deleting", (d) => delete d.blocks[id(0)]],
+    ["typing before the marker", (d) => A.splice(d, ["blocks", id(0), "richText"], 0, 0, "x")],
+    ["deleting the marker", (d) => A.splice(d, ["blocks", id(0), "richText"], 0, 1)],
+    ["emptying the text", (d) => A.updateText(d, ["blocks", id(0), "richText"], "")],
   ])
     assert.equal(judge(base, edit), null, name);
-  // A key no earlier block held is still refused.
-  assert.equal(judge(base, (d) => (d.blocks[id(0)].note = "x"))?.code, INVALID_BLOCK);
-  // A replacement block is new: the old block's keys don't carry over.
-  assert.equal(
-    judge(base, (d) => {
-      d.blocks[id(0)] = { position: new A.RawString("a0"), richText: "", kind: "markdown" };
-    })?.code,
-    INVALID_BLOCK,
-  );
-  // Another legacy block's keys don't carry over to a new block either.
-  assert.equal(
-    judge(base, (d) => {
-      d.blocks[id(9)] = { position: new A.RawString("a9"), richText: "", kind: "markdown" };
-    })?.code,
-    INVALID_BLOCK,
-  );
 });
 
 test("concurrent block writes that are each in shape are admitted in either order", () => {
@@ -175,12 +178,8 @@ test("concurrent block writes that are each in shape are admitted in either orde
   const peer = (n, edit) => A.change(A.clone(base, { actor: actor(n) }), { time: 0 }, edit);
   const pairs = {
     "two peers create blocks": [
-      peer(2, (d) => {
-        d.blocks[id(10)] = { position: new A.RawString("a5"), richText: "two" };
-      }),
-      peer(3, (d) => {
-        d.blocks[id(11)] = { position: new A.RawString("a5"), richText: "three" };
-      }),
+      peer(2, (d) => putBlock(d, id(10), "a5", "two")),
+      peer(3, (d) => putBlock(d, id(11), "a5", "three")),
     ],
     "a delete and typing in the deleted block": [
       peer(2, (d) => delete d.blocks[id(1)]),
@@ -240,16 +239,12 @@ test("a position with a character outside the base-62 digits is refused", () => 
   }
 });
 
-/** Two peers that each put a block map at `blockId` without seeing the other.
- * The higher actor wins the conflict. */
-function rivals(base, blockId, winner, loser) {
+/** Two peers that each put a block map without seeing the other: `winner`
+ * and `loser` are the edits. The higher actor wins the conflict. */
+function rivals(base, winner, loser) {
   return {
-    winner: A.change(A.clone(base, { actor: actor(0xff) }), { time: 0 }, (d) => {
-      d.blocks[blockId] = winner;
-    }),
-    loser: A.change(A.clone(base, { actor: actor(0x02) }), { time: 0 }, (d) => {
-      d.blocks[blockId] = loser;
-    }),
+    winner: A.change(A.clone(base, { actor: actor(0xff) }), { time: 0 }, winner),
+    loser: A.change(A.clone(base, { actor: actor(0x02) }), { time: 0 }, loser),
   };
 }
 
@@ -261,13 +256,13 @@ const merged = (base, ...docs) =>
 
 test("a value that loses a conflict is judged at its own frame, in either arrival order", () => {
   const base = page(1);
-  const good = () => ({ position: new A.RawString("a5"), richText: "good" });
+  const good = (d) => putBlock(d, id(5), "a5", "good");
   for (const bad of [
     { position: new A.RawString("a5") },
     { position: "a5", richText: "" },
     { position: new A.RawString("a5"), richText: "", note: 1 },
   ]) {
-    const { winner, loser } = rivals(base, id(5), good(), bad);
+    const { winner, loser } = rivals(base, good, (d) => (d.blocks[id(5)] = bad));
     // The winner arrives first; the hidden loser is refused at its frame.
     const withWinner = merged(base, winner);
     assert.equal(admit(base, winner), null);
@@ -294,9 +289,8 @@ test("two valid concurrent replacements are admitted, and a delete that saw one 
   const base = page(1);
   const { winner, loser } = rivals(
     base,
-    id(5),
-    { position: new A.RawString("a5"), richText: "winner" },
-    { position: new A.RawString("a6"), richText: "loser" },
+    (d) => putBlock(d, id(5), "a5", "winner"),
+    (d) => putBlock(d, id(5), "a6", "loser"),
   );
   for (const [first, second] of [
     [winner, loser],
@@ -311,7 +305,7 @@ test("two valid concurrent replacements are admitted, and a delete that saw one 
     });
     assert.equal(admit(live, deletes), null);
     const after = merged(base, first, second, deletes);
-    assert.equal(after.blocks[id(5)].richText, "loser");
+    assert.equal(after.blocks[id(5)].richText, "\ufffcloser");
   }
 });
 
@@ -319,18 +313,17 @@ test("an edit to a block hidden behind a concurrent value is judged", () => {
   const base = page(1);
   const { winner, loser } = rivals(
     base,
-    id(5),
-    { position: new A.RawString("a5"), richText: "winner" },
-    { position: new A.RawString("a6"), richText: "loser" },
+    (d) => putBlock(d, id(5), "a5", "winner"),
+    (d) => putBlock(d, id(5), "a6", "loser"),
   );
   const live = merged(base, winner, loser);
-  assert.equal(live.blocks[id(5)].richText, "winner");
+  assert.equal(live.blocks[id(5)].richText, "\ufffcwinner");
   // The loser's author, still without the winner, breaks and then edits its
   // block. Neither is visible on the host; both are judged.
   const broken = A.change(A.clone(loser), { time: 0 }, (d) => delete d.blocks[id(5)].richText);
   assert.equal(admit(live, broken)?.code, INVALID_BLOCK);
   const typed = A.change(A.clone(loser), { time: 0 }, (d) =>
-    A.splice(d, ["blocks", id(5), "richText"], 0, 0, "more "),
+    A.splice(d, ["blocks", id(5), "richText"], 1, 0, "more "),
   );
   assert.equal(admit(live, typed), null);
 });
@@ -348,7 +341,7 @@ function keystrokeCost(count, frames = 200) {
     // The host has the fresh changes before admission runs.
     const fresh = A.getChangesSince(after, A.getHeads(live));
     const started = performance.now();
-    assert.equal(blockChangeRefusal(live, after, fresh), null);
+    assert.equal(blockChangeRefusal(after, fresh), null);
     times.push(performance.now() - started);
     A.free(peer);
     A.free(live);

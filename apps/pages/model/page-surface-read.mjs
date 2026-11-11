@@ -1,7 +1,7 @@
 import * as A from "@automerge/automerge/slim";
 import { nativeReadSpans } from "./native-read.mjs";
-import { codeTextUnmarked } from "./richtext-format.mjs";
-import { nodeType, TEXT_CONTAINERS } from "./node-registry.mjs";
+import { codeTextUnmarked, markerParents } from "./richtext-format.mjs";
+import { nodeType, TEXT_CONTAINERS, markerType } from "./node-registry.mjs";
 import { unknownNodeNotice } from "./richtext-notices.mjs";
 
 const MAX_SPANS = 65536;
@@ -21,7 +21,7 @@ export function surfaceRead(block) {
   const input = codeTextUnmarked(A.spans(block, ["richText"]));
   if (input.length > MAX_SPANS) throw Error("Surface span budget exceeded");
   for (const span of input)
-    if (span.type === "block" && span.value.parents?.length > MAX_PARENTS)
+    if (span.type === "block" && markerParents(span.value).length > MAX_PARENTS)
       throw Error("Surface depth budget exceeded");
   try {
     return surfaceNodes(input, false);
@@ -30,9 +30,9 @@ export function surfaceRead(block) {
       !input.some(
         ({ type, value }) =>
           type === "block" &&
-          ([value.type, ...(value.parents ?? [])].some((type) => !nodeType(type)) ||
-            (String(value.type) === "dataframe" &&
-              (value.parents ?? []).some((type) => TEXT_CONTAINERS.has(String(type))))),
+          ([markerType(value), ...markerParents(value)].some((type) => !nodeType(type)) ||
+            (markerType(value) === "dataframe" &&
+              markerParents(value).some((type) => TEXT_CONTAINERS.has(type)))),
       )
     )
       throw error;
@@ -51,19 +51,20 @@ function surfaceNodes(input, all) {
       leaf &&
       !leaf.isEmbed &&
       nodeType(leaf.type)?.kind === "leaf" &&
-      String(leaf.type) !== "pages-opaque" &&
-      !(leaf.parents ?? []).some((p) => TEXT_CONTAINERS.has(String(p)))
+      markerType(leaf) !== "pages-opaque" &&
+      !markerParents(leaf).some((p) => TEXT_CONTAINERS.has(p))
     )
       readable.push(marker(new A.ImmutableString("paragraph"), leaf.parents));
     if (span.type !== "block") {
       readable.push(span);
       continue;
     }
-    const { type, parents = [], isEmbed } = span.value;
-    const name = String(type),
-      textOnly = parents.some((p) => TEXT_CONTAINERS.has(String(p)));
+    const { isEmbed } = span.value,
+      parents = markerParents(span.value);
+    const name = markerType(span.value) ?? "",
+      textOnly = parents.some((p) => TEXT_CONTAINERS.has(p));
     const unknown = !nodeType(name) || (name === "dataframe" && textOnly);
-    if (!unknown || !(all || (isEmbed && parents.some((p) => String(p) === "code-block")))) {
+    if (!unknown || !(all || (isEmbed && parents.includes("code-block")))) {
       readable.push(span);
       continue;
     }
@@ -72,7 +73,7 @@ function surfaceNodes(input, all) {
         ? [
             marker(
               new A.ImmutableString("paragraph"),
-              parents.filter((p) => nodeType(p)).map((p) => new A.ImmutableString(String(p))),
+              parents.filter((p) => nodeType(p)).map((p) => new A.ImmutableString(p)),
             ),
           ]
         : []),
@@ -87,8 +88,8 @@ function surfaceNodes(input, all) {
     const span = input[index];
     if (span.type === "block") {
       const raw = span.value,
-        name = String(raw.type),
-        parents = (raw.parents ?? []).map(String);
+        name = markerType(raw),
+        parents = markerParents(raw);
       if (
         !raw.isEmbed &&
         name !== "dataframe" &&
@@ -109,16 +110,28 @@ function surfaceNodes(input, all) {
       spans.push(span);
       continue;
     }
-    // Mutable marker fields have a defined legacy read spelling. These copies
-    // are projection inputs only; no Automerge bytes or IDs are rewritten.
+    // Mutable marker fields have a defined legacy read spelling: a type
+    // stored as a mutable string reads as a paragraph, and parents with one
+    // among them as none. A type or parent that is no name at all (a map,
+    // nothing) reads as one this build doesn't know, as in the agent read.
+    // These copies are projection inputs only; no Automerge bytes or IDs are
+    // rewritten.
     const value = span.value;
+    const legacy = (raw) => typeof raw === "string";
     let type =
-      value.type instanceof A.ImmutableString ? value.type : new A.ImmutableString("paragraph");
-    let parents =
-      Array.isArray(value.parents) && value.parents.every((p) => p instanceof A.ImmutableString)
+      value.type instanceof A.ImmutableString
+        ? value.type
+        : legacy(value.type)
+          ? new A.ImmutableString("paragraph")
+          : unknownWrapper;
+    let parents = !Array.isArray(value.parents)
+      ? []
+      : value.parents.every((p) => p instanceof A.ImmutableString)
         ? value.parents
-        : [];
-    if (all && (value.parents ?? []).some((parent) => !nodeType(parent)))
+        : value.parents.some((p) => !legacy(p) && !(p instanceof A.ImmutableString))
+          ? value.parents.map((p) => (p instanceof A.ImmutableString ? p : unknownWrapper))
+          : [];
+    if (all && markerParents(value).some((parent) => !nodeType(parent)))
       parents = value.parents
         .filter((parent) => nodeType(parent))
         .map((parent) => new A.ImmutableString(String(parent)));
@@ -127,9 +140,6 @@ function surfaceNodes(input, all) {
       name = String(type),
       def = nodeType(name);
     let isEmbed = !!value.isEmbed;
-    if (name === "image" && attrs.src === undefined) throw Error("Unreadable image attributes");
-    if (name === "dataframe" && (attrs?.src === undefined || attrs?.media_type === undefined))
-      throw Error("Unreadable dataframe attributes");
     if (isEmbed) {
       if (def && def.kind !== "embed") {
         if (!container(context.at(-1))) throw Error("Unreadable embedded block");
@@ -165,7 +175,7 @@ function surfaceNodes(input, all) {
       if (
         ((!def || name === "dataframe") && parents.some((p) => TEXT_CONTAINERS.has(String(p)))) ||
         (name === "dataframe" &&
-          (value.parents ?? []).some((p) => TEXT_CONTAINERS.has(String(p))) &&
+          markerParents(value).some((p) => TEXT_CONTAINERS.has(p)) &&
           input[index + 1] &&
           (input[index + 1].type === "text" || input[index + 1].value.isEmbed))
       )

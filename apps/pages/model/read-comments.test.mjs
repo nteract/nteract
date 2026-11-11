@@ -70,8 +70,8 @@ test("compact threads preserve Unicode quotes/coordinates and allowlist document
   assert.equal(thread.message_count, 2);
   assert.deepEqual(thread.selectionContext, {
     status: "attached",
-    start: { blockId: "first", offsetUtf16: 7 },
-    end: { blockId: "first", offsetUtf16: 17 },
+    start: { blockId: "first", offsetUtf16: 8 },
+    end: { blockId: "first", offsetUtf16: 18 },
     text: "🌊 passage",
   });
   const message = thread.messages.find((value) => value.id === ids.first.message_id);
@@ -164,7 +164,7 @@ test("deleted blocks remain addressable and removed selections report detached",
   let { doc, ids } = fixture();
   doc = A.change(doc, (draft) => {
     delete draft.blocks.second;
-    A.splice(draft, ["blocks", "first", "richText"], 7, 10, "");
+    A.splice(draft, ["blocks", "first", "richText"], 8, 10, "");
   });
   const [detachedBlock] = projectReadComments(doc, { block_id: "second" });
   assert.equal(detachedBlock.id, ids.second.thread_id);

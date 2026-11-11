@@ -117,11 +117,11 @@ test("unrelated edits in the same rich block preserve both contributions, marks 
 
 test("native cursors map a scoped node past an inserted paragraph without selecting duplicate text", () => {
   const { doc, id, heads } = fixture("apple\n\napple");
-  // A new first paragraph, as the editor writes one: the old first paragraph
-  // gets its own marker, and the new one is implicit before it.
+  // A new first paragraph, as the editor writes one: its own marker and
+  // text before the old first paragraph's marker.
   const current = A.change(A.clone(doc), (draft) => {
     A.splitBlock(draft, textPath(id), 0, paragraph());
-    A.splice(draft, textPath(id), 0, 0, "apple");
+    A.splice(draft, textPath(id), 1, 0, "apple");
   });
   const { after, plan } = edit(current, heads, [
     op(id, { match_text: "apple", replacement: "pear", node_index: 1 }),

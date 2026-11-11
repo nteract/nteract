@@ -51,6 +51,8 @@ test("the preview renders blocks with the schema's own tags and attributes", (t)
   assert.deepEqual(figure, ["p", {}, ["img", { src: asset, alt: "Figure" }]]);
 });
 
+// An unsafe link target is a mark value this build must not render: the
+// preview draws it as a mark it doesn't know, as the editor does.
 test("the preview drops unsafe link targets the way the editor does", () => {
   const doc = page("[x](https://ok.example)");
   const id = orderedBlockIds(doc)[0];
@@ -58,12 +60,14 @@ test("the preview drops unsafe link targets the way the editor does", () => {
     A.mark(
       draft,
       ["blocks", id, "richText"],
-      { start: 0, end: 1, expand: "none" },
+      { start: 1, end: 2, expand: "none" },
       "link",
       JSON.stringify({ href: "javascript:alert(1)", title: null }),
     ),
   );
-  assert.deepEqual(pagePreview(next).blocks[0].content, [["p", {}, ["span", {}, "x"]]]);
+  assert.deepEqual(pagePreview(next).blocks[0].content, [
+    ["p", {}, ["span", { "data-unknown-mark": true }, "x"]],
+  ]);
 });
 
 /** A Page titled `title` with one block per entry of `blocks`. */

@@ -268,15 +268,38 @@ test("set_node changes heading levels and turns headings into paragraphs", () =>
   ]);
 });
 
-test("set_node gives the implicit first paragraph a marker when it becomes a heading", () => {
-  let doc = A.from(createPageData({ pageId: "implicit", title: "Implicit" }));
-  const id = orderedBlockIds(doc)[0];
-  doc = A.change(doc, (draft) => A.splice(draft, textPath(id), 0, 0, "Opening words"));
-  assert.deepEqual(markers(doc, id), []);
+/** A block whose text a merge left with no marker opening it. */
+function unmarkedFixture(text) {
+  const { doc, id } = fixture("x");
+  const unmarked = A.change(doc, (draft) => {
+    draft.blocks[id].richText = "";
+    A.splice(draft, textPath(id), 0, 0, text);
+  });
+  return { doc: unmarked, id };
+}
+
+test("set_node turns a block's first paragraph into a heading through its own marker", () => {
+  const { doc, id } = fixture("Opening words");
+  assert.deepEqual(markers(doc, id), [["paragraph", {}]]);
   const { after } = apply(doc, [
     { op: "set_node", block_id: id, match_text: "Opening", type: "heading", attrs: { level: 1 } },
   ]);
   assert.equal(md(after, id), "# Opening words");
+  assert.deepEqual(markers(after, id), [["heading", { level: 1 }]]);
+  // Unmarked text gets its marker in the same write, then the retype.
+  const unmarked = unmarkedFixture("Opening words");
+  assert.deepEqual(markers(unmarked.doc, unmarked.id), []);
+  const marked = apply(unmarked.doc, [
+    {
+      op: "set_node",
+      block_id: unmarked.id,
+      match_text: "Opening",
+      type: "heading",
+      attrs: { level: 1 },
+    },
+  ]).after;
+  assert.equal(md(marked, unmarked.id), "# Opening words");
+  assert.deepEqual(markers(marked, unmarked.id), [["heading", { level: 1 }]]);
 });
 
 test("set_node aligns a whole table column and clears it", () => {
@@ -422,7 +445,7 @@ test("set_node updates markers in place and leaves every text mark alone", () =>
     "Lead\n\nIntro **bold** text\n\n```py\nx = 1\n```\n\n| a | *b* |\n| --- | --- |\n| 1 | 2 |",
   );
   const path = textPath(id);
-  // The first paragraph is implicit; "Intro" has its own marker to update.
+  // "Lead" and "Intro" each have their own paragraph marker; Intro's updates.
   // A mark crossing a block marker, a stray mark on code text, and a mark
   // this build doesn't know: none may change on any text character. Marks on
   // the marker characters themselves carry no formatting; updateSpans drops
@@ -476,7 +499,7 @@ test("set_node updates markers in place and leaves every text mark alone", () =>
       markerOffsets(marked)
         .filter(([, type]) => type === "paragraph")
         .map(([at]) => at)
-        .slice(0, 1),
+        .slice(1, 2),
     ],
     [
       { match_text: "x = 1", attrs: { language: "rust" } },
@@ -577,15 +600,20 @@ test("an editor rewrite after an import or a set_node writes nothing", () => {
     const { after } = apply(doc, [{ op: "set_node", block_id: id, ...op }]);
     assert.deepEqual(rewrite(after, id), [], key(op));
   }
-  // The implicit first paragraph: a heading marker the editor keeps, and a
-  // no-op that writes nothing at all.
-  let doc = A.from(createPageData({ pageId: "implicit_rewrite", title: "Implicit" }));
-  const id = orderedBlockIds(doc)[0];
-  doc = A.change(doc, (draft) => A.splice(draft, textPath(id), 0, 0, "Opening words"));
-  const heading = apply(doc, [
-    { op: "set_node", block_id: id, match_text: "Opening", type: "heading", attrs: { level: 2 } },
+  // Unmarked text a write marked: a heading marker the editor keeps. A
+  // retype to the type the node has writes nothing at all.
+  const unmarked = unmarkedFixture("Opening words");
+  const heading = apply(unmarked.doc, [
+    {
+      op: "set_node",
+      block_id: unmarked.id,
+      match_text: "Opening",
+      type: "heading",
+      attrs: { level: 2 },
+    },
   ]);
-  assert.deepEqual(rewrite(heading.after, id), []);
+  assert.deepEqual(rewrite(heading.after, unmarked.id), []);
+  const { doc, id } = fixture("Opening words");
   const same = apply(doc, [
     { op: "set_node", block_id: id, match_text: "Opening", type: "paragraph" },
   ]);
@@ -788,20 +816,32 @@ test("a retype drops only the old type's own attrs and keeps a newer build's", (
   const { doc: plain, id } = fixture("Intro words\n\nSecond words");
   // A newer build's attr on the second paragraph's marker.
   const extra = A.change(A.clone(plain), (draft) => {
+    let seen = 0;
     const spans = A.spans(draft, textPath(id)).map((span) =>
-      span.type === "block" ? { ...span, value: { ...span.value, attrs: { anchor: "a1" } } } : span,
+      span.type === "block" && seen++ === 1
+        ? { ...span, value: { ...span.value, attrs: { anchor: "a1" } } }
+        : span,
     );
     A.updateSpans(draft, textPath(id), spans);
   });
-  assert.deepEqual(markers(extra, id), [["paragraph", { anchor: "a1" }]]);
+  assert.deepEqual(markers(extra, id), [
+    ["paragraph", {}],
+    ["paragraph", { anchor: "a1" }],
+  ]);
   const heading = apply(extra, [
     { op: "set_node", block_id: id, match_text: "Second", type: "heading", attrs: { level: 2 } },
   ]).after;
-  assert.deepEqual(markers(heading, id), [["heading", { anchor: "a1", level: 2 }]]);
+  assert.deepEqual(markers(heading, id), [
+    ["paragraph", {}],
+    ["heading", { anchor: "a1", level: 2 }],
+  ]);
   const back = apply(heading, [
     { op: "set_node", block_id: id, match_text: "Second", type: "paragraph" },
   ]).after;
-  assert.deepEqual(markers(back, id), [["paragraph", { anchor: "a1" }]]);
+  assert.deepEqual(markers(back, id), [
+    ["paragraph", {}],
+    ["paragraph", { anchor: "a1" }],
+  ]);
 });
 
 test("set_node refuses a top-level field and names the typed field to use", () => {

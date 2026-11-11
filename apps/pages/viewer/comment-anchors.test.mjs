@@ -105,7 +105,7 @@ test(
     p.dispatch({ changes: { from: p.at("brown fox"), to: p.at(" jumps") } });
     assert.equal(p.anchored(target).status, "detached");
     p.dispatch(undo({ state: p.state }));
-    assert.equal(p.replica.doc.blocks.one.richText, "The quick brown fox jumps.");
+    assert.equal(p.replica.doc.blocks.one.richText, "￼The quick brown fox jumps.");
     assert.equal(p.anchored(target).status, "attached");
     p.binding.destroy();
   },

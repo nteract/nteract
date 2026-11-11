@@ -13,9 +13,12 @@
 // marker. A Markdown rewrite diffs the block and can replace markers, so it
 // can mint new ids.
 //
-// The block's implicit first paragraph has no marker, so it has no id
-// (null). Inline embeds (images, line breaks) are markers too, but they sit
-// inside a node and never open one.
+// Every writer opens every node with a marker, the block's first node
+// included, so every written node has an id. A paragraph of unmarked text,
+// which only a merge leaves (decode in model/wordgard-doc.mjs), has none
+// (null) until the next host write to its block marks it. Inline embeds
+// (images, line breaks) are markers too, but they sit inside a node and
+// never open one.
 //
 // An id is meaningful only with its block_id: cursors are per text object.
 import * as A from "@automerge/automerge/slim";
@@ -28,8 +31,7 @@ export const MAX_NODE_ID = 192;
 
 /** For each top-level node of rich block `blockId`, in order: `{ id, at }`,
  * the cursor at its opening marker and that marker's index in the text, or
- * `{ id: null, at: null }` for the implicit first paragraph. Addresses come
- * from the stored spans (model/node-addresses.mjs). `tree` is the block's
+ * `{ id: null, at: null }` for a paragraph of unmarked text. Addresses come from the stored spans (model/node-addresses.mjs). `tree` is the block's
  * richDoc, when the caller pairs the ids with its nodes; the ids line up with
  * them, or this throws. Also throws when the block holds a node this build
  * can't place where it was stored. */
@@ -82,7 +84,7 @@ export function resolveNodeId(doc, blockId, nodeId, tree) {
     ids = nodeIds(doc, blockId, tree);
   } catch {
     throw notFound(
-      "This block holds a node this version of Pages can't place, so its nodes have no ids. Use delete_block, or edit around it with patch_page.",
+      "This block holds a node this version of Pages can't place, so its nodes have no ids. Use delete_block. patch_page edits around it only while the block reads whole; otherwise it answers newer_content.",
     );
   }
   const index = ids.findIndex((entry) => entry.id === nodeId);
@@ -98,14 +100,13 @@ export function resolveNodeId(doc, blockId, nodeId, tree) {
 }
 
 /** The text range `[start, end)` of node `index`: its marker up to the next
- * node's marker, or to the end of the text for the last node. A node with no
- * marker after the first can't bound the range, so that's refused rather
- * than letting the range run on over the nodes after it. */
+ * node's marker, or to the end of the text for the last node. A host write
+ * marks a block's unmarked text before it resolves an id (page.mjs), so the
+ * next node always has a marker; one without is refused rather than letting
+ * the range run on over the nodes after it. */
 export function nodeRange(ids, index, length) {
   const next = ids[index + 1];
   if (next && next.at === null)
-    throw Error(
-      "delete_node can't tell where this node ends: the node after it has no marker. Edit the block with replace_block_markdown or delete_block instead.",
-    );
+    throw Error("This node's end is unmarked text; mark the block's unmarked text first");
   return { start: ids[index].at, end: next ? next.at : length };
 }

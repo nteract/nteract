@@ -24,11 +24,10 @@ import {
   plainCommentSpans,
 } from "./comment-content.mjs";
 import { pageSpans } from "./richtext-spans.mjs";
-import { explicitOpeningSpans } from "./richtext-test-support.mjs";
+import { unmarkedSpans } from "./richtext-test-support.mjs";
 import { parseAgentMarkdown } from "./markdown-import.mjs";
 import { schema, Paragraph, PagesImage } from "./wordgard-doc.mjs";
 import { Leaf } from "wordgard/doc";
-import { RICH_FORMAT } from "./richtext-format.mjs";
 
 const identity = { principal: "fixture", displayName: "Writer", driver: "Test" };
 const fixture = () =>
@@ -88,11 +87,11 @@ const plain = (spans) =>
     JSON.stringify(spans, (_key, value) => (A.isImmutableString?.(value) ? String(value) : value)),
   ).map((span) => (span.type === "text" ? { ...span, marks: span.marks ?? {} } : span));
 
-test("plain input is stored as unmarked spans and read back literally", () => {
+test("plain input is stored as unformatted spans and read back literally", () => {
   const literal = "**literal** | <b>text</b>\n2 * 3";
   const { doc, ids, path } = add(fixture(), literal, { body_format: "plain" });
   const message = messageAt(doc, path);
-  assert.equal(message.format, RICH_FORMAT, "one stored shape for every message");
+  assert.equal(message.format, undefined, "a message stores its spans and no format field");
   assert.equal(message.bodyFormat, "plain", "the author's format is recorded");
   assert.equal(message.body, undefined);
   const spans = A.spans(message, ["richText"]);
@@ -142,115 +141,23 @@ test("an edit switches between plain and Markdown in place", () => {
       identity,
     ),
   );
-  assert.equal(messageAt(doc, path).richText, "**literal**");
+  assert.equal(messageAt(doc, path).richText, "\ufffc**literal**");
   assert.equal(commentMarkdown(messageAt(doc, path)), "**literal**");
 });
 
-test("a message in an old stored form reads as a placeholder and is refused on write", () => {
-  const { doc: seeded, ids, path } = add(fixture(), "placeholder");
-  const refused = { code: "stored_form_unsupported", status: 409 };
-  // A plain message and an adapter-form rich message with its Markdown copy,
-  // as builds before the comments migration wrote them.
-  const legacy = A.change(A.clone(seeded), (d) => {
-    const thread = d.threads[ids.thread_id];
-    thread.messages[ids.message_id] = {
-      body: "**literal** | <b>text</b>",
-      author: { ...messageAt(seeded, path).author },
-      createdAt: "2026-11-01T00:00:00.000Z",
-      deletedAt: null,
-    };
-  });
-  const adapter = A.change(A.clone(seeded), (d) => {
-    const old = d.threads[ids.thread_id].messages[ids.message_id];
-    old.body = "frozen copy";
-    A.updateSpans(
-      d,
-      [...path, "richText"],
-      explicitOpeningSpans(parseAgentMarkdown("Adapter **form**\n\nTwo")),
-    );
-  });
-  for (const doc of [legacy, adapter]) {
-    // Reads show a placeholder for that one message, never its stored text.
-    for (const projected of [projectComments(doc), projectReadComments(doc)]) {
-      const [message] = projected[0].messages;
-      assert.equal(message.id, ids.message_id);
-      assert.equal(message.body, "");
-      assert.equal(message.body_format, "plain");
-      assert.equal(message.content_error, "stored_form_unsupported");
-      assert.equal(message.author.principal, "fixture", "the author line stays");
-    }
-    assert.throws(
-      () =>
-        A.change(doc, (d) => applyComment(d, { action: "edit", ...ids, body: "New" }, identity)),
-      refused,
-    );
-  }
-});
-
-test("a stale replica's concurrent body write survives a merge and reads as a placeholder", async () => {
-  const { admitCommentChanges } = await import("./comment-authority.mjs");
-  // The shared history: one message in today's form, and one bare `body`
-  // message as builds before the comments migration wrote it.
-  const { doc: seeded, ids } = add(fixture(), "Readable sibling", { body_format: "plain" });
-  const staleId = "stale-message";
-  const stalePath = ["threads", ids.thread_id, "messages", staleId];
-  const base = A.change(seeded, (d) => {
-    d.threads[ids.thread_id].messages[staleId] = {
-      body: "Old form",
-      author: { ...identity },
-      createdAt: "2026-11-05T18:00:00.000Z",
-      deletedAt: null,
-    };
-  });
-  // The host migrates the message: rich text in, `body` out.
-  const migrated = A.change(A.clone(base), (d) => {
-    const message = messageAt(d, stalePath);
-    message.format = RICH_FORMAT;
-    message.richText = "";
-    A.updateSpans(d, [...stalePath, "richText"], plainCommentSpans("Old form"));
-    message.bodyFormat = "plain";
-    delete message.body;
-  });
-  const byId = (messages, id) => messages.find((message) => message.id === id);
-  assert.equal(byId(projectComments(migrated)[0].messages, staleId).body, "Old form");
-  // A tab that never saw the migration edits the message the old way.
-  const stale = A.change(A.clone(base), (d) => {
-    messageAt(d, stalePath).body = "Edited offline";
-  });
-  // The concurrent put wins over the delete it never saw.
-  const merged = A.merge(A.clone(migrated), stale);
-  assert.equal(messageAt(merged, stalePath).body, "Edited offline");
-  assert.equal(messageAt(merged, stalePath).format, RICH_FORMAT);
-  for (const projected of [projectComments(merged), projectReadComments(merged)]) {
-    const readable = byId(projected[0].messages, ids.message_id);
-    const unreadable = byId(projected[0].messages, staleId);
-    assert.equal(readable.body, "Readable sibling", "the rest of the thread reads");
-    assert.equal(unreadable.body, "", "the stale text is never shown");
-    assert.equal(unreadable.content_error, "stored_form_unsupported");
-    assert.equal(unreadable.createdAt, "2026-11-05T18:00:00.000Z");
-  }
-  // The host refuses the stale change on admission, so it can't reach the
-  // stored copy: only the replica that wrote it holds the merged form.
-  const staleChanges = A.getChanges(base, stale);
-  const decision = admitCommentChanges(migrated, staleChanges, identity.principal, {
-    role: "editor",
-  });
-  assert.equal(decision.ok, false);
-  assert.equal(decision.reason.code, "outdated_form");
-});
-
 test("the length limit counts text characters, not block markers", () => {
-  // 16000 characters across 100 list items: 100 markers on top.
+  // 16000 characters across 100 list items: 200 markers on top, an item's
+  // and its paragraph's.
   const items = Array.from({ length: 100 }, () => "x".repeat(160));
   const spans = markdownCommentSpans(items.map((item) => `- ${item}`).join("\n"));
-  assert.equal(spans.filter((span) => span.type === "block").length, 100);
+  assert.equal(spans.filter((span) => span.type === "block").length, 200);
   assert.doesNotThrow(() => validateCommentSpans(spans));
   const over = markdownCommentSpans(`${items.map((item) => `- ${item}`).join("\n")}x`);
   assert.throws(() => validateCommentSpans(over), /16000/);
-  // The adapter form of a message has one more marker than the editor form;
-  // either counts the same.
+  // Unmarked text, which a merge can leave, has one marker fewer than the
+  // editor's form; either counts the same.
   const tree = schema.doc([Paragraph.create([Leaf.text("y".repeat(16000))])]);
-  assert.doesNotThrow(() => validateCommentSpans(explicitOpeningSpans(tree)));
+  assert.doesNotThrow(() => validateCommentSpans(unmarkedSpans(tree)));
   assert.doesNotThrow(() => validateCommentSpans(pageSpans(tree)));
 });
 
@@ -333,13 +240,13 @@ test("concurrent rich replies preserve both messages and the original selection 
 
 test("browser submission stores the editor's spans without a Markdown round trip", () => {
   const spans = markdownCommentSpans("**[Linked](https://example.com/)** text");
-  // A peer's spans in the adapter's form are stored in the editor's form.
+  // A peer's spans holding unmarked text are stored in the editor's form.
   const adapterDoc = A.change(fixture(), (d) =>
     applyComment(
       d,
       { action: "add", block_id: "one" },
       identity,
-      explicitOpeningSpans(parseAgentMarkdown("**[Linked](https://example.com/)** text")),
+      unmarkedSpans(parseAgentMarkdown("**[Linked](https://example.com/)** text")),
     ),
   );
   const [adapterMessage] = Object.values(Object.values(adapterDoc.threads)[0].messages);

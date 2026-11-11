@@ -50,6 +50,7 @@ import { codeHighlighting } from "./code-highlight.mjs";
 import {
   insertPlainLineBreak,
   wordgardCodeNewlines,
+  wordgardForeignMarks,
   wordgardListStarts,
 } from "./wordgard-binding.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
@@ -60,8 +61,6 @@ import { bareLinkPaste } from "./bare-links.mjs";
 import { CurrentPage, CurrentProject } from "./current-page.mjs";
 import { registerEditor } from "./editor-focus.mjs";
 import { PROSE_ENTRY_ATTRIBUTES } from "./prose-entry.mjs";
-import { UNREADABLE_COMMENT } from "./comment-thread-display.mjs";
-import { STORED_FORM_UNSUPPORTED } from "../model/stored-form.mjs";
 import {
   COMMENT_MAX_BYTES,
   COMMENT_MAX_LENGTH,
@@ -114,6 +113,7 @@ function nativeConfig({ currentPageId = () => null, currentProjectId = () => nul
     // A pasted URL becomes a bare link, as in Page blocks.
     bareLinkPaste(),
     wordgardCodeNewlines,
+    wordgardForeignMarks,
     wordgardListStarts,
     codeHighlighting,
     KeyBinding.of({ key: "Shift-Enter", run: insertPlainLineBreak }),
@@ -511,13 +511,10 @@ export function CommentContent({ message, source }) {
   const current = useRef(null);
   current.current = { pageId: currentPageId, projectId: currentProjectId };
   const unavailable = message.content_error === "rich_text_unavailable";
-  // A message an earlier build stored (model/comment-content.mjs). Its
-  // stored text isn't read; the author line and the thread still show.
-  const unreadable = message.content_error === STORED_FORM_UNSUPPORTED;
   const [problem, setProblem] = useState(false);
   useEffect(() => {
     setProblem(false);
-    if (unavailable || unreadable) return;
+    if (unavailable) return;
     let editor;
     try {
       editor = Wordgard.create({
@@ -537,13 +534,7 @@ export function CommentContent({ message, source }) {
       setProblem(true);
     }
     return () => editor?.dom.remove();
-  }, [source, unavailable, unreadable]);
-  if (unreadable)
-    return (
-      <div className="comment-rich-content comment-unreadable">
-        <p className="muted">{UNREADABLE_COMMENT}</p>
-      </div>
-    );
+  }, [source, unavailable]);
   return (
     <div className="comment-rich-content wordgard-editor">
       <div ref={mount} hidden={problem || unavailable} />

@@ -40,15 +40,26 @@ Comments live in their own document and anchor to the Page with cursors.
 
 ## What changes from today
 
-1. **Format 2 for `pages.page`.** A block stores `position` and `richText`
-   only, and a response block is `id`, `position` and `markdown`, the
-   projection of `richText` ([model/page.mjs](model/page.mjs)).
-   **Format 3** gives every node an explicit opening marker, including a
-   block's first paragraph, so every node has an id. Comment messages hold
-   the same rich text, so `pages.comments` moves to format 2 in that change
-   and drops the constant `format` field each message stores. The markers
-   get their own format number so that the release gate refuses a marker
-   build on a target whose documents have none.
+1. **Format 3 for `pages.page`, format 2 for `pages.comments`.** In place.
+   A block stores `position` and `richText` only, and a response block is
+   `id`, `position` and `markdown`, the projection of `richText`
+   ([model/page.mjs](model/page.mjs)). Every node a writer writes opens with
+   its marker, a block's first paragraph included, so every written node has
+   a `node_id`: the cursor on its marker. A comment message holds the same
+   rich text and no `format` field.
+   A merge can leave content that no marker opens, for example when one
+   person deletes a paragraph while another types or puts an image into it.
+   That is unmarked text, an image or line break included. The stored
+   format allows it and every reader reads it by one rule: content continues the node before it in its scope
+   when that node can hold it, and otherwise opens a paragraph (in a table,
+   a row and cell) with no marker. A code block holds text and line breaks;
+   every other textblock holds every inline node; a leaf (a rule, a
+   dataframe) holds nothing. Such a paragraph has `node_id` null. The next
+   host write to the block marks it, and the editor marks it when a person
+   types or formats inside it. A merge can also delete a container's marker
+   while a node a peer added inside it survives. Readers draw the container
+   from that node's `parents` and name it by that node's marker, and no
+   writer restores the container's marker.
 2. **Sync without `automerge-repo`.** Pages uses the Repo package for CBOR,
    document ID helpers, record sizing, the Sedimentree backend interface in
    [sync/backend.mjs](sync/backend.mjs), and one `Repo` in the browser
@@ -84,19 +95,19 @@ Comments live in their own document and anchor to the Page with cursors.
    that service. A fix for it goes on a maintenance branch cut from the tag,
    built from that branch and promoted by hand.
 3. **Delete what a new service does not need** (list below).
-4. **Format 2**, deployed to a new, empty service. `main` writes the format 2
-   block shape, and `page10` is the lab target that takes it. Explicit
-   opening markers follow as format 3, their own change, because they move
-   node ids, the golden node addresses and the editor's caret positions. A
-   target is emptied again for format 3. Two host checks land before it:
-   - Plain sync admission checks the block shape, as registration does. This
-     one is in place.
-   - Landed: a Page's host record stores the format of each of its documents
+4. **Formats 2 and 3**, deployed to a new, empty service. Done: `main`
+   writes `pages.page` 3 and `pages.comments` 2, and `page10` is the lab
+   target that takes them. A target is emptied for format 3, because its
+   markers move node ids, the golden node addresses and the editor's caret
+   positions. The host checks that go with it:
+   - Plain sync admission checks the block shape, as registration does: a
+     block holds exactly `position` and `richText`. Neither applies a
+     marker rule to the text, since every reader reads unmarked text.
+   - A Page's host record stores the format of each of its documents
      (`documentFormats`), and the host refuses a record in a format the
-     build does not write while its owner can still delete the Page.
-     `TARGET_DOCUMENT_FORMATS` stays the release gate. A record from before
-     the stamp reads as format 2; the format 3 change deletes that rule, so
-     a missed reset is refused Page by Page.
+     build does not write, or a record without the stamp, while its owner
+     can still delete the Page. `TARGET_DOCUMENT_FORMATS` stays the release
+     gate. A missed reset is refused Page by Page.
 5. **Agent tools on format 2.**
 6. **A second document type**, once Pages runs on the type boundary.
 
@@ -106,7 +117,6 @@ Comments live in their own document and anchor to the Page with cursors.
 | --- | --- | --- |
 | Any time | A snapshot file with no regenerate command, or a test that compares against a fixed commit | It pins code that no longer exists and cannot follow an intended change |
 | After the format 1 tag | `PageRecords`, `recordStorage` stamps and guards, `stored-form.mjs` | They protect documents and open tabs on `pages.runtimed.run`. A new service has neither. The `PageRecords` Durable Object class stays declared, with an empty body, while a deployed target still binds it |
-| With format 3 | The `format` field each comment message stores, and `isRich` with it. Plain sync admission's tolerance for block keys other than `position` and `richText` (`kept` in `model/block-shape.mjs`) | Every message holds rich text. The field only told an earlier stored form apart. The key tolerance exists for Pages stored before format 2 on targets that still hold them; a target is emptied for format 3, so then every block holds exactly its two keys |
 
 Keep tests that state behavior: concurrent edits, comment anchors, access
 decisions, receipts, persistence and recovery, and the property tests.
@@ -184,4 +194,12 @@ records the node addresses agents use.
   admission checks and the Markdown and outline projections are the first
   candidates, because the host, the tools and a Rust client can then share
   one codec. Moving the editor's document into WASM is a larger step.
-- Whether marker `parents` becomes a scalar path, and how small blocks get.
+- How small blocks get. Marker `parents` stays a list: a scalar parents
+  value and one path scalar for type and parents each merged no better in a
+  census of concurrent writers. As lists, two writers that change one marker's parents at once merge into
+  parents neither wrote. Every reader draws any stored spans, whatever their
+  parents or values, and none throws; the next host write or editor edit to
+  a block whose only problem is its nesting stores what they drew
+  ([model/merge-readers.test.mjs](model/merge-readers.test.mjs)). A merge
+  can still pair one writer's type with another's parents, or drop a
+  structural edit.

@@ -15,6 +15,7 @@ import {
   CodeBlock,
   LineBreak,
   OrderedList,
+  PagesForeignMarks,
 } from "./wordgard-model.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
 import {
@@ -24,6 +25,7 @@ import {
   synced,
 } from "./wordgard-projection-state.mjs";
 import { MARK_NAMES, markExpand } from "../model/marks.mjs";
+import { updateSpansExactly } from "../model/richtext-format.mjs";
 import { stampMarks, stampSpans } from "../model/schema-features.mjs";
 
 // Enter inserts LineBreak leaves, while Wordgard's code clipboard parser can
@@ -68,6 +70,33 @@ export const wordgardCodeNewlines = [
       : null,
   ),
 ];
+
+// A readable mark replaces a stored value of the same name this build can't
+// read (PagesForeignMarks): applying bold over a stored `strong: "yes"`
+// stores `strong: true`. The foreign mark loses that name's entry and keeps
+// its others; with none left it goes. Removing the readable mark later
+// brings nothing back. encode (toMarks) then never sees both for one name.
+// The stored names a mark writes, or none for a mark encode doesn't write
+// (a code block's language).
+const namesOf = (mark) => {
+  try {
+    return markNames(mark);
+  } catch {
+    return [];
+  }
+};
+export const wordgardForeignMarks = Correction.onMarks(Leaf.Text, (position) => {
+  const { marks } = position.node;
+  const foreign = marks.find((mark) => mark.type === PagesForeignMarks);
+  if (!foreign) return null;
+  const named = new Set(marks.filter((mark) => mark !== foreign).flatMap(namesOf));
+  const kept = Object.entries(foreign.value).filter(([name]) => !named.has(name));
+  if (kept.length === Object.keys(foreign.value).length) return null;
+  const range = { from: position.before, to: position.before + position.node.length };
+  return kept.length
+    ? { ...range, add: PagesForeignMarks.of(Object.fromEntries(kept)) }
+    : { ...range, remove: foreign };
+});
 
 // Shift+Enter. A hard break is a native block marker, which can't carry
 // marks, so insert an unmarked break and keep the active marks on the cursor
@@ -173,6 +202,68 @@ const splitsPair = (doc, pos) => {
   const before = doc.resolve(pos).nodeBefore;
   return !!before?.isText && /[\uD800-\uDBFF]$/.test(String(before.param));
 };
+/** Whether the textblock holding editor position `pos` opens with a native
+ * marker of its own: false for unmarked text, which only a merge leaves. */
+function ownMarker({ doc, map }, pos) {
+  const level = doc.resolve(pos).parent;
+  if (!level?.parent || !level.node.type.spec.inlineContent) return true;
+  return map.wgToAm[level.before + 1] > map.wgToAm[level.before];
+}
+/** Whether every textblock the editor range `[from, to]` touches opens with
+ * a native marker of its own (ownMarker). */
+function rangeMarked(projection, from, to) {
+  if (!ownMarker(projection, from) || !ownMarker(projection, to)) return false;
+  let marked = true;
+  projection.doc.iterate(from, to, (node, pos) => {
+    if (node.inlineContent && !ownMarker(projection, pos + 1)) marked = false;
+  });
+  return marked;
+}
+/** `spans` with the native ranges `[from, to)` (ascending, disjoint) cut out. */
+function withoutRanges(spans, ranges) {
+  const out = [];
+  let at = 0;
+  for (const span of spans) {
+    if (span.type === "text") {
+      let kept = "";
+      for (let i = 0; i < span.value.length; i++)
+        if (!ranges.some(([from, to]) => at + i >= from && at + i < to)) kept += span.value[i];
+      if (kept) out.push({ ...span, value: kept });
+      at += span.value.length;
+    } else {
+      if (!ranges.some(([from, to]) => at >= from && at < to)) out.push(span);
+      at++;
+    }
+  }
+  return out;
+}
+const plainValue = (value) =>
+  JSON.stringify(value, (_key, item) => {
+    if (A.isImmutableString(item)) return String(item);
+    if (item && typeof item === "object" && !Array.isArray(item))
+      return Object.fromEntries(
+        Object.entries(item).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+      );
+    return item;
+  });
+/** Whether two span lists store the same content: adjacent text runs with
+ * the same marks are one run. */
+function sameSpans(a, b) {
+  const runs = (spans) => {
+    const out = [];
+    for (const span of spans) {
+      if (span.type !== "text") out.push({ type: span.type, value: plainValue(span.value) });
+      else if (span.value) {
+        const marks = plainValue(span.marks ?? {});
+        const last = out.at(-1);
+        if (last?.type === "text" && last.marks === marks) last.value += span.value;
+        else out.push({ type: "text", value: span.value, marks });
+      }
+    }
+    return JSON.stringify(out);
+  };
+  return runs(a) === runs(b);
+}
 const nativeLength = (doc, id) => String(doc.blocks?.[id]?.richText ?? "").length;
 
 /** Position maps after replacing editor range `[from, to)` with `length`
@@ -195,7 +286,7 @@ export function spliceProjectionMap({ wgToAm, amToWg }, from, to, length) {
 
 // The editor position where decode would draw text inserted at native
 // `index`, or null when it would land outside a textblock (decode would
-// create a paragraph for it). Text inserted before a block marker, or at the
+// draw it as unmarked text). Text inserted before a block marker, or at the
 // end, joins the content before it: the first editor position sharing that
 // native index.
 function insertionPoint(doc, map, index) {
@@ -230,8 +321,8 @@ export function applyTextPatches(projection, patches, path) {
           return null;
         if (!textOnly(doc.slice(from, to))) return null;
         step = ChangeSet.create(doc, { from, to });
-        // An emptied textblock may have no native marker of its own, and
-        // decode draws no paragraph for it.
+        // An emptied paragraph of unmarked text has no marker to
+        // keep it, and decode draws no paragraph for it.
         if (!step.apply(doc).resolve(from).parent.node.content.length) return null;
         map = spliceProjectionMap(map, from, to, 0);
       } else if (patch.action === "splice") {
@@ -400,29 +491,53 @@ export function createWordgardBinding(
         // the Page as it is.
         step({ type: "read", heads, projection: original });
       }
-      // The editor couldn't draw this block as stored (a node or container
-      // from a newer build); any write would reshape what it left out.
-      if (original.lossy)
+      // The editor couldn't draw this block as stored because it holds
+      // content from a newer build; any write would reshape what it left out.
+      if (original.lossy && original.newer)
         throw Error("This block holds content from a newer version of Pages. Reload to edit it.");
       if (original.doc !== tr.startState.doc && !original.doc.eq(tr.startState.doc))
         throw Error("Wordgard editor is behind its Pages document");
       const replacements = [],
         formats = [];
-      let structural = false;
+      // A block whose only problem is nesting a merge left (decode's
+      // `adjusted`) is written through encode, which stores the tree the
+      // editor drew.
+      let structural = !!original.adjusted;
       tr.changes.iterChanges(
         (from, to, fromB, toB, inserted) => {
           const removed = tr.startState.doc.slice(from, to);
           if (!textOnly([...inserted, ...removed])) structural = true;
           if (to - from !== original.map.wgToAm[to] - original.map.wgToAm[from]) structural = true;
+          // An edit inside unmarked text (no marker opens its textblock; see
+          // decode) is written through encode, which gives it its marker.
+          if (!ownMarker(original, from)) structural = true;
           replacements.push({ from, to, fromB, toB, inserted });
         },
-        (_a, _b, from, to, modifications) => {
+        (fromA, toA, from, to, modifications) => {
+          // Formatting inside unmarked text, or a selection that reaches
+          // into it, is written through encode too, which marks it.
+          if (modifications?.length && !rangeMarked(original, fromA, toA)) structural = true;
+          // A readable mark that replaces a stored value of the same name
+          // (wordgardForeignMarks) removes the foreign mark in the same
+          // modification set: that name is written by the readable mark,
+          // so the foreign removal leaves it alone.
+          const added = new Set(
+            (modifications ?? []).flatMap((mod) =>
+              "add" in mod && mod.add.type !== PagesForeignMarks ? namesOf(mod.add) : [],
+            ),
+          );
           for (const mod of modifications ?? []) {
             try {
               formats.push(
                 "add" in mod
                   ? { from, to, add: toMarks([mod.add]) }
-                  : { from, to, remove: markNames(mod.remove) },
+                  : {
+                      from,
+                      to,
+                      remove: markNames(mod.remove).filter(
+                        (name) => mod.remove.type !== PagesForeignMarks || !added.has(name),
+                      ),
+                    },
               );
             } catch {
               structural = true;
@@ -443,9 +558,10 @@ export function createWordgardBinding(
           (range) =>
             !splitsPair(tr.startState.doc, range.from) &&
             !splitsPair(tr.startState.doc, range.to) &&
-            // An emptied textblock may have no native marker of its own, and
-            // decode draws no paragraph for it.
-            tr.newDoc.resolve(range.fromB).parent.node.content.length > 0 &&
+            // An emptied textblock stays as long as its own marker does;
+            // emptied unmarked text has none, and decode draws nothing for it.
+            (tr.newDoc.resolve(range.fromB).parent.node.content.length > 0 ||
+              ownMarker(original, range.from)) &&
             range.inserted.every((token) => {
               const text = String(token.param);
               if (!text.isWellFormed() || SPECIAL_TEXT.test(text)) return false;
@@ -479,7 +595,25 @@ export function createWordgardBinding(
           // stamp in the same change.
           if (structural) {
             const spans = encodeSpans(tr.newDoc);
-            A.updateSpans(d, path, spans, expand);
+            // A deletion that removes whole nodes (Backspace in an empty
+            // paragraph, a selection across nodes) deletes exactly the
+            // native characters it covers when that leaves the encoded
+            // spans. Rewriting through updateSpans instead could delete a
+            // neighbour's marker with the same value and keep the removed
+            // node's: the neighbour's node id and anything anchored to the
+            // removed node would then move.
+            const deleted =
+              !formats.length &&
+              replacements.length > 0 &&
+              replacements.every((range) => range.toB === range.fromB)
+                ? replacements.map((range) => [
+                    original.map.wgToAm[range.from],
+                    original.map.wgToAm[range.to],
+                  ])
+                : null;
+            if (deleted && sameSpans(withoutRanges(A.spans(d, path), deleted), spans))
+              for (const [from, to] of [...deleted].reverse()) A.splice(d, path, from, to - from);
+            else updateSpansExactly(d, path, spans, expand);
             stampSpans(d, spans);
           } else {
             const written = new Set();

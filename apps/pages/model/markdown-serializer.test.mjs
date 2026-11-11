@@ -9,7 +9,8 @@ import { projectReadChanges } from "./read-changes.mjs";
 import { projectReadContent } from "./read-content.mjs";
 import { textPath } from "./richtext-format.mjs";
 import { blockMarkdown } from "./richtext-page.mjs";
-import { readTree } from "./richtext-spans.mjs";
+import { readTree, validateRich } from "./richtext-spans.mjs";
+import { PagesUnknownBlock } from "./wordgard-doc.mjs";
 import { updateSpansConfig } from "./marks.mjs";
 import { nativeRead, readMarkdown } from "./native-read.mjs";
 import {
@@ -151,11 +152,12 @@ test("a hard break stored in a code block reads as a line of the code", () => {
   assert.equal(blockMarkdown(doc.blocks[id], doc.page_id), "```js\na\nb\n```");
 });
 
-test("the refusal readTree reports for unreadable spans is the only one blockMarkdown reads around", () => {
+test("a heading level this build doesn't write reads as a notice in every reader", () => {
   const { doc, id } = pageWithSpans([block("heading", [], { level: 9 }), text("x")]);
-  assert.throws(() => readTree(doc.blocks[id], doc.page_id), /heading level/);
-  // The adapter still reads it, as it always did.
-  assert.equal(blockMarkdown(doc.blocks[id], doc.page_id), "######### x");
+  // Registration refuses it; a peer's stored marker still reads.
+  assert.throws(() => validateRich(doc.blocks[id]), /heading level/);
+  assert.equal(readTree(doc.blocks[id], doc.page_id).content[0].type, PagesUnknownBlock);
+  assert.equal(blockMarkdown(doc.blocks[id], doc.page_id), "\\[Unsupported node: heading\\]\n\nx");
 });
 
 test("read_page and read_page_changes read a hard break stored in a code block", () => {
