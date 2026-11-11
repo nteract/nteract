@@ -97,16 +97,19 @@ Comments live in their own document and anchor to the Page with cursors.
      an `op` enum, and no schema uses `oneOf`, `anyOf`, `allOf`, `const` or
      `$ref`. A test walks the schemas and enforces it.
    - A read returns a short revision handle, such as `r1842`, in place of
-     64-hex heads. A write names the handle it read.
+     64-hex heads. A write names the handle it read. Done: `r<n>` for the
+     Page and `c<n>` for its comments, with browsers, sync and host-to-host
+     calls still on heads.
    - A write carries a short nonce and no retry token. The host keeps the
      receipt under the account, the document and the nonce, and a retry of
      the same request returns that receipt. The handle's age bounds the retry
      window: a write that names a handle older than the receipts the host
-     keeps is refused with `resync_required`.
+     keeps is refused with `resync_required`. Done: one receipt lane kept for
+     seven days, with a durable horizon behind the fence.
    - Writes with no revision (`create_page`, move, Trash, restore) carry the
      nonce alone. After its receipt is gone, a retried `create_page` can make
      a second Page. `purge_page` and `delete_project` keep their preview
-     token.
+     token. Done.
 
 ## Order of work
 

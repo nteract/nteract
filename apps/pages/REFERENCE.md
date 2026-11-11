@@ -1091,7 +1091,7 @@ refused (`invalid_arguments`). `id` is accepted and neither stored nor returned.
 once, on the new message's author (`author.agent`, schema feature
 `comment-agent` on the comments document); editing the message never changes it.
 The assertion joins the request fingerprint of an add or reply, so the same
-`idempotency_key` with other labels conflicts and an exact retry replays the
+`nonce` with other labels is `nonce_conflict` and an exact retry replays the
 original receipt. `list_page_comments`, `read_page` and `read_page_changes`
 return `author.agent` when stored. The comment thread reads "<agent name> via
 <driver> for <person>" with the model in the tooltip. These are what the client
@@ -1325,14 +1325,13 @@ Uploads need edit access. Asset storage has no per-Page aggregate byte or
 object quota yet, so comment access alone doesn't open it: commenters comment
 in text and can't attach images until that quota exists.
 
-Comment receipts carry the Page revision their write read as `heads`, journaled
-with the receipt, and the comments document's revision as `comment_heads`. An
-agent polling `read_page_changes` from a comment receipt still sees a browser
-edit that landed meanwhile, and an exact retry returns the same heads. A
-receipt a build before the comments document journaled on the Page replays
-with its Page heads, `legacy_receipt: true` and no comment heads.
+Comment receipts carry the Page revision their write read as `revision`,
+minted with the receipt, and the comments document's revision as
+`comment_revision`. An agent polling `read_page_changes` from a comment receipt
+still sees a browser edit that landed meanwhile, and an exact retry returns the
+same revisions.
 
-`read_page_changes` takes `since_comment_heads` for comment changes. Without
+`read_page_changes` takes `since_comment_revision` for comment changes. Without
 it, `comments` lists every current thread (`change: "snapshot"`) and
 `comments_snapshot: true` says to replace what the caller holds, so a client
 from before the comments document keeps seeing comments.
@@ -1670,8 +1669,8 @@ with the binding name only.
 - A transient failure is `503 page_transient_failure` with `retry_after_ms` and
   `Retry-After`. The object may have started the request. A tool request is
   told what its repeat safety allows, as a timeout is: a read, a progress
-  renewal or a write with a `retry_token` is `retryable: true` and replays its
-  receipt; a tokenless write is `retryable: false` and told to read back and
+  renewal or a write with a valid `nonce` is `retryable: true` and replays its
+  receipt; any other write is `retryable: false` and told to read back and
   reconcile; a progress creation gets the lease advice. Outside the tool API
   the refusal is `retryable: true` and gives both pieces of advice.
 
@@ -1727,11 +1726,10 @@ Tool requests to a Catalog or Page answer
 within 60 seconds; a slower one returns `504 request_timeout` while the host
 finishes the work it accepted. For a read, a progress renewal or clear
 (`progress_id` and `lease_token` name the session) or a write that carried a
-`retry_token`, the timeout is `retryable: true` and says to
-retry the same request; the receipt replays. For a tokenless write it is
-`retryable: false` and says to read back and reconcile, since the host may
-have completed the write and its tokenless receipt is kept only best-effort,
-so a blind retry could apply it twice. A progress creation is `retryable:
+valid `nonce`, the timeout is `retryable: true` and says to retry the same
+request; the receipt replays. For any other write it is `retryable: false` and
+says to read back and reconcile, since the host may have completed the write
+and nothing keys a receipt for it. A progress creation is `retryable:
 false` with the lease advice: a repeat would mint a second session, and a
 lost creation leaves an indicator that expires within 60 seconds. The same
 split applies to MCP's `outcome_unknown` when no answer arrives at all.
@@ -1925,8 +1923,8 @@ and card image the host stored earlier are still served (`page_cards`, the
 card-image route): like the stored title, they are projections, and they
 show the owner what they are deleting. Its owner can trash, restore and
 permanently delete it: receipts carry the title the host last projected
-(`host/title-projection`), a trash with `base_heads` is refused as invalid,
-and the purge preview describes the record with `heads`, `comment_threads`
+(`host/title-projection`), a trash that names a `revision` is refused as
+invalid, and the purge preview describes the record with `comment_threads`
 and `comment_count` null. Permanent deletion removes its stored documents
 by id, as for any Page. `stored_form_unsupported` keeps its own meaning: a
 stored form inside a document or draft that this build doesn't read.
@@ -2302,20 +2300,21 @@ are suitable for literal edits, not whole-block replacement. `list_page_comments
 reads filtered threads separately. Legacy `read_page({page_id})` remains unbounded
 for cached clients.
 
-`read_page_changes({page_id,since_heads})` returns a complete net delta at one
+`read_page_changes({page_id,since_revision})` returns a complete net delta at one
 captured revision: changed native nodes, address-only deletions, title changes,
 and compact comment changes. Stable native identity avoids treating later
 paragraphs as changed when an earlier one is inserted. It is not an event/audit
 log and does not supply historical person/client attribution or deleted message
-bodies. Unknown history returns `resync_required`; oversized deltas return
-`changes_budget_exceeded`, never partial success. Advance saved heads only after
-consuming a successful response or resynchronizing with focused reads.
+bodies. A revision the host no longer knows returns `resync_required`; oversized
+deltas return `changes_budget_exceeded`, never partial success. Advance a saved
+revision only after consuming a successful response or resynchronizing with
+focused reads.
 
-Mutations require an idempotency key. Content edits also require observed
-`base_heads`, and so does a comment on selected text, which is located at
-them. Other comment writes (a block comment, a reply, resolve, reopen, edit and
-delete) take none. `delete_page` takes them as an optional guard. The default
-`conflict_scope:"page"` requires exact current heads. `edit_page` can use
+Mutations require a `nonce`. Content edits also require the observed
+`revision`, and so does a comment on selected text, which is located at it.
+Other comment writes (a block comment, a reply, resolve, reopen, edit and
+delete) take none. `delete_page` takes one as an optional guard. The default
+`conflict_scope:"page"` requires the current revision. `edit_page` can use
 `conflict_scope:"target"` for batches of only `replace_match`, `format_match`
 and `set_node`, without `all`:
 native identity maps
@@ -2323,7 +2322,7 @@ historical literal ranges into current text, checking text, marks, and structure
 Optional `node_index` narrows the match at the base revision. Unrelated edits,
 even within the same block, survive. Deleted/reinserted text is a new target;
 overlapping batch targets are rejected. Structural/Markdown changes retain the
-exact-head guard. Conflicts provide bounded addresses for focused rereading.
+exact-revision guard. Conflicts provide bounded addresses for focused rereading.
 Guards check the preparation snapshot; native changes can still merge during
 persistence. Tool mutations do not simulate typing or lock out peers.
 
@@ -2664,8 +2663,9 @@ follow-up before viewport loading raises the request volume.
 
 Every MCP refusal carries a stable `code`, in `structuredContent` and in the JSON
 text, so agents never branch on message text. The Worker codes specific refusals
-where they're raised: a stale exact-head guard is `409 stale_heads`, malformed
-`base_heads` and an edit batch that can't apply (zero or multiple matches, an
+where they're raised: a stale exact-revision guard is `409 stale_revision`, a
+malformed revision handle is `400 invalid_revision`, a missing `revision` and
+an edit batch that can't apply (zero or multiple matches, an
 unknown block, operation or mark) are `400 invalid_edit_selector`, a
 `replace_match` whose change is past the diff budget with nothing to split it
 on is `400 replace_match_too_large`, and a comment
@@ -2681,13 +2681,13 @@ A listing that meets an unavailable shared Page is `503 shared_page_unavailable`
 (see Request limits).
 An MCP result has no HTTP status, so [mcp.mjs](mcp.mjs) names any refusal the
 Worker left uncoded by its status (`access_denied`, `not_found`, `conflict` and
-so on). It adds `retryable: true` to `stale_heads`, whose retry is a new request
+so on). It adds `retryable: true` to `stale_revision`, whose retry is a new request
 built from a fresh read. The HTTP API keeps `retryable` for transient failures
 only, because the browser treats those as an outage. A tool call that gets no
 answer returns `read_failed` or `outcome_unknown`. `outcome_unknown` is
-`retryable: true` only when the write carried a `retry_token`, whose receipt replays for the token's window; a tokenless write gets
-`retryable: false` and is told to read back and reconcile, since its receipt is
-kept best-effort and a repeat after eviction applies again. The `/llms.txt`
+`retryable: true` only when the write carried a valid `nonce`, whose receipt
+replays while it is kept; any other write gets `retryable: false` and is told to
+read back and reconcile. The `/llms.txt`
 guide lists the codes agents act on.
 
 Every tool declares all four MCP annotation hints, and `tool()` refuses one that
@@ -2736,16 +2736,16 @@ targets are captured on the revision the read returned.
 Each participant's color comes from nteract's cursor palette, keyed by
 principal and driver.
 
-Comment and progress anchors are native cursors, so they skip the exact-head
+Comment and progress anchors are native cursors, so they skip the exact-revision
 guard. Comments are written to the comments document, so a comment never
-changes the Page's heads: the receipt's `heads` are the Page's, unchanged, and
-`comment_heads` name the comments document's new revision.
-`manage_page_comment` `add` with `selected_text` requires known
-`base_heads`, finds the passage (and `occurrence`) at that revision, and anchors
+changes the Page's revision: the receipt's `revision` is the Page's, unchanged,
+and `comment_revision` names the comments document's new revision.
+`manage_page_comment` `add` with `selected_text` requires a known
+`revision`, finds the passage (and `occurrence`) at that revision, and anchors
 its cursors there. It returns `edit_conflict` only when the passage no longer
-resolves, and `resync_required` for unknown heads. A block comment needs only
-its block. Replies, status changes, message edits and deletions touch only the
-thread, so `base_heads` is optional and never compared. `resolve` and `reopen`
+resolves, and `resync_required` for a revision the host no longer knows. A block
+comment needs only its block. Replies, status changes, message edits and
+deletions touch only the thread, so `revision` is optional and never compared. `resolve` and `reopen`
 take `thread_id` or `thread_ids` (1–100 unique IDs), never both. A batch is one
 Automerge change, one journal entry and one receipt, and `result.threads` gives
 each thread's outcome: `resolved`, `already_resolved`, `reopened` or
@@ -2754,8 +2754,8 @@ keeps its status time. The batch is all-or-nothing. An unknown ID rejects it
 with `invalid_comment_selector` and `not_found_thread_ids`, before anything is
 written. Permission is the Page's comment access, the same check a single
 resolve makes, so a denial also rejects the whole batch. `report_page_progress`
-targets follow the same rule with `expected_heads`, failing with
-`presence_revision_changed` for unknown heads or a detached passage. Retries
+targets follow the same rule with `revision`, failing with
+`presence_revision_changed` for an unknown revision or a detached passage. Retries
 still replay the recorded receipt; these guards run only for new intents.
 
 `edit_page` supports structural operations including `insert_markdown`,
@@ -2780,8 +2780,8 @@ read-only preview through reads and sync; edits, comments, progress,
 sharing changes, and image uploads return `409 page_trashed`. The browser
 previews on a reader replica, so restore reloads onto the writer replica. An upload authorized
 before trashing can still store its bytes before the final authorization check
-rejects it; those bytes are unreferenced and are not cleaned up. Reads of a trashed Page carry a `trash` object
-and no edit retry authority. The owner's catalog moves the entry from `page/` to
+rejects it; those bytes are unreferenced and are not cleaned up. Reads of a trashed Page carry a `trash` object.
+The owner's catalog moves the entry from `page/` to
 `trash/`, so trashed Pages leave default listings and the account's active Page
 quota (see Page quotas).
 `list_pages({in_trash:true})` lists them.
@@ -3124,15 +3124,15 @@ draft that hasn't registered says to wait for it to sync.
 
 | Tool | Arguments | Result |
 | --- | --- | --- |
-| `create_project` | `title`, `description?`, `idempotency_key`, `retry_token?` | `project_id`, `title`, `description`, `revision`, `role`, `owner`, `url`, `document_id` |
-| `list_projects` | `cursor?`, `limit?` | Projects with the same fields as `get_project`, `next_cursor`, `retry_token` |
+| `create_project` | `title`, `description?`, `nonce` | `project_id`, `title`, `description`, `revision`, `role`, `owner`, `url`, `document_id` |
+| `list_projects` | `cursor?`, `limit?` | Projects with the same fields as `get_project`, `next_cursor` |
 | `get_project` | `project_id` | `project_id`, `title`, `description`, `revision`, `role`, `owner`, `url`, `document_id` |
-| `update_project` | `project_id`, `title?`, `description?`, `expected_revision`, `idempotency_key` | the updated Project, or `superseded` |
-| `delete_project` | `project_id`, `action` (`preview` or `confirm`), `preview_token` (confirm), `idempotency_key` (confirm), `retry_token?` | preview: `title`, `collaborators`, `pending_invitations`, `comment_count`, `heads`, `preview_token`; confirm: `{ project_id, deleted: true }` |
+| `update_project` | `project_id`, `title?`, `description?`, `expected_revision`, `nonce` | the updated Project, or `superseded` |
+| `delete_project` | `project_id`, `action` (`preview` or `confirm`), `preview_token` (confirm), `nonce` (confirm) | preview: `title`, `collaborators`, `pending_invitations`, `comment_count`, `preview_token`; confirm: `{ project_id, deleted: true }` |
 | `create_page` | adds `project_id?`, `parent_id?` | adds `project_id`, `parent_id` (`null` at the top level) |
 | `list_pages` | adds `project_id?`, `parent_id?` (`null` = top level), `kind?` | owned rows add `project_id`, `parent_id`, `position`; never the content document |
 | `read_page` and every other tool taking `page_id` | `project_id` in place of `page_id` addresses the Project's content (exactly one; both is `invalid_arguments`) | adds `kind` (`page` or `project`), `project_id`, `parent_id`, `breadcrumbs`; content reads carry its `page_id` (= `document_id`) |
-| `move_page` | `page_id`, `parent_id`, `position?`, `idempotency_key`, `retry_token` | `page_id`, `project_id`, `parent_id`, `position`, `location_revision`, `descendants`, `trashed_descendants` |
+| `move_page` | `page_id`, `parent_id`, `position?`, `nonce` | `page_id`, `project_id`, `parent_id`, `position`, `location_revision`, `descendants`, `trashed_descendants` |
 
 Every Project and item operation goes through the caller's own Catalog, which
 calls the Project and Pages with the caller's credentials. A Project never calls a
@@ -3337,7 +3337,7 @@ once done, replays `{ project_id, deleted: true }`:
 A Project whose content record is in a format this build doesn't write
 (including `pages.page` 2, and a record with no `documentFormats` stamp) is
 deleted from that record, as Trash and purge delete such a Page: nothing
-opens or decodes its documents. Its preview reports `heads`,
+opens or decodes its documents. Its preview reports
 `comment_threads` and `comment_count` as `null`, and the token binds the
 content record's lifecycle revision in their place; through this build no
 one can change documents it doesn't open. The deletion's trash then applies
@@ -3409,47 +3409,90 @@ hash read and uploads nothing, and the grid keeps showing JSON cards.
 ### Retry contract
 
 After a conflict, reread before constructing new work. For an uncertain outcome,
-retry the **identical token, key, and payload**. Page reads/deltas supply
-`retry_token` and `retry_until`; catalog listing supplies create/delete
-authority. The `idempotency_key` is the caller's own nonce, a new UUID for each
-new operation. With a token, the host keys the receipt by the token's SHA-256
-and the nonce (`v1_<hex>_<nonce>`), so the same nonce under another token is a
-different request. A key that starts with `v1_` is refused with
-`invalid_idempotency_key`: send only the nonce.
+retry the **identical nonce and payload** from the same account. Every agent
+write takes a `nonce`, the caller's own: 6–64 letters, digits, `_` or `-`
+(`^[A-Za-z0-9_-]{6,64}$`), a new UUID for each new operation. Anything else is
+`400 invalid_nonce`. The host keys the receipt by the caller's principal, the
+receipt lane and the nonce:
 
-Only the same token, key and payload replay. The same key sent without its
-token, or with a different valid token, is a separate request: it is checked
-and applied on its own, so it can create a Page or Project, or add a comment, a
-second time. A client that lost a response and holds an expired or replaced
-token reads back and reconciles instead of resending.
+```
+host/operation/n1_<first 32 hex of sha256(principal)>_<lane>_<nonce>
+```
 
-Tokens last seven days. Expired completed requests return `410 retry_expired`
-without executing, even after receipt collection; reconcile the old outcome
-before deliberately submitting new work. Pending intents never expire and retain
-their original replay authority. The journal first persists the causal base and
-encoded changes, then replays identical CRDT change IDs after interruption.
-Exact record reservations protect those changes from concurrent ingress and cleanup.
+Lanes keep one account's writes of different kinds apart on one object: `page`
+for edits, `comments` for comment writes, `catalog`, `project`,
+`project-access`, `page-access` and `lifecycle`. A Page stores its lifecycle
+receipts (trash, restore, purge) under `host/lifecycle/` and a Space its
+receipts under `host/receipt/`, each with the same name after the prefix.
+Another account's identical nonce is another request. The same nonce with a
+different payload is `409 nonce_conflict` ("This nonce was used for a
+different request"). `purge_page` and `delete_project` keep their
+`preview_token`, which binds the confirm to what the preview showed.
 
-The journal keeps receipts in two lanes of 1,000 entries/8 MiB each, with
-pending work bounded separately at 64 entries/4 MiB. The token lane holds the
-receipts of calls that carried a `retry_token`, for the token's seven-day
-window: an exact retry replays its receipt, a changed payload under the same
-key is an `idempotency_conflict`, and a full lane refuses new tokened work
-with `429 operation_receipt_capacity` until collection removes expired
-receipts behind a durable monotonic clock floor, never arbitrary keys. The
-tokenless lane holds the receipts of calls without a token. Those have no
-window and so never expire; a receipt there exists to replay an exact repeat
-of the same key, which in practice is a client retrying a lost response
-moments later. So that lane keeps its newest receipts: when it is full, a new
-tokenless call evicts the oldest completed tokenless receipts (by the
-`recordedAt` stamp each one gets at admission, oldest first, then by key;
-each receipt is sized once per pass) to make room, and a key whose receipt
-was evicted is a new request again, so a tokenless write is deduplicated only
-while its receipt is retained. A Page that takes
-thousands of tokenless comments stays writable, and comments and edits share
-one Page's lanes without one locking the other. Pending entries are never
-evicted. Browser edits consume neither lane. Catalog deletion tombstones
-remain permanent; Trash writes none. See the
+#### Revision handles
+
+Agents never see Automerge heads. A read, receipt or refusal names a Page
+document revision as `r<n>` and a comments document revision as `c<n>`
+([revisions.mjs](worker/revisions.mjs)). Results carry `revision` and
+`comment_revision`; revision refusals (`stale_revision`, `edit_conflict`,
+`resync_required`) carry `current_revision` and `comment_revision`; a
+target-scoped edit's `concurrency` is `{rebased, base_revision,
+observed_revision}`. Arguments are `revision`, `since_revision` and
+`since_comment_revision`. A malformed handle, or one with the other document's
+letter, is `400 invalid_revision`; a well-formed handle the host doesn't hold is
+`409 resync_required`. Browsers, sync and host-to-host calls keep heads.
+
+Each document's host keeps a counter, its latest handle and a table:
+
+| Key | Value |
+| --- | --- |
+| `host/revision/<doc>/counter` | the last number minted |
+| `host/revision/<doc>/latest` | `{ n, heads, at }` of that number |
+| `host/revision/<doc>/h/<n>` | `{ heads, at }`, `n` zero-padded to 16 digits |
+
+`<doc>` is `page` or `comments`. Minting writes all three in one put, and a
+handle reaches a caller only after a sync barrier. Heads that equal the latest
+handle's reuse it. The table keeps the newest 2,000 handles per document and
+never drops the latest. A write mints its handles in the same put as its
+pending journal entry, so the receipt and its handles exist together. A read
+that meets heads with no handle mints one: `read_page`, `list_page_comments`
+and `read_page_changes` write one batched put and sync when they do, and so does
+turning a revision refusal into `current_revision`. `read_page_presence` names
+no revision and writes nothing.
+
+#### Receipts and the fence
+
+The journal keeps one receipt lane of 1,000 entries/8 MiB, with pending work
+bounded separately at 64 entries/4 MiB. Each receipt gets `recordedAt` from the
+host's journal time: the wall clock, never below the receipt horizon or the
+`at` of either document's latest handle, so a stepped-back clock can't stamp
+a receipt behind one already recorded. Collection deletes completed receipts
+older than `RECEIPT_LIFETIME_MS` (seven days). At capacity a new write evicts
+the oldest completed receipts (by `recordedAt`, then by key). Only pending
+entries make the journal refuse, with `429 operation_receipt_capacity` or
+`pending_operation_capacity`. Pending entries are never collected, and an
+interrupted write resumes with its original request: the journal persists the
+causal base and encoded changes first, then replays identical CRDT change IDs.
+
+Forgetting a receipt is allowed; running an uncertain request again on the
+strength of a forgotten one is not. Before it deletes receipts, the journal
+raises the horizon (`host/receipt-horizon`) to the newest `recordedAt` among
+them and makes it durable. The horizon is never less than the clock minus seven
+days. A write that names a revision is fenced: unless that revision is the
+document's latest, the handle minted after it must be newer than the horizon.
+Otherwise a receipt for a write made against it may be gone, so the host
+refuses with `409 resync_required` rather than guess whether it is a retry.
+
+A write that names no revision has no fence. `create_page`, `create_project`,
+`move_page`, `restore_page`, `delete_page` without its optional `revision`, and
+comment writes other than a passage comment run again as new requests once
+their receipt is gone. Writes that carry an `expected_revision` (sharing,
+`update_project`) still meet that check. A passage comment names a revision,
+but comments never move it: while the Page hasn't changed, that revision stays
+the latest and is exempt, so a late retry adds the comment again. A client
+that lost a response reads back and reconciles before it resends past the
+receipt's lifetime. Browser edits consume no receipts. Catalog deletion
+tombstones remain permanent; Trash writes none. See the
 [operation journal](worker/operation-journal.mjs) and its tests
 ([unit](worker/operation-journal.test.mjs), [capacity](worker/receipt-capacity.test.mjs)).
 
