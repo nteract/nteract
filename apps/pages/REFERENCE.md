@@ -50,11 +50,12 @@ references; it does not publish the Page or change asset access.
   with no marks, each newline a hard break, and records `bodyFormat: "plain"`,
   so reads return the text literally without a format marker, as plain reads
   always have. Omitting the format when editing retains the message's current
-  kind. Thread/message IDs and passage anchors stay unchanged. No Markdown copy
-  (`body`) is stored. A message an earlier build stored with only a `body`, or
-  with a `body` copy beside its spans, reads with an empty body and
-  `content_error: "stored_form_unsupported"`, shows as a placeholder in the
-  viewer, and refuses edits with `409 stored_form_unsupported`. If native content
+  kind. Thread/message IDs and passage anchors stay unchanged. A message
+  (`pages.comments` format 2) holds `richText`, `author`, `createdAt`,
+  `deletedAt` and, for plain input, `bodyFormat`. Its rich text is in the same
+  form as a block's: every node opens with its marker. No Markdown copy and no
+  per-message `format` field is stored, and the comments document's admission
+  refuses a message with any other field. If native content
   cannot be decoded, reads return its bare text with
   `content_error: "rich_text_unavailable"` rather than failing the entire Page.
   A message holds at most 16,000 text characters (block markers don't count,
@@ -1808,10 +1809,13 @@ stored:
    id must be a map, and every value of its `position` a raw-string fractional
    index of at most 512 base-62 characters and of its `richText` text, so a
    value that loses a conflict is judged at the frame that brings it, not when
-   a later delete reveals it. `blocks` must stay a map. The changes may not add another
-   key to a block; a key the same block already held is kept, so blocks with
-   the earlier format's extra keys stay editable. Deleting and moving blocks
-   pass. A refusal is `invalid_block`, not fatal: the socket stays open, the
+   a later delete reveals it. `blocks` must stay a map. A block holds no key
+   but those two. A block object the changes make must open its text with a
+   top-level node's marker (not an embed and with no parents), as every
+   writer writes a new block. A block that already existed isn't held to
+   that: a merge of a delete and concurrent typing can leave text no marker
+   opens (unmarked text), which every reader reads as a paragraph. Deleting
+   and moving blocks pass. A refusal is `invalid_block`, not fatal: the socket stays open, the
    principal isn't blocked, and the browser stops offering the refused heads
    until it synchronizes again. The cost follows the change, not the number of
    blocks. Trusted host writes skip this check.
@@ -1863,16 +1867,15 @@ on every relay.
 #### Document formats in the host record
 
 A Page's host record (`host/document`) stores the format of each of its
-document types as `documentFormats`, `{ "pages.page": 2, "pages.comments":
-1 }`. Creation, registration and a Project's content document all stamp the
+document types as `documentFormats`, `{ "pages.page": 3, "pages.comments":
+2 }`. Creation, registration and a Project's content document all stamp the
 formats the build writes ([model/document-types.mjs](model/document-types.mjs)),
 the comments format included, since the comments document is created at
-boot. `recordDocumentFormats` is the one reader. A record without the field
-was written before records carried it and reads as `pages.page` 2 and
-`pages.comments` 1 (`UNSTAMPED_RECORD_FORMATS`); the build that changes
-either format deletes that rule.
+boot. `recordDocumentFormats` is the one reader; it reads a record without
+the field as naming no formats.
 
-A record whose formats aren't exactly the ones the build writes opens
+A record without the field, or whose formats aren't exactly the ones the
+build writes, opens
 neither document. Discovery, the socket (closed `4427`), `/api/saved`, every
 agent read and edit, comments, presence, image uploads and card uploads
 answer `409 document_format_unsupported`, and the viewer shows "This Page is
@@ -2344,12 +2347,10 @@ rewrites the governing block marker through `updateSpans`, which updates the
 marker's attributes in place, as the editor does: the marker, its text and
 its comment anchors keep their identity. Marks on text characters are unchanged;
 marks on marker characters, which format nothing, are dropped, as every editor
-keystroke in the block already does. The implicit first paragraph gets an
-explicit marker first, as the editor does; two writers converting it at once
-each insert one and leave an empty paragraph, which target scope refuses
-through its ancestry check. Inline embeds (hard breaks, images) govern no text.
-A container's first paragraph has no marker of its own, so a type change there
-names the quote or list item and is refused. In target scope a concurrent
+keystroke in the block already does. Inline embeds (hard breaks, images)
+govern no text. In agent tools a quote's or list item's first paragraph is
+addressed through the container's marker, so a type change there names the
+quote or list item and is refused. In target scope a concurrent
 change to the node's attributes is a `target_structure_changed` conflict, and a
 `set_node` may share its passage with another operation.
 
