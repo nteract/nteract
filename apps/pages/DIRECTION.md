@@ -114,9 +114,22 @@ records the node addresses agents use.
 
 ## Rules for the work
 
-- **The new service starts empty.** It needs no reader for any earlier stored
-  form and no migration from an existing target. The host never loads a
-  format 1 document beside format 2 ones, and never converts one in place.
+- **Before production, a target changes format by deleting its old
+  documents.** It needs no reader for any earlier stored form and no
+  migration from an existing target, and the host never converts a document
+  in place. Deleting means removing the old Pages: Trash and permanent
+  deletion cover a Page's content and comments documents. Sign-ins, grants
+  and the deployment's secrets stay. A Project has no delete yet, so a target
+  that holds Projects needs that first, or its storage cleared.
+  A format 2 build opens a format 1 Page, because it reads `position` and
+  `richText` and ignores the fields format 2 dropped. Nothing relies on that.
+  Format 3 moves node ids, so a format 2 Page must be gone before it.
+- **Format 3 is the format production starts on.** Once people's documents
+  are in it, no target that holds them is emptied. A later stored change is
+  additive under a schema feature, or it follows the structural rule below:
+  a new format number and a new document for each Page, written from the old
+  one. The host record's format (order of work, step 4) is what lets a host
+  hold both while that runs.
 - **A Project moves by copy, through the agent edge.**
   `scripts/project-transfer.mjs` reads a Project from one target's `/mcp`
   and writes it to another's, so it needs no code in the host and works
