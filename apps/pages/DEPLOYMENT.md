@@ -1684,6 +1684,31 @@ Use a new destination directory each time. The session keyring goes in with
 Worker with people on it also needs the memory, recovery and overload behaviour
 qualified on Workers; the limits in this release are sized for the celld hosts.
 
+### Deployment-neutral release package
+
+The [Pages package release](../../.github/workflows/pages-package-release.yml)
+workflow publishes a package that names no deployment, so an operator can deploy
+released bytes without building this source. A maintainer runs it by hand from
+`main`. [release-package.mjs](scripts/release-package.mjs) writes three release
+assets under the tag `pages-<build_id>`:
+
+| Asset | Contents |
+| --- | --- |
+| `pages-package-<build_id>.tar.gz` | `worker/`, `public/`, `build-receipt.json`, `wrangler.json`; regular files only |
+| `pages-package-<build_id>.tar.gz.sha256` | `sha256sum -c` line for the archive |
+| `pages-package-<build_id>.manifest.json` | build id, source commit, document formats, entry digests, archive digest, structural fields, binding names |
+
+The archive's `wrangler.json` is `structuralConfig()` in
+[cloudflare-stage.mjs](scripts/cloudflare-stage.mjs), not a deployable file: it
+has no `name`. The operator's own Wrangler file deploys it. These fields are
+structural, fixed by the code: `main`, `no_bundle`, `compatibility_date`,
+`assets`, `durable_objects`, `migrations`, `triggers`, `preview_urls`,
+`observability`, and the variable `NOTEBOOK_CLOUD_OIDC_FLOW`. These are
+profile-bound and absent from the package: `name`, `account_id`, `workers_dev`,
+`routes`, `d1_databases`, `r2_buckets`, and every other variable. A change to
+`worker-shape.mjs` or `structuralConfig()` changes what an operator must
+mirror in their own file.
+
 ## Copying a Project to a new target
 
 Deployment never copies data. When a new target needs a Project from an older

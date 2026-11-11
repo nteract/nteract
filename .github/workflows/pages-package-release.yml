@@ -1,0 +1,213 @@
+name: Pages package release
+
+# Publishes one deployment-neutral Pages package as a GitHub release asset,
+# built from a commit on main. A consumer deploys the package with its own
+# Wrangler file instead of building this source next to its credentials.
+#
+# One commit gives one build id (the receipt's source fingerprint), and the
+# release tag is pages-<build_id>. A tag that exists is never replaced.
+#
+# The build job runs the repository's install and build scripts with read-only
+# permissions. The publish job holds the write and attestation permissions and
+# runs none of them: it checks the digest, attests the archive and publishes.
+#
+# Manual only: publishing is a maintainer decision. Run it from main.
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Full SHA of a commit on main to build (default, the commit this run starts from)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-package-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build the Pages package
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      build_id: ${{ steps.package.outputs.build_id }}
+      source_commit: ${{ steps.package.outputs.source_commit }}
+    defaults:
+      run:
+        working-directory: apps/pages
+    steps:
+      - name: Resolve the commit to build
+        id: commit
+        env:
+          REQUESTED: ${{ inputs.commit }}
+        working-directory: .
+        run: |
+          commit="${REQUESTED:-$GITHUB_SHA}"
+          if ! [[ "$commit" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::commit must be a full 40-character lowercase SHA"
+            exit 1
+          fi
+          echo "sha=$commit" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ steps.commit.outputs.sha }}
+          # The full history lets the next step prove the commit is on main.
+          fetch-depth: 0
+          persist-credentials: false
+          sparse-checkout: |
+            apps/pages
+            apps/notebook-cloud/src
+            packages/runtimed/src
+            packages/local-oidc/src
+            src/components/markdown
+            src/components/sharing
+            src/styles
+      - name: Require a commit on main
+        working-directory: .
+        env:
+          COMMIT: ${{ steps.commit.outputs.sha }}
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$COMMIT" FETCH_HEAD; then
+            echo "::error::$COMMIT is not on main"
+            exit 1
+          fi
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Prepare pinned upstream packages and locked dependencies
+        run: npm run setup
+      - name: Build native Pages Worker and browser
+        run: npm run build
+      - name: Package
+        id: package
+        env:
+          OUT: ${{ runner.temp }}/pages-package
+        run: |
+          node scripts/release-package.mjs "$OUT" | tee "$RUNNER_TEMP/package.json"
+          echo "build_id=$(jq -r .build_id "$RUNNER_TEMP/package.json")" >> "$GITHUB_OUTPUT"
+          echo "source_commit=$(jq -r .source_commit "$RUNNER_TEMP/package.json")" >> "$GITHUB_OUTPUT"
+          ls -l "$OUT"
+      - name: Upload the package files
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pages-package
+          path: ${{ runner.temp }}/pages-package
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Attest and publish
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BUILD_ID: ${{ needs.build.outputs.build_id }}
+      SOURCE_COMMIT: ${{ needs.build.outputs.source_commit }}
+      # Resolved here from the dispatch, not taken from build outputs: the
+      # build job's outputs come from repository code.
+      EXPECTED_COMMIT: ${{ inputs.commit || github.sha }}
+    steps:
+      - name: Download the package files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: pages-package
+          path: package
+      - name: Check the files against each other
+        working-directory: package
+        run: |
+          [[ "$BUILD_ID" =~ ^[0-9a-f]{12}$ ]]
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          test "$SOURCE_COMMIT" = "$EXPECTED_COMMIT"
+          test "$(find . -type f | sort | tr '\n' ' ')" = "./pages-package-$BUILD_ID.manifest.json ./pages-package-$BUILD_ID.tar.gz ./pages-package-$BUILD_ID.tar.gz.sha256 "
+          sha256sum -c "pages-package-$BUILD_ID.tar.gz.sha256"
+          digest="$(sha256sum "pages-package-$BUILD_ID.tar.gz" | cut -d' ' -f1)"
+          test "$(jq -r .archive.sha256 "pages-package-$BUILD_ID.manifest.json")" = "$digest"
+          test "$(jq -r .build_id "pages-package-$BUILD_ID.manifest.json")" = "$BUILD_ID"
+          test "$(jq -r .source_commit "pages-package-$BUILD_ID.manifest.json")" = "$SOURCE_COMMIT"
+          # Only regular files, and only the entries a Pages package has.
+          tar -tvzf "pages-package-$BUILD_ID.tar.gz" | grep -v '^-' && exit 1
+          tar -tzf "pages-package-$BUILD_ID.tar.gz" | cut -d/ -f1 | sort -u | tr '\n' ' ' \
+            | grep -qx 'build-receipt.json public worker wrangler.json '
+          # Every member path: the exact package layout, no dot components, no
+          # duplicates, the manifest's entry list.
+          archive="pages-package-$BUILD_ID.tar.gz"
+          manifest="pages-package-$BUILD_ID.manifest.json"
+          members="$RUNNER_TEMP/members"
+          tar -tzf "$archive" > "$members"
+          layout='^(build-receipt\.json|wrangler\.json|worker/[A-Za-z0-9_-][A-Za-z0-9._-]*|public/([A-Za-z0-9_-][A-Za-z0-9._-]*/)*[A-Za-z0-9_-][A-Za-z0-9._-]*)$'
+          if grep -vE "$layout" "$members"; then
+            echo "::error::The archive has a member outside the package layout"
+            exit 1
+          fi
+          if grep -E '(^|/)\.\.?(/|$)' "$members"; then
+            echo "::error::The archive has a member with a . or .. component"
+            exit 1
+          fi
+          test -z "$(sort "$members" | uniq -d)"
+          grep -qx 'worker/index.js' "$members"
+          diff <(sort "$members") <(jq -r '.entries[].path' "$manifest" | sort)
+          echo "digest=$digest"
+      - name: Refuse a tag or release that exists
+        run: |
+          # A bare tag with no release would pass `gh release view`, and
+          # `gh release create` would attach to it. matching-refs is a prefix
+          # match, hence the exact comparison; an API error fails the step.
+          refs="$(gh api "repos/$GH_REPO/git/matching-refs/tags/pages-$BUILD_ID" --jq '.[].ref')"
+          if grep -qx "refs/tags/pages-$BUILD_ID" <<< "$refs"; then
+            echo "::error::Tag pages-$BUILD_ID already exists. A build id is published once."
+            exit 1
+          fi
+          if gh release view "pages-$BUILD_ID" >/dev/null 2>&1; then
+            echo "::error::Release pages-$BUILD_ID already exists. A build id is published once."
+            exit 1
+          fi
+      - name: Attest the package files
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-path: |
+            package/pages-package-${{ needs.build.outputs.build_id }}.tar.gz
+            package/pages-package-${{ needs.build.outputs.build_id }}.tar.gz.sha256
+            package/pages-package-${{ needs.build.outputs.build_id }}.manifest.json
+      - name: Verify the attestation before publishing
+        run: |
+          gh attestation verify "package/pages-package-$BUILD_ID.tar.gz" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/pages-package-release.yml"
+      - name: Publish the release
+        run: |
+          cat > notes.md <<EOF
+          Deployment-neutral Pages package. Build id \`$BUILD_ID\`, source commit \`$SOURCE_COMMIT\`.
+
+          Verify before use:
+
+          \`\`\`sh
+          sha256sum -c pages-package-$BUILD_ID.tar.gz.sha256
+          gh attestation verify pages-package-$BUILD_ID.tar.gz --repo $GITHUB_REPOSITORY \\
+            --signer-workflow $GITHUB_REPOSITORY/.github/workflows/pages-package-release.yml
+          \`\`\`
+          EOF
+          # A draft first, so a failed upload never leaves a half-filled
+          # public release. Not the repository's latest release: the app
+          # updater and installers read that one.
+          gh release create "pages-$BUILD_ID" \
+            "package/pages-package-$BUILD_ID.tar.gz" \
+            "package/pages-package-$BUILD_ID.tar.gz.sha256" \
+            "package/pages-package-$BUILD_ID.manifest.json" \
+            --draft --latest=false \
+            --target "$SOURCE_COMMIT" \
+            --title "Pages package $BUILD_ID" \
+            --notes-file notes.md
+          gh release edit "pages-$BUILD_ID" --draft=false --latest=false
