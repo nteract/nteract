@@ -43,6 +43,11 @@ test("every state answers every event", () => {
       [start(before), null],
       [start(after), "exchanging"],
       [settle, "leased"],
+      // The attempt owns the key until it settles: an answer after the
+      // request that started it gave up still installs the lease.
+      [{ ...settle, now: 99, until: 200 }, "leased"],
+      // Past its hold, until another attempt takes the key.
+      [{ ...settle, now: 150, until: 200 }, "leased"],
       [{ ...settle, until: 50 }, "expired"],
       [stale(settle), null],
       [refuse, "refused"],
@@ -397,6 +402,177 @@ test("a waiter returns by its own deadline through endless turnover", async (t) 
   assert.ok(waiter.at <= arrived + 1000, `${waiter.at - arrived} ms`);
   assert.ok(waiter.error === failure || waiter.error?.reason === "wait_timeout");
   assert.ok(generations > 1);
+});
+
+/** Exchanges that record how many run at once, per token and overall. Each
+ * call to `script(key, n)` gives the nth exchange's behaviour for `key`. */
+function instrumented(clock, script) {
+  const running = new Map();
+  const log = { overall: 0, peak: 0, peakPerKey: 0, starts: [] };
+  const exchange = (key) => () => {
+    const n = log.starts.filter((start) => start.key === key).length;
+    log.starts.push({ key, at: clock.now });
+    running.set(key, (running.get(key) ?? 0) + 1);
+    log.overall++;
+    log.peak = Math.max(log.peak, log.overall);
+    log.peakPerKey = Math.max(log.peakPerKey, running.get(key));
+    const done = () => {
+      running.set(key, running.get(key) - 1);
+      log.overall--;
+    };
+    return script(key, n).then(
+      (value) => {
+        done();
+        return value;
+      },
+      (error) => {
+        done();
+        throw error;
+      },
+    );
+  };
+  return { log, exchange };
+}
+
+test("an abandoned attempt holds its token until its exchange settles", async (t) => {
+  const clock = virtualClock(t);
+  const start = clock.now;
+  const at = (ms) => clock.sleep(start + ms - clock.now);
+  const lease = table(clock, { pollMs: 100 });
+  // The production timeline: A's exchange fails at 9.9 s; B, which arrived at
+  // 0.1 s, then starts one that runs to Kilo's 10 s timeout and fails at
+  // about 19.9 s; C arrives at 15.2 s, after B gave up.
+  const { log, exchange } = instrumented(clock, async (key, n) => {
+    if (n === 0) {
+      await at(9_900);
+      throw failure;
+    }
+    if (n === 1) {
+      await clock.sleep(10_000);
+      throw failure;
+    }
+    await clock.sleep(1_000);
+    return { value: "person", until: clock.now + 60_000 };
+  });
+  const a = timed(clock, lease.resolve("token", exchange("token")));
+  const b = at(100).then(() => timed(clock, lease.resolve("token", exchange("token"))));
+  const c = at(15_200).then(() => timed(clock, lease.resolve("token", exchange("token"))));
+  assert.equal((await a).error, failure);
+  const bOutcome = await b;
+  assert.equal(bOutcome.error?.reason, "wait_timeout");
+  assert.ok(bOutcome.at <= start + 100 + 15_000);
+  const cOutcome = await c;
+  assert.equal(cOutcome.value, "person");
+  assert.ok(cOutcome.at <= start + 15_200 + 15_000);
+  // C started only after B's abandoned exchange settled.
+  assert.equal(log.peakPerKey, 1, "one exchange per token at every instant");
+  assert.ok(log.starts[2].at >= start + 19_900, `${log.starts[2].at - start} ms`);
+});
+
+test("an attempt counts against the in-flight bound until it settles, not until its requester leaves", async (t) => {
+  const clock = virtualClock(t);
+  const start = clock.now;
+  const at = (ms) => clock.sleep(start + ms - clock.now);
+  const lease = table(clock, { holdMs: 1000, pollMs: 10, maxInFlight: 1 });
+  const { log, exchange } = instrumented(clock, async (key, n) => {
+    if (key === "token" && n === 0) {
+      await at(500);
+      throw failure;
+    }
+    // B's attempt starts at 0.5 s and settles at 1.4 s, after B left at 1 s.
+    await clock.sleep(900);
+    return { value: key, until: clock.now + 60_000 };
+  });
+  const a = lease.resolve("token", exchange("token")).catch((error) => error);
+  const b = timed(clock, lease.resolve("token", exchange("token")));
+  assert.equal(await a, failure);
+  assert.equal((await b).error?.reason, "wait_timeout");
+  // Between B leaving and its attempt settling, the slot is still taken.
+  await at(1_200);
+  assert.equal(lease.inFlight(), 1);
+  await assert.rejects(lease.resolve("other", exchange("other")), {
+    reason: "exchanges_in_flight",
+  });
+  assert.ok(log.peak <= 1);
+  await at(1_450);
+  assert.equal(lease.inFlight(), 0);
+});
+
+test("an attempt whose requester gave up still decides what the next request finds", async (t) => {
+  for (const [label, outcome, expect] of [
+    ["success", async () => ({ value: "person", until: Infinity }), "leased"],
+    [
+      "refusal",
+      async () => {
+        throw Object.assign(new Error("invalid"), { remember: 300_000 });
+      },
+      "refused",
+    ],
+    ["transient failure", async () => Promise.reject(failure), "absent"],
+  ]) {
+    await t.test(label, async (t) => {
+      const clock = virtualClock(t);
+      const start = clock.now;
+      const at = (ms) => clock.sleep(start + ms - clock.now);
+      const lease = table(clock, {
+        holdMs: 1000,
+        pollMs: 10,
+        rememberFor: (error) => error.remember ?? 0,
+      });
+      const { log, exchange } = instrumented(clock, async (key, n) => {
+        if (n === 0) {
+          await at(500);
+          throw failure;
+        }
+        if (n === 1) {
+          // Starts at 0.5 s, answers at 1.2 s, after its requester left at 1 s.
+          await at(1_200);
+          return outcome();
+        }
+        return { value: "fresh", until: clock.now + 60_000 };
+      });
+      const a = lease.resolve("token", exchange("token")).catch((error) => error);
+      const b = timed(clock, lease.resolve("token", exchange("token")));
+      await a;
+      assert.equal((await b).error?.reason, "wait_timeout");
+      await at(1_300);
+      assert.equal(lease.state("token").name, expect);
+      const next = await lease.resolve("token", exchange("token")).then(
+        (value) => value,
+        (error) => error,
+      );
+      if (expect === "leased") assert.equal(next, "person");
+      if (expect === "refused") assert.equal(next.remember, 300_000);
+      if (expect === "absent") assert.equal(next, "fresh");
+      assert.equal(log.starts.length, expect === "absent" ? 3 : 2, label);
+    });
+  }
+});
+
+test("an attempt that never settles frees its token and slot at its own hold, not before", async (t) => {
+  const clock = virtualClock(t);
+  const start = clock.now;
+  const at = (ms) => clock.sleep(start + ms - clock.now);
+  const lease = table(clock, { holdMs: 1000, pollMs: 10, maxInFlight: 1 });
+  const { log, exchange } = instrumented(clock, async (key) =>
+    key === "hung" ? new Promise(() => {}) : { value: key, until: clock.now + 60_000 },
+  );
+  void lease.resolve("hung", exchange("hung")).catch(() => {});
+  await at(999);
+  await assert.rejects(lease.resolve("other", exchange("other")), {
+    reason: "exchanges_in_flight",
+  });
+  // A request for the same token waits on the hung attempt until its hold.
+  const same = timed(clock, lease.resolve("hung", exchange("hung")));
+  await at(1_000);
+  assert.equal(await lease.resolve("other", exchange("other")), "other");
+  const late = await same;
+  assert.equal(late.error?.reason, "wait_timeout");
+  assert.ok(
+    log.starts
+      .filter((s) => s.key === "hung")
+      .every((s) => s.at === start || s.at >= start + 1_000),
+  );
 });
 
 test("at most maxInFlight exchanges run; a new token past that is refused untried", async (t) => {

@@ -1048,18 +1048,22 @@ is the same principal either way. It needs no settings beyond the three
 `account_unavailable` or 503 `sign_in_unavailable` (`retryable: true`); the
 caller never sees Kilo's body. Each isolate leases an accepted token by its
 SHA-256 until the earliest of its `exp` less 30 seconds, its whole lifetime
-after the exchange was sent, and 15 minutes, with one exchange for concurrent
-requests ([worker/kilo-token-lease.mjs](worker/kilo-token-lease.mjs)). A
-token Kilo accepts without a lease authorizes its own request for 30 seconds
-and is exchanged again on the next. Only Kilo's explicit refusal of a token
-(`400 invalid_token`, `403 account_unavailable`) answers repeats of it, for
-five minutes or 30 seconds; every other answer is a 503 and is never kept. At most 8
-exchanges run and 1,000 tokens are kept per isolate, never by dropping a live
+after the exchange was sent, and 15 minutes
+([worker/kilo-token-lease.mjs](worker/kilo-token-lease.mjs)). One token's
+exchanges run one at a time, so concurrent requests with a token that gets a
+lease share one exchange. A token Kilo accepts without a lease authorizes its
+own request for 30 seconds and is exchanged by each request. Only Kilo's
+explicit refusal of a token (`400 invalid_token`, `403 account_unavailable`)
+answers repeats of it, for five minutes or 30 seconds; every other answer is
+a 503 and is never kept. An isolate starts no exchange while 8 are in flight,
+counting each from its start until it answers (15 seconds at most), even
+after its request gave up, and keeps 1,000 tokens, never by dropping a live
 lease: past either bound a new token gets 503 without an exchange. An account
 Kilo blocks keeps working until its lease ends. A lease can outlast the token
 by the clock difference between Pages and Kilo, never by more than the
-token's whole lifetime. An upload capability the token issues ends with the
-lease.
+token's whole lifetime. An upload capability issued under the token ends at
+the earlier of that identity's validity (the lease end, or 30 seconds for an
+unleased token) and the upload's own lifetime.
 
 The account menu's Connected agents dialog lists the account's live OAuth
 connections (`GET /api/auth/grants`: client name, scope, issue and expiry

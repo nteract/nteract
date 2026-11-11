@@ -4,9 +4,10 @@
  * Each token, keyed by its SHA-256, has one lifecycle:
  *
  * - `absent`: nothing is known. A request starts an exchange.
- * - `exchanging`: attempt `generation` is asking Kilo, until `deadline`.
- *   Holding the key keeps one token's exchanges serial: other requests for
- *   it wait on their own timers.
+ * - `exchanging`: attempt `generation` is asking Kilo. It holds the key until
+ *   its exchange settles, or at most until `deadline`, its own hold from the
+ *   moment it started. Holding the key keeps one token's exchanges serial:
+ *   other requests for it wait on their own timers.
  * - `leased`: Kilo accepted the token. Every request uses `value` until
  *   `until`.
  * - `refused`: Kilo refused the token itself, until `until`. Every request
@@ -20,17 +21,28 @@
  * state it finds next: it uses a lease, takes a refusal, waits on a running
  * attempt, or starts its own.
  *
+ * Two clocks run here, and each has one owner:
+ *
+ * - An attempt owns the key and one in-flight slot from its start until its
+ *   exchange settles, and never past `holdMs` from its start, which is
+ *   longer than the exchange's own timeout. Its answer drives the
+ *   transition whether or not anyone still waits for it: a late success
+ *   installs the lease for the next request, a late refusal is kept, a late
+ *   transient failure leaves nothing.
+ * - A request waits at most `holdMs` from its arrival, whether it waits on
+ *   another attempt, starts its own, or both. When it gives up, the attempt
+ *   it started keeps running.
+ *
  * Gateway requests never await a promise another request started
- * (isolate-setup.mjs says why): the request that starts an exchange awaits
- * it, and the others poll the state on their own timers. Every request
- * answers by its own deadline, `holdMs` after it arrived, whether it waits,
- * starts an attempt, or both.
+ * (isolate-setup.mjs says why): the request that starts an attempt awaits
+ * it, and the others poll the state on their own timers.
  *
  * The table is bounded twice, so tokens nobody has seen can't crowd out
  * tokens in use:
  *
- * - At most `maxInFlight` exchanges run at once. A request that would start
- *   another is refused with `busy()` without asking Kilo.
+ * - At most `maxInFlight` attempts hold a slot at once: started, not
+ *   settled, and within their own hold. A request that would start another
+ *   is refused with `busy()` without asking Kilo.
  * - At most `maxEntries` tokens are kept. To admit a new token, a refusal
  *   leaves first, then any entry whose time is over, oldest first. A running
  *   exchange and a live lease never leave early: when only they remain, the
@@ -59,11 +71,12 @@ function endOf(state) {
 /**
  * One token's transition. Events:
  *
- * - `start` (`generation`, `now`, `deadline`): a request begins an exchange.
- *   Refused while a lease or a refusal is live or an exchange holds the
- *   token.
- * - `settle` (`generation`, `now`, `value`, `until`): the attempt succeeded.
- *   A lease that would already be over is `expired`.
+ * - `start` (`generation`, `now`, `deadline`): a request begins an attempt,
+ *   which holds the key until `deadline`. Refused while a lease or a refusal
+ *   is live or an attempt holds the token.
+ * - `settle` (`generation`, `now`, `value`, `until`): the attempt succeeded,
+ *   even after the request that started it gave up. A lease that would
+ *   already be over is `expired`.
  * - `refuse` (`generation`, `failure`, `until`): Kilo refused the token;
  *   every request gets `failure` until `until`.
  * - `fail` (`generation`): the attempt failed and nothing is kept.
@@ -175,9 +188,10 @@ const realSleep = (ms, signal) =>
  * as a refusal of the token; 0 keeps nothing. `busy(reason)` builds the
  * failure for a request turned away by a bound or by its own deadline.
  *
- * `holdMs` is how long one request takes at most, and how long its attempt
- * holds the key; it is longer than the exchange's own timeout. `now`,
- * `sleep` and `pollMs` let tests drive time.
+ * `holdMs` is how long one request waits at most from its arrival, and how
+ * long an attempt may hold its key and slot from its start; it is longer
+ * than the exchange's own timeout. `now`, `sleep` and `pollMs` let tests
+ * drive time.
  */
 export function kiloTokenLease({
   holdMs,
@@ -232,44 +246,50 @@ export function kiloTokenLease({
       await sleep(Math.min(pollMs, deadline - now()));
     }
     // Checked and claimed in the same synchronous step. The attempt holds
-    // the key only as long as this request may wait for it.
+    // the key and a slot from now until its exchange settles, or for
+    // `holdMs` from now at most, whatever becomes of this request.
     const at = now();
     step(key, { type: "expire", now: at });
     if (inFlight(at) >= maxInFlight) throw busy("exchanges_in_flight");
     if (!entries.has(key) && !admit(at)) throw busy("lease_capacity");
     const generation = ++generations;
-    step(key, { type: "start", generation, now: at, deadline });
-    let answer;
+    step(key, { type: "start", generation, now: at, deadline: at + holdMs });
+    const attempt = Promise.resolve().then(exchange);
+    // The attempt's answer drives the transition even after this request
+    // has given up; a stale generation changes nothing.
+    attempt.then(
+      (answer) => {
+        const settledAt = now();
+        step(key, {
+          type: "settle",
+          generation,
+          now: settledAt,
+          value: answer.value,
+          until: answer.until ?? settledAt,
+        });
+      },
+      (failure) => {
+        const remember = rememberFor(failure);
+        step(
+          key,
+          remember > 0
+            ? { type: "refuse", generation, failure, until: now() + remember }
+            : { type: "fail", generation },
+        );
+      },
+    );
     const stop = new AbortController();
     const abandoned = {};
+    let answer;
     try {
       answer = await Promise.race([
-        Promise.resolve().then(exchange),
-        // An exchange that never answers can't hold the request past its
-        // deadline; the attempt is abandoned at the same moment.
+        attempt,
         sleep(Math.max(0, deadline - now()), stop.signal).then(() => abandoned),
       ]);
-    } catch (failure) {
-      const remember = rememberFor(failure);
-      step(
-        key,
-        remember > 0
-          ? { type: "refuse", generation, failure, until: now() + remember }
-          : { type: "fail", generation },
-      );
-      throw failure;
     } finally {
       stop.abort();
     }
     if (answer === abandoned) throw busy("wait_timeout");
-    const settledAt = now();
-    step(key, {
-      type: "settle",
-      generation,
-      now: settledAt,
-      value: answer.value,
-      until: answer.until ?? settledAt,
-    });
     return answer.value;
   };
   return { resolve, size: () => entries.size, state: stateOf, inFlight: () => inFlight(now()) };

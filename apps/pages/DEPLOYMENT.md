@@ -1298,21 +1298,32 @@ the exchange was sent, and 15 minutes. A token Kilo accepts that gets no
 lease, because it is inside that 30-second allowance or its `iat` and `exp`
 aren't whole seconds at most 15 minutes apart, still authorizes its own
 request, with an identity valid for 30 seconds from Kilo's answer; the next
-request exchanges it again. Concurrent requests with one new token share one
-exchange, and one token's exchanges run one at a time. When that exchange
-fails transiently, only the request that made it gets the 503; the others
-use what the next exchange finds. Every request answers within 15 seconds.
+request exchanges it again. One token's exchanges run one at a time, so
+concurrent requests with a token that gets a lease share one exchange; a
+token that gets no lease is exchanged by each request in turn. When an
+exchange fails transiently, only the request that made it gets the 503; the
+others use what the next exchange finds. Every request answers within 15
+seconds of arriving. An exchange whose request gave up keeps running, and its
+answer still decides what the next request finds: a lease, a kept refusal,
+or nothing.
 
 Kilo's explicit refusal of the token is kept for repeats of that token:
 `invalid_kilo_token` for five minutes, since an invalid token can't become
-valid, and `account_unavailable` for 30 seconds. Each isolate runs at most 8
-exchanges at once and keeps at most 1,000 tokens. Kept refusals leave first,
-then entries whose time is over; a running exchange or a live lease never
-leaves early. Past either bound a new token gets 503 `sign_in_unavailable`
-without an exchange, and tokens already leased keep working. So eight
-forged, well-shaped tokens can hold every exchange slot of an isolate for up
-to the 10-second exchange timeout each; while they do, a new legitimate token
-gets a retryable 503 there, and tokens already leased keep working.
+valid, and `account_unavailable` for 30 seconds. Each isolate starts no new
+exchange while 8 are in flight; an exchange counts from its start until it
+answers, or for 15 seconds from its start if it never does, whether or not
+the request that started it is still waiting. Each isolate keeps at most
+1,000 tokens. Kept refusals leave first, then entries whose time is over; a
+running exchange or a live lease never leaves early. Past either bound a new
+token gets 503 `sign_in_unavailable` without an exchange, and tokens already
+leased keep working. So eight forged, well-shaped tokens can hold every
+exchange slot of an isolate for up to the 10-second exchange timeout each;
+while they do, a new legitimate token gets a retryable 503 there, and tokens
+already leased keep working.
+
+An upload capability issued under a Kilo token ends at the earlier of that
+identity's validity (the lease end, or 30 seconds after Kilo's answer for an
+unleased token) and the upload's own lifetime.
 
 The lease is the limit of this design: an account Kilo blocks keeps working
 here until its lease ends. A lease can outlast the token by the clock
