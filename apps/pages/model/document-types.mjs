@@ -4,10 +4,10 @@
 // each type.
 export const DOCUMENT_TYPES = Object.freeze({
   "pages.page": Object.freeze({
-    2: Object.freeze({ type: "pages.page", format: 2 }),
+    3: Object.freeze({ type: "pages.page", format: 3 }),
   }),
   "pages.comments": Object.freeze({
-    1: Object.freeze({ type: "pages.comments", format: 1 }),
+    2: Object.freeze({ type: "pages.comments", format: 2 }),
   }),
 });
 
@@ -23,21 +23,11 @@ export const WRITTEN_FORMATS = Object.freeze(
   Object.fromEntries(Object.keys(DOCUMENT_TYPES).map((type) => [type, currentFormat(type)])),
 );
 
-/** The formats of a host record written before records stored
- * `documentFormats`. Every Page such a target holds is in pages.page 2 and
- * pages.comments 1, the formats this build writes, so an unstamped record
- * reads as them. The build that changes either format deletes this rule; an
- * unstamped record is then refused like any record in a format the build
- * doesn't write. */
-export const UNSTAMPED_RECORD_FORMATS = Object.freeze({ "pages.page": 2, "pages.comments": 1 });
-
 /** The formats a Page host record says its documents are in, `{ type:
- * format }`: its `documentFormats`, or UNSTAMPED_RECORD_FORMATS without one.
- * The only reader of that field. */
+ * format }`: its `documentFormats`, or null for a record without one. The
+ * only reader of that field. */
 export function recordDocumentFormats(record) {
-  return Object.hasOwn(record, "documentFormats")
-    ? record.documentFormats
-    : UNSTAMPED_RECORD_FORMATS;
+  return Object.hasOwn(record, "documentFormats") ? record.documentFormats : null;
 }
 
 /** Whether a host record's documents are in the formats this build writes:
@@ -89,7 +79,7 @@ export function pageDocuments(formats, documentId, commentsDocumentId) {
   };
 }
 
-/** The formats this build reads, by type: `{ "pages.page": [2], ... }`. A
+/** The formats this build reads, by type: `{ "pages.page": [3], ... }`. A
  * build receipt records this as `document_formats`. */
 export function formatsByType() {
   return Object.fromEntries(
@@ -107,7 +97,7 @@ export function readableFormats() {
   );
 }
 
-/** Query-string form of a reader's formats: `pages.comments:1,pages.page:2`,
+/** Query-string form of a reader's formats: `pages.comments:2,pages.page:3`,
  * sorted so one build always sends one value. */
 export function encodeDeclaredFormats(formats) {
   return formats

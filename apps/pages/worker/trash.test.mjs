@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
+import { WRITTEN_FORMATS } from "../model/document-types.mjs";
 import { Page } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { pageAccess, pageGrant, pageState } from "./access.mjs";
@@ -596,7 +597,13 @@ test("a restarted host loads trashed documents but not permanently deleted ones"
     await page.ready;
     return page;
   };
-  const base = { pageId, owner: "user:owner", documentId: "trashed-document", deleted: true };
+  const base = {
+    pageId,
+    documentFormats: WRITTEN_FORMATS,
+    owner: "user:owner",
+    documentId: "trashed-document",
+    deleted: true,
+  };
   const trashed = await restart({ ...base, trash: { trashed_at: "2026-10-29T00:00:00.000Z" } });
   assert.ok(trashed.handle);
   assert.deepEqual(finds, ["trashed-document"]);

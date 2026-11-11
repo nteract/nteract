@@ -315,6 +315,27 @@ test("registration rejects oversized transport and native history before creatin
   assert.equal(f.catalog().storage.values.size, 0);
 });
 
+test("a draft two tabs merged into unmarked text registers", async (t) => {
+  const f = await fixture(t),
+    { args, doc } = registration();
+  const path = ["blocks", Object.keys(doc.blocks)[0], "richText"];
+  // One tab deletes the paragraph, marker and all, while the other types into it.
+  const deleted = A.change(A.clone(doc, { actor: "0a".repeat(16) }), (draft) =>
+    A.splice(draft, path, 0, draft.blocks[path[1]].richText.length),
+  );
+  const typed = A.change(A.clone(doc, { actor: "0b".repeat(16) }), (draft) =>
+    A.splice(draft, path, draft.blocks[path[1]].richText.length, 0, " typed"),
+  );
+  const draft = A.merge(deleted, typed);
+  assert.deepEqual(A.spans(draft, path), [{ type: "text", value: " typed" }]);
+  const request = {
+    ...args,
+    initial_snapshot_base64: Buffer.from(A.save(draft)).toString("base64"),
+  };
+  A.free(readRegistration(request).doc);
+  assert.equal((await f.send(request)).status, 200);
+});
+
 test("registration obeys account quota, same-origin and credential write gates", async (t) => {
   const f = await fixture(t),
     { args } = registration();

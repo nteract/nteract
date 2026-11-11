@@ -29,8 +29,8 @@ test("connect describes host-owned IDs without changing document bytes or host m
   const { status, body } = await f.pageCall("owner", `/api/connect?page=${pageId}`);
   assert.equal(status, 200);
   assert.deepEqual(body.documents, {
-    page: { id: metadata.documentId, type: "pages.page", format: 2 },
-    comments: { id: commentsDocumentId(commentsUuid), type: "pages.comments", format: 1 },
+    page: { id: metadata.documentId, type: "pages.page", format: 3 },
+    comments: { id: commentsDocumentId(commentsUuid), type: "pages.comments", format: 2 },
   });
   assert.equal(body.documentId, body.documents.page.id);
   assert.equal(body.commentsDocumentId, body.documents.comments.id);
@@ -55,7 +55,7 @@ test("comments descriptors follow handle availability, not document content or U
   assert.equal(status, 200);
   assert.equal(Object.hasOwn(body, "commentsDocumentId"), false);
   assert.deepEqual(body.documents, {
-    page: { id: f.page.metadata.documentId, type: "pages.page", format: 2 },
+    page: { id: f.page.metadata.documentId, type: "pages.page", format: 3 },
   });
   assert.equal(f.page.commentsHandle, undefined);
 });
@@ -74,7 +74,7 @@ test("Project content discovery describes pages.page, not a separate document ty
   assert.deepEqual(body.documents.page, {
     id: host.metadata.documentId,
     type: "pages.page",
-    format: 2,
+    format: 3,
   });
 });
 
@@ -243,9 +243,9 @@ test("a socket lacking the current format of a document the Page holds is closed
   const f = await fixture(t);
   const { sockets, accepted } = fakeSockets(t, f.page);
   for (const formats of [
-    "pages.comments:1",
-    "pages.page:2",
-    "pages.page:1,pages.comments:1",
+    "pages.comments:2",
+    "pages.page:3",
+    "pages.page:2,pages.comments:1",
     "pages.future:1",
   ])
     assert.equal(openSocket(f, sockets, formats).closed?.reason, "schema_unsupported", formats);
@@ -255,7 +255,7 @@ test("a socket lacking the current format of a document the Page holds is closed
 test("a socket may declare formats beyond the current ones", async (t) => {
   const f = await fixture(t);
   const { sockets, accepted } = fakeSockets(t, f.page);
-  const { closed } = openSocket(f, sockets, "pages.comments:1,pages.future:3,pages.page:2");
+  const { closed } = openSocket(f, sockets, "pages.comments:2,pages.future:3,pages.page:3");
   assert.equal(closed, undefined);
   assert.equal(accepted.mock.callCount(), 1);
 });
@@ -264,7 +264,7 @@ test("a Page with no comments document yet still requires pages.comments", async
   const f = await fixture(t);
   f.page.commentsHandle = undefined;
   const { sockets, accepted } = fakeSockets(t, f.page);
-  const { response, closed } = openSocket(f, sockets, "pages.page:2");
+  const { response, closed } = openSocket(f, sockets, "pages.page:3");
   assert.equal(response.status, 101);
   assert.equal(closed.reason, "schema_unsupported");
   assert.equal(accepted.mock.callCount(), 0);
@@ -273,15 +273,15 @@ test("a Page with no comments document yet still requires pages.comments", async
 test("a malformed or repeated formats parameter is a 400", async (t) => {
   const f = await fixture(t);
   const { sockets } = fakeSockets(t, f.page);
-  for (const formats of ["", "pages.page", "pages.page:x", "pages.page:2,pages.page:2"])
+  for (const formats of ["", "pages.page", "pages.page:x", "pages.page:3,pages.page:3"])
     assert.throws(
       () => openSocket(f, sockets, formats),
       (error) => error.status === 400 && error.message === "Invalid formats",
       formats,
     );
   const url = new URL("https://pages.invalid/api/sync?sync=automerge");
-  url.searchParams.append("formats", "pages.page:2,pages.comments:1");
-  url.searchParams.append("formats", "pages.page:2,pages.comments:1");
+  url.searchParams.append("formats", "pages.page:3,pages.comments:2");
+  url.searchParams.append("formats", "pages.page:3,pages.comments:2");
   assert.throws(
     () => f.page.connect(new Request(url, { headers: { upgrade: "websocket" } }), {}),
     (error) => error.status === 400 && error.message === "Invalid formats",
@@ -292,22 +292,25 @@ test("a malformed or repeated formats parameter is a 400", async (t) => {
 // (`documentFormats`), and the host acts on the record, not on the build.
 
 /** A format this build doesn't write. */
-const UNOPENED = { "pages.page": 99, "pages.comments": 1 };
+const UNOPENED = { "pages.page": 99, "pages.comments": 2 };
 
-test("connect reports the record's formats; an unstamped record reads as this build's", async (t) => {
+test("connect reports the record's formats; a record without them isn't opened", async (t) => {
   const f = await fixture(t);
   assert.deepEqual(f.page.metadata.documentFormats, WRITTEN_FORMATS);
   const stamped = await f.pageCall("owner", `/api/connect?page=${pageId}`);
+  assert.equal(stamped.body.documents.page.format, 3);
+  assert.equal(stamped.body.documents.comments.format, 2);
   const { documentFormats: _stamp, ...unstamped } = f.page.metadata;
   f.page.metadata = unstamped;
   const connected = await f.pageCall("owner", `/api/connect?page=${pageId}`);
-  assert.equal(connected.status, 200);
-  assert.deepEqual(connected.body.documents, stamped.body.documents);
-  assert.equal(connected.body.documents.page.format, 2);
-  assert.equal(connected.body.documents.comments.format, 1);
+  assert.equal(connected.status, 409);
+  assert.equal(connected.body.code, "document_format_unsupported");
   const { sockets, accepted } = fakeSockets(t, f.page);
-  assert.equal(openSocket(f, sockets, BUILD_FORMATS).closed, undefined);
-  assert.equal(accepted.mock.callCount(), 1);
+  assert.deepEqual(openSocket(f, sockets, BUILD_FORMATS).closed, {
+    code: 4427,
+    reason: "document_format_unsupported",
+  });
+  assert.equal(accepted.mock.callCount(), 0);
 });
 
 /** The fixture's Page with its record stamped `documentFormats` (UNOPENED by
@@ -392,7 +395,7 @@ test("every route that opens a record's documents refuses a format this build do
   assert.equal((await f.tool("stranger", "read_page")).status, 403);
   // The socket closes with the refusal, whatever formats the client declares.
   const { sockets, accepted } = fakeSockets(t, page);
-  for (const formats of [BUILD_FORMATS, "pages.comments:1,pages.page:99"])
+  for (const formats of [BUILD_FORMATS, "pages.comments:2,pages.page:99"])
     assert.deepEqual(
       openSocket(f, sockets, formats).closed,
       { code: 4427, reason: "document_format_unsupported" },
@@ -526,8 +529,8 @@ test("a new Page's host record stores the format of each of its documents", asyn
   });
   assert.equal(response.status, 201, await response.clone().text());
   assert.deepEqual((await h.storage.get("host/document")).documentFormats, {
-    "pages.page": 2,
-    "pages.comments": 1,
+    "pages.page": 3,
+    "pages.comments": 2,
   });
 });
 
@@ -535,8 +538,8 @@ test("a Project's content record stores the format of each of its documents", as
   const w = await world(t);
   const project = await w.createProject();
   assert.deepEqual(w.page(project.document_id).metadata.documentFormats, {
-    "pages.page": 2,
-    "pages.comments": 1,
+    "pages.page": 3,
+    "pages.comments": 2,
   });
 });
 

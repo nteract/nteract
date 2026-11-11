@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { createAuthFixture } from "../auth-fixtures.mjs";
+import { WRITTEN_FORMATS } from "../model/document-types.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import worker, { Page } from "./index.mjs";
 import { authenticate } from "./auth.mjs";
@@ -50,6 +51,7 @@ async function fixture(t, role = "owner") {
     ctx: { storage },
     metadata: {
       pageId,
+      documentFormats: WRITTEN_FORMATS,
       owner: role === "owner" ? identity.principal : "user:other",
       deleted: false,
       acl: {

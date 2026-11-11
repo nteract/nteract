@@ -28,7 +28,7 @@ test("the sync address pins the freshly discovered activity epoch, and names pla
   assert.equal(address.searchParams.get("page"), "fixture");
   assert.equal(address.searchParams.get("activity_epoch"), "host+epoch");
   assert.equal(address.searchParams.get("sync"), "automerge");
-  assert.equal(address.searchParams.get("formats"), "pages.comments:1,pages.page:2");
+  assert.equal(address.searchParams.get("formats"), "pages.comments:2,pages.page:3");
   const legacy = pageSyncAddress("fixture", "http://localhost:8910/", null);
   assert.equal(legacy.protocol, "ws:");
   assert.equal(legacy.searchParams.has("activity_epoch"), false);
