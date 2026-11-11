@@ -82,7 +82,9 @@ export function handleContract(name, makeFixture) {
         const peer = await f.peer();
         const before = f.handle.doc();
         const heads = A.getHeads(before);
-        const expected = structuredClone(before);
+        // JSON keeps a raw string's value; structuredClone drops its type.
+        const json = (doc) => JSON.parse(JSON.stringify(doc));
+        const expected = json(before);
         const writer = origin === "host" ? f.handle : peer.handle;
         await writer.update((doc) =>
           A.change(doc, (d) => {
@@ -95,9 +97,9 @@ export function handleContract(name, makeFixture) {
         assert.deepEqual(A.getHeads(before), heads);
         const clone = A.clone(before);
         try {
-          assert.deepEqual(clone, expected);
+          assert.deepEqual(json(clone), expected);
           assert.deepEqual(A.getHeads(clone), heads);
-          assert.deepEqual(A.view(before, heads), expected);
+          assert.deepEqual(json(A.view(before, heads)), expected);
         } finally {
           A.free(clone);
         }
@@ -395,7 +397,7 @@ export function handleContract(name, makeFixture) {
       const f = await makeFixture(t);
       const base = f.handle.doc();
       let candidate = A.change(A.clone(base), (d) => {
-        d.blocks.added = { position: "a1", richText: "first" };
+        d.blocks.added = { position: new A.RawString("a1"), richText: "first" };
       });
       candidate = A.change(candidate, (d) => {
         d.blocks.added.richText += " second";

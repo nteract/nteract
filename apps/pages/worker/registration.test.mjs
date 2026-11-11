@@ -269,6 +269,9 @@ test("malformed and mismatched snapshots reserve no capacity and leave the key r
       (block) => (block.markdown = ""),
       (block) => delete block.position,
       (block) => delete block.richText,
+      // A position the index can order: base-62 digits after the head.
+      (block) => (block.position = new A.RawString("a!")),
+      (block) => (block.position = new A.RawString("a0!")),
     ].map((edit) => ({
       initial_snapshot_base64: Buffer.from(
         A.save(A.change(A.clone(doc), (draft) => edit(draft.blocks[Object.keys(draft.blocks)[0]]))),

@@ -1,6 +1,6 @@
 import * as A from "@automerge/automerge";
 import { documentIdToBinary } from "@automerge/automerge-repo";
-import { generateKeyBetween } from "fractional-indexing";
+import { BLOCK_KEYS, validBlockFields } from "../model/block-shape.mjs";
 import { assertDocumentLimits } from "../model/limits.mjs";
 import { validateRich } from "../model/richtext-spans.mjs";
 import { requireSupportedSchema } from "../model/schema-features.mjs";
@@ -11,8 +11,7 @@ import { HttpError } from "./auth.mjs";
 export const validPageId = (id) =>
   typeof id === "string" &&
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id);
-// A stored block holds exactly these fields; its id is its key in `blocks`.
-const BLOCK_KEYS = ["position", "richText"];
+// A stored block holds exactly BLOCK_KEYS; its id is its key in `blocks`.
 const map = (value) => value && typeof value === "object" && !Array.isArray(value);
 
 /** Validate the immutable bootstrap, never a replacement for an existing Page.
@@ -74,12 +73,9 @@ export function readRegistration(args) {
         !map(block) ||
         Object.keys(block).length !== BLOCK_KEYS.length ||
         !BLOCK_KEYS.every((key) => Object.hasOwn(block, key)) ||
-        typeof block.richText !== "string" ||
-        !A.isRawString(block.position) ||
-        String(block.position).length > 512
+        !validBlockFields(block)
       )
         throw Error("Invalid Page block");
-      generateKeyBetween(String(block.position), null);
       validateRich(block);
     }
     if (!Object.keys(doc.blocks).length) throw Error("Page bootstrap needs a block");

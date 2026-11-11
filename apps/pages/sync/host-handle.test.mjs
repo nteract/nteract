@@ -16,7 +16,7 @@ handleContract("HostRepo adapter", async (t) => {
   const documents = new Map([[documentId, "page"]]);
   const seed = A.from({
     title: "Contract Page",
-    blocks: { b: { richText: "Text" } },
+    blocks: { b: { position: new A.RawString("a0"), richText: "Text" } },
     future: { keep: [1, 2] },
   });
   let plain = await plainHostFixture({
