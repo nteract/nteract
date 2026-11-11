@@ -2441,7 +2441,10 @@ the readable mark brings nothing back.
   form (a heading level, an image) is also recovered by
   `replace_block_markdown`, which rewrites the block whole. That tool
   refuses a block holding an unknown node, an aside or a dataframe it
-  can't keep, and its refusal names both recoveries.
+  can't keep, and its refusal names both recoveries. Editing around such a
+  node with `replace_match`, `format_match` or `set_node` works only while
+  the block reads whole; when it is `newer` and lossy they answer
+  `newer_content`.
 - `adjusted`: every name is known, but `nestIn` re-homed a node or dropped
   or skipped a parent. Every reader draws one tree for the block, and
   `moved` lists each node marker whose drawn parents differ from its stored

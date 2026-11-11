@@ -5748,9 +5748,12 @@ export class Page {
               return result;
             } catch (error) {
               // The batch cannot apply as written: zero or multiple matches, or
-              // an unknown block, operation or mark.
+              // an unknown block, operation or mark (400). A block holding
+              // content this build can't draw whole refuses an edit with 409
+              // (newer_content), as a target-scoped edit does.
+              const status = error.code === "newer_content" ? 409 : 400;
               throw Object.assign(
-                new HttpError(400, error.message, error.code ?? "invalid_edit_selector"),
+                new HttpError(status, error.message, error.code ?? "invalid_edit_selector"),
                 error.details && { details: error.details },
               );
             }

@@ -257,7 +257,7 @@ function applyEdit(doc, op, trace, context) {
     if (node)
       throw Object.assign(
         Error(
-          `This block holds ${quotableNodeType(node) ? `${/^[aeiou]/.test(node) ? "an" : "a"} ${node}` : "a node this version of Pages doesn't know"}, which has no Markdown form, so a Markdown rewrite would lose it. Remove it with delete_node, or edit around it with patch_page. When read_page reports no node_id for it, delete_block removes the whole block.`,
+          `This block holds ${quotableNodeType(node) ? `${/^[aeiou]/.test(node) ? "an" : "a"} ${node}` : "a node this version of Pages doesn't know"}, which has no Markdown form, so a Markdown rewrite would lose it. Remove it with delete_node, or with delete_block when read_page reports no node_id for it. patch_page edits around it only while the block reads whole (nothing after the node is its content); otherwise patch_page answers newer_content.`,
         ),
         { code: "markdownless_node" },
       );

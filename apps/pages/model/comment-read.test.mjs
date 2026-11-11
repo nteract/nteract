@@ -270,9 +270,10 @@ test("representative malformed comments have explicit notice or plain-fallback o
       },
     },
     {
-      name: "orphan dataframe missing asset metadata falls back",
+      // A dataframe this build can't read is a notice, as in every reader.
+      name: "orphan dataframe missing asset metadata reads as a notice",
       spans: [block("dataframe"), text("after")],
-      expected: { body: "after", body_format: "plain", content_error: "rich_text_unavailable" },
+      expected: { body: "\\[Unsupported node: dataframe\\]\n\nafter", body_format: "markdown" },
     },
     {
       name: "mutable marker names remain ordinary text",

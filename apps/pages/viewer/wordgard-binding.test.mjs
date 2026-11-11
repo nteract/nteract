@@ -1339,3 +1339,36 @@ test("removing bold from text whose stored strong this build couldn't read store
   assert.deepEqual(storedMarks(replica) ?? {}, {});
   editor.binding.destroy();
 });
+
+const storedText = (replica) =>
+  nativeSpans(replica, "one")
+    .filter((span) => span.type === "text")
+    .map((span) => [span.value, span.marks ?? {}]);
+
+// Bold over "wo" of "word", whose stored strong this build can't read.
+function partBold() {
+  const replica = foreignFixture({ strong: "yes", future: "x" }),
+    editor = editorFor(replica, "one");
+  const before = storedText(replica);
+  editor.dispatch({ selection: { anchor: 1, head: 3 } });
+  assert.equal(editor.run(toggleMark, Strong), true);
+  assertInSync(editor, replica, "one", "part bold");
+  return { replica, editor, before };
+}
+
+test("bold over part of a run with a stored strong replaces it only there", () => {
+  const { replica, editor } = partBold();
+  assert.deepEqual(storedText(replica), [
+    ["wo", { strong: true, future: "x" }],
+    ["rd", { strong: "yes", future: "x" }],
+  ]);
+  editor.binding.destroy();
+});
+
+test("undo after bold over a stored strong restores the stored spans", () => {
+  const { replica, editor, before } = partBold();
+  assert.equal(editor.run(undo), true);
+  assertInSync(editor, replica, "one", "undo");
+  assert.deepEqual(storedText(replica), before);
+  editor.binding.destroy();
+});

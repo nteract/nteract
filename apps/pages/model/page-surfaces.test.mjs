@@ -750,10 +750,12 @@ test("dataframe titles cannot provide a DOM specification", () => {
     }),
   ]);
   try {
+    // A title that isn't text is a dataframe this build can't read: the
+    // surfaces draw the notice, as every reader does.
     assert.deepEqual(pagePreview(doc), {
       title: "Shared title",
-      blocks: [],
-      truncated: true,
+      blocks: [{ id: "one", content: [["p", {}, "[Unsupported node: dataframe]"]] }],
+      truncated: false,
     });
     assert.equal(cardContent(doc).truncated, false);
     assert.doesNotMatch(observe(doc).cardHTML, /<script/);
@@ -793,10 +795,13 @@ test("depth and output budgets reject one pathological block without reading lat
 test("dataframe placeholders and inert links do not resolve labels or fetch assets", () => {
   const doc = page([
     T("private label", { link: link("https://tracking.example/resolve") }),
+    B("dataframe", [], { src: asset, media_type: "data", title: "Dataset" }),
+    // A src that isn't a Page asset is a dataframe this build can't read:
+    // a notice, with nothing of its src or title.
     B("dataframe", [], {
       src: "https://tracking.example/data",
       media_type: "data",
-      title: "Dataset",
+      title: "Tracked",
     }),
   ]);
   const previous = globalThis.fetch;
@@ -807,7 +812,8 @@ test("dataframe placeholders and inert links do not resolve labels or fetch asse
     const observed = observe(doc);
     assert.equal(observed.card.error, undefined);
     assert.equal(JSON.stringify(observed.card).includes("tracking.example"), false);
-    assert.match(observed.cardExcerpt, /private labelDataset/);
+    assert.match(observed.cardExcerpt, /private labelDataset\[Unsupported node: dataframe\]/);
+    assert.equal(JSON.stringify(observed.card).includes("Tracked"), false);
   } finally {
     globalThis.fetch = previous;
     A.free(doc);

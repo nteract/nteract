@@ -389,6 +389,52 @@ test("a Page holding a node this build doesn't know reads, and refuses a Markdow
   assert.equal(rewrite.status, 400);
 });
 
+test("an edit into a block holding content this build can't draw whole answers 409 in both scopes", async (t) => {
+  const plain = await fixture(t);
+  const path = ["blocks", plain.blockId, "richText"];
+  // Text after a node this build doesn't know is that node's content: the
+  // block reads only in part.
+  const page = A.change(A.load(A.save(plain.doc())), (draft) => {
+    const at = draft.blocks[plain.blockId].richText.indexOf("Friday");
+    A.splitBlock(draft, path, at, {
+      type: new A.ImmutableString("future-chart"),
+      parents: [],
+      attrs: {},
+      isEmbed: false,
+    });
+  });
+  const f = await fixture(t, { auth: plain.auth, docBytes: A.save(page) });
+  const base = f.heads();
+  for (const [scope, extra] of [
+    ["page", {}],
+    ["target", { conflict_scope: "target" }],
+  ])
+    for (const op of [
+      { op: "replace_match", match_text: "We ship", replacement: "We sail" },
+      { op: "format_match", match_text: "We ship", add: { strong: true } },
+      { op: "set_node", match_text: "We ship", type: "heading", attrs: { level: 2 } },
+    ]) {
+      const refused = await f.tool("owner", "patch_page", {
+        base_heads: base,
+        idempotency_key: `newer-${scope}-${op.op}`,
+        ...extra,
+        operations: [{ ...op, block_id: f.blockId }],
+      });
+      assert.equal(refused.status, 409, `${scope} ${op.op}: ${JSON.stringify(refused.body)}`);
+      assert.equal(refused.body.code, "newer_content", `${scope} ${op.op}`);
+    }
+  // Other refusals through the same path keep their status.
+  const missing = await f.tool("owner", "patch_page", {
+    base_heads: base,
+    idempotency_key: "newer-missing-match",
+    operations: [
+      { op: "replace_match", block_id: crypto.randomUUID(), match_text: "We", replacement: "x" },
+    ],
+  });
+  assert.equal(missing.status, 400, JSON.stringify(missing.body));
+  assert.equal(missing.body.code, "invalid_edit_selector");
+});
+
 test("set_node {type, attrs} goes through the host, and read_page reports the same names", async (t) => {
   const f = await fixture(t);
   const edit = await f.tool("owner", "patch_page", {

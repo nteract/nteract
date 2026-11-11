@@ -1392,3 +1392,54 @@ test("surfaceRead draws a marker or mark value this build can't read as the agen
     });
   }
 });
+
+// A dataframe or image whose attrs this build can't read is a notice on the
+// preview and the card, between the text around it, and its src never
+// reaches either.
+test("the preview and card draw a dataframe or image this build can't read as a notice", () => {
+  const asset = `/api/pages/${PAGE_ID}/assets/${"b".repeat(64)}`;
+  const cases = {
+    "dataframe with no media type": {
+      type: S("dataframe"),
+      parents: [],
+      attrs: { src: S(asset), title: S("T") },
+      isEmbed: false,
+    },
+    "dataframe with a src that isn't an asset": {
+      type: S("dataframe"),
+      parents: [],
+      attrs: { src: S("nope"), title: S("T"), media_type: S("application/vnd.apache.parquet") },
+      isEmbed: false,
+    },
+    "image with no src": UNREADABLE_MARKERS["image with no src"](),
+    "image src javascript": UNREADABLE_MARKERS["image src javascript"](),
+  };
+  for (const [name, stored] of Object.entries(cases)) {
+    freeing((keep) => {
+      const { doc, id } = pageWithSpans([
+        marker("paragraph", []),
+        { type: "text", value: "a" },
+        { type: "block", value: stored },
+        ...(stored.isEmbed ? [] : [marker("paragraph", [])]),
+        { type: "text", value: "word" },
+      ]);
+      keep(doc);
+      const notice = `[Unsupported node: ${String(stored.type)}]`;
+      const expected = stored.isEmbed
+        ? [["p", {}, "a", notice, "word"]]
+        : [
+            ["p", {}, "a"],
+            ["p", {}, notice],
+            ["p", {}, "word"],
+          ];
+      assert.deepEqual(blockPreview(doc.blocks[id]), expected, name);
+      assert.deepEqual(
+        cardContent(doc).blocks.map((block) => block.content),
+        [expected],
+        name,
+      );
+      const shown = JSON.stringify([blockPreview(doc.blocks[id]), cardContent(doc)]);
+      assert.doesNotMatch(shown, /nope|javascript|\/assets\/|"T"/, name);
+    });
+  }
+});

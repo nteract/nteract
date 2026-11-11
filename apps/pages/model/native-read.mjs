@@ -39,7 +39,7 @@ import {
 import { treeMarkdown } from "./markdown-serializer.mjs";
 import { codeTextUnmarked } from "./richtext-format.mjs";
 import { unknownNodeNotice } from "./richtext-notices.mjs";
-import { parseAssetPath } from "../shared/dataset-assets.mjs";
+import { parseAssetPath, readDataframe } from "../shared/dataset-assets.mjs";
 import { isKnownBlock, TEXT_CONTAINERS, markerName, markerType } from "./node-registry.mjs";
 
 // Never installed in the editor schema: a stored unknown container is readable,
@@ -337,8 +337,15 @@ export function nativeReadSpans(input, pageId) {
     const foreign =
       pageId !== undefined &&
       parseAssetPath(typeof attrs.src === "string" ? attrs.src : "")?.pageId !== pageId;
-    // A dataframe it can't show reads as a notice where it is stored.
-    const shown = !(parents.some((parent) => TEXT_CONTAINERS.has(parent)) || foreign);
+    // A dataframe it can't show reads as a notice where it is stored: in a
+    // text container, from another Page, or with attrs it can't read (as
+    // decode reads them), so no reader is handed their src.
+    const readable =
+      !!readDataframe(attrs) &&
+      Object.values(attrs).every(
+        (value) => value === null || ["string", "number", "boolean"].includes(typeof value),
+      );
+    const shown = !(parents.some((parent) => TEXT_CONTAINERS.has(parent)) || foreign) && readable;
     let leafNode = type === "dataframe" || type === "horizontal-rule";
     if (type === "dataframe" && !shown) {
       if (!inlineAt()) fits(PagesUnknownBlock);
