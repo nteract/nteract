@@ -124,8 +124,9 @@ const ipc = await parquetToArrowStream(bytes) // one uncompressed IPC stream
 
 It takes the same limits and defaults as `loadTableFile` and fails on any file
 over them. Nothing stays resident in Sift, so there is nothing to dispose.
-Utf8View and BinaryView columns are written as Utf8 and Binary, and an empty
-file gives a schema-only stream.
+Utf8View and BinaryView types, including nested ones, are written as Utf8 and
+Binary. That copies out values the decoded views share, so `maxDecodedBytes`
+also caps the stream. An empty file gives a schema-only stream.
 
 ## Parquet by byte range
 

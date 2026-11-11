@@ -183,8 +183,10 @@ export async function loadTableFile(
  * or a worker. Nothing stays resident in Sift: there is no store to dispose.
  *
  * The limits are `loadTableFile`'s, with the same defaults, and a file over
- * any of them is an error. An empty file gives a schema-only stream. View
- * types (Utf8View, BinaryView) are written as Utf8 and Binary.
+ * any of them is an error. `maxDecodedBytes` also caps the stream: view types
+ * (Utf8View, BinaryView), at any depth, are written as Utf8 and Binary, which
+ * copies out values the decoded views share. An empty file gives a
+ * schema-only stream.
  */
 export async function parquetToArrowStream(
   bytes: Uint8Array,
