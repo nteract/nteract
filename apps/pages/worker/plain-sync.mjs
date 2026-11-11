@@ -1,14 +1,7 @@
 import * as A from "@automerge/automerge";
 import { cbor } from "@automerge/automerge-repo";
-import { blockChangeRefusal } from "../model/block-shape.mjs";
 import { BACKEND_LIMITS, assertStoredSize } from "../model/limits.mjs";
-import {
-  BUILD_FEATURES,
-  documentFeatures,
-  missingFeatures,
-  schemaUnsupported,
-} from "../model/schema-features.mjs";
-import { BLOCKING, commentAdmission } from "../sync/comments.mjs";
+import { BUILD_FEATURES, missingFeatures, schemaUnsupported } from "../model/schema-features.mjs";
 import { HostRepo, hostTreeOf } from "../sync/host-handle.mjs";
 import { Refusal, SyncHost } from "../sync/host.mjs";
 import { socketTransport } from "../sync/wire.mjs";
@@ -18,6 +11,7 @@ import {
   logAdmissionDenied,
   withAdmissionReason,
 } from "./admission-reasons.mjs";
+import { PAGE_FAMILY_MODULES, modulesByKind } from "./document-modules.mjs";
 import { ROUNDS_EMPTY, roundsStep } from "./plain-sync-log.mjs";
 import { PermissionDenied, credentialExpired } from "./policy.mjs";
 
@@ -29,6 +23,13 @@ import { PermissionDenied, credentialExpired } from "./policy.mjs";
 //
 // Access comes from DocumentPolicy.account(identity): the ACL, trash,
 // recovery and credential rules, checked on every frame and every delivery.
+//
+// A document is served under a kind, and every type-specific answer comes
+// from that kind's module (document-modules.mjs): the write access a browser
+// needs, the feature stamps that gate a write, admission of its changes,
+// what a refusal leaves behind, and whether it carries the Page's host
+// messages. A document whose kind has no module is served for reading and
+// refuses every write.
 
 const PREFIX = "plain/";
 const BLOCKED = "host/comments-blocked/";
@@ -144,22 +145,20 @@ function refusalFrom(error, code = admissionCode(error)) {
   });
 }
 
-/**
- * The block shape a browser's Page changes leave (model/block-shape.mjs).
- * A refusal is not fatal: an out-of-shape block is a client bug, so the
- * socket stays open and the principal is not blocked. Host writes produce
- * valid blocks and skip this check.
- */
-function guardBlocks(preview, fresh) {
-  const refused = blockChangeRefusal(preview, fresh);
-  if (refused) throw new Refusal(refused.code, refused.message);
-}
+/** The refusal for a write to a document whose kind has no module. Not
+ * fatal: the connection's other documents keep syncing. */
+const noModule = (doc) =>
+  new Refusal("request_rejected", `This host has no type module for ${doc.kind} documents`);
 
 export class PlainSync {
   /**
-   * `policy` is the Page's DocumentPolicy. `pageFeatures()` is the Page's
-   * schema stamp. `onActors(delta)` publishes actor profiles and attested
-   * changes.
+   * `policy` is the Page's DocumentPolicy. `modules` are the type modules
+   * of the documents this host serves; a Page's host serves the Page family.
+   * `pageFeatures()` is the Page's schema stamp, which gates a write to every
+   * document. `onActors(delta)` publishes actor profiles and attested
+   * changes. `onJoined(conn, doc)` reports a browser joining a document that
+   * carries the Page's host messages, and `onWrite(conn, doc)` a browser
+   * write admitted to any document.
    *
    * Reporting: `onRefused(conn, refusal, { doc, repeats })` for a refused
    * frame; a browser connection reports each reason once at once, and its
@@ -172,6 +171,7 @@ export class PlainSync {
   constructor({
     storage,
     policy,
+    modules = PAGE_FAMILY_MODULES,
     now = Date.now,
     pageFeatures = () => [],
     onRefused = () => {},
@@ -182,6 +182,7 @@ export class PlainSync {
     onWrite = () => {},
   }) {
     this.storage = storage;
+    this.modules = modulesByKind(modules);
     this.pageFeatures = pageFeatures;
     this.policy = policy;
     this.now = now;
@@ -191,9 +192,11 @@ export class PlainSync {
     this.onWrite = onWrite;
     this.blocked = new Set();
     this.recent = new Map();
-    const guardComments = commentAdmission({
-      isBlocked: (conn) => this.blocked.has(conn.principal),
-    });
+    // What a module's hooks may act on.
+    const family = {
+      isBlocked: (principal) => this.blocked.has(principal),
+      block: (principal, code) => this.#block(principal, code),
+    };
     this.host = new SyncHost({
       bytes: new PlainByteStore(storage),
       hostId: HOST_SENDER_ID,
@@ -203,9 +206,10 @@ export class PlainSync {
         canRead: () => true,
         canWrite: (conn, doc) => this.#canWrite(conn, doc),
         admit: async (conn, doc, live, fresh, preview, actorPrincipal) => {
-          this.#gate(conn, doc, live, fresh);
-          if (doc.kind === "page") guardBlocks(preview, fresh);
-          return guardComments(conn, doc, live, fresh, preview, actorPrincipal);
+          const module = this.#moduleOf(doc);
+          if (!module) throw noModule(doc);
+          this.#gate(conn, module, doc, live, fresh);
+          return module.admit(conn, doc, live, fresh, preview, actorPrincipal, family);
         },
         admitTrusted: (doc, live, fresh, preview, context, conn, origin) => {
           if (!conn.trusted || !["mutate", "replay", "retry", "bridge"].includes(origin))
@@ -215,14 +219,16 @@ export class PlainSync {
           // an older host cannot edit a newer document blindly.
           // Already-admitted relays have no fresh bytes and never reach this
           // gate.
-          this.#gate({ features: BUILD_FEATURES }, doc, live, fresh);
+          const module = this.#moduleOf(doc);
+          if (!module) throw noModule(doc);
+          this.#gate({ features: BUILD_FEATURES }, module, doc, live, fresh);
           return preview;
         },
         admitted: (conn, doc, fresh, claims) => this.#admitted(conn, doc, fresh, claims),
         joined: (conn, doc) => {
-          if (!conn.trusted) onJoined(conn, doc);
+          if (!conn.trusted && this.#moduleOf(doc)?.hostMessages) onJoined(conn, doc);
         },
-        refused: (conn, doc, refusal) => this.#refused(conn, doc, refusal),
+        refused: (conn, doc, refusal) => this.#refused(conn, doc, refusal, family),
         synced: (conn, _doc, round) => {
           if (!conn.trusted) this.#rounds(conn, { type: "round", ...round });
         },
@@ -412,19 +418,30 @@ export class PlainSync {
     return null;
   }
 
+  /** The type module of a served document, or undefined for a kind no
+   * module claims. */
+  #moduleOf(doc) {
+    return this.modules.get(doc.kind);
+  }
+
+  /** The role gate: the access the document's module says a write needs. A
+   * document with no module passes it, so admission refuses the write by
+   * name instead of stripping it. */
   #canWrite(conn, doc) {
+    const module = this.#moduleOf(doc);
+    if (!module) return true;
     try {
-      this.policy.account(conn.identity, doc.kind === "comments" ? "comment" : true);
+      this.policy.account(conn.identity, module.writeAccess);
       return true;
     } catch {
       return false;
     }
   }
 
-  /** Schema gate and history capacity, before comment rules. */
-  #gate(conn, doc, live, fresh) {
-    const stamps = [this.pageFeatures()];
-    if (doc.kind === "comments") stamps.push(documentFeatures(live));
+  /** Schema gate and history capacity, before the module's admission: the
+   * Page's stamp and the document's own stamps, from its module. */
+  #gate(conn, module, doc, live, fresh) {
+    const stamps = [this.pageFeatures(), ...(module.featureStamps?.(live) ?? [])];
     for (const stamp of stamps) {
       const missing = missingFeatures(stamp, conn.features);
       if (missing.length) throw refusalFrom(schemaUnsupported(missing));
@@ -473,9 +490,10 @@ export class PlainSync {
           driver: claim.driver,
         };
     }
-    // The Page document's readers hear who wrote its changes before they
-    // receive them; comment authors aren't named.
-    if (doc.kind === "page")
+    // Readers of a document that carries host messages hear who wrote its
+    // changes before they receive them; other documents' authors aren't
+    // named to their readers.
+    if (this.#moduleOf(doc)?.hostMessages)
       this.publish(doc, {
         kind: "actor-profiles",
         actorProfiles,
@@ -484,17 +502,15 @@ export class PlainSync {
     this.onActors({ actorProfiles, attestedChanges: attested });
   }
 
-  #refused(conn, doc, refusal) {
-    if (
-      doc.kind === "comments" &&
-      BLOCKING.has(refusal.code) &&
-      !this.blocked.has(conn.principal)
-    ) {
-      this.blocked.add(conn.principal);
-      void this.storage
-        .put(BLOCKED + conn.principal, { code: refusal.code, at: this.now() })
-        .catch(() => {});
-    }
+  /** Block a principal's comment writes on this Page, durably. Idempotent. */
+  #block(principal, code) {
+    if (this.blocked.has(principal)) return;
+    this.blocked.add(principal);
+    void this.storage.put(BLOCKED + principal, { code, at: this.now() }).catch(() => {});
+  }
+
+  #refused(conn, doc, refusal, family) {
+    this.#moduleOf(doc)?.refused?.(conn, doc, refusal, family);
     // A client that retries a refused frame refuses again; log the first,
     // count the rest until the closed connection is released.
     const counted = !conn.trusted && !conn.released && conn.refusals;

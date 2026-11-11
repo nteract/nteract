@@ -18,7 +18,7 @@ stays in this directory of the nteract monorepo.
 | Offline work | Each client's local replica | Edits made offline merge when the client reconnects |
 | Stored content | Automerge documents | The only source of truth. No stored Markdown |
 | Sync | Plain Automerge sync messages over a WebSocket | No Repo layer, no Subduction |
-| Host | One host per document | Identity, access, admission, persistence, receipts |
+| Host | One host per document family: a Page's host holds the Page and its comments documents | Identity, access, admission, persistence, receipts |
 | Document type | A type module: `type` plus integer `format` | Genesis, admission checks, projections for readers |
 | Rich text | Wordgard tree, memory only | Decoded from Automerge spans. No ProseMirror |
 | Change flow | Automerge bytes, then patches, then a projection stream, then views | The same shape as nteract notebooks. Derived state lives in RxJS streams outside React |
@@ -142,7 +142,11 @@ Comments live in their own document and anchor to the Page with cursors.
      can still delete the Page. `TARGET_DOCUMENT_FORMATS` stays the release
      gate. A missed reset is refused Page by Page.
 5. **Agent tools on format 2.**
-6. **A second document type**, once Pages runs on the type boundary.
+6. **A second document type**, once Pages runs on the type boundary. The
+   host runs on it: plain sync asks each document's type module for its
+   write access, feature gates, admission and revision handles
+   ([worker/document-modules.mjs](worker/document-modules.mjs)), with the
+   Page and comments documents as its first two modules.
 
 ### Delete
 

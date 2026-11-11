@@ -1,7 +1,10 @@
+import { PAGE_FAMILY } from "./document-modules.mjs";
+
 /**
  * Revision handles: the short names agents use for one revision of one
- * document. `r<n>` names a Page document revision and `c<n>` a comments
- * document revision. Browsers, sync and host-to-host calls keep Automerge
+ * document. A handle opens with the letter of its document's type module:
+ * `r<n>` names a Page document revision and `c<n>` a comments document
+ * revision. Browsers, sync and host-to-host calls keep Automerge
  * heads; only the agent edge sees a handle.
  *
  * Each document's host keeps a counter and a table from handle number to
@@ -37,8 +40,13 @@
  * mutation queue.
  */
 export const REVISION_LIMIT = 2000;
-export const REVISION_PATTERN = /^[rc][1-9][0-9]{0,15}$/;
-export const REVISION_DOCS = Object.freeze({ page: "r", comments: "c" });
+/** `kind → handle letter` for each document of a Page, from its type module. */
+export const REVISION_DOCS = Object.freeze(
+  Object.fromEntries([...PAGE_FAMILY].map(([kind, module]) => [kind, module.revisionLetter])),
+);
+export const REVISION_PATTERN = new RegExp(
+  `^[${Object.values(REVISION_DOCS).join("")}][1-9][0-9]{0,15}$`,
+);
 const PREFIX = "host/revision/";
 const counterKey = (doc) => `${PREFIX}${doc}/counter`;
 const latestKey = (doc) => `${PREFIX}${doc}/latest`;
@@ -69,7 +77,7 @@ export function parseRevision(value, doc, name = "revision") {
     reject(
       400,
       "invalid_revision",
-      `${name} must be a ${letter}… revision from a read or receipt of this ${doc === "page" ? "Page" : "Page's comments"}`,
+      `${name} must be a ${letter}… revision from a read or receipt of this ${PAGE_FAMILY.get(doc).revisionNoun}`,
     );
   const n = Number(value.slice(1));
   if (!Number.isSafeInteger(n)) reject(400, "invalid_revision", `${name} is out of range`);

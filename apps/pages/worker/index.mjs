@@ -132,6 +132,7 @@ import { fencedHeads, headsFor, revisionPlan } from "./revisions.mjs";
 import { STORAGE_KEYS_PER_CALL, guardContext } from "./storage-guard.mjs";
 import { pageRecordsCall } from "./page-records.mjs";
 export { PageRecords } from "./page-records.mjs";
+import { COMMENTS_MODULE, PAGE_MODULE } from "./document-modules.mjs";
 import { HOST_SENDER_ID, PlainSync, clearPrefixes, plainSessionReplaced } from "./plain-sync.mjs";
 import { logSyncRefused, logSyncRounds } from "./plain-sync-log.mjs";
 import { BLOCKING as BLOCKING_COMMENT_CODES } from "../sync/comments.mjs";
@@ -5123,7 +5124,7 @@ export class Page {
   async loadComments() {
     if (this.commentsHandle || !this.commentsUuid) return;
     const documentId = commentsDocumentId(this.commentsUuid);
-    this.plain.serve(documentId, "comments");
+    this.plain.serve(documentId, COMMENTS_MODULE.kind);
     this.commentsHandle = await this.repo.import(A.save(commentsGenesis(this.commentsUuid)), {
       docId: documentId,
     });
@@ -5198,9 +5199,9 @@ export class Page {
       // PlainSync already published the delta to the Page's readers.
       onActors: () => {},
       onWrite: (conn, doc) => this.browserWrite(conn, conn.identity, doc.kind),
-      // A browser receives host messages once it has joined the Page document.
-      onJoined: (_conn, doc) => {
-        if (doc.kind !== "page") return;
+      // A browser receives host messages once it has joined the document
+      // that carries them, the Page document (document-modules.mjs).
+      onJoined: () => {
         this.broadcastProfiles();
         this.broadcastActivity();
         this.broadcastActorSnapshot();
@@ -5212,8 +5213,9 @@ export class Page {
     // still deletes its stored documents by id.
     const documents = [];
     const serving = !deleted && !this.formatRefusal(metadata);
-    if (serving && metadata?.documentId) documents.push([metadata.documentId, "page"]);
-    if (serving && commentsUuid) documents.push([commentsDocumentId(commentsUuid), "comments"]);
+    if (serving && metadata?.documentId) documents.push([metadata.documentId, PAGE_MODULE.kind]);
+    if (serving && commentsUuid)
+      documents.push([commentsDocumentId(commentsUuid), COMMENTS_MODULE.kind]);
     await plain.load(documents, { deleted });
     Object.assign(this, {
       serverSenderId: HOST_SENDER_ID,
@@ -6803,7 +6805,7 @@ export class Page {
         // imports nothing: its record installs and the host refuses it.
         if (!recordFormatsWritten(context.intent.metadata)) return;
         // A replayed creation may find the document stored already.
-        this.plain.serve(context.intent.metadata.documentId, "page");
+        this.plain.serve(context.intent.metadata.documentId, PAGE_MODULE.kind);
         this.handle = await this.repo.import(context.intent.bytes, {
           docId: context.intent.metadata.documentId,
         });

@@ -1,4 +1,5 @@
 import { from, lastValueFrom, takeUntil, tap, timer } from "rxjs";
+import { PAGE_FAMILY } from "./document-modules.mjs";
 import { flushUsage } from "./usage-store.mjs";
 import { logUsage } from "./usage.mjs";
 
@@ -79,13 +80,15 @@ export class BrowserWrites {
   constructor({ now = Date.now, emit = logUsage } = {}) {
     Object.assign(this, { now, emit });
   }
+  /** A browser write admitted to the document of `kind`; its action is the
+   * write action of that kind's type module. */
   admitted(session, identity, kind, pageId, env) {
-    if (!session || identity?.driver !== "Browser" || !["page", "comments"].includes(kind)) return;
+    const action = PAGE_FAMILY.get(kind)?.writeAction;
+    if (!session || identity?.driver !== "Browser" || !action) return;
     const now = new Date(this.now());
     const day = now.toISOString().slice(0, 10);
     const previous = this.sessions.get(session);
     const actions = previous?.day === day ? previous.actions : [];
-    const action = kind === "comments" ? "comment.write" : "page.write";
     if (actions.includes(action)) return;
     this.sessions.set(session, { day, actions: [...actions, action] });
     this.emit({ action, surface: "browser-sync", identity, pageId, outcome: "ok", now }, env);
