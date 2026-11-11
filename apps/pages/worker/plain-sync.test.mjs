@@ -139,7 +139,7 @@ test("plain API edit write costs at 1, 10 and 100 consecutive edits", async (t) 
   let changeBytes = 0;
   for (let n = 1; n <= 100; n++) {
     const heads = A.getHeads(host.handle.doc());
-    const response = await tool(f, host, "patch_page", {
+    const response = await tool(f, host, "edit_page", {
       base_heads: heads,
       idempotency_key: `write-cost-${String(n).padStart(3, "0")}`,
       operations: [
@@ -882,7 +882,7 @@ test("browser usage writes follow durable admission, not read-only sync, retries
   });
   await until(() => host.handle.doc().title === "Second edit");
   assert.equal(events.length, 1);
-  const edited = await tool(f, host, "patch_page", {
+  const edited = await tool(f, host, "edit_page", {
     base_heads: A.getHeads(host.handle.doc()),
     idempotency_key: "usage-agent-edit",
     operations: [

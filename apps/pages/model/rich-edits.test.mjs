@@ -17,7 +17,7 @@ function fixture(markdown) {
 function apply(doc, operations) {
   let result;
   const after = A.change(A.clone(doc), (draft) => {
-    result = applyPageOperation(draft, { operation: "patch_page", arguments: { operations } });
+    result = applyPageOperation(draft, { operation: "edit_page", arguments: { operations } });
   });
   return { after, result };
 }
@@ -33,6 +33,45 @@ const markers = (doc, id) =>
   A.spans(doc, textPath(id))
     .filter((span) => span.type === "block")
     .map((span) => [String(span.value.type), { ...span.value.attrs }]);
+
+test("edit_page rejects fields from another operation", () => {
+  const { doc } = fixture("Hello");
+  refuses(
+    doc,
+    [{ op: "set_title", title: "New", markdown: "wrong field" }],
+    /set_title does not take markdown/,
+  );
+  refuses(
+    doc,
+    [{ op: "insert_markdown", markdown: "New", match_text: "Hello" }],
+    /insert_markdown does not take match_text/,
+  );
+  refuses(doc, [{ op: "set_title", title: null }], /set_title requires a title string/);
+  // Each is a valid insert apart from the top-level type.
+  refuses(
+    doc,
+    [{ op: "insert_image", type: "heading", asset_id: "a".repeat(64), alt: "" }],
+    /insert_image requires/,
+  );
+  refuses(
+    doc,
+    [
+      {
+        op: "insert_node",
+        type: "heading",
+        node: { type: "dataframe", attrs: { asset_id: "a".repeat(64) } },
+      },
+    ],
+    /insert_node requires/,
+  );
+  refuses(doc, [null], /Each operation is an object with an op/);
+  refuses(doc, [[]], /Each operation is an object with an op/);
+  refuses(
+    doc,
+    [{ type: "insert_markdown", markdown: "New" }],
+    /Unsupported edit operation|Block not found/,
+  );
+});
 
 test("format_match occurrence picks one match in document order", () => {
   const { doc, id } = fixture("Ship it. Ship it now. Ship it later.");

@@ -488,7 +488,7 @@ try {
           const current = await tool(a, "read_page", { page_id: page });
           await Promise.all([
             a.keyboard.type(chunk, { delay: 40 }),
-            tool(a, "patch_page", {
+            tool(a, "edit_page", {
               page_id: page,
               base_heads: current.heads,
               conflict_scope: "target",

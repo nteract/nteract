@@ -46,7 +46,7 @@ const projected = (markdown) => {
   return blockMarkdown(written.doc.blocks[written.id]);
 };
 const edit = (doc, operations) => run(doc, "edit_page", operations);
-const patch = (doc, operations) => run(doc, "patch_page", operations).doc;
+const patch = (doc, operations) => run(doc, "edit_page", operations).doc;
 const outline = (doc, id) =>
   projectReadContent(doc, { include_content: false }).outline.filter(
     (entry) => entry.block_id === id,

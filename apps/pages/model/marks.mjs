@@ -120,11 +120,13 @@ export function formatAddSchema() {
   const properties = {};
   for (const spec of registry.marks) {
     const rule = spec.value;
-    if (rule.type === "flag") properties[spec.name] = { const: true };
+    if (rule.type === "flag") properties[spec.name] = { type: "boolean" };
     else if (rule.type === "string")
       properties[spec.name] = {
         type: "string",
-        anyOf: [{ enum: rule.enum }, { pattern: rule.pattern }],
+        pattern: [...(rule.enum?.length ? [`^(?:${rule.enum.join("|")})$`] : []), rule.pattern]
+          .filter(Boolean)
+          .join("|"),
       };
     else if (rule.type === "json-object")
       properties[spec.name] = {

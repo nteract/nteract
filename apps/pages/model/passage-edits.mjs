@@ -14,7 +14,7 @@ import { repairBlockMarkers } from "./richtext-page.mjs";
 // Operations a target-scoped batch may contain. Each finds one literal range
 // the same way; replace_match changes its text, format_match its marks and
 // set_node the attributes of the node that holds it.
-const PASSAGE_OPS = new Set(["replace_match", "format_match", "set_node"]);
+export const PASSAGE_OPS = new Set(["replace_match", "format_match", "set_node"]);
 const applyPassage = (doc, input, context) =>
   input.op === "format_match"
     ? formatMatch(doc, input.block_id, input, undefined, context)

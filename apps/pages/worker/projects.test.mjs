@@ -208,7 +208,7 @@ test("the gateway links Page edit receipts, and leaves refusals and unlinked cal
   const answer = (status, body) => async () =>
     Response.json(body, { status, headers: { "retry-after": "1" } });
   const receipt = { page_id: pageId, heads: ["a".repeat(64)], result: { applied: 1 } };
-  for (const operation of ["edit_page", "patch_page", "manage_page_comment", "read_page_changes"]) {
+  for (const operation of ["edit_page", "manage_page_comment", "read_page_changes"]) {
     const linked = await invokeProjectApi(answer(200, receipt), operation, {}, { env });
     assert.deepEqual(await linked.json(), { ...receipt, url: `https://pages.invalid/p/${pageId}` });
     assert.equal(linked.headers.get("retry-after"), "1", "headers survive");
@@ -314,7 +314,7 @@ test("tools name the right argument when a Project ID and a Page ID are swapped"
   const pageId = project.document_id;
   const cases = [
     ["read_page", { page_id: project.project_id }, "project_id_as_page_id", /project_id/],
-    ["patch_page", { page_id: project.project_id }, "project_id_as_page_id", /project_id/],
+    ["edit_page", { page_id: project.project_id }, "project_id_as_page_id", /project_id/],
     [
       "delete_page",
       { page_id: project.project_id, base_heads: [], idempotency_key: w.key() },
@@ -2044,7 +2044,7 @@ test("Page tools address Project content by project_id with the caller's own acc
       },
     };
   };
-  await w.call("owner", "patch_page", {
+  await w.call("owner", "edit_page", {
     project_id: project.project_id,
     base_heads: read.body.heads,
     idempotency_key: w.key(),

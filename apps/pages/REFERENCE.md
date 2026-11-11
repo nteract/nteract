@@ -1687,12 +1687,12 @@ retries with backoff. The
 The host keeps its own holds short. A tool write flushes before it answers and
 sets no timer. Agent presence sets no timer: its entries carry `idle_at` and `expires_at`, the host
 prunes when it next reads or publishes the roster, and viewers apply the times
-on their own clocks (see Agent carets). Before this, every `patch_page` and
-`edit_page` stayed counted for 60 s, the caret's fade and expiry, so a Page that
+on their own clocks (see Agent carets). Before this, every `edit_page`
+stayed counted for 60 s, the caret's fade and expiry, so a Page that
 was already near the limit refused every request for a minute after one edit
 ([#4654](https://github.com/nteract/nteract/issues/4654)).
 [comments-scale.test.mjs](worker/comments-scale.test.mjs) builds a Page with
-200 threads and 1,000 messages and checks that a `patch_page` holds no timer,
+200 threads and 1,000 messages and checks that an `edit_page` holds no timer,
 leaves no timer behind
 (tracking through the background work, so a timer a callback sets is seen),
 that the work settles within budget, and that reads during that window succeed.
@@ -2315,7 +2315,7 @@ Mutations require an idempotency key. Content edits also require observed
 `base_heads`, and so does a comment on selected text, which is located at
 them. Other comment writes (a block comment, a reply, resolve, reopen, edit and
 delete) take none. `delete_page` takes them as an optional guard. The default
-`conflict_scope:"page"` requires exact current heads. `patch_page` can use
+`conflict_scope:"page"` requires exact current heads. `edit_page` can use
 `conflict_scope:"target"` for batches of only `replace_match`, `format_match`
 and `set_node`, without `all`:
 native identity maps
@@ -2705,7 +2705,7 @@ file, and idempotent, since a repeat issues another equivalent capability.
 
 API agents get presence derived from the calls the host already authorized
 ([`model/agent-presence.mjs`](model/agent-presence.mjs)). A committed
-`patch_page` or `edit_page` publishes a caret where its last operation landed: a
+`edit_page` publishes a caret where its last operation landed: a
 selection over the text a `replace_match` or `format_match` changed, which the
 browser fills for 600 ms before collapsing it to a caret, or a corner dot on a
 block an operation inserted, moved or replaced. A `read_page` by section, search,

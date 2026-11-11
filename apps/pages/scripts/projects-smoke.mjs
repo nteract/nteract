@@ -671,7 +671,7 @@ try {
     const read = await ok("owner", "read_page", { page_id: pageId });
     const block = read.blocks.find((entry) => entry.markdown.includes(matchText));
     assert.ok(block, `read_page finds "${matchText}"`);
-    await ok("owner", "patch_page", {
+    await ok("owner", "edit_page", {
       page_id: pageId,
       base_heads: read.heads,
       idempotency_key: crypto.randomUUID(),
@@ -945,7 +945,7 @@ try {
     const read = await ok("editor", "read_page", { page_id: zeta.page_id });
     const block = read.blocks.find((entry) => entry.markdown.includes("Outside any Project."));
     assert.ok(block, "read_page finds Zeta's paragraph");
-    await ok("editor", "patch_page", {
+    await ok("editor", "edit_page", {
       page_id: zeta.page_id,
       base_heads: read.heads,
       idempotency_key: crypto.randomUUID(),
@@ -1565,7 +1565,7 @@ try {
   }
   const glideWrite = async (matchText, replacement) => {
     const read = await ok("owner", "read_page", { page_id: glidePage.page_id });
-    await ok("owner", "patch_page", {
+    await ok("owner", "edit_page", {
       page_id: glidePage.page_id,
       base_heads: read.heads,
       idempotency_key: crypto.randomUUID(),

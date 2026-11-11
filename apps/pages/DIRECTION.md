@@ -89,7 +89,7 @@ Comments live in their own document and anchor to the Page with cursors.
    - `node_id` replaces the mix of `block_id`, `node_id`, `node_index` and
      `image_id`. A `node_id` is a cursor inside one block's text and does not
      name its block, so the host needs a lookup from node to block.
-   - `edit_page` and `patch_page` become one tool with one operation list.
+   - `edit_page` and `patch_page` become one tool with one operation list. Done on `main`.
      Every operation stays: text and formatting edits, images, Parquet
      dataframes, node insert, delete and retype, and block moves. Uploads
      keep their flow.

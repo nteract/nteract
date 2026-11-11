@@ -381,7 +381,6 @@ const operations = new Set([
   "import_page_image",
   ASSET_UPLOAD_OPERATION,
   "edit_page",
-  "patch_page",
   "manage_page_comment",
   "reply_page_comment",
   "delete_page",
@@ -673,6 +672,25 @@ function validateCreateInput(args) {
   if (unsupported) throw unsupportedMarkdownError(unsupported);
 }
 
+/** move_page's place among its new siblings, as the catalog's position value:
+ * `position` is "first" or "last", `before` and `after` name a sibling Page,
+ * and none of them means last. A caller gives at most one. */
+function requestedPosition(args) {
+  const named = ["position", "before", "after"].filter((key) => args[key] !== undefined);
+  if (named.length > 1)
+    throw new HttpError(400, "Give at most one of position, before or after", "invalid_position");
+  const [key] = named;
+  if (key === undefined) return "last";
+  const position = key === "position" ? args.position : { [key]: args[key] };
+  if ((key === "position" && typeof position !== "string") || !validPosition(position))
+    throw new HttpError(
+      400,
+      'position is "first" or "last"; before and after take a sibling page_id',
+      "invalid_position",
+    );
+  return position;
+}
+
 /**
  * move_page's arguments as the Catalog runs them: `{ pageId, parentId,
  * spaceId, position }`. Every refusal here is deterministic input, so it
@@ -709,13 +727,7 @@ function validateMoveInput(args) {
     : args.space_id === null
       ? null
       : requireSpaceIdArgument(args.space_id);
-  const position = args.position === undefined ? "last" : args.position;
-  if (!validPosition(position))
-    throw new HttpError(
-      400,
-      'position is "first", "last", {"before": page_id} or {"after": page_id}',
-      "invalid_position",
-    );
+  const position = requestedPosition(args);
   if (typeof args.retry_token !== "string")
     throw new HttpError(
       400,
@@ -6124,13 +6136,10 @@ export class Page {
               origin: pagesPublicOrigin(this.env),
             }),
           );
-        if (!["edit_page", "patch_page"].includes(body.operation))
-          throw new HttpError(400, "Unknown document operation");
+        if (body.operation !== "edit_page") throw new HttpError(400, "Unknown document operation");
         const ops = Array.isArray(body.arguments?.operations) ? body.arguments.operations : [];
         // Ops that create a node naming a stored asset (model/node-registry.mjs).
-        const inserts = ops.filter(
-          (op) => insertOperation(op?.op ?? op?.type) || op?.op === "set_image",
-        );
+        const inserts = ops.filter((op) => insertOperation(op?.op) || op?.op === "set_image");
         // Where this batch landed, captured inside the change so the cursors
         // name the characters it wrote. A replayed receipt has no caret.
         let caret = null;
@@ -6172,7 +6181,7 @@ export class Page {
                 identity: publicIdentity(identity),
                 trace,
               });
-              if (["edit_page", "patch_page"].includes(body.operation)) {
+              if (body.operation === "edit_page") {
                 try {
                   caret = writeTargets(doc, trace);
                 } catch (error) {

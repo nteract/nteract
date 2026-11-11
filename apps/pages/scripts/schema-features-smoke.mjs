@@ -193,7 +193,7 @@ try {
   checkpoint("a current build's edit is accepted");
 
   stage = "the host refuses writes it can't express";
-  const refused = await tool("patch_page", {
+  const refused = await tool("edit_page", {
     page_id: future,
     base_heads: futureRead.body.heads,
     idempotency_key: crypto.randomUUID(),

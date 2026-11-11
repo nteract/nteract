@@ -98,7 +98,7 @@ function edit(doc, operations) {
   let targets;
   const after = A.change(doc, (d) => {
     const trace = [];
-    applyPageOperation(d, { operation: "patch_page", arguments: { operations }, trace });
+    applyPageOperation(d, { operation: "edit_page", arguments: { operations }, trace });
     targets = writeTargets(d, trace);
   });
   return { after, targets };

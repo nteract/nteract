@@ -54,10 +54,7 @@ test("content descriptors accept exactly one selector without changing placement
     if (PROJECT_CONTENT_OPERATIONS.has(tool.name)) {
       assert.ok(tool.inputSchema.properties.project_id, tool.name);
       assert.ok(!tool.inputSchema.required.includes("page_id"), tool.name);
-      assert.deepEqual(tool.inputSchema.oneOf, [
-        { required: ["page_id"] },
-        { required: ["project_id"] },
-      ]);
+      assert.equal(tool.inputSchema.oneOf, undefined);
     } else assert.equal(tool.inputSchema.oneOf, undefined, tool.name);
   }
   assert.ok(
@@ -95,7 +92,7 @@ test("authentication and write scopes precede Project lookup", async (t) => {
   assert.equal(anonymous.status, 401);
   for (const operation of [
     "edit_page",
-    "patch_page",
+    "edit_page",
     "manage_page_comment",
     "report_page_progress",
     "import_page_image",
@@ -340,9 +337,9 @@ test("patch, comment and presence tools resolve the same content and receipt sco
       },
     ],
   };
-  const patched = await w.call("owner", "patch_page", patch);
+  const patched = await w.call("owner", "edit_page", patch);
   assert.equal(patched.status, 200, JSON.stringify(patched.body));
-  const replay = await w.call("owner", "patch_page", alias(patch, project.project_id));
+  const replay = await w.call("owner", "edit_page", alias(patch, project.project_id));
   assert.deepEqual(replay.body, { ...patched.body, project_id: project.project_id });
   const changes = await w.call("owner", "read_page_changes", {
     project_id: project.project_id,

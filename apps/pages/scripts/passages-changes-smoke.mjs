@@ -256,7 +256,7 @@ try {
       replacement: "Beta was revised by the agent.",
     },
   ]);
-  const firstReceipt = await mcp("patch_page", firstArgs);
+  const firstReceipt = await mcp("edit_page", firstArgs);
   assert.equal(firstReceipt.concurrency.rebased, true);
   assert.deepEqual(firstReceipt.concurrency.base_heads, baseline.heads);
   assert.deepEqual(firstReceipt.concurrency.observed_heads, human.heads);
@@ -278,7 +278,7 @@ try {
       replacement: "selected orange",
     },
   ]);
-  await mcp("patch_page", repeatedArgs);
+  await mcp("edit_page", repeatedArgs);
   const repeatedDelta = await changes(firstDelta.heads);
   onlyNodes(repeatedDelta, [3]);
   assert.equal(repeatedDelta.changes[0].markdown, "South keeps selected orange.");
@@ -290,7 +290,7 @@ try {
   const beforeOverlap = repeatedDelta;
   await typeAndObserve("Beta was revised by the agent.", "Beta was changed again by the human.");
   const rejected = await rawMcp(
-    "patch_page",
+    "edit_page",
     patchArgs(beforeOverlap, [
       {
         op: "replace_match",
@@ -319,14 +319,14 @@ try {
       replacement: "Beta includes the human update and agent follow-up.",
     },
   ]);
-  const freshReceipt = await mcp("patch_page", freshArgs);
+  const freshReceipt = await mcp("edit_page", freshArgs);
   assert.equal(freshReceipt.concurrency.rebased, false);
   await expect(content()).toContainText("Beta includes the human update and agent follow-up.");
   complete(stage);
 
   stage = "exact retry after a later browser edit returns the original receipt without reauthoring";
   const later = await typeAndObserve("Alpha was revised in the browser.", " Still editing.", true);
-  const retry = await mcp("patch_page", firstArgs);
+  const retry = await mcp("edit_page", firstArgs);
   assert.deepEqual(retry, firstReceipt);
   const afterRetry = await read();
   assert.deepEqual(afterRetry.heads, later.heads);

@@ -246,7 +246,7 @@ try {
   assert.ok(tableBlock, "read_page exports the table Markdown");
   assert.match(tableBlock.markdown, /\*\*Pages A\*\*/);
   assert.match(tableBlock.markdown, /Reviewed B/);
-  await call(a, "patch_page", {
+  await call(a, "edit_page", {
     page_id: fixture.page_id,
     base_heads: current.heads,
     idempotency_key: crypto.randomUUID(),

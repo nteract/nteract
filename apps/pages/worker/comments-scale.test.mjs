@@ -177,7 +177,7 @@ async function heavyPage(t) {
 }
 
 const patch = (f, read, retry) =>
-  f.tool("owner", "patch_page", {
+  f.tool("owner", "edit_page", {
     base_heads: read.body.heads,
     ...retry(),
     operations: [
@@ -186,7 +186,7 @@ const patch = (f, read, retry) =>
   });
 
 test(
-  "a patch_page on a Page with 200 threads and 1,000 messages stays within budget and leaves nothing pending",
+  "a edit_page on a Page with 200 threads and 1,000 messages stays within budget and leaves nothing pending",
   { timeout: 120_000 },
   async (t) => {
     const { f, read, retry, threads, commentWriteP50 } = await heavyPage(t);
@@ -202,7 +202,7 @@ test(
     const edit = await patch(f, read, retry);
     const handlerMs = performance.now() - t0;
     assert.equal(edit.status, 200, JSON.stringify(edit.body));
-    assert.ok(handlerMs < BUDGET.handlerMs, `patch_page took ${Math.round(handlerMs)} ms`);
+    assert.ok(handlerMs < BUDGET.handlerMs, `edit_page took ${Math.round(handlerMs)} ms`);
 
     // Reads during the post-edit window answer with the edit applied.
     const during = await Promise.all([
@@ -254,7 +254,7 @@ test(
       "no timer held the comment write",
     );
     t.diagnostic(
-      `patch_page ${Math.round(handlerMs)} ms, background ${Math.round(backgroundMs)} ms, tool comment write p50 ${Math.round(commentWriteP50)} ms at ~${MESSAGES} messages`,
+      `edit_page ${Math.round(handlerMs)} ms, background ${Math.round(backgroundMs)} ms, tool comment write p50 ${Math.round(commentWriteP50)} ms at ~${MESSAGES} messages`,
     );
   },
 );

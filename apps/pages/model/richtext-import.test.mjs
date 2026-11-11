@@ -111,7 +111,7 @@ test("create_page and replace_block_markdown store the diagnosis as native rich 
   doc = A.change(doc, (d) => setRichMarkdown(d, id, "Placeholder"));
   doc = A.change(doc, (d) =>
     applyPageOperation(d, {
-      operation: "patch_page",
+      operation: "edit_page",
       arguments: { operations: [{ op: "replace_block_markdown", block_id: id, markdown: BODY }] },
     }),
   );

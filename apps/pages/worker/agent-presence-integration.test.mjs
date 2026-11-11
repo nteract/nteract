@@ -137,7 +137,7 @@ async function fixture(t, driver = "Kilo", agent) {
   auth.env.PAGES = { getByName: () => page };
   const patch = async (operations, key = crypto.randomUUID()) => {
     const auth = await call("read_page", { include_content: false });
-    return call("patch_page", {
+    return call("edit_page", {
       operations,
       base_heads: auth.heads,
       retry_token: auth.retry_token,
@@ -158,7 +158,7 @@ async function fixture(t, driver = "Kilo", agent) {
   };
 }
 
-test("a committed patch_page publishes the agent's caret over its new text", async (t) => {
+test("a committed edit_page publishes the agent's caret over its new text", async (t) => {
   const f = await fixture(t);
   const receipt = await f.patch([
     { op: "replace_match", block_id: f.blockId(), match_text: "Monday", replacement: "Tuesday" },
@@ -189,10 +189,10 @@ test("a retried patch replays its receipt without publishing a new caret", async
     retry_token: auth.retry_token,
     idempotency_key: "retry-once",
   };
-  const first = await f.call("patch_page", args);
+  const first = await f.call("edit_page", args);
   const seq = f.agents()[0].seq;
   const revision = f.broadcasts.filter((b) => b.kind === "page-activity").at(-1).revision;
-  const again = await f.call("patch_page", args);
+  const again = await f.call("edit_page", args);
   assert.deepEqual(again, first);
   assert.equal(f.agents()[0].seq, seq);
   assert.equal(f.broadcasts.filter((b) => b.kind === "page-activity").at(-1).revision, revision);

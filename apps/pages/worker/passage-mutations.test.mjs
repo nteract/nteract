@@ -51,14 +51,14 @@ function fixture(t, markdown = "Alpha first.\n\nBeta second.\n\nKeep the tail.")
   const context = (args, overrides = {}) => ({
     storage,
     handle,
-    operation: "patch_page",
+    operation: "edit_page",
     args,
     identity,
     apply(draft, effectiveArgs) {
       applications++;
       appliedArguments.push(structuredClone(effectiveArgs));
       return applyPageOperation(draft, {
-        operation: "patch_page",
+        operation: "edit_page",
         arguments: effectiveArgs,
         identity,
       });

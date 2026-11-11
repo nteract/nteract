@@ -261,7 +261,7 @@ try {
   complete(stage);
 
   stage = "an exact edit retry preserves its warning and heads after an unrelated patch";
-  const patched = await http("patch_page", {
+  const patched = await http("edit_page", {
     page_id: pageId,
     base_heads: withTitle.heads,
     ...retry(withTitle),

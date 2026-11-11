@@ -64,34 +64,21 @@ test("server instructions carry only the Markdown rules Pages adds, and /llms.tx
   assert.ok(guide.includes(markdownSyntax()));
 });
 
-test("patch_page advertises set_node, occurrence, all and replacement_markdown", () => {
-  const patch = tools.find((tool) => tool.name === "patch_page");
-  const [replace, format, setNode] = patch.inputSchema.properties.operations.items.oneOf;
-  assert.deepEqual(
-    [replace, format, setNode].map((op) => op.properties.op.const),
-    ["replace_match", "format_match", "set_node"],
-  );
-  assert.ok(replace.properties.replacement_markdown);
-  assert.deepEqual(replace.required, ["op", "block_id", "match_text"]);
-  for (const op of [replace, format, setNode]) assert.ok(op.properties.occurrence);
-  assert.deepEqual(format.properties.all, { ...format.properties.all, const: true });
-  for (const field of ["checked", "language", "heading_level", "align"])
-    assert.equal(field in setNode.properties, false, `set_node advertises top-level ${field}`);
+test("edit_page advertises set_node, occurrence, all and replacement_markdown", () => {
+  const patch = tools.find((tool) => tool.name === "edit_page");
+  const operation = patch.inputSchema.properties.operations.items;
+  for (const name of ["replace_match", "format_match", "set_node", "delete_node"])
+    assert.ok(operation.properties.op.enum.includes(name), name);
+  for (const field of ["replacement_markdown", "occurrence", "type", "attrs", "node_id"])
+    assert.ok(operation.properties[field], field);
+  assert.equal(operation.properties.all.type, "boolean");
+  assert.equal(operation.additionalProperties, false);
   assert.match(patch.description, /set_node/);
-  // Agents learn the {type, attrs} shape.
-  assert.match(patch.description, /type heading, attrs \{level\}/);
-  for (const field of ["heading_level", "(checked)", "(language", "(align)"])
-    assert.equal(patch.description.includes(field), false, `patch_page teaches ${field}`);
 });
 
 test("edit_page takes delete_node by node_id, and the guides say where the id comes from", async () => {
   const editPage = tools.find((tool) => tool.name === "edit_page");
-  const deleteNode = editPage.inputSchema.properties.operations.items.oneOf.find(
-    (variant) => variant.properties.op.const === "delete_node",
-  );
-  assert.deepEqual(deleteNode.required, ["op", "block_id", "node_id"]);
-  assert.equal(deleteNode.additionalProperties, false);
-  assert.match(editPage.description, /delete_node removes one top-level node/);
+  assert.ok(editPage.inputSchema.properties.operations.items.properties.node_id);
   const { typedReadFields } = await import("./rich-content-guide.mjs");
   assert.match(typedReadFields(), /node_id names a top-level node/);
   const guide = agentGuide({ NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.example" });

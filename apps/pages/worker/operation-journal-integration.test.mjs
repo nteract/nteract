@@ -158,7 +158,7 @@ test("opening title warnings describe receipt heads before concurrent native edi
 for (const recovery of ["retry", "startup"]) {
   test(`opening title warning survives pending ${recovery}, later edits, and terminal replay`, async (t) => {
     const f = richMutationFixture(t);
-    const operation = recovery === "startup" ? "patch_page" : "edit_page";
+    const operation = "edit_page";
     const args = {
       idempotency_key: `opening-title-${recovery}`,
       base_heads: A.getHeads(f.handle.doc()),
@@ -238,7 +238,7 @@ test("patch removal omits warnings and comment operations do not report existing
       },
     ],
   };
-  const removed = await documentMutation(f.context(args, "patch_page"));
+  const removed = await documentMutation(f.context(args, "edit_page"));
   assert.equal(Object.hasOwn(removed, "warnings"), false);
   assert.equal(f.handle.doc().title, "Guide");
   await f.handle.update((doc) =>
@@ -264,7 +264,7 @@ test("patch removal omits warnings and comment operations do not report existing
   assert.deepEqual(A.getHeads(f.handle.doc()), headsBefore);
 });
 
-test("a patch_page receipt names the marks a replace_match dropped, per edit and at the top, and replays them", async (t) => {
+test("a edit_page receipt names the marks a replace_match dropped, per edit and at the top, and replays them", async (t) => {
   const f = richMutationFixture(
     t,
     "# Guide\n\nThe `rotate()` helper is in `worker/keys.mjs`.\n\nPlain sentence here.",
@@ -295,7 +295,7 @@ test("a patch_page receipt names the marks a replace_match dropped, per edit and
       },
     ],
   };
-  const receipt = await documentMutation(f.context(args, "patch_page"));
+  const receipt = await documentMutation(f.context(args, "edit_page"));
   assert.match(f.handle.doc().blocks[f.blockId].richText, /Rewritten entirely\./);
   // The quiet edits carry no warning; the third names what it dropped.
   assert.equal(receipt.result.edits[0].warnings, undefined);
@@ -318,7 +318,7 @@ test("a patch_page receipt names the marks a replace_match dropped, per edit and
   );
   assert.deepEqual(receipt.warnings[1].ranges, dropped.ranges);
   // Warnings are part of the journaled receipt: an exact retry replays them.
-  assert.deepEqual(await documentMutation(f.context(args, "patch_page")), receipt);
+  assert.deepEqual(await documentMutation(f.context(args, "edit_page")), receipt);
   assert.equal(f.applications(), 1);
 });
 

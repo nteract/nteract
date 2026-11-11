@@ -29,7 +29,7 @@ function edit(current, baseHeads, operations) {
   const plan = guardPassageEdits(current, baseHeads, operations);
   const after = A.change(A.clone(current), (draft) =>
     applyPageOperation(draft, {
-      operation: "patch_page",
+      operation: "edit_page",
       arguments: { operations: plan.operations },
     }),
   );

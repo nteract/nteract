@@ -8,7 +8,6 @@ export const PROJECT_CONTENT_OPERATIONS = new Set([
   "read_page",
   "read_page_changes",
   "edit_page",
-  "patch_page",
   "list_page_comments",
   "manage_page_comment",
   "read_page_presence",

@@ -302,7 +302,7 @@ test("guide teaches project_id content addressing and document_id with no home c
   assert.match(prose, /A Project has editable content and a hierarchy of Pages/);
   assert.match(
     prose,
-    /call read_page with project_id instead of page_id, and edit it with edit_page or patch_page the same way/,
+    /call read_page with project_id instead of page_id, and edit it with edit_page the same way/,
   );
   assert.match(prose, /page_id is the content document's ID \(document_id on get_project\)/);
   assert.match(
