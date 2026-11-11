@@ -28,7 +28,7 @@
 {"name":"shape/unknown-in-cell","hash":"f4cf70aa69a5efc6","ids":[null,null],"types":["table","paragraph"],"placed":false,"ranges":[[0,5],[5,11]],"text":[0,1]},
 {"name":"shape/unknown-parent","hash":"e7fecea3aaa4bd52","ids":[null,1,8],"types":["paragraph","unknown","paragraph"],"placed":true,"ranges":[[0,1],[1,8],[8,10]],"text":[0,1,2]},
 {"name":"shape/unknown-mark","hash":"dea7357c6dbcf005","ids":[null,7],"types":["paragraph","paragraph"],"placed":true,"ranges":[[0,7],[7,9]],"text":[0,0,1]},
-{"name":"shape/aside","hash":"6ac034a72a05ccb1","ids":[null,1,5],"types":null,"placed":true,"ranges":[[0,1],[1,5],[5,7]],"text":[0,1,2]},
+{"name":"shape/aside","hash":"6ac034a72a05ccb1","ids":[null,1,5],"types":["paragraph","aside","paragraph"],"placed":true,"ranges":[[0,1],[1,5],[5,7]],"text":[0,1,2]},
 {"name":"shape/image-unknown-attrs","hash":"1275469c0e9170cb","ids":[null,2],"types":["paragraph","paragraph"],"placed":true,"ranges":[[0,2],[2,4]],"text":[0,1]},
 {"name":"shape/rule-in-list","hash":"248b73841e07b380","ids":[0,4],"types":["bullet-list","paragraph"],"placed":true,"ranges":[[0,4],[4,6]],"text":[0,1]},
 {"name":"shape/dataframe-in-quote","hash":"ca3f145bb20871f5","ids":[0,4],"types":["blockquote","paragraph"],"placed":true,"ranges":[[0,4],[4,6]],"text":[0,1]},

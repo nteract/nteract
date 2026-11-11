@@ -75,8 +75,9 @@ const markName = (mark) => {
 function serialMarks(marks) {
   const out = [];
   for (const mark of marks) {
+    // A mark with no Markdown rule renders its text with no mark.
     const name = markName(mark);
-    if (name) out.push({ name, value: mark.value });
+    if (name && MARKS[name]) out.push({ name, value: mark.value });
   }
   return out.sort((a, b) => MARK_RANK.get(a.name) - MARK_RANK.get(b.name));
 }
@@ -209,7 +210,7 @@ function inlineItems(content) {
     if (node.type === LineBreak.type) item.kind = "hard_break";
     else if (node.type === PagesImage) item.kind = "image";
     else if (node.type === PagesUnknownEmbed) item.kind = "unknownLeaf";
-    else throw Error(`Token type \`${node.name}\` not supported by Markdown renderer`);
+    else item.kind = "unsupportedLeaf";
     items.push(item);
   }
   return items;
@@ -316,17 +317,13 @@ class State {
     return str.replace(this.escapeExtraCharacters, "\\$&");
   }
   render(node, parent, index) {
-    const render = this.nodes[kind(node)];
-    if (!render) throw Error(`Token type \`${kind(node)}\` not supported by Markdown renderer`);
-    render(this, node, parent, index);
+    (this.nodes[kind(node)] ?? unsupportedBlock)(this, node, parent, index);
   }
   renderContent(parent) {
     parent.content.forEach((node, i) => this.render(node, parent, i));
   }
   renderInlineItem(item, parent, index) {
-    const render = this.nodes[item.kind];
-    if (!render) throw Error(`Token type \`${item.kind}\` not supported by Markdown renderer`);
-    render(this, item, parent, index);
+    (this.nodes[item.kind] ?? unsupportedLeaf)(this, item, parent, index);
   }
   markString(mark, open, parent, index) {
     const value = open ? MARKS[mark.name].open : MARKS[mark.name].close;
@@ -459,6 +456,22 @@ const image = (state, item) => {
 };
 const unknownLeaf = (state, item) =>
   state.write(state.esc(unknownNodeNotice(item.node.param?.type)));
+// The serializer never throws on a node: one with no rule reads as the
+// unknown-node notice, and a block's content follows it, so a read never
+// hides what the node holds.
+const unsupportedLeaf = (state, item) => state.write(state.esc(unknownNodeNotice(item.node.name)));
+// A notice is a line of paragraph text. What follows it separates as from a
+// paragraph, so a list that can't interrupt one gets its blank line.
+const closeAsParagraph = (state) => (state.closed = { kind: "paragraph" });
+function unsupportedBlock(state, node) {
+  state.write(state.esc(unknownNodeNotice(kind(node))));
+  closeAsParagraph(state);
+  if (!node.isPlot || !node.content.length) return;
+  if (node.type.spec.inlineContent) {
+    state.renderInline(inlineItems(node.content));
+    closeAsParagraph(state);
+  } else state.renderContent(node);
+}
 const paragraph = (state, node) => {
   state.renderInline(inlineItems(node.content));
   state.closeBlock(node);
@@ -651,7 +664,14 @@ const NODES = {
   // refuses the block (markdownlessNode).
   unknownBlock(state, node) {
     state.write(state.esc(unknownNodeNotice(node.param?.type)));
-    state.closeBlock(node);
+    closeAsParagraph(state);
+  },
+  // An aside has no Markdown form. It reads as a notice, then its content.
+  // replace_block_markdown refuses the block (markdownlessNode).
+  aside(state, node) {
+    state.write(state.esc(unknownNodeNotice("aside")));
+    closeAsParagraph(state);
+    state.renderContent(node);
   },
 };
 

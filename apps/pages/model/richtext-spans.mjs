@@ -31,7 +31,8 @@ export function markdownlessNode(block, pageId) {
           parseAssetPath(String(span.value.attrs?.src ?? ""))?.pageId !== pageId))
     )
       return DATAFRAME_BLOCK;
-    for (const name of [type, ...parents]) if (!isKnownBlock(name)) return name;
+    // An aside reads as a notice: a rewrite would store the notice's text.
+    for (const name of [type, ...parents]) if (!isKnownBlock(name) || name === "aside") return name;
   }
   return null;
 }
