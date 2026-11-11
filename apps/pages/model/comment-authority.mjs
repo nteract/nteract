@@ -8,6 +8,7 @@ import {
 } from "./comments-doc.mjs";
 import { COMMENTING_ROLES, commentDecision } from "./comment-rules.mjs";
 import { BUILD_FEATURES, documentFeatures } from "./schema-features.mjs";
+import { normalizeAgentAssertions } from "../shared/client-provenance.mjs";
 
 /** Per-author admission for a comments document (shape in comments-doc.mjs).
  *
@@ -146,12 +147,40 @@ function validateAnchor(anchor) {
   return false;
 }
 
+/** `author.agent` is `{ name?, model? }` in the bounds of the request
+ * assertions it came from, with no other key and no untrimmed text. */
+function validateAgent(agent, where) {
+  const invalid = () =>
+    reject(REJECTION.INVALID_VALUE, "author.agent must be { name?, model? } within bounds", where);
+  if (!isMap(agent)) invalid();
+  const keys = Object.keys(agent);
+  if (!keys.length || keys.some((k) => !["name", "model"].includes(k))) invalid();
+  const plain = {};
+  for (const key of keys) {
+    const text = scalar(agent[key]);
+    if (text === undefined) invalid();
+    plain[key] = text;
+  }
+  let normalized;
+  try {
+    normalized = normalizeAgentAssertions(plain);
+  } catch {
+    invalid();
+  }
+  if (keys.some((key) => normalized?.[key] !== plain[key])) invalid();
+}
+
 function validateAuthor(author, principal, where) {
   if (
     !isMap(author) ||
-    Object.keys(author).some((k) => !["principal", "displayName", "driver"].includes(k))
+    Object.keys(author).some((k) => !["principal", "displayName", "driver", "agent"].includes(k))
   )
-    reject(REJECTION.INVALID_VALUE, "author must be { principal, displayName, driver }", where);
+    reject(
+      REJECTION.INVALID_VALUE,
+      "author must be { principal, displayName, driver, agent? }",
+      where,
+    );
+  if (own(author, "agent")) validateAgent(author.agent, where);
   if (scalar(author.principal) !== principal)
     reject(REJECTION.AUTHOR_MISMATCH, "A new entry's author must be the acting principal", where);
   for (const key of ["displayName", "driver"])

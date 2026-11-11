@@ -344,8 +344,8 @@ ${part.unlabeledSessionsParagraph}
 ### Name your client and model
 
 Two more optional headers tell Pages which harness and model made a request.
-Pages records them in usage telemetry only; they never affect access, and
-nothing else reads them:
+Pages records them in usage telemetry, and shows the model on comments you
+write (see "Say who wrote a comment"); they never affect access:
 
 - X-Pages-Client: <harness>/<version>, such as kilo-cli/1.4.2,
   claude-code/2.1.0 or codex/0.50.0.
@@ -356,6 +356,30 @@ characters and truncates longer values. Without X-Pages-Client, Pages uses the
 MCP clientInfo name and version from initialize. MCP has no model field, so
 send X-Pages-Model if you know it. For Kilo, add
 "X-Pages-Model": "{env:PAGES_MODEL}" beside X-Pages-Agent.
+
+### Say who wrote a comment
+
+When you add or reply to a comment, Pages stores the agent name and model you
+assert on that message. Readers see "<agent name> via <harness> for <person>"
+and the model, worded as reported by the client. These are what your client
+said about itself. They show under the authenticated account, are not verified
+identity, and grant nothing. Send them in one of two ways:
+
+- \`_meta.agent\` with \`name\` (at most 80 characters), \`model\` (at most 120) and
+  optionally \`id\` (not stored). On an MCP request put it in the tool call
+  params: \`"params": {"name": "manage_page_comment", "arguments": {...},
+  "_meta": {"agent": {"name": "release agent", "model": "gpt-5"}}}\`. On
+  \`POST /api/tools\` put it beside \`operation\` and \`arguments\`:
+  \`{"operation": "manage_page_comment", "arguments": {...},
+  "_meta": {"agent": {"name": "release agent", "model": "gpt-5"}}}\`.
+- The X-Pages-Agent header for the name and X-Pages-Model for the model. When
+  \`_meta.agent\` and a header both name the agent or the model, they must
+  match; a mismatch is refused with invalid_arguments.
+
+Labels hold no control or bidirectional formatting characters. Pages keeps the
+labels from the request that created the message; editing the message later
+does not change them. Retrying a write with the same idempotency_key and
+different labels is a conflict.
 
 ### ChatGPT / cloud connection (OAuth)
 

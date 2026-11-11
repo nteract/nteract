@@ -670,3 +670,119 @@ test("admission refuses a message holding a marker or mark value this build can'
   );
   assert.equal(readable.ok, true, JSON.stringify(readable.reason));
 });
+
+const agentOf = (principal, agent) => ({ ...who(principal), agent });
+const rawReplyWith = (author) => (d, ids) => {
+  d.threads[ids.thread].messages.agentreply = { ...richMessage("reply", BOB), author };
+};
+
+test("a well-formed author.agent is admitted on a browser-synced reply and a new thread", () => {
+  const { doc, ids } = seed();
+  for (const agent of [
+    { name: "release agent" },
+    { model: "gpt-5" },
+    { name: "Rev", model: "m" },
+  ]) {
+    const reply = admit(doc, BOB, "commenter", (d) =>
+      rawReplyWith(agentOf(BOB, agent))(d, { thread: ids.aliceThread }),
+    );
+    assert.equal(reply.ok, true, JSON.stringify(reply.reason));
+    const thread = admit(doc, BOB, "commenter", (d) => {
+      d.threads.newthread = {
+        target: { kind: "block", blockId: "b1" },
+        author: agentOf(BOB, agent),
+        createdAt: now(),
+        status: { value: "open", at: now() },
+        messages: { m1: { ...richMessage("hello", BOB), author: agentOf(BOB, agent) } },
+      };
+    });
+    assert.equal(thread.ok, true, JSON.stringify(thread.reason));
+  }
+});
+
+test("author.agent outside the normalizer's shape and bounds is refused", () => {
+  const { doc, ids } = seed();
+  const bad = [
+    {},
+    { id: "session-1" },
+    { name: "ok", extra: "x" },
+    { name: 7 },
+    { name: "x".repeat(81) },
+    { model: "m".repeat(121) },
+    { name: " padded " },
+    { name: "tab\there" },
+    { name: "bidi‮flip" },
+    { name: "" },
+    "agent",
+    ["name"],
+    null,
+  ];
+  for (const agent of bad) {
+    const result = admit(doc, BOB, "commenter", (d) =>
+      rawReplyWith(agentOf(BOB, agent))(d, { thread: ids.aliceThread }),
+    );
+    assert.equal(result.ok, false, JSON.stringify(agent));
+    assert.equal(result.reason.code, REJECTION.INVALID_VALUE, JSON.stringify(agent));
+  }
+});
+
+test("a message without author.agent is unchanged, and an existing author's agent is immutable", () => {
+  const { doc, ids } = seed();
+  const plain = admit(doc, BOB, "commenter", (d) =>
+    rawReplyWith(who(BOB))(d, { thread: ids.aliceThread }),
+  );
+  assert.equal(plain.ok, true, JSON.stringify(plain.reason));
+  const withAgent = changesOf(doc, (d) =>
+    applyComment(d, { action: "reply", thread_id: ids.aliceThread, body: "x" }, who(BOB), null, {
+      page,
+      role: "commenter",
+      agent: { name: "Rev", model: "m" },
+    }),
+  );
+  const admitted = admitCommentChanges(doc, withAgent, BOB, { role: "commenter" });
+  assert.equal(admitted.ok, true, JSON.stringify(admitted.reason));
+  assert.deepEqual(documentAgent(admitted.next, ids.aliceThread), { name: "Rev", model: "m" });
+  const next = admitted.next;
+  const [threadId, messageId] = latestMessage(next, ids.aliceThread);
+  const rewrite = admit(next, BOB, "commenter", (d) => {
+    d.threads[threadId].messages[messageId].author.agent.name = "Someone else";
+  });
+  assert.equal(rewrite.reason.code, REJECTION.IMMUTABLE_FIELD);
+  const drop = admit(next, BOB, "commenter", (d) => {
+    delete d.threads[threadId].messages[messageId].author.agent;
+  });
+  assert.equal(drop.reason.code, REJECTION.IMMUTABLE_FIELD);
+  A.free(next);
+});
+
+test("a tool write with an agent stamps comment-agent; one without does not", () => {
+  const { doc, ids } = seed();
+  const stamped = changesOf(doc, (d) =>
+    applyComment(d, { action: "reply", thread_id: ids.aliceThread, body: "x" }, who(BOB), null, {
+      page,
+      role: "commenter",
+      agent: { name: "Rev" },
+    }),
+  );
+  const result = admitCommentChanges(doc, stamped, BOB, { role: "commenter" });
+  assert.deepEqual(result.next.schema?.features, ["comment-agent"]);
+  A.free(result.next);
+  const fork = A.change(A.clone(doc, { actor: actor() }), (d) =>
+    applyComment(d, { action: "reply", thread_id: ids.aliceThread, body: "x" }, who(BOB), null, {
+      page,
+      role: "commenter",
+    }),
+  );
+  assert.equal(fork.schema, undefined);
+});
+
+function latestMessage(doc, threadId) {
+  const messages = Object.entries(doc.threads[threadId].messages);
+  messages.sort((a, b) => String(a[1].createdAt).localeCompare(String(b[1].createdAt)));
+  return [threadId, messages.at(-1)[0]];
+}
+function documentAgent(doc, threadId) {
+  const [, messageId] = latestMessage(doc, threadId);
+  const agent = doc.threads[threadId].messages[messageId].author.agent;
+  return agent && { ...agent };
+}

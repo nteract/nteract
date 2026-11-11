@@ -1,8 +1,8 @@
 import * as A from "@automerge/automerge/slim";
 import { commentBodyProjection, setCommentContent } from "./comment-content.mjs";
-import { COMMENTS_FEATURE, commentThreads } from "./comments-doc.mjs";
+import { COMMENTS_FEATURE, COMMENT_AGENT_FEATURE, commentThreads } from "./comments-doc.mjs";
 import { commentDecision, requireCommentDecision } from "./comment-rules.mjs";
-import { documentFeatures } from "./schema-features.mjs";
+import { documentFeatures, stampFeatures } from "./schema-features.mjs";
 import { storedFormUnsupported } from "./stored-form.mjs";
 
 // The text object and final selected character must both survive. Repeated
@@ -184,8 +184,18 @@ function applyThreadStatuses(threads, action, ids, now) {
  * without it, `input.body` and `input.body_format` are the content
  * (comment-content.mjs setCommentContent). Agent Markdown refuses math and
  * HTML with `unsupported_markdown`.
+ *
+ * `agent` is `{ name?, model? }`, what the writing client said about itself
+ * (shared/client-provenance.mjs). A new message keeps it on its author, under
+ * the `comment-agent` stamp; later edits never touch it.
  */
-export function applyComment(commentsDoc, input, identity, nativeSpans, { page, role } = {}) {
+export function applyComment(
+  commentsDoc,
+  input,
+  identity,
+  nativeSpans,
+  { page, role, agent } = {},
+) {
   const action = input.action ?? "add",
     now = new Date().toISOString();
   if (!page) throw Error("A comment needs its Page");
@@ -201,7 +211,10 @@ export function applyComment(commentsDoc, input, identity, nativeSpans, { page, 
     principal,
     displayName: identity?.displayName ?? "Collaborator",
     driver: identity?.driver ?? "Browser",
+    ...(agent && Object.keys(agent).length && { agent: { ...agent } }),
   };
+  if (author.agent && ["add", "reply"].includes(action))
+    stampFeatures(commentsDoc, [COMMENT_AGENT_FEATURE]);
   const threadId = action === "add" ? crypto.randomUUID() : input.thread_id;
   const messageId = ["add", "reply"].includes(action) ? crypto.randomUUID() : input.message_id;
   const path = (id) => ["threads", threadId, "messages", id];

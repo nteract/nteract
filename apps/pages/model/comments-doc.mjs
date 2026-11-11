@@ -16,7 +16,7 @@ import * as A from "@automerge/automerge/slim";
  *         [messageId]: {
  *           richText: rich text,   // the editor's spans, as a Page body holds
  *           bodyFormat?: "plain",  // written as literal text; reads return it
- *           author: { principal, displayName, driver },
+ *           author: { principal, displayName, driver, agent? },
  *           createdAt: ISO string,
  *           deletedAt: null | ISO string,   // soft delete
  *         },
@@ -41,7 +41,10 @@ import * as A from "@automerge/automerge/slim";
  * document; the comments document never names a host or an origin.
  *
  * `author.principal` is the authenticated account. `displayName` and `driver`
- * are labels the writer supplies; they never authorize anything.
+ * are labels the writer supplies; they never authorize anything. `agent` is
+ * `{ name?, model? }`, what a tool client said about itself when it created
+ * the message (shared/client-provenance.mjs bounds). It is set once, only
+ * under the `comment-agent` stamp, and is never verified identity.
  * comment-authority.mjs holds the per-author rules every incoming change from
  * a peer must pass.
  *
@@ -64,6 +67,9 @@ export const THREAD_STATUSES = Object.freeze(["open", "resolved"]);
  * without it would write comments into the Page document, so it opens the
  * Page read-only and the host refuses its writes. */
 export const COMMENTS_FEATURE = "comments-doc";
+/** The schema feature the comments document carries once a message author
+ * holds `agent`. */
+export const COMMENT_AGENT_FEATURE = "comment-agent";
 
 /** Hex of 16 bytes: the genesis actor for a comments document. */
 function genesisActor(uuid) {

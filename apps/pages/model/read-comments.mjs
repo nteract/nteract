@@ -43,6 +43,12 @@ const strings = (value, keys) =>
   Object.fromEntries(
     keys.filter((key) => typeof value?.[key] === "string").map((key) => [key, value[key]]),
   );
+/** What the writing client said about itself, when the author holds it:
+ * `{ name?, model? }`. Never verified identity. */
+function agentLabels(agent) {
+  const labels = strings(agent, ["name", "model"]);
+  return Object.keys(labels).length ? { agent: labels } : {};
+}
 function blockId(thread) {
   const target = thread.target;
   const id = target?.kind === "selection" ? target.anchor?.blockId : target?.blockId;
@@ -65,7 +71,10 @@ function message(id, value) {
     ...base,
     ...commentBodyProjection(value),
     // Author labels are mutable document content, not verified audit identity.
-    author: strings(value.author, ["principal", "displayName", "driver"]),
+    author: {
+      ...strings(value.author, ["principal", "displayName", "driver"]),
+      ...agentLabels(value.author?.agent),
+    },
   };
 }
 

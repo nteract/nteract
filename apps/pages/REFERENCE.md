@@ -1081,6 +1081,24 @@ label. The Kilo recipe uses one shared entry with
 `"X-Pages-Agent": "{env:PAGES_AGENT}"`, and each worktree sets `PAGES_AGENT` in
 its `.envrc`. Both labels are self-declared descriptions shown under the
 authenticated account, not verified vendor identity or a permission grant.
+A tool client can also assert an agent name and model. `_meta.agent`
+(`{name, model, id}`, at most 80, 120 and 128 characters; no control or bidi
+characters) rides on an MCP `tools/call` in `params._meta`, or on `POST /api/tools`
+beside `operation` and `arguments`. Without it, `X-Pages-Agent` gives the name
+and `X-Pages-Model` the model. A header that disagrees with `_meta.agent` is
+refused (`invalid_arguments`). `id` is accepted and neither stored nor returned.
+`manage_page_comment` and `reply_page_comment` store the resolved `{name?, model?}`
+once, on the new message's author (`author.agent`, schema feature
+`comment-agent` on the comments document); editing the message never changes it.
+The assertion joins the request fingerprint of an add or reply, so the same
+`idempotency_key` with other labels conflicts and an exact retry replays the
+original receipt. `list_page_comments`, `read_page` and `read_page_changes`
+return `author.agent` when stored. The comment thread reads "<agent name> via
+<driver> for <person>" with the model in the tooltip. These are what the client
+said about itself, shown under the authenticated account: they grant nothing and
+verify nothing. `read_page_changes` still reports `attribution: "unavailable"`
+for document edits.
+
 `Browser` is the one driver a bearer credential can't claim: viewers show a
 browser session by the person's name alone, so on a request with an API key or
 OAuth token the server reads `X-Pages-Driver: Browser` (any case) as `API`.
@@ -1248,6 +1266,8 @@ Trash, restore, permanent deletion and the purge preview cover both documents.
 
 Shape ([model/comments-doc.mjs](model/comments-doc.mjs)):
 `{ threads: { [id]: { target, author, createdAt, status, messages } } }`.
+A message's `author` is `{ principal, displayName, driver, agent? }`; `agent` is `{ name?, model? }`
+in the `_meta.agent` bounds, set when the message is created and admitted on any message.
 `target` is a cursor anchor into the Page document, `{ kind: "block", blockId }`
 or `{ kind: "selection", anchor, head }`, resolved against the Page on read.
 The Page's rich text carries no comment marks and no hint. Its first change is

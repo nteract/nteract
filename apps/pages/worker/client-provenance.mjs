@@ -45,9 +45,29 @@ export function forwardClientProvenance(request, headers) {
   if (agent) headers.set(INTERNAL_AGENT, encodeURIComponent(JSON.stringify(agent)));
 }
 
-/** Private request context, excluded from receipts, fingerprints, broadcasts
- * and author fields. Durable consumers must first bind an immutable snapshot
- * to the logical operation and fence retries against changed assertions. */
+/** What a client said about itself, as `{ name?, model? }` or undefined:
+ * `_meta.agent` first, then the X-Pages-Agent name and X-Pages-Model model
+ * that `provenance` (from clientProvenance) already resolved. The harness and
+ * `agent.id` are not part of it. Text outside the `_meta.agent` bounds,
+ * such as a header name with a bidi control, refuses with invalid_arguments. */
+export function agentFromProvenance(provenance) {
+  const { agent, model } = provenance?.assertions ?? {};
+  return normalizeAgentAssertions({
+    ...(agent?.name && { name: agent.name }),
+    ...(model && { model }),
+  });
+}
+
+/** The resolved assertion for one request. Throws on the same conflicts as
+ * clientProvenance. */
+export function agentAssertion(request, legacyAgent) {
+  return agentFromProvenance(clientProvenance(request, legacyAgent));
+}
+
+/** Private request context, excluded from receipts, broadcasts and author
+ * fields. A durable consumer binds the resolved assertion into its request
+ * fingerprint (comment writes do), so a retry with changed assertions
+ * conflicts instead of replaying. */
 export function clientProvenance(request, legacyAgent) {
   const explicit = requestAgent(request);
   // Transport session IDs are correlation credentials, not harness agent IDs.
