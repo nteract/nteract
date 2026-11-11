@@ -17,6 +17,18 @@ const TEMPORAL =
   /^(DATE|TIMESTAMP|TIMESTAMP_S|TIMESTAMP_MS|TIMESTAMP_NS|TIMESTAMP WITH TIME ZONE)$/;
 const ORDERED = ["between", "gt", "gte", "lt", "lte", "is_null", "is_not_null"];
 
+/**
+ * A temporal column as fractional epoch milliseconds, the way Sift compares
+ * timestamps (f64, microseconds / 1e3, nanoseconds / 1e6), so pushdown keeps
+ * Sift's row set at sub-millisecond boundaries. A zoned timestamp is already
+ * an instant; casting it would apply the session time zone.
+ */
+function epochMs(type, col) {
+  if (type === "TIMESTAMP_NS") return `(epoch_ns(${col})::DOUBLE / 1e6)`;
+  const instant = type === "TIMESTAMP WITH TIME ZONE" ? col : `${col}::TIMESTAMP`;
+  return `(epoch_us(${instant})::DOUBLE / 1e3)`;
+}
+
 /** Leaf ops a DuckDB column type answers. Other types accept no pushdown. */
 function opsFor(type) {
   if (NUMERIC.test(type)) return [...ORDERED, "eq", "neq", "in", "not_in"];
@@ -58,13 +70,7 @@ export async function createDuckQuerySession(engine, relation) {
         return `(${p.args.map(compile).join(p.op === "and" ? " AND " : " OR ")})`;
       }
       const type = typeOf.get(p.column);
-      // Sift sends timestamps as epoch milliseconds. A zoned timestamp is
-      // already an instant; casting it would apply the session time zone.
-      const col = !TEMPORAL.test(type)
-        ? quoteIdent(p.column)
-        : type === "TIMESTAMP WITH TIME ZONE"
-          ? `epoch_ms(${quoteIdent(p.column)})`
-          : `epoch_ms(${quoteIdent(p.column)}::TIMESTAMP)`;
+      const col = TEMPORAL.test(type) ? epochMs(type, quoteIdent(p.column)) : quoteIdent(p.column);
       const bind = (value) => (params.push(value), "?");
       switch (p.op) {
         case "between":

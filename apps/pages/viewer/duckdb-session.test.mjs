@@ -209,6 +209,24 @@ test("only scalar columns take pushdown; zoned and fine timestamps compare as in
   await assert.rejects(session.query(query([{ column: "days", op: "is_null" }]), ctx()), /days/);
 });
 
+test("timestamps keep Sift's fractional milliseconds at range boundaries", async () => {
+  await engine.run(`CREATE TABLE fine AS SELECT * FROM (VALUES
+    (TIMESTAMP '1970-01-01 00:00:00.0005', TIMESTAMP_NS '1970-01-01 00:00:00.0000005',
+     TIMESTAMPTZ '1970-01-01 00:00:00.0005+00')
+  ) t(us, ns, zoned)`);
+  const session = await createDuckQuerySession(engine, "fine");
+  const matched = async (filter) => (await session.count(query([filter]), "exact", ctx())).value;
+  for (const [column, ms] of [
+    ["us", 0.5],
+    ["ns", 0.0005],
+    ["zoned", 0.5],
+  ]) {
+    assert.equal(await matched({ column, op: "between", value: [0, 0] }), 0, column);
+    assert.equal(await matched({ column, op: "between", value: [ms, ms] }), 1, column);
+    assert.equal(await matched({ column, op: "gt", value: 0 }), 1, column);
+  }
+});
+
 test("a closing engine takes no more work and shares one shutdown", async () => {
   const closing = await openPageEngine(await database());
   await closing.addSource(ASSET, parquet);
