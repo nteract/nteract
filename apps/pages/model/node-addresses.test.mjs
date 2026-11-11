@@ -18,7 +18,7 @@ import { projectReadContent } from "./read-content.mjs";
 import { visibleNodeRange, visibleRangeAddress } from "./replace-match.mjs";
 import { textPath } from "./richtext-format.mjs";
 import { nativeRead } from "./native-read.mjs";
-import { blockMarkdown, markUnmarkedText } from "./richtext-page.mjs";
+import { blockMarkdown, repairBlockMarkers } from "./richtext-page.mjs";
 import { decode } from "./wordgard-doc.mjs";
 import { applyPageOperation } from "./page.mjs";
 import { allInputs, PAGE_ID, pageWithSpans, spansToJSON } from "../test/address-inputs.mjs";
@@ -242,7 +242,7 @@ test("every reader reads unmarked text, and marking it gives every node an id", 
     // A top-level paragraph of unmarked text has no id; unmarked text inside
     // a container is inside a node that has one.
     assert.equal(ids.filter((entry) => entry.id === null).length, topLevel ? 1 : 0, shape);
-    const marked = A.change(A.clone(doc), (draft) => assert.ok(markUnmarkedText(draft, id)));
+    const marked = A.change(A.clone(doc), (draft) => assert.ok(repairBlockMarkers(draft, id)));
     assert.equal(decode(A.spans(marked, textPath(id))).unmarked.length, 0, shape);
     assert.ok(
       nodeIds(marked, id).every((entry) => typeof entry.id === "string"),
@@ -251,7 +251,7 @@ test("every reader reads unmarked text, and marking it gives every node an id", 
     // Marking adds markers only: the Markdown reads the same.
     assert.equal(blockMarkdown(marked.blocks[id]), blockMarkdown(doc.blocks[id]), shape);
     // A second pass writes nothing.
-    A.change(A.clone(marked), (draft) => assert.equal(markUnmarkedText(draft, id), false));
+    A.change(A.clone(marked), (draft) => assert.equal(repairBlockMarkers(draft, id), false));
   }
 });
 

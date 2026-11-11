@@ -12,8 +12,14 @@ import * as A from "@automerge/automerge";
 import { applyPageOperation, createPageData, initializePage, orderedBlockIds } from "./page.mjs";
 import { projectReadContent } from "./read-content.mjs";
 import { blockMarkdown, textPath } from "./richtext.mjs";
-import { markUnmarkedText } from "./richtext-page.mjs";
-import { MISSING_ANCESTOR_CASES, addInside, deleteContainer } from "./richtext-test-support.mjs";
+import { repairBlockMarkers } from "./richtext-page.mjs";
+import {
+  ADJUSTED_NESTING_CASES,
+  MISSING_ANCESTOR_CASES,
+  addInside,
+  deleteContainer,
+  nestedTable,
+} from "./richtext-test-support.mjs";
 import { updateSpansConfig } from "./marks.mjs";
 import { stampSpans } from "./schema-features.mjs";
 import { nativeRead } from "./native-read.mjs";
@@ -232,20 +238,17 @@ const intent = (kinds) =>
     pick: fc.nat({ max: 2 }),
     variant: fc.nat({ max: 5 }),
   });
-// A marker's parents are an Automerge list, and two writers that change the
-// same marker's parents at once (both indenting one list item) merge into
-// parents no writer wrote (["table", "table"]). Readers draw such a block,
-// lossy ("two writers that indent the same list item" and the random-marker
-// property below); this property checks lossless merges, so only the first
-// writer changes parents here.
-const NESTING = new Set(["quote", "indent"]);
+// Every writer may quote and indent. A marker's parents are an Automerge
+// list, and two writers that change the same marker's parents at once merge
+// into parents no writer wrote (["table", "table"]): readers draw the block
+// with adjusted nesting, and repair stores what they drew.
 const writers = fc
   .tuple(
     fc.array(intent(KINDS), { minLength: 1, maxLength: 3 }),
-    fc.array(
-      fc.array(intent(KINDS.filter((kind) => !NESTING.has(kind))), { minLength: 1, maxLength: 3 }),
-      { minLength: 1, maxLength: 2 },
-    ),
+    fc.array(fc.array(intent(KINDS), { minLength: 1, maxLength: 3 }), {
+      minLength: 1,
+      maxLength: 2,
+    }),
   )
   .map(([first, rest]) => [first, ...rest]);
 
@@ -374,13 +377,22 @@ test("whatever a merge of writers leaves, every reader reads it and repair chang
           else assert.equal(spans, stored);
         }
         const label = JSON.stringify({ writers, spans: JSON.parse(stored) });
-        const before = readAll(merged, id, label);
+        // These writers use only names this build knows: a merge can leave
+        // adjusted nesting, never newer content, and repair stores what every
+        // reader drew.
+        const before = readAll(merged, id, label, { lossy: true });
+        assert.equal(before.decoded.newer, false, label);
         const repaired = keep(
           A.change(A.clone(merged), (draft) => {
-            assert.equal(markUnmarkedText(draft, id), before.decoded.unmarked.length > 0, label);
+            assert.equal(
+              repairBlockMarkers(draft, id),
+              before.decoded.unmarked.length > 0 || before.decoded.moved.length > 0,
+              label,
+            );
           }),
         );
         const after = readAll(repaired, id, label);
+        assert.equal(after.decoded.adjusted, false, label);
         assert.deepEqual(after.decoded.unmarked, [], label);
         assert.equal(after.markdown, before.markdown, label);
         assert.ok(
@@ -391,7 +403,7 @@ test("whatever a merge of writers leaves, every reader reads it and repair chang
         for (const [index, entry] of before.ids.entries())
           if (entry.id !== null) assert.equal(after.ids[index].id, entry.id, label);
         A.change(A.clone(repaired), (draft) =>
-          assert.equal(markUnmarkedText(draft, id), false, label),
+          assert.equal(repairBlockMarkers(draft, id), false, label),
         );
       }),
     ),
@@ -426,7 +438,7 @@ test("a container a merge leaves with no marker reads in every reader, and repai
       );
       const repaired = keep(
         A.change(A.clone(merged), (draft) => {
-          markUnmarkedText(draft, id);
+          repairBlockMarkers(draft, id);
         }),
       );
       const after = readAll(repaired, id, name);
@@ -472,7 +484,7 @@ test("two writers that mark the same unmarked text at once leave an empty paragr
       }),
     );
     const other = keep(
-      A.change(A.clone(unmarked, { actor: ACTORS[2] }), (draft) => markUnmarkedText(draft, id)),
+      A.change(A.clone(unmarked, { actor: ACTORS[2] }), (draft) => repairBlockMarkers(draft, id)),
     );
     const merged = keep(A.merge(A.clone(host), other));
     const read = readAll(merged, id, "both repairs");
@@ -493,23 +505,14 @@ test("two writers that mark the same unmarked text at once leave an empty paragr
     assert.equal(readAll(cleaned, id, "cleaned").markdown, read.markdown);
   }));
 
-// Marker parents, written as lists. Both cases leave parents no writer wrote
-// and a block decode refuses ("Node type Table cannot contain child Table").
 const S = (value) => new A.ImmutableString(value);
 const marker = (type, parents) => ({
   type: "block",
   value: { type: S(type), parents: parents.map(S), attrs: {}, isEmbed: false },
 });
-const nested = (outer) => [
-  ...outer.map((type, i) => marker(type, outer.slice(0, i))),
-  marker("table", outer),
-  marker("table-row", [...outer, "table"]),
-  marker("table-header", [...outer, "table", "table-row"]),
-  { type: "text", value: "a" },
-  marker("table-row", [...outer, "table"]),
-  marker("table-cell", [...outer, "table", "table-row"]),
-  { type: "text", value: "b" },
-];
+// Marker parents, written as lists. Concurrent changes to one marker's
+// parents, and Automerge 3.5's updateSpans on its own, can store parents no
+// writer wrote.
 const parentsOf = (doc) =>
   A.spans(doc, ["text"]).flatMap((span) =>
     span.type === "block" ? [span.value.parents.map(String)] : [],
@@ -528,45 +531,95 @@ function pageWithSpans(spans) {
   return { doc, id };
 }
 
-test("a structural write stores the parents it is given, and a miswritten block still reads", () => {
+test("a structural write stores the parents it is given and keeps every marker", () => {
   // Automerge 3.5's updateSpans, on a rewrite that drops an outer container,
   // stores a table row's parents as [table, table].
-  const before = nested(["blockquote", "ordered-list-item"]);
-  const after = nested(["ordered-list-item"]);
+  const before = nestedTable(["blockquote", "ordered-list-item"]);
+  const after = nestedTable(["ordered-list-item"]);
   const given = after.flatMap((span) =>
     span.type === "block" ? [span.value.parents.map(String)] : [],
   );
   let raw = A.change(A.from({ text: "" }), (d) => A.updateSpans(d, ["text"], before));
   raw = A.change(raw, (d) => A.updateSpans(d, ["text"], after));
   assert.notDeepEqual(parentsOf(raw), given);
-  // The writers' path gives every marker the value it was given.
+  // The writers' path gives every marker the value it was given, and the
+  // markers that stay keep their cursors (their node ids).
   let exact = A.change(A.from({ text: "" }), (d) => A.updateSpans(d, ["text"], before));
-  const row = A.getCursor(exact, ["text"], 7);
+  const cursors = new Set([...Array(10).keys()].map((at) => A.getCursor(exact, ["text"], at)));
   exact = A.change(exact, (d) => updateSpansExactly(d, ["text"], after));
   assert.deepEqual(parentsOf(exact), given);
-  // The fix-up keeps the marker, so its cursor (its node id) still resolves.
-  assert.equal(A.spans(exact, ["text"]).filter((span) => span.type === "block").length, 6);
-  assert.equal(typeof A.getCursorPosition(exact, ["text"], row), "number");
-  // The miswritten spans read in every reader: the repeated table drops out.
-  const { doc, id } = pageWithSpans(A.spans(raw, ["text"]));
-  const read = readAll(doc, id, "miswritten", { lossy: true });
-  assert.equal(read.decoded.lossy, true);
-  assert.equal(String(read.decoded.doc.content[0].type.name), "OrderedList");
+  // No marker was replaced: every character is one that was stored before.
+  for (let at = 0; at < 9; at++) assert.ok(cursors.has(A.getCursor(exact, ["text"], at)), `${at}`);
+});
+
+test("parents no writer wrote read in every reader, and the next host write repairs them", () => {
+  for (const [name, spansOf] of Object.entries(ADJUSTED_NESTING_CASES)) {
+    const { doc, id } = pageWithSpans(spansOf());
+    const before = readAll(doc, id, name, { lossy: true });
+    assert.equal(before.decoded.adjusted, true, name);
+    assert.equal(before.decoded.newer, false, name);
+    // A replace_match to text unrelated to the bad markers repairs them in
+    // the same change: the block reads as drawn, nothing is adjusted, and
+    // every node keeps its id.
+    const word = name === "repeated table" ? "cell" : "b";
+    const after = A.change(doc, (draft) =>
+      applyPageOperation(draft, {
+        operation: "patch_page",
+        arguments: {
+          operations: [{ op: "replace_match", block_id: id, match_text: word, replacement: "z" }],
+        },
+      }),
+    );
+    const read = readAll(after, id, name);
+    assert.equal(read.decoded.lossy, false, name);
+    assert.equal(read.markdown, before.markdown.replace(new RegExp(`\\b${word}\\b`), "z"), name);
+    assert.deepEqual(
+      read.ids.map((entry) => entry.id),
+      before.ids.map((entry) => entry.id),
+      name,
+    );
+    A.change(A.clone(after), (draft) => assert.equal(repairBlockMarkers(draft, id), false, name));
+  }
+});
+
+test("a re-homed node keeps its node id when repair stores where it is drawn", () => {
+  const { doc, id } = pageWithSpans([
+    marker("paragraph", []),
+    { type: "text", value: "one" },
+    marker("paragraph", ["table-row", "table-row"]),
+    { type: "text", value: "two" },
+  ]);
+  const before = readAll(doc, id, "re-homed", { lossy: true });
+  assert.deepEqual(before.decoded.moved, [{ at: 4, parents: [] }]);
+  const repaired = A.change(doc, (draft) => assert.ok(repairBlockMarkers(draft, id)));
+  const after = readAll(repaired, id, "re-homed");
+  assert.deepEqual(
+    after.ids.map((entry) => entry.id),
+    before.ids.map((entry) => entry.id),
+  );
+  assert.equal(after.markdown, before.markdown);
+});
+
+test("repair leaves a block with content from a newer build exactly as it is", () => {
+  const spans = ADJUSTED_NESTING_CASES["repeated table"]();
+  spans.splice(1, 0, marker("callout", []), { type: "text", value: "future" });
+  const { doc, id } = pageWithSpans(spans);
+  const before = readAll(doc, id, "newer", { lossy: true });
+  assert.equal(before.decoded.newer, true);
+  A.change(A.clone(doc), (draft) => assert.equal(repairBlockMarkers(draft, id), false));
 });
 
 test("two writers that indent the same list item at once leave a block every reader reads", () => {
-  const base = A.change(A.from({ text: "" }), (d) =>
-    A.updateSpans(d, ["text"], nested(["unordered-list-item"])),
-  );
-  const indent = (actor) =>
-    A.change(A.clone(base, { actor }), (d) =>
-      updateSpansExactly(d, ["text"], nested(["unordered-list-item", "unordered-list-item"])),
-    );
-  const merged = A.merge(indent(ACTORS[0]), indent(ACTORS[1]));
   // Marker parents merge element by element: the merge stores parents
   // neither writer wrote.
-  assert.ok(parentsOf(merged).some((parents) => parents.filter((p) => p === "table").length > 1));
-  const { doc, id } = pageWithSpans(A.spans(merged, ["text"]));
+  const spans = ADJUSTED_NESTING_CASES["concurrent indent"]();
+  assert.ok(
+    spans.some(
+      (span) =>
+        span.type === "block" && span.value.parents.filter((p) => String(p) === "table").length > 1,
+    ),
+  );
+  const { doc, id } = pageWithSpans(spans);
   const read = readAll(doc, id, "concurrent indent", { lossy: true });
   assert.equal(read.decoded.lossy, true);
   assert.match(read.markdown, /a/);
@@ -625,7 +678,20 @@ test("random marker parents and types read in every reader, which agree on the n
           return;
         }
         keep(stored.doc);
-        readAll(stored.doc, stored.id, JSON.stringify(spans), { lossy: true });
+        const label = JSON.stringify(spans);
+        const before = readAll(stored.doc, stored.id, label, { lossy: true });
+        // With every name known, repair stores what every reader drew: the
+        // same Markdown, nothing adjusted, and a second repair writes nothing.
+        if (before.decoded.newer) return;
+        const repaired = keep(
+          A.change(A.clone(stored.doc), (draft) => repairBlockMarkers(draft, stored.id)),
+        );
+        const after = readAll(repaired, stored.id, label, { lossy: true });
+        assert.equal(after.decoded.adjusted, false, label);
+        assert.equal(after.markdown, before.markdown, label);
+        A.change(A.clone(repaired), (draft) =>
+          assert.equal(repairBlockMarkers(draft, stored.id), false, label),
+        );
       }),
     ),
     { ...parameters, numRuns: Number(process.env.PAGES_FUZZ_RUNS ?? 200) },

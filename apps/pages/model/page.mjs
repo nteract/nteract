@@ -4,7 +4,7 @@ import { quotableNodeType } from "./richtext-notices.mjs";
 import { markdownlessNode } from "./richtext-spans.mjs";
 import { nativeRead, readKind } from "./native-read.mjs";
 import {
-  markUnmarkedText,
+  repairBlockMarkers,
   setRichEmpty,
   setRichMarkdown,
   setRichMarkdownKeepingNodes,
@@ -323,13 +323,15 @@ function applyOperation(doc, { operation, arguments: args = {}, trace }) {
     if (!Object.hasOwn(doc.blocks, op.block_id)) throw Error("Block not found");
     resolveImageId(doc, op.block_id, op.image_id);
   }
-  // Every block the batch edits gets its unmarked text marked first, in this
-  // change, so every node an operation resolves has a marker. Marking adds no
-  // visible text, so the matches and ids the caller read still hold.
+  // Every block the batch edits has its markers repaired first, in this
+  // change: nodes stored under parents no writer wrote get the parents they
+  // are drawn with, and unmarked text gets its marker, so every node an
+  // operation resolves has one. Repair changes no visible text or node, so
+  // the matches and ids the caller read still hold.
   for (const op of operations) {
     const id = op.block_id ?? op.id;
     if (op.op !== "delete_block" && typeof id === "string" && Object.hasOwn(doc.blocks, id))
-      markUnmarkedText(doc, id);
+      repairBlockMarkers(doc, id);
   }
   // Every occurrence names a match in the batch's starting snapshot, the one
   // the caller read. Resolve them all before any operation runs.

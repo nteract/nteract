@@ -418,15 +418,18 @@ export function createWordgardBinding(
         // the Page as it is.
         step({ type: "read", heads, projection: original });
       }
-      // The editor couldn't draw this block as stored (a node or container
-      // from a newer build); any write would reshape what it left out.
-      if (original.lossy)
+      // The editor couldn't draw this block as stored because it holds
+      // content from a newer build; any write would reshape what it left out.
+      if (original.lossy && original.newer)
         throw Error("This block holds content from a newer version of Pages. Reload to edit it.");
       if (original.doc !== tr.startState.doc && !original.doc.eq(tr.startState.doc))
         throw Error("Wordgard editor is behind its Pages document");
       const replacements = [],
         formats = [];
-      let structural = false;
+      // A block whose only problem is nesting a merge left (decode's
+      // `adjusted`) is written through encode, which stores the tree the
+      // editor drew.
+      let structural = !!original.adjusted;
       tr.changes.iterChanges(
         (from, to, fromB, toB, inserted) => {
           const removed = tr.startState.doc.slice(from, to);

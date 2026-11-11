@@ -9,36 +9,48 @@ export const textPath = (id) => ["blocks", id, "richText"];
 const markerKey = (value) =>
   JSON.stringify([
     String(value.type),
-    (value.parents ?? []).map(String),
+    Array.isArray(value.parents) ? value.parents.map(String) : [value.parents ?? null],
     Object.entries(value.attrs ?? {})
       .map(([key, item]) => [key, A.isImmutableString(item) ? String(item) : item])
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
     !!value.isEmbed,
   ]);
 
-/** Inside a change: store `spans` as the text at `path`, as `A.updateSpans`
- * does, and then give every marker exactly the value `spans` gives it.
- * Automerge 3.5's updateSpans diffs a marker's `parents` list in place, and
- * when a rewrite changes the parents of several markers it can store a list
- * other than the one given (a table row's parents become `["table",
- * "table"]`). `A.updateBlock` replaces a marker's value and keeps the marker,
- * so its cursor, which is its node id, stays. */
-export function updateSpansExactly(doc, path, spans, config) {
-  A.updateSpans(doc, path, spans, config);
+/** The offsets of the markers whose stored value at `path` differs from the
+ * one `spans` gives, with the value it gives. */
+function misstored(doc, path, spans) {
   const wanted = new Map();
   let at = 0;
   for (const span of spans) {
     if (span.type === "block") wanted.set(at, span.value);
     at += span.type === "text" ? span.value.length : 1;
   }
+  const wrong = [];
   at = 0;
   for (const span of A.spans(doc, path)) {
     if (span.type === "block") {
       const value = wanted.get(at);
-      if (value && markerKey(value) !== markerKey(span.value)) A.updateBlock(doc, path, at, value);
+      if (value && markerKey(value) !== markerKey(span.value)) wrong.push([at, value]);
     }
     at += span.type === "text" ? span.value.length : 1;
   }
+  return wrong;
+}
+
+/** Inside a change: store `spans` as the text at `path`, as `A.updateSpans`
+ * does, giving every marker exactly the value `spans` gives it. Automerge
+ * 3.5's updateSpans diffs a marker's `parents` list in place, and when a
+ * rewrite changes the parents of several markers it can store a list other
+ * than the one given (a table row's parents become `["table", "table"]`).
+ * A second updateSpans, now over markers of the right types, edits those
+ * lists in place, which keeps every marker and so its cursor (its node id).
+ * A marker still wrong after that is replaced with `A.updateBlock`, which
+ * deletes the marker and inserts a new one: its node id changes. */
+export function updateSpansExactly(doc, path, spans, config) {
+  A.updateSpans(doc, path, spans, config);
+  if (!misstored(doc, path, spans).length) return;
+  A.updateSpans(doc, path, spans, config);
+  for (const [at, value] of misstored(doc, path, spans)) A.updateBlock(doc, path, at, value);
 }
 // Code text is unformatted: ProseMirror's code_block allows no marks and a
 // Markdown fence can't express them. Marks a writer left on code text are not

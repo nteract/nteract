@@ -97,3 +97,57 @@ export function addInside(doc, path, markers) {
   );
   A.splice(doc, path, end + markers.length, 0, "new");
 }
+
+const marker = (type, parents) => ({
+  type: "block",
+  value: {
+    type: new A.ImmutableString(type),
+    parents: parents.map((parent) => new A.ImmutableString(parent)),
+    attrs: {},
+    isEmbed: false,
+  },
+});
+/** A table of a header row ("a") and a body row ("b") inside the containers
+ * `outer` names, outermost first, with each list item's marker. */
+export const nestedTable = (outer) => [
+  ...outer.map((type, i) => marker(type, outer.slice(0, i))),
+  marker("table", outer),
+  marker("table-row", [...outer, "table"]),
+  marker("table-header", [...outer, "table", "table-row"]),
+  { type: "text", value: "a" },
+  marker("table-row", [...outer, "table"]),
+  marker("table-cell", [...outer, "table", "table-row"]),
+  { type: "text", value: "b" },
+];
+
+/** Blocks whose names this build knows, stored with parents no writer
+ * wrote, as their spans. Every reader draws them with adjusted nesting
+ * (decode's `adjusted`); repairBlockMarkers stores what they draw. */
+export const ADJUSTED_NESTING_CASES = {
+  // What Automerge 3.5's updateSpans stored for a list item's table after its
+  // quote was unwrapped.
+  "repeated table": () => [
+    marker("ordered-list-item", []),
+    marker("paragraph", ["ordered-list-item"]),
+    { type: "text", value: "item" },
+    marker("table", ["ordered-list-item"]),
+    marker("table-row", ["table", "table"]),
+    marker("table-header", ["ordered-list-item", "table", "table-row"]),
+    { type: "text", value: "head" },
+    marker("table-row", ["ordered-list-item", "table"]),
+    marker("table-cell", ["ordered-list-item", "table", "table-row"]),
+    { type: "text", value: "cell" },
+  ],
+  // Two writers indent one list item holding a table at once: the item's
+  // parents lists merge element by element.
+  "concurrent indent": () => {
+    const base = A.change(A.from({ text: "" }), (d) =>
+      A.updateSpans(d, ["text"], nestedTable(["unordered-list-item"])),
+    );
+    const indent = (actor) =>
+      A.change(A.clone(base, { actor }), (d) =>
+        A.updateSpans(d, ["text"], nestedTable(["unordered-list-item", "unordered-list-item"])),
+      );
+    return A.spans(A.merge(indent("0a".repeat(16)), indent("0b".repeat(16))), ["text"]);
+  },
+};

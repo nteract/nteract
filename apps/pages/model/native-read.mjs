@@ -36,6 +36,7 @@ import {
   codeHolds,
   nestIn,
   storedParents,
+  TABLE_PART_OUTER,
 } from "./wordgard-doc.mjs";
 import { treeMarkdown } from "./markdown-serializer.mjs";
 import { codeTextUnmarked } from "./richtext-format.mjs";
@@ -322,6 +323,18 @@ export function nativeReadSpans(input, pageId) {
       if (!desc.outer || place({ tag: desc.outer })) place(desc);
     }
     let desc = descriptor(type, attrs);
+    // A table part no container holds is drawn inside the table containers
+    // it needs, as decode draws it (TABLE_PART_OUTER).
+    const wrapped = (tag) => {
+      const names = TABLE_PART_OUTER[type];
+      if (!names) return false;
+      for (let from = names.length - 1; from >= 0; from--) {
+        if (depthFor(descriptor(names[from]).tag) === null) continue;
+        for (const name of names.slice(from)) place(descriptor(name));
+        return fits(tag);
+      }
+      return false;
+    };
     const unknownNode = () => {
       desc = { tag: ReadUnknown.of(type) };
       if (!inlineAt()) fits(PagesUnknownBlock);
@@ -341,7 +354,8 @@ export function nativeReadSpans(input, pageId) {
         unknownNode();
       }
     } else if (desc.tag.type === ReadUnknown) unknownNode();
-    else if (desc.outer ? !place({ tag: desc.outer }) : !fits(desc.tag)) unknownNode();
+    else if (desc.outer ? !place({ tag: desc.outer }) : !fits(desc.tag) && !wrapped(desc.tag))
+      unknownNode();
     let common = 0;
     while (
       common < outer.length &&

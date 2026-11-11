@@ -24,8 +24,9 @@ import { applyPageOperation, createPageData, initializePage, projectPage } from 
 import { orderedBlockIds } from "../model/order.mjs";
 import { Leaf, Slice } from "wordgard/doc";
 import { textPath, blockMarkdown } from "../model/richtext.mjs";
-import { richFromSource } from "../model/richtext-test-support.mjs";
-import { markUnmarkedText } from "../model/richtext-page.mjs";
+import { ADJUSTED_NESTING_CASES, richFromSource } from "../model/richtext-test-support.mjs";
+import { updateSpansExactly } from "../model/richtext-format.mjs";
+import { repairBlockMarkers } from "../model/richtext-page.mjs";
 import {
   schema,
   Paragraph,
@@ -1011,6 +1012,29 @@ test("the binding refuses writes to a block decode couldn't draw as stored", () 
 // Every node opens with its marker, the block's first paragraph included: an
 // editor position inside the first paragraph maps one for one onto the
 // native text after that marker.
+test("a person can edit a block whose only problem is parents no writer wrote", () => {
+  for (const [name, spansOf] of Object.entries(ADJUSTED_NESTING_CASES)) {
+    const replica = fixture("x");
+    replica.change((d) => updateSpansExactly(d, textPath("one"), spansOf()));
+    const before = blockMarkdown(replica.doc.blocks.one);
+    const editor = editorFor(replica, "one");
+    assert.equal(editor.binding.current.adjusted, true, name);
+    const word = name === "repeated table" ? "head" : "a";
+    const at = editor.binding.current.map.amToWg[replica.doc.blocks.one.richText.indexOf(word)];
+    editor.dispatch({ changes: { from: at, insert: [Leaf.text("z")] } });
+    assertInSync(editor, replica, "one", name);
+    // The edit is written through encode, which stores the tree the editor
+    // drew: nothing is adjusted any more, and only the typed text changed.
+    assert.equal(decode(nativeSpans(replica, "one")).lossy, false, name);
+    assert.equal(
+      blockMarkdown(replica.doc.blocks.one),
+      before.replace(new RegExp(`\\| ${word} \\|`), `| z${word} |`),
+      name,
+    );
+    editor.binding.destroy();
+  }
+});
+
 const markerTypes = (replica, id) =>
   nativeSpans(replica, id)
     .filter((span) => span.type === "block")
@@ -1150,7 +1174,7 @@ test("formatting unmarked text, or a selection reaching into it, gives it its ma
 test("two concurrent repairs leave an empty paragraph, and Backspace removes it", () => {
   const replica = unmarkedFixture();
   const repair = (actor) =>
-    A.change(A.clone(replica.doc, { actor }), (d) => markUnmarkedText(d, "one"));
+    A.change(A.clone(replica.doc, { actor }), (d) => repairBlockMarkers(d, "one"));
   replica.receive(A.merge(repair("0c".repeat(16)), repair("0d".repeat(16))));
   assert.deepEqual(markerTypes(replica, "one"), ["paragraph", "paragraph", "paragraph"]);
   const editor = editorFor(replica, "one");

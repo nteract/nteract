@@ -271,9 +271,9 @@ export const PagesDataframe = Leaf.Type.define("PagesDataframe", {
 // makes the Page read-only here (schemaGateStep in viewer/session.mjs), so it
 // is drawn as a notice. Its value is the stored marker: type, attrs, parents
 // and isEmbed, and encode writes exactly that marker back. decode reports
-// `lossy` when it can't place a node where it was stored, or when it skips a
-// container this build doesn't know; the binding refuses writes then, so an
-// unstamped Page can't flatten what it can't draw.
+// `newer` content and `lossy` when it skips a container this build doesn't
+// know; the binding refuses writes then, so an unstamped Page can't flatten
+// what it can't draw.
 export const UNKNOWN_NODE_NOTICE = "Added by a newer version of Pages. Reload to see it.";
 function validateUnknown(value) {
   if (
@@ -560,14 +560,23 @@ const typeOf = (tag) => tag.type ?? tag;
  * the top level, or null when nothing in the chain, nor the top level, can.
  * Every reader nests a marker's parents and then the node by this rule:
  * each nests in the nearest container before it that can hold it, so a
- * repeated container, a parent that can't hold the next one, or a row
- * outside a table drops out, and the block is lossy. */
+ * repeated container or a parent that can't hold the next one drops out,
+ * and decode reports the block's nesting `adjusted`. */
 export function nestIn(chain, tag) {
   const type = typeOf(tag);
   for (let depth = chain.length; depth > 0; depth--)
     if (schema.canContain(typeOf(chain[depth - 1].tag), type)) return depth;
   return schema.canContain(DOC_TYPE, type) ? 0 : null;
 }
+
+/** The containers a table part needs around it, outermost first. Where no
+ * container in its chain holds one, a reader draws these around it, as
+ * containers with no marker of their own. */
+export const TABLE_PART_OUTER = {
+  "table-row": ["table"],
+  "table-cell": ["table", "table-row"],
+  "table-header": ["table", "table-row"],
+};
 
 /** Whether a code block holds an inline embed of `type` stored with
  * `parents`. A code block holds text and line breaks; every other textblock
@@ -582,10 +591,24 @@ export function codeHolds(type, parents) {
 }
 
 /** The editor tree for a block's spans, the native/editor position maps,
- * whether the tree had to leave out something it couldn't place (`lossy`),
  * the unmarked text it drew (`unmarked`) and the containers it drew with
  * no marker of their own (`rebuilt`), each with the native offset where a
- * writer's marker for it would go. */
+ * writer's marker for it would go.
+ *
+ * Two reasons a block can't be drawn as stored are reported apart:
+ * - `newer`: it holds content from a newer build: a node, container or embed
+ *   name this build doesn't know, attributes it can't read, or a known node
+ *   stored where this build can't draw it (a dataframe in a table cell).
+ *   A node or embed drawn whole as a notice round-trips; a container that
+ *   draws nothing, text after an unknown node or unreadable attributes
+ *   don't, and make the block lossy. No repair rewrites a newer block.
+ * - `adjusted`: every name is known, but nestIn re-homed a node or dropped
+ *   or skipped one of its parents (parents no writer wrote, which a merge
+ *   of two writers' parents can leave). `moved` lists each such node
+ *   marker's offset and the parents it is drawn with; storing those parents
+ *   (repairBlockMarkers in model/richtext-page.mjs) leaves the same tree
+ *   with nothing adjusted.
+ * `lossy` is either one that makes the tree differ from what is stored. */
 export function decode(spans) {
   const blocks = [],
     stack = [],
@@ -593,8 +616,14 @@ export function decode(spans) {
     amToWg = [];
   let wg = 0,
     am = 0,
-    lossy = false,
+    newer = false,
+    // Newer content this build draws only in part: a notice in place of a
+    // container, text or attributes.
+    partial = false,
+    adjusted = false,
     afterUnknown = false;
+  // Each node marker drawn with parents other than its stored ones.
+  const moved = [];
   const boundary = () => {
     wgToAm[wg] = am;
     amToWg[am] ??= wg;
@@ -637,12 +666,12 @@ export function decode(spans) {
   // deletes); no writer does. It reads as a paragraph (in a
   // table, a row and cell) with no marker, so it has no node id, and
   // `unmarked` records the markers a writer adds to mark it
-  // (markUnmarkedText in model/richtext-page.mjs). What a node this build
+  // (repairBlockMarkers in model/richtext-page.mjs). What a node this build
   // doesn't know stores right after its own marker is that node's content
   // instead: drawn as a paragraph of its own, and the block is lossy.
   const ensureText = () => {
     if (stack.at(-1)?.tag.type.spec.inlineContent) return;
-    if (afterUnknown) lossy = true;
+    if (afterUnknown) newer = partial = true;
     const markers = [];
     const opening = (tag, name) => {
       markers.push({ type: name, parents: stack.map((f) => f.name).filter(Boolean) });
@@ -669,7 +698,7 @@ export function decode(spans) {
   // (a table cell) show the inline notice.
   const unknownInline = (value) => {
     if (inCode()) {
-      lossy = true;
+      newer = partial = true;
       leaf(Leaf.text("\uFFFC", Mark.none));
     } else leaf(PagesUnknownEmbed.of(unknownValue(value)));
   };
@@ -690,8 +719,9 @@ export function decode(spans) {
     if (span.type !== "block" || !span.value || typeof span.value !== "object")
       throw Error("Invalid Pages rich span");
     // A marker's parents are a list of names. Anything else reads as no
-    // parents, and the block is lossy.
-    if (!Array.isArray(span.value.parents)) lossy = true;
+    // parents: a node marker's nesting is then adjusted; an embed's parents
+    // only say whether a code block holds it.
+    const listed = Array.isArray(span.value.parents);
     const value = { ...span.value, parents: storedParents(span.value) },
       type = String(value.type),
       attrs = strings(value.attrs);
@@ -703,13 +733,16 @@ export function decode(spans) {
       else if (type === "image") {
         if (!safeUrl(attrs.src)) throw Error("Invalid Pages image");
         if (!imageAttrs(value.attrs)) {
-          lossy = true;
+          newer = partial = true;
           unknownInline(value);
         } else {
           PagesImage.spec.validate(attrs);
           leaf(PagesImage.of(attrs));
         }
-      } else unknownInline(value);
+      } else {
+        newer = true;
+        unknownInline(value);
+      }
       continue;
     }
     afterUnknown = false;
@@ -727,13 +760,13 @@ export function decode(spans) {
       // content renders at the nearest known level.
       const d = descriptor(String(parent));
       if (!d) {
-        lossy = true;
+        newer = partial = true;
         continue;
       }
       const before = outer.length;
-      if (d.outer && !place({ tag: d.outer, name: null })) lossy = true;
-      else if (!place({ tag: d.tag, name: String(parent) })) lossy = true;
-      else if (outer.length !== before + (d.outer ? 2 : 1)) lossy = true;
+      if (d.outer && !place({ tag: d.outer, name: null })) adjusted = true;
+      else if (!place({ tag: d.tag, name: String(parent) })) adjusted = true;
+      else if (outer.length !== before + (d.outer ? 2 : 1)) adjusted = true;
     }
     // Leaf blocks hold no content of their own.
     // A dataframe stored inside a text container (a table cell, a code
@@ -749,28 +782,51 @@ export function decode(spans) {
         : null;
     const builtIn = type === "horizontal-rule" || !!dataframe;
     let desc = builtIn ? null : descriptor(type, attrs);
-    // The node itself nests the same way. One no container can hold (a
-    // table row with no table) reads as a node this build doesn't know.
+    // The node itself nests the same way. A table part no container in its
+    // chain holds is drawn inside the table containers it needs
+    // (TABLE_PART_OUTER), which have no marker of their own.
     const own = type === "horizontal-rule" ? HorizontalRule : dataframe ? PagesDataframe : desc;
     const fits = (tag) => {
       const depth = nestIn(outer, tag);
       if (depth === null) return false;
       if (depth < outer.length) {
-        lossy = true;
+        adjusted = true;
         outer.length = depth;
       }
       return true;
     };
+    const wrapped = (tag) => {
+      const names = TABLE_PART_OUTER[type];
+      if (!names) return false;
+      for (let from = names.length - 1; from >= 0; from--) {
+        const first = descriptor(names[from]).tag;
+        if (nestIn(outer, first) === null) continue;
+        for (const name of names.slice(from)) place({ tag: descriptor(name).tag, name });
+        adjusted = true;
+        return fits(tag);
+      }
+      return false;
+    };
     let unknown = !builtIn && !desc;
+    if (unknown) newer = true;
     if (desc) {
-      if (desc.outer ? !place({ tag: desc.outer, name: null }) : !fits(desc.tag)) {
-        lossy = true;
+      if (
+        desc.outer ? !place({ tag: desc.outer, name: null }) : !fits(desc.tag) && !wrapped(desc.tag)
+      ) {
+        adjusted = true;
         desc = null;
         unknown = true;
       }
     } else if (own && !fits(own)) {
-      lossy = true;
+      adjusted = true;
       unknown = true;
+    }
+    if (!unknown) {
+      const drawn = outer.map((entry) => entry.name).filter(Boolean);
+      if (!listed || drawn.join("\u0000") !== value.parents.join("\u0000")) {
+        adjusted = true;
+        moved.push({ at: am, parents: drawn });
+      }
     }
     if (unknown && !outer.at(-1)?.tag.type.spec.inlineContent) fits(PagesUnknownBlock);
     let common = 0;
@@ -797,7 +853,7 @@ export function decode(spans) {
       afterUnknown = true;
       if (stack.at(-1)?.tag.type.spec.inlineContent) {
         // Stored inside a text container (a table cell): drawn inline.
-        lossy = true;
+        newer = partial = true;
         unknownInline(value);
       } else leaf(PagesUnknownBlock.of(unknownValue(value)));
     } else if (type === "horizontal-rule") leaf(HorizontalRule);
@@ -811,7 +867,16 @@ export function decode(spans) {
   }
   while (stack.length) close();
   boundary();
-  return { doc: schema.doc(blocks), map: { wgToAm, amToWg }, lossy, unmarked, rebuilt };
+  return {
+    doc: schema.doc(blocks),
+    map: { wgToAm, amToWg },
+    lossy: partial || adjusted,
+    newer,
+    adjusted,
+    moved: newer ? [] : moved,
+    unmarked,
+    rebuilt,
+  };
 }
 
 export function encode(doc) {

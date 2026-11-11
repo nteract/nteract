@@ -79,20 +79,52 @@ export function setRichMarkdown(doc, id, source, { literal = false } = {}) {
   updateSpansExactly(doc, textPath(id), spans, updateSpansConfig);
   stampSpans(doc, spans);
 }
-/** Give block `id`'s unmarked text the markers a writer writes, in place,
- * inside the caller's change. Unmarked text is what a merge can leave with no
- * marker opening it (decode in model/wordgard-doc.mjs); each new marker goes
- * in before the text, which keeps its characters, marks and comment anchors.
- * A block decode can't draw whole (`lossy`) is left alone: its scopes include
- * containers this build doesn't know. A container whose own marker a merge
- * deleted (decode's `rebuilt`) is left as it is too: every reader draws it
- * from its surviving child's parents and names it by that child's marker, so
- * restoring its marker would only move its node id. Returns whether it wrote. */
-export function markUnmarkedText(doc, id) {
+/** Repair block `id`'s markers in place, inside the caller's change, so
+ * the block stores what every reader draws. Two repairs, in one pass:
+ *
+ * - Adjusted nesting: a node marker whose parents no writer wrote (decode
+ *   in model/wordgard-doc.mjs re-homed it, or dropped or skipped a parent)
+ *   gets the parents it is drawn with. The tree every reader draws doesn't
+ *   change. The markers keep their identity, so their node ids stay, unless
+ *   Automerge can't store a marker's parents in place (updateSpansExactly):
+ *   that marker is replaced, and its node id changes.
+ * - Unmarked text, which a merge can leave with no marker opening it, gets
+ *   the markers a writer writes. Each goes in before the text, which keeps
+ *   its characters, marks and comment anchors.
+ *
+ * A block decode draws only in part because it holds content from a newer
+ * build (`newer` and `lossy`) is left alone. A container whose own marker a
+ * merge deleted (decode's `rebuilt`) is left as it is too: every reader
+ * draws it from its surviving child's parents and names it by that child's
+ * marker, so restoring its marker would only move its node id. Returns
+ * whether it wrote. */
+export function repairBlockMarkers(doc, id) {
   const path = textPath(id);
-  const { unmarked, lossy } = decode(A.spans(doc, path));
-  if (lossy || !unmarked.length) return false;
-  for (const { at, markers } of [...unmarked].reverse())
+  let spans = A.spans(doc, path);
+  let decoded = decode(spans);
+  if (decoded.lossy && decoded.newer) return false;
+  let wrote = false;
+  if (decoded.moved.length) {
+    const drawn = new Map(decoded.moved.map(({ at, parents }) => [at, parents]));
+    let at = 0;
+    const repaired = spans.map((span) => {
+      const parents = span.type === "block" ? drawn.get(at) : undefined;
+      at += span.type === "text" ? span.value.length : 1;
+      return parents
+        ? {
+            ...span,
+            value: { ...span.value, parents: parents.map((name) => new A.ImmutableString(name)) },
+          }
+        : span;
+    });
+    updateSpansExactly(doc, path, repaired, updateSpansConfig);
+    stampSpans(doc, repaired);
+    wrote = true;
+    spans = A.spans(doc, path);
+    decoded = decode(spans);
+    if (decoded.lossy) return wrote;
+  }
+  for (const { at, markers } of [...decoded.unmarked].reverse())
     markers.forEach(({ type, parents }, i) =>
       A.splitBlock(doc, path, at + i, {
         type: new A.ImmutableString(type),
@@ -101,7 +133,7 @@ export function markUnmarkedText(doc, id) {
         isEmbed: false,
       }),
     );
-  return true;
+  return wrote || decoded.unmarked.length > 0;
 }
 /** Write one empty paragraph, with its marker, as a block's whole content. */
 export function setRichEmpty(doc, id) {

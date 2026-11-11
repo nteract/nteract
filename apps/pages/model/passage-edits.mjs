@@ -9,7 +9,7 @@ import {
   visibleRangeAddress,
 } from "./replace-match.mjs";
 import { nodeChange, setNode } from "./set-node.mjs";
-import { markUnmarkedText } from "./richtext-page.mjs";
+import { repairBlockMarkers } from "./richtext-page.mjs";
 
 // Operations a target-scoped batch may contain. Each finds one literal range
 // the same way; replace_match changes its text, format_match its marks and
@@ -263,7 +263,7 @@ export function guardPassageEdits(current, baseHeads, operations) {
     try {
       checked = A.change(clone, (draft) => {
         // As the write itself does (applyPageOperation in page.mjs).
-        for (const target of targets) markUnmarkedText(draft, target.input.block_id);
+        for (const target of targets) repairBlockMarkers(draft, target.input.block_id);
         const budget = { writes: 0 };
         for (const target of targets) {
           // An occurrence names a match in the batch's starting snapshot, as
