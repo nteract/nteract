@@ -10,6 +10,9 @@ import { explicitOpeningSpans } from "./richtext-test-support.mjs";
 import { BLOCKING } from "../sync/comments.mjs";
 import { parseMarkdown } from "./markdown-import.mjs";
 import { RICH_FORMAT } from "./richtext-format.mjs";
+import { projectReadComments } from "./read-comments.mjs";
+import { Leaf } from "wordgard/doc";
+import { Aside, Paragraph, encode, schema } from "./wordgard-doc.mjs";
 
 const ALICE = "account:alice";
 const BOB = "account:bob";
@@ -656,4 +659,35 @@ test("rich content passes admission through create, edit and soft delete", () =>
     step({ action: "delete_message", ...target });
     assert.ok(doc.threads[ids.aliceThread].messages[message_id].deletedAt, name);
   }
+});
+
+test("a composer draft holding an aside passes admission and reads with its notice", () => {
+  const { doc, ids } = seed();
+  // The browser composer's draft for pasted `<aside>` HTML.
+  const spans = editorCommentSpans(
+    encode(schema.doc([Aside.create([Paragraph.create([Leaf.text("Wait we can copy asides")])])])),
+  );
+  let message;
+  const changes = changesOf(doc, (d) => {
+    ({ message_id: message } = applyComment(
+      d,
+      { action: "reply", thread_id: ids.aliceThread },
+      who(BOB),
+      spans,
+      { page, role: "commenter" },
+    ));
+  });
+  const admitted = admitCommentChanges(doc, changes, BOB, { role: "commenter" });
+  assert.equal(admitted.ok, true, JSON.stringify(admitted.reason));
+  // list_page_comments reads each message through this projection.
+  const [thread] = projectReadComments(
+    page,
+    { thread_ids: [ids.aliceThread], include_messages: true },
+    admitted.next,
+  );
+  assert.equal(
+    thread.messages.find((entry) => entry.id === message).body,
+    "\\[Unsupported node: aside\\]\n\nWait we can copy asides",
+  );
+  A.free(admitted.next);
 });

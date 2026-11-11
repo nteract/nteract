@@ -17,7 +17,9 @@ import {
   decode,
   encode,
   Aside,
+  Blockquote,
   BulletList,
+  HorizontalRule,
   ListItem,
   Paragraph,
   CodeBlock,
@@ -197,7 +199,12 @@ test("read_page and read_page_changes read a hard break stored in a code block",
 
 // The serializer is total over the editor tree: a node or mark it has no
 // rule for reads as a notice (or as plain text), never as an error.
-const para = (value, marks) => Paragraph.create([Leaf.text(value, marks)]);
+const para = (value, marks) => Paragraph.create(value ? [Leaf.text(value, marks)] : []);
+const Callout = Plot.define("TestCallout", {
+  group: Node.Group.Content,
+  blockContent: Node.Group.Content,
+  shape: { element: "section" },
+});
 
 test("an aside reads as a notice, then its paragraph and list", () => {
   const aside = Aside.create([
@@ -211,11 +218,6 @@ test("an aside reads as a notice, then its paragraph and list", () => {
 });
 
 test("a block with no Markdown rule reads as a notice, then its content", () => {
-  const Callout = Plot.define("TestCallout", {
-    group: Node.Group.Content,
-    blockContent: Node.Group.Content,
-    shape: { element: "section" },
-  });
   const Line = Plot.define("TestLine", {
     group: Node.Group.Content,
     inlineContent: true,
@@ -237,7 +239,8 @@ test("an inline leaf with no Markdown rule reads as a notice in its line", () =>
   );
 });
 
-test("a mark with no Markdown rule reads as its text", () => {
+// markName already dropped a mark type it doesn't know; this pins that.
+test("a mark with no Markdown rule reads as its text (existing behaviour)", () => {
   const Underline = Mark.define("TestUnderline", { shape: { element: "u" } });
   assert.equal(
     exportMarkdown({
@@ -250,4 +253,49 @@ test("a mark with no Markdown rule reads as its text", () => {
     }),
     "plain **under**",
   );
+});
+
+test("a notice separates from the block after it as a paragraph does", () => {
+  const headings = (markdown) => {
+    let count = 0;
+    parseMarkdown(markdown).iterate((node) => {
+      if (node.name === "Heading") count++;
+    });
+    return count;
+  };
+  const list = (...items) =>
+    BulletList.create(items.map((value) => ListItem.create([para(value)])));
+  const inItem = (node) => ({ content: [BulletList.create([ListItem.create([node])])] });
+  for (const [wrap, notice] of [
+    [Aside, "\\[Unsupported node: aside\\]"],
+    [Callout, "\\[Unsupported node\\]"],
+  ]) {
+    // In a tight list item, a list whose empty first item can't interrupt a
+    // paragraph needs a blank line, or its `-` underlines the notice.
+    const nested = exportMarkdown(inItem(wrap.create([list("", "b")])));
+    assert.equal(nested, `- \n  ${notice}\n\n  - \n  - b`);
+    assert.equal(headings(nested), 0, nested);
+    for (const [child, expected] of [
+      [HorizontalRule, 0],
+      [Blockquote.create([para("q")]), 0],
+      [parseMarkdown("## h").content[0], 1],
+    ]) {
+      const out = exportMarkdown(inItem(wrap.create([child])));
+      assert.equal(headings(out), expected, out);
+    }
+  }
+  // A stored node this build doesn't know reads the same way.
+  const item = "unordered-list-item";
+  const { doc, id } = pageWithSpans([
+    block(item),
+    block("callout", [item]),
+    block(item, [item, "callout"]),
+    block(item, [item, "callout"]),
+    text("b"),
+  ]);
+  assert.equal(
+    blockMarkdown(doc.blocks[id], doc.page_id),
+    "- \n  \\[Unsupported node: callout\\]\n\n  - \n  - b",
+  );
+  A.free(doc);
 });

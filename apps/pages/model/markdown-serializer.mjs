@@ -460,13 +460,16 @@ const unknownLeaf = (state, item) =>
 // unknown-node notice, and a block's content follows it, so a read never
 // hides what the node holds.
 const unsupportedLeaf = (state, item) => state.write(state.esc(unknownNodeNotice(item.node.name)));
+// A notice is a line of paragraph text. What follows it separates as from a
+// paragraph, so a list that can't interrupt one gets its blank line.
+const closeAsParagraph = (state) => (state.closed = { kind: "paragraph" });
 function unsupportedBlock(state, node) {
   state.write(state.esc(unknownNodeNotice(kind(node))));
-  state.closeBlock(node);
+  closeAsParagraph(state);
   if (!node.isPlot || !node.content.length) return;
   if (node.type.spec.inlineContent) {
     state.renderInline(inlineItems(node.content));
-    state.closeBlock(node);
+    closeAsParagraph(state);
   } else state.renderContent(node);
 }
 const paragraph = (state, node) => {
@@ -661,13 +664,13 @@ const NODES = {
   // refuses the block (markdownlessNode).
   unknownBlock(state, node) {
     state.write(state.esc(unknownNodeNotice(node.param?.type)));
-    state.closeBlock(node);
+    closeAsParagraph(state);
   },
   // An aside has no Markdown form. It reads as a notice, then its content.
   // replace_block_markdown refuses the block (markdownlessNode).
   aside(state, node) {
     state.write(state.esc(unknownNodeNotice("aside")));
-    state.closeBlock(node);
+    closeAsParagraph(state);
     state.renderContent(node);
   },
 };

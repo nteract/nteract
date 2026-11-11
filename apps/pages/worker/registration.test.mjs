@@ -7,6 +7,7 @@ import { createAuthFixture } from "../auth-fixtures.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import worker, { Catalog, Page } from "./index.mjs";
 import { readRegistration } from "./registration.mjs";
+import { readTool } from "./tool-reads.mjs";
 import { DEFAULT_PAGE_QUOTA } from "./page-quota.mjs";
 import { REPLAYED_RECEIPT_HEADER } from "./usage.mjs";
 import { fingerprint } from "./mutations.mjs";
@@ -740,4 +741,36 @@ test("a draft from before the comments stamp replays once registered, and is ref
   const fromPage = await f.send(old);
   assert.equal(fromPage.status, 200, await fromPage.clone().text());
   assert.equal((await fromPage.json()).document_id, args.document_id);
+});
+
+test("a draft whose body holds an aside registers, and read_page reads it", async (t) => {
+  const f = await fixture(t),
+    { args, doc } = registration();
+  const path = ["blocks", Object.keys(doc.blocks)[0], "richText"];
+  const marker = (type, parents) => ({
+    type: new A.ImmutableString(type),
+    parents: parents.map((parent) => new A.ImmutableString(parent)),
+    attrs: {},
+    isEmbed: false,
+  });
+  const draft = A.change(A.clone(doc), (d) => {
+    const at = d.blocks[path[1]].richText.indexOf("text");
+    A.splitBlock(d, path, at, marker("paragraph", ["aside"]));
+    A.splitBlock(d, path, at, marker("aside", []));
+  });
+  const response = await f.send({
+    ...args,
+    initial_snapshot_base64: Buffer.from(A.save(draft)).toString("base64"),
+  });
+  assert.equal(response.status, 200, await response.clone().text());
+  // This fixture's Page stub serves no tool routes; read the stored
+  // document with the host's read.
+  const read = await readTool(
+    f.page().handle.doc(),
+    "read_page",
+    { page_id: pageId, comments: "none" },
+    { issueAuthority: async () => ({}) },
+  );
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+  assert.equal(read.body.blocks[0].markdown, "Original \n\n\\[Unsupported node: aside\\]\n\ntext");
 });
