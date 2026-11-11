@@ -2308,8 +2308,10 @@ bodies. Unknown history returns `resync_required`; oversized deltas return
 `changes_budget_exceeded`, never partial success. Advance saved heads only after
 consuming a successful response or resynchronizing with focused reads.
 
-Mutations require an idempotency key; content edits, comment adds and deletion
-also require observed `base_heads`. The default
+Mutations require an idempotency key. Content edits also require observed
+`base_heads`, and so does a comment on selected text, which is located at
+them. Other comment writes (a block comment, a reply, resolve, reopen, edit and
+delete) take none. `delete_page` takes them as an optional guard. The default
 `conflict_scope:"page"` requires exact current heads. `patch_page` can use
 `conflict_scope:"target"` for batches of only `replace_match`, `format_match`
 and `set_node`, without `all`:
