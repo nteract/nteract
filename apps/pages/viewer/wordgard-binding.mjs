@@ -180,6 +180,16 @@ function ownMarker({ doc, map }, pos) {
   if (!level?.parent || !level.node.type.spec.inlineContent) return true;
   return map.wgToAm[level.before + 1] > map.wgToAm[level.before];
 }
+/** Whether every textblock the editor range `[from, to]` touches opens with
+ * a native marker of its own (ownMarker). */
+function rangeMarked(projection, from, to) {
+  if (!ownMarker(projection, from) || !ownMarker(projection, to)) return false;
+  let marked = true;
+  projection.doc.iterate(from, to, (node, pos) => {
+    if (node.inlineContent && !ownMarker(projection, pos + 1)) marked = false;
+  });
+  return marked;
+}
 const nativeLength = (doc, id) => String(doc.blocks?.[id]?.richText ?? "").length;
 
 /** Position maps after replacing editor range `[from, to)` with `length`
@@ -426,7 +436,10 @@ export function createWordgardBinding(
           if (!ownMarker(original, from)) structural = true;
           replacements.push({ from, to, fromB, toB, inserted });
         },
-        (_a, _b, from, to, modifications) => {
+        (fromA, toA, from, to, modifications) => {
+          // Formatting inside unmarked text, or a selection that reaches
+          // into it, is written through encode too, which marks it.
+          if (modifications?.length && !rangeMarked(original, fromA, toA)) structural = true;
           for (const mod of modifications ?? []) {
             try {
               formats.push(

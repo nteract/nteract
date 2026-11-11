@@ -25,6 +25,7 @@ import { orderedBlockIds } from "../model/order.mjs";
 import { Leaf, Slice } from "wordgard/doc";
 import { textPath, blockMarkdown } from "../model/richtext.mjs";
 import { richFromSource } from "../model/richtext-test-support.mjs";
+import { markUnmarkedText } from "../model/richtext-page.mjs";
 import {
   schema,
   Paragraph,
@@ -1110,3 +1111,65 @@ test("editing unmarked text a merge left gives it its marker", () => {
   assert.equal(blockMarkdown(replica.doc.blocks.one), "Now typed\n\nSecond");
   editor.binding.destroy();
 });
+
+/** A replica whose block "one" opens with unmarked " typed", then "Second". */
+function unmarkedFixture() {
+  const replica = fixture("Intro words\n\nSecond");
+  const base = A.clone(replica.doc);
+  const deleted = A.change(A.clone(base, { actor: "0a".repeat(16) }), (d) =>
+    A.splice(d, textPath("one"), 0, d.blocks.one.richText.indexOf("Second") - 1),
+  );
+  const typed = A.change(A.clone(base, { actor: "0b".repeat(16) }), (d) =>
+    A.splice(d, textPath("one"), d.blocks.one.richText.indexOf(" words") + 6, 0, " typed"),
+  );
+  replica.receive(A.merge(deleted, typed));
+  assert.equal(nativeSpans(replica, "one")[0].type, "text");
+  return replica;
+}
+
+test("formatting unmarked text, or a selection reaching into it, gives it its marker", () => {
+  for (const [name, range] of [
+    ["inside it", (doc) => ({ from: 2, to: 6 })],
+    ["from it into a marked paragraph", (doc) => ({ from: 2, to: doc.length - 3 })],
+  ]) {
+    const replica = unmarkedFixture(),
+      editor = editorFor(replica, "one");
+    editor.dispatch({ changes: { ...range(editor.state.doc), add: Strong } });
+    assertInSync(editor, replica, "one", name);
+    assert.deepEqual(markerTypes(replica, "one"), ["paragraph", "paragraph"], name);
+    assert.ok(
+      nativeSpans(replica, "one").some((span) => span.type === "text" && span.marks?.strong),
+      name,
+    );
+    editor.binding.destroy();
+  }
+  // A selection that stays in marked text writes marks alone (below).
+  markedOnly();
+});
+
+test("two concurrent repairs leave an empty paragraph, and Backspace removes it", () => {
+  const replica = unmarkedFixture();
+  const repair = (actor) =>
+    A.change(A.clone(replica.doc, { actor }), (d) => markUnmarkedText(d, "one"));
+  replica.receive(A.merge(repair("0c".repeat(16)), repair("0d".repeat(16))));
+  assert.deepEqual(markerTypes(replica, "one"), ["paragraph", "paragraph", "paragraph"]);
+  const editor = editorFor(replica, "one");
+  assert.equal(editor.state.doc.content[0].content.length, 0);
+  // The caret at the start of " typed", right after the empty paragraph.
+  editor.dispatch({ selection: { anchor: editor.state.doc.content[0].length + 1 } });
+  assert.equal(editor.run(deleteUnit, "backward"), true);
+  assertInSync(editor, replica, "one", "Backspace into the empty paragraph");
+  assert.deepEqual(markerTypes(replica, "one"), ["paragraph", "paragraph"]);
+  assert.equal(blockMarkdown(replica.doc.blocks.one), " typed\n\nSecond");
+  editor.binding.destroy();
+});
+
+function markedOnly() {
+  const replica = unmarkedFixture(),
+    editor = editorFor(replica, "one");
+  const end = editor.state.doc.length;
+  editor.dispatch({ changes: { from: end - 5, to: end - 2, add: Strong } });
+  assertInSync(editor, replica, "one", "marked text only");
+  assert.deepEqual(markerTypes(replica, "one"), ["paragraph"]);
+  editor.binding.destroy();
+}
