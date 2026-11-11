@@ -33,10 +33,14 @@ import { applyComment, commentsMigrated } from "../model/comments.mjs";
 import { guardCommentIntent } from "../model/comment-guard.mjs";
 import { commentsDocUuid, commentsDocumentId } from "./comments-store.mjs";
 import {
-  currentFormats,
+  WRITTEN_FORMATS,
+  documentFormatsUnsupported,
+  formatPairs,
   missingFormats,
   pageDocuments,
   parseDeclaredFormats,
+  recordDocumentFormats,
+  recordFormatsWritten,
 } from "../model/document-types.mjs";
 import { storedFormUnsupported } from "../model/stored-form.mjs";
 import { readTargets, writeTargets } from "../model/agent-presence.mjs";
@@ -486,16 +490,22 @@ function requirePlainSyncClient(request) {
   throw withAdmissionReason(schemaUnsupported(["automerge-sync"]), "schema_unsupported");
 }
 
-/** A socket's client declares the document formats it reads as `formats`.
- * No host holds two formats of one type, so a Page's documents are in the
- * formats this build writes. That includes a comments document the Page
- * gains while the socket is open, so every type is required of every socket.
- * A client that lacks one is refused as schema_unsupported, which its viewer
- * shows as "Reload to update". */
-function requireReadableDocuments(declared) {
-  if (!missingFormats(declared, currentFormats()).length) return;
+/** A socket's client declares the document formats it reads as `formats`;
+ * `record` is the formats the Page's host record names. Every type the
+ * record names is required of every socket, including a comments document
+ * the Page gains while the socket is open. A client that lacks one is
+ * refused as schema_unsupported, which its viewer shows as "Reload to
+ * update". */
+function requireReadableDocuments(declared, record) {
+  if (!missingFormats(declared, formatPairs(record)).length) return;
   throw withAdmissionReason(schemaUnsupported(["document-formats"]), "schema_unsupported");
 }
+
+/** Page host routes a record in a format this build doesn't write still
+ * answers once the caller may read it: the shared-Page check and sharing
+ * read the record alone, and the socket refuses in connect(). Trash,
+ * restore and permanent deletion run before that check. */
+const RECORD_ROUTES = Object.freeze(["/internal/catalog", "/internal/access", "/api/sync"]);
 
 /** One structured line when the comments document's per-author check
  * refuses a comment change: the Page, the rule it broke, never content. */
@@ -3501,11 +3511,12 @@ export class Catalog {
   async previewSpaceDeletion(request, entry) {
     const content = await this.contentImpact(request, entry.document_id);
     if (!content.ok) return content;
-    const { heads, comment_heads, comment_threads, comment_count } = await content.json();
+    const { revision, heads, comment_heads, comment_threads, comment_count } = await content.json();
     const response = await this.env.PROJECTS.getByName(entry.space_id).fetch(
       forwarded(request, "/internal/space/delete", {
         space_id: entry.space_id,
         step: "preview",
+        content_revision: revision,
         heads,
         comment_heads,
       }),
@@ -3569,9 +3580,10 @@ export class Catalog {
           run.reply = content;
           return { type: "closed", ok: false, refusal: "space" };
         }
-        const { heads, comment_heads } = await content.json();
+        const { revision, heads, comment_heads } = await content.json();
         const closed = await space({
           step: "close",
+          content_revision: revision,
           heads,
           comment_heads,
           preview_token: intent.previewToken,
@@ -3617,7 +3629,9 @@ export class Catalog {
           forwarded(request, "/internal/trash", {
             page_id: intent.documentId,
             idempotency_key: intent.trashKey,
-            base_heads: intent.heads,
+            // Null heads: the content's documents weren't opened, and the
+            // trash applies only while that holds.
+            ...(intent.heads && { base_heads: intent.heads }),
             base_comment_heads: intent.commentHeads,
           }),
         );
@@ -4843,8 +4857,16 @@ export class Page {
    * loaded is treated as transiently unavailable: startup completes, requests
    * answer 503, and the next request tries again. Permanent absence is only
    * established by a deleted record or the owner Catalog's tombstone.
+   *
+   * A record in a format this build doesn't write (formatRefusal) loads
+   * neither document, only the title this host last projected, which its
+   * lifecycle receipts and listings carry.
    */
   async loadDocument() {
+    if (this.formatRefusal()) {
+      await this.restoreTitleProjection();
+      return;
+    }
     try {
       this.handle = await this.repo.find(this.metadata.documentId);
     } catch (error) {
@@ -5175,10 +5197,13 @@ export class Page {
       },
     });
     // A deleted Page serves nothing: its documents are gone, and a record
-    // from a Subduction Page may name one plain sync can't address.
+    // from a Subduction Page may name one plain sync can't address. A record
+    // in a format this build doesn't write serves nothing either; a purge
+    // still deletes its stored documents by id.
     const documents = [];
-    if (!deleted && metadata?.documentId) documents.push([metadata.documentId, "page"]);
-    if (!deleted && commentsUuid) documents.push([commentsDocumentId(commentsUuid), "comments"]);
+    const serving = !deleted && !this.formatRefusal(metadata);
+    if (serving && metadata?.documentId) documents.push([metadata.documentId, "page"]);
+    if (serving && commentsUuid) documents.push([commentsDocumentId(commentsUuid), "comments"]);
     await plain.load(documents, { deleted });
     Object.assign(this, {
       serverSenderId: HOST_SENDER_ID,
@@ -5322,7 +5347,10 @@ export class Page {
   cacheTitle(identity, { observe = false } = {}) {
     // A trashed Page must not relist itself in owner or member catalogs.
     if (pageState(this.metadata) !== "active") return;
-    const title = catalogTitle(this.handle.doc().title);
+    // A Page whose documents this host doesn't open sends the title it last
+    // projected, and nothing when it never projected one.
+    if (!this.handle && this.pageTitle() === undefined) return;
+    const title = catalogTitle(this.pageTitle());
     const observedReader =
       identity && pageAccess(this.metadata, identity).source === "domain"
         ? identity.principal
@@ -5520,6 +5548,23 @@ export class Page {
     this.cacheTitle(undefined, { observe: true });
   }
 
+  /** The refusal for opening this Page's documents, or undefined. A record
+   * whose `documentFormats` aren't the ones this build writes opens neither
+   * document (recordFormatsWritten); the owner still manages the Page from
+   * its record. A deleted Page serves nothing either way, so it never gets
+   * this refusal. */
+  formatRefusal(metadata = this.metadata) {
+    if (!metadata || pageState(metadata) === "deleted" || recordFormatsWritten(metadata))
+      return undefined;
+    return documentFormatsUnsupported();
+  }
+
+  /** The Page's title: its document's, or for a Page whose documents this
+   * host doesn't open, the one it last projected. Undefined without either. */
+  pageTitle() {
+    return this.handle ? this.handle.doc().title : this.titleProjection?.record?.title;
+  }
+
   /** The Page's comments document. The Page's `comments-doc` stamp says its
    * comments live there; a Page without the stamp fails closed. */
   commentsView() {
@@ -5529,8 +5574,10 @@ export class Page {
   }
 
   /** The repo document IDs this Page host holds: the Page and, once open,
-   * its comments document. */
+   * its comments document. A record in a format this build doesn't write
+   * holds none. */
   documentIds() {
+    if (this.formatRefusal()) return [];
     return [
       this.metadata.documentId,
       ...(this.commentsHandle ? [commentsDocumentId(this.commentsUuid)] : []),
@@ -5742,6 +5789,9 @@ export class Page {
               documentId,
               // The Page's comments document, by its deployment-relative id.
               comments_doc: await commentsDocUuid(args.page_id),
+              // The format of each document type the Page holds. The comments
+              // document is created at boot, in the format named here.
+              documentFormats: { ...WRITTEN_FORMATS },
               deleted: false,
               // Location lives in the owner's Catalog; the receipt there adds it.
               createdReceipt: {
@@ -5772,7 +5822,7 @@ export class Page {
       }
       const hidden = this.hiddenRefusal(identity, admissionRoute);
       if (hidden) throw hidden;
-      if (pageState(this.metadata) === "trashed" && !this.handle) {
+      if (pageState(this.metadata) === "trashed" && !this.handle && !this.formatRefusal()) {
         await this.loadDocument();
         if (!this.handle) throw new HttpError(503, "Page is temporarily unavailable");
       }
@@ -5798,15 +5848,29 @@ export class Page {
       if (url.pathname === CONTENT_IMPACT_PATH) {
         // The owner's Catalog previewing or confirming a Project's deletion:
         // what this content document holds, and the heads it holds them at.
+        // Like Trash and purge it runs from the record, before the format
+        // refusal: a record in a format this build doesn't write reports its
+        // lifecycle revision only, with null heads and counts, and nothing
+        // opens its documents.
         if (pageRelation(this.metadata, identity.principal) !== "owner")
           throw new HttpError(403, "Document access denied");
         if (pageState(this.metadata) !== "active")
           throw new HttpError(404, "Page not found", "page_not_found");
+        const revision = this.metadata.lifecycleRevision ?? 0;
+        if (this.formatRefusal())
+          return json({
+            page_id: this.metadata.pageId,
+            revision,
+            heads: null,
+            comment_heads: null,
+            ...discussionOf(null),
+          });
         await this.loadComments();
         const doc = this.handle.doc();
         const comments = this.commentsView();
         return json({
           page_id: this.metadata.pageId,
+          revision,
           heads: A.getHeads(doc),
           comment_heads: comments ? A.getHeads(comments) : [],
           ...discussionOf(doc, comments),
@@ -5820,6 +5884,11 @@ export class Page {
         if (claimed) await this.installAccess(claimed);
       }
       this.policy.account(identity);
+      // A record in a format this build doesn't write opens no document. The
+      // shared-Page check and sharing answer from the record; the socket
+      // closes with this refusal (connect); every other route is refused.
+      const unopened = this.formatRefusal();
+      if (unopened && !RECORD_ROUTES.includes(url.pathname)) throw unopened;
       if (url.pathname === ASSET_AUTHORIZE_PATH) {
         const args = await readJson(request);
         if (args.page_id !== this.metadata.pageId || typeof args.write !== "boolean")
@@ -5871,7 +5940,7 @@ export class Page {
         this.cacheTitle();
         return json(
           catalogAnswer({ ...this.metadata, projectAccess: this.projectAccess }, identity, {
-            title: this.handle.doc().title,
+            title: this.pageTitle(),
             observed: {
               at: this.titleProjection?.record?.observed_at,
               keep: this.titleProjection?.record?.keep !== false,
@@ -5910,7 +5979,11 @@ export class Page {
           documentId: this.metadata.documentId,
           // The comments document syncs on the same socket.
           ...(this.commentsHandle && { commentsDocumentId: commentsId }),
-          documents: pageDocuments(this.metadata.documentId, commentsId),
+          documents: pageDocuments(
+            recordDocumentFormats(this.metadata),
+            this.metadata.documentId,
+            commentsId,
+          ),
           recordStorage: "automerge",
           serverSenderId: this.serverSenderId,
           identity: publicIdentity(identity),
@@ -6328,7 +6401,10 @@ export class Page {
       page_id: this.metadata.pageId,
       state,
       revision: this.metadata.lifecycleRevision ?? 0,
-      ...(state !== "deleted" && this.handle && { title: catalogTitle(this.handle.doc().title) }),
+      ...(state !== "deleted" &&
+        (this.handle || this.pageTitle() !== undefined) && {
+          title: catalogTitle(this.pageTitle()),
+        }),
       ...(state === "trashed" && publicTrash(this.metadata)),
     };
   }
@@ -6387,8 +6463,10 @@ export class Page {
       )
         event.deletion = summarizeReceipt(this.metadata.deletion.receipt);
     }
-    // A comments guard compares against the loaded comments document.
-    if (type === "trash" && args.base_comment_heads !== undefined) await this.loadComments();
+    // A comments guard compares against the loaded comments document, which
+    // a record in a format this build doesn't write never opens.
+    if (type === "trash" && Array.isArray(args.base_comment_heads) && !this.formatRefusal())
+      await this.loadComments();
     let state = this.lifecycleState();
     if (
       type === "purgeConfirm" &&
@@ -6397,7 +6475,8 @@ export class Page {
       !isSuperseded(state, event)
     ) {
       const verified = this.metadata;
-      const doc = this.handle.doc();
+      // Null for a Page whose documents this host doesn't open.
+      const doc = this.handle?.doc() ?? null;
       event.preview = await checkPurgePreview(
         this.ctx.storage,
         verified,
@@ -6411,17 +6490,38 @@ export class Page {
       // change accepted before Trash that applied late.
       if (
         event.preview === "valid" &&
-        (this.metadata !== verified || !sameHeads(A.getHeads(this.handle.doc()), A.getHeads(doc)))
+        (this.metadata !== verified ||
+          (doc && !sameHeads(A.getHeads(this.handle.doc()), A.getHeads(doc))))
       )
         event.preview = "changed";
       state = this.lifecycleState();
     }
     // No await from the head guard to the policy-visible record.
     if (type === "trash") {
-      const checks = [
-        this.handle ? headsCheck(this.handle.doc(), args.base_heads) : "invalid",
-        commentHeadsCheck(this.commentsHandle?.doc(), args.base_comment_heads),
-      ];
+      const unopened = Boolean(this.formatRefusal());
+      // A caller's trash: a Page whose documents this host doesn't open has
+      // no heads to match, so a trash without base_heads proceeds and one
+      // with them is invalid. delete_project's own trash sends
+      // base_comment_heads, null when the deletion read a record whose
+      // documents this host doesn't open; it applies only while the host
+      // still opens exactly what the deletion read, at those heads.
+      const checks =
+        args.base_comment_heads === undefined
+          ? [
+              this.handle
+                ? headsCheck(this.handle.doc(), args.base_heads)
+                : unopened && args.base_heads === undefined
+                  ? "absent"
+                  : "invalid",
+            ]
+          : (args.base_comment_heads === null) !== unopened
+            ? ["mismatch"]
+            : unopened
+              ? ["absent"]
+              : [
+                  this.handle ? headsCheck(this.handle.doc(), args.base_heads) : "invalid",
+                  commentHeadsCheck(this.commentsHandle?.doc(), args.base_comment_heads),
+                ];
       event.heads = checks.includes("invalid")
         ? "invalid"
         : checks.includes("mismatch")
@@ -6455,7 +6555,7 @@ export class Page {
         page_id: pageId,
         state: "trashed",
         trashed: true,
-        title: catalogTitle(this.handle.doc().title),
+        title: catalogTitle(this.pageTitle()),
         trashed_at: now,
         trashed_by: identity.principal,
         trash_root_id: pageId,
@@ -6480,7 +6580,7 @@ export class Page {
       return;
     }
     if (type === "restore") {
-      const title = catalogTitle(this.handle.doc().title);
+      const title = catalogTitle(this.pageTitle());
       if (state.name === "active") {
         context.record = this.lifecycleRecord("restore_page", digest, {
           page_id: pageId,
@@ -6621,6 +6721,9 @@ export class Page {
         await this.loadDocument();
         return;
       case "importDocument":
+        // An intent whose record names formats this build doesn't write
+        // imports nothing: its record installs and the host refuses it.
+        if (!recordFormatsWritten(context.intent.metadata)) return;
         // A replayed creation may find the document stored already.
         this.plain.serve(context.intent.metadata.documentId, "page");
         this.handle = await this.repo.import(context.intent.bytes, {
@@ -6675,12 +6778,16 @@ export class Page {
       case "superseded":
         return this.supersededResponse();
       case "preview": {
-        const doc = this.handle.doc();
+        // A Page whose documents this host doesn't open is described from
+        // its record and the title it last projected, with no heads.
+        const doc = this.handle?.doc() ?? null;
         return json({
           page_id: this.metadata.pageId,
           ...publicTrash(this.metadata),
-          ...purgeImpact(this.metadata, doc, this.commentsView()),
-          heads: A.getHeads(doc),
+          ...(doc
+            ? purgeImpact(this.metadata, doc, this.commentsView())
+            : purgeImpact(this.metadata, null, undefined, this.pageTitle())),
+          heads: doc ? A.getHeads(doc) : null,
           ...(await issuePurgePreview(
             this.ctx.storage,
             this.metadata,
@@ -6779,6 +6886,8 @@ export class Page {
             ownerName: identity.displayName,
             documentId: args.document_id,
             comments_doc: await commentsDocUuid(args.page_id),
+            // readRegistration admitted the draft in the format this build writes.
+            documentFormats: { ...WRITTEN_FORMATS },
             deleted: false,
             registration: digest,
             createdReceipt: {
@@ -6882,6 +6991,9 @@ export class Page {
   connect(request, identity) {
     if (request.headers.get("upgrade")?.toLowerCase() !== "websocket")
       throw new HttpError(426, "WebSocket upgrade required");
+    // A record in a format this build doesn't write serves no document.
+    const unopened = this.formatRefusal();
+    if (unopened) return refuseSocket(unopened, identity);
     const epochs = new URL(request.url).searchParams.getAll("activity_epoch");
     if (epochs.length) {
       if (
@@ -6914,7 +7026,7 @@ export class Page {
     if (capacity) return refuseSocket(capacity, identity);
     try {
       requirePlainSyncClient(request);
-      requireReadableDocuments(readable);
+      requireReadableDocuments(readable, recordDocumentFormats(this.metadata));
     } catch (error) {
       return refuseSocket(error, identity);
     }

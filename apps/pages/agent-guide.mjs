@@ -174,6 +174,10 @@ ${part.authErrorItems}
 - stored_form_unsupported (409): part of this Page is stored in a form from an
   earlier version of Pages that this build doesn't read. Retrying doesn't
   help; tell the person, since the Page needs an operator.
+- document_format_unsupported (409): this Page is stored in a format this
+  version of Pages doesn't open, so it can't be read or edited. It still
+  appears in list_pages; its owner can delete_page, restore_page and
+  purge_page it. Retrying doesn't help; tell the person.
 - idempotency_conflict: the key was used for a different request. Use a new key.
 - operation_pending (409): an earlier request with this key is still being
   applied. Retry the same request shortly.
@@ -777,7 +781,8 @@ project_id_as_page_id or page_id_as_project_id, naming the right tool and argume
   holds a Page, even one in Trash, returns project_not_empty: move its Pages
   out, or trash and purge them, first. Call it with {"action": "preview"}: the
   result has title, collaborators who lose access, pending_invitations,
-  comment_count and a preview_token valid for ten minutes. Show that to the
+  comment_count (null when Pages can't read the content's format) and a
+  preview_token valid for ten minutes. Show that to the
   person and get confirmation. Then call {"action": "confirm"} with the
   unchanged preview_token and an idempotency_key. A content edit, comment or
   sharing change after the preview returns purge_preview_invalid; preview

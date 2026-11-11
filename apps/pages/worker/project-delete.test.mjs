@@ -618,6 +618,124 @@ test("purge_page can't delete a Project's content outside its deletion", async (
   assert.ok(w.page(project.document_id).metadata.purged);
 });
 
+/** The content host as a host booted on a record whose documents this build
+ * doesn't write: it holds the record and opens neither document. Returns
+ * the documents the host opens from then on. */
+async function unopenedContent(w, project, documentFormats) {
+  const host = w.page(project.document_id);
+  host.metadata = { ...host.metadata, documentFormats };
+  await host.ctx.storage.put("host/document", host.metadata);
+  host.handle = undefined;
+  host.commentsHandle = undefined;
+  host.commentsUuid ??= host.metadata.comments_doc;
+  const opened = [];
+  host.repo.import = async (_bytes, { docId } = {}) => {
+    opened.push(docId);
+    throw new Error("A refused record's document was opened");
+  };
+  return { host, opened };
+}
+
+test("the owner deletes a Project whose content is in a format this build doesn't write, from its record", async (t) => {
+  const w = await world(t);
+  t.mock.method(console, "info", () => {});
+  const project = await w.createProject("Old format");
+  const { host, opened } = await unopenedContent(w, project, {
+    "pages.page": 99,
+    "pages.comments": 1,
+  });
+  const read = await w.call("owner", "read_page", { project_id: project.project_id });
+  assert.equal(read.status, 409);
+  assert.equal(read.body.code, "document_format_unsupported");
+
+  const previewed = await preview(w, project.project_id);
+  assert.equal(previewed.status, 200, JSON.stringify(previewed.body));
+  // Nothing read the content, so the preview reports no heads or discussion.
+  assert.equal(previewed.body.heads, null);
+  assert.equal(previewed.body.comment_count, null);
+  assert.equal(previewed.body.comment_threads, null);
+  assert.match(previewed.body.preview_token, /^pp1\./);
+
+  const key = w.key();
+  const deleted = await confirm(w, project.project_id, previewed.body.preview_token, key);
+  assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
+  assert.deepEqual(deleted.body, { project_id: project.project_id, deleted: true });
+  assert.ok(host.metadata.purged);
+  assert.deepEqual(opened, [], "no path opened the content");
+  assert.equal(host.handle, undefined);
+  assert.equal(
+    (await w.call("owner", "get_project", { project_id: project.project_id })).status,
+    404,
+  );
+  assert.deepEqual(
+    await confirm(w, project.project_id, previewed.body.preview_token, key),
+    deleted,
+  );
+});
+
+test("a content record that opens after the preview refuses the deletion and reopens", async (t) => {
+  const w = await world(t);
+  t.mock.method(console, "info", () => {});
+  const project = await w.createProject("Opened later");
+  const formats = { ...w.page(project.document_id).metadata.documentFormats };
+  const handle = w.page(project.document_id).handle;
+  const { host } = await unopenedContent(w, project, { "pages.page": 99, "pages.comments": 1 });
+  const token = (await preview(w, project.project_id)).body.preview_token;
+  // A build that writes the record's format opens it between the close and
+  // the trash: the token bound a record nothing could change, and the trash
+  // refuses because the host now opens the documents.
+  const projects = w.env.PROJECTS;
+  let opened = false;
+  w.env.PROJECTS = {
+    getByName(id) {
+      const target = projects.getByName(id);
+      return {
+        async fetch(request, init) {
+          const step =
+            new URL(request.url).pathname === "/internal/space/delete" &&
+            (await request.clone().json()).step;
+          const response = await target.fetch(request, init);
+          if (step === "close" && !opened) {
+            opened = true;
+            host.metadata = { ...host.metadata, documentFormats: formats };
+            host.handle = handle;
+          }
+          return response;
+        },
+      };
+    },
+  };
+  const key = w.key();
+  const refused = await confirm(w, project.project_id, token, key);
+  assert.ok(opened);
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.equal(refused.body.code, "purge_preview_invalid");
+  assert.equal(host.metadata.deleted, false, "the content stays out of Trash");
+  assert.equal(await w.catalogStorage().get(`host/operation/${key}`), undefined);
+  assert.equal(
+    (await w.call("owner", "get_project", { project_id: project.project_id })).status,
+    200,
+  );
+});
+
+test("a content record without a format stamp reads as this build's formats and deletes by its heads", async (t) => {
+  const w = await world(t);
+  t.mock.method(console, "info", () => {});
+  const project = await w.createProject("Unstamped");
+  writableContent(w, project);
+  const host = w.page(project.document_id);
+  const { documentFormats: _stamp, ...unstamped } = host.metadata;
+  host.metadata = unstamped;
+  await host.ctx.storage.put("host/document", unstamped);
+  const previewed = await preview(w, project.project_id);
+  assert.equal(previewed.status, 200, JSON.stringify(previewed.body));
+  assert.deepEqual(previewed.body.heads, A.getHeads(host.handle.doc()));
+  assert.equal(previewed.body.comment_count, 0);
+  const deleted = await confirm(w, project.project_id, previewed.body.preview_token);
+  assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
+  assert.ok(host.metadata.purged);
+});
+
 test("delete_project over MCP previews, confirms and maps project_id", async (t) => {
   const w = await world(t);
   t.mock.method(console, "info", () => {});

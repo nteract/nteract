@@ -16,15 +16,74 @@ function currentFormat(type) {
   return Math.max(...Object.keys(DOCUMENT_TYPES[type]).map(Number));
 }
 
-/** Project the host's existing IDs without minting, persisting or converting
- * documents. Omit comments when the host has no comments handle to advertise. */
-export function pageDocuments(documentId, commentsDocumentId) {
+/** The format this build writes for each type, `{ type: format }`. A Page
+ * host record stores it as `documentFormats` from the Page's creation or
+ * registration on. */
+export const WRITTEN_FORMATS = Object.freeze(
+  Object.fromEntries(Object.keys(DOCUMENT_TYPES).map((type) => [type, currentFormat(type)])),
+);
+
+/** The formats of a host record written before records stored
+ * `documentFormats`. Every Page such a target holds is in pages.page 2 and
+ * pages.comments 1, the formats this build writes, so an unstamped record
+ * reads as them. The build that changes either format deletes this rule; an
+ * unstamped record is then refused like any record in a format the build
+ * doesn't write. */
+export const UNSTAMPED_RECORD_FORMATS = Object.freeze({ "pages.page": 2, "pages.comments": 1 });
+
+/** The formats a Page host record says its documents are in, `{ type:
+ * format }`: its `documentFormats`, or UNSTAMPED_RECORD_FORMATS without one.
+ * The only reader of that field. */
+export function recordDocumentFormats(record) {
+  return Object.hasOwn(record, "documentFormats")
+    ? record.documentFormats
+    : UNSTAMPED_RECORD_FORMATS;
+}
+
+/** Whether a host record's documents are in the formats this build writes:
+ * every registered type at its written format, and no other type. The host
+ * opens the documents of no other record. */
+export function recordFormatsWritten(record) {
+  const formats = recordDocumentFormats(record);
+  if (!formats || typeof formats !== "object" || Array.isArray(formats)) return false;
+  const types = Object.keys(formats);
+  return (
+    types.length === Object.keys(WRITTEN_FORMATS).length &&
+    types.every(
+      (type) => Object.hasOwn(WRITTEN_FORMATS, type) && formats[type] === WRITTEN_FORMATS[type],
+    )
+  );
+}
+
+/** The refusal for a request that would open, read or write the documents
+ * of a record recordFormatsWritten rejects. The owner still lists, trashes,
+ * restores and permanently deletes the Page. */
+export function documentFormatsUnsupported() {
+  return Object.assign(
+    Error(
+      "This Page is stored in a format this version of Pages doesn't open. Its owner can delete it.",
+    ),
+    { status: 409, code: "document_format_unsupported" },
+  );
+}
+
+/** `{ type, format }` pairs of a `{ type: format }` map. */
+export function formatPairs(formats) {
+  return Object.entries(formats).map(([type, format]) => ({ type, format }));
+}
+
+/** Project the host's existing IDs at `formats` (a record's, from
+ * recordDocumentFormats) without minting, persisting or converting
+ * documents. Omit comments when the host has no comments handle to
+ * advertise. */
+export function pageDocuments(formats, documentId, commentsDocumentId) {
   return {
-    page: { id: documentId, ...DOCUMENT_TYPES["pages.page"][currentFormat("pages.page")] },
+    page: { id: documentId, type: "pages.page", format: formats["pages.page"] },
     ...(commentsDocumentId !== undefined && {
       comments: {
         id: commentsDocumentId,
-        ...DOCUMENT_TYPES["pages.comments"][currentFormat("pages.comments")],
+        type: "pages.comments",
+        format: formats["pages.comments"],
       },
     }),
   };
@@ -46,11 +105,6 @@ export function readableFormats() {
   return Object.entries(formatsByType()).flatMap(([type, formats]) =>
     formats.map((format) => ({ type, format })),
   );
-}
-
-/** The format this build writes for each type, as `{ type, format }` pairs. */
-export function currentFormats() {
-  return Object.keys(DOCUMENT_TYPES).map((type) => ({ type, format: currentFormat(type) }));
 }
 
 /** Query-string form of a reader's formats: `pages.comments:1,pages.page:2`,

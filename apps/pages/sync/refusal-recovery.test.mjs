@@ -282,6 +282,7 @@ for (const code of [
   "history_capacity",
   "history_capacity_then_accept",
   "malformed_change",
+  "invalid_block",
   "io",
   "closed",
   "missing_dependencies",
@@ -295,9 +296,12 @@ for (const code of [
       const acceptsOnReconnect = code === "history_capacity_then_accept";
       const policyCode = acceptsOnReconnect ? "history_capacity" : code;
       let accepting = false;
-      const terminal = ["actor_claimed", "history_capacity", "malformed_change"].includes(
-        policyCode,
-      );
+      const terminal = [
+        "actor_claimed",
+        "history_capacity",
+        "invalid_block",
+        "malformed_change",
+      ].includes(policyCode);
       const { h, id, base, bytes, client, handle } = await fixture(t, {
         policy: {
           admit(conn, _doc, _live, _fresh, preview) {

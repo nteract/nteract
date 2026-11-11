@@ -485,23 +485,36 @@ export class Space {
       throw spaceNotFound();
     if (identity.principal !== record.owner)
       throw new HttpError(403, "Only the Project owner can delete it");
-    const binding = ({ heads, comment_heads }) =>
+    const binding = ({ content_revision, heads, comment_heads }) =>
       bindingOf({
         project: record.space_id,
         principal: identity.principal,
         document_id: record.document_id,
-        heads: [...heads].sort(),
-        comment_heads: [...comment_heads].sort(),
+        content_revision,
+        heads: heads && [...heads].sort(),
+        comment_heads: comment_heads && [...comment_heads].sort(),
         acl: record.acl ?? null,
         revision: record.revision ?? 0,
       });
-    // The content's heads and its comments document's heads, as the Catalog
-    // read them from the content's Page host.
+    // What the Catalog read from the content's Page host: its lifecycle
+    // revision, and the heads of the content and its comments document. Both
+    // heads are null for a record whose documents that host doesn't open;
+    // nothing can change those documents, so its revision binds the content.
     const contentHeads = () => {
-      for (const name of ["heads", "comment_heads"])
-        if (!Array.isArray(args[name]) || args[name].some((head) => typeof head !== "string"))
-          throw new HttpError(400, `${name} must be the content's ${name}`);
-      return { heads: args.heads, comment_heads: args.comment_heads };
+      const heads = (name) =>
+        Array.isArray(args[name]) && args[name].every((head) => typeof head === "string");
+      const unopened = args.heads === null && args.comment_heads === null;
+      if (
+        !Number.isSafeInteger(args.content_revision) ||
+        args.content_revision < 0 ||
+        !(unopened || (heads("heads") && heads("comment_heads")))
+      )
+        throw new HttpError(400, "content_revision, heads and comment_heads describe the content");
+      return {
+        content_revision: args.content_revision,
+        heads: args.heads,
+        comment_heads: args.comment_heads,
+      };
     };
     if (step === "preview") {
       if (record.deletion) throw spaceNotFound();
