@@ -17,7 +17,7 @@ const UUID = "0f5db4ee-ab47-48e4-a0e2-facc277a3efe";
 const actor = () => Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("hex");
 const who = (principal) => ({ principal, displayName: principal.slice(8), driver: "Browser" });
 const page = A.from({
-  blocks: { b1: { id: "b1", markdown: "One" }, b2: { id: "b2", markdown: "Two" } },
+  blocks: { b1: { position: "a0", richText: "One" }, b2: { position: "a1", richText: "Two" } },
 });
 
 /** Alice's thread (her first message, then Bob's reply) and Bob's thread. */

@@ -91,9 +91,7 @@ function page(blocks) {
   return A.change(A.from({ page_id: "anchor-fixture", title: "Title", blocks: {} }), (doc) => {
     blocks.forEach(({ id, markdown }, index) => {
       doc.blocks[id] = {
-        id,
         position: new A.RawString(`a${index}`),
-        kind: "markdown",
         markdown,
       };
       richFromSource(doc, id);

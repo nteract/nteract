@@ -12,7 +12,7 @@ import {
 } from "../shared/dataset-assets.mjs";
 import { schema, Paragraph, PagesImage, PagesDataframe, PagesLink } from "./wordgard-doc.mjs";
 import { parseAgentMarkdown, parseMarkdown } from "./markdown-import.mjs";
-import { requireRich, textPath } from "./richtext-format.mjs";
+import { textPath } from "./richtext-format.mjs";
 import { pageSpans, richDoc } from "./richtext-spans.mjs";
 import { nativeRead, readMarkdown, readKind } from "./native-read.mjs";
 import { dataframeLabel, unknownNodeNotice } from "./richtext-notices.mjs";
@@ -21,7 +21,6 @@ import { dataframeLabel, unknownNodeNotice } from "./richtext-notices.mjs";
  * dataframe naming another Page's asset then reads as an unknown-node
  * notice. The read projection does not change or validate stored content. */
 export function blockMarkdown(block, pageId) {
-  requireRich(block);
   return readMarkdown(nativeRead(block, pageId).nodes);
 }
 
@@ -108,7 +107,7 @@ export function setRichNode(doc, id, { type, attrs }) {
  * - reads like a dataframe the block doesn't hold.
  */
 export function setRichMarkdownKeepingNodes(doc, id, source) {
-  const block = requireRich(doc.blocks[id]);
+  const block = doc.blocks[id];
   const images = A.spans(block, ["richText"]).filter(
     (s) => s.type === "block" && String(s.value.type) === "image",
   );
@@ -248,7 +247,8 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
   const spans = keepImages(pageSpans(kept));
   writeMarkdownSpans(doc, id, spans);
 }
-export function projectedBlock(block, pageId) {
-  const { richText: _rich, ...result } = block;
-  return { ...result, markdown: blockMarkdown(block, pageId) };
+/** A block as a response carries it. The map key is the block's id. */
+export function projectedBlock(doc, id) {
+  const block = doc.blocks[id];
+  return { id, position: block.position, markdown: blockMarkdown(block, doc.page_id) };
 }

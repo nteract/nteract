@@ -10,18 +10,9 @@ import { nativeRead } from "./native-read.mjs";
 
 function page(blocks) {
   return A.change(A.from({ page_id: "read-fixture", title: "A title", blocks: {} }), (doc) => {
-    for (const [
-      index,
-      { id, markdown, rich = true, kind = "markdown", position },
-    ] of blocks.entries()) {
-      doc.blocks[id] = {
-        id,
-        position: new A.RawString(position ?? `a${index}`),
-        kind,
-        markdown,
-        metadata: { retained: id },
-      };
-      if (rich) richFromSource(doc, id);
+    for (const [index, { id, markdown, position }] of blocks.entries()) {
+      doc.blocks[id] = { position: new A.RawString(position ?? `a${index}`), markdown };
+      richFromSource(doc, id);
     }
     stampFeatures(doc, ["comments-doc"]);
   });
@@ -78,7 +69,7 @@ const contentJSON = (value) =>
     ),
   );
 
-test("default and block-ID reads retain the complete projectedBlock shape in document order", () => {
+test("default and block-ID reads return id, position and markdown in document order", () => {
   let doc = page([
     { id: "later", markdown: "Later", position: "a2" },
     { id: "first", markdown: "Old import", position: "a0" },
@@ -86,6 +77,7 @@ test("default and block-ID reads retain the complete projectedBlock shape in doc
   ]);
   doc = A.change(doc, (d) => {
     setRichMarkdown(d, "first", "Current **rich** text 🌊");
+    // A field a peer added is never returned.
     d.blocks.first.extension = { version: 2 };
   });
   const expected = projectPage(doc).blocks;
@@ -95,7 +87,8 @@ test("default and block-ID reads retain the complete projectedBlock shape in doc
   assert.equal(selected.blocks[0].markdown, "Current **rich** text 🌊");
   assert.equal(selected.blocks[0].richText, undefined);
   assert.equal(selected.blocks[0].partial, undefined);
-  assert.deepEqual(selected.blocks[0].extension, { version: 2 });
+  for (const block of read(doc).blocks)
+    assert.deepEqual(Object.keys(block).sort(), ["id", "markdown", "position"]);
   assert.deepEqual(selected.selection, { type: "blocks", block_ids: ["first", "later"] });
 });
 
@@ -111,6 +104,13 @@ test("a section inside one rich block includes its heading and children until a 
   assert.equal(result.blocks.length, 1);
   assert.equal(result.blocks[0].id, "one");
   assert.equal(result.blocks[0].partial, true);
+  assert.deepEqual(Object.keys(result.blocks[0]).sort(), [
+    "id",
+    "markdown",
+    "node_range",
+    "partial",
+    "position",
+  ]);
   assert.deepEqual(result.blocks[0].node_range, { block_id: "one", from: 2, to: 6 });
   assert.equal(
     result.blocks[0].markdown,
@@ -254,18 +254,6 @@ test("partial reads preserve whole nested lists, tasks, tables, links, code and 
     });
     assert.equal(entry.markdown_bytes, Buffer.byteLength(single.blocks[0].markdown, "utf8"));
   }
-});
-
-test("a block without rich text fails closed instead of being read as Markdown", () => {
-  const doc = page([
-    { id: "one", markdown: "Current" },
-    { id: "legacy", markdown: "# Legacy", rich: false },
-  ]);
-  for (const args of [{}, { section: "Legacy" }, { include_content: false }])
-    assert.throws(
-      () => projectReadContent(doc, args),
-      expectedError(409, "stored_form_unsupported"),
-    );
 });
 
 test("instruction-like text and private image references are only data", () => {

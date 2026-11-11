@@ -123,8 +123,8 @@ function fakePages(origin, { outlinePage = 100, token = KEY, insertNode = true }
       position: position ?? generateKeyBetween(last ?? null, null),
       blocks: blocks.map((block) =>
         typeof block === "string"
-          ? { id: crypto.randomUUID(), kind: "markdown", markdown: block }
-          : { id: crypto.randomUUID(), kind: "markdown", ...block },
+          ? { id: crypto.randomUUID(), markdown: block }
+          : { id: crypto.randomUUID(), ...block },
       ),
       comments: [],
       revision: 1,
@@ -207,7 +207,6 @@ function fakePages(origin, { outlinePage = 100, token = KEY, insertNode = true }
   /** A block holding one dataframe, read back as the server does. */
   const dataframeBlock = (pageId, { asset_id, media_type, title }) => ({
     id: crypto.randomUUID(),
-    kind: "markdown",
     type: "dataframe",
     markdown: `[Dataframe${title ? `: ${title}` : ""}](${assetPath(pageId, asset_id)})`,
     attrs: { asset_id, src: assetPath(pageId, asset_id), media_type, ...(title && { title }) },
@@ -315,7 +314,11 @@ function fakePages(origin, { outlinePage = 100, token = KEY, insertNode = true }
       const { page, rest, extra, error } = resolve(args);
       if (error) return error;
       const common = { ...extra, page_id: page.page_id, title: page.title, heads: [head(page)] };
-      const blocks = page.blocks.map(({ id, kind, markdown }) => ({ id, kind, markdown }));
+      const blocks = page.blocks.map(({ id, kind, markdown }) => ({
+        id,
+        ...(kind && { kind }),
+        markdown,
+      }));
       args = rest;
       if (Object.keys(args).length === 0)
         return {
@@ -359,7 +362,7 @@ function fakePages(origin, { outlinePage = 100, token = KEY, insertNode = true }
             op.after_block_id === null ? page.blocks.unshift(block) : page.blocks.push(block);
           if (op.op === "set_title") page.title = op.title;
           else if (op.op === "insert_markdown")
-            place({ id: crypto.randomUUID(), kind: "markdown", markdown: op.markdown });
+            place({ id: crypto.randomUUID(), markdown: op.markdown });
           else if (op.op === "insert_node") {
             const { attrs } = op.node;
             // validateNodeInsertion's shape (model/page.mjs).
@@ -541,7 +544,7 @@ async function imageBundle() {
   const id = createHash("sha256").update(PNG).digest("hex");
   const src = assetPath(content.page_id, id);
   const markdown = `> ![quote](${src} "Caption")\n\n- ![list](${src})\n\n| image |\n| --- |\n| ![table](${src}) |\n\n[link](${src})\n\n\`![code](${src})\`\n\n\`\`\`md\n![fenced](${src})\n\`\`\``;
-  content.blocks = [{ id: crypto.randomUUID(), kind: "markdown", markdown }];
+  content.blocks = [{ id: crypto.randomUUID(), markdown }];
   source.assets.set(`${content.page_id}/${id}`, PNG);
   const result = await exportProject(client(source, SOURCE), { projectId: project_id, ...quick });
   return { ...result, source, content, id, src, project_id };
@@ -972,6 +975,34 @@ test("export flags preserved Markdown from a source that still reports raw", asy
     report.preserved_markdown.map((page) => page.title),
     ["Alpha"],
   );
+});
+
+test("export reads a format 2 source, whose blocks carry no kind, as Markdown", async () => {
+  const source = fakePages(SOURCE);
+  const { project_id, content } = source.seedProject({ title: "Format 2" });
+  content.blocks = [{ id: crypto.randomUUID(), markdown: "Plain block." }];
+  const { bundle } = await exportProject(client(source, SOURCE), {
+    projectId: project_id,
+    ...quick,
+  });
+  assert.equal(bundle.project.content.preserved_markdown, false);
+  assert.equal(bundle.project.content.markdown, "Plain block.");
+});
+
+test("export reads a format 1 source: kind markdown is plain, any other kind is preserved", async () => {
+  for (const [kind, preserved] of [
+    ["markdown", false],
+    ["html", true],
+  ]) {
+    const source = fakePages(SOURCE);
+    const { project_id, content } = source.seedProject({ title: "Format 1" });
+    content.blocks = [{ id: crypto.randomUUID(), kind, markdown: "Block." }];
+    const { bundle } = await exportProject(client(source, SOURCE), {
+      projectId: project_id,
+      ...quick,
+    });
+    assert.equal(bundle.project.content.preserved_markdown, preserved, kind);
+  }
 });
 
 test("export does not flag a Page whose outline has only rich nodes", async () => {
@@ -1793,15 +1824,14 @@ const base64 = (bytes) => Buffer.from(bytes).toString("base64");
 async function dataframeSource({ token = KEY, ...options } = {}) {
   const source = fakePages(SOURCE, { token, ...options });
   const { project_id, content } = source.seedProject({ title: "Usage report" });
-  content.blocks = [{ id: crypto.randomUUID(), kind: "markdown", markdown: "Intro prose." }];
+  content.blocks = [{ id: crypto.randomUUID(), markdown: "Intro prose." }];
   const daily = await source.addDataframe(content, frameBytes("daily"), { title: "Usage by day" });
-  content.blocks.push({ id: crypto.randomUUID(), kind: "markdown", markdown: "Between." });
+  content.blocks.push({ id: crypto.randomUUID(), markdown: "Between." });
   // A browser drop leaves a dataframe inside a prose block.
   const weekly = await source.addDataframe(content, frameBytes("weekly"), { title: "By week" });
   const dropped = content.blocks.pop();
   content.blocks.push({
     id: crypto.randomUUID(),
-    kind: "markdown",
     markdown: `Before the drop.\n\n${dropped.markdown}\n\nAfter the drop.`,
     outline: [
       { type: "paragraph" },
@@ -1967,7 +1997,7 @@ test("a rerun over a body an earlier run wrote, dataframes first, converges", as
   const { project_id, content } = source.seedProject({ title: "Frames first" });
   content.blocks = [];
   await source.addDataframe(content, frameBytes("lead"), { title: "Lead" });
-  content.blocks.push({ id: crypto.randomUUID(), kind: "markdown", markdown: "After the lead." });
+  content.blocks.push({ id: crypto.randomUUID(), markdown: "After the lead." });
   const { bundle } = await exportProject(client(source, SOURCE), {
     projectId: project_id,
     ...quick,
@@ -1999,7 +2029,7 @@ test("a rerun over a body an earlier run wrote, dataframes first, converges", as
 test("two dataframes showing one asset keep their own titles", async () => {
   const source = fakePages(SOURCE);
   const { project_id, content } = source.seedProject({ title: "Same asset" });
-  content.blocks = [{ id: crypto.randomUUID(), kind: "markdown", markdown: "Two views." }];
+  content.blocks = [{ id: crypto.randomUUID(), markdown: "Two views." }];
   const bytes = frameBytes("shared");
   await source.addDataframe(content, bytes, { title: "By day" });
   await source.addDataframe(content, bytes, { title: "By week" });
@@ -2083,7 +2113,7 @@ test("the client sends its credential only to same-origin asset paths", async ()
 test("an outline src that isn't its own asset path is never downloaded", async () => {
   const source = fakePages(SOURCE);
   const { project_id, content } = source.seedProject({ title: "Hostile src" });
-  content.blocks = [{ id: crypto.randomUUID(), kind: "markdown", markdown: "Intro." }];
+  content.blocks = [{ id: crypto.randomUUID(), markdown: "Intro." }];
   const frame = await source.addDataframe(content, frameBytes("x"), { title: "X" });
   content.blocks.at(-1).attrs.src = "@evil.example/steal";
   const { bundle } = await exportProject(client(source, SOURCE), {
@@ -2106,7 +2136,7 @@ test("an outline src that isn't its own asset path is never downloaded", async (
 test("a dataframe whose asset is missing on the source imports as a reported link", async () => {
   const source = fakePages(SOURCE);
   const { project_id, content } = source.seedProject({ title: "Missing asset" });
-  content.blocks = [{ id: crypto.randomUUID(), kind: "markdown", markdown: "Intro." }];
+  content.blocks = [{ id: crypto.randomUUID(), markdown: "Intro." }];
   const kept = await source.addDataframe(content, frameBytes("kept"), { title: "Kept" });
   const gone = await source.addDataframe(content, frameBytes("gone"), { title: "Gone" });
   source.assets.delete(`${content.page_id}/${gone.asset_id}`);
@@ -2125,9 +2155,7 @@ test("a dataframe line inside a quote isn't a private image; it's reported as no
   const source = fakePages(SOURCE);
   const { project_id, content } = source.seedProject({ title: "Quoted" });
   const frame = await source.addDataframe(content, frameBytes("q"), { title: "Q" });
-  content.blocks = [
-    { id: crypto.randomUUID(), kind: "markdown", markdown: `> ${frame.line}\n>\n> Quoted.` },
-  ];
+  content.blocks = [{ id: crypto.randomUUID(), markdown: `> ${frame.line}\n>\n> Quoted.` }];
   const { bundle, report } = await exportProject(client(source, SOURCE), {
     projectId: project_id,
     ...quick,
@@ -2140,9 +2168,9 @@ test("a dataframe line inside a quote isn't a private image; it's reported as no
 test("a quoted copy of a top-level dataframe is reported as not copied", async () => {
   const source = fakePages(SOURCE);
   const { project_id, content } = source.seedProject({ title: "Quoted copy" });
-  content.blocks = [{ id: crypto.randomUUID(), kind: "markdown", markdown: "Intro." }];
+  content.blocks = [{ id: crypto.randomUUID(), markdown: "Intro." }];
   const frame = await source.addDataframe(content, frameBytes("q"), { title: "Q" });
-  content.blocks.push({ id: crypto.randomUUID(), kind: "markdown", markdown: `> ${frame.line}` });
+  content.blocks.push({ id: crypto.randomUUID(), markdown: `> ${frame.line}` });
   const { bundle, report } = await exportProject(client(source, SOURCE), {
     projectId: project_id,
     ...quick,
@@ -2168,9 +2196,9 @@ test("asset requests never follow a redirect, and a 404 is told apart by status"
 test("a source path is listed once in the not-copied report", async () => {
   const source = fakePages(SOURCE, { token: "pages_oauth-token" });
   const { project_id, content } = source.seedProject({ title: "Twice" });
-  content.blocks = [{ id: crypto.randomUUID(), kind: "markdown", markdown: "Intro." }];
+  content.blocks = [{ id: crypto.randomUUID(), markdown: "Intro." }];
   const frame = await source.addDataframe(content, frameBytes("t"), { title: "T" });
-  content.blocks.push({ id: crypto.randomUUID(), kind: "markdown", markdown: `> ${frame.line}` });
+  content.blocks.push({ id: crypto.randomUUID(), markdown: `> ${frame.line}` });
   const { report } = await exportProject(client(source, SOURCE, "pages_oauth-token"), {
     projectId: project_id,
     ...quick,

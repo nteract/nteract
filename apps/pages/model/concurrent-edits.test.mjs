@@ -10,7 +10,7 @@ import { Leaf, Mark } from "wordgard/doc";
 import * as A from "@automerge/automerge";
 import { applyPageOperation, createPageData, orderedBlockIds } from "./page.mjs";
 import { projectReadContent } from "./read-content.mjs";
-import { blockMarkdown, parseAgentMarkdown, textPath, RICH_FORMAT } from "./richtext.mjs";
+import { blockMarkdown, parseAgentMarkdown, textPath } from "./richtext.mjs";
 import { updateSpansConfig } from "./marks.mjs";
 import { stampSpans } from "./schema-features.mjs";
 import { textSegments } from "./replace-match.mjs";
@@ -32,7 +32,6 @@ function pageWith(tree) {
   const id = orderedBlockIds(doc)[0];
   const spans = encode(tree);
   doc = A.change(doc, (draft) => {
-    draft.blocks[id].format = RICH_FORMAT;
     draft.blocks[id].richText = "";
     A.updateSpans(draft, textPath(id), spans, updateSpansConfig);
     stampSpans(draft, spans);

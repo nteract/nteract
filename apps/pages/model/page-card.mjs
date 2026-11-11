@@ -22,7 +22,6 @@
 //
 // `rich` says the first screen holds Mermaid, a dataframe or an image, which
 // the JSON card can only stand in for. Nothing reads it yet.
-import { isRich } from "./richtext-format.mjs";
 import { surfaceRead } from "./page-surface-read.mjs";
 import { readKind } from "./native-read.mjs";
 import { PagesLink } from "./wordgard-doc.mjs";
@@ -165,7 +164,6 @@ const CARD_OVERRIDES = Object.freeze({
 
 /** One block's top-level card nodes, lazily, or null when it can't render. */
 function blockNodes(block) {
-  if (!isRich(block)) return null;
   let doc;
   try {
     doc = surfaceRead(block);

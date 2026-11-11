@@ -1,5 +1,4 @@
 import { orderedBlockIds } from "./order.mjs";
-import { isRich } from "./richtext-format.mjs";
 import { readChildren, readKind } from "./native-read.mjs";
 import { surfaceRead } from "./page-surface-read.mjs";
 
@@ -77,7 +76,7 @@ export function openingTitleWarning(doc) {
     for (const blockId of orderedBlockIds(doc)) {
       if (blockId.length > 128) return null;
       const block = doc.blocks[blockId];
-      if (!block || !isRich(block)) return null;
+      if (!block) return null;
       const { nodes } = surfaceRead(block);
       for (const node of nodes) {
         if (!["paragraph", "heading"].includes(readKind(node))) return null;

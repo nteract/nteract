@@ -1,6 +1,6 @@
 import * as A from "@automerge/automerge/slim";
 import { nativeReadSpans } from "./native-read.mjs";
-import { codeTextUnmarked, requireRich } from "./richtext-format.mjs";
+import { codeTextUnmarked } from "./richtext-format.mjs";
 import { nodeType, TEXT_CONTAINERS } from "./node-registry.mjs";
 import { unknownNodeNotice } from "./richtext-notices.mjs";
 
@@ -14,10 +14,9 @@ const marker = (type, parents = [], attrs = {}, isEmbed = false) => ({
 const container = (type) => !type || !nodeType(type) || nodeType(type).kind === "container";
 const unknownWrapper = new A.ImmutableString("pages-preview-unknown");
 
-/** Surface reads retain the stored-form refusal used by previews and cards,
- * rather than the more permissive API Markdown projection. */
+/** Surface reads are bounded by size, span and depth budgets that the API
+ * Markdown projection does not apply. */
 export function surfaceRead(block) {
-  requireRich(block);
   if (block.richText.length > MAX_TEXT) throw Error("Surface text budget exceeded");
   const input = codeTextUnmarked(A.spans(block, ["richText"]));
   if (input.length > MAX_SPANS) throw Error("Surface span budget exceeded");

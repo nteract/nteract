@@ -395,11 +395,16 @@ function installFixture(
     health = (build) => JSON.stringify({ ok: true, prototype: "pages-celld-native", build }),
     // A fake clock that `sleep` advances, for adoption timeouts.
     clock,
-    // The staged release's build receipt. The default is a current build.
+    // The staged release's build receipt. The default is a current build that
+    // reads the formats `target` holds.
     buildReceipt = {
       build_id: "0123456789ab",
       record_storage: CURRENT_RECORD_STORAGE,
       plain_storage_formats: CURRENT_PLAIN_STORAGE_FORMATS,
+      document_formats: {
+        "pages.page": [target === "page10" ? 2 : 1],
+        "pages.comments": [1],
+      },
     },
   } = {},
 ) {
@@ -1977,10 +1982,12 @@ test("a node that never adopts fails the install after the local record", (t) =>
 // hold. A build from before `record_storage` was recorded opens none beyond the
 // native modes.
 const PRE_PLAIN = { source_sha: "d".repeat(40), build_id: "9ae4ed83e44e" };
+// A receipt that qualifies for every target: it reads both Page formats.
 const PLAIN = {
   ...PRE_PLAIN,
   record_storage: CURRENT_RECORD_STORAGE,
   plain_storage_formats: CURRENT_PLAIN_STORAGE_FORMATS,
+  document_formats: { "pages.page": [1, 2], "pages.comments": [1] },
 };
 
 test("a release without plain storage is refused for a target that has enabled it", () => {
@@ -2023,31 +2030,54 @@ test("plain targets refuse receipts that know automerge but not the current plai
 });
 
 test("a release must list the document formats a target's documents are in", () => {
-  const formats = { "pages.page": [1], "pages.comments": [1] };
-  for (const target of ["pages", "page10", "pages2", "page11"]) {
+  const format1 = { "pages.page": [1], "pages.comments": [1] };
+  const format2 = { "pages.page": [2], "pages.comments": [1] };
+  // page10 holds format 2. The other targets hold format 1.
+  for (const [target, formats] of [
+    ["page10", format2],
+    ["pages", format1],
+    ["pages2", format1],
+    ["page11", format1],
+  ])
     assert.doesNotThrow(() =>
       profiles.assertReleaseOpensTargetPages(target, { ...PLAIN, document_formats: formats }),
     );
-    // A receipt built before the field wrote and read format 1 of both types.
-    assert.doesNotThrow(() => profiles.assertReleaseOpensTargetPages(target, PLAIN));
-  }
-  for (const [type, listed] of [
-    ["pages.page", [2]],
-    ["pages.page", []],
-    ["pages.comments", [2]],
-    ["pages.comments", undefined],
+  // A current build reads format 2 of pages.page: page10 accepts it and
+  // the format 1 targets refuse it.
+  for (const target of ["pages", "pages2", "page11"])
+    assert.throws(
+      () => profiles.assertReleaseOpensTargetPages(target, { ...PLAIN, document_formats: format2 }),
+      /pages\.page documents are in format 1/,
+      target,
+    );
+  assert.throws(
+    () => profiles.assertReleaseOpensTargetPages("page10", { ...PLAIN, document_formats: format1 }),
+    /page10's pages\.page documents are in format 2/,
+  );
+  // A receipt built before the field wrote and read format 1 of both types.
+  const { document_formats: _absent, ...beforeField } = PLAIN;
+  assert.doesNotThrow(() => profiles.assertReleaseOpensTargetPages("pages", beforeField));
+  assert.throws(
+    () => profiles.assertReleaseOpensTargetPages("page10", beforeField),
+    /page10's pages\.page documents are in format 2/,
+  );
+  for (const [type, listed, format] of [
+    ["pages.page", [1], 2],
+    ["pages.page", [], 2],
+    ["pages.comments", [2], 1],
+    ["pages.comments", undefined, 1],
   ])
     assert.throws(
       () =>
         profiles.assertReleaseOpensTargetPages("page10", {
           ...PLAIN,
-          document_formats: { ...formats, [type]: listed },
+          document_formats: { ...format2, [type]: listed },
         }),
       (error) => {
         assert.match(error.message, /^Refusing release d{12} \(build 9ae4ed83e44e\) for page10: /);
         assert.match(
           error.message,
-          new RegExp(`page10's ${type.replace(".", "\\.")} documents are in format 1`),
+          new RegExp(`page10's ${type.replace(".", "\\.")} documents are in format ${format}`),
         );
         assert.match(error.message, /lists document_formats/);
         return true;
@@ -2055,10 +2085,10 @@ test("a release must list the document formats a target's documents are in", () 
     );
   // Only an absent field means a receipt from before it. Anything else that
   // lists no formats opens no documents.
-  for (const document_formats of [{}, null, [], "pages.page:1", { "pages.page": "1" }])
+  for (const document_formats of [{}, null, [], "pages.page:2", { "pages.page": "2" }])
     assert.throws(
       () => profiles.assertReleaseOpensTargetPages("page10", { ...PLAIN, document_formats }),
-      /documents are in format 1/,
+      /documents are in format 2/,
       JSON.stringify(document_formats),
     );
 });
@@ -2238,7 +2268,11 @@ test("a timeout does not name a rollback to a release without the plain format c
     earlier,
     JSON.stringify({
       ...recorded,
-      build_receipt: { build_id: "0123456789ab", record_storage: CURRENT_RECORD_STORAGE },
+      build_receipt: {
+        build_id: "0123456789ab",
+        record_storage: CURRENT_RECORD_STORAGE,
+        document_formats: PLAIN.document_formats,
+      },
     }),
   );
   nextRelease(f);

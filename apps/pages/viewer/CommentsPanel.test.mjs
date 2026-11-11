@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
+import * as A from "@automerge/automerge";
 
 const dom = new JSDOM("<!doctype html><body></body>", { url: "http://localhost" });
 const saved = new Map();
@@ -106,7 +107,7 @@ async function fixture(t, options = {}) {
   const props = {
     open: true,
     session: {
-      doc: { blocks: { block: {} } },
+      doc: A.from({ blocks: { block: { position: "a0", richText: "" } } }),
       canComment: true,
       commentMessage: () => undefined,
       comment: async (action) => {
@@ -380,7 +381,11 @@ test("resolve and reopen send the action and keep focus in the thread", async (t
 
 test("viewers read threads without Reply or Resolve; resolved threads say so", async (t) => {
   const f = await fixture(t, {
-    session: { doc: { blocks: { block: {} } }, canComment: false, commentMessage: () => undefined },
+    session: {
+      doc: A.from({ blocks: { block: { position: "a0", richText: "" } } }),
+      canComment: false,
+      commentMessage: () => undefined,
+    },
   });
   f.props.target = { id: "done", source: "passage", request: 9 };
   await f.render();
@@ -492,7 +497,7 @@ test("a kept inline-composer draft shows as Unsent comment with Continue and Dis
   const f = await fixture(t, {
     composer: { store, reopen: () => reopened++, cancel: () => cancelled++, focus() {} },
     session: {
-      doc: { blocks: { block: {} } },
+      doc: A.from({ blocks: { block: { position: "a0", richText: "" } } }),
       canComment: true,
       commentMessage: () => undefined,
     },

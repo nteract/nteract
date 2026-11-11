@@ -30,8 +30,9 @@ second document type arrive without a second host.
 
 ## The Page model
 
-A Page document holds a map of blocks keyed by stable ID. Each block has a
-fractional `position` and one Automerge text object. Structure lives in that
+A Page document holds a map of blocks keyed by stable ID. A block stores a
+fractional `position` and one Automerge text object, `richText`; the key is
+its ID. Structure lives in that
 text as flat markers; formatting lives in marks. Moving a block changes its
 `position` and nothing else. `decode(spans)` builds the Wordgard tree and
 `encode(tree)` writes spans back ([model/wordgard-doc.mjs](model/wordgard-doc.mjs)).
@@ -40,14 +41,14 @@ Comments live in their own document and anchor to the Page with cursors.
 ## What changes from today
 
 1. **Format 2 for `pages.page`.** A block stores `position` and `richText`
-   only. Format 2 drops `kind`, `format`, `markdown` and `metadata`. New
-   blocks get a fixed default for each ([model/page.mjs](model/page.mjs)).
-   Older documents can hold other values, such as Markdown left from an
-   import, but the content is `richText`. Tool responses stop reporting `kind`,
-   `format` and `metadata`. The `markdown` a read returns is the projection,
-   and it stays.
-   Every node gets an explicit opening marker, including a block's first
-   paragraph, so every node has an id.
+   only, and a response block is `id`, `position` and `markdown`, the
+   projection of `richText` ([model/page.mjs](model/page.mjs)).
+   **Format 3** gives every node an explicit opening marker, including a
+   block's first paragraph, so every node has an id. Comment messages hold
+   the same rich text, so `pages.comments` moves to format 2 in that change
+   and drops the constant `format` field each message stores. The markers
+   get their own format number so that the release gate refuses a marker
+   build on a target whose documents have none.
 2. **Sync without `automerge-repo`.** Pages uses the Repo package for CBOR,
    document ID helpers, record sizing, the Sedimentree backend interface in
    [sync/backend.mjs](sync/backend.mjs), and one `Repo` in the browser
@@ -57,9 +58,9 @@ Comments live in their own document and anchor to the Page with cursors.
    the sender ([sync/wire.mjs](sync/wire.mjs)). This is Pages' own presence,
    separate from the notebook protocol's.
 3. **Type and format checked at the socket.** A client declares the formats
-   it reads. The host refuses a socket that lacks the document's current
-   format. Today the registry in
-   [model/document-types.mjs](model/document-types.mjs) only describes.
+   it reads. The host refuses a socket that sends none or lacks the
+   document's current format. The registry is
+   [model/document-types.mjs](model/document-types.mjs).
 4. **Agent writes merge by default.** An edit applies at the heads the agent
    read and merges with newer work. The receipt reports the merged result for
    the nodes the edit touched, so the agent sees what landed without another
@@ -75,18 +76,26 @@ Comments live in their own document and anchor to the Page with cursors.
 
 1. **The socket check and the release gate.** The host refuses a socket that
    lacks the document's format. A build's release receipt names the formats
-   it writes, and a release to a target is refused when the target's
-   documents are in another format. Both work on format 1, so they land
-   first.
+   it reads, and a release to a target is refused when the target's
+   documents are in a format the build does not read. Both landed on
+   format 1.
 2. **The last format 1 commit is tagged `pages-format-1`.**
    `pages.runtimed.run` runs that commit, and `main` is never promoted to
    that service. A fix for it goes on a maintenance branch cut from the tag,
    built from that branch and promoted by hand.
 3. **Delete what a new service does not need** (list below).
-4. **Format 2**, deployed to a new, empty service. The block shape comes
-   first. Explicit opening markers follow as their own change, because they
-   move node ids, the golden node addresses and the editor's caret
-   positions.
+4. **Format 2**, deployed to a new, empty service. `main` writes the format 2
+   block shape, and `page10` is the lab target that takes it. Explicit
+   opening markers follow as format 3, their own change, because they move
+   node ids, the golden node addresses and the editor's caret positions. A
+   target is emptied again for format 3. Two host checks land before it:
+   - Plain sync admission checks the block shape, as registration does.
+     Today only registration does, and a reader throws on a block a writing
+     peer synced without `richText`.
+   - A Page's host record stores the type and format of its documents, and
+     the host refuses a record in a format the build does not write. Today
+     the format a target holds is the operator's statement in
+     `TARGET_DOCUMENT_FORMATS`, and a missed reset is not detected.
 5. **Agent tools on format 2.**
 6. **A second document type**, once Pages runs on the type boundary.
 
@@ -96,8 +105,7 @@ Comments live in their own document and anchor to the Page with cursors.
 | --- | --- | --- |
 | Any time | A snapshot file with no regenerate command, or a test that compares against a fixed commit | It pins code that no longer exists and cannot follow an intended change |
 | After the format 1 tag | `PageRecords`, `recordStorage` stamps and guards, `stored-form.mjs` | They protect documents and open tabs on `pages.runtimed.run`. A new service has neither. The `PageRecords` Durable Object class stays declared, with an empty body, while a deployed target still binds it |
-| With format 2 | The `pm` names in `model/node-registry.mjs`, `SUBDUCTION_LOG` in the cold-open benchmark, comments that name removed code | They are read by current code; rename them with the format change |
-| With format 2 | `UNDECLARED_FORMATS` in `model/document-types.mjs`, the reading of a socket that sends no `formats` | It describes tabs opened before the parameter. A new service has none, so a socket without `formats` is refused there |
+| With format 3 | The `format` field each comment message stores, and `isRich` with it | Every message holds rich text. The field only told an earlier stored form apart |
 
 Keep tests that state behavior: concurrent edits, comment anchors, access
 decisions, receipts, persistence and recovery, and the property tests.
@@ -106,9 +114,22 @@ records the node addresses agents use.
 
 ## Rules for the work
 
-- **The new service starts empty.** It needs no reader for any earlier stored
-  form and no migration from an existing target. The host never loads a
-  format 1 document beside format 2 ones, and never converts one in place.
+- **Before production, a target changes format by deleting its old
+  documents.** It needs no reader for any earlier stored form and no
+  migration from an existing target, and the host never converts a document
+  in place. Deleting means removing the old Pages: Trash and permanent
+  deletion cover a Page's content and comments documents. Sign-ins, grants
+  and the deployment's secrets stay. A Project has no delete yet, so a target
+  that holds Projects needs that first, or its storage cleared.
+  A format 2 build opens a format 1 Page, because it reads `position` and
+  `richText` and ignores the fields format 2 dropped. Nothing relies on that.
+  Format 3 moves node ids, so a format 2 Page must be gone before it.
+- **Format 3 is the format production starts on.** Once people's documents
+  are in it, no target that holds them is emptied. A later stored change is
+  additive under a schema feature, or it follows the structural rule below:
+  a new format number and a new document for each Page, written from the old
+  one. The host record's format (order of work, step 4) is what lets a host
+  hold both while that runs.
 - **A Project moves by copy, through the agent edge.**
   `scripts/project-transfer.mjs` reads a Project from one target's `/mcp`
   and writes it to another's, so it needs no code in the host and works

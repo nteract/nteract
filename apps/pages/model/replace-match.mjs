@@ -1,6 +1,6 @@
 import * as A from "@automerge/automerge/slim";
 import { diffArrays } from "diff";
-import { isRich, textPath } from "./richtext-format.mjs";
+import { textPath } from "./richtext-format.mjs";
 import { parseInlineMarkdown } from "./markdown-inline.mjs";
 import { ancestryAt, blockAddresses, nodeIndexAt } from "./node-addresses.mjs";
 import { nativeRead } from "./native-read.mjs";
@@ -39,7 +39,6 @@ export function visibleNodeRange(doc, id, nodeIndex) {
   if (!Number.isSafeInteger(nodeIndex) || nodeIndex < 0)
     throw Error("node_index must be a nonnegative integer from the read outline");
   const block = doc.blocks[id];
-  if (!isRich(block)) throw Error("replace_match requires a rich-text block");
   const { nodes } = blockAddresses(A.spans(doc, textPath(id)));
   // node_index names a node of the outline, which read_page builds from the
   // readable tree. When the stored spans count differently (markers a peer
@@ -75,7 +74,6 @@ export function visibleRangeAddress(doc, id, start, end) {
 // Each segment records whether a code block holds it: the nearest block
 // marker before it, as inCodeBlock decides.
 export function textSegments(block) {
-  if (!isRich(block)) throw Error("replace_match requires a rich-text block");
   if (block.richText.length > MAX_TEXT_LENGTH) throw Error("Block is too large for replace_match");
   const segments = [];
   let offset = 0;

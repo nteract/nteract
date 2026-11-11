@@ -22,9 +22,7 @@ import { taskLists, toggleTaskItem } from "./wordgard-task-lists.mjs";
 const path = textPath("one");
 
 function fixture(markdown, readOnly = false) {
-  let doc = A.change(A.from({ blocks: { one: { id: "one", kind: "markdown", markdown } } }), (d) =>
-    richFromSource(d, "one"),
-  );
+  let doc = A.change(A.from({ blocks: { one: { markdown } } }), (d) => richFromSource(d, "one"));
   const observers = new Set();
   const publish = (before, remote) => {
     for (const listener of observers) listener({ remote, patchInfo: { before, after: doc } });

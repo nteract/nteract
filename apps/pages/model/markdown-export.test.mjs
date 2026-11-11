@@ -77,11 +77,7 @@ test("export uses live rich text and fractional block order from the Page projec
         },
       }),
     );
-    assert.notEqual(
-      doc.blocks[first].markdown,
-      "Current content",
-      "raw import source is not the current text",
-    );
+    assert.deepEqual(Object.keys(doc.blocks[first]).sort(), ["position", "richText"]);
     assert.equal(
       pageMarkdown(projectPage(doc)),
       "# Current title\n\nFirst section\n\nCurrent content\n",

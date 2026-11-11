@@ -9,7 +9,6 @@
 //   PAGES_COLD_IMAGES      images in the Page (default 6)
 //   PAGES_COLD_THROTTLE    "fast3g" (default) or "none"
 //   PAGES_COLD_SCENARIOS   "cold,first" (default), or one of them
-//   PAGES_COLD_SUBDUCTION_LOG  a Subduction log level to capture, e.g. "debug"
 //
 // Each run opens the Page in a new browser context: an empty HTTP cache, no
 // IndexedDB and no local replica, signed in by cookie only. Two scenarios:
@@ -39,8 +38,6 @@ const PARAGRAPHS = Number(process.env.PAGES_COLD_PARAGRAPHS || 300);
 const IMAGES = Number(process.env.PAGES_COLD_IMAGES || 6);
 const THROTTLE = process.env.PAGES_COLD_THROTTLE || "fast3g";
 const SCENARIOS = (process.env.PAGES_COLD_SCENARIOS || "cold,first").split(",");
-// Subduction reads its log level from localStorage at WASM start.
-const SUBDUCTION_LOG = process.env.PAGES_COLD_SUBDUCTION_LOG;
 const FAST_3G = {
   offline: false,
   latency: 562.5,
@@ -366,17 +363,13 @@ async function measure(scenario, run) {
   });
   await context.addCookies(cookies.map((cookie) => ({ ...cookie, domain: "localhost" })));
   await context.addInitScript(INSTRUMENT);
-  if (SUBDUCTION_LOG)
-    await context.addInitScript(
-      `localStorage.setItem("SUBDUCTION_LOG_LEVEL", ${JSON.stringify(SUBDUCTION_LOG)})`,
-    );
   const page = await context.newPage();
   const errors = [];
   const consoleLines = [];
   page.on("pageerror", (error) => errors.push(error.message));
   const opened = Date.now();
   page.on("console", (message) => {
-    if (SUBDUCTION_LOG || ["error", "warning"].includes(message.type()))
+    if (["error", "warning"].includes(message.type()))
       consoleLines.push(
         `${Date.now() - opened} ${message.type()}: ${message.text().replace(/%c/g, "").slice(0, 300)}`,
       );
@@ -516,8 +509,7 @@ try {
         )}`,
       );
       console.log("  wire:", JSON.stringify(result.framing));
-      if (result.console.length && !SUBDUCTION_LOG)
-        console.log("  console:", result.console.join(" | "));
+      if (result.console.length) console.log("  console:", result.console.join(" | "));
     }
   }
   const median = (values) => {

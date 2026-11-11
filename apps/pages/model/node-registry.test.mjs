@@ -1,6 +1,6 @@
 // The node registry against the layers that still define block types in
-// their own terms: the ProseMirror adapter, features.json and the Wordgard
-// model. A type added to one of them without the registry fails here.
+// their own terms: features.json and the Wordgard model. A type added to one
+// of them without the registry fails here.
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
@@ -203,13 +203,4 @@ test("the editor and registration agree on heading levels", () => {
   assert.equal(decode(heading({ level: 6 })).lossy, false);
   for (const level of [null, "3", S("3"), 0, 7, 2.5])
     assert.throws(() => decode(heading({ level })), /heading level/, String(level));
-});
-
-test("agent-facing types are stored block names, list names or unknown", async () => {
-  const { agentType, LIST_TYPES } = await import("./node-registry.mjs");
-  for (const type of NODE_TYPES) if (!type.wrapper) assert.equal(agentType(type.pm), type.block);
-  for (const [pm, name] of Object.entries(LIST_TYPES)) {
-    assert.equal(agentType(pm), name);
-  }
-  assert.equal(agentType("unknownBlock"), "unknown");
 });

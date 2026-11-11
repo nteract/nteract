@@ -34,7 +34,7 @@ import {
 } from "./wordgard-binding.mjs";
 import { createPageData } from "../model/page.mjs";
 import { orderedBlockIds } from "../model/order.mjs";
-import { RICH_FORMAT, textPath } from "../model/richtext.mjs";
+import { textPath } from "../model/richtext.mjs";
 import { updateSpansConfig } from "../model/marks.mjs";
 import { stampSpans } from "../model/schema-features.mjs";
 import { PAGE_ID, pageTreeArbitrary, toWordgardTree } from "../test/random-page-tree.mjs";
@@ -196,7 +196,6 @@ function pageWith(tree) {
   const id = orderedBlockIds(doc)[0];
   const spans = encode(tree);
   doc = A.change(doc, CHANGE, (draft) => {
-    draft.blocks[id].format = RICH_FORMAT;
     draft.blocks[id].richText = "";
     A.updateSpans(draft, textPath(id), spans, updateSpansConfig);
     stampSpans(draft, spans);

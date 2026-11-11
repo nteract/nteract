@@ -101,7 +101,7 @@ test("a closed activity count does not read or project the document", () => {
 });
 
 test("progress ranges follow edits, detach on deletion, and never mutate the document", () => {
-  let doc = A.from({ blocks: { first: { kind: "markdown", markdown: "Hello **world**." } } });
+  let doc = A.from({ blocks: { first: { markdown: "Hello **world**." } } });
   doc = A.change(doc, (d) => richFromSource(d, "first"));
   const targets = createProgressTargets(
     doc,

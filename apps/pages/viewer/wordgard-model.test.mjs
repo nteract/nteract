@@ -23,9 +23,7 @@ import {
   PagesUnknownEmbed,
 } from "./wordgard-model.mjs";
 function fixture(markdown) {
-  return A.change(A.from({ blocks: { one: { id: "one", kind: "markdown", markdown } } }), (d) =>
-    richFromSource(d, "one"),
-  );
+  return A.change(A.from({ blocks: { one: { markdown } } }), (d) => richFromSource(d, "one"));
 }
 test("Wordgard reads actual Pages spans with implicit paragraphs and UTF-16 positions", () => {
   const doc = fixture("A🌊 **bold**"),

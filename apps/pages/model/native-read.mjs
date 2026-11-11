@@ -35,7 +35,7 @@ import {
   PagesForeignMarks,
 } from "./wordgard-doc.mjs";
 import { treeMarkdown } from "./markdown-serializer.mjs";
-import { codeTextUnmarked, isRich } from "./richtext-format.mjs";
+import { codeTextUnmarked } from "./richtext-format.mjs";
 import { unknownNodeNotice } from "./richtext-notices.mjs";
 import { parseAssetPath } from "../shared/dataset-assets.mjs";
 import { TEXT_CONTAINERS } from "./node-registry.mjs";
@@ -196,7 +196,6 @@ function descriptor(type, attrs = {}) {
 }
 
 export function nativeRead(block, pageId) {
-  if (!isRich(block)) throw Error("Block is not rich text");
   return nativeReadSpans(A.spans(block, ["richText"]), pageId);
 }
 

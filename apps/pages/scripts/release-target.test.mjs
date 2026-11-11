@@ -144,6 +144,7 @@ test("install refuses an old staged plain format before the host installer", (t)
       build_receipt: {
         build_id: "9ae4ed83e44e",
         record_storage: ["local", "buffered", "automerge"],
+        document_formats: { "pages.page": [2], "pages.comments": [1] },
       },
     }),
   );
@@ -174,6 +175,7 @@ test("install --restart reaches the host installer; other extra flags do not", (
         build_id: "0123456789ab",
         record_storage: ["local", "buffered", "automerge"],
         plain_storage_formats: ["doc-store-v2-host-actor-prefix"],
+        document_formats: { "pages.page": [2], "pages.comments": [1] },
       },
     }),
   );

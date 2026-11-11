@@ -1,6 +1,5 @@
 // Tests only. Fixtures that start from a block's Markdown `markdown` field.
 import { COMMENTS_FEATURE } from "./comments-doc.mjs";
-import { RICH_FORMAT, isRich } from "./richtext-format.mjs";
 import { setRichMarkdown } from "./richtext-page.mjs";
 import { stampFeatures } from "./schema-features.mjs";
 import * as A from "@automerge/automerge/slim";
@@ -15,22 +14,22 @@ export const explicitOpeningSpans = (tree) => [
   ...encode(tree),
 ];
 
-/** Inside an `A.change`: give block `id` rich text parsed from its
- * `markdown` field, math and HTML kept as text. */
+/** Inside an `A.change`: give block `id` rich text parsed from the Markdown
+ * in its `markdown` seed field, math and HTML kept as text, and drop the seed.
+ * A fixture block is `{ position, markdown }`; the block it leaves is a stored
+ * one, `{ position, richText }`. */
 export function richFromSource(doc, id) {
   const block = doc.blocks[id];
-  block.format = RICH_FORMAT;
+  const markdown = block.markdown ?? "";
+  delete block.markdown;
   block.richText = "";
-  setRichMarkdown(doc, id, block.markdown, { literal: true });
+  setRichMarkdown(doc, id, markdown, { literal: true });
 }
 
-/** Inside an `A.change`: every block in rich text from its `markdown` field,
- * and the `comments-doc` stamp, the forms every stored Page is in. */
+/** Inside an `A.change`: every block that still holds a Markdown seed in rich
+ * text, and the `comments-doc` stamp, the forms every stored Page is in. */
 export function currentForm(doc) {
   for (const [id, block] of Object.entries(doc.blocks ?? {}))
-    if (!isRich(block)) {
-      block.markdown ??= "";
-      richFromSource(doc, id);
-    }
+    if (typeof block.richText !== "string") richFromSource(doc, id);
   stampFeatures(doc, [COMMENTS_FEATURE]);
 }

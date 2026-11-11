@@ -55,9 +55,8 @@ const PROJECT_ID = "prj_33333333-3333-4333-8333-333333333333";
 const PROJECT = `https://pages.example/project/${PROJECT_ID}`;
 
 function treeOf(markdown) {
-  const native = A.change(
-    A.from({ blocks: { one: { id: "one", kind: "markdown", markdown } } }),
-    (d) => richFromSource(d, "one"),
+  const native = A.change(A.from({ blocks: { one: { markdown } } }), (d) =>
+    richFromSource(d, "one"),
   );
   return decode(A.spans(native, textPath("one"))).doc;
 }

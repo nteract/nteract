@@ -20,9 +20,8 @@ test("tables nested in quotes and lists retain every row inside their container"
     const parsed = parseMarkdown(source),
       exported = exportMarkdown(parsed);
     assert.deepEqual(parseMarkdown(exported).toJSON(), parsed.toJSON());
-    const native = A.change(
-      A.from({ blocks: { one: { id: "one", kind: "markdown", markdown: source } } }),
-      (d) => richFromSource(d, "one"),
+    const native = A.change(A.from({ blocks: { one: { markdown: source } } }), (d) =>
+      richFromSource(d, "one"),
     );
     const tree = decode(A.spans(native, textPath("one"))).doc;
     assert.ok(decode(encode(tree)).doc.eq(tree));

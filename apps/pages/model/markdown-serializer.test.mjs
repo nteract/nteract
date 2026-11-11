@@ -7,7 +7,7 @@ import { parseAgentMarkdown, parseMarkdown } from "./markdown-import.mjs";
 import { exportMarkdown } from "./markdown-serializer.mjs";
 import { projectReadChanges } from "./read-changes.mjs";
 import { projectReadContent } from "./read-content.mjs";
-import { RICH_FORMAT, textPath } from "./richtext-format.mjs";
+import { textPath } from "./richtext-format.mjs";
 import { blockMarkdown } from "./richtext-page.mjs";
 import { readTree } from "./richtext-spans.mjs";
 import { updateSpansConfig } from "./marks.mjs";
@@ -156,8 +156,6 @@ test("the refusal readTree reports for unreadable spans is the only one blockMar
   assert.throws(() => readTree(doc.blocks[id], doc.page_id), /heading level/);
   // The adapter still reads it, as it always did.
   assert.equal(blockMarkdown(doc.blocks[id], doc.page_id), "######### x");
-  // Anything else readTree throws is not a refusal and propagates.
-  assert.throws(() => blockMarkdown({ format: RICH_FORMAT, richText: "plain" }, PAGE_ID));
 });
 
 test("read_page and read_page_changes read a hard break stored in a code block", () => {

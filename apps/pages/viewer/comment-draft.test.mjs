@@ -126,7 +126,7 @@ test("block-only and selection drafts reject removed or replaced blocks", () => 
     });
     assert.throws(() => resolveCommentDraft(deleted, draft), /Comment block was removed/);
     const replaced = A.change(A.clone(doc), (d) => {
-      d.blocks[id] = { ...d.blocks[id], metadata: {} };
+      d.blocks[id] = { position: d.blocks[id].position, richText: d.blocks[id].richText };
     });
     assert.throws(() => resolveCommentDraft(replaced, draft), /Comment block was replaced/);
   }

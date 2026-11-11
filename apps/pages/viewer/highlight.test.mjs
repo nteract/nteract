@@ -18,9 +18,7 @@ import {
 import { clearHighlight, selectionHighlight, setHighlight, toggleHighlight } from "./highlight.mjs";
 
 function setup(markdown) {
-  let doc = A.change(A.from({ blocks: { one: { id: "one", kind: "markdown", markdown } } }), (d) =>
-    richFromSource(d, "one"),
-  );
+  let doc = A.change(A.from({ blocks: { one: { markdown } } }), (d) => richFromSource(d, "one"));
   const observers = new Set();
   const replica = {
     get doc() {
@@ -126,9 +124,8 @@ test("a collapsed selection sets the highlight for the next typed text", () => {
 });
 
 function native(spans) {
-  let doc = A.change(
-    A.from({ blocks: { one: { id: "one", kind: "markdown", markdown: "" } } }),
-    (d) => richFromSource(d, "one"),
+  let doc = A.change(A.from({ blocks: { one: { markdown: "" } } }), (d) =>
+    richFromSource(d, "one"),
   );
   return A.change(doc, (d) => A.updateSpans(d, textPath("one"), spans));
 }

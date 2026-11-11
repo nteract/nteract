@@ -58,9 +58,7 @@ import {
 } from "./wordgard-binding.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
 function fixture(markdown = "hello 🌊 world") {
-  let doc = A.change(A.from({ blocks: { one: { id: "one", kind: "markdown", markdown } } }), (d) =>
-    richFromSource(d, "one"),
-  );
+  let doc = A.change(A.from({ blocks: { one: { markdown } } }), (d) => richFromSource(d, "one"));
   const observers = new Set();
   const publish = (before, after, remote) => {
     for (const fn of observers)

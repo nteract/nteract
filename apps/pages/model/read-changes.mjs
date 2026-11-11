@@ -5,7 +5,6 @@ import { nodeFields } from "./read-content.mjs";
 import { nodeIds } from "./node-ids.mjs";
 import { readableImageIds } from "./image-ids.mjs";
 import { commentMessageState, commentThreadState } from "./comment-content.mjs";
-import { requireRich } from "./richtext-format.mjs";
 import {
   nativeRead,
   readMarkdown,
@@ -117,7 +116,6 @@ function index(doc) {
     blocks = new Map();
   for (const id of orderedBlockIds(doc)) {
     const block = doc.blocks[id];
-    requireRich(block);
     const nodes = nativeNodes(doc, id, headings);
     blocks.set(id, { block, pageId: doc.page_id, nodes });
     // A block without node ids can contain headings, but has no native
@@ -125,15 +123,6 @@ function index(doc) {
     if (!nodes) headings.length = 0;
   }
   return blocks;
-}
-function metadata(block) {
-  return canonical(
-    Object.fromEntries(
-      Object.entries(block).filter(
-        ([key]) => !["id", "position", "markdown", "richText"].includes(key),
-      ),
-    ),
-  );
 }
 function address(entry, previous = false) {
   return {
@@ -200,21 +189,13 @@ function contentChanges(before, after) {
     }
     if (String(prior.block.position ?? "") !== String(entry.block.position ?? ""))
       changes.push({ block_id: id, scope: "block", change: "moved" });
-    const metadataChanged = metadata(prior.block) !== metadata(entry.block);
-    if (prior.nodes && entry.nodes) {
-      if (metadataChanged)
-        changes.push({ block_id: id, scope: "block", change: "updated", metadata_changed: true });
-      changes.push(...nodeChanges(id, prior.nodes, entry.nodes));
-    } else if (
-      metadataChanged ||
-      blockMarkdown(prior.block, prior.pageId) !== blockMarkdown(entry.block, entry.pageId)
-    )
+    if (prior.nodes && entry.nodes) changes.push(...nodeChanges(id, prior.nodes, entry.nodes));
+    else if (blockMarkdown(prior.block, prior.pageId) !== blockMarkdown(entry.block, entry.pageId))
       changes.push({
         block_id: id,
         scope: "block",
         change: "updated",
         markdown: blockMarkdown(entry.block, entry.pageId),
-        ...(metadataChanged && { metadata_changed: true }),
       });
   }
   return changes;

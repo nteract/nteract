@@ -30,7 +30,7 @@ function fixture(markdown = "hello world", { anchor = 7 } = {}) {
   let doc = A.change(
     A.from({
       page_id: pageId,
-      blocks: { one: { id: "one", position: "a0", kind: "markdown", markdown } },
+      blocks: { one: { position: "a0", markdown } },
     }),
     (d) => richFromSource(d, "one"),
   );
@@ -102,7 +102,7 @@ test("image clipboard HTML preserves the native reference, alt and title without
     const native = A.change(
       A.from({
         blocks: {
-          one: { kind: "markdown", markdown: `Before ![Screenshot](${asset.url} "A title") after` },
+          one: { markdown: `Before ![Screenshot](${asset.url} "A title") after` },
         },
       }),
       (d) => richFromSource(d, "one"),

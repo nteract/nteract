@@ -16,11 +16,8 @@ function page(markdown = "# Start\n\nFirst paragraph.\n\n## Later\n\nSecond para
     A.from({ page_id: "changes-fixture", title: "Page title", blocks: {} }),
     (doc) => {
       doc.blocks.one = {
-        id: "one",
-        kind: "markdown",
         position: new A.RawString("a0"),
         markdown,
-        metadata: {},
       };
       richFromSource(doc, "one");
       stampFeatures(doc, ["comments-doc"]);
@@ -235,20 +232,13 @@ test("a title-only change including an empty title leaves the body feed empty", 
   assert.deepEqual(result.changes, []);
 });
 
-test("block insert, move, metadata and deletion stay explicit without raw extension fields", () => {
+test("block insert, move and deletion stay explicit without raw extension fields", () => {
   let doc = page();
   const before = A.getHeads(doc);
   doc = A.change(doc, (draft) => {
-    draft.blocks.two = {
-      id: "two",
-      kind: "markdown",
-      position: new A.RawString("a1"),
-      markdown: "Added",
-      metadata: {},
-    };
+    draft.blocks.two = { position: new A.RawString("a1"), markdown: "Added" };
     richFromSource(draft, "two");
     draft.blocks.one.position = new A.RawString("a2");
-    draft.blocks.one.metadata.private = "never returned";
   });
   const result = read(doc, before);
   assert.ok(
@@ -262,8 +252,6 @@ test("block insert, move, metadata and deletion stay explicit without raw extens
     ),
   );
   assert.ok(result.changes.some((c) => c.block_id === "one" && c.change === "moved"));
-  assert.ok(result.changes.some((c) => c.block_id === "one" && c.metadata_changed));
-  assert.doesNotMatch(JSON.stringify(result), /never returned/);
   const next = A.getHeads(doc);
   doc = A.change(doc, (draft) => {
     delete draft.blocks.one;
@@ -271,6 +259,17 @@ test("block insert, move, metadata and deletion stay explicit without raw extens
   assert.deepEqual(read(doc, next).changes, [
     { block_id: "one", scope: "block", change: "deleted" },
   ]);
+});
+
+test("a field a peer adds to a block is neither reported nor returned", () => {
+  let doc = page();
+  const before = A.getHeads(doc);
+  doc = A.change(doc, (draft) => {
+    draft.blocks.one.private = "never returned";
+  });
+  const result = read(doc, before);
+  assert.deepEqual(result.changes, []);
+  assert.doesNotMatch(JSON.stringify(result), /never returned|metadata_changed/);
 });
 
 test("lists and tables are whole top-level nodes while nearby prose stays out", () => {

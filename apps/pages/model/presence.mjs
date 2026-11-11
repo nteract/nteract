@@ -1,7 +1,6 @@
 import * as A from "@automerge/automerge/slim";
 import { selectionContext } from "./comments.mjs";
 import { findUniqueVisibleRange } from "./replace-match.mjs";
-import { isRich } from "./richtext-format.mjs";
 
 const plain = (value) => value && typeof value === "object" && !Array.isArray(value);
 const bounded = (value, max) =>
@@ -180,9 +179,6 @@ export function resolvePeerSelection(doc, input) {
       id = value.block_id;
     if (!Object.hasOwn(original.blocks ?? {}, id) || !Object.hasOwn(doc.blocks ?? {}, id))
       return base;
-    // A selection resolves only in rich text: a block without it is never
-    // placed.
-    if (!isRich(original.blocks[id]) || !isRich(doc.blocks[id])) return base;
     const name = "richText",
       path = ["blocks", id, name],
       before = original.blocks[id][name],

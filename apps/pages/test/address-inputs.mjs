@@ -6,7 +6,7 @@ import * as A from "@automerge/automerge";
 import fc from "fast-check";
 import { readFileSync } from "node:fs";
 import { applyPageOperation, createPageData, orderedBlockIds } from "../model/page.mjs";
-import { RICH_FORMAT, textPath } from "../model/richtext-format.mjs";
+import { textPath } from "../model/richtext-format.mjs";
 import { setRichMarkdown } from "../model/richtext-page.mjs";
 import { updateSpansConfig } from "../model/marks.mjs";
 import { stampFeatures, stampSpans } from "../model/schema-features.mjs";
@@ -27,7 +27,6 @@ function emptyPage() {
 export function pageWithSpans(spans) {
   let { doc, id } = emptyPage();
   doc = A.change(doc, (draft) => {
-    draft.blocks[id].format = RICH_FORMAT;
     draft.blocks[id].richText = "";
     A.updateSpans(draft, textPath(id), spans, updateSpansConfig);
     stampSpans(draft, spans);
@@ -39,7 +38,6 @@ export function pageWithSpans(spans) {
 function markdownSpans(markdown, literal) {
   let { doc, id } = emptyPage();
   doc = A.change(doc, (draft) => {
-    draft.blocks[id].format = RICH_FORMAT;
     draft.blocks[id].richText = "";
     setRichMarkdown(draft, id, markdown, { literal });
   });
@@ -330,12 +328,18 @@ export function allInputs(random) {
   return [...shapeInputs(), ...corpusInputs(), ...randomInputs(random)];
 }
 
-/** JSON for stored spans: immutable strings tagged so they round-trip. */
+/** JSON for stored spans: immutable strings tagged so they round-trip, keys
+ * sorted so the text does not depend on the order Automerge materializes a
+ * map's keys, which follows operation ids. */
 export function spansToJSON(value) {
   if (A.isImmutableString(value)) return { $immutable: String(value) };
   if (Array.isArray(value)) return value.map(spansToJSON);
   if (value && typeof value === "object")
-    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, spansToJSON(v)]));
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([a], [b]) => (a < b ? -1 : 1))
+        .map(([k, v]) => [k, spansToJSON(v)]),
+    );
   return value;
 }
 

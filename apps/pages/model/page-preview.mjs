@@ -4,7 +4,6 @@
 // [tag, attributes, ...children] and each text run is a string. The viewer
 // (viewer/PagePreview.jsx) builds elements from an allowlist; nothing here is
 // HTML.
-import { requireRich } from "./richtext-format.mjs";
 import { readChildren, readKind } from "./native-read.mjs";
 import { surfaceRead } from "./page-surface-read.mjs";
 import { orderedBlockIds } from "./order.mjs";
@@ -182,7 +181,7 @@ export function renderNode(node, overrides, metadata) {
 /** One block's preview content, or null when it can't be rendered. */
 export function blockPreview(block) {
   try {
-    const { nodes, metadata } = surfaceRead(requireRich(block));
+    const { nodes, metadata } = surfaceRead(block);
     const out = [];
     for (const child of nodes) out.push(...renderNode(child, undefined, metadata));
     return out;

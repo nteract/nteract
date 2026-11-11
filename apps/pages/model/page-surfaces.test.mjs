@@ -13,7 +13,6 @@ import { JSDOM } from "jsdom";
 import { pagePreview } from "./page-preview.mjs";
 import { cardContent } from "./page-card.mjs";
 import { openingTitleWarning } from "./title-warning.mjs";
-import { RICH_FORMAT } from "./richtext-format.mjs";
 import { encode } from "./wordgard-doc.mjs";
 import { SHAPES, PAGE_ID } from "../test/address-inputs.mjs";
 import { pageTreeArbitrary, toWordgardTree } from "../test/random-page-tree.mjs";
@@ -490,10 +489,7 @@ function page(spans) {
         page_id: PAGE_ID,
         blocks: {
           one: {
-            id: "one",
             position: "a0",
-            kind: "markdown",
-            format: RICH_FORMAT,
             richText: "",
           },
         },
@@ -593,10 +589,7 @@ test("an unknown inline node never fails the card, at any byte budget, with a bl
     const original = page(spansNamed(name));
     const doc = A.change(original, { time: 0 }, (draft) => {
       draft.blocks.two = {
-        id: "two",
         position: "a1",
-        kind: "markdown",
-        format: RICH_FORMAT,
         richText: "second block",
       };
     });
@@ -639,10 +632,7 @@ test("unknown parents with different names share one card node", () => {
 test("a following block is kept whole when the byte budget allows and dropped when it does not", () => {
   const doc = A.change(page(spansNamed("native-title")), { time: 0 }, (draft) => {
     draft.blocks.two = {
-      id: "two",
       position: "a1",
-      kind: "markdown",
-      format: RICH_FORMAT,
       richText: "second block",
     };
   });

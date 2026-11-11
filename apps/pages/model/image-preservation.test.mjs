@@ -5,7 +5,7 @@ import { textPath, blockMarkdown, setRichMarkdownKeepingNodes } from "./richtext
 import { richFromSource } from "./richtext-test-support.mjs";
 
 function fixture(markdown, extra = { future: "opaque", enabled: false, count: 2, empty: null }) {
-  return A.change(A.from({ blocks: { one: { id: "one", kind: "markdown", markdown } } }), (d) => {
+  return A.change(A.from({ blocks: { one: { markdown } } }), (d) => {
     richFromSource(d, "one");
     const spans = A.spans(d, textPath("one"));
     for (const span of spans)

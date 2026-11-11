@@ -1,20 +1,26 @@
 # Pages deployment
 
-The current release is qualified for four isolated celld targets: **Pages**
+The deployment helpers know four isolated celld targets: **Pages**
 (`pages.runtimed.run`), **Page10**, **Pages2** (`page2.runtimed.run`, on its
 own host, lab2) and **Page11** (`page11.runtimed.run`, also on lab2).
 [profiles.mjs](scripts/deployment/profiles.mjs) lists the profiles, and the
 deployment helpers reject any other target name.
+
+A build of `main` reads `pages.page` format 2, and only Page10 takes it
+([Document formats](#document-formats)). Pages, Pages2 and Page11 hold format 1
+documents. They take a build of the maintenance branch cut from the
+`pages-format-1` tag.
 
 A release that would break existing clients goes to a fresh target instead of
 carrying compatibility code. Deployment never copies data between targets.
 
 | Target | Rule ([DIRECTION.md](DIRECTION.md#rules-for-the-work)) |
 | --- | --- |
-| pages | Holds documents people use. No reset and no migration from it. A format 1 release is promoted by hand from the build page10 runs; format 2 work never deploys here |
+| pages | Holds documents people use. No reset and no migration from it. A format 1 release is built from the maintenance branch and promoted by hand; a build of `main` never deploys here |
 | pages2, page10 | Demos. Reset freely; confirm the target a command addresses first |
 
-The procedures below promote a format 1 release to `pages`. They are not
+The procedures below promote a format 1 release to `pages`. Run them from a
+checkout of the maintenance branch. They are not
 permission to reset it or to deploy format 2 work to it; that work uses a
 separate target. Confirm
 application state, auth/catalog storage, deployment pointers, and routes are
@@ -72,6 +78,12 @@ including one an earlier prototype left behind. Remove such a record in
 Cloudflare by hand, after checking nothing serves from it, then rerun.
 
 ### Promote production from the CI artifact
+
+The gate's artifact is a build of `main`, which reads `pages.page` format 2.
+`install` refuses it for `pages`, which holds format 1
+([Document formats](#document-formats)). A format 1 fix is built locally from
+the maintenance branch with the commands above. This section describes the
+artifact path as `deploy.mjs` implements it.
 
 Every green push to `main` uploads the gate's `pages-release` artifact. Page10
 deploys from it, and its `build_id` equals a local build of the same commit.
@@ -651,6 +663,31 @@ There is no repair tool. To repair a Page:
 3. Never infer an ACL from the creation intent, the Catalog's shared entries or
    the receipts. Restore it from a backup, or ask the owner to grant access
    again.
+
+### Document formats
+
+`TARGET_DOCUMENT_FORMATS` in [profiles.mjs](scripts/deployment/profiles.mjs)
+names the format of each document type that a target holds. Install and
+rollback refuse a release whose build receipt does not list that format under
+`document_formats`.
+
+| Target | `pages.page` | `pages.comments` |
+| --- | --- | --- |
+| page10 | 2 | 1 |
+| pages, pages2, page11 | 1 | 1 |
+
+A build of `main` reads `pages.page` format 2 only, so only page10 accepts it.
+The controller checks out the commit it deploys and reads this table from it,
+so the first format 2 commit on `main` installs on page10 with no change on
+the host. The same check stops a revert to a format 1 build.
+
+The table is the operator's statement of what a target holds. Nothing reads
+the stored documents to confirm it. A Page record carries no format: discovery
+labels a Page's documents with the formats the running build writes. page10's
+Pages from before format 2 stay and open: a format 2 build reads their
+`position` and `richText` and ignores the other block fields. They are deleted
+before a format 3 build, which moves node ids
+([DIRECTION.md](DIRECTION.md#rules-for-the-work)). No command empties a target.
 
 ### Stored forms and rollback rules
 

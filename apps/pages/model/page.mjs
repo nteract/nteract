@@ -1,11 +1,5 @@
 import * as A from "@automerge/automerge/slim";
-import {
-  RICH_FORMAT,
-  isRich,
-  redundantFirstMarker,
-  requireRich,
-  textPath,
-} from "./richtext-format.mjs";
+import { redundantFirstMarker, textPath } from "./richtext-format.mjs";
 import { quotableNodeType } from "./richtext-notices.mjs";
 import { markdownlessNode } from "./richtext-spans.mjs";
 import { nativeRead, readKind } from "./native-read.mjs";
@@ -30,21 +24,13 @@ import { setNode } from "./set-node.mjs";
 import { insertOperation } from "./node-registry.mjs";
 import { stampFeatures } from "./schema-features.mjs";
 export { orderedBlockIds } from "./order.mjs";
-const block = (id = crypto.randomUUID(), position = positionForInsertion()) => ({
-  id,
-  position,
-  kind: "markdown",
-  format: RICH_FORMAT,
-  markdown: "",
-  richText: "",
-  metadata: {},
-});
+// A stored block holds its order and its text. Its id is its key in `blocks`.
+const block = (position = positionForInsertion()) => ({ position, richText: "" });
 export function createPageData({ pageId, title = "Untitled" }) {
-  const first = block();
   return {
     page_id: pageId,
     title: String(title).slice(0, 1024),
-    blocks: { [first.id]: first },
+    blocks: { [crypto.randomUUID()]: block() },
   };
 }
 /** A new Page's first change: its first block's Markdown, and the stamp that
@@ -58,7 +44,7 @@ export function projectPage(doc, commentsDoc) {
   return {
     page_id: doc.page_id,
     title: doc.title,
-    blocks: orderedBlockIds(doc).map((id) => projectedBlock(doc.blocks[id], doc.page_id)),
+    blocks: orderedBlockIds(doc).map((id) => projectedBlock(doc, id)),
     comments: projectComments(doc, commentsDoc),
   };
 }
@@ -187,26 +173,26 @@ function applyEdit(doc, op, trace, context) {
     return;
   }
   if (op.op === "insert_markdown") {
-    const value = block(crypto.randomUUID(), positionForInsertion(doc, op.after_block_id));
-    doc.blocks[value.id] = value;
-    setRichMarkdown(doc, value.id, String(op.markdown ?? ""));
-    trace?.push({ type: "block", block_id: value.id });
+    const blockId = crypto.randomUUID();
+    doc.blocks[blockId] = block(positionForInsertion(doc, op.after_block_id));
+    setRichMarkdown(doc, blockId, String(op.markdown ?? ""));
+    trace?.push({ type: "block", block_id: blockId });
     return;
   }
   if (op.op === "insert_image") {
     validateImageInsertion(op);
-    const value = block(crypto.randomUUID(), positionForInsertion(doc, op.after_block_id));
+    const blockId = crypto.randomUUID();
     const asset_url = imageAssetUrl(doc.page_id, op.asset_id);
-    doc.blocks[value.id] = value;
+    doc.blocks[blockId] = block(positionForInsertion(doc, op.after_block_id));
     const dark_src = op.dark_asset_id ? imageAssetUrl(doc.page_id, op.dark_asset_id) : null;
-    setRichImage(doc, value.id, { src: asset_url, dark_src, alt: op.alt, title: op.title });
-    trace?.push({ type: "block", block_id: value.id });
+    setRichImage(doc, blockId, { src: asset_url, dark_src, alt: op.alt, title: op.title });
+    trace?.push({ type: "block", block_id: blockId });
     return {
       op: "insert_image",
-      block_id: value.id,
+      block_id: blockId,
       asset_id: op.asset_id,
       asset_url,
-      image_id: imageIds(doc, value.id)[0].image_id,
+      image_id: imageIds(doc, blockId)[0].image_id,
       ...(dark_src && { dark_asset_id: op.dark_asset_id, dark_src }),
       ...(op.title !== undefined && { title: op.title }),
       alt: op.alt,
@@ -214,14 +200,14 @@ function applyEdit(doc, op, trace, context) {
   }
   if (op.op === "insert_node") {
     const input = validateNodeInsertion(op);
-    const value = block(crypto.randomUUID(), positionForInsertion(doc, op.after_block_id));
+    const blockId = crypto.randomUUID();
     const attrs = dataframeFor(doc.page_id, input);
-    doc.blocks[value.id] = value;
-    setRichNode(doc, value.id, { type: op.node.type, attrs });
-    trace?.push({ type: "block", block_id: value.id });
+    doc.blocks[blockId] = block(positionForInsertion(doc, op.after_block_id));
+    setRichNode(doc, blockId, { type: op.node.type, attrs });
+    trace?.push({ type: "block", block_id: blockId });
     return {
       op: "insert_node",
-      block_id: value.id,
+      block_id: blockId,
       type: op.node.type,
       attrs: { asset_id: input.asset_id, ...attrs },
     };
@@ -285,7 +271,6 @@ function applyEdit(doc, op, trace, context) {
  * batch drops the next node's plain paragraph marker once it's done
  * (dropOpeningMarkers), so later deletes in the batch still find their ids. */
 function deleteNode(doc, id, op, trace, opened) {
-  requireRich(doc.blocks[id]);
   const tree = nativeRead(doc.blocks[id], doc.page_id);
   const { index, start, end } = resolveNodeId(doc, id, op.node_id, tree);
   const type = readKind(tree.nodes[index]);
@@ -311,7 +296,7 @@ function deleteNode(doc, id, op, trace, opened) {
  * marker it may now open with, as the editor would on its next edit. */
 function dropOpeningMarkers(doc, opened) {
   for (const id of opened) {
-    if (!Object.hasOwn(doc.blocks, id) || !isRich(doc.blocks[id])) continue;
+    if (!Object.hasOwn(doc.blocks, id)) continue;
     const path = textPath(id);
     if (redundantFirstMarker(A.spans(doc, path))) A.splice(doc, path, 0, 1);
   }

@@ -32,7 +32,7 @@ function fixture(source = "Same passage here and same passage again 😀.") {
       ["first", "a0"],
       ["second", "a1"],
     ]) {
-      d.blocks[id] = { id, position, kind: "markdown", markdown: source };
+      d.blocks[id] = { position, markdown: source };
       richFromSource(d, id);
     }
     stampFeatures(d, ["comments-doc"]);

@@ -2,7 +2,6 @@ import * as A from "@automerge/automerge";
 import { documentIdToBinary } from "@automerge/automerge-repo";
 import { generateKeyBetween } from "fractional-indexing";
 import { assertDocumentLimits } from "../model/limits.mjs";
-import { RICH_FORMAT } from "../model/richtext-format.mjs";
 import { validateRich } from "../model/richtext-spans.mjs";
 import { requireSupportedSchema } from "../model/schema-features.mjs";
 import { commentsMigrated } from "../model/comments.mjs";
@@ -12,6 +11,8 @@ import { HttpError } from "./auth.mjs";
 export const validPageId = (id) =>
   typeof id === "string" &&
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id);
+// A stored block holds exactly these fields; its id is its key in `blocks`.
+const BLOCK_KEYS = ["position", "richText"];
 const map = (value) => value && typeof value === "object" && !Array.isArray(value);
 
 /** Validate the immutable bootstrap, never a replacement for an existing Page.
@@ -71,12 +72,9 @@ export function readRegistration(args) {
       if (
         !validPageId(id) ||
         !map(block) ||
-        block.id !== id ||
-        block.kind !== "markdown" ||
-        block.format !== RICH_FORMAT ||
-        typeof block.markdown !== "string" ||
+        Object.keys(block).length !== BLOCK_KEYS.length ||
+        !BLOCK_KEYS.every((key) => Object.hasOwn(block, key)) ||
         typeof block.richText !== "string" ||
-        !map(block.metadata) ||
         !A.isRawString(block.position) ||
         String(block.position).length > 512
       )

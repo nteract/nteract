@@ -1959,43 +1959,36 @@ function App() {
                 />
                 {page.blocks.map((block) => (
                   <section className="page-block" data-block-id={block.id} key={block.id}>
-                    {block.format === "automerge-rich-text-v1" ? (
-                      <BlockBoundary
-                        onError={(error) =>
-                          console.error(
-                            `Pages block ${block.id} failed to draw:`,
-                            error?.stack ?? error,
-                          )
+                    <BlockBoundary
+                      onError={(error) =>
+                        console.error(
+                          `Pages block ${block.id} failed to draw:`,
+                          error?.stack ?? error,
+                        )
+                      }
+                    >
+                      <WordgardEditor
+                        replica={session}
+                        id={block.id}
+                        editable={session.canWrite}
+                        commentable={session.canComment}
+                        onError={setError}
+                        onComment={(selected) => startComment(block.id, selected)}
+                        onRevealComment={selectComment}
+                        toolbarHost={active === block.id ? toolbar : null}
+                        toolbarOpen={toolbarOpen}
+                        onActivate={() => activateBlock(block.id)}
+                        threads={threads}
+                        commentTarget={target}
+                        commentDraft={
+                          composerState.composer?.draft.blockId === block.id &&
+                          (composerState.state.name === "open" ||
+                            composerState.state.name === "sending")
+                            ? composerState.composer.draft
+                            : null
                         }
-                      >
-                        <WordgardEditor
-                          replica={session}
-                          id={block.id}
-                          editable={session.canWrite}
-                          commentable={session.canComment}
-                          onError={setError}
-                          onComment={(selected) => startComment(block.id, selected)}
-                          onRevealComment={selectComment}
-                          toolbarHost={active === block.id ? toolbar : null}
-                          toolbarOpen={toolbarOpen}
-                          onActivate={() => activateBlock(block.id)}
-                          threads={threads}
-                          commentTarget={target}
-                          commentDraft={
-                            composerState.composer?.draft.blockId === block.id &&
-                            (composerState.state.name === "open" ||
-                              composerState.state.name === "sending")
-                              ? composerState.composer.draft
-                              : null
-                          }
-                        />
-                      </BlockBoundary>
-                    ) : (
-                      <section className="opaque" role="note" data-block-error="true">
-                        This block is stored in a form from an earlier version of Pages that this
-                        build doesn&apos;t read.
-                      </section>
-                    )}
+                      />
+                    </BlockBoundary>
                   </section>
                 ))}
                 {/* Blank space below the last block: a click there puts the

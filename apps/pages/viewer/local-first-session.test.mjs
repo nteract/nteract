@@ -543,10 +543,10 @@ test("independent offline tabs merge their shared recovery checkpoints instead o
   assert.notEqual(first.local.seed, second.local.seed);
   const blockId = Object.keys(first.doc.blocks)[0];
   await first.change((doc) => {
-    doc.blocks[blockId].metadata.first = "From first tab";
+    A.splice(doc, ["blocks", blockId, "richText"], 0, 0, "From first tab");
   });
   await second.change((doc) => {
-    doc.blocks[blockId].metadata.second = "From second tab";
+    A.splice(doc, ["blocks", blockId, "richText"], 0, 0, "From second tab");
   });
   clearTimeout(first.savedTimer);
   clearTimeout(second.savedTimer);
@@ -554,12 +554,12 @@ test("independent offline tabs merge their shared recovery checkpoints instead o
   await first.saveReceipt();
   const cache = await readLocalPage(auth.identity, first.pageId);
   const combined = A.load(decodeSnapshot(cache.snapshot));
-  assert.equal(combined.blocks[blockId].metadata.first, "From first tab");
-  assert.equal(combined.blocks[blockId].metadata.second, "From second tab");
+  assert.match(combined.blocks[blockId].richText, /From first tab/);
+  assert.match(combined.blocks[blockId].richText, /From second tab/);
   assert.equal(cache.pending, true);
-  assert.equal(
-    first.doc.blocks[blockId].metadata.second,
-    undefined,
+  assert.doesNotMatch(
+    first.doc.blocks[blockId].richText,
+    /From second tab/,
     "cache merging does not mutate a live replica",
   );
 });
@@ -995,8 +995,7 @@ test("duplicated tabs open a shared checkpoint larger than an ordinary edit batc
   const documentId = interpretAsDocumentId(generateAutomergeUrl());
   const data = createPageData({ pageId, title: "Cached history" });
   const block = Object.values(data.blocks)[0];
-  block.id = "36f62da1-539d-4d43-9974-dd46e51997a1";
-  data.blocks = { [block.id]: block };
+  data.blocks = { "36f62da1-539d-4d43-9974-dd46e51997a1": block };
   // Fixed IDs and timestamps keep fragment aggregation stable across runs.
   let doc = A.change(A.init({ actor: "ab".repeat(16) }), { time: 0 }, (draft) =>
     Object.assign(draft, data),
@@ -1004,7 +1003,7 @@ test("duplicated tabs open a shared checkpoint larger than an ordinary edit batc
   doc = A.change(doc, { time: 0 }, initializePage);
   // Fragment boundaries follow change hashes, so the count that exceeds the
   // batch limit depends on the fixture's exact history.
-  for (let i = 0; i < 1200; i++)
+  for (let i = 0; i < 1300; i++)
     doc = A.change(doc, { time: 0 }, (draft) => {
       draft.title = `Cached history ${i % 2}`;
     });
@@ -1038,8 +1037,7 @@ test("duplicated tabs open a shared checkpoint larger than an ordinary edit batc
 function concurrentMergeFixture(pageId) {
   const data = createPageData({ pageId, title: "Shared history" });
   const block = Object.values(data.blocks)[0];
-  block.id = "7a3c0e52-9a59-4b6e-8f0a-2d6c5f4b1e90";
-  data.blocks = { [block.id]: block };
+  data.blocks = { "7a3c0e52-9a59-4b6e-8f0a-2d6c5f4b1e90": block };
   let base = A.change(A.init({ actor: "ab".repeat(16) }), { time: 0 }, (draft) =>
     Object.assign(draft, data),
   );
