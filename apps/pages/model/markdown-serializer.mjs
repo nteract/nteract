@@ -479,15 +479,18 @@ const notice = (state, node, name = noticeName(node)) => {
   state.write(state.esc(unknownNodeNotice(name)));
 };
 const unknownLeaf = (state, item) => notice(state, item.node);
+// A notice is a line of paragraph text. What follows it separates as from a
+// paragraph, so a list that can't interrupt one gets its blank line.
+const closeAsParagraph = (state) => (state.closed = { kind: "paragraph" });
 /** A block node with no renderer: the notice, then its content, as an
  * aside reads. A textblock's inline content reads as a paragraph. */
 function unrendered(state, node) {
   notice(state, node);
-  state.closeBlock(node);
+  closeAsParagraph(state);
   if (!node.isPlot || !node.content.length) return;
   if (node.inlineContent) {
     state.renderInline(inlineItems(node.content));
-    state.closeBlock(node);
+    closeAsParagraph(state);
   } else state.renderContent(node);
 }
 const paragraph = (state, node) => {

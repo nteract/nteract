@@ -26,6 +26,9 @@ import {
   PagesHighlight,
   Aside,
   Blockquote,
+  BulletList,
+  HorizontalRule,
+  ListItem,
   Paragraph,
 } from "./wordgard-doc.mjs";
 import { PAGE_ID, pageWithSpans, randomInputs, shapeInputs } from "../test/address-inputs.mjs";
@@ -271,4 +274,47 @@ test("generated trees with a node, leaf or mark the serializer can't draw still 
     assert.ok(markdown.includes(NOTICE), markdown);
     assert.notEqual(noticeNode({ content }), undefined);
   }
+});
+
+test("a notice separates from the block after it as a paragraph does", () => {
+  const headings = (markdown) => {
+    let count = 0;
+    parseMarkdown(markdown).iterate((node) => {
+      if (node.name === "Heading") count++;
+    });
+    return count;
+  };
+  const item = (value) => ListItem.create([value ? para(Leaf.text(value)) : para()]);
+  const inItem = (node) => ({ content: [BulletList.create([ListItem.create([node])])] });
+  for (const [wrap, shown] of [
+    [Aside, "\\[Unsupported node: aside\\]"],
+    [Box, NOTICE],
+  ]) {
+    // In a tight list item, a list whose empty first item can't interrupt a
+    // paragraph needs a blank line, or its `-` underlines the notice.
+    const nested = exportMarkdown(inItem(wrap.create([BulletList.create([item(""), item("b")])])));
+    assert.equal(nested, `- \n  ${shown}\n\n  - \n  - b`);
+    assert.equal(headings(nested), 0, nested);
+    for (const [child, expected] of [
+      [HorizontalRule, 0],
+      [Blockquote.create([para(Leaf.text("q"))]), 0],
+      [parseMarkdown("## h").content[0], 1],
+    ]) {
+      const out = exportMarkdown(inItem(wrap.create([child])));
+      assert.equal(headings(out), expected, out);
+    }
+  }
+  // A stored container this build doesn't know reads the same way.
+  const li = "unordered-list-item";
+  const { doc, id } = pageWithSpans([
+    block(li),
+    block("callout", [li]),
+    block(li, [li, "callout"]),
+    block(li, [li, "callout"]),
+    text("b"),
+  ]);
+  const stored = blockMarkdown(doc.blocks[id], doc.page_id);
+  assert.equal(stored, "- \n  \\[Unsupported node: callout\\]\n\n  - \n  - b");
+  assert.equal(headings(stored), 0, stored);
+  A.free(doc);
 });
