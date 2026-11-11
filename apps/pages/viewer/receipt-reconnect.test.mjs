@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import { generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
-import { PageSession, connectionFailureRetries } from "./session.mjs";
+import { PAGE_FORMAT_UNSUPPORTED, PageSession, connectionFailureRetries } from "./session.mjs";
+import { documentFormatsUnsupported } from "../model/document-types.mjs";
 import {
   HANDSHAKE_TIMEOUT_MS,
   MAX_STEP_MS,
@@ -633,6 +634,30 @@ test("a socket the host closes as schema_unsupported shows the reload notice", a
   assert.equal(f.sockets.length, 1, "no automatic reconnect");
 });
 
+test("a Page the host doesn't open shows its stored-format message, not the reload notice", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  // The socket closes with the refusal.
+  const socket = f.sockets.at(-1);
+  hostClose(socket, 4427, "document_format_unsupported");
+  f.session.socketDisconnected(socket);
+  assert.equal(f.session.connectionProblem, PAGE_FORMAT_UNSUPPORTED);
+  assert.equal(f.session.schemaGate.refused, false);
+  assert.equal(f.session.retryTimer, undefined);
+  // Discovery answers with the host's refusal, and the viewer shows its text.
+  const refusal = documentFormatsUnsupported();
+  f.hooks.connect = () =>
+    Response.json({ error: refusal.message, code: refusal.code }, { status: refusal.status });
+  await f.session.retryConnection();
+  assert.equal(f.session.connectionProblem, PAGE_FORMAT_UNSUPPORTED);
+  assert.doesNotMatch(f.session.connectionProblem, /reload/i);
+  assert.equal(f.session.schemaGate.refused, false);
+  assert.equal(f.session.schemaGate.editable, true);
+  assert.equal(f.session.retryTimer, undefined);
+  await f.advance(60_000);
+  assert.equal(f.sockets.length, 1, "no automatic reconnect");
+});
+
 test("a refused signing key stops automatic reconnects until an explicit retry", async (t) => {
   const f = fixture(t);
   await f.start();
@@ -1236,6 +1261,7 @@ test("only definitive answers stop automatic reconnects", () => {
     [{ status: 409, code: "STORAGE_SWITCH_FAILED" }, true],
     [{ status: 409, code: "unsupported_schema_feature" }, false],
     [{ status: 409, code: "stored_form_unsupported" }, false],
+    [{ status: 409, code: "document_format_unsupported" }, false],
     [{}, true],
     [{ code: "RECORD_STORAGE_CHANGED" }, true],
     [{ status: 500 }, true],

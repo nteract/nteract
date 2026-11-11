@@ -92,10 +92,12 @@ Comments live in their own document and anchor to the Page with cursors.
    - Plain sync admission checks the block shape, as registration does.
      Today only registration does, and a reader throws on a block a writing
      peer synced without `richText`.
-   - A Page's host record stores the type and format of its documents, and
-     the host refuses a record in a format the build does not write. Today
-     the format a target holds is the operator's statement in
-     `TARGET_DOCUMENT_FORMATS`, and a missed reset is not detected.
+   - Landed: a Page's host record stores the format of each of its documents
+     (`documentFormats`), and the host refuses a record in a format the
+     build does not write while its owner can still delete the Page.
+     `TARGET_DOCUMENT_FORMATS` stays the release gate. A record from before
+     the stamp reads as format 2; the format 3 change deletes that rule, so
+     a missed reset is refused Page by Page.
 5. **Agent tools on format 2.**
 6. **A second document type**, once Pages runs on the type boundary.
 

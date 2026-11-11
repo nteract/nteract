@@ -2,15 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   DOCUMENT_TYPES,
-  currentFormats,
   BUILD_FORMATS,
+  UNSTAMPED_RECORD_FORMATS,
+  WRITTEN_FORMATS,
+  documentFormatsUnsupported,
   encodeDeclaredFormats,
+  formatPairs,
   formatsByType,
   missingFormats,
   pageDocuments,
   parseDeclaredFormats,
   parseDocumentDescriptor,
   readableFormats,
+  recordDocumentFormats,
+  recordFormatsWritten,
 } from "./document-types.mjs";
 
 test("the registry names Page format 2 and comments format 1", () => {
@@ -26,10 +31,10 @@ test("the registry names Page format 2 and comments format 1", () => {
 });
 
 test("descriptors project the existing IDs, with optional comments", () => {
-  assert.deepEqual(pageDocuments("existing-page"), {
+  assert.deepEqual(pageDocuments(WRITTEN_FORMATS, "existing-page"), {
     page: { id: "existing-page", type: "pages.page", format: 2 },
   });
-  const documents = pageDocuments("existing-page", "existing-comments");
+  const documents = pageDocuments(WRITTEN_FORMATS, "existing-page", "existing-comments");
   assert.deepEqual(documents, {
     page: { id: "existing-page", type: "pages.page", format: 2 },
     comments: { id: "existing-comments", type: "pages.comments", format: 1 },
@@ -40,7 +45,58 @@ test("descriptors project the existing IDs, with optional comments", () => {
     assert.deepEqual(withExtraField, { ...descriptor, future: "ignored" });
   }
   documents.page.format = 99;
-  assert.equal(pageDocuments("another-page").page.format, 2);
+  assert.equal(pageDocuments(WRITTEN_FORMATS, "another-page").page.format, 2);
+});
+
+test("descriptors carry the formats they are given, not the build's", () => {
+  assert.deepEqual(
+    pageDocuments({ "pages.page": 99, "pages.comments": 7 }, "page-id", "comments-id"),
+    {
+      page: { id: "page-id", type: "pages.page", format: 99 },
+      comments: { id: "comments-id", type: "pages.comments", format: 7 },
+    },
+  );
+});
+
+test("a host record's formats are its documentFormats stamp", () => {
+  assert.deepEqual(WRITTEN_FORMATS, { "pages.page": 2, "pages.comments": 1 });
+  assert.ok(Object.isFrozen(WRITTEN_FORMATS));
+  const stamped = { pageId: "p", documentFormats: { "pages.page": 99, "pages.comments": 1 } };
+  assert.deepEqual(recordDocumentFormats(stamped), stamped.documentFormats);
+  assert.equal(recordFormatsWritten(stamped), false);
+  assert.equal(recordFormatsWritten({ documentFormats: { ...WRITTEN_FORMATS } }), true);
+});
+
+test("an unstamped record reads as the formats this build writes", () => {
+  // UNSTAMPED_RECORD_FORMATS names pages.page 2 and pages.comments 1. The
+  // build that changes either format deletes it, and this test with it.
+  assert.deepEqual(UNSTAMPED_RECORD_FORMATS, WRITTEN_FORMATS);
+  assert.deepEqual(recordDocumentFormats({ pageId: "p" }), WRITTEN_FORMATS);
+  assert.equal(recordFormatsWritten({ pageId: "p" }), true);
+});
+
+test("a record names exactly the registered types at their written formats", () => {
+  for (const documentFormats of [
+    { "pages.page": 2 },
+    { "pages.comments": 1 },
+    { "pages.page": 2, "pages.comments": 2 },
+    { "pages.page": 1, "pages.comments": 1 },
+    { "pages.page": "2", "pages.comments": 1 },
+    { "pages.page": 2, "pages.comments": 1, "pages.future": 1 },
+    { "pages.page": 2, "pages.future": 1 },
+    {},
+    [],
+    null,
+    "pages.page:2",
+  ])
+    assert.equal(recordFormatsWritten({ documentFormats }), false, JSON.stringify(documentFormats));
+});
+
+test("an unopened record's refusal is a 409 document_format_unsupported", () => {
+  const error = documentFormatsUnsupported();
+  assert.equal(error.status, 409);
+  assert.equal(error.code, "document_format_unsupported");
+  assert.doesNotMatch(error.message, /reload/i);
 });
 
 test("descriptor parsing rejects unknown types and formats without coercion", () => {
@@ -87,7 +143,7 @@ test("a build reads and writes the formats the registry lists", () => {
     { type: "pages.page", format: 2 },
     { type: "pages.comments", format: 1 },
   ]);
-  assert.deepEqual(currentFormats(), readableFormats());
+  assert.deepEqual(formatPairs(WRITTEN_FORMATS), readableFormats());
   assert.equal(BUILD_FORMATS, "pages.comments:1,pages.page:2");
 });
 
