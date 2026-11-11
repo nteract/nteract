@@ -148,13 +148,19 @@ export async function receiptHorizon(storage, now) {
   if (!Number.isSafeInteger(stored)) throw Error("Invalid stored receipt horizon");
   return Math.max(stored, now - RECEIPT_LIFETIME_MS);
 }
+/** Raise the horizon to `newest`, the latest time of a receipt about to be
+ * forgotten, and make it durable. Every store of client receipts on this
+ * object calls it before it deletes any: the journal (forget) and a Page's
+ * lifecycle receipts. */
+export async function raiseHorizon(storage, newest, now = Date.now()) {
+  await storage.put(HORIZON, Math.max(await receiptHorizon(storage, now), newest));
+  await storage.sync();
+}
 /** Delete completed receipts `entries`, raising the horizon to the newest of
  * them first. The horizon is durable before any delete is. */
 async function forget(storage, entries, now) {
   if (!entries.length) return;
-  const newest = Math.max(...entries.map(([, value]) => value.recordedAt ?? 0));
-  await storage.put(HORIZON, Math.max(await receiptHorizon(storage, now), newest));
-  await storage.sync();
+  await raiseHorizon(storage, Math.max(...entries.map(([, value]) => value.recordedAt ?? 0)), now);
   for (const [key] of entries) await storage.delete(key);
 }
 

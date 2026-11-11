@@ -165,6 +165,7 @@
       "heads-absent",
       "non-owner",
       "heads-mismatch",
+      "heads-unknown",
       "stale-revision",
       "has-children",
       "recorded",
@@ -688,6 +689,34 @@
           "beforeChange": true
         },
         "rejected": "stale_revision"
+      }
+    },
+    {
+      "case": "heads-unknown",
+      "state": {
+        "name": "active",
+        "revision": 0
+      },
+      "event": {
+        "type": "trash",
+        "actor": "owner",
+        "key": "fresh",
+        "heads": "unknown",
+        "expected": 0
+      },
+      "expect": {
+        "state": {
+          "name": "active",
+          "revision": 0
+        },
+        "effects": [],
+        "response": {
+          "status": 409,
+          "error": "revision is unknown or older than the receipts this Page keeps; read the Page again",
+          "code": "resync_required",
+          "beforeChange": true
+        },
+        "rejected": "resync_required"
       }
     },
     {

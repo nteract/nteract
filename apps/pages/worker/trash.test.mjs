@@ -6,7 +6,7 @@ import { Page } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { pageAccess, pageGrant, pageState } from "./access.mjs";
 import { fingerprint } from "./mutations.mjs";
-import { inspectOperation } from "./operation-journal.mjs";
+import { HORIZON, inspectOperation, RECEIPT_LIFETIME_MS } from "./operation-journal.mjs";
 import { countCapacity, lifecycleSlot } from "./catalog.mjs";
 import { PURGE_PREVIEW_TTL_MS } from "./trash.mjs";
 import { Storage, coldPage, fixture, pageId, trashArgs } from "./trash-fixture.mjs";
@@ -58,6 +58,63 @@ test("delete_page needs no revision: the nonce alone trashes, and a sent revisio
   });
   assert.equal(replay.status, 200);
   assert.deepEqual(replay.body, trashed.body);
+});
+
+test("delete_page refuses an unknown or too-old revision with resync_required and trashes nothing", async (t) => {
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  const f = await fixture(t);
+  const unknown = await f.catalogCall("owner", "delete_page", {
+    page_id: pageId,
+    revision: "r999999",
+    nonce: "unknown-revision",
+  });
+  assert.equal(unknown.status, 409, JSON.stringify(unknown.body));
+  assert.equal(unknown.body.code, "resync_required");
+  assert.deepEqual(await f.headsOf(unknown.body.current_revision), f.heads());
+  assert.equal(pageState(f.page.metadata), "active");
+  // The Page doesn't change, but its handle ages behind the horizon.
+  const old = await f.revision();
+  now += RECEIPT_LIFETIME_MS + 1000;
+  const aged = await f.catalogCall("owner", "delete_page", {
+    page_id: pageId,
+    revision: old,
+    nonce: "aged-revision",
+  });
+  assert.equal(aged.status, 409, JSON.stringify(aged.body));
+  assert.equal(aged.body.code, "resync_required");
+  assert.equal(pageState(f.page.metadata), "active");
+  // A fresh read names the same Page anew, and that trashes.
+  const fresh = await f.revision();
+  assert.notEqual(fresh, old);
+  const trashed = await f.catalogCall("owner", "delete_page", {
+    page_id: pageId,
+    revision: fresh,
+    nonce: "fresh-revision",
+  });
+  assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
+  assert.equal(pageState(f.page.metadata), "trashed");
+});
+
+test("a lifecycle receipt pruned from the Page raises the receipt horizon first", async (t) => {
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  const f = await fixture(t);
+  // A full store of lifecycle receipts, the oldest recorded at `oldest`.
+  const oldest = now - 10_000;
+  for (let n = 0; n < 256; n++)
+    f.storage.values.set(`host/lifecycle/seed-${String(n).padStart(3, "0")}`, {
+      operation: "restore_page",
+      fingerprint: `seed-${n}`,
+      revision: 0,
+      receipt: { page_id: pageId },
+      at: oldest + n,
+    });
+  assert.ok(((await f.storage.get(HORIZON)) ?? 0) < oldest);
+  const trashed = await f.catalogCall("owner", "delete_page", trashArgs(f, "prunes-one"));
+  assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
+  assert.equal(await f.storage.get("host/lifecycle/seed-000"), undefined, "the oldest was pruned");
+  assert.equal(await f.storage.get(HORIZON), oldest, "the horizon covers it");
 });
 
 test("delete_page moves a Page to Trash and keeps its document, comments and ACL", async (t) => {

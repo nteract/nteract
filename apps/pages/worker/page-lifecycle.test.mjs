@@ -33,7 +33,7 @@ test("the page-lifecycle table covers every pair and case and drives the Page ho
   const summary = await runTable(pageLifecycleSpec, s.table, {
     drive: async (state, event) => (await drive(s, state, event)).result,
   });
-  assert.deepEqual(summary, { rows: s.table.rows.length, pairs: 45, unreachable: 27, cases: 41 });
+  assert.deepEqual(summary, { rows: s.table.rows.length, pairs: 45, unreachable: 27, cases: 42 });
 });
 
 test("a request or tombstone in a pending phase settles it first, then runs as in the settled state", async (t) => {
@@ -149,7 +149,8 @@ const POST_COMMIT = {
  * - index: a D1 write rejected. Index writes are best-effort; a failed report
  *   stores the repair marker, and listings verify rows with the Page.
  * - prune: a receipt landed but its prune did not. The store holds one
- *   receipt over the limit until the next receipt write prunes it.
+ *   receipt over the limit until the next receipt write prunes it, and the
+ *   receipt horizon the prune raises first stays where it was.
  * - titleRecord: the stored title projection's write rejected, or its
  *   projection mark's did, which leaves the title unstored. It is
  *   best-effort: without it, the next projection observes the title anew and
@@ -165,7 +166,8 @@ function allowance(key, run, row, committed, reference) {
   const cutD1 = run.cut && run.mutations[run.cut.index]?.startsWith("d1 ");
   if (key.startsWith("index ") && cutD1) return "index";
   if (key === "page host/index/report-pending") return cutD1 ? "index" : undefined;
-  if (key.startsWith("page host/lifecycle/seed-")) return "prune";
+  if (key.startsWith("page host/lifecycle/seed-") || key === "page host/receipt-horizon")
+    return "prune";
   if (key.startsWith("page host/revision/")) return "revisionTable";
   if (key === "page host/title-projection/pending")
     return new Map(run.final.page).get("host/title-projection/pending") === true &&
@@ -263,16 +265,18 @@ test("every mutation the lifecycle makes can reject before or after it applies, 
       // rejected mark write leaves the title unstored (titleRecord), and one
       // that landed before it rejected stays, since the projection failed
       // (projectionMark). A stale-revision trash names the live revisions in
-      // its refusal: their put and barrier are cut points (revisionTable).
-      cuts: 206,
-      runs: 784,
-      indexRetirement: 15,
-      titleProjection: 10,
+      // its refusal, as an unknown-revision trash does: their put and barrier are
+      // cut points (revisionTable). A receipt write that prunes raises the
+      // receipt horizon first, so its put and barrier are cut points too.
+      cuts: 246,
+      runs: 944,
+      indexRetirement: 27,
+      titleProjection: 18,
       titleRecord: 12,
-      prune: 22,
+      prune: 66,
       index: 14,
       projectionMark: 16,
-      revisionTable: 8,
+      revisionTable: 9,
     },
   );
 });

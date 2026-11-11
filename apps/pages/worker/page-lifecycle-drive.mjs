@@ -578,6 +578,7 @@ async function requestBody(h, state, event) {
       let revision = await f.revision();
       if (event.heads === "mismatch") f.edit("A newer title");
       if (event.heads === "invalid") revision = "not-a-revision";
+      if (event.heads === "unknown") revision = "r999999";
       return {
         page_id: pageId,
         // An absent guard trashes on the nonce alone.

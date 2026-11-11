@@ -120,11 +120,13 @@ import {
 } from "./history-admission.mjs";
 import {
   inspectOperation,
+  journalTime,
+  raiseHorizon,
   readRevisions,
   reserveOperation,
   revisionClock,
 } from "./operation-journal.mjs";
-import { headsFor, revisionPlan } from "./revisions.mjs";
+import { fencedHeads, headsFor, revisionPlan } from "./revisions.mjs";
 import { STORAGE_KEYS_PER_CALL, guardContext } from "./storage-guard.mjs";
 import { pageRecordsCall } from "./page-records.mjs";
 export { PageRecords } from "./page-records.mjs";
@@ -6476,13 +6478,16 @@ export class Page {
     // a record in a format this build doesn't write never opens.
     if (type === "trash" && Array.isArray(args.base_comment_heads) && !this.formatRefusal())
       await this.loadComments();
-    // A caller's trash may name a revision handle, resolved here, before the
-    // head guard: a malformed one is invalid and one this host no longer
-    // knows can't match. delete_project's own trash sends heads.
+    // A caller's trash may name a revision handle, resolved here through the
+    // same fence as an edit, before the head guard: a malformed one is
+    // invalid, and one that is unknown, pruned, or minted at or before the
+    // receipt horizon needs a fresh read. delete_project's own trash sends
+    // heads.
     let callerHeads;
     if (type === "trash" && args.base_comment_heads === undefined && args.revision !== undefined)
       try {
-        callerHeads = await headsFor(this.ctx.storage, PAGE_DOC, args.revision);
+        const { horizon } = await revisionClock(this.ctx.storage);
+        callerHeads = await fencedHeads(this.ctx.storage, PAGE_DOC, args.revision, horizon);
       } catch (error) {
         if (error.code === "invalid_revision") callerHeads = "invalid";
         else if (error.code === "resync_required") callerHeads = "unknown";
@@ -6492,7 +6497,7 @@ export class Page {
       callerHeads === "invalid"
         ? "invalid"
         : callerHeads === "unknown"
-          ? "mismatch"
+          ? "unknown"
           : headsCheck(doc, callerHeads);
     let state = this.lifecycleState();
     if (
@@ -6785,9 +6790,9 @@ export class Page {
     if (response.status >= 500) return json({ error: response.error }, response.status);
     if (response.status !== 200) {
       const error = new HttpError(response.status, response.error, response.code);
-      // A trash refused for a stale revision names the live one, as an edit
-      // refusal does.
-      if (response.code === "stale_revision" && this.handle)
+      // A trash refused for a stale or unknown revision names the live one, as
+      // an edit refusal does.
+      if (["stale_revision", "resync_required"].includes(response.code) && this.handle)
         error.details = { current_heads: A.getHeads(this.handle.doc()) };
       const reply = errorResponse(await this.agentRefusal(error), "page-lifecycle");
       // Every refusal before the record changes lets the Catalog release its
@@ -6854,20 +6859,25 @@ export class Page {
   }
 
   /** Persist a lifecycle receipt, optionally with the new record, in one
-   * multi-key write. Receipts are bounded: the Catalog's expected revision,
-   * not receipt retention, prevents an old request from applying again.
+   * multi-key write. Receipts are bounded: the Catalog's expected revision
+   * keeps an old request from applying again. A receipt is stamped with the
+   * journal time, and pruning raises the receipt horizon to the newest
+   * pruned stamp first, so a trash that names a revision handle meets the
+   * same fence as an edit once its receipt is gone.
    */
   async commitLifecycle(key, record, metadata) {
-    await this.ctx.storage.put({
-      [lifecycleReceiptKey(key)]: record,
+    const storage = this.ctx.storage;
+    await storage.put({
+      [lifecycleReceiptKey(key)]: { ...record, at: await journalTime(storage) },
       ...(metadata && { "host/document": metadata }),
     });
-    const records = await this.ctx.storage.list({ prefix: "host/lifecycle/" });
+    const records = await storage.list({ prefix: "host/lifecycle/" });
     if (records.size <= LIFECYCLE_RECEIPT_LIMIT) return;
     const oldest = [...records]
       .sort(([, a], [, b]) => a.at - b.at)
       .slice(0, records.size - LIFECYCLE_RECEIPT_LIMIT);
-    for (const [name] of oldest) await this.ctx.storage.delete(name);
+    await raiseHorizon(storage, Math.max(...oldest.map(([, value]) => value.at ?? 0)));
+    for (const [name] of oldest) await storage.delete(name);
   }
 
   supersededResponse() {
