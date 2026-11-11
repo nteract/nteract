@@ -78,6 +78,11 @@ export class AutomergeSyncBackend {
       replayEvents: options.replayEvents ?? 128,
       replayBytes: options.replayBytes ?? 4 * 1024 * 1024,
       syncTimeoutMs: options.syncTimeoutMs ?? 10_000,
+      // Starts and cancels a round's timeout. Tests pass one they fire by hand.
+      syncTimer: options.syncTimer ?? {
+        set: (fire, ms) => setTimeout(fire, ms),
+        clear: (timer) => clearTimeout(timer),
+      },
       // The app decides when a local store's round starts (OutboundSync).
       scheduleLocalSync: options.scheduleLocalSync ?? ((_id, start) => queueMicrotask(start)),
       onRefusal: options.onRefusal ?? (() => {}),
@@ -286,7 +291,7 @@ export class AutomergeSyncBackend {
     try {
       this.#trees.delete(id);
       tree.deleted = true;
-      clearTimeout(tree.sync.timer);
+      this.#opts.syncTimer.clear(tree.sync.timer);
       for (const session of [...tree.sessions])
         session.end({ type: "deleted", sequence: tree.log.sequence + 1 });
       for (const waiter of tree.sync.waiters.splice(0))
@@ -307,7 +312,7 @@ export class AutomergeSyncBackend {
     for (const watch of [...this.#collectionWatches]) watch.end();
     const tails = [];
     for (const tree of this.#trees.values()) {
-      clearTimeout(tree.sync.timer);
+      this.#opts.syncTimer.clear(tree.sync.timer);
       for (const session of [...tree.sessions]) session.end();
       for (const waiter of tree.sync.waiters.splice(0))
         waiter.reject(new BackendError("synchronize", "closed", "Backend is closed"));
@@ -340,7 +345,7 @@ export class AutomergeSyncBackend {
       tree.refusedTerminal = false;
       tree.sync.recovery = dependencyRecoveryStep(tree.sync.recovery, "connect");
       tree.sync.inflight = null;
-      clearTimeout(tree.sync.timer);
+      this.#opts.syncTimer.clear(tree.sync.timer);
     }
     transport.onMessage((frame) => {
       if (this.#conn === conn) this.#onFrame(frame);
@@ -350,7 +355,7 @@ export class AutomergeSyncBackend {
       this.#conn = null;
       for (const tree of this.#trees.values()) {
         tree.sync.inflight = null;
-        clearTimeout(tree.sync.timer);
+        this.#opts.syncTimer.clear(tree.sync.timer);
         this.#finishRound(tree, "failed");
       }
     });
@@ -429,8 +434,8 @@ export class AutomergeSyncBackend {
     const r = ++this.#frame;
     tree.sync.inflight = r;
     tree.sync.again = false;
-    clearTimeout(tree.sync.timer);
-    tree.sync.timer = setTimeout(() => {
+    this.#opts.syncTimer.clear(tree.sync.timer);
+    tree.sync.timer = this.#opts.syncTimer.set(() => {
       if (tree.sync.inflight !== r) return;
       tree.sync.inflight = null;
       // A transport timeout is not a native acknowledgment. Clear inFlight and
@@ -463,7 +468,7 @@ export class AutomergeSyncBackend {
       const superseded = frame.r !== undefined && !correlated;
       if (correlated) {
         tree.sync.inflight = null;
-        clearTimeout(tree.sync.timer);
+        this.#opts.syncTimer.clear(tree.sync.timer);
       }
       // Retain native peer bookkeeping, never a durability acknowledgment.
       if (!superseded) tree.sync.state = A.decodeSyncState(A.encodeSyncState(tree.sync.state));
@@ -506,7 +511,7 @@ export class AutomergeSyncBackend {
     const reply = frame.r !== undefined && frame.r === tree.sync.inflight;
     if (reply) {
       tree.sync.inflight = null;
-      clearTimeout(tree.sync.timer);
+      this.#opts.syncTimer.clear(tree.sync.timer);
       tree.sync.has = frame.has;
     }
     if (frame.has && frame.heads?.length) {

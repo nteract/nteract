@@ -199,15 +199,20 @@ test("the exchange sends exactly the token and audience, with the deployment's s
 
 test("a Kilo that doesn't answer in time is a 503, and the token is asked about again", async (t) => {
   const { env, kilo } = await fixture(t);
-  const timeout = AbortSignal.timeout.bind(AbortSignal);
+  // The exchange's timeout is a signal the test fires itself, once Kilo holds
+  // the request without answering. No wall-clock timer decides the order.
+  const timeouts = [];
   const asked = t.mock.method(AbortSignal, "timeout", (ms) => {
     assert.equal(ms, 10_000, "the code flow's timeout");
-    return timeout(50);
+    const timeout = new AbortController();
+    timeouts.push(timeout);
+    return timeout.signal;
   });
   const token = kilo.mintToken(person(), { audience });
   let hung;
   kilo.respond((req, res) => {
     hung = res;
+    timeouts.at(-1).abort(new DOMException("The operation timed out.", "TimeoutError"));
   });
   await assert.rejects(authenticate(request(token), env), {
     status: 503,

@@ -12,7 +12,10 @@ const history = (doc) =>
     .map((c) => A.decodeChange(c).hash)
     .sort();
 
-async function fixture(t, { trusted = false, policy, syncTimeoutMs = 1000 } = {}) {
+async function fixture(
+  t,
+  { trusted = false, policy, syncTimeoutMs = 1000, syncTimer, onRefusal } = {},
+) {
   const bytes = new MemoryByteStore();
   const h = await host({ bytes, policy });
   const id = newId();
@@ -26,6 +29,8 @@ async function fixture(t, { trusted = false, policy, syncTimeoutMs = 1000 } = {}
     {
       scheduleLocalSync: (_id, start) => start(),
       syncTimeoutMs,
+      syncTimer,
+      onRefusal,
     },
   );
   t.after(() => client.repo.shutdown());
@@ -494,7 +499,22 @@ for (const code of ["io", "history_capacity", "missing_dependencies"])
     `a late ${code} refusal does not finish or suppress a newer in-flight round`,
     { timeout: 5000 },
     async (t) => {
-      const { h, id, client, handle } = await fixture(t, { syncTimeoutMs: 100 });
+      // Round timeouts fire only when the test fires them, so the newer round
+      // stays in flight however long the steps below take.
+      const timers = new Set();
+      const syncTimer = {
+        set: (fire) => {
+          const timer = { fire };
+          timers.add(timer);
+          return timer;
+        },
+        clear: (timer) => timers.delete(timer),
+      };
+      const refusals = [];
+      const { h, id, client, handle } = await fixture(t, {
+        syncTimer,
+        onRefusal: (refusal) => refusals.push(refusal),
+      });
       const send = client.link.host.send;
       const replies = [];
       client.link.host.send = (frame) => {
@@ -505,9 +525,14 @@ for (const code of ["io", "history_capacity", "missing_dependencies"])
           d.n = 1;
         }),
       );
-      assert.equal((await client.backend.synchronizeTree(id)).outcome, "failed");
+      const timedOut = client.backend.synchronizeTree(id);
+      await until(() => replies.some((f) => f.r !== undefined));
       const old = replies.find((f) => f.r !== undefined);
-      assert.ok(old);
+      assert.equal(timers.size, 1);
+      const [oldTimer] = timers;
+      timers.delete(oldTimer);
+      oldTimer.fire();
+      assert.equal((await timedOut).outcome, "failed");
       let settled = false;
       const round = client.backend.synchronizeTree(id).then((result) => {
         settled = true;
@@ -515,7 +540,9 @@ for (const code of ["io", "history_capacity", "missing_dependencies"])
       });
       await until(() => replies.some((f) => f.r > old.r));
       send({ t: "refused", doc: id, r: old.r, code, message: "late refusal", fatal: false });
-      await delay(10);
+      await until(() => refusals.length > 0);
+      assert.equal(refusals[0].correlated, false);
+      await new Promise((resolve) => setImmediate(resolve));
       assert.equal(settled, false);
       client.link.host.send = send;
       for (const frame of replies.filter((f) => f.r > old.r)) send(frame);
