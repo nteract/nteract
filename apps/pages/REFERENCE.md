@@ -1049,9 +1049,11 @@ is the same principal either way. It needs no settings beyond the three
 caller never sees Kilo's body. Each isolate leases an accepted token by its
 SHA-256 until the earliest of its `exp` less 30 seconds, its whole lifetime
 after the exchange was sent, and 15 minutes, with one exchange for concurrent
-requests ([worker/kilo-token-lease.mjs](worker/kilo-token-lease.mjs)). Kilo's
-refusal of a token answers repeats of it for five minutes (`invalid_kilo_token`)
-or 30 seconds (`account_unavailable`); a 503 is never kept. At most 8
+requests ([worker/kilo-token-lease.mjs](worker/kilo-token-lease.mjs)). A
+token Kilo accepts without a lease authorizes its own request for 30 seconds
+and is exchanged again on the next. Only Kilo's explicit refusal of a token
+(`400 invalid_token`, `403 account_unavailable`) answers repeats of it, for
+five minutes or 30 seconds; every other answer is a 503 and is never kept. At most 8
 exchanges run and 1,000 tokens are kept per isolate, never by dropping a live
 lease: past either bound a new token gets 503 without an exchange. An account
 Kilo blocks keeps working until its lease ends. A lease can outlast the token

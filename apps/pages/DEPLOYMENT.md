@@ -1274,30 +1274,45 @@ refuses it with 403 before Kilo is asked.
 
 | Kilo's answer | Caller gets |
 | --- | --- |
-| `400 invalid_token` or any other 4xx but 401 and 403 | 401 `invalid_kilo_token`: mint a new token for this deployment |
-| `403 account_unavailable` | 403 `account_unavailable` |
-| `401 invalid_client` (wrong secret or audience), 429, 5xx, a 3xx, a timeout, a body over 16 KB, or a body that isn't the documented shape | 503 `sign_in_unavailable`, `retryable: true` |
+| `400` with `{"error":"invalid_token"}` | 401 `invalid_kilo_token`: mint a new token for this deployment. Kept five minutes |
+| `403` with `{"error":"account_unavailable"}` | 403 `account_unavailable`. Kept 30 seconds |
+| `401 invalid_client` (wrong secret or audience) | 503 `sign_in_unavailable`, `retryable: true` |
+| Anything else: `400 invalid_request`, a 403 with another body, 404, 408, 429, 5xx, a 3xx, a timeout, a body over 16 KB, or a 200 that isn't the documented shape | 503 `sign_in_unavailable`, `retryable: true` |
 
-The caller never sees Kilo's body. Each refusal logs one `kilo_token.refused`
-auth line with a coded `reason`, never the token or the secret.
+Pages reads Kilo's error body, within the 16 KB limit, only to pick among
+these rows; the caller and the logs never see it. A 503 is never kept, so the
+next request with the token asks Kilo again. The browser code exchange keeps
+its own mapping by status alone.
+
+Each refusal and each request turned away by a bound below logs one
+`kilo_token.refused` auth line whose `reason` names the cause, never the
+token or the secret. A 503 also produces the gateway's generic
+`request.failed` line, which carries only the code `sign_in_unavailable`.
 
 Each Worker isolate leases an accepted token, keyed by its SHA-256, so a
 token costs one exchange per isolate rather than one per call
 ([worker/kilo-token-lease.mjs](worker/kilo-token-lease.mjs)). Pages can't
 read Kilo's clock, so the lease ends at the earliest of the token's `exp` by
 Pages' clock less 30 seconds, the token's whole lifetime (`exp - iat`) after
-the exchange was sent, and 15 minutes. A token whose `iat` and `exp` aren't
-whole seconds at most 15 minutes apart is accepted for its one request and
-not leased. Concurrent requests with one new token share one exchange.
+the exchange was sent, and 15 minutes. A token Kilo accepts that gets no
+lease, because it is inside that 30-second allowance or its `iat` and `exp`
+aren't whole seconds at most 15 minutes apart, still authorizes its own
+request, with an identity valid for 30 seconds from Kilo's answer; the next
+request exchanges it again. Concurrent requests with one new token share one
+exchange, and one token's exchanges run one at a time. When that exchange
+fails transiently, only the request that made it gets the 503; the others
+use what the next exchange finds. Every request answers within 15 seconds.
 
-Kilo's refusal of the token itself is kept for repeats of that token:
+Kilo's explicit refusal of the token is kept for repeats of that token:
 `invalid_kilo_token` for five minutes, since an invalid token can't become
-valid, and `account_unavailable` for 30 seconds. A 503 is never kept. Each
-isolate runs at most 8 exchanges at once and keeps at most 1,000 tokens.
-Kept refusals leave first, then entries whose time is over; a running
-exchange or a live lease never leaves early. Past either bound a new token
-gets 503 `sign_in_unavailable` without an exchange, and tokens already
-leased keep working.
+valid, and `account_unavailable` for 30 seconds. Each isolate runs at most 8
+exchanges at once and keeps at most 1,000 tokens. Kept refusals leave first,
+then entries whose time is over; a running exchange or a live lease never
+leaves early. Past either bound a new token gets 503 `sign_in_unavailable`
+without an exchange, and tokens already leased keep working. So eight
+forged, well-shaped tokens can hold every exchange slot of an isolate for up
+to the 10-second exchange timeout each; while they do, a new legitimate token
+gets a retryable 503 there, and tokens already leased keep working.
 
 The lease is the limit of this design: an account Kilo blocks keeps working
 here until its lease ends. A lease can outlast the token by the clock

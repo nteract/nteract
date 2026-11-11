@@ -3,37 +3,38 @@
  *
  * Each token, keyed by its SHA-256, has one lifecycle:
  *
- * - `absent`: nothing is known. The next request starts an exchange.
+ * - `absent`: nothing is known. A request starts an exchange.
  * - `exchanging`: attempt `generation` is asking Kilo, until `deadline`.
- *   Other requests for the token wait for it on their own timers. When the
- *   attempt replaced a `failed` one, it keeps that failure as `prior` for the
- *   requests that were waiting on it.
+ *   Holding the key keeps one token's exchanges serial: other requests for
+ *   it wait on their own timers.
  * - `leased`: Kilo accepted the token. Every request uses `value` until
  *   `until`.
- * - `refused`: Kilo refused the token itself, for `until`. Every request for
- *   it gets the same `failure` without an exchange. A token Kilo called
- *   invalid can't become valid; the caller decides how long a refusal is
- *   kept (`rememberFor`).
- * - `failed`: attempt `generation` failed in a way that says nothing about
- *   the token, such as Kilo being unreachable. Only the requests that waited
- *   on that attempt get its failure, until `until`; any other request starts
- *   a new exchange.
- * - `expired`: a lease, a refusal or an attempt is over. The entry leaves.
+ * - `refused`: Kilo refused the token itself, until `until`. Every request
+ *   for it gets the same `failure` without an exchange. The caller decides
+ *   which failures are refusals and how long each is kept (`rememberFor`).
+ * - `expired`: a lease, a refusal or an attempt is over, or an attempt
+ *   failed in a way that says nothing about the token. The entry leaves.
+ *
+ * A transient failure, such as Kilo being unreachable, reaches only the
+ * request that made that exchange. A request that was waiting acts on the
+ * state it finds next: it uses a lease, takes a refusal, waits on a running
+ * attempt, or starts its own.
  *
  * Gateway requests never await a promise another request started
  * (isolate-setup.mjs says why): the request that starts an exchange awaits
- * it, and the others poll the state on their own timers. Every request gives
- * up at its own deadline, `holdMs` after it arrived.
+ * it, and the others poll the state on their own timers. Every request
+ * answers by its own deadline, `holdMs` after it arrived, whether it waits,
+ * starts an attempt, or both.
  *
  * The table is bounded twice, so tokens nobody has seen can't crowd out
  * tokens in use:
  *
  * - At most `maxInFlight` exchanges run at once. A request that would start
  *   another is refused with `busy()` without asking Kilo.
- * - At most `maxEntries` tokens are kept. To admit a new token, a refusal or
- *   a failure leaves first, then any entry whose time is over, oldest first.
- *   A running exchange and a live lease never leave early: when only they
- *   remain, the new token is refused with `busy()`.
+ * - At most `maxEntries` tokens are kept. To admit a new token, a refusal
+ *   leaves first, then any entry whose time is over, oldest first. A running
+ *   exchange and a live lease never leave early: when only they remain, the
+ *   new token is refused with `busy()`.
  *
  * The table holds account ids, names and refusals, never a token. */
 
@@ -51,7 +52,7 @@ export const CLOCK_ALLOWANCE_MS = 30_000;
 /** When an entry's time is over, or undefined for one with no end. */
 function endOf(state) {
   if (state.name === "exchanging") return state.deadline;
-  if (["leased", "refused", "failed"].includes(state.name)) return state.until;
+  if (state.name === "leased" || state.name === "refused") return state.until;
   return undefined;
 }
 
@@ -60,14 +61,13 @@ function endOf(state) {
  *
  * - `start` (`generation`, `now`, `deadline`): a request begins an exchange.
  *   Refused while a lease or a refusal is live or an exchange holds the
- *   token. A live `failed` attempt becomes the new attempt's `prior`.
+ *   token.
  * - `settle` (`generation`, `now`, `value`, `until`): the attempt succeeded.
  *   A lease that would already be over is `expired`.
  * - `refuse` (`generation`, `failure`, `until`): Kilo refused the token;
  *   every request gets `failure` until `until`.
- * - `fail` (`generation`, `failure`, `until`): the attempt failed; its
- *   waiters may read `failure` until `until`.
- * - `expire` (`now`): a lease, a refusal, a failure or an attempt is over.
+ * - `fail` (`generation`): the attempt failed and nothing is kept.
+ * - `expire` (`now`): a lease, a refusal or an attempt is over.
  *
  * `settle`, `refuse` and `fail` change only the attempt they name, so a late
  * answer from an abandoned attempt changes nothing. Returns `{ state }`, or
@@ -77,24 +77,14 @@ export function leaseTransition(state, event) {
   const reject = (rejected) => ({ state, rejected });
   const current = state.name === "exchanging" && state.generation === event.generation;
   switch (event.type) {
-    case "start": {
+    case "start":
       if (state.name === "leased" && event.now < state.until) return reject("the lease is live");
       if (state.name === "refused" && event.now < state.until) return reject("the refusal is live");
       if (state.name === "exchanging" && event.now < state.deadline)
         return reject("an exchange holds the token");
-      const prior =
-        state.name === "failed" && event.now < state.until
-          ? { generation: state.generation, failure: state.failure, until: state.until }
-          : undefined;
       return {
-        state: {
-          name: "exchanging",
-          generation: event.generation,
-          deadline: event.deadline,
-          ...(prior && { prior }),
-        },
+        state: { name: "exchanging", generation: event.generation, deadline: event.deadline },
       };
-    }
     case "settle":
       if (!current) return reject("not the running exchange");
       return {
@@ -104,16 +94,11 @@ export function leaseTransition(state, event) {
             : { name: "expired" },
       };
     case "refuse":
+      if (!current) return reject("not the running exchange");
+      return { state: { name: "refused", failure: event.failure, until: event.until } };
     case "fail":
       if (!current) return reject("not the running exchange");
-      return {
-        state: {
-          name: event.type === "refuse" ? "refused" : "failed",
-          generation: event.generation,
-          failure: event.failure,
-          until: event.until,
-        },
-      };
+      return { state: { name: "expired" } };
     case "expire": {
       const end = endOf(state);
       if (end === undefined) return reject("nothing to expire");
@@ -125,31 +110,13 @@ export function leaseTransition(state, event) {
   }
 }
 
-/** What a request does in `state` at `now`: `use` the lease, `fail` with a
- * refusal, or with the failure of the attempt it waited on (`joined`),
- * `wait` for the running exchange, or `start` an exchange of its own. */
-export function leaseAction(state, now, joined) {
+/** What a request does in `state` at `now`: `use` the lease, `fail` with the
+ * refusal, `wait` for the running exchange, or `start` an exchange. */
+export function leaseAction(state, now) {
   if (state.name === "leased" && now < state.until) return "use";
   if (state.name === "refused" && now < state.until) return "fail";
-  if (
-    state.name === "failed" &&
-    joined !== undefined &&
-    state.generation === joined &&
-    now < state.until
-  )
-    return "fail";
-  if (state.name === "exchanging") {
-    const { prior } = state;
-    if (prior && joined !== undefined && prior.generation === joined && now < prior.until)
-      return "fail";
-    if (now < state.deadline) return "wait";
-  }
+  if (state.name === "exchanging" && now < state.deadline) return "wait";
   return "start";
-}
-
-/** The failure a `fail` action answers with. */
-export function leaseFailure(state) {
-  return state.name === "exchanging" ? state.prior.failure : state.failure;
 }
 
 /** Whether an entry may leave to admit another token at `now`: anything but
@@ -205,14 +172,12 @@ const realSleep = (ms, signal) =>
  * value for `key`, or runs `exchange()` when there is none. `exchange`
  * returns `{ value, until }`, with `until` null for no lease, and throws to
  * fail. `rememberFor(failure)` says how many milliseconds a failure is kept
- * as a refusal of the token; 0 keeps it only for the requests that waited on
- * it. `busy()` builds the failure for a request turned away by a bound or by
- * its own deadline.
+ * as a refusal of the token; 0 keeps nothing. `busy(reason)` builds the
+ * failure for a request turned away by a bound or by its own deadline.
  *
- * `holdMs` is how long an exchange holds its key before it is abandoned, how
- * long its waiters may read a failure, and how long one request waits at
- * most; it is longer than the exchange's own timeout. `now`, `sleep` and
- * `pollMs` let tests drive time.
+ * `holdMs` is how long one request takes at most, and how long its attempt
+ * holds the key; it is longer than the exchange's own timeout. `now`,
+ * `sleep` and `pollMs` let tests drive time.
  */
 export function kiloTokenLease({
   holdMs,
@@ -247,10 +212,7 @@ export function kiloTokenLease({
    * exchanges and live leases remain. */
   const admit = (at) => {
     if (entries.size < maxEntries) return true;
-    for (const pass of [
-      (state) => state.name === "refused" || state.name === "failed",
-      (state) => evictable(state, at),
-    ])
+    for (const pass of [(state) => state.name === "refused", (state) => evictable(state, at)])
       for (const [key, state] of entries)
         if (pass(state)) {
           entries.delete(key);
@@ -260,35 +222,32 @@ export function kiloTokenLease({
   };
   const resolve = async (key, exchange) => {
     const deadline = now() + holdMs;
-    let joined;
     for (;;) {
-      const state = stateOf(key);
-      const action = leaseAction(state, now(), joined);
-      if (action === "use") return state.value;
-      if (action === "fail") throw leaseFailure(state);
-      if (action === "start") break;
       if (now() >= deadline) throw busy("wait_timeout");
-      // The attempt this request now waits on, and whose failure it may take.
-      joined = state.generation;
-      await sleep(pollMs);
+      const state = stateOf(key);
+      const action = leaseAction(state, now());
+      if (action === "use") return state.value;
+      if (action === "fail") throw state.failure;
+      if (action === "start") break;
+      await sleep(Math.min(pollMs, deadline - now()));
     }
-    // Checked and claimed in the same synchronous step.
+    // Checked and claimed in the same synchronous step. The attempt holds
+    // the key only as long as this request may wait for it.
     const at = now();
     step(key, { type: "expire", now: at });
     if (inFlight(at) >= maxInFlight) throw busy("exchanges_in_flight");
     if (!entries.has(key) && !admit(at)) throw busy("lease_capacity");
     const generation = ++generations;
-    step(key, { type: "start", generation, now: at, deadline: at + holdMs });
+    step(key, { type: "start", generation, now: at, deadline });
     let answer;
     const stop = new AbortController();
     const abandoned = {};
     try {
       answer = await Promise.race([
         Promise.resolve().then(exchange),
-        // The starter gives up when its attempt would be abandoned, so an
-        // exchange that never answers can't hold the request. The attempt
-        // stays `exchanging` until its deadline, which is this moment.
-        sleep(Math.max(0, at + holdMs - now()), stop.signal).then(() => abandoned),
+        // An exchange that never answers can't hold the request past its
+        // deadline; the attempt is abandoned at the same moment.
+        sleep(Math.max(0, deadline - now()), stop.signal).then(() => abandoned),
       ]);
     } catch (failure) {
       const remember = rememberFor(failure);
@@ -296,7 +255,7 @@ export function kiloTokenLease({
         key,
         remember > 0
           ? { type: "refuse", generation, failure, until: now() + remember }
-          : { type: "fail", generation, failure, until: now() + holdMs },
+          : { type: "fail", generation },
       );
       throw failure;
     } finally {

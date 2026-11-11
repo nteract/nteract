@@ -17,9 +17,11 @@
  * A token Kilo accepted is leased in this isolate (kilo-token-lease.mjs) until
  * its own `exp` less a clock allowance, for no longer than its own lifetime
  * from the exchange and never longer than `MAX_LEASE_MS`; `iat` and `exp`
- * are read only after Kilo accepted it. An account Kilo blocks keeps working
- * here until its lease ends. Kilo's refusal of a token is kept for repeats
- * of it (`REMEMBER_REFUSAL_MS`); a Kilo that can't answer is never kept. A
+ * are read only after Kilo accepted it. A token Kilo accepted that gets no
+ * lease still authorizes its own request. An account Kilo blocks keeps
+ * working here until its lease ends. Only Kilo's explicit refusal of a token
+ * is kept for repeats of it (`REMEMBER_REFUSAL_MS`); any other answer is a
+ * retryable 503 and is never kept. A
  * bounded number of exchanges run at once and a bounded number of tokens is
  * kept, so tokens nobody has seen can't crowd out tokens in use: past either
  * bound a new token gets 503 `sign_in_unavailable` without an exchange.
@@ -47,8 +49,13 @@ export const REMEMBER_REFUSAL_MS = Object.freeze({
   account_unavailable: 30 * 1000,
 });
 
-// An exchange holds its token past the exchange's own 10 s timeout, so its
-// waiters see its answer before another request may start one.
+/** How long the identity of a request whose token Kilo accepted but Pages
+ * doesn't lease stays valid, from Kilo's answer. The token isn't kept: the
+ * next request exchanges it again. */
+export const UNLEASED_VALIDITY_MS = 30 * 1000;
+
+// One request waits at most this long, past the exchange's own 10 s timeout,
+// so a waiter can still use an answer that comes in just in time.
 const lease = kiloTokenLease({
   holdMs: 15_000,
   busy: (reason) => unavailable(reason),
@@ -114,7 +121,9 @@ async function digest(text) {
 }
 
 /** The Kilo account `token` names, as `{ id, name, until }`, where `until` is
- * when this isolate's lease of it ends. Throws a coded error when Kilo
+ * when this request's identity stops being valid: the end of the isolate's
+ * lease, or `UNLEASED_VALIDITY_MS` after Kilo answered when there is no
+ * lease. Throws a coded error when Kilo
  * refuses it (401 `invalid_kilo_token`, 403 `account_unavailable`) or can't
  * answer (503 `sign_in_unavailable`, retryable). */
 export async function kiloTokenAccount({ config, claims }, token) {
@@ -142,16 +151,24 @@ export async function kiloTokenAccount({ config, claims }, token) {
         "This Kilo account can't use Pages",
         "exchange_refused_account",
       );
-    if (answer.refused)
+    if (answer.refused === "token")
       throw refused(
         401,
         "invalid_kilo_token",
         "Kilo did not accept this token. Mint a new Kilo token for this Pages deployment and send it as Authorization: Bearer",
         "exchange_refused_token",
       );
+    if (answer.refused) throw unavailable("kilo_protocol_error");
     const settledAt = Date.now();
+    // How long the isolate keeps the token, possibly not at all, and how long
+    // the identity this request carries is valid: Kilo accepted the token,
+    // so it authorizes its own request either way.
     const until = leaseEnd(claims, { sentAt, settledAt });
-    const value = Object.freeze({ id: answer.id, name: answer.name, until: until ?? settledAt });
+    const value = Object.freeze({
+      id: answer.id,
+      name: answer.name,
+      until: until ?? settledAt + UNLEASED_VALIDITY_MS,
+    });
     void logAuthEvent({
       action: "kilo_token.accepted",
       credential: "kilo-token",

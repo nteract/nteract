@@ -173,21 +173,27 @@ test("the exchange sends exactly the token and audience, with the deployment's s
   assert.deepEqual(Object.keys(JSON.parse(init.body)).sort(), ["audience", "token"]);
   assert.equal(init.redirect, "manual");
   assert.ok(init.signal instanceof AbortSignal);
-  for (const [status, refused] of [
-    [400, "token"],
-    [410, "token"],
-    [401, "client"],
-    [403, "account"],
+  const answer = (status, body) =>
+    exchangeKiloToken(async () => Response.json(body, { status }), {
+      appUrl: "https://kilo.invalid",
+      secret,
+      token: "t.t.t",
+      audience,
+    });
+  assert.deepEqual(await answer(400, { error: "invalid_token" }), { refused: "token" });
+  assert.deepEqual(await answer(403, { error: "account_unavailable" }), { refused: "account" });
+  assert.deepEqual(await answer(401, { error: "invalid_client" }), { refused: "client" });
+  assert.deepEqual(await answer(401, {}), { refused: "client" });
+  for (const [status, body] of [
+    [400, { error: "invalid_request" }],
+    [400, {}],
+    [403, { error: "forbidden" }],
+    [403, {}],
+    [404, { error: "invalid_token" }],
+    [408, {}],
+    [410, { error: "invalid_token" }],
   ])
-    assert.deepEqual(
-      await exchangeKiloToken(async () => Response.json({}, { status }), {
-        appUrl: "https://kilo.invalid",
-        secret,
-        token: "t.t.t",
-        audience,
-      }),
-      { refused },
-    );
+    await assert.rejects(answer(status, body), /Kilo/, `${status} ${JSON.stringify(body)}`);
 });
 
 test("a Kilo that doesn't answer in time is a 503, and the token is asked about again", async (t) => {
@@ -324,11 +330,29 @@ test("Kilo's refusals reach the caller as codes, and nothing of the token or Kil
       401,
       "invalid_kilo_token",
     ],
+    // Only Kilo's explicit refusal of the token is a refusal of it.
     [
       "invalid_request",
       json(400, { error: "invalid_request", detail: leak }),
-      401,
-      "invalid_kilo_token",
+      503,
+      "sign_in_unavailable",
+    ],
+    ["400 without a body", (req, res) => res.writeHead(400).end(), 503, "sign_in_unavailable"],
+    ["400 not json", (req, res) => res.writeHead(400).end(leak), 503, "sign_in_unavailable"],
+    [
+      "403 with another error",
+      json(403, { error: "forbidden", detail: leak }),
+      503,
+      "sign_in_unavailable",
+    ],
+    ["404", json(404, { error: "invalid_token" }), 503, "sign_in_unavailable"],
+    ["408", json(408, { error: "invalid_token" }), 503, "sign_in_unavailable"],
+    ["410", json(410, { error: "invalid_token" }), 503, "sign_in_unavailable"],
+    [
+      "400 over the size limit",
+      json(400, { error: "invalid_token", detail: leak.repeat(1000) }),
+      503,
+      "sign_in_unavailable",
     ],
     [
       "account",
@@ -441,10 +465,9 @@ class Storage {
   async sync() {}
 }
 
-test("a Kilo agent reads and writes its person's Page over /mcp and /api/tools with one exchange", async (t) => {
-  const { env, kilo, lines } = await fixture(t);
-  const holder = person();
-  const token = kilo.mintToken(holder, { audience });
+/** One Page owned by `holder`, and the tool calls a Kilo agent sends with a
+ * token over /mcp and /api/tools. */
+function pageWorld(t, { env, holder }) {
   let doc = A.change(A.from(createPageData({ pageId, title: "Kilo Page" })), (draft) =>
     initializePage(draft, "Ship on Monday."),
   );
@@ -465,7 +488,7 @@ test("a Kilo agent reads and writes its person's Page over /mcp and /api/tools w
     metadata: {
       pageId,
       documentFormats: WRITTEN_FORMATS,
-      owner: kiloIdentity(kiloSignIn(env, request(token)), holder).principal,
+      owner: kiloIdentity(kiloSignIn(env, request("x")), holder).principal,
       deleted: false,
       acl: { revision: 0, members: {}, invites: {} },
     },
@@ -476,7 +499,7 @@ test("a Kilo agent reads and writes its person's Page over /mcp and /api/tools w
   page.policy = new DocumentPolicy({ metadata: () => page.metadata });
   env.PAGES = { getByName: () => page };
   const bodies = [];
-  const tools = async (operation, args) => {
+  const tools = async (token, operation, args) => {
     const response = await worker.fetch(
       toolCall(token, operation, { page_id: pageId, ...args }),
       env,
@@ -486,7 +509,7 @@ test("a Kilo agent reads and writes its person's Page over /mcp and /api/tools w
     assert.equal(response.status, 200, text);
     return JSON.parse(text);
   };
-  const mcp = async (operation, args) => {
+  const mcp = async (token, operation, args) => {
     const response = await worker.fetch(
       new Request(`${origin}/mcp`, {
         method: "POST",
@@ -511,27 +534,65 @@ test("a Kilo agent reads and writes its person's Page over /mcp and /api/tools w
     assert.ok(!body.result?.isError, text);
     return body.result.structuredContent;
   };
-  const read = await mcp("read_page", {});
+  return { tools, mcp, bodies, doc: () => doc };
+}
+
+test("a Kilo agent reads and writes its person's Page over /mcp and /api/tools with one exchange", async (t) => {
+  const { env, kilo, lines } = await fixture(t);
+  const holder = person();
+  const token = kilo.mintToken(holder, { audience });
+  const w = pageWorld(t, { env, holder });
+  const read = await w.mcp(token, "read_page", {});
   assert.match(JSON.stringify(read), /Ship on Monday/);
-  await mcp("edit_page", {
+  await w.mcp(token, "edit_page", {
     operations: [{ op: "set_title", title: "Kilo over MCP" }],
     base_heads: read.heads,
     retry_token: read.retry_token,
     idempotency_key: crypto.randomUUID(),
   });
-  assert.equal(doc.title, "Kilo over MCP");
-  const again = await tools("read_page", {});
-  await tools("edit_page", {
+  assert.equal(w.doc().title, "Kilo over MCP");
+  const again = await w.tools(token, "read_page", {});
+  await w.tools(token, "edit_page", {
     operations: [{ op: "set_title", title: "Kilo over HTTP" }],
     base_heads: again.heads,
     retry_token: again.retry_token,
     idempotency_key: crypto.randomUUID(),
   });
-  assert.equal(doc.title, "Kilo over HTTP");
+  assert.equal(w.doc().title, "Kilo over HTTP");
   // Every call, and every hop it forwarded, used the one exchange.
   assert.equal(kilo.exchanges().length, 1);
-  for (const text of [...bodies, ...lines]) assert.ok(!text.includes(token));
+  for (const text of [...w.bodies, ...lines]) assert.ok(!text.includes(token));
   const usage = lines.filter((line) => line.includes('"pages.usage.v1"'));
   assert.ok(usage.length >= 4);
   assert.ok(usage.every((line) => line.includes('"credential":"kilo-token"')));
+});
+
+test("a token Kilo accepts but Pages doesn't lease still authorizes its request", async (t) => {
+  const { env, kilo } = await fixture(t);
+  const holder = person();
+  const w = pageWorld(t, { env, holder });
+  for (const [label, token] of [
+    // Inside the 30-second clock allowance: no lease.
+    ["20 seconds left", kilo.mintToken(holder, { audience, seconds: 20 })],
+    // No iat: the lifetime is unknown, so no lease.
+    ["no iat", kilo.mintToken(holder, { audience, claims: { iat: undefined } })],
+  ])
+    for (const [surface, call] of [
+      ["mcp", w.mcp],
+      ["tools", w.tools],
+    ]) {
+      const before = kilo.exchanges().length;
+      const read = await call(token, "read_page", {});
+      assert.match(JSON.stringify(read), /Ship on Monday/, `${label} ${surface}`);
+      // Nothing is leased, so each call asks Kilo again.
+      assert.ok(kilo.exchanges().length > before, `${label} ${surface}`);
+    }
+  // The identity is valid for 30 seconds from Kilo's answer.
+  const before = Date.now();
+  const identity = await authenticate(
+    request(kilo.mintToken(holder, { audience, seconds: 20 })),
+    env,
+  );
+  assert.ok(identity.expiresAt > Date.now());
+  assert.ok(identity.expiresAt <= Date.now() + 30_000 && identity.expiresAt >= before + 30_000);
 });
