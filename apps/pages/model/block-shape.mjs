@@ -6,9 +6,8 @@ import { generateKeyBetween } from "fractional-indexing";
 // and `richText` is an Automerge text object. Registration checks every block
 // of a draft (worker/registration.mjs) and validates the spans inside each
 // `richText` (`validateRich`). Plain sync admission checks the shape of the
-// blocks a peer's changes touch (blockChangeRefusal), and that a block the
-// changes create opens with its first node's marker; it doesn't validate the
-// spans.
+// blocks a peer's changes touch (blockChangeRefusal), not the spans: no
+// marker rule applies at admission, since every reader reads any text.
 
 export const BLOCK_KEYS = Object.freeze(["position", "richText"]);
 export const MAX_POSITION_LENGTH = 512;
@@ -52,18 +51,14 @@ const POSITION_MESSAGE = `A block's position must be a raw-string fractional ind
  * `objInfo` at the document's heads, or at its own change's heads when the
  * object is hidden behind a concurrent value. Paths are looked up once per
  * object, so the cost follows the change, not the number of blocks.
- * `created` holds the id of every map the changes make: an object's id is
- * the id of the op that made it.
  */
 function touchedBlocks(backend, fresh) {
   const touched = new Set();
-  const created = new Set();
   const paths = new Map();
   let blocks = false;
   for (const bytes of fresh) {
-    const { hash, ops, actor, startOp } = A.decodeChange(bytes);
-    for (const [index, { action, obj, key }] of ops.entries()) {
-      if (action === "makeMap") created.add(`${startOp + index}@${actor}`);
+    const { hash, ops } = A.decodeChange(bytes);
+    for (const { obj, key } of ops) {
       if (obj === "_root") {
         if (key === "blocks") blocks = true;
         continue;
@@ -80,21 +75,11 @@ function touchedBlocks(backend, fresh) {
       } else touched.add(String(path[1]));
     }
   }
-  return { blocks, touched, created };
+  return { blocks, touched };
 }
 
-/** The marker at the start of text object `text`, or null. */
-function openingMarker(backend, text) {
-  try {
-    return backend.getBlock(text, 0);
-  } catch {
-    return null;
-  }
-}
-
-/** The refusal for block object `obj` stored at `id`, or null. `isNew` says
- * the changes made the object. */
-function blockObjectRefusal(backend, obj, id, isNew) {
+/** The refusal for block object `obj` stored at `id`, or null. */
+function blockObjectRefusal(backend, obj, id) {
   for (const key of backend.keys(obj))
     if (!BLOCK_KEYS.includes(key))
       return refusal(`A block holds only position and richText, not ${key}`, id);
@@ -107,12 +92,6 @@ function blockObjectRefusal(backend, obj, id, isNew) {
   const texts = backend.getAll(obj, "richText");
   if (!texts.length || texts.some(([type]) => type !== "text"))
     return refusal("A block's richText must be text", id);
-  if (isNew)
-    for (const [, text] of texts) {
-      const marker = openingMarker(backend, text);
-      if (!marker || marker.isEmbed || marker.parents?.length)
-        return refusal("A new block's text must open with its first node's marker", id);
-    }
   return null;
 }
 
@@ -128,15 +107,14 @@ function blockObjectRefusal(backend, obj, id, isNew) {
  * id must be a map whose every `position` is a raw-string fractional index and
  * whose every `richText` is text.
  *
- * A block holds no key other than those two. A block object the changes
- * make must also open its text with a top-level node's marker, as every
- * writer writes it. A block that already existed is not held to that: a
- * merge of two edits can leave text no marker opens (model/wordgard-doc.mjs
- * decode), and every reader reads it. Deleting and moving blocks are allowed.
+ * A block holds no key other than those two. The spans inside `richText` are
+ * not judged: a merge can leave text no marker opens, and every reader reads
+ * it (decode in model/wordgard-doc.mjs). Deleting and moving blocks are
+ * allowed.
  */
 export function blockChangeRefusal(after, fresh) {
   const backend = A.getBackend(after);
-  const { blocks, touched, created } = touchedBlocks(backend, fresh);
+  const { blocks, touched } = touchedBlocks(backend, fresh);
   if (!blocks) return null;
   const maps = backend.getAll("_root", "blocks");
   if (!maps.length || maps.some(([type]) => type !== "map"))
@@ -145,7 +123,7 @@ export function blockChangeRefusal(after, fresh) {
     for (const [, blocksObj] of maps)
       for (const [type, obj] of backend.getAll(blocksObj, id)) {
         if (type !== "map") return refusal("A block must be a map", id);
-        const refused = blockObjectRefusal(backend, obj, id, created.has(obj));
+        const refused = blockObjectRefusal(backend, obj, id);
         if (refused) return refused;
       }
   return null;

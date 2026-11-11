@@ -145,45 +145,26 @@ test("blocks must stay a map", () => {
   );
 });
 
-test("a block a change creates opens with a top-level node's marker", () => {
+test("admission judges no marker: any text in a block in shape is admitted", () => {
+  // A merge can leave text no marker opens, and every reader reads it. A
+  // block's creation and a later merge that unmarks its start can arrive in
+  // one frame.
   const base = page(1);
-  const create = (spans) => (d) => {
-    d.blocks[id(5)] = { position: new A.RawString("a5"), richText: "" };
-    A.updateSpans(d, ["blocks", id(5), "richText"], spans);
-  };
   const text = (value) => ({ type: "text", value });
-  for (const [name, spans] of [
-    ["a paragraph", [marker("paragraph"), text("x")]],
-    ["an empty paragraph", [marker("paragraph")]],
-    ["a heading", [marker("heading"), text("x")]],
-    ["a quote", [marker("blockquote"), marker("paragraph", { parents: ["blockquote"] })]],
-    ["a rule", [marker("horizontal-rule")]],
-    ["a node this build doesn't know", [marker("callout"), text("x")]],
-  ])
-    assert.equal(judge(base, create(spans)), null, name);
   for (const [name, spans] of [
     ["no text", []],
     ["text before any marker", [text("x"), marker("paragraph")]],
     ["an embed", [marker("image", { parents: ["paragraph"], isEmbed: true })]],
     ["a nested marker", [marker("paragraph", { parents: ["blockquote"] }), text("x")]],
-  ]) {
-    const refused = judge(base, create(spans));
-    assert.equal(refused?.code, INVALID_BLOCK, name);
-    assert.equal(refused.block, id(5), name);
-  }
-  // A new map at an existing block's id is a new block.
-  assert.equal(
-    judge(base, (d) => {
-      d.blocks[id(0)] = { position: new A.RawString("a0"), richText: "x" };
-    })?.code,
-    INVALID_BLOCK,
-  );
-});
-
-test("an existing block's text need not open with a marker", () => {
-  // A merge of a delete and typing can leave unmarked text, and a later edit
-  // of that text is admitted, as is one that removes the opening marker.
-  const base = page(1);
+  ])
+    assert.equal(
+      judge(base, (d) => {
+        d.blocks[id(5)] = { position: new A.RawString("a5"), richText: "" };
+        A.updateSpans(d, ["blocks", id(5), "richText"], spans);
+      }),
+      null,
+      name,
+    );
   for (const [name, edit] of [
     ["typing before the marker", (d) => A.splice(d, ["blocks", id(0), "richText"], 0, 0, "x")],
     ["deleting the marker", (d) => A.splice(d, ["blocks", id(0), "richText"], 0, 1)],
