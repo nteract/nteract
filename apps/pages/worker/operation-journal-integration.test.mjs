@@ -1315,3 +1315,114 @@ test("recovery-blocked Page keeps accepted content readable and rejects tool and
   });
   assert.equal(f.page.handle.doc().title, "Accepted content");
 });
+
+test("source writes use Page asset checks, revisions, atomic batches and durable retry receipts", async (t) => {
+  const f = await pageFixture(t);
+  const asset = "a".repeat(64),
+    refreshed = "b".repeat(64);
+  let checks = 0;
+  f.page.env.PAGES_ASSETS = {
+    async head(key) {
+      checks++;
+      return parquetHead(key.includes(refreshed) ? refreshed : asset);
+    },
+  };
+  const read = async (sources = true) => (await f.request("read_page", { sources })).json();
+  const before = await read();
+  const op = {
+    op: "set_source",
+    source_id: "usage",
+    name: "Usage",
+    asset_id: asset,
+    expected_revision: null,
+  };
+  const args = {
+    page_id: pageId,
+    base_heads: before.heads,
+    retry_token: before.retry_token,
+    idempotency_key: "register-source-once",
+    operations: [op],
+  };
+  const response = await f.request("edit_page", args);
+  assert.equal(response.status, 200, await response.clone().text());
+  const receipt = await response.json();
+  assert.equal(checks, 1);
+  assert.ok(f.page.handle.doc().schema.features.includes("page-sources"));
+  const original = (await read("usage")).source;
+  assert.equal(original.asset_id, asset);
+  assert.ok(original.source_revision);
+  assert.deepEqual((await read()).sources, [{ source_id: "usage", name: "Usage" }]);
+  assert.equal((await (await f.request("read_page")).json()).sources, undefined);
+  f.page.env.PAGES_ASSETS.head = async () => assert.fail("A replay must not need asset storage");
+  assert.deepEqual(await (await f.request("edit_page", args)).json(), receipt);
+  f.page.env.PAGES_ASSETS.head = async () => parquetHead(refreshed);
+  const fresh = await read();
+  const update = {
+    ...args,
+    retry_token: fresh.retry_token,
+    idempotency_key: "refresh-source-once",
+    base_heads: fresh.heads,
+    operations: [{ ...op, asset_id: refreshed, expected_revision: original.source_revision }],
+  };
+  const changed = await f.request("edit_page", update);
+  assert.equal(changed.status, 200, await changed.clone().text());
+  const next = await read("usage");
+  assert.equal(next.source.asset_id, refreshed);
+  assert.notEqual(next.source.source_revision, original.source_revision);
+  const stale = await f.request("edit_page", {
+    ...update,
+    base_heads: next.heads,
+    idempotency_key: "stale-source-fresh-heads",
+  });
+  assert.equal(stale.status, 409);
+  assert.equal((await stale.json()).code, "stale_source");
+  const failed = await f.request("edit_page", {
+    ...update,
+    base_heads: next.heads,
+    idempotency_key: "source-batch-rolls-back",
+    operations: [
+      {
+        ...op,
+        name: "Should roll back",
+        asset_id: refreshed,
+        expected_revision: next.source.source_revision,
+      },
+      { op: "unknown" },
+    ],
+  });
+  assert.equal(failed.status, 400);
+  assert.deepEqual((await read("usage")).source, next.source);
+});
+
+test("source preflight refuses missing and foreign assets and revocation while checking", async (t) => {
+  for (const kind of ["missing", "foreign", "revoked"]) {
+    const f = await pageFixture(t);
+    const asset = "c".repeat(64);
+    f.page.env.PAGES_ASSETS = {
+      async head() {
+        if (kind === "missing") return null;
+        if (kind === "foreign") return parquetHead(asset, "44444444-4444-4444-8444-444444444444");
+        f.page.metadata.deleted = true;
+        return parquetHead(asset);
+      },
+    };
+    const read = await (await f.request("read_page", { sources: true })).json();
+    const response = await f.request("edit_page", {
+      page_id: pageId,
+      base_heads: read.heads,
+      retry_token: read.retry_token,
+      idempotency_key: `source-refused-${kind}`,
+      operations: [
+        {
+          op: "set_source",
+          source_id: "usage",
+          name: "Usage",
+          asset_id: asset,
+          expected_revision: null,
+        },
+      ],
+    });
+    assert.ok(response.status >= 400, kind);
+    assert.equal(f.page.handle.doc().sources, undefined);
+  }
+});

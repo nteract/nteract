@@ -3,6 +3,10 @@
   "version": 1,
   "features": [
     {
+      "id": "page-sources",
+      "description": "Host-managed named Page sources: stable source IDs bind to immutable Page-local Parquet assets and host-issued revisions. Writers use edit_page set_source."
+    },
+    {
       "id": "image-theme-variants",
       "description": "Images with an optional dark_src alternate source and shared alternative text and title.",
       "attributes": [{ "block": "image", "name": "dark_src" }]
@@ -37,10 +41,6 @@
       "id": "dataframe-chart",
       "description": "Local evaluation only: a dataframe node with a chart attr, a Vega-Lite spec as a JSON string. The viewer draws the node's dataset as that chart instead of a table.",
       "attributes": [{ "block": "dataframe", "name": "chart" }]
-    },
-    {
-      "id": "page-sources",
-      "description": "Local evaluation only: named Page sources. sources maps a stable source ID to its name and current asset and revision. Only the Page host writes them; charts and tables bind to a source ID or pin an asset."
     }
   ]
 }

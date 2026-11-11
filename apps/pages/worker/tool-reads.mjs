@@ -3,11 +3,13 @@ import { projectPage } from "../model/page.mjs";
 import { projectReadContent } from "../model/read-content.mjs";
 import { projectReadComments } from "../model/read-comments.mjs";
 import { documentFeatures } from "../model/schema-features.mjs";
+import { listPageSources, readPageSource } from "../model/page-sources.mjs";
 
 export const DEFAULT_READ_BYTES = 128 * 1024;
 const encoder = new TextEncoder();
 const bytes = (value) => encoder.encode(JSON.stringify(value)).byteLength;
 const selectorKeys = [
+  "sources",
   "block_ids",
   "section",
   "section_occurrence",
@@ -32,6 +34,8 @@ const commentKeys = [
 ];
 /** Read refusals that reach the caller with their own code. */
 export const READ_ERROR_CODES = new Set([
+  "invalid_source",
+  "source_not_found",
   "invalid_read_selector",
   "read_target_not_found",
   "ambiguous_section",
@@ -60,6 +64,17 @@ function validate(operation, args) {
     invalid("comments must be none, summary, open or all");
   if (args.include_presence !== undefined && typeof args.include_presence !== "boolean")
     invalid("include_presence must be a boolean");
+  if (
+    args.sources !== undefined &&
+    (operation !== "read_page" ||
+      !(args.sources === true || typeof args.sources === "string") ||
+      Object.keys(args).some(
+        (key) => !["page_id", "sources", "max_bytes", "expected_heads"].includes(key),
+      ))
+  )
+    invalid(
+      "sources is true to list, or a source ID; combine only with max_bytes and expected_heads",
+    );
   return { maxBytes, offset, limit };
 }
 function checkRevision(args, heads, offset) {
@@ -118,7 +133,14 @@ export async function readTool(
   try {
     settings = validate(operation, args);
     checkRevision(args, heads, settings.offset);
-    if (operation === "list_page_comments") {
+    if (args.sources !== undefined) {
+      payload = {
+        page_id: doc.page_id,
+        ...(args.sources === true
+          ? { sources: listPageSources(doc) }
+          : { source: readPageSource(doc, args.sources) }),
+      };
+    } else if (operation === "list_page_comments") {
       const { page_id: _id, max_bytes: _bytes, expected_heads: _heads, ...filters } = args;
       payload = {
         page_id: doc.page_id,
@@ -179,6 +201,24 @@ export async function readTool(
   if (legacy) return { status, body };
   // Reserve room for the public URL added by the MCP transport.
   const fits = (value) => bytes(value) + 512 <= settings.maxBytes;
+  if (args?.sources !== undefined && !fits(body)) {
+    const refusal = {
+      page_id: doc.page_id,
+      code: "read_budget_exceeded",
+      error: "Source read exceeds max_bytes; increase the budget or select one source ID.",
+      max_bytes: settings.maxBytes,
+      ...common,
+    };
+    return {
+      status: 413,
+      body: fits(refusal)
+        ? refusal
+        : {
+            code: "read_metadata_budget_exceeded",
+            error: "Revision metadata exceeds max_bytes",
+          },
+    };
+  }
   // Requested content has priority over the optional outline page. Shorten
   // only that explicitly paginated metadata before rejecting a fitting passage.
   if (

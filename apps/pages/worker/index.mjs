@@ -6129,7 +6129,9 @@ export class Page {
         const ops = Array.isArray(body.arguments?.operations) ? body.arguments.operations : [];
         // Ops that create a node naming a stored asset (model/node-registry.mjs).
         const inserts = ops.filter(
-          (op) => insertOperation(op?.op ?? op?.type) || op?.op === "set_image",
+          (op) =>
+            insertOperation(op?.op ?? op?.type) ||
+            ["set_image", "set_source"].includes(op?.op ?? op?.type),
         );
         // Where this batch landed, captured inside the change so the cursors
         // name the characters it wrote. A replayed receipt has no caret.
@@ -6185,7 +6187,7 @@ export class Page {
               // an unknown block, operation or mark (400). An edit to a node
               // this build can't read is refused with 409 (newer_content), as
               // a target-scoped edit does.
-              const status = error.code === "newer_content" ? 409 : 400;
+              const status = ["newer_content", "stale_source"].includes(error.code) ? 409 : 400;
               throw Object.assign(
                 new HttpError(status, error.message, error.code ?? "invalid_edit_selector"),
                 error.details && { details: error.details },

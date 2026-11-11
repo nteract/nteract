@@ -57,7 +57,8 @@ export function readRegistration(args) {
       doc.page_id !== args.page_id ||
       doc.title !== args.title ||
       !map(doc.blocks) ||
-      doc.comments !== undefined
+      doc.comments !== undefined ||
+      doc.sources !== undefined
     )
       throw Error("Invalid Page bootstrap");
     // A draft from a newer build can use features this host can't express.

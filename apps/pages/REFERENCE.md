@@ -239,6 +239,20 @@ else replaces the screen with a Reload notice and leaves the Page unchanged.
   zoom controls get a gutter beside a shrunk diagram. Source and
   language are shared content; rendered SVG is not stored. Cmd/Ctrl+Enter
   continues in a paragraph. Pages does not execute code.
+- **Named sources:** the Page host manages `sources[source_id]` as
+  `{name, current: {asset_id, revision}}`, gated by `page-sources`. `edit_page`
+  accepts `set_source` with `source_id`, `name`, a Page-local uploaded Parquet
+  `asset_id`, and `expected_revision` (`null` to create). Exact Page heads,
+  access checks and retry receipts apply; the host increments a per-source
+  decimal revision (starting at "1") rather than issuing a long opaque token.
+  Native peer writes and draft registration cannot install source records.
+  `read_page` with `sources:true` lists IDs/names; `sources:"id"` reads one
+  asset/revision. These focused reads omit the body and comments; ordinary
+  Page reads do not include sources. There are at most 64 sources per Page.
+  The viewer resolver accepts named or pinned bindings and shares a bounded,
+  per-Page Parquet-byte cache. Each consumer owns and disposes its decoded
+  Sift table; mutable WASM tables are not shared. Wiring the chart and table consumers, deletion,
+  and source schema/statistics are follow-up work.
 - **Dataframes:** a `dataframe` block marker with no text. Its attrs are
   `src` (a Page asset path), `media_type` and an optional `title`
   ([`shared/dataset-assets.mjs`](shared/dataset-assets.mjs)). The viewer picks

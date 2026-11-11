@@ -25,6 +25,8 @@ import { anchorOccurrence, formatMatch, replaceMatch } from "./replace-match.mjs
 import { setNode } from "./set-node.mjs";
 import { insertOperation } from "./node-registry.mjs";
 import { stampFeatures } from "./schema-features.mjs";
+import { setPageSource, validateSourceWrite } from "./page-sources.mjs";
+import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
 export { orderedBlockIds } from "./order.mjs";
 // A stored block holds its order and its text. Its id is its key in `blocks`.
 // Its text is written in the change that adds it, and always opens with a
@@ -156,6 +158,12 @@ export function insertedAssets(operations, pageId) {
   const seen = new Set();
   for (const op of operations) {
     const name = op?.op ?? op?.type;
+    if (name === "set_source") {
+      const { op: _op, type: _type, ...args } = op;
+      validateSourceWrite(args);
+      assets.push({ asset: "dataset", assetId: args.asset_id, mediaType: PARQUET_MEDIA_TYPE });
+      continue;
+    }
     if (name === "set_image") {
       validateImageChange(op);
       for (const assetId of [op.asset_id, op.dark_asset_id].filter(Boolean)) {
@@ -189,6 +197,10 @@ const PASSAGE_OPS = new Set(["replace_match", "format_match", "set_node"]);
 // `trace` records where each operation landed, for agent presence. It never
 // enters the result, so stored receipts and retries are unchanged.
 function applyEdit(doc, op, trace, context) {
+  if (op.op === "set_source") {
+    const { op: _op, type: _type, ...args } = op;
+    return { op: "set_source", ...setPageSource(doc, args) };
+  }
   const id = op.block_id ?? op.id;
   if (op.op === "set_title") {
     A.updateText(doc, ["title"], String(op.title).slice(0, 1024));

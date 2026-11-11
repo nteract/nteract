@@ -4,6 +4,32 @@ import * as A from "@automerge/automerge";
 import { createPageData, initializePage, projectPage } from "../model/page.mjs";
 import { comment, newCommentsDoc } from "../model/comments-test-support.mjs";
 import { readTool } from "./tool-reads.mjs";
+import { setPageSource } from "../model/page-sources.mjs";
+
+test("focused source reads omit prose, comments, schemas and asset IDs from listings", async () => {
+  let doc = A.change(A.from(createPageData({ pageId: "source-fixture" })), (draft) => {
+    initializePage(draft, "Body should stay out of source reads.");
+    setPageSource(draft, {
+      source_id: "usage",
+      name: "Usage",
+      asset_id: "a".repeat(64),
+      expected_revision: null,
+    });
+  });
+  const listing = await read(doc, { sources: true });
+  assert.equal(listing.status, 200);
+  assert.deepEqual(listing.body.sources, [{ source_id: "usage", name: "Usage" }]);
+  for (const key of ["blocks", "outline", "comments", "source"])
+    assert.equal(listing.body[key], undefined);
+  const detail = await read(doc, { sources: "usage" });
+  assert.equal(detail.body.source.source_revision, "1");
+  assert.equal(detail.body.source.asset_id, "a".repeat(64));
+  assert.equal((await read(doc, { sources: "missing" })).status, 404);
+  assert.equal((await read(doc, { sources: true, include_content: false })).status, 400);
+  assert.equal((await read(doc, { sources: true, comments: "all" })).status, 400);
+  assert.equal((await read(doc, { page_id: doc.page_id })).body.sources, undefined);
+  A.free(doc);
+});
 
 const authority = {
   retry_token: "test-retry",

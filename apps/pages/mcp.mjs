@@ -495,7 +495,15 @@ export const tools = [
   tool(
     "read_page",
     "Read a Page's title, Markdown blocks, comments, heads and a retry_token for edits. Use comments:none for body work, include_content:false for an outline, or section/search inside a large block. Partial slices are for patch_page, not replace_block_markdown. Outline entries carry node_id (stable across edits, unlike node_index), type, attrs and summary; see llms.txt. Comment author.agent {name, model} is what the client said about itself, not verified identity.",
-    { page_id: page, ...readSelectors },
+    {
+      page_id: page,
+      ...readSelectors,
+      sources: {
+        anyOf: [{ const: true }, { type: "string", maxLength: 64 }],
+        description:
+          "Source-only read: true lists IDs/names; a source ID reads its asset/revision. Only combines with max_bytes and expected_heads.",
+      },
+    },
     ["page_id"],
     READ,
   ),
@@ -674,6 +682,24 @@ export const tools = [
         maxItems: 100,
         items: {
           oneOf: [
+            {
+              type: "object",
+              properties: {
+                op: { const: "set_source" },
+                source_id: { type: "string", pattern: "^[a-z][a-z0-9_-]{0,63}$" },
+                name: { type: "string", minLength: 1, maxLength: 200 },
+                asset_id: { type: "string", pattern: "^[a-f0-9]{64}$" },
+                expected_revision: {
+                  type: ["string", "null"],
+                  pattern: "^[1-9][0-9]{0,15}$",
+                  maxLength: 16,
+                  description:
+                    "Observed source_revision; null creates a source. Asset must be uploaded to this Page.",
+                },
+              },
+              required: ["op", "source_id", "name", "asset_id", "expected_revision"],
+              additionalProperties: false,
+            },
             {
               type: "object",
               properties: {

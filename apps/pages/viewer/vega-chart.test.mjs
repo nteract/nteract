@@ -16,6 +16,39 @@ const {
 } = await import("./vega-chart.mjs");
 
 const theme = { dark: false, text: "#111", muted: "#555", line: "#ddd", font: "sans-serif" };
+
+test("owned source leases release after rows are copied, including abort and decode errors", () =>
+  withWindow(async (window) => {
+    for (const mode of ["ok", "abort", "error"]) {
+      const controller = new AbortController();
+      let released = 0;
+      const report = await drawChart(window.document.createElement("div"), {
+        spec: {
+          data: { name: "usage" },
+          mark: "bar",
+          encoding: { x: { field: "x", type: "quantitative" } },
+        },
+        theme,
+        signal: controller.signal,
+        width: 400,
+        resolveSource: async () => {
+          if (mode === "abort") controller.abort();
+          return {
+            table: mode === "error" ? { columns: null } : { columns: ["x"], rows: [{ x: 1 }] },
+            asset_id: "a".repeat(64),
+            release: () => released++,
+          };
+        },
+      });
+      assert.equal(released, 1, mode);
+      assert.equal(
+        report.status,
+        mode === "ok" ? "rendered" : mode === "abort" ? "aborted" : "error",
+      );
+      assert.equal(report.sources?.usage?.release, undefined);
+      report.view?.finalize();
+    }
+  }));
 const usage = {
   columns: ["client", "tool", "calls", "refused"],
   rows: [

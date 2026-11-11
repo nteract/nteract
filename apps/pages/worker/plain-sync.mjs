@@ -1,6 +1,7 @@
 import * as A from "@automerge/automerge";
 import { cbor } from "@automerge/automerge-repo";
 import { blockChangeRefusal } from "../model/block-shape.mjs";
+import { sourceChangeRefusal } from "../model/page-sources.mjs";
 import { BACKEND_LIMITS, assertStoredSize } from "../model/limits.mjs";
 import {
   BUILD_FEATURES,
@@ -151,7 +152,7 @@ function refusalFrom(error, code = admissionCode(error)) {
  * valid blocks and skip this check.
  */
 function guardBlocks(preview, fresh) {
-  const refused = blockChangeRefusal(preview, fresh);
+  const refused = sourceChangeRefusal(preview, fresh) ?? blockChangeRefusal(preview, fresh);
   if (refused) throw new Refusal(refused.code, refused.message);
 }
 

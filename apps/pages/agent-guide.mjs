@@ -139,6 +139,11 @@ ${part.authErrorItems}
 - invalid_edit_selector: the request can't apply as written: missing or
   malformed base_heads, zero or multiple matches, an unknown block, operation or
   mark. Fix the request; repeating it unchanged fails again.
+- invalid_source (400): malformed source ID, name, asset or revision, or the
+  Page's 64-source limit. Fix the source operation.
+- stale_source (409): the source revision changed. Read that source and
+  reconsider the refresh before sending a new request and key.
+- source_not_found (404): that source ID is not registered on this Page.
 - replace_match_too_large: one replace_match changes more text than it can diff
   while keeping comment anchors on the words it leaves alone. Split it into
   smaller replace_match operations, or use replace_block_markdown if the block
@@ -680,6 +685,22 @@ the authenticated Page; an upload receipt alone does not mean it was inserted.
 ${part.uploadCapabilityParagraph}
 
 ## Datasets
+
+Named sources use existing tools. read_page with sources:true returns only
+source IDs/names; sources:"<source_id>" returns that source's asset and revision.
+These reads omit body/comments; combine only with max_bytes and expected_heads.
+Ordinary Page reads do not include the registry. After uploading Parquet to the
+same Page, edit_page can register or refresh it:
+
+\`\`\`json
+{"op":"set_source","source_id":"daily","name":"Daily usage","asset_id":"<asset_id>","expected_revision":null}
+\`\`\`
+
+Use null only for creation; a refresh supplies the observed source_revision.
+The edit still needs exact base_heads and its retry key/token. The host checks
+asset access and generates the new revision. Sources cannot be edited through
+native peer writes. Chart/table bindings to these sources are being integrated;
+registering a source alone does not insert a visualization.
 
 ${part.datasetUploadParagraph}
 
