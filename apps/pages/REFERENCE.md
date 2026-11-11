@@ -1000,7 +1000,11 @@ redirects, reading at most 5 KB of JSON within five seconds, and keeps a valid
 document for its `max-age`, five minutes at most, in a 64-entry cache. The
 document's `client_id` must equal the URL, and the requested callback must be
 one it lists: `https`, or `http` on `localhost` or `127.0.0.1` where the port
-may differ. A callback whose path has `;`, `,` or a quote is refused, so the
+may differ. A callback on the Pages hostname is refused on every port: the
+browser would send the Pages session cookie there, because a cookie belongs to
+a hostname and not to a port. A local server meets this with a native client
+that listens on the same loopback name, and the refusal names the other one
+(`PAGES_HOST`, [Run locally](README.md#run-locally)). A callback whose path has `;`, `,` or a quote is refused, so the
 consent page's `form-action` always names the callback's origin and path. One
 request fetches a client ID at a time; another request for it waits on its own
 timer and then reads the cache ([worker/isolate-setup.mjs](worker/isolate-setup.mjs)

@@ -23,6 +23,7 @@ import {
   metadataClient,
   admittedClientUrl,
   namedClient,
+  loopbackNameClash,
   redirectAllowed,
 } from "./oauth-clients.mjs";
 
@@ -182,8 +183,18 @@ function scopeFor(value) {
 }
 function authorizationRequest(params, env, context, client) {
   const redirectUri = single(params, "redirect_uri");
-  if (!redirectAllowed(client, redirectUri, pagesPublicOrigin(env)))
-    throw new OAuthError("invalid_request", "The callback does not match this client.");
+  const origin = pagesPublicOrigin(env);
+  if (!redirectAllowed(client, redirectUri, origin)) {
+    // On a local server the usual cause is a native client that listens on
+    // the loopback name Pages itself uses. Say which name to run Pages on.
+    const other = client.named ? null : loopbackNameClash(redirectUri, origin);
+    throw new OAuthError(
+      "invalid_request",
+      other
+        ? `This client listens on ${new URL(origin).hostname}, the name this local Pages server uses, so your browser would send it your Pages session. Run Pages on ${other} to connect it.`
+        : "The callback does not match this client.",
+    );
+  }
   const state = single(params, "state", { required: false, max: 1024 });
   if (state === "") throw new OAuthError("invalid_request", "State must not be empty.");
   // Before anyone has chosen, an OAuth error is sent only to the exact callback
