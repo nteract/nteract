@@ -389,6 +389,53 @@ test("a Page holding a node this build doesn't know reads, and refuses a Markdow
   assert.equal(rewrite.status, 400);
 });
 
+test("a Page holding an aside reads with its notice and content, and refuses a Markdown rewrite of that block", async (t) => {
+  const plain = await fixture(t);
+  const path = ["blocks", plain.blockId, "richText"];
+  const marker = (type, parents) => ({
+    type: new A.ImmutableString(type),
+    parents: parents.map((parent) => new A.ImmutableString(parent)),
+    attrs: {},
+    isEmbed: false,
+  });
+  const page = A.change(A.load(A.save(plain.doc())), (draft) => {
+    const at = draft.blocks[plain.blockId].richText.indexOf("Friday");
+    A.splitBlock(draft, path, at, marker("paragraph", ["aside"]));
+    A.splitBlock(draft, path, at, marker("aside", []));
+  });
+  const f = await fixture(t, { auth: plain.auth, docBytes: A.save(page) });
+  for (const args of [
+    { page_id: f.pageId },
+    { page_id: f.pageId, comments: "none" },
+    { page_id: f.pageId, include_content: true },
+    { page_id: f.pageId, include_content: false, comments: "none" },
+  ]) {
+    const read = await f.tool("owner", "read_page", args);
+    assert.equal(read.status, 200, JSON.stringify(read.body));
+    if (args.include_content === false) {
+      assert.deepEqual(
+        read.body.outline.entries.map((entry) => entry.type),
+        ["paragraph", "aside"],
+        JSON.stringify(args),
+      );
+      continue;
+    }
+    assert.match(
+      read.body.blocks[0].markdown,
+      /\n\n\\\[Unsupported node: aside\\\]\n\nFriday/,
+      JSON.stringify(args),
+    );
+  }
+  const rewrite = await f.tool("owner", "edit_page", {
+    base_heads: f.heads(),
+    idempotency_key: "aside-rewrite",
+    operations: [{ op: "replace_block_markdown", block_id: f.blockId, markdown: "We ship." }],
+  });
+  assert.equal(rewrite.body.code, "markdownless_node", JSON.stringify(rewrite.body));
+  assert.match(rewrite.body.error, /holds an aside/);
+  assert.equal(rewrite.status, 400);
+});
+
 test("set_node {type, attrs} goes through the host, and read_page reports the same names", async (t) => {
   const f = await fixture(t);
   const edit = await f.tool("owner", "patch_page", {

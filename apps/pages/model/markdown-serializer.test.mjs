@@ -2,6 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
+import { Leaf, Mark, Node, Plot } from "wordgard/doc";
 import markdownCorpus from "./markdown-corpus.json" with { type: "json" };
 import { parseAgentMarkdown, parseMarkdown } from "./markdown-import.mjs";
 import { exportMarkdown } from "./markdown-serializer.mjs";
@@ -15,6 +16,10 @@ import { nativeRead, readMarkdown } from "./native-read.mjs";
 import {
   decode,
   encode,
+  Aside,
+  BulletList,
+  ListItem,
+  Paragraph,
   CodeBlock,
   CodeBlockLanguage,
   PagesLink,
@@ -187,5 +192,62 @@ test("read_page and read_page_changes read a hard break stored in a code block",
   assert.deepEqual(
     changes.changes.map(({ scope, markdown }) => ({ scope, markdown })),
     [{ scope: "node", markdown: "```js\na\nbc\n```" }],
+  );
+});
+
+// The serializer is total over the editor tree: a node or mark it has no
+// rule for reads as a notice (or as plain text), never as an error.
+const para = (value, marks) => Paragraph.create([Leaf.text(value, marks)]);
+
+test("an aside reads as a notice, then its paragraph and list", () => {
+  const aside = Aside.create([
+    para("note"),
+    BulletList.create([ListItem.create([para("one")]), ListItem.create([para("two")])]),
+  ]);
+  assert.equal(
+    exportMarkdown({ content: [para("before"), aside, para("after")] }),
+    "before\n\n\\[Unsupported node: aside\\]\n\nnote\n\n- one\n- two\n\nafter",
+  );
+});
+
+test("a block with no Markdown rule reads as a notice, then its content", () => {
+  const Callout = Plot.define("TestCallout", {
+    group: Node.Group.Content,
+    blockContent: Node.Group.Content,
+    shape: { element: "section" },
+  });
+  const Line = Plot.define("TestLine", {
+    group: Node.Group.Content,
+    inlineContent: true,
+    shape: { element: "div" },
+  });
+  assert.equal(
+    exportMarkdown({
+      content: [Callout.create([para("inside")]), Line.create([Leaf.text("a line")])],
+    }),
+    "\\[Unsupported node\\]\n\ninside\n\n\\[Unsupported node\\]\n\na line",
+  );
+});
+
+test("an inline leaf with no Markdown rule reads as a notice in its line", () => {
+  const Chip = Leaf.define("TestChip", { inline: true, shape: { element: "span" } });
+  assert.equal(
+    exportMarkdown({ content: [Paragraph.create([Leaf.text("a "), Chip, Leaf.text(" b")])] }),
+    "a \\[Unsupported node\\] b",
+  );
+});
+
+test("a mark with no Markdown rule reads as its text", () => {
+  const Underline = Mark.define("TestUnderline", { shape: { element: "u" } });
+  assert.equal(
+    exportMarkdown({
+      content: [
+        Paragraph.create([
+          Leaf.text("plain "),
+          Leaf.text("under", Underline.addToSet(Strong.addToSet(Mark.none))),
+        ]),
+      ],
+    }),
+    "plain **under**",
   );
 });

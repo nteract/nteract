@@ -52,7 +52,7 @@ function observe(spans) {
   try {
     outline = projectReadContent(doc, { include_content: false }).outline;
   } catch {
-    // read_page refuses a block its Markdown projection can't hold (an aside).
+    // An outline this build can't read leaves `types` null.
   }
   const ids = readableNodeIds(doc, id, tree);
   let addresses;
