@@ -198,21 +198,17 @@ const EDIT_FIELDS = new Map([
   ["set_node", [...LOCATOR, "type", "attrs", "checked", "language", "heading_level", "align"]],
 ]);
 /** Refuse a field operation `op` doesn't take, and a Markdown operation
- * without Markdown. The flat schema marks no field required, so a request
- * that leaves `markdown` out reaches here; written as an empty string it
- * would erase the block replace_block_markdown names. Removing a block's
- * content is delete_block's job, so an empty rewrite is refused too. */
+ * without a Markdown string. The flat schema marks no field required, so a
+ * request that leaves `markdown` out reaches here; read as an empty string it
+ * would erase the block replace_block_markdown names. An explicit empty
+ * string is a stated rewrite and is written. */
 export function validateEditFields(op) {
   const fields = EDIT_FIELDS.get(op.op);
   if (!fields) return;
   const unexpected = Object.keys(op).find((field) => !["op", ...fields].includes(field));
   if (unexpected) throw Error(`${op.op} does not take ${unexpected}`);
-  if (!fields.includes("markdown")) return;
-  if (typeof op.markdown !== "string") throw Error(`${op.op} requires a markdown string`);
-  if (op.op === "replace_block_markdown" && !op.markdown.trim())
-    throw Error(
-      "replace_block_markdown requires Markdown to write: an empty rewrite would erase the block. Use delete_block to remove it.",
-    );
+  if (fields.includes("markdown") && typeof op.markdown !== "string")
+    throw Error(`${op.op} requires a markdown string`);
 }
 // The addresses each operation names, by field, and the kinds each field
 // takes (model/addresses.mjs). Kinds are strict: no operation acts on the

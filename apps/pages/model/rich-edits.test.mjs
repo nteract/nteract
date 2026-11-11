@@ -91,13 +91,6 @@ test("a Markdown operation without Markdown is refused", () => {
       /insert_markdown requires a markdown string/,
     );
   }
-  // An empty rewrite would erase the block as surely as a missing field.
-  for (const markdown of ["", "  \n\t"])
-    refuses(
-      doc,
-      [{ op: "replace_block_markdown", node_id, markdown }],
-      /an empty rewrite would erase the block. Use delete_block/,
-    );
   // One bad operation refuses the whole batch.
   refuses(
     doc,
@@ -107,13 +100,16 @@ test("a Markdown operation without Markdown is refused", () => {
     ],
     /requires a markdown string/,
   );
-  // A real rewrite and an empty insert still work.
+  // A rewrite still works, and so does an explicit empty string: Page
+  // transfer empties a block that way (scripts/project-transfer.mjs).
   const { after } = apply(doc, [
     { op: "replace_block_markdown", node_id, markdown: "Rewritten." },
     { op: "insert_markdown", markdown: "" },
   ]);
   assert.equal(md(after, id).trim(), "Rewritten.");
   assert.equal(orderedBlockIds(after).length, 2);
+  const emptied = apply(doc, [{ op: "replace_block_markdown", node_id, markdown: "" }]).after;
+  assert.equal(md(emptied, id).trim(), "");
 });
 
 test("format_match occurrence picks one match in document order", () => {
