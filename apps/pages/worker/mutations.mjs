@@ -183,16 +183,13 @@ export async function documentMutation({
     const baseHeads =
       base === undefined
         ? undefined
-        : await fencedHeads(
-            storage,
-            PAGE_DOC,
-            base,
-            (await revisionClock(storage)).horizon,
-          ).catch((error) => {
-            const current_heads = error?.code === "resync_required" && pageHeads();
-            if (current_heads) error.details = { current_heads };
-            throw error;
-          });
+        : await fencedHeads(storage, PAGE_DOC, base, (await revisionClock(storage)).horizon).catch(
+            (error) => {
+              const current_heads = error?.code === "resync_required" && pageHeads();
+              if (current_heads) error.details = { current_heads };
+              throw error;
+            },
+          );
     if (prepare) {
       if (targetScope) guardPassageEdits(handle.doc(), baseHeads, args.operations);
       else if (guard) guard(args, baseHeads);

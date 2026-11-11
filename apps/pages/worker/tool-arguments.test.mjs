@@ -92,7 +92,10 @@ test("an argument an operation doesn't take is refused before anything runs, ove
     "oops",
   );
   // The MCP schema names no viewer extras.
-  refused(await g.mcp("restore_page", { page_id: pageId, nonce, expected_principal: "x" }), "expected_principal");
+  refused(
+    await g.mcp("restore_page", { page_id: pageId, nonce, expected_principal: "x" }),
+    "expected_principal",
+  );
   assert.equal(g.forwarded.length, 0, "no Page saw a refused call");
   assert.deepEqual(g.catalog, [], "no Catalog saw a refused call");
 });

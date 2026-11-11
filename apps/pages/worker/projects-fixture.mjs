@@ -247,8 +247,7 @@ export async function world(t, { index = "1", storage: newStorage = () => new St
   const receipt = async (nonce, principal = owner) =>
     catalogStorage(principal).get(await receiptKey(nonce, principal));
   /** A revision handle of the Page as it is now, minted in its host. */
-  const revision = (pageId) =>
-    readRevision(pages.get(pageId).ctx.storage, "page", heads(pageId));
+  const revision = (pageId) => readRevision(pages.get(pageId).ctx.storage, "page", heads(pageId));
   /** Run every held background job, including ones they start, to the end. */
   const settle = async () => {
     while (jobs.length) await Promise.allSettled(jobs.splice(0));
