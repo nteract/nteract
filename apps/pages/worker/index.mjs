@@ -3440,7 +3440,7 @@ export class Catalog {
     let inspected;
     if (action === "confirm") {
       await this.locationShape();
-      key = mutationKey(args);
+      key = await operationKey(args);
       digest = await fingerprint("delete_project", args, identity);
       inspected = await inspectOperation(storage, {
         key,
