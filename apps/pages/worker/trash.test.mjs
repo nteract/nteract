@@ -24,14 +24,14 @@ async function fill(storage, prefix, count) {
 test("delete_page needs no base_heads: the catalog retry_token alone trashes, and sent heads still guard", async (t) => {
   const f = await fixture(t);
   const listed = await f.catalogCall("owner", "list_pages");
-  const { retry_token, retry_key_prefix } = listed.body;
+  const { retry_token } = listed.body;
   // Heads the caller does send are checked: malformed ones are refused and
   // stale ones name the live revision, as for an edit.
   const malformed = await f.catalogCall("owner", "delete_page", {
     page_id: pageId,
     base_heads: ["not-a-head"],
     retry_token,
-    idempotency_key: `${retry_key_prefix}malformed-heads`,
+    idempotency_key: "malformed-heads",
   });
   assert.equal(malformed.status, 400);
   assert.equal(malformed.body.code, "invalid_edit_selector");
@@ -39,7 +39,7 @@ test("delete_page needs no base_heads: the catalog retry_token alone trashes, an
     page_id: pageId,
     base_heads: ["0".repeat(64)],
     retry_token,
-    idempotency_key: `${retry_key_prefix}stale-heads-guard`,
+    idempotency_key: "stale-heads-guard",
   });
   assert.equal(stale.status, 409);
   assert.equal(stale.body.code, "stale_heads");
@@ -49,7 +49,7 @@ test("delete_page needs no base_heads: the catalog retry_token alone trashes, an
   const trashed = await f.catalogCall("owner", "delete_page", {
     page_id: pageId,
     retry_token,
-    idempotency_key: `${retry_key_prefix}token-only-trash`,
+    idempotency_key: "token-only-trash",
   });
   assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
   assert.equal(trashed.body.state, "trashed");
@@ -58,7 +58,7 @@ test("delete_page needs no base_heads: the catalog retry_token alone trashes, an
   const replay = await f.catalogCall("owner", "delete_page", {
     page_id: pageId,
     retry_token,
-    idempotency_key: `${retry_key_prefix}token-only-trash`,
+    idempotency_key: "token-only-trash",
   });
   assert.equal(replay.status, 200);
   assert.deepEqual(replay.body, trashed.body);

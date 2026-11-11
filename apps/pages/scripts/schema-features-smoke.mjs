@@ -20,7 +20,6 @@ import * as A from "@automerge/automerge";
 import { generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
 import { createPageData, initializePage, orderedBlockIds } from "../model/page.mjs";
 import { textPath } from "../model/richtext.mjs";
-import { retryKey } from "../model/retry-key.mjs";
 import { chromium, expect } from "@playwright/test";
 import { eventually, plainPeer } from "./plain-peer.mjs";
 
@@ -319,7 +318,7 @@ try {
       initial_snapshot_base64: Buffer.from(A.save(draft)).toString("base64"),
       title: draftTitle,
       retry_token: prepared.body.retry_token,
-      idempotency_key: await retryKey(prepared.body.retry_token),
+      idempotency_key: crypto.randomUUID(),
     },
   );
   assert.equal(registered.status, 400, JSON.stringify(registered.body));

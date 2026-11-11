@@ -58,13 +58,13 @@ async function call(page, operation, args = {}) {
         catalog ? {} : { page_id: args.page_id },
       );
       assert.equal(typeof authority.retry_token, "string");
-      assert.match(authority.retry_key_prefix, /^v1_[a-f0-9]{64}_$/);
+      assert.equal(authority.retry_key_prefix, undefined);
       request = {
         fingerprint,
         args: structuredClone({
           ...args,
           retry_token: authority.retry_token,
-          idempotency_key: authority.retry_key_prefix + args.idempotency_key,
+          idempotency_key: args.idempotency_key,
         }),
       };
       requests.set(key, request);
@@ -418,7 +418,7 @@ try {
   const authority = await call(control, "read_page", { page_id: created.page_id });
   let heads = authority.heads;
   assert.equal(typeof authority.retry_token, "string");
-  assert.match(authority.retry_key_prefix, /^v1_[a-f0-9]{64}_$/);
+  assert.equal(authority.retry_key_prefix, undefined);
   const start = epoch(),
     timings = [];
   output.aging = {
@@ -434,7 +434,7 @@ try {
       page_id: created.page_id,
       base_heads: heads,
       retry_token: authority.retry_token,
-      idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+      idempotency_key: crypto.randomUUID(),
       operations: [{ op: "set_title", title: "Latency history " + (i % 2 === 0 ? "A" : "B") }],
     });
     assert.notDeepEqual(receipt.heads, heads, "each awaited mutation creates a distinct change");

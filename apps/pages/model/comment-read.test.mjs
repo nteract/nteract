@@ -26,7 +26,7 @@ const PAGE = "11111111-1111-4111-8111-111111111111";
 const BLOCK = "22222222-2222-4222-8222-222222222222";
 const AUTHOR = { principal: "user:reader", displayName: "Reader", driver: "Test client" };
 const AT = "2026-11-07T18:00:00-08:00";
-const AUTHORITY = { retry_token: "read-fixture", retry_key_prefix: "fixture_", retry_until: AT };
+const AUTHORITY = { retry_token: "read-fixture", retry_until: AT };
 
 function richMessage(spans) {
   let doc = A.from({ richText: "" });

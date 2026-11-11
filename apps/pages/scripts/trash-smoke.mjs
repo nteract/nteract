@@ -223,7 +223,7 @@ try {
     page_id: pageId,
     base_heads: again.heads,
     retry_token: authority.retry_token,
-    idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
   });
   assert.equal(trashedAgain.status, 200);
   await owner.goto(origin + "/");

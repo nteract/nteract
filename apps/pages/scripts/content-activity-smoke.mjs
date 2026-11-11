@@ -109,7 +109,7 @@ async function patch(pageId, from, to) {
     page_id: pageId,
     base_heads: read.heads,
     retry_token: read.retry_token,
-    idempotency_key: `${read.retry_key_prefix}${crypto.randomUUID()}`,
+    idempotency_key: crypto.randomUUID(),
     operations: [
       { op: "replace_match", block_id: read.blocks[0].id, match_text: from, replacement: to },
     ],

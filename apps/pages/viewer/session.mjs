@@ -44,7 +44,6 @@ import { CatchUp } from "./catch-up.mjs";
 import { CATCH_UP_LIMIT_MS } from "./catch-up-machine.mjs";
 import { BACKEND_LIMITS } from "../model/limits.mjs";
 import { BUILD_FORMATS } from "../model/document-types.mjs";
-import { retryKey } from "../model/retry-key.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 import { admissionCloseOutcome } from "../shared/admission.mjs";
 import { isTransientFailure, request } from "./request.mjs";
@@ -159,6 +158,12 @@ function draftUnreadable(error) {
     cause: error,
   });
 }
+/** Whether the host can never answer this saved registration again: its
+ * retry window closed, or it refuses the saved key's form. Either way the
+ * draft reconciles the Page before it registers under a fresh key. */
+const registrationUnanswerable = (error) =>
+  (error.status === 410 && error.code === "retry_expired") ||
+  (error.status === 400 && error.code === "invalid_idempotency_key");
 /** Whether a failed connection attempt retries on the reconnect backoff. It
  * runs after attemptConnection has handled classifyRefusal, a 401, and the
  * admission's own stop, so it decides what remains.
@@ -1821,7 +1826,7 @@ export class PageSession {
           initial_snapshot_base64: snapshot,
           title: this.doc.title,
           record_storage: "automerge",
-          idempotency_key: `v1_${crypto.randomUUID()}`,
+          idempotency_key: crypto.randomUUID(),
         },
       };
       await writeLocalPage(this.identity, this.localPage, {
@@ -2124,7 +2129,7 @@ export class PageSession {
         if (!this.alive) return;
         if (typeof prepared.retry_token !== "string")
           throw Error("Could not prepare Page registration");
-        const key = await retryKey(prepared.retry_token);
+        const key = crypto.randomUUID();
         if (!this.alive || this.authRequired) return;
         await this.persistLocal({
           registration: {
@@ -2141,7 +2146,7 @@ export class PageSession {
         body: JSON.stringify(this.localPage.registration),
       });
     } catch (error) {
-      if (error.status === 410 && error.code === "retry_expired") {
+      if (registrationUnanswerable(error)) {
         try {
           result = await this.reconcileExpiredRegistration();
         } catch (renewed) {
@@ -2175,8 +2180,9 @@ export class PageSession {
       this.localPage?.document_id === registration.document_id;
     let connection;
     try {
-      // A lost registration response can outlive its retry receipt. Reconcile
-      // the exact Page/document identity before considering another request.
+      // A registration the host can no longer answer may still have been
+      // recorded before its response was lost. Reconcile the exact
+      // Page/document identity before considering another request.
       connection = await this.requestWithRenewal(connectUrl(this.pageId));
     } catch (error) {
       if (!current()) return;
@@ -2195,10 +2201,10 @@ export class PageSession {
       if (!current()) return;
       if (typeof prepared.retry_token !== "string")
         throw Error("Could not prepare Page registration");
-      const key = await retryKey(prepared.retry_token);
+      const key = crypto.randomUUID();
       if (!current()) return;
-      // The expired token cannot execute again. Keep the original bootstrap and
-      // UUID, and replace only its retry authority. IndexedDB compare-and-swap
+      // The saved key and token cannot execute again. Keep the original
+      // bootstrap and UUID, and replace only its retry authority. IndexedDB compare-and-swap
       // makes simultaneous tabs adopt the first replacement rather than race.
       await this.persistLocal({
         registrationSupersedes: registration.idempotency_key,

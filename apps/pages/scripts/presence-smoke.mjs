@@ -85,11 +85,11 @@ async function mutate(name, args) {
     ["create_page", "delete_page"].includes(name) ? {} : { page_id: pageId },
   );
   assert.equal(typeof authority.retry_token, "string");
-  assert.match(authority.retry_key_prefix, /^v1_[a-f0-9]{64}_$/);
+  assert.equal(authority.retry_key_prefix, undefined);
   return mcp(a, name, {
     ...args,
     retry_token: authority.retry_token,
-    idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
   });
 }
 async function update(lease, fields) {
@@ -650,7 +650,7 @@ try {
           const authority = await mcp(a, "list_pages");
           return {
             retry_token: authority.retry_token,
-            idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+            idempotency_key: crypto.randomUUID(),
           };
         },
       );

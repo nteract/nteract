@@ -4,10 +4,9 @@ import * as A from "@automerge/automerge";
 import { createAuthFixture } from "../auth-fixtures.mjs";
 import { Catalog, Page } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";
-import { retryKey } from "../model/retry-key.mjs";
 import { applyPageOperation, createPageData, initializePage } from "../model/page.mjs";
 import { comment, newCommentsDoc } from "../model/comments-test-support.mjs";
-import { documentMutation, recoverDocumentMutations } from "./mutations.mjs";
+import { documentMutation, operationKey, recoverDocumentMutations } from "./mutations.mjs";
 import { issueRetryToken, JOURNAL_LIMITS, RETRY_LIFETIME_MS } from "./operation-journal.mjs";
 import { plainStub } from "./plain-stub.mjs";
 import { WRITTEN_FORMATS } from "../model/document-types.mjs";
@@ -71,7 +70,7 @@ function fixture() {
 }
 async function argsFor(f, token, key) {
   return {
-    idempotency_key: await retryKey(token, key),
+    idempotency_key: key,
     base_heads: A.getHeads(f.handle.doc()),
     retry_token: token,
   };
@@ -199,7 +198,7 @@ for (const recovery of ["retry", "startup"]) {
       ),
       /Interrupted title warning/,
     );
-    const key = `host/operation/${args.idempotency_key}`;
+    const key = await operationKey(args);
     const pending = await f.storage.get(key);
     assert.equal(pending.pending, true);
     assert.equal(pending.receipt.warnings[0].heading, "Guide");
@@ -333,7 +332,7 @@ test("old receipts without warnings are replayed unchanged despite a currently d
     ],
   };
   await documentMutation(f.context(args));
-  const key = `host/operation/${args.idempotency_key}`;
+  const key = await operationKey(args);
   const old = await f.storage.get(key);
   delete old.receipt.warnings;
   await f.storage.put(key, old);
@@ -389,7 +388,7 @@ test("new-intent preparation cannot bypass a concurrently changed head guard", a
   );
   assert.equal(f.applications(), 0);
   assert.equal(f.handle.doc().concurrent, true);
-  assert.equal(await f.storage.get(`host/operation/${args.idempotency_key}`), undefined);
+  assert.equal(await f.storage.get(await operationKey(args)), undefined);
 });
 
 test("pending and completed retries preserve receipts without repeating external preparation", async () => {
@@ -412,7 +411,7 @@ test("pending and completed retries preserve receipts without repeating external
     }),
     /Interrupted durability/,
   );
-  const entry = await f.storage.get(`host/operation/${args.idempotency_key}`);
+  const entry = await f.storage.get(await operationKey(args));
   assert.equal(entry.pending, true);
   const retry = {
     ...f.context,
@@ -425,7 +424,7 @@ test("pending and completed retries preserve receipts without repeating external
   assert.equal(f.applications(), 1);
 });
 
-test("expired document retries never execute after retirement or token stripping", async (t) => {
+test("expired document retries never execute after retirement under their token", async (t) => {
   let now = start;
   t.mock.method(Date, "now", () => now);
   const f = fixture();
@@ -438,27 +437,58 @@ test("expired document retries never execute after retirement or token stripping
     ...f.context,
     args: await argsFor(f, renewed.retry_token, "collect-retired"),
   });
-  assert.equal(await f.storage.get(`host/operation/${args.idempotency_key}`), undefined);
-  await assert.rejects(
-    documentMutation({ ...f.context, args: { ...args, retry_token: renewed.retry_token } }),
-    {
-      status: 400,
-      code: "invalid_retry_token",
-    },
-  );
+  assert.equal(await f.storage.get(await operationKey(args)), undefined);
   for (const request of [args, await argsFor(f, issued.retry_token, "never-attempted")])
     await assert.rejects(documentMutation({ ...f.context, args: request }), {
       status: 410,
       code: "retry_expired",
     });
-  const stripped = { ...args, base_heads: A.getHeads(f.handle.doc()) };
-  delete stripped.retry_token;
-  await assert.rejects(documentMutation({ ...f.context, args: stripped }), {
-    status: 400,
-    code: "invalid_retry_token",
-  });
   assert.equal(f.applications(), 2);
   assert.equal(f.handle.doc().edits, 2);
+});
+
+test("a nonce is scoped to its token: another token or none makes a new request", async (t) => {
+  let now = start;
+  t.mock.method(Date, "now", () => now);
+  const f = fixture();
+  const issued = await f.token();
+  const args = await argsFor(f, issued.retry_token, "scoped-nonce");
+  const receipt = await documentMutation({ ...f.context, args });
+  assert.deepEqual(await documentMutation({ ...f.context, args }), receipt, "exact retry replays");
+  assert.equal(f.applications(), 1);
+  assert.equal(await f.storage.get("host/operation/scoped-nonce"), undefined);
+  // The same nonce without a token is a separate, best-effort request.
+  const plain = { idempotency_key: "scoped-nonce", base_heads: A.getHeads(f.handle.doc()) };
+  await documentMutation({ ...f.context, args: plain });
+  assert.equal(f.applications(), 2);
+  assert.equal((await f.storage.get("host/operation/scoped-nonce")).retry, undefined);
+  // And under another token it is a different request again.
+  now += 1000;
+  const renewed = await f.token();
+  assert.notEqual(renewed.retry_token, issued.retry_token);
+  await documentMutation({
+    ...f.context,
+    args: await argsFor(f, renewed.retry_token, "scoped-nonce"),
+  });
+  assert.equal(f.applications(), 3);
+  assert.equal(f.handle.doc().edits, 3);
+});
+
+test("a key that starts with v1_ is refused, with or without a token", async (t) => {
+  t.mock.method(Date, "now", () => start);
+  const f = fixture();
+  const issued = await f.token();
+  for (const args of [
+    await argsFor(f, issued.retry_token, `v1_${"a".repeat(64)}_built-by-caller`),
+    { idempotency_key: "v1_plain-key", base_heads: A.getHeads(f.handle.doc()) },
+  ])
+    await assert.rejects(documentMutation({ ...f.context, args }), {
+      status: 400,
+      code: "invalid_idempotency_key",
+      message: /Send only your own nonce, such as a new UUID, with the retry_token/,
+    });
+  assert.equal(f.applications(), 0);
+  assert.equal((await f.storage.list({ prefix: "host/operation/" })).size, 0);
 });
 
 test("1000 retained legacy receipts do not block new versioned document work", async (t) => {
@@ -525,15 +555,15 @@ for (const recovery of ["retry", "startup"]) {
       }),
       /interrupted persistence/,
     );
-    const entry = await f.storage.get(`host/operation/${args.idempotency_key}`);
+    const entry = await f.storage.get(await operationKey(args));
     assert.equal(entry.pending, true);
     assert.equal(f.applications(), 1);
     now += RETRY_LIFETIME_MS * 2;
     await f.token();
-    assert.deepEqual(await f.storage.get(`host/operation/${args.idempotency_key}`), entry);
+    assert.deepEqual(await f.storage.get(await operationKey(args)), entry);
     if (recovery === "startup") {
       await recoverDocumentMutations(f.storage, f.handle, f.context.flush);
-      assert.equal((await f.storage.get(`host/operation/${args.idempotency_key}`)).pending, false);
+      assert.equal((await f.storage.get(await operationKey(args))).pending, false);
       // Terminal recovery preserves the original retry deadline, never reauthoring.
       await assert.rejects(documentMutation({ ...f.context, args }), {
         status: 410,
@@ -541,7 +571,7 @@ for (const recovery of ["retry", "startup"]) {
       });
     } else {
       assert.deepEqual(await documentMutation({ ...f.context, args }), entry.receipt);
-      assert.equal((await f.storage.get(`host/operation/${args.idempotency_key}`)).pending, false);
+      assert.equal((await f.storage.get(await operationKey(args))).pending, false);
     }
     assert.equal(f.applications(), 1);
     assert.equal(f.handle.doc().edits, 1);
@@ -615,7 +645,7 @@ test("list_pages token governs catalog create/delete retries and rejects another
   assert.equal(retry_until, new Date(start + RETRY_LIFETIME_MS).toISOString());
   const create = {
     title: "Shared plan",
-    idempotency_key: await retryKey(retry_token, "catalog-create"),
+    idempotency_key: "catalog-create",
     retry_token,
   };
   const createdResponse = await f.request("create_page", create);
@@ -633,7 +663,7 @@ test("list_pages token governs catalog create/delete retries and rejects another
   });
   const wrongResponse = await f.request("create_page", {
     ...create,
-    idempotency_key: await retryKey(wrongScope.retry_token, "wrong-resource"),
+    idempotency_key: "wrong-resource",
     retry_token: wrongScope.retry_token,
   });
   assert.equal(wrongResponse.status, 400);
@@ -641,7 +671,7 @@ test("list_pages token governs catalog create/delete retries and rejects another
   assert.equal(f.requests.length, 1);
   const deletion = {
     page_id: created.page_id,
-    idempotency_key: await retryKey(retry_token, "catalog-delete"),
+    idempotency_key: "catalog-delete",
     retry_token,
   };
   const deletedResponse = await f.request("delete_page", deletion);
@@ -665,18 +695,12 @@ test("list_pages token governs catalog create/delete retries and rejects another
       await f.request("create_page", {
         title: "Fresh request",
         retry_token: renewed.retry_token,
-        idempotency_key: await retryKey(renewed.retry_token, "next-catalog-create"),
+        idempotency_key: "next-catalog-create",
       })
     ).status,
     200,
   );
-  assert.equal(await f.storage.get(`host/operation/${create.idempotency_key}`), undefined);
-  const substituted = await f.request("create_page", {
-    ...create,
-    retry_token: renewed.retry_token,
-  });
-  assert.equal(substituted.status, 400);
-  assert.equal((await substituted.json()).code, "invalid_retry_token");
+  assert.equal(await f.storage.get(await operationKey(create)), undefined);
   for (const [operation, args] of [
     ["create_page", create],
     ["delete_page", deletion],
@@ -686,6 +710,14 @@ test("list_pages token governs catalog create/delete retries and rejects another
     assert.equal((await expired.json()).code, "retry_expired");
   }
   assert.equal(f.requests.length, 3);
+  // The old nonce under the renewed token is another request, not a replay.
+  const substituted = await f.request("create_page", {
+    ...create,
+    retry_token: renewed.retry_token,
+  });
+  assert.equal(substituted.status, 200);
+  assert.notEqual((await substituted.json()).page_id, created.page_id);
+  assert.equal(f.requests.length, 4);
 });
 
 test("a legacy-full catalog accepts a versioned operation and preserves old receipts", async (t) => {
@@ -695,7 +727,7 @@ test("a legacy-full catalog accepts a versioned operation and preserves old rece
   const { retry_token } = await (await f.request("list_pages")).json();
   const response = await f.request("create_page", {
     title: "Shared plan",
-    idempotency_key: await retryKey(retry_token, "catalog-after-legacy"),
+    idempotency_key: "catalog-after-legacy",
     retry_token,
   });
   assert.equal(response.status, 200);
@@ -801,7 +833,7 @@ test("actual Page read_page issues a token usable by its guarded edit path", asy
     page_id: pageId,
     base_heads: before.heads,
     retry_token: before.retry_token,
-    idempotency_key: await retryKey(before.retry_token, "page-route-edit"),
+    idempotency_key: "page-route-edit",
     operations: [{ op: "set_title", title: "Edited once" }],
   };
   const changed = await f.request("edit_page", args);
@@ -835,7 +867,7 @@ for (const operation of ["read_page", "list_page_comments"]) {
     assert.deepEqual(A.getHeads(f.page.handle.doc()), heads);
     assert.equal(f.updates(), 0);
     assert.ok(before.retry_token);
-    assert.ok(before.retry_key_prefix);
+    assert.equal(before.retry_key_prefix, undefined);
     assert.ok(before.retry_until);
     if (operation === "read_page") {
       assert.deepEqual(
@@ -855,7 +887,7 @@ for (const operation of ["read_page", "list_page_comments"]) {
       page_id: pageId,
       base_heads: before.heads,
       retry_token: before.retry_token,
-      idempotency_key: await retryKey(before.retry_token, `${operation}-edit`),
+      idempotency_key: `${operation}-edit`,
       operations: [{ op: "set_title", title: "Edited from a partial read" }],
     };
     const changed = await f.request("edit_page", args);
@@ -1006,7 +1038,7 @@ test("Page image insertion validates storage once and journals actual block iden
     page_id: pageId,
     base_heads: before.heads,
     retry_token: before.retry_token,
-    idempotency_key: await retryKey(before.retry_token, "insert-image-once"),
+    idempotency_key: "insert-image-once",
     operations: [{ op: "insert_image", asset_id: assetId, alt: "A cat" }],
   };
   const response = await f.request("edit_page", args);
@@ -1071,7 +1103,7 @@ test("Page theme image set preflights both sources and keeps exact heads", async
       page_id: pageId,
       base_heads: before.heads,
       retry_token: before.retry_token,
-      idempotency_key: await retryKey(before.retry_token, "theme-insert"),
+      idempotency_key: "theme-insert",
       operations: [{ op: "insert_image", asset_id: assetId, alt: "Chart" }],
     })
   ).json();
@@ -1083,7 +1115,7 @@ test("Page theme image set preflights both sources and keeps exact heads", async
       page_id: pageId,
       base_heads: read.heads,
       retry_token: read.retry_token,
-      idempotency_key: await retryKey(read.retry_token, `theme-set-${reason}`),
+      idempotency_key: `theme-set-${reason}`,
       operations: [
         {
           op: "set_image",
@@ -1101,7 +1133,7 @@ test("Page theme image set preflights both sources and keeps exact heads", async
     page_id: pageId,
     base_heads: before.heads,
     retry_token: before.retry_token,
-    idempotency_key: await retryKey(before.retry_token, "theme-stale"),
+    idempotency_key: "theme-stale",
     operations: [
       { op: "set_image", block_id: image.block_id, image_id: image.image_id, alt: "No" },
     ],
@@ -1132,7 +1164,7 @@ test("Page image preflight rejects missing assets and lost write access before e
       page_id: pageId,
       base_heads: before.heads,
       retry_token: before.retry_token,
-      idempotency_key: await retryKey(before.retry_token, `image-${denied}`),
+      idempotency_key: `image-${denied}`,
       operations: [
         { op: "set_title", title: "Must not apply" },
         { op: "insert_image", asset_id: assetId, alt: "cat" },
@@ -1142,7 +1174,7 @@ test("Page image preflight rejects missing assets and lost write access before e
     assert.equal(response.status, denied === "missing" ? 404 : 403);
     assert.equal(f.updates(), 0);
     assert.equal(f.page.handle.doc().title, "Accepted content");
-    assert.equal(await f.storage.get(`host/operation/${args.idempotency_key}`), undefined);
+    assert.equal(await f.storage.get(await operationKey(args)), undefined);
   }
 });
 
@@ -1171,7 +1203,7 @@ test("Page dataframe insertion checks storage once and replays without it", asyn
     page_id: pageId,
     base_heads: before.heads,
     retry_token: before.retry_token,
-    idempotency_key: await retryKey(before.retry_token, "insert-dataframe-once"),
+    idempotency_key: "insert-dataframe-once",
     operations: [
       {
         op: "insert_node",
@@ -1235,7 +1267,7 @@ test("Page dataframe preflight refuses missing, image and malformed assets befor
       page_id: pageId,
       base_heads: before.heads,
       retry_token: before.retry_token,
-      idempotency_key: await retryKey(before.retry_token, `dataframe-${name.replace(" ", "-")}`),
+      idempotency_key: `dataframe-${name.replace(" ", "-")}`,
       operations: [
         { op: "set_title", title: "Must not apply" },
         { op: "insert_node", node: { type: "dataframe", attrs } },
@@ -1246,7 +1278,7 @@ test("Page dataframe preflight refuses missing, image and malformed assets befor
     if (code) assert.equal((await response.json()).code, code, name);
     assert.equal(f.updates(), 0, name);
     assert.equal(f.page.handle.doc().title, "Accepted content", name);
-    assert.equal(await f.storage.get(`host/operation/${args.idempotency_key}`), undefined, name);
+    assert.equal(await f.storage.get(await operationKey(args)), undefined, name);
   }
 });
 
@@ -1262,7 +1294,7 @@ test("recovery-blocked Page keeps accepted content readable and rejects tool and
     page_id: pageId,
     base_heads: accepted.heads,
     retry_token: accepted.retry_token,
-    idempotency_key: await retryKey(accepted.retry_token, "blocked-page-edit"),
+    idempotency_key: "blocked-page-edit",
     operations: [{ op: "set_title", title: "Must not apply" }],
   });
   assert.equal(edit.status, 409);

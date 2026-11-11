@@ -160,7 +160,7 @@ test("a tool request whose host never answers times out with advice that fits th
   const tokened = {
     page_id: pageId,
     retry_token: "token",
-    idempotency_key: `v1_${"a".repeat(64)}_timeout-fixture`,
+    idempotency_key: "timeout-fixture",
     base_heads: ["b".repeat(64)],
     operations: [],
   };
@@ -468,7 +468,7 @@ test("a transient failure is retryable only for a request that is safe to repeat
     PAGES: answer(lost),
     CATALOGS: answer(lost),
   };
-  const token = { idempotency_key: `v1_${"a".repeat(64)}_request-1`, retry_token: "rt" };
+  const token = { idempotency_key: "request-1", retry_token: "rt" };
   const call = async (operation, args) => {
     const response = await worker.fetch(
       new Request("http://127.0.0.1:9477/api/tools", {
@@ -500,6 +500,13 @@ test("a transient failure is retryable only for a request that is safe to repeat
   // A write that carries its retry_token is safe to repeat.
   const tokened = await call("create_page", { title: "New", ...token });
   assert.equal(tokened.retryable, true);
+  // A key that starts with v1_ is refused, so it is never safe to repeat.
+  const built = await call("create_page", {
+    title: "New",
+    ...token,
+    idempotency_key: `v1_${"a".repeat(64)}_request-1`,
+  });
+  assert.equal(built.retryable, false);
 });
 
 test("a stalled refusal body is cancelled at the tool deadline", async (t) => {

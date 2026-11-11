@@ -27,10 +27,10 @@ const complete = (name) => {
 };
 const retry = (read) => {
   assert.equal(typeof read.retry_token, "string");
-  assert.equal(typeof read.retry_key_prefix, "string");
+  assert.equal(read.retry_key_prefix, undefined);
   return {
     retry_token: read.retry_token,
-    idempotency_key: read.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
   };
 };
 const content = (page) => page.locator("wg-content");

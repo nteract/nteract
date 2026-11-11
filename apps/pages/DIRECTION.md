@@ -128,10 +128,10 @@ records the node addresses agents use.
 - **Before production, a target changes format by deleting its old
   documents.** It needs no reader for any earlier stored form and no
   migration from an existing target, and the host never converts a document
-  in place. Deleting means removing the old Pages: Trash and permanent
-  deletion cover a Page's content and comments documents. Sign-ins, grants
-  and the deployment's secrets stay. A Project has no delete yet, so a target
-  that holds Projects needs that first, or its storage cleared.
+  in place. Deleting means removing the old Pages, then their Projects: Trash
+  and permanent deletion cover a Page's content and comments documents, and
+  `delete_project` removes an emptied Project with its content. Sign-ins,
+  grants and the deployment's secrets stay.
   A format 2 build opens a format 1 Page, because it reads `position` and
   `richText` and ignores the fields format 2 dropped. Nothing relies on that.
   Format 3 moves node ids, so a format 2 Page must be gone before it.

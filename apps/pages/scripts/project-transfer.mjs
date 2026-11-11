@@ -33,7 +33,12 @@ export const BUNDLE_FORMAT = "nteract-pages-project-bundle";
  */
 export const BUNDLE_VERSION = 5;
 export const STATE_FORMAT = "nteract-pages-project-import-state";
-export const STATE_VERSION = 1;
+/**
+ * Version 2 state holds idempotency keys that are the importer's own nonces,
+ * sent beside retry_token. Version 1 state holds keys built from a
+ * retry_key_prefix, which the target refuses, so it is never resumed.
+ */
+export const STATE_VERSION = 2;
 // Persisted theme-body lifecycle. A receipt advances exactly one saved batch;
 // neither restart nor retry may reconstruct an installed body or its image IDs.
 export function themeBodyTransition(state, event) {
@@ -489,7 +494,6 @@ export async function readWholePage(client, address, options) {
       title: read.title,
       heads: read.heads,
       retry_token: read.retry_token,
-      retry_key_prefix: read.retry_key_prefix,
       // A format 1 source reports each block's `kind`; a format 2 source
       // reports none, and a block without one is Markdown.
       blocks: (blocks ?? []).map((block) => ({
@@ -1441,8 +1445,13 @@ export async function importBundle(
     throw new TransferError("The target is the bundle's source; import into a different target");
   const { content } = bundle.project;
   let state = (await store.load()) ?? freshState(bundle, client.origin);
-  if (state.format !== STATE_FORMAT || state.version !== STATE_VERSION)
+  if (state.format !== STATE_FORMAT)
     throw new TransferError("The state file is not an import state");
+  if (state.version !== STATE_VERSION)
+    throw new TransferError(
+      `The state file is version ${state.version}; this importer resumes only version ${STATE_VERSION}. ` +
+        "Start a new transfer with a new state file, or reconcile the target by hand against this one.",
+    );
   if (state.bundle_id !== bundle.bundle_id)
     throw new TransferError("The state file belongs to a different bundle");
   if (state.target_origin !== client.origin)
@@ -1614,14 +1623,13 @@ export async function importBundle(
     }
   }
 
-  // Catalog retry authority for creates. Keys are its prefix plus a nonce from
-  // (bundle_id, source_page_id). A new window is safe once nothing is pending.
+  // Catalog retry authority for creates. Keys are a nonce from (bundle_id,
+  // source_page_id). A new window is safe once nothing is pending.
   const unmapped = entriesOf(bundle).some((entry) => !state.pages[sourceKey(entry)]);
   if (unmapped && (!state.catalog || Date.parse(state.catalog.retry_until) - 60_000 <= now())) {
     const authority = await withRetries(() => client.call("list_pages", { limit: 1 }), options);
     state.catalog = {
       retry_token: authority.retry_token,
-      retry_key_prefix: authority.retry_key_prefix,
       retry_until: authority.retry_until,
     };
     await save();
@@ -1649,7 +1657,7 @@ export async function importBundle(
     const args = {
       title: bundle.project.title,
       ...(bundle.project.description && { description: bundle.project.description }),
-      idempotency_key: state.catalog.retry_key_prefix + (await nonce(bundle.bundle_id, "project")),
+      idempotency_key: await nonce(bundle.bundle_id, "project"),
       retry_token: state.catalog.retry_token,
     };
     await send("project", "create_project", args, commitFor("project"));
@@ -1667,9 +1675,7 @@ export async function importBundle(
       title: page.title,
       markdown: page.images?.length || page.image_variants?.length ? "" : pageBlocks(page)[0],
       ...placement,
-      idempotency_key:
-        state.catalog.retry_key_prefix +
-        (await nonce(bundle.bundle_id, "page", page.source_page_id)),
+      idempotency_key: await nonce(bundle.bundle_id, "page", page.source_page_id),
       retry_token: state.catalog.retry_token,
     };
     const step = `page:${page.source_page_id}`;
@@ -1822,9 +1828,7 @@ export async function importBundle(
           ...address,
           base_heads: progress.heads,
           retry_token: read.retry_token,
-          idempotency_key:
-            read.retry_key_prefix +
-            (await nonce(bundle.bundle_id, progress.phase, id, String(progress.next))),
+          idempotency_key: await nonce(bundle.bundle_id, progress.phase, id, String(progress.next)),
           operations: progress.operations.slice(progress.next, progress.next + EDIT_BATCH),
         },
         commitFor(step),
@@ -1846,9 +1850,7 @@ export async function importBundle(
       const args = {
         ...address,
         base_heads: read.heads,
-        idempotency_key:
-          read.retry_key_prefix +
-          (await nonce(bundle.bundle_id, "body", sourceKey(page), String(batch))),
+        idempotency_key: await nonce(bundle.bundle_id, "body", sourceKey(page), String(batch)),
         retry_token: read.retry_token,
         operations: operations.slice(batch * EDIT_BATCH, (batch + 1) * EDIT_BATCH),
       };

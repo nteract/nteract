@@ -110,7 +110,10 @@ test("Project listings follow cursors and a new Page uses the listing's retry to
   const [, args] = calls.at(-1);
   assert.equal(args.project_id, projectId);
   assert.equal(args.retry_token, "token");
-  assert.match(args.idempotency_key, /^v1_[0-9a-f]{64}_/);
+  assert.match(
+    args.idempotency_key,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+  );
 });
 
 const crumbTitles = (crumbs) =>

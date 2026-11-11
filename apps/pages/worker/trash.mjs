@@ -35,15 +35,10 @@ export function publicTrash(metadata) {
   };
 }
 
-/** Collaborators who lose access when the Page is permanently deleted, and
- * the discussion deleted with it: `commentsDoc` is the Page's comments
- * document. A Page whose documents the host doesn't open has `doc` null: it
- * is described from its record and `title`, the title it last projected,
- * and its comment counts are null because nothing read them. */
-export function purgeImpact(metadata, doc, commentsDoc, title) {
-  const threads = doc ? Object.values(threadsOf(doc, commentsDoc)) : null;
-  const shown = doc ? doc.title : title;
-  const collaborators = Object.entries(metadata.acl?.members ?? {})
+/** Members in `acl` who lose access when what it guards is permanently
+ * deleted, in principal order. */
+export function collaboratorsOf(acl) {
+  return Object.entries(acl?.members ?? {})
     .filter(([, member]) => ["viewer", "commenter", "editor"].includes(member?.role))
     .map(([principal, member]) => ({
       principal,
@@ -52,9 +47,18 @@ export function purgeImpact(metadata, doc, commentsDoc, title) {
       ...(typeof member.email === "string" && { email: member.email }),
     }))
     .sort((a, b) => a.principal.localeCompare(b.principal));
-  const now = Date.now();
+}
+
+/** How many of `acl`'s invitations are still pending at `now`. */
+export const pendingInvitations = (acl, now = Date.now()) =>
+  Object.values(acl?.invites ?? {}).filter((invite) => invite?.expiresAt > now).length;
+
+/** The discussion deleted with a document: `commentsDoc` is its comments
+ * document. A document the host doesn't open has `doc` null, and its counts
+ * are null because nothing read them. */
+export function discussionOf(doc, commentsDoc) {
+  const threads = doc ? Object.values(threadsOf(doc, commentsDoc)) : null;
   return {
-    title: typeof shown === "string" ? shown : "Untitled",
     comment_threads: threads ? threads.length : null,
     comment_count: threads
       ? threads.reduce(
@@ -64,10 +68,20 @@ export function purgeImpact(metadata, doc, commentsDoc, title) {
           0,
         )
       : null,
-    collaborators,
-    pending_invitations: Object.values(metadata.acl?.invites ?? {}).filter(
-      (invite) => invite?.expiresAt > now,
-    ).length,
+  };
+}
+
+/** Collaborators who lose access when the Page is permanently deleted, and
+ * the discussion deleted with it: `commentsDoc` is the Page's comments
+ * document. A Page whose documents the host doesn't open has `doc` null: it
+ * is described from its record and `title`, the title it last projected. */
+export function purgeImpact(metadata, doc, commentsDoc, title) {
+  const shown = doc ? doc.title : title;
+  return {
+    title: typeof shown === "string" ? shown : "Untitled",
+    ...discussionOf(doc, commentsDoc),
+    collaborators: collaboratorsOf(metadata.acl),
+    pending_invitations: pendingInvitations(metadata.acl),
     domain_view: metadata.acl?.domainView?.domain ?? null,
   };
 }
@@ -98,25 +112,27 @@ async function previewKey(storage) {
 /** Everything a preview describes. Any change to it invalidates the token.
  * `doc` is null for a Page whose documents the host doesn't open: nothing
  * can change them, so the record alone binds the preview. */
-async function previewBinding(metadata, doc, principal) {
-  const bytes = encoder.encode(
-    JSON.stringify({
-      page: metadata.pageId,
-      principal,
-      heads: doc ? [...A.getHeads(doc)].sort() : null,
-      acl: metadata.acl ?? null,
-      trashed_at: metadata.trash.trashed_at,
-      revision: metadata.lifecycleRevision ?? 0,
-    }),
-  );
+function previewBinding(metadata, doc, principal) {
+  return bindingOf({
+    page: metadata.pageId,
+    principal,
+    heads: doc ? [...A.getHeads(doc)].sort() : null,
+    acl: metadata.acl ?? null,
+    trashed_at: metadata.trash.trashed_at,
+    revision: metadata.lifecycleRevision ?? 0,
+  });
+}
+
+/** A digest of `facts`: the state a deletion preview describes. */
+export async function bindingOf(facts) {
+  const bytes = encoder.encode(JSON.stringify(facts));
   return base64url(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)));
 }
 
-export async function issuePurgePreview(storage, metadata, doc, principal, now = Date.now()) {
-  const payload = {
-    binding: await previewBinding(metadata, doc, principal),
-    expires_at: now + PURGE_PREVIEW_TTL_MS,
-  };
+/** A preview token for `binding`, signed with this object's preview secret
+ * and valid for PURGE_PREVIEW_TTL_MS. */
+export async function issuePreviewToken(storage, binding, now = Date.now()) {
+  const payload = { binding, expires_at: now + PURGE_PREVIEW_TTL_MS };
   const body = base64url(encoder.encode(JSON.stringify(payload)));
   const signature = new Uint8Array(
     await crypto.subtle.sign("HMAC", await previewKey(storage), encoder.encode(body)),
@@ -125,6 +141,10 @@ export async function issuePurgePreview(storage, metadata, doc, principal, now =
     preview_token: `${TOKEN_PREFIX}.${body}.${base64url(signature)}`,
     preview_expires_at: new Date(payload.expires_at).toISOString(),
   };
+}
+
+export async function issuePurgePreview(storage, metadata, doc, principal, now = Date.now()) {
+  return issuePreviewToken(storage, await previewBinding(metadata, doc, principal), now);
 }
 
 /** Check a preview token against the current record and document:
@@ -137,6 +157,12 @@ export async function checkPurgePreview(
   token,
   now = Date.now(),
 ) {
+  return checkPreviewToken(storage, await previewBinding(metadata, doc, principal), token, now);
+}
+
+/** Check a preview token against the binding of the current state: `valid`,
+ * `invalid` (malformed or forged), `expired`, or `changed`. */
+export async function checkPreviewToken(storage, binding, token, now = Date.now()) {
   const [prefix, body, signature, extra] = typeof token === "string" ? token.split(".") : [];
   if (prefix !== TOKEN_PREFIX || !body || !signature || extra !== undefined) return "invalid";
   let payload;
@@ -153,6 +179,6 @@ export async function checkPurgePreview(
     return "invalid";
   }
   if (!Number.isFinite(payload?.expires_at) || payload.expires_at <= now) return "expired";
-  if (payload.binding !== (await previewBinding(metadata, doc, principal))) return "changed";
+  if (payload.binding !== binding) return "changed";
   return "valid";
 }

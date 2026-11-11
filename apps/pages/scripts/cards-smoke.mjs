@@ -116,7 +116,7 @@ async function edit(page, pageId, [from, to]) {
     page_id: pageId,
     base_heads: read.body.heads,
     retry_token: read.body.retry_token,
-    idempotency_key: `${read.body.retry_key_prefix}${crypto.randomUUID()}`,
+    idempotency_key: crypto.randomUUID(),
     operations: [
       {
         op: "replace_match",

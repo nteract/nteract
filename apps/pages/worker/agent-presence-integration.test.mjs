@@ -141,7 +141,7 @@ async function fixture(t, driver = "Kilo", agent) {
       operations,
       base_heads: auth.heads,
       retry_token: auth.retry_token,
-      idempotency_key: auth.retry_key_prefix + key,
+      idempotency_key: key,
     });
   };
   return {
@@ -187,7 +187,7 @@ test("a retried patch replays its receipt without publishing a new caret", async
     ],
     base_heads: auth.heads,
     retry_token: auth.retry_token,
-    idempotency_key: auth.retry_key_prefix + "retry-once",
+    idempotency_key: "retry-once",
   };
   const first = await f.call("patch_page", args);
   const seq = f.agents()[0].seq;

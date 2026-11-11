@@ -146,6 +146,7 @@ import {
   documentMutation,
   recoverDocumentMutations,
   mutationKey,
+  operationKey,
   fingerprint,
   requireHeads,
 } from "./mutations.mjs";
@@ -232,6 +233,7 @@ import {
 } from "./catalog-index.mjs";
 import { readRegistration, requireRegistrationAccount, validPageId } from "./registration.mjs";
 import {
+  deleteUploadedAssets,
   handleImageAssets,
   privateImageResponse,
   requireStoredDatasetAsset,
@@ -250,6 +252,7 @@ import {
   locationEntries,
   locationScan,
   parentActive,
+  projectHoldsPages,
   projectOf,
   publicLocation,
   receiptLocation,
@@ -292,11 +295,17 @@ import {
   requireSpaceIdArgument,
   spaceNotFound,
   validSpaceId,
+  validateSpaceDeletion,
   validateSpaceInput,
 } from "./spaces.mjs";
 // The class name is the storage identity for Projects; see spaces.mjs.
 export { Space } from "./spaces.mjs";
-import { spaceCreationEffect, spaceCreationTransition } from "./space-lifecycle.mjs";
+import {
+  PROJECT_NOT_EMPTY,
+  spaceCreationEffect,
+  spaceCreationTransition,
+  spaceDeletion,
+} from "./space-lifecycle.mjs";
 import { handleImportPageImage } from "./import-image.mjs";
 import {
   PROJECT_CONTENT_OPERATIONS,
@@ -321,6 +330,7 @@ import { readChangesTool } from "./tool-changes.mjs";
 import { PageActivity } from "./page-activity.mjs";
 import {
   checkPurgePreview,
+  discussionOf,
   issuePurgePreview,
   publicTrash,
   purgeImpact,
@@ -377,6 +387,7 @@ const operations = new Set([
   "list_spaces",
   "get_space",
   "update_space",
+  "delete_project",
   "get_project_access",
   "manage_project_access",
   "get_page_access",
@@ -400,11 +411,17 @@ async function requireProjectReader(request, env, spaceId) {
     body.code,
   );
 }
-/** Project operations under their stored Space names. Each goes through the
- * caller's own Catalog, which calls the Project with the caller's credentials.
- * Storage keeps the Space name so a rollback build reads the same records;
- * project-api.mjs maps callers' Project names onto these. */
-const spaceOperations = ["create_space", "list_spaces", "get_space", "update_space"];
+/** Project operations, under their stored Space names where a rollback build
+ * reads the same records (project-api.mjs maps callers' Project names onto
+ * these); delete_project has no older name. Each goes through the caller's
+ * own Catalog, which calls the Project with the caller's credentials. */
+const spaceOperations = [
+  "create_space",
+  "list_spaces",
+  "get_space",
+  "update_space",
+  "delete_project",
+];
 /** The Page limit this Catalog's own gateway last resolved (rememberPageLimit). */
 const PAGE_LIMIT_KEY = "host/page-limit";
 /** Catalog-owned Page lifecycle operations and the Page route each one uses. */
@@ -413,6 +430,23 @@ const lifecycleRoutes = {
   restore_page: "/internal/restore",
   purge_page: "/internal/purge",
 };
+/** The Page route that reports a Project content document's heads and
+ * discussion to its owner's Catalog for delete_project. */
+const CONTENT_IMPACT_PATH = "/internal/content-impact";
+/** Throw when a host answered with a server error: the step's outcome is
+ * open, and the retry repeats it. */
+async function requireAnswer(response) {
+  if (response.status < 500) return;
+  await response.body?.cancel();
+  throw new HttpError(503, "Project deletion is temporarily unavailable; retry the same request");
+}
+/** A host's refusal as an error to throw. A server error leaves the outcome
+ * open and says to retry. */
+async function refusalOf(response) {
+  await requireAnswer(response);
+  const body = await response.json().catch(() => ({}));
+  return new HttpError(response.status, body.error ?? "Project deletion was refused", body.code);
+}
 /** Where a pending Trash or restore keeps its destination slot. */
 const slotPrefix = { delete_page: "trash/", restore_page: "page/" };
 /** delete_page moves a Page to Trash. Its journal fingerprint uses a distinct
@@ -510,6 +544,8 @@ export const sharedCheckBounds = { concurrency: 16 };
 const PAGE_CARD_STORE_TIMEOUT_MS = 10_000;
 /** How long a deletion waits on the card object's delete. */
 const PAGE_CARD_DELETE_TIMEOUT_MS = 2_000;
+/** How long a permanent deletion waits for its uploaded assets to go. */
+const ASSET_DELETE_TIMEOUT_MS = 10_000;
 /** Budgets for reading Page lifecycles while the Catalog queue waits. */
 export const lifecycleBounds = { readMs: 2000, passMs: 5000, concurrency: 4 };
 const lifecycleUnsettled = () =>
@@ -602,12 +638,21 @@ function headsCheck(doc, heads) {
 }
 const sameHeads = (left, right) =>
   left.length === right.length && [...left].sort().join() === [...right].sort().join();
+/** A delete_project trash's `base_comment_heads` against the comments
+ * document (`[]` when the Page has none), judged like headsCheck. */
+function commentHeadsCheck(commentsDoc, heads) {
+  if (heads === undefined) return "absent";
+  if (!Array.isArray(heads) || heads.some((head) => typeof head !== "string")) return "invalid";
+  return sameHeads(commentsDoc ? A.getHeads(commentsDoc) : [], heads) ? "match" : "mismatch";
+}
 const publicIdentity = ({ principal, displayName, driver }) => ({ principal, displayName, driver });
 /** Lifecycle arguments as the caller sent them. The Catalog alone sets the
- * compare-and-set controls it forwards to a Page. */
+ * compare-and-set controls it forwards to a Page, and only delete_project's
+ * own trash sends `base_comment_heads`. */
 const callerLifecycleArguments = ({
   expected_revision: _expected,
   replay_only: _replay,
+  base_comment_heads: _commentHeads,
   ...requested
 }) => requested;
 
@@ -669,7 +714,7 @@ function validateMoveInput(args) {
   if (typeof args.retry_token !== "string")
     throw new HttpError(
       400,
-      "move_page needs the retry_token from list_pages and a v1_ idempotency_key built from its retry_key_prefix",
+      "move_page needs the retry_token from list_pages with your own idempotency_key",
       "invalid_retry_token",
     );
   return { pageId, parentId, spaceId, position };
@@ -863,7 +908,8 @@ async function invoke(request, env, operation, args = {}, seen) {
     );
   }
   if (!READ_OPERATIONS.includes(operation)) requireWrite(identity);
-  if (["get_space", "update_space"].includes(operation)) requireSpaceIdArgument(args.space_id);
+  if (["get_space", "update_space", "delete_project"].includes(operation))
+    requireSpaceIdArgument(args.space_id);
   if (operation === "page_cards") return await pageCards(request, env, identity, args);
   if (
     [
@@ -1553,6 +1599,7 @@ export class Catalog {
         if (
           !record ||
           record.pending ||
+          record.deletion ||
           record.space_id !== query.project_content ||
           record.document_id !== query.page_id ||
           content?.state !== "active" ||
@@ -1848,6 +1895,8 @@ export class Catalog {
       if (body.operation === "create_space")
         return await this.createSpace(request, identity, args, limit);
       if (body.operation === "update_space") return await this.updateSpace(request, identity, args);
+      if (body.operation === "delete_project")
+        return await this.deleteSpace(request, identity, args);
       if (body.operation === "move_page") return await this.movePage(identity, args);
       const lifecycle = lifecycleRoutes[body.operation];
       if (!["create_page", "register_page"].includes(body.operation) && !lifecycle)
@@ -1861,6 +1910,17 @@ export class Catalog {
       )
         throw new HttpError(403, "Sign in with this Page's original account to change it");
       if (lifecycle) requirePageIdArgument(args.page_id);
+      // A Project's content leaves Trash or storage only through
+      // delete_project, which trashes and purges it itself.
+      if (
+        ["restore_page", "purge_page"].includes(body.operation) &&
+        (await this.storage.get(`page/${args.page_id}`))?.project_content
+      )
+        throw new HttpError(
+          409,
+          "This is a Project's content. It belongs to its Project and can't be restored or purged on its own; delete_project removes it",
+          "project_content_protected",
+        );
       if (body.operation === "purge_page") {
         if (!["preview", "confirm"].includes(args.action))
           throw new HttpError(400, "action must be preview or confirm");
@@ -1887,7 +1947,7 @@ export class Catalog {
         // bytes the browser saved with the draft, which this build may no
         // longer accept fresh. Its receipt, or for a pending one the Page
         // host's record, answers it, so only a new request is validated.
-        const recorded = await this.storage.get(mutationKey(args));
+        const recorded = await this.storage.get(await operationKey(args));
         const digest =
           recorded &&
           (await fingerprint(
@@ -1903,7 +1963,7 @@ export class Catalog {
       }
       // Input is sound: this write runs the shape pass first.
       await this.locationShape();
-      const key = mutationKey(args);
+      const key = await operationKey(args);
       const digest = await fingerprint(
         lifecycleFingerprint[body.operation] ?? body.operation,
         args,
@@ -2382,7 +2442,7 @@ export class Catalog {
         );
     }
     const space = await storage.get(`space/${body.space_id}`);
-    if (!space || space.pending) throw spaceNotFound();
+    if (!space || space.pending || space.deletion) throw spaceNotFound();
     const policy = await this.projectPolicy(body.space_id, this.ctx.id.name);
     if ((policy.acl?.revision ?? 0) !== body.fence) throw fenceMoved();
     requireCreateItems(policy, identity, spaceNotFound);
@@ -2719,7 +2779,7 @@ export class Catalog {
         : requirePageIdArgument(args.parent_id, "parent_id");
     if (spaceArg && !parentId) {
       const entry = await storage.get(`space/${spaceArg}`);
-      if (!entry || entry.pending) throw spaceNotFound();
+      if (!entry || entry.pending || entry.deletion) throw spaceNotFound();
       const response = await this.env.PROJECTS.getByName(spaceArg).fetch(
         forwarded(request, "/internal/space/read", { space_id: spaceArg }),
       );
@@ -2914,7 +2974,7 @@ export class Catalog {
       parentId,
       spaceId,
       position,
-      key: mutationKey(args),
+      key: await operationKey(args),
       digest: await fingerprint("move_page", args, identity),
     };
     let state = { name: "received" };
@@ -3028,7 +3088,8 @@ export class Catalog {
           : null;
     if (typeof destinationSpace === "string") {
       const record = await storage.get(`space/${destinationSpace}`);
-      if (!record || record.pending) return refuse("project_not_found", "Project not found");
+      if (!record || record.pending || record.deletion)
+        return refuse("project_not_found", "Project not found");
     }
     const sourceSpace = projectOf(entries, pageId);
     if (sourceSpace !== destinationSpace) {
@@ -3058,7 +3119,7 @@ export class Catalog {
     };
     const revision = (await storage.get(LOCATION_REVISION_KEY)) ?? 0;
     const projects = [...(await listAll(storage, "space/")).values()]
-      .filter((record) => record?.space_id && !record.pending)
+      .filter((record) => record?.space_id && !record.pending && !record.deletion)
       .map((record) => record.space_id);
     const plan = planMove({ revision, entries, contents, projects }, pageId, destination, position);
     if (!plan.ok) return refuse(plan.code, plan.message);
@@ -3146,7 +3207,7 @@ export class Catalog {
     const { title, description } = validateSpaceInput(args, { creating: true });
     // Input is sound: the shape pass runs first, as for every queued write.
     await this.locationShape();
-    const key = mutationKey(args);
+    const key = await operationKey(args);
     const digest = await fingerprint("create_space", args, identity);
     const inspected = await inspectOperation(storage, {
       key,
@@ -3280,7 +3341,7 @@ export class Catalog {
     const storage = this.storage;
     validateSpaceInput(args, { creating: false });
     await this.locationShape();
-    const key = mutationKey(args);
+    const key = await operationKey(args);
     const digest = await fingerprint("update_space", args, identity);
     const inspected = await inspectOperation(storage, {
       key,
@@ -3315,6 +3376,8 @@ export class Catalog {
       forwarded(request, "/internal/space/update", {
         space_id: intent.spaceId,
         idempotency_key: args.idempotency_key,
+        // The Space keys its receipt as this Catalog does: by key and token.
+        ...(args.retry_token !== undefined && { retry_token: args.retry_token }),
         expected_revision: intent.expectedRevision,
         ...(args.title !== undefined && { title: args.title }),
         ...(args.description !== undefined && { description: args.description }),
@@ -3360,6 +3423,305 @@ export class Catalog {
     return json(intent.receipt);
   }
 
+  /**
+   * delete_project. Only the owner's Catalog holds the Project's `space/`
+   * entry; anyone else is refused as update_project refuses them. A Project
+   * that still holds a Page, active, being created or in Trash, is refused.
+   * A preview reads and reserves nothing. A confirm runs the spaceDeletion
+   * machine (space-lifecycle.mjs) from its intent's persisted phase, so an
+   * exact retry resumes or replays it.
+   */
+  async deleteSpace(request, identity, args) {
+    const storage = this.storage;
+    const action = validateSpaceDeletion(args);
+    const spaceId = args.space_id;
+    let key;
+    let digest;
+    let inspected;
+    if (action === "confirm") {
+      await this.locationShape();
+      key = await operationKey(args);
+      digest = await fingerprint("delete_project", args, identity);
+      inspected = await inspectOperation(storage, {
+        key,
+        digest,
+        retryToken: args.retry_token,
+        scope: `catalog:${identity.principal}`,
+        principal: identity.principal,
+      });
+      const recorded = inspected.entry;
+      if (recorded && !recorded.pending) {
+        await storage.sync();
+        return json(recorded.receipt);
+      }
+      if (recorded) return await this.runSpaceDeletion(request, key, recorded);
+    }
+    const entry = await storage.get(`space/${spaceId}`);
+    if (!entry || entry.deletion) return await this.spaceDeletionRefusal(request, spaceId);
+    if (entry.pending)
+      throw new HttpError(
+        409,
+        "This Project is still being created. Retry create_project with the same idempotency_key and payload.",
+        "project_pending",
+      );
+    if (await projectHoldsPages(storage, spaceId)) {
+      const { status, body } = PROJECT_NOT_EMPTY;
+      return json(body, status);
+    }
+    if (action === "preview") return await this.previewSpaceDeletion(request, entry);
+    const intent = await reserveOperation(storage, {
+      key,
+      retry: inspected.retry,
+      entry: {
+        fingerprint: digest,
+        pending: true,
+        spaceId,
+        documentId: entry.document_id,
+        // Names this deletion to the Space, which holds it while it runs.
+        deletionId: crypto.randomUUID(),
+        previewToken: args.preview_token,
+        // The content's Trash request key, fixed so a resumed trash replays.
+        trashKey: `pd_${crypto.randomUUID()}`,
+        phase: "reserved",
+        createdAt: new Date().toISOString(),
+      },
+    });
+    await storage.put(key, intent);
+    return await this.runSpaceDeletion(request, key, intent);
+  }
+
+  /** The refusal for a Project this Catalog doesn't own: the owner-only
+   * refusal for a member, and a missing Project for everyone else. */
+  async spaceDeletionRefusal(request, spaceId) {
+    const response = await this.env.PROJECTS.getByName(spaceId).fetch(
+      forwarded(request, "/internal/space/read", { space_id: spaceId, claim: false }),
+    );
+    await response.body?.cancel();
+    if (response.ok) throw new HttpError(403, "Only the Project owner can delete it");
+    if (response.status >= 500) throw new HttpError(503, "Project is temporarily unavailable");
+    throw spaceNotFound();
+  }
+
+  /** What the owner's content document holds now: its heads and discussion. */
+  contentImpact(request, documentId) {
+    return this.env.PAGES.getByName(documentId).fetch(
+      forwarded(request, CONTENT_IMPACT_PATH, { page_id: documentId }),
+    );
+  }
+
+  /** delete_project's preview: what the deletion removes, from the Space and
+   * the content document, and the Space's token bound to both. */
+  async previewSpaceDeletion(request, entry) {
+    const content = await this.contentImpact(request, entry.document_id);
+    if (!content.ok) return content;
+    const { revision, heads, comment_heads, comment_threads, comment_count } = await content.json();
+    const response = await this.env.PROJECTS.getByName(entry.space_id).fetch(
+      forwarded(request, "/internal/space/delete", {
+        space_id: entry.space_id,
+        step: "preview",
+        content_revision: revision,
+        heads,
+        comment_heads,
+      }),
+    );
+    if (!response.ok) return response;
+    const { preview_token, preview_expires_at, ...space } = await response.json();
+    return json({
+      ...space,
+      comment_threads,
+      comment_count,
+      heads,
+      preview_token,
+      preview_expires_at,
+    });
+  }
+
+  /** Step the spaceDeletion machine from the intent's phase and run its
+   * effects until it answers. A failure that leaves the outcome open throws,
+   * and the intent stays at its last persisted phase for the retry. */
+  async runSpaceDeletion(request, key, intent) {
+    const run = { request, key, intent, principal: this.ctx.id.name ?? null };
+    let state = { name: intent.phase };
+    let event = { type: "resume" };
+    for (;;) {
+      const result = spaceDeletion.step(state, event);
+      let next;
+      for (const effect of result.effects)
+        next = (await this.runDeletionEffect(run, effect)) ?? next;
+      if (result.response) {
+        if (result.response.reply === "receipt") return json(intent.receipt);
+        if (result.response.reply === "refusal") return run.reply;
+        return json(result.response.body, result.response.status);
+      }
+      if (!next) throw new Error("A Project deletion stopped without an answer");
+      ({ state } = result);
+      event = next;
+    }
+  }
+
+  async runDeletionEffect(run, effect) {
+    const storage = this.storage;
+    const { request, key, intent } = run;
+    const spaceKey = `space/${intent.spaceId}`;
+    const page = this.env.PAGES.getByName(intent.documentId);
+    const space = (body) =>
+      this.env.PROJECTS.getByName(intent.spaceId).fetch(
+        forwarded(request, "/internal/space/delete", {
+          space_id: intent.spaceId,
+          deletion_id: intent.deletionId,
+          ...body,
+        }),
+      );
+    switch (effect.type) {
+      case "close_space": {
+        // Resumed after a crash, the Project may have gained a Page.
+        if (await projectHoldsPages(storage, intent.spaceId))
+          return { type: "closed", ok: false, refusal: "not_empty" };
+        const content = await this.contentImpact(request, intent.documentId);
+        if (!content.ok) {
+          await requireAnswer(content);
+          run.reply = content;
+          return { type: "closed", ok: false, refusal: "space" };
+        }
+        const { revision, heads, comment_heads } = await content.json();
+        const closed = await space({
+          step: "close",
+          content_revision: revision,
+          heads,
+          comment_heads,
+          preview_token: intent.previewToken,
+        });
+        if (!closed.ok) {
+          await requireAnswer(closed);
+          run.reply = closed;
+          return { type: "closed", ok: false, refusal: "space" };
+        }
+        // The heads the Space recorded when it closed, which a repeated close
+        // answers too: the trash compares against exactly these.
+        const recorded = await closed.json();
+        intent.heads = recorded.heads;
+        intent.commentHeads = recorded.comment_heads;
+        return { type: "closed", ok: true };
+      }
+      case "hide_project": {
+        const entry = await storage.get(spaceKey);
+        if (entry && entry.deletion !== intent.deletionId)
+          await storage.put(spaceKey, { ...entry, deletion: intent.deletionId });
+        await markSpaceIndexDirty(storage);
+        return;
+      }
+      case "show_project": {
+        const entry = await storage.get(spaceKey);
+        if (entry?.deletion === intent.deletionId) {
+          const { deletion: _deletion, ...shown } = entry;
+          await storage.put(spaceKey, shown);
+          await markSpaceIndexDirty(storage);
+        }
+        return;
+      }
+      case "persist":
+        intent.phase = effect.state;
+        if (effect.state === "deleted") {
+          intent.pending = false;
+          intent.receipt = { space_id: intent.spaceId, deleted: true };
+        }
+        await storage.put(key, intent);
+        return;
+      case "trash_content": {
+        const response = await page.fetch(
+          forwarded(request, "/internal/trash", {
+            page_id: intent.documentId,
+            idempotency_key: intent.trashKey,
+            // Null heads: the content's documents weren't opened, and the
+            // trash applies only while that holds.
+            ...(intent.heads && { base_heads: intent.heads }),
+            base_comment_heads: intent.commentHeads,
+          }),
+        );
+        if (response.ok) {
+          // The purge applies only at the revision this trash reached.
+          intent.contentRevision = (await response.json()).current.revision;
+          return { type: "trashed", outcome: "trashed" };
+        }
+        if (response.status === 404) return { type: "trashed", outcome: "missing" };
+        const failure = await refusalOf(response);
+        if (failure.code === "stale_heads") return { type: "trashed", outcome: "changed" };
+        throw failure;
+      }
+      case "reopen_space": {
+        const response = await space({ step: "reopen" });
+        if (!response.ok) throw await refusalOf(response);
+        return { type: "reopened" };
+      }
+      case "purge_content":
+        for (let previewed = false; ; previewed = true) {
+          if (!intent.purge) {
+            const preview = await page.fetch(
+              forwarded(request, "/internal/purge", {
+                page_id: intent.documentId,
+                action: "preview",
+              }),
+            );
+            if (preview.status === 404) return { type: "purged" };
+            if (!preview.ok) throw await refusalOf(preview);
+            // Kept with the intent: a resumed confirm repeats the same
+            // payload, so the Page replays a purge it already applied.
+            intent.purge = {
+              key: `pd_${crypto.randomUUID()}`,
+              token: (await preview.json()).preview_token,
+            };
+            await storage.put(key, intent);
+          }
+          const confirmed = await page.fetch(
+            forwarded(request, "/internal/purge", {
+              page_id: intent.documentId,
+              action: "confirm",
+              preview_token: intent.purge.token,
+              idempotency_key: intent.purge.key,
+              expected_revision: intent.contentRevision,
+            }),
+          );
+          if (confirmed.status === 404) return { type: "purged" };
+          if (confirmed.ok) {
+            if ((await confirmed.json()).current?.state === "deleted") return { type: "purged" };
+            throw new HttpError(503, "The Project's content was not deleted; retry");
+          }
+          const failure = await refusalOf(confirmed);
+          // A stored preview that expired was refused before anything
+          // changed: preview once more under a new key.
+          if (failure.code !== "purge_preview_invalid" || previewed) throw failure;
+          delete intent.purge;
+          await storage.put(key, intent);
+        }
+      case "forget_catalog": {
+        const now = new Date().toISOString();
+        const current = { state: "deleted", revision: (intent.contentRevision ?? 0) + 1 };
+        const item = await lifecycleIndexItem(storage, intent.documentId, current, now);
+        const marks = item ? await markPagesForIndex(this.env, storage, [intent.documentId]) : [];
+        // The deletion tombstone lands with the content's entry removal, so a
+        // late title projection never lists the content again.
+        await projectLifecycle(storage, intent.documentId, current, { marked: true, now });
+        await storage.delete(spaceKey);
+        await markSpaceIndexDirty(storage);
+        if (item) this.indexInBackground(run.principal, [item], marks);
+        return { type: "forgotten" };
+      }
+      case "remove_space": {
+        const response = await space({ step: "delete" });
+        if (!response.ok) throw await refusalOf(response);
+        return { type: "removed" };
+      }
+      case "release":
+        await storage.delete(key);
+        await storage.sync();
+        return;
+      case "sync":
+        await storage.sync();
+        return;
+    }
+    throw new Error(`A Project deletion can't run ${effect.type}`);
+  }
+
   /** The Space record answers with the caller's credentials. This account's
    * own entry only says whether its creation finished. */
   async getSpace(request, args) {
@@ -3370,7 +3732,7 @@ export class Catalog {
     if (entry?.pending)
       throw new HttpError(
         409,
-        "This Project is still being created. Retry create_project with the same idempotency_key and payload.",
+        "This Project is still being created. Retry create_project with the same retry_token, idempotency_key and payload.",
         "project_pending",
       );
     const response = await this.env.PROJECTS.getByName(spaceId).fetch(
@@ -3416,7 +3778,7 @@ export class Catalog {
       ];
       const spaces = [];
       for (const candidate of candidates) {
-        if (candidate.pending) continue;
+        if (candidate.pending || candidate.deletion) continue;
         const response = await this.env.PROJECTS.getByName(candidate.space_id).fetch(
           forwarded(request, "/internal/space/read", { space_id: candidate.space_id }),
         );
@@ -3522,7 +3884,7 @@ export class Catalog {
         scanned += rows.length;
         for (const row of rows) {
           const entry = await storage.get(`space/${row.page_id}`);
-          if (!entry || entry.pending) continue;
+          if (!entry || entry.pending || entry.deletion) continue;
           spaces.push({
             row,
             space: {
@@ -3666,7 +4028,7 @@ export class Catalog {
       // entry records it. A Space the caller can't see looks missing.
       const space = await storage.get(`space/${options.spaceId}`);
       if (!space) return this.listSharedProjectPages(request, identity, options);
-      if (space.pending) throw spaceNotFound();
+      if (space.pending || space.deletion) throw spaceNotFound();
     }
     // This account's entries record where each owned Page is, and its
     // Project is derived from them. A listing builds the map once. The same
@@ -4669,6 +5031,24 @@ export class Page {
     }
   }
 
+  /** Remove this Page's uploaded images and datasets (image-assets.mjs
+   * `deleteUploadedAssets`) under a deadline, so bucket trouble never holds
+   * a purge. Best-effort: a deleted Page authorizes no asset read, so a
+   * missed delete leaves bytes no one is served. */
+  async deleteAssets() {
+    const pageId = this.metadata?.pageId;
+    if (!this.env.PAGES_ASSETS || !validPageId(pageId)) return;
+    try {
+      await withTimeout(
+        deleteUploadedAssets(this.env.PAGES_ASSETS, pageId),
+        ASSET_DELETE_TIMEOUT_MS,
+        "Page asset delete timed out",
+      );
+    } catch (error) {
+      logFailure(error, "page-assets");
+    }
+  }
+
   /** Detach the content listener from the handle it was attached to. */
   unwatchContent() {
     this.contentHandle?.off?.("change", this.contentListener);
@@ -5468,6 +5848,37 @@ export class Page {
       }
       const deleted = this.deletedRefusal(identity, admissionRoute);
       if (deleted) throw deleted;
+      if (url.pathname === CONTENT_IMPACT_PATH) {
+        // The owner's Catalog previewing or confirming a Project's deletion:
+        // what this content document holds, and the heads it holds them at.
+        // Like Trash and purge it runs from the record, before the format
+        // refusal: a record in a format this build doesn't write reports its
+        // lifecycle revision only, with null heads and counts, and nothing
+        // opens its documents.
+        if (pageRelation(this.metadata, identity.principal) !== "owner")
+          throw new HttpError(403, "Document access denied");
+        if (pageState(this.metadata) !== "active")
+          throw new HttpError(404, "Page not found", "page_not_found");
+        const revision = this.metadata.lifecycleRevision ?? 0;
+        if (this.formatRefusal())
+          return json({
+            page_id: this.metadata.pageId,
+            revision,
+            heads: null,
+            comment_heads: null,
+            ...discussionOf(null),
+          });
+        await this.loadComments();
+        const doc = this.handle.doc();
+        const comments = this.commentsView();
+        return json({
+          page_id: this.metadata.pageId,
+          revision,
+          heads: A.getHeads(doc),
+          comment_heads: comments ? A.getHeads(comments) : [],
+          ...discussionOf(doc, comments),
+        });
+      }
       const state = pageState(this.metadata);
       // claimInvitation ignores trashed records, so the ACL stays unchanged.
       if (!["/api/sync", "/api/saved"].includes(url.pathname)) {
@@ -5793,7 +6204,7 @@ export class Page {
   }
 
   /** The create_page receipt with this Page's edit authority: the Page-scoped
-   * retry_token, retry_key_prefix and retry_until that read_page would issue,
+   * retry_token and retry_until that read_page would issue,
    * so the first edit needs no read. The stored receipt stays as recorded;
    * the token is minted per reply and journaled by the owner's Catalog with
    * the rest of the receipt, so an exact retry returns the same one. */
@@ -6035,7 +6446,7 @@ export class Page {
     const event = { type, actor };
     const context = { args, identity };
     if (type !== "purgePreview") {
-      const key = mutationKey(args);
+      const key = await operationKey(args);
       // The Catalog adds compare-and-set controls; they never change identity.
       const { expected_revision: _expected, replay_only: _replay, ...requested } = args;
       const digest = await fingerprint(LIFECYCLE_OPERATIONS[route], requested, identity);
@@ -6058,6 +6469,10 @@ export class Page {
       )
         event.deletion = summarizeReceipt(this.metadata.deletion.receipt);
     }
+    // A comments guard compares against the loaded comments document, which
+    // a record in a format this build doesn't write never opens.
+    if (type === "trash" && Array.isArray(args.base_comment_heads) && !this.formatRefusal())
+      await this.loadComments();
     let state = this.lifecycleState();
     if (
       type === "purgeConfirm" &&
@@ -6088,14 +6503,37 @@ export class Page {
       state = this.lifecycleState();
     }
     // No await from the head guard to the policy-visible record.
-    // A Page whose documents this host doesn't open has no heads to match:
-    // a trash without base_heads proceeds, one with them is invalid.
-    if (type === "trash")
-      event.heads = this.handle
-        ? headsCheck(this.handle.doc(), args.base_heads)
-        : this.formatRefusal() && args.base_heads === undefined
-          ? "absent"
-          : "invalid";
+    if (type === "trash") {
+      const unopened = Boolean(this.formatRefusal());
+      // A caller's trash: a Page whose documents this host doesn't open has
+      // no heads to match, so a trash without base_heads proceeds and one
+      // with them is invalid. delete_project's own trash sends
+      // base_comment_heads, null when the deletion read a record whose
+      // documents this host doesn't open; it applies only while the host
+      // still opens exactly what the deletion read, at those heads.
+      const checks =
+        args.base_comment_heads === undefined
+          ? [
+              this.handle
+                ? headsCheck(this.handle.doc(), args.base_heads)
+                : unopened && args.base_heads === undefined
+                  ? "absent"
+                  : "invalid",
+            ]
+          : (args.base_comment_heads === null) !== unopened
+            ? ["mismatch"]
+            : unopened
+              ? ["absent"]
+              : [
+                  this.handle ? headsCheck(this.handle.doc(), args.base_heads) : "invalid",
+                  commentHeadsCheck(this.commentsHandle?.doc(), args.base_comment_heads),
+                ];
+      event.heads = checks.includes("invalid")
+        ? "invalid"
+        : checks.includes("mismatch")
+          ? "mismatch"
+          : checks[0];
+    }
     const result = pageLifecycle.step(state, event);
     if (result.effects.length) {
       this.prepareLifecycle(type, state, context);
@@ -6261,6 +6699,7 @@ export class Page {
         // Both documents go together: the Page and its comments.
         await this.repo.delete(this.metadata.documentId);
         if (this.commentsUuid) await this.repo.delete(commentsDocumentId(this.commentsUuid));
+        await this.deleteAssets();
         // From metadata, not loaded handles: a deleted Page boots without them.
         await this.plain.forget(
           [

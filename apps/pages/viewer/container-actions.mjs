@@ -1,7 +1,6 @@
 // The writes and listings behind the New Project and Move to… dialogs.
-// Each write takes the retry_token and a v1_ idempotency_key built from it, so
+// Each write takes the retry_token and a new idempotency_key nonce, so
 // a retry with the same `attempt` replays the receipt instead of writing again.
-import { retryKey } from "../model/retry-key.mjs";
 import { listAllPages } from "./page-list.mjs";
 import { listProjectPages } from "./projects.mjs";
 
@@ -15,7 +14,7 @@ function attemptError(error, attempt) {
 async function prepare(call, operation, attempt) {
   if (attempt) return attempt;
   const listed = await call(operation, { limit: 1 });
-  return { retry_token: listed.retry_token, idempotency_key: await retryKey(listed.retry_token) };
+  return { retry_token: listed.retry_token, idempotency_key: crypto.randomUUID() };
 }
 
 /** create_project, the same path agents use. Returns its receipt. */

@@ -104,7 +104,7 @@ test("independent tabs retain the first prepared registration across stale check
     ...page,
     registered: false,
     registrationProtocol: 1,
-    registration: { idempotency_key: `v1_${crypto.randomUUID()}`, page_id: page.page_id },
+    registration: { idempotency_key: crypto.randomUUID(), page_id: page.page_id },
   };
   await writeLocalPage(identity, original);
   const stale = await readLocalPage(identity, page.page_id);

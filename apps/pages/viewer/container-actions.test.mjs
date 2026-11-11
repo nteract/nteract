@@ -21,7 +21,7 @@ function caller(answers) {
   return { call, calls };
 }
 
-test("createProject calls create_project with a v1_ key from list_projects' token", async () => {
+test("createProject calls create_project with its own key and list_projects' token", async () => {
   const { call, calls } = caller({
     list_projects: { retry_token: "token-1" },
     create_project: { project_id: "prj_new" },
@@ -33,7 +33,10 @@ test("createProject calls create_project with a v1_ key from list_projects' toke
   assert.equal(args.title, "Conference");
   assert.equal(args.description, undefined, "a blank description is omitted");
   assert.equal(args.retry_token, "token-1");
-  assert.match(args.idempotency_key, /^v1_[0-9a-f]{64}_/);
+  assert.match(
+    args.idempotency_key,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+  );
 });
 
 test("a failed write carries its attempt, and a retry replays it without a new token", async () => {

@@ -13,7 +13,7 @@ import {
 import { validSpaceId } from "./spaces.mjs";
 import { MAX_DEPTH, deriveLocation } from "../model/location.mjs";
 import { locationEntries } from "./catalog-location.mjs";
-import { inspectOperation } from "./operation-journal.mjs";
+import { inspectOperation, retryKeyPrefix } from "./operation-journal.mjs";
 import { tools } from "../mcp.mjs";
 import { invokeProjectApi } from "./project-api.mjs";
 import { ids, locationOf, world } from "./projects-fixture.mjs";
@@ -229,23 +229,44 @@ test("the gateway links Page edit receipts, and leaves refusals and unlinked cal
   assert.deepEqual(await unconfigured.json(), receipt);
 });
 
-test("a v1_ create key without its token is refused with where to get the token", async (t) => {
+test("a create key that starts with v1_ is refused: the caller sends only its nonce", async (t) => {
   const w = await world(t);
   const listed = await w.call("owner", "list_pages");
+  const built = `v1_${"a".repeat(64)}_${crypto.randomUUID()}`;
   for (const [operation, args] of [
     ["create_page", { title: "Keyed" }],
     ["create_project", { title: "Keyed" }],
-  ]) {
-    const refused = await w.call("owner", operation, {
-      ...args,
-      idempotency_key: `${listed.body.retry_key_prefix}${crypto.randomUUID()}`,
-    });
-    assert.equal(refused.status, 400, operation);
-    assert.equal(refused.body.code, "invalid_retry_token", operation);
-    assert.match(refused.body.error, /list_pages for create_page/, operation);
-    assert.match(refused.body.error, /list_projects for create_project/, operation);
-    assert.match(refused.body.error, /plain key/, operation);
-  }
+  ])
+    for (const token of [{ retry_token: listed.body.retry_token }, {}]) {
+      const refused = await w.call("owner", operation, {
+        ...args,
+        ...token,
+        idempotency_key: built,
+      });
+      assert.equal(refused.status, 400, operation);
+      assert.equal(refused.body.code, "invalid_idempotency_key", operation);
+      assert.match(
+        refused.body.error,
+        /Send only your own nonce, such as a new UUID, with the retry_token/,
+        operation,
+      );
+    }
+  assert.equal((await w.call("owner", "list_pages")).body.pages.length, 0);
+});
+
+test("a tokened create with a plain nonce replays exactly; without the token it is new", async (t) => {
+  const w = await world(t);
+  const listed = await w.call("owner", "list_pages");
+  const nonce = crypto.randomUUID();
+  const tokened = { title: "Once", idempotency_key: nonce, retry_token: listed.body.retry_token };
+  const created = await w.call("owner", "create_page", tokened);
+  assert.equal(created.status, 200, JSON.stringify(created.body));
+  assert.deepEqual((await w.call("owner", "create_page", tokened)).body, created.body);
+  assert.equal((await w.call("owner", "list_pages")).body.pages.length, 1);
+  const plain = await w.call("owner", "create_page", { title: "Once", idempotency_key: nonce });
+  assert.equal(plain.status, 200, JSON.stringify(plain.body));
+  assert.notEqual(plain.body.page_id, created.body.page_id);
+  assert.equal((await w.call("owner", "list_pages")).body.pages.length, 2);
 });
 
 test("create_page returns the new Page's edit authority, so the first edit needs no read", async (t) => {
@@ -257,25 +278,25 @@ test("create_page returns the new Page's edit authority, so the first edit needs
     idempotency_key: createKey,
   });
   assert.equal(created.status, 200, JSON.stringify(created.body));
-  const { page_id, retry_token, retry_key_prefix, retry_until } = created.body;
+  const { page_id, retry_token, retry_until } = created.body;
   assert.equal(typeof retry_token, "string");
-  assert.match(retry_key_prefix, /^v1_[a-f0-9]{64}_$/);
+  assert.equal(created.body.retry_key_prefix, undefined);
   assert.ok(Number.isFinite(Date.parse(retry_until)));
   // The token is the Page's own, as read_page issues it: the Page's journal
   // accepts it for an edit under page:<id>, and refuses the catalog's.
   const pageStorage = w.page(page_id).ctx.storage;
-  const inspect = (token, prefix) =>
+  const inspect = async (token) =>
     inspectOperation(pageStorage, {
-      key: `host/operation/${prefix}${crypto.randomUUID()}`,
+      key: `host/operation/${await retryKeyPrefix(token)}${crypto.randomUUID()}`,
       digest: "d".repeat(64),
       retryToken: token,
       scope: `page:${page_id}`,
       principal: w.owner,
     });
-  assert.deepEqual((await inspect(retry_token, retry_key_prefix)).entry, undefined);
+  assert.deepEqual((await inspect(retry_token)).entry, undefined);
   const listed = await w.call("owner", "list_pages");
   assert.notEqual(listed.body.retry_token, retry_token);
-  await assert.rejects(inspect(listed.body.retry_token, listed.body.retry_key_prefix), {
+  await assert.rejects(inspect(listed.body.retry_token), {
     code: "invalid_retry_token",
   });
   // An exact retry replays the recorded receipt, token included.
@@ -1856,12 +1877,7 @@ test("a shared parent's hidden children never show through pagination", async (t
   const list = async (parentId, args = {}) => {
     const listed = await w.call("member", "list_pages", { parent_id: parentId, limit: 1, ...args });
     assert.equal(listed.status, 200, JSON.stringify(listed.body));
-    const {
-      retry_token: _token,
-      retry_key_prefix: _prefix,
-      retry_until: _until,
-      ...visible
-    } = listed.body;
+    const { retry_token: _token, retry_until: _until, ...visible } = listed.body;
     return visible;
   };
 

@@ -139,7 +139,7 @@ async function heavyPage(t) {
   assert.equal(read.status, 200);
   const retry = () => ({
     retry_token: read.body.retry_token,
-    idempotency_key: read.body.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
   });
   const latencies = [];
   for (let i = 0; i < toolWrites; i++) {
@@ -267,7 +267,7 @@ test("the tracker sees a long timer that a request timer's callback sets", async
   const read = await f.tool("owner", "read_page", { comments: "none" });
   const retry = () => ({
     retry_token: read.body.retry_token,
-    idempotency_key: read.body.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
   });
   const activity = f.page.activityState();
   const agentEvent = activity.agentEvent.bind(activity);
