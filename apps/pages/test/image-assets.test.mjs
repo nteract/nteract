@@ -203,11 +203,15 @@ async function upload(f, options) {
   assert.equal(response.status, 201, await response.clone().text());
   return response.json();
 }
-function privateHeaders(response) {
-  assert.equal(response.headers.get("cache-control"), "private, no-store");
+// Refusals, errors and upload results are never stored.
+function privateHeaders(response, cache = "private, no-store") {
+  assert.equal(response.headers.get("cache-control"), cache);
   assert.equal(response.headers.get("x-content-type-options"), "nosniff");
   assert.equal(response.headers.get("cross-origin-resource-policy"), "same-origin");
 }
+// Served bytes are named by their hash, so the reader's browser keeps them.
+const servedHeaders = (response) =>
+  privateHeaders(response, "private, max-age=31536000, immutable");
 
 test("real PNG, JPEG and WebP containers expose their actual dimensions", () => {
   for (const mime_type of Object.keys(fixtures))
@@ -276,7 +280,7 @@ test("uploads raw bytes and serves a stable, immutable, Page-scoped private imag
   for (const method of ["GET", "HEAD"]) {
     const response = await run(f, { method, asset: image.asset_id });
     assert.equal(response.status, 200);
-    privateHeaders(response);
+    servedHeaders(response);
     assert.equal(response.headers.get("content-type"), "image/png");
     assert.equal(response.headers.get("content-length"), String(bytesFor().length));
     assert.deepEqual(
@@ -343,9 +347,42 @@ test("ACL and credential ceilings apply before storage, and revocation blocks su
   );
   assert.equal(f.env.PAGES_ASSETS.calls.length, before);
   page.metadata.acl.members[f.principal].role = "none";
-  for (const method of ["GET", "HEAD"])
-    assert.equal((await run(f, { asset: image.asset_id, method })).status, 403);
+  for (const method of ["GET", "HEAD"]) {
+    const refused = await run(f, { asset: image.asset_id, method });
+    assert.equal(refused.status, 403);
+    privateHeaders(refused);
+  }
   assert.equal(f.env.PAGES_ASSETS.calls.length, before);
+});
+
+test("served asset bytes are immutable in the reader's cache; every refusal is uncacheable", async (t) => {
+  const f = await fixture(t),
+    image = await upload(f);
+  const served = await run(f, { asset: image.asset_id });
+  assert.equal(served.status, 200);
+  servedHeaders(served);
+  assert.ok(served.headers.get("etag"));
+  const missing = "0".repeat(64);
+  const refusals = {
+    "no credential": await run(f, { asset: image.asset_id, authenticated: false }),
+    "not stored": await run(f, { asset: missing }),
+    "other Page": await run(f, { id: otherId, asset: image.asset_id }),
+    "bad reference": await run(f, { asset: "not-a-hash" }),
+    "wrong method": await run(f, { asset: image.asset_id, method: "DELETE" }),
+  };
+  const unrelated = { authorization: `Bearer ${f.auth.apiKey({ userId: "unrelated-person" })}` };
+  refusals["no access"] = await run(f, { asset: image.asset_id, headers: unrelated });
+  f.pages.get(pageId).metadata.deleted = true;
+  refusals["deleted Page"] = await run(f, { asset: image.asset_id });
+  for (const [reason, response] of Object.entries(refusals)) {
+    assert.ok(response.status >= 400, reason);
+    privateHeaders(response);
+  }
+  f.pages.get(pageId).metadata.deleted = false;
+  delete f.env.PAGES_ASSETS;
+  const failed = await run(f, { asset: image.asset_id });
+  assert.equal(failed.status, 503);
+  privateHeaders(failed);
 });
 
 test("Page deletion and unrelated principals cannot read or overwrite an existing image", async (t) => {
@@ -591,7 +628,7 @@ test("a Parquet upload is stored once, Page-scoped, and served as a download", a
     for (const method of ["GET", "HEAD"]) {
       const read = await run(f, { method, asset: dataset.asset_id });
       assert.equal(read.status, 200);
-      privateHeaders(read);
+      servedHeaders(read);
       assert.equal(read.headers.get("content-type"), PARQUET_MEDIA_TYPE);
       assert.equal(
         read.headers.get("content-disposition"),
