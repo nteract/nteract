@@ -1800,9 +1800,24 @@ stored:
 4. Actor claims. Each new change's actor is unclaimed or claimed by this
    principal. A claim is written in the same `saveMany` as the history it
    covers, and no other document can claim the actor meanwhile.
-5. The schema-feature gate and the 16 MiB history bound, then
-   `admitCommentChanges` for the comments document. A comment rule refusal blocks the principal's
-   comment writes (`host/comments-blocked/<principal>`) and closes the socket.
+5. The schema-feature gate and the 16 MiB history bound. Then, for the Page
+   document, the block shape
+   ([model/block-shape.mjs](model/block-shape.mjs)). The blocks the changes
+   write come from their decoded ops and each object's `objInfo` path (at the
+   change's own heads when the object is hidden). Every value at such a block
+   id must be a map, and every value of its `position` a raw-string fractional
+   index of at most 512 base-62 characters and of its `richText` text, so a
+   value that loses a conflict is judged at the frame that brings it, not when
+   a later delete reveals it. `blocks` must stay a map. The changes may not add another
+   key to a block; a key the same block already held is kept, so blocks with
+   the earlier format's extra keys stay editable. Deleting and moving blocks
+   pass. A refusal is `invalid_block`, not fatal: the socket stays open, the
+   principal isn't blocked, and the browser stops offering the refused heads
+   until it synchronizes again. The cost follows the change, not the number of
+   blocks. Trusted host writes skip this check.
+   For the comments document, `admitCommentChanges`. A comment rule refusal
+   blocks the principal's comment writes (`host/comments-blocked/<principal>`)
+   and closes the socket.
 6. Persist, publish who wrote the changes (`actor-profiles`, ahead of the
    changes), reply, then fan out.
 
