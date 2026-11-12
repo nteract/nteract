@@ -1380,8 +1380,10 @@ later answer replaces the record and an earlier one changes nothing. In the
 same millisecond, an answer whose stored text equals the record's changes
 nothing, and any other answer leaves the record with no organizations until
 the next exchange: two different answers that close can't be ordered, so a
-tie never adds one. `verified_at_ms` never moves back. That is one D1 write per browser
-sign-in and one per agent token exchange in each isolate
+tie never adds one. `verified_at_ms` never moves back. That is one D1 write
+per browser sign-in, and for an agent token at least one per exchange in each
+isolate: requests that arrive together at the start of a lease each write the
+same answer, which leaves the record as it is
 ([worker/kilo-membership.mjs](worker/kilo-membership.mjs)). Schema version 2
 drops the table and creates it again with `verified_at_ms`: a version 1 row
 was timed in seconds and can't be ordered by the millisecond, so it is gone

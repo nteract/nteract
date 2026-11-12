@@ -8,8 +8,9 @@
  * that reported them, in milliseconds by Pages' clock. Every successful
  * exchange writes, in one statement (`recordKiloMembership`), so the row
  * always holds the newest answer any isolate received, and a slow exchange
- * can't undo a newer one. That costs one D1 write per browser sign-in and one
- * per agent token exchange in each isolate.
+ * can't undo a newer one. That costs one D1 write per browser sign-in, and
+ * for an agent token at least one per exchange in each isolate: requests that
+ * arrive together at the start of a lease each write the same answer.
  *
  * `authenticate` (auth.mjs) reads the row by principal for every Kilo
  * identity, whichever credential it arrived with: a browser cookie, a Pages
@@ -20,12 +21,14 @@
  *
  * Every host a request crosses authenticates it again, so reads go through a
  * small per-isolate cache. An entry answers for at most `CACHE_MS` from its
- * read, and never past the end of the leases it yields; a write drops the
- * writing isolate's entry, and a read that overlapped a write in this isolate
- * is not cached, so it can't put back what the write dropped. So a request sees a new report at most 30 seconds
- * after it is written, and an open sync socket, which re-authenticates every
- * 15 seconds, at most 45 seconds after. Only settled values are cached, never
- * a pending read (isolate-setup.mjs says why).
+ * read, and never past the end of the leases it yields. When a write in this
+ * isolate ends, no entry read before that end survives it, and the writing
+ * request's own next read goes to D1. (A read that ran wholly inside a
+ * pending write may be cached until the write ends.) So a request sees a new
+ * report at most 30 seconds after it is written, and an open sync socket,
+ * which re-authenticates every 15 seconds, at most 45 seconds after. Only
+ * settled values are cached, never a pending read (isolate-setup.mjs says
+ * why).
  *
  * No organization id or name reaches a log line from here. */
 import { identityProvider } from "../identity-provider.mjs";
@@ -75,9 +78,11 @@ const ready = isolateSetup((db) =>
 const cache = new Map();
 
 /** Counts each write's start and each write's end in this isolate. A read is
- * cached only when this count didn't change while it ran: a read that
- * overlapped a write may hold the row from before it, and caching that would
- * undo the write's drop of the cache entry. One isolate-wide count rather
+ * cached only when this count didn't change while it ran, and a write drops
+ * the principal's entry when it ends. Together: no entry read before a
+ * write's end survives that end, and the writing request's own next read
+ * goes to D1. A read that ran wholly inside a pending write may be cached
+ * until the write ends. One isolate-wide count rather
  * than one per principal: writes come once per exchange, so a read that loses
  * its cache entry to another principal's write costs one more D1 read, and
  * there is no second table to bound. */
