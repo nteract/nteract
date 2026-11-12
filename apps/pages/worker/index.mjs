@@ -31,6 +31,7 @@ import {
 import { unsupportedMarkdown, unsupportedMarkdownError } from "../model/markdown-scan.mjs";
 import { applyComment, commentsMigrated } from "../model/comments.mjs";
 import { guardCommentIntent, passageComment } from "../model/comment-guard.mjs";
+import { authorOf } from "../model/author.mjs";
 import { checkSources, setSources, validateSourceBatch } from "../model/sources-doc.mjs";
 import {
   commentsDocUuid,
@@ -6543,6 +6544,9 @@ export class Page {
   async writeSources(request, identity, body) {
     const args = body.arguments ?? {};
     const mediaTypes = new Map();
+    // Stored on the source as its writer's agent, so the retry fingerprint
+    // covers it, as a comment's does.
+    const agent = agentFromProvenance(identity.clientProvenance);
     await this.sourcesDocumentId();
     if (this.sourcesView())
       await recoverDocumentMutations(
@@ -6569,6 +6573,7 @@ export class Page {
         operation: body.operation,
         args,
         identity,
+        agent,
         guard: (input) => input,
         pageHeads: () => A.getHeads(this.handle.doc()),
         prepare: async () => {
@@ -6595,7 +6600,7 @@ export class Page {
             return {
               edits: setSources(draft, effectiveArgs.operations, {
                 mediaTypes,
-                principal: identity.principal,
+                by: authorOf(publicIdentity(identity), agent),
               }),
             };
           } catch (error) {

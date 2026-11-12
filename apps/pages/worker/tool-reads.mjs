@@ -3,7 +3,7 @@ import { orderedBlockIds } from "../model/order.mjs";
 import { agentBlock, projectReadContent } from "../model/read-content.mjs";
 import { projectReadComments } from "../model/read-comments.mjs";
 import { documentFeatures } from "../model/schema-features.mjs";
-import { listSources, readSource } from "../model/sources-doc.mjs";
+import { listSources, readSource, sourceHistory } from "../model/sources-doc.mjs";
 
 export const DEFAULT_READ_BYTES = 128 * 1024;
 const encoder = new TextEncoder();
@@ -97,13 +97,21 @@ function outlinePage(entries, offset, limit) {
   };
 }
 
+/** One source with its producer and `history`, its newest states oldest
+ * first (sourceHistory); `history_truncated` says that older ones exist. */
+function oneSource(sourcesDoc, sourceId) {
+  const source = readSource(sourcesDoc, sourceId);
+  const { states, older } = sourceHistory(sourcesDoc, sourceId);
+  return { ...source, history: states, history_truncated: older };
+}
+
 /** The sources a read_page asks for: `{ sources }` listing every source
- * for `sources: true`, `{ source }` with its producer for `source_id`, or
- * both. A Page with no sources document lists none. */
+ * for `sources: true`, `{ source }` with its producer and history for
+ * `source_id`, or both. A Page with no sources document lists none. */
 function sourcesRead(sourcesDoc, { sources, source_id }) {
   return {
     ...(sources === true && { sources: listSources(sourcesDoc) }),
-    ...(source_id !== undefined && { source: readSource(sourcesDoc, source_id) }),
+    ...(source_id !== undefined && { source: oneSource(sourcesDoc, source_id) }),
   };
 }
 

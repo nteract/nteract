@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as A from "@automerge/automerge";
+import { DocStore, MemoryByteStore } from "../sync/doc-store.mjs";
+import { authorOf } from "./author.mjs";
 import {
   MAX_SOURCES,
+  SOURCE_HISTORY_LIMIT,
   listSources,
   readSource,
   setSources,
+  sourceHistory,
   sourcesGenesis,
   validateSourceBatch,
 } from "./sources-doc.mjs";
@@ -24,9 +28,13 @@ const op = (fields = {}) => ({
   source_revision: null,
   ...fields,
 });
-const write = (doc, operations, principal = "user:test:owner") =>
+const AT = "2026-11-12T10:00:00.000Z";
+const writer = (principal, agent) =>
+  authorOf({ principal, displayName: "Owner", driver: "MCP" }, agent);
+const OWNER = writer("user:test:owner");
+const write = (doc, operations, by = OWNER, at = AT) =>
   A.change(doc, (draft) => {
-    setSources(draft, operations, { mediaTypes, principal });
+    setSources(draft, operations, { mediaTypes, by, at });
   });
 const initial = () => write(A.clone(sourcesGenesis(uuid)), [op()]);
 
@@ -51,13 +59,23 @@ test("create, rename and refresh mint one revision per write and survive save an
     source_revision: "1",
     asset_id: first,
     media_type: PARQUET,
-    producer: { kind: "upload", principal: "user:test:owner" },
+    producer: {
+      kind: "upload",
+      at: AT,
+      by: { principal: "user:test:owner", displayName: "Owner", driver: "MCP" },
+    },
   });
   doc = write(doc, [op({ name: "  Renamed  ", source_revision: "1" })]);
   assert.equal(readSource(doc, "usage").name, "Renamed");
   assert.equal(readSource(doc, "usage").source_revision, "2");
   assert.equal(readSource(doc, "usage").asset_id, first);
-  doc = write(doc, [op({ name: "Renamed", asset_id: second, source_revision: "2" })], "user:b");
+  const later = "2026-11-12T11:00:00.000Z";
+  doc = write(
+    doc,
+    [op({ name: "Renamed", asset_id: second, source_revision: "2" })],
+    writer("user:b", { name: "Release bot", model: "m-1" }),
+    later,
+  );
   const loaded = A.load(A.save(doc));
   assert.deepEqual(readSource(loaded, "usage"), {
     source_id: "usage",
@@ -65,7 +83,16 @@ test("create, rename and refresh mint one revision per write and survive save an
     source_revision: "3",
     asset_id: second,
     media_type: PARQUET,
-    producer: { kind: "upload", principal: "user:b" },
+    producer: {
+      kind: "upload",
+      at: later,
+      by: {
+        principal: "user:b",
+        displayName: "Owner",
+        driver: "MCP",
+        agent: { name: "Release bot", model: "m-1" },
+      },
+    },
   });
   assert.deepEqual(listSources(loaded), [
     {
@@ -81,16 +108,25 @@ test("create, rename and refresh mint one revision per write and survive save an
 test("a write records the media type it is given, not one the caller names", () => {
   const types = new Map([[first, "application/x-other"]]);
   const doc = A.change(A.clone(sourcesGenesis(uuid)), (draft) => {
-    setSources(draft, [op()], { mediaTypes: types, principal: "p" });
+    setSources(draft, [op()], { mediaTypes: types, by: OWNER });
   });
   assert.equal(readSource(doc, "usage").media_type, "application/x-other");
+  assert.ok(!Number.isNaN(Date.parse(readSource(doc, "usage").producer.at)), "the host's time");
   assert.throws(
     () =>
       A.change(A.clone(sourcesGenesis(uuid)), (draft) => {
-        setSources(draft, [op()], { mediaTypes: new Map(), principal: "p" });
+        setSources(draft, [op()], { mediaTypes: new Map(), by: OWNER });
       }),
     /no checked media type/,
   );
+  for (const bad of [{ by: undefined }, { by: { principal: "p" } }, { at: "yesterday" }])
+    assert.throws(
+      () =>
+        A.change(A.clone(sourcesGenesis(uuid)), (draft) => {
+          setSources(draft, [op()], { mediaTypes, by: OWNER, ...bad });
+        }),
+      /needs its writer and time/,
+    );
 });
 
 test("a stale, missing or ambiguous revision is refused with the current one", () => {
@@ -208,7 +244,7 @@ test("concurrent host candidates never tear an asset from its media type, and di
   ]);
   const candidate = (operations) =>
     A.change(A.clone(base), (draft) => {
-      setSources(draft, operations, { mediaTypes: pairs, principal: "user:test:owner" });
+      setSources(draft, operations, { mediaTypes: pairs, by: OWNER, at: AT });
     });
   const left = candidate([
     op({ asset_id: second, source_revision: "1" }),
@@ -232,7 +268,160 @@ test("concurrent host candidates never tear an asset from its media type, and di
 test("a stored record no host write produces reads as invalid_source", () => {
   const doc = A.change(A.clone(sourcesGenesis(uuid)), (draft) => {
     draft.sources.broken = { name: "x", revision: "1", current: { asset_id: first } };
+    // A producer without a time and a writer is not one a host write stores.
+    draft.sources.unattributed = {
+      name: "x",
+      revision: "1",
+      current: { media_type: PARQUET, asset_id: first },
+      producer: { kind: "upload", principal: "user:test:owner" },
+    };
   });
-  assert.throws(() => readSource(doc, "broken"), { code: "invalid_source" });
+  for (const id of ["broken", "unattributed"])
+    assert.throws(() => readSource(doc, id), { code: "invalid_source" });
   assert.throws(() => listSources(doc), { code: "invalid_source" });
+});
+
+const times = ["T10:00:00.000Z", "T11:00:00.000Z", "T12:00:00.000Z", "T13:00:00.000Z"].map(
+  (time) => `2026-11-12${time}`,
+);
+const ALICE = writer("user:alice", { name: "Loader", model: "m-1" });
+const BOB = authorOf({ principal: "user:bob", displayName: "Bob", driver: "Browser" });
+
+/** Create, rename, refresh, rename again: one source's four writes. */
+function fourWrites() {
+  let doc = write(A.clone(sourcesGenesis(uuid)), [op()], ALICE, times[0]);
+  doc = write(doc, [op({ name: "Usage", source_revision: "1" })], BOB, times[1]);
+  doc = write(
+    doc,
+    [op({ name: "Usage", asset_id: second, source_revision: "2" })],
+    ALICE,
+    times[2],
+  );
+  doc = write(
+    doc,
+    [op({ name: "Daily usage", asset_id: second, source_revision: "3" })],
+    OWNER,
+    times[3],
+  );
+  return doc;
+}
+const FOUR_STATES = [
+  {
+    revision: "1",
+    name: "Tool usage",
+    media_type: PARQUET,
+    asset_id: first,
+    at: times[0],
+    by: ALICE,
+  },
+  { revision: "2", name: "Usage", media_type: PARQUET, asset_id: first, at: times[1], by: BOB },
+  { revision: "3", name: "Usage", media_type: PARQUET, asset_id: second, at: times[2], by: ALICE },
+  {
+    revision: "4",
+    name: "Daily usage",
+    media_type: PARQUET,
+    asset_id: second,
+    at: times[3],
+    by: OWNER,
+  },
+];
+
+test("a source's history is every revision's file, name, time and writer, oldest first", () => {
+  const doc = fourWrites();
+  assert.deepEqual(sourceHistory(doc, "usage"), { states: FOUR_STATES, older: false });
+  assert.deepEqual(readSource(doc, "usage").producer, {
+    kind: "upload",
+    at: times[3],
+    by: OWNER,
+  });
+  assert.deepEqual(sourceHistory(doc, "missing"), { states: [], older: false });
+  assert.deepEqual(sourceHistory(undefined, "usage"), { states: [], older: false });
+  assert.throws(() => sourceHistory(doc, "__proto__"), { code: "invalid_source" });
+});
+
+test("two sources written in turn keep separate histories", () => {
+  let doc = write(A.clone(sourcesGenesis(uuid)), [op()], ALICE, times[0]);
+  doc = write(doc, [op({ source_id: "latency", name: "Latency", asset_id: third })], BOB, times[1]);
+  doc = write(doc, [op({ asset_id: second, source_revision: "1" })], BOB, times[2]);
+  doc = write(
+    doc,
+    [op({ source_id: "latency", name: "P99", asset_id: third, source_revision: "1" })],
+    ALICE,
+    times[3],
+  );
+  // A batch that writes both sources is one revision of each.
+  doc = write(
+    doc,
+    [
+      op({ name: "Both", asset_id: first, source_revision: "2" }),
+      op({ source_id: "latency", name: "Both", asset_id: first, source_revision: "2" }),
+    ],
+    OWNER,
+    times[3],
+  );
+  const usage = sourceHistory(doc, "usage").states;
+  const latency = sourceHistory(doc, "latency").states;
+  assert.deepEqual(
+    usage.map(({ revision, name, asset_id, at }) => [revision, name, asset_id, at]),
+    [
+      ["1", "Tool usage", first, times[0]],
+      ["2", "Tool usage", second, times[2]],
+      ["3", "Both", first, times[3]],
+    ],
+  );
+  assert.deepEqual(
+    latency.map(({ revision, name, asset_id, at, by }) => [revision, name, asset_id, at, by]),
+    [
+      ["1", "Latency", third, times[1], BOB],
+      ["2", "P99", third, times[3], ALICE],
+      ["3", "Both", first, times[3], OWNER],
+    ],
+  );
+});
+
+test("history returns the newest states and says when older ones exist", () => {
+  let doc = write(A.clone(sourcesGenesis(uuid)), [op()]);
+  const writes = SOURCE_HISTORY_LIMIT + 10;
+  for (let revision = 1; revision < writes; revision++)
+    doc = write(doc, [op({ name: `Usage ${revision + 1}`, source_revision: String(revision) })]);
+  const { states, older } = sourceHistory(doc, "usage");
+  assert.equal(older, true);
+  assert.equal(states.length, SOURCE_HISTORY_LIMIT);
+  assert.equal(states[0].revision, String(writes - SOURCE_HISTORY_LIMIT + 1));
+  assert.equal(states.at(-1).revision, String(writes));
+  assert.equal(states.at(-1).name, `Usage ${writes}`);
+  const small = sourceHistory(doc, "usage", { limit: writes });
+  assert.equal(small.older, false);
+  assert.equal(small.states.length, writes);
+});
+
+test("history survives the host's chunked storage and compaction", async () => {
+  const concat = (parts) => {
+    const out = new Uint8Array(parts.reduce((size, part) => size + part.length, 0));
+    let at = 0;
+    for (const part of parts) {
+      out.set(part, at);
+      at += part.length;
+    }
+    return out;
+  };
+  const store = new DocStore(new MemoryByteStore());
+  const genesis = sourcesGenesis(uuid);
+  await store.compact("s", A.save(genesis), A.getHeads(genesis));
+  const doc = fourWrites();
+  // Each write lands as its own chunk of change bytes, as SyncHost appends
+  // them, and a compaction folds the first two into the snapshot.
+  const changes = A.getChanges(genesis, doc);
+  const loadStored = async () => {
+    const stored = await store.read("s");
+    return A.load(concat([stored.snapshot, ...stored.chunks].filter(Boolean)));
+  };
+  for (const [index, change] of changes.entries()) {
+    await store.append("s", change, []);
+    if (index === 1) await store.compact("s", A.save(await loadStored()), []);
+  }
+  const chunked = await loadStored();
+  assert.deepEqual(sourceHistory(chunked, "usage").states, FOUR_STATES);
+  await store.compact("s", A.save(chunked), A.getHeads(chunked));
+  assert.deepEqual(sourceHistory(await loadStored(), "usage").states, FOUR_STATES);
 });

@@ -748,11 +748,16 @@ sources_revision (s…), and result.edits lists each source_id with its new
 source_revision. Resend the same nonce to retry.
 
 read_page with sources:true lists every source: source_id, name,
-source_revision, asset_id and media_type. source_id:"<source_id>" reads one,
-with producer, who set it; give both for both. Alone, they skip the Page's
-content; beside other selectors, such as include_content:false, they add to
-them. A Page with no sources lists none. Once a
-Page has sources, every read names sources_revision.
+source_revision, asset_id and media_type. source_id:"<source_id>" reads one
+with producer: kind, at (when it was set) and by (who set it: principal,
+displayName, driver, and agent {name, model} when the writing client asserted
+one). Its history lists the source's newest 50 revisions, oldest first, each
+{revision, name, media_type, asset_id, at, by}; history_truncated is true
+when older ones exist. A source write records the agent you assert, as a
+comment does; readers see it as a client claim, not verified identity. Give
+both for both. Alone, they skip the Page's content; beside other selectors,
+such as include_content:false, they add to them. A Page with no sources lists
+none. Once a Page has sources, every read names sources_revision.
 
 ## JSON tools
 

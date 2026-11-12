@@ -19,17 +19,26 @@ export { MAX_SOURCE_NAME, MAX_SOURCES };
  *       name: string,
  *       revision: string,          // decimal, minted by the host: "1", then +1 per write
  *       current: { media_type: string, asset_id: string },
- *       producer: { kind: "upload", principal: string },
+ *       producer: {
+ *         kind: "upload",
+ *         at: string,              // ISO 8601, the host's clock when it wrote
+ *         by: { principal, displayName, driver, agent?: { name?, model? } },
+ *       },
  *     }
  *   }
  * }
  * ```
  *
  * A source is a stable id, an editable name and the immutable Page asset it
- * currently names. `current` and `producer` are each replaced as one map
- * value, so a reader never pairs one write's asset with another's media type.
- * Every write is the host's, serialized in the Page's queue, so `revision`
- * moves once per accepted write.
+ * currently names. `producer` is the write that set the entry: `by` is the
+ * writer in a comment author's shape (author.mjs), the account the host
+ * authenticated and the labels and agent its client asserted. `current` and
+ * `producer` are each replaced as one map value, so a reader never pairs one
+ * write's asset with another's media type, or one write's time with
+ * another's writer. Every write is the host's, serialized in the Page's
+ * queue, so `revision` moves once per accepted write and each source write is
+ * one change; a source's history is read from those changes
+ * (sourceHistory), not stored.
  */
 
 const SOURCE_ID = new RegExp(SOURCE_ID_PATTERN);
@@ -74,6 +83,28 @@ export function sourcesGenesis(uuid) {
 /** The source map of a sources document, or an empty object. */
 const sourceMap = (doc) => (isMap(doc?.sources) ? doc.sources : {});
 
+const AUTHOR_FIELDS = ["principal", "displayName", "driver", "agent"];
+const AGENT_FIELDS = ["name", "model"];
+const validTime = (value) =>
+  typeof value === "string" && value.length <= 64 && !Number.isNaN(Date.parse(value));
+/** Whether `by` is a writer author.mjs builds. */
+const validWriter = (by) =>
+  isMap(by) &&
+  Object.keys(by).every((key) => AUTHOR_FIELDS.includes(key)) &&
+  ["principal", "displayName", "driver"].every((key) => typeof by[key] === "string") &&
+  (by.agent === undefined ||
+    (isMap(by.agent) &&
+      Object.keys(by.agent).every(
+        (key) => AGENT_FIELDS.includes(key) && typeof by.agent[key] === "string",
+      )));
+/** A plain copy of a stored writer. */
+const writerCopy = (by) => ({
+  principal: by.principal,
+  displayName: by.displayName,
+  driver: by.driver,
+  ...(by.agent && { agent: { ...by.agent } }),
+});
+
 /** One stored source as an agent reads it, or an invalid_source refusal for
  * a record no host write produces. */
 function project(id, entry) {
@@ -88,7 +119,8 @@ function project(id, entry) {
     typeof current.media_type !== "string" ||
     !isMap(producer) ||
     typeof producer.kind !== "string" ||
-    typeof producer.principal !== "string"
+    !validTime(producer.at) ||
+    !validWriter(producer.by)
   )
     fail("invalid_source", "Malformed source record");
   return {
@@ -97,7 +129,7 @@ function project(id, entry) {
     source_revision: entry.revision,
     asset_id: current.asset_id,
     media_type: current.media_type,
-    producer: { kind: producer.kind, principal: producer.principal },
+    producer: { kind: producer.kind, at: producer.at, by: writerCopy(producer.by) },
   };
 }
 
@@ -110,6 +142,56 @@ export function readSource(doc, sourceId) {
   if (!Object.hasOwn(sources, sourceId))
     fail("source_not_found", "No source with this ID on this Page");
   return project(sourceId, sources[sourceId]);
+}
+
+/** How many of a source's past states sourceHistory returns: the newest. */
+export const SOURCE_HISTORY_LIMIT = 50;
+
+/**
+ * A source's states, oldest to newest, one per revision: `{ revision, name,
+ * media_type, asset_id, at, by }`, the entry as each write left it. They are
+ * read from the document's own changes, not stored: every source write is
+ * one host change, so replaying the changes in causal order onto an empty
+ * document and reading the entry after each one yields every revision. The
+ * replay applies each change once, so its cost grows with the number of
+ * changes, not their square, as viewing the document at each change's heads
+ * would. Only the newest `limit` states are kept; `older` says that earlier
+ * ones exist. A state whose revision equals the one before it (concurrent
+ * host candidates, which the Page's queue never accepts both of) replaces
+ * it, so the merged winner is what the history shows. `doc` may be undefined,
+ * and an id the document never held has no states.
+ */
+export function sourceHistory(doc, sourceId, { limit = SOURCE_HISTORY_LIMIT } = {}) {
+  if (!validSourceId(sourceId)) fail("invalid_source", "Invalid source ID");
+  const states = [];
+  let older = false;
+  if (!doc) return { states, older };
+  let replay = A.init();
+  try {
+    for (const change of A.getAllChanges(doc)) {
+      [replay] = A.applyChanges(replay, [change]);
+      const sources = sourceMap(replay);
+      if (!Object.hasOwn(sources, sourceId)) continue;
+      const source = project(sourceId, sources[sourceId]);
+      const state = {
+        revision: source.source_revision,
+        name: source.name,
+        media_type: source.media_type,
+        asset_id: source.asset_id,
+        at: source.producer.at,
+        by: source.producer.by,
+      };
+      if (states.at(-1)?.revision === state.revision) states[states.length - 1] = state;
+      else states.push(state);
+      if (states.length > limit) {
+        states.shift();
+        older = true;
+      }
+    }
+  } finally {
+    A.free(replay);
+  }
+  return { states, older };
 }
 
 /** Every source, ordered by id, without producers. Empty for a Page with no
@@ -160,11 +242,13 @@ export function validateSourceBatch(operations) {
 /**
  * Apply a validated batch of set_source operations inside one host change.
  * `mediaTypes` maps each named asset id to the media type its stored record
- * holds; `principal` is the writer. Each operation checks the revision its
- * caller saw (null creates), then mints the next revision. Returns the
- * receipt's per-operation edits.
+ * holds; `by` is the writer (author.mjs authorOf) and `at` the host's time
+ * for the batch, read once when the caller gives none. Each operation checks
+ * the revision its caller saw (null creates), then mints the next revision.
+ * Returns the receipt's per-operation edits.
  */
-export function setSources(doc, operations, { mediaTypes, principal }) {
+export function setSources(doc, operations, { mediaTypes, by, at = new Date().toISOString() }) {
+  if (!validWriter(by) || !validTime(at)) throw Error("A source write needs its writer and time");
   const previousOf = checkSources(doc, operations);
   if (!isMap(doc.sources)) doc.sources = {};
   const sources = doc.sources;
@@ -176,7 +260,7 @@ export function setSources(doc, operations, { mediaTypes, principal }) {
     const revision = String(previous ? Number(previous.source_revision) + 1 : 1);
     const name = op.name.trim();
     const current = { media_type: mediaType, asset_id: op.asset_id };
-    const producer = { kind: "upload", principal };
+    const producer = { kind: "upload", at, by: writerCopy(by) };
     if (!previous) sources[id] = { name, revision, current, producer };
     else {
       const entry = sources[id];
@@ -184,11 +268,7 @@ export function setSources(doc, operations, { mediaTypes, principal }) {
       entry.revision = revision;
       if (previous.asset_id !== current.asset_id || previous.media_type !== current.media_type)
         entry.current = current;
-      if (
-        previous.producer.kind !== producer.kind ||
-        previous.producer.principal !== producer.principal
-      )
-        entry.producer = producer;
+      entry.producer = producer;
     }
     return { op: "set_source", source_id: id, source_revision: revision };
   });

@@ -77,27 +77,34 @@ async function sourcesHost(t) {
     hosts.push(host);
     return host;
   };
-  const call = async (host, path, body) => {
+  // `headers` adds to or replaces the default ones: an agent assertion
+  // (`agentHeader`) or another `x-pages-driver`.
+  const call = async (host, path, body, headers = {}) => {
     const response = await host.fetch(
       new Request(`https://pages.invalid${path}`, {
         method: body === undefined ? "GET" : "POST",
-        headers: { authorization: `Bearer ${token}`, "x-pages-driver": "ChatGPT" },
+        headers: { authorization: `Bearer ${token}`, "x-pages-driver": "ChatGPT", ...headers },
         ...(body !== undefined && { body: JSON.stringify(body) }),
       }),
     );
     return { status: response.status, body: await response.json() };
   };
-  const tool = (host, operation, args = {}) =>
-    call(host, "/internal/tool", { operation, arguments: { page_id: pageId, ...args } });
+  const tool = (host, operation, args = {}, headers) =>
+    call(host, "/internal/tool", { operation, arguments: { page_id: pageId, ...args } }, headers);
   let nonces = 0;
-  const setSource = async (host, operations, extra = {}) => {
+  const setSource = async (host, operations, extra = {}, headers) => {
     const read = await tool(host, "read_page", { include_content: false });
-    return tool(host, "edit_page", {
-      revision: read.body.revision,
-      nonce: `sources-${++nonces}`,
-      operations: operations.map((operation) => ({ op: "set_source", ...operation })),
-      ...extra,
-    });
+    return tool(
+      host,
+      "edit_page",
+      {
+        revision: read.body.revision,
+        nonce: `sources-${++nonces}`,
+        operations: operations.map((operation) => ({ op: "set_source", ...operation })),
+        ...extra,
+      },
+      headers,
+    );
   };
   const host = page();
   const created = await call(host, "/internal/create", {
@@ -128,6 +135,11 @@ async function sourcesHost(t) {
     sourcesStored,
   };
 }
+
+/** The internal header a gateway forwards an agent's `{ name?, model? }` in. */
+const agentHeader = (agent) => ({
+  "x-pages-internal-request-agent": encodeURIComponent(JSON.stringify(agent)),
+});
 
 const usage = (fields = {}) => ({
   source_id: "usage",
@@ -189,10 +201,24 @@ test("a Page has no sources document until its first source write", async (t) =>
   ]);
   assert.equal(listed.body.sources_revision, written.body.sources_revision);
   const one = await h.tool(h.host, "read_page", { source_id: "usage" });
-  assert.deepEqual(one.body.source.producer, {
-    kind: "upload",
-    principal: `user:anaconda-fixture:${h.auth.subject}`,
-  });
+  const { at, by } = one.body.source.producer;
+  assert.equal(one.body.source.producer.kind, "upload");
+  assert.ok(Math.abs(Date.parse(at) - Date.now()) < 60_000, "the host's time of the write");
+  assert.equal(by.principal, `user:anaconda-fixture:${h.auth.subject}`);
+  assert.equal(by.driver, "ChatGPT");
+  assert.equal(by.agent, undefined, "no agent asserted, none stored");
+  assert.deepEqual(one.body.source.history, [
+    {
+      revision: "1",
+      name: "Usage",
+      media_type: PARQUET,
+      asset_id: first,
+      at,
+      by,
+    },
+  ]);
+  assert.equal(one.body.source.history_truncated, false);
+  assert.equal(listed.body.sources[0].history, undefined, "the list carries no history");
 
   // A restart serves the same document from the record.
   const restarted = h.page();
@@ -328,6 +354,83 @@ test("a retried set_source replays its receipt without a second revision or asse
   });
   assert.equal(conflict.status, 409);
   assert.equal(conflict.body.code, "nonce_conflict");
+});
+
+test("each source write stores its writer and time, and the read returns them as history", async (t) => {
+  const h = await sourcesHost(t);
+  const principal = `user:anaconda-fixture:${h.auth.subject}`;
+  // The fixture account's display name.
+  const displayName = "Fixture Person";
+  const loader = { name: "Loader", model: "m-1" };
+  const create = await h.setSource(h.host, [usage()], {}, agentHeader(loader));
+  assert.equal(create.status, 200, JSON.stringify(create.body));
+  // No agent asserted, and another driver.
+  const rename = await h.setSource(
+    h.host,
+    [usage({ name: "Daily", source_revision: "1" })],
+    {},
+    {
+      "x-pages-driver": "Claude Code",
+    },
+  );
+  assert.equal(rename.status, 200, JSON.stringify(rename.body));
+  // A name alone, without a model.
+  const refresh = await h.setSource(
+    h.host,
+    [usage({ name: "Daily", asset_id: second, source_revision: "2" })],
+    {},
+    agentHeader({ name: "Refresher" }),
+  );
+  assert.equal(refresh.status, 200, JSON.stringify(refresh.body));
+
+  const { source } = (await h.tool(h.host, "read_page", { source_id: "usage" })).body;
+  assert.deepEqual(
+    source.history.map(({ revision, name, asset_id, by }) => [revision, name, asset_id, by]),
+    [
+      ["1", "Usage", first, { principal, displayName, driver: "ChatGPT", agent: loader }],
+      ["2", "Daily", first, { principal, displayName, driver: "Claude Code" }],
+      [
+        "3",
+        "Daily",
+        second,
+        { principal, displayName, driver: "ChatGPT", agent: { name: "Refresher" } },
+      ],
+    ],
+  );
+  const at = source.history.map((state) => Date.parse(state.at));
+  assert.ok(
+    at.every((time, index) => time >= (at[index - 1] ?? 0)),
+    "times only move forward",
+  );
+  assert.deepEqual(source.producer, {
+    kind: "upload",
+    at: source.history[2].at,
+    by: source.history[2].by,
+  });
+  assert.equal(source.history_truncated, false);
+
+  // A retry under the same nonce must assert the same agent: a changed
+  // assertion conflicts instead of replaying, as a comment's does.
+  const read = await h.tool(h.host, "read_page", { include_content: false });
+  const args = {
+    revision: read.body.revision,
+    nonce: "attributed-source",
+    operations: [{ op: "set_source", ...usage({ source_id: "other" }) }],
+  };
+  const written = await h.tool(h.host, "edit_page", args, agentHeader(loader));
+  assert.equal(written.status, 200, JSON.stringify(written.body));
+  assert.deepEqual(await h.tool(h.host, "edit_page", args, agentHeader(loader)), written);
+  for (const changed of [{ name: "Loader", model: "m-2" }, { name: "Other" }]) {
+    const conflict = await h.tool(h.host, "edit_page", args, agentHeader(changed));
+    assert.equal(conflict.status, 409, JSON.stringify(changed));
+    assert.equal(conflict.body.code, "nonce_conflict");
+  }
+  const unasserted = await h.tool(h.host, "edit_page", args);
+  assert.equal(unasserted.status, 409);
+  assert.equal(unasserted.body.code, "nonce_conflict");
+  const other = (await h.tool(h.host, "read_page", { source_id: "other" })).body.source;
+  assert.equal(other.history.length, 1);
+  assert.deepEqual(other.producer.by.agent, loader);
 });
 
 test("a Page revision that isn't current still writes a source", async (t) => {

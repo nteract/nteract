@@ -1396,11 +1396,24 @@ A Page's named sources live in a third Automerge document, `pages.sources`
 format 1 ([model/sources-doc.mjs](model/sources-doc.mjs)), owned by the same
 Page Durable Object. Only the host writes it. Its root is `sources`, a map
 from `source_id` to `{ name, revision, current: { media_type, asset_id },
-producer: { kind, principal } }`. `revision` is a decimal string the host
+producer: { kind, at, by } }`. `revision` is a decimal string the host
 mints, `"1"` and then one more per accepted write; `media_type` comes from the
-stored asset's record; `producer.kind` is `upload`, and `principal` is the
-writer. A Page holds up to 64 sources. Nothing on the Page draws from a source
-yet.
+stored asset's record; `producer.kind` is `upload`. `producer.at` is the
+host's ISO 8601 time for the write, read once per batch, and `producer.by`
+the writer in a comment author's shape ([model/author.mjs](model/author.mjs)):
+the account `principal`, `displayName`, `driver`, and `agent` `{ name?,
+model? }` when the client asserted one. The asserted agent is part of the
+write's retry fingerprint, so a retry that changes it is `409
+nonce_conflict`. `current` and `producer` are each replaced as one map. A
+Page holds up to 64 sources. Nothing on the Page draws from a source yet.
+
+A source's history isn't stored. Each source write is one host change, and
+the document keeps every change, so `sourceHistory` replays the changes in
+causal order onto an empty document and reads the entry after each one: one
+state per revision, `{ revision, name, media_type, asset_id, at, by }`,
+oldest first. It keeps the newest 50 and reports whether older ones exist.
+The replay applies each change once, so a read costs time linear in the
+document's changes, every source's writes included.
 
 A Page has at most one sources document, and a Page with no sources has none.
 Its id is derived from the Page ID with its own label, as the comments
@@ -1418,7 +1431,9 @@ write access and refuses rather than strips a browser frame that changes it:
 `request_rejected`, not fatal, and the principal isn't blocked. Host writes
 go through the journal and `admitTrusted`. The socket serves it only to a
 client that declared `pages.sources:1`; discovery names it in
-`documents.sources` once it exists. The viewer doesn't open it yet.
+`documents.sources` once it exists. The viewer doesn't open it yet. A
+reader that syncs it sees each source's `producer.by` and every earlier
+writer in its changes, as comment authors are visible to comment readers.
 
 Agents write it with `edit_page` `set_source` operations (`source_id`,
 `name`, `asset_id`, `source_revision`) in a batch with no other operation;
@@ -1435,7 +1450,8 @@ before the host creates the document, so a refused first write creates
 nothing, and a journaled source write whose apply didn't finish is replayed
 before a new one is built. `read_page` takes `sources: true`, which lists
 `source_id`, `name`, `source_revision`, `asset_id` and `media_type`, and
-`source_id`, which reads one source with `producer`; both together return
+`source_id`, which reads one source with `producer`, `history` and
+`history_truncated`; both together return
 both. Alone they read no Page content; beside other selectors they add to
 them. Reads name `sources_revision` once the document exists.
 

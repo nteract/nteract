@@ -160,7 +160,7 @@ const readSelectors = {
   source_id: {
     type: "string",
     pattern: SOURCE_ID_PATTERN,
-    description: "Reads one source, with who set it. Alone, skips content.",
+    description: "Reads one source, who set it when, and its history. Alone, skips content.",
   },
   max_bytes: readBudget,
 };
