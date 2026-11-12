@@ -89,6 +89,7 @@ import { markdownShortcuts } from "./wordgard-shortcuts.mjs";
 import { displaySymbols } from "./wordgard-symbols.mjs";
 import { clickBelowFinalBlock, exitBlock, leaveFinalBlock } from "./wordgard-leave-block.mjs";
 import { codeIndentation, selectedCodeBlock } from "./wordgard-code-indent.mjs";
+import { codeWords } from "./wordgard-code-words.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
 import {
   createWordgardCollaboration,
@@ -372,6 +373,7 @@ export function WordgardEditor(props) {
         tablePresentation,
         // Before the table keys: in a code block Tab indents.
         codeIndentation,
+        codeWords,
         tableKeys,
         GardState.schemaElement.of(elements),
         // A link to another Page or a Project gets its glyph and the hover

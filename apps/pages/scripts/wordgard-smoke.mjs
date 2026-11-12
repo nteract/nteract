@@ -1265,6 +1265,33 @@ try {
     true,
     "Tab and Shift-Tab keep focus in the code block",
   );
+  // A double-click in code selects the whole identifier, underscores included,
+  // and word deletion removes it whole.
+  await a.keyboard.press("Enter");
+  await a.keyboard.type("pages_catalog_tags");
+  const inIdentifier = await pastedEditor.locator("pre").evaluate((pre) => {
+    const walker = document.createTreeWalker(pre, NodeFilter.SHOW_TEXT);
+    for (let node; (node = walker.nextNode()); ) {
+      const index = node.data.indexOf("catalog");
+      if (index < 0) continue;
+      const range = document.createRange();
+      range.setStart(node, index);
+      range.setEnd(node, index + "catalog".length);
+      const box = range.getBoundingClientRect();
+      return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    }
+    return null;
+  });
+  await a.mouse.dblclick(inIdentifier.x, inIdentifier.y);
+  await expect.poll(() => a.evaluate(() => getSelection().toString())).toBe("pages_catalog_tags");
+  await a.keyboard.press("ArrowRight");
+  await a.keyboard.press(process.platform === "darwin" ? "Alt+Backspace" : "Control+Backspace");
+  // The emptied last line draws a filler break after its own, so the text
+  // ends in two newlines until Backspace removes the line.
+  for (const page of [a, b])
+    await expect.poll(() => textOf(page, pastedIndex)).toBe(dedented + "\n\n");
+  await a.keyboard.press("Backspace");
+  for (const page of [a, b]) await expect.poll(() => textOf(page, pastedIndex)).toBe(dedented);
   // A selection in code gets the code block's toolbar: no marks, and placed
   // outside the block so it covers neither the code nor the language menu.
   await a.keyboard.press("Shift+ArrowLeft");
