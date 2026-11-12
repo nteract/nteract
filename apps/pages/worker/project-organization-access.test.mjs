@@ -390,7 +390,10 @@ test("opened hints keep the newest OPENED_PROJECT_HINTS by when they were writte
   assert.equal(OPENED_PROJECT_HINTS, 200);
   // Times run against write order and are scattered, so neither key order nor
   // write order names the oldest.
-  const times = Array.from({ length: OPENED_PROJECT_HINTS }, (_, i) => 1_000_000 + ((i * 7919) % OPENED_PROJECT_HINTS) * 10);
+  const times = Array.from(
+    { length: OPENED_PROJECT_HINTS },
+    (_, i) => 1_000_000 + ((i * 7919) % OPENED_PROJECT_HINTS) * 10,
+  );
   const ids = await fillOpened(w, OPENED_PROJECT_HINTS, (i) => times[i]);
   const byAge = ids.map((id, i) => [id, times[i]]).sort(([, a], [, b]) => a - b);
   const [oldest] = byAge[0];
@@ -420,7 +423,9 @@ test("a member grant at 500 member hints behaves as before, whatever opened hint
   // Hints for Projects that no longer exist, which the reclaim removes.
   for (let i = 0; i < 500; i++) {
     const id = projectId();
-    await w.catalogStorage(w.member).put(`project-discovery/${id}`, { space_id: id, owner: w.owner });
+    await w
+      .catalogStorage(w.member)
+      .put(`project-discovery/${id}`, { space_id: id, owner: w.owner });
   }
   const { project_id } = await w.createProject("Direct");
   const granted = await manage(w, "owner", {
