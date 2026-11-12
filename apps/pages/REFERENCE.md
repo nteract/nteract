@@ -1411,14 +1411,24 @@ Page holds up to 64 sources. Nothing on the Page draws from a source yet.
 each `{ revision, name, media_type, asset_id, at, by }`. The write that
 creates or changes a source appends its state in the same change and deletes
 from the front past 50 states, so the last state always equals the entry's
-present name, revision, `current` and `producer`; a read refuses an entry
-where it doesn't as `invalid_source`. `history_truncated` is true when
+present name, revision, `current` and `producer` as a whole, and revisions
+strictly rise along the list; a read refuses an entry where either doesn't
+hold as `invalid_source`, and so does a write to it. Its name is still in the
+document, but no read returns it; a new `source_id` can be set beside it,
+while `sources: true` refuses until the entry is gone. `history_truncated` is true when
 `revision` exceeds the list's length: each write raises the revision by one
 and appends one state, so only the cap makes the list shorter. Older states
-remain in the document's Automerge history, but no read returns them. Two
-concurrent host candidates for one source (the Page's queue never accepts
-both) each append a state for the same revision; a merged document reads
-that revision as the state whose file is the present `current`.
+remain in the document's Automerge history, but no read returns them. The
+host builds every source write in the Page's queue, so two writes never share
+a base; a document merged from two such candidates holds two states for one
+revision and reads as `invalid_source`, never as a state neither wrote.
+
+Each state repeats its writer, so a source stores bounded labels: a display
+name cut to 200 UTF-16 code units, as the Kilo exchange keeps one; a driver
+up to 80 and an agent name up to 80 and model up to 120, the bounds those
+already have where a request brings them, over which the write is refused.
+At those bounds a full history reads in about 122 KB, inside `read_page`'s
+128 KiB default.
 
 A full list costs about 12 KiB in `A.save` for one source with 50 writes and
 693 KiB for 64 sources with 50 writes each. The document keeps every change,

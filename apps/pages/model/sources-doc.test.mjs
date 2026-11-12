@@ -6,6 +6,7 @@ import { authorOf } from "./author.mjs";
 import {
   MAX_SOURCES,
   SOURCE_HISTORY_LIMIT,
+  WRITER_LIMITS,
   listSources,
   readSource,
   setSources,
@@ -143,6 +144,36 @@ test("a write records the media type it is given, not one the caller names", () 
     );
 });
 
+test("a writer's display name is cut to its bound; over-long driver and agent labels are refused", () => {
+  const long = authorOf({ principal: "user:long", displayName: "x".repeat(6000), driver: "MCP" });
+  let doc = write(A.clone(sourcesGenesis(uuid)), [op()], long);
+  const stored = readSource(doc, "usage");
+  assert.equal(stored.producer.by.displayName, "x".repeat(WRITER_LIMITS.displayName));
+  assert.deepEqual(stored.history[0].by, stored.producer.by);
+  // A cut never leaves half a surrogate pair.
+  const astral = authorOf({ principal: "p", displayName: `${"x".repeat(199)}😀`, driver: "MCP" });
+  doc = write(doc, [op({ source_revision: "1" })], astral);
+  assert.equal(readSource(doc, "usage").producer.by.displayName, "x".repeat(199));
+  for (const by of [
+    authorOf({ principal: "p", displayName: "d", driver: "D".repeat(WRITER_LIMITS.driver + 1) }),
+    writer("p", { name: "N".repeat(WRITER_LIMITS.agentName + 1) }),
+    writer("p", { model: "M".repeat(WRITER_LIMITS.agentModel + 1) }),
+  ])
+    assert.throws(() => write(A.clone(doc), [op({ source_revision: "2" })], by), /writer and time/);
+  // At their bounds they are stored.
+  const widest = authorOf(
+    { principal: "p", displayName: "d", driver: "D".repeat(WRITER_LIMITS.driver) },
+    { name: "N".repeat(WRITER_LIMITS.agentName), model: "M".repeat(WRITER_LIMITS.agentModel) },
+  );
+  doc = write(doc, [op({ source_revision: "2" })], widest);
+  assert.deepEqual(readSource(doc, "usage").producer.by, widest);
+  // A stored label over its bound is not one a host write stores.
+  const overLong = A.change(A.clone(doc), (draft) => {
+    draft.sources.usage.producer.by.displayName = "x".repeat(WRITER_LIMITS.displayName + 1);
+  });
+  assert.throws(() => readSource(overLong, "usage"), { code: "invalid_source" });
+});
+
 test("a stale, missing or ambiguous revision is refused with the current one", () => {
   const doc = initial();
   for (const [revision, code, current] of [
@@ -262,6 +293,13 @@ test("concurrent host candidates never tear an asset from its media type, and di
     });
   const LEFT = writer("user:left");
   const RIGHT = writer("user:right-hand");
+  const LEFT_AT = "2026-11-12T10:01:00.000Z";
+  const RIGHT_AT = "2026-11-12T10:02:00.000Z";
+  // Each candidate's whole state for "usage" at revision "2".
+  const written = [
+    { name: "Tool usage", asset_id: second, media_type: PARQUET, at: LEFT_AT, by: LEFT },
+    { name: "Tool usage", asset_id: third, media_type: OTHER, at: RIGHT_AT, by: RIGHT },
+  ];
   // Each actor order decides each key's conflict on its own; the two orders
   // cover a merge where `current` and `producer` come from one candidate and
   // one where they come from different candidates.
@@ -277,7 +315,7 @@ test("concurrent host candidates never tear an asset from its media type, and di
         op({ source_id: "daily", asset_id: second }),
       ],
       LEFT,
-      "2026-11-12T10:01:00.000Z",
+      LEFT_AT,
     );
     const right = candidate(
       rightActor,
@@ -286,32 +324,69 @@ test("concurrent host candidates never tear an asset from its media type, and di
         op({ source_id: "latency", asset_id: third }),
       ],
       RIGHT,
-      "2026-11-12T10:02:00.000Z",
+      RIGHT_AT,
     );
-    const merged = A.merge(A.clone(left), right);
-    const value = readSource(merged, "usage");
-    assert.ok([second, third].includes(value.asset_id));
-    assert.equal(value.media_type, pairs.get(value.asset_id), "an asset keeps its own media type");
-    assert.equal(value.source_revision, "2");
-    assert.equal(listSources(merged).length, 3);
-    assert.deepEqual(readSource(A.merge(A.clone(right), left), "usage"), value, "merge order");
-    // Both candidates stay recoverable as conflicts. The host writes one
-    // source at a time in the Page's queue, so it never accepts both.
-    assert.equal(Object.keys(A.getConflicts(merged.sources.usage, "current")).length, 2);
-    // Both appended a revision "2" state; the read shows one: the state
-    // whose file is the present `current`.
-    assert.equal(merged.sources.usage.history.length, 3);
-    assert.deepEqual(
-      value.history.map((state) => state.revision),
-      ["1", "2"],
-    );
-    const last = value.history.at(-1);
-    assert.equal(last.asset_id, value.asset_id);
-    assert.deepEqual(last.by, value.asset_id === second ? LEFT : RIGHT);
-    assert.equal(value.history_truncated, false);
-    torn.push(JSON.stringify(last.by) !== JSON.stringify(value.producer.by));
+    for (const merged of [A.merge(A.clone(left), right), A.merge(A.clone(right), left)]) {
+      const stored = merged.sources.usage;
+      // `current` is one map: its asset keeps its own media type.
+      assert.equal(stored.current.media_type, pairs.get(stored.current.asset_id));
+      // Both candidates stay recoverable as conflicts. The host writes one
+      // source at a time in the Page's queue, so it never accepts both.
+      assert.equal(Object.keys(A.getConflicts(stored, "current")).length, 2);
+      assert.equal(stored.history.length, 3, "both appended a revision 2 state");
+      torn.push(
+        stored.producer.by.principal !==
+          (stored.current.asset_id === second ? LEFT : RIGHT).principal,
+      );
+      // A read returns one candidate's whole state or refuses; never a mix.
+      let value;
+      try {
+        value = readSource(merged, "usage");
+      } catch (error) {
+        assert.equal(error.code, "invalid_source");
+      }
+      if (value) {
+        const present = {
+          name: value.name,
+          asset_id: value.asset_id,
+          media_type: value.media_type,
+          at: value.producer.at,
+          by: value.producer.by,
+        };
+        assert.ok(written.some((state) => JSON.stringify(state) === JSON.stringify(present)));
+        const { revision: _revision, ...last } = value.history.at(-1);
+        assert.deepEqual(last, present);
+      }
+      // The sources each candidate created alone still read.
+      assert.equal(readSource(merged, "daily").asset_id, second);
+      assert.equal(readSource(merged, "latency").asset_id, third);
+    }
   }
-  assert.deepEqual(torn.sort(), [false, true], "one merge mixed the candidates' fields");
+  assert.deepEqual([...new Set(torn)].sort(), [false, true], "some merges mixed the fields");
+});
+
+test("an entry that reads as invalid_source refuses its own writes, not new sources", () => {
+  // Two candidates' revision 2 states in one list: no read accepts it.
+  let doc = initial();
+  doc = A.change(doc, (draft) => {
+    const state = { ...JSON.parse(JSON.stringify(draft.sources.usage.history[0])) };
+    draft.sources.usage.history.push({ ...state, revision: "2" });
+    draft.sources.usage.history.push({ ...state, revision: "2" });
+    draft.sources.usage.revision = "2";
+  });
+  assert.throws(() => readSource(doc, "usage"), { code: "invalid_source" });
+  // The list read refuses as a whole, so it can't show the broken entry's name.
+  assert.throws(() => listSources(doc), { code: "invalid_source" });
+  // A write to that id is refused before anything is written.
+  for (const revision of [null, "2"])
+    assert.throws(() => write(A.clone(doc), [op({ source_revision: revision })]), {
+      code: "invalid_source",
+    });
+  // A new id is written, and reads alone.
+  doc = write(doc, [op({ source_id: "usage-2" })]);
+  assert.equal(readSource(doc, "usage-2").name, "Tool usage");
+  // The name is still in the document, but no read returns it.
+  assert.equal(doc.sources.usage.name, "Tool usage");
 });
 
 test("the last history state is always the present entry", () => {

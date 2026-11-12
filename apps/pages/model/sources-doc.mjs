@@ -95,16 +95,50 @@ const AUTHOR_FIELDS = ["principal", "displayName", "driver", "agent"];
 const AGENT_FIELDS = ["name", "model"];
 const validTime = (value) =>
   typeof value === "string" && value.length <= 64 && !Number.isNaN(Date.parse(value));
-/** Whether `by` is a writer author.mjs builds. */
+/**
+ * The longest attribution labels a source stores, in UTF-16 code units. Each
+ * of a source's 50 history states repeats its writer, so these keep a
+ * single-source read inside read_page's default byte budget. They are the
+ * bounds those values already have where they enter: an agent's name and
+ * model (shared/client-provenance.mjs), a driver label (worker/auth.mjs and
+ * worker/oauth-clients.mjs), and a display name as the Kilo exchange keeps it
+ * (worker/kilo-exchange.mjs). The account principal is the authenticated
+ * identity and is stored whole.
+ */
+export const WRITER_LIMITS = Object.freeze({
+  displayName: 200,
+  driver: 80,
+  agentName: 80,
+  agentModel: 120,
+});
+const within = (value, max) => typeof value === "string" && value.length <= max;
+/** Whether `by` is a writer author.mjs builds, within WRITER_LIMITS. */
 const validWriter = (by) =>
   isMap(by) &&
   Object.keys(by).every((key) => AUTHOR_FIELDS.includes(key)) &&
-  ["principal", "displayName", "driver"].every((key) => typeof by[key] === "string") &&
+  typeof by.principal === "string" &&
+  within(by.displayName, WRITER_LIMITS.displayName) &&
+  within(by.driver, WRITER_LIMITS.driver) &&
   (by.agent === undefined ||
     (isMap(by.agent) &&
-      Object.keys(by.agent).every(
-        (key) => AGENT_FIELDS.includes(key) && typeof by.agent[key] === "string",
-      )));
+      Object.keys(by.agent).every((key) => AGENT_FIELDS.includes(key)) &&
+      (by.agent.name === undefined || within(by.agent.name, WRITER_LIMITS.agentName)) &&
+      (by.agent.model === undefined || within(by.agent.model, WRITER_LIMITS.agentModel))));
+
+/**
+ * `by` with its display name cut to WRITER_LIMITS.displayName. A display name
+ * comes from the identity provider, not from the request, so a long one is
+ * cut as the Kilo exchange cuts one, never refused: refusing would lock the
+ * account out of setting sources. Cutting never leaves half a surrogate pair.
+ * The driver and agent labels are refused at the request's edge when over
+ * their bounds, so one that arrives here over its bound fails validWriter.
+ */
+function boundedWriter(by) {
+  if (!isMap(by) || typeof by.displayName !== "string") return by;
+  let displayName = by.displayName.slice(0, WRITER_LIMITS.displayName);
+  if (/[\ud800-\udbff]$/.test(displayName)) displayName = displayName.slice(0, -1);
+  return { ...by, displayName };
+}
 /** A plain copy of a stored writer. */
 const writerCopy = (by) => ({
   principal: by.principal,
@@ -140,48 +174,34 @@ function stateOf(state) {
     by: writerCopy(state.by),
   };
 }
-const sameFile = (a, b) => a.asset_id === b.asset_id && a.media_type === b.media_type;
-const sameWrite = (a, b) => a.at === b.at && JSON.stringify(a.by) === JSON.stringify(b.by);
+/** Whether two states record the same write, field for field. */
+const sameState = (a, b) =>
+  a.revision === b.revision &&
+  a.name === b.name &&
+  a.media_type === b.media_type &&
+  a.asset_id === b.asset_id &&
+  a.at === b.at &&
+  JSON.stringify(a.by) === JSON.stringify(b.by);
 
 /**
- * A stored history list as its states, oldest first, one per revision, or
- * undefined for a list no host write produces. `present` is the entry's own
- * state: its name, revision, `current` and `producer`.
- *
- * Revisions only rise along the list, and its last state is the present
- * entry. A list holds one state per revision unless two concurrent host
- * candidates both wrote the source: each appended a state for the same
- * revision, a merge keeps both, and each of the entry's fields resolves to
- * one candidate's value on its own, so the present entry can mix them. The
- * Page's queue never accepts both, but such a document still reads: the
- * present name, file and writer must each be one of the run's states, and
- * the run reads as the state whose file is the present `current` (the map
- * that is never torn), or else the later one.
+ * A stored history list as its states, oldest first, or undefined for a list
+ * no host write produces: revisions strictly rise along it, and its last
+ * state equals `present`, the entry's own name, revision, `current` and
+ * `producer`, as a whole. The host builds each source write in the Page's
+ * queue, so no two writes share a base and one write's state is never split
+ * across fields; an entry that doesn't hold this reads as invalid_source
+ * rather than as a state no writer stored.
  */
 function historyOf(list, present) {
   if (!Array.isArray(list) || !list.length) return undefined;
-  const runs = [];
+  const states = [];
   for (const stored of list) {
     const state = stateOf(stored);
     if (!state) return undefined;
-    const run = runs.at(-1);
-    if (run && Number(state.revision) < Number(run[0].revision)) return undefined;
-    if (run?.[0].revision === state.revision) run.push(state);
-    else runs.push([state]);
+    if (states.length && Number(state.revision) <= Number(states.at(-1).revision)) return undefined;
+    states.push(state);
   }
-  const last = runs.at(-1);
-  if (
-    last[0].revision !== present.revision ||
-    !last.some((state) => state.name === present.name) ||
-    !last.some((state) => sameFile(state, present)) ||
-    !last.some((state) => sameWrite(state, present))
-  )
-    return undefined;
-  return runs.map((run, index) =>
-    index === runs.length - 1
-      ? (run.findLast((state) => sameFile(state, present)) ?? run.at(-1))
-      : run.at(-1),
-  );
+  return sameState(states.at(-1), present) ? states : undefined;
 }
 
 /** One stored source as an agent reads it, or an invalid_source refusal for
@@ -291,13 +311,19 @@ export function validateSourceBatch(operations) {
 /**
  * Apply a validated batch of set_source operations inside one host change.
  * `mediaTypes` maps each named asset id to the media type its stored record
- * holds; `by` is the writer (author.mjs authorOf) and `at` the host's time
+ * holds; `by` is the writer (author.mjs authorOf), stored within
+ * WRITER_LIMITS (boundedWriter), and `at` the host's time
  * for the batch, read once when the caller gives none. Each operation checks
  * the revision its caller saw (null creates), then mints the next revision
  * and appends the new state to the source's history. Returns the receipt's
  * per-operation edits.
  */
-export function setSources(doc, operations, { mediaTypes, by, at = new Date().toISOString() }) {
+export function setSources(
+  doc,
+  operations,
+  { mediaTypes, by: writer, at = new Date().toISOString() },
+) {
+  const by = boundedWriter(writer);
   if (!validWriter(by) || !validTime(at)) throw Error("A source write needs its writer and time");
   const previousOf = checkSources(doc, operations);
   if (!isMap(doc.sources)) doc.sources = {};

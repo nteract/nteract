@@ -10,7 +10,9 @@ import { createAuthFixture } from "../auth-fixtures.mjs";
 import { MEMBER_FORMATS } from "../model/document-types.mjs";
 import { Storage, pageId } from "./trash-fixture.mjs";
 import { derivedDocUuid, derivedDocumentId } from "./comments-store.mjs";
+import { SOURCE_HISTORY_LIMIT, WRITER_LIMITS } from "../model/sources-doc.mjs";
 import { SOURCES_MODULE } from "./document-modules.mjs";
+import { DEFAULT_READ_BYTES } from "./tool-reads.mjs";
 import { Page } from "./index.mjs";
 import { treeOf } from "./plain-sync.mjs";
 
@@ -48,7 +50,7 @@ const parquetHead = (assetId, owner = pageId) => ({
 
 /** A Page over real plain sync. `page()` starts a new host over the same
  * storage, as after eviction or a crash; `assets.head` answers asset HEADs. */
-async function sourcesHost(t) {
+async function sourcesHost(t, { profile } = {}) {
   const auth = await createAuthFixture();
   t.mock.method(globalThis, "fetch", auth.fetch);
   t.mock.method(console, "error", () => {});
@@ -64,7 +66,8 @@ async function sourcesHost(t) {
       },
     },
   };
-  const token = auth.apiKey();
+  // `profile` is the account's provider profile, which names it.
+  const token = auth.apiKey(profile && { profile });
   const hosts = [];
   t.after(async () => {
     for (const host of hosts) await host.plain?.close();
@@ -431,6 +434,40 @@ test("each source write stores its writer and time, and the read returns them as
   const other = (await h.tool(h.host, "read_page", { source_id: "other" })).body.source;
   assert.equal(other.history.length, 1);
   assert.deepEqual(other.producer.by.agent, loader);
+});
+
+test("a full history at the longest attribution reads inside the default read budget", async (t) => {
+  // The provider joins profile names with no bound; a control character
+  // costs six bytes once escaped in the JSON a read returns.
+  const h = await sourcesHost(t, {
+    profile: { first_name: "\u0001".repeat(3000), last_name: "\u0001".repeat(3000) },
+  });
+  const headers = {
+    "x-pages-driver": "D".repeat(80),
+    ...agentHeader({ name: "N".repeat(80), model: "M".repeat(120) }),
+  };
+  // A 200-character name of three-byte characters.
+  const name = "数".repeat(200);
+  for (let revision = 0; revision < SOURCE_HISTORY_LIMIT; revision++) {
+    const written = await h.setSource(
+      h.host,
+      [usage({ name, source_revision: revision ? String(revision) : null })],
+      {},
+      headers,
+    );
+    assert.equal(written.status, 200, JSON.stringify(written.body));
+  }
+  const read = await h.tool(h.host, "read_page", { source_id: "usage" });
+  assert.equal(read.status, 200, JSON.stringify(read.body).slice(0, 300));
+  const { source } = read.body;
+  assert.equal(source.history.length, SOURCE_HISTORY_LIMIT);
+  assert.equal(source.producer.by.displayName.length, WRITER_LIMITS.displayName);
+  assert.ok(
+    source.history.every((state) => state.by.displayName === source.producer.by.displayName),
+  );
+  const bytes = new TextEncoder().encode(JSON.stringify(read.body)).byteLength;
+  // About 122 KB of the 128 KiB default.
+  assert.ok(bytes <= DEFAULT_READ_BYTES, `${bytes} bytes`);
 });
 
 test("a Page revision that isn't current still writes a source", async (t) => {
