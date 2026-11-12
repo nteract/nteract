@@ -205,6 +205,84 @@
       ]
     },
     {
+      "name": "a Project's organization grant reaches its members on the Project's items at the grant's role, beside member rows",
+      "modes": ["built-in", "external"],
+      "object": "page:guild_item",
+      "lifecycle": "active",
+      "revision": 0,
+      "relationships": [
+        "page:guild_item#project@project:guild",
+        "project:guild#owner@user:alice",
+        "project:guild#editor@organization:acme#member",
+        "project:guild#commenter@organization:research#member",
+        "project:guild#viewer@user:gail",
+        "project:guild#editor@user:frank",
+        "organization:acme#member@user:dana",
+        "organization:acme#member@user:gail",
+        "organization:research#member@user:erin",
+        "organization:research#member@user:frank"
+      ],
+      "principals": [
+        {
+          "subject": "user:dana",
+          "credential": "write",
+          "capabilities": ["read", "comment", "edit", "create_items"],
+          "basis": { "relation": "editor", "via": "project" }
+        },
+        {
+          "subject": "user:erin",
+          "credential": "write",
+          "capabilities": ["read", "comment"],
+          "basis": { "relation": "commenter", "via": "project" }
+        },
+        {
+          "subject": "user:gail",
+          "credential": "write",
+          "capabilities": ["read", "comment", "edit", "create_items"],
+          "basis": { "relation": "editor", "via": "project" }
+        },
+        {
+          "subject": "user:frank",
+          "credential": "write",
+          "capabilities": ["read", "comment", "edit", "create_items"],
+          "basis": { "relation": "editor", "via": "project" }
+        },
+        {
+          "subject": "user:mallory",
+          "credential": "write",
+          "capabilities": []
+        }
+      ]
+    },
+    {
+      "name": "a Project's organization grant on the Project itself",
+      "modes": ["built-in", "external"],
+      "object": "project:guild",
+      "lifecycle": "active",
+      "revision": 0,
+      "relationships": [
+        "project:guild#owner@user:alice",
+        "project:guild#editor@organization:acme#member",
+        "project:guild#commenter@organization:research#member",
+        "organization:acme#member@user:dana",
+        "organization:research#member@user:erin"
+      ],
+      "principals": [
+        {
+          "subject": "user:dana",
+          "credential": "write",
+          "capabilities": ["read", "create_items"],
+          "basis": { "relation": "editor", "via": "organization" }
+        },
+        {
+          "subject": "user:erin",
+          "credential": "write",
+          "capabilities": ["read"],
+          "basis": { "relation": "commenter", "via": "organization" }
+        }
+      ]
+    },
+    {
       "name": "Trash: the lifecycle overlay keeps read, restore and purge for the owner only",
       "modes": ["built-in", "external"],
       "object": "page:trashed",

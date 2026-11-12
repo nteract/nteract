@@ -23,7 +23,7 @@ import { fingerprint, operationKey } from "./mutations.mjs";
 import { validPageId } from "./registration.mjs";
 import { NO_ACTOR_CHAIN, decide, heldRelation, principalOf, projectObject } from "./authz.mjs";
 import { serialQueue } from "./serial-queue.mjs";
-import { claimInvitation, proposeSharingMutation } from "./sharing.mjs";
+import { claimInvitation, organizationSharing, proposeSharingMutation } from "./sharing.mjs";
 import { indexProjectInvitations, pruneProjectInvitations } from "./project-invitations.mjs";
 import { logAuthEvent } from "./auth-events.mjs";
 import {
@@ -136,9 +136,11 @@ export function projectContentMarkdown(description) {
 }
 
 /** Public sharing roster, never durable signing identities or ACL bookkeeping.
- * Accept receipts too so older stored replies cannot expose removed members. */
+ * Accept receipts too so older stored replies cannot expose removed members.
+ * `organizationAccess` is the organization grant without its namespace. */
 export function publicProjectAccess(value) {
   const acl = value.acl ?? value;
+  const organization = acl.organizationAccess;
   return {
     space_id: value.space_id,
     revision: acl.revision ?? 0,
@@ -160,16 +162,23 @@ export function publicProjectAccess(value) {
       role,
       expiresAt,
     })),
+    organizationAccess:
+      organization && ["viewer", "commenter", "editor"].includes(organization.role)
+        ? { id: organization.id, name: organization.name, role: organization.role }
+        : null,
   };
 }
 
+/** The Project as its reader sees it. `role` is the relation the reader's
+ * decision rests on, so a role held through the organization grant, which no
+ * member row records, is reported too. */
 export function publicSpace(record, identity) {
   return {
     space_id: record.space_id,
     title: record.title,
     description: record.description ?? "",
     document_id: record.document_id,
-    role: identity ? heldRelation(projectObject(record), identity.principal) : "owner",
+    role: identity ? projectDecision(record, identity).basis.relation ?? "none" : "owner",
     revision: record.revision ?? 0,
     owner: record.owner,
     created_at: record.created_at,
@@ -177,14 +186,13 @@ export function publicSpace(record, identity) {
   };
 }
 
-/** Capability checks include current Project members. */
+const projectDecision = (record, identity) =>
+  decide(principalOf(identity), NO_ACTOR_CHAIN, projectObject(record), Date.now());
+
+/** Capability checks include current Project members and the organization
+ * grant's current members. */
 function can(capability, record, identity) {
-  return decide(
-    principalOf(identity),
-    NO_ACTOR_CHAIN,
-    projectObject(record),
-    Date.now(),
-  ).capabilities.includes(capability);
+  return projectDecision(record, identity).capabilities.includes(capability);
 }
 
 /** Authority for one Project's record and ACL. Only the host reaches these
@@ -296,7 +304,29 @@ export class Space {
       }
       // A Space the caller cannot read looks exactly like a missing one.
       if (!record || !can("read", record, identity)) throw spaceNotFound();
-      if (path === "/internal/space/read") return json(publicSpace(record, identity));
+      if (path === "/internal/space/read") {
+        // An organization has no member list to fan out to, so a person who
+        // opens the Project through its organization grant records their own
+        // discovery hint. Like every hint it is a candidate: the listing
+        // reads the Project again, so a person whose lease ends, or whose
+        // grant clears, stops seeing it. The hint only lists the Project, so
+        // a failure to write it never fails the open.
+        if (
+          args.claim !== false &&
+          projectDecision(record, identity).basis.via === "organization"
+        ) {
+          try {
+            const discovered = await this.env.CATALOGS.getByName(identity.principal).fetch(
+              new Request("https://pages.internal/internal/project-discovery", {
+                method: "POST",
+                body: JSON.stringify({ space_id: record.space_id, owner: record.owner }),
+              }),
+            );
+            await discovered.body?.cancel();
+          } catch {}
+        }
+        return json(publicSpace(record, identity));
+      }
       if (path === "/internal/space/access") {
         if (identity.principal !== record.owner)
           throw new HttpError(403, "Only the Project owner can manage access");
@@ -306,10 +336,29 @@ export class Space {
             "Pages sharing permission is required",
             "oauth_insufficient_scope",
           );
+        // Every answer carries the owner's organization choices for `holder`,
+        // the record `value` describes. They follow the owner's leases now;
+        // the roster, revision and grant are `value`'s, so a replay answers
+        // as its receipt did.
+        const answer = async (value, holder) => {
+          const roster = publicProjectAccess(value);
+          return json({
+            ...roster,
+            ...(await organizationSharing(holder, identity, this.env)),
+            organizationAccess: roster.organizationAccess,
+          });
+        };
         if (!args.read) {
           requireWrite(identity);
-          if (!["set_role", "invite", "revoke_invite"].includes(args.action))
-            throw new HttpError(400, "Choose invite, set_role or revoke_invite");
+          if (
+            !["set_role", "invite", "revoke_invite", "set_organization_access"].includes(
+              args.action,
+            )
+          )
+            throw new HttpError(
+              400,
+              "Choose invite, set_role, revoke_invite or set_organization_access",
+            );
           if (
             Object.keys(args).some(
               (key) =>
@@ -320,6 +369,7 @@ export class Space {
                   "principal",
                   "email",
                   "invite_id",
+                  "organization_id",
                   "role",
                   "expected_revision",
                   "nonce",
@@ -336,6 +386,7 @@ export class Space {
               principal: args.principal,
               email: args.email,
               invite_id: args.invite_id,
+              organization_id: args.organization_id,
               role: args.role,
               expected_revision: args.expected_revision,
             },
@@ -352,12 +403,14 @@ export class Space {
             await this.ctx.storage.sync();
             // Repeats a hint removal that failed after the ACL committed.
             if (indexedAction(args.action)) await pruneProjectInvitations(this.env, record);
-            return json(publicProjectAccess(previous.receipt));
+            return answer(previous.receipt, record);
           }
           const proposed = await proposeSharingMutation(
             { ...record, pageId: record.space_id },
             identity,
             args,
+            Date.now(),
+            this.env,
           );
           const next = { ...record, acl: proposed.metadata.acl };
           const receipt = publicProjectAccess(next);
@@ -406,9 +459,9 @@ export class Space {
                 body: JSON.stringify({ space_id: record.space_id, remove: true }),
               }),
             );
-          return json(receipt);
+          return answer(receipt, next);
         }
-        return json(publicProjectAccess(record));
+        return answer(record, record);
       }
       if (path === "/internal/space/update") return await this.update(identity, args, record);
       throw new HttpError(404, "Not found");

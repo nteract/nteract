@@ -1838,6 +1838,9 @@ export class Catalog {
           return json({ ok: true });
         }
         const known = await this.storage.get(`project-discovery/${value.space_id}`);
+        // An organization member's every open sends this; an unchanged hint
+        // is not written again.
+        if (known?.owner === value.owner) return json({ ok: true });
         if (
           !known &&
           (await this.storage.list({ prefix: "project-discovery/", limit: 500 })).size >= 500
@@ -1849,12 +1852,15 @@ export class Catalog {
                 body: JSON.stringify({ space_id: hint.space_id, owner: hint.owner }),
               }),
             );
+            // A hint stays while this account is a member or the Project has
+            // an organization grant. This host holds no lease to check the
+            // grant against, and the listing checks it on every read.
+            const acl = response.ok ? (await response.json()).acl : null;
             if (
               response.status === 404 ||
               (response.ok &&
-                !["viewer", "commenter", "editor"].includes(
-                  (await response.json()).acl?.members?.[this.ctx.id.name]?.role,
-                ))
+                !acl?.organizationAccess &&
+                !["viewer", "commenter", "editor"].includes(acl?.members?.[this.ctx.id.name]?.role))
             )
               await this.storage.delete(key);
           }
@@ -3156,9 +3162,12 @@ export class Catalog {
         if (!response.ok)
           return refuse("project_policy_unavailable", "Project access cannot be verified");
         const policy = await response.json();
+        // A Project with members, invitations or an organization grant is
+        // shared: someone besides its owner reaches the Pages in it.
         if (
           Object.keys(policy.acl?.members ?? {}).length ||
-          Object.keys(policy.acl?.invites ?? {}).length
+          Object.keys(policy.acl?.invites ?? {}).length ||
+          policy.acl?.organizationAccess
         )
           return refuse(
             "shared_project_move_unsupported",
