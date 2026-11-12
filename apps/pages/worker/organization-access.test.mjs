@@ -553,7 +553,10 @@ test("an organization editor's upload capability carries its namespace, so the u
   );
   const metadata = { ...page(grant("editor")), pageId };
   assert.equal(pageAccess(metadata, identity, { now }).canWrite, true);
-  assert.equal(pageAccess({ ...metadata, ...page(grant("viewer")) }, identity, { now }).canWrite, false);
+  assert.equal(
+    pageAccess({ ...metadata, ...page(grant("viewer")) }, identity, { now }).canWrite,
+    false,
+  );
   // A capability without a namespace holds no organization lease.
   const bare = await withDomainAccess(uploadIdentity({ ...claims, namespace: undefined }), env);
   assert.equal(bare.organizations, undefined);
