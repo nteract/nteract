@@ -3,6 +3,7 @@ import { orderedBlockIds } from "../model/order.mjs";
 import { agentBlock, projectReadContent } from "../model/read-content.mjs";
 import { projectReadComments } from "../model/read-comments.mjs";
 import { documentFeatures } from "../model/schema-features.mjs";
+import { listSources, readSource } from "../model/sources-doc.mjs";
 
 export const DEFAULT_READ_BYTES = 128 * 1024;
 const encoder = new TextEncoder();
@@ -20,6 +21,8 @@ const selectorKeys = [
   "outline_limit",
   "max_bytes",
   "revision",
+  "sources",
+  "source_id",
 ];
 const commentKeys = ["state", "node_id", "thread_ids", "include_messages", "max_bytes", "revision"];
 /** Read refusals that reach the caller with their own code. */
@@ -31,6 +34,8 @@ export const READ_ERROR_CODES = new Set([
   "comment_not_found",
   "read_revision_changed",
   "wrong_address_kind",
+  "invalid_source",
+  "source_not_found",
 ]);
 function invalid(message) {
   throw Object.assign(new Error(message), { status: 400, code: "invalid_read_selector" });
@@ -53,6 +58,10 @@ function validate(operation, args) {
     invalid("comments must be none, summary, open or all");
   if (args.include_presence !== undefined && typeof args.include_presence !== "boolean")
     invalid("include_presence must be a boolean");
+  if (args.sources !== undefined && typeof args.sources !== "boolean")
+    invalid("sources must be a boolean: true lists the Page's sources");
+  if (args.source_id !== undefined && typeof args.source_id !== "string")
+    invalid("source_id must be one source's ID");
   return { maxBytes, offset, limit };
 }
 /** A read's `revision` against the revision it reads. The handle resolves
@@ -88,21 +97,43 @@ function outlinePage(entries, offset, limit) {
   };
 }
 
+/** The sources a read_page asks for: `{ sources }` listing every source
+ * for `sources: true`, `{ source }` with its producer and history for
+ * `source_id`, or both. A Page with no sources document lists none. */
+function sourcesRead(sourcesDoc, { sources, source_id }) {
+  return {
+    ...(sources === true && { sources: listSources(sourcesDoc) }),
+    ...(source_id !== undefined && { source: readSource(sourcesDoc, source_id) }),
+  };
+}
+
 /** One captured CRDT revision supplies content, comments and revisions.
  * `revisions` is the host's handle table: `handles([[doc, heads], ...])`
  * names revisions, minting handles when needed, and `heads(doc, handle)`
- * resolves one. The result names the Page revision as `revision` and the comments
+ * resolves one. The result names the Page revision as `revision`, the comments
  * document's as `comment_revision`, the baseline read_page_changes takes as
- * `since_comment_revision`; comment writes never move `revision`. `heads`
- * beside the body is the Page revision read, for the host's own use. */
+ * `since_comment_revision`, and the sources document's, once the Page has
+ * one, as `sources_revision`; comment and source writes never move
+ * `revision`. `heads` beside the body is the Page revision read, for the
+ * host's own use.
+ *
+ * read_page's `sources` and `source_id` read the Page's sources
+ * (`sourcesDoc`). Alone, they read them without the Page's content; beside
+ * other selectors, such as include_content false, they add them to that
+ * read. */
 export async function readTool(
   doc,
   operation,
   args,
-  { revisions, recovery, historyIncomplete, getPresence, commentsDoc } = {},
+  { revisions, recovery, historyIncomplete, getPresence, commentsDoc, sourcesDoc } = {},
 ) {
   const heads = A.getHeads(doc);
   const commentHeads = commentsDoc ? A.getHeads(commentsDoc) : undefined;
+  const sourceHeads = sourcesDoc ? A.getHeads(sourcesDoc) : undefined;
+  // validate() refuses arguments that aren't an object.
+  const { sources, source_id, ...contentArgs } = args ?? {};
+  const sourceSelector = { sources, source_id };
+  const readsSources = sources === true || source_id !== undefined;
   let settings = { maxBytes: DEFAULT_READ_BYTES, offset: 0, limit: 100 },
     legacy = false,
     content,
@@ -122,6 +153,15 @@ export async function readTool(
         title: doc.title,
         comments: projectReadComments(doc, { state: "open", ...filters }, commentsDoc),
       };
+    } else if (
+      readsSources &&
+      Object.keys(contentArgs).every((key) => ["page_id", "max_bytes", "revision"].includes(key))
+    ) {
+      payload = {
+        page_id: doc.page_id,
+        title: doc.title,
+        ...sourcesRead(sourcesDoc, sourceSelector),
+      };
     } else if (Object.keys(args).every((key) => key === "page_id")) {
       // A read with no selector: every block whole and every thread with its
       // messages, without an outline or a budget.
@@ -133,7 +173,7 @@ export async function readTool(
         comments: projectReadComments(doc, { state: "all" }, commentsDoc),
       };
     } else {
-      content = projectReadContent(doc, args);
+      content = projectReadContent(doc, contentArgs);
       const mode = args.comments ?? (args.include_content === false ? "none" : "summary");
       payload = {
         page_id: doc.page_id,
@@ -155,6 +195,7 @@ export async function readTool(
               ),
         ...(content.selection && { selection: content.selection }),
         ...(args.include_presence && { presence: getPresence(doc) }),
+        ...(readsSources && sourcesRead(sourcesDoc, sourceSelector)),
       };
     }
   } catch (error) {
@@ -169,13 +210,17 @@ export async function readTool(
       ...(error.code === "read_revision_changed" && { outline: outline() }),
     };
   }
-  const [revision, comment_revision] = await revisions.handles([
+  const [revision, ...others] = await revisions.handles([
     ["page", heads],
     ...(commentHeads ? [["comments", commentHeads]] : []),
+    ...(sourceHeads ? [["sources", sourceHeads]] : []),
   ]);
+  const comment_revision = commentHeads ? others.shift() : undefined;
+  const sources_revision = sourceHeads ? others.shift() : undefined;
   const common = {
     revision,
     ...(comment_revision && { comment_revision }),
+    ...(sources_revision && { sources_revision }),
     // The Page's schema stamp; empty when it uses only the baseline.
     ...(operation === "read_page" && { schema_features: documentFeatures(doc) }),
     ...(recovery && { recovery }),

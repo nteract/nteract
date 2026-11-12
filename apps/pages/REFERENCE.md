@@ -1405,6 +1405,96 @@ document. A Page without it holds threads in a form an earlier build wrote;
 comment reads and writes on it answer `409 stored_form_unsupported`, and the
 viewer shows no comments.
 
+## Sources document
+
+A Page's named sources live in a third Automerge document, `pages.sources`
+format 1 ([model/sources-doc.mjs](model/sources-doc.mjs)), owned by the same
+Page Durable Object. Only the host writes it. Its root is `sources`, a map
+from `source_id` to `{ name, revision, current: { media_type, asset_id },
+producer: { kind, at, by }, history }`. `revision` is a decimal string the host
+mints, `"1"` and then one more per accepted write; `media_type` comes from the
+stored asset's record; `producer.kind` is `upload`. `producer.at` is the
+host's ISO 8601 time for the write, read once per batch, and `producer.by`
+the writer in a comment author's shape ([model/author.mjs](model/author.mjs)):
+the account `principal`, `displayName`, `driver`, and `agent` `{ name?,
+model? }` when the client asserted one. The asserted agent is part of the
+write's retry fingerprint, so a retry that changes it is `409
+nonce_conflict`. `current` and `producer` are each replaced as one map. A
+Page holds up to 64 sources. Nothing on the Page draws from a source yet.
+
+`history` is an Automerge list of the source's newest states, oldest first,
+each `{ revision, name, media_type, asset_id, at, by }`. The write that
+creates or changes a source appends its state in the same change and deletes
+from the front past 50 states, so the last state always equals the entry's
+present name, revision, `current` and `producer` as a whole, and revisions
+strictly rise along the list; a read refuses an entry where either doesn't
+hold as `invalid_source`, and so does a write to it. Its name is still in the
+document, but no read returns it; a new `source_id` can be set beside it,
+while `sources: true` refuses until the entry is gone. `history_truncated` is true when
+`revision` exceeds the list's length: each write raises the revision by one
+and appends one state, so only the cap makes the list shorter. Older states
+remain in the document's Automerge history, but no read returns them. The
+host builds every source write in the Page's queue, so two writes never share
+a base; a document merged from two such candidates holds two states for one
+revision and reads as `invalid_source`, never as a state neither wrote.
+
+Each state repeats its writer, so a source stores bounded labels: a display
+name cut to 200 UTF-16 code units, as the Kilo exchange keeps one; a driver
+up to 80 and an agent name up to 80 and model up to 120, the bounds those
+already have where a request brings them, over which the write is refused.
+At those bounds a full history reads in about 122 KB, inside `read_page`'s
+128 KiB default.
+
+A full list costs about 12 KiB in `A.save` for one source with 50 writes and
+693 KiB for 64 sources with 50 writes each. The document keeps every change,
+deleted states included, so it grows by about 0.2 KiB per write whatever the
+cap; 64 sources with 100 writes each save to 1.4 MiB.
+
+A Page has at most one sources document, and a Page with no sources has none.
+Its id is derived from the Page ID with its own label, as the comments
+document's is, and its genesis is fixed, so creating it twice stores one
+document. The host creates it on the first source write
+([worker/sources-lifecycle.mjs](worker/sources-lifecycle.mjs)): it stores the
+genesis, then writes the host record with `pages.sources` in
+`documentFormats`. A restart before the record names it starts over on the
+next write; a restart after it loads the document and replays its journal.
+`pages.sources` is not a member type: a new record doesn't name it, and a
+record that does is still held to format 1.
+
+Browsers read it and never write it. Its type module declares no browser
+write access and refuses rather than strips a browser frame that changes it:
+`request_rejected`, not fatal, and the principal isn't blocked. Host writes
+go through the journal and `admitTrusted`. The socket serves it only to a
+client that declared `pages.sources:1`; discovery names it in
+`documents.sources` once it exists. The viewer doesn't open it yet. A
+reader that syncs it sees each source's `producer.by` and every earlier
+writer in its changes, as comment authors are visible to comment readers.
+
+Agents write it with `edit_page` `set_source` operations (`source_id`,
+`name`, `asset_id`, `source_revision`) in a batch with no other operation;
+a mixed batch is `400 invalid_arguments`. `source_revision` is null to
+create, or the revision the caller read. A mismatch is `409 stale_source`
+and an unknown source with a non-null revision `404 source_not_found`, each
+carrying `source_id` and the current `source_revision`. The asset must be a
+dataset stored on this Page (`dataset_not_found` otherwise). The batch names
+the Page `revision` it read and is fenced like any edit, but a newer Page
+revision doesn't refuse it. The receipt carries `sources_revision` and
+`result.edits` of `{ op, source_id, source_revision }`; the nonce shares
+`edit_page`'s lane. A write is checked against the sources the Page holds
+before the host creates the document, so a refused first write creates
+nothing, and a journaled source write whose apply didn't finish is replayed
+before a new one is built. `read_page` takes `sources: true`, which lists
+`source_id`, `name`, `source_revision`, `asset_id` and `media_type`, and
+`source_id`, which reads one source with `producer`, `history` and
+`history_truncated`; both together return
+both. Alone they read no Page content; beside other selectors they add to
+them. Reads name `sources_revision` once the document exists.
+
+Trash and restore keep the document. Permanent deletion deletes its stored
+bytes with the Page's. Page assets are never collected, so a source's
+current and earlier assets stay stored until the Page is purged.
+`scripts/project-transfer.mjs` doesn't copy sources.
+
 ## Authorization
 
 ### Current behavior
@@ -1943,9 +2033,12 @@ Discovery and the socket carry `sync=automerge`; a build without it gets
 document formats the build reads, as sorted `type:format` pairs
 (`pages.comments:1,pages.page:2`). The Page's host record names its
 documents' formats (below). A socket whose `formats` lacks one of the
-record's is closed as `schema_unsupported`, and the viewer shows "Reload to
-update". Every type the record names is required, because a Page can gain
-its comments document while a socket is open. A socket with no `formats` is
+record's member types is closed as `schema_unsupported`, and the viewer shows
+"Reload to update". Every member type the record names is required, because a
+Page can gain its comments document while a socket is open. A type a Page may
+hold beside them, `pages.sources`, isn't: a socket without it opens the Page
+and its comments, and plain sync doesn't serve it the sources document (a
+frame naming it is answered as for an unknown document). A socket with no `formats` is
 a 400, as is a repeated or malformed `formats`. Discovery takes no `formats`
 and stays open to every reader; its `documents` descriptors carry the
 record's formats. Presence ids are per tab (`sender`), stamped by the host
@@ -1958,7 +2051,8 @@ document types as `documentFormats`, `{ "pages.page": 3, "pages.comments":
 2 }`. Creation, registration and a Project's content document all stamp the
 formats the build writes ([model/document-types.mjs](model/document-types.mjs)),
 the comments format included, since the comments document is created at
-boot. `recordDocumentFormats` is the one reader; it reads a record without
+boot. The host adds `"pages.sources": 1` once it creates the Page's sources
+document. `recordDocumentFormats` is the one reader; it reads a record without
 the field as naming no formats.
 
 A record without the field, or whose formats aren't exactly the ones the
@@ -3517,9 +3611,11 @@ different request"). `purge_page` and `delete_project` keep their
 #### Revision handles
 
 Agents never see Automerge heads. A read, receipt or refusal names a Page
-document revision as `r<n>` and a comments document revision as `c<n>`
-([revisions.mjs](worker/revisions.mjs)). Results carry `revision` and
-`comment_revision`; revision refusals (`stale_revision`, `edit_conflict`,
+document revision as `r<n>`, a comments document revision as `c<n>` and a
+sources document revision as `s<n>` ([revisions.mjs](worker/revisions.mjs));
+the letters come from the host's type modules. Results carry `revision`,
+`comment_revision` and, once the Page has sources, `sources_revision`;
+revision refusals (`stale_revision`, `edit_conflict`,
 `resync_required`) carry `current_revision` and `comment_revision`; a
 target-scoped edit's `concurrency` is `{rebased, base_revision,
 observed_revision}`. Arguments are `revision`, `since_revision` and
@@ -3535,7 +3631,7 @@ Each document's host keeps a counter, its latest handle and a table:
 | `host/revision/<doc>/latest` | `{ n, heads, at }` of that number |
 | `host/revision/<doc>/h/<n>` | `{ heads, at }`, `n` zero-padded to 16 digits |
 
-`<doc>` is `page` or `comments`. Minting writes all three in one put, and a
+`<doc>` is `page`, `comments` or `sources`. Minting writes all three in one put, and a
 handle reaches a caller only after a sync barrier. Heads that equal the latest
 handle's reuse it while that handle is newer than the receipt horizon; otherwise
 the host mints the next number, so a read never hands out a handle the fence

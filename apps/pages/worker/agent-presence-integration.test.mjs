@@ -11,7 +11,7 @@ import { DocumentPolicy } from "./policy.mjs";
 import { authenticate } from "./auth.mjs";
 import { plainStub } from "./plain-stub.mjs";
 import { headsFor } from "./revisions.mjs";
-import { WRITTEN_FORMATS } from "../model/document-types.mjs";
+import { MEMBER_FORMATS } from "../model/document-types.mjs";
 
 const pageId = "33333333-3333-4333-8333-333333333333";
 class Storage {
@@ -67,7 +67,7 @@ async function fixture(t, driver = "Kilo", agent) {
     ctx: { storage },
     metadata: {
       pageId,
-      documentFormats: WRITTEN_FORMATS,
+      documentFormats: MEMBER_FORMATS,
       owner: null,
       deleted: false,
       acl: { revision: 0, members: {}, invites: {} },

@@ -158,6 +158,14 @@ test("a fatal refusal logs its close outcome; a non-fatal one only its reason", 
   );
 });
 
+test("a refusal names each kind a Page host serves", () => {
+  for (const kind of ["page", "comments", "sources"])
+    assert.equal(
+      syncRefusedRecord({ pageId, kind, refusal: new Refusal("request_rejected", "no"), now }).doc,
+      kind,
+    );
+});
+
 test("refusal records keep free text, bad ids and identities out", () => {
   const record = syncRefusedRecord({
     pageId: "not a page id",

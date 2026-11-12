@@ -1,5 +1,6 @@
 import * as A from "@automerge/automerge";
 import { cbor } from "@automerge/automerge-repo";
+import { WRITTEN_FORMATS } from "../model/document-types.mjs";
 import { BACKEND_LIMITS, assertStoredSize } from "../model/limits.mjs";
 import { BUILD_FEATURES, missingFeatures, schemaUnsupported } from "../model/schema-features.mjs";
 import { HostRepo, hostTreeOf } from "../sync/host-handle.mjs";
@@ -26,10 +27,16 @@ import { PermissionDenied, credentialExpired } from "./policy.mjs";
 //
 // A document is served under a kind, and every type-specific answer comes
 // from that kind's module (document-modules.mjs): the write access a browser
-// needs, the feature stamps that gate a write, admission of its changes,
-// what a refusal leaves behind, and whether it carries the Page's host
-// messages. A document whose kind has no module is served for reading and
-// refuses every write.
+// needs and whether a write without it is stripped or refused, the feature
+// stamps that gate a write, admission of its changes, what a refusal leaves
+// behind, and whether it carries the Page's host messages. A document whose
+// kind has no module is served for reading and refuses every write.
+//
+// A browser connection reads a document only when it declared the
+// document's type at the format this build writes. The Page's host refuses
+// a socket that lacks a member type (index.mjs requireReadableDocuments), so
+// this decides only for a type a Page may hold, such as `pages.sources`: a
+// client that doesn't read it still syncs the Page and its comments.
 
 const PREFIX = "plain/";
 const BLOCKED = "host/comments-blocked/";
@@ -150,6 +157,11 @@ function refusalFrom(error, code = admissionCode(error)) {
 const noModule = (doc) =>
   new Refusal("request_rejected", `This host has no type module for ${doc.kind} documents`);
 
+/** The refusal for a browser write a module refuses rather than strips
+ * (`deniedWrites: "refuse"`). Not fatal, and it blocks no one. */
+const hostOnly = (doc) =>
+  new Refusal("request_rejected", `Only the Page's host writes its ${doc.kind} document`);
+
 export class PlainSync {
   /**
    * `policy` is the Page's DocumentPolicy. `modules` are the type modules
@@ -203,11 +215,15 @@ export class PlainSync {
       now,
       policy: {
         denied: (conn, at) => this.#denied(conn, at),
-        canRead: () => true,
+        canRead: (conn, doc) => this.#canRead(conn, doc),
         canWrite: (conn, doc) => this.#canWrite(conn, doc),
         admit: async (conn, doc, live, fresh, preview, actorPrincipal) => {
           const module = this.#moduleOf(doc);
           if (!module) throw noModule(doc);
+          // The role gate passed a write this module refuses instead of
+          // stripping (#canWrite).
+          if (module.deniedWrites === "refuse" && !this.#mayWrite(conn, module))
+            throw hostOnly(doc);
           this.#gate(conn, module, doc, live, fresh);
           return module.admit(conn, doc, live, fresh, preview, actorPrincipal, family);
         },
@@ -279,8 +295,10 @@ export class PlainSync {
     return plainSender(this.host.connections(), identity, requested, mint);
   }
 
-  /** Accept an authenticated browser socket. Returns the connection. */
-  accept(socket, identity, { features = [], senderId }) {
+  /** Accept an authenticated browser socket. Returns the connection.
+   * `formats` are the `{ type, format }` pairs the client reads; a
+   * connection without them reads every served document. */
+  accept(socket, identity, { features = [], formats, senderId }) {
     const transport = socketTransport(socket, {
       onRejected: (reason) =>
         logAdmissionDenied(
@@ -299,6 +317,7 @@ export class PlainSync {
       driver: identity.driver,
       senderId,
       features,
+      formats,
       access: accessShape(access),
       role: access.role,
       expiresAt: this.policy.leaseExpiresAt(identity),
@@ -424,12 +443,31 @@ export class PlainSync {
     return this.modules.get(doc.kind);
   }
 
-  /** The role gate: the access the document's module says a write needs. A
-   * document with no module passes it, so admission refuses the write by
-   * name instead of stripping it. */
+  /** Whether a browser connection reads `doc`: it declared the document's
+   * type at the format this build writes, or declared no formats. A
+   * document with no module is readable. */
+  #canRead(conn, doc) {
+    const module = this.#moduleOf(doc);
+    if (!module || !Array.isArray(conn.formats)) return true;
+    const format = WRITTEN_FORMATS[module.type];
+    return conn.formats.some((pair) => pair.type === module.type && pair.format === format);
+  }
+
+  /** The role gate. A write whose author lacks the access the document's
+   * module says a write needs is stripped, unless the module refuses such
+   * writes (`deniedWrites: "refuse"`): then it passes, and admission refuses
+   * it by name. A document with no module passes too, so admission refuses
+   * the write by name instead of stripping it. */
   #canWrite(conn, doc) {
     const module = this.#moduleOf(doc);
-    if (!module) return true;
+    if (!module || module.deniedWrites === "refuse") return true;
+    return this.#mayWrite(conn, module);
+  }
+
+  /** Whether `conn`'s author holds the access `module` says a browser write
+   * needs. No browser holds it for a module whose writeAccess is null. */
+  #mayWrite(conn, module) {
+    if (module.writeAccess === null) return false;
     try {
       this.policy.account(conn.identity, module.writeAccess);
       return true;

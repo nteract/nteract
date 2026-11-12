@@ -1,4 +1,5 @@
 import * as A from "@automerge/automerge/slim";
+import { authorOf } from "./author.mjs";
 import { commentBodyProjection, setCommentContent } from "./comment-content.mjs";
 import { COMMENTS_FEATURE, COMMENT_AGENT_FEATURE, commentThreads } from "./comments-doc.mjs";
 import { commentDecision, requireCommentDecision } from "./comment-rules.mjs";
@@ -211,12 +212,7 @@ export function applyComment(
     requireCommentDecision(commentDecision({ action, role, principal }));
     return applyThreadStatuses(threads, action, batch, now);
   }
-  const author = {
-    principal,
-    displayName: identity?.displayName ?? "Collaborator",
-    driver: identity?.driver ?? "Browser",
-    ...(agent && Object.keys(agent).length && { agent: { ...agent } }),
-  };
+  const author = authorOf(identity, agent);
   if (author.agent && ["add", "reply"].includes(action))
     stampFeatures(commentsDoc, [COMMENT_AGENT_FEATURE]);
   const threadId = action === "add" ? crypto.randomUUID() : input.thread_id;

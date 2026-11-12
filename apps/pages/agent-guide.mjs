@@ -246,8 +246,15 @@ ${part.authErrorItems}
   progress_capacity_exceeded, progress_budget_exceeded. See Progress and
   presence below.
 - image_not_found (404): the asset isn't stored on this Page.
-- dataset_not_found (404): insert_node named an asset_id that isn't stored on
-  this Page.
+- dataset_not_found (404): insert_node or set_source named an asset_id that
+  isn't stored on this Page.
+- invalid_source (400): a set_source field is malformed, or the batch would
+  pass the Page's 64 sources, or read_page's source_id is malformed.
+  Fix the request.
+- source_not_found (404): no source has that source_id on this Page. To
+  create it, send set_source with source_revision null.
+- stale_source (409): the source changed since you read it, or exists
+  already. The refusal carries source_id and its current source_revision.
 - unsupported_media_type (415): import_page_image or a byte upload got bytes
   that aren't a PNG, JPEG or static WebP (or, for a byte upload, an
   unencrypted Parquet file), or don't match their Content-Type. Convert the
@@ -737,6 +744,41 @@ by the node_id read_page's outline reports. A missing asset is dataset_not_found
 
 ${part.datasetReaderParagraph}
 
+### Named sources
+
+A Page can name its datasets. A source is a source_id you choose, a name you
+can change, and the dataset asset it names now. Point a source at a new upload
+to refresh it; its source_id stays. Nothing on the Page shows a source yet.
+
+Set one with an edit_page batch of set_source operations, and nothing else in
+that batch (a mixed batch is invalid_arguments; send two requests):
+
+\`\`\`json
+{"op": "set_source", "source_id": "daily", "name": "Daily usage", "asset_id": "<asset_id>", "source_revision": null}
+\`\`\`
+
+source_id is 1 to 64 lowercase letters, digits, - and _, starting with a
+letter. source_revision is null to create the source, or the source_revision
+you last read to change it; anything else is stale_source with the current
+one. Pages counts revisions per source: "1", then one more per write. The
+asset is a dataset uploaded to this Page, and Pages records its media type.
+A Page holds up to 64 sources. The batch still names the Page revision you
+read, but a Page edit since then doesn't refuse it. The receipt names
+sources_revision (s…), and result.edits lists each source_id with its new
+source_revision. Resend the same nonce to retry.
+
+read_page with sources:true lists every source: source_id, name,
+source_revision, asset_id and media_type. source_id:"<source_id>" reads one
+with producer: kind, at (when it was set) and by (who set it: principal,
+displayName, driver, and agent {name, model} when the writing client asserted
+one). Its history lists the source's newest 50 revisions, oldest first, each
+{revision, name, media_type, asset_id, at, by}; history_truncated is true
+when older ones existed. No read returns those older revisions. A source write records the agent you assert, as a
+comment does; readers see it as a client claim, not verified identity. Give
+both for both. Alone, they skip the Page's content; beside other selectors,
+such as include_content:false, they add to them. A Page with no sources lists
+none. Once a Page has sources, every read names sources_revision.
+
 ## JSON tools
 
 ${part.jsonToolsParagraph}
@@ -792,7 +834,8 @@ page_quota_exceeded with limit and count; tell the person rather than retrying.
   code block's language, change a heading level or align a table column. See Rich content.
   The same operations list also takes set_title, replace_block_markdown, insert_markdown, insert_image,
   insert_node, move_block, delete_block, or delete_node operations. Every
-  operation names what it acts on by node_id; see Addresses below.
+  operation names what it acts on by node_id; see Addresses below. A batch of
+  set_source operations sets the Page's named sources; see Named sources.
 - manage_page_comment: add, reply, resolve, reopen, edit, or delete_message. resolve and
   reopen also take thread_ids to change up to 100 threads in one call. See Comments below.
 - import_page_image: page_id and a ChatGPT-supplied file descriptor; returns a
@@ -1126,7 +1169,8 @@ Read before editing. Document edits and passage comments require page_id, the
 revision from a read or receipt, and a nonce; delete_page takes revision as an
 optional guard. A revision is a short handle such as r42; it names one Page
 revision on that Page and means nothing elsewhere. comment_revision (c…) names
-the comments document's revision the same way.
+the comments document's revision the same way, and sources_revision (s…) the
+sources document's.
 Send a new UUID as nonce for each new request (6–64 letters, digits,
 underscores or hyphens). Pages keys each receipt by your account and the nonce,
 so another account's identical nonce is another request. Resend the same nonce

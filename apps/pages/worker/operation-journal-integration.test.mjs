@@ -17,7 +17,7 @@ import {
 } from "./operation-journal.mjs";
 import { headsFor } from "./revisions.mjs";
 import { plainStub } from "./plain-stub.mjs";
-import { WRITTEN_FORMATS } from "../model/document-types.mjs";
+import { MEMBER_FORMATS } from "../model/document-types.mjs";
 
 const start = Date.parse("2026-10-25T00:00:00Z");
 /** The key of the block `address` names in `doc`, or undefined. */
@@ -787,7 +787,7 @@ async function pageFixture(t, { readContent = false } = {}) {
     ctx: { storage, id: { name: pageId } },
     metadata: {
       pageId,
-      documentFormats: WRITTEN_FORMATS,
+      documentFormats: MEMBER_FORMATS,
       documentId: "test",
       tree: "c".repeat(32),
       owner: principal,

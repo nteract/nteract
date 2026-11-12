@@ -19,7 +19,7 @@ import {
 } from "./oauth-store.mjs";
 import { plainStub } from "./plain-stub.mjs";
 import { headsFor } from "./revisions.mjs";
-import { WRITTEN_FORMATS } from "../model/document-types.mjs";
+import { MEMBER_FORMATS } from "../model/document-types.mjs";
 
 const origin = "https://page10.example";
 const resource = `${origin}/mcp`;
@@ -561,7 +561,7 @@ function readPageFixture(t, f, role) {
     ctx: { storage },
     metadata: {
       pageId,
-      documentFormats: WRITTEN_FORMATS,
+      documentFormats: MEMBER_FORMATS,
       owner: role === "owner" ? person.principal : "user:anaconda:owner",
       deleted: false,
       acl: {
@@ -697,7 +697,7 @@ test("a live Page ACL downgrade and revocation override an existing OAuth write 
     ctx: { storage },
     metadata: {
       pageId,
-      documentFormats: WRITTEN_FORMATS,
+      documentFormats: MEMBER_FORMATS,
       owner: "user:anaconda:owner",
       deleted: false,
       acl: {
@@ -803,7 +803,7 @@ test("OAuth domain viewing rechecks company policy, explicit denial, and proof e
     ctx: { storage, waitUntil: (promise) => jobs.push(promise) },
     metadata: {
       pageId,
-      documentFormats: WRITTEN_FORMATS,
+      documentFormats: MEMBER_FORMATS,
       owner: "user:anaconda:other",
       deleted: false,
       acl: {
@@ -882,7 +882,7 @@ test("OAuth MCP clients trash, restore, preview and confirm permanent deletion",
     ctx: { storage: pageStorage, waitUntil() {} },
     metadata: {
       pageId,
-      documentFormats: WRITTEN_FORMATS,
+      documentFormats: MEMBER_FORMATS,
       owner: person.principal,
       documentId: "doc",
       deleted: false,

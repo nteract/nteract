@@ -9,6 +9,9 @@ export const DOCUMENT_TYPES = Object.freeze({
   "pages.comments": Object.freeze({
     2: Object.freeze({ type: "pages.comments", format: 2 }),
   }),
+  "pages.sources": Object.freeze({
+    1: Object.freeze({ type: "pages.sources", format: 1 }),
+  }),
 });
 
 /** The format this build writes for `type`: the highest one registered. */
@@ -22,7 +25,8 @@ export const WRITTEN_FORMATS = Object.freeze(
 );
 
 /** The types every Page holds a document of. A type registered beside them
- * is one a Page may hold, and a record without it is still opened. */
+ * is one a Page may hold, such as `pages.sources`: its record names the type
+ * once the document exists, and a record without it is still opened. */
 export const MEMBER_TYPES = Object.freeze(["pages.page", "pages.comments"]);
 
 /** `documentFormats` for a new Page: each member type at its written format.
@@ -74,8 +78,8 @@ export function formatPairs(formats) {
 /** Project the host's existing IDs at `formats` (a record's, from
  * recordDocumentFormats) without minting, persisting or converting
  * documents. Omit comments when the host has no comments handle to
- * advertise. */
-export function pageDocuments(formats, documentId, commentsDocumentId) {
+ * advertise, and sources when the Page has no sources document. */
+export function pageDocuments(formats, documentId, commentsDocumentId, sourcesDocumentId) {
   return {
     page: { id: documentId, type: "pages.page", format: formats["pages.page"] },
     ...(commentsDocumentId !== undefined && {
@@ -83,6 +87,13 @@ export function pageDocuments(formats, documentId, commentsDocumentId) {
         id: commentsDocumentId,
         type: "pages.comments",
         format: formats["pages.comments"],
+      },
+    }),
+    ...(sourcesDocumentId !== undefined && {
+      sources: {
+        id: sourcesDocumentId,
+        type: "pages.sources",
+        format: formats["pages.sources"],
       },
     }),
   };
