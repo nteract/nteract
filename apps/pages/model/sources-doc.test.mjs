@@ -9,7 +9,6 @@ import {
   listSources,
   readSource,
   setSources,
-  sourceHistory,
   sourcesGenesis,
   validateSourceBatch,
 } from "./sources-doc.mjs";
@@ -53,17 +52,25 @@ test("the genesis is a pure function of the document id", () => {
 
 test("create, rename and refresh mint one revision per write and survive save and load", () => {
   let doc = initial();
+  const owner = { principal: "user:test:owner", displayName: "Owner", driver: "MCP" };
   assert.deepEqual(readSource(doc, "usage"), {
     source_id: "usage",
     name: "Tool usage",
     source_revision: "1",
     asset_id: first,
     media_type: PARQUET,
-    producer: {
-      kind: "upload",
-      at: AT,
-      by: { principal: "user:test:owner", displayName: "Owner", driver: "MCP" },
-    },
+    producer: { kind: "upload", at: AT, by: owner },
+    history: [
+      {
+        revision: "1",
+        name: "Tool usage",
+        media_type: PARQUET,
+        asset_id: first,
+        at: AT,
+        by: owner,
+      },
+    ],
+    history_truncated: false,
   });
   doc = write(doc, [op({ name: "  Renamed  ", source_revision: "1" })]);
   assert.equal(readSource(doc, "usage").name, "Renamed");
@@ -77,23 +84,30 @@ test("create, rename and refresh mint one revision per write and survive save an
     later,
   );
   const loaded = A.load(A.save(doc));
-  assert.deepEqual(readSource(loaded, "usage"), {
+  const releaser = {
+    principal: "user:b",
+    displayName: "Owner",
+    driver: "MCP",
+    agent: { name: "Release bot", model: "m-1" },
+  };
+  const { history, ...present } = readSource(loaded, "usage");
+  assert.deepEqual(present, {
     source_id: "usage",
     name: "Renamed",
     source_revision: "3",
     asset_id: second,
     media_type: PARQUET,
-    producer: {
-      kind: "upload",
-      at: later,
-      by: {
-        principal: "user:b",
-        displayName: "Owner",
-        driver: "MCP",
-        agent: { name: "Release bot", model: "m-1" },
-      },
-    },
+    producer: { kind: "upload", at: later, by: releaser },
+    history_truncated: false,
   });
+  assert.deepEqual(
+    history.map(({ revision, name, asset_id, at, by }) => [revision, name, asset_id, at, by]),
+    [
+      ["1", "Tool usage", first, AT, owner],
+      ["2", "Renamed", first, AT, owner],
+      ["3", "Renamed", second, later, releaser],
+    ],
+  );
   assert.deepEqual(listSources(loaded), [
     {
       source_id: "usage",
@@ -242,27 +256,99 @@ test("concurrent host candidates never tear an asset from its media type, and di
     [second, PARQUET],
     [third, OTHER],
   ]);
-  const candidate = (operations) =>
-    A.change(A.clone(base), (draft) => {
-      setSources(draft, operations, { mediaTypes: pairs, by: OWNER, at: AT });
+  const candidate = (actor, operations, by, at) =>
+    A.change(A.clone(base, { actor }), (draft) => {
+      setSources(draft, operations, { mediaTypes: pairs, by, at });
     });
-  const left = candidate([
-    op({ asset_id: second, source_revision: "1" }),
-    op({ source_id: "daily", asset_id: second }),
-  ]);
-  const right = candidate([
-    op({ asset_id: third, source_revision: "1" }),
-    op({ source_id: "latency", asset_id: third }),
-  ]);
-  const merged = A.merge(left, right);
-  const value = readSource(merged, "usage");
-  assert.ok([second, third].includes(value.asset_id));
-  assert.equal(value.media_type, pairs.get(value.asset_id), "an asset keeps its own media type");
-  assert.equal(value.source_revision, "2");
-  assert.equal(listSources(merged).length, 3);
-  // Both candidates stay recoverable as conflicts. The host writes one
-  // source at a time in the Page's queue, so it never accepts both.
-  assert.equal(Object.keys(A.getConflicts(merged.sources.usage, "current")).length, 2);
+  const LEFT = writer("user:left");
+  const RIGHT = writer("user:right-hand");
+  // Each actor order decides each key's conflict on its own; the two orders
+  // cover a merge where `current` and `producer` come from one candidate and
+  // one where they come from different candidates.
+  const torn = [];
+  for (const [leftActor, rightActor] of [
+    ["aa".repeat(16), "bb".repeat(16)],
+    ["bb".repeat(16), "aa".repeat(16)],
+  ]) {
+    const left = candidate(
+      leftActor,
+      [
+        op({ asset_id: second, source_revision: "1" }),
+        op({ source_id: "daily", asset_id: second }),
+      ],
+      LEFT,
+      "2026-11-12T10:01:00.000Z",
+    );
+    const right = candidate(
+      rightActor,
+      [
+        op({ asset_id: third, source_revision: "1" }),
+        op({ source_id: "latency", asset_id: third }),
+      ],
+      RIGHT,
+      "2026-11-12T10:02:00.000Z",
+    );
+    const merged = A.merge(A.clone(left), right);
+    const value = readSource(merged, "usage");
+    assert.ok([second, third].includes(value.asset_id));
+    assert.equal(value.media_type, pairs.get(value.asset_id), "an asset keeps its own media type");
+    assert.equal(value.source_revision, "2");
+    assert.equal(listSources(merged).length, 3);
+    assert.deepEqual(readSource(A.merge(A.clone(right), left), "usage"), value, "merge order");
+    // Both candidates stay recoverable as conflicts. The host writes one
+    // source at a time in the Page's queue, so it never accepts both.
+    assert.equal(Object.keys(A.getConflicts(merged.sources.usage, "current")).length, 2);
+    // Both appended a revision "2" state; the read shows one: the state
+    // whose file is the present `current`.
+    assert.equal(merged.sources.usage.history.length, 3);
+    assert.deepEqual(
+      value.history.map((state) => state.revision),
+      ["1", "2"],
+    );
+    const last = value.history.at(-1);
+    assert.equal(last.asset_id, value.asset_id);
+    assert.deepEqual(last.by, value.asset_id === second ? LEFT : RIGHT);
+    assert.equal(value.history_truncated, false);
+    torn.push(JSON.stringify(last.by) !== JSON.stringify(value.producer.by));
+  }
+  assert.deepEqual(torn.sort(), [false, true], "one merge mixed the candidates' fields");
+});
+
+test("the last history state is always the present entry", () => {
+  let doc = initial();
+  for (let revision = 1; revision <= 5; revision++) {
+    doc = write(doc, [
+      op({
+        name: `Usage ${revision}`,
+        asset_id: [first, second][revision % 2],
+        source_revision: String(revision),
+      }),
+    ]);
+    const source = readSource(doc, "usage");
+    const last = source.history.at(-1);
+    assert.deepEqual(
+      [last.revision, last.name, last.asset_id, last.media_type, last.at, last.by],
+      [
+        source.source_revision,
+        source.name,
+        source.asset_id,
+        source.media_type,
+        source.producer.at,
+        source.producer.by,
+      ],
+    );
+  }
+  // An entry whose present fields disagree with its last state is refused.
+  for (const edit of [
+    (entry) => (entry.name = "Elsewhere"),
+    (entry) => (entry.current = { media_type: PARQUET, asset_id: third }),
+    (entry) => (entry.producer = { kind: "upload", at: AT, by: writer("user:other") }),
+    (entry) => (entry.revision = "7"),
+    (entry) => entry.history.splice(entry.history.length - 1, 1),
+  ]) {
+    const broken = A.change(A.clone(doc), (draft) => edit(draft.sources.usage));
+    assert.throws(() => readSource(broken, "usage"), { code: "invalid_source" });
+  }
 });
 
 test("a stored record no host write produces reads as invalid_source", () => {
@@ -279,6 +365,25 @@ test("a stored record no host write produces reads as invalid_source", () => {
   for (const id of ["broken", "unattributed"])
     assert.throws(() => readSource(doc, id), { code: "invalid_source" });
   assert.throws(() => listSources(doc), { code: "invalid_source" });
+});
+
+test("a malformed history list reads as invalid_source", () => {
+  const doc = fourWrites();
+  for (const edit of [
+    (entry) => delete entry.history,
+    (entry) => (entry.history = []),
+    (entry) => (entry.history = "states"),
+    (entry) => (entry.history[0].by = { principal: "p" }),
+    (entry) => (entry.history[0].at = "yesterday"),
+    (entry) => (entry.history[1].asset_id = "bad"),
+    (entry) => (entry.history[1].extra = true),
+    (entry) => (entry.history[0].revision = "9"),
+    (entry) => entry.history.insertAt(0, "not a state"),
+  ]) {
+    const broken = A.change(A.clone(doc), (draft) => edit(draft.sources.usage));
+    assert.throws(() => readSource(broken, "usage"), { code: "invalid_source" }, String(edit));
+    assert.throws(() => listSources(broken), { code: "invalid_source" });
+  }
 });
 
 const times = ["T10:00:00.000Z", "T11:00:00.000Z", "T12:00:00.000Z", "T13:00:00.000Z"].map(
@@ -326,17 +431,14 @@ const FOUR_STATES = [
   },
 ];
 
+const history = (doc, id = "usage") => readSource(doc, id).history;
+
 test("a source's history is every revision's file, name, time and writer, oldest first", () => {
   const doc = fourWrites();
-  assert.deepEqual(sourceHistory(doc, "usage"), { states: FOUR_STATES, older: false });
-  assert.deepEqual(readSource(doc, "usage").producer, {
-    kind: "upload",
-    at: times[3],
-    by: OWNER,
-  });
-  assert.deepEqual(sourceHistory(doc, "missing"), { states: [], older: false });
-  assert.deepEqual(sourceHistory(undefined, "usage"), { states: [], older: false });
-  assert.throws(() => sourceHistory(doc, "__proto__"), { code: "invalid_source" });
+  const source = readSource(doc, "usage");
+  assert.deepEqual(source.history, FOUR_STATES);
+  assert.equal(source.history_truncated, false);
+  assert.deepEqual(source.producer, { kind: "upload", at: times[3], by: OWNER });
 });
 
 test("two sources written in turn keep separate histories", () => {
@@ -359,8 +461,8 @@ test("two sources written in turn keep separate histories", () => {
     OWNER,
     times[3],
   );
-  const usage = sourceHistory(doc, "usage").states;
-  const latency = sourceHistory(doc, "latency").states;
+  const usage = history(doc, "usage");
+  const latency = history(doc, "latency");
   assert.deepEqual(
     usage.map(({ revision, name, asset_id, at }) => [revision, name, asset_id, at]),
     [
@@ -379,20 +481,27 @@ test("two sources written in turn keep separate histories", () => {
   );
 });
 
-test("history returns the newest states and says when older ones exist", () => {
-  let doc = write(A.clone(sourcesGenesis(uuid)), [op()]);
-  const writes = SOURCE_HISTORY_LIMIT + 10;
-  for (let revision = 1; revision < writes; revision++)
-    doc = write(doc, [op({ name: `Usage ${revision + 1}`, source_revision: String(revision) })]);
-  const { states, older } = sourceHistory(doc, "usage");
-  assert.equal(older, true);
-  assert.equal(states.length, SOURCE_HISTORY_LIMIT);
-  assert.equal(states[0].revision, String(writes - SOURCE_HISTORY_LIMIT + 1));
-  assert.equal(states.at(-1).revision, String(writes));
-  assert.equal(states.at(-1).name, `Usage ${writes}`);
-  const small = sourceHistory(doc, "usage", { limit: writes });
-  assert.equal(small.older, false);
-  assert.equal(small.states.length, writes);
+test("history keeps the newest 50 states and says when older ones exist", () => {
+  let doc = write(A.clone(sourcesGenesis(uuid)), [op({ name: "Usage 1" })]);
+  let writes = 1;
+  const writeUpTo = (count) => {
+    for (; writes < count; writes++)
+      doc = write(doc, [op({ name: `Usage ${writes + 1}`, source_revision: String(writes) })]);
+  };
+  writeUpTo(SOURCE_HISTORY_LIMIT);
+  assert.equal(history(doc).length, SOURCE_HISTORY_LIMIT);
+  assert.equal(readSource(doc, "usage").history_truncated, false, "a full list holds every state");
+  for (const count of [SOURCE_HISTORY_LIMIT + 1, SOURCE_HISTORY_LIMIT + 10]) {
+    writeUpTo(count);
+    const source = readSource(doc, "usage");
+    assert.equal(doc.sources.usage.history.length, SOURCE_HISTORY_LIMIT, "the stored list");
+    assert.equal(source.history.length, SOURCE_HISTORY_LIMIT);
+    assert.equal(source.history_truncated, true);
+    assert.equal(source.history[0].revision, String(count - SOURCE_HISTORY_LIMIT + 1));
+    assert.equal(source.history[0].name, `Usage ${count - SOURCE_HISTORY_LIMIT + 1}`);
+    assert.equal(source.history.at(-1).revision, String(count));
+    assert.equal(source.history.at(-1).name, `Usage ${count}`);
+  }
 });
 
 test("history survives the host's chunked storage and compaction", async () => {
@@ -421,7 +530,7 @@ test("history survives the host's chunked storage and compaction", async () => {
     if (index === 1) await store.compact("s", A.save(await loadStored()), []);
   }
   const chunked = await loadStored();
-  assert.deepEqual(sourceHistory(chunked, "usage").states, FOUR_STATES);
+  assert.deepEqual(history(chunked), FOUR_STATES);
   await store.compact("s", A.save(chunked), A.getHeads(chunked));
-  assert.deepEqual(sourceHistory(await loadStored(), "usage").states, FOUR_STATES);
+  assert.deepEqual(history(await loadStored()), FOUR_STATES);
 });

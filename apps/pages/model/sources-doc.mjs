@@ -24,6 +24,9 @@ export { MAX_SOURCE_NAME, MAX_SOURCES };
  *         at: string,              // ISO 8601, the host's clock when it wrote
  *         by: { principal, displayName, driver, agent?: { name?, model? } },
  *       },
+ *       history: [                 // oldest first, at most SOURCE_HISTORY_LIMIT
+ *         { revision, name, media_type, asset_id, at, by },
+ *       ],
  *     }
  *   }
  * }
@@ -36,9 +39,14 @@ export { MAX_SOURCE_NAME, MAX_SOURCES };
  * `producer` are each replaced as one map value, so a reader never pairs one
  * write's asset with another's media type, or one write's time with
  * another's writer. Every write is the host's, serialized in the Page's
- * queue, so `revision` moves once per accepted write and each source write is
- * one change; a source's history is read from those changes
- * (sourceHistory), not stored.
+ * queue, so `revision` moves once per accepted write.
+ *
+ * `history` is the source's newest states. The write that creates or changes
+ * a source appends its state in the same change and drops states from the
+ * front past the cap, so the last state always equals the entry's present
+ * name, revision, `current` and `producer`; a read refuses an entry where it
+ * doesn't. Older states remain in the document's Automerge history, but no
+ * read returns them.
  */
 
 const SOURCE_ID = new RegExp(SOURCE_ID_PATTERN);
@@ -105,6 +113,77 @@ const writerCopy = (by) => ({
   ...(by.agent && { agent: { ...by.agent } }),
 });
 
+/** How many states a source's `history` list holds: the newest. */
+export const SOURCE_HISTORY_LIMIT = 50;
+
+const STATE_FIELDS = ["revision", "name", "media_type", "asset_id", "at", "by"];
+/** A history state as a plain object, or undefined for one no host write
+ * stores. */
+function stateOf(state) {
+  if (
+    !isMap(state) ||
+    !Object.keys(state).every((key) => STATE_FIELDS.includes(key)) ||
+    !validRevision(state.revision) ||
+    !validName(state.name) ||
+    typeof state.media_type !== "string" ||
+    !validAssetId(state.asset_id) ||
+    !validTime(state.at) ||
+    !validWriter(state.by)
+  )
+    return undefined;
+  return {
+    revision: state.revision,
+    name: state.name,
+    media_type: state.media_type,
+    asset_id: state.asset_id,
+    at: state.at,
+    by: writerCopy(state.by),
+  };
+}
+const sameFile = (a, b) => a.asset_id === b.asset_id && a.media_type === b.media_type;
+const sameWrite = (a, b) => a.at === b.at && JSON.stringify(a.by) === JSON.stringify(b.by);
+
+/**
+ * A stored history list as its states, oldest first, one per revision, or
+ * undefined for a list no host write produces. `present` is the entry's own
+ * state: its name, revision, `current` and `producer`.
+ *
+ * Revisions only rise along the list, and its last state is the present
+ * entry. A list holds one state per revision unless two concurrent host
+ * candidates both wrote the source: each appended a state for the same
+ * revision, a merge keeps both, and each of the entry's fields resolves to
+ * one candidate's value on its own, so the present entry can mix them. The
+ * Page's queue never accepts both, but such a document still reads: the
+ * present name, file and writer must each be one of the run's states, and
+ * the run reads as the state whose file is the present `current` (the map
+ * that is never torn), or else the later one.
+ */
+function historyOf(list, present) {
+  if (!Array.isArray(list) || !list.length) return undefined;
+  const runs = [];
+  for (const stored of list) {
+    const state = stateOf(stored);
+    if (!state) return undefined;
+    const run = runs.at(-1);
+    if (run && Number(state.revision) < Number(run[0].revision)) return undefined;
+    if (run?.[0].revision === state.revision) run.push(state);
+    else runs.push([state]);
+  }
+  const last = runs.at(-1);
+  if (
+    last[0].revision !== present.revision ||
+    !last.some((state) => state.name === present.name) ||
+    !last.some((state) => sameFile(state, present)) ||
+    !last.some((state) => sameWrite(state, present))
+  )
+    return undefined;
+  return runs.map((run, index) =>
+    index === runs.length - 1
+      ? (run.findLast((state) => sameFile(state, present)) ?? run.at(-1))
+      : run.at(-1),
+  );
+}
+
 /** One stored source as an agent reads it, or an invalid_source refusal for
  * a record no host write produces. */
 function project(id, entry) {
@@ -123,19 +202,34 @@ function project(id, entry) {
     !validWriter(producer.by)
   )
     fail("invalid_source", "Malformed source record");
+  const by = writerCopy(producer.by);
+  const history = historyOf(entry.history, {
+    revision: entry.revision,
+    name: entry.name,
+    media_type: current.media_type,
+    asset_id: current.asset_id,
+    at: producer.at,
+    by,
+  });
+  if (!history) fail("invalid_source", "Malformed source history");
   return {
     source_id: id,
     name: entry.name,
     source_revision: entry.revision,
     asset_id: current.asset_id,
     media_type: current.media_type,
-    producer: { kind: producer.kind, at: producer.at, by: writerCopy(producer.by) },
+    producer: { kind: producer.kind, at: producer.at, by },
+    history,
+    // Each write raises the revision by one and appends one state, so a list
+    // that kept every state holds exactly `revision` of them. Fewer means the
+    // cap dropped older ones from the front.
+    history_truncated: Number(entry.revision) > history.length,
   };
 }
 
-/** One source, with its producer. A malformed id is invalid_source and an
- * unknown one source_not_found. `doc` may be undefined: a Page with no
- * sources document holds no source. */
+/** One source, with its producer and history. A malformed id is
+ * invalid_source and an unknown one source_not_found. `doc` may be
+ * undefined: a Page with no sources document holds no source. */
 export function readSource(doc, sourceId) {
   if (!validSourceId(sourceId)) fail("invalid_source", "Invalid source ID");
   const sources = sourceMap(doc);
@@ -144,64 +238,19 @@ export function readSource(doc, sourceId) {
   return project(sourceId, sources[sourceId]);
 }
 
-/** How many of a source's past states sourceHistory returns: the newest. */
-export const SOURCE_HISTORY_LIMIT = 50;
-
-/**
- * A source's states, oldest to newest, one per revision: `{ revision, name,
- * media_type, asset_id, at, by }`, the entry as each write left it. They are
- * read from the document's own changes, not stored: every source write is
- * one host change, so replaying the changes in causal order onto an empty
- * document and reading the entry after each one yields every revision. The
- * replay applies each change once, so its cost grows with the number of
- * changes, not their square, as viewing the document at each change's heads
- * would. Only the newest `limit` states are kept; `older` says that earlier
- * ones exist. A state whose revision equals the one before it (concurrent
- * host candidates, which the Page's queue never accepts both of) replaces
- * it, so the merged winner is what the history shows. `doc` may be undefined,
- * and an id the document never held has no states.
- */
-export function sourceHistory(doc, sourceId, { limit = SOURCE_HISTORY_LIMIT } = {}) {
-  if (!validSourceId(sourceId)) fail("invalid_source", "Invalid source ID");
-  const states = [];
-  let older = false;
-  if (!doc) return { states, older };
-  let replay = A.init();
-  try {
-    for (const change of A.getAllChanges(doc)) {
-      [replay] = A.applyChanges(replay, [change]);
-      const sources = sourceMap(replay);
-      if (!Object.hasOwn(sources, sourceId)) continue;
-      const source = project(sourceId, sources[sourceId]);
-      const state = {
-        revision: source.source_revision,
-        name: source.name,
-        media_type: source.media_type,
-        asset_id: source.asset_id,
-        at: source.producer.at,
-        by: source.producer.by,
-      };
-      if (states.at(-1)?.revision === state.revision) states[states.length - 1] = state;
-      else states.push(state);
-      if (states.length > limit) {
-        states.shift();
-        older = true;
-      }
-    }
-  } finally {
-    A.free(replay);
-  }
-  return { states, older };
-}
-
-/** Every source, ordered by id, without producers. Empty for a Page with no
- * sources document. */
+/** Every source, ordered by id, without producers or history. Empty for a
+ * Page with no sources document. */
 export function listSources(doc) {
   const sources = sourceMap(doc);
   return Object.keys(sources)
     .sort()
     .map((id) => {
-      const { producer: _producer, ...source } = project(id, sources[id]);
+      const {
+        producer: _producer,
+        history: _history,
+        history_truncated: _truncated,
+        ...source
+      } = project(id, sources[id]);
       return source;
     });
 }
@@ -244,8 +293,9 @@ export function validateSourceBatch(operations) {
  * `mediaTypes` maps each named asset id to the media type its stored record
  * holds; `by` is the writer (author.mjs authorOf) and `at` the host's time
  * for the batch, read once when the caller gives none. Each operation checks
- * the revision its caller saw (null creates), then mints the next revision.
- * Returns the receipt's per-operation edits.
+ * the revision its caller saw (null creates), then mints the next revision
+ * and appends the new state to the source's history. Returns the receipt's
+ * per-operation edits.
  */
 export function setSources(doc, operations, { mediaTypes, by, at = new Date().toISOString() }) {
   if (!validWriter(by) || !validTime(at)) throw Error("A source write needs its writer and time");
@@ -261,7 +311,8 @@ export function setSources(doc, operations, { mediaTypes, by, at = new Date().to
     const name = op.name.trim();
     const current = { media_type: mediaType, asset_id: op.asset_id };
     const producer = { kind: "upload", at, by: writerCopy(by) };
-    if (!previous) sources[id] = { name, revision, current, producer };
+    const state = { revision, name, ...current, at, by: writerCopy(by) };
+    if (!previous) sources[id] = { name, revision, current, producer, history: [state] };
     else {
       const entry = sources[id];
       if (entry.name !== name) entry.name = name;
@@ -269,6 +320,9 @@ export function setSources(doc, operations, { mediaTypes, by, at = new Date().to
       if (previous.asset_id !== current.asset_id || previous.media_type !== current.media_type)
         entry.current = current;
       entry.producer = producer;
+      entry.history.push(state);
+      const excess = entry.history.length - SOURCE_HISTORY_LIMIT;
+      if (excess > 0) entry.history.splice(0, excess);
     }
     return { op: "set_source", source_id: id, source_revision: revision };
   });

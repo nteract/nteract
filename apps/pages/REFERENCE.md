@@ -1396,7 +1396,7 @@ A Page's named sources live in a third Automerge document, `pages.sources`
 format 1 ([model/sources-doc.mjs](model/sources-doc.mjs)), owned by the same
 Page Durable Object. Only the host writes it. Its root is `sources`, a map
 from `source_id` to `{ name, revision, current: { media_type, asset_id },
-producer: { kind, at, by } }`. `revision` is a decimal string the host
+producer: { kind, at, by }, history }`. `revision` is a decimal string the host
 mints, `"1"` and then one more per accepted write; `media_type` comes from the
 stored asset's record; `producer.kind` is `upload`. `producer.at` is the
 host's ISO 8601 time for the write, read once per batch, and `producer.by`
@@ -1407,13 +1407,23 @@ write's retry fingerprint, so a retry that changes it is `409
 nonce_conflict`. `current` and `producer` are each replaced as one map. A
 Page holds up to 64 sources. Nothing on the Page draws from a source yet.
 
-A source's history isn't stored. Each source write is one host change, and
-the document keeps every change, so `sourceHistory` replays the changes in
-causal order onto an empty document and reads the entry after each one: one
-state per revision, `{ revision, name, media_type, asset_id, at, by }`,
-oldest first. It keeps the newest 50 and reports whether older ones exist.
-The replay applies each change once, so a read costs time linear in the
-document's changes, every source's writes included.
+`history` is an Automerge list of the source's newest states, oldest first,
+each `{ revision, name, media_type, asset_id, at, by }`. The write that
+creates or changes a source appends its state in the same change and deletes
+from the front past 50 states, so the last state always equals the entry's
+present name, revision, `current` and `producer`; a read refuses an entry
+where it doesn't as `invalid_source`. `history_truncated` is true when
+`revision` exceeds the list's length: each write raises the revision by one
+and appends one state, so only the cap makes the list shorter. Older states
+remain in the document's Automerge history, but no read returns them. Two
+concurrent host candidates for one source (the Page's queue never accepts
+both) each append a state for the same revision; a merged document reads
+that revision as the state whose file is the present `current`.
+
+A full list costs about 12 KiB in `A.save` for one source with 50 writes and
+693 KiB for 64 sources with 50 writes each. The document keeps every change,
+deleted states included, so it grows by about 0.2 KiB per write whatever the
+cap; 64 sources with 100 writes each save to 1.4 MiB.
 
 A Page has at most one sources document, and a Page with no sources has none.
 Its id is derived from the Page ID with its own label, as the comments
