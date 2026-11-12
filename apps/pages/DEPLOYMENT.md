@@ -1416,6 +1416,27 @@ caches a record for at most 30 seconds, so a request sees a new record at
 most 30 seconds after the exchange that wrote it, and an open sync socket,
 which re-authenticates every 15 seconds, at most 45 seconds after.
 
+A Project's owner can share it with one organization the same way
+(`acl.organizationAccess` on the Project record, set through
+`manage_project_access`). Its members hold that role on the Project and on
+every Page in it, through the Project as a member does, and only while both
+their lease and the Page host's 15-second Project lease are current. Nobody
+is added to the Project's members, and nothing is written on its Pages.
+There is no member list to send discovery hints to, so a member who opens
+the Project records an opened hint in their own Catalog
+(`project-opened/<space_id>`, [worker/project-opened.mjs](worker/project-opened.mjs)),
+apart from member hints. The list reads owned Projects, member hints and
+opened hints, each Project once, and shows one only while the person can read
+it. The owner sends members the Project's link. Writing an opened hint does
+storage operations only: a re-open within a day writes nothing, and a Catalog
+keeps the newest 200 by when they were written, so the oldest goes first. An
+opened hint never counts against the 500 member hints and never refuses a
+write. A member removed from a Project with an organization grant gets an
+opened hint in place of their member hint. Deleting the Project or clearing
+the grant sends nothing to the organization's members: their opened hints stay
+hidden and age out. A Project with an organization grant is shared, so a Page
+can't be moved across its boundary.
+
 The auth log's `kilo_token.accepted` line carries how many organizations the
 exchange reported (`organizations`). No organization id or name reaches a log.
 

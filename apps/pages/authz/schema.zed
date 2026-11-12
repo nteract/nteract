@@ -54,11 +54,14 @@ definition project {
 	/** owner is the person who owns the project. */
 	relation owner: user
 
-	/** editor contributes to every item in the project. */
+	/**
+	 * editor, commenter and viewer reach every item in the project.
+	 * organization#member is the project's organization grant, in the relation
+	 * its role names. Projects have no removal tombstone: a member row and the
+	 * organization grant combine.
+	 */
 	relation editor: user | group#member | organization#member
-	relation commenter: user | group#member
-
-	/** viewer reads every item in the project. organization#member is company view. */
+	relation commenter: user | group#member | organization#member
 	relation viewer: user | group#member | organization#member
 
 	/** contribute is the proposal's project.contribute: owner + editor. */

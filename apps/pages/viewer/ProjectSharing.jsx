@@ -4,6 +4,8 @@ import { Share2 } from "lucide-react";
 import { SharingPanel, nativePrimitives } from "../../../src/components/sharing/SharingPanel.tsx";
 import { projectPath } from "../shared/routes.mjs";
 import { ROLE_LABELS } from "./sharing-roles.mjs";
+import { linkAccessProjection } from "./sharing-projection.mjs";
+import { LinkAccess } from "./LinkAccess.jsx";
 import "./sharing-panel.css";
 
 export function projectSharingTransition(state, event) {
@@ -196,6 +198,12 @@ export function ProjectSharing({
       : (request.principal ?? request.invite_id)
     : null;
   const failed = state.name === "failed";
+  // Only the owner reads the Project's access, so a loaded value is the
+  // owner's: its organization choices are theirs to manage.
+  const linkAccess =
+    owner && state.value
+      ? linkAccessProjection({ ...state.value, access: { canManageAccess: true } })
+      : null;
   const message =
     (failed && state.error) ||
     copyStatus ||
@@ -295,6 +303,16 @@ export function ProjectSharing({
             primitives={primitives}
             concealEmails
           />
+          {linkAccess && !failed && (
+            <LinkAccess
+              linkAccess={linkAccess}
+              resource="Project"
+              busy={state.name !== "ready"}
+              refreshing={state.name === "loading"}
+              onChange={save}
+              onRefresh={() => dispatch({ type: "load" })}
+            />
+          )}
           {failed && (
             <button
               type="button"
