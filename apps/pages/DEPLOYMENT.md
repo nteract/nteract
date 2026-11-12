@@ -1237,8 +1237,41 @@ A Kilo deployment differs in three ways:
   deployment is refused with `api_keys_unsupported` (401) before the Worker
   makes any outbound request. A Kilo credential is never forwarded anywhere
   but Kilo's own exchange.
-- Email invitations cannot be accepted, because Kilo accounts carry no
-  verified email.
+- A person can accept an email invitation only when Kilo vouches for their
+  address. Kilo's exchange answers `{"user": {"id", "name", "verified_email"?}}`
+  and sends `verified_email`, the account's primary address, only when it
+  holds proof the account controls it. Pages keeps it only when an invitation
+  could name it (the check inviting by email uses); any other value is
+  treated as absent and the sign-in still succeeds. The exception is size:
+  Pages refuses any exchange answer over 16 KiB before reading a field, so an
+  answer made that large by `verified_email` fails the browser sign-in
+  (`kilo_protocol_error`) and the token exchange (503
+  `sign_in_unavailable`). Without a usable address, invitations by email
+  can't be accepted and email quota rules don't apply.
+
+A browser session keeps the address as signed email proof, not as the
+address. The proof is good for 6 hours from sign-in
+(`NOTEBOOK_CLOUD_IDENTITY_PROOF_MAX_AGE_SECONDS`), so a Kilo session claims
+invitations for the first 6 of its 8 hours; after that the person signs in
+again.
+
+Claiming an invitation keeps the invitation's address with the claimant. The
+member entry stores the principal, the display name and that address, and
+the owner sees the three together in Page sharing, Project sharing and the
+list of collaborators who lose access when a Page or Project is deleted. That
+entry stays after the proof expires and after the session ends, until the
+owner removes the member; it is the address the owner invited, as Kilo
+verified it at the claim.
+
+An OAuth client connected from that session keeps the same proof, and
+claims invitations until 6 hours after the sign-in that approved it, whatever
+its own grant's lifetime. Quota rules read the proof at its own verification
+time, so they apply for the session's whole life and the grant's. A Kilo
+agent token (below) carries the address for its lease and claims
+invitations with it; quota rules read only API-key addresses and browser or
+OAuth proof, so a Kilo token gets the default quota. Company-domain view
+stays off on a Kilo deployment whatever Kilo sends: the Kilo provider
+reviews no company domains.
 
 ### Kilo agent tokens
 
@@ -1265,8 +1298,8 @@ Content-Type: application/json
 {"token": "<token>", "audience": "<PAGES_KILO_AUDIENCE>"}
 ```
 
-Kilo answers `200 {"user": {"id", "name"}, "organizations": [...]}`, and the
-person is `<PAGES_KILO_PRINCIPAL_NAMESPACE or user:kilo>:<user.id>`, the
+Kilo answers `200 {"user": {"id", "name", "verified_email"?}, "organizations": [...]}`,
+and the person is `<PAGES_KILO_PRINCIPAL_NAMESPACE or user:kilo>:<user.id>`, the
 principal the browser sign-in gives them. The call times out after 10 seconds.
 The token reaches `/mcp`, `/api/tools`, `GET /whoami` and the internal hops
 they forward to, with the reach an API key has there. Every other route

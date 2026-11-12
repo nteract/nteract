@@ -79,7 +79,7 @@ test("the guide, the connect page, the recipes and the refusals say what the pro
   assert.ok(credentialRequired(production).message.includes(`Bearer <${key.name}>`));
 });
 
-test("PAGES_KILO_APP_URL selects Kilo, which has no API key and no verified email", () => {
+test("PAGES_KILO_APP_URL selects Kilo, which has no API key and vouches for some accounts' email", () => {
   assert.deepEqual(identityProvider(kilo), {
     id: "kilo",
     label: "Kilo",
@@ -142,7 +142,7 @@ test("the guide and the connect page for a provider with no API key describe OAu
   assert.match(guide, /^- auth_required \(401\): .*OAuth/m);
   assert.match(
     guide,
-    /carry no verified email, so an invitation by email\s+cannot be accepted here yet/,
+    /Only an account whose email address Kilo has verified can accept an\s+invitation by email here/,
   );
   assert.match(guide, /\/api\/tools accepts no\s+OAuth token/);
   assert.match(guide, /"X-Pages-Agent": "\{env:PAGES_AGENT\}" to the headers object/);
@@ -166,9 +166,10 @@ test("the guide keeps the same error codes, email note and client list for each 
   const anyClient = { ...kilo, PAGES_OAUTH_ANY_CLIENT_DOCUMENT: "true" };
   assert.match(agentGuide(anyClient), /client ID is the https URL of its client ID metadata/);
   assert.match(agentGuide(kilo), /ChatGPT, Claude and Claude Code by their client ID/);
-  // The email note belongs to a provider with no verified email, not to Kilo by name.
-  assert.doesNotMatch(agentGuide(production), /carry no verified email/);
-  assert.match(agentGuide(kilo), /carry no verified email/);
+  // The email note belongs to a provider that doesn't verify every account's
+  // email, not to Kilo by name.
+  assert.doesNotMatch(agentGuide(production), /whose email address \w+ has verified/);
+  assert.match(agentGuide(kilo), /whose email address Kilo has verified/);
   // Both variants answer every code a client can receive.
   assert.match(agentGuide(production), /^- invalid_api_key/m);
   assert.doesNotMatch(agentGuide(production), /api_keys_unsupported/);
@@ -201,6 +202,13 @@ test("a deployment can turn on only the provider's reviewed company domains", ()
   assert.deepEqual(on(" Anaconda.com "), ["anaconda.com"]);
   assert.deepEqual(on("anaconda.com, example.com"), []);
   assert.deepEqual(on("example.com"), []);
+  // Kilo reviews no company domains, so a Kilo deployment turns none on,
+  // whatever address Kilo verifies for an account.
+  for (const domains of ["anaconda.com", "example.com"])
+    assert.deepEqual(
+      companyViewDomains({ ...env, ...kilo, PAGES_COMPANY_VIEW_DOMAINS: domains }),
+      [],
+    );
 });
 
 // Code the Worker and the viewer ship: the modules at the top level, and
