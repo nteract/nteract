@@ -23,7 +23,8 @@ export function LinkAccess({ linkAccess, resource, busy, refreshing, onChange, o
           ? { action: "set_organization_access", organization_id: null }
           : { action: "set_domain_view", domain: null },
       );
-    if (option.kind === "domain") return onChange({ action: "set_domain_view", domain: option.value });
+    if (option.kind === "domain")
+      return onChange({ action: "set_domain_view", domain: option.value });
     onChange({
       action: "set_organization_access",
       organization_id: option.id,

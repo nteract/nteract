@@ -178,7 +178,7 @@ export function publicSpace(record, identity) {
     title: record.title,
     description: record.description ?? "",
     document_id: record.document_id,
-    role: identity ? projectDecision(record, identity).basis.relation ?? "none" : "owner",
+    role: identity ? (projectDecision(record, identity).basis.relation ?? "none") : "owner",
     revision: record.revision ?? 0,
     owner: record.owner,
     created_at: record.created_at,

@@ -31,7 +31,10 @@ const project = (organizationAccess, members = {}) => ({
 });
 const memberRow = (role) => ({ role, generation: 1 });
 /** An identity whose organization leases are `organizations`. */
-const identity = (organizations = [acme], { expiresAt = now + 30_000, space = namespace } = {}) => ({
+const identity = (
+  organizations = [acme],
+  { expiresAt = now + 30_000, space = namespace } = {},
+) => ({
   principal: reader,
   namespace,
   canWrite: true,
@@ -65,7 +68,10 @@ test("a Project's organization grant gives each role to current members on the P
   const expected = {
     viewer: { page: ["read"], project: ["read"] },
     commenter: { page: ["read", "comment"], project: ["read"] },
-    editor: { page: ["read", "comment", "edit", "create_items"], project: ["read", "create_items"] },
+    editor: {
+      page: ["read", "comment", "edit", "create_items"],
+      project: ["read", "create_items"],
+    },
   };
   for (const [role, capabilities] of Object.entries(expected)) {
     const record = project(grant(role));
@@ -80,7 +86,10 @@ test("a Project's organization grant gives each role to current members on the P
 
 test("the grant holds until the earlier of the Project lease and the organization lease", () => {
   const record = project(grant("editor"));
-  assert.equal(onPage(record, identity([acme], { expiresAt: now + 5_000 })).valid_until, now + 5_000);
+  assert.equal(
+    onPage(record, identity([acme], { expiresAt: now + 5_000 })).valid_until,
+    now + 5_000,
+  );
   assert.equal(
     onPage(record, identity([acme], { expiresAt: now + 60_000 })).valid_until,
     now + PROJECT_ACCESS_LEASE_MS,
@@ -121,8 +130,7 @@ test("a member row and the organization grant combine: the higher role wins", ()
 // ---------------------------------------------------------------------------
 // Through the hosts, with Kilo agent tokens.
 
-const manage = (w, who, args) =>
-  w.call(who, "manage_project_access", { nonce: w.key(), ...args });
+const manage = (w, who, args) => w.call(who, "manage_project_access", { nonce: w.key(), ...args });
 const share = (w, projectId, organization_id, role, expected_revision) =>
   manage(w, "owner", {
     project_id: projectId,
