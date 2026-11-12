@@ -39,7 +39,12 @@ export async function recordOpenedProject(storage, { space_id, owner }, now = Da
   const oldest = [...hints]
     .sort(([, a], [, b]) => (a?.at ?? 0) - (b?.at ?? 0))
     .slice(0, hints.size - OPENED_PROJECT_HINTS);
-  for (const [name] of oldest) await storage.delete(name);
+  // Another write may have refreshed a hint since the list, so each one goes
+  // only while its `at` is still the one listed. A refresh that lands between
+  // that read and the delete still loses the list entry until the person's
+  // next open writes it again.
+  for (const [name, hint] of oldest)
+    if ((await storage.get(name))?.at === hint?.at) await storage.delete(name);
 }
 
 /** Every opened hint in `storage`, as `{ space_id, owner }` candidates. */
