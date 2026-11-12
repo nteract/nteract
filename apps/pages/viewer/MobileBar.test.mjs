@@ -229,3 +229,21 @@ test("with any node selected, text style, marks and lists are disabled", async (
   for (const label of ["Text style", "Bold", "Italic", "Bulleted list"])
     assert.equal(view.bar.querySelector(`[aria-label="${label}"]`).disabled, true, label);
 });
+
+test("in a code block the marks are disabled; text style, lists and the rest stay", async (t) => {
+  const view = await renderBar(t, {
+    format: { codeBlock: true, style: "code", undo: true, redo: true, link: true },
+  });
+  for (const [label, disabled] of [
+    ["Text style", false],
+    ["Bold", true],
+    ["Italic", true],
+    ["Bulleted list", false],
+  ])
+    assert.equal(view.bar.querySelector(`[aria-label="${label}"]`).disabled, disabled, label);
+  await click(view.button("More formatting"));
+  const off = [...view.bar.querySelectorAll("[role='menuitem']")]
+    .filter((item) => item.disabled)
+    .map((item) => item.textContent);
+  assert.deepEqual(off, ["Highlight", "Strikethrough", "Inline code", "Link"]);
+});

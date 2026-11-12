@@ -316,6 +316,14 @@ const diagram = Widget.define({
   propagateEvent: false,
 });
 
+// A code block's controls (the language menu, a diagram's Preview button) are
+// point widgets at the start of its content, before the caret. CSS positions
+// them, so their place in the DOM is free. It must not be the end of the
+// content: on an empty last line the caret would sit directly before the
+// control, Chromium would address paste and beforeinput to it, and Wordgard
+// drops events aimed at a widget, so the paste would insert nothing.
+const CODE_CONTROL = Object.freeze({ side: -1 });
+
 const previewDiagram = Widget.create({
   render(_value, editor) {
     const button = diagramButton("Preview diagram", "preview", "wordgard-diagram-preview");
@@ -375,10 +383,7 @@ export function wordgardWidgets() {
         if (!isMermaid(node)) return;
         if (showCode(state, node, pos)) {
           if (!state.readOnly && codeSource(node).trim())
-            entries.push([
-              Decoration.Point.widget(previewDiagram, { side: 1 }),
-              pos + node.length - 1,
-            ]);
+            entries.push([Decoration.Point.widget(previewDiagram, CODE_CONTROL), pos + 1]);
         } else {
           entries.push([
             Decoration.Point.shape(
@@ -442,9 +447,9 @@ export function wordgardCodeLanguages(languages) {
           entries.push([
             Decoration.Point.widget(
               languageMenu.of({ languages, value: node.mark(CodeBlockLanguage) ?? "" }),
-              { side: 1 },
+              CODE_CONTROL,
             ),
-            pos + node.length - 1,
+            pos + 1,
           ]);
       });
       return Decoration.Point.set(entries);
