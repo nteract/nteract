@@ -22,6 +22,7 @@ const selectorKeys = [
   "max_bytes",
   "revision",
   "sources",
+  "source_id",
 ];
 const commentKeys = ["state", "node_id", "thread_ids", "include_messages", "max_bytes", "revision"];
 /** Read refusals that reach the caller with their own code. */
@@ -57,8 +58,10 @@ function validate(operation, args) {
     invalid("comments must be none, summary, open or all");
   if (args.include_presence !== undefined && typeof args.include_presence !== "boolean")
     invalid("include_presence must be a boolean");
-  if (args.sources !== undefined && args.sources !== true && typeof args.sources !== "string")
-    invalid("sources is true to list the Page's sources, or one source ID");
+  if (args.sources !== undefined && typeof args.sources !== "boolean")
+    invalid("sources must be a boolean: true lists the Page's sources");
+  if (args.source_id !== undefined && typeof args.source_id !== "string")
+    invalid("source_id must be one source's ID");
   return { maxBytes, offset, limit };
 }
 /** A read's `revision` against the revision it reads. The handle resolves
@@ -94,13 +97,14 @@ function outlinePage(entries, offset, limit) {
   };
 }
 
-/** The sources a read_page asks for with `sources`: `{ sources }` listing
- * every source for true, `{ source }` with its producer for one id. A Page
- * with no sources document lists none. */
-function sourcesRead(sourcesDoc, selector) {
-  return selector === true
-    ? { sources: listSources(sourcesDoc) }
-    : { source: readSource(sourcesDoc, selector) };
+/** The sources a read_page asks for: `{ sources }` listing every source
+ * for `sources: true`, `{ source }` with its producer for `source_id`, or
+ * both. A Page with no sources document lists none. */
+function sourcesRead(sourcesDoc, { sources, source_id }) {
+  return {
+    ...(sources === true && { sources: listSources(sourcesDoc) }),
+    ...(source_id !== undefined && { source: readSource(sourcesDoc, source_id) }),
+  };
 }
 
 /** One captured CRDT revision supplies content, comments and revisions.
@@ -113,9 +117,10 @@ function sourcesRead(sourcesDoc, selector) {
  * `revision`. `heads` beside the body is the Page revision read, for the
  * host's own use.
  *
- * read_page's `sources` reads the Page's sources (`sourcesDoc`). Alone, it
- * reads them without the Page's content; beside other selectors, such as
- * include_content false, it adds them to that read. */
+ * read_page's `sources` and `source_id` read the Page's sources
+ * (`sourcesDoc`). Alone, they read them without the Page's content; beside
+ * other selectors, such as include_content false, they add them to that
+ * read. */
 export async function readTool(
   doc,
   operation,
@@ -126,7 +131,9 @@ export async function readTool(
   const commentHeads = commentsDoc ? A.getHeads(commentsDoc) : undefined;
   const sourceHeads = sourcesDoc ? A.getHeads(sourcesDoc) : undefined;
   // validate() refuses arguments that aren't an object.
-  const { sources: sourceSelector, ...contentArgs } = args ?? {};
+  const { sources, source_id, ...contentArgs } = args ?? {};
+  const sourceSelector = { sources, source_id };
+  const readsSources = sources === true || source_id !== undefined;
   let settings = { maxBytes: DEFAULT_READ_BYTES, offset: 0, limit: 100 },
     legacy = false,
     content,
@@ -147,7 +154,7 @@ export async function readTool(
         comments: projectReadComments(doc, { state: "open", ...filters }, commentsDoc),
       };
     } else if (
-      sourceSelector !== undefined &&
+      readsSources &&
       Object.keys(contentArgs).every((key) => ["page_id", "max_bytes", "revision"].includes(key))
     ) {
       payload = {
@@ -188,7 +195,7 @@ export async function readTool(
               ),
         ...(content.selection && { selection: content.selection }),
         ...(args.include_presence && { presence: getPresence(doc) }),
-        ...(sourceSelector !== undefined && sourcesRead(sourcesDoc, sourceSelector)),
+        ...(readsSources && sourcesRead(sourcesDoc, sourceSelector)),
       };
     }
   } catch (error) {

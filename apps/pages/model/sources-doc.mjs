@@ -165,9 +165,45 @@ export function validateSourceBatch(operations) {
  * receipt's per-operation edits.
  */
 export function setSources(doc, operations, { mediaTypes, principal }) {
-  validateSourceBatch(operations);
+  const previousOf = checkSources(doc, operations);
   if (!isMap(doc.sources)) doc.sources = {};
   const sources = doc.sources;
+  return operations.map((op, index) => {
+    const id = op.source_id;
+    const previous = previousOf[index];
+    const mediaType = mediaTypes.get(op.asset_id);
+    if (typeof mediaType !== "string") throw Error("A source's asset has no checked media type");
+    const revision = String(previous ? Number(previous.source_revision) + 1 : 1);
+    const name = op.name.trim();
+    const current = { media_type: mediaType, asset_id: op.asset_id };
+    const producer = { kind: "upload", principal };
+    if (!previous) sources[id] = { name, revision, current, producer };
+    else {
+      const entry = sources[id];
+      if (entry.name !== name) entry.name = name;
+      entry.revision = revision;
+      if (previous.asset_id !== current.asset_id || previous.media_type !== current.media_type)
+        entry.current = current;
+      if (
+        previous.producer.kind !== producer.kind ||
+        previous.producer.principal !== producer.principal
+      )
+        entry.producer = producer;
+    }
+    return { op: "set_source", source_id: id, source_revision: revision };
+  });
+}
+
+/**
+ * Every refusal setSources can give a batch, checked against `doc` without
+ * writing: the batch's shape, the Page's source cap, and each operation's
+ * source_revision against the source it names. `doc` may be a sources
+ * document's genesis, for a Page that has none yet. Returns each operation's
+ * current source, or null for one it creates.
+ */
+export function checkSources(doc, operations) {
+  validateSourceBatch(operations);
+  const sources = sourceMap(doc);
   const created = operations.filter((op) => !Object.hasOwn(sources, op.source_id)).length;
   if (created && Object.keys(sources).length + created > MAX_SOURCES)
     fail("invalid_source", `A Page holds up to ${MAX_SOURCES} sources`);
@@ -191,26 +227,8 @@ export function setSources(doc, operations, { mediaTypes, principal }) {
           : "This source changed since it was read; read it again",
         { source_id: id, source_revision: previous.source_revision },
       );
-    const mediaType = mediaTypes.get(op.asset_id);
-    if (typeof mediaType !== "string") throw Error("A source's asset has no checked media type");
-    const revision = String(previous ? Number(previous.source_revision) + 1 : 1);
-    if (!validRevision(revision)) fail("invalid_source", "This source's revisions are exhausted");
-    const name = op.name.trim();
-    const current = { media_type: mediaType, asset_id: op.asset_id };
-    const producer = { kind: "upload", principal };
-    if (!previous) sources[id] = { name, revision, current, producer };
-    else {
-      const entry = sources[id];
-      if (entry.name !== name) entry.name = name;
-      entry.revision = revision;
-      if (previous.asset_id !== current.asset_id || previous.media_type !== current.media_type)
-        entry.current = current;
-      if (
-        previous.producer.kind !== producer.kind ||
-        previous.producer.principal !== producer.principal
-      )
-        entry.producer = producer;
-    }
-    return { op: "set_source", source_id: id, source_revision: revision };
+    if (previous && !validRevision(String(Number(previous.source_revision) + 1)))
+      fail("invalid_source", "This source's revisions are exhausted");
+    return previous;
   });
 }

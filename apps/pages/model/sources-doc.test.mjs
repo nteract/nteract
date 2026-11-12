@@ -200,18 +200,28 @@ test("reads refuse malformed and unknown ids; a Page with no document lists none
 
 test("concurrent host candidates never tear an asset from its media type, and distinct sources survive", () => {
   const base = initial();
-  const left = write(A.clone(base), [
-    op({ asset_id: second, source_revision: "1" }),
-    op({ source_id: "daily" }),
+  // Two distinct asset and media type pairs, so a torn merge shows.
+  const OTHER = "application/x-other-dataset";
+  const pairs = new Map([
+    [second, PARQUET],
+    [third, OTHER],
   ]);
-  const right = write(A.clone(base), [
+  const candidate = (operations) =>
+    A.change(A.clone(base), (draft) => {
+      setSources(draft, operations, { mediaTypes: pairs, principal: "user:test:owner" });
+    });
+  const left = candidate([
+    op({ asset_id: second, source_revision: "1" }),
+    op({ source_id: "daily", asset_id: second }),
+  ]);
+  const right = candidate([
     op({ asset_id: third, source_revision: "1" }),
-    op({ source_id: "latency" }),
+    op({ source_id: "latency", asset_id: third }),
   ]);
   const merged = A.merge(left, right);
   const value = readSource(merged, "usage");
   assert.ok([second, third].includes(value.asset_id));
-  assert.equal(value.media_type, PARQUET);
+  assert.equal(value.media_type, pairs.get(value.asset_id), "an asset keeps its own media type");
   assert.equal(value.source_revision, "2");
   assert.equal(listSources(merged).length, 3);
   // Both candidates stay recoverable as conflicts. The host writes one

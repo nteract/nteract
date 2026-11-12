@@ -153,13 +153,14 @@ const readSelectors = {
     maximum: 100,
     description: "Outline entries (default 100). Follow next_offset until null.",
   },
-  // The host also takes a source_id string here, to read one source with its
-  // producer. The portable schema subset has no boolean-or-string type, so
-  // the schema states the listing form.
   sources: {
     type: "boolean",
-    description:
-      "true lists the Page's sources (a source_id string reads one). Alone, skips content.",
+    description: "true lists the Page's named sources. Alone, skips content.",
+  },
+  source_id: {
+    type: "string",
+    pattern: SOURCE_ID_PATTERN,
+    description: "Reads one source, with who set it. Alone, skips content.",
   },
   max_bytes: readBudget,
 };

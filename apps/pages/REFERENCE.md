@@ -1430,10 +1430,14 @@ dataset stored on this Page (`dataset_not_found` otherwise). The batch names
 the Page `revision` it read and is fenced like any edit, but a newer Page
 revision doesn't refuse it. The receipt carries `sources_revision` and
 `result.edits` of `{ op, source_id, source_revision }`; the nonce shares
-`edit_page`'s lane. `read_page` takes `sources`: true lists `source_id`,
-`name`, `source_revision`, `asset_id` and `media_type`; a source id reads
-one with `producer`. Alone it reads no Page content; beside other selectors
-it adds to them. Reads name `sources_revision` once the document exists.
+`edit_page`'s lane. A write is checked against the sources the Page holds
+before the host creates the document, so a refused first write creates
+nothing, and a journaled source write whose apply didn't finish is replayed
+before a new one is built. `read_page` takes `sources: true`, which lists
+`source_id`, `name`, `source_revision`, `asset_id` and `media_type`, and
+`source_id`, which reads one source with `producer`; both together return
+both. Alone they read no Page content; beside other selectors they add to
+them. Reads name `sources_revision` once the document exists.
 
 Trash and restore keep the document. Permanent deletion deletes its stored
 bytes with the Page's. Page assets are never collected, so a source's

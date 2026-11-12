@@ -5,12 +5,14 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as A from "@automerge/automerge";
 import { createAuthFixture } from "../auth-fixtures.mjs";
 import { MEMBER_FORMATS } from "../model/document-types.mjs";
 import { Storage, pageId } from "./trash-fixture.mjs";
 import { derivedDocUuid, derivedDocumentId } from "./comments-store.mjs";
 import { SOURCES_MODULE } from "./document-modules.mjs";
 import { Page } from "./index.mjs";
+import { treeOf } from "./plain-sync.mjs";
 
 const PARQUET = "application/vnd.apache.parquet";
 const first = "a".repeat(64),
@@ -107,7 +109,24 @@ async function sourcesHost(t) {
   const sourcesId = derivedDocumentId(await derivedDocUuid(SOURCES_MODULE.derived.label, pageId));
   const record = () => storage.get("host/document");
   const plainKeys = async () => [...(await storage.list({ prefix: "plain/" })).keys()];
-  return { auth, storage, assets, host, page, call, tool, setSource, sourcesId, record, plainKeys };
+  // The sources document's own stored history: its manifest and chunks.
+  const sourcesStored = async () => [
+    ...(await storage.list({ prefix: `plain/sync/${treeOf(sourcesId)}/` })).keys(),
+  ];
+  return {
+    auth,
+    storage,
+    assets,
+    host,
+    page,
+    call,
+    tool,
+    setSource,
+    sourcesId,
+    record,
+    plainKeys,
+    sourcesStored,
+  };
 }
 
 const usage = (fields = {}) => ({
@@ -121,6 +140,7 @@ const usage = (fields = {}) => ({
 test("a Page has no sources document until its first source write", async (t) => {
   const h = await sourcesHost(t);
   assert.deepEqual((await h.record()).documentFormats, MEMBER_FORMATS);
+  assert.deepEqual(await h.sourcesStored(), []);
   const empty = await h.tool(h.host, "read_page", { sources: true });
   assert.equal(empty.status, 200);
   assert.deepEqual(empty.body.sources, []);
@@ -168,7 +188,7 @@ test("a Page has no sources document until its first source write", async (t) =>
     },
   ]);
   assert.equal(listed.body.sources_revision, written.body.sources_revision);
-  const one = await h.tool(h.host, "read_page", { sources: "usage" });
+  const one = await h.tool(h.host, "read_page", { source_id: "usage" });
   assert.deepEqual(one.body.source.producer, {
     kind: "upload",
     principal: `user:anaconda-fixture:${h.auth.subject}`,
@@ -191,7 +211,7 @@ test("set_source creates, renames and refreshes, and refuses stale, missing and 
     usage({ name: "Daily usage", asset_id: second, source_revision: "2" }),
   ]);
   assert.equal(refreshed.status, 200);
-  const read = await h.tool(h.host, "read_page", { sources: "usage" });
+  const read = await h.tool(h.host, "read_page", { source_id: "usage" });
   assert.equal(read.body.source.name, "Daily usage");
   assert.equal(read.body.source.asset_id, second);
   assert.equal(read.body.source.source_revision, "3");
@@ -209,7 +229,7 @@ test("set_source creates, renames and refreshes, and refuses stale, missing and 
   assert.equal(unknown.status, 404);
   assert.equal(unknown.body.code, "source_not_found");
   assert.equal(unknown.body.source_revision, null);
-  const unread = await h.tool(h.host, "read_page", { sources: "other" });
+  const unread = await h.tool(h.host, "read_page", { source_id: "other" });
   assert.equal(unread.status, 404);
   assert.equal(unread.body.code, "source_not_found");
 
@@ -224,10 +244,10 @@ test("set_source creates, renames and refreshes, and refuses stale, missing and 
     assert.equal(refused.status, 400, JSON.stringify(bad));
     assert.equal(refused.body.code, "invalid_source", JSON.stringify(bad));
   }
-  const badRead = await h.tool(h.host, "read_page", { sources: "Bad/id" });
+  const badRead = await h.tool(h.host, "read_page", { source_id: "Bad/id" });
   assert.equal(badRead.status, 400);
   assert.equal(badRead.body.code, "invalid_source");
-  const after = await h.tool(h.host, "read_page", { sources: "usage" });
+  const after = await h.tool(h.host, "read_page", { source_id: "usage" });
   assert.deepEqual(after.body.source, read.body.source);
 });
 
@@ -341,8 +361,8 @@ test("a restart after the genesis is stored, before the record names it, starts 
   h.storage.crashes.push({ test: namesSources, before: true });
   const crashed = await h.setSource(h.host, [usage()]);
   assert.equal(crashed.status, 500);
-  // The genesis is stored under plain sync's keys.
-  assert.ok((await h.plainKeys()).length > 1);
+  // The sources document's genesis is stored under its own keys.
+  assert.ok((await h.sourcesStored()).length > 0);
   // Restart: the record doesn't name the document, so the Page has none.
   const host = h.page();
   assert.deepEqual((await h.record()).documentFormats, MEMBER_FORMATS);
@@ -398,6 +418,80 @@ test("a restart after the write is journaled replays it, and the retry returns i
   assert.equal(retried.status, 200, JSON.stringify(retried.body));
   assert.equal(retried.body.result.edits[0].source_revision, "1");
   assert.equal(retried.body.sources_revision, sources.body.sources_revision);
+});
+
+test("a first write the Page's sources refuse creates no document", async (t) => {
+  const h = await sourcesHost(t);
+  const over = Array.from({ length: 65 }, (_, i) => usage({ source_id: `s${i}` }));
+  for (const [operations, status, code] of [
+    [[usage({ source_revision: "1" })], 404, "source_not_found"],
+    [over, 400, "invalid_source"],
+  ]) {
+    const refused = await h.setSource(h.host, operations);
+    assert.equal(refused.status, status, code);
+    assert.equal(refused.body.code, code);
+  }
+  assert.equal(h.assets.heads, 0, "the batch is refused before any asset is read");
+  assert.deepEqual((await h.record()).documentFormats, MEMBER_FORMATS);
+  assert.deepEqual(await h.sourcesStored(), []);
+  const connected = await h.call(h.host, `/api/connect?page=${pageId}`);
+  assert.equal(connected.body.documents.sources, undefined);
+  assert.equal(h.host.sourcesView(), undefined);
+});
+
+test("a write whose apply didn't finish is replayed before another write is checked", async (t) => {
+  const h = await sourcesHost(t);
+  const read = await h.tool(h.host, "read_page", { include_content: false });
+  const first = {
+    revision: read.body.revision,
+    nonce: "write-a",
+    operations: [{ op: "set_source", ...usage() }],
+  };
+  // A's pending entry is durable; its barrier fails before the apply.
+  h.storage.crashes.push({
+    test: (name, value) => name.startsWith("host/operation/") && value?.pending === true,
+    before: false,
+  });
+  assert.equal((await h.tool(h.host, "edit_page", first)).status, 500);
+  // B, under another nonce on the same host, meets A's source.
+  const second = await h.tool(h.host, "edit_page", {
+    ...first,
+    nonce: "write-b",
+    operations: [{ op: "set_source", ...usage({ name: "B" }) }],
+  });
+  assert.equal(second.status, 409, JSON.stringify(second.body));
+  assert.equal(second.body.code, "stale_source");
+  assert.equal(second.body.source_revision, "1");
+  // A's retry returns its receipt.
+  const retried = await h.tool(h.host, "edit_page", first);
+  assert.equal(retried.status, 200, JSON.stringify(retried.body));
+  assert.equal(retried.body.result.edits[0].source_revision, "1");
+  const one = await h.tool(h.host, "read_page", { source_id: "usage" });
+  assert.equal(one.body.source.name, "Usage");
+  assert.equal(one.body.source.source_revision, "1");
+  const doc = h.host.sourcesView();
+  assert.ok(
+    Object.keys(A.getConflicts(doc.sources, "usage") ?? {}).length <= 1,
+    "one write created the source",
+  );
+});
+
+test("a failed boot load refuses requests until a new host loads the document", async (t) => {
+  const h = await sourcesHost(t);
+  assert.equal((await h.setSource(h.host, [usage()])).status, 200);
+  const failing = h.page();
+  const load = Page.prototype.sourcesEffect;
+  t.mock.method(failing, "sourcesEffect", async function (effect) {
+    if (effect === "load") throw Error("Simulated sources load failure");
+    return load.call(this, effect);
+  });
+  const refused = await h.tool(failing, "read_page", { sources: true });
+  assert.ok(refused.status >= 500, JSON.stringify(refused.body));
+  const write = await h.setSource(failing, [usage({ name: "Again", source_revision: "1" })]);
+  assert.ok(write.status >= 500, "a write can't follow a failed boot on the same host");
+  const next = h.page();
+  const sources = await h.tool(next, "read_page", { sources: true });
+  assert.equal(sources.body.sources[0].source_revision, "1");
 });
 
 test("Trash and restore keep the sources document; purge deletes its stored bytes", async (t) => {

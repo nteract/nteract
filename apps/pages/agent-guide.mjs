@@ -249,7 +249,7 @@ ${part.authErrorItems}
 - dataset_not_found (404): insert_node or set_source named an asset_id that
   isn't stored on this Page.
 - invalid_source (400): a set_source field is malformed, or the batch would
-  pass the Page's 64 sources, or read_page's sources names a malformed ID.
+  pass the Page's 64 sources, or read_page's source_id is malformed.
   Fix the request.
 - source_not_found (404): no source has that source_id on this Page. To
   create it, send set_source with source_revision null.
@@ -748,9 +748,10 @@ sources_revision (s…), and result.edits lists each source_id with its new
 source_revision. Resend the same nonce to retry.
 
 read_page with sources:true lists every source: source_id, name,
-source_revision, asset_id and media_type. sources:"<source_id>" reads one,
-with producer, who set it. Alone, sources skips the Page's content; beside
-other selectors it adds to them. A Page with no sources lists none. Once a
+source_revision, asset_id and media_type. source_id:"<source_id>" reads one,
+with producer, who set it; give both for both. Alone, they skip the Page's
+content; beside other selectors, such as include_content:false, they add to
+them. A Page with no sources lists none. Once a
 Page has sources, every read names sources_revision.
 
 ## JSON tools

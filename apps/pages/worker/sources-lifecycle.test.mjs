@@ -6,7 +6,8 @@ const STATES = ["absent", "loading", "storing", "recording", "ready"];
 const EVENTS = [
   { type: "boot", recorded: true },
   { type: "boot", recorded: false },
-  { type: "create" },
+  { type: "create", recorded: true },
+  { type: "create", recorded: false },
   { type: "loaded" },
   { type: "stored" },
   { type: "recorded" },
@@ -14,7 +15,9 @@ const EVENTS = [
   { type: "drop" },
 ];
 const label = (event) =>
-  event.type === "boot" ? `boot:${event.recorded ? "recorded" : "unrecorded"}` : event.type;
+  ["boot", "create"].includes(event.type)
+    ? `${event.type}:${event.recorded ? "recorded" : "unrecorded"}`
+    : event.type;
 
 // Every state and event: `[next state, effects]`, or null for a rejected
 // event that leaves the state alone.
@@ -22,7 +25,8 @@ const TABLE = {
   absent: {
     "boot:recorded": ["loading", ["load"]],
     "boot:unrecorded": ["absent", []],
-    create: ["storing", ["store"]],
+    "create:recorded": ["loading", ["load"]],
+    "create:unrecorded": ["storing", ["store"]],
     loaded: null,
     stored: null,
     recorded: null,
@@ -32,7 +36,8 @@ const TABLE = {
   loading: {
     "boot:recorded": null,
     "boot:unrecorded": null,
-    create: null,
+    "create:recorded": null,
+    "create:unrecorded": null,
     loaded: ["ready", []],
     stored: null,
     recorded: null,
@@ -42,7 +47,8 @@ const TABLE = {
   storing: {
     "boot:recorded": null,
     "boot:unrecorded": null,
-    create: null,
+    "create:recorded": null,
+    "create:unrecorded": null,
     loaded: null,
     stored: ["recording", ["record"]],
     recorded: null,
@@ -52,7 +58,8 @@ const TABLE = {
   recording: {
     "boot:recorded": null,
     "boot:unrecorded": null,
-    create: null,
+    "create:recorded": null,
+    "create:unrecorded": null,
     loaded: null,
     stored: null,
     recorded: ["ready", []],
@@ -62,7 +69,8 @@ const TABLE = {
   ready: {
     "boot:recorded": ["ready", []],
     "boot:unrecorded": ["ready", []],
-    create: ["ready", []],
+    "create:recorded": ["ready", []],
+    "create:unrecorded": ["ready", []],
     loaded: null,
     stored: null,
     recorded: null,
@@ -103,22 +111,36 @@ test("a first write runs store then record, and a failure at either starts over"
     }
     return { state: state.name, effects };
   };
-  assert.deepEqual(run([{ type: "create" }, { type: "stored" }, { type: "recorded" }]), {
-    state: "ready",
-    effects: ["store", "record"],
-  });
+  assert.deepEqual(
+    run([{ type: "create", recorded: false }, { type: "stored" }, { type: "recorded" }]),
+    {
+      state: "ready",
+      effects: ["store", "record"],
+    },
+  );
   // A failed record (or store) leaves nothing to resume: the next write runs
   // both idempotent steps again.
   assert.deepEqual(
     run([
-      { type: "create" },
+      { type: "create", recorded: false },
       { type: "stored" },
       { type: "failed" },
-      { type: "create" },
+      { type: "create", recorded: false },
       { type: "stored" },
       { type: "recorded" },
     ]),
     { state: "ready", effects: ["store", "record", "store", "record"] },
+  );
+  // A failed load forgets nothing the record holds: a write on a Page whose
+  // record names the type loads it and replays its journal, never stores.
+  assert.deepEqual(
+    run([
+      { type: "boot", recorded: true },
+      { type: "failed" },
+      { type: "create", recorded: true },
+      { type: "loaded" },
+    ]),
+    { state: "ready", effects: ["load", "load"] },
   );
   // A restart boots from the record alone.
   assert.deepEqual(run([{ type: "boot", recorded: false }]), { state: "absent", effects: [] });

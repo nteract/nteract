@@ -27,7 +27,8 @@
 //
 //   boot      { recorded }: the host loads the Page's documents, from a record
 //             that does or doesn't name the type
-//   create    a source write needs the document
+//   create    { recorded }: a source write needs the document, on a Page
+//             whose record does or doesn't name the type
 //   loaded, stored, recorded
 //             the effect of that name finished
 //   failed    the running effect threw; the next create starts over
@@ -48,10 +49,18 @@ export function sourcesStep(current, event) {
   switch (current.name) {
     case "absent":
       if (event.type === "boot") return event.recorded ? to("loading", ["load"]) : to("absent");
-      if (event.type === "create") return to("storing", ["store"]);
+      // A write to a Page whose record already names the type loads the
+      // stored document and replays its journal; it never stores anew.
+      if (event.type === "create")
+        return event.recorded ? to("loading", ["load"]) : to("storing", ["store"]);
       return reject();
     case "loading":
       if (event.type === "loaded") return to("ready");
+      // At boot a failed load fails the boot: the runtime replaces this
+      // object (page-startup.mjs `failed`) and every request until then gets
+      // the boot's error. A trashed Page whose document failed to load
+      // retries loadDocument on its next request, and may land here; the
+      // record still names the type, so the next write's `create` loads.
       if (event.type === "failed") return to("absent");
       return reject();
     case "storing":

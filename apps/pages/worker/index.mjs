@@ -31,7 +31,7 @@ import {
 import { unsupportedMarkdown, unsupportedMarkdownError } from "../model/markdown-scan.mjs";
 import { applyComment, commentsMigrated } from "../model/comments.mjs";
 import { guardCommentIntent, passageComment } from "../model/comment-guard.mjs";
-import { setSources, validateSourceBatch } from "../model/sources-doc.mjs";
+import { checkSources, setSources, validateSourceBatch } from "../model/sources-doc.mjs";
 import {
   commentsDocUuid,
   commentsDocumentId,
@@ -535,6 +535,14 @@ function requireReadableDocuments(declared, record) {
  * names `pages.sources` once the host created it (sources-lifecycle.mjs). */
 const recordNamesSources = (record) =>
   Object.hasOwn(recordDocumentFormats(record ?? {}) ?? {}, SOURCES_MODULE.type);
+
+/** A sources document refusal (model/sources-doc.mjs) as the agent edge
+ * answers it, with its source_id and current source_revision. */
+const sourceRefusal = (error) =>
+  Object.assign(
+    new HttpError(error.status ?? 400, error.message, error.code ?? "invalid_source"),
+    error.details && { details: error.details },
+  );
 
 /** Page host routes a record in a format this build doesn't write still
  * answers once the caller may read it: the shared-Page check and sharing
@@ -6521,10 +6529,14 @@ export class Page {
    * change: a Page revision that isn't current still writes. Each operation
    * names the source revision its caller saw instead.
    *
-   * For a new intent, `prepare` checks that every named asset is a dataset
-   * stored on this Page, takes its media type from the stored record, and
-   * creates the sources document when the Page has none
-   * (sources-lifecycle.mjs). Until then the journal reads the fixed genesis.
+   * A journaled source write whose apply didn't finish (its barrier failed)
+   * is replayed first, so a new write checks source revisions against every
+   * write that has a receipt. For a new intent, `prepare` checks the batch
+   * against the sources the Page holds (none before its document exists),
+   * checks that every named asset is a dataset stored on this Page, takes its
+   * media type from the stored record, and only then creates the sources
+   * document when the Page has none (sources-lifecycle.mjs), so a refused
+   * write creates nothing. Until then the journal reads the fixed genesis.
    * The receipt's `sources_revision` names the sources document after the
    * write; an exact retry replays it.
    */
@@ -6532,6 +6544,13 @@ export class Page {
     const args = body.arguments ?? {};
     const mediaTypes = new Map();
     await this.sourcesDocumentId();
+    if (this.sourcesView())
+      await recoverDocumentMutations(
+        this.ctx.storage,
+        this.sourcesHandle,
+        () => this.flush(),
+        SOURCES_DOC,
+      );
     let genesis;
     const handle = {
       doc: () =>
@@ -6556,8 +6575,9 @@ export class Page {
           let assetIds;
           try {
             assetIds = validateSourceBatch(args.operations);
+            checkSources(handle.doc(), args.operations);
           } catch (error) {
-            throw new HttpError(error.status, error.message, error.code);
+            throw sourceRefusal(error);
           }
           for (const assetId of assetIds) {
             const dataset = await requireStoredDatasetAsset(this.env.PAGES_ASSETS, {
@@ -6568,7 +6588,7 @@ export class Page {
           }
           // Access can change while the asset records are read.
           this.policy.account(await authenticate(request, this.env), true);
-          await this.sourcesEvent({ type: "create" });
+          await this.sourcesEvent({ type: "create", recorded: recordNamesSources(this.metadata) });
         },
         apply: (draft, effectiveArgs) => {
           try {
@@ -6579,10 +6599,7 @@ export class Page {
               }),
             };
           } catch (error) {
-            throw Object.assign(
-              new HttpError(error.status ?? 400, error.message, error.code ?? "invalid_source"),
-              error.details && { details: error.details },
-            );
+            throw sourceRefusal(error);
           }
         },
         flush: () => this.flush(),
