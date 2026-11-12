@@ -223,7 +223,13 @@ import {
   readCardImagePointer,
 } from "./card-images.mjs";
 import { MAX_TAGS_PER_PAGE, TagError, normalizeTag } from "./page-tags.mjs";
-import { deletePageTags, readPageTags, tagMatchingIds, writePageTags } from "./page-tags-store.mjs";
+import {
+  deletePageTags,
+  pageTagsDatabase as openPageTags,
+  readPageTags,
+  tagMatchingIds,
+  writePageTags,
+} from "./page-tags-store.mjs";
 import {
   CatalogIndexUnavailable,
   SHORT_CURSOR_MAX_LENGTH,
@@ -525,16 +531,35 @@ const tagsUnavailable = () =>
   );
 /** The D1 binding for a request that needs tags, or `tags_unavailable`. D1 is
  * reached through the catalog index's binding and its `PAGES_CATALOG_INDEX`
- * gate; that makes the database available to tags, not an index of them. */
+ * gate; that makes the database available to tags, not an index of them. The
+ * tag table's own schema is brought current here (page-tags-store.mjs). */
 async function pageTagsDatabase(env, ctx) {
   if (!catalogIndexEpoch(env)) throw tagsUnavailable();
   try {
-    return await withTimeout(catalogIndexDatabase(env, ctx), catalogIndexTimeouts.read);
+    return await openPageTags(env, ctx);
   } catch (error) {
     logFailure(error, "page-tags");
     throw tagsUnavailable();
   }
 }
+/** `value` as distinct normalized tags: an array of at most 32 valid tags, or
+ * nothing. Refuses with `invalid_arguments` or `invalid_tag`, naming `field`. */
+function tagList(value, field) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > MAX_TAGS_PER_PAGE)
+    throw new HttpError(
+      400,
+      `${field} must be an array of at most ${MAX_TAGS_PER_PAGE} tags`,
+      "invalid_arguments",
+    );
+  try {
+    return [...new Set(value.map(normalizeTag))];
+  } catch (error) {
+    if (!(error instanceof TagError)) throw error;
+    throw new HttpError(400, `${field}: ${error.message}`, "invalid_tag");
+  }
+}
+const requestedTags = (value) => tagList(value, "tags");
 /** What a Page's `run` returns for a request whose queue work is done: `work`
  * answers the request once the queue has released it (`enqueue`). */
 class AfterQueue {
@@ -2093,7 +2118,17 @@ export class Catalog {
             "purge_preview_required",
           );
       }
-      if (body.operation === "create_page") validateCreateInput(args);
+      // The tags a create_page asks for are checked, and their database
+      // reached, before anything is reserved: a call that can't tag the Page
+      // creates nothing.
+      let createTags = [];
+      if (body.operation === "create_page") {
+        validateCreateInput(args);
+        createTags = requestedTags(args.tags);
+        if (createTags.length) await pageTagsDatabase(this.env, this.ctx);
+      }
+      const withTags = (response) =>
+        createTags.length ? this.tagCreated(response, identity, createTags) : response;
       if (registering) {
         requireRegistrationAccount(args, identity);
         // A retry of a registration this Catalog already recorded resends the
@@ -2137,14 +2172,16 @@ export class Catalog {
         body.operation === "create_page" &&
         (inspected.entry ? !!inspected.entry.forward : await this.placedElsewhere(args))
       )
-        return await this.forwardCreate(request, identity, args, { key, digest, inspected });
+        return withTags(
+          await this.forwardCreate(request, identity, args, { key, digest, inspected }),
+        );
       let intent = inspected.entry;
       if (intent && !intent.pending) {
         // A previous attempt may have stored its receipt before sync failed.
         await this.storage.sync();
         const replay = json(intent.receipt);
         replay.headers.set(REPLAYED_RECEIPT_HEADER, "1");
-        return replay;
+        return withTags(replay);
       }
       if (!intent) {
         await this.requirePageRoom(limit);
@@ -2181,17 +2218,61 @@ export class Catalog {
           },
         });
       }
-      return await this.completeCreation(request, {
-        key,
-        intent,
-        args,
-        registering,
-        resumed: !!inspected.entry,
-        owner: identity.principal,
-      });
+      return withTags(
+        await this.completeCreation(request, {
+          key,
+          intent,
+          args,
+          registering,
+          resumed: !!inspected.entry,
+          owner: identity.principal,
+        }),
+      );
     } catch (error) {
       return errorResponse(error, "catalog");
     }
+  }
+
+  /**
+   * Tag the Page a create_page made, once its receipt exists. `response` is the
+   * receipt (fresh, replayed or forwarded); a failed one passes through. The
+   * tags are written the way update_page_tags writes them, as this caller
+   * (`added_by`), to `page_tags` in D1, which is outside this Catalog's
+   * storage. The Page exists by now and the receipt is recorded, so a write
+   * that fails doesn't undo the creation: the receipt says `tags_applied:
+   * false`, and repeating the same call (same nonce) replays the receipt and
+   * writes the tags again, which is safe because tags are a set.
+   */
+  async tagCreated(response, identity, add) {
+    if (!response.ok) return response;
+    const receipt = await response.clone().json();
+    let outcome;
+    try {
+      const db = await pageTagsDatabase(this.env, this.ctx);
+      outcome = {
+        tags: await writePageTags(db, {
+          pageId: receipt.page_id,
+          principal: identity.principal,
+          add,
+          remove: [],
+          now: new Date().toISOString(),
+        }),
+      };
+    } catch (error) {
+      if (!(error instanceof HttpError)) logFailure(error, "page-tags");
+      outcome = {
+        tags_applied: false,
+        tags_error: {
+          code: error instanceof HttpError ? error.code : "tags_unavailable",
+          message:
+            "The Page was created but its tags were not written. Send the same create_page again to retry them, or use update_page_tags.",
+        },
+      };
+    }
+    const tagged = json({ ...receipt, ...outcome }, response.status);
+    if (response.headers.has(REPLAYED_RECEIPT_HEADER))
+      tagged.headers.set(REPLAYED_RECEIPT_HEADER, response.headers.get(REPLAYED_RECEIPT_HEADER));
+    return tagged;
   }
 
   /** Finish a reserved create_page or register_page: the Page host creates
@@ -4343,10 +4424,7 @@ export class Catalog {
     if (!pages.length) return;
     try {
       const handle =
-        db ??
-        (catalogIndexEpoch(this.env)
-          ? await withTimeout(catalogIndexDatabase(this.env, this.ctx), catalogIndexTimeouts.read)
-          : null);
+        db ?? (catalogIndexEpoch(this.env) ? await openPageTags(this.env, this.ctx) : null);
       if (!handle) {
         if (strict) throw tagsUnavailable();
         return;
@@ -6592,23 +6670,8 @@ export class Page {
    * normalized sets that don't overlap. Pure, so it runs in the Page's queue.
    */
   tagChange(args = {}) {
-    const names = (value, field) => {
-      if (value === undefined) return [];
-      if (!Array.isArray(value) || value.length > MAX_TAGS_PER_PAGE)
-        throw new HttpError(
-          400,
-          `${field} must be an array of at most ${MAX_TAGS_PER_PAGE} tags`,
-          "invalid_arguments",
-        );
-      try {
-        return [...new Set(value.map(normalizeTag))];
-      } catch (error) {
-        if (!(error instanceof TagError)) throw error;
-        throw new HttpError(400, `${field}: ${error.message}`, "invalid_tag");
-      }
-    };
-    const add = names(args.add, "add");
-    const remove = names(args.remove, "remove");
+    const add = tagList(args.add, "add");
+    const remove = tagList(args.remove, "remove");
     if (!add.length && !remove.length)
       throw new HttpError(
         400,

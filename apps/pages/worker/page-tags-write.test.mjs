@@ -6,12 +6,16 @@ import { createAuthFixture } from "../auth-fixtures.mjs";
 import { sqliteD1 } from "../test/sqlite-d1.mjs";
 import { catalogIndexTimeouts, migrateCatalogIndex, reportPageIndex } from "./catalog-index.mjs";
 import worker from "./index.mjs";
+import { migratePageTags } from "./page-tags-store.mjs";
 import { fixture, pageId } from "./trash-fixture.mjs";
 import { pageState } from "./access.mjs";
+import { projectObject } from "./authz.mjs";
+import { DocumentPolicy } from "./policy.mjs";
 
 async function tagged(t, options = {}) {
   const db = sqliteD1(t).open();
   await migrateCatalogIndex(db);
+  await migratePageTags(db);
   const f = await fixture(t, { env: { DB: db, PAGES_CATALOG_INDEX: "1" }, ...options });
   const rows = () =>
     db
@@ -119,6 +123,178 @@ test("a Page in Trash takes no tag changes, and its tags return with it", async 
   });
   assert.equal(restored.status, 200, JSON.stringify(restored.body));
   assert.deepEqual((await update(f, "owner", { add: ["more"] })).body.tags, ["code", "more"]);
+});
+
+// Edit access reaches update_page_tags through more than the Page's own member
+// rows. These tests give the Page host the identity and the Page record a
+// request would carry, so each grant is the one decide() reads in production.
+const namespace = "user:anaconda-fixture";
+const acme = Object.freeze({ id: "org-acme", name: "Acme Research" });
+const guild = Object.freeze({ id: "org-guild", name: "Other Guild" });
+const future = () => Date.now() + 60_000;
+
+function actingAs(f, principal, extra = {}) {
+  const identity = {
+    principal,
+    displayName: principal,
+    namespace,
+    canWrite: true,
+    credentialKind: "oidc",
+    expiresAt: future(),
+    ...extra,
+  };
+  f.page.identify = async () => identity;
+  return identity;
+}
+
+const organizationLease = (organization = acme, expiresAt = future()) => ({
+  ...organization,
+  namespace,
+  expiresAt,
+});
+
+const projectSnapshot = (f, role, { principal, validUntil = future() } = {}) => {
+  const members = { [principal]: { role, generation: 1 } };
+  return {
+    ...projectObject({
+      space_id: "prj_00000000-0000-4000-8000-000000000001",
+      owner: f.owner,
+      acl: { revision: 1, members },
+    }),
+    members,
+    valid_until: validUntil,
+  };
+};
+
+function inProject(f, snapshot) {
+  // The fixture's policy reads the bare record; the host's own adds the
+  // Project snapshot (initializePlain).
+  f.page.policy = new DocumentPolicy({
+    metadata: () => ({ ...f.page.metadata, projectAccess: f.page.projectAccess }),
+  });
+  f.page.projectAccessState = {
+    name: "available",
+    snapshot,
+    fence: { owner: f.owner, id: snapshot.id, location: "fixture", revision: snapshot.revision },
+  };
+}
+
+test("a Project editor changes tags on a Page in the Project; a viewer or commenter does not", async (t) => {
+  const principal = `${namespace}:project-editor`;
+  for (const [role, status] of [
+    ["editor", 200],
+    ["commenter", 403],
+    ["viewer", 403],
+  ]) {
+    const { f, rows } = await tagged(t);
+    actingAs(f, principal);
+    inProject(f, projectSnapshot(f, role, { principal }));
+    const changed = await update(f, "stranger", { add: ["Plan"] });
+    assert.equal(changed.status, status, `${role}: ${JSON.stringify(changed.body)}`);
+    if (status === 200) {
+      assert.deepEqual(changed.body.tags, ["plan"]);
+      assert.deepEqual(rows(), [{ tag: "plan", added_by: principal }]);
+    } else assert.deepEqual(rows(), []);
+  }
+});
+
+test("a Project grant that has lapsed, or never named the caller, gives no tag access", async (t) => {
+  const principal = `${namespace}:project-editor`;
+  const stale = await tagged(t);
+  actingAs(stale.f, principal);
+  inProject(stale.f, projectSnapshot(stale.f, "editor", { principal, validUntil: Date.now() - 1 }));
+  const lapsed = await update(stale.f, "stranger", { add: ["plan"] });
+  assert.equal(lapsed.status, 403, JSON.stringify(lapsed));
+  assert.deepEqual(stale.rows(), []);
+  const other = await tagged(t);
+  actingAs(other.f, principal);
+  inProject(other.f, projectSnapshot(other.f, "editor", { principal: `${namespace}:someone` }));
+  const unnamed = await update(other.f, "stranger", { add: ["plan"] });
+  assert.equal(unnamed.status, 403, JSON.stringify(unnamed));
+  assert.deepEqual(other.rows(), []);
+});
+
+test("a Project editor can't change the tags of a Page in Trash", async (t) => {
+  const principal = `${namespace}:project-editor`;
+  const { f, rows } = await tagged(t);
+  actingAs(f, principal);
+  inProject(f, projectSnapshot(f, "editor", { principal }));
+  assert.equal((await update(f, "stranger", { add: ["plan"] })).status, 200);
+  // The owner trashes it through the real credential check.
+  const stub = f.page.identify;
+  delete f.page.identify;
+  assert.equal((await trash(f, "tags-project-trash")).status, 200);
+  f.page.identify = stub;
+  const refused = await update(f, "stranger", { add: ["more"] });
+  // A trashed Page is hidden from everyone but those who may restore it.
+  assert.equal(refused.status, 404, JSON.stringify(refused));
+  assert.deepEqual(
+    rows().map((row) => row.tag),
+    ["plan"],
+  );
+});
+
+test("an organization link grants tag changes by its role, only to that organization's members", async (t) => {
+  const principal = `${namespace}:org-member`;
+  const grant = (role, organization = acme) => ({
+    id: organization.id,
+    name: organization.name,
+    namespace,
+    role,
+  });
+  for (const [role, status] of [
+    ["editor", 200],
+    ["commenter", 403],
+    ["viewer", 403],
+  ]) {
+    const { f, rows } = await tagged(t);
+    f.page.metadata.acl.organizationAccess = grant(role);
+    actingAs(f, principal, { organizations: [organizationLease()] });
+    const changed = await update(f, "stranger", { add: ["Shared"] });
+    assert.equal(changed.status, status, `${role}: ${JSON.stringify(changed.body)}`);
+    assert.deepEqual(rows(), status === 200 ? [{ tag: "shared", added_by: principal }] : []);
+  }
+  // An editor link names one organization: another's member, a member whose
+  // lease has lapsed, and a caller with no lease get nothing.
+  for (const identity of [
+    { organizations: [organizationLease(guild)] },
+    { organizations: [organizationLease(acme, Date.now() - 1)] },
+    {},
+  ]) {
+    const { f, rows } = await tagged(t);
+    f.page.metadata.acl.organizationAccess = grant("editor");
+    actingAs(f, principal, identity);
+    const refused = await update(f, "stranger", { add: ["shared"] });
+    assert.equal(refused.status, 403, JSON.stringify([identity, refused]));
+    assert.deepEqual(rows(), []);
+  }
+  // An organization editor's link is withdrawn: the next write is refused.
+  const { f, rows } = await tagged(t);
+  f.page.metadata.acl.organizationAccess = grant("editor");
+  actingAs(f, principal, { organizations: [organizationLease()] });
+  assert.equal((await update(f, "stranger", { add: ["shared"] })).status, 200);
+  f.page.metadata.acl.organizationAccess = null;
+  const withdrawn = await update(f, "stranger", { add: ["more"] });
+  assert.equal(withdrawn.status, 403, JSON.stringify(withdrawn));
+  assert.deepEqual(
+    rows().map((row) => row.tag),
+    ["shared"],
+  );
+});
+
+test("a company-domain link only views, so its members can't change tags", async (t) => {
+  const principal = `${namespace}:employee`;
+  const { f, rows } = await tagged(t);
+  f.page.metadata.acl.domainView = { domain: "anaconda.com", namespace };
+  actingAs(f, principal, {
+    domainAccess: { domain: "anaconda.com", namespace, expiresAt: future() },
+  });
+  // The link does open the Page to them: they can read it.
+  const read = await f.tool("stranger", "read_page", { comments: "none" });
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+  const refused = await update(f, "stranger", { add: ["plan"] });
+  assert.equal(refused.status, 403, JSON.stringify(refused.body));
+  assert.deepEqual(rows(), []);
 });
 
 test("without the catalog index flag (no D1 binding), a tag change is refused and nothing is written", async (t) => {
@@ -260,7 +436,12 @@ test("a tag write waits on D1 outside the Page's queue", async (t) => {
   );
 });
 
-test("a Page that is already in Trash is refused in the queue, before any D1 work", async (t) => {
+// CONTROL. This passes with or without the D1 fence on Trash: the refusal
+// comes from the Page host's admission queue, ahead of every D1 call, and the
+// fence is not consulted. It pins the behavior the fence must not replace, not
+// the fence itself; "a write held in D1 and refused by Trash" and the timed-out
+// batch test below are the ones that fail without it.
+test("control: a Page that is already in Trash is refused in the queue, before any D1 work", async (t) => {
   const { f, db, rows } = await tagged(t);
   await trash(f);
   const before = db.calls;
@@ -324,7 +505,11 @@ test("a batch that timed out can't land on a Page trashed after the timeout", as
   assert.deepEqual((await update(f, "owner", { add: ["late"] })).body.tags, ["late"]);
 });
 
-test("a timed-out batch that lands before any Trash is the write the caller retries", async (t) => {
+// CONTROL. No Trash happens here, so this passes with or without the fence:
+// a batch that timed out and lands later is an ordinary write, and the retry
+// the 503 tells the caller to make changes nothing. It pins that the fence
+// doesn't reject a write on a Page that was never trashed.
+test("control: a timed-out batch that lands before any Trash is the write the caller retries", async (t) => {
   const { f, db, rows } = await tagged(t);
   await project(f);
   const write = catalogIndexTimeouts.write;
@@ -339,8 +524,16 @@ test("a timed-out batch that lands before any Trash is the write the caller retr
     rows().map((row) => row.tag),
     ["code"],
   );
+  const landed = db
+    .rows("SELECT tag, added_by, added_at FROM page_tags")
+    .map((row) => ({ ...row }));
   const retried = await update(f, "owner", { add: ["code"] });
   assert.deepEqual(retried.body.tags, ["code"]);
+  assert.deepEqual(
+    db.rows("SELECT tag, added_by, added_at FROM page_tags").map((row) => ({ ...row })),
+    landed,
+    "the retry rewrote no row",
+  );
 });
 
 test("a Page's deleted mark answers a held write as not found", async (t) => {
@@ -388,6 +581,7 @@ test("a purge deletes the tag rows with the catalog index off, and with nothing 
   // Rows written while the index was on, a purge after it was turned off.
   const db = sqliteD1(t).open();
   await migrateCatalogIndex(db);
+  await migratePageTags(db);
   const f = await fixture(t, { env: { DB: db } });
   db.sqlite.prepare("INSERT INTO page_tags VALUES (?, 'old', ?, ?)").run(pageId, f.owner, "x");
   const purged = await purge(f);

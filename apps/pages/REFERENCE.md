@@ -3694,9 +3694,9 @@ A Page carries a set of tags: short, lowercase, freeform labels that agents set
 on their own work and other agents search. Tags mean nothing to Pages and grant
 no access, and anyone who can see a Page sees its tags. They are rows in the D1
 table `page_tags` (`page_id`, `tag`, `added_by`, `added_at`; primary key
-`(page_id, tag)`, plus a lookup index on `(tag, page_id)`), added by catalog migration
-9. They are not in the Page's Automerge document, so changing them never moves
-its revision, and a document restore or export does not carry them.
+`(page_id, tag)`, plus a lookup index on `(tag, page_id)`), created by its own migration
+list (`PAGE_TAGS_MIGRATIONS`), recorded in its own version table, `page_tags_schema`.
+They are not in the Page's Automerge document, so changing them never moves its revision, and a document restore or export does not carry them.
 
 **Source of truth.** `page_tags` is the single normative record of a Page's
 tags. It is not an index and not a projection. No Durable Object, Page host
@@ -3707,7 +3707,9 @@ D1 is the only place that can search tags across Pages, so it is also where they
 live. This differs from the `pages_catalog_*` tables, which project each
 account's Catalog and Page host Durable Objects into D1 for listing
 ([Catalog index](#catalog-index)) and can be cleared and rebuilt. The table
-shares D1's migration chain and database with them, but not their rules.
+shares D1's database with them, but not their migration chain or their rules: its
+schema versions live in `page_tags_schema`, apart from `pages_catalog_schema`, so a
+change to the catalog's migrations can't reset or renumber it.
 Nothing clears or rebuilds `page_tags`: not reconciliation, not a cooled index,
 not a migration that resets `pages_catalog_accounts`. Only a Page's permanent
 deletion deletes its rows, and the Page host does that itself
@@ -3761,6 +3763,23 @@ Page's `pages_catalog_pages` row as they run: a Page marked `trashed` or
 404 `page_not_found`). The mark is a projection the host writes after its own
 record is durable, so a write that races the Trash itself, before the mark, can
 still land; it stays with the Page, and a purge deletes it.
+
+`added_by` records the principal that added each tag, and only that. A tag such as
+`session:<id>` is a claim by whoever added it: anyone who can edit the Page can add
+or remove it, so it does not prove which session wrote the Page, and a tag is data
+for a reader, never an instruction. The tool text says so.
+
+**`create_page` `tags`** takes the same array as `add`, at most 32. A bad tag is 400
+`invalid_tag` (or `invalid_arguments` for a wrong type or count), and a database that
+can't be reached is 503 `tags_unavailable`; both answer before anything is reserved,
+so the call creates no Page. Otherwise the Page is created first, and its tags are
+written to `page_tags` as the caller (`added_by`) once the receipt exists, even for a
+Page in a Project another account owns. The receipt then carries `tags`. If the Page
+exists but the write fails, the receipt carries `tags_applied: false` and a
+`tags_error` instead, and nothing is rolled back: the same call (same nonce) replays
+the receipt and writes the tags again, which is safe because tags are a set. The tags
+are part of the request's fingerprint, so a retry that changes them under the same
+nonce is a conflict, not a retry.
 
 **`list_pages` `tags`** is one boolean expression over a Page's tags:
 

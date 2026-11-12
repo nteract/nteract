@@ -59,10 +59,11 @@ Object that holds tags, and none is planned**: no Catalog entry, Page host
 record or Automerge document carries a copy, and no projection step exists for
 them. The Page host only decides whether a caller may edit; it keeps no tag
 state. The table is named `page_tags`, without the `pages_catalog_` prefix, so
-it is not mistaken for part of the index. It shares the D1 database, its
-migration chain (`CATALOG_MIGRATIONS`, migration 9) and the `PAGES_CATALOG_INDEX`
-gate with the projection tables. That gate controls whether the worker has the D1
-binding; with it unset, tag writes and tag filters answer `tags_unavailable`
+it is not mistaken for part of the index. It shares the D1 database and the
+`PAGES_CATALOG_INDEX` gate with the projection tables, but not their migration
+chain: its schema versions are in their own table, `page_tags_schema`
+(`PAGE_TAGS_MIGRATIONS`), and `pages_catalog_schema` records only the projection. That gate controls whether the
+worker has the D1 binding; with it unset, tag writes and tag filters answer `tags_unavailable`
 and the rows stay as they are. Nothing may clear or rewrite `page_tags` except
 a Page's permanent deletion: the Page host deletes that Page's rows itself,
 after the catalog tombstone and whether or not `PAGES_CATALOG_INDEX` is set (the
@@ -504,12 +505,14 @@ against the newer schema. Listing cursors are sealed with a key derived from the
 active session key and expire after 24 hours; a cursor opens under any key in
 the keyring (see [Session key rotation](#session-key-rotation)). Migration 2 adds per-principal title snapshots and clears the
 reconcile markers, so each account rebuilds its rows on its next listings. Migration 3
-adds `lifecycle_revision` to Page rows; older builds ignore it. Migration 9 adds
-`page_tags`, which is not index data: it is the normative record of Page tags.
-Older builds ignore the table, and its rows persist across a rollback. A build
-from before migration 9 does not delete a Page's tags when it deletes the Page,
-so a Page deleted by such a build leaves orphan rows. They are invisible (a
-listing starts from the caller's access rows, and a deleted Page has none) and
+adds `lifecycle_revision` to Page rows; older builds ignore it. `page_tags` is not
+part of that chain: it is the normative record of Page tags, with its own `page_tags_schema` version table, and the tag migration only adds. A pre-release build
+recorded the table as catalog migration 9; a database that did keeps its rows, because
+the tag migration is `CREATE ... IF NOT EXISTS`, and the catalog chain skips a recorded
+version 9 it no longer lists. Older builds ignore the table, and
+its rows persist across a rollback. A build from before tags does not delete a Page's tags
+when it deletes the Page, so a Page deleted by such a build leaves orphan rows. They are
+invisible (a listing starts from the caller's access rows, and a deleted Page has none) and
 harmless. Lifecycle state
 changes, retirements and access writes apply only from a revision at least as
 new as the row's, so a delayed trash retirement cannot undo a restore.

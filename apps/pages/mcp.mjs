@@ -567,7 +567,7 @@ export const tools = [
   ),
   tool(
     "update_page_tags",
-    "Add and remove tags on a Page you can edit. A tag is a lowercase label (a-z, 0-9 and . _ : / -, starting with a letter or digit, up to 64 characters; case is folded; and, or and not are reserved). Other agents find Pages with list_pages tags. A Page holds at most 32. Adding a tag it has, or removing one it lacks, changes nothing, so a retry is safe and needs no nonce. Tags are stored apart from the Page's content: this never changes its revision. Anyone who can see a Page sees its tags, so put no secrets in them. Returns the Page's full tag set.",
+    "Add and remove tags on a Page you can edit. A tag is a lowercase label (a-z, 0-9 and . _ : / -, starting with a letter or digit, up to 64 characters; case is folded; and, or and not are reserved). Other agents find Pages with list_pages tags. A tag such as session:<id> is a claim by whoever added it, not proof of who wrote the Page: anyone who can edit the Page can add or remove it. A Page holds at most 32. Adding a tag it has, or removing one it lacks, changes nothing, so a retry is safe and needs no nonce. Tags are stored apart from the Page's content: this never changes its revision. Anyone who can see a Page sees its tags, so put no secrets in them. Returns the Page's full tag set.",
     {
       page_id: page,
       add: { ...tagList, description: "Tags to add." },
@@ -578,7 +578,7 @@ export const tools = [
   ),
   tool(
     "create_page",
-    "Create a rich-text Page. Returns url and revision, so the first edit needs no read. Omit project_id and parent_id for Your items; parent_id makes a sub-page (max 9 levels). Project owners and editors can add Pages; a Page added to someone else's Project is owned by its owner.",
+    "Create a rich-text Page. Returns url and revision, so the first edit needs no read. Omit project_id and parent_id for Your items; parent_id makes a sub-page (max 9 levels). Project owners and editors can add Pages; a Page added to someone else's Project is owned by its owner. tags adds tags as update_page_tags does; if the Page is created but its tags are not written the result says tags_applied:false, and sending the same call again retries them.",
     {
       title,
       markdown: markdownBody,
@@ -588,6 +588,7 @@ export const tools = [
         type: "string",
         description: "Parent Page ID; implies its Project.",
       },
+      tags: { ...tagList, description: "Tags to put on the new Page." },
       nonce,
     },
     ["title", "nonce"],

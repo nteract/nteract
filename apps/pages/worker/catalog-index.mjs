@@ -6,9 +6,10 @@
  * Object are the source of truth, and these rows are a projection kept in sync
  * from them. They are an index for listing and search and can be cleared and
  * rebuilt by reconciliation. Not every table in this D1 database is like that.
- * `page_tags` shares the database and this migration chain, but it is the
- * normative record of Page tags with no Durable Object behind it: nothing here
- * may clear, rebuild or "repair" it (see page-tags-store.mjs). Quota rules,
+ * `page_tags` shares the database, but not this migration chain: it has its own
+ * schema-version table and migrations, and it is the normative record of Page
+ * tags with no Durable Object behind it. Nothing here may clear, rebuild or
+ * "repair" it (see page-tags-store.mjs). Quota rules,
  * sessions, OAuth grants and Kilo memberships are also normative D1 state.
  * Before adding a table or a repair path, decide which kind it is and say so
  * where the table is created.
@@ -56,7 +57,7 @@ import { acceptedTime, validTime } from "./content-activity.mjs";
 import { migrateSchema } from "./d1-schema.mjs";
 import { configuredOrganizationAccess, pageAudienceKey } from "./organization-access.mjs";
 import { validPageId } from "./registration.mjs";
-import { MAX_TAGS_PER_PAGE, TagError, parseTagExpression, tagPredicate } from "./page-tags.mjs";
+import { TagError, parseTagExpression, tagPredicate } from "./page-tags.mjs";
 import { holdUntilSettled } from "./request-hold.mjs";
 import { requirePageIdArgument, requireSpaceIdArgument, validSpaceId } from "./spaces.mjs";
 
@@ -220,32 +221,6 @@ export const CATALOG_MIGRATIONS = Object.freeze([
       "ALTER TABLE pages_catalog_spaces_v8 RENAME TO pages_catalog_spaces",
       `CREATE INDEX IF NOT EXISTS pages_catalog_spaces_listing
         ON pages_catalog_spaces (owner, updated_at DESC, space_id DESC)`,
-    ]),
-  }),
-  // A Page's tags: one row per (Page, tag). NORMATIVE, not a projection. This
-  // table is the single source of truth for tags: no Durable Object, Catalog
-  // entry, Page host record or document holds a copy, and none is planned
-  // (tags have no real-time part). It only shares this migration chain and D1
-  // database with the `pages_catalog_*` projection tables, which are rebuilt
-  // from the Durable Objects and may be cleared; this one never may. No
-  // migration, reconcile pass or repair may delete or rewrite its rows. Only
-  // a Page's deletion tombstone removes that Page's rows. `added_by` is the
-  // principal that added the tag, a claim shown where trust matters. The
-  // second index answers "Pages with this tag". Name and code live in
-  // page-tags.mjs and page-tags-store.mjs.
-  Object.freeze({
-    version: 9,
-    name: "page_tags",
-    statements: Object.freeze([
-      `CREATE TABLE IF NOT EXISTS page_tags (
-        page_id TEXT NOT NULL,
-        tag TEXT NOT NULL,
-        added_by TEXT NOT NULL,
-        added_at TEXT NOT NULL,
-        PRIMARY KEY (page_id, tag)
-      ) WITHOUT ROWID`,
-      `CREATE INDEX IF NOT EXISTS page_tags_by_tag
-        ON page_tags (tag, page_id)`,
     ]),
   }),
 ]);

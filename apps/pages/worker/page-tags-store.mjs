@@ -18,10 +18,14 @@
 // - Authorization is not stored here. The Page host decides who may edit a
 //   Page before `writePageTags` runs, and a listing verifies every candidate
 //   before it shows it. A tag row grants nothing.
-// - The table shares D1's migration chain and database binding with the
-//   catalog index (`CATALOG_MIGRATIONS`, migration 9), so a tag read or write
-//   needs the D1 binding that `PAGES_CATALOG_INDEX` turns on. That flag gates
-//   access to the database; it does not make tags an index.
+// - The table has its own schema-version table, `page_tags_schema`, and its
+//   own migration list (`PAGE_TAGS_MIGRATIONS`), apart from the catalog's
+//   `pages_catalog_schema` chain: the catalog chain is a projection's, and may
+//   reset tables that this one never may. The two share D1's database binding,
+//   so a tag read or write needs the binding that `PAGES_CATALOG_INDEX` turns
+//   on, and the catalog schema is current first because a tag write checks the
+//   `pages_catalog_pages` fence. That flag gates access to the database; it
+//   does not make tags an index.
 
 import { HttpError } from "./auth.mjs";
 import {
@@ -30,10 +34,60 @@ import {
   catalogIndexTimeouts,
   withTimeout,
 } from "./catalog-index.mjs";
+import { migrateSchema } from "./d1-schema.mjs";
+import { isolateSetup } from "./isolate-setup.mjs";
 import { MAX_TAGS_PER_PAGE, tagPredicate } from "./page-tags.mjs";
 
 const TIMED_OUT = "Page tags timed out";
 const read = (promise) => withTimeout(promise, catalogIndexTimeouts.read, TIMED_OUT);
+
+/** The tag table's migrations, numbered from 1 in `page_tags_schema`. NORMATIVE,
+ * not a projection: no migration may drop, clear or rewrite `page_tags` rows,
+ * so each one only adds. `CREATE ... IF NOT EXISTS` adopts a table a pre-release
+ * build created as catalog migration 9 and leaves its rows.
+ * `added_by` is the principal that added the tag. It is a claim about who
+ * added it, not proof of anything about the tag's meaning. The second index
+ * answers "Pages with this tag". */
+export const PAGE_TAGS_MIGRATIONS = Object.freeze([
+  Object.freeze({
+    version: 1,
+    name: "page_tags",
+    statements: Object.freeze([
+      `CREATE TABLE IF NOT EXISTS page_tags (
+        page_id TEXT NOT NULL,
+        tag TEXT NOT NULL,
+        added_by TEXT NOT NULL,
+        added_at TEXT NOT NULL,
+        PRIMARY KEY (page_id, tag)
+      ) WITHOUT ROWID`,
+      `CREATE INDEX IF NOT EXISTS page_tags_by_tag
+        ON page_tags (tag, page_id)`,
+    ]),
+  }),
+]);
+
+/** Apply the tag table's pending migrations; returns its schema version. */
+export function migratePageTags(
+  db,
+  migrations = PAGE_TAGS_MIGRATIONS,
+  now = () => new Date().toISOString(),
+) {
+  return migrateSchema(db, { table: "page_tags_schema", migrations, now });
+}
+
+const tagSchemaReady = isolateSetup((db) => migratePageTags(db));
+
+/** The D1 binding with the catalog schema (the Trash fence's table) and the
+ * tag schema both current. Throws when D1 doesn't answer. */
+export async function pageTagsDatabase(env, ctx) {
+  const db = await withTimeout(
+    catalogIndexDatabase(env, ctx),
+    catalogIndexTimeouts.read,
+    TIMED_OUT,
+  );
+  await tagSchemaReady(db);
+  return db;
+}
 
 /** Page IDs per D1 statement when a filter or a read names candidates. */
 const TAG_CHUNK = 400;
@@ -147,15 +201,13 @@ export async function writePageTags(db, { pageId, principal, add, remove, now })
  * calls this itself, after the catalog tombstone is written, for a purge or a
  * recorded deletion: the rows are the normative record, so the deletion does
  * not ride a projection that a missing or disabled catalog index would skip.
- * With the index off, the table may not exist (migration 9 never ran), and
+ * With the index off, the table may not exist (its migration never ran), and
  * then there is nothing to delete. A database failure throws, so the Page's
  * lifecycle repeats this step on its next request. Idempotent.
  */
 export async function deletePageTags(env, ctx, pageId) {
   if (!env.DB?.prepare) return;
-  const db = catalogIndexEpoch(env)
-    ? await withTimeout(catalogIndexDatabase(env, ctx), catalogIndexTimeouts.read, TIMED_OUT)
-    : env.DB;
+  const db = catalogIndexEpoch(env) ? await pageTagsDatabase(env, ctx) : env.DB;
   try {
     await withTimeout(
       db.prepare("DELETE FROM page_tags WHERE page_id = ?").bind(pageId).run(),

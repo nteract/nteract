@@ -12,6 +12,7 @@ import {
   retirePageIndex,
 } from "./catalog-index.mjs";
 import { at, catalogFixture, id, member, owner } from "./catalog-fixture.mjs";
+import { PAGE_TAGS_MIGRATIONS, migratePageTags } from "./page-tags-store.mjs";
 
 /** Pages the member owns (1 to 4) and one shared with them (100), with tags. */
 const TAGS = new Map([
@@ -61,6 +62,7 @@ async function world(t, { index = "1", migrate = true } = {}) {
   });
   if (migrate) {
     await migrateCatalogIndex(f.db);
+    await migratePageTags(f.db);
     for (const [n, tags] of TAGS)
       for (const tag of tags)
         f.db.sqlite
@@ -186,28 +188,111 @@ test("a tag filter never falls back to entries that have no tags", async (t) => 
   assert.equal(failed.body.code, "tags_unavailable");
 });
 
-test("migration 9 adds the tag table without touching older rows", async (t) => {
-  assert.equal(CATALOG_MIGRATIONS.at(-1).version, 9);
+const tagTables = (f) =>
+  f.db
+    .rows("SELECT name FROM sqlite_master WHERE name LIKE 'page_tags%' ORDER BY name")
+    .map((row) => row.name);
+const versions = (f, table) =>
+  f.db.rows(`SELECT version, name FROM ${table} ORDER BY version`).map((row) => ({ ...row }));
+const snapshot = (f) =>
+  Object.fromEntries(
+    ["pages_catalog_pages", "pages_catalog_access", "pages_catalog_accounts"].map((table) => [
+      table,
+      f.db.rows(`SELECT * FROM ${table} ORDER BY 1, 2`).map((row) => ({ ...row })),
+    ]),
+  );
+
+test("the tag table has its own schema-version table, and the catalog chain no longer carries it", async (t) => {
+  assert.equal(CATALOG_MIGRATIONS.at(-1).version, 8);
+  assert.deepEqual(
+    PAGE_TAGS_MIGRATIONS.map((migration) => migration.version),
+    [1],
+  );
   const f = await catalogFixture(t);
-  await migrateCatalogIndex(f.db, CATALOG_MIGRATIONS.slice(0, 8));
-  assert.deepEqual(
-    f.db.rows("SELECT name FROM sqlite_master WHERE name LIKE 'page_tags%' ORDER BY name"),
-    [],
+  assert.equal(await migrateCatalogIndex(f.db), 8);
+  assert.deepEqual(tagTables(f), [], "the catalog migrations create no tag table");
+  assert.equal(await migratePageTags(f.db), 1);
+  assert.deepEqual(tagTables(f), ["page_tags", "page_tags_by_tag", "page_tags_schema"]);
+  assert.deepEqual(versions(f, "page_tags_schema"), [{ version: 1, name: "page_tags" }]);
+  assert.equal(
+    Math.max(...versions(f, "pages_catalog_schema").map((row) => row.version)),
+    8,
+    "the catalog's version table is untouched",
   );
+  assert.equal(await migratePageTags(f.db), 1, "a second run applies nothing");
+});
+
+test("the tag migration adds its table without touching rows already in the database", async (t) => {
+  // A database a build before tags left behind: catalog rows for owned,
+  // shared and trashed Pages, and an account marker.
+  const f = await catalogFixture(t);
+  await migrateCatalogIndex(f.db);
+  const env = { DB: f.db, PAGES_CATALOG_INDEX: "1" };
+  for (const n of [1, 2, 3]) {
+    const metadata = {
+      pageId: id(n),
+      owner,
+      deleted: false,
+      acl: { revision: 1, members: { [member]: { role: "viewer", generation: 1 } } },
+    };
+    await reportPageIndex(env, {}, { metadata, title: `Older ${n}`, observedAt: at(n) });
+  }
+  await retirePageIndex(
+    env,
+    {},
+    {
+      pageId: id(3),
+      owner,
+      deleted: true,
+      lifecycleRevision: 1,
+      acl: { revision: 1, members: {} },
+      trash: { trashed_at: at(4) },
+    },
+    at(4),
+  );
+  const older = snapshot(f);
+  assert.ok(older.pages_catalog_pages.length >= 3, "older Page rows are seeded");
+  assert.ok(older.pages_catalog_access.length >= 3, "older access rows are seeded");
+  assert.deepEqual(tagTables(f), []);
+  assert.equal(await migratePageTags(f.db), 1);
+  assert.deepEqual(snapshot(f), older, "no existing row changed");
+  // Rerunning either chain, or a build that knows an earlier catalog list,
+  // leaves both the older rows and the tag rows alone.
+  f.db.sqlite.prepare("INSERT INTO page_tags VALUES (?, 'keep', ?, ?)").run(id(1), owner, at(0));
+  assert.equal(await migrateCatalogIndex(f.db, CATALOG_MIGRATIONS.slice(0, 5)), 8);
+  assert.equal(await migratePageTags(f.db), 1);
+  assert.deepEqual(snapshot(f), older);
+  assert.deepEqual(
+    f.db.rows("SELECT page_id, tag, added_by FROM page_tags").map((row) => ({ ...row })),
+    [{ page_id: id(1), tag: "keep", added_by: owner }],
+  );
+});
+
+test("a database that took the table from the earlier catalog migration 9 keeps its tag rows", async (t) => {
+  // An earlier build of this branch created `page_tags` as catalog migration 9.
+  const f = await catalogFixture(t);
+  await migrateCatalogIndex(f.db);
+  f.db.sqlite.exec(`CREATE TABLE page_tags (
+      page_id TEXT NOT NULL, tag TEXT NOT NULL, added_by TEXT NOT NULL, added_at TEXT NOT NULL,
+      PRIMARY KEY (page_id, tag)
+    ) WITHOUT ROWID;
+    CREATE INDEX page_tags_by_tag ON page_tags (tag, page_id);
+    INSERT INTO pages_catalog_schema (version, name, applied_at) VALUES (9, 'page_tags', 'x')`);
+  f.db.sqlite.prepare("INSERT INTO page_tags VALUES (?, 'old', ?, ?)").run(id(1), owner, at(0));
+  // The catalog chain ends at 8 now and the recorded 9 does not stop it.
   assert.equal(await migrateCatalogIndex(f.db), 9);
+  assert.equal(await migratePageTags(f.db), 1);
   assert.deepEqual(
-    f.db
-      .rows("SELECT name FROM sqlite_master WHERE name LIKE 'page_tags%' ORDER BY name")
-      .map((row) => row.name),
-    ["page_tags", "page_tags_by_tag"],
+    f.db.rows("SELECT page_id, tag FROM page_tags").map((row) => ({ ...row })),
+    [{ page_id: id(1), tag: "old" }],
   );
-  // A build that knows only migrations 1 to 8 runs against the newer schema.
-  assert.equal(await migrateCatalogIndex(f.db, CATALOG_MIGRATIONS.slice(0, 8)), 9);
+  assert.deepEqual(tagTables(f), ["page_tags", "page_tags_by_tag", "page_tags_schema"]);
 });
 
 test("the catalog tombstone leaves tags alone: they are not part of the projection", async (t) => {
   const f = await catalogFixture(t);
   await migrateCatalogIndex(f.db);
+  await migratePageTags(f.db);
   const env = { DB: f.db, PAGES_CATALOG_INDEX: "1" };
   const metadata = { pageId: id(1), owner, deleted: false, acl: { revision: 0, members: {} } };
   await reportPageIndex(env, {}, { metadata, title: "Tagged", observedAt: at(1) });
@@ -247,6 +332,7 @@ const HIDDEN = 203;
 async function sharedParent(t, tagged) {
   const f = await catalogFixture(t);
   await migrateCatalogIndex(f.db);
+  await migratePageTags(f.db);
   const share = { revision: 1, members: { [member]: { role: "viewer", generation: 1 } } };
   f.addPage(id(PARENT), "Parent", share);
   for (const n of READABLE) f.addPage(id(n), `Child ${n}`, share);
