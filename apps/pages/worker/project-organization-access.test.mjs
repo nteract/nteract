@@ -374,8 +374,8 @@ const policyRequest = (id, owner) =>
     body: JSON.stringify({ space_id: id, owner }),
   });
 const hintIds = async (w) =>
-  [...(await w.catalogStorage(w.member).list({ prefix: "project-discovery/" })).keys()].map(
-    (key) => key.slice("project-discovery/".length),
+  [...(await w.catalogStorage(w.member).list({ prefix: "project-discovery/" })).keys()].map((key) =>
+    key.slice("project-discovery/".length),
   );
 
 test("at capacity, a new organization open evicts the oldest organization hint", async (t) => {
@@ -415,7 +415,10 @@ test("a member's hint is never evicted for an organization hint", async (t) => {
   const [organization] = await fillHints(w, 1, { from: 1000 });
   const first = await w.createProject("First");
   assert.equal((await share(w, first.project_id, acme.id, "viewer", 0)).status, 200);
-  assert.equal((await w.call("member", "get_project", { project_id: first.project_id })).status, 200);
+  assert.equal(
+    (await w.call("member", "get_project", { project_id: first.project_id })).status,
+    200,
+  );
   let hints = await hintIds(w);
   assert.ok(hints.includes(first.project_id));
   assert.ok(!hints.includes(organization), "the one organization hint made room");
@@ -424,7 +427,10 @@ test("a member's hint is never evicted for an organization hint", async (t) => {
   // Another organization open evicts that one, never a member's.
   const second = await w.createProject("Second");
   assert.equal((await share(w, second.project_id, acme.id, "viewer", 0)).status, 200);
-  assert.equal((await w.call("member", "get_project", { project_id: second.project_id })).status, 200);
+  assert.equal(
+    (await w.call("member", "get_project", { project_id: second.project_id })).status,
+    200,
+  );
   hints = await hintIds(w);
   assert.ok(hints.includes(second.project_id));
   assert.ok(!hints.includes(first.project_id));
@@ -436,7 +442,10 @@ test("a member's hint is never evicted for an organization hint", async (t) => {
   await w.catalogStorage(w.member).delete(`project-discovery/${second.project_id}`);
   members.push(...(await fillHints(w, 1, { member: true, from: 3000 })));
   assert.equal((await hintIds(w)).length, 500);
-  assert.equal((await w.call("member", "get_project", { project_id: third.project_id })).status, 200);
+  assert.equal(
+    (await w.call("member", "get_project", { project_id: third.project_id })).status,
+    200,
+  );
   hints = await hintIds(w);
   assert.equal(hints.length, 500);
   assert.ok(!hints.includes(third.project_id));
@@ -506,7 +515,10 @@ test("removing a member row leaves their hint while the Project has an organizat
   assert.equal((await role(plain.project_id, "editor", 0)).status, 200);
   for (const { project_id } of [shared, plain])
     assert.equal((await w.call("member", "get_project", { project_id })).status, 200);
-  assert.deepEqual((await listed(w, "member")).sort(), [shared.project_id, plain.project_id].sort());
+  assert.deepEqual(
+    (await listed(w, "member")).sort(),
+    [shared.project_id, plain.project_id].sort(),
+  );
   assert.equal((await role(shared.project_id, null, 2)).status, 200);
   assert.equal((await role(plain.project_id, null, 1)).status, 200);
   assert.deepEqual(await listed(w, "member"), [shared.project_id], "still reached through acme");

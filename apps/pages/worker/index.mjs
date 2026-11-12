@@ -1878,7 +1878,8 @@ export class Catalog {
             await this.storage.delete(key);
             count--;
           }
-          if (count >= 500) throw new HttpError(409, "This account already has 500 shared Projects");
+          if (count >= 500)
+            throw new HttpError(409, "This account already has 500 shared Projects");
         }
         await this.storage.put(`project-discovery/${value.space_id}`, {
           space_id: value.space_id,
