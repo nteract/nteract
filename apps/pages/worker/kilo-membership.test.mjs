@@ -262,6 +262,82 @@ test("a leased agent token writes its exchange's evidence once, not once per req
   assert.equal(inserts(), 2, "a new exchange writes again, even with the same answer");
 });
 
+/** Makes the next `count` evidence writes fail as an unreachable D1 would,
+ * 50 ms after they start so concurrent requests meet them in flight, and
+ * counts every evidence write attempted. */
+function failEvidenceWrites(t, env, count) {
+  const prepare = env.DB.prepare.bind(env.DB);
+  let failures = count;
+  let attempts = 0;
+  t.mock.method(env.DB, "prepare", (sql) => {
+    if (!sql.startsWith("INSERT INTO kilo_memberships ")) return prepare(sql);
+    attempts++;
+    if (failures-- > 0)
+      return {
+        bind: () => ({
+          run: () =>
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error("D1 is unreachable")), 50),
+            ),
+        }),
+      };
+    return prepare(sql);
+  });
+  return () => attempts;
+}
+
+test("requests on one leased answer share its write, and none goes on past a failed one", async (t) => {
+  const { env, kilo } = await fixture(t);
+  const account = person([sentinel]);
+  // An older exchange listed an organization the new answer leaves out.
+  await recordKiloMembership(env, principalOf(account), [second], Date.now() - 5000);
+  const attempts = failEvidenceWrites(t, env, 1);
+  const token = kilo.mintToken(account, { audience });
+  const [first, concurrent] = await Promise.allSettled([
+    authenticate(bearer(token), env),
+    authenticate(bearer(token), env),
+  ]);
+  for (const result of [first, concurrent]) {
+    assert.equal(result.status, "rejected", "no request goes on with the older listing");
+    const { status, code, retryable } = result.reason;
+    assert.deepEqual({ status, code, retryable }, {
+      status: 503,
+      code: "sign_in_unavailable",
+      retryable: true,
+    });
+  }
+  assert.equal(attempts(), 1, "the concurrent request awaited the first request's write");
+  assert.equal(kilo.exchanges().length, 1);
+  const [retried, alongside] = await Promise.all([
+    authenticate(bearer(token), env),
+    authenticate(bearer(token), env),
+  ]);
+  assert.equal(attempts(), 2, "the failed write was forgotten and tried once more");
+  assert.deepEqual(named(retried), [sentinel]);
+  assert.deepEqual(named(alongside), [sentinel]);
+  assert.equal(kilo.exchanges().length, 1, "the retry reused the lease, not Kilo");
+});
+
+test("a browser sign-in whose evidence write fails gets a retryable failure page and no session", async (t) => {
+  const { env, kilo } = await fixture(t);
+  const account = person([sentinel]);
+  failEvidenceWrites(t, env, 1);
+  kilo.signIn(account);
+  const started = await handleKiloSignIn(request("/api/auth/login"), env);
+  const binding = setCookie(started, "__Host-pages_kilo_handoff");
+  const atKilo = await fetch(started.headers.get("location"), { redirect: "manual" });
+  const failed = await handleKiloSignIn(
+    request(atKilo.headers.get("location"), { cookie: binding }),
+    env,
+  );
+  assert.equal(failed.status, 503);
+  assert.equal(setCookie(failed, SERVER_SESSION_COOKIE), undefined);
+  assert.match(await failed.text(), /Try again/);
+  const cookie = await browserSignIn(env, kilo, account);
+  const identity = await authenticate(request("/whoami", { cookie }), env);
+  assert.deepEqual(named(identity), [sentinel]);
+});
+
 test("a browser cookie, a Pages OAuth token and a Kilo agent token carry the same organizations", async (t) => {
   const { env, kilo } = await fixture(t);
   const account = person([sentinel, second]);

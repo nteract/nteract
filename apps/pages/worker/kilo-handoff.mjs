@@ -242,7 +242,14 @@ async function completeHandoff(request, env, config) {
   if (account.refused === "account") return signInFailed(403, "exchange_refused_account", returnTo);
   if (account.refused) return signInFailed(400, "exchange_refused_code", returnTo);
   const identity = kiloIdentity(config, account);
-  await recordKiloMembership(env, identity.principal, account.organizations, sentAt);
+  // A session is created only over a stored answer: a session over a failed
+  // write would read an older listing, one this answer may have removed
+  // organizations from.
+  try {
+    await recordKiloMembership(env, identity.principal, account.organizations, sentAt);
+  } catch {
+    return signInFailed(503, "membership_unrecorded", returnTo);
+  }
   const sessionCookie = await createServerSession(
     request,
     env,

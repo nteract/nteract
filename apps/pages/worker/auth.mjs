@@ -179,19 +179,37 @@ function onAgentRoute(request, extra = []) {
   );
 }
 
-/** Kilo token answers whose membership evidence this isolate has written.
+/** Each Kilo token answer's membership evidence write, keyed by the answer.
  * The token lease hands every request the same answer object until it ends,
- * so evidence is written once per exchange, not once per request. */
-const recordedExchanges = new WeakSet();
-async function recordExchange(env, principal, account) {
-  if (recordedExchanges.has(account)) return;
-  recordedExchanges.add(account);
-  try {
-    await recordKiloMembership(env, principal, account.organizations, account.verifiedAt);
-  } catch (error) {
-    recordedExchanges.delete(account);
-    throw error;
-  }
+ * so evidence is written once per exchange, and every request on that answer
+ * awaits that one write before it reads leases.
+ *
+ * A failed write is forgotten, so the next request on the answer writes again,
+ * and every request that awaited it fails with a retryable 503
+ * `sign_in_unavailable`. It does not go on without organization leases
+ * instead: that would answer the person's organization Pages with access
+ * denials that a retry would reverse. Either way no request authenticates
+ * with evidence older than an answer this isolate has received. */
+const exchangeWrites = new WeakMap();
+function recordExchange(env, principal, account) {
+  let write = exchangeWrites.get(account);
+  if (write) return write;
+  write = recordKiloMembership(env, principal, account.organizations, account.verifiedAt).catch(
+    (cause) => {
+      if (exchangeWrites.get(account) === write) exchangeWrites.delete(account);
+      throw withAdmissionReason(
+        Object.assign(new Error("Kilo sign-in is unavailable. Retry the request."), {
+          status: 503,
+          code: "sign_in_unavailable",
+          retryable: true,
+          cause,
+        }),
+        "credential_unverified",
+      );
+    },
+  );
+  exchangeWrites.set(account, write);
+  return write;
 }
 
 /** The identity with the audience leases its evidence supports: a company
