@@ -3709,9 +3709,12 @@ account's Catalog and Page host Durable Objects into D1 for listing
 ([Catalog index](#catalog-index)) and can be cleared and rebuilt. The table
 shares D1's migration chain and database with them, but not their rules.
 Nothing clears or rebuilds `page_tags`: not reconciliation, not a cooled index,
-not a migration that resets `pages_catalog_accounts`. Only a Page's deletion
-tombstone (`tombstoneStatements`) deletes its rows. Trash keeps them, hidden with
-the Page; restore brings them back. The Page host decides who may edit and
+not a migration that resets `pages_catalog_accounts`. Only a Page's permanent
+deletion deletes its rows, and the Page host does that itself
+(`deletePageTags`, after the catalog tombstone is written), whether or not
+`PAGES_CATALOG_INDEX` is set: the tombstone is a projection and never touches
+the table. If D1 fails the delete, the purge step fails and the lifecycle repeats
+it. Trash keeps them, hidden with the Page; restore brings them back. The Page host decides who may edit and
 holds no tag state. The read and write code is in
 [page-tags-store.mjs](worker/page-tags-store.mjs); the projection supplies only
 candidate Pages, and the table decides which candidates match. On a celld target
@@ -3747,6 +3750,18 @@ checked against the rows read and again inside the insert, so two writers racing
 can't pass it: the loser's adds are skipped and reported, its removals applied.
 The result is `{ page_id, tags }`, the full sorted set.
 
+The Page host decides access and Trash state in its admission queue, then
+releases the queue before it touches D1, so a slow D1 never holds the Page's
+other requests. Between that decision and the write, the Page can be trashed or
+purged, and a batch that times out keeps running in D1 and can land after the
+caller has its 503 `tags_unavailable` (which means the outcome is unknown; the
+same call is safe to repeat). Both statements of the write therefore check the
+Page's `pages_catalog_pages` row as they run: a Page marked `trashed` or
+`deleted` there takes no change, and the write answers 409 `page_trashed` (or
+404 `page_not_found`). The mark is a projection the host writes after its own
+record is durable, so a write that races the Trash itself, before the mark, can
+still land; it stays with the Page, and a purge deletes it.
+
 **`list_pages` `tags`** is one boolean expression over a Page's tags:
 
 ```
@@ -3761,8 +3776,11 @@ and is lowercased before it matches. AND and OR never mix at one level, so
 `a AND b OR c` is refused and the error says to add parentheses: no caller relies
 on a precedence rule it may misremember. `NOT` is a prefix (`hello AND NOT
 world`); a bare `NOT done` lists the caller's Pages without that tag. An
-expression is at most 256 characters, names at most 16 tags and nests at most 4
-levels. A contradiction such as `a AND NOT a` lists nothing. A syntax error is
+expression is at most 256 characters, as written and as written back
+canonically (the echoed `tag_filter`), names at most 16 tags and nests at most 4
+levels. The canonical form can be longer than the input, since it adds spaces and
+parentheses, so one that would not fit is refused; an accepted expression's
+`tag_filter` is always accepted when sent back. A contradiction such as `a AND NOT a` lists nothing. A syntax error is
 400 `invalid_list_arguments` naming the character position. In a URL, write
 spaces as `+` or `%20`; parentheses, `:` and `/` need no escaping. The expression
 is a string, not a nested argument, because tool schemas allow no recursion.
@@ -3772,7 +3790,9 @@ canonical expression, parsed and written back with normalized case and spacing,
 as `tag_filter`. A client that gets no `tag_filter` talked to a host that
 ignored the argument. `include_tags: true` adds `tags` to an unfiltered listing,
 which otherwise keeps its row shape; there `tags` is best effort, and a Page
-with no `tags` field means they could not be read. The cursor is sealed to the
+with no `tags` field means they could not be read. With a `tags` filter, every
+Page carries `tags`: if they can't be read the listing is 503 `tags_unavailable`,
+not Pages without them. The cursor is sealed to the
 canonical expression, so it opens only under it (`invalid_cursor` otherwise); a
 listing with no `tags` seals the scope it always did, so earlier cursors still
 open.
@@ -3786,12 +3806,18 @@ How a listing applies the filter depends on its source:
   company-viewable Pages all list, and non-owner rows are still verified by their
   Page host. Tags are bound parameters, never interpolated. The scan bound, order
   and keyset paging are unchanged.
-- **Catalog entries** (a Project or parent filter, a cooling index, or children of
-  a shared parent): the candidate IDs are checked against D1 in chunks of 400
+- **Catalog entries** (a Project or parent filter, or a cooling index): the
+  caller's own candidate IDs are checked against D1 in chunks of 400
   (`tagMatchingIds`) before they become a source, so rows that fail never count
   against the scan bound. That check uses the candidates' own IDs, never the tags
   table, so a Page with no tags still matches `NOT x`. It decides nothing about
   access: each candidate is verified as before.
+- **Children of a shared parent, and a Project's Pages seen by a member**: the
+  owner's Catalog names these whether or not the caller can read them, so they are
+  checked for access first and the filter runs only on the Pages that passed
+  (`keepVerified` in `scanCandidates`). A tag never decides anything about a Page
+  the caller can't open, and a filtered listing is the same whether or not an
+  unreadable child matches. Filtered-out Pages count against the scan bound.
 
 Measured locally on SQLite 3.51 (200k Pages, 600k tag rows, a caller who can see
 about 3,300 Pages, limit 50): common tags and NOT queries answered in under 1.1

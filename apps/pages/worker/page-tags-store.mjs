@@ -11,9 +11,10 @@
 // - That differs from the `pages_catalog_*` tables, which project each
 //   account's Catalog Durable Object and Page host records into D1 and can be
 //   cleared and rebuilt. Never treat `page_tags` like them: no reconcile pass,
-//   migration or repair may clear or rewrite it. Only a Page's deletion
-//   tombstone deletes a Page's rows (`tombstoneStatements` in
-//   catalog-index.mjs).
+//   migration or repair may clear or rewrite it. Only a Page's permanent
+//   deletion deletes its rows: the Page host does it itself, after the
+//   catalog tombstone (`deletePageTags`), whether or not the catalog index is
+//   on. The tombstone is a projection and never touches this table.
 // - Authorization is not stored here. The Page host decides who may edit a
 //   Page before `writePageTags` runs, and a listing verifies every candidate
 //   before it shows it. A tag row grants nothing.
@@ -23,7 +24,12 @@
 //   access to the database; it does not make tags an index.
 
 import { HttpError } from "./auth.mjs";
-import { catalogIndexTimeouts, withTimeout } from "./catalog-index.mjs";
+import {
+  catalogIndexDatabase,
+  catalogIndexEpoch,
+  catalogIndexTimeouts,
+  withTimeout,
+} from "./catalog-index.mjs";
 import { MAX_TAGS_PER_PAGE, tagPredicate } from "./page-tags.mjs";
 
 const TIMED_OUT = "Page tags timed out";
@@ -61,10 +67,18 @@ export async function tagMatchingIds(db, ast, pageIds) {
  *
  * The limit is checked against the rows read first and again inside the
  * insert, so two writers racing can't pass it: the loser's adds are skipped
- * and reported as `tag_limit_exceeded`, with its removals applied. A Page
- * whose deletion tombstone is in `pages_catalog_pages` takes no tags. That row
- * is a projection of the Page host's deletion, used here only as a guard so a
- * late write can't resurrect rows the tombstone deleted; it is not tag data.
+ * and reported as `tag_limit_exceeded`, with its removals applied.
+ *
+ * This runs after the Page host's queue has released the request, so a Page
+ * can be trashed or deleted between the host's check and this write, and a
+ * batch that timed out here keeps running in D1 and can land later still. A
+ * Page whose tombstone or Trash mark is in `pages_catalog_pages` takes no tag
+ * changes: both statements of the batch check it as they run, so a late batch
+ * lands nothing on a Page that took its Trash mark first. That row is a
+ * projection of the Page host's lifecycle, used here only as a fence; it is
+ * not tag data. The host marks it after its own record is durable, so a write
+ * that races a Trash or purge itself can land first. Trash keeps tags (a
+ * restored Page has them back) and a purge deletes them (`deletePageTags`).
  */
 export async function writePageTags(db, { pageId, principal, add, remove, now }) {
   const list = async () =>
@@ -86,20 +100,22 @@ export async function writePageTags(db, { pageId, principal, add, remove, now })
     );
   if (after.size > MAX_TAGS_PER_PAGE) throw full(after.size);
   const adds = JSON.stringify(add);
+  const open = `NOT EXISTS (SELECT 1 FROM pages_catalog_pages p
+                             WHERE p.page_id = ? AND p.state IN ('deleted', 'trashed'))`;
   await withTimeout(
     db.batch([
       db
         .prepare(
           `DELETE FROM page_tags
-            WHERE page_id = ? AND tag IN (SELECT value FROM json_each(?))`,
+            WHERE page_id = ? AND tag IN (SELECT value FROM json_each(?))
+              AND ${open}`,
         )
-        .bind(pageId, JSON.stringify(remove)),
+        .bind(pageId, JSON.stringify(remove), pageId),
       db
         .prepare(
           `INSERT OR IGNORE INTO page_tags (page_id, tag, added_by, added_at)
           SELECT ?, j.value, ?, ? FROM json_each(?) j
-          WHERE NOT EXISTS (SELECT 1 FROM pages_catalog_pages p
-                             WHERE p.page_id = ? AND p.state = 'deleted')
+          WHERE ${open}
             AND (SELECT count(*) FROM page_tags t WHERE t.page_id = ?)
               + (SELECT count(*) FROM json_each(?) j2
                   WHERE NOT EXISTS (SELECT 1 FROM page_tags t2
@@ -112,8 +128,43 @@ export async function writePageTags(db, { pageId, principal, add, remove, now })
     TIMED_OUT,
   );
   const tags = await list();
-  if (add.some((tag) => !tags.includes(tag))) throw full(tags.length);
+  const missing = add.filter((tag) => !tags.includes(tag));
+  const lingering = remove.filter((tag) => tags.includes(tag));
+  if (!missing.length && !lingering.length) return tags;
+  // Something didn't apply: the Page's lifecycle mark, or the limit.
+  const marked = await read(
+    db.prepare("SELECT state FROM pages_catalog_pages WHERE page_id = ?").bind(pageId).first(),
+  );
+  if (marked?.state === "deleted") throw new HttpError(404, "Page not found", "page_not_found");
+  if (marked?.state === "trashed")
+    throw new HttpError(409, "Restore this Page before changing its tags", "page_trashed");
+  if (missing.length) throw full(tags.length);
   return tags;
+}
+
+/**
+ * Delete every tag row of a Page that is permanently deleted. The Page host
+ * calls this itself, after the catalog tombstone is written, for a purge or a
+ * recorded deletion: the rows are the normative record, so the deletion does
+ * not ride a projection that a missing or disabled catalog index would skip.
+ * With the index off, the table may not exist (migration 9 never ran), and
+ * then there is nothing to delete. A database failure throws, so the Page's
+ * lifecycle repeats this step on its next request. Idempotent.
+ */
+export async function deletePageTags(env, ctx, pageId) {
+  if (!env.DB?.prepare) return;
+  const db = catalogIndexEpoch(env)
+    ? await withTimeout(catalogIndexDatabase(env, ctx), catalogIndexTimeouts.read, TIMED_OUT)
+    : env.DB;
+  try {
+    await withTimeout(
+      db.prepare("DELETE FROM page_tags WHERE page_id = ?").bind(pageId).run(),
+      catalogIndexTimeouts.write,
+      TIMED_OUT,
+    );
+  } catch (error) {
+    if (!/no such table/i.test(String(error?.message))) throw error;
+  }
 }
 
 /** The tags of each of `pageIds`, read from `page_tags`, as a Map from Page ID to a sorted array. A

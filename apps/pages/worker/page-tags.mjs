@@ -30,7 +30,8 @@ export const MAX_TAGS_PER_PAGE = 32;
 /** Words an expression reads as operators, so no tag may spell them. */
 export const RESERVED_TAGS = Object.freeze(["and", "or", "not"]);
 
-/** The longest expression, in characters. */
+/** The longest expression, in characters, as written and as written back
+ * canonically (`parseTagExpression`). */
 export const MAX_EXPRESSION_LENGTH = 256;
 /** The most tags one expression names. */
 export const MAX_EXPRESSION_TAGS = 16;
@@ -166,7 +167,16 @@ export function parseTagExpression(input) {
       token.position,
     );
   }
-  return { ast, canonical: writeTagExpression(ast), tags: [...new Set(collectTags(ast))] };
+  // The canonical spelling is what a listing echoes as `tag_filter` and seals
+  // into its cursor, and a caller may send it back as `tags`. Parentheses it
+  // adds can make it longer than the input, so it meets the same bound: an
+  // expression this accepts is one its own echo round-trips through.
+  const canonical = writeTagExpression(ast);
+  if (canonical.length > MAX_EXPRESSION_LENGTH)
+    throw new TagError(
+      `tags is at most ${MAX_EXPRESSION_LENGTH} characters once written canonically (${canonical.length}: each NOT of a group and each nested group gets a space or parentheses); shorten it`,
+    );
+  return { ast, canonical, tags: [...new Set(collectTags(ast))] };
 }
 
 function collectTags(node) {

@@ -223,7 +223,7 @@ import {
   readCardImagePointer,
 } from "./card-images.mjs";
 import { MAX_TAGS_PER_PAGE, TagError, normalizeTag } from "./page-tags.mjs";
-import { readPageTags, tagMatchingIds, writePageTags } from "./page-tags-store.mjs";
+import { deletePageTags, readPageTags, tagMatchingIds, writePageTags } from "./page-tags-store.mjs";
 import {
   CatalogIndexUnavailable,
   SHORT_CURSOR_MAX_LENGTH,
@@ -533,6 +533,16 @@ async function pageTagsDatabase(env, ctx) {
   } catch (error) {
     logFailure(error, "page-tags");
     throw tagsUnavailable();
+  }
+}
+/** What a Page's `run` returns for a request whose queue work is done: `work`
+ * answers the request once the queue has released it (`enqueue`). */
+class AfterQueue {
+  constructor(work) {
+    this.work = work;
+  }
+  finish() {
+    return this.work();
   }
 }
 /** The error an abandoned object refuses with when its reset gave no reason. */
@@ -4143,7 +4153,6 @@ export class Catalog {
           options.access === "owned"
             ? []
             : await this.childIdsFromOwner(shared.page.owner, options.parentId);
-        if (keep) sharedChildren = [...(await keep(sharedChildren))];
       }
     }
     // A Project's top level (`project_id` with `parent_id: null`) is its
@@ -4159,12 +4168,17 @@ export class Catalog {
     const filtered = options.spaceId !== null || options.parentId !== undefined;
     // Children of a shared parent come from its owner's Catalog, so a
     // rejected one may be a Page the caller can't see at all. That listing
-    // checks every child before it paginates; see scanCandidates.
+    // checks every child before it paginates or filters by tag; see
+    // scanCandidates.
     const scope = {
       locations,
       located,
       sharedChildren: sharedChildren && new Set(sharedChildren),
       exhaustive: !!sharedChildren,
+      // The owner's Catalog names these children whether or not the caller
+      // can read them, so the tag filter runs only on the ones that passed
+      // the access check (scanCandidates).
+      keepVerified: sharedChildren ? keep : null,
     };
     const context = {
       principal: identity.principal,
@@ -4279,7 +4293,8 @@ export class Catalog {
       )),
       source: "catalog",
     };
-    if (options.tags || options.includeTags) await this.attachTags(result.pages, tagDb ?? db);
+    if (options.tags || options.includeTags)
+      await this.attachTags(result.pages, tagDb ?? db, !!options.tags);
     const response = json({
       pages: result.pages,
       limit: options.limit,
@@ -4321,9 +4336,10 @@ export class Catalog {
 
   /** Set `tags` on each listed Page: an array, empty when it has none. Best
    * effort without a tag filter: a listing never fails for want of tags, and
-   * a Page with no `tags` field means they could not be read. With a filter
-   * the database is known to work. */
-  async attachTags(pages, db) {
+   * a Page with no `tags` field means they could not be read. A tag filter
+   * promises `tags` on every Page it returns, so when it can't read them the
+   * listing is `tags_unavailable`, never Pages without their tags (`strict`). */
+  async attachTags(pages, db, strict = false) {
     if (!pages.length) return;
     try {
       const handle =
@@ -4331,7 +4347,10 @@ export class Catalog {
         (catalogIndexEpoch(this.env)
           ? await withTimeout(catalogIndexDatabase(this.env, this.ctx), catalogIndexTimeouts.read)
           : null);
-      if (!handle) return;
+      if (!handle) {
+        if (strict) throw tagsUnavailable();
+        return;
+      }
       const tags = await readPageTags(
         handle,
         pages.map((page) => page.page_id),
@@ -4339,6 +4358,7 @@ export class Catalog {
       for (const page of pages) page.tags = tags.get(page.page_id) ?? [];
     } catch (error) {
       logFailure(error, "page-tags");
+      if (strict) throw tagsUnavailable();
     }
   }
 
@@ -4380,17 +4400,18 @@ export class Catalog {
       : { position: null };
     const candidates =
       options.inTrash || options.access === "owned" ? [] : ids.map((e) => e.page_id);
-    const tagged = keep ? [...(await keep(candidates))] : candidates;
     const result = await this.scanCandidates(
       request,
       identity,
-      childIdSource(tagged, options.sort),
+      childIdSource(candidates, options.sort),
       { ...options, spaceId: null },
       {
         locations: new Map(),
         located: () => false,
         sharedChildren: new Set(ids.map((entry) => entry.page_id)),
         exhaustive: true,
+        // Filtered after each Page's access check, never before it.
+        keepVerified: keep,
       },
       after,
       null,
@@ -4400,7 +4421,7 @@ export class Catalog {
       space_id: options.spaceId,
       parent_id: entries.find((entry) => entry.page_id === page.page_id)?.parent_id,
     }));
-    if (options.tags || options.includeTags) await this.attachTags(pages, tagDb);
+    if (options.tags || options.includeTags) await this.attachTags(pages, tagDb, !!options.tags);
     return json({
       pages,
       limit: options.limit,
@@ -4515,7 +4536,17 @@ export class Catalog {
     while (verified.length <= limit && scanned < scanBound) {
       const want = Math.min(limit + 1 - verified.length, scanBound - scanned);
       const rows = await source.next(position, want);
-      const checked = await boundedMap(rows, sharedCheckBounds.concurrency, check);
+      let checked = await boundedMap(rows, sharedCheckBounds.concurrency, check);
+      // A tag filter on candidates the caller may not be able to see runs on
+      // the ones that passed their check, so a tag never decides what a
+      // refused Page reveals, and a Page that fails the filter still counts
+      // as scanned.
+      if (scope.keepVerified && checked.some(Boolean)) {
+        const matched = await scope.keepVerified(
+          checked.filter(Boolean).map((page) => page.page_id),
+        );
+        checked = checked.map((page) => (page && matched.has(page.page_id) ? page : null));
+      }
       for (const [index, page] of checked.entries())
         if (page) verified.push({ page, row: rows[index] });
       scanned += rows.length;
@@ -5732,17 +5763,25 @@ export class Page {
 
   /** Lifecycle state for the index, after the host record is durable. */
   async retireIndex() {
-    if (!catalogIndexEpoch(this.env)) return;
-    try {
-      await withTimeout(
-        retirePageIndex(this.env, this.ctx, this.metadata),
-        catalogIndexTimeouts.write,
-      );
-    } catch (error) {
-      // Owner rows are confirmed against the Catalog and non-owner rows were
-      // removed before commit, so a missed retirement cannot list the Page.
-      logFailure(error, "catalog-index-retire");
+    if (catalogIndexEpoch(this.env)) {
+      try {
+        await withTimeout(
+          retirePageIndex(this.env, this.ctx, this.metadata),
+          catalogIndexTimeouts.write,
+        );
+      } catch (error) {
+        // Owner rows are confirmed against the Catalog and non-owner rows were
+        // removed before commit, so a missed retirement cannot list the Page.
+        logFailure(error, "catalog-index-retire");
+      }
     }
+    // A permanent deletion deletes the Page's tag rows itself, after the
+    // tombstone above fences late tag writes, and whether or not the catalog
+    // index is on. Unlike the projection it is not best-effort: the rows are
+    // the only record, so a failure fails this step and the lifecycle repeats
+    // it. Trash keeps tags.
+    if (pageState(this.metadata) === "deleted")
+      await deletePageTags(this.env, this.ctx, this.metadata.pageId);
   }
 
   async installAccess(metadata) {
@@ -5828,11 +5867,13 @@ export class Page {
     return settle(this.enqueue(request));
   }
 
-  /** Run `request` in admission order. */
+  /** Run `request` in admission order. A request that returns `AfterQueue`
+   * has decided its admission in the queue and finishes its work here, after
+   * the queue has moved on, so a slow dependency can't hold later requests. */
   enqueue(request) {
     const next = this.tail.then(() => this.run(request));
     this.tail = next.catch(() => {});
-    return next;
+    return next.then((result) => (result instanceof AfterQueue ? result.finish() : result));
   }
 
   /** An upload capability's screen (asset-uploads.mjs uploadScreen): only the
@@ -6317,7 +6358,19 @@ export class Page {
         if (body.operation === "update_page_tags") {
           if (state === "trashed")
             throw new HttpError(409, "Restore this Page before changing its tags", "page_trashed");
-          return json(await this.updateTags(identity, body.arguments));
+          // Access and Trash state are decided here, in the queue. The write
+          // is D1 work, so it runs after the queue releases this request
+          // (updateTags).
+          const change = this.tagChange(body.arguments);
+          const pageId = this.metadata.pageId;
+          return new AfterQueue(async () => {
+            try {
+              return json(await this.updateTags(identity, pageId, change));
+            } catch (error) {
+              if ((error.status ?? 500) >= 500) logFailure(error, "page");
+              return errorResponse(await this.agentRefusal(error), "page");
+            }
+          });
         }
         if (body.operation === "report_page_progress") {
           const revision = body.arguments?.revision;
@@ -6535,15 +6588,10 @@ export class Page {
   }
 
   /**
-   * One update_page_tags call. The caller has edit access (checked above) and
-   * the Page is not in Trash. The Page host only authorizes the call; it keeps
-   * no tag state, and no Durable Object does. Tags are rows in the D1
-   * `page_tags` table, the only record of them (page-tags-store.mjs), and
-   * never part of the document: this changes neither the Page's content nor
-   * its revision. `add` and `remove` are sets, so a repeat changes nothing and
-   * needs no receipt.
+   * The validated change of one update_page_tags call: `{ add, remove }`,
+   * normalized sets that don't overlap. Pure, so it runs in the Page's queue.
    */
-  async updateTags(identity, args) {
+  tagChange(args = {}) {
     const names = (value, field) => {
       if (value === undefined) return [];
       if (!Array.isArray(value) || value.length > MAX_TAGS_PER_PAGE)
@@ -6569,16 +6617,32 @@ export class Page {
       );
     if (add.some((tag) => remove.includes(tag)))
       throw new HttpError(400, "A tag can't be in both add and remove", "invalid_arguments");
+    return { add, remove };
+  }
+
+  /**
+   * One update_page_tags call, after the queue has released it. The caller has
+   * edit access and the Page was not in Trash when the queue admitted it. The
+   * Page host only authorizes the call; it keeps no tag state, and no Durable
+   * Object does. Tags are rows in the D1 `page_tags` table, the only record of
+   * them (page-tags-store.mjs), and never part of the document: this changes
+   * neither the Page's content nor its revision. `add` and `remove` are sets,
+   * so a repeat changes nothing and needs no receipt. A Trash or purge between
+   * the admission and the write is fenced in D1 (writePageTags); a timeout
+   * answers `tags_unavailable`, which doesn't say whether the write landed, and
+   * the same call is safe to repeat.
+   */
+  async updateTags(identity, pageId, { add, remove }) {
     const db = await pageTagsDatabase(this.env, this.ctx);
     try {
       const tags = await writePageTags(db, {
-        pageId: this.metadata.pageId,
+        pageId,
         principal: identity.principal,
         add,
         remove,
         now: new Date().toISOString(),
       });
-      return { page_id: this.metadata.pageId, tags };
+      return { page_id: pageId, tags };
     } catch (error) {
       if (error instanceof HttpError) throw error;
       logFailure(error, "page-tags");

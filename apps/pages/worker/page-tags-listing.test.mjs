@@ -1,7 +1,7 @@
 // list_pages' `tags` filter: the same answers from D1 and from the Catalog
 // entries, cursors sealed to the expression, refusals, and the lifecycle of
-// `page_tags`, the normative tag table (not a projection: only a deletion
-// tombstone clears its rows).
+// `page_tags`, the normative tag table (not a projection: only a purge clears
+// its rows, and the Page host does that itself).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
@@ -205,7 +205,7 @@ test("migration 9 adds the tag table without touching older rows", async (t) => 
   assert.equal(await migrateCatalogIndex(f.db, CATALOG_MIGRATIONS.slice(0, 8)), 9);
 });
 
-test("a Page's tags go with its deletion tombstone and nothing else clears them", async (t) => {
+test("the catalog tombstone leaves tags alone: they are not part of the projection", async (t) => {
   const f = await catalogFixture(t);
   await migrateCatalogIndex(f.db);
   const env = { DB: f.db, PAGES_CATALOG_INDEX: "1" };
@@ -224,7 +224,180 @@ test("a Page's tags go with its deletion tombstone and nothing else clears them"
     at(2),
   );
   assert.deepEqual(tagged(), [id(1), id(2)]);
-  // Deleting removes this Page's tags and no other Page's.
+  // The deletion tombstone marks the Page deleted and deletes no tag row; the
+  // Page host's purge does (page-tags-write.test.mjs).
   await retirePageIndex(env, {}, { ...metadata, deleted: true, lifecycleRevision: 2 }, at(3));
-  assert.deepEqual(tagged(), [id(2)]);
+  assert.equal(
+    f.db.rows("SELECT state FROM pages_catalog_pages WHERE page_id = ?", id(1))[0].state,
+    "deleted",
+  );
+  assert.deepEqual(tagged(), [id(1), id(2)]);
+});
+
+// ---------------------------------------------------------------------------
+// A shared parent's children: the owner's Catalog names them, readable or not.
+
+const PARENT = 200;
+const READABLE = [201, 202, 204];
+const HIDDEN = 203;
+
+/** Member lists the children of a Page shared with them. Children 201, 202 and
+ * 204 are shared with the member; 203 is not. `tagged` are the child numbers
+ * that carry the tag `x`. `asked` collects the Page IDs the tag filter reads. */
+async function sharedParent(t, tagged) {
+  const f = await catalogFixture(t);
+  await migrateCatalogIndex(f.db);
+  const share = { revision: 1, members: { [member]: { role: "viewer", generation: 1 } } };
+  f.addPage(id(PARENT), "Parent", share);
+  for (const n of READABLE) f.addPage(id(n), `Child ${n}`, share);
+  f.addPage(id(HIDDEN), "Hidden child");
+  for (const n of tagged)
+    f.db.sqlite.prepare("INSERT INTO page_tags VALUES (?, 'x', ?, ?)").run(id(n), owner, at(0));
+  const children = [...READABLE, HIDDEN].map(id);
+  const real = f.env.CATALOGS.getByName;
+  f.env.CATALOGS.getByName = (principal) =>
+    principal === owner
+      ? {
+          fetch: async (request) => {
+            const body = await request.clone().json();
+            return body.children_of ? Response.json({ children }) : real(principal).fetch(request);
+          },
+        }
+      : real(principal);
+  const asked = [];
+  const prepare = f.db.prepare.bind(f.db);
+  f.db.prepare = (sql) => {
+    const statement = prepare(sql);
+    if (!sql.includes("FROM json_each(?) j WHERE")) return statement;
+    return {
+      ...statement,
+      bind: (...values) => {
+        asked.push(...JSON.parse(values[0]));
+        return statement.bind(...values);
+      },
+    };
+  };
+  return { f, asked };
+}
+
+test("a tag filter on a shared parent's children never reads a child the caller can't open", async (t) => {
+  // The same listing whether or not the child the caller can't read matches:
+  // its tags decide nothing the caller can see.
+  const results = [];
+  for (const tagged of [[201, HIDDEN], [201], [201, 204, HIDDEN], [HIDDEN]]) {
+    const { f, asked } = await sharedParent(t, tagged);
+    const first = (await f.list(member, { parent_id: id(PARENT), tags: "x", limit: 1 })).body;
+    const everything = (await f.list(member, { parent_id: id(PARENT), tags: "x" })).body;
+    assert.ok(!asked.includes(id(HIDDEN)), `asked: ${JSON.stringify(tagged)}`);
+    const expected = READABLE.filter((n) => tagged.includes(n));
+    assert.deepEqual(numbers(everything), expected, JSON.stringify(tagged));
+    assert.equal(everything.tag_filter, "x");
+    assert.equal(everything.next_cursor, null);
+    // A page of one has a next cursor exactly when another readable match follows.
+    assert.equal(first.pages.length, Math.min(1, expected.length));
+    assert.equal(first.next_cursor !== null, expected.length > 1, JSON.stringify(tagged));
+    results.push(expected.length);
+  }
+  assert.deepEqual(results, [1, 1, 2, 0]);
+});
+
+test("a tag filter on a shared parent's children matches NOT and OR over the readable children", async (t) => {
+  const { f } = await sharedParent(t, [201, HIDDEN]);
+  const list = async (tags) =>
+    numbers((await f.list(member, { parent_id: id(PARENT), tags })).body);
+  assert.deepEqual(await list("x"), [201]);
+  assert.deepEqual(await list("NOT x"), [202, 204]);
+  assert.deepEqual(await list("x OR NOT x"), [201, 202, 204]);
+  // Walked one at a time, the filter finds each readable match once.
+  const walked = await f.walk(member, { parent_id: id(PARENT), tags: "NOT x", limit: 1 });
+  assert.deepEqual(
+    walked.seen.map((pageId) => Number(pageId.slice(0, 8))).sort((a, b) => a - b),
+    [202, 204],
+  );
+});
+
+test("a tag filter with no tag database refuses the listing of a shared parent's children", async (t) => {
+  const { f } = await sharedParent(t, [201]);
+  f.db.mode = "fail";
+  const refused = await f.listRaw(member, { parent_id: id(PARENT), tags: "x" });
+  assert.equal(refused.status, 503);
+  assert.equal(refused.body.code, "tags_unavailable");
+});
+
+// ---------------------------------------------------------------------------
+// A filtered listing always carries tags.
+
+test("a filtered listing that can't read its Pages' tags is tags_unavailable, never Pages without tags", async (t) => {
+  const f = await world(t);
+  await f.untilReady(member);
+  // The filter reads D1; then only the per-Page tag read fails.
+  const prepare = f.db.prepare.bind(f.db);
+  f.db.prepare = (sql) => {
+    const statement = prepare(sql);
+    if (!sql.includes("SELECT page_id, tag FROM page_tags")) return statement;
+    return {
+      ...statement,
+      bind: (...values) => ({
+        ...statement.bind(...values),
+        all: async () => {
+          throw new Error("injected tag read failure");
+        },
+      }),
+    };
+  };
+  const refused = await f.listRaw(member, { tags: "code" });
+  assert.equal(refused.status, 503);
+  assert.equal(refused.body.code, "tags_unavailable");
+  assert.equal(refused.body.retryable, true);
+  assert.equal(Object.hasOwn(refused.body, "pages"), false);
+  // Without a filter the tags are an extra: the listing stands without them.
+  const asked = await f.listRaw(member, { include_tags: true });
+  assert.equal(asked.status, 200);
+  assert.ok(asked.body.pages.length > 0);
+  assert.ok(asked.body.pages.every((page) => !Object.hasOwn(page, "tags")));
+  const plain = await f.listRaw(member);
+  assert.equal(plain.status, 200);
+});
+
+test("every Page a filter returns has its tags, including a Page with none", async (t) => {
+  const f = await world(t);
+  await f.untilReady(member);
+  const { body } = await f.list(member, { tags: "NOT code" });
+  assert.deepEqual(numbers(body), [3, 4]);
+  assert.ok(body.pages.every((page) => Array.isArray(page.tags)));
+  assert.deepEqual(new Map(body.pages.map((page) => [page.page_id, page.tags])).get(id(4)), []);
+});
+
+// ---------------------------------------------------------------------------
+// The longest expression, and the expression a listing echoes.
+
+/** Groups the tokenizer reads without spaces around AND, so the canonical
+ * spelling is longer than what was sent. */
+const compact = (groups, tag = 11) =>
+  Array.from(
+    { length: groups },
+    (_, i) => `(${String(i).padStart(tag, "t")} OR ${String(i + 100).padStart(tag, "u")})`,
+  ).join("AND");
+
+test("tag_filter round-trips: an expression the listing accepts, its echo accepts too", async (t) => {
+  const f = await world(t);
+  await f.untilReady(member);
+  const base = (await f.list(member, { tags: "code AND NOT status:blocked" })).body;
+  const again = (await f.list(member, { tags: base.tag_filter })).body;
+  assert.equal(again.tag_filter, base.tag_filter);
+  assert.deepEqual(numbers(again), numbers(base));
+  // The largest expression whose canonical spelling still fits the bound.
+  const input = compact(7);
+  assert.ok(input.length < 256);
+  const fits = (await f.list(member, { tags: input })).body;
+  assert.ok(fits.tag_filter.length <= 256, String(fits.tag_filter.length));
+  assert.equal((await f.list(member, { tags: fits.tag_filter })).body.tag_filter, fits.tag_filter);
+  // Sent without spaces, 8 groups fit the bound as written but not canonically:
+  // the echo would be refused, so the request is.
+  const crowded = compact(8);
+  assert.ok(crowded.length <= 256 && crowded.length > 240, String(crowded.length));
+  const refused = await f.listRaw(member, { tags: crowded });
+  assert.equal(refused.status, 400);
+  assert.equal(refused.body.code, "invalid_list_arguments");
+  assert.match(refused.body.error, /at most 256 characters once written canonically/);
 });

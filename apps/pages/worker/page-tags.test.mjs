@@ -175,6 +175,31 @@ test("an expression is bounded in length, tags and nesting", () => {
   assert.doesNotThrow(() => parseTagExpression("NOT NOT NOT NOT a"));
 });
 
+test("an accepted expression's canonical spelling is accepted too, at the length bound", () => {
+  // Groups sent without spaces gain spaces when written canonically.
+  const groups = (count) =>
+    Array.from(
+      { length: count },
+      (_, i) => `(${String(i).padStart(11, "t")} OR ${String(i + 100).padStart(11, "u")})`,
+    ).join("AND");
+  for (let count = 1; count <= 7; count++) {
+    const parsed = parseTagExpression(groups(count));
+    assert.ok(parsed.canonical.length <= MAX_EXPRESSION_LENGTH, `${count} groups`);
+    assert.equal(parseTagExpression(parsed.canonical).canonical, parsed.canonical);
+  }
+  const crowded = groups(8);
+  assert.ok(crowded.length <= MAX_EXPRESSION_LENGTH, "it fits as written");
+  refuses(crowded, /at most 256 characters once written canonically \(259/);
+  // Spaced as the echo would be, it is over the bound as written.
+  refuses(crowded.replaceAll("AND", " AND "), /at most 256 characters$/);
+  // A canonical spelling of exactly the bound is accepted.
+  const exact = parseTagExpression(
+    `${"a".repeat(64)} OR ${"b".repeat(64)} OR ${"c".repeat(64)} OR ${"d".repeat(52)}`,
+  );
+  assert.equal(exact.canonical.length, MAX_EXPRESSION_LENGTH);
+  assert.equal(parseTagExpression(exact.canonical).canonical, exact.canonical);
+});
+
 test("matching evaluates the expression over a set of tags", () => {
   const has = (expression, ...tags) =>
     matchesTags(parseTagExpression(expression).ast, new Set(tags));

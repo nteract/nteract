@@ -64,8 +64,9 @@ migration chain (`CATALOG_MIGRATIONS`, migration 9) and the `PAGES_CATALOG_INDEX
 gate with the projection tables. That gate controls whether the worker has the D1
 binding; with it unset, tag writes and tag filters answer `tags_unavailable`
 and the rows stay as they are. Nothing may clear or rewrite `page_tags` except
-a Page's deletion tombstone, which deletes that Page's rows when the Page is
-permanently deleted. Trash keeps them. Reconciliation, a migration that resets
+a Page's permanent deletion: the Page host deletes that Page's rows itself,
+after the catalog tombstone and whether or not `PAGES_CATALOG_INDEX` is set (the
+projection never touches them). Trash keeps them. Reconciliation, a migration that resets
 `pages_catalog_accounts`, a cooled index and a dropped projection table leave
 them alone.
 

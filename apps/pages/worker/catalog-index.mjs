@@ -817,9 +817,10 @@ export async function restrictPageIndex(env, ctx, metadata, revision = revisionO
 }
 
 /** A deleted Page's tombstone: no title, no access rows, and no later write
- * changes it. It also deletes the Page's rows in `page_tags`. That is the only
- * thing that removes tag rows, and it deletes the normative record, not a
- * projection: a deleted Page's tags are gone for good. */
+ * changes it. It leaves `page_tags` alone: those rows are the normative record,
+ * not part of this projection, and the Page host deletes them itself on a
+ * purge (`deletePageTags`). The tombstone is also the fence a late tag write
+ * meets. */
 function tombstoneStatements(db, pageId, owner, lifecycle, now = new Date().toISOString()) {
   return [
     db
@@ -832,7 +833,6 @@ function tombstoneStatements(db, pageId, owner, lifecycle, now = new Date().toIS
       )
       .bind(pageId, owner, now, now, lifecycle),
     db.prepare("DELETE FROM pages_catalog_access WHERE page_id = ?").bind(pageId),
-    db.prepare("DELETE FROM page_tags WHERE page_id = ?").bind(pageId),
   ];
 }
 
