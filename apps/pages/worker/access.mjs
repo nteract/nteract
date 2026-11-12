@@ -81,6 +81,18 @@ export function pageDecision(metadata, identity, { now = Date.now() } = {}) {
   return decide(principal, NO_ACTOR_CHAIN, pageObject(metadata, principal.id), now);
 }
 
+/** When `identity`'s edit access ends if its link audience leases (company
+ * domain and organization) are not renewed: Infinity when it edits without
+ * them, as an owner, a member or a Project member does, else the decision's
+ * bound, which is the end of the lease it edits through or its own expiry.
+ * Null when it can't edit now. */
+export function audienceEditUntil(metadata, identity, { now = Date.now() } = {}) {
+  if (!pageAccess(metadata, identity, { now }).canWrite) return null;
+  const bare = { ...identity, domainAccess: undefined, organizations: undefined };
+  if (pageAccess(metadata, bare, { now }).canWrite) return Infinity;
+  return pageDecision(metadata, identity, { now }).valid_until;
+}
+
 /** The relation a principal holds on a Page record before the lifecycle
  * overlay: what deletion disclosure and the lifecycle owner check read. */
 export function pageRelation(metadata, principal) {

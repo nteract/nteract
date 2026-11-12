@@ -31,12 +31,14 @@
  * route with its own cookie. An API key's revocation isn't seen here (the
  * host never holds the key), so its capabilities end at their expiry, at most
  * ten minutes; removing the principal's Page access or revoking an OAuth
- * connection ends them at once.
+ * connection ends them at once. A caller that edits only through a link
+ * audience lease gets a capability that expires with that lease.
  *
  * A capability holds no server state, so it has no lifecycle beyond its
  * expiry. uploadVerdict is the pure decision on a verified payload.
  */
-import { HttpError } from "./auth.mjs";
+import { audienceEditUntil } from "./access.mjs";
+import { HttpError, withDomainAccess } from "./auth.mjs";
 import { openCapability, signCapability } from "./operation-journal.mjs";
 import { ASSET_UPLOAD_SCHEME, assetUploadCommand } from "../agent-client-setup.mjs";
 import { IMAGE_MAX_BYTES, IMAGE_MEDIA_TYPES } from "../shared/image-assets.mjs";
@@ -210,10 +212,16 @@ export function uploadScreen(claims, { pageId, now }) {
  * Sign an upload capability for `identity` on `pageId`. The caller has
  * checked write scope and current edit access. An OAuth capability names its
  * grant, checked again at upload. Returns the tool result.
+ *
+ * `accessUntil(claims)` answers when the edit access the capability's own
+ * identity would hold ends without renewal: the end of the link audience
+ * lease (company domain or organization) it edits through, or Infinity when
+ * it edits without one. The capability expires then if that is sooner, so
+ * `expires_at` is the deadline the upload actually has.
  */
 export async function issueAssetUpload(
   storage,
-  { pageId, identity, args, origin, now = Date.now() },
+  { pageId, identity, args, origin, now = Date.now(), accessUntil = async () => Infinity },
 ) {
   const binding = uploadBinding(args, pageId);
   const kind = identity?.credentialKind;
@@ -229,7 +237,7 @@ export async function issueAssetUpload(
     throw Error("An OAuth identity is missing its grant");
   // A Kilo agent token's capability ends with the token's lease, so it can't
   // outlast the check Kilo made of the token.
-  const expiresAt =
+  const lifetime =
     kind === "kilo-token"
       ? Math.min(now + ASSET_UPLOAD_TTL_MS, identity.expiresAt)
       : now + ASSET_UPLOAD_TTL_MS;
@@ -243,25 +251,25 @@ export async function issueAssetUpload(
     Number.isSafeInteger(identity.domainAccess.expiresAt)
       ? identity.domainAccess
       : null;
+  const claimsUntil = (exp) => ({
+    page: pageId,
+    principal: identity.principal,
+    // The principal's namespace, so the upload's identity can hold the
+    // organization leases its evidence supports, as the issuer's did.
+    ...(namespace !== undefined && { namespace }),
+    ...(domain && { domain: domain.domain, domain_exp: Math.min(domain.expiresAt, exp) }),
+    kind,
+    ...(kind === "oauth" && { grant: identity.grantId }),
+    iat: now,
+    exp,
+    ...binding,
+  });
+  const expiresAt = Math.min(lifetime, await accessUntil(claimsUntil(lifetime)));
+  if (!(expiresAt > now)) throw new HttpError(403, "Page is read-only", "access_denied");
   const token = await signCapability(storage, {
     purpose: PURPOSE,
     prefix: PREFIX,
-    payload: {
-      page: pageId,
-      principal: identity.principal,
-      // The principal's namespace, so the upload's identity can hold the
-      // organization leases its evidence supports, as the issuer's did.
-      ...(namespace !== undefined && { namespace }),
-      ...(domain && {
-        domain: domain.domain,
-        domain_exp: Math.min(domain.expiresAt, expiresAt),
-      }),
-      kind,
-      ...(kind === "oauth" && { grant: identity.grantId }),
-      iat: now,
-      exp: expiresAt,
-      ...binding,
-    },
+    payload: claimsUntil(expiresAt),
   });
   const uploadUrl = `${origin}/api/pages/${pageId}/assets`;
   const contentType = binding.content_type ?? "application/octet-stream";
@@ -316,4 +324,13 @@ export function uploadIdentity(claims) {
     expiresAt: claims.exp,
     upload: Object.freeze(storedBinding(claims)),
   });
+}
+
+/** `issueAssetUpload`'s `accessUntil` for a Page host: when the edit access of
+ * the identity `claims` would stand for ends on the record `metadata`, with
+ * its leases derived as the upload will derive them (`audienceEditUntil`), or
+ * 0 when it can't edit. */
+export async function uploaderEditUntil(metadata, claims, env, now = Date.now()) {
+  const uploader = await withDomainAccess(uploadIdentity(claims), env);
+  return audienceEditUntil(metadata, uploader, { now }) ?? 0;
 }

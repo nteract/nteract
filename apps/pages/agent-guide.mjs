@@ -1539,7 +1539,8 @@ OAuth clients upload with create_page_asset_upload instead: its Pages-Upload
 capability is a separate, Page-scoped credential, not the OAuth token, and
 revoking the connection also ends the upload URLs it issued. Revoking an API
 key doesn't end upload URLs it already issued; they stop at expires_at, at
-most 10 minutes. Removing the principal's Page access ends them at once. MCP can import
+most 10 minutes, and sooner when the caller edits only through a company
+domain or organization grant. Removing the principal's Page access ends them at once. MCP can import
 files and preserve image references, but it does not return image pixels. Pages
 has no tool that fetches an arbitrary remote URL, and image bytes don't go in
 tool arguments. A reference from read_page is not evidence that an
@@ -1843,7 +1844,8 @@ config.
    - Repeating an upload is safe: the same bytes always return the same
      asset_id.
    - One URL takes several files until its expires_at, 10 minutes after you
-     asked; then request another.
+     asked, or sooner when you edit only through a company domain or
+     organization grant: then it ends with that access. Request another after.
    - Optional content_type and size arguments bind the URL to one type and length.
    - The Pages-Upload header works only on that upload route. Never send your
      own API key there, and keep the token out of Page content and comments.
@@ -1941,7 +1943,8 @@ the asset route.
 OAuth clients upload with create_page_asset_upload instead: its Pages-Upload
 capability is a separate, Page-scoped credential, not the OAuth token, and
 revoking the connection also ends the upload URLs it issued. They stop at
-expires_at, at most 10 minutes. Removing the principal's Page access ends them
+expires_at, at most 10 minutes, and sooner when the caller edits only through
+a company domain or organization grant. Removing the principal's Page access ends them
 at once. MCP can import files and preserve image references, but it does not
 return image pixels. Pages has no tool that fetches an arbitrary remote URL, and
 image bytes don't go in tool arguments. A reference from read_page is not
@@ -2061,7 +2064,8 @@ or a permission grant.`,
    - Repeating an upload is safe: the same bytes always return the same
      asset_id.
    - One URL takes several files until its expires_at, 10 minutes after you
-     asked; then request another.
+     asked, or sooner when you edit only through a company domain or
+     organization grant: then it ends with that access. Request another after.
    - Optional content_type and size arguments bind the URL to one type and length.
    - The Pages-Upload header works only on that upload route. Never send your
      own OAuth token there, and keep the token out of Page content and comments.

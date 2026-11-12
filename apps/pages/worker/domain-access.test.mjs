@@ -9,7 +9,9 @@ import { createPageData, initializePage } from "../model/page.mjs";
 import { companyViewDomains, domainAccessForIdentity } from "./domain-access.mjs";
 import { pageAccess, proposeAccessUpdate, restrictAccessDuringCommit } from "./access.mjs";
 import {
+  ASSET_UPLOAD_TTL_MS,
   issueAssetUpload,
+  uploaderEditUntil,
   uploadIdentity,
   uploadVerdict,
   verifyAssetUpload,
@@ -961,60 +963,90 @@ test("permanent deletion names the company domain with its role", () => {
   assert.equal(purgeImpact(sharedAt(null), null, null, "Plan").domain_view, null);
 });
 
-test("a domain editor's upload capability carries the issuer's domain lease, and no longer than it lasts", async () => {
+test("a domain editor's upload URL carries the issuer's domain lease and expires with it", async (t) => {
+  // One clock for issue, lease derivation and the upload.
+  let clock = now;
+  t.mock.method(Date, "now", () => clock);
   const storage = new Storage();
   const pageId = "domain-upload-page";
   const page = { ...sharedAt("editor"), pageId };
+  const uploadUrl = (identity, record = page) =>
+    issueAssetUpload(storage, {
+      pageId,
+      identity,
+      args: { page_id: pageId },
+      origin: "https://pages.invalid",
+      now: clock,
+      accessUntil: (claims) => uploaderEditUntil(record, claims, env),
+    });
+  const tokenOf = (issued) => issued.headers.Authorization.slice("Pages-Upload ".length);
+  const open = (issued) =>
+    verifyAssetUpload(storage, tokenOf(issued), {
+      pageId,
+      now: clock,
+      grantActive: () => assert.fail("an API-key capability names no grant"),
+    });
+  /** The Page host's upload check: verify the capability, derive its leases,
+   * and decide edit access on the record as it is now. */
+  const upload = async (issued, record = page, deployment = env) => {
+    const identity = await withDomainAccess(uploadIdentity(await open(issued)), deployment);
+    new DocumentPolicy({ metadata: () => record, now: () => clock }).account(identity, true);
+    return identity;
+  };
   // An API key's domain lease lasts as long as its 60-second identity.
-  const issuer = await withDomainAccess(
-    {
-      ...employee,
-      credentialKind: "api-key",
-      verifiedEmail: "person@anaconda.com",
-      expiresAt: now + 60_000,
-    },
-    env,
-  );
+  const apiKey = (verifiedEmail = "person@anaconda.com") =>
+    withDomainAccess(
+      { ...employee, credentialKind: "api-key", verifiedEmail, expiresAt: clock + 60_000 },
+      env,
+    );
+  const issuer = await apiKey();
   assert.equal(issuer.domainAccess.expiresAt, now + 60_000);
-  const issued = await issueAssetUpload(storage, {
-    pageId,
-    identity: issuer,
-    args: { page_id: pageId },
-    origin: "https://pages.invalid",
-    now,
-  });
-  const token = issued.headers.Authorization.slice("Pages-Upload ".length);
-  const claims = await verifyAssetUpload(storage, token, {
-    pageId,
-    now,
-    grantActive: () => assert.fail("an API-key capability names no grant"),
-  });
+  const issued = await uploadUrl(issuer);
+  // The URL says when it stops working: the lease's end, not ten minutes.
+  assert.equal(issued.expires_at, new Date(now + 60_000).toISOString());
+  const claims = await open(issued);
+  assert.equal(claims.exp, now + 60_000);
   assert.equal(claims.domain, "anaconda.com");
   assert.equal(claims.domain_exp, now + 60_000);
-  const identity = await withDomainAccess(uploadIdentity(claims), env);
-  assert.deepEqual(identity.domainAccess, { ...domainView, expiresAt: now + 60_000 });
-  assert.equal(pageAccess(page, identity, { now }).canWrite, true);
-  assert.equal(pageAccess(sharedAt("commenter"), identity, { now }).canWrite, false);
-  assert.equal(pageAccess(page, identity, { now: now + 60_000 }).canWrite, false, "lease ended");
-  // The deployment must still allow the domain when the upload arrives.
-  const off = await withDomainAccess(uploadIdentity(claims), {
-    ...env,
-    PAGES_COMPANY_VIEW_DOMAINS: "",
-  });
-  assert.equal(off.domainAccess, undefined);
+  assert.deepEqual((await upload(issued)).domainAccess, { ...domainView, expiresAt: now + 60_000 });
+  clock = now + 59_999;
+  assert.equal((await upload(issued)).domainAccess.domain, "anaconda.com");
+  // At domain_exp, replaying the capability derives no lease, and the upload
+  // is refused.
+  clock = now + 60_000;
+  assert.equal((await withDomainAccess(uploadIdentity(claims), env)).domainAccess, undefined);
+  await assert.rejects(upload(issued), { status: 401, code: "upload_capability_expired" });
+  // Changes after issue refuse the upload at once: the owner withdraws the
+  // grant, downgrades it to viewer, or the deployment drops the domain.
+  for (const [change, record, deployment] of [
+    ["withdrawn", { ...sharedAt(null), pageId }, env],
+    ["downgraded", { ...sharedAt("viewer"), pageId }, env],
+    ["not allowed", page, { ...env, PAGES_COMPANY_VIEW_DOMAINS: "" }],
+  ]) {
+    clock = now;
+    const later = await uploadUrl(await apiKey());
+    clock = now + 1000;
+    assert.ok(await upload(later), change);
+    const derived = await withDomainAccess(uploadIdentity(await open(later)), deployment);
+    if (change === "not allowed") assert.equal(derived.domainAccess, undefined, change);
+    await assert.rejects(upload(later, record, deployment), /read-only|denied/i, change);
+  }
+  // A caller who can't edit gets no URL.
+  clock = now;
+  await assert.rejects(uploadUrl(await apiKey("person@gmail.com")), { status: 403 });
+  // A member editor who also holds the lease keeps the full ten minutes: the
+  // upload doesn't depend on the lease.
+  const memberPage = structuredClone(page);
+  memberPage.acl.members[employee.principal] = { role: "editor", generation: 1 };
+  const member = await uploadUrl(await apiKey(), memberPage);
+  assert.equal(member.expires_at, new Date(now + ASSET_UPLOAD_TTL_MS).toISOString());
+  assert.equal((await open(member)).domain_exp, now + 60_000);
+  clock = now + 60_001;
+  assert.equal((await upload(member, memberPage)).domainAccess, undefined);
   // An issuer without a domain lease issues a capability without one.
-  const plain = await issueAssetUpload(storage, {
-    pageId,
-    identity: { ...employee, credentialKind: "api-key" },
-    args: { page_id: pageId },
-    origin: "https://pages.invalid",
-    now,
-  });
-  const bare = await verifyAssetUpload(
-    storage,
-    plain.headers.Authorization.slice("Pages-Upload ".length),
-    { pageId, now, grantActive: () => true },
-  );
+  clock = now;
+  const plain = await uploadUrl({ ...employee, credentialKind: "api-key" }, memberPage);
+  const bare = await open(plain);
   assert.equal(bare.domain, undefined);
   assert.equal((await withDomainAccess(uploadIdentity(bare), env)).domainAccess, undefined);
   // A payload's domain fields are well formed or the capability is invalid.

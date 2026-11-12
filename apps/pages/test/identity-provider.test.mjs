@@ -244,6 +244,24 @@ test("a company domain value is a lower-case hostname of two or more labels", ()
     42,
   ])
     assert.equal(companyDomainValid(invalid), false, String(invalid));
+  // Line terminators and other whitespace or control characters, wherever
+  // they sit. The label pattern's `$` has no `m` flag, so it matches only at
+  // the end of the value, never before a final line terminator.
+  for (const [form, invalid] of [
+    ["trailing LF", "anaconda.com\n"],
+    ["trailing CR", "anaconda.com\r"],
+    ["trailing CRLF", "anaconda.com\r\n"],
+    ["trailing LINE SEPARATOR", "anaconda.com "],
+    ["trailing PARAGRAPH SEPARATOR", "anaconda.com "],
+    ["leading LF", "\nanaconda.com"],
+    ["LF inside a label", "ana\nconda.com"],
+    ["LF as a label", "anaconda.\n.com"],
+    ["tab", "anaconda.com\t"],
+    ["embedded space", "ana conda.com"],
+    ["embedded NUL", "ana\u0000conda.com"],
+    ["trailing NUL", "anaconda.com\u0000"],
+  ])
+    assert.equal(companyDomainValid(invalid), false, form);
   // Each provider's reviewed list passes the same check; a bad entry would
   // have thrown when identity-provider.mjs loaded.
   for (const env of [production, kilo])

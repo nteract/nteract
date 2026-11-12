@@ -1637,8 +1637,12 @@ host's existing retry-token key ([operation-journal.mjs](worker/operation-journa
 `pages-asset-upload-v1`, ahead of the payload, and the payload repeats it, so a
 retry token never verifies as a capability or the reverse. The payload names
 the Page, principal, credential kind, OAuth grant ID (for OAuth), issue and
-expiry times (10 minutes) and the optional binding. No server state is
-created.
+expiry times, the issuer's company domain lease when it holds one, and the
+optional binding. The expiry is 10 minutes after issue, or the end of the
+company domain or organization lease the caller edits through when that comes
+first; a caller who edits without one (owner, member, Project member) gets the
+full 10 minutes. `expires_at` in the answer is that same expiry. No server
+state is created.
 
 The upload sends it as `Authorization: Pages-Upload <token>`, a header rather
 than a query parameter so access logs and `Referer` don't carry it. The gateway
