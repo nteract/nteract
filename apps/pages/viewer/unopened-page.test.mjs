@@ -7,6 +7,7 @@ import {
   formatRefused,
   sessionFormatStopped,
   trashArguments,
+  trashOutcome,
   unopenedAction,
   unopenedPageStep,
 } from "./unopened-page.mjs";
@@ -19,6 +20,7 @@ const SAMPLE = {
   unanswered: { type: "unanswered" },
   trash: { type: "trash", nonce: "new-nonce" },
   succeeded: { type: "succeeded" },
+  failed: { type: "failed", message: "Offline" },
   refused: { type: "refused", message: "No" },
 };
 const at = (name) =>
@@ -39,7 +41,8 @@ const NEXT = {
   trashing: {
     ...same("trashing"),
     succeeded: ["trashed", ["leave"]],
-    refused: ["failed", []],
+    failed: ["failed", []],
+    refused: ["checking", ["check"]],
   },
   failed: { ...same("failed"), trash: ["trashing", ["trash"]] },
   trashed: same("trashed"),
@@ -91,14 +94,60 @@ test("only the host's answer that this account owns the Page offers Move to Tras
   assert.equal(unopenedAction(at("trashed")), null);
 });
 
-test("a retry after a refused move resends its nonce", () => {
+test("a retry after an uncertain failure resends its nonce", () => {
   let { state, effects } = unopenedPageStep({ name: "owner" }, { type: "trash", nonce: "first" });
   assert.deepEqual(effects, [{ type: "trash", nonce: "first" }]);
-  ({ state } = unopenedPageStep(state, { type: "refused", message: "Offline" }));
+  ({ state } = unopenedPageStep(state, { type: "failed", message: "Offline" }));
   assert.deepEqual(state, { name: "failed", nonce: "first", message: "Offline" });
   ({ state, effects } = unopenedPageStep(state, { type: "trash", nonce: "second" }));
   assert.deepEqual(effects, [{ type: "trash", nonce: "first" }]);
   assert.equal(state.name, "trashing");
+});
+
+test("a move the host settled as not applied asks again and spends its nonce", () => {
+  let { state, effects } = unopenedPageStep({ name: "owner" }, { type: "trash", nonce: "first" });
+  ({ state, effects } = unopenedPageStep(state, { type: "refused", message: "Changed" }));
+  assert.deepEqual(state, { name: "checking", message: "Changed" });
+  assert.deepEqual(effects, [{ type: "check" }]);
+  // The Page may be in Trash now, or no longer this account's to trash.
+  assert.deepEqual(
+    unopenedPageStep(state, { type: "answered", access: { trashed: true, canRestore: true } })
+      .state,
+    { name: "inTrash", message: "Changed" },
+  );
+  assert.deepEqual(unopenedPageStep(state, { type: "answered", access: MEMBER }).state, {
+    name: "reader",
+    message: "Changed",
+  });
+  ({ state } = unopenedPageStep(state, { type: "answered", access: OWNER }));
+  assert.deepEqual(state, { name: "owner", message: "Changed" });
+  ({ state, effects } = unopenedPageStep(state, { type: "trash", nonce: "second" }));
+  assert.deepEqual(effects, [{ type: "trash", nonce: "second" }], "a new nonce");
+  assert.deepEqual(state, { name: "trashing", nonce: "second" });
+});
+
+test("delete_page outcomes split into uncertain and settled", () => {
+  // The move may have landed: the same nonce replays it.
+  for (const error of [
+    Object.assign(new TypeError("Failed to fetch"), { code: "NETWORK_ERROR" }),
+    Object.assign(Error("The request timed out."), { code: "REQUEST_TIMEOUT" }),
+    Object.assign(Error("Unexpected"), { code: "INVALID_RESPONSE", httpStatus: 404 }),
+    Object.assign(Error("Pages request failed"), { status: 500 }),
+    Object.assign(Error("Unavailable"), { status: 503, retryable: true }),
+    Object.assign(Error("Still settling"), { status: 409, code: "lifecycle_unsettled" }),
+  ])
+    assert.equal(trashOutcome(error).type, "failed", error.message);
+  // The host answered that nothing applied: the nonce is spent.
+  for (const error of [
+    Object.assign(Error("Only the owner"), { status: 403, code: "page_access_denied" }),
+    Object.assign(Error("Not found"), { status: 404, code: "page_not_found" }),
+    Object.assign(Error("Trash full"), { status: 409, code: "trash_capacity" }),
+    Object.assign(Error("Bad"), { status: 400, code: "invalid_revision" }),
+  ])
+    assert.equal(trashOutcome(error).type, "refused", error.message);
+  assert.equal(trashOutcome(undefined, { superseded: true }).type, "refused");
+  assert.equal(trashOutcome(undefined, { applied: false }).type, "refused");
+  assert.deepEqual(trashOutcome(undefined, { state: "trashed" }), { type: "succeeded" });
 });
 
 test("a move to Trash names heads unless the host stopped the Page for its format", () => {

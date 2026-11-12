@@ -1,10 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Trash2 } from "lucide-react";
-import { failureMessage } from "./alerts.mjs";
 import { PAGE_FORMAT_UNSUPPORTED } from "./format-gate.mjs";
 import {
   UNOPENED_INITIAL,
   trashArguments,
+  trashOutcome,
   unopenedAction,
   unopenedPageStep,
 } from "./unopened-page.mjs";
@@ -17,6 +17,11 @@ export function UnopenedPage({ pageId, principal, request, tool, onTrashed, onOp
   const [state, setState] = useState(UNOPENED_INITIAL);
   const current = useRef(UNOPENED_INITIAL);
   const alive = useRef(true);
+  const check = () =>
+    void request(`/api/access?page=${encodeURIComponent(pageId)}`).then(
+      (answer) => dispatch({ type: "answered", access: answer?.access }),
+      () => dispatch({ type: "unanswered" }),
+    );
   const dispatch = (event) => {
     if (!alive.current) return;
     const { state: next, effects } = unopenedPageStep(current.current, event);
@@ -24,27 +29,20 @@ export function UnopenedPage({ pageId, principal, request, tool, onTrashed, onOp
     setState(next);
     for (const effect of effects) {
       if (effect.type === "leave") onTrashed(pageId);
+      else if (effect.type === "check") check();
       else if (effect.type === "trash")
         void tool(
           "delete_page",
           trashArguments({ pageId, principal, nonce: effect.nonce, heads: undefined }),
         ).then(
-          (result) =>
-            dispatch(
-              result?.superseded
-                ? { type: "refused", message: "This Page changed before it could move to Trash." }
-                : { type: "succeeded" },
-            ),
-          (error) => dispatch({ type: "refused", message: failureMessage(error) }),
+          (result) => dispatch(trashOutcome(undefined, result)),
+          (error) => dispatch(trashOutcome(error)),
         );
     }
   };
   useEffect(() => {
     alive.current = true;
-    void request(`/api/access?page=${encodeURIComponent(pageId)}`).then(
-      (answer) => dispatch({ type: "answered", access: answer?.access }),
-      () => dispatch({ type: "unanswered" }),
-    );
+    check();
     return () => {
       alive.current = false;
     };
@@ -55,7 +53,7 @@ export function UnopenedPage({ pageId, principal, request, tool, onTrashed, onOp
       <div className="access-notice" role="status">
         <h1>This Page can't be opened</h1>
         <p>{PAGE_FORMAT_UNSUPPORTED}</p>
-        {state.name === "failed" && (
+        {state.message && (
           <p className="error" role="alert">
             {state.message}
           </p>
