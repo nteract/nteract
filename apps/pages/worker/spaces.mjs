@@ -452,7 +452,11 @@ export class Space {
           // replaced) go after the audit line, so a failure here leaves the
           // retry, which replays the receipt above, to finish the removal.
           if (indexedAction(args.action)) await pruneProjectInvitations(this.env, next);
-          if (args.action === "set_role" && args.role === null)
+          // While the Project has an organization grant, the removed person
+          // may still read it through the organization, so their hint stays:
+          // the listing checks access on every read, and a full Catalog
+          // evicts it before any member's hint.
+          if (args.action === "set_role" && args.role === null && !next.acl.organizationAccess)
             await this.env.CATALOGS.getByName(args.principal).fetch(
               new Request("https://pages.internal/internal/project-discovery", {
                 method: "POST",

@@ -403,3 +403,29 @@ test("a Project shared only with an organization is a shared Project boundary fo
   });
   assert.equal(moved.body.code, "shared_project_move_unsupported", JSON.stringify(moved.body));
 });
+
+test("removing a member row leaves their hint while the Project has an organization grant", async (t) => {
+  const w = await world(t, { kilo: { owner: [acme], member: [acme] } });
+  const shared = await w.createProject("Guild");
+  const plain = await w.createProject("Plain");
+  const role = (project_id, value, expected_revision) =>
+    manage(w, "owner", {
+      project_id,
+      action: "set_role",
+      principal: w.member,
+      role: value,
+      expected_revision,
+    });
+  assert.equal((await share(w, shared.project_id, acme.id, "viewer", 0)).status, 200);
+  assert.equal((await role(shared.project_id, "editor", 1)).status, 200);
+  assert.equal((await role(plain.project_id, "editor", 0)).status, 200);
+  for (const { project_id } of [shared, plain])
+    assert.equal((await w.call("member", "get_project", { project_id })).status, 200);
+  assert.deepEqual((await listed(w, "member")).sort(), [shared.project_id, plain.project_id].sort());
+  assert.equal((await role(shared.project_id, null, 2)).status, 200);
+  assert.equal((await role(plain.project_id, null, 1)).status, 200);
+  assert.deepEqual(await listed(w, "member"), [shared.project_id], "still reached through acme");
+  assert.deepEqual(await hintIds(w), [shared.project_id]);
+  const opened = await w.call("member", "get_project", { project_id: shared.project_id });
+  assert.equal(opened.body.role, "viewer");
+});
