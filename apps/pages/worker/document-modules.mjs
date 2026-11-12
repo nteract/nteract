@@ -1,12 +1,16 @@
 import { blockChangeRefusal } from "../model/block-shape.mjs";
+import { commentsGenesis } from "../model/comments-doc.mjs";
 import { documentFeatures } from "../model/schema-features.mjs";
+import { sourcesGenesis } from "../model/sources-doc.mjs";
 import { BLOCKING, commentAdmission } from "../sync/comments.mjs";
 import { Refusal } from "../sync/host.mjs";
+import { COMMENTS_LABEL } from "./comments-store.mjs";
 
 // The Page host's document type modules. The host serves a document by its
 // `kind` and asks that kind's module every question whose answer depends on
 // the document's type; it compares no kind itself. A Page's host serves one
-// family: the Page document and its comments document.
+// family: the Page document, its comments document and, once the Page has a
+// source, its sources document.
 //
 // A module is host code. The browser bundle reads the type registry
 // (model/document-types.mjs) and never imports this file.
@@ -22,9 +26,16 @@ import { Refusal } from "../sync/host.mjs";
 //   revisionField   the receipt field that carries a write's revision handle
 //                   (mutations.mjs)
 //   writeAccess     the access a browser write needs, as the second argument
-//                   to DocumentPolicy.account (PlainSync's role gate)
+//                   to DocumentPolicy.account (PlainSync's role gate), or
+//                   null when no browser writes the document: only the host
+//                   does, through the journal and `admitTrusted`
+//   deniedWrites    what a browser frame that carries changes gets when its
+//                   author lacks writeAccess: "strip" drops the changes and
+//                   the rest of the frame stands; "refuse" refuses the frame
+//                   with a non-fatal `request_rejected`, so nothing of it is
+//                   stored and the principal is not blocked
 //   writeAction     the usage action an admitted browser write reports
-//                   (usage-session.mjs BrowserWrites)
+//                   (usage-session.mjs BrowserWrites), or null for none
 //   hostMessages    whether the document carries the Page's host messages to
 //                   its readers: who wrote each admitted change
 //                   (`actor-profiles`), and for a browser that joins it,
@@ -37,7 +48,14 @@ import { Refusal } from "../sync/host.mjs";
 //   admit(conn, doc, live, fresh, preview, actorPrincipal, host)
 //                   a browser's changes, after the schema gate and history
 //                   cap: returns the preview to store or throws a Refusal
-//                   (PlainSync's SyncHost `admit` policy)
+//                   (PlainSync's SyncHost `admit` policy). Absent when
+//                   writeAccess is null
+//   derived         optional: `{ label, genesis(uuid) }` for a document the
+//                   host derives from the Page: at most one per Page, its
+//                   UUID derived from the Page ID and `label`
+//                   (comments-store.mjs derivedDocUuid), its first change
+//                   the fixed `genesis`, so creating it twice stores one
+//                   document
 //   refused(conn, doc, refusal, host)
 //                   optional: what the document's type does after a browser
 //                   frame to it is refused (PlainSync's SyncHost `refused`)
@@ -53,6 +71,7 @@ export const PAGE_MODULE = Object.freeze({
   revisionNoun: "Page",
   revisionField: "revision",
   writeAccess: true,
+  deniedWrites: "strip",
   writeAction: "page.write",
   hostMessages: true,
   /**
@@ -77,8 +96,10 @@ export const COMMENTS_MODULE = Object.freeze({
   revisionNoun: "Page's comments",
   revisionField: "comment_revision",
   writeAccess: "comment",
+  deniedWrites: "strip",
   writeAction: "comment.write",
   hostMessages: false,
+  derived: Object.freeze({ label: COMMENTS_LABEL, genesis: commentsGenesis }),
   /** The comments document's own schema stamp gates its writes too. */
   featureStamps: (live) => [documentFeatures(live)],
   /** The comment rules (sync/comments.mjs). A blocked principal's frames
@@ -100,8 +121,25 @@ export const COMMENTS_MODULE = Object.freeze({
   },
 });
 
+/** The Page's named sources (model/sources-doc.mjs): written by the host
+ * alone, from edit_page set_source. A browser reads it; a browser frame that
+ * changes it is refused, not stripped, so a client bug shows up as a
+ * refusal and leaves nothing behind. */
+export const SOURCES_MODULE = Object.freeze({
+  type: "pages.sources",
+  kind: "sources",
+  revisionLetter: "s",
+  revisionNoun: "Page's sources",
+  revisionField: "sources_revision",
+  writeAccess: null,
+  deniedWrites: "refuse",
+  writeAction: null,
+  hostMessages: false,
+  derived: Object.freeze({ label: "pages-sources", genesis: sourcesGenesis }),
+});
+
 /** The documents a Page's host serves, in registration order. */
-export const PAGE_FAMILY_MODULES = Object.freeze([PAGE_MODULE, COMMENTS_MODULE]);
+export const PAGE_FAMILY_MODULES = Object.freeze([PAGE_MODULE, COMMENTS_MODULE, SOURCES_MODULE]);
 
 /** `kind → module` over `modules`. Two modules may not share a kind or a
  * revision letter, since both name a document in storage and on the agent

@@ -10,7 +10,7 @@ import { world } from "./projects-fixture.mjs";
 import { commentsDocUuid, commentsDocumentId } from "./comments-store.mjs";
 import {
   BUILD_FORMATS,
-  WRITTEN_FORMATS,
+  MEMBER_FORMATS,
   parseDocumentDescriptor,
 } from "../model/document-types.mjs";
 import { PageSession } from "../viewer/session.mjs";
@@ -270,6 +270,36 @@ test("a Page with no comments document yet still requires pages.comments", async
   assert.equal(accepted.mock.callCount(), 0);
 });
 
+test("a client that doesn't read pages.sources opens a Page that holds sources", async (t) => {
+  const f = await fixture(t);
+  f.page.metadata = {
+    ...f.page.metadata,
+    documentFormats: { ...MEMBER_FORMATS, "pages.sources": 1 },
+  };
+  const { sockets, accepted } = fakeSockets(t, f.page);
+  const old = openSocket(f, sockets, "pages.comments:2,pages.page:3");
+  assert.equal(old.closed, undefined);
+  const current = openSocket(f, sockets, BUILD_FORMATS);
+  assert.equal(current.closed, undefined);
+  assert.equal(accepted.mock.callCount(), 2);
+  // The socket's declared formats go to plain sync, which serves the sources
+  // document only to the client that declared it.
+  assert.deepEqual(accepted.mock.calls[0].arguments[4], [
+    { type: "pages.comments", format: 2 },
+    { type: "pages.page", format: 3 },
+  ]);
+  assert.ok(
+    accepted.mock.calls[1].arguments[4].some(
+      ({ type, format }) => type === "pages.sources" && format === 1,
+    ),
+  );
+  // A member type is still required.
+  assert.equal(
+    openSocket(f, sockets, "pages.page:3,pages.sources:1").closed?.reason,
+    "schema_unsupported",
+  );
+});
+
 test("a malformed or repeated formats parameter is a 400", async (t) => {
   const f = await fixture(t);
   const { sockets } = fakeSockets(t, f.page);
@@ -296,7 +326,7 @@ const UNOPENED = { "pages.page": 99, "pages.comments": 2 };
 
 test("connect reports the record's formats; a record without them isn't opened", async (t) => {
   const f = await fixture(t);
-  assert.deepEqual(f.page.metadata.documentFormats, WRITTEN_FORMATS);
+  assert.deepEqual(f.page.metadata.documentFormats, MEMBER_FORMATS);
   const stamped = await f.pageCall("owner", `/api/connect?page=${pageId}`);
   assert.equal(stamped.body.documents.page.format, 3);
   assert.equal(stamped.body.documents.comments.format, 2);
@@ -352,7 +382,7 @@ async function storedPage(t, documentFormats = UNOPENED) {
 }
 
 test("a record in a format this build writes opens its documents", async (t) => {
-  const { f, loads } = await storedPage(t, { ...WRITTEN_FORMATS });
+  const { f, loads } = await storedPage(t, { ...MEMBER_FORMATS });
   const connected = await f.pageCall("owner", `/api/connect?page=${pageId}`);
   assert.equal(connected.status, 200);
   assert.equal(loads(), 2);
@@ -559,7 +589,7 @@ test("a registered draft's record is stamped, and in a format this build doesn't
   });
   assert.equal(registered.status, 201, await registered.clone().text());
   const record = await h.storage.get("host/document");
-  assert.deepEqual(record.documentFormats, WRITTEN_FORMATS);
+  assert.deepEqual(record.documentFormats, MEMBER_FORMATS);
   const plainKeys = async () => (await h.storage.list({ prefix: "plain/" })).size;
   assert.ok((await plainKeys()) > 0);
   // The record now names a format this build doesn't write: a new host opens

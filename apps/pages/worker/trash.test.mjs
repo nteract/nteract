@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
-import { WRITTEN_FORMATS } from "../model/document-types.mjs";
+import { MEMBER_FORMATS } from "../model/document-types.mjs";
 import { Page } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { pageAccess, pageGrant, pageState } from "./access.mjs";
@@ -675,7 +675,7 @@ test("a restarted host loads trashed documents but not permanently deleted ones"
   };
   const base = {
     pageId,
-    documentFormats: WRITTEN_FORMATS,
+    documentFormats: MEMBER_FORMATS,
     owner: "user:owner",
     documentId: "trashed-document",
     deleted: true,

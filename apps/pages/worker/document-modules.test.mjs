@@ -14,8 +14,10 @@ import {
   PAGE_FAMILY,
   PAGE_FAMILY_MODULES,
   PAGE_MODULE,
+  SOURCES_MODULE,
   modulesByKind,
 } from "./document-modules.mjs";
+import { commentsDocUuid, derivedDocUuid } from "./comments-store.mjs";
 import { PlainSync, treeOf } from "./plain-sync.mjs";
 import { REVISION_DOCS, REVISION_PATTERN, formatRevision, parseRevision } from "./revisions.mjs";
 
@@ -49,21 +51,6 @@ function notesModule(kind = "notes") {
   };
 }
 
-/** A module that refuses every browser change to its document. */
-const SEALED_MODULE = Object.freeze({
-  type: "test.sealed",
-  kind: "sealed",
-  revisionLetter: "s",
-  revisionNoun: "sealed document",
-  revisionField: "sealed_revision",
-  writeAccess: true,
-  writeAction: "sealed.write",
-  hostMessages: false,
-  admit() {
-    throw new Refusal("sealed_document", "Only the host writes this document");
-  },
-});
-
 const docId = (n) => interpretAsDocumentId(new Uint8Array(16).fill(n));
 
 async function fixture({ modules, documents }) {
@@ -90,7 +77,7 @@ async function fixture({ modules, documents }) {
 
 /** A browser on PlainSync.accept through a stand-in WebSocket, sending raw
  * sync frames. */
-function connect(plain, features, principal = "account:alice") {
+function connect(plain, features, principal = "account:alice", formats) {
   const link = framePipe();
   const socket = new EventTarget();
   socket.send = (bytes) => link.host.send(decodeFrame(bytes));
@@ -110,7 +97,7 @@ function connect(plain, features, principal = "account:alice") {
       canWrite: true,
       credentialKind: "api-key",
     },
-    { features, senderId: `b-${crypto.randomUUID()}` },
+    { features, formats, senderId: `b-${crypto.randomUUID()}` },
   );
   let r = 0;
   return {
@@ -167,25 +154,108 @@ test("the host admits, refuses, accounts and gates a third type by asking its mo
   }
 });
 
-test("a module that refuses every client change keeps its document host-written", async () => {
+test("the sources module refuses every browser change, blocks no one, and admits the host", async () => {
   const id = docId(8);
   const seed = A.from({ sources: {} }, { actor: "00".repeat(16) });
   const f = await fixture({
-    modules: [...PAGE_FAMILY_MODULES, SEALED_MODULE],
-    documents: [[id, "sealed", seed]],
+    modules: PAGE_FAMILY_MODULES,
+    documents: [[id, "sources", seed]],
   });
   try {
     const writer = connect(f.plain, [...BUILD_FEATURES]);
-    const refused = await writer.write(id, seed, (d) => (d.sources.x = "forged"));
-    assert.equal(refused.t, "refused");
-    assert.equal(refused.code, "sealed_document");
-    assert.equal((await f.plain.host.document(treeOf(id))).sources.x, undefined);
+    for (const edit of [
+      (d) => (d.sources.x = { name: "forged" }),
+      (d) => delete d.sources,
+      (d) => (d.title = "outside the source map"),
+    ]) {
+      const refused = await writer.write(id, seed, edit);
+      assert.equal(refused.t, "refused");
+      assert.equal(refused.code, "request_rejected");
+      assert.equal(refused.fatal, false);
+    }
+    assert.deepEqual({ ...(await f.plain.host.document(treeOf(id))) }, { sources: {} });
     assert.deepEqual(f.writes, []);
+    assert.deepEqual(f.accounted, [], "no browser holds write access to it, so none is asked");
+    assert.deepEqual(f.refusals, [{ kind: "sources", code: "request_rejected" }]);
+    assert.equal(f.plain.blocked.size, 0, "a refused source change blocks no principal");
 
-    // The host's own writes still land.
+    // The socket stays open: a later frame is answered.
+    const later = await writer.write(id, seed, (d) => (d.sources.y = { name: "again" }));
+    assert.equal(later.t, "refused");
+
+    // The host's own writes land through admitTrusted.
     const handle = await f.plain.repo.find(id);
-    await handle.change((d) => (d.sources.y = "host"));
-    assert.equal((await f.plain.host.document(treeOf(id))).sources.y, "host");
+    await handle.change((d) => (d.sources.z = { name: "host" }));
+    assert.equal((await f.plain.host.document(treeOf(id))).sources.z.name, "host");
+  } finally {
+    await f.plain.close();
+  }
+});
+
+test("a module that refuses denied writes refuses a reader's frame by name; one that strips drops it", async () => {
+  const id = docId(11);
+  const seed = A.from({ lines: {} }, { actor: "00".repeat(16) });
+  for (const deniedWrites of ["refuse", "strip"]) {
+    const notes = notesModule();
+    const f = await fixture({
+      modules: [...PAGE_FAMILY_MODULES, { ...notes.module, deniedWrites }],
+      documents: [[id, "notes", seed]],
+    });
+    // A reader: the policy refuses every write access.
+    f.plain.policy = {
+      account(_identity, write) {
+        if (write) throw new Error("read only");
+        return { role: "viewer", canWrite: false, canComment: false, generation: 0 };
+      },
+      leaseExpiresAt: () => Infinity,
+    };
+    try {
+      const reader = connect(f.plain, [...BUILD_FEATURES, NOTES_FEATURE]);
+      const answer = await reader.write(id, seed, (d) => (d.lines.a = "one"));
+      assert.equal(answer.t, deniedWrites === "refuse" ? "refused" : "sync", deniedWrites);
+      if (deniedWrites === "refuse") assert.equal(answer.code, "request_rejected");
+      assert.equal(notes.asked.admit, 0, "the module's admission is not asked");
+      assert.equal((await f.plain.host.document(treeOf(id))).lines.a, undefined);
+    } finally {
+      await f.plain.close();
+    }
+  }
+});
+
+test("a socket reads only the documents whose formats it declared", async () => {
+  const sources = docId(12);
+  const comments = docId(13);
+  const f = await fixture({
+    modules: PAGE_FAMILY_MODULES,
+    documents: [
+      [sources, "sources", A.from({ sources: {} }, { actor: "00".repeat(16) })],
+      [comments, "comments", A.from({ threads: {} }, { actor: "01".repeat(16) })],
+    ],
+  });
+  const page = { type: "pages.page", format: 3 };
+  const commentsFormat = { type: "pages.comments", format: 2 };
+  try {
+    const old = connect(f.plain, [...BUILD_FEATURES], "account:old", [page, commentsFormat]);
+    const current = connect(f.plain, [...BUILD_FEATURES], "account:new", [
+      page,
+      commentsFormat,
+      { type: "pages.sources", format: 1 },
+    ]);
+    const base = A.from({ sources: {} }, { actor: "02".repeat(16) });
+    // A document the socket doesn't read is answered as an unknown one:
+    // nothing held, nothing sent.
+    const unread = await old.write(sources, base, (d) => (d.sources.a = { name: "x" }));
+    assert.equal(unread.t, "sync");
+    assert.equal(unread.has, false);
+    assert.deepEqual(unread.heads, []);
+    const read = await current.write(sources, base, (d) => (d.sources.a = { name: "x" }));
+    assert.equal(read.t, "refused", "a reader of sources is answered, and its write refused");
+    const thread = await old.write(
+      comments,
+      A.from({ threads: {} }, { actor: "03".repeat(16) }),
+      () => {},
+    );
+    assert.equal(thread.has, true, "a client without the sources format still syncs comments");
   } finally {
     await f.plain.close();
   }
@@ -230,7 +300,7 @@ test("revision handles take each module's letter and name its document", () => {
     REVISION_DOCS,
     Object.fromEntries(PAGE_FAMILY_MODULES.map((module) => [module.kind, module.revisionLetter])),
   );
-  assert.deepEqual(REVISION_DOCS, { page: "r", comments: "c" });
+  assert.deepEqual(REVISION_DOCS, { page: "r", comments: "c", sources: "s" });
   for (const module of PAGE_FAMILY_MODULES) {
     const handle = formatRevision(module.kind, 42);
     assert.equal(handle, `${module.revisionLetter}42`);
@@ -246,22 +316,57 @@ test("revision handles take each module's letter and name its document", () => {
     () => parseRevision("r1", "comments"),
     (error) => error.code === "invalid_revision" && error.message.endsWith("this Page's comments"),
   );
+  assert.equal(parseRevision("s7", "sources"), 7);
+  assert.throws(
+    () => parseRevision("r1", "sources"),
+    (error) => error.code === "invalid_revision" && error.message.endsWith("this Page's sources"),
+  );
 });
 
-test("the Page family is two modules with distinct kinds and handle letters", () => {
-  assert.deepEqual([...PAGE_FAMILY.keys()], ["page", "comments"]);
+test("the Page family is three modules with distinct kinds and handle letters", () => {
+  assert.deepEqual([...PAGE_FAMILY.keys()], ["page", "comments", "sources"]);
   assert.equal(PAGE_FAMILY.get("page"), PAGE_MODULE);
   assert.equal(PAGE_FAMILY.get("comments"), COMMENTS_MODULE);
+  assert.equal(PAGE_FAMILY.get("sources"), SOURCES_MODULE);
   assert.deepEqual(
     PAGE_FAMILY_MODULES.map((module) => module.type),
-    MEMBER_TYPES,
-    "the host serves one module for each member type of a Page",
+    [...MEMBER_TYPES, "pages.sources"],
+    "one module for each member type of a Page, and one for the sources a Page may hold",
   );
-  assert.throws(() => modulesByKind([PAGE_MODULE, { ...SEALED_MODULE, kind: "page" }]), /kind/);
+  const other = notesModule().module;
+  assert.throws(() => modulesByKind([PAGE_MODULE, { ...other, kind: "page" }]), /kind/);
   assert.throws(
-    () => modulesByKind([PAGE_MODULE, { ...SEALED_MODULE, revisionLetter: "r" }]),
+    () => modulesByKind([PAGE_MODULE, { ...other, revisionLetter: "r" }]),
     /revision letter/,
   );
+});
+
+test("page and comments strip a denied browser write; sources refuses every one", () => {
+  assert.equal(PAGE_MODULE.deniedWrites, "strip");
+  assert.equal(COMMENTS_MODULE.deniedWrites, "strip");
+  assert.equal(SOURCES_MODULE.deniedWrites, "refuse");
+  assert.equal(SOURCES_MODULE.writeAccess, null);
+  assert.equal(Object.hasOwn(SOURCES_MODULE, "admit"), false);
+});
+
+test("a derived document's module carries its label and fixed genesis", async () => {
+  const pageId = "33333333-3333-4333-8333-333333333333";
+  assert.equal(PAGE_MODULE.derived, undefined, "a Page document is not derived from its id");
+  assert.equal(
+    await derivedDocUuid(COMMENTS_MODULE.derived.label, pageId),
+    await commentsDocUuid(pageId),
+  );
+  assert.notEqual(
+    await derivedDocUuid(SOURCES_MODULE.derived.label, pageId),
+    await commentsDocUuid(pageId),
+  );
+  for (const module of [COMMENTS_MODULE, SOURCES_MODULE]) {
+    const uuid = await derivedDocUuid(module.derived.label, pageId);
+    const [first, again] = [module.derived.genesis(uuid), module.derived.genesis(uuid)];
+    assert.deepEqual(A.getHeads(first), A.getHeads(again), `${module.kind} genesis is fixed`);
+    A.free(first);
+    A.free(again);
+  }
 });
 
 /** Host source files under worker/ and sync/: everything but tests. */

@@ -29,12 +29,20 @@ import {
   schemaUnsupported,
 } from "../model/schema-features.mjs";
 import { unsupportedMarkdown, unsupportedMarkdownError } from "../model/markdown-scan.mjs";
-import { commentsGenesis } from "../model/comments-doc.mjs";
 import { applyComment, commentsMigrated } from "../model/comments.mjs";
 import { guardCommentIntent, passageComment } from "../model/comment-guard.mjs";
-import { commentsDocUuid, commentsDocumentId } from "./comments-store.mjs";
+import { setSources, validateSourceBatch } from "../model/sources-doc.mjs";
+import {
+  commentsDocUuid,
+  commentsDocumentId,
+  derivedDocUuid,
+  derivedDocumentId,
+} from "./comments-store.mjs";
+import { SOURCES_ABSENT, sourcesStep } from "./sources-lifecycle.mjs";
 import {
   MEMBER_FORMATS,
+  MEMBER_TYPES,
+  WRITTEN_FORMATS,
   documentFormatsUnsupported,
   formatPairs,
   missingFormats,
@@ -132,7 +140,7 @@ import { fencedHeads, headsFor, revisionPlan } from "./revisions.mjs";
 import { STORAGE_KEYS_PER_CALL, guardContext } from "./storage-guard.mjs";
 import { pageRecordsCall } from "./page-records.mjs";
 export { PageRecords } from "./page-records.mjs";
-import { COMMENTS_MODULE, PAGE_MODULE } from "./document-modules.mjs";
+import { COMMENTS_MODULE, PAGE_MODULE, SOURCES_MODULE } from "./document-modules.mjs";
 import { HOST_SENDER_ID, PlainSync, clearPrefixes, plainSessionReplaced } from "./plain-sync.mjs";
 import { logSyncRefused, logSyncRounds } from "./plain-sync-log.mjs";
 import { BLOCKING as BLOCKING_COMMENT_CODES } from "../sync/comments.mjs";
@@ -159,6 +167,7 @@ import {
 import {
   COMMENTS_DOC,
   PAGE_DOC,
+  SOURCES_DOC,
   documentMutation,
   recoverDocumentMutations,
   operationKey,
@@ -509,15 +518,23 @@ function requirePlainSyncClient(request) {
 }
 
 /** A socket's client declares the document formats it reads as `formats`;
- * `record` is the formats the Page's host record names. Every type the
- * record names is required of every socket, including a comments document
- * the Page gains while the socket is open. A client that lacks one is
- * refused as schema_unsupported, which its viewer shows as "Reload to
- * update". */
+ * `record` is the formats the Page's host record names. Every member type
+ * the record names is required of every socket, including a comments
+ * document the Page gains while the socket is open. A client that lacks one
+ * is refused as schema_unsupported, which its viewer shows as "Reload to
+ * update". A type a Page may hold beside them, such as `pages.sources`, is
+ * not required: a socket that doesn't declare it opens the Page and its
+ * comments, and is not served that document (plain-sync.mjs). */
 function requireReadableDocuments(declared, record) {
-  if (!missingFormats(declared, formatPairs(record)).length) return;
+  const members = formatPairs(record).filter(({ type }) => MEMBER_TYPES.includes(type));
+  if (!missingFormats(declared, members).length) return;
   throw withAdmissionReason(schemaUnsupported(["document-formats"]), "schema_unsupported");
 }
+
+/** Whether a Page's host record names its sources document: the record
+ * names `pages.sources` once the host created it (sources-lifecycle.mjs). */
+const recordNamesSources = (record) =>
+  Object.hasOwn(recordDocumentFormats(record ?? {}) ?? {}, SOURCES_MODULE.type);
 
 /** Page host routes a record in a format this build doesn't write still
  * answers once the caller may read it: the shared-Page check and sharing
@@ -4904,6 +4921,7 @@ export class Page {
       } else throw error;
     }
     await this.loadComments();
+    await this.sourcesEvent({ type: "boot", recorded: recordNamesSources(this.metadata) });
     await this.restoreTitleProjection();
     // After recovery: a replayed journal entry was accepted before the
     // restart, not now.
@@ -5123,11 +5141,7 @@ export class Page {
    * no-op once it exists, so this also creates it the first time. */
   async loadComments() {
     if (this.commentsHandle || !this.commentsUuid) return;
-    const documentId = commentsDocumentId(this.commentsUuid);
-    this.plain.serve(documentId, COMMENTS_MODULE.kind);
-    this.commentsHandle = await this.repo.import(A.save(commentsGenesis(this.commentsUuid)), {
-      docId: documentId,
-    });
+    this.commentsHandle = await this.importDerived(COMMENTS_MODULE, this.commentsUuid);
     this.assertNotAbandoned();
     await recoverDocumentMutations(
       this.ctx.storage,
@@ -5135,6 +5149,93 @@ export class Page {
       () => this.flush(),
       COMMENTS_DOC,
     );
+  }
+
+  /** Serve the document `module` derives for this Page (`module.derived`)
+   * under UUID `uuid`, and import its fixed genesis. Importing is a no-op
+   * once the document is stored, so this also creates it. Returns its
+   * handle; the caller replays its journal. */
+  async importDerived(module, uuid) {
+    const documentId = derivedDocumentId(uuid);
+    this.plain.serve(documentId, module.kind);
+    return this.repo.import(A.save(module.derived.genesis(uuid)), { docId: documentId });
+  }
+
+  /** The id of this Page's sources document, derived from the Page id
+   * whether or not the document exists. */
+  async sourcesDocumentId() {
+    this.sourcesUuid ??= await derivedDocUuid(SOURCES_MODULE.derived.label, this.metadata.pageId);
+    return derivedDocumentId(this.sourcesUuid);
+  }
+
+  /** Step the sources lifecycle (sources-lifecycle.mjs) and run its effects
+   * in order. A failed effect leaves the lifecycle where the next write
+   * starts over, and throws. */
+  async sourcesEvent(event) {
+    const result = sourcesStep(this.sourcesState ?? SOURCES_ABSENT, event);
+    if (result.rejected)
+      throw Error(`The sources lifecycle refused ${event.type} in ${this.sourcesState?.name}`);
+    this.sourcesState = result.state;
+    for (const effect of result.effects) {
+      let done;
+      try {
+        done = await this.sourcesEffect(effect);
+      } catch (error) {
+        this.sourcesState = sourcesStep(this.sourcesState, { type: "failed" }).state;
+        throw error;
+      }
+      await this.sourcesEvent(done);
+    }
+  }
+
+  /** One sources lifecycle effect. Returns the event that reports it. */
+  async sourcesEffect(effect) {
+    switch (effect) {
+      case "load":
+      case "store": {
+        const documentId = await this.sourcesDocumentId();
+        this.sourcesHandle = await this.importDerived(SOURCES_MODULE, this.sourcesUuid);
+        this.assertNotAbandoned();
+        if (effect === "load") {
+          await recoverDocumentMutations(
+            this.ctx.storage,
+            this.sourcesHandle,
+            () => this.flush(),
+            SOURCES_DOC,
+          );
+          return { type: "loaded" };
+        }
+        await this.plain.flush([documentId]);
+        await this.ctx.storage.sync();
+        return { type: "stored" };
+      }
+      case "record": {
+        const metadata = {
+          ...this.metadata,
+          documentFormats: {
+            ...recordDocumentFormats(this.metadata),
+            [SOURCES_MODULE.type]: WRITTEN_FORMATS[SOURCES_MODULE.type],
+          },
+        };
+        await this.ctx.storage.put("host/document", metadata);
+        await this.ctx.storage.sync();
+        this.metadata = metadata;
+        return { type: "recorded" };
+      }
+      default:
+        throw Error(`Unknown sources effect ${effect}`);
+    }
+  }
+
+  /** Forget the sources document: the Page's documents are gone. */
+  dropSources() {
+    this.sourcesHandle = undefined;
+    this.sourcesState = sourcesStep(this.sourcesState ?? SOURCES_ABSENT, { type: "drop" }).state;
+  }
+
+  /** The Page's sources document, or undefined while it doesn't exist. */
+  sourcesView() {
+    return this.sourcesState?.name === "ready" ? this.sourcesHandle?.doc() : undefined;
   }
 
   /** Boot plain Automerge sync for the Page: DocumentPolicy for access, and
@@ -5586,13 +5687,14 @@ export class Page {
   }
 
   /** The repo document IDs this Page host holds: the Page and, once open,
-   * its comments document. A record in a format this build doesn't write
-   * holds none. */
+   * its comments and sources documents. A record in a format this build
+   * doesn't write holds none. */
   documentIds() {
     if (this.formatRefusal()) return [];
     return [
       this.metadata.documentId,
       ...(this.commentsHandle ? [commentsDocumentId(this.commentsUuid)] : []),
+      ...(this.sourcesHandle ? [derivedDocumentId(this.sourcesUuid)] : []),
     ];
   }
 
@@ -6001,10 +6103,14 @@ export class Page {
           documentId: this.metadata.documentId,
           // The comments document syncs on the same socket.
           ...(this.commentsHandle && { commentsDocumentId: commentsId }),
+          // The sources document, once it exists, syncs on the same socket
+          // to a client that declares its format; nothing in the viewer
+          // reads it yet.
           documents: pageDocuments(
             recordDocumentFormats(this.metadata),
             this.metadata.documentId,
             commentsId,
+            this.sourcesView() ? derivedDocumentId(this.sourcesUuid) : undefined,
           ),
           recordStorage: "automerge",
           serverSenderId: this.serverSenderId,
@@ -6069,6 +6175,7 @@ export class Page {
             historyIncomplete: incompleteHistory(this.handle.doc()),
             getPresence: (doc) => this.activityState().read(doc),
             commentsDoc: this.commentsView(),
+            sourcesDoc: this.sourcesView(),
             revisions: this.revisionTable(),
           };
           const result =
@@ -6126,6 +6233,16 @@ export class Page {
           );
         if (body.operation !== "edit_page") throw new HttpError(400, "Unknown document operation");
         const ops = Array.isArray(body.arguments?.operations) ? body.arguments.operations : [];
+        // One journal entry writes one document: a batch with a set_source
+        // writes the sources document and nothing else.
+        const sourceOps = ops.filter((op) => op?.op === "set_source").length;
+        if (sourceOps && sourceOps !== ops.length)
+          throw new HttpError(
+            400,
+            "A batch with set_source holds only set_source operations. Send the other operations in a second edit_page request.",
+            "invalid_arguments",
+          );
+        if (sourceOps) return json(await this.writeSources(request, identity, body));
         // Ops that create a node naming a stored asset (model/node-registry.mjs).
         const inserts = ops.filter((op) => insertOperation(op?.op) || op?.op === "set_image");
         // Where this batch landed, captured inside the change so the cursors
@@ -6394,6 +6511,85 @@ export class Page {
       comments: true,
     });
     return receipt;
+  }
+
+  /**
+   * One edit_page batch of set_source operations, written to the sources
+   * document (model/sources-doc.mjs) through the journal. The caller holds
+   * edit access. The request names the Page `revision` it read, fenced like
+   * any edit_page write, but a source write never conflicts with a Page
+   * change: a Page revision that isn't current still writes. Each operation
+   * names the source revision its caller saw instead.
+   *
+   * For a new intent, `prepare` checks that every named asset is a dataset
+   * stored on this Page, takes its media type from the stored record, and
+   * creates the sources document when the Page has none
+   * (sources-lifecycle.mjs). Until then the journal reads the fixed genesis.
+   * The receipt's `sources_revision` names the sources document after the
+   * write; an exact retry replays it.
+   */
+  async writeSources(request, identity, body) {
+    const args = body.arguments ?? {};
+    const mediaTypes = new Map();
+    await this.sourcesDocumentId();
+    let genesis;
+    const handle = {
+      doc: () =>
+        this.sourcesView() ?? (genesis ??= SOURCES_MODULE.derived.genesis(this.sourcesUuid)),
+      update: (fn, options) => this.sourcesHandle.update(fn, options),
+    };
+    try {
+      return await documentMutation({
+        storage: this.ctx.storage,
+        hostActorPrefix: this.plain.hostActorPrefix,
+        handle,
+        doc: SOURCES_DOC,
+        // edit_page's nonces share one lane, whichever document a batch writes.
+        lane: PAGE_DOC,
+        pageId: this.metadata.pageId,
+        operation: body.operation,
+        args,
+        identity,
+        guard: (input) => input,
+        pageHeads: () => A.getHeads(this.handle.doc()),
+        prepare: async () => {
+          let assetIds;
+          try {
+            assetIds = validateSourceBatch(args.operations);
+          } catch (error) {
+            throw new HttpError(error.status, error.message, error.code);
+          }
+          for (const assetId of assetIds) {
+            const dataset = await requireStoredDatasetAsset(this.env.PAGES_ASSETS, {
+              pageId: this.metadata.pageId,
+              assetId,
+            });
+            mediaTypes.set(assetId, dataset.mime_type);
+          }
+          // Access can change while the asset records are read.
+          this.policy.account(await authenticate(request, this.env), true);
+          await this.sourcesEvent({ type: "create" });
+        },
+        apply: (draft, effectiveArgs) => {
+          try {
+            return {
+              edits: setSources(draft, effectiveArgs.operations, {
+                mediaTypes,
+                principal: identity.principal,
+              }),
+            };
+          } catch (error) {
+            throw Object.assign(
+              new HttpError(error.status ?? 400, error.message, error.code ?? "invalid_source"),
+              error.details && { details: error.details },
+            );
+          }
+        },
+        flush: () => this.flush(),
+      });
+    } finally {
+      if (genesis) A.free(genesis);
+    }
   }
 
   /** Owner or a valid viewer/editor grant on the deleted metadata. A role
@@ -6768,21 +6964,29 @@ export class Page {
         this.activity?.close();
         this.plain.disconnectAll();
         return;
-      case "deleteDocument":
+      case "deleteDocument": {
         await this.forgetContent();
-        // Both documents go together: the Page and its comments.
+        // Every document goes together: the Page, its comments and its
+        // sources. From metadata, not loaded handles: a deleted Page boots
+        // without them.
+        const sourcesId =
+          (recordNamesSources(this.metadata) || this.sourcesHandle) &&
+          (await this.sourcesDocumentId());
         await this.repo.delete(this.metadata.documentId);
         if (this.commentsUuid) await this.repo.delete(commentsDocumentId(this.commentsUuid));
+        if (sourcesId) await this.repo.delete(sourcesId);
+        this.dropSources();
         await this.deleteAssets();
-        // From metadata, not loaded handles: a deleted Page boots without them.
         await this.plain.forget(
           [
             this.metadata.documentId,
             this.commentsUuid && commentsDocumentId(this.commentsUuid),
+            sourcesId,
           ].filter(Boolean),
         );
         if (this.metadata.recordStorageMigratedFrom) await this.purgeConvertedRecords();
         return;
+      }
       case "flush":
         // A deleted document has nothing left to flush; the barrier stays.
         await this.plain.flush(pageState(this.metadata) === "deleted" ? [] : this.documentIds());
@@ -6796,6 +7000,7 @@ export class Page {
         await this.forgetContent();
         this.handle = undefined;
         this.commentsHandle = undefined;
+        this.dropSources();
         return;
       case "loadDocument":
         await this.loadDocument();
@@ -7119,14 +7324,15 @@ export class Page {
     } catch (error) {
       return refuseSocket(error, identity);
     }
-    return this.connectPlain(request, identity, features, sender);
+    return this.connectPlain(request, identity, features, sender, readable);
   }
 
   /** connect()'s socket. HTTP authentication already named the
    * principal; the socket speaks plain Automerge sync (sync/wire.mjs), and
    * PlainSync checks access on every frame. No handshake, no signing key.
-   * `sender` is PlainSync.sender's decision for this socket's presence id. */
-  connectPlain(request, identity, features, sender) {
+   * `sender` is PlainSync.sender's decision for this socket's presence id, and
+   * `formats` the document formats its client declared it reads. */
+  connectPlain(request, identity, features, sender, formats) {
     const pair = new WebSocketPair();
     const client = pair[0],
       socket = pair[1];
@@ -7142,7 +7348,11 @@ export class Page {
     try {
       // The tab's presence id (plainSender): it keys presence labels, and the
       // host stamps every relay with it.
-      conn = this.plain.accept(socket, identity, { features, senderId: sender.senderId });
+      conn = this.plain.accept(socket, identity, {
+        features,
+        formats,
+        senderId: sender.senderId,
+      });
     } catch (error) {
       logAdmissionDenied(error, { stage: "native", identity });
       logUsage(

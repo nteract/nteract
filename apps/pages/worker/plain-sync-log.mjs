@@ -1,4 +1,5 @@
 import { ADMISSION_OUTCOMES } from "../shared/admission.mjs";
+import { PAGE_FAMILY } from "./document-modules.mjs";
 import { validPageId } from "./registration.mjs";
 
 // Structured lines for plain Automerge sync, one JSON object each, in the
@@ -17,7 +18,8 @@ import { validPageId } from "./registration.mjs";
 
 const SERVICE = "nteract-pages-native";
 const REASON = /^[a-z0-9_]{1,64}$/;
-const KINDS = new Set(["page", "comments"]);
+// The kinds a Page host serves, from its type modules.
+const KINDS = new Set(PAGE_FAMILY.keys());
 const CREDENTIALS = new Set(["oidc", "api-key", "oauth", "session"]);
 
 const pageIdOf = (value) => (validPageId(value) ? value : undefined);

@@ -5,6 +5,7 @@ import { PRODUCT_NAME } from "./shared/product.mjs";
 import { HIGHLIGHT_COLORS, MARK_NAMES, formatAddSchema } from "./model/marks.mjs";
 import { SETTABLE_ATTRS, retypeTargets } from "./model/node-registry.mjs";
 import { richContentInstructions } from "./model/rich-content-guide.mjs";
+import { MAX_SOURCE_NAME, SOURCE_ID_PATTERN, SOURCE_REVISION_PATTERN } from "./shared/sources.mjs";
 import {
   RENAMED_TOOLS,
   refusalCode,
@@ -152,6 +153,14 @@ const readSelectors = {
     maximum: 100,
     description: "Outline entries (default 100). Follow next_offset until null.",
   },
+  // The host also takes a source_id string here, to read one source with its
+  // producer. The portable schema subset has no boolean-or-string type, so
+  // the schema states the listing form.
+  sources: {
+    type: "boolean",
+    description:
+      "true lists the Page's sources (a source_id string reads one). Alone, skips content.",
+  },
   max_bytes: readBudget,
 };
 const nonce = {
@@ -237,9 +246,10 @@ const editOperation = {
         "replace_match",
         "format_match",
         "set_node",
+        "set_source",
       ),
       description:
-        "set_title: title. replace_block_markdown: node_id, markdown. insert_markdown: markdown, after_node_id. move_block: node_id, after_node_id. delete_block: node_id. insert_image: asset_id, alt; optional dark_asset_id, title, after_node_id. set_image: node_id and the fields to change. insert_node: node, after_node_id. delete_node: node_id. replace_match: node_id, match_text, replacement or replacement_markdown. format_match: node_id, match_text, add or remove; optional all. set_node: node_id, match_text, type or attrs.",
+        "set_title: title. replace_block_markdown: node_id, markdown. insert_markdown: markdown, after_node_id. move_block: node_id, after_node_id. delete_block: node_id. insert_image: asset_id, alt; optional dark_asset_id, title, after_node_id. set_image: node_id and the fields to change. insert_node: node, after_node_id. delete_node: node_id. replace_match: node_id, match_text, replacement or replacement_markdown. format_match: node_id, match_text, add or remove; optional all. set_node: node_id, match_text, type or attrs. set_source: source_id, name, asset_id, source_revision; alone in its batch.",
     },
     node_id: {
       ...address,
@@ -261,7 +271,19 @@ const editOperation = {
     asset_id: {
       ...assetId,
       description:
-        "Image ops: asset uploaded to this Page (create_page_asset_upload or import_page_image).",
+        "Image ops and set_source: asset uploaded to this Page (create_page_asset_upload or import_page_image).",
+    },
+    source_id: { type: "string", pattern: SOURCE_ID_PATTERN, description: "set_source: its ID." },
+    name: {
+      ...string,
+      minLength: 1,
+      maxLength: MAX_SOURCE_NAME,
+      description: "set_source: its name.",
+    },
+    source_revision: {
+      type: ["string", "null"],
+      pattern: SOURCE_REVISION_PATTERN,
+      description: "set_source: source_revision you read; null creates. Else stale_source.",
     },
     dark_asset_id: {
       ...assetId,
