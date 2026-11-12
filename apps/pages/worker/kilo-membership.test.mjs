@@ -451,17 +451,61 @@ test("a read that overlapped a write in this isolate is not cached", async (t) =
   );
 });
 
+/** Resolves once `ready()` holds, polling on this test's own timer; rejects
+ * after `ms` so a request that never gets there fails the test. */
+async function until(ready, ms, what) {
+  const deadline = Date.now() + ms;
+  while (!ready()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+}
+
 test("each request on a leased answer writes for itself until one write succeeds", async (t) => {
   const { env, kilo } = await fixture(t);
   const account = person([sentinel]);
   // An older exchange listed an organization the new answer leaves out.
   await recordKiloMembership(env, principalOf(account), [second], Date.now() - 5000);
-  const attempts = failEvidenceWrites(t, env, 1);
+  // Each evidence write waits for the test to settle it: the first fails, the
+  // ones after it run against D1.
+  const prepare = env.DB.prepare.bind(env.DB);
+  const pending = [];
+  let inFlight = 0;
+  let mostInFlight = 0;
+  t.mock.method(env.DB, "prepare", (sql) => {
+    if (!sql.startsWith("INSERT INTO kilo_memberships ")) return prepare(sql);
+    const statement = prepare(sql);
+    return {
+      bind: (...values) => ({
+        run: async () => {
+          const attempt = pending.length;
+          let settle;
+          const settled = new Promise((resolve) => (settle = resolve));
+          pending.push(settle);
+          mostInFlight = Math.max(mostInFlight, ++inFlight);
+          try {
+            await settled;
+            if (attempt === 0) throw new Error("D1 is unreachable");
+            return await statement.bind(...values).run();
+          } finally {
+            inFlight--;
+          }
+        },
+      }),
+    };
+  });
   const token = kilo.mintToken(account, { audience });
-  const [failed, written] = await Promise.allSettled([
+  const requests = Promise.allSettled([
     authenticate(bearer(token), env),
     authenticate(bearer(token), env),
   ]);
+  // The first write stays pending until the second request has started its
+  // own: a request that waited on the first one's write would never get here.
+  await until(() => pending.length === 2, 2000, "the second request's own write");
+  assert.equal(mostInFlight, 2, "both writes were in flight at once");
+  pending[0]();
+  pending[1]();
+  const [failed, written] = await requests;
   assert.equal(failed.status, "rejected", "the request whose write failed doesn't go on");
   const { status, code, retryable } = failed.reason;
   assert.deepEqual(
@@ -470,9 +514,8 @@ test("each request on a leased answer writes for itself until one write succeeds
   );
   assert.equal(written.status, "fulfilled", "the other request's own write succeeded");
   assert.deepEqual(named(written.value), [sentinel]);
-  assert.equal(attempts(), 2, "each request made its own write");
   const third = await authenticate(bearer(token), env);
-  assert.equal(attempts(), 2, "a request after a successful write writes nothing");
+  assert.equal(pending.length, 2, "a request after a successful write writes nothing");
   assert.deepEqual(named(third), [sentinel]);
   assert.equal(kilo.exchanges().length, 1, "every request used the one lease");
 });
