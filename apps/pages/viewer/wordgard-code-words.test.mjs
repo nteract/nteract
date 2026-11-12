@@ -91,6 +91,11 @@ test("word motion has nowhere to go past the last identifier", () => {
   assert.equal(moved("tags▮ (\n);\n", true), null);
   assert.equal(moved("  -- ▮tags", false), null);
   assert.equal(moved("▮", true), null);
+  // A block that opens with an empty line ends the search at offset 0.
+  assert.equal(moved("\n▮name", false), null);
+  assert.equal(moved("\n\n▮", false), null);
+  assert.equal(moved("▮\n", false), null);
+  assert.equal(word("▮\nname"), null);
 });
 
 /** `marked` after word deletion at its caret (▮), or null when nothing goes. */
@@ -109,6 +114,11 @@ test("word deletion takes a whole identifier, or a run of punctuation", () => {
   assert.equal(deleted("a !==▮ b", false), "a ▮ b");
   assert.equal(deleted("x.$sc▮ope", false, "ts"), "x.▮ope");
   assert.equal(deleted("x.$sc▮ope", false, "python"), "x.$▮ope");
+});
+
+test("word deletion at the start of a block that opens with an empty line", () => {
+  assert.equal(deleted("▮\nname", false), null);
+  assert.equal(deleted("▮\nname", true), null);
 });
 
 test("word deletion stays inside the line", () => {
@@ -292,4 +302,11 @@ test("word deletion of a selection, at a line edge, or in prose stays Wordgard's
   assert.equal(deleteCodeWord({ state: selected }, "backward"), false);
   assert.equal(deleteCodeWord({ state: caretAt(state, at("▮  page_id")) }, "backward"), false);
   assert.equal(deleteCodeWord({ state: caretAt(state, at("snake_case▮")) }, "backward"), false);
+});
+
+test("word motion in a block with right-to-left text stays Wordgard's", () => {
+  const { state, at } = fixture("```python\ntotal_count = 1  # אבגד הוזח\n```");
+  const start = caretAt(state, at("▮total_count"));
+  assert.equal(moveByCodeWord({ state: start }, { dir: "right" }), false);
+  assert.equal(moveByCodeWord({ state: start }, { dir: "right", extend: true }), false);
 });

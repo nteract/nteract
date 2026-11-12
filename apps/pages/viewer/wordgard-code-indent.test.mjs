@@ -117,6 +117,8 @@ test("Tab at a caret adds spaces up to the next indentation column", () => {
     ["javascript", "a▮", "a ▮"],
     ["javascript", "ab▮c", "ab  ▮c"],
     ["", "▮", "  ▮"],
+    // The first line is empty: its column is 0, not one before the break.
+    ["javascript", "▮\nx", "  ▮\nx"],
     ["python", "all:\n\tmake\n▮", "all:\n\tmake\n\t▮"],
   ];
   for (const [language, before, after] of cases) {

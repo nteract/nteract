@@ -3,7 +3,7 @@ import { Wordgard } from "wordgard/editor";
 import { GardSelection } from "wordgard/state";
 import { CodeBlock, CodeBlockLanguage } from "./wordgard-model.mjs";
 import { languageFor } from "./code-highlight.mjs";
-import { sourceOf } from "./wordgard-code-indent.mjs";
+import { lineEnd, lineStart, sourceOf } from "./wordgard-code-indent.mjs";
 
 // Words in a code block are identifiers. Wordgard's own word is a run of
 // letters and digits, which is right for prose and splits `pages_catalog_tags`
@@ -49,9 +49,8 @@ function wordsIn(run) {
 
 /** The line that holds `offset` and its words, all as source offsets. */
 function lineWords(source, offset, language) {
-  const from = source.lastIndexOf("\n", offset - 1) + 1;
-  const end = source.indexOf("\n", offset);
-  const to = end < 0 ? source.length : end;
+  const from = lineStart(source, offset);
+  const to = lineEnd(source, offset);
   const words = [];
   for (const run of source.slice(from, to).matchAll(classFor(language).run))
     for (const word of wordsIn(run[0]))
@@ -166,9 +165,17 @@ export function codeWordMouseSelection(wg, event) {
   };
 }
 
+// Hebrew, Arabic and the other right-to-left scripts.
+const RIGHT_TO_LEFT =
+  /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF\u{10800}-\u{10FFF}\u{1E800}-\u{1EFFF}]/u;
+
 /** Word motion with the head in a code block. It stops where Wordgard's does,
  * at the far end of the next word, and returns false when the block holds no
- * further word, so Wordgard moves the selection out of it. */
+ * further word, so Wordgard moves the selection out of it.
+ *
+ * It moves through the source in order, which is the order on screen only
+ * while every character runs one way. A block that holds right-to-left text
+ * keeps Wordgard's motion, which follows the screen. */
 export function moveByCodeWord({ state }, { dir, extend }) {
   const { selection } = state;
   if (!(selection instanceof GardSelection.Text)) return false;
@@ -181,9 +188,10 @@ export function moveByCodeWord({ state }, { dir, extend }) {
     : forward
       ? [selection.from, selection.to]
       : [selection.to, selection.from];
-  if (head < block.start || head > block.end) return false;
+  const source = sourceOf(block.node);
+  if (head < block.start || head > block.end || RIGHT_TO_LEFT.test(source)) return false;
   const offset = codeWordBoundary(
-    sourceOf(block.node),
+    source,
     head - block.start,
     forward,
     block.node.mark(CodeBlockLanguage),
