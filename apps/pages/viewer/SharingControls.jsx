@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Copy, Share2 } from "lucide-react";
 import { SharingPanel, nativePrimitives } from "../../../src/components/sharing/SharingPanel.tsx";
 
@@ -22,6 +22,7 @@ const primitives = {
 import "./sharing-panel.css";
 import { createSharingAccess, sharingAvailable, SHARING_FRESH_MS } from "./sharing-access.mjs";
 import { linkAccessProjection } from "./sharing-projection.mjs";
+import { LinkAccess } from "./LinkAccess.jsx";
 import { pageMarkdown } from "../model/markdown-export.mjs";
 
 function projection(value, manage) {
@@ -122,7 +123,6 @@ function PageSharing({
     busy = state.busy,
     error = state.error?.message || copyError,
     loading = available && !value && !state.error;
-  const domainId = useId();
   const controlled = requested !== undefined;
   const open = controlled ? requested : own;
   const changeOpen = useRef(null);
@@ -240,28 +240,6 @@ function PageSharing({
       ![401, 403, 404].includes(state.error?.status));
   const linkAccess = manage ? linkAccessProjection(value) : null;
   proofExpired.current = !!linkAccess?.expired;
-  // Restricted clears whichever audience is stored; choosing an audience sets
-  // it, an organization at its current role or Can view.
-  function chooseAudience(selected) {
-    const option = linkAccess.options.find((candidate) => candidate.value === selected);
-    if (!option?.kind)
-      return void mutate(
-        linkAccess.organization
-          ? { action: "set_organization_access", organization_id: null }
-          : { action: "set_domain_view", domain: null },
-        "domain-view",
-      );
-    if (option.kind === "domain")
-      return void mutate({ action: "set_domain_view", domain: option.value }, "domain-view");
-    void mutate(
-      {
-        action: "set_organization_access",
-        organization_id: option.id,
-        role: linkAccess.organization?.role ?? "viewer",
-      },
-      "domain-view",
-    );
-  }
   return (
     <div className="page-sharing" ref={root}>
       {trigger && (
@@ -350,8 +328,8 @@ function PageSharing({
           />
           {inheritedProject && (
             <p className="page-sharing-note">
-              If {inheritedProject} has members, they also have access through the Project. These
-              settings manage this Page's direct grants only.
+              If {inheritedProject} has members or is shared with an organization, they also have
+              access through the Project. These settings manage this Page's direct grants only.
             </p>
           )}
           {state.error && available && (
@@ -364,112 +342,14 @@ function PageSharing({
             </button>
           )}
           {linkAccess && (
-            <section className="page-domain-sharing" aria-labelledby={domainId}>
-              <label id={domainId} htmlFor={`${domainId}-select`}>
-                Link access
-              </label>
-              <select
-                id={`${domainId}-select`}
-                value={linkAccess.selected}
-                disabled={!!busy}
-                onChange={(event) => chooseAudience(event.target.value)}
-              >
-                {linkAccess.options.map(({ value, label, disabled }) => (
-                  <option key={value} value={value} disabled={disabled}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-              {linkAccess.organization && (
-                <>
-                  <label htmlFor={`${domainId}-role`}>Members can</label>
-                  <select
-                    id={`${domainId}-role`}
-                    className="page-organization-role"
-                    value={linkAccess.organization.role}
-                    disabled={!!busy || linkAccess.unverified}
-                    onChange={(event) =>
-                      void mutate(
-                        {
-                          action: "set_organization_access",
-                          organization_id: linkAccess.organization.id,
-                          role: event.target.value,
-                        },
-                        "domain-view",
-                      )
-                    }
-                  >
-                    {Object.entries(ROLE_LABELS).map(([role, label]) => (
-                      <option key={role} value={role}>
-                        {label}
-                      </option>
-                    ))}
-                  </select>
-                </>
-              )}
-              <p>
-                {linkAccess.organization ? (
-                  <>
-                    <strong>{roleLabel(linkAccess.organization.role)}.</strong> Members of{" "}
-                    {linkAccess.organization.name} who sign in can open the link. They are not added
-                    to the people list.
-                  </>
-                ) : linkAccess.domain ? (
-                  <>
-                    <strong>Can view.</strong> Sign in with a verified {linkAccess.domain} email.
-                  </>
-                ) : (
-                  "Only you and invited people can open this Page."
-                )}
-              </p>
-              {linkAccess.expired ? (
-                <div className="page-domain-sharing-note" role="note">
-                  <p>
-                    {linkAccess.expired.kind === "domain"
-                      ? "Your company email verification expired. Sign in again with the same account to enable company sharing."
-                      : `Your membership in ${linkAccess.expired.name} needs confirming. Sign in again with the same account to change this sharing.`}
-                  </p>
-                  {linkAccess.unverified && (
-                    <p>
-                      {linkAccess.organization
-                        ? `Members of ${linkAccess.organization.name} can still open this Page.`
-                        : `People at ${linkAccess.domain} can still view this Page.`}{" "}
-                      Choose Restricted to stop sharing with them.
-                    </p>
-                  )}
-                  <div className="page-domain-sharing-actions">
-                    {/* The same sign-in the session uses; a separate tab keeps
-                        this Page open and its edits running. */}
-                    <a href="/api/auth/login" target="_blank" rel="noopener noreferrer">
-                      Sign in again
-                    </a>
-                    <button
-                      type="button"
-                      className="subtle-button"
-                      disabled={state.refreshing || !!busy}
-                      onClick={() => void cache.read({ force: true }).catch(() => {})}
-                    >
-                      Refresh sharing settings
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                linkAccess.unverified &&
-                (linkAccess.organization ? (
-                  <p className="page-domain-sharing-note" role="note">
-                    You are not a member of {linkAccess.organization.name} now. Its members can
-                    still open this Page. Choose Restricted to stop sharing with them; sharing again
-                    needs membership in {linkAccess.organization.name}.
-                  </p>
-                ) : (
-                  <p className="page-domain-sharing-note" role="note">
-                    You are not signed in with a verified {linkAccess.domain} email. People at{" "}
-                    {linkAccess.domain} can still view this Page. Choose Restricted to stop sharing
-                    with them; sharing again needs a verified {linkAccess.domain} email.
-                  </p>
-                ))
-              )}
-            </section>
+            <LinkAccess
+              linkAccess={linkAccess}
+              resource="Page"
+              busy={!!busy}
+              refreshing={!!state.refreshing}
+              onChange={(change) => void mutate(change, "domain-view")}
+              onRefresh={() => void cache.read({ force: true }).catch(() => {})}
+            />
           )}
           <div className="page-sharing-export">
             <button

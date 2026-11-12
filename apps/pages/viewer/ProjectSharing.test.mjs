@@ -319,3 +319,124 @@ test("owner shares Project by email with revision fencing; members never fetch t
     }
   }
 });
+
+/** Renders the owner's Project panel against `tool` in a fresh document. */
+async function ownerPanel(t, tool) {
+  const dom = new JSDOM("<div id='root'></div>", { url: "http://localhost" });
+  const saved = new Map();
+  for (const [key, value] of Object.entries({
+    window: dom.window,
+    document: dom.window.document,
+    location: dom.window.location,
+    navigator: { clipboard: { writeText: async () => {} } },
+    IS_REACT_ACT_ENVIRONMENT: true,
+  })) {
+    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, { configurable: true, value });
+  }
+  const root = createRoot(document.getElementById("root"));
+  t.after(async () => {
+    await act(async () => root.unmount());
+    dom.window.close();
+    for (const [key, descriptor] of saved) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete globalThis[key];
+    }
+  });
+  await act(async () =>
+    root.render(
+      createElement(ProjectSharing, {
+        project: { project_id: "prj_3b160b47-6df1-4983-81eb-489ca5a26812", role: "owner" },
+        tool,
+        session: { identity: { principal: "owner", displayName: "Owner" } },
+        open: true,
+        onOpenChange() {},
+      }),
+    ),
+  );
+  const choose = async (select, value) =>
+    act(async () => {
+      select.value = value;
+      select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+    });
+  return { choose };
+}
+
+const acme = { id: "org-acme", name: "Acme Research" };
+const projectLedger = (stored, { revision = 1, proof = "verified" } = {}) => ({
+  revision,
+  members: {},
+  invites: [],
+  organizationOptions: proof === "verified" ? [acme] : [],
+  organizationProof: { [acme.id]: proof },
+  organizationAccess: stored ? { ...acme, ...stored } : null,
+  ...(stored && { organizationAccessOwnerVerified: proof === "verified" }),
+});
+const linkSelect = () => document.querySelector(".page-domain-sharing select");
+const roleSelect = () => document.querySelector(".page-organization-role");
+
+test("a Project's owner shares it with an organization, sets the role, and Restricted withdraws it", async (t) => {
+  const calls = [];
+  let current = projectLedger(null);
+  const { choose } = await ownerPanel(t, async (name, args) => {
+    calls.push([name, args]);
+    if (name === "manage_project_access")
+      current = projectLedger(args.organization_id ? { role: args.role } : null, {
+        revision: current.revision + 1,
+      });
+    return current;
+  });
+  assert.deepEqual(
+    [...linkSelect().options].map((option) => option.textContent),
+    ["Restricted", "Anyone in Acme Research with the link"],
+  );
+  assert.equal(roleSelect(), null);
+  await choose(linkSelect(), "org:org-acme");
+  const [name, args] = calls.at(-1);
+  assert.equal(name, "manage_project_access");
+  assert.deepEqual(
+    { ...args, nonce: undefined },
+    {
+      project_id: "prj_3b160b47-6df1-4983-81eb-489ca5a26812",
+      action: "set_organization_access",
+      organization_id: acme.id,
+      role: "viewer",
+      expected_revision: 1,
+      nonce: undefined,
+    },
+  );
+  assert.equal(linkSelect().value, "org:org-acme");
+  assert.match(document.body.textContent, /Can view\. Members of Acme Research who sign in/);
+  await choose(roleSelect(), "editor");
+  assert.deepEqual(
+    { action: calls.at(-1)[1].action, role: calls.at(-1)[1].role },
+    { action: "set_organization_access", role: "editor" },
+  );
+  assert.match(document.body.textContent, /Can edit\. Members of Acme Research/);
+  await choose(linkSelect(), "");
+  assert.deepEqual(
+    {
+      action: calls.at(-1)[1].action,
+      organization_id: calls.at(-1)[1].organization_id,
+      expected_revision: calls.at(-1)[1].expected_revision,
+    },
+    { action: "set_organization_access", organization_id: null, expected_revision: 3 },
+  );
+  assert.equal(linkSelect().value, "");
+  assert.equal(roleSelect(), null);
+});
+
+test("a Project organization the owner can no longer prove stays shared, with sign-in and Restricted", async (t) => {
+  await ownerPanel(t, async () => projectLedger({ role: "commenter" }, { proof: "expired" }));
+  assert.equal(linkSelect().value, "org:org-acme");
+  assert.equal(linkSelect().options[1].disabled, true);
+  assert.equal(roleSelect().disabled, true);
+  const note = document.querySelector(".page-domain-sharing-note");
+  assert.match(note.textContent, /membership in Acme Research needs confirming/);
+  assert.match(note.textContent, /Members of Acme Research can still open this Project/);
+});
+
+test("a Project owner in no organization sees no link access row", async (t) => {
+  await ownerPanel(t, async () => projectLedger(null, { proof: "missing" }));
+  assert.equal(document.querySelector(".page-domain-sharing"), null);
+});
