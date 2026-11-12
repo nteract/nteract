@@ -155,3 +155,51 @@ test("expired registration replacement is atomic across competing tabs and stale
   assert.equal(late.registered, true);
   assert.deepEqual(late.registration, completed.registration);
 });
+
+test("a writer that vouches for its earlier snapshot still merges another tab's checkpoint", async () => {
+  const { identity, page } = fixture();
+  const base = A.load(Uint8Array.from(atob(page.snapshot), (c) => c.charCodeAt(0)));
+  const mine = A.change(A.clone(base, { actor: "aa".repeat(16) }), (doc) => {
+    doc.text = "Mine";
+  });
+  const first = encodeSnapshot(A.save(mine));
+  await writeLocalPage(identity, { ...page, snapshot: first });
+  // Another tab writes its own edit, merged into the stored checkpoint.
+  const theirs = A.change(A.clone(base, { actor: "bb".repeat(16) }), (doc) => {
+    doc.title = "Theirs";
+  });
+  await writeLocalPage(identity, { ...page, snapshot: encodeSnapshot(A.save(theirs)) });
+  // This tab's next snapshot holds `first`, but the stored one is no longer
+  // `first`: the merge still runs and keeps the other tab's edit.
+  const next = A.change(mine, (doc) => {
+    doc.text = "Mine, later";
+  });
+  const written = await writeLocalPage(
+    identity,
+    { ...page, snapshot: encodeSnapshot(A.save(next)) },
+    { covers: first },
+  );
+  const stored = A.load(Uint8Array.from(atob(written.snapshot), (c) => c.charCodeAt(0)));
+  assert.equal(stored.title, "Theirs");
+  assert.equal(stored.text, "Mine, later");
+});
+
+test("a writer whose earlier snapshot is the stored one replaces it without a merge", async () => {
+  const { identity, page } = fixture();
+  await writeLocalPage(identity, page);
+  const base = A.load(Uint8Array.from(atob(page.snapshot), (c) => c.charCodeAt(0)));
+  const next = encodeSnapshot(
+    A.save(
+      A.change(base, (doc) => {
+        doc.text = "After";
+      }),
+    ),
+  );
+  const written = await writeLocalPage(
+    identity,
+    { ...page, snapshot: next },
+    { covers: page.snapshot },
+  );
+  assert.equal(written.snapshot, next);
+  assert.equal((await readLocalPage(identity, page.page_id)).snapshot, next);
+});

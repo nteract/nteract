@@ -87,6 +87,22 @@ export function headingsInSpans(spans) {
 }
 
 const anchorsByDoc = new WeakMap();
+// A block's headings, per block object. A change gives new objects only
+// along the paths it touched, so the blocks it left keep theirs and aren't
+// read again.
+const headingsByBlock = new WeakMap();
+function blockHeadings(block) {
+  let headings = headingsByBlock.get(block);
+  if (!headings) {
+    headings = headingsInSpans(A.spans(block, ["richText"]));
+    try {
+      headingsByBlock.set(block, headings);
+    } catch {
+      // A block that can't be a WeakMap key is read uncached.
+    }
+  }
+  return headings;
+}
 
 /**
  * Every heading on the Page in document order, as `{ blockId, index, level,
@@ -102,7 +118,7 @@ export function pageHeadingAnchors(doc) {
   const anchors = [];
   for (const blockId of orderedBlockIds(doc)) {
     const block = doc.blocks[blockId];
-    headingsInSpans(A.spans(block, ["richText"])).forEach(({ level, text }, index) =>
+    blockHeadings(block).forEach(({ level, text }, index) =>
       anchors.push({ blockId, index, level, text, anchor: name(text) }),
     );
   }
