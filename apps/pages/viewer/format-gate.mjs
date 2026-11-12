@@ -17,6 +17,12 @@
 // Returns `{ gate, allowed }`, as schemaGateStep does.
 
 export const FORMAT_UNSUPPORTED_CODE = "document_format_unsupported";
+/** Shown when the host closes a socket as document_format_unsupported, which
+ * carries no message: the Page's host record names document formats the
+ * host doesn't open. Reloading can't help, so it doesn't say to. Discovery's
+ * refusal carries the same text from the host. */
+export const PAGE_FORMAT_UNSUPPORTED =
+  "This Page is stored in a format this version of Pages doesn't open. Its owner can delete it.";
 export const FORMAT_GATE_INITIAL = Object.freeze({ name: "open" });
 const STOPPED = Object.freeze({ name: "stopped" });
 
