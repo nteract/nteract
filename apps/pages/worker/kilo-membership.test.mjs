@@ -167,28 +167,71 @@ test("the evidence record is replaced only by a report sent later", async (t) =>
   await recordKiloMembership(env, principal, [sentinel], at);
   // A slow exchange sent earlier lands later: it changes nothing.
   await recordKiloMembership(env, principal, [], at - 60_000);
-  resetMembershipCache();
   assert.deepEqual(await membershipRecord(env, principal), {
     organizations: [sentinel],
-    verifiedAt: Math.floor(at / 1000),
+    verifiedAtMs: at,
   });
-  // Another isolate's newer report wins over this isolate's older view.
-  await env.DB.prepare("UPDATE kilo_memberships SET organizations = ?, verified_at = ?")
-    .bind(JSON.stringify([second]), Math.floor(at / 1000) + 120)
+  // Another isolate's newer report wins over this isolate's older answer.
+  await env.DB.prepare("UPDATE kilo_memberships SET organizations = ?, verified_at_ms = ?")
+    .bind(JSON.stringify([second]), at + 120_000)
     .run();
   await recordKiloMembership(env, principal, [], at + 60_000);
-  resetMembershipCache();
   assert.deepEqual((await membershipRecord(env, principal)).organizations, [second]);
   // A later report with other organizations always lands.
   await recordKiloMembership(env, principal, [sentinel, second], at + 180_000);
-  resetMembershipCache();
   assert.deepEqual(await membershipRecord(env, principal), {
     organizations: [sentinel, second],
-    verifiedAt: Math.floor(at / 1000) + 180,
+    verifiedAtMs: at + 180_000,
   });
 });
 
-test("an equal report within five minutes isn't written again; a changed one always is", async (t) => {
+/** A second isolate: its own copy of the module, so its own cache. */
+const otherIsolate = () => import(`./kilo-membership.mjs?isolate=${Math.random()}`);
+const stored = async (env, principal) => {
+  const row = await env.DB.prepare("SELECT organizations FROM kilo_memberships WHERE principal = ?")
+    .bind(principal)
+    .first();
+  return JSON.parse(row.organizations);
+};
+
+test("a newer exchange's empty answer wins over another isolate's listing, whatever this isolate cached", async (t) => {
+  const { env } = await fixture(t);
+  const principal = "user:kilo:interleaved";
+  const a = await otherIsolate();
+  const b = await otherIsolate();
+  const at = Date.now();
+  // A caches an empty set; B records an exchange that lists the organization.
+  await a.recordKiloMembership(env, principal, [], at);
+  assert.deepEqual((await a.membershipRecord(env, principal)).organizations, []);
+  await b.recordKiloMembership(env, principal, [sentinel], at + 1000);
+  // A newer exchange reaches A and lists none: it must be written.
+  await a.recordKiloMembership(env, principal, [], at + 2000);
+  assert.deepEqual(await stored(env, principal), []);
+  a.resetMembershipCache();
+  assert.deepEqual((await a.membershipRecord(env, principal)).organizations, []);
+  // An exchange sent between the two but delivered last changes nothing.
+  await b.recordKiloMembership(env, principal, [sentinel], at + 1500);
+  b.resetMembershipCache();
+  assert.deepEqual((await b.membershipRecord(env, principal)).organizations, []);
+});
+
+test("the fence orders exchanges by the millisecond, and a tie never adds an organization", async (t) => {
+  const { env } = await fixture(t);
+  const principal = "user:kilo:subsecond";
+  const second0 = Math.floor(Date.now() / 1000) * 1000;
+  await recordKiloMembership(env, principal, [sentinel], second0 + 100);
+  await recordKiloMembership(env, principal, [], second0 + 800);
+  assert.deepEqual(await stored(env, principal), [], "a later answer in the same second wins");
+  const tie = second0 + 5000;
+  await recordKiloMembership(env, principal, [sentinel, second], tie - 1);
+  await recordKiloMembership(env, principal, [second, { id: "org-third", name: "Third" }], tie);
+  await recordKiloMembership(env, principal, [sentinel, second], tie);
+  assert.deepEqual(await stored(env, principal), [second], "same millisecond: only what both list");
+  resetMembershipCache();
+  assert.deepEqual((await membershipRecord(env, principal)).organizations, [second]);
+});
+
+test("every exchange writes, even with an unchanged answer", async (t) => {
   const { env } = await fixture(t);
   const principal = "user:kilo:rewrites";
   const writes = t.mock.method(env.DB, "prepare");
@@ -197,14 +240,25 @@ test("an equal report within five minutes isn't written again; a changed one alw
       sql.startsWith("INSERT INTO kilo_memberships "),
     ).length;
   const at = Date.now();
-  await recordKiloMembership(env, principal, [sentinel], at);
-  await recordKiloMembership(env, principal, [sentinel], at + 60_000);
-  await recordKiloMembership(env, principal, [sentinel], at + 4 * 60_000);
+  for (const offset of [0, 1000, 2000])
+    await recordKiloMembership(env, principal, [sentinel], at + offset);
+  assert.equal(inserts(), 3);
+});
+
+test("a leased agent token writes its exchange's evidence once, not once per request", async (t) => {
+  const { env, kilo } = await fixture(t);
+  const writes = t.mock.method(env.DB, "prepare");
+  const inserts = () =>
+    writes.mock.calls.filter(({ arguments: [sql] }) =>
+      sql.startsWith("INSERT INTO kilo_memberships "),
+    ).length;
+  const account = person([sentinel]);
+  const token = kilo.mintToken(account, { audience });
+  for (let request = 0; request < 3; request++) await authenticate(bearer(token), env);
+  assert.equal(kilo.exchanges().length, 1);
   assert.equal(inserts(), 1);
-  await recordKiloMembership(env, principal, [], at + 4 * 60_000 + 1000);
-  assert.equal(inserts(), 2, "a changed set is written however soon");
-  await recordKiloMembership(env, principal, [], at + 10 * 60_000);
-  assert.equal(inserts(), 3, "equal evidence is refreshed after five minutes");
+  await authenticate(bearer(kilo.mintToken(account, { audience, claims: { n: 1 } })), env);
+  assert.equal(inserts(), 2, "a new exchange writes again, even with the same answer");
 });
 
 test("a browser cookie, a Pages OAuth token and a Kilo agent token carry the same organizations", async (t) => {
@@ -238,10 +292,7 @@ test("an OAuth agent loses its person's organizations when the evidence ages out
   const access = await oauthToken(env, account);
   const fresh = await authenticate(bearer(access), env);
   assert.deepEqual(named(fresh), [sentinel]);
-  assert.equal(
-    fresh.organizations[0].expiresAt,
-    (Math.floor(sentAt / 1000) + KILO_MEMBERSHIP_SECONDS) * 1000,
-  );
+  assert.equal(fresh.organizations[0].expiresAt, sentAt + KILO_MEMBERSHIP_SECONDS * 1000);
   clock += 6000;
   const aged = await authenticate(bearer(access), env);
   assert.equal(aged.organizations, undefined);

@@ -179,6 +179,21 @@ function onAgentRoute(request, extra = []) {
   );
 }
 
+/** Kilo token answers whose membership evidence this isolate has written.
+ * The token lease hands every request the same answer object until it ends,
+ * so evidence is written once per exchange, not once per request. */
+const recordedExchanges = new WeakSet();
+async function recordExchange(env, principal, account) {
+  if (recordedExchanges.has(account)) return;
+  recordedExchanges.add(account);
+  try {
+    await recordKiloMembership(env, principal, account.organizations, account.verifiedAt);
+  } catch (error) {
+    recordedExchanges.delete(account);
+    throw error;
+  }
+}
+
 /** The identity with the audience leases its evidence supports: a company
  * domain lease and one lease per organization. Each host derives them again
  * from the credential; no identity carries them between hosts. A Page host
@@ -278,7 +293,7 @@ export async function authenticate(request, env) {
         );
       const account = await kiloTokenAccount(kilo, token);
       const { principal, metadata } = kiloIdentity(kilo.config, account);
-      await recordKiloMembership(env, principal, account.organizations, account.verifiedAt);
+      await recordExchange(env, principal, account);
       return withDomainAccess(
         {
           principal,

@@ -3,11 +3,13 @@
  *
  * Every successful Kilo exchange, the browser code exchange and the agent
  * token exchange alike, reports the account's organizations
- * (kilo-exchange.mjs). The host keeps the latest report per principal as one
- * D1 row: the organizations and `verified_at`, when Pages sent the exchange
- * that reported them, in seconds by Pages' clock. The row is last-writer-wins
- * on `verified_at`: one statement replaces it only with a report sent later,
- * so a slow exchange can't undo a newer answer.
+ * (kilo-exchange.mjs). The host keeps the newest report per principal as one
+ * D1 row: the organizations and `verified_at_ms`, when Pages sent the exchange
+ * that reported them, in milliseconds by Pages' clock. Every successful
+ * exchange writes, in one statement (`recordKiloMembership`), so the row
+ * always holds the newest answer any isolate received, and a slow exchange
+ * can't undo a newer one. That costs one D1 write per browser sign-in and one
+ * per agent token exchange in each isolate.
  *
  * `authenticate` (auth.mjs) reads the row by principal for every Kilo
  * identity, whichever credential it arrived with: a browser cookie, a Pages
@@ -18,11 +20,11 @@
  *
  * Every host a request crosses authenticates it again, so reads go through a
  * small per-isolate cache. An entry answers for at most `CACHE_MS` from its
- * read, and never past the end of the leases it yields. So a new report
- * reaches an isolate's identities at most `CACHE_MS` after it is written; a
- * sync socket re-authenticates every 15 seconds, so it sees one within
- * `CACHE_MS` + 15 seconds. Only settled values are cached, never a pending
- * read (isolate-setup.mjs says why).
+ * read, and never past the end of the leases it yields; a write drops the
+ * writing isolate's entry. So a request sees a new report at most 30 seconds
+ * after it is written, and an open sync socket, which re-authenticates every
+ * 15 seconds, at most 45 seconds after. Only settled values are cached, never
+ * a pending read (isolate-setup.mjs says why).
  *
  * No organization id or name reaches a log line from here. */
 import { identityProvider } from "../identity-provider.mjs";
@@ -34,9 +36,6 @@ import { KILO_MEMBERSHIP_SECONDS, kiloPrincipalNamespace } from "./kilo-config.m
 export const CACHE_MS = 30_000;
 /** How many principals one isolate remembers. */
 export const MAX_CACHED = 1000;
-/** A report equal to one this isolate knows was verified less than this long
- * before it is not written again. */
-export const REWRITE_AFTER_SECONDS = 5 * 60;
 
 const MIGRATIONS = Object.freeze([
   Object.freeze({
@@ -46,7 +45,7 @@ const MIGRATIONS = Object.freeze([
       `CREATE TABLE IF NOT EXISTS kilo_memberships (
         principal TEXT PRIMARY KEY,
         organizations TEXT NOT NULL,
-        verified_at INTEGER NOT NULL
+        verified_at_ms INTEGER NOT NULL
       )`,
     ]),
   }),
@@ -56,11 +55,11 @@ const ready = isolateSetup((db) =>
 );
 
 /** principal -> { record, readAt }, oldest first. `record` is
- * `{ organizations, verifiedAt }` or null when the principal has none. */
+ * `{ organizations, verifiedAtMs }` or null when the principal has none. */
 const cache = new Map();
 
 /** When `record`'s evidence stops counting, in milliseconds. */
-const evidenceEnd = (record) => (record.verifiedAt + KILO_MEMBERSHIP_SECONDS) * 1000;
+const evidenceEnd = (record) => record.verifiedAtMs + KILO_MEMBERSHIP_SECONDS * 1000;
 
 function remember(principal, record, now) {
   cache.delete(principal);
@@ -82,7 +81,7 @@ function cached(principal, now) {
 
 /** A stored row, or null for one that isn't the shape this module writes. */
 function parseRecord(row) {
-  if (!row || !Number.isSafeInteger(row.verified_at)) return null;
+  if (!row || !Number.isSafeInteger(row.verified_at_ms)) return null;
   let organizations;
   try {
     organizations = JSON.parse(row.organizations);
@@ -98,15 +97,11 @@ function parseRecord(row) {
     return null;
   return Object.freeze({
     organizations: Object.freeze(organizations.map(({ id, name }) => Object.freeze({ id, name }))),
-    verifiedAt: row.verified_at,
+    verifiedAtMs: row.verified_at_ms,
   });
 }
 
-const sameOrganizations = (a, b) =>
-  a.length === b.length &&
-  a.every((entry, index) => entry.id === b[index].id && entry.name === b[index].name);
-
-/** The principal's membership record, `{ organizations, verifiedAt }`, or
+/** The principal's membership record, `{ organizations, verifiedAtMs }`, or
  * null. Reads D1 unless this isolate read or wrote it within `CACHE_MS`. */
 export async function membershipRecord(env, principal, now = Date.now()) {
   const hit = cached(principal, now);
@@ -114,7 +109,7 @@ export async function membershipRecord(env, principal, now = Date.now()) {
   await ready(env.DB);
   const record = parseRecord(
     await env.DB.prepare(
-      "SELECT organizations, verified_at FROM kilo_memberships WHERE principal = ?",
+      "SELECT organizations, verified_at_ms FROM kilo_memberships WHERE principal = ?",
     )
       .bind(principal)
       .first(),
@@ -124,45 +119,43 @@ export async function membershipRecord(env, principal, now = Date.now()) {
 }
 
 /**
- * Record what one exchange said about `principal`'s organizations.
- * `sentAt` is when Pages sent that exchange, in milliseconds. One statement
- * replaces the stored row only with a report sent in a later second, so of
- * two reports sent in the same second the first one written stays.
+ * Record what one exchange said about `principal`'s organizations. `sentAt`
+ * is when Pages sent that exchange, in milliseconds. One statement orders it
+ * against the stored row, so the newest answer wins across isolates:
  *
- * The write is skipped when it can't change what readers get: the row as
- * this isolate sees it (`membershipRecord`) is at least as new, or holds the
- * same organizations verified less than `REWRITE_AFTER_SECONDS` earlier. A
- * newer report with different organizations is always written. That view is
- * at most `CACHE_MS` old, so a report another isolate wrote within it can
- * stand for up to `REWRITE_AFTER_SECONDS` over an equal one skipped here.
+ * - sent later than the row: it replaces the row;
+ * - sent in the same millisecond: the row keeps only the organizations both
+ *   answers list. Two answers that close can't be ordered, and keeping the
+ *   intersection means a tie never adds an organization, only drops one;
+ * - sent earlier: nothing changes.
+ *
+ * The row's `verified_at_ms` never moves back. Every exchange writes, equal
+ * answer or not, so that time always reaches the newest exchange seen.
  */
 export async function recordKiloMembership(env, principal, organizations, sentAt) {
-  const verifiedAt = Math.floor(sentAt / 1000);
-  const known = await membershipRecord(env, principal);
-  if (
-    known &&
-    (verifiedAt <= known.verifiedAt ||
-      (sameOrganizations(known.organizations, organizations) &&
-        verifiedAt - known.verifiedAt < REWRITE_AFTER_SECONDS))
-  )
-    return;
-  const stored = organizations.map(({ id, name }) => ({ id, name }));
-  const result = await env.DB.prepare(
-    `INSERT INTO kilo_memberships (principal, organizations, verified_at) VALUES (?, ?, ?)
+  await ready(env.DB);
+  const stored = JSON.stringify(organizations.map(({ id, name }) => ({ id, name })));
+  await env.DB.prepare(
+    `INSERT INTO kilo_memberships (principal, organizations, verified_at_ms) VALUES (?, ?, ?)
     ON CONFLICT (principal) DO UPDATE SET
-      organizations = excluded.organizations, verified_at = excluded.verified_at
-    WHERE excluded.verified_at > kilo_memberships.verified_at`,
+      organizations = CASE
+        WHEN excluded.verified_at_ms > kilo_memberships.verified_at_ms THEN excluded.organizations
+        ELSE (
+          SELECT coalesce(json_group_array(json(answer.value)), '[]')
+          FROM json_each(excluded.organizations) AS answer
+          WHERE json_extract(answer.value, '$.id') IN (
+            SELECT json_extract(kept.value, '$.id')
+            FROM json_each(kilo_memberships.organizations) AS kept
+          )
+        )
+      END,
+      verified_at_ms = excluded.verified_at_ms
+    WHERE excluded.verified_at_ms >= kilo_memberships.verified_at_ms`,
   )
-    .bind(principal, JSON.stringify(stored), verifiedAt)
+    .bind(principal, stored, Math.floor(sentAt))
     .run();
-  // Another isolate's newer report won: the next read fetches it.
-  if (!result?.meta?.changes) cache.delete(principal);
-  else
-    remember(
-      principal,
-      parseRecord({ organizations: JSON.stringify(stored), verified_at: verifiedAt }),
-      Date.now(),
-    );
+  // The row may now differ from both this answer and this isolate's view.
+  cache.delete(principal);
 }
 
 /** Whether `identity` is a Kilo account on this deployment, the only kind of

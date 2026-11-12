@@ -1338,14 +1338,18 @@ account's `organizations`. Pages keeps each entry's `id` and `name` (Kilo's
 an answer without a usable list counts as no organizations and never fails a
 sign-in ([worker/kilo-exchange.mjs](worker/kilo-exchange.mjs)).
 
-After each successful exchange the host writes one membership record per
-principal to D1 (`kilo_memberships`, migrated through
-`kilo_membership_schema`): the organizations and `verified_at`, when Pages
-sent that exchange, by its own clock. A record is replaced only by one sent in
-a later second, in one statement, so a slow exchange can't undo a newer
-answer ([worker/kilo-membership.mjs](worker/kilo-membership.mjs)).
+Every successful exchange writes the principal's membership record in D1
+(`kilo_memberships`, migrated through `kilo_membership_schema`): the
+organizations and `verified_at_ms`, when Pages sent that exchange, in
+milliseconds by its own clock. One statement orders each write against the
+stored record, so the newest answer wins whichever isolate received it: a
+later answer replaces the record, an earlier one changes nothing, and two sent
+in the same millisecond leave only the organizations both list, so a tie never
+adds one. `verified_at_ms` never moves back. That is one D1 write per browser
+sign-in and one per agent token exchange in each isolate
+([worker/kilo-membership.mjs](worker/kilo-membership.mjs)).
 
-The record is evidence for 8 hours from `verified_at`
+The record is evidence for 8 hours from `verified_at_ms`
 (`KILO_MEMBERSHIP_SECONDS`), the length of a Kilo browser session. Every Kilo
 identity reads it by principal, whichever credential it arrived with: the
 browser cookie, a Pages OAuth access token, or a Kilo agent token. Each
@@ -1360,8 +1364,9 @@ view, Can comment or Can edit. Members who open the link get that role and are
 not added to the Page's member list. Someone Kilo no longer lists keeps that
 access until their evidence ends: up to 8 hours after their last exchange, or
 sooner when a newer exchange no longer names the organization. Each isolate
-caches a record for at most 30 seconds, so a new record reaches a sync socket
-within 30 seconds plus its 15-second re-authentication.
+caches a record for at most 30 seconds, so a request sees a new record at
+most 30 seconds after the exchange that wrote it, and an open sync socket,
+which re-authenticates every 15 seconds, at most 45 seconds after.
 
 The auth log's `kilo_token.accepted` line carries how many organizations the
 exchange reported (`organizations`). No organization id or name reaches a log.
