@@ -1330,6 +1330,42 @@ here until its lease ends. A lease can outlast the token by the clock
 difference between Pages and Kilo, and never by more than the token's whole
 lifetime.
 
+### Kilo organizations
+
+Both exchanges, the browser code and the agent token, answer with the
+account's `organizations`. Pages keeps each entry's `id` and `name` (Kilo's
+`role` is not read), at most 50, and drops malformed entries and repeated ids;
+an answer without a usable list counts as no organizations and never fails a
+sign-in ([worker/kilo-exchange.mjs](worker/kilo-exchange.mjs)).
+
+After each successful exchange the host writes one membership record per
+principal to D1 (`kilo_memberships`, migrated through
+`kilo_membership_schema`): the organizations and `verified_at`, when Pages
+sent that exchange, by its own clock. A record is replaced only by one sent in
+a later second, in one statement, so a slow exchange can't undo a newer
+answer ([worker/kilo-membership.mjs](worker/kilo-membership.mjs)).
+
+The record is evidence for 8 hours from `verified_at`
+(`KILO_MEMBERSHIP_SECONDS`), the length of a Kilo browser session. Every Kilo
+identity reads it by principal, whichever credential it arrived with: the
+browser cookie, a Pages OAuth access token, or a Kilo agent token. Each
+organization becomes a lease that ends with the identity or the evidence,
+whichever is first. Nothing is copied into a session or an OAuth grant, so an
+agent connected by OAuth holds its person's organizations while that person's
+evidence is fresh, and loses them at most 8 hours after the person's last Kilo
+sign-in or agent-token exchange. Refreshing an OAuth token does not renew them.
+
+An owner can share a Page with one organization they hold a lease for, as Can
+view, Can comment or Can edit. Members who open the link get that role and are
+not added to the Page's member list. Someone Kilo no longer lists keeps that
+access until their evidence ends: up to 8 hours after their last exchange, or
+sooner when a newer exchange no longer names the organization. Each isolate
+caches a record for at most 30 seconds, so a new record reaches a sync socket
+within 30 seconds plus its 15-second re-authentication.
+
+The auth log's `kilo_token.accepted` line carries how many organizations the
+exchange reported (`organizations`). No organization id or name reaches a log.
+
 ## Outbound requests
 
 The OAuth server for `/mcp` reads a client's client ID metadata document from
@@ -1432,7 +1468,7 @@ only with `PAGES_OAUTH_ANY_CLIENT_DOCUMENT` ([Outbound requests](#outbound-reque
 | `oauth.code_replayed` | An authorization code was presented twice. Its grant is revoked. | `grant` |
 | `oauth.refresh_reused` | A spent refresh token was presented again. Within 30 seconds of its first use, new tokens are issued and the grant stays; this is what overlapping refreshes from one client's processes look like. After that, the grant is revoked. | `grant`, `reason` (`within_window` when tokens were issued; absent when the grant was revoked) |
 | `api_key.accepted` | An Anaconda API key authenticated. One line per key per isolate per 60 s cache window, not per request. | `scope` (`editor` or `viewer`) |
-| `kilo_token.accepted` | Kilo accepted a Kilo agent token. One line per token per isolate lease, not per request. | |
+| `kilo_token.accepted` | Kilo accepted a Kilo agent token. One line per token per isolate lease, not per request. | `organizations`: how many organizations the exchange reported |
 | `kilo_token.refused` | A Kilo agent token was refused or couldn't be checked. No principal. | `reason`: `exchange_refused_token`, `exchange_refused_account`, `exchange_refused_client`, `kilo_unavailable`, `kilo_protocol_error`, `exchange_failed`, and for a 503 before any exchange `exchanges_in_flight`, `lease_capacity` or `wait_timeout` |
 | `invitation.created`, `invitation.revoked` | A Project owner invited an email or revoked an invitation. `principal` is the owner. | `project_id`, `invite`, `role` |
 | `invitation.accepted` | A verified recipient claimed a Project invitation. `principal` is the recipient. | `project_id`, `invite`, `role` |

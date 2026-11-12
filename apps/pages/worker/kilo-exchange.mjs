@@ -8,8 +8,8 @@
  * `KILO_CALLBACK_PATH` at the address it holds, so it never receives or trusts
  * an address or a path. Its code is signed, short lived and bound to the
  * audience and `state` it was minted for; it is not single use, so the
- * exchange sends both back. The answer is identity only: Pages is never given
- * a Kilo API token.
+ * exchange sends both back. The answer is identity and the organizations the
+ * account belongs to: Pages is never given a Kilo API token.
  *
  * The module holds no state and logs nothing. Error messages are fixed text,
  * so a code, a secret or a response body can't reach a log through them. */
@@ -25,6 +25,8 @@ const MAX_BODY_BYTES = 16 * 1024;
 const DEFAULT_TIMEOUT_MS = 10_000;
 const MAX_ID_LENGTH = 255;
 const MAX_NAME_LENGTH = 200;
+/** The most organizations Pages keeps from one answer, in Kilo's order. */
+export const MAX_ORGANIZATIONS = 50;
 
 /** Kilo didn't answer, or answered 429 or 5xx. Signing in again may work. */
 export class KiloUnavailable extends Error {
@@ -98,7 +100,8 @@ const discard = async (response) => {
  * `state` must be the ones the sign-in started with: Kilo's code is good only
  * for them, which is what makes a code copied out of a browser useless.
  *
- * Returns `{ id, name }`, with `name` null when the account has none, or
+ * Returns `{ id, name, organizations }`, with `name` null when the account
+ * has none and `organizations` as `kiloOrganizations` reads them, or
  * `{ refused }` when Kilo turned the call down: `"client"` for a 401, which
  * means it didn't accept this deployment's secret or audience; `"account"` for
  * a 403, which means the account is gone or blocked; and `"code"` for any
@@ -117,7 +120,7 @@ export function exchangeKiloCode(
  * doesn't hold and binds it to `audience`, so this call is the only check of
  * it.
  *
- * Returns `{ id, name }` as the code exchange does, or `{ refused }` only for
+ * Returns what the code exchange does, or `{ refused }` only for
  * an answer that says what is wrong: `"token"` for a 400 whose `error` is
  * `invalid_token` (forged, expired, or for another deployment), `"account"`
  * for a 403 whose `error` is `account_unavailable`, and `"client"` for any
@@ -155,6 +158,33 @@ async function tokenRefusal(response) {
   throw new KiloProtocolError();
 }
 
+/** The organizations Kilo lists for the account, as `[{ id, name }]` in
+ * Kilo's order and at most `MAX_ORGANIZATIONS` of them. An id is a non-empty
+ * string of at most 255 characters with no surrounding space; a name is
+ * trimmed to at most 200 and is the id when empty. An entry without a usable
+ * id, and a repeat of an id, is dropped, and anything but an array is no
+ * organizations: dropping can only remove access, so nothing here fails a
+ * sign-in. Kilo's `role` is not read. */
+export function kiloOrganizations(value) {
+  if (!Array.isArray(value)) return [];
+  const organizations = new Map();
+  for (const entry of value) {
+    if (organizations.size === MAX_ORGANIZATIONS) break;
+    const id = entry?.id;
+    if (
+      typeof id !== "string" ||
+      !id ||
+      id.length > MAX_ID_LENGTH ||
+      id !== id.trim() ||
+      organizations.has(id)
+    )
+      continue;
+    const name = typeof entry.name === "string" ? entry.name.trim().slice(0, MAX_NAME_LENGTH) : "";
+    organizations.set(id, { id, name: name || id });
+  }
+  return [...organizations.values()];
+}
+
 async function exchange(fetcher, { appUrl, secret, body, timeoutMs }, credential) {
   let response;
   try {
@@ -187,16 +217,17 @@ async function exchange(fetcher, { appUrl, secret, body, timeoutMs }, credential
     await discard(response);
     throw new KiloProtocolError();
   }
-  let user;
+  let answer;
   try {
-    user = JSON.parse(new TextDecoder().decode(await readLimited(response)))?.user;
+    answer = JSON.parse(new TextDecoder().decode(await readLimited(response)));
   } catch (error) {
     if (error instanceof KiloUnavailable) throw error;
     throw new KiloProtocolError();
   }
+  const user = answer?.user;
   const id = user?.id;
   if (typeof id !== "string" || !id || id.length > MAX_ID_LENGTH || id !== id.trim())
     throw new KiloProtocolError();
   const name = typeof user.name === "string" ? user.name.trim().slice(0, MAX_NAME_LENGTH) : "";
-  return { id, name: name || null };
+  return { id, name: name || null, organizations: kiloOrganizations(answer?.organizations) };
 }

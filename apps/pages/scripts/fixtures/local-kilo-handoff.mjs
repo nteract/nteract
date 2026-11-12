@@ -16,7 +16,9 @@ const send = (res, status, value) =>
 /** Starts the fake. `deployments` maps each audience to the Pages origin it
  * redirects to and `secret` is what the exchange requires. `signIn(account)`
  * sets who the browser is at Kilo, or nobody with `null`; `respond(fn)`
- * replaces the next exchange answer with `fn(req, res)`. */
+ * replaces the next exchange answer with `fn(req, res)`. An account's
+ * `organizations` (`[{ id, name, role }]`) is what each exchange that names
+ * it reports, read when the exchange runs. */
 export async function startLocalKiloHandoff({ deployments, secret, port = 0, now = Date.now }) {
   const codes = new Map();
   const exchanges = [];
@@ -108,7 +110,7 @@ export async function startLocalKiloHandoff({ deployments, secret, port = 0, now
         if (!holder || holder.blocked) return send(res, 403, { error: "account_unavailable" });
         return send(res, 200, {
           user: { id: holder.id, name: holder.name, email: holder.email },
-          organizations: [],
+          organizations: holder.organizations ?? [],
         });
       }
       const issued = codes.get(body?.code);
@@ -124,7 +126,7 @@ export async function startLocalKiloHandoff({ deployments, secret, port = 0, now
         // Kilo sends no email. This one is here so the tests can show Pages
         // would not keep it.
         user: { id: issued.account.id, name: issued.account.name, email: issued.account.email },
-        organizations: [],
+        organizations: issued.account.organizations ?? [],
       });
     }
     return send(res, 404, { error: "not_found" });

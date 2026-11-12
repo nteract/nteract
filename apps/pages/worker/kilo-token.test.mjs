@@ -14,6 +14,7 @@ import { kiloToken, MAX_KILO_TOKEN_LENGTH, unverifiedClaims } from "./kilo-token
 import { receiptKey } from "./operation-journal.mjs";
 import { plainStub } from "./plain-stub.mjs";
 import { DocumentPolicy } from "./policy.mjs";
+import { sqliteD1 } from "../test/sqlite-d1.mjs";
 
 const origin = "https://pages.invalid";
 const audience = "pages-test";
@@ -32,6 +33,7 @@ const unique = () => ({ iat: Math.floor(Date.now() / 1000) - (++minted % 500) })
 async function fixture(t, extra = {}) {
   const kilo = await startLocalKiloHandoff({ deployments: { [audience]: origin }, secret });
   const env = {
+    DB: sqliteD1(t).open(),
     NOTEBOOK_CLOUD_PUBLIC_ORIGIN: origin,
     NOTEBOOK_CLOUD_LOCAL_OIDC: "true",
     PAGES_KILO_APP_URL: kilo.origin,
@@ -159,7 +161,7 @@ test("the exchange sends exactly the token and audience, with the deployment's s
     token: "header.payload.signature",
     audience,
   });
-  assert.deepEqual(account, { id: "person:1", name: "Example" });
+  assert.deepEqual(account, { id: "person:1", name: "Example", organizations: [] });
   assert.equal(calls.length, 1);
   const [{ url, init }] = calls;
   assert.equal(url, `https://kilo.invalid${KILO_EXCHANGE_PATH}`);

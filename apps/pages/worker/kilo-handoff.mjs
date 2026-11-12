@@ -20,7 +20,8 @@
  * doesn't answer is not resumed: the person starts again, which costs one
  * redirect while they are signed in at Kilo.
  *
- * Pages is given identity only: an account id and a name. It holds no Kilo
+ * Pages is given an account id, a name and the account's organizations, which
+ * it records as membership evidence (kilo-membership.mjs). It holds no Kilo
  * token, so a session has nothing to renew with. It ends after
  * `SESSION_SECONDS` and the browser signs in again; that is also how long a
  * person Kilo has blocked can keep a session here. Kilo gives no email
@@ -37,6 +38,7 @@ import { recordOidcEvent } from "./auth-events.mjs";
 import { migrateSchema } from "./catalog-index.mjs";
 import { isolateSetup } from "./isolate-setup.mjs";
 import { kiloIdentity, kiloSignIn } from "./kilo-config.mjs";
+import { recordKiloMembership } from "./kilo-membership.mjs";
 import {
   exchangeKiloCode,
   KILO_CALLBACK_PATH,
@@ -212,6 +214,7 @@ async function completeHandoff(request, env, config) {
     return signInFailed(400, "binding_mismatch");
   const returnTo = safeReturnTo(row.return_to, config.origin);
   let account;
+  const sentAt = Date.now();
   try {
     account = await exchangeKiloCode(fetch, {
       appUrl: config.appUrl,
@@ -229,11 +232,13 @@ async function completeHandoff(request, env, config) {
   if (account.refused === "client") return signInFailed(503, "exchange_refused_client", returnTo);
   if (account.refused === "account") return signInFailed(403, "exchange_refused_account", returnTo);
   if (account.refused) return signInFailed(400, "exchange_refused_code", returnTo);
+  const identity = kiloIdentity(config, account);
+  await recordKiloMembership(env, identity.principal, account.organizations, sentAt);
   const sessionCookie = await createServerSession(
     request,
     env,
     {
-      identity: kiloIdentity(config, account),
+      identity,
       expiresAt: Math.floor(Date.now() / 1000) + SESSION_SECONDS,
       bundle: { kind: "kilo-handoff", appUrl: config.appUrl, userId: account.id },
     },

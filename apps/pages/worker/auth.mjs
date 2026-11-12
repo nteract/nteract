@@ -11,6 +11,7 @@ import { clientProvenance } from "./client-provenance.mjs";
 import { REVISION_PATTERN } from "./revisions.mjs";
 import { kiloIdentity } from "./kilo-config.mjs";
 import { kiloToken, kiloTokenAccount } from "./kilo-token.mjs";
+import { organizationLeases, recordKiloMembership } from "./kilo-membership.mjs";
 
 export class HttpError extends Error {
   constructor(status, message, code) {
@@ -178,9 +179,17 @@ function onAgentRoute(request, extra = []) {
   );
 }
 
+/** The identity with the audience leases its evidence supports: a company
+ * domain lease and one lease per organization. Each host derives them again
+ * from the credential; no identity carries them between hosts. */
 async function withDomainAccess(identity, env) {
   const domainAccess = await domainAccessForIdentity(env, identity);
-  return Object.freeze({ ...identity, ...(domainAccess && { domainAccess }) });
+  const organizations = await organizationLeases(env, identity);
+  return Object.freeze({
+    ...identity,
+    ...(domainAccess && { domainAccess }),
+    ...(organizations.length && { organizations: Object.freeze(organizations) }),
+  });
 }
 
 export async function authenticate(request, env) {
@@ -268,6 +277,7 @@ export async function authenticate(request, env) {
         );
       const account = await kiloTokenAccount(kilo, token);
       const { principal, metadata } = kiloIdentity(kilo.config, account);
+      await recordKiloMembership(env, principal, account.organizations, account.verifiedAt);
       return withDomainAccess(
         {
           principal,
