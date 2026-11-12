@@ -21,7 +21,8 @@
  * Every host a request crosses authenticates it again, so reads go through a
  * small per-isolate cache. An entry answers for at most `CACHE_MS` from its
  * read, and never past the end of the leases it yields; a write drops the
- * writing isolate's entry. So a request sees a new report at most 30 seconds
+ * writing isolate's entry, and a read that overlapped a write in this isolate
+ * is not cached, so it can't put back what the write dropped. So a request sees a new report at most 30 seconds
  * after it is written, and an open sync socket, which re-authenticates every
  * 15 seconds, at most 45 seconds after. Only settled values are cached, never
  * a pending read (isolate-setup.mjs says why).
@@ -73,6 +74,15 @@ const ready = isolateSetup((db) =>
  * `{ organizations, verifiedAtMs }` or null when the principal has none. */
 const cache = new Map();
 
+/** Counts each write's start and each write's end in this isolate. A read is
+ * cached only when this count didn't change while it ran: a read that
+ * overlapped a write may hold the row from before it, and caching that would
+ * undo the write's drop of the cache entry. One isolate-wide count rather
+ * than one per principal: writes come once per exchange, so a read that loses
+ * its cache entry to another principal's write costs one more D1 read, and
+ * there is no second table to bound. */
+let writes = 0;
+
 /** When `record`'s evidence stops counting, in milliseconds. */
 const evidenceEnd = (record) => record.verifiedAtMs + KILO_MEMBERSHIP_SECONDS * 1000;
 
@@ -121,6 +131,7 @@ function parseRecord(row) {
 export async function membershipRecord(env, principal, now = Date.now()) {
   const hit = cached(principal, now);
   if (hit) return hit.record;
+  const writesBefore = writes;
   await ready(env.DB);
   const record = parseRecord(
     await env.DB.prepare(
@@ -129,7 +140,7 @@ export async function membershipRecord(env, principal, now = Date.now()) {
       .bind(principal)
       .first(),
   );
-  remember(principal, record, now);
+  if (writes === writesBefore) remember(principal, record, now);
   return record;
 }
 
@@ -150,6 +161,18 @@ export async function membershipRecord(env, principal, now = Date.now()) {
  * answer or not, so that time always reaches the newest exchange seen.
  */
 export async function recordKiloMembership(env, principal, organizations, sentAt) {
+  writes++;
+  try {
+    await write(env, principal, organizations, sentAt);
+  } finally {
+    writes++;
+    // The row may now differ from both this answer and this isolate's view,
+    // so the writing request's own next read goes to D1.
+    cache.delete(principal);
+  }
+}
+
+async function write(env, principal, organizations, sentAt) {
   await ready(env.DB);
   const stored = JSON.stringify(organizations.map(({ id, name }) => ({ id, name })));
   await env.DB.prepare(
@@ -185,8 +208,6 @@ export async function recordKiloMembership(env, principal, organizations, sentAt
   )
     .bind(principal, stored, Math.floor(sentAt))
     .run();
-  // The row may now differ from both this answer and this isolate's view.
-  cache.delete(principal);
 }
 
 /** Whether `identity` is a Kilo account on this deployment, the only kind of

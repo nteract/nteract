@@ -378,6 +378,45 @@ function failEvidenceWrites(t, env, count) {
   return () => attempts;
 }
 
+test("a read that overlapped a write in this isolate is not cached", async (t) => {
+  const { env } = await fixture(t);
+  const principal = "user:kilo:overlapped";
+  const at = Date.now();
+  await recordKiloMembership(env, principal, [sentinel, second], at - 1000);
+  resetMembershipCache();
+  // The next read takes the row as it is now and returns it only on release,
+  // as a D1 read that started before a write and answers after it would.
+  const prepare = env.DB.prepare.bind(env.DB);
+  let release;
+  const released = new Promise((resolve) => (release = resolve));
+  let hold = true;
+  t.mock.method(env.DB, "prepare", (sql) => {
+    const statement = prepare(sql);
+    if (!hold || !sql.startsWith("SELECT organizations")) return statement;
+    hold = false;
+    return {
+      bind: (...values) => ({
+        first: async () => {
+          const row = await statement.bind(...values).first();
+          await released;
+          return row;
+        },
+      }),
+    };
+  });
+  const before = membershipRecord(env, principal);
+  // Let the read reach D1 before the write starts.
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  await recordKiloMembership(env, principal, [sentinel], at);
+  release();
+  assert.deepEqual((await before).organizations, [sentinel, second], "it answers as it read");
+  assert.deepEqual(
+    await membershipRecord(env, principal),
+    { organizations: [sentinel], verifiedAtMs: at },
+    "the next read goes to D1, not to what the overlapping read saw",
+  );
+});
+
 test("each request on a leased answer writes for itself until one write succeeds", async (t) => {
   const { env, kilo } = await fixture(t);
   const account = person([sentinel]);
