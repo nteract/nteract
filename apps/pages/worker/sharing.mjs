@@ -1,7 +1,7 @@
-import { normalizeInviteEmail } from "@cloud/sharing.ts";
 import { appSessionHasFreshVerifiedEmail } from "@cloud/app-session.ts";
 import { MEMBER_ROLES, pageAccess, proposeAccessUpdate } from "./access.mjs";
 import { HttpError } from "./auth.mjs";
+import { inviteEmail } from "./invite-email.mjs";
 import { fingerprint, operationKey } from "./mutations.mjs";
 import { companyDomainProof, companyViewDomains, configuredDomainView } from "./domain-access.mjs";
 
@@ -40,13 +40,9 @@ export async function sharingProjection(metadata, identity, env = {}, now = Date
   };
 }
 function checkedEmail(value) {
-  if (typeof value !== "string" || value.length > 254)
-    throw new HttpError(400, "Enter a valid email address");
-  try {
-    return normalizeInviteEmail(value);
-  } catch {
-    throw new HttpError(400, "Enter a valid email address");
-  }
+  const email = inviteEmail(value);
+  if (!email) throw new HttpError(400, "Enter a valid email address");
+  return email;
 }
 export async function invitationMatches(identity, invite, env, now = Date.now()) {
   if (invite.expiresAt <= now || !identity.namespace || invite.namespace !== identity.namespace)

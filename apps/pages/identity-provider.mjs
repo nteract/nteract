@@ -84,8 +84,10 @@ const KILO = Object.freeze({
   /** The long-lived credential coding agents and scripts send as a bearer.
    * Null when the provider has no such credential: agents connect by OAuth. */
   apiKey: null,
-  /** Whether accounts carry an email address the provider has verified. An
-   * invitation by email can be accepted only where this is true. */
+  /** Whether every account carries an email address the provider has
+   * verified. Kilo vouches for an address only on accounts where it holds
+   * proof (kilo-exchange.mjs), so here only those accounts can accept an
+   * invitation by email. */
   verifiedEmail: false,
 });
 
@@ -108,8 +110,9 @@ function anacondaProvider(env) {
     /** Email domains an owner may open a Page to for viewing. A deployment
      * turns each on with PAGES_COMPANY_VIEW_DOMAINS; it cannot add others. */
     companyDomains: ["anaconda.com"],
-    /** Whether accounts carry an email address the provider has verified. An
-     * invitation by email can be accepted only where this is true. */
+    /** Whether every account carries an email address the provider has
+     * verified. Where it is false, only the accounts the provider vouches for
+     * can accept an invitation by email. */
     verifiedEmail: true,
     /** The long-lived credential coding agents and scripts send as a bearer. */
     apiKey: {

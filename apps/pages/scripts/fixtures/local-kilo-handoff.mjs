@@ -6,12 +6,25 @@
 // holds, and checks the exchange secret. Like Kilo's, a code is not single
 // use, and the exchange body is strict: a code with its audience and state,
 // or a token with its audience.
+//
+// An account is `{ id, name, email?, verifiedEmail?, blocked? }`. The answer
+// carries `verified_email` only for an account given `verifiedEmail`, as Kilo
+// sends it only with proof the account controls the address, and the value
+// is sent as given so a test can send one Pages can't use. `email` stands for
+// an address Kilo holds without that proof; it is sent as `email`, a key
+// Pages doesn't read.
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 
 const CODE_SECONDS = 60;
 const send = (res, status, value) =>
   res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(value));
+const userOf = (account) => ({
+  id: account.id,
+  name: account.name,
+  email: account.email,
+  ...(Object.hasOwn(account, "verifiedEmail") && { verified_email: account.verifiedEmail }),
+});
 
 /** Starts the fake. `deployments` maps each audience to the Pages origin it
  * redirects to and `secret` is what the exchange requires. `signIn(account)`
@@ -106,10 +119,7 @@ export async function startLocalKiloHandoff({ deployments, secret, port = 0, now
           return send(res, 400, { error: "invalid_token" });
         const holder = accounts.get(claims.kiloUserId);
         if (!holder || holder.blocked) return send(res, 403, { error: "account_unavailable" });
-        return send(res, 200, {
-          user: { id: holder.id, name: holder.name, email: holder.email },
-          organizations: [],
-        });
+        return send(res, 200, { user: userOf(holder), organizations: [] });
       }
       const issued = codes.get(body?.code);
       if (
@@ -120,12 +130,7 @@ export async function startLocalKiloHandoff({ deployments, secret, port = 0, now
       )
         return send(res, 400, { error: "invalid_code" });
       if (issued.account.blocked) return send(res, 403, { error: "account_unavailable" });
-      return send(res, 200, {
-        // Kilo sends no email. This one is here so the tests can show Pages
-        // would not keep it.
-        user: { id: issued.account.id, name: issued.account.name, email: issued.account.email },
-        organizations: [],
-      });
+      return send(res, 200, { user: userOf(issued.account), organizations: [] });
     }
     return send(res, 404, { error: "not_found" });
   });

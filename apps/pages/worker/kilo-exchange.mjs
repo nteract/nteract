@@ -11,8 +11,18 @@
  * exchange sends both back. The answer is identity only: Pages is never given
  * a Kilo API token.
  *
+ * That identity is the account's id, its name, and `verified_email`: the
+ * account's primary address, which Kilo sends only when it holds proof the
+ * account controls it. Pages reads it as the address an invitation can be
+ * claimed with. It is optional, so an address Pages can't use as an
+ * invitation address (inviteEmail in invite-email.mjs) is treated as absent
+ * and the sign-in goes ahead without one: an optional field never locks a
+ * person out. The rest of the answer, `organizations` included, is not read.
+ *
  * The module holds no state and logs nothing. Error messages are fixed text,
- * so a code, a secret or a response body can't reach a log through them. */
+ * so a code, a secret, an address or a response body can't reach a log
+ * through them. */
+import { inviteEmail } from "./invite-email.mjs";
 
 /** Where Pages sends a browser to sign in. Kilo checks its own session there. */
 export const KILO_ENTER_PATH = "/pages-auth";
@@ -98,8 +108,10 @@ const discard = async (response) => {
  * `state` must be the ones the sign-in started with: Kilo's code is good only
  * for them, which is what makes a code copied out of a browser useless.
  *
- * Returns `{ id, name }`, with `name` null when the account has none, or
- * `{ refused }` when Kilo turned the call down: `"client"` for a 401, which
+ * Returns `{ id, name, verifiedEmail }`, with `name` null when the account
+ * has none and `verifiedEmail`, normalized as an invitation stores it, left
+ * out when Kilo sent no usable address; or `{ refused }` when Kilo turned the
+ * call down: `"client"` for a 401, which
  * means it didn't accept this deployment's secret or audience; `"account"` for
  * a 403, which means the account is gone or blocked; and `"code"` for any
  * other 4xx, which means the code is forged, stale, or for another sign-in.
@@ -117,7 +129,7 @@ export function exchangeKiloCode(
  * doesn't hold and binds it to `audience`, so this call is the only check of
  * it.
  *
- * Returns `{ id, name }` as the code exchange does, or `{ refused }` only for
+ * Returns `{ id, name, verifiedEmail }` as the code exchange does, or `{ refused }` only for
  * an answer that says what is wrong: `"token"` for a 400 whose `error` is
  * `invalid_token` (forged, expired, or for another deployment), `"account"`
  * for a 403 whose `error` is `account_unavailable`, and `"client"` for any
@@ -198,5 +210,8 @@ async function exchange(fetcher, { appUrl, secret, body, timeoutMs }, credential
   if (typeof id !== "string" || !id || id.length > MAX_ID_LENGTH || id !== id.trim())
     throw new KiloProtocolError();
   const name = typeof user.name === "string" ? user.name.trim().slice(0, MAX_NAME_LENGTH) : "";
-  return { id, name: name || null };
+  // Optional: a value that isn't a usable invitation address reads as no
+  // address, never as a malformed answer.
+  const verifiedEmail = inviteEmail(user.verified_email);
+  return { id, name: name || null, ...(verifiedEmail && { verifiedEmail }) };
 }

@@ -28,7 +28,10 @@
  *
  * The token is sent to Kilo's exchange and nowhere else. It is never logged,
  * stored or put in an error; the lease is keyed by its SHA-256. Errors carry
- * fixed text only. */
+ * fixed text only. The leased account carries the address Kilo verified, when
+ * it sent one, and the identity presents it as `verifiedEmail`, as an API key
+ * does: it claims invitations to that address for as long as the lease. It is
+ * never logged. */
 import { withAdmissionReason } from "./admission-reasons.mjs";
 import { logAuthEvent } from "./auth-events.mjs";
 import { kiloIdentity, kiloSignIn } from "./kilo-config.mjs";
@@ -120,7 +123,8 @@ async function digest(text) {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-/** The Kilo account `token` names, as `{ id, name, until }`, where `until` is
+/** The Kilo account `token` names, as `{ id, name, verifiedEmail, until }`,
+ * with `verifiedEmail` only when Kilo sent a usable one, where `until` is
  * when this request's identity stops being valid: the end of the isolate's
  * lease, or `UNLEASED_VALIDITY_MS` after Kilo answered when there is no
  * lease. Throws a coded error when Kilo
@@ -167,6 +171,7 @@ export async function kiloTokenAccount({ config, claims }, token) {
     const value = Object.freeze({
       id: answer.id,
       name: answer.name,
+      ...(answer.verifiedEmail && { verifiedEmail: answer.verifiedEmail }),
       until: until ?? settledAt + UNLEASED_VALIDITY_MS,
     });
     void logAuthEvent({
