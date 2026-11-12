@@ -392,11 +392,14 @@ test("requests on one leased answer share its write, and none goes on past a fai
   for (const result of [first, concurrent]) {
     assert.equal(result.status, "rejected", "no request goes on with the older listing");
     const { status, code, retryable } = result.reason;
-    assert.deepEqual({ status, code, retryable }, {
-      status: 503,
-      code: "sign_in_unavailable",
-      retryable: true,
-    });
+    assert.deepEqual(
+      { status, code, retryable },
+      {
+        status: 503,
+        code: "sign_in_unavailable",
+        retryable: true,
+      },
+    );
   }
   assert.equal(attempts(), 1, "the concurrent request awaited the first request's write");
   assert.equal(kilo.exchanges().length, 1);
