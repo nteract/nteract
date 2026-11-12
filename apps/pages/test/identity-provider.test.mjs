@@ -84,6 +84,7 @@ test("PAGES_KILO_APP_URL selects Kilo, which has no API key and vouches for some
     id: "kilo",
     label: "Kilo",
     companyDomains: [],
+    organizations: true,
     apiKey: null,
     verifiedEmail: false,
   });
@@ -92,6 +93,7 @@ test("PAGES_KILO_APP_URL selects Kilo, which has no API key and vouches for some
   for (const env of [undefined, {}, production, { PAGES_KILO_APP_URL: "" }]) {
     assert.equal(identityProvider(env).id, "anaconda");
     assert.equal(identityProvider(env).verifiedEmail, true);
+    assert.equal(identityProvider(env).organizations, false);
   }
 });
 

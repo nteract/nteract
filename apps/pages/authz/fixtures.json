@@ -167,6 +167,44 @@
       ]
     },
     {
+      "name": "an organization grant at editor or commenter gives that role to its members, and a removal tombstone beats it",
+      "modes": ["built-in", "external"],
+      "object": "page:organization-roles",
+      "lifecycle": "active",
+      "revision": 8,
+      "relationships": [
+        "page:organization-roles#owner@user:alice",
+        "page:organization-roles#editor@organization:acme#member",
+        "page:organization-roles#commenter@organization:research#member",
+        "page:organization-roles#removed@user:gail",
+        "organization:acme#member@user:gail",
+        "organization:acme#member@user:dana",
+        "organization:research#member@user:gail",
+        "organization:research#member@user:erin"
+      ],
+      "principals": [
+        { "subject": "user:gail", "credential": "write", "capabilities": [] },
+        {
+          "subject": "user:dana",
+          "credential": "write",
+          "capabilities": ["read", "comment", "edit"],
+          "basis": { "relation": "editor", "via": "organization" }
+        },
+        {
+          "subject": "user:erin",
+          "credential": "write",
+          "capabilities": ["read", "comment"],
+          "basis": { "relation": "commenter", "via": "organization" }
+        },
+        {
+          "subject": "user:dana",
+          "credential": "read",
+          "capabilities": ["read"],
+          "basis": { "relation": "editor", "via": "organization" }
+        }
+      ]
+    },
+    {
       "name": "Trash: the lifecycle overlay keeps read, restore and purge for the owner only",
       "modes": ["built-in", "external"],
       "object": "page:trashed",

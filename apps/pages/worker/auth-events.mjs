@@ -12,19 +12,20 @@
  *
  * Recorded: principal, OAuth client id (a client Pages recognizes in full,
  * any other metadata-document client by its host), a short grant or
- * invitation reference, scopes, and enum reasons. A reference is the first 12
- * hex digits of SHA-256 over the id: it joins events of one grant without
- * naming the stored row.
+ * invitation reference, scopes, enum reasons, and how many organizations a
+ * Kilo exchange reported. A reference is the first 12 hex digits of SHA-256
+ * over the id: it joins events of one grant without naming the stored row.
  *
  * Never recorded: tokens, authorization codes, consent ids, CSRF tokens,
  * OAuth state, cookies, session ids, sealed blobs, emails, IP addresses,
- * display names or free text. Every field passes an allowlist; a principal
- * that contains `@` is dropped.
+ * display names, organization ids or names, or free text. Every field passes
+ * an allowlist; a principal that contains `@` is dropped.
  *
  * Emission never fails or delays a request beyond one digest. A record that
  * can't be built is dropped and counted; the next line carries the count as
  * `dropped`. */
 
+import { MAX_ORGANIZATIONS } from "./kilo-exchange.mjs";
 import { loggedClientId } from "./oauth-clients.mjs";
 
 export const AUTH_EVENT = "pages.auth.v1";
@@ -99,6 +100,8 @@ const scopeOf = (value, action) => {
 };
 const refOf = (value) => (typeof value === "string" && REF.test(value) ? value : undefined);
 const boolOf = (value) => (typeof value === "boolean" ? value : undefined);
+const countOf = (value) =>
+  Number.isSafeInteger(value) && value >= 0 && value <= MAX_ORGANIZATIONS ? value : undefined;
 
 let dropped = 0;
 
@@ -121,6 +124,7 @@ export function authEvent({
   projectId,
   invite,
   role,
+  organizations,
   now = new Date(),
 }) {
   if (!AUTH_ACTIONS.includes(action)) throw new TypeError(`Unknown auth action ${action}`);
@@ -143,6 +147,8 @@ export function authEvent({
     project_id: typeof projectId === "string" && PROJECT_ID.test(projectId) ? projectId : undefined,
     invite: refOf(invite),
     role: oneOf(ROLES)(role),
+    // How many organizations an exchange reported, never which.
+    organizations: countOf(organizations),
     timestamp: now.toISOString(),
   };
   for (const key of Object.keys(record)) if (record[key] === undefined) delete record[key];

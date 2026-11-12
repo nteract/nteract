@@ -29,7 +29,9 @@ const userOf = (account) => ({
 /** Starts the fake. `deployments` maps each audience to the Pages origin it
  * redirects to and `secret` is what the exchange requires. `signIn(account)`
  * sets who the browser is at Kilo, or nobody with `null`; `respond(fn)`
- * replaces the next exchange answer with `fn(req, res)`. */
+ * replaces the next exchange answer with `fn(req, res)`. An account's
+ * `organizations` (`[{ id, name, role }]`) is what each exchange that names
+ * it reports, read when the exchange runs. */
 export async function startLocalKiloHandoff({ deployments, secret, port = 0, now = Date.now }) {
   const codes = new Map();
   const exchanges = [];
@@ -119,7 +121,10 @@ export async function startLocalKiloHandoff({ deployments, secret, port = 0, now
           return send(res, 400, { error: "invalid_token" });
         const holder = accounts.get(claims.kiloUserId);
         if (!holder || holder.blocked) return send(res, 403, { error: "account_unavailable" });
-        return send(res, 200, { user: userOf(holder), organizations: [] });
+        return send(res, 200, {
+          user: userOf(holder),
+          organizations: holder.organizations ?? [],
+        });
       }
       const issued = codes.get(body?.code);
       if (
@@ -130,7 +135,10 @@ export async function startLocalKiloHandoff({ deployments, secret, port = 0, now
       )
         return send(res, 400, { error: "invalid_code" });
       if (issued.account.blocked) return send(res, 403, { error: "account_unavailable" });
-      return send(res, 200, { user: userOf(issued.account), organizations: [] });
+      return send(res, 200, {
+        user: userOf(issued.account),
+        organizations: issued.account.organizations ?? [],
+      });
     }
     return send(res, 404, { error: "not_found" });
   });

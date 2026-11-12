@@ -114,6 +114,7 @@ import {
   logFailure,
   json,
   readJson,
+  withDomainAccess,
 } from "./auth.mjs";
 import {
   incompleteHistory,
@@ -168,6 +169,7 @@ import {
 } from "./mutations.mjs";
 
 import { claimInvitation, proposeSharingMutation, sharingProjection } from "./sharing.mjs";
+import { identityAudienceKeys, openedAudienceKey } from "./organization-access.mjs";
 import { pageAccess, pageRelation, pageState, restrictAccessDuringCommit } from "./access.mjs";
 
 import {
@@ -4138,7 +4140,6 @@ export class Catalog {
           epoch,
           verify: (pageId) => this.verifyShared(request, pageId),
         });
-        const evidence = identity.domainAccess;
         // While D1 may miss a Catalog write, a walk over it would end
         // early with no cursor; the Catalog entries serve while the pass
         // and the Page marks settle. A walk continues on the source that
@@ -4149,7 +4150,7 @@ export class Catalog {
         if (pinned === "index" || (pinned === null && ready))
           source = indexSource(db, {
             principal: identity.principal,
-            domain: evidence?.expiresAt > Date.now() ? evidence.domain : null,
+            audiences: identityAudienceKeys(identity),
             inTrash: options.inTrash,
             needle: options.needle,
             access: options.access,
@@ -4434,15 +4435,15 @@ export class Catalog {
  * (`{ at, keep }`). */
 function catalogAnswer(metadata, identity, { title, observed, contentUpdatedAt }) {
   const access = pageAccess(metadata, identity);
-  const domain = access.source === "domain";
+  const audience = openedAudienceKey(metadata, identity, access);
   return {
     page_id: metadata.pageId,
     title: catalogTitle(title),
     shared: true,
     owner: metadata.owner,
     role: access.role,
-    source: domain ? "domain_opened" : "member",
-    ...(domain && { domain: identity.domainAccess?.domain }),
+    source: audience ? "domain_opened" : "member",
+    ...(audience && { domain: audience }),
     revision: metadata.acl?.revision ?? 0,
     lifecycle_revision: metadata.lifecycleRevision ?? 0,
     state: indexedState(metadata),
@@ -4837,11 +4838,14 @@ export class Page {
     const identity =
       capability === undefined
         ? await authenticate(request, this.env)
-        : uploadIdentity(
-            await verifyAssetUpload(this.ctx.storage, capability, {
-              pageId: this.metadata?.pageId,
-              grantActive: (grantId) => oauthGrantActive(this.env, grantId),
-            }),
+        : await withDomainAccess(
+            uploadIdentity(
+              await verifyAssetUpload(this.ctx.storage, capability, {
+                pageId: this.metadata?.pageId,
+                grantActive: (grantId) => oauthGrantActive(this.env, grantId),
+              }),
+            ),
+            this.env,
           );
     if (identity.principal !== this.metadata?.owner) {
       const metadata = this.metadata;
@@ -5363,10 +5367,12 @@ export class Page {
     // projected, and nothing when it never projected one.
     if (!this.handle && this.pageTitle() === undefined) return;
     const title = catalogTitle(this.pageTitle());
-    const observedReader =
-      identity && pageAccess(this.metadata, identity).source === "domain"
-        ? identity.principal
-        : null;
+    // A link audience's reader: someone who opened the Page through company
+    // view or its organization grant.
+    const audience = identity
+      ? openedAudienceKey(this.metadata, identity, pageAccess(this.metadata, identity))
+      : null;
+    const observedReader = audience ? identity.principal : null;
     const effects = this.advanceTitleProjection({
       type: "project",
       title,
@@ -5432,9 +5438,8 @@ export class Page {
       const reported = this.indexedReaders.get(observedReader);
       const reader =
         observedReader &&
-        identity.domainAccess &&
         (reported === undefined || (contentUpdatedAt !== null && contentUpdatedAt !== reported))
-          ? { principal: observedReader, domain: identity.domainAccess.domain }
+          ? { principal: observedReader, domain: audience }
           : undefined;
       if (fanout || reader) {
         if (reader) this.indexedReaders.set(reader.principal, contentUpdatedAt);

@@ -9,9 +9,12 @@ export class PermissionDenied extends Error {
   }
 }
 
-/** An inherited lease requires a fresh policy resolution, not a new credential. */
+/** An inherited lease requires a fresh policy resolution, not a new credential.
+ * A company-domain or organization lease that ends is the credential's own
+ * evidence ending: authenticating again reads it afresh. */
 export function leaseExpiryError(identity, deadline) {
-  return deadline < identity.expiresAt && deadline !== identity.domainAccess?.expiresAt
+  const evidence = [identity.domainAccess, ...(identity.organizations ?? [])];
+  return deadline < identity.expiresAt && !evidence.some((lease) => lease?.expiresAt === deadline)
     ? withAdmissionReason(
         Object.assign(new Error("Project authority lease expired"), {
           status: 503,
@@ -92,7 +95,8 @@ export class DocumentPolicy {
   }
 
   /** The decision's own bound: the credential's expiry, or an earlier lease
-   * (company view's email-domain proof) whose loss would change access. */
+   * (company view's email-domain proof, or an organization's membership
+   * evidence) whose loss would change access. */
   leaseExpiresAt(identity) {
     this.account(identity);
     return pageDecision(this.metadata(), identity, { now: this.now() }).valid_until;

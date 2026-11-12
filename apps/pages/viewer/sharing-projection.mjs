@@ -43,3 +43,95 @@ export function domainSharingProjection(value) {
     ],
   };
 }
+
+// Organizations follow the same host-owned rules. organizationOptions are the
+// organizations the owner proves membership in now; organizationProof reports
+// each option and the stored grant as verified, expired or missing. A stored
+// grant the owner can't prove now stays visible, flagged and withdrawable.
+// An option's value is its listing audience key, `org:<encoded id>`, which no
+// domain can equal.
+const organizationValue = (id) => `org:${encodeURIComponent(id)}`;
+const organizationEntry = (value) =>
+  typeof value?.id === "string" && !!value.id && typeof value.name === "string" && !!value.name;
+const ORGANIZATION_ROLES = ["viewer", "commenter", "editor"];
+
+export function organizationSharingProjection(value) {
+  if (!value?.access?.canManageAccess || !Array.isArray(value.organizationOptions)) return null;
+  const verified = [];
+  for (const option of value.organizationOptions)
+    if (organizationEntry(option) && !verified.some(({ id }) => id === option.id))
+      verified.push({ id: option.id, name: option.name });
+  const proof =
+    value.organizationProof &&
+    typeof value.organizationProof === "object" &&
+    !Array.isArray(value.organizationProof)
+      ? value.organizationProof
+      : {};
+  const stored =
+    organizationEntry(value.organizationAccess) &&
+    ORGANIZATION_ROLES.includes(value.organizationAccess.role)
+      ? {
+          id: value.organizationAccess.id,
+          name: value.organizationAccess.name,
+          role: value.organizationAccess.role,
+        }
+      : null;
+  const unverified = !!stored && value.organizationAccessOwnerVerified === false;
+  const choices = [...verified];
+  if (stored && !choices.some(({ id }) => id === stored.id))
+    choices.push({ id: stored.id, name: stored.name });
+  if (!choices.length) return null;
+  return {
+    selected: stored ? organizationValue(stored.id) : "",
+    stored,
+    unverified,
+    // Only the stored grant's lapsed proof is something signing in restores.
+    expired: unverified && proof[stored.id] === "expired" ? stored.name : null,
+    options: choices.map(({ id, name }) => ({
+      value: organizationValue(id),
+      label: `Anyone in ${name} with the link`,
+      disabled: !verified.some((option) => option.id === id),
+      id,
+    })),
+  };
+}
+
+/**
+ * The owner's one "Link access" control: Restricted, then each organization,
+ * then each company domain. A Page has one link audience at a time, so while
+ * one kind is stored the other kind's options are disabled; choosing
+ * Restricted clears whichever is stored. `organization` is the stored
+ * organization grant, `domain` the stored company domain, and `expired` names
+ * the audience whose proof a fresh sign-in restores.
+ */
+export function linkAccessProjection(value) {
+  const domain = domainSharingProjection(value);
+  const organization = organizationSharingProjection(value);
+  if (!domain && !organization) return null;
+  const storedDomain = domain?.selected || null;
+  const stored = organization?.stored ?? null;
+  return {
+    selected: organization?.selected || storedDomain || "",
+    organization: stored,
+    domain: storedDomain,
+    unverified: stored ? organization.unverified : !!domain?.unverified,
+    expired: organization?.expired
+      ? { kind: "organization", name: organization.expired }
+      : domain?.expired && !stored
+        ? { kind: "domain", name: domain.expired }
+        : null,
+    options: [
+      { value: "", label: "Restricted", disabled: false },
+      ...(organization?.options ?? []).map((option) => ({
+        ...option,
+        kind: "organization",
+        disabled: option.disabled || !!storedDomain,
+      })),
+      ...(domain?.options.slice(1) ?? []).map((option) => ({
+        ...option,
+        kind: "domain",
+        disabled: option.disabled || !!stored,
+      })),
+    ],
+  };
+}

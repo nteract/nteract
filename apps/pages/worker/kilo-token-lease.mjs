@@ -48,8 +48,8 @@
  *   exchange and a live lease never leave early: when only they remain, the
  *   new token is refused with `busy()`.
  *
- * The table holds account ids, names, verified addresses and refusals, never a
- * token. */
+ * The table holds account ids, names, verified addresses, organizations and
+ * refusals, never a token. */
 
 /** The longest a lease lasts after its exchange, whatever the token says. */
 export const MAX_LEASE_MS = 15 * 60 * 1000;

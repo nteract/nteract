@@ -432,3 +432,88 @@ test("a personal-account owner with a missing company proof still sees no compan
   assert.match(f.container.textContent, /account-a owner/);
   assert.equal(f.container.querySelector(".page-domain-sharing"), null);
 });
+
+const acme = { id: "org-acme", name: "Acme Research" };
+const organizationLedger = (stored, { revision = 1, proof = "verified" } = {}) => ({
+  ...ledger(revision),
+  domainOptions: [],
+  domainView: null,
+  organizationOptions: proof === "verified" ? [acme] : [],
+  organizationProof: { [acme.id]: proof },
+  organizationAccess: stored ? { ...acme, ...stored } : null,
+  ...(stored && { organizationAccessOwnerVerified: proof === "verified" }),
+});
+const linkSelect = (container) => container.querySelector(".page-domain-sharing select");
+const roleSelect = (container) => container.querySelector(".page-organization-role");
+async function choose(select, value) {
+  await act(() => {
+    select.value = value;
+    select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  });
+}
+
+test("an owner shares with an organization, sets its role, and Restricted withdraws it", async (t) => {
+  const posts = [];
+  let current = organizationLedger(null);
+  const f = await fixture(t, async (_url, options) => {
+    if (options.method === "POST") {
+      const body = JSON.parse(options.body);
+      posts.push(body);
+      current = organizationLedger(body.organization_id ? { role: body.role } : null, {
+        revision: current.access.revision + 1,
+      });
+      return json({ ...current, receipt: { revision: current.access.revision } });
+    }
+    return json(current);
+  });
+  await f.toggle();
+  assert.deepEqual(
+    [...linkSelect(f.container).options].map((option) => option.textContent),
+    ["Restricted", "Anyone in Acme Research with the link"],
+  );
+  assert.equal(roleSelect(f.container), null);
+  await choose(linkSelect(f.container), "org:org-acme");
+  await flush();
+  const { action, organization_id, role } = posts[0];
+  assert.deepEqual(
+    { action, organization_id, role },
+    { action: "set_organization_access", organization_id: acme.id, role: "viewer" },
+  );
+  assert.equal(linkSelect(f.container).value, "org:org-acme");
+  assert.match(f.container.textContent, /Can view\. Members of Acme Research who sign in/);
+  await choose(roleSelect(f.container), "editor");
+  await flush();
+  assert.equal(posts[1].action, "set_organization_access");
+  assert.equal(posts[1].organization_id, acme.id);
+  assert.equal(posts[1].role, "editor");
+  assert.match(f.container.textContent, /Can edit\. Members of Acme Research/);
+  await choose(linkSelect(f.container), "");
+  await flush();
+  assert.deepEqual(
+    { action: posts[2].action, organization_id: posts[2].organization_id },
+    { action: "set_organization_access", organization_id: null },
+  );
+  assert.equal(linkSelect(f.container).value, "");
+  assert.equal(roleSelect(f.container), null);
+});
+
+test("an organization the owner can no longer prove stays shared, with sign-in and Restricted", async (t) => {
+  const f = await fixture(t, async () =>
+    json(organizationLedger({ role: "commenter" }, { proof: "expired" })),
+  );
+  await f.toggle();
+  assert.equal(linkSelect(f.container).value, "org:org-acme");
+  assert.equal(linkSelect(f.container).options[1].disabled, true);
+  assert.equal(roleSelect(f.container).disabled, true);
+  const note = f.container.querySelector(".page-domain-sharing-note");
+  assert.match(note.textContent, /membership in Acme Research needs confirming/);
+  assert.match(note.textContent, /Members of Acme Research can still open this Page/);
+  assert.ok([...note.querySelectorAll("a")].some((a) => a.textContent === "Sign in again"));
+});
+
+test("an owner who belongs to no organization and has no grant sees no link access row", async (t) => {
+  const f = await fixture(t, async () => json(organizationLedger(null, { proof: "missing" })));
+  await f.toggle();
+  assert.match(f.container.textContent, /account-a owner/);
+  assert.equal(f.container.querySelector(".page-domain-sharing"), null);
+});

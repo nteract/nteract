@@ -192,16 +192,18 @@ test("the exchange keeps a usable verified address, normalized as an invitation 
   for (const exchange of [exchangeCode, exchangeToken]) {
     assert.deepEqual(
       await exchange({ id: "person:1", name: "Example", verified_email: " Person@Example.TEST " }),
-      { id: "person:1", name: "Example", verifiedEmail: address },
+      { id: "person:1", name: "Example", verifiedEmail: address, organizations: [] },
     );
     assert.deepEqual(await exchange({ id: "person:1", name: "Example" }), {
       id: "person:1",
       name: "Example",
+      organizations: [],
     });
     // An unverified address is another key, and is never read.
     assert.deepEqual(await exchange({ id: "person:1", name: "Example", email: address }), {
       id: "person:1",
       name: "Example",
+      organizations: [],
     });
   }
 });
@@ -211,7 +213,7 @@ test("a verified address Pages can't use reads as none, and the sign-in still su
     for (const value of unusable)
       assert.deepEqual(
         await exchange({ id: "person:1", name: "Example", verified_email: value }),
-        { id: "person:1", name: "Example" },
+        { id: "person:1", name: "Example", organizations: [] },
         JSON.stringify(value),
       );
   // The longest usable address is kept.
@@ -402,6 +404,7 @@ test("an address that lowercases past the limit is no address, and matches no in
     assert.deepEqual(await exchange({ id: "person:1", name: "Example", verified_email: dotted }), {
       id: "person:1",
       name: "Example",
+      organizations: [],
     });
   // Inviting it is refused, so no stored invitation holds it.
   await assert.rejects(invitedPage(dotted), { status: 400 });
@@ -455,6 +458,7 @@ test("an answer over the body limit is refused whatever field makes it large", a
     assert.deepEqual(await exchange(async () => Response.json(sized(MAX_BODY_BYTES))), {
       id: "person:1",
       name: "Example",
+      organizations: [],
     });
     await assert.rejects(
       exchange(async () => Response.json(sized(MAX_BODY_BYTES + 1))),

@@ -149,6 +149,36 @@ test("a company-proof refusal keeps the ledger and reloads its proof state", asy
   assert.equal(cache.getSnapshot().busy, null);
 });
 
+test("an organization-proof refusal keeps the ledger and reloads its proof state", async () => {
+  let calls = 0;
+  const refused = Object.assign(Error("Sign in again with the same account."), {
+    status: 403,
+    code: "organization_proof_required",
+  });
+  const cache = createSharingAccess(session(), {
+    request: (_url, options) => {
+      calls++;
+      if (options.method === "POST") throw refused;
+      return {
+        ...ledger(),
+        organizationOptions: calls === 1 ? [{ id: "org-a", name: "Org A" }] : [],
+        organizationProof: { "org-a": calls === 1 ? "verified" : "expired" },
+      };
+    },
+  });
+  await cache.read();
+  await assert.rejects(
+    cache.mutate(
+      { action: "set_organization_access", organization_id: "org-a", role: "editor" },
+      "domain-view",
+    ),
+    refused,
+  );
+  assert.equal(calls, 3);
+  assert.deepEqual(cache.getSnapshot().value.organizationProof, { "org-a": "expired" });
+  assert.equal(cache.getSnapshot().error, null);
+});
+
 for (const status of [401, 403, 404]) {
   test(`HTTP ${status} clears cached private access and refresh can recover`, async () => {
     let failure = false;

@@ -237,15 +237,15 @@ test("schema.zed declares the model decide() implements", () => {
   }
   assert.deepEqual(definitions.page.relations.project, ["project"]);
   assert.deepEqual(definitions.page.relations.removed, ["user"]);
-  assert.deepEqual(definitions.page.relations.commenter, ["user", "group#member"]);
+  assert.deepEqual(definitions.page.relations.commenter, shared);
   // The proposal's rewrites.
   const { project, page } = definitions;
   assert.equal(project.permissions.contribute, "owner + editor");
   assert.equal(project.permissions.comment_items, "contribute + commenter");
   assert.equal(project.permissions.read_items, "contribute + commenter + viewer");
   assert.equal(page.permissions.administer, "owner + project->administer");
-  assert.equal(page.permissions.edit, "administer + editor + project->contribute");
-  assert.equal(page.permissions.comment, "edit + commenter + project->comment_items");
+  assert.equal(page.permissions.edit, "administer + (editor - removed) + project->contribute");
+  assert.equal(page.permissions.comment, "edit + (commenter - removed) + project->comment_items");
   assert.equal(page.permissions.read, "comment + (viewer - removed) + project->read_items");
   assert.equal(page.permissions.share, "administer");
   assert.match(schema, /either a `project` or an `owner`, never both/);

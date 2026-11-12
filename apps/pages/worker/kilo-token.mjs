@@ -123,8 +123,9 @@ async function digest(text) {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-/** The Kilo account `token` names, as `{ id, name, verifiedEmail, until }`,
- * with `verifiedEmail` only when Kilo sent a usable one, where `until` is
+/** The Kilo account `token` names, as `{ id, name, verifiedEmail,
+ * organizations, verifiedAt, until }`, with `verifiedEmail` only when Kilo
+ * sent a usable one, `verifiedAt` when the exchange was sent, and `until`
  * when this request's identity stops being valid: the end of the isolate's
  * lease, or `UNLEASED_VALIDITY_MS` after Kilo answered when there is no
  * lease. Throws a coded error when Kilo
@@ -172,12 +173,17 @@ export async function kiloTokenAccount({ config, claims }, token) {
       id: answer.id,
       name: answer.name,
       ...(answer.verifiedEmail && { verifiedEmail: answer.verifiedEmail }),
+      // What the exchange said about the account's organizations, and when
+      // it was sent: the evidence auth.mjs records (kilo-membership.mjs).
+      organizations: answer.organizations,
+      verifiedAt: sentAt,
       until: until ?? settledAt + UNLEASED_VALIDITY_MS,
     });
     void logAuthEvent({
       action: "kilo_token.accepted",
       credential: "kilo-token",
       principal: kiloIdentity(config, answer).principal,
+      organizations: answer.organizations.length,
     });
     return { value, until };
   });
