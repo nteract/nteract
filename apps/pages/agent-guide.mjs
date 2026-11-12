@@ -1408,6 +1408,21 @@ export function agentGuideResponse(request, env) {
   });
 }
 
+/** Company domain sharing in the access tools, the same for every provider:
+ * whether the deployment allows a domain shows in domainOptions. */
+const companyDomainSharing = `set_domain_view takes domain from
+domainOptions and role (viewer, commenter or editor; viewer when omitted), or
+domain null for Restricted. Choosing a domain or changing its role needs your
+own fresh company email proof, else 403 with code company_email_proof_required;
+Restricted needs none. domainView is { domain, namespace, role } or null. A
+higher individual grant still wins, and an explicit removal overrides the
+domain. Browser/OAuth company proof expires after six hours without fresh
+sign-in; refreshing an OAuth token does not renew that identity proof. A
+deployment allows a domain only when its sign-in provider's reviewed list names
+it and the deployment's PAGES_COMPANY_VIEW_DOMAINS setting turns it on; one
+value that isn't a lower-case hostname of two or more labels turns company
+sharing off.`;
+
 /** Organization sharing in the access tools, the same for every provider:
  * whether the deployment reports organizations shows in organizationOptions. */
 const organizationSharing = `organizationOptions lists the organizations
@@ -1504,12 +1519,8 @@ Page is still shared with that company but you cannot currently prove it; you ca
 set Restricted. Owners may POST to the same endpoint with
 an action, expected_revision from access.revision, and a new nonce.
 Actions are invite (email, role: viewer, commenter or editor), set_role (principal,
-role: viewer, commenter, editor or null to remove), revoke_invite (invite_id), and set_domain_view (domain
-from domainOptions, or null for Restricted; a company domain you cannot prove
-returns 403 with code company_email_proof_required). Company access is always view-only;
-individual editor grants still work, and explicit removals override the domain.
-Browser/OAuth company proof expires after six hours without fresh sign-in;
-refreshing an OAuth token does not renew that identity proof. ${organizationSharing}
+role: viewer, commenter, editor or null to remove), revoke_invite (invite_id), and
+set_domain_view. ${companyDomainSharing} ${organizationSharing}
 A 409 requires reading access again. An uncertain request can be retried with its identical nonce and body.`,
     importPageImageParagraph: `import_page_image requires pages:read and pages:write plus current Page edit
 access. It copies the bytes into private Page storage and returns asset_id,
@@ -1912,12 +1923,7 @@ it; you can set Restricted. Owners call manage_page_access with an action,
 expected_revision from access.revision, and a new nonce. Actions are
 invite (email, role: viewer, commenter or editor), set_role (principal, role:
 viewer, commenter, editor or null to remove), revoke_invite (invite_id), and
-set_domain_view (domain from domainOptions, or null for Restricted; a company
-domain you cannot prove returns 403 with code company_email_proof_required).
-Company access is always view-only; individual editor grants still work, and
-explicit removals override the domain. Browser/OAuth company proof expires after
-six hours without fresh sign-in; refreshing an OAuth token does not renew that
-identity proof. ${organizationSharing} A 409 requires reading access again. An uncertain request can be
+set_domain_view. ${companyDomainSharing} ${organizationSharing} A 409 requires reading access again. An uncertain request can be
 retried with its identical nonce and body.`,
     importPageImageParagraph: `import_page_image requires pages:read and pages:write plus current Page edit
 access. It copies the bytes into private Page storage and returns asset_id,

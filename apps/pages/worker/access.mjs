@@ -6,6 +6,7 @@ import { projectGrantGeneration } from "../shared/grant-generation.mjs";
 import {
   NO_ACTOR_CHAIN,
   decide,
+  domainViewRole,
   heldRelation,
   holdsOrganizationGrant,
   memberRow,
@@ -204,40 +205,41 @@ export function restrictAccessDuringCommit(previous, proposed) {
     )
       members[principal] = proposed.acl.members[principal];
   }
-  const beforeDomain = previous.acl?.domainView,
-    afterDomain = proposed.acl?.domainView;
-  const lostDomain =
-    beforeDomain &&
-    (!afterDomain ||
-      beforeDomain.domain !== afterDomain.domain ||
-      beforeDomain.namespace !== afterDomain.namespace);
+  const acl = previous.acl ?? {};
   return {
     ...previous,
     acl: {
-      ...previous.acl,
+      ...acl,
       members,
-      ...(lostDomain && { domainView: null }),
-      ...organizationDuringCommit(
-        previous.acl?.organizationAccess,
-        proposed.acl?.organizationAccess,
-      ),
+      ...(acl.domainView && {
+        domainView: audienceDuringCommit(acl.domainView, proposed.acl?.domainView, {
+          same: (a, b) => a.domain === b.domain && a.namespace === b.namespace,
+          role: domainViewRole,
+        }),
+      }),
+      ...(acl.organizationAccess && {
+        organizationAccess: audienceDuringCommit(
+          acl.organizationAccess,
+          proposed.acl?.organizationAccess,
+          {
+            same: (a, b) => a.id === b.id && a.namespace === b.namespace,
+            role: (grant) => (MEMBER_ROLES.includes(grant.role) ? grant.role : null),
+          },
+        ),
+      }),
     },
   };
 }
 
-/** The organization grant both `before` and `after` allow: unchanged when
- * they name the same organization, at the weaker of their roles, and none
- * when the grant goes or moves to another organization. */
-function organizationDuringCommit(before, after) {
-  if (!before) return {};
-  if (
-    !after ||
-    before.id !== after.id ||
-    before.namespace !== after.namespace ||
-    !MEMBER_ROLES.includes(after.role)
-  )
-    return { organizationAccess: null };
-  return MEMBER_ROLES.indexOf(after.role) < MEMBER_ROLES.indexOf(before.role)
-    ? { organizationAccess: { ...before, role: after.role } }
-    : {};
+/** The link audience grant (company domain or organization) both `before`
+ * and `after` allow: `before` when they name the same audience (`same`) and
+ * `after`'s role is no weaker, `before` at `after`'s role when it is weaker,
+ * and null when the grant goes, names no role, or moves to another audience.
+ * `role` reads the role a grant names, or null. */
+function audienceDuringCommit(before, after, { same, role }) {
+  const next = after && same(before, after) ? role(after) : null;
+  if (!next) return null;
+  return MEMBER_ROLES.indexOf(next) < MEMBER_ROLES.indexOf(role(before))
+    ? { ...before, role: next }
+    : before;
 }

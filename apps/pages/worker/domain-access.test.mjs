@@ -1,13 +1,27 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { test } from "node:test";
+import * as A from "@automerge/automerge";
 import { createServerAppSession } from "@cloud/app-session.ts";
+import { createAuthFixture } from "../auth-fixtures.mjs";
+import { WRITTEN_FORMATS } from "../model/document-types.mjs";
+import { createPageData, initializePage } from "../model/page.mjs";
 import { companyViewDomains, domainAccessForIdentity } from "./domain-access.mjs";
 import { pageAccess, proposeAccessUpdate, restrictAccessDuringCommit } from "./access.mjs";
+import {
+  issueAssetUpload,
+  uploadIdentity,
+  uploadVerdict,
+  verifyAssetUpload,
+} from "./asset-uploads.mjs";
 import { proposeSharingMutation, sharingProjection } from "./sharing.mjs";
-import { DocumentPolicy } from "./policy.mjs";
-import { Page } from "./index.mjs";
-import { errorResponse, HttpError } from "./auth.mjs";
+import { DocumentPolicy, leaseExpiryError } from "./policy.mjs";
+import worker, { Page } from "./index.mjs";
+import { authenticate, errorResponse, HttpError, withDomainAccess } from "./auth.mjs";
+import { accessRows, listingRestricted } from "./catalog-index.mjs";
 import { plainStub } from "./plain-stub.mjs";
+import { Storage } from "./projects-fixture.mjs";
+import { purgeImpact } from "./trash.mjs";
 
 const now = 1_800_000_000_000;
 const namespace = "user:anaconda";
@@ -32,6 +46,8 @@ const employee = {
   expiresAt: now + 60_000,
 };
 const domainView = { domain: "anaconda.com", namespace };
+// A grant set now names its role; a stored grant without one is a viewer grant.
+const viewerGrant = { ...domainView, role: "viewer" };
 const lease = { ...domainView, expiresAt: now + 30_000 };
 const metadata = () => ({
   owner: owner.principal,
@@ -89,6 +105,39 @@ test("company sharing is disabled by default and rejects consumer or arbitrary c
     companyViewDomains({ ...env, NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE: undefined }),
     [],
   );
+});
+
+test("one allowlist value that isn't a valid hostname turns company sharing off", () => {
+  assert.deepEqual(
+    companyViewDomains({ ...env, PAGES_COMPANY_VIEW_DOMAINS: " anaconda.com " }),
+    ["anaconda.com"],
+    "spaces around an entry separate entries; they are not part of the value",
+  );
+  for (const [form, value] of [
+    ["upper case", "Anaconda.com"],
+    ["wildcard", "*.anaconda.com"],
+    ["trailing dot", "anaconda.com."],
+    ["inner whitespace", "anaconda .com"],
+    ["tab", "anaconda.com\tx"],
+    ["one label", "com"],
+    ["empty label", "anaconda..com"],
+    ["leading hyphen", "-anaconda.com"],
+    ["trailing hyphen", "anaconda-.com"],
+    ["underscore", "ana_conda.com"],
+    ["label over 63", `${"a".repeat(64)}.com`],
+    ["over 253", `${"a.".repeat(127)}com`],
+    ["non-ASCII", "anacönda.com"],
+    ["IPv4", "10.0.0.1"],
+    ["numeric final label", "127.1"],
+    ["IPv6", "[::1]"],
+    ["port", "anaconda.com:443"],
+    ["URL", "https://anaconda.com"],
+  ])
+    assert.deepEqual(
+      companyViewDomains({ ...env, PAGES_COMPANY_VIEW_DOMAINS: `anaconda.com,${value}` }),
+      [],
+      form,
+    );
 });
 
 const enableArgs = {
@@ -168,10 +217,18 @@ test("an owner without company email proof is offered no company audience and ca
       400,
       /supported company domain/,
     );
+    for (const role of ["owner", "none", null])
+      await rejectsWithStatus(
+        proposeSharingMutation(before, identity, { ...enableArgs, role }, now, env),
+        400,
+        /Can view, Can comment or Can edit/,
+      );
+    // A valid role still needs proof.
     await rejectsWithStatus(
       proposeSharingMutation(before, identity, { ...enableArgs, role: "editor" }, now, env),
-      400,
-      /view-only/,
+      403,
+      proof === "expired" ? ownerProofExpired : ownerProofDenied,
+      "company_email_proof_required",
     );
     const restricted = await proposeSharingMutation(before, identity, restrictArgs, now, env);
     assert.equal(restricted.metadata.acl.domainView, null);
@@ -188,12 +245,12 @@ test("an owner with a verified company email (API key or browser proof) can shar
     assert.deepEqual(offered.domainProof, { "anaconda.com": "verified" });
     assert.equal(offered.domainView, null);
     const enabled = await proposeSharingMutation(before, identity, enableArgs, now, env);
-    assert.deepEqual(enabled.metadata.acl.domainView, domainView);
+    assert.deepEqual(enabled.metadata.acl.domainView, viewerGrant);
     assert.deepEqual(enabled.metadata.acl.members, {});
     assert.equal(before.acl.domainView, undefined);
     const projected = await sharingProjection(enabled.metadata, identity, env, now);
     assert.deepEqual(projected.domainOptions, ["anaconda.com"]);
-    assert.deepEqual(projected.domainView, domainView);
+    assert.deepEqual(projected.domainView, viewerGrant);
     assert.equal(projected.domainViewOwnerVerified, true);
     assert.equal(
       (await proposeSharingMutation(enabled.metadata, identity, enableArgs, now, env)).replay,
@@ -268,7 +325,7 @@ test("company proof that expires mid-session reports expired, refuses enabling, 
     later,
     env,
   );
-  assert.deepEqual(enabled.metadata.acl.domainView, domainView);
+  assert.deepEqual(enabled.metadata.acl.domainView, viewerGrant);
 });
 
 test("the proof refusal code survives the HTTP error boundary", async () => {
@@ -287,7 +344,7 @@ test("a company audience the owner cannot prove stays readable, is flagged, and 
   const legacy = metadata();
   const projected = await sharingProjection(legacy, owner, env, now);
   assert.deepEqual(projected.domainOptions, []);
-  assert.deepEqual(projected.domainView, domainView);
+  assert.deepEqual(projected.domainView, viewerGrant);
   assert.equal(projected.domainViewOwnerVerified, false);
   assert.equal(
     (await sharingProjection(legacy, companyApiKeyOwner, env, now)).domainViewOwnerVerified,
@@ -677,4 +734,413 @@ test("a domain reader's failure during initial fanout does not invalidate owner 
   assert.equal(page.titleProjection.name, "settled");
   await open();
   assert.deepEqual(sent, [doc.owner, employee.principal, employee.principal]);
+});
+
+// ---------------------------------------------------------------------------
+// Roles through a company domain grant.
+
+const grantAt = (role) => ({ ...domainView, role });
+/** The fixture Page shared with the company domain at `role`, with no role
+ * stored when `role` is undefined, and Restricted when it is null. */
+const sharedAt = (role) => {
+  const value = metadata();
+  if (role === null) value.acl.domainView = null;
+  else if (role !== undefined) value.acl.domainView = grantAt(role);
+  return value;
+};
+const domainReader = { ...employee, domainAccess: lease };
+const capabilities = (access) =>
+  ["canRead", "canComment", "canWrite", "canManageAccess", "canDelete"].filter(
+    (name) => access[name],
+  );
+
+test("an owner shares with a company domain at each role; a role change needs current proof, withdrawing none", async () => {
+  let page = restrictedPage();
+  let revision = 1;
+  for (const role of ["viewer", "commenter", "editor", "viewer"]) {
+    const result = await proposeSharingMutation(
+      page,
+      companyApiKeyOwner,
+      { ...enableArgs, role, expected_revision: revision, nonce: `role-${revision}` },
+      now,
+      env,
+    );
+    revision++;
+    assert.equal(result.receipt.revision, revision, "every change, a role change too, bumps it");
+    assert.deepEqual(result.metadata.acl.domainView, grantAt(role));
+    assert.deepEqual(result.metadata.acl.members, {});
+    page = result.metadata;
+  }
+  page = (
+    await proposeSharingMutation(
+      page,
+      companyApiKeyOwner,
+      { ...enableArgs, role: "editor", expected_revision: revision, nonce: "to-editor" },
+      now,
+      env,
+    )
+  ).metadata;
+  revision++;
+  const projected = await sharingProjection(page, companyApiKeyOwner, env, now);
+  assert.deepEqual(projected.domainView, grantAt("editor"));
+  assert.equal(projected.domainViewOwnerVerified, true);
+  // A grant stored without a role projects as the viewer grant it is.
+  assert.deepEqual(
+    (await sharingProjection(metadata(), companyApiKeyOwner, env, now)).domainView,
+    viewerGrant,
+  );
+  // An owner whose proof lapsed can't change the role, only withdraw.
+  const stale = await verifiedIdentity(
+    "owner@anaconda.com",
+    true,
+    now - 6 * 3600 * 1000 - 1000,
+    owner.principal,
+  );
+  for (const role of ["viewer", "commenter"])
+    await rejectsWithStatus(
+      proposeSharingMutation(
+        page,
+        stale,
+        { ...enableArgs, role, expected_revision: revision, nonce: `stale-${role}` },
+        now,
+        env,
+      ),
+      403,
+      ownerProofExpired,
+      "company_email_proof_required",
+    );
+  const withdrawn = await proposeSharingMutation(
+    page,
+    stale,
+    { ...restrictArgs, expected_revision: revision },
+    now,
+    env,
+  );
+  assert.equal(withdrawn.metadata.acl.domainView, null);
+});
+
+test("a company domain grant gives its role to verified readers only, with no member row", () => {
+  for (const [role, expected] of [
+    [undefined, ["canRead"]],
+    ["viewer", ["canRead"]],
+    ["commenter", ["canRead", "canComment"]],
+    ["editor", ["canRead", "canComment", "canWrite"]],
+  ]) {
+    const page = sharedAt(role);
+    const access = pageAccess(page, domainReader, { now });
+    assert.equal(access.role, role ?? "viewer");
+    assert.equal(access.source, "domain");
+    assert.equal(access.generation, 0);
+    assert.deepEqual(capabilities(access), expected, String(role));
+    assert.deepEqual(page.acl.members, {});
+    for (const outsider of [
+      employee,
+      { ...employee, domainAccess: { ...lease, domain: "example.com" } },
+      { ...employee, domainAccess: { ...lease, namespace: "user:other" } },
+      { ...employee, domainAccess: { ...lease, expiresAt: now } },
+      { ...domainReader, expiresAt: now },
+    ])
+      assert.equal(pageAccess(page, outsider, { now }).canRead, false, String(role));
+  }
+  // A stored role that names nothing grantable grants nothing.
+  for (const role of ["owner", "none", null, "Editor"]) {
+    const page = metadata();
+    page.acl.domainView = grantAt(role);
+    assert.equal(pageAccess(page, domainReader, { now }).canRead, false, String(role));
+  }
+  // Comments follow the grant: a commenter and an editor comment, a viewer doesn't.
+  for (const [role, comments] of [
+    ["viewer", false],
+    ["commenter", true],
+    ["editor", true],
+  ]) {
+    const policy = new DocumentPolicy({ metadata: () => sharedAt(role), now: () => now });
+    if (comments) assert.equal(policy.account(domainReader, "comment").canComment, true);
+    else assert.throws(() => policy.account(domainReader, "comment"), /Commenting is not allowed/);
+    if (role === "editor") assert.equal(policy.account(domainReader, true).canWrite, true);
+    else assert.throws(() => policy.account(domainReader, true), /read-only/);
+  }
+  // A read-only credential keeps the role it holds but writes nothing.
+  const readOnly = pageAccess(sharedAt("editor"), { ...domainReader, canWrite: false }, { now });
+  assert.equal(readOnly.role, "editor");
+  assert.deepEqual(capabilities(readOnly), ["canRead"]);
+});
+
+test("against a direct grant, the higher rank wins, a tie is direct, and a removal blocks the domain at every role", () => {
+  const withMember = (role, row) => {
+    const page = sharedAt(role);
+    page.acl.members[employee.principal] = row;
+    return pageAccess(page, domainReader, { now });
+  };
+  const higher = withMember("viewer", { role: "editor", generation: 2 });
+  assert.equal(higher.role, "editor");
+  assert.equal(higher.source, undefined);
+  assert.equal(higher.generation, 2);
+  const domainHigher = withMember("editor", { role: "viewer", generation: 1 });
+  assert.equal(domainHigher.role, "editor");
+  assert.equal(domainHigher.source, "domain");
+  assert.equal(domainHigher.canWrite, true);
+  const tie = withMember("commenter", { role: "commenter", generation: 3 });
+  assert.equal(tie.role, "commenter");
+  assert.equal(tie.source, undefined, "on a tie the direct grant is the basis");
+  for (const role of [undefined, "viewer", "commenter", "editor"])
+    assert.equal(withMember(role, { role: "none", generation: 4 }).canRead, false, String(role));
+});
+
+test("while a domain change commits, readers hold only what both grants allow", () => {
+  const during = (before, after) =>
+    pageAccess(restrictAccessDuringCommit(before, after), domainReader, { now });
+  assert.equal(during(sharedAt(null), sharedAt("editor")).canRead, false, "a new grant waits");
+  assert.equal(during(sharedAt("editor"), sharedAt(null)).canRead, false, "withdrawal is at once");
+  const downgrade = during(sharedAt("editor"), sharedAt("viewer"));
+  assert.equal(downgrade.role, "viewer");
+  assert.equal(downgrade.canWrite, false);
+  assert.equal(
+    during(sharedAt("commenter"), sharedAt("editor")).role,
+    "commenter",
+    "an upgrade waits",
+  );
+  assert.equal(
+    during(sharedAt(undefined), sharedAt("editor")).role,
+    "viewer",
+    "a stored viewer grant too",
+  );
+  assert.equal(during(sharedAt("editor"), sharedAt(undefined)).role, "viewer");
+  const elsewhere = sharedAt("editor");
+  elsewhere.acl.domainView = { ...grantAt("editor"), domain: "example.com" };
+  assert.equal(during(sharedAt("editor"), elsewhere).canRead, false, "a switch waits");
+  assert.equal(during(sharedAt("editor"), sharedAt("editor")).role, "editor");
+});
+
+test("an owner's downgrade or withdrawal, or the proof's end, takes a domain editor's writes away", () => {
+  for (const change of ["downgrade", "withdraw", "proof"]) {
+    let page = sharedAt("editor"),
+      clock = now;
+    const policy = new DocumentPolicy({ metadata: () => page, now: () => clock });
+    assert.equal(policy.account(domainReader, true).canWrite, true);
+    assert.equal(policy.leaseExpiresAt(domainReader), lease.expiresAt);
+    if (change === "downgrade") page = sharedAt("viewer");
+    else if (change === "withdraw") page = sharedAt(null);
+    else {
+      // The decision ends with the domain lease, and its end reads as the
+      // credential's own evidence ending.
+      assert.equal(leaseExpiryError(domainReader, lease.expiresAt).code, "credential_expired");
+      clock = lease.expiresAt;
+    }
+    assert.throws(() => policy.account(domainReader, true), /read-only|denied/i, change);
+    if (change === "downgrade") assert.equal(policy.account(domainReader).role, "viewer");
+    else assert.throws(() => policy.account(domainReader), /denied/i, change);
+  }
+});
+
+test("a domain reader's listing row carries the grant's role, and a role change keeps the row", () => {
+  const opened = { principal: employee.principal, domain: "anaconda.com" };
+  const row = (page) =>
+    accessRows(page, env, opened).rows.find((value) => value.source === "domain_opened");
+  assert.equal(row(sharedAt("editor")).role, "editor");
+  assert.equal(
+    row(sharedAt("commenter")).role,
+    "viewer",
+    "the index lists a commenter as a viewer",
+  );
+  assert.equal(row(sharedAt(undefined)).role, "viewer");
+  assert.equal(row(sharedAt("editor")).domain, "anaconda.com");
+  assert.equal(listingRestricted(sharedAt("editor"), sharedAt("viewer"), env), false);
+  assert.equal(listingRestricted(sharedAt("editor"), sharedAt(null), env), true);
+});
+
+test("permanent deletion names the company domain with its role", () => {
+  assert.deepEqual(purgeImpact(sharedAt("editor"), null, null, "Plan").domain_view, {
+    domain: "anaconda.com",
+    role: "editor",
+  });
+  assert.deepEqual(purgeImpact(sharedAt(undefined), null, null, "Plan").domain_view, {
+    domain: "anaconda.com",
+    role: "viewer",
+  });
+  assert.equal(purgeImpact(sharedAt(null), null, null, "Plan").domain_view, null);
+});
+
+test("a domain editor's upload capability carries the issuer's domain lease, and no longer than it lasts", async () => {
+  const storage = new Storage();
+  const pageId = "domain-upload-page";
+  const page = { ...sharedAt("editor"), pageId };
+  // An API key's domain lease lasts as long as its 60-second identity.
+  const issuer = await withDomainAccess(
+    {
+      ...employee,
+      credentialKind: "api-key",
+      verifiedEmail: "person@anaconda.com",
+      expiresAt: now + 60_000,
+    },
+    env,
+  );
+  assert.equal(issuer.domainAccess.expiresAt, now + 60_000);
+  const issued = await issueAssetUpload(storage, {
+    pageId,
+    identity: issuer,
+    args: { page_id: pageId },
+    origin: "https://pages.invalid",
+    now,
+  });
+  const token = issued.headers.Authorization.slice("Pages-Upload ".length);
+  const claims = await verifyAssetUpload(storage, token, {
+    pageId,
+    now,
+    grantActive: () => assert.fail("an API-key capability names no grant"),
+  });
+  assert.equal(claims.domain, "anaconda.com");
+  assert.equal(claims.domain_exp, now + 60_000);
+  const identity = await withDomainAccess(uploadIdentity(claims), env);
+  assert.deepEqual(identity.domainAccess, { ...domainView, expiresAt: now + 60_000 });
+  assert.equal(pageAccess(page, identity, { now }).canWrite, true);
+  assert.equal(pageAccess(sharedAt("commenter"), identity, { now }).canWrite, false);
+  assert.equal(pageAccess(page, identity, { now: now + 60_000 }).canWrite, false, "lease ended");
+  // The deployment must still allow the domain when the upload arrives.
+  const off = await withDomainAccess(uploadIdentity(claims), {
+    ...env,
+    PAGES_COMPANY_VIEW_DOMAINS: "",
+  });
+  assert.equal(off.domainAccess, undefined);
+  // An issuer without a domain lease issues a capability without one.
+  const plain = await issueAssetUpload(storage, {
+    pageId,
+    identity: { ...employee, credentialKind: "api-key" },
+    args: { page_id: pageId },
+    origin: "https://pages.invalid",
+    now,
+  });
+  const bare = await verifyAssetUpload(
+    storage,
+    plain.headers.Authorization.slice("Pages-Upload ".length),
+    { pageId, now, grantActive: () => true },
+  );
+  assert.equal(bare.domain, undefined);
+  assert.equal((await withDomainAccess(uploadIdentity(bare), env)).domainAccess, undefined);
+  // A payload's domain fields are well formed or the capability is invalid.
+  for (const bad of [
+    { namespace: undefined },
+    { domain_exp: undefined },
+    { domain_exp: claims.exp + 1 },
+    { domain: 42 },
+    { domain: undefined },
+  ])
+    assert.equal(
+      uploadVerdict({ ...claims, ...bad }, { pageId, now }),
+      "invalid",
+      JSON.stringify(bad),
+    );
+});
+
+test("an API-key agent edits through a company domain editor grant, publishes its presence, and loses the grant with its lease", async (t) => {
+  const origin = "https://pages.invalid";
+  const fixture = await createAuthFixture();
+  t.mock.method(globalThis, "fetch", fixture.fetch);
+  let clock = Date.now();
+  t.mock.method(Date, "now", () => clock);
+  const companyEnv = {
+    ...fixture.env,
+    NOTEBOOK_CLOUD_PUBLIC_ORIGIN: origin,
+    PAGES_COMPANY_VIEW_DOMAINS: "anaconda.com",
+  };
+  const pageId = "44444444-4444-4444-8444-444444444444";
+  let doc = A.change(A.from(createPageData({ pageId, title: "Company Page" })), (draft) =>
+    initializePage(draft, "Ship on Monday."),
+  );
+  t.after(() => A.free(doc));
+  const presence = [];
+  const page = Object.assign(Object.create(Page.prototype), {
+    plain: plainStub(),
+    env: companyEnv,
+    ready: Promise.resolve(),
+    tail: Promise.resolve(),
+    ctx: { storage: new Storage() },
+    metadata: {
+      pageId,
+      documentFormats: WRITTEN_FORMATS,
+      owner: "user:anaconda-fixture:owner",
+      deleted: false,
+      acl: { revision: 1, members: {}, invites: {} },
+    },
+    handle: Object.assign(new EventEmitter(), {
+      doc: () => doc,
+      async update(fn) {
+        doc = fn(doc);
+      },
+      broadcast() {},
+    }),
+    cacheTitle() {},
+    flush: async () => {},
+    publishAgentPresence(identity, type, ...rest) {
+      presence.push({ principal: identity.principal, type });
+      return Page.prototype.publishAgentPresence.call(this, identity, type, ...rest);
+    },
+  });
+  page.policy = new DocumentPolicy({ metadata: () => page.metadata, now: () => clock });
+  companyEnv.PAGES = { getByName: () => page };
+  const share = (role) =>
+    (page.metadata = {
+      ...page.metadata,
+      acl: {
+        ...page.metadata.acl,
+        domainView: role
+          ? {
+              domain: "anaconda.com",
+              namespace: fixture.env.NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE,
+              role,
+            }
+          : null,
+      },
+    });
+  const call = (key, operation, args) =>
+    worker.fetch(
+      new Request(`${origin}/api/tools`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+        body: JSON.stringify({ operation, arguments: { page_id: pageId, ...args } }),
+      }),
+      companyEnv,
+    );
+  const edit = async (key, title) => {
+    const read = await call(key, "read_page", {});
+    if (read.status !== 200) return read;
+    return call(key, "edit_page", {
+      operations: [{ op: "set_title", title }],
+      revision: (await read.json()).revision,
+      nonce: crypto.randomUUID(),
+    });
+  };
+  const key = fixture.apiKey({ email: "agent@anaconda.com" });
+  share("editor");
+  const written = await edit(key, "Edited through the company");
+  assert.equal(written.status, 200, await written.clone().text());
+  assert.equal(doc.title, "Edited through the company");
+  assert.deepEqual(page.metadata.acl.members, {});
+  const principal = `user:anaconda-fixture:${fixture.subject}`;
+  assert.ok(
+    presence.some((entry) => entry.principal === principal && entry.type === "write"),
+    JSON.stringify(presence),
+  );
+  for (const role of ["commenter", "viewer"]) {
+    share(role);
+    const refused = await edit(key, `Edited as ${role}`);
+    assert.equal(refused.status, 403, role);
+    assert.match((await refused.json()).error, /read-only/);
+    assert.equal(doc.title, "Edited through the company");
+  }
+  // A key whose account email is at another domain holds no lease.
+  share("editor");
+  const outsider = fixture.apiKey({ email: "agent@gmail.com" });
+  assert.equal((await call(outsider, "read_page", {})).status, 403);
+  // The lease is the key's 60-second identity: the policy refuses that
+  // identity when it ends, and only a fresh check of the key renews it.
+  const identity = await authenticate(
+    new Request(`${origin}/mcp`, { headers: { authorization: `Bearer ${key}` } }),
+    companyEnv,
+  );
+  assert.equal(identity.domainAccess.expiresAt, identity.expiresAt);
+  assert.ok(identity.expiresAt <= clock + 60_000);
+  assert.equal(page.policy.account(identity, true).canWrite, true);
+  clock = identity.expiresAt;
+  assert.throws(() => page.policy.account(identity, true), /credential expired/);
 });

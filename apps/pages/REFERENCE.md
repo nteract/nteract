@@ -1149,13 +1149,16 @@ principal grants only after verified provider email admission, and do not send
 email. Pending invitations cannot authorize sockets or override a newer role.
 There is no public/anonymous access, guest commenting, or ownership transfer.
 
-Company-domain viewing is an optional, read-only fallback. Deployment configuration
-and the owner's Page setting must both allow it; only `anaconda.com` is currently
-recognized. New Pages start Restricted. Existing company audiences remain active.
-Enabling a company audience requires fresh owner proof. Browser and OAuth proof
-expires after six hours. API-key access uses bounded leases backed by provider
-verification. Explicit revocation overrides domain access; removing the audience
-revokes fallback access without creating permanent members.
+Company-domain sharing is optional. Deployment configuration and the owner's Page
+setting must both allow it; only `anaconda.com` is currently recognized
+([Company domains](DEPLOYMENT.md#company-domains)). The owner picks the
+audience's role: Can view, Can comment or Can edit. A grant stored without a
+role is a viewer grant. New Pages start Restricted. Existing company audiences
+remain active. Enabling a company audience or changing its role requires fresh
+owner proof. Browser and OAuth proof expires after six hours. API-key access uses
+bounded leases backed by provider verification. A higher direct grant wins and
+explicit revocation overrides domain access; removing the audience revokes it
+without creating permanent members.
 
 ACL updates use a revision and idempotency key. Increases wait for durable
 confirmation; reductions apply immediately. A downgrade or removal ends the
@@ -1427,10 +1430,11 @@ yet. Execute is out of scope for Pages.
 decide() runs three steps, in this order:
 
 1. **Relations.** A viewer, commenter or editor member row grants, and a removal
-   tombstone becomes `removed`. Company view is the `organization#member`
-   userset. Built-in mode has no tenants, so the verified email-domain lease
-   stands in for organization membership. A tombstone subtracts from the
-   item's own viewer path, so it beats company view. A Page placed in a
+   tombstone becomes `removed`. A company domain grant is an
+   `organization#member` userset in the relation its role names. Built-in mode
+   has no tenants, so the verified email-domain lease stands in for
+   organization membership. A tombstone subtracts from the item's own viewer,
+   commenter and editor paths, so it beats a company grant at any role. A Page placed in a
    Project has the `project` relation instead of `owner`.
 2. **Lifecycle overlay.** A trashed item keeps `read`, `administer`, `restore`
    and `purge`, and only for principals who may restore it. A deleted or

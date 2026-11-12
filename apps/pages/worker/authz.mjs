@@ -327,7 +327,7 @@ export function memberRow(members, principal) {
   return members && Object.hasOwn(members, principal) ? readRow(members[principal]) : null;
 }
 
-/** Company view as an organization subject. Built-in mode has no tenants: a
+/** A company domain as an organization subject. Built-in mode has no tenants: a
  * Page's company audience and a credential's verified email-domain lease
  * name the same organization when namespace and domain both match. Both sides
  * are host-written strings. */
@@ -346,16 +346,25 @@ const accountOrganization = (namespace, id) =>
     : null;
 const LINK_ROLES = new Set(["viewer", "commenter", "editor"]);
 
+/** The role a Page's company domain grant (`acl.domainView`) names: its
+ * `role`, viewer when it has no `role` field, or null when it names anything
+ * else. */
+export function domainViewRole(domainView) {
+  const role = domainView?.role === undefined ? "viewer" : domainView.role;
+  return LINK_ROLES.has(role) ? role : null;
+}
+
 /**
  * decide()'s object for a Page record, scoped to one principal.
  *
- * The relations hold the owner, company view, the organization grant in the
- * relation its role names, and only the principal's own member row, so
+ * The relations hold the owner, the company domain grant and the
+ * organization grant each in the relation its role names, and only the
+ * principal's own member row, so
  * building one costs a single member lookup however many grants and
  * tombstones the ACL has collected. A viewer, commenter or editor row grants.
  * Any other row (a removal tombstone or an unreadable row) becomes `removed`,
- * which blocks company view and the organization grant, not Project
- * membership. The optional transient
+ * which blocks the company domain and organization grants at every role, not
+ * Project membership. The optional transient
  * projectAccess comes only from the owner's Catalog placement. The immutable
  * Page owner retains direct authority even when the Project lease expires.
  */
@@ -373,13 +382,14 @@ export function pageObject(metadata, principal) {
     else if (row?.role === "viewer") viewer.push(user(principal));
     else removed.push(user(principal));
   }
+  const byRole = { editor, commenter, viewer };
   const domainView = metadata?.acl?.domainView;
-  const company = domainView && companyOrganization(domainView.namespace, domainView.domain);
-  if (company) viewer.push({ type: "organization", id: company });
+  const companyRole = domainViewRole(domainView);
+  const company = companyRole && companyOrganization(domainView?.namespace, domainView?.domain);
+  if (company) byRole[companyRole].push({ type: "organization", id: company });
   const shared = metadata?.acl?.organizationAccess;
   const organization =
     shared && LINK_ROLES.has(shared.role) && accountOrganization(shared.namespace, shared.id);
-  const byRole = { editor, commenter, viewer };
   if (organization) byRole[shared.role].push({ type: "organization", id: organization });
   const container = principal === metadata?.owner ? null : metadata?.projectAccess;
   return {

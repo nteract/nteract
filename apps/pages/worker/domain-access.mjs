@@ -3,11 +3,18 @@ import {
   NOTEBOOK_CLOUD_IDENTITY_PROOF_MAX_AGE_SECONDS,
 } from "@cloud/app-session.ts";
 import { normalizeInviteEmail } from "@cloud/sharing.ts";
-import { identityProvider } from "../identity-provider.mjs";
+import { companyDomainValid, identityProvider } from "../identity-provider.mjs";
+import { domainViewRole } from "./authz.mjs";
 
-// Deliberately a company allowlist, never a caller-provided domain or a consumer
-// provider blocklist. A deployment can enable only the domains reviewed for its
-// identity provider.
+/**
+ * The company domains this deployment allows, read from
+ * PAGES_COMPANY_VIEW_DOMAINS: a comma-separated list, with spaces around each
+ * entry ignored. Deliberately an allowlist, never a caller-provided domain or
+ * a consumer provider blocklist. Every entry must be a valid hostname
+ * (`companyDomainValid`) and one the identity provider's reviewed list names.
+ * One entry that fails either check turns company sharing off for the whole
+ * deployment.
+ */
 export function companyViewDomains(env) {
   const configured = env.PAGES_COMPANY_VIEW_DOMAINS;
   if (
@@ -16,17 +23,24 @@ export function companyViewDomains(env) {
     !env.NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE?.trim()
   )
     return [];
-  const values = [...new Set(configured.split(",").map((value) => value.trim().toLowerCase()))];
+  const values = [...new Set(configured.split(",").map((value) => value.trim()))];
   const reviewed = identityProvider(env).companyDomains;
-  return values.every((value) => reviewed.includes(value)) ? values : [];
+  return values.every((value) => companyDomainValid(value) && reviewed.includes(value))
+    ? values
+    : [];
 }
 
+/** The Page's company domain grant, `{ domain, namespace, role }`, when this
+ * deployment allows the domain, the grant is for its account namespace and
+ * names a role; else null. A grant stored without a role is a viewer grant. */
 export function configuredDomainView(metadata, env) {
   const value = metadata?.acl?.domainView;
+  const role = domainViewRole(value);
   return value &&
+    role &&
     companyViewDomains(env).includes(value.domain) &&
     value.namespace === env.NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE?.trim()
-    ? { domain: value.domain, namespace: value.namespace }
+    ? { domain: value.domain, namespace: value.namespace, role }
     : null;
 }
 
@@ -58,6 +72,16 @@ export async function verifiedCompanyDomains(env, identity, now = Date.now()) {
       }
       if (email.slice(email.lastIndexOf("@") + 1) === domain)
         leases.push({ domain, namespace, expiresAt: identity.expiresAt });
+    } else if (identity.credentialKind === "upload-capability") {
+      // An upload capability carries the lease its issuer held, signed by the
+      // Page (asset-uploads.mjs), and holds it no longer than the issuer did.
+      const evidence = identity.domainEvidence;
+      if (evidence?.domain === domain && evidence.expiresAt > now)
+        leases.push({
+          domain,
+          namespace,
+          expiresAt: Math.min(identity.expiresAt, evidence.expiresAt),
+        });
     } else if (
       ["oidc", "oauth"].includes(identity.credentialKind) &&
       identity.emailProof &&

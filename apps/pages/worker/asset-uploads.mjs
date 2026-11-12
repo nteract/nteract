@@ -10,7 +10,8 @@
  * (write scope and current edit access) and signs it with its retry key
  * under a distinct purpose (operation-journal.mjs signCapability). It names
  * the Page, the principal, the credential kind (and an OAuth grant), its
- * issue and expiry times, and optionally the file's content type and size.
+ * issue and expiry times, the issuer's company domain lease when it held one,
+ * and optionally the file's content type and size.
  * The upload request carries it as `Authorization: Pages-Upload
  * <token>`. The gateway never passes that header to authenticate(), so it is
  * not sent to the API-key verifier or read as an OAuth token anywhere.
@@ -118,7 +119,7 @@ function storedBinding(claims) {
  */
 export function uploadVerdict(claims, { pageId, now }) {
   if (!claims || typeof claims !== "object" || Array.isArray(claims)) return "invalid";
-  const { page, principal, namespace, kind, grant, iat, exp } = claims;
+  const { page, principal, namespace, kind, grant, iat, exp, domain, domain_exp } = claims;
   if (
     typeof pageId !== "string" ||
     page !== pageId ||
@@ -126,6 +127,13 @@ export function uploadVerdict(claims, { pageId, now }) {
     !principal ||
     principal.length > 1024 ||
     (namespace !== undefined && (typeof namespace !== "string" || namespace.length > 512)) ||
+    (domain !== undefined &&
+      (namespace === undefined ||
+        typeof domain !== "string" ||
+        domain.length > 253 ||
+        !Number.isSafeInteger(domain_exp) ||
+        domain_exp > exp)) ||
+    (domain === undefined && domain_exp !== undefined) ||
     !ISSUING_KINDS.has(kind) ||
     (kind === "oauth") !== (typeof grant === "string" && grant.length > 0) ||
     !Number.isSafeInteger(iat) ||
@@ -225,6 +233,16 @@ export async function issueAssetUpload(
     kind === "kilo-token"
       ? Math.min(now + ASSET_UPLOAD_TTL_MS, identity.expiresAt)
       : now + ASSET_UPLOAD_TTL_MS;
+  const namespace = typeof identity.namespace === "string" ? identity.namespace : undefined;
+  // The issuer's company domain lease, which no store holds: its evidence is
+  // the issuer's credential. It ends when the lease does, never later.
+  const domain =
+    namespace !== undefined &&
+    identity.domainAccess?.namespace === namespace &&
+    typeof identity.domainAccess.domain === "string" &&
+    Number.isSafeInteger(identity.domainAccess.expiresAt)
+      ? identity.domainAccess
+      : null;
   const token = await signCapability(storage, {
     purpose: PURPOSE,
     prefix: PREFIX,
@@ -233,7 +251,11 @@ export async function issueAssetUpload(
       principal: identity.principal,
       // The principal's namespace, so the upload's identity can hold the
       // organization leases its evidence supports, as the issuer's did.
-      ...(typeof identity.namespace === "string" && { namespace: identity.namespace }),
+      ...(namespace !== undefined && { namespace }),
+      ...(domain && {
+        domain: domain.domain,
+        domain_exp: Math.min(domain.expiresAt, expiresAt),
+      }),
       kind,
       ...(kind === "oauth" && { grant: identity.grantId }),
       iat: now,
@@ -275,12 +297,17 @@ export async function verifyAssetUpload(storage, token, { pageId, now = Date.now
 
 /** The identity a verified capability stands for: its principal (and its
  * namespace, when the capability names one) with write scope until the
- * capability expires, and the binding the upload must match. It decides
- * nothing itself; the Page's record decides access. */
+ * capability expires, and the binding the upload must match. A capability
+ * that names a company domain carries it as `domainEvidence`, which
+ * domain-access.mjs turns into a lease while the deployment still allows the
+ * domain. It decides nothing itself; the Page's record decides access. */
 export function uploadIdentity(claims) {
   return Object.freeze({
     principal: claims.principal,
     ...(claims.namespace !== undefined && { namespace: claims.namespace }),
+    ...(claims.domain !== undefined && {
+      domainEvidence: Object.freeze({ domain: claims.domain, expiresAt: claims.domain_exp }),
+    }),
     displayName: claims.principal,
     accountDisplayName: null,
     driver: "API",

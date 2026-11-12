@@ -12,7 +12,7 @@ import {
   saveKeyCommand,
   setupPrompt,
 } from "../agent-client-setup.mjs";
-import { identityProvider } from "../identity-provider.mjs";
+import { companyDomainValid, identityProvider } from "../identity-provider.mjs";
 import { credentialRequired } from "../worker/auth.mjs";
 import { companyViewDomains } from "../worker/domain-access.mjs";
 
@@ -200,9 +200,55 @@ test("a deployment can turn on only the provider's reviewed company domains", ()
   const env = { NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE: "ns" };
   const on = (domains) => companyViewDomains({ ...env, PAGES_COMPANY_VIEW_DOMAINS: domains });
   assert.deepEqual(on("anaconda.com"), ["anaconda.com"]);
-  assert.deepEqual(on(" Anaconda.com "), ["anaconda.com"]);
+  assert.deepEqual(on(" anaconda.com , anaconda.com"), ["anaconda.com"]);
   assert.deepEqual(on("anaconda.com, example.com"), []);
   assert.deepEqual(on("example.com"), []);
+  // Kilo reviews no domain, so no setting turns company sharing on there.
+  assert.deepEqual(
+    companyViewDomains({ ...env, ...kilo, PAGES_COMPANY_VIEW_DOMAINS: "anaconda.com" }),
+    [],
+  );
+});
+
+test("a company domain value is a lower-case hostname of two or more labels", () => {
+  for (const valid of ["anaconda.com", "a.b.c.example", "xn--bcher-kva.example", "a-1.co"])
+    assert.equal(companyDomainValid(valid), true, valid);
+  for (const invalid of [
+    "",
+    "com",
+    "Anaconda.com",
+    "ANACONDA.COM",
+    "*.anaconda.com",
+    "anaconda.com.",
+    ".anaconda.com",
+    "anaconda..com",
+    "anaconda com",
+    " anaconda.com",
+    "anaconda.com\n",
+    "-anaconda.com",
+    "anaconda-.com",
+    "anaconda_corp.com",
+    "bücher.example",
+    `${"a".repeat(64)}.com`,
+    `${"a.".repeat(127)}com`,
+    "10.0.0.1",
+    "127.1",
+    "0x7f.0x1",
+    "[::1]",
+    "::1",
+    "anaconda.com:443",
+    "user@anaconda.com",
+    "anaconda.com/path",
+    undefined,
+    null,
+    42,
+  ])
+    assert.equal(companyDomainValid(invalid), false, String(invalid));
+  // Each provider's reviewed list passes the same check; a bad entry would
+  // have thrown when identity-provider.mjs loaded.
+  for (const env of [production, kilo])
+    for (const domain of identityProvider(env).companyDomains)
+      assert.equal(companyDomainValid(domain), true, domain);
 });
 
 // Code the Worker and the viewer ship: the modules at the top level, and

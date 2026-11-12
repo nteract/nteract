@@ -1371,6 +1371,38 @@ which re-authenticates every 15 seconds, at most 45 seconds after.
 The auth log's `kilo_token.accepted` line carries how many organizations the
 exchange reported (`organizations`). No organization id or name reaches a log.
 
+### Company domains
+
+An owner can share a Page with everyone who signs in with a verified email at
+a company domain, as Can view, Can comment or Can edit. Two things allow a
+domain, and a deployment needs both:
+
+1. A reviewed entry in the identity provider's `companyDomains` list in
+   [identity-provider.mjs](identity-provider.mjs). Adding one is a code change
+   with its own review. Anaconda's list holds `anaconda.com`; Kilo's is empty,
+   so a Kilo deployment has no company sharing whatever it sets.
+2. `PAGES_COMPANY_VIEW_DOMAINS`, a plain variable: the comma-separated domains
+   this deployment turns on, such as `anaconda.com`. A profile sets it with
+   `companyViewDomains`. Spaces around an entry are ignored.
+
+Every value, in the setting and in the reviewed lists, must be a lower-case
+ASCII hostname of two or more labels and at most 253 characters, each label 1
+to 63 letters, digits or inner hyphens (punycode `xn--` labels qualify). The
+check refuses upper case, a wildcard (`*.example.com`), a trailing dot,
+whitespace inside a value, a single label, a port or path, and an IP address
+(a final label that is all digits or `0x` hex). A value that fails the check,
+or that the reviewed list doesn't name, turns company sharing off for the
+whole deployment: Pages offers no domain and grants nothing through a stored
+one until the setting is fixed. A bad reviewed entry fails when
+`identity-provider.mjs` loads, so it fails the tests, not a deployment
+([worker/domain-access.mjs](worker/domain-access.mjs) `companyViewDomains`).
+
+A reader proves a domain with a verified email: a browser or OAuth sign-in
+counts for six hours, and an API key's account email for its 60-second
+identity. An upload URL issued to a domain editor carries that lease and ends
+with it. A domain can't be registered at runtime; the allowlist is
+configuration.
+
 ## Outbound requests
 
 The OAuth server for `/mcp` reads a client's client ID metadata document from
