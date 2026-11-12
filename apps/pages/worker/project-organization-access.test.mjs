@@ -267,46 +267,128 @@ test("the Project leaves the member's list when the grant clears, the lease ends
   await gone("Kilo stopped listing the organization");
 });
 
-test("reclaiming discovery capacity keeps a hint an organization member's open wrote", async (t) => {
+test("an organization member's repeated opens write the discovery hint once, with when it was written", async (t) => {
   const w = await world(t, { kilo: { owner: [acme], member: [acme] } });
-  const shared = await w.createProject("Guild");
-  const granted = await w.createProject("Direct");
-  assert.equal((await share(w, shared.project_id, acme.id, "viewer", 0)).status, 200);
-  assert.equal(
-    (await w.call("member", "get_project", { project_id: shared.project_id })).status,
-    200,
-  );
+  const { project_id } = await w.createProject("Guild");
+  assert.equal((await share(w, project_id, acme.id, "viewer", 0)).status, 200);
+  const before = Date.now();
+  assert.equal((await w.call("member", "get_project", { project_id })).status, 200);
   const storage = w.catalogStorage(w.member);
-  const hints = async () => [...(await storage.list({ prefix: "project-discovery/" })).keys()];
-  assert.deepEqual(await hints(), [`project-discovery/${shared.project_id}`]);
-  // A later open doesn't write the hint again.
+  const hint = await storage.get(`project-discovery/${project_id}`);
+  assert.equal(hint.space_id, project_id);
+  assert.ok(hint.at >= before && hint.at <= Date.now(), JSON.stringify(hint));
   const put = t.mock.method(storage, "put");
-  assert.equal(
-    (await w.call("member", "get_project", { project_id: shared.project_id })).status,
-    200,
-  );
+  assert.equal((await w.call("member", "get_project", { project_id })).status, 200);
   assert.equal(
     put.mock.calls.filter(({ arguments: [key] }) => String(key).startsWith("project-discovery/"))
       .length,
     0,
   );
-  put.mock.restore();
-  for (let i = 0; i < 499; i++) {
+});
+
+/** Fills `w.member`'s Catalog with `count` discovery hints for Projects that
+ * exist, each shared with acme, and with a member row for `w.member` when
+ * `member`. Hints are written oldest first, one millisecond apart, the first
+ * without a time. Returns their Project ids in that order. */
+async function fillHints(w, count, { member = false, from = 0 } = {}) {
+  const storage = w.catalogStorage(w.member);
+  const ids = [];
+  for (let i = 0; i < count; i++) {
     const id = `prj_${crypto.randomUUID()}`;
-    await storage.put(`project-discovery/${id}`, { space_id: id, owner: w.owner });
+    // Reaching the host creates it; then give it a record.
+    await (await w.env.PROJECTS.getByName(id).fetch(policyRequest(id, w.owner))).body?.cancel();
+    await w.projects.get(id).ctx.storage.put("space/record", {
+      space_id: id,
+      owner: w.owner,
+      acl: {
+        revision: 1,
+        members: member ? { [w.member]: { role: "viewer", generation: 1 } } : {},
+        invites: {},
+        organizationAccess: grant("viewer"),
+      },
+    });
+    await storage.put(`project-discovery/${id}`, {
+      space_id: id,
+      owner: w.owner,
+      ...(from + i > 0 && { at: 1_000_000 + from + i }),
+    });
+    ids.push(id);
   }
-  const member = await manage(w, "owner", {
-    project_id: granted.project_id,
+  return ids;
+}
+const policyRequest = (id, owner) =>
+  new Request("https://pages.internal/internal/space/policy", {
+    method: "POST",
+    body: JSON.stringify({ space_id: id, owner }),
+  });
+const hintIds = async (w) =>
+  [...(await w.catalogStorage(w.member).list({ prefix: "project-discovery/" })).keys()].map(
+    (key) => key.slice("project-discovery/".length),
+  );
+
+test("at capacity, a new organization open evicts the oldest organization hint", async (t) => {
+  const w = await world(t, { kilo: { owner: [acme], member: [acme] } });
+  const filled = await fillHints(w, 500);
+  const { project_id } = await w.createProject("Newest");
+  assert.equal((await share(w, project_id, acme.id, "viewer", 0)).status, 200);
+  assert.equal((await w.call("member", "get_project", { project_id })).status, 200);
+  const hints = await hintIds(w);
+  assert.equal(hints.length, 500);
+  assert.ok(hints.includes(project_id), "the open recorded its hint");
+  assert.ok(!hints.includes(filled[0]), "the hint without a time went first");
+  assert.ok(filled.slice(1).every((id) => hints.includes(id)));
+});
+
+test("at capacity, a direct grant evicts an organization hint and never fails on them", async (t) => {
+  const w = await world(t, { kilo: { owner: [acme], member: [acme] } });
+  const filled = await fillHints(w, 500);
+  const { project_id } = await w.createProject("Direct");
+  const granted = await manage(w, "owner", {
+    project_id,
     action: "set_role",
     principal: w.member,
     role: "viewer",
     expected_revision: 0,
   });
-  assert.equal(member.status, 200, JSON.stringify(member.body));
-  assert.deepEqual(
-    (await hints()).sort(),
-    [`project-discovery/${shared.project_id}`, `project-discovery/${granted.project_id}`].sort(),
-  );
+  assert.equal(granted.status, 200, JSON.stringify(granted.body));
+  const hints = await hintIds(w);
+  assert.equal(hints.length, 500);
+  assert.ok(hints.includes(project_id));
+  assert.ok(!hints.includes(filled[0]));
+});
+
+test("a member's hint is never evicted for an organization hint", async (t) => {
+  const w = await world(t, { kilo: { owner: [acme], member: [acme] } });
+  const members = await fillHints(w, 499, { member: true });
+  const [organization] = await fillHints(w, 1, { from: 1000 });
+  const first = await w.createProject("First");
+  assert.equal((await share(w, first.project_id, acme.id, "viewer", 0)).status, 200);
+  assert.equal((await w.call("member", "get_project", { project_id: first.project_id })).status, 200);
+  let hints = await hintIds(w);
+  assert.ok(hints.includes(first.project_id));
+  assert.ok(!hints.includes(organization), "the one organization hint made room");
+  assert.ok(members.every((id) => hints.includes(id)));
+  // The Catalog now holds 499 member hints and the newest organization hint.
+  // Another organization open evicts that one, never a member's.
+  const second = await w.createProject("Second");
+  assert.equal((await share(w, second.project_id, acme.id, "viewer", 0)).status, 200);
+  assert.equal((await w.call("member", "get_project", { project_id: second.project_id })).status, 200);
+  hints = await hintIds(w);
+  assert.ok(hints.includes(second.project_id));
+  assert.ok(!hints.includes(first.project_id));
+  assert.ok(members.every((id) => hints.includes(id)));
+  // With only member hints, an organization open still reads the Project; it
+  // records no hint.
+  const third = await w.createProject("Third");
+  assert.equal((await share(w, third.project_id, acme.id, "viewer", 0)).status, 200);
+  await w.catalogStorage(w.member).delete(`project-discovery/${second.project_id}`);
+  members.push(...(await fillHints(w, 1, { member: true, from: 3000 })));
+  assert.equal((await hintIds(w)).length, 500);
+  assert.equal((await w.call("member", "get_project", { project_id: third.project_id })).status, 200);
+  hints = await hintIds(w);
+  assert.equal(hints.length, 500);
+  assert.ok(!hints.includes(third.project_id));
+  assert.ok(members.every((id) => hints.includes(id)));
 });
 
 test("a Project shared only with an organization is a shared Project boundary for moves", async (t) => {

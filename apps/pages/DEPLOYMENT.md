@@ -1425,8 +1425,14 @@ is added to the Project's members, and nothing is written on its Pages.
 There is no member list to send discovery hints to, so the first time a
 member opens the Project their own Catalog records a hint, and the Project
 appears in their list from then on while the listing's check of their access
-passes. The owner sends them the Project's link. A Project with an
-organization grant is shared, so a Page can't be moved across its boundary.
+passes. The owner sends them the Project's link. A Catalog holds at most 500
+discovery hints. When it is full, hints for Projects that are gone go first;
+hints for Projects this account is a member of always stay; then hints for
+Projects reached only through an organization grant go, oldest first, until
+the new hint fits. Such a hint comes back the next time the person opens the
+Project, so a member grant or an invitation never fails because of
+organization hints. A Project with an organization grant is shared, so a Page
+can't be moved across its boundary.
 
 The auth log's `kilo_token.accepted` line carries how many organizations the
 exchange reported (`organizations`). No organization id or name reaches a log.

@@ -1839,12 +1839,20 @@ export class Catalog {
         }
         const known = await this.storage.get(`project-discovery/${value.space_id}`);
         // An organization member's every open sends this; an unchanged hint
-        // is not written again.
+        // is not written again, so `at` is when it was first written.
         if (known?.owner === value.owner) return json({ ok: true });
-        if (
-          !known &&
-          (await this.storage.list({ prefix: "project-discovery/", limit: 500 })).size >= 500
-        ) {
+        const full = async () =>
+          (await this.storage.list({ prefix: "project-discovery/", limit: 500 })).size >= 500;
+        if (!known && (await full())) {
+          // Reclaim before refusing. A hint for a Project that is gone goes,
+          // and a hint this account holds a member row for stays. A hint for
+          // a Project with an organization grant and no member row here stays
+          // in this pass, but yields if the Catalog is still full: those go
+          // oldest first (`at`, a hint without one first) until this hint
+          // fits. Such a hint comes back the next time the person opens the
+          // Project, so only a list entry is lost, and a member grant or an
+          // invitation claim never fails because of organization hints.
+          const yielding = [];
           for (const [key, hint] of await this.storage.list({ prefix: "project-discovery/" })) {
             const response = await this.env.PROJECTS.getByName(hint.space_id).fetch(
               new Request("https://pages.internal/internal/space/policy", {
@@ -1852,24 +1860,30 @@ export class Catalog {
                 body: JSON.stringify({ space_id: hint.space_id, owner: hint.owner }),
               }),
             );
-            // A hint stays while this account is a member or the Project has
-            // an organization grant. This host holds no lease to check the
-            // grant against, and the listing checks it on every read.
-            const acl = response.ok ? (await response.json()).acl : null;
-            if (
-              response.status === 404 ||
-              (response.ok &&
-                !acl?.organizationAccess &&
-                !["viewer", "commenter", "editor"].includes(acl?.members?.[this.ctx.id.name]?.role))
-            )
+            if (response.status === 404) {
               await this.storage.delete(key);
+              continue;
+            }
+            if (!response.ok) continue;
+            const acl = (await response.json()).acl;
+            if (["viewer", "commenter", "editor"].includes(acl?.members?.[this.ctx.id.name]?.role))
+              continue;
+            if (acl?.organizationAccess) yielding.push([key, hint.at ?? 0]);
+            else await this.storage.delete(key);
           }
-          if ((await this.storage.list({ prefix: "project-discovery/", limit: 500 })).size >= 500)
-            throw new HttpError(409, "This account already has 500 shared Projects");
+          yielding.sort(([, a], [, b]) => a - b);
+          let count = (await this.storage.list({ prefix: "project-discovery/", limit: 500 })).size;
+          for (const [key] of yielding) {
+            if (count < 500) break;
+            await this.storage.delete(key);
+            count--;
+          }
+          if (count >= 500) throw new HttpError(409, "This account already has 500 shared Projects");
         }
         await this.storage.put(`project-discovery/${value.space_id}`, {
           space_id: value.space_id,
           owner: value.owner,
+          at: Date.now(),
         });
         return json({ ok: true });
       }
