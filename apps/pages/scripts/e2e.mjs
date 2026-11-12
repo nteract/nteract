@@ -51,6 +51,11 @@ const SUITES = Object.freeze([
     timeout: 3 * minute,
   },
   {
+    name: "comments-review",
+    script: "scripts/comments-review-smoke.mjs",
+    timeout: 3 * minute,
+  },
+  {
     name: "editable-table",
     script: "scripts/editable-table-smoke.mjs",
     timeout: 3 * minute,

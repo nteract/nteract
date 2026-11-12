@@ -365,6 +365,7 @@ export function CommentsPanel({
       now={now}
       excerpt={passageExcerpt(session.doc, thread)}
       location={locate(thread)}
+      clamp={!reviewing}
       changing={changing === thread.id}
       sending={Boolean(sending[thread.id])}
       value={drafts[thread.id] || ""}
@@ -1013,6 +1014,8 @@ function ThreadRow({ thread, now, location, active, hovered = false, draft, onOp
 /**
  * One thread, opened: its title, state and Resolve; the passage in its
  * paragraph; the conversation; and a reply composer docked at the bottom.
+ * `clamp` puts long message bodies behind Show more. Review shows them whole,
+ * since each thread there is read through before it is resolved.
  */
 function ThreadView({
   thread,
@@ -1020,6 +1023,7 @@ function ThreadView({
   now,
   excerpt,
   location,
+  clamp,
   changing,
   sending,
   value,
@@ -1106,6 +1110,7 @@ function ThreadView({
               message={first}
               source={session.commentMessage(thread.id, first.id)}
               now={now}
+              clamp={clamp}
             />
           )}
           {replies.length > 0 && (
@@ -1118,6 +1123,7 @@ function ThreadView({
                   messages={replies}
                   sourceOf={(message) => session.commentMessage(thread.id, message.id)}
                   now={now}
+                  clamp={clamp}
                 />
               </div>
             </>
