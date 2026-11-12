@@ -17,16 +17,27 @@ const TEMPORAL =
   /^(DATE|TIMESTAMP|TIMESTAMP_S|TIMESTAMP_MS|TIMESTAMP_NS|TIMESTAMP WITH TIME ZONE)$/;
 const ORDERED = ["between", "gt", "gte", "lt", "lte", "is_null", "is_not_null"];
 
+const FLOATING = /^(FLOAT|DOUBLE)$/;
+
 /**
- * A temporal column as fractional epoch milliseconds, the way Sift compares
- * timestamps (f64, microseconds / 1e3, nanoseconds / 1e6), so pushdown keeps
- * Sift's row set at sub-millisecond boundaries. A zoned timestamp is already
- * an instant; casting it would apply the session time zone.
+ * A temporal column as epoch milliseconds, computed the way Sift compares
+ * timestamps: an f64 from the column's own unit (nanoseconds / 1e6,
+ * microseconds / 1e3, whole milliseconds as they are), so pushdown keeps
+ * Sift's row set at sub-millisecond boundaries and past 2^53 microseconds.
+ * A zoned timestamp is already an instant; casting it would apply the
+ * session time zone.
  */
 function epochMs(type, col) {
-  if (type === "TIMESTAMP_NS") return `(epoch_ns(${col})::DOUBLE / 1e6)`;
-  const instant = type === "TIMESTAMP WITH TIME ZONE" ? col : `${col}::TIMESTAMP`;
-  return `(epoch_us(${instant})::DOUBLE / 1e3)`;
+  switch (type) {
+    case "TIMESTAMP_NS":
+      return `(epoch_ns(${col})::DOUBLE / 1e6)`;
+    case "TIMESTAMP":
+    case "TIMESTAMP WITH TIME ZONE":
+      return `(epoch_us(${col})::DOUBLE / 1e3)`;
+    default:
+      // DATE, TIMESTAMP_S and TIMESTAMP_MS hold whole milliseconds.
+      return `epoch_ms(${col}::TIMESTAMP)::DOUBLE`;
+  }
 }
 
 /** Leaf ops a DuckDB column type answers. Other types accept no pushdown. */
@@ -53,7 +64,8 @@ export async function createDuckQuerySession(engine, relation) {
   }
   const capabilities = {
     filters,
-    sort: columns.map(({ name }) => name),
+    // Only scalar columns sort; a list or struct has no order Sift shows.
+    sort: Object.keys(filters),
     casts: [],
     counts: ["exact"],
     compound: ["and", "or", "not"],
@@ -70,36 +82,49 @@ export async function createDuckQuerySession(engine, relation) {
         return `(${p.args.map(compile).join(p.op === "and" ? " AND " : " OR ")})`;
       }
       const type = typeOf.get(p.column);
-      const col = TEMPORAL.test(type) ? epochMs(type, quoteIdent(p.column)) : quoteIdent(p.column);
+      const col = quoteIdent(p.column);
       const bind = (value) => (params.push(value), "?");
+      // Equality on a number binds its text and casts it to the column's
+      // type, so a BIGINT, HUGEINT or wide DECIMAL compares exactly rather
+      // than through a double. Sift's category values are cell text already.
+      const exact = NUMERIC.test(type)
+        ? (value) => `CAST(${bind(String(value))} AS ${type})`
+        : bind;
+      // Ordered comparisons are Sift's range filter: both sides as f64, stated
+      // here rather than left to parameter type inference, and NaN, which
+      // DuckDB orders above every number, never matches.
+      const f64 = TEMPORAL.test(type) ? epochMs(type, col) : `CAST(${col} AS DOUBLE)`;
+      const bound = (value) => `CAST(${bind(value)} AS DOUBLE)`;
+      const ordered = (sql) => (FLOATING.test(type) ? `(${sql} AND NOT isnan(${col}))` : sql);
       switch (p.op) {
         case "between":
-          return `${col} BETWEEN ${bind(p.value[0])} AND ${bind(p.value[1])}`;
+          return ordered(`${f64} BETWEEN ${bound(p.value[0])} AND ${bound(p.value[1])}`);
         case "eq":
-          return p.value === null ? `${col} IS NULL` : `${col} = ${bind(p.value)}`;
+          return p.value === null ? `${col} IS NULL` : `${col} = ${exact(p.value)}`;
         case "neq":
           return p.value === null
             ? `${col} IS NOT NULL`
-            : `${col} IS DISTINCT FROM ${bind(p.value)}`;
+            : `${col} IS DISTINCT FROM ${exact(p.value)}`;
         case "gt":
-          return `${col} > ${bind(p.value)}`;
+          return ordered(`${f64} > ${bound(p.value)}`);
         case "gte":
-          return `${col} >= ${bind(p.value)}`;
+          return ordered(`${f64} >= ${bound(p.value)}`);
         case "lt":
-          return `${col} < ${bind(p.value)}`;
+          return ordered(`${f64} < ${bound(p.value)}`);
         case "lte":
-          return `${col} <= ${bind(p.value)}`;
+          return ordered(`${f64} <= ${bound(p.value)}`);
         case "is_null":
           return `${col} IS NULL`;
         case "is_not_null":
           return `${col} IS NOT NULL`;
         case "contains":
+          // Case-sensitive and literal, as Sift's SQL and pandas exports read it.
           return `contains(${col}, ${bind(p.value)})`;
         case "in":
         case "not_in": {
           const values = p.value.filter((v) => v !== null);
           const hasNull = values.length < p.value.length;
-          const set = values.length ? `${col} IN (${values.map(bind).join(", ")})` : "FALSE";
+          const set = values.length ? `${col} IN (${values.map(exact).join(", ")})` : "FALSE";
           if (p.op === "in") return hasNull ? `(${set} OR ${col} IS NULL)` : set;
           // Sift's not_in keeps nulls unless null is listed.
           return hasNull ? `(NOT ${set} AND ${col} IS NOT NULL)` : `(${col} IS NULL OR NOT ${set})`;
@@ -120,9 +145,10 @@ export async function createDuckQuerySession(engine, relation) {
 
   async function count(query, ctx) {
     const { sql, params } = where(query);
-    const ipc = await engine.run(
+    const { ipc } = await engine.stream(
       `SELECT count(*)::DOUBLE AS n FROM ${quoteIdent(relation)}${sql}`,
       params,
+      { signal: ctx.signal },
     );
     ctx.signal.throwIfAborted();
     return { kind: "exact", value: await firstNumber(ipc) };
@@ -137,21 +163,28 @@ export async function createDuckQuerySession(engine, relation) {
         ? ` ORDER BY ${query.sort.map((s) => `${quoteIdent(s.column)} ${s.direction === "desc" ? "DESC" : "ASC"} NULLS LAST`).join(", ")}`
         : "";
       const limit = Math.max(0, Math.floor(query.window.limit));
-      const ipc = await engine.run(
+      // The stream is uncompressed, so its size is also its decoded size.
+      const maxBytes = Math.min(ctx.budget.maxIpcBytes, ctx.budget.maxDecodedBytes);
+      const { ipc, complete } = await engine.stream(
         `SELECT * FROM ${quoteIdent(relation)}${sql}${order} LIMIT ${limit}`,
         params,
+        { signal: ctx.signal, maxBytes },
       );
       ctx.signal.throwIfAborted();
-      if (ipc.byteLength > ctx.budget.maxIpcBytes)
-        throw Error(`Result exceeds ${ctx.budget.maxIpcBytes} bytes; filter further.`);
       const returnedRows = await rowCount(ipc);
       const matched =
-        returnedRows < limit ? { kind: "exact", value: returnedRows } : await count(query, ctx);
+        complete && returnedRows < limit
+          ? { kind: "exact", value: returnedRows }
+          : await count(query, ctx);
       return {
         ipc,
         returnedRows,
         matchedCount: matched,
-        continuation: returnedRows < matched.value ? { kind: "more" } : { kind: "end" },
+        continuation: !complete
+          ? { kind: "stopped", reason: "budget" }
+          : returnedRows < matched.value
+            ? { kind: "more" }
+            : { kind: "end" },
       };
     },
     async count(query, _mode, ctx) {

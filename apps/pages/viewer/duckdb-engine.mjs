@@ -24,8 +24,11 @@
 export const SOURCE_DIR = "pages-src/";
 const ASSET_ID = /^[a-f0-9]{64}$/;
 
-const lockdown = (readsParquet) => [
+const MEMORY_LIMIT = /^\d{1,6}(\.\d{1,3})?\s?(KB|MB|GB|KiB|MiB|GiB)$/;
+
+const lockdown = (readsParquet, memoryLimit) => [
   ...(readsParquet ? ["LOAD parquet", `SET allowed_directories = ['${SOURCE_DIR}']`] : []),
+  `SET memory_limit = '${memoryLimit}'`,
   "SET enable_external_access = false",
   "SET autoinstall_known_extensions = false",
   "SET autoload_known_extensions = false",
@@ -43,6 +46,8 @@ function concat(chunks) {
   return out;
 }
 
+const sourceFile = (assetId) => `${SOURCE_DIR}${assetId}.parquet`;
+
 /** The relation (a table, or a view over Parquet) a source asset is queried by. */
 export const assetRelation = (assetId) => `asset_${assetId}`;
 
@@ -51,11 +56,16 @@ export const quoteIdent = (name) => `"${String(name).replaceAll('"', '""')}"`;
 
 /**
  * Open the engine over an instantiated database. Statements run one at a
- * time, in call order.
+ * time, in call order. `memoryLimit` caps DuckDB's buffer memory and is
+ * locked with the rest of the configuration.
  */
-export async function openPageEngine(bindings, { toArrowStream } = {}) {
+export async function openPageEngine(bindings, { toArrowStream, memoryLimit = "1GB" } = {}) {
+  if (!MEMORY_LIMIT.test(memoryLimit)) throw Error(`Invalid memory limit: ${memoryLimit}`);
   const connection = await bindings.connect();
+  // The bindings address a connection by its id, which duckdb-wasm keeps in a
+  // private field. Fail here, not on a later query, if an upgrade renames it.
   const conn = connection._conn;
+  if (typeof conn !== "number") throw Error("duckdb-wasm connection has no _conn id");
   let tail = Promise.resolve();
   const serial = (work) => {
     const next = tail.then(work, work);
@@ -64,31 +74,56 @@ export async function openPageEngine(bindings, { toArrowStream } = {}) {
   };
   // runQuery answers in the Arrow IPC file format; Sift takes a stream. The
   // pending-query calls give the stream's schema message, then one message
-  // per record batch.
-  const stream = async (header) => {
+  // per record batch. With `maxBytes`, the stream keeps the batches that fit,
+  // end marker included, and reports `complete: false` if any were left.
+  const cancel = async () => {
+    try {
+      await bindings.cancelPendingQuery(conn);
+    } catch {}
+  };
+  const stream = async (header, { signal, maxBytes = Infinity }) => {
     const chunks = [header];
+    let size = header.byteLength + END_OF_STREAM.byteLength;
+    let complete = true;
     for (;;) {
+      if (signal?.aborted) {
+        await cancel();
+        signal.throwIfAborted();
+      }
       const chunk = await bindings.fetchQueryResults(conn);
       if (!chunk?.byteLength) break;
+      if (size + chunk.byteLength > maxBytes) {
+        complete = false;
+        await cancel();
+        break;
+      }
+      size += chunk.byteLength;
       chunks.push(chunk);
     }
     chunks.push(END_OF_STREAM);
-    return concat(chunks);
+    return { ipc: concat(chunks), complete };
   };
-  const raw = async (sql, params) => {
+  const raw = async (sql, params, options = {}) => {
+    options.signal?.throwIfAborted();
     if (!params?.length) {
       let header = await bindings.startPendingQuery(conn, sql, false);
-      while (header == null) header = await bindings.pollPendingQuery(conn);
-      return stream(header);
+      while (header == null) {
+        if (options.signal?.aborted) {
+          await cancel();
+          options.signal.throwIfAborted();
+        }
+        header = await bindings.pollPendingQuery(conn);
+      }
+      return stream(header, options);
     }
     const statement = await bindings.createPrepared(conn, sql);
     try {
-      return await stream(await bindings.sendPrepared(conn, statement, params));
+      return await stream(await bindings.sendPrepared(conn, statement, params), options);
     } finally {
       await bindings.closePrepared(conn, statement);
     }
   };
-  for (const statement of lockdown(!toArrowStream)) await raw(statement);
+  for (const statement of lockdown(!toArrowStream, memoryLimit)) await raw(statement);
   const ingest = toArrowStream
     ? async (assetId, bytes) => {
         const ipc = await toArrowStream(bytes);
@@ -104,11 +139,16 @@ export async function openPageEngine(bindings, { toArrowStream } = {}) {
         }
       }
     : async (assetId, bytes) => {
-        const file = `${SOURCE_DIR}${assetId}.parquet`;
-        await bindings.registerFileBuffer(file, bytes.slice());
+        await bindings.registerFileBuffer(sourceFile(assetId), bytes.slice());
         await raw(
-          `CREATE VIEW ${quoteIdent(assetRelation(assetId))} AS SELECT * FROM read_parquet('${file}')`,
+          `CREATE VIEW ${quoteIdent(assetRelation(assetId))} AS SELECT * FROM read_parquet('${sourceFile(assetId)}')`,
         );
+      };
+  const release = toArrowStream
+    ? (assetId) => raw(`DROP TABLE IF EXISTS ${quoteIdent(assetRelation(assetId))}`)
+    : async (assetId) => {
+        await raw(`DROP VIEW IF EXISTS ${quoteIdent(assetRelation(assetId))}`);
+        await bindings.dropFile(sourceFile(assetId));
       };
 
   const sources = new Map();
@@ -121,7 +161,17 @@ export async function openPageEngine(bindings, { toArrowStream } = {}) {
     /** Run one statement; resolves to one Arrow IPC stream. */
     run(sql, params = []) {
       if (state !== "open") return refuse();
-      return serial(() => raw(sql, params));
+      return serial(() => raw(sql, params)).then(({ ipc }) => ipc);
+    },
+    /**
+     * Run one query for a request. Work still queued when `signal` aborts
+     * never runs, and a running query is cancelled. Resolves to `{ ipc,
+     * complete }`; with `maxBytes`, `ipc` holds the batches that fit and
+     * `complete` is false if the result had more.
+     */
+    stream(sql, params = [], { signal, maxBytes } = {}) {
+      if (state !== "open") return refuse();
+      return serial(() => raw(sql, params, { signal, maxBytes }));
     },
     /**
      * Load a source asset's Parquet bytes once; later calls for the same asset
@@ -141,6 +191,20 @@ export async function openPageEngine(bindings, { toArrowStream } = {}) {
         sources.set(assetId, pending);
       }
       return pending;
+    },
+    /**
+     * Drop a source asset's relation and bytes. Sessions over it fail on their
+     * next query. Dropping an asset that isn't loaded is a no-op.
+     */
+    dropSource(assetId) {
+      if (state !== "open") return refuse();
+      const pending = sources.get(assetId);
+      if (!pending) return Promise.resolve();
+      sources.delete(assetId);
+      return serial(async () => {
+        await pending.catch(() => {});
+        await release(assetId);
+      });
     },
     /** Column names and DuckDB type names of a relation. */
     async describe(relation) {
