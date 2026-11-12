@@ -186,6 +186,62 @@ test("the evidence record is replaced only by a report sent later", async (t) =>
   });
 });
 
+const columns = async (env) =>
+  (await env.DB.prepare("SELECT name FROM pragma_table_info('kilo_memberships')").all()).results
+    .map(({ name }) => name)
+    .sort();
+const versions = async (env) =>
+  (
+    await env.DB.prepare("SELECT version FROM kilo_membership_schema ORDER BY version").all()
+  ).results.map(({ version }) => version);
+
+test("a fresh database gets the millisecond evidence table", async (t) => {
+  const { env } = await fixture(t);
+  const at = Date.now();
+  await recordKiloMembership(env, "user:kilo:fresh", [sentinel], at);
+  assert.deepEqual(await versions(env), [1, 2]);
+  assert.deepEqual(await columns(env), ["organizations", "principal", "verified_at_ms"]);
+  assert.deepEqual(await membershipRecord(env, "user:kilo:fresh"), {
+    organizations: [sentinel],
+    verifiedAtMs: at,
+  });
+});
+
+test("a database that ran the seconds table drops its rows and takes millisecond evidence", async (t) => {
+  const { env } = await fixture(t);
+  // The first migration as it shipped, with one row written under it.
+  for (const sql of [
+    `CREATE TABLE kilo_membership_schema (
+      version INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      applied_at TEXT NOT NULL
+    )`,
+    `CREATE TABLE kilo_memberships (
+      principal TEXT PRIMARY KEY,
+      organizations TEXT NOT NULL,
+      verified_at INTEGER NOT NULL
+    )`,
+    `INSERT INTO kilo_membership_schema VALUES (1, 'memberships', '2026-11-11T00:00:00.000Z')`,
+  ])
+    await env.DB.prepare(sql).run();
+  await env.DB.prepare("INSERT INTO kilo_memberships VALUES (?, ?, ?)")
+    .bind("user:kilo:upgraded", JSON.stringify([second]), Math.floor(Date.now() / 1000))
+    .run();
+  assert.equal(
+    await membershipRecord(env, "user:kilo:upgraded"),
+    null,
+    "a seconds row is not evidence",
+  );
+  assert.deepEqual(await versions(env), [1, 2]);
+  assert.deepEqual(await columns(env), ["organizations", "principal", "verified_at_ms"]);
+  const at = Date.now();
+  await recordKiloMembership(env, "user:kilo:upgraded", [sentinel], at);
+  assert.deepEqual(await membershipRecord(env, "user:kilo:upgraded"), {
+    organizations: [sentinel],
+    verifiedAtMs: at,
+  });
+});
+
 /** A second isolate: its own copy of the module, so its own cache. */
 const otherIsolate = () => import(`./kilo-membership.mjs?isolate=${Math.random()}`);
 const stored = async (env, principal) => {

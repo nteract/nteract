@@ -45,6 +45,21 @@ const MIGRATIONS = Object.freeze([
       `CREATE TABLE IF NOT EXISTS kilo_memberships (
         principal TEXT PRIMARY KEY,
         organizations TEXT NOT NULL,
+        verified_at INTEGER NOT NULL
+      )`,
+    ]),
+  }),
+  // The fence compares send times by the millisecond. A row timed in seconds
+  // can't be ordered against one, so its evidence is dropped; every
+  // principal's next exchange writes it again.
+  Object.freeze({
+    version: 2,
+    name: "memberships_by_millisecond",
+    statements: Object.freeze([
+      "DROP TABLE IF EXISTS kilo_memberships",
+      `CREATE TABLE kilo_memberships (
+        principal TEXT PRIMARY KEY,
+        organizations TEXT NOT NULL,
         verified_at_ms INTEGER NOT NULL
       )`,
     ]),

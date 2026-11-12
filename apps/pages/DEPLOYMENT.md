@@ -1380,7 +1380,10 @@ later answer replaces the record, an earlier one changes nothing, and two sent
 in the same millisecond leave only the organizations both list, so a tie never
 adds one. `verified_at_ms` never moves back. That is one D1 write per browser
 sign-in and one per agent token exchange in each isolate
-([worker/kilo-membership.mjs](worker/kilo-membership.mjs)).
+([worker/kilo-membership.mjs](worker/kilo-membership.mjs)). Schema version 2
+drops the table and creates it again with `verified_at_ms`: a version 1 row
+was timed in seconds and can't be ordered by the millisecond, so it is gone
+and that principal's next exchange writes a new one.
 
 The record is evidence for 8 hours from `verified_at_ms`
 (`KILO_MEMBERSHIP_SECONDS`), the length of a Kilo browser session. Every Kilo
