@@ -3808,11 +3808,7 @@ export class Catalog {
     if (!args || typeof args !== "object" || Array.isArray(args))
       throw new HttpError(400, "Invalid list arguments", "invalid_list_arguments");
     const limit = args.limit ?? 50;
-    if (
-      (args.limit !== undefined && !Number.isSafeInteger(args.limit)) ||
-      limit < 1 ||
-      limit > 100
-    )
+    if ((args.limit !== undefined && !Number.isSafeInteger(args.limit)) || limit < 1 || limit > 100)
       throw new HttpError(400, "limit must be an integer from 1 to 100", "invalid_list_arguments");
     if (args.cursor !== undefined && args.cursor !== null && typeof args.cursor !== "string")
       throw new HttpError(400, "Invalid cursor; restart from the first page", "invalid_cursor");
