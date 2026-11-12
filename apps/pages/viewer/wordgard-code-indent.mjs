@@ -14,10 +14,13 @@ import { languageFor } from "./code-highlight.mjs";
 // position long, so an offset into the source text is an offset from the
 // block's start.
 
+/** A code block's source text. */
 export const sourceOf = (node) =>
   node.content.map((child) => (child.isText ? String(child.param) : "\n")).join("");
 
-export const lineStart = (source, offset) => source.lastIndexOf("\n", offset - 1) + 1;
+// At offset 0 the line starts there. `lastIndexOf` clamps a negative start to
+// 0, so it would find a line break that sits at 0 and answer 1.
+export const lineStart = (source, offset) => offset && source.lastIndexOf("\n", offset - 1) + 1;
 export const lineEnd = (source, offset) => {
   const end = source.indexOf("\n", offset);
   return end < 0 ? source.length : end;

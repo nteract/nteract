@@ -91,6 +91,7 @@ import { clickBelowFinalBlock, exitBlock, leaveFinalBlock } from "./wordgard-lea
 import { codeIndentation, selectedCodeBlock } from "./wordgard-code-indent.mjs";
 import { codeBrackets } from "./wordgard-code-brackets.mjs";
 import { codeComments } from "./wordgard-code-comments.mjs";
+import { codeWords } from "./wordgard-code-words.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
 import {
   createWordgardCollaboration,
@@ -376,6 +377,7 @@ export function WordgardEditor(props) {
         codeIndentation,
         codeBrackets,
         codeComments,
+        codeWords,
         tableKeys,
         GardState.schemaElement.of(elements),
         // A link to another Page or a Project gets its glyph and the hover
