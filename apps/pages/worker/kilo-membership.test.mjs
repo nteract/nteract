@@ -16,6 +16,7 @@ import {
   resetMembershipCache,
 } from "./kilo-membership.mjs";
 import { exchangeAuthorizationCode, issueAuthorizationCode } from "./oauth-store.mjs";
+import { invitationMatches } from "./sharing.mjs";
 
 const origin = "http://127.0.0.1:9477";
 const audience = "pages-test";
@@ -351,4 +352,23 @@ test("no organization id or name reaches a log line", async (t) => {
     })
     .find((event) => event?.action === "kilo_token.accepted");
   assert.equal(accepted.organizations, 2);
+});
+
+test("one Kilo sign-in gives both an email proof and organization leases, in a browser and to an agent token", async (t) => {
+  const { env, kilo } = await fixture(t);
+  const account = { ...person([sentinel]), verifiedEmail: "Member@Example.TEST" };
+  const invite = (identity) => ({
+    email: "member@example.test",
+    namespace: identity.namespace,
+    expiresAt: Date.now() + 60_000,
+  });
+  const cookie = await browserSignIn(env, kilo, account);
+  const browser = await authenticate(request("/", { cookie }), env);
+  assert.ok(Number.isSafeInteger(browser.emailProof.identityVerifiedAt));
+  assert.equal(await invitationMatches(browser, invite(browser), env), true);
+  assert.deepEqual(named(browser), [sentinel]);
+  const agent = await authenticate(bearer(kilo.mintToken(account, { audience })), env);
+  assert.equal(agent.verifiedEmail, "member@example.test");
+  assert.equal(await invitationMatches(agent, invite(agent), env), true);
+  assert.deepEqual(named(agent), [sentinel]);
 });

@@ -306,6 +306,11 @@ export async function authenticate(request, env) {
           canWrite: true,
           credentialKind: "kilo-token",
           namespace: metadata.principalNamespace,
+          // Kilo sends it only with proof the account controls it, and the
+          // exchange keeps it only when an invitation could name it
+          // (kilo-exchange.mjs). Like an API key's, it lasts as long as this
+          // identity does.
+          verifiedEmail: metadata.emailVerified === true ? metadata.email : undefined,
           expiresAt: account.until,
         },
         env,

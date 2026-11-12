@@ -60,8 +60,11 @@ export function kiloSignIn(env, request) {
   };
 }
 
-/** The identity a Kilo account stands for: its id and, when it has one, its
- * name. */
+/** The identity a Kilo account stands for: its id and, when it has them, its
+ * name and the address Kilo verified for it (`account.verifiedEmail`, from
+ * kilo-exchange.mjs). That address is marked verified, so a browser session
+ * made from this identity carries the signed email proof (app-session.ts) and
+ * can claim an invitation sent to it. */
 export function kiloIdentity(config, account) {
   const principal = `${config.namespace}:${encodeURIComponent(account.id)}`;
   return {
@@ -75,6 +78,7 @@ export function kiloIdentity(config, account) {
       transport: "host-session-cookie",
       principalNamespace: config.namespace,
       ...(account.name ? { displayName: account.name } : {}),
+      ...(account.verifiedEmail ? { email: account.verifiedEmail, emailVerified: true } : {}),
     },
   };
 }

@@ -56,8 +56,8 @@ export function agentGuide(env) {
     ? ""
     : `
 
-Accounts on this deployment carry no verified email, so an invitation by email
-cannot be accepted here yet.`;
+Only an account whose email address ${provider.label} has verified can accept an
+invitation by email here. Invite the address the person's ${provider.label} account uses.`;
   return `# ${PRODUCT_NAME}
 
 ${part.opening}

@@ -11,8 +11,22 @@
  * exchange sends both back. The answer is identity and the organizations the
  * account belongs to: Pages is never given a Kilo API token.
  *
+ * That identity is the account's id, its name, and `verified_email`: the
+ * account's primary address, which Kilo sends only when it holds proof the
+ * account controls it. Pages reads it as the address an invitation can be
+ * claimed with. It is optional, so an address Pages can't use as an
+ * invitation address (inviteEmail in invite-email.mjs) is treated as absent
+ * and the sign-in goes ahead without one: an unusable value in the field
+ * never locks a person out. The one exception is size: an answer over
+ * `MAX_BODY_BYTES` (16 KiB) is refused before any field is read, whatever
+ * makes it large. `organizations` is read the same way: entries Pages can't
+ * use are dropped and never fail a sign-in (`kiloOrganizations`). The rest of
+ * the answer is not read.
+ *
  * The module holds no state and logs nothing. Error messages are fixed text,
- * so a code, a secret or a response body can't reach a log through them. */
+ * so a code, a secret, an address or a response body can't reach a log
+ * through them. */
+import { inviteEmail } from "./invite-email.mjs";
 
 /** Where Pages sends a browser to sign in. Kilo checks its own session there. */
 export const KILO_ENTER_PATH = "/pages-auth";
@@ -100,9 +114,11 @@ const discard = async (response) => {
  * `state` must be the ones the sign-in started with: Kilo's code is good only
  * for them, which is what makes a code copied out of a browser useless.
  *
- * Returns `{ id, name, organizations }`, with `name` null when the account
- * has none and `organizations` as `kiloOrganizations` reads them, or
- * `{ refused }` when Kilo turned the call down: `"client"` for a 401, which
+ * Returns `{ id, name, verifiedEmail, organizations }`, with `name` null
+ * when the account has none, `verifiedEmail`, normalized as an invitation
+ * stores it, left out when Kilo sent no usable address, and `organizations`
+ * as `kiloOrganizations` reads them; or `{ refused }` when Kilo turned the
+ * call down: `"client"` for a 401, which
  * means it didn't accept this deployment's secret or audience; `"account"` for
  * a 403, which means the account is gone or blocked; and `"code"` for any
  * other 4xx, which means the code is forged, stale, or for another sign-in.
@@ -229,5 +245,13 @@ async function exchange(fetcher, { appUrl, secret, body, timeoutMs }, credential
   if (typeof id !== "string" || !id || id.length > MAX_ID_LENGTH || id !== id.trim())
     throw new KiloProtocolError();
   const name = typeof user.name === "string" ? user.name.trim().slice(0, MAX_NAME_LENGTH) : "";
-  return { id, name: name || null, organizations: kiloOrganizations(answer?.organizations) };
+  // Optional: a value that isn't a usable invitation address reads as no
+  // address, never as a malformed answer.
+  const verifiedEmail = inviteEmail(user.verified_email);
+  return {
+    id,
+    name: name || null,
+    ...(verifiedEmail && { verifiedEmail }),
+    organizations: kiloOrganizations(answer?.organizations),
+  };
 }
