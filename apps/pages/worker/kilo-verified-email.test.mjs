@@ -9,12 +9,13 @@ import { startLocalKiloHandoff } from "../scripts/fixtures/local-kilo-handoff.mj
 import { sqliteD1 } from "../test/sqlite-d1.mjs";
 import { authenticate } from "./auth.mjs";
 import { companyViewDomains, verifiedCompanyDomains } from "./domain-access.mjs";
-import { exchangeKiloCode, exchangeKiloToken } from "./kilo-exchange.mjs";
+import { exchangeKiloCode, exchangeKiloToken, KiloProtocolError } from "./kilo-exchange.mjs";
 import { handleKiloSignIn } from "./kilo-handoff.mjs";
 import { handleOAuth } from "./oauth.mjs";
 import { quotaEvidence } from "./page-quota.mjs";
 import { indexProjectInvitations, invitedProjects } from "./project-invitations.mjs";
-import { claimInvitation, proposeSharingMutation } from "./sharing.mjs";
+import { inviteEmail, MAX_INVITE_EMAIL_LENGTH } from "./invite-email.mjs";
+import { claimInvitation, invitationMatches, proposeSharingMutation } from "./sharing.mjs";
 
 const origin = "http://127.0.0.1:9477";
 const audience = "pages-test";
@@ -147,6 +148,29 @@ async function assertClaimsNothing(env, identity, at) {
   assert.equal(await claimInvitation(project, identity, env, now), null);
 }
 
+// U+0130 lowercases to two code units.
+const dotted = `${"\u0130".repeat(240)}@example.test`;
+/** Every `verified_email` the exchange must read as no address. */
+const unusable = [
+  null,
+  42,
+  true,
+  {},
+  [address],
+  "",
+  "   ",
+  "no-at-sign",
+  "two@at@signs.test",
+  "@example.test",
+  "person@",
+  "with space@example.test",
+  "slash/person@example.test",
+  `${"a".repeat(255 - "@example.test".length)}@example.test`,
+  // 253 code units that lowercase to 493: under the limit only before
+  // normalizing.
+  dotted,
+];
+
 const answer = (user) => async () => Response.json({ user, organizations: [] });
 const exchangeCode = (user) =>
   exchangeKiloCode(answer(user), {
@@ -183,23 +207,6 @@ test("the exchange keeps a usable verified address, normalized as an invitation 
 });
 
 test("a verified address Pages can't use reads as none, and the sign-in still succeeds", async () => {
-  const unusable = [
-    null,
-    42,
-    true,
-    {},
-    [address],
-    "",
-    "   ",
-    "no-at-sign",
-    "two@at@signs.test",
-    "@example.test",
-    "person@",
-    "with space@example.test",
-    "slash/person@example.test",
-    `${"a".repeat(255 - "@example.test".length)}@example.test`,
-  ];
-  assert.equal(unusable.at(-1).length, 255);
   for (const exchange of [exchangeCode, exchangeToken])
     for (const value of unusable)
       assert.deepEqual(
@@ -371,4 +378,105 @@ test("an OAuth client approved from a Kilo session keeps the session's email pro
     (browser.emailProof.identityVerifiedAt + NOTEBOOK_CLOUD_IDENTITY_PROOF_MAX_AGE_SECONDS) * 1000;
   await assertClaimsNothing(env, identity, stale);
   assert.ok(!lines.some((line) => line.includes(address)));
+});
+
+test("what inviteEmail returns passes it again unchanged", () => {
+  assert.equal(dotted.length, 253);
+  assert.equal(dotted.trim().toLowerCase().length, 493);
+  const usable = [
+    address,
+    " Person@Example.TEST ",
+    `${"a".repeat(MAX_INVITE_EMAIL_LENGTH - "@example.test".length)}@example.test`,
+    `${"İ".repeat(120)}@example.test`,
+  ];
+  for (const value of [...unusable, ...usable]) {
+    const once = inviteEmail(value);
+    assert.equal(inviteEmail(once), once, JSON.stringify(value));
+    if (once !== null) assert.ok(once.length <= MAX_INVITE_EMAIL_LENGTH);
+  }
+  for (const value of unusable) assert.equal(inviteEmail(value), null, JSON.stringify(value));
+});
+
+test("an address that lowercases past the limit is no address, and matches no invitation", async (t) => {
+  for (const exchange of [exchangeCode, exchangeToken])
+    assert.deepEqual(await exchange({ id: "person:1", name: "Example", verified_email: dotted }), {
+      id: "person:1",
+      name: "Example",
+    });
+  // Inviting it is refused, so no stored invitation holds it.
+  await assert.rejects(invitedPage(dotted), { status: 400 });
+  // A credential that presents it declines every invitation instead of
+  // failing the request.
+  const invite = Object.values((await invitedPage(address)).acl.invites)[0];
+  assert.equal(
+    await invitationMatches(
+      { principal: `${namespace}:x`, namespace, verifiedEmail: dotted },
+      invite,
+      {},
+    ),
+    false,
+  );
+  const { env, kilo } = await fixture(t);
+  const identity = await tokenIdentity(env, kilo, person({ verifiedEmail: dotted }));
+  assert.equal(identity.verifiedEmail, undefined);
+  await assertClaimsNothing(env, identity);
+});
+
+test("an answer over the body limit is refused whatever field makes it large", async (t) => {
+  const MAX_BODY_BYTES = 16 * 1024;
+  // An answer of exactly `bytes` bytes whose verified_email is unusable.
+  const sized = (bytes) => {
+    const shape = (filler) => ({
+      user: { id: "person:1", name: "Example", verified_email: filler },
+      organizations: [],
+    });
+    const overhead = JSON.stringify(shape("")).length;
+    const body = shape("x".repeat(bytes - overhead));
+    assert.equal(JSON.stringify(body).length, bytes);
+    return body;
+  };
+  for (const exchange of [
+    (fetcher) =>
+      exchangeKiloCode(fetcher, {
+        appUrl: "https://kilo.invalid",
+        secret,
+        code: "c",
+        audience,
+        state: "s",
+      }),
+    (fetcher) =>
+      exchangeKiloToken(fetcher, {
+        appUrl: "https://kilo.invalid",
+        secret,
+        token: "t.t.t",
+        audience,
+      }),
+  ]) {
+    assert.deepEqual(await exchange(async () => Response.json(sized(MAX_BODY_BYTES))), {
+      id: "person:1",
+      name: "Example",
+    });
+    await assert.rejects(
+      exchange(async () => Response.json(sized(MAX_BODY_BYTES + 1))),
+      KiloProtocolError,
+    );
+  }
+  // Through the real routes: the browser sign-in fails and the token is a 503.
+  const { env, kilo, lines } = await fixture(t);
+  const huge = person({ verifiedEmail: `${"x".repeat(MAX_BODY_BYTES)}@example.test` });
+  kilo.signIn(huge);
+  const started = await handleKiloSignIn(request("/api/auth/login?return_to=%2F"), env);
+  const atKilo = await fetch(started.headers.get("location"), { redirect: "manual" });
+  const back = await handleKiloSignIn(
+    request(atKilo.headers.get("location"), { cookie: setCookie(started, BINDING) }),
+    env,
+  );
+  assert.equal(back.status, 502);
+  assert.equal(setCookie(back, SERVER_SESSION_COOKIE), undefined);
+  await assert.rejects(tokenIdentity(env, kilo, huge), {
+    status: 503,
+    code: "sign_in_unavailable",
+  });
+  assert.ok(kilo.exchanges().length >= 2);
+  assert.ok(!lines.some((line) => line.includes("x".repeat(64))));
 });

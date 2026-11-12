@@ -16,8 +16,11 @@
  * account controls it. Pages reads it as the address an invitation can be
  * claimed with. It is optional, so an address Pages can't use as an
  * invitation address (inviteEmail in invite-email.mjs) is treated as absent
- * and the sign-in goes ahead without one: an optional field never locks a
- * person out. The rest of the answer, `organizations` included, is not read.
+ * and the sign-in goes ahead without one: an unusable value in the field
+ * never locks a person out. The one exception is size: an answer over
+ * `MAX_BODY_BYTES` (16 KiB) is refused before any field is read, whatever
+ * makes it large. The rest of the answer, `organizations` included, is not
+ * read.
  *
  * The module holds no state and logs nothing. Error messages are fixed text,
  * so a code, a secret, an address or a response body can't reach a log

@@ -47,7 +47,12 @@ function checkedEmail(value) {
 export async function invitationMatches(identity, invite, env, now = Date.now()) {
   if (invite.expiresAt <= now || !identity.namespace || invite.namespace !== identity.namespace)
     return false;
-  if (identity.verifiedEmail) return checkedEmail(identity.verifiedEmail) === invite.email;
+  // A provider's address an invitation can't name matches no invitation; it
+  // is the caller's credential, not input to refuse.
+  if (identity.verifiedEmail) {
+    const email = inviteEmail(identity.verifiedEmail);
+    return email !== null && email === invite.email;
+  }
   if (!identity.emailProof) return false;
   return appSessionHasFreshVerifiedEmail(
     env,

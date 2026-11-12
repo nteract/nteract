@@ -1242,14 +1242,28 @@ A Kilo deployment differs in three ways:
   and sends `verified_email`, the account's primary address, only when it
   holds proof the account controls it. Pages keeps it only when an invitation
   could name it (the check inviting by email uses); any other value is
-  treated as absent and the sign-in still succeeds. Without it, invitations
-  by email can't be accepted and email quota rules don't apply.
+  treated as absent and the sign-in still succeeds. The exception is size:
+  Pages refuses any exchange answer over 16 KiB before reading a field, so an
+  answer made that large by `verified_email` fails the browser sign-in
+  (`kilo_protocol_error`) and the token exchange (503
+  `sign_in_unavailable`). Without a usable address, invitations by email
+  can't be accepted and email quota rules don't apply.
 
 A browser session keeps the address as signed email proof, not as the
 address. The proof is good for 6 hours from sign-in
 (`NOTEBOOK_CLOUD_IDENTITY_PROOF_MAX_AGE_SECONDS`), so a Kilo session claims
 invitations for the first 6 of its 8 hours; after that the person signs in
-again. An OAuth client connected from that session keeps the same proof, and
+again.
+
+Claiming an invitation keeps the invitation's address with the claimant. The
+member entry stores the principal, the display name and that address, and
+the owner sees the three together in Page sharing, Project sharing and the
+list of collaborators who lose access when a Page or Project is deleted. That
+entry stays after the proof expires and after the session ends, until the
+owner removes the member; it is the address the owner invited, as Kilo
+verified it at the claim.
+
+An OAuth client connected from that session keeps the same proof, and
 claims invitations until 6 hours after the sign-in that approved it, whatever
 its own grant's lifetime. Quota rules read the proof at its own verification
 time, so they apply for the session's whole life and the grant's. A Kilo
