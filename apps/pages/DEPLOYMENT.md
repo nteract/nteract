@@ -1385,6 +1385,12 @@ drops the table and creates it again with `verified_at_ms`: a version 1 row
 was timed in seconds and can't be ordered by the millisecond, so it is gone
 and that principal's next exchange writes a new one.
 
+A sign-in whose write fails gets the retryable failure page (503,
+`membership_unrecorded`) and no session. Every agent request on a token
+answer awaits that answer's one write; when it fails, each of them gets a
+retryable 503 `sign_in_unavailable`, and the next request writes again. No
+request goes on over a record older than an answer its isolate received.
+
 The record is evidence for 8 hours from `verified_at_ms`
 (`KILO_MEMBERSHIP_SECONDS`), the length of a Kilo browser session. Every Kilo
 identity reads it by principal, whichever credential it arrived with: the
