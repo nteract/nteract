@@ -165,13 +165,28 @@ export async function createDuckQuerySession(engine, relation) {
       const limit = Math.max(0, Math.floor(query.window.limit));
       // The stream is uncompressed, so its size is also its decoded size.
       const maxBytes = Math.min(ctx.budget.maxIpcBytes, ctx.budget.maxDecodedBytes);
-      const { ipc, complete } = await engine.stream(
-        `SELECT * FROM ${quoteIdent(relation)}${sql}${order} LIMIT ${limit}`,
-        params,
-        { signal: ctx.signal, maxBytes },
-      );
+      const select = (rows) =>
+        engine.stream(`SELECT * FROM ${quoteIdent(relation)}${sql}${order} LIMIT ${rows}`, params, {
+          signal: ctx.signal,
+          maxBytes,
+        });
+      let { ipc, complete, refused } = await select(limit);
       ctx.signal.throwIfAborted();
-      const returnedRows = await rowCount(ipc);
+      let returnedRows = await rowCount(ipc);
+      if (returnedRows === 0 && refused) {
+        // DuckDB batches rows by the thousand, so on a wide table the first
+        // batch alone can exceed the budget. Ask once for the rows that fit,
+        // sized from that batch's bytes per row with room for batch overhead.
+        const rows = await rowCount(
+          concat(ipc.subarray(0, -END_OF_STREAM), refused, ipc.subarray(-END_OF_STREAM)),
+        );
+        const fit = Math.floor((0.9 * (maxBytes - ipc.byteLength) * rows) / refused.byteLength);
+        if (fit >= 1 && fit < limit) {
+          ({ ipc } = await select(fit));
+          ctx.signal.throwIfAborted();
+          returnedRows = await rowCount(ipc);
+        }
+      }
       const matched =
         complete && returnedRows < limit
           ? { kind: "exact", value: returnedRows }
@@ -195,6 +210,17 @@ export async function createDuckQuerySession(engine, relation) {
       closed = true;
     },
   };
+}
+
+const END_OF_STREAM = 8;
+function concat(...parts) {
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.byteLength, 0));
+  let at = 0;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.byteLength;
+  }
+  return out;
 }
 
 let arrow;

@@ -296,6 +296,58 @@ test("a result over the byte budget keeps the batches that fit and says it stopp
   assert.deepEqual(rows(await engine.run("SELECT 7 AS seven")), [{ seven: 7 }]);
 });
 
+test("a first batch over the budget is retried once at the rows that fit", async () => {
+  await engine.run(
+    "CREATE TABLE wider AS SELECT range::INTEGER AS i, repeat('y', 2000) AS pad FROM range(5000)",
+  );
+  const session = await createDuckQuerySession(engine, "wider");
+  const budget = { maxIpcBytes: 256 * 1024, maxDecodedBytes: 1 << 24 };
+  const page = await session.query(
+    query([{ column: "i", op: "gte", value: 0 }], [{ column: "i", direction: "asc" }], 5000),
+    { ...ctx(), budget },
+  );
+  assert.ok(page.returnedRows > 0, "rows, not an empty page");
+  assert.ok(page.ipc.byteLength <= budget.maxIpcBytes);
+  assert.equal(rows(page.ipc).length, page.returnedRows);
+  assert.deepEqual(page.continuation, { kind: "stopped", reason: "budget" });
+  assert.deepEqual(page.matchedCount, { kind: "exact", value: 5000 });
+});
+
+test("a budget smaller than the schema is refused, not overrun", async () => {
+  await assert.rejects(
+    engine.stream("SELECT 1 AS one", [], { maxBytes: 1 }),
+    /schema alone exceeds 1 bytes/,
+  );
+  assert.deepEqual(rows(await engine.run("SELECT 2 AS two")), [{ two: 2 }]);
+});
+
+test("a failed load does not erase a newer load of the same asset", async () => {
+  let failFirst;
+  const first = new Promise((_, reject) => (failFirst = reject));
+  let calls = 0;
+  const arrowEngine = await openPageEngine(await database(), {
+    toArrowStream: (bytes) => (calls++ === 0 ? first : parquetToArrowStream(bytes)),
+  });
+  try {
+    const a = arrowEngine.addSource(ASSET, parquet);
+    const dropped = arrowEngine.dropSource(ASSET);
+    const b = arrowEngine.addSource(ASSET, parquet);
+    failFirst(Error("decode failed"));
+    await assert.rejects(a, /decode failed/);
+    await dropped;
+    const relation = await b;
+    assert.equal(
+      rows(await arrowEngine.run(`SELECT count(*)::INT AS n FROM "${relation}"`))[0].n,
+      4,
+    );
+    await arrowEngine.dropSource(ASSET);
+    await assert.rejects(arrowEngine.run(`SELECT * FROM "${relation}"`), /does not exist/);
+    assert.equal(calls, 2);
+  } finally {
+    await arrowEngine.close();
+  }
+});
+
 test("work queued for an aborted request never runs", async () => {
   const aborted = new AbortController();
   const pending = engine.stream("CREATE TABLE skipped AS SELECT 1 AS one", [], {

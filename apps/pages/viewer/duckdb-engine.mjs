@@ -75,7 +75,13 @@ export async function openPageEngine(bindings, { toArrowStream, memoryLimit = "1
   // runQuery answers in the Arrow IPC file format; Sift takes a stream. The
   // pending-query calls give the stream's schema message, then one message
   // per record batch. With `maxBytes`, the stream keeps the batches that fit,
-  // end marker included, and reports `complete: false` if any were left.
+  // end marker included, and reports `complete: false` if any were left,
+  // with `refused`, the first batch that did not fit.
+  //
+  // An abort is honored before a statement starts and between fetched
+  // batches. A prepared statement executes inside `sendPrepared`, and the
+  // worker handles one message at a time, so a cancel sent meanwhile waits
+  // for that execution; the abort then lands at the first fetch.
   const cancel = async () => {
     try {
       await bindings.cancelPendingQuery(conn);
@@ -84,7 +90,10 @@ export async function openPageEngine(bindings, { toArrowStream, memoryLimit = "1
   const stream = async (header, { signal, maxBytes = Infinity }) => {
     const chunks = [header];
     let size = header.byteLength + END_OF_STREAM.byteLength;
-    let complete = true;
+    if (size > maxBytes) {
+      await cancel();
+      throw Error(`The result's schema alone exceeds ${maxBytes} bytes`);
+    }
     for (;;) {
       if (signal?.aborted) {
         await cancel();
@@ -93,15 +102,15 @@ export async function openPageEngine(bindings, { toArrowStream, memoryLimit = "1
       const chunk = await bindings.fetchQueryResults(conn);
       if (!chunk?.byteLength) break;
       if (size + chunk.byteLength > maxBytes) {
-        complete = false;
         await cancel();
-        break;
+        chunks.push(END_OF_STREAM);
+        return { ipc: concat(chunks), complete: false, refused: chunk };
       }
       size += chunk.byteLength;
       chunks.push(chunk);
     }
     chunks.push(END_OF_STREAM);
-    return { ipc: concat(chunks), complete };
+    return { ipc: concat(chunks), complete: true };
   };
   const raw = async (sql, params, options = {}) => {
     options.signal?.throwIfAborted();
@@ -118,6 +127,7 @@ export async function openPageEngine(bindings, { toArrowStream, memoryLimit = "1
     }
     const statement = await bindings.createPrepared(conn, sql);
     try {
+      options.signal?.throwIfAborted();
       return await stream(await bindings.sendPrepared(conn, statement, params), options);
     } finally {
       await bindings.closePrepared(conn, statement);
@@ -165,9 +175,10 @@ export async function openPageEngine(bindings, { toArrowStream, memoryLimit = "1
     },
     /**
      * Run one query for a request. Work still queued when `signal` aborts
-     * never runs, and a running query is cancelled. Resolves to `{ ipc,
-     * complete }`; with `maxBytes`, `ipc` holds the batches that fit and
-     * `complete` is false if the result had more.
+     * never runs, and a running query is cancelled between batches. Resolves
+     * to `{ ipc, complete, refused }`; with `maxBytes`, `ipc` holds the
+     * batches that fit, `complete` is false if the result had more, and
+     * `refused` is the first batch left out.
      */
     stream(sql, params = [], { signal, maxBytes } = {}) {
       if (state !== "open") return refuse();
@@ -187,7 +198,10 @@ export async function openPageEngine(bindings, { toArrowStream, memoryLimit = "1
           await ingest(assetId, bytes);
           return assetRelation(assetId);
         });
-        pending.catch(() => sources.delete(assetId));
+        // Forget a failed load, unless a drop and a newer load replaced it.
+        pending.catch(() => {
+          if (sources.get(assetId) === pending) sources.delete(assetId);
+        });
         sources.set(assetId, pending);
       }
       return pending;
