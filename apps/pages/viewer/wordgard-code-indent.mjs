@@ -14,11 +14,11 @@ import { languageFor } from "./code-highlight.mjs";
 // position long, so an offset into the source text is an offset from the
 // block's start.
 
-const sourceOf = (node) =>
+export const sourceOf = (node) =>
   node.content.map((child) => (child.isText ? String(child.param) : "\n")).join("");
 
-const lineStart = (source, offset) => source.lastIndexOf("\n", offset - 1) + 1;
-const lineEnd = (source, offset) => {
+export const lineStart = (source, offset) => source.lastIndexOf("\n", offset - 1) + 1;
+export const lineEnd = (source, offset) => {
   const end = source.indexOf("\n", offset);
   return end < 0 ? source.length : end;
 };
@@ -33,7 +33,7 @@ export function selectedCodeBlock(state) {
 
 /** The editable code block that holds the selection, with the selection as
  * offsets into its source. */
-function selectedCode(state) {
+export function selectedCode(state) {
   const block = state.readOnly ? null : selectedCodeBlock(state);
   if (!block) return null;
   const { start } = block;
@@ -58,7 +58,7 @@ export function indentUnit(source, language) {
 
 /** Where each line the selection touches starts. A selection that ends at the
  * start of a line doesn't touch that line. */
-function touchedLines(source, from, to) {
+export function touchedLines(source, from, to) {
   const starts = [];
   for (let start = lineStart(source, from); ; ) {
     if (start < to || !starts.length) starts.push(start);
@@ -70,13 +70,14 @@ function touchedLines(source, from, to) {
 
 /** The selection after `edits`, keeping its direction. Each edit is
  * `{ at, removed, inserted }` in source offsets, in ascending order. An edit
- * at the selection's own boundary stays outside it. */
-function selectionAfter(state, start, edits) {
+ * at the selection's own boundary stays outside it; with `assoc` 1, text
+ * inserted there goes before it. */
+export function selectionAfter(state, start, edits, assoc = -1) {
   const map = (pos) => {
     const offset = pos - start;
     let moved = offset;
     for (const { at, removed, inserted } of edits) {
-      if (at >= offset) break;
+      if (at > offset || (at === offset && (assoc < 0 || removed))) break;
       moved += inserted - Math.min(removed, offset - at);
     }
     return start + moved;

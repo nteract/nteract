@@ -1,100 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import * as A from "@automerge/automerge";
-import { GardState, GardSelection, Transaction } from "wordgard/state";
-import { Command, enter } from "wordgard/command";
-import { history, undo } from "wordgard/history";
-import { codeBlock } from "wordgard/schema";
-import { textPath, blockMarkdown, validateRich } from "../model/richtext.mjs";
-import { createPageData, initializePage, orderedBlockIds } from "../model/page.mjs";
-import { schema, decode, CodeBlockLanguage } from "./wordgard-model.mjs";
-import { createWordgardBinding, wordgardCodeNewlines } from "./wordgard-binding.mjs";
+import { GardSelection } from "wordgard/state";
+import { enter } from "wordgard/command";
+import { undo } from "wordgard/history";
+import * as fixtures from "../test/code-block-fixture.mjs";
 import { codeIndentation, dedentCode, indentCode, indentUnit } from "./wordgard-code-indent.mjs";
 
-// A fixture reads and writes a code block as its source with the selection
-// drawn in: ▮ is a caret, « and » are a selection's anchor and head.
-const MARKS = /[▮«»]/g;
-
-function fixture(markdown) {
-  let doc = A.from(createPageData({ pageId: "page_fixture", title: "Code indent" }));
-  doc = A.change(doc, (d) => initializePage(d, markdown));
-  const id = orderedBlockIds(doc)[0];
-  const path = textPath(id);
-  const replica = {
-    get doc() {
-      return doc;
-    },
-    change(fn) {
-      doc = A.change(doc, fn);
-    },
-    observeChange: () => () => {},
-  };
-  const binding = createWordgardBinding(replica, id);
-  let state = GardState.create({
-    doc: binding.current.doc,
-    config: [
-      GardState.schemaElement.of(schema.elements),
-      codeBlock(),
-      codeIndentation,
-      wordgardCodeNewlines,
-      history(),
-    ],
-  });
-  const editor = {
-    get state() {
-      return state;
-    },
-    dispatch(spec) {
-      for (const tr of Transaction.append(state.update(spec))) {
-        binding.applyEditorTransaction(tr);
-        state = tr.state;
-      }
-      assert.ok(decode(A.spans(doc, path)).doc.eq(state.doc), "editor and native agree");
-      validateRich(doc.blocks[id]);
-    },
-    run(command) {
-      return Command.dispatch(this, command);
-    },
-  };
-  const source = (node) =>
-    node.content.map((child) => (child.isText ? String(child.param) : "\n")).join("");
-  return {
-    editor,
-    markdown: () => blockMarkdown(doc.blocks[id]),
-    outline: () => state.doc.content.map((node) => [node.type.name, source(node)]),
-    language: (index) => state.doc.content[index].mark(CodeBlockLanguage),
-    /** The first node's source, with the selection drawn in. */
-    code() {
-      const text = source(state.doc.content[0]);
-      const { anchor, head } = state.selection;
-      const marks =
-        anchor === head
-          ? [[head - 1, "▮"]]
-          : [
-              [anchor - 1, "«"],
-              [head - 1, "»"],
-            ];
-      return marks
-        .sort((a, b) => b[0] - a[0])
-        .reduce((out, [at, mark]) => out.slice(0, at) + mark + out.slice(at), text);
-    },
-    destroy: () => binding.destroy(),
-  };
-}
-
-/** A code block in `language` holding `drawn`, with its selection set. */
-function codeFixture(language, drawn) {
-  const f = fixture("```" + language + "\n" + drawn.replace(MARKS, "") + "\n```");
-  const caret = drawn.indexOf("▮");
-  const anchor = caret < 0 ? drawn.replace("»", "").indexOf("«") : caret;
-  const head = caret < 0 ? drawn.replace("«", "").indexOf("»") : caret;
-  // The code block is the first node, so its content starts at position 1.
-  f.editor.dispatch({
-    selection: GardSelection.Text.create({ anchor: anchor + 1, head: head + 1 }),
-  });
-  assert.equal(f.code(), drawn, "the fixture draws its own selection");
-  return f;
-}
+const fixture = (markdown) => fixtures.fixture(markdown, codeIndentation);
+const codeFixture = (language, drawn) => fixtures.codeFixture(language, drawn, codeIndentation);
 
 test("one level is four spaces for Python and Rust, two elsewhere, a tab where the block uses tabs", () => {
   assert.equal(indentUnit("x = 1", "python"), "    ");

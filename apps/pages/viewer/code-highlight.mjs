@@ -69,6 +69,12 @@ export function languageFor(stored) {
   return byName.get(name) ?? null;
 }
 
+/** The CodeMirror language data the language's parser carries, such as
+ * `commentTokens` and `closeBrackets`. Empty for an unknown language. */
+export function languageData(stored) {
+  return languageFor(stored)?.parser.languageData ?? {};
+}
+
 // Mermaid never gets token decorations. Its block renders through a shape with
 // a hidden native content hole, and range decorations inside that hole stop
 // remote source edits from reaching it (Wordgard 0.6.2; see wordgard-widgets).

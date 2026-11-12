@@ -81,7 +81,12 @@ else replaces the screen with a Reload notice and leaves the Page unchanged.
   line or every selected line. One level is four spaces in Python and Rust, two
   elsewhere, and a tab in a block whose lines already start with tabs. Enter
   keeps the indentation of the line it leaves; three Enters, or Mod-Enter, leave
-  the block. Outside a code block Tab moves focus as usual. Code text carries no
+  the block. Outside a code block Tab moves focus as usual. Brackets and quotes
+  close themselves as in CodeMirror: typing the inserted closer moves over it,
+  Backspace inside an empty pair deletes both, and a selection gets wrapped.
+  Cmd/Ctrl+/ comments or uncomments the touched lines with the language's line
+  comment, or one block comment in CSS and HTML; JSON and blocks with no language
+  have none. Both read the highlighter's language data. Code text carries no
   marks, so a selection inside one code block gets a toolbar with the text style
   and Comment only, placed outside the block.
 - **Mark registry:** [`model/marks.json`](model/marks.json) lists every inline
