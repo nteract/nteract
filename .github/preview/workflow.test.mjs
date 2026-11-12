@@ -6,7 +6,7 @@ import {spawnSync} from "node:child_process";
 import {test} from "node:test";
 
 const workflow = readFileSync(new URL("../workflows/preview-reusable.yml", import.meta.url), "utf8");
-const helperSha = "745935af5fdfcf15424c59d52cbccc629a260d50";
+const helperSha = "7797fcba934c467f966bc91856e8c6ce817eb8e8";
 
 test("the caller skips unsupported fork previews without changing deployment authority", () => {
   const caller = readFileSync(new URL("../workflows/preview.yml", import.meta.url), "utf8");

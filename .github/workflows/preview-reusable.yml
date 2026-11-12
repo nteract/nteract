@@ -29,7 +29,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: nteract/nteract
-          ref: 745935af5fdfcf15424c59d52cbccc629a260d50 # Reviewed preview helpers
+          ref: 7797fcba934c467f966bc91856e8c6ce817eb8e8 # Reviewed preview helpers
           persist-credentials: false
           sparse-checkout: .github/preview
       - name: Authorize the current PR revision before building
@@ -158,7 +158,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: nteract/nteract
-          ref: 745935af5fdfcf15424c59d52cbccc629a260d50 # Reviewed preview helpers
+          ref: 7797fcba934c467f966bc91856e8c6ce817eb8e8 # Reviewed preview helpers
           persist-credentials: false
           sparse-checkout: .github/preview
       - name: Deploy and wait for readiness
@@ -185,7 +185,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: nteract/nteract
-          ref: 745935af5fdfcf15424c59d52cbccc629a260d50 # Reviewed preview helpers
+          ref: 7797fcba934c467f966bc91856e8c6ce817eb8e8 # Reviewed preview helpers
           persist-credentials: false
           sparse-checkout: .github/preview
       - name: Stop preview and retain notebook data
@@ -209,7 +209,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: nteract/nteract
-          ref: 745935af5fdfcf15424c59d52cbccc629a260d50 # Reviewed preview helpers
+          ref: 7797fcba934c467f966bc91856e8c6ce817eb8e8 # Reviewed preview helpers
           persist-credentials: false
           sparse-checkout: .github/preview
       - name: Report the controller-derived preview outcome
