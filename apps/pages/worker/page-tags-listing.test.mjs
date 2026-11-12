@@ -1,6 +1,7 @@
 // list_pages' `tags` filter: the same answers from D1 and from the Catalog
-// entries, cursors sealed to the expression, refusals, and the tag table's
-// own lifecycle.
+// entries, cursors sealed to the expression, refusals, and the lifecycle of
+// `page_tags`, the normative tag table (not a projection: only a deletion
+// tombstone clears its rows).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
@@ -63,7 +64,7 @@ async function world(t, { index = "1", migrate = true } = {}) {
     for (const [n, tags] of TAGS)
       for (const tag of tags)
         f.db.sqlite
-          .prepare("INSERT INTO pages_catalog_tags VALUES (?, ?, ?, ?)")
+          .prepare("INSERT INTO page_tags VALUES (?, ?, ?, ?)")
           .run(id(n), tag, owner, at(0));
   }
   return f;
@@ -168,7 +169,8 @@ test("a malformed expression is refused with its position", async (t) => {
 });
 
 test("a tag filter never falls back to entries that have no tags", async (t) => {
-  // The index is off: tags live only in D1.
+  // The catalog index flag is off, so D1 is not reachable. Tags live only in
+  // D1 (the normative page_tags table), so the Catalog entries cannot stand in.
   const off = await world(t, { index: null, migrate: false });
   const refused = await off.listRaw(member, { tags: "code" });
   assert.equal(refused.status, 503);
@@ -189,15 +191,15 @@ test("migration 9 adds the tag table without touching older rows", async (t) => 
   const f = await catalogFixture(t);
   await migrateCatalogIndex(f.db, CATALOG_MIGRATIONS.slice(0, 8));
   assert.deepEqual(
-    f.db.rows("SELECT name FROM sqlite_master WHERE name LIKE 'pages_catalog_tags%' ORDER BY name"),
+    f.db.rows("SELECT name FROM sqlite_master WHERE name LIKE 'page_tags%' ORDER BY name"),
     [],
   );
   assert.equal(await migrateCatalogIndex(f.db), 9);
   assert.deepEqual(
     f.db
-      .rows("SELECT name FROM sqlite_master WHERE name LIKE 'pages_catalog_tags%' ORDER BY name")
+      .rows("SELECT name FROM sqlite_master WHERE name LIKE 'page_tags%' ORDER BY name")
       .map((row) => row.name),
-    ["pages_catalog_tags", "pages_catalog_tags_by_tag"],
+    ["page_tags", "page_tags_by_tag"],
   );
   // A build that knows only migrations 1 to 8 runs against the newer schema.
   assert.equal(await migrateCatalogIndex(f.db, CATALOG_MIGRATIONS.slice(0, 8)), 9);
@@ -210,11 +212,9 @@ test("a Page's tags go with its deletion tombstone and nothing else clears them"
   const metadata = { pageId: id(1), owner, deleted: false, acl: { revision: 0, members: {} } };
   await reportPageIndex(env, {}, { metadata, title: "Tagged", observedAt: at(1) });
   for (const pageId of [id(1), id(2)])
-    f.db.sqlite
-      .prepare("INSERT INTO pages_catalog_tags VALUES (?, 'keep', ?, ?)")
-      .run(pageId, owner, at(0));
+    f.db.sqlite.prepare("INSERT INTO page_tags VALUES (?, 'keep', ?, ?)").run(pageId, owner, at(0));
   const tagged = () =>
-    f.db.rows("SELECT page_id FROM pages_catalog_tags ORDER BY page_id").map((row) => row.page_id);
+    f.db.rows("SELECT page_id FROM page_tags ORDER BY page_id").map((row) => row.page_id);
   assert.deepEqual(tagged(), [id(1), id(2)]);
   // Trash keeps tags: a restored Page has them back.
   await retirePageIndex(

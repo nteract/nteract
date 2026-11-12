@@ -1,6 +1,14 @@
 // Page tags: the alphabet a tag may use, and the boolean expression a listing
-// filters by. Tags live in D1 (`pages_catalog_tags`), never in a Page's
-// Automerge document, and mean nothing to Pages: they grant no access.
+// filters by. Tags live in D1 (`page_tags`), never in a Page's Automerge
+// document, and mean nothing to Pages: they grant no access.
+//
+// `page_tags` is the single normative record of tags. It is not an index of
+// anything and has no Durable Object source: there is no tag state in a Page
+// host or Catalog, and none is planned, because tags have no real-time part
+// and need only request/response access. Do not confuse it with the
+// `pages_catalog_*` tables, which project Durable Object state and can be
+// rebuilt. This file holds pure functions only; reads and writes of the table
+// are in page-tags-store.mjs.
 //
 // An expression is a boolean over the set of tags a Page has:
 //
@@ -193,7 +201,7 @@ export function matchesTags(ast, tags) {
 }
 
 /**
- * SQL for `ast` over `pages_catalog_tags`, as `{ sql, params }`. `pageIdColumn`
+ * SQL for `ast` over `page_tags`, as `{ sql, params }`. `pageIdColumn`
  * is the outer query's Page ID column, for example `a.page_id`. Each tag is
  * one `EXISTS` on the table's primary key, combined by the expression's own
  * AND, OR and NOT. Tags are bound parameters, never interpolated.
@@ -203,7 +211,7 @@ export function tagPredicate(ast, pageIdColumn) {
   const build = (node) => {
     if (node.type === "tag") {
       params.push(node.tag);
-      return `EXISTS (SELECT 1 FROM pages_catalog_tags t WHERE t.page_id = ${pageIdColumn} AND t.tag = ?)`;
+      return `EXISTS (SELECT 1 FROM page_tags t WHERE t.page_id = ${pageIdColumn} AND t.tag = ?)`;
     }
     if (node.type === "not") return `NOT (${build(node.operand)})`;
     return `(${node.operands.map(build).join(node.type === "and" ? " AND " : " OR ")})`;

@@ -502,6 +502,12 @@ entries into D1 tables (`pages_catalog_pages`, `pages_catalog_access`) so
 shared Page. Migrations are versioned in
 [catalog-index.mjs](worker/catalog-index.mjs) and applied lazily on first use.
 
+These `pages_catalog_*` tables are a projection: the Durable Objects are the
+source of truth and reconciliation can rebuild the rows. The same D1 database
+holds normative tables too, such as `page_tags`, which are the only copy of their
+data and are never rebuilt or cleared by the index
+([Where state lives](DEPLOYMENT.md#where-state-lives)).
+
 Durable Objects in one isolate share module state but not I/O contexts. If the
 object that started a migration resets mid-flight, its D1 call and its expiry
 timer can be dropped, and a promise shared with other objects would never
@@ -3687,22 +3693,36 @@ tombstones remain permanent; Trash writes none. See the
 A Page carries a set of tags: short, lowercase, freeform labels that agents set
 on their own work and other agents search. Tags mean nothing to Pages and grant
 no access, and anyone who can see a Page sees its tags. They are rows in the D1
-table `pages_catalog_tags` (`page_id`, `tag`, `added_by`, `added_at`; primary key
-`(page_id, tag)`, plus an index on `(tag, page_id)`), added by catalog migration
+table `page_tags` (`page_id`, `tag`, `added_by`, `added_at`; primary key
+`(page_id, tag)`, plus a lookup index on `(tag, page_id)`), added by catalog migration
 9. They are not in the Page's Automerge document, so changing them never moves
 its revision, and a document restore or export does not carry them.
 
-**Authority.** Every other table in the catalog index is a projection that
-reconciliation can rebuild from Catalog entries and Page host records. Tag rows
-are the only copy. Nothing clears or rebuilds them: not reconciliation, not a
-migration that resets `pages_catalog_accounts`. Only a Page's deletion tombstone
-(`tombstoneStatements`) deletes its rows. Trash keeps them, hidden with the
-Page; restore brings them back. On a celld target D1 is a SQLite file under
-celld's own directory, so recovery is whatever backs up that directory;
-[DEPLOYMENT.md](DEPLOYMENT.md) describes backups of Page records, not of D1.
-Tags need the index: with `PAGES_CATALOG_INDEX` unset, or D1 not answering, a
-tag write or a listing with `tags` answers 503 `tags_unavailable` (retryable)
-and never falls back to the Catalog entries, which hold no tags.
+**Source of truth.** `page_tags` is the single normative record of a Page's
+tags. It is not an index and not a projection. No Durable Object, Page host
+record, Catalog entry or document holds a copy, so there is nothing to rebuild
+it from, and there is no Durable Object for tags and none planned: tags have no
+real-time part, and a REST-style write plus a searchable read is all they need.
+D1 is the only place that can search tags across Pages, so it is also where they
+live. This differs from the `pages_catalog_*` tables, which project each
+account's Catalog and Page host Durable Objects into D1 for listing
+([Catalog index](#catalog-index)) and can be cleared and rebuilt. The table
+shares D1's migration chain and database with them, but not their rules.
+Nothing clears or rebuilds `page_tags`: not reconciliation, not a cooled index,
+not a migration that resets `pages_catalog_accounts`. Only a Page's deletion
+tombstone (`tombstoneStatements`) deletes its rows. Trash keeps them, hidden with
+the Page; restore brings them back. The Page host decides who may edit and
+holds no tag state. The read and write code is in
+[page-tags-store.mjs](worker/page-tags-store.mjs); the projection supplies only
+candidate Pages, and the table decides which candidates match. On a celld target
+D1 and each Page's storage sit under the same versioned fleet prefix, so the
+restore points in [DEPLOYMENT.md](DEPLOYMENT.md#restore-points) cover both for 14
+days. Past that, nothing can rebuild tags. See
+[Where state lives](DEPLOYMENT.md#where-state-lives).
+Tags need D1: with `PAGES_CATALOG_INDEX` unset (that variable also turns on the
+D1 binding, though tags are not part of the index) or D1 not answering, a tag
+write or a listing with `tags` answers 503 `tags_unavailable` (retryable) and
+never falls back to the Catalog entries, which hold no tags.
 
 **Alphabet.** A tag is trimmed and lowercased, then must match
 `[a-z0-9][a-z0-9._:/-]{0,63}`: lowercase letters, digits and `. _ : / -`,

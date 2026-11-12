@@ -27,6 +27,52 @@ application state, auth/catalog storage, deployment pointers, and routes are
 isolated. Project transfer alone is not a complete archive of loose Pages,
 comments, sharing, or history.
 
+## Where state lives
+
+A target stores state in two systems, and they do not play the same role.
+Durable Objects and D1 are both durable. Being in D1 does not make a table an
+index, and being a Durable Object does not make it the only copy of a fact.
+Every table or key has one **normative** home: the place whose content is the
+truth. Anything else that holds the same fact is a **projection** and can be
+rebuilt from the normative home. Before you clear, repair, migrate or hand-edit
+state, find out which kind it is.
+
+| Kind | Where | What | If lost or wrong |
+| --- | --- | --- | --- |
+| Normative, in a Durable Object | Page host, per-account Catalog, Project (`Space`) objects | The Page's host record, access list, lifecycle, receipts and its documents; each account's `page/<id>`, `shared/<id>`, `trash/<id>` and `space/<id>` entries | Restore point only ([Restore points](#restore-points)) |
+| Projection, in D1 | `pages_catalog_pages`, `pages_catalog_access`, `pages_catalog_spaces`, `pages_catalog_accounts` | A copy of the Durable Object state above, written from it for listing and search | Rebuild: reconciliation regenerates the rows from the Durable Objects. Never edit by hand |
+| Normative, in D1 only | `page_tags` | Every Page's tags | Restore point only. Nothing can rebuild it |
+| Normative, in D1 only | `pages_quota_rules`, `kilo_memberships`, `pages_project_invitations`, and the session and `pages_oauth_*` tables | Quota overrides, Kilo organization evidence, invitations, sign-in sessions and OAuth grants | Restore point. Sessions, grants and memberships also renew when the person signs in again; deleting session or grant rows signs people out or revokes agents |
+
+For the first two rows the Durable Object is the source of truth and D1 is kept
+in sync with it as a projection; D1 chooses listing candidates and never grants
+access ([Catalog index](REFERENCE.md#catalog-index)). The `pages_catalog_`
+prefix means projection: those tables share one migration chain, and the
+reconcile, repair and cooling code may clear them because the Durable Objects
+can regenerate their rows.
+
+`page_tags` is the opposite case, by design. Tags have no real-time part and
+are not in the document, so they need only ordinary request/response access:
+a REST-style write and a searchable read. D1 is where they can be searched
+across Pages, so the D1 table is their source of truth. There is **no Durable
+Object that holds tags, and none is planned**: no Catalog entry, Page host
+record or Automerge document carries a copy, and no projection step exists for
+them. The Page host only decides whether a caller may edit; it keeps no tag
+state. The table is named `page_tags`, without the `pages_catalog_` prefix, so
+it is not mistaken for part of the index. It shares the D1 database, its
+migration chain (`CATALOG_MIGRATIONS`, migration 9) and the `PAGES_CATALOG_INDEX`
+gate with the projection tables. That gate controls whether the worker has the D1
+binding; with it unset, tag writes and tag filters answer `tags_unavailable`
+and the rows stay as they are. Nothing may clear or rewrite `page_tags` except
+a Page's deletion tombstone, which deletes that Page's rows when the Page is
+permanently deleted. Trash keeps them. Reconciliation, a migration that resets
+`pages_catalog_accounts`, a cooled index and a dropped projection table leave
+them alone.
+
+Where `page_tags` is read together with the projection, the projection only
+supplies candidates (a Page the caller can see) and the tag table decides
+whether a candidate matches. See [Page tags](REFERENCE.md#page-tags).
+
 ## Pages release
 
 The `pages` profile owns `pages.runtimed.run`:
@@ -401,7 +447,12 @@ aws s3 cp versions.json \
   s3://nteract-celld-lab-621741996708/standalone/<prefix>-snapshots/<date>-<label>/versions.json
 ```
 
-Take one before a release that changes storage. A release that changes only the
+The prefix holds the Durable Object storage and the celld D1 database
+(`pages-next-auth`), so one restore point covers both, and restoring one
+returns them to the same moment. That includes the normative D1 tables, `page_tags`
+among them: tags set after the restore point are gone, and no other source can
+rebuild them. The projection tables come back as of that moment too, and
+reconciliation repairs any drift from the Durable Objects. Take one before a release that changes storage. A release that changes only the
 app does not need one: it rolls back by moving the fleet pointer to the previous
 release ([When a wait times out](#when-a-wait-times-out)). To restore, stop the service on
 every node of the fleet, copy each listed version back over its key
@@ -436,18 +487,29 @@ record storage](#rollback-and-page-record-storage).
 Every profile sets `PAGES_CATALOG_INDEX=1`. Changing this epoch label starts
 account reconciliation on the next listing. Reconciliation may take several
 listings. Unsetting the variable turns the index off, and listings read Catalog
-entries directly.
+entries directly. It also takes away the D1 binding that tags use: tag writes and
+tag filters answer 503 `tags_unavailable` until it is set again. The `page_tags`
+rows are untouched, because they are the only record of tags and the Catalog
+entries hold none.
 
 The D1 catalog index (`PAGES_CATALOG_INDEX`) is additive: Catalog entries keep
-their keys and shape, and older builds ignore the `pages_catalog_*` tables. After
-a rollback, accounts repair their index within six hours of their next listing, or
-immediately when the `PAGES_CATALOG_INDEX` value changes. Index migrations run
+their keys and shape, and older builds ignore the `pages_catalog_*` projection
+tables. After a rollback, accounts repair their projection within six hours of
+their next listing, or immediately when the `PAGES_CATALOG_INDEX` value changes.
+That repair rebuilds projection rows only; it never touches `page_tags`, which is
+not a projection ([Where state lives](#where-state-lives)). Index migrations run
 lazily on first use and must stay additive so a rollback build keeps working
 against the newer schema. Listing cursors are sealed with a key derived from the
 active session key and expire after 24 hours; a cursor opens under any key in
 the keyring (see [Session key rotation](#session-key-rotation)). Migration 2 adds per-principal title snapshots and clears the
 reconcile markers, so each account rebuilds its rows on its next listings. Migration 3
-adds `lifecycle_revision` to Page rows; older builds ignore it. Lifecycle state
+adds `lifecycle_revision` to Page rows; older builds ignore it. Migration 9 adds
+`page_tags`, which is not index data: it is the normative record of Page tags.
+Older builds ignore the table, and its rows persist across a rollback. A build
+from before migration 9 does not delete a Page's tags when it deletes the Page,
+so a Page deleted by such a build leaves orphan rows. They are invisible (a
+listing starts from the caller's access rows, and a deleted Page has none) and
+harmless. Lifecycle state
 changes, retirements and access writes apply only from a revision at least as
 new as the row's, so a delayed trash retirement cannot undo a restore.
 
@@ -906,12 +968,18 @@ echo "SELECT 1" | node scripts/d1.mjs --target pages -
 `--target` is required, as for quota rules. Rows print one JSON object per line
 on stdout; the database, target and storage prefix print on stderr.
 
-- **The catalog tables are projections.** Each account's Catalog cell is
-  authoritative; the Worker writes the `pages_catalog_*` rows from it, so an
-  edit to a row can be overwritten. Change Pages through the Worker.
+- **The `pages_catalog_*` tables are projections.** The Page host and each
+  account's Catalog Durable Object are the source of truth; the Worker writes
+  those rows from them, so an edit to a row can be overwritten. Change Pages
+  through the Worker. See [Where state lives](#where-state-lives).
+- **`page_tags` is not a projection.** It is the only copy of every Page's tags.
+  A row you edit, or delete, stays that way, and nothing regenerates it. Change
+  tags with `update_page_tags`. Take a [restore point](#restore-points) before
+  any hand edit.
 - **Auth lives here too.** `pages-next-auth` holds the OIDC sessions and OAuth
-  grants, codes and tokens beside the catalog, quota and invitation tables.
-  Deleting rows there signs people out or revokes agents.
+  grants, codes and tokens beside the catalog projection, tags, quota and
+  invitation tables. Those are normative like tags. Deleting rows there signs
+  people out or revokes agents.
 - **A failed write may have committed.** celld can report an error for a write
   that landed, as in [After a failed write](#after-a-failed-write). Read the
   row back before running it again.

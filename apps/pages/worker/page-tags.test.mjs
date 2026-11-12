@@ -199,7 +199,7 @@ function tagDatabase() {
   const db = new DatabaseSync(":memory:");
   db.exec(`
     CREATE TABLE pages_catalog_pages (page_id TEXT PRIMARY KEY);
-    CREATE TABLE pages_catalog_tags (
+    CREATE TABLE page_tags (
       page_id TEXT NOT NULL, tag TEXT NOT NULL, PRIMARY KEY (page_id, tag)
     ) WITHOUT ROWID;
   `);
@@ -210,8 +210,7 @@ function tagDatabase() {
     const tags = names.filter((_, bit) => mask & (1 << bit));
     pages.set(pageId, new Set(tags));
     db.prepare("INSERT INTO pages_catalog_pages VALUES (?)").run(pageId);
-    for (const tag of tags)
-      db.prepare("INSERT INTO pages_catalog_tags VALUES (?, ?)").run(pageId, tag);
+    for (const tag of tags) db.prepare("INSERT INTO page_tags VALUES (?, ?)").run(pageId, tag);
   }
   return { db, pages };
 }

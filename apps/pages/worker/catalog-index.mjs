@@ -1,6 +1,18 @@
 /**
  * D1 projection of each account's Page catalog.
  *
+ * Provenance. This module owns the `pages_catalog_*` tables, which are
+ * derived: the Page host Durable Objects and each account's Catalog Durable
+ * Object are the source of truth, and these rows are a projection kept in sync
+ * from them. They are an index for listing and search and can be cleared and
+ * rebuilt by reconciliation. Not every table in this D1 database is like that.
+ * `page_tags` shares the database and this migration chain, but it is the
+ * normative record of Page tags with no Durable Object behind it: nothing here
+ * may clear, rebuild or "repair" it (see page-tags-store.mjs). Quota rules,
+ * sessions, OAuth grants and Kilo memberships are also normative D1 state.
+ * Before adding a table or a repair path, decide which kind it is and say so
+ * where the table is created.
+ *
  * The projection chooses listing candidates; it never grants access. Page DOs
  * own the owner, ACL and lifecycle state. A listing returns a non-owner title
  * only after its Page DO confirms access, and an owner title only while the
@@ -210,25 +222,30 @@ export const CATALOG_MIGRATIONS = Object.freeze([
         ON pages_catalog_spaces (owner, updated_at DESC, space_id DESC)`,
     ]),
   }),
-  // A Page's tags: one row per (Page, tag). Unlike every other table here,
-  // nothing rebuilds these rows from a Catalog entry or a Page host record, so
-  // no migration or reconcile pass may clear them. Only a Page's deletion
-  // tombstone removes its rows. `added_by` is the principal that added the
-  // tag, a claim shown where trust matters. The second index answers "Pages
-  // with this tag".
+  // A Page's tags: one row per (Page, tag). NORMATIVE, not a projection. This
+  // table is the single source of truth for tags: no Durable Object, Catalog
+  // entry, Page host record or document holds a copy, and none is planned
+  // (tags have no real-time part). It only shares this migration chain and D1
+  // database with the `pages_catalog_*` projection tables, which are rebuilt
+  // from the Durable Objects and may be cleared; this one never may. No
+  // migration, reconcile pass or repair may delete or rewrite its rows. Only
+  // a Page's deletion tombstone removes that Page's rows. `added_by` is the
+  // principal that added the tag, a claim shown where trust matters. The
+  // second index answers "Pages with this tag". Name and code live in
+  // page-tags.mjs and page-tags-store.mjs.
   Object.freeze({
     version: 9,
     name: "page_tags",
     statements: Object.freeze([
-      `CREATE TABLE IF NOT EXISTS pages_catalog_tags (
+      `CREATE TABLE IF NOT EXISTS page_tags (
         page_id TEXT NOT NULL,
         tag TEXT NOT NULL,
         added_by TEXT NOT NULL,
         added_at TEXT NOT NULL,
         PRIMARY KEY (page_id, tag)
       ) WITHOUT ROWID`,
-      `CREATE INDEX IF NOT EXISTS pages_catalog_tags_by_tag
-        ON pages_catalog_tags (tag, page_id)`,
+      `CREATE INDEX IF NOT EXISTS page_tags_by_tag
+        ON page_tags (tag, page_id)`,
     ]),
   }),
 ]);
@@ -800,7 +817,9 @@ export async function restrictPageIndex(env, ctx, metadata, revision = revisionO
 }
 
 /** A deleted Page's tombstone: no title, no access rows, and no later write
- * changes it. */
+ * changes it. It also deletes the Page's rows in `page_tags`. That is the only
+ * thing that removes tag rows, and it deletes the normative record, not a
+ * projection: a deleted Page's tags are gone for good. */
 function tombstoneStatements(db, pageId, owner, lifecycle, now = new Date().toISOString()) {
   return [
     db
@@ -813,7 +832,7 @@ function tombstoneStatements(db, pageId, owner, lifecycle, now = new Date().toIS
       )
       .bind(pageId, owner, now, now, lifecycle),
     db.prepare("DELETE FROM pages_catalog_access WHERE page_id = ?").bind(pageId),
-    db.prepare("DELETE FROM pages_catalog_tags WHERE page_id = ?").bind(pageId),
+    db.prepare("DELETE FROM page_tags WHERE page_id = ?").bind(pageId),
   ];
 }
 
@@ -1393,7 +1412,10 @@ const before = (row, after) =>
 
 /** SQL and parameters for one page of D1 candidates. The SQL text depends
  * only on `access`, `sort` and whether `after` holds a position; every value
- * is a bound parameter. `after` is null or a `positionOf(sort, …)`. */
+ * is a bound parameter. `after` is null or a `positionOf(sort, …)`.
+ * `tags` is a parsed tag expression: the candidates (projection rows) are
+ * narrowed by joining the normative `page_tags` table through an `EXISTS` per
+ * tag. Tags are read here, never copied into the projection. */
 export function listingQuery({
   principal,
   audiences = [],
@@ -1607,115 +1629,6 @@ function memorySource(rows, sort) {
 }
 
 export class CatalogIndexUnavailable extends Error {}
-
-/** Page IDs per D1 statement when a filter or a read names candidates. */
-const TAG_CHUNK = 400;
-
-/** The Set of `pageIds` whose tags satisfy `ast`. The IDs come from the
- * caller's own candidate list, never from the tags table, so a Page with no
- * tags and no index row still matches `NOT x`. This decides nothing about
- * access: every candidate is still verified before it lists. */
-export async function tagMatchingIds(db, ast, pageIds) {
-  const matched = new Set();
-  const { sql, params } = tagPredicate(ast, "j.value");
-  for (let start = 0; start < pageIds.length; start += TAG_CHUNK) {
-    const chunk = pageIds.slice(start, start + TAG_CHUNK);
-    const result = await read(
-      db
-        .prepare(`SELECT j.value AS page_id FROM json_each(?) j WHERE ${sql}`)
-        .bind(JSON.stringify(chunk), ...params)
-        .all(),
-    );
-    for (const row of result.results ?? []) matched.add(row.page_id);
-  }
-  return matched;
-}
-
-/**
- * Add and remove tags on one Page, and return the Page's tags afterwards.
- * `add` and `remove` are normalized, distinct and disjoint (page-tags.mjs).
- * Adding a tag the Page has, or removing one it lacks, changes nothing.
- *
- * The limit is checked against the rows read first and again inside the
- * insert, so two writers racing can't pass it: the loser's adds are skipped
- * and reported as `tag_limit_exceeded`, with its removals applied. A Page
- * whose deletion tombstone is in D1 takes no tags.
- */
-export async function writePageTags(db, { pageId, principal, add, remove, now }) {
-  const list = async () =>
-    (
-      (
-        await read(
-          db
-            .prepare("SELECT tag FROM pages_catalog_tags WHERE page_id = ? ORDER BY tag")
-            .bind(pageId)
-            .all(),
-        )
-      ).results ?? []
-    ).map((row) => row.tag);
-  const before = await list();
-  const after = new Set(before.filter((tag) => !remove.includes(tag)));
-  for (const tag of add) after.add(tag);
-  const full = (count) =>
-    new HttpError(
-      409,
-      `A Page holds at most ${MAX_TAGS_PER_PAGE} tags; this change would leave ${count}. Remove some first.`,
-      "tag_limit_exceeded",
-    );
-  if (after.size > MAX_TAGS_PER_PAGE) throw full(after.size);
-  const adds = JSON.stringify(add);
-  await withTimeout(
-    db.batch([
-      db
-        .prepare(
-          `DELETE FROM pages_catalog_tags
-            WHERE page_id = ? AND tag IN (SELECT value FROM json_each(?))`,
-        )
-        .bind(pageId, JSON.stringify(remove)),
-      db
-        .prepare(
-          `INSERT OR IGNORE INTO pages_catalog_tags (page_id, tag, added_by, added_at)
-          SELECT ?, j.value, ?, ? FROM json_each(?) j
-          WHERE NOT EXISTS (SELECT 1 FROM pages_catalog_pages p
-                             WHERE p.page_id = ? AND p.state = 'deleted')
-            AND (SELECT count(*) FROM pages_catalog_tags t WHERE t.page_id = ?)
-              + (SELECT count(*) FROM json_each(?) j2
-                  WHERE NOT EXISTS (SELECT 1 FROM pages_catalog_tags t2
-                                     WHERE t2.page_id = ? AND t2.tag = j2.value))
-              <= ?`,
-        )
-        .bind(pageId, principal, now, adds, pageId, pageId, adds, pageId, MAX_TAGS_PER_PAGE),
-    ]),
-    catalogIndexTimeouts.write,
-  );
-  const tags = await list();
-  if (add.some((tag) => !tags.includes(tag))) throw full(tags.length);
-  return tags;
-}
-
-/** The tags of each of `pageIds`, as a Map from Page ID to a sorted array. A
- * Page with none has no entry. */
-export async function readPageTags(db, pageIds) {
-  const tags = new Map();
-  for (let start = 0; start < pageIds.length; start += TAG_CHUNK) {
-    const chunk = pageIds.slice(start, start + TAG_CHUNK);
-    const result = await read(
-      db
-        .prepare(
-          `SELECT page_id, tag FROM pages_catalog_tags
-            WHERE page_id IN (SELECT value FROM json_each(?)) ORDER BY page_id, tag`,
-        )
-        .bind(JSON.stringify(chunk))
-        .all(),
-    );
-    for (const row of result.results ?? []) {
-      const list = tags.get(row.page_id);
-      if (list) list.push(row.tag);
-      else tags.set(row.page_id, [row.tag]);
-    }
-  }
-  return tags;
-}
 
 /** Candidate source over D1. Its errors are marked so the listing can fall
  * back to the Catalog entries instead of failing. */

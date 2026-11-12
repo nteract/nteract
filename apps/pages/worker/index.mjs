@@ -223,6 +223,7 @@ import {
   readCardImagePointer,
 } from "./card-images.mjs";
 import { MAX_TAGS_PER_PAGE, TagError, normalizeTag } from "./page-tags.mjs";
+import { readPageTags, tagMatchingIds, writePageTags } from "./page-tags-store.mjs";
 import {
   CatalogIndexUnavailable,
   SHORT_CURSOR_MAX_LENGTH,
@@ -231,8 +232,6 @@ import {
   catalogIndexTimeouts,
   catalogSource,
   childIdSource,
-  tagMatchingIds,
-  writePageTags,
   indexOwnedEntries,
   indexSource,
   indexedState,
@@ -252,7 +251,6 @@ import {
   pruneIndexRows,
   readIndexCooldown,
   reconcileAccountIndex,
-  readPageTags,
   reportContentActivity,
   reportPageIndex,
   restrictPageIndex,
@@ -515,17 +513,20 @@ const sharedPagesUnavailable = ({ overloaded = false } = {}) =>
     ),
     { retryAfterMs: overloaded ? overloadRetryAfterMs() : 1000 },
   );
-/** A tag filter or a tag write needs the D1 index: tags live nowhere else, so
- * a listing never falls back to the Catalog entries for one. Coded server
- * failures are retryable. */
+/** A tag filter or a tag write needs D1: the `page_tags` table is the only
+ * record of tags (no Durable Object, Catalog entry or Page record holds a
+ * copy), so a listing never falls back to the Catalog entries for one. Coded
+ * server failures are retryable. */
 const tagsUnavailable = () =>
   new HttpError(
     503,
-    "Page tags are temporarily unavailable: the tag index did not answer. Retry the request.",
+    "Page tags are temporarily unavailable: the tag database did not answer. Retry the request.",
     "tags_unavailable",
   );
-/** The D1 binding for a request that needs tags, or `tags_unavailable`. */
-async function tagIndex(env, ctx) {
+/** The D1 binding for a request that needs tags, or `tags_unavailable`. D1 is
+ * reached through the catalog index's binding and its `PAGES_CATALOG_INDEX`
+ * gate; that makes the database available to tags, not an index of them. */
+async function pageTagsDatabase(env, ctx) {
   if (!catalogIndexEpoch(env)) throw tagsUnavailable();
   try {
     return await withTimeout(catalogIndexDatabase(env, ctx), catalogIndexTimeouts.read);
@@ -4300,11 +4301,11 @@ export class Catalog {
   }
 
   async tagDatabase() {
-    return tagIndex(this.env, this.ctx);
+    return pageTagsDatabase(this.env, this.ctx);
   }
 
   /** For a listing with a tag filter, `keep(pageIds)` answers the Set of IDs
-   * that satisfy it, read from D1. A failure is `tags_unavailable`: the
+   * that satisfy it, read from the `page_tags` table in D1. A failure is `tags_unavailable`: the
    * Catalog entries have no tags, so the listing can't answer without it. */
   tagKeep(options, db) {
     if (!options.tags) return null;
@@ -6535,9 +6536,12 @@ export class Page {
 
   /**
    * One update_page_tags call. The caller has edit access (checked above) and
-   * the Page is not in Trash. Tags are rows in D1, never part of the document:
-   * this changes neither the Page's content nor its revision. `add` and
-   * `remove` are sets, so a repeat changes nothing and needs no receipt.
+   * the Page is not in Trash. The Page host only authorizes the call; it keeps
+   * no tag state, and no Durable Object does. Tags are rows in the D1
+   * `page_tags` table, the only record of them (page-tags-store.mjs), and
+   * never part of the document: this changes neither the Page's content nor
+   * its revision. `add` and `remove` are sets, so a repeat changes nothing and
+   * needs no receipt.
    */
   async updateTags(identity, args) {
     const names = (value, field) => {
@@ -6565,7 +6569,7 @@ export class Page {
       );
     if (add.some((tag) => remove.includes(tag)))
       throw new HttpError(400, "A tag can't be in both add and remove", "invalid_arguments");
-    const db = await tagIndex(this.env, this.ctx);
+    const db = await pageTagsDatabase(this.env, this.ctx);
     try {
       const tags = await writePageTags(db, {
         pageId: this.metadata.pageId,

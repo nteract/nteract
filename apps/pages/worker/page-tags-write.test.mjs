@@ -14,7 +14,7 @@ async function tagged(t, options = {}) {
   const f = await fixture(t, { env: { DB: db, PAGES_CATALOG_INDEX: "1" }, ...options });
   const rows = () =>
     db
-      .rows("SELECT tag, added_by FROM pages_catalog_tags WHERE page_id = ? ORDER BY tag", pageId)
+      .rows("SELECT tag, added_by FROM page_tags WHERE page_id = ? ORDER BY tag", pageId)
       .map((row) => ({ ...row }));
   return { f, db, rows };
 }
@@ -120,7 +120,7 @@ test("a Page in Trash takes no tag changes, and its tags return with it", async 
   assert.deepEqual((await update(f, "owner", { add: ["more"] })).body.tags, ["code", "more"]);
 });
 
-test("without the tag index, a tag change is refused and nothing is written", async (t) => {
+test("without the catalog index flag (no D1 binding), a tag change is refused and nothing is written", async (t) => {
   const off = await fixture(t);
   const refused = await update(off, "owner", { add: ["code"] });
   assert.equal(refused.status, 503);
