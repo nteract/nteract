@@ -4,6 +4,7 @@ import * as A from "@automerge/automerge";
 import { generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
 import { PAGE_FORMAT_UNSUPPORTED, PageSession, connectionFailureRetries } from "./session.mjs";
 import { documentFormatsUnsupported } from "../model/document-types.mjs";
+import { sessionFormatStopped } from "./unopened-page.mjs";
 import {
   HANDSHAKE_TIMEOUT_MS,
   MAX_STEP_MS,
@@ -660,9 +661,11 @@ test("a Page the host doesn't open shows its stored-format message, not the relo
 
 // A Page stored in a format the host doesn't open can never save: the
 // format gate holds content, title and comments read-only, the status shows
-// it without a Retry, and Trash and delete stay as they were.
+// it without a Retry, and Trash and delete stay as they were. Its Move to
+// Trash then names no heads (trashArguments), which the host refuses here.
 function assertFormatStopped(f, before) {
   assert.equal(f.session.formatGate.name, "stopped");
+  assert.equal(sessionFormatStopped(f.session), true);
   assert.equal(f.session.canWrite, false);
   assert.equal(f.session.canComment, false);
   assert.equal(f.session.canDelete, before.canDelete);

@@ -36,6 +36,7 @@ const taskLists = process.argv.includes("--task-lists");
 const admission = process.argv.includes("--admission");
 const buildUpdate = process.argv.includes("--build-update");
 const trash = process.argv.includes("--trash");
+const unopened = process.argv.includes("--unopened");
 const projects = process.argv.includes("--projects");
 const revocation = process.argv.includes("--revocation");
 const coldOpen = process.argv.includes("--cold-open");
@@ -54,6 +55,7 @@ if (
     admission,
     buildUpdate,
     trash,
+    unopened,
     projects,
     revocation,
     coldOpen,
@@ -65,7 +67,7 @@ if (
   ].filter(Boolean).length > 1
 )
   throw new Error(
-    "Choose one qualification: --domain-view, --images, --datasets, --mcp-images, --task-lists, --admission, --build-update, --trash, --projects, --revocation, --cold-open, --commenter, --content-activity, --cards, --card-images or --listing-bench",
+    "Choose one qualification: --domain-view, --images, --datasets, --mcp-images, --task-lists, --admission, --build-update, --trash, --unopened, --projects, --revocation, --cold-open, --commenter, --content-activity, --cards, --card-images or --listing-bench",
   );
 const children = new Set();
 let canceled = false;
@@ -184,7 +186,9 @@ try {
           ? "local-mcp-image-worker.mjs"
           : domainView
             ? "local-domain-sharing-worker.mjs"
-            : "local-sharing-worker.mjs",
+            : unopened
+              ? "local-unopened-worker.mjs"
+              : "local-sharing-worker.mjs",
       ),
     ],
     bundle: true,
@@ -357,8 +361,8 @@ try {
     });
     buildId = next;
   }
-  // The admission smoke and the listing benchmark ask the harness to stop and
-  // restart the same runtime directory, so persisted Pages, sessions, and
+  // The admission, unopened-page and listing smokes ask the harness to stop
+  // and restart the same runtime directory, so persisted Pages, sessions, and
   // bindings survive the restart.
   const restartOnRequest = async (message, child) => {
     if (message?.type !== "restart-celld") return;
@@ -398,23 +402,25 @@ try {
                     ? "scripts/projects-smoke.mjs"
                     : trash
                       ? "scripts/trash-smoke.mjs"
-                      : admission
-                        ? "scripts/admission-smoke.mjs"
-                        : taskLists
-                          ? "scripts/task-lists-smoke.mjs"
-                          : mcpImages
-                            ? "scripts/mcp-image-import-smoke.mjs"
-                            : images
-                              ? "scripts/images-smoke.mjs"
-                              : datasets
-                                ? "scripts/datasets-smoke.mjs"
-                                : domainView
-                                  ? "scripts/domain-sharing-smoke.mjs"
-                                  : buildUpdate
-                                    ? "scripts/build-update-smoke.mjs"
-                                    : listingBench
-                                      ? "scripts/listing-benchmark.mjs"
-                                      : "scripts/sharing-smoke.mjs",
+                      : unopened
+                        ? "scripts/unopened-page-smoke.mjs"
+                        : admission
+                          ? "scripts/admission-smoke.mjs"
+                          : taskLists
+                            ? "scripts/task-lists-smoke.mjs"
+                            : mcpImages
+                              ? "scripts/mcp-image-import-smoke.mjs"
+                              : images
+                                ? "scripts/images-smoke.mjs"
+                                : datasets
+                                  ? "scripts/datasets-smoke.mjs"
+                                  : domainView
+                                    ? "scripts/domain-sharing-smoke.mjs"
+                                    : buildUpdate
+                                      ? "scripts/build-update-smoke.mjs"
+                                      : listingBench
+                                        ? "scripts/listing-benchmark.mjs"
+                                        : "scripts/sharing-smoke.mjs",
     ],
     {
       env: {
@@ -428,11 +434,11 @@ try {
           PAGES_E2E_FIXTURE_ID: imageSource.identity,
         }),
       },
-      ...((admission || buildUpdate || listingBench) && {
+      ...((admission || buildUpdate || listingBench || unopened) && {
         stdio: ["inherit", "inherit", "inherit", "ipc"],
       }),
     },
-    admission || buildUpdate || listingBench ? restartOnRequest : undefined,
+    admission || buildUpdate || listingBench || unopened ? restartOnRequest : undefined,
   );
   const result = JSON.parse(await readFile(path.join(output, "report.json"), "utf8"));
   if (!result.cleaned || result.failure)
