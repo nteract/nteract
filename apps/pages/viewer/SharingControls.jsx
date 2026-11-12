@@ -21,7 +21,7 @@ const primitives = {
 };
 import "./sharing-panel.css";
 import { createSharingAccess, sharingAvailable, SHARING_FRESH_MS } from "./sharing-access.mjs";
-import { domainSharingProjection } from "./sharing-projection.mjs";
+import { linkAccessProjection } from "./sharing-projection.mjs";
 import { pageMarkdown } from "../model/markdown-export.mjs";
 
 function projection(value, manage) {
@@ -238,8 +238,30 @@ function PageSharing({
       !!session.canManageAccess &&
       session.access?.role === "owner" &&
       ![401, 403, 404].includes(state.error?.status));
-  const domainSharing = manage ? domainSharingProjection(value) : null;
-  proofExpired.current = !!domainSharing?.expired;
+  const linkAccess = manage ? linkAccessProjection(value) : null;
+  proofExpired.current = !!linkAccess?.expired;
+  // Restricted clears whichever audience is stored; choosing an audience sets
+  // it, an organization at its current role or Can view.
+  function chooseAudience(selected) {
+    const option = linkAccess.options.find((candidate) => candidate.value === selected);
+    if (!option?.kind)
+      return void mutate(
+        linkAccess.organization
+          ? { action: "set_organization_access", organization_id: null }
+          : { action: "set_domain_view", domain: null },
+        "domain-view",
+      );
+    if (option.kind === "domain")
+      return void mutate({ action: "set_domain_view", domain: option.value }, "domain-view");
+    void mutate(
+      {
+        action: "set_organization_access",
+        organization_id: option.id,
+        role: linkAccess.organization?.role ?? "viewer",
+      },
+      "domain-view",
+    );
+  }
   return (
     <div className="page-sharing" ref={root}>
       {trigger && (
@@ -341,48 +363,78 @@ function PageSharing({
               Retry sharing settings
             </button>
           )}
-          {domainSharing && (
+          {linkAccess && (
             <section className="page-domain-sharing" aria-labelledby={domainId}>
               <label id={domainId} htmlFor={`${domainId}-select`}>
                 Link access
               </label>
               <select
                 id={`${domainId}-select`}
-                value={domainSharing.selected}
+                value={linkAccess.selected}
                 disabled={!!busy}
-                onChange={(event) =>
-                  void mutate(
-                    { action: "set_domain_view", domain: event.target.value || null },
-                    "domain-view",
-                  )
-                }
+                onChange={(event) => chooseAudience(event.target.value)}
               >
-                {domainSharing.options.map(({ value, label, disabled }) => (
+                {linkAccess.options.map(({ value, label, disabled }) => (
                   <option key={value} value={value} disabled={disabled}>
                     {label}
                   </option>
                 ))}
               </select>
+              {linkAccess.organization && (
+                <>
+                  <label htmlFor={`${domainId}-role`}>Members can</label>
+                  <select
+                    id={`${domainId}-role`}
+                    className="page-organization-role"
+                    value={linkAccess.organization.role}
+                    disabled={!!busy || linkAccess.unverified}
+                    onChange={(event) =>
+                      void mutate(
+                        {
+                          action: "set_organization_access",
+                          organization_id: linkAccess.organization.id,
+                          role: event.target.value,
+                        },
+                        "domain-view",
+                      )
+                    }
+                  >
+                    {Object.entries(ROLE_LABELS).map(([role, label]) => (
+                      <option key={role} value={role}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                </>
+              )}
               <p>
-                {domainSharing.selected ? (
+                {linkAccess.organization ? (
                   <>
-                    <strong>Can view.</strong> Sign in with a verified {domainSharing.selected}{" "}
-                    email.
+                    <strong>{roleLabel(linkAccess.organization.role)}.</strong> Members of{" "}
+                    {linkAccess.organization.name} who sign in can open the link. They are not added
+                    to the people list.
+                  </>
+                ) : linkAccess.domain ? (
+                  <>
+                    <strong>Can view.</strong> Sign in with a verified {linkAccess.domain} email.
                   </>
                 ) : (
                   "Only you and invited people can open this Page."
                 )}
               </p>
-              {domainSharing.expired ? (
+              {linkAccess.expired ? (
                 <div className="page-domain-sharing-note" role="note">
                   <p>
-                    Your company email verification expired. Sign in again with the same account to
-                    enable company sharing.
+                    {linkAccess.expired.kind === "domain"
+                      ? "Your company email verification expired. Sign in again with the same account to enable company sharing."
+                      : `Your membership in ${linkAccess.expired.name} needs confirming. Sign in again with the same account to change this sharing.`}
                   </p>
-                  {domainSharing.unverified && (
+                  {linkAccess.unverified && (
                     <p>
-                      People at {domainSharing.selected} can still view this Page. Choose Restricted
-                      to stop sharing with them.
+                      {linkAccess.organization
+                        ? `Members of ${linkAccess.organization.name} can still open this Page.`
+                        : `People at ${linkAccess.domain} can still view this Page.`}{" "}
+                      Choose Restricted to stop sharing with them.
                     </p>
                   )}
                   <div className="page-domain-sharing-actions">
@@ -402,14 +454,20 @@ function PageSharing({
                   </div>
                 </div>
               ) : (
-                domainSharing.unverified && (
+                linkAccess.unverified &&
+                (linkAccess.organization ? (
                   <p className="page-domain-sharing-note" role="note">
-                    You are not signed in with a verified {domainSharing.selected} email. People at{" "}
-                    {domainSharing.selected} can still view this Page. Choose Restricted to stop
-                    sharing with them; sharing again needs a verified {domainSharing.selected}{" "}
-                    email.
+                    You are not a member of {linkAccess.organization.name} now. Its members can
+                    still open this Page. Choose Restricted to stop sharing with them; sharing again
+                    needs membership in {linkAccess.organization.name}.
                   </p>
-                )
+                ) : (
+                  <p className="page-domain-sharing-note" role="note">
+                    You are not signed in with a verified {linkAccess.domain} email. People at{" "}
+                    {linkAccess.domain} can still view this Page. Choose Restricted to stop sharing
+                    with them; sharing again needs a verified {linkAccess.domain} email.
+                  </p>
+                ))
               )}
             </section>
           )}

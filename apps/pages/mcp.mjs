@@ -410,7 +410,7 @@ const tool = (name, description, properties, required, annotations, share = fals
 export const tools = [
   tool(
     "get_page_access",
-    "Read your Page access; owners also get members, invites and domain options. Needs pages:share consent.",
+    "Read your Page access; owners also get members, invites, domain and organization options (organizationOptions, organizationProof, organizationAccess). Needs pages:share consent.",
     { page_id: page },
     ["page_id"],
     READ,
@@ -418,12 +418,12 @@ export const tools = [
   ),
   tool(
     "manage_page_access",
-    "Change direct Page sharing as its owner, at access.revision from get_page_access. invite: email and role. set_role: principal and role (null removes). revoke_invite: invite_id. set_domain_view: a domain from domainOptions, or null. Grants never cover sub-pages. Needs pages:share consent.",
+    "Change direct Page sharing as its owner, at access.revision from get_page_access. invite: email and role. set_role: principal and role (null removes). revoke_invite: invite_id. set_domain_view: a domain from domainOptions, or null. set_organization_access: organization_id from organizationOptions and role, or null. Grants never cover sub-pages. Needs pages:share consent.",
     {
       page_id: page,
       action: {
         type: "string",
-        enum: ["invite", "set_role", "revoke_invite", "set_domain_view"],
+        enum: ["invite", "set_role", "revoke_invite", "set_domain_view", "set_organization_access"],
       },
       email: {
         ...string,
@@ -433,6 +433,7 @@ export const tools = [
       role: accessRole,
       invite_id: string,
       domain: { type: ["string", "null"] },
+      organization_id: { type: ["string", "null"] },
       expected_revision: accessRevision,
       nonce,
     },

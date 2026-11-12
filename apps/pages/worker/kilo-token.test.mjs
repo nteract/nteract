@@ -652,3 +652,50 @@ test("a token Kilo accepts but Pages doesn't lease still authorizes its request"
   assert.ok(identity.expiresAt > Date.now());
   assert.ok(identity.expiresAt <= Date.now() + 30_000 && identity.expiresAt >= before + 30_000);
 });
+
+test("a member of the organization a Page is shared with edits it through edit_page at the grant's role", async (t) => {
+  const { env, kilo } = await fixture(t);
+  const owner = person();
+  const w = pageWorld(t, { env, holder: owner });
+  const organization = { id: "org-agents", name: "Agent Guild" };
+  const share = (role) =>
+    (w.page.metadata = {
+      ...w.page.metadata,
+      acl: {
+        ...w.page.metadata.acl,
+        organizationAccess: role ? { ...organization, namespace: "user:kilo", role } : null,
+      },
+    });
+  const holder = { ...person(), organizations: [{ ...organization, role: "member" }] };
+  const outsider = person();
+  const edit = async (token, title) => {
+    const read = await w.tools(token, "read_page", {});
+    return worker.fetch(
+      toolCall(token, "edit_page", {
+        page_id: pageId,
+        operations: [{ op: "set_title", title }],
+        revision: read.revision,
+        nonce: crypto.randomUUID(),
+      }),
+      env,
+    );
+  };
+  share("editor");
+  const token = kilo.mintToken(holder, { audience });
+  assert.equal((await edit(token, "Edited by the guild")).status, 200);
+  assert.equal(w.doc().title, "Edited by the guild");
+  assert.deepEqual(w.page.metadata.acl.members, {});
+  for (const role of ["commenter", "viewer"]) {
+    share(role);
+    const refused = await edit(token, `Edited as ${role}`);
+    assert.equal(refused.status, 403, role);
+    assert.match((await refused.json()).error, /read-only/);
+    assert.equal(w.doc().title, "Edited by the guild");
+  }
+  const stranger = kilo.mintToken(outsider, { audience });
+  const denied = await worker.fetch(toolCall(stranger, "read_page", { page_id: pageId }), env);
+  assert.equal(denied.status, 403);
+  share(null);
+  const withdrawn = await worker.fetch(toolCall(token, "read_page", { page_id: pageId }), env);
+  assert.equal(withdrawn.status, 403);
+});

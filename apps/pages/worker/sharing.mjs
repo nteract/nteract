@@ -4,6 +4,8 @@ import { MEMBER_ROLES, pageAccess, proposeAccessUpdate } from "./access.mjs";
 import { HttpError } from "./auth.mjs";
 import { fingerprint, operationKey } from "./mutations.mjs";
 import { companyDomainProof, companyViewDomains, configuredDomainView } from "./domain-access.mjs";
+import { organizationLeases, organizationProof } from "./kilo-membership.mjs";
+import { configuredOrganizationAccess } from "./organization-access.mjs";
 
 const lifetime = 7 * 24 * 60 * 60 * 1000;
 const roleValid = (role) => MEMBER_ROLES.includes(role);
@@ -15,6 +17,12 @@ const stronger = (a, b) => (MEMBER_ROLES.indexOf(a) >= MEMBER_ROLES.indexOf(b) ?
  * domainView the owner cannot currently prove stays in effect for readers and
  * is flagged with domainViewOwnerVerified: false, so the owner can see it and
  * switch to Restricted.
+ *
+ * Organizations follow the same rules: organizationOptions are the
+ * organizations the owner proves membership in now, organizationProof gives
+ * the proof state of each option and of the stored grant, and a stored
+ * organizationAccess the owner cannot prove now is flagged with
+ * organizationAccessOwnerVerified: false.
  */
 export async function sharingProjection(metadata, identity, env = {}, now = Date.now()) {
   const access = pageAccess(metadata, identity, { now });
@@ -26,6 +34,21 @@ export async function sharingProjection(metadata, identity, env = {}, now = Date
     (domain) => domainProof[domain] === "verified",
   );
   const domainView = configuredDomainView(metadata, env);
+  const organizationOptions = (await organizationLeases(env, identity, now)).map(
+    ({ id, name }) => ({ id, name }),
+  );
+  const organization = configuredOrganizationAccess(metadata, env);
+  const organizationProofs = await organizationProof(
+    env,
+    identity,
+    [
+      ...new Set([
+        ...organizationOptions.map(({ id }) => id),
+        ...(organization ? [organization.id] : []),
+      ]),
+    ],
+    now,
+  );
   return {
     access,
     owner: { principal: metadata.owner, displayName: metadata.ownerName },
@@ -33,6 +56,14 @@ export async function sharingProjection(metadata, identity, env = {}, now = Date
     domainProof,
     domainView,
     ...(domainView && { domainViewOwnerVerified: domainOptions.includes(domainView.domain) }),
+    organizationOptions,
+    organizationProof: organizationProofs,
+    organizationAccess: organization
+      ? { id: organization.id, name: organization.name, role: organization.role }
+      : null,
+    ...(organization && {
+      organizationAccessOwnerVerified: organizationProofs[organization.id] === "verified",
+    }),
     members: Object.entries(acl.members ?? {})
       .filter(([, member]) => roleValid(member.role))
       .map(([principal, member]) => ({ principal, ...member })),
@@ -92,6 +123,39 @@ export async function claimInvitation(metadata, identity, env, now = Date.now())
   }
   return null;
 }
+/** A Page has one link audience at a time. Replacing one is two changes the
+ * owner makes, never a side effect of the other. */
+const audienceSet = (current) =>
+  new HttpError(
+    409,
+    `This Page is shared with ${current}. Choose Restricted to turn that off first`,
+    "link_audience_set",
+  );
+
+/** The organization grant `set_organization_access` asks for, or null to
+ * withdraw it. Choosing an organization, or a new role for the one already
+ * set, needs the caller's own current membership in it; withdrawing needs
+ * nothing, so an owner can always stop sharing. */
+async function organizationGrant(acl, identity, args, env, now) {
+  const id = args.organization_id;
+  if (id === null) return null;
+  if (typeof id !== "string" || !id) throw new HttpError(400, "Choose an organization");
+  if (!roleValid(args.role)) throw new HttpError(400, "Choose Can view, Can comment or Can edit");
+  if (acl.domainView) throw audienceSet(`everyone at ${acl.domainView.domain}`);
+  const lease = (await organizationLeases(env, identity, now)).find((value) => value.id === id);
+  if (!lease) {
+    const proof = (await organizationProof(env, identity, [id], now))[id];
+    throw new HttpError(
+      403,
+      proof === "expired"
+        ? "Your organization membership was last confirmed too long ago. Sign in again with the same account to share with this organization"
+        : "Share only with an organization you belong to",
+      "organization_proof_required",
+    );
+  }
+  return { id, name: lease.name, namespace: lease.namespace, role: args.role };
+}
+
 export async function proposeSharingMutation(metadata, identity, args, now = Date.now(), env = {}) {
   if (!pageAccess(metadata, identity, { now }).canManageAccess)
     throw new HttpError(403, "Only the owner can manage sharing");
@@ -117,6 +181,8 @@ export async function proposeSharingMutation(metadata, identity, args, now = Dat
       throw new HttpError(400, "Choose a supported company domain");
     if (args.role !== undefined && args.role !== "viewer")
       throw new HttpError(400, "Company domain access is view-only");
+    if (args.domain !== null && acl.organizationAccess)
+      throw audienceSet(acl.organizationAccess.name || "an organization");
     // Only someone who proves the company email may present a Page to that
     // company. Restricted needs no proof, so an owner can always withdraw.
     if (args.domain !== null) {
@@ -137,6 +203,9 @@ export async function proposeSharingMutation(metadata, identity, args, now = Dat
             domain: args.domain,
             namespace: env.NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE.trim(),
           };
+    acl.revision++;
+  } else if (args.action === "set_organization_access") {
+    acl.organizationAccess = await organizationGrant(acl, identity, args, env, now);
     acl.revision++;
   } else if (args.action === "set_role") {
     const update = proposeAccessUpdate(metadata, identity, args, { now });

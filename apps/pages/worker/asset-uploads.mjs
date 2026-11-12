@@ -118,13 +118,14 @@ function storedBinding(claims) {
  */
 export function uploadVerdict(claims, { pageId, now }) {
   if (!claims || typeof claims !== "object" || Array.isArray(claims)) return "invalid";
-  const { page, principal, kind, grant, iat, exp } = claims;
+  const { page, principal, namespace, kind, grant, iat, exp } = claims;
   if (
     typeof pageId !== "string" ||
     page !== pageId ||
     typeof principal !== "string" ||
     !principal ||
     principal.length > 1024 ||
+    (namespace !== undefined && (typeof namespace !== "string" || namespace.length > 512)) ||
     !ISSUING_KINDS.has(kind) ||
     (kind === "oauth") !== (typeof grant === "string" && grant.length > 0) ||
     !Number.isSafeInteger(iat) ||
@@ -230,6 +231,9 @@ export async function issueAssetUpload(
     payload: {
       page: pageId,
       principal: identity.principal,
+      // The principal's namespace, so the upload's identity can hold the
+      // organization leases its evidence supports, as the issuer's did.
+      ...(typeof identity.namespace === "string" && { namespace: identity.namespace }),
       kind,
       ...(kind === "oauth" && { grant: identity.grantId }),
       iat: now,
@@ -269,12 +273,14 @@ export async function verifyAssetUpload(storage, token, { pageId, now = Date.now
   return claims;
 }
 
-/** The identity a verified capability stands for: its principal with write
- * scope until the capability expires, and the binding the upload must match.
- * It decides nothing itself; the Page's record decides access. */
+/** The identity a verified capability stands for: its principal (and its
+ * namespace, when the capability names one) with write scope until the
+ * capability expires, and the binding the upload must match. It decides
+ * nothing itself; the Page's record decides access. */
 export function uploadIdentity(claims) {
   return Object.freeze({
     principal: claims.principal,
+    ...(claims.namespace !== undefined && { namespace: claims.namespace }),
     displayName: claims.principal,
     accountDisplayName: null,
     driver: "API",

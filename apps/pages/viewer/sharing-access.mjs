@@ -2,11 +2,14 @@ import { request } from "./request.mjs";
 import { monotonicNow } from "./monotonic.mjs";
 
 export const SHARING_FRESH_MS = 30_000;
-// A missing company-email proof refuses one sharing change; it is not a loss of
-// Page access, so the owner's ledger stays and is reloaded with the new proof state.
+// A missing company-email or organization proof refuses one sharing change; it
+// is not a loss of Page access, so the owner's ledger stays and is reloaded
+// with the new proof state.
 export const COMPANY_PROOF_REQUIRED = "company_email_proof_required";
+export const ORGANIZATION_PROOF_REQUIRED = "organization_proof_required";
+const PROOF_REQUIRED = [COMPANY_PROOF_REQUIRED, ORGANIZATION_PROOF_REQUIRED];
 const accessError = (error) =>
-  [401, 403, 404].includes(error?.status) && error?.code !== COMPANY_PROOF_REQUIRED;
+  [401, 403, 404].includes(error?.status) && !PROOF_REQUIRED.includes(error?.code);
 
 export function sharingAvailable(session) {
   return (
@@ -121,8 +124,9 @@ export function createSharingAccess(
     } catch (error) {
       if (error.status === 409 && current())
         await read({ force: true, preserveError: true }).catch(() => {});
-      // The reloaded ledger carries domainProof, which explains the refusal.
-      else if (error.code === COMPANY_PROOF_REQUIRED && current())
+      // The reloaded ledger carries domainProof or organizationProof, which
+      // explains the refusal.
+      else if (PROOF_REQUIRED.includes(error.code) && current())
         await read({ force: true }).catch(() => {});
       throw error;
     }

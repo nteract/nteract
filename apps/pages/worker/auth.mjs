@@ -181,8 +181,9 @@ function onAgentRoute(request, extra = []) {
 
 /** The identity with the audience leases its evidence supports: a company
  * domain lease and one lease per organization. Each host derives them again
- * from the credential; no identity carries them between hosts. */
-async function withDomainAccess(identity, env) {
+ * from the credential; no identity carries them between hosts. A Page host
+ * applies it to an upload capability's identity too (index.mjs `identify`). */
+export async function withDomainAccess(identity, env) {
   const domainAccess = await domainAccessForIdentity(env, identity);
   const organizations = await organizationLeases(env, identity);
   return Object.freeze({
@@ -450,6 +451,8 @@ export const CLIENT_ERROR_CODES = Object.freeze([
   "invalid_cursor",
   "invalid_list_arguments",
   "company_email_proof_required",
+  "organization_proof_required",
+  "link_audience_set",
   "project_id_as_page_id",
   "page_id_as_project_id",
   "project_not_found",

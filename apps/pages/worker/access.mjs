@@ -7,6 +7,7 @@ import {
   NO_ACTOR_CHAIN,
   decide,
   heldRelation,
+  holdsOrganizationGrant,
   memberRow,
   pageObject,
   pageState,
@@ -87,7 +88,9 @@ export function pageRelation(metadata, principal) {
 
 /** decide() projected onto the access flags the host and viewer read. The
  * role is the decision's basis, so a read-only credential still reports the
- * role it holds. Grant revision and generation come from pageGrant.
+ * role it holds. Grant revision and generation come from pageGrant: a role
+ * held through company view or an organization grant has no member row and
+ * generation 0, as the owner's does.
  */
 export function pageAccess(metadata, identity, options) {
   const grant = pageGrant(metadata, identity?.principal, options?.now);
@@ -113,8 +116,13 @@ export function pageAccess(metadata, identity, options) {
   return {
     ...grant,
     role,
-    // Company viewing never creates a durable principal membership.
-    ...(decision.basis.via === "organization" && { source: "domain" }),
+    // Company view and organization grants never create a durable principal
+    // membership.
+    ...(decision.basis.via === "organization" && {
+      source: holdsOrganizationGrant(metadata, identity, options?.now ?? Date.now())
+        ? "organization"
+        : "domain",
+    }),
     ...(decision.basis.via === "project" && { source: "project" }),
     canRead: can("read"),
     canWrite: can("edit"),
@@ -205,6 +213,31 @@ export function restrictAccessDuringCommit(previous, proposed) {
       beforeDomain.namespace !== afterDomain.namespace);
   return {
     ...previous,
-    acl: { ...previous.acl, members, ...(lostDomain && { domainView: null }) },
+    acl: {
+      ...previous.acl,
+      members,
+      ...(lostDomain && { domainView: null }),
+      ...organizationDuringCommit(
+        previous.acl?.organizationAccess,
+        proposed.acl?.organizationAccess,
+      ),
+    },
   };
+}
+
+/** The organization grant both `before` and `after` allow: unchanged when
+ * they name the same organization, at the weaker of their roles, and none
+ * when the grant goes or moves to another organization. */
+function organizationDuringCommit(before, after) {
+  if (!before) return {};
+  if (
+    !after ||
+    before.id !== after.id ||
+    before.namespace !== after.namespace ||
+    !MEMBER_ROLES.includes(after.role)
+  )
+    return { organizationAccess: null };
+  return MEMBER_ROLES.indexOf(after.role) < MEMBER_ROLES.indexOf(before.role)
+    ? { organizationAccess: { ...before, role: after.role } }
+    : {};
 }
