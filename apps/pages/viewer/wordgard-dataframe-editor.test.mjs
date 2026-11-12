@@ -136,10 +136,8 @@ const attrs = {
   title: "Usage",
 };
 
-// The editor draws a dataframe with a tag shape. A shaped point decoration
-// that first appears at an insertion boundary at the end of a document makes
-// Wordgard 0.6.2 throw "Moving past end of document" when the view updates;
-// that's where a dropped dataset usually lands.
+// A dropped dataset usually lands at an insertion boundary at the end of the
+// document. Drawing it there must not throw when the view updates.
 for (const [where, at] of [
   ["at the end of the document", (doc) => doc.length - 1],
   ["mid-paragraph", () => 6],

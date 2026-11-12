@@ -392,8 +392,6 @@ export function wordgardWidgets() {
               // Selection entering source reveals it in the same transaction.
               Elt.mk("div", { class: "wordgard-diagram-block" }, [
                 diagram.of({ source: codeSource(node), editable: !state.readOnly }),
-                // The content hole must stay last: Wordgard 0.6.2 reparents
-                // trailing widgets into it when range decorations change.
                 Elt.mk("pre", { hidden: "", "aria-hidden": "true" }, [0]),
               ]),
             ),

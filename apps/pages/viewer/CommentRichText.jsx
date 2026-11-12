@@ -287,6 +287,7 @@ export function CommentRichText({
         }),
         history(),
         compartment.current.of(permissions(!latest.current.disabled)),
+        Wordgard.editorAttributes.of({ class: "wordgard-document" }),
         Wordgard.contentAttributes.of({
           "aria-label": label,
           role: "textbox",
@@ -328,7 +329,6 @@ export function CommentRichText({
     });
     view.current = editor;
     const forget = registerEditor(editor);
-    editor.dom.classList.add("wordgard-document");
     setEditor(editor);
     refreshFormatting(editor.state);
     return () => {
@@ -527,10 +527,10 @@ export function CommentContent({ message, source }) {
             currentProjectId: () => current.current.projectId,
           }),
           ...permissions(false),
+          Wordgard.editorAttributes.of({ class: "wordgard-document" }),
           Wordgard.exceptionSink.of(() => setProblem(true)),
         ],
       });
-      editor.dom.classList.add("wordgard-document");
     } catch {
       setProblem(true);
     }

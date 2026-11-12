@@ -106,9 +106,9 @@ test("highlighting writes nothing: code spans stay unmarked and comments stay at
   binding.destroy();
 });
 
-// Wordgard 0.6.2's highlighter replaced a code block once per changed range,
-// so a remote edit with two changed ranges in one block threw and never
-// reached the editor. That broke Mermaid source sync between peers.
+// A remote source edit often has several changed ranges in one code block.
+// Rebuilding that block's tokens once per range would throw and keep the edit
+// from reaching the editor, which breaks Mermaid source sync between peers.
 test("a remote edit with several changed ranges in one code block applies", async () => {
   const { GardState } = await import("wordgard/state");
   const { schema, decode } = await import("./wordgard-model.mjs");
