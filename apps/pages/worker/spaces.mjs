@@ -460,6 +460,9 @@ export class Space {
           // organization grant they may still read it through the
           // organization, so the same request records an opened hint: the
           // list re-checks it on every read, and it is bounded and evictable.
+          // The response's status is not read: the Catalog writes the opened
+          // hint before it removes the member hint, so a failure leaves at
+          // worst the member hint, which the list re-checks.
           if (args.action === "set_role" && args.role === null)
             await this.env.CATALOGS.getByName(args.principal).fetch(
               new Request("https://pages.internal/internal/project-discovery", {

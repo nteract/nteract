@@ -1838,11 +1838,14 @@ export class Catalog {
         // operations only: this route runs outside the queue, inside the
         // Project host's read, so it never awaits another host. A body that
         // also says `remove` drops the member hint in the same request, for a
-        // member removed from a Project with an organization grant.
+        // member removed from a Project with an organization grant. The
+        // opened hint goes first: a failure after it leaves the member hint,
+        // which the list re-checks and the member reclaim drops, never
+        // neither.
         if (value.opened === true) {
+          await recordOpenedProject(this.storage, value);
           if (value.remove === true)
             await this.storage.delete(`project-discovery/${value.space_id}`);
-          await recordOpenedProject(this.storage, value);
           return json({ ok: true });
         }
         if (value.remove === true) {
@@ -3802,6 +3805,17 @@ export class Catalog {
    * supplies what is returned. */
   async listSpaces(request, identity, args) {
     const storage = this.storage;
+    if (!args || typeof args !== "object" || Array.isArray(args))
+      throw new HttpError(400, "Invalid list arguments", "invalid_list_arguments");
+    const limit = args.limit ?? 50;
+    if (
+      (args.limit !== undefined && !Number.isSafeInteger(args.limit)) ||
+      limit < 1 ||
+      limit > 100
+    )
+      throw new HttpError(400, "limit must be an integer from 1 to 100", "invalid_list_arguments");
+    if (args.cursor !== undefined && args.cursor !== null && typeof args.cursor !== "string")
+      throw new HttpError(400, "Invalid cursor; restart from the first page", "invalid_cursor");
     for (const spaceId of await invitedProjects(this.env, identity)) {
       // An invitation is an untrusted candidate, not an existing membership.
       // Capacity conflicts or unavailable candidate hosts must not prevent
@@ -3837,13 +3851,6 @@ export class Catalog {
         else if (![403, 404, 409].includes(response.status))
           throw new HttpError(503, "Project access is temporarily unavailable");
       }
-      const limit = args.limit ?? 50;
-      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
-        throw new HttpError(
-          400,
-          "limit must be an integer from 1 to 100",
-          "invalid_list_arguments",
-        );
       const context = {
         principal: identity.principal,
         needle: null,
@@ -3880,20 +3887,6 @@ export class Catalog {
         principal: identity.principal,
       });
     }
-    if (!args || typeof args !== "object" || Array.isArray(args))
-      throw new HttpError(400, "Invalid list arguments", "invalid_list_arguments");
-    let limit = 50;
-    if (args.limit !== undefined) {
-      if (!Number.isSafeInteger(args.limit) || args.limit < 1 || args.limit > 100)
-        throw new HttpError(
-          400,
-          "limit must be an integer from 1 to 100",
-          "invalid_list_arguments",
-        );
-      limit = args.limit;
-    }
-    if (args.cursor !== undefined && args.cursor !== null && typeof args.cursor !== "string")
-      throw new HttpError(400, "Invalid cursor; restart from the first page", "invalid_cursor");
     const context = {
       principal: identity.principal,
       needle: null,

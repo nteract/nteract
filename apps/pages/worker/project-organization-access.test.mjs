@@ -406,15 +406,52 @@ test("opened hints keep the newest OPENED_PROJECT_HINTS by when they were writte
   assert.ok(byAge.slice(1).every(([id]) => kept.includes(id)));
 });
 
-test("two opened-hint writes that race at the bound leave at most the bound after the next write", async (t) => {
+test("opened-hint writes past the bound each succeed and leave the newest OPENED_PROJECT_HINTS", async (t) => {
   const w = await world(t, { kilo: { owner: [acme], member: [acme] } });
-  await fillOpened(w, OPENED_PROJECT_HINTS, (i) => 1_000_000 + i);
-  await Promise.all([
-    discover(w, { space_id: projectId(), owner: w.owner, opened: true }),
-    discover(w, { space_id: projectId(), owner: w.owner, opened: true }),
-  ]);
-  await discover(w, { space_id: projectId(), owner: w.owner, opened: true });
-  assert.ok((await openedHints(w)).length <= OPENED_PROJECT_HINTS);
+  const filled = await fillOpened(w, OPENED_PROJECT_HINTS, (i) => 1_000_000 + i);
+  const added = [projectId(), projectId(), projectId()];
+  for (const space_id of added)
+    assert.equal((await discover(w, { space_id, owner: w.owner, opened: true })).status, 200);
+  assert.deepEqual(
+    (await openedHints(w)).sort(),
+    [...filled.slice(added.length), ...added].sort(),
+    "the three written longest ago went",
+  );
+});
+
+test("a member removed from an organization-shared Project keeps their member hint if the opened hint can't be written", async (t) => {
+  const w = await world(t, { kilo: { owner: [acme], member: [acme] } });
+  const space_id = projectId();
+  const storage = w.catalogStorage(w.member);
+  await storage.put(`project-discovery/${space_id}`, { space_id, owner: w.owner });
+  const put = storage.put.bind(storage);
+  t.mock.method(storage, "put", async (key, value) => {
+    if (String(key).startsWith("project-opened/")) throw new Error("storage is unavailable");
+    return put(key, value);
+  });
+  const response = await discover(w, { space_id, owner: w.owner, remove: true, opened: true });
+  assert.ok(!response.ok);
+  assert.deepEqual(await memberHints(w), [space_id], "the member hint stays for the list to check");
+});
+
+test("list_projects holds limit and cursor to one rule, with or without hints", async (t) => {
+  const w = await world(t, { kilo: { owner: [acme], member: [acme] } });
+  const { project_id } = await w.createProject("Guild");
+  assert.equal((await share(w, project_id, acme.id, "viewer", 0)).status, 200);
+  assert.equal((await w.call("member", "get_project", { project_id })).status, 200);
+  assert.deepEqual(await openedHints(w), [project_id]);
+  // The member's list reads hints; the owner's reads the index.
+  for (const who of ["member", "owner"]) {
+    const limit = await w.call(who, "list_projects", { limit: null });
+    assert.equal(limit.status, 400, `${who}: ${JSON.stringify(limit.body)}`);
+    assert.equal(limit.body.code, "invalid_list_arguments");
+    for (const cursor of [0, false]) {
+      const refused = await w.call(who, "list_projects", { cursor });
+      assert.equal(refused.status, 400, `${who}: ${JSON.stringify(refused.body)}`);
+      assert.equal(refused.body.code, "invalid_cursor");
+    }
+    assert.equal((await w.call(who, "list_projects", { cursor: null })).status, 200, who);
+  }
 });
 
 test("a member grant at 500 member hints behaves as before, whatever opened hints there are", async (t) => {
