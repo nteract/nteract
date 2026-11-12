@@ -427,13 +427,32 @@ test("a Project's owner shares it with an organization, sets the role, and Restr
 });
 
 test("a Project organization the owner can no longer prove stays shared, with sign-in and Restricted", async (t) => {
-  await ownerPanel(t, async () => projectLedger({ role: "commenter" }, { proof: "expired" }));
+  const calls = [];
+  let current = projectLedger({ role: "commenter" }, { proof: "expired" });
+  const { choose } = await ownerPanel(t, async (name, args) => {
+    calls.push([name, args]);
+    if (name === "manage_project_access")
+      current = projectLedger(null, { revision: current.revision + 1, proof: "expired" });
+    return current;
+  });
   assert.equal(linkSelect().value, "org:org-acme");
   assert.equal(linkSelect().options[1].disabled, true);
   assert.equal(roleSelect().disabled, true);
   const note = document.querySelector(".page-domain-sharing-note");
   assert.match(note.textContent, /membership in Acme Research needs confirming/);
   assert.match(note.textContent, /Members of Acme Research can still open this Project/);
+  const signIn = [...note.querySelectorAll("a")].find((a) => a.textContent === "Sign in again");
+  assert.equal(signIn?.getAttribute("href"), "/api/auth/login");
+  assert.equal(linkSelect().options[0].textContent, "Restricted");
+  assert.equal(linkSelect().options[0].disabled, false);
+  await choose(linkSelect(), "");
+  const [name, args] = calls.at(-1);
+  assert.equal(name, "manage_project_access");
+  assert.deepEqual(
+    { action: args.action, organization_id: args.organization_id, role: args.role },
+    { action: "set_organization_access", organization_id: null, role: undefined },
+  );
+  assert.equal(args.expected_revision, 1);
 });
 
 test("a Project owner in no organization sees no link access row", async (t) => {

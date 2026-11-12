@@ -46,8 +46,8 @@ const identity = (
   })),
 });
 /** decide() on a Page in `record`, as its host sees it with a current
- * Project lease. */
-const onPage = (record, who, at = now) => {
+ * Project lease. `members` are the Page's own member rows. */
+const onPage = (record, who, at = now, members = {}) => {
   const principal = principalOf(who);
   const container = {
     ...projectObject(record),
@@ -57,7 +57,16 @@ const onPage = (record, who, at = now) => {
   return decide(
     principal,
     NO_ACTOR_CHAIN,
-    pageObject({ pageId: "in-project", owner, deleted: false, projectAccess: container }, reader),
+    pageObject(
+      {
+        pageId: "in-project",
+        owner,
+        deleted: false,
+        acl: { revision: 1, members },
+        projectAccess: container,
+      },
+      reader,
+    ),
     at,
   );
 };
@@ -99,6 +108,49 @@ test("the grant holds until the earlier of the Project lease and the organizatio
     onPage(record, identity([acme], { expiresAt: now + 5_000 }), now + 5_000).capabilities,
     [],
   );
+});
+
+test("the grant ends with the Project lease even while the organization lease runs on", () => {
+  const record = project(grant("editor"));
+  const who = identity([acme], { expiresAt: now + 60_000 });
+  const end = now + PROJECT_ACCESS_LEASE_MS;
+  assert.deepEqual(onPage(record, who, end - 1).capabilities, [
+    "read",
+    "comment",
+    "edit",
+    "create_items",
+  ]);
+  assert.deepEqual(onPage(record, who, end).capabilities, []);
+});
+
+test("a Page's own tombstone and direct grant meet the Project's organization grant as they meet a Project member", () => {
+  const removed = { [reader]: { role: "none", generation: 2 } };
+  // A Page's tombstone blocks only the organization grant on the Page
+  // itself. Project access comes through the container, so it stands, for
+  // a Project member and for the Project's organization grant alike.
+  const member = project(null, { [reader]: memberRow("viewer") });
+  assert.deepEqual(onPage(member, identity([]), now, removed).basis, {
+    relation: "viewer",
+    via: "project",
+  });
+  assert.deepEqual(onPage(project(grant("viewer")), identity(), now, removed).basis, {
+    relation: "viewer",
+    via: "project",
+  });
+  // A Page's direct grant and the Project's grant combine: the higher wins,
+  // and a tie goes to the direct grant.
+  const direct = (role) => ({ [reader]: memberRow(role) });
+  for (const [record, rows, basis] of [
+    [project(grant("viewer")), direct("editor"), { relation: "editor", via: "direct" }],
+    [project(grant("editor")), direct("viewer"), { relation: "editor", via: "project" }],
+    [project(grant("commenter")), direct("commenter"), { relation: "commenter", via: "direct" }],
+    [
+      project(null, { [reader]: memberRow("editor") }),
+      direct("viewer"),
+      { relation: "editor", via: "project" },
+    ],
+  ])
+    assert.deepEqual(onPage(record, identity(), now, rows).basis, basis);
 });
 
 test("no lease, an expired lease, a cleared grant or another namespace's organization grants nothing", () => {
@@ -389,6 +441,39 @@ test("a member's hint is never evicted for an organization hint", async (t) => {
   assert.equal(hints.length, 500);
   assert.ok(!hints.includes(third.project_id));
   assert.ok(members.every((id) => hints.includes(id)));
+});
+
+test("a Project with an organization grant refuses a move into it", async (t) => {
+  const w = await world(t, { kilo: { owner: [acme] } });
+  const { project_id } = await w.createProject("Guild");
+  const page = (await w.createPage({ title: "Personal" })).body;
+  assert.equal((await share(w, project_id, acme.id, "viewer", 0)).status, 200);
+  const moved = await w.call("owner", "move_page", {
+    page_id: page.page_id,
+    project_id,
+    nonce: crypto.randomUUID(),
+  });
+  assert.equal(moved.body.code, "shared_project_move_unsupported", JSON.stringify(moved.body));
+});
+
+test("a Page moved out of the Project no longer grants through its organization", async (t) => {
+  const w = await world(t, { kilo: { owner: [acme], member: [acme] } });
+  const { project_id } = await w.createProject("Guild");
+  const child = (await w.createPage({ title: "Child", project_id })).body;
+  assert.equal((await share(w, project_id, acme.id, "viewer", 0)).status, 200);
+  assert.equal((await w.call("member", "read_page", { page_id: child.page_id })).status, 200);
+  // A shared Project refuses a move across its boundary, so the grant clears
+  // first and returns after the move.
+  assert.equal((await share(w, project_id, null, undefined, 1)).status, 200);
+  const moved = await w.call("owner", "move_page", {
+    page_id: child.page_id,
+    project_id: null,
+    nonce: crypto.randomUUID(),
+  });
+  assert.equal(moved.status, 200, JSON.stringify(moved.body));
+  assert.equal((await share(w, project_id, acme.id, "viewer", 2)).status, 200);
+  assert.equal((await w.call("member", "get_project", { project_id })).status, 200);
+  assert.equal((await w.call("member", "read_page", { page_id: child.page_id })).status, 403);
 });
 
 test("a Project shared only with an organization is a shared Project boundary for moves", async (t) => {
